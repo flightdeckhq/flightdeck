@@ -21,7 +21,6 @@ import urllib.error
 import urllib.request
 import uuid
 
-import pytest
 
 from .conftest import (
     API_URL,

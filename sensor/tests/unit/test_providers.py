@@ -76,7 +76,7 @@ def test_openai_extract_usage_reads_prompt_and_completion(mock_openai_response: 
 # LitellmProvider (KI21)
 # ----------------------------------------------------------------------
 
-from flightdeck_sensor.providers.litellm import LitellmProvider
+from flightdeck_sensor.providers.litellm import LitellmProvider  # noqa: E402
 
 
 def test_litellm_estimation_reasonable() -> None:
@@ -86,15 +86,15 @@ def test_litellm_estimation_reasonable() -> None:
     """
     provider = LitellmProvider()
     for model in ("claude-haiku-4-5-20251001", "gpt-4o"):
-        estimate, source = provider.estimate_tokens({
-            "model": model,
-            "messages": [
-                {"role": "user", "content": "Explain quantum computing"},
-            ],
-        })
-        assert estimate > 0, (
-            f"expected non-zero estimate for model={model}, got {estimate}"
+        estimate, source = provider.estimate_tokens(
+            {
+                "model": model,
+                "messages": [
+                    {"role": "user", "content": "Explain quantum computing"},
+                ],
+            }
         )
+        assert estimate > 0, f"expected non-zero estimate for model={model}, got {estimate}"
         assert source in ("tiktoken", "heuristic")
 
 
@@ -106,12 +106,14 @@ def test_litellm_estimation_falls_back_to_char_heuristic() -> None:
     provider = LitellmProvider()
     # A clearly-invalid model that won't match any litellm tokenizer.
     # The fallback should kick in and return something >= 0.
-    estimate, source = provider.estimate_tokens({
-        "model": "some-never-seen-provider/xyz-v99",
-        "messages": [
-            {"role": "user", "content": "A" * 400},
-        ],
-    })
+    estimate, source = provider.estimate_tokens(
+        {
+            "model": "some-never-seen-provider/xyz-v99",
+            "messages": [
+                {"role": "user", "content": "A" * 400},
+            ],
+        }
+    )
     assert estimate >= 0
     assert source in ("tiktoken", "heuristic", "none")
 

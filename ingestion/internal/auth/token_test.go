@@ -262,7 +262,7 @@ func TestValidate_CacheExpiryReQueriesDB(t *testing.T) {
 		t.Fatalf("expected 1 initial DB hit, got %d", db.devQueryCount.Load())
 	}
 	v.mu.Lock()
-	v.cache["tok_dev"] = cacheEntry{
+	v.cache[cacheKey("tok_dev")] = cacheEntry{
 		result:  ValidationResult{Valid: true, ID: "dev-uuid", Name: "Development Token"},
 		validAt: time.Now().Add(-2 * cacheTTL),
 	}

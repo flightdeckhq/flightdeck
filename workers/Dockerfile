@@ -10,4 +10,6 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /workers ./cmd/
 FROM alpine:3.20
 RUN apk --no-cache add ca-certificates
 COPY --from=builder /workers /usr/local/bin/workers
+RUN addgroup -S flightdeck && adduser -S flightdeck -G flightdeck
+USER flightdeck
 CMD ["workers"]

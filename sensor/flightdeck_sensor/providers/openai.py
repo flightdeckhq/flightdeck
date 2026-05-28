@@ -258,9 +258,7 @@ class OpenAIProvider:
                         vectors = []
                         for entry in data:
                             emb = getattr(entry, "embedding", None) or (
-                                entry.get("embedding")
-                                if isinstance(entry, dict)
-                                else None
+                                entry.get("embedding") if isinstance(entry, dict) else None
                             )
                             if emb is not None:
                                 vectors.append(list(emb))
@@ -294,6 +292,7 @@ class OpenAIProvider:
                 # ``Object of type AsyncStream is not JSON
                 # serializable`` (caught by Rule 40d smoke).
                 import json as _json
+
                 resp_dict = {}
                 for k, v in dict(response.__dict__).items():
                     try:

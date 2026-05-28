@@ -16,6 +16,10 @@ import {
 } from "@/components/ui/select";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
+// Sentinel <Select> value meaning "no flavor filter". Radix Select cannot
+// use an empty string as an item value, so null maps to this token.
+const ALL_AGENTS_SENTINEL = "__all__";
+
 const CODE_SNIPPET = `@flightdeck_sensor.directive(
     name="my_action",
     description="What this does",
@@ -72,8 +76,8 @@ export function Directives() {
 
       <div className="mb-4 mt-4 flex items-center gap-3">
         <Select
-          value={flavorFilter ?? "__all__"}
-          onValueChange={(v) => setFlavorFilter(v === "__all__" ? null : v)}
+          value={flavorFilter ?? ALL_AGENTS_SENTINEL}
+          onValueChange={(v) => setFlavorFilter(v === ALL_AGENTS_SENTINEL ? null : v)}
         >
           <SelectTrigger
             className="w-48"
@@ -90,7 +94,7 @@ export function Directives() {
             <SelectValue placeholder="All Agents" />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value="__all__">All Agents</SelectItem>
+            <SelectItem value={ALL_AGENTS_SENTINEL}>All Agents</SelectItem>
             {flavors.map((f) => (
               <SelectItem key={f} value={f}>
                 {f}

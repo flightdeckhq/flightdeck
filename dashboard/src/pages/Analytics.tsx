@@ -73,6 +73,7 @@ export function Analytics() {
             <div className="flex items-center gap-2">
               <input
                 type="date"
+                aria-label="From date"
                 value={customFrom}
                 onChange={(e) => setCustomFrom(e.target.value)}
                 className="h-7 rounded-md border border-border bg-surface px-2 text-xs text-text"
@@ -80,6 +81,7 @@ export function Analytics() {
               <span className="text-xs text-text-muted">to</span>
               <input
                 type="date"
+                aria-label="To date"
                 value={customTo}
                 onChange={(e) => setCustomTo(e.target.value)}
                 className="h-7 rounded-md border border-border bg-surface px-2 text-xs text-text"

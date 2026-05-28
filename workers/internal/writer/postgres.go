@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -14,13 +15,13 @@ import (
 )
 
 const (
-	staleThreshold = "2 minutes"
-	// lostThreshold was 10 minutes; raised to 30 minutes in D105 to
-	// cover typical interactive user think-time on the Claude Code
-	// plugin without hiding legitimately-active sessions from the
-	// fleet view. Revival on any event (D105) closes the correctness
-	// gap; this threshold narrows the "appears lost" window.
-	lostThreshold = "30 minutes"
+	staleThreshold = 2 * time.Minute
+	// lostThreshold was 10 minutes; raised to 30 minutes to cover
+	// typical interactive user think-time on the Claude Code plugin
+	// without hiding legitimately-active sessions from the fleet view.
+	// Revival on any event closes the correctness gap; this threshold
+	// narrows the "appears lost" window.
+	lostThreshold = 30 * time.Minute
 )
 
 // Writer performs all Postgres writes for the worker pipeline.
@@ -709,8 +710,8 @@ func (w *Writer) ReviveOrCreateSession(
 			// the agent row exists, so dashboards still render; a
 			// missed increment at worst shows one fewer session in the
 			// total_sessions column until reconciliation runs.
-			// Log-only rather than unwind the insert.
-			_ = bErr
+			slog.Warn("bump agent session count failed (non-fatal)",
+				"agent_id", identity.AgentID, "err", bErr)
 		}
 		return true, nil
 	}
@@ -870,8 +871,8 @@ func (w *Writer) ReconcileStaleSessions(ctx context.Context) error {
 		UPDATE sessions
 		SET state = 'stale'
 		WHERE state IN ('active', 'idle')
-		  AND last_seen_at < NOW() - INTERVAL '`+staleThreshold+`'
-	`)
+		  AND last_seen_at < NOW() - make_interval(secs => $1)
+	`, staleThreshold.Seconds())
 	if err != nil {
 		return fmt.Errorf("mark stale: %w", err)
 	}
@@ -881,8 +882,8 @@ func (w *Writer) ReconcileStaleSessions(ctx context.Context) error {
 		UPDATE sessions
 		SET state = 'lost'
 		WHERE state = 'stale'
-		  AND last_seen_at < NOW() - INTERVAL '`+lostThreshold+`'
-	`)
+		  AND last_seen_at < NOW() - make_interval(secs => $1)
+	`, lostThreshold.Seconds())
 	if err != nil {
 		return fmt.Errorf("mark lost: %w", err)
 	}

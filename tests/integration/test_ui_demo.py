@@ -432,7 +432,6 @@ def test_ui_demo() -> None:
     flow1_done = False
     flow2_done = False
     flow3_done = False
-    flow4_done = False
 
     def now_iso() -> str:
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
@@ -639,7 +638,6 @@ def test_ui_demo() -> None:
                 ))
                 inactive_sessions.add(target_sid)
                 directive_sent = True
-                flow4_done = True
                 print(f"  ** Flow 4: shutdown acknowledged and session ended for {target_sid[:8]}")
 
             # Filter sessions by inactive set BEFORE the per-session loop
@@ -802,9 +800,9 @@ def test_ui_demo() -> None:
     code_tokens = sum(s["tokens_used_session"] for s in code_sessions)
     claude_tokens = sum(s["tokens_used_session"] for s in claude_sessions)
 
-    print(f"\n=== Demo complete ===")
-    print(f"Sessions: 10")
-    print(f"Duration: ~180s")
+    print("\n=== Demo complete ===")
+    print("Sessions: 10")
+    print("Duration: ~180s")
     print(f"Total events: {total_events}")
     print(f"research-agent tokens: {research_tokens:,}")
     print(f"code-agent tokens: {code_tokens:,}")

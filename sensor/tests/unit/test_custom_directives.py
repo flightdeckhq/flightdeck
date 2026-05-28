@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import time
 from typing import Any
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from flightdeck_sensor import (
     Parameter,
@@ -24,7 +21,6 @@ from flightdeck_sensor.core.types import (
     SensorConfig,
 )
 from flightdeck_sensor.transport.client import ControlPlaneClient
-
 
 # ------------------------------------------------------------------
 # Helpers

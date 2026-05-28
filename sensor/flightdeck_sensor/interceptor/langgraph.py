@@ -85,6 +85,7 @@ def _ensure_imported() -> bool:
         return _LANGGRAPH_AVAILABLE
     try:
         from langgraph.graph import StateGraph
+
         _StateGraph = StateGraph
         _LANGGRAPH_AVAILABLE = True
     except ImportError:

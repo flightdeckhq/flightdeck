@@ -27,7 +27,8 @@ payload-extraction Provider classes (``AnthropicProvider`` /
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch as mock_patch
+from unittest.mock import MagicMock
+from unittest.mock import patch as mock_patch
 
 import pytest
 
@@ -99,7 +100,7 @@ def test_provider_member_is_a_string() -> None:
     enum member is passed in its place."""
     assert isinstance(Provider.ANTHROPIC, str)
     assert Provider.ANTHROPIC == "anthropic"
-    assert "anthropic" == Provider.ANTHROPIC
+    assert Provider.ANTHROPIC == "anthropic"
     # Hash equivalence is what makes ``"anthropic" in
     # {Provider.ANTHROPIC}`` work without explicit normalisation.
     assert hash(Provider.ANTHROPIC) == hash("anthropic")
@@ -246,6 +247,7 @@ def test_provider_importable_from_top_level() -> None:
     """``from flightdeck_sensor import Provider`` resolves; ``Provider``
     is in ``__all__``. Public-API surface lock."""
     import flightdeck_sensor as fd
+
     assert hasattr(fd, "Provider")
     assert fd.Provider is Provider
     assert "Provider" in fd.__all__

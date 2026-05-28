@@ -32,41 +32,36 @@ Tests in this file:
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 from unittest.mock import MagicMock
 
-import pytest
-
 import anthropic
 import openai
+import pytest
 
 import flightdeck_sensor
 from flightdeck_sensor.interceptor.anthropic import (
     SensorAnthropic,
     SensorBeta,
     SensorMessages,
-    _OrigAnthropic,
-    _OrigAsyncAnthropic,
     _AnthropicMessagesDescriptor,
+    _OrigAnthropic,
     patch_anthropic_classes,
     unpatch_anthropic_classes,
 )
 from flightdeck_sensor.interceptor.litellm import (
     SensorLitellm,
-    patch_litellm_functions,
     unpatch_litellm_functions,
 )
 from flightdeck_sensor.interceptor.openai import (
     SensorChat,
-    SensorCompletions,
     SensorOpenAI,
     _OpenAIChatDescriptor,
     _OrigOpenAI,
-    _OrigAsyncOpenAI,
     patch_openai_classes,
     unpatch_openai_classes,
 )
-
 
 # ----------------------------------------------------------------------
 # Fixtures
@@ -86,10 +81,8 @@ def sensor_init() -> Any:
         quiet=True,
     )
     yield
-    try:
+    with contextlib.suppress(Exception):
         flightdeck_sensor.teardown()
-    except Exception:
-        pass
     # Defensive: in case teardown failed mid-way leave classes clean.
     unpatch_anthropic_classes()
     unpatch_openai_classes()
@@ -405,7 +398,8 @@ def test_sensor_beta_passes_through_unknown_attrs(sensor_init: Any) -> None:
 
 
 def test_sensor_beta_messages_create_routes_through_intercept(
-    sensor_init: Any, monkeypatch: pytest.MonkeyPatch,
+    sensor_init: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """End-to-end: SensorBeta.messages.create() reaches base.call().
     Patching the call hook to a sentinel proves the intercept fires
@@ -465,11 +459,13 @@ def test_async_anthropic_streaming_returns_guarded_async_stream(sensor_init: Any
     chunk + abort measurement policy as the sync wrapper.
     """
     from flightdeck_sensor.interceptor import base
+
     async_client = anthropic.AsyncAnthropic(api_key="test-key")
     wrapped = flightdeck_sensor.wrap(async_client)
     assert isinstance(wrapped, SensorAnthropic)
     guarded = wrapped.messages.stream(
-        model="claude-sonnet-4-6", messages=[],
+        model="claude-sonnet-4-6",
+        messages=[],
     )
     assert isinstance(guarded, base.GuardedAsyncStream)
 
@@ -488,7 +484,9 @@ def test_async_openai_streaming_returns_guarded_async_stream(sensor_init: Any) -
     """
     import asyncio
     import inspect
+
     from flightdeck_sensor.interceptor import base
+
     async_client = openai.AsyncOpenAI(api_key="test-key")
     wrapped = flightdeck_sensor.wrap(async_client)
     assert isinstance(wrapped, SensorOpenAI)
@@ -566,10 +564,8 @@ def test_descriptor_no_session_then_init_anthropic() -> None:
         assert "messages" in vars(client)
         assert vars(client)["messages"] is msgs2
     finally:
-        try:
+        with contextlib.suppress(Exception):
             flightdeck_sensor.teardown()
-        except Exception:
-            pass
         unpatch_anthropic_classes()
         unpatch_openai_classes()
 
@@ -596,10 +592,8 @@ def test_descriptor_no_session_then_init_openai() -> None:
         assert "chat" in vars(client)
         assert vars(client)["chat"] is chat2
     finally:
-        try:
+        with contextlib.suppress(Exception):
             flightdeck_sensor.teardown()
-        except Exception:
-            pass
         unpatch_anthropic_classes()
         unpatch_openai_classes()
 
@@ -619,7 +613,7 @@ def test_descriptor_no_session_then_init_openai() -> None:
 # provider-agnostic and does not hard-code either side.
 
 
-import litellm as _litellm
+import litellm as _litellm  # noqa: E402
 
 
 def _make_mock_litellm_response(
@@ -661,9 +655,7 @@ def test_patch_litellm_is_idempotent(sensor_init: Any) -> None:
     first = _litellm.completion
     flightdeck_sensor.patch(quiet=True)
     second = _litellm.completion
-    assert first is second, (
-        "second patch() must not re-wrap litellm.completion"
-    )
+    assert first is second, "second patch() must not re-wrap litellm.completion"
     assert getattr(_litellm, "_flightdeck_patched", False) is True
 
 
@@ -682,7 +674,8 @@ def test_litellm_completion_intercepted_sync(
     """
     mock_completion = MagicMock(
         return_value=_make_mock_litellm_response(
-            prompt_tokens=12, completion_tokens=8,
+            prompt_tokens=12,
+            completion_tokens=8,
             model="claude-haiku-4-5-20251001",
         ),
     )
@@ -722,7 +715,8 @@ async def test_litellm_acompletion_intercepted_async(
 
     mock_acompletion = AsyncMock(
         return_value=_make_mock_litellm_response(
-            prompt_tokens=15, completion_tokens=9,
+            prompt_tokens=15,
+            completion_tokens=9,
             model="gpt-4o",
         ),
     )
@@ -752,6 +746,7 @@ def test_litellm_exception_propagates(
     code path still runs. The patched wrapper must not swallow the
     exception.
     """
+
     class _SimulatedProviderError(RuntimeError):
         pass
 
@@ -857,7 +852,8 @@ def test_sensor_litellm_per_instance_wrap(
     patched in this test -- SensorLitellm works standalone.
     """
     mock_response = _make_mock_litellm_response(
-        prompt_tokens=7, completion_tokens=3,
+        prompt_tokens=7,
+        completion_tokens=3,
     )
     # SensorLitellm's __init__ captures _OrigCompletion at module
     # import time. Replace that captured reference via the module's
@@ -865,7 +861,8 @@ def test_sensor_litellm_per_instance_wrap(
     from flightdeck_sensor.interceptor import litellm as _litellm_interceptor
 
     monkeypatch.setattr(
-        _litellm_interceptor, "_OrigCompletion",
+        _litellm_interceptor,
+        "_OrigCompletion",
         MagicMock(return_value=mock_response),
     )
     session = flightdeck_sensor._session

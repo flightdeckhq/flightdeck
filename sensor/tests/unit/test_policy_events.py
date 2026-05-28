@@ -65,11 +65,7 @@ def _make_session(
 
 def _events_of_type(eq: MagicMock, event_type: str) -> list[dict[str, Any]]:
     """Return the payloads enqueued for ``event_type`` in call order."""
-    return [
-        c[0][0]
-        for c in eq.enqueue.call_args_list
-        if c[0][0]["event_type"] == event_type
-    ]
+    return [c[0][0] for c in eq.enqueue.call_args_list if c[0][0]["event_type"] == event_type]
 
 
 # ---------------------------------------------------------------------------
@@ -143,9 +139,7 @@ def test_apply_directive_degrade_emits_policy_degrade() -> None:
 
     # Decision-locked: POLICY_DEGRADE first, DIRECTIVE_RESULT second.
     types_in_order = [c[0][0]["event_type"] for c in eq.enqueue.call_args_list]
-    assert types_in_order.index("policy_degrade") < types_in_order.index(
-        "directive_result"
-    )
+    assert types_in_order.index("policy_degrade") < types_in_order.index("directive_result")
 
 
 # ---------------------------------------------------------------------------
@@ -173,13 +167,9 @@ def test_forced_degrade_emits_one_event_per_directive_arm() -> None:
     # Subsequent _pre_call invocations on the armed session swap the
     # model but must NOT re-emit policy_degrade. Per-call swaps are
     # visible via post_call.model only.
-    out_kwargs = base._pre_call(
-        session, provider, {"model": "claude-sonnet-4-6"}, estimated=5
-    )
+    out_kwargs = base._pre_call(session, provider, {"model": "claude-sonnet-4-6"}, estimated=5)
     assert out_kwargs["model"] == "claude-haiku-4-5"
-    out_kwargs2 = base._pre_call(
-        session, provider, {"model": "claude-sonnet-4-6"}, estimated=5
-    )
+    out_kwargs2 = base._pre_call(session, provider, {"model": "claude-sonnet-4-6"}, estimated=5)
     assert out_kwargs2["model"] == "claude-haiku-4-5"
 
     degrade_events_after_swaps = _events_of_type(eq, "policy_degrade")
@@ -199,9 +189,7 @@ def test_pre_call_emits_policy_block_then_flushes_before_raising() -> None:
     session._tokens_used = 60
 
     with pytest.raises(BudgetExceededError):
-        base._pre_call(
-            session, provider, {"model": "claude-sonnet-4-6"}, estimated=5
-        )
+        base._pre_call(session, provider, {"model": "claude-sonnet-4-6"}, estimated=5)
 
     # Event must have been enqueued before the raise.
     block_events = _events_of_type(eq, "policy_block")
@@ -229,9 +217,7 @@ def test_no_policy_event_when_decision_is_allow() -> None:
     base._pre_call(session, provider, {"model": "claude-sonnet-4-6"}, estimated=10)
 
     for event_type in ("policy_warn", "policy_degrade", "policy_block"):
-        assert _events_of_type(eq, event_type) == [], (
-            f"unexpected {event_type} on ALLOW decision"
-        )
+        assert _events_of_type(eq, event_type) == [], f"unexpected {event_type} on ALLOW decision"
 
 
 # ---------------------------------------------------------------------------
@@ -252,9 +238,7 @@ def test_policy_block_source_always_server() -> None:
     session._tokens_used = 60
 
     with pytest.raises(BudgetExceededError):
-        base._pre_call(
-            session, provider, {"model": "claude-sonnet-4-6"}, estimated=5
-        )
+        base._pre_call(session, provider, {"model": "claude-sonnet-4-6"}, estimated=5)
 
     e = _events_of_type(eq, "policy_block")[0]
     assert e["source"] == "server", "BLOCK source must be 'server' (D035)"
@@ -332,9 +316,7 @@ def test_policy_event_payload_shape() -> None:
     session3, eq3, provider3 = _make_session(token_limit=100, block_at_pct=50)
     session3._tokens_used = 60
     with pytest.raises(BudgetExceededError):
-        base._pre_call(
-            session3, provider3, {"model": "claude-sonnet-4-6"}, estimated=5
-        )
+        base._pre_call(session3, provider3, {"model": "claude-sonnet-4-6"}, estimated=5)
     block = _events_of_type(eq3, "policy_block")[0]
     assert "intended_model" in block
 
@@ -373,12 +355,12 @@ def test_local_and_server_warn_fire_independently() -> None:
     sources.
     """
     session, eq, provider = _make_session(
-        token_limit=10_000,           # large server limit so block never fires
-        warn_at_pct=1,                # server warn at 100 tokens
-        degrade_at_pct=99,            # well above the bumped token range
-        block_at_pct=99,              # ditto
+        token_limit=10_000,  # large server limit so block never fires
+        warn_at_pct=1,  # server warn at 100 tokens
+        degrade_at_pct=99,  # well above the bumped token range
+        block_at_pct=99,  # ditto
         local_limit=200,
-        local_warn_at=0.9,            # local warn at 180 tokens
+        local_warn_at=0.9,  # local warn at 180 tokens
     )
     # First call: tokens_used=110+5 estimated=115 → past server warn
     # (100), under local warn (180). Expect server WARN.

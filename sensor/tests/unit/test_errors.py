@@ -12,12 +12,10 @@ from typing import Any
 
 from flightdeck_sensor.core.errors import (
     OTEL_ERROR_TYPE,
-    ErrorClassification,
     ErrorPayload,
     ErrorType,
     classify_exception,
 )
-
 
 # ---------------------------------------------------------------------------
 # Synthetic exception factory. We do NOT import provider SDKs here so the
@@ -48,8 +46,10 @@ def _mk(
     if request_id is not None:
         attrs["request_id"] = request_id
     if headers is not None:
+
         class _Resp:
             pass
+
         resp = _Resp()
         resp.status_code = status  # type: ignore[attr-defined]
         resp.headers = headers  # type: ignore[attr-defined]
@@ -83,8 +83,14 @@ def test_authentication_error_maps_to_authentication() -> None:
 def test_permission_denied_error_maps_to_permission() -> None:
     # OpenAI names it PermissionDeniedError; anthropic uses PermissionError.
     # Both should resolve to the same taxonomy entry.
-    assert classify_exception(_mk("PermissionDeniedError", module="openai", status=403)).error_type is ErrorType.PERMISSION
-    assert classify_exception(_mk("PermissionError", module="anthropic", status=403)).error_type is ErrorType.PERMISSION
+    assert (
+        classify_exception(_mk("PermissionDeniedError", module="openai", status=403)).error_type
+        is ErrorType.PERMISSION
+    )
+    assert (
+        classify_exception(_mk("PermissionError", module="anthropic", status=403)).error_type
+        is ErrorType.PERMISSION
+    )
 
 
 def test_not_found_error_maps_to_not_found() -> None:
@@ -183,11 +189,14 @@ def test_classifier_never_raises_on_garbage_exception() -> None:
     class Busted:
         def __getattr__(self, _name: str) -> Any:
             raise RuntimeError("detonate")
+
     # Should not raise; should produce an ``other`` classification.
     # We have to construct via _mk() for __module__, so bolt Busted's
     # __getattr__ on after.
     exc = _mk("APIError", status=500)
-    object.__setattr__(exc, "__getattr__", lambda _: (_ for _ in ()).throw(RuntimeError("detonate")))
+    object.__setattr__(
+        exc, "__getattr__", lambda _: (_ for _ in ()).throw(RuntimeError("detonate"))
+    )
     c = classify_exception(exc)
     assert c.error_type in {ErrorType.API_ERROR, ErrorType.OTHER}
 
@@ -224,9 +233,18 @@ def test_extracts_provider_error_code_from_body_error_dict() -> None:
 
 
 def test_provider_inferred_from_module_name() -> None:
-    assert classify_exception(_mk("APIError", module="anthropic.errors", status=500)).provider == "anthropic"
-    assert classify_exception(_mk("APIError", module="openai._exceptions", status=500)).provider == "openai"
-    assert classify_exception(_mk("APIError", module="litellm.exceptions", status=500)).provider == "litellm"
+    assert (
+        classify_exception(_mk("APIError", module="anthropic.errors", status=500)).provider
+        == "anthropic"
+    )
+    assert (
+        classify_exception(_mk("APIError", module="openai._exceptions", status=500)).provider
+        == "openai"
+    )
+    assert (
+        classify_exception(_mk("APIError", module="litellm.exceptions", status=500)).provider
+        == "litellm"
+    )
 
 
 def test_provider_hint_overrides_module_inference() -> None:
@@ -249,7 +267,8 @@ def test_error_message_includes_class_name_and_clip() -> None:
     below — class name only."""
     big = "x" * 500
     c = classify_exception(
-        _mk("APIError", status=500, message=big), capture_prompts=True,
+        _mk("APIError", status=500, message=big),
+        capture_prompts=True,
     )
     assert c.error_message.startswith("APIError:")
     # Clipped to 200-char summary + ellipsis.

@@ -300,6 +300,7 @@ async def test_list_tools_emits_count_and_item_names(install_session: Session) -
     """Phase 7 Step 3: discovery family carries item_names so the
     drift-detection workflow can answer "did this server's tool
     inventory change last week" without a separate query."""
+
     async def fake_orig(self: Any, *args: Any, **kwargs: Any) -> Any:
         return SimpleNamespace(
             tools=[
@@ -957,7 +958,10 @@ async def test_d150_call_tool_capture_routes_to_event_content_dedicated_columns(
         return fake_result
 
     wrapped = _make_async_wrapper(
-        "call_tool", fake_orig, EventType.MCP_TOOL_CALL, _emit_tool_call,
+        "call_tool",
+        fake_orig,
+        EventType.MCP_TOOL_CALL,
+        _emit_tool_call,
     )
     await wrapped(_bound_receiver(), "echo", {"text": "small"})
 
@@ -993,7 +997,10 @@ async def test_d150_call_tool_large_payload_lands_via_same_path(
         return fake_result
 
     wrapped = _make_async_wrapper(
-        "call_tool", fake_orig, EventType.MCP_TOOL_CALL, _emit_tool_call,
+        "call_tool",
+        fake_orig,
+        EventType.MCP_TOOL_CALL,
+        _emit_tool_call,
     )
     await wrapped(_bound_receiver(), "fetch", {"url": "ex"})
 
@@ -1025,7 +1032,10 @@ async def test_b6_resource_read_large_content_overflows(
         return fake_result
 
     wrapped = _make_async_wrapper(
-        "read_resource", fake_orig, EventType.MCP_RESOURCE_READ, _emit_resource_read,
+        "read_resource",
+        fake_orig,
+        EventType.MCP_RESOURCE_READ,
+        _emit_resource_read,
     )
     await wrapped(_bound_receiver(), "mem://big-log")
 
@@ -1039,10 +1049,9 @@ async def test_b6_resource_read_large_content_overflows(
     # consumes it). The dashboard discriminates via has_content alone.
     assert payload["has_content"] is True
     assert payload["content"]["provider"] == "mcp"
-    assert (
-        payload["content"]["response"]
-        == {"contents": [{"text": big_text, "mimeType": "text/plain"}]}
-    )
+    assert payload["content"]["response"] == {
+        "contents": [{"text": big_text, "mimeType": "text/plain"}]
+    }
 
 
 @pytest.mark.asyncio
@@ -1052,7 +1061,9 @@ async def test_b6_resource_read_small_content_stays_inline(
     """Below threshold: inline ReadResourceResult, has_content=false."""
     small_text = "hello"
     text_piece = SimpleNamespace(
-        text=small_text, blob=None, mimeType="text/plain",
+        text=small_text,
+        blob=None,
+        mimeType="text/plain",
     )
     fake_result = SimpleNamespace(contents=[text_piece])
     fake_result.model_dump = lambda mode="json": {  # noqa: ARG005
@@ -1063,8 +1074,10 @@ async def test_b6_resource_read_small_content_stays_inline(
         return fake_result
 
     wrapped = _make_async_wrapper(
-        "read_resource", fake_orig,
-        EventType.MCP_RESOURCE_READ, _emit_resource_read,
+        "read_resource",
+        fake_orig,
+        EventType.MCP_RESOURCE_READ,
+        _emit_resource_read,
     )
     await wrapped(_bound_receiver(), "mem://demo")
 
@@ -1093,7 +1106,10 @@ async def test_d150_prompt_get_capture_routes_to_event_content(
         return SimpleNamespace(messages=[msg])
 
     wrapped = _make_async_wrapper(
-        "get_prompt", fake_orig, EventType.MCP_PROMPT_GET, _emit_prompt_get,
+        "get_prompt",
+        fake_orig,
+        EventType.MCP_PROMPT_GET,
+        _emit_prompt_get,
     )
     await wrapped(_bound_receiver(), "system_prompt", {"name": "Ada"})
 

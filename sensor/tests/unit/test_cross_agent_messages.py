@@ -30,7 +30,6 @@ from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import SensorConfig, SubagentMessage
 from flightdeck_sensor.transport.client import ControlPlaneClient
 
-
 # ----------------------------------------------------------------------
 # Direct Session-method coverage (interceptor-independent)
 # ----------------------------------------------------------------------
@@ -236,6 +235,7 @@ def test_hard_cap_drops_oversized_body(caplog: Any) -> None:
     body = _approx_bytes_string(SUBAGENT_HARD_CAP_BYTES + 1024)
     msg = SubagentMessage(body=body, captured_at="2026-05-02T00:00:00Z")
     import logging
+
     with caplog.at_level(logging.WARNING, logger="flightdeck_sensor.core.session"):
         session.emit_subagent_session_start(
             child_session_id="c-cap",
@@ -391,7 +391,8 @@ def test_crewai_and_langgraph_emit_identical_message_envelope_shape() -> None:
             child_agent_name="parent/Researcher",
             agent_role="Researcher",
             incoming_message=SubagentMessage(
-                body="task: find x", captured_at="2026-05-02T00:00:00Z",
+                body="task: find x",
+                captured_at="2026-05-02T00:00:00Z",
             ),
         )
         session.emit_subagent_session_start(
@@ -414,9 +415,11 @@ def test_crewai_and_langgraph_emit_identical_message_envelope_shape() -> None:
     # Both payloads must have the same set of envelope keys (body
     # + captured_at) under incoming_message — that's the parity
     # invariant.
-    assert set(p_crewai["incoming_message"].keys()) == set(
-        p_lg["incoming_message"].keys()
-    ) == {"body", "captured_at"}
+    assert (
+        set(p_crewai["incoming_message"].keys())
+        == set(p_lg["incoming_message"].keys())
+        == {"body", "captured_at"}
+    )
 
     # Bodies stay verbatim (string for CrewAI's task description,
     # dict for LangGraph's state) — no auto-stringification or

@@ -1,8 +1,8 @@
 import type { Session } from "@/lib/types";
 
 export interface LostSubAgentInfo {
-	role: string | undefined;
-	sessionIdSuffix: string;
+  role: string | undefined;
+  sessionIdSuffix: string;
 }
 
 // findLostSubAgent surfaces a sub-agent that ended in ``lost`` state
@@ -19,25 +19,25 @@ export interface LostSubAgentInfo {
 // characters of the offending session_id (used as the tooltip
 // disambiguator on the dot itself).
 export function findLostSubAgent(sessions: Session[]): LostSubAgentInfo | null {
-	const latestPerRole = new Map<string, Session>();
-	for (const s of sessions) {
-		if (s.parent_session_id == null) continue;
-		const roleKey = s.agent_role ?? "(no-role)";
-		const prior = latestPerRole.get(roleKey);
-		const sMs = new Date(s.started_at).getTime();
-		const priorMs = prior ? new Date(prior.started_at).getTime() : -Infinity;
-		// Strict ``>`` so identical-timestamp duplicates keep the
-		// first session encountered; otherwise iteration order on
-		// the input array would tip the recency winner.
-		if (sMs > priorMs) latestPerRole.set(roleKey, s);
-	}
-	for (const [, s] of latestPerRole) {
-		if (s.state === "lost") {
-			return {
-				role: s.agent_role ?? undefined,
-				sessionIdSuffix: s.session_id.slice(-8),
-			};
-		}
-	}
-	return null;
+  const latestPerRole = new Map<string, Session>();
+  for (const s of sessions) {
+    if (s.parent_session_id == null) continue;
+    const roleKey = s.agent_role ?? "(no-role)";
+    const prior = latestPerRole.get(roleKey);
+    const sMs = new Date(s.started_at).getTime();
+    const priorMs = prior ? new Date(prior.started_at).getTime() : -Infinity;
+    // Strict ``>`` so identical-timestamp duplicates keep the
+    // first session encountered; otherwise iteration order on
+    // the input array would tip the recency winner.
+    if (sMs > priorMs) latestPerRole.set(roleKey, s);
+  }
+  for (const [, s] of latestPerRole) {
+    if (s.state === "lost") {
+      return {
+        role: s.agent_role ?? undefined,
+        sessionIdSuffix: s.session_id.slice(-8),
+      };
+    }
+  }
+  return null;
 }

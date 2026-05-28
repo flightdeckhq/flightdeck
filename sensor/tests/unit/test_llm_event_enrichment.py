@@ -13,6 +13,7 @@ enrichment:
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -52,11 +53,7 @@ def _make_session(
 
 
 def _events(eq: MagicMock, event_type: str) -> list[dict[str, Any]]:
-    return [
-        c[0][0]
-        for c in eq.enqueue.call_args_list
-        if c[0][0]["event_type"] == event_type
-    ]
+    return [c[0][0] for c in eq.enqueue.call_args_list if c[0][0]["event_type"] == event_type]
 
 
 # --------------------------------------------------------------------------
@@ -67,8 +64,11 @@ def _events(eq: MagicMock, event_type: str) -> list[dict[str, Any]]:
 def test_pre_call_event_carries_estimated_via_and_model() -> None:
     session, eq, provider = _make_session()
     base._pre_call(
-        session, provider, {"model": "claude-sonnet-4-6"},
-        estimated=42, estimated_via="tiktoken",
+        session,
+        provider,
+        {"model": "claude-sonnet-4-6"},
+        estimated=42,
+        estimated_via="tiktoken",
     )
     pre_calls = _events(eq, "pre_call")
     assert len(pre_calls) == 1
@@ -83,7 +83,11 @@ def test_pre_call_event_omits_policy_decision_pre_on_allow() -> None:
     session, eq, provider = _make_session(token_limit=1000, warn_at_pct=80)
     session._tokens_used = 100
     base._pre_call(
-        session, provider, {"model": "m"}, estimated=10, estimated_via="heuristic",
+        session,
+        provider,
+        {"model": "m"},
+        estimated=10,
+        estimated_via="heuristic",
     )
     pre_calls = _events(eq, "pre_call")
     assert len(pre_calls) == 1
@@ -94,7 +98,11 @@ def test_pre_call_event_carries_policy_decision_pre_on_warn() -> None:
     session, eq, provider = _make_session(token_limit=100, warn_at_pct=50)
     session._tokens_used = 60
     base._pre_call(
-        session, provider, {"model": "m"}, estimated=5, estimated_via="tiktoken",
+        session,
+        provider,
+        {"model": "m"},
+        estimated=5,
+        estimated_via="tiktoken",
     )
     pre_calls = _events(eq, "pre_call")
     assert len(pre_calls) == 1
@@ -107,13 +115,14 @@ def test_pre_call_event_carries_policy_decision_pre_on_warn() -> None:
 def test_pre_call_event_carries_policy_decision_pre_on_block() -> None:
     session, eq, provider = _make_session(token_limit=100, block_at_pct=80)
     session._tokens_used = 80
-    try:
+    with contextlib.suppress(Exception):
         base._pre_call(
-            session, provider, {"model": "m"},
-            estimated=5, estimated_via="tiktoken",
+            session,
+            provider,
+            {"model": "m"},
+            estimated=5,
+            estimated_via="tiktoken",
         )
-    except Exception:
-        pass
     pre_calls = _events(eq, "pre_call")
     assert len(pre_calls) == 1
     pdp = pre_calls[0].get("policy_decision_pre")
@@ -125,7 +134,11 @@ def test_pre_call_event_carries_policy_decision_pre_on_block() -> None:
 def test_pre_call_event_estimated_via_none_lands_when_estimator_failed() -> None:
     session, eq, provider = _make_session()
     base._pre_call(
-        session, provider, {"model": "m"}, estimated=0, estimated_via="none",
+        session,
+        provider,
+        {"model": "m"},
+        estimated=0,
+        estimated_via="none",
     )
     pre_calls = _events(eq, "pre_call")
     assert len(pre_calls) == 1
@@ -139,12 +152,14 @@ def test_pre_call_event_estimated_via_none_lands_when_estimator_failed() -> None
 
 
 def _mock_anthropic_response(
-    input_tokens: int = 100, output_tokens: int = 50,
+    input_tokens: int = 100,
+    output_tokens: int = 50,
     headers: dict[str, str] | None = None,
 ) -> Any:
     """Plain object whose attributes match what AnthropicProvider reads.
     A bare MagicMock auto-generates child mocks for missing attrs,
     which then break arithmetic with int."""
+
     class _Usage:
         pass
 
@@ -168,8 +183,12 @@ def test_post_call_payload_carries_estimated_via_passthrough() -> None:
     session, eq, provider = _make_session()
     response = _mock_anthropic_response()
     base._post_call(
-        session, provider, response,
-        estimated=42, latency_ms=120, call_kwargs={"model": "m"},
+        session,
+        provider,
+        response,
+        estimated=42,
+        latency_ms=120,
+        call_kwargs={"model": "m"},
         estimated_via="tiktoken",
     )
     posts = _events(eq, "post_call")
@@ -186,8 +205,12 @@ def test_post_call_payload_carries_provider_metadata_when_headers_present() -> N
     }
     response = _mock_anthropic_response(headers=headers)
     base._post_call(
-        session, provider, response,
-        estimated=10, latency_ms=50, call_kwargs={"model": "m"},
+        session,
+        provider,
+        response,
+        estimated=10,
+        latency_ms=50,
+        call_kwargs={"model": "m"},
         estimated_via="tiktoken",
     )
     posts = _events(eq, "post_call")
@@ -202,8 +225,12 @@ def test_post_call_payload_omits_provider_metadata_when_no_headers() -> None:
     session, eq, provider = _make_session()
     response = _mock_anthropic_response(headers=None)
     base._post_call(
-        session, provider, response,
-        estimated=10, latency_ms=50, call_kwargs={"model": "m"},
+        session,
+        provider,
+        response,
+        estimated=10,
+        latency_ms=50,
+        call_kwargs={"model": "m"},
         estimated_via="tiktoken",
     )
     posts = _events(eq, "post_call")
@@ -217,8 +244,12 @@ def test_post_call_payload_carries_policy_decision_post_when_crossed() -> None:
     session._tokens_used = 60
     response = _mock_anthropic_response(input_tokens=25, output_tokens=0)
     base._post_call(
-        session, provider, response,
-        estimated=10, latency_ms=50, call_kwargs={"model": "m"},
+        session,
+        provider,
+        response,
+        estimated=10,
+        latency_ms=50,
+        call_kwargs={"model": "m"},
         estimated_via="tiktoken",
     )
     posts = _events(eq, "post_call")
@@ -232,8 +263,12 @@ def test_post_call_payload_omits_policy_decision_post_when_no_crossing() -> None
     session._tokens_used = 100
     response = _mock_anthropic_response(input_tokens=10, output_tokens=5)
     base._post_call(
-        session, provider, response,
-        estimated=10, latency_ms=50, call_kwargs={"model": "m"},
+        session,
+        provider,
+        response,
+        estimated=10,
+        latency_ms=50,
+        call_kwargs={"model": "m"},
         estimated_via="tiktoken",
     )
     posts = _events(eq, "post_call")
@@ -277,10 +312,14 @@ def test_embeddings_payload_carries_output_dimensions() -> None:
     provider = OpenAIProvider()
     response = _mock_embeddings_response([[0.0] * 1536, [0.0] * 1536])
     base._post_call(
-        session, provider, response,
-        estimated=8, latency_ms=22,
+        session,
+        provider,
+        response,
+        estimated=8,
+        latency_ms=22,
         call_kwargs={"model": "text-embedding-3-small", "input": ["a", "b"]},
-        event_type=EventType.EMBEDDINGS, estimated_via="tiktoken",
+        event_type=EventType.EMBEDDINGS,
+        estimated_via="tiktoken",
     )
     embs = _events(eq, "embeddings")
     assert len(embs) == 1
@@ -295,10 +334,14 @@ def test_embeddings_payload_with_capture_carries_embedding_output_in_content() -
     provider = OpenAIProvider(capture_prompts=True)
     response = _mock_embeddings_response([[0.1, 0.2, 0.3]])
     base._post_call(
-        session, provider, response,
-        estimated=4, latency_ms=11,
+        session,
+        provider,
+        response,
+        estimated=4,
+        latency_ms=11,
         call_kwargs={"model": "text-embedding-3-small", "input": "hello"},
-        event_type=EventType.EMBEDDINGS, estimated_via="tiktoken",
+        event_type=EventType.EMBEDDINGS,
+        estimated_via="tiktoken",
     )
     embs = _events(eq, "embeddings")
     e = embs[0]
@@ -315,10 +358,14 @@ def test_embeddings_payload_without_capture_omits_embedding_output() -> None:
     provider = OpenAIProvider(capture_prompts=False)
     response = _mock_embeddings_response([[0.1, 0.2, 0.3]])
     base._post_call(
-        session, provider, response,
-        estimated=4, latency_ms=11,
+        session,
+        provider,
+        response,
+        estimated=4,
+        latency_ms=11,
         call_kwargs={"model": "text-embedding-3-small", "input": "hello"},
-        event_type=EventType.EMBEDDINGS, estimated_via="tiktoken",
+        event_type=EventType.EMBEDDINGS,
+        estimated_via="tiktoken",
     )
     e = _events(eq, "embeddings")[0]
     assert e.get("has_content", False) is False
@@ -337,7 +384,10 @@ def test_llm_error_carries_retry_attempt_and_terminal_for_non_retryable() -> Non
 
     exc = _AuthError("invalid api key")
     base._emit_error(
-        session, provider, exc, latency_ms=50,
+        session,
+        provider,
+        exc,
+        latency_ms=50,
         call_kwargs={"model": "m"},
     )
     errs = _events(eq, "llm_error")
@@ -355,11 +405,17 @@ def test_llm_error_increments_retry_attempt_within_request_id() -> None:
         pass
 
     base._emit_error(
-        session, provider, _Timeout("attempt 1"), latency_ms=50,
+        session,
+        provider,
+        _Timeout("attempt 1"),
+        latency_ms=50,
         call_kwargs={"model": "m"},
     )
     base._emit_error(
-        session, provider, _Timeout("attempt 2"), latency_ms=50,
+        session,
+        provider,
+        _Timeout("attempt 2"),
+        latency_ms=50,
         call_kwargs={"model": "m"},
     )
     errs = _events(eq, "llm_error")

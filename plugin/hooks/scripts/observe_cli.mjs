@@ -59,6 +59,10 @@ import {
 } from "./remembered_decisions.mjs";
 import { uuid5 } from "./uuid5.mjs";
 
+// Abort the fire-and-forget event POST after 2s. The hook runs inline in the
+// Claude Code tool lifecycle, so a hung or unreachable control plane must
+// never block the user's session; 2s is generous for a local stack and a hard
+// ceiling for a slow one.
 const TIMEOUT_MS = 2000;
 
 // Plugin version stamped on every session_start (parity with the

@@ -14,6 +14,7 @@ Python ``>= 3.10`` (sensor/pyproject.toml requires-python). ``StrEnum``
 landed in 3.11. The mixin form gives the same "member IS a string"
 semantics on 3.10.
 """
+
 from __future__ import annotations
 
 from enum import Enum

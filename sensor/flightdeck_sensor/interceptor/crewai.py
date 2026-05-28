@@ -86,6 +86,7 @@ def _ensure_imported() -> bool:
         return _CREWAI_AVAILABLE
     try:
         from crewai import Agent as _Agent
+
         _CrewAIAgent = _Agent
         _CREWAI_AVAILABLE = True
     except ImportError:

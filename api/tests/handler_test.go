@@ -978,9 +978,12 @@ func TestStreamHandler_ReceivesBroadcast(t *testing.T) {
 	}
 	defer func() { _ = conn.Close() }()
 
-	// Wait for client to register in the hub
+	// Poll until the client registers in the hub. Deadline-based (not a
+	// fixed iteration budget) so CI / WSL scheduling jitter cannot trip a
+	// too-tight 100ms ceiling; 5ms between checks keeps it responsive.
 	registered := false
-	for i := 0; i < 20; i++ {
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
 		if hub.ClientCount() > 0 {
 			registered = true
 			break
@@ -988,7 +991,7 @@ func TestStreamHandler_ReceivesBroadcast(t *testing.T) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	if !registered {
-		t.Fatal("WebSocket client did not register within 100ms")
+		t.Fatal("WebSocket client did not register within 2s")
 	}
 
 	hub.Broadcast([]byte(`{"type":"session_update"}`))

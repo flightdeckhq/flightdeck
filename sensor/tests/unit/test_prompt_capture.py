@@ -159,7 +159,9 @@ def test_openai_embeddings_capture_string_input() -> None:
         "input": "phase 4 e2e single-string capture",
     }
     pc = provider.extract_content(
-        kwargs, MagicMock(), event_type=EventType.EMBEDDINGS,
+        kwargs,
+        MagicMock(),
+        event_type=EventType.EMBEDDINGS,
     )
     assert pc is not None
     assert pc.input == "phase 4 e2e single-string capture"
@@ -180,7 +182,9 @@ def test_openai_embeddings_capture_list_input() -> None:
         "input": ["item one", "item two", "item three"],
     }
     pc = provider.extract_content(
-        kwargs, MagicMock(), event_type=EventType.EMBEDDINGS,
+        kwargs,
+        MagicMock(),
+        event_type=EventType.EMBEDDINGS,
     )
     assert pc is not None
     assert pc.input == ["item one", "item two", "item three"]
@@ -204,7 +208,9 @@ def test_litellm_embeddings_capture_string_input() -> None:
         "input": "phase 4 litellm string capture",
     }
     pc = provider.extract_content(
-        kwargs, MagicMock(), event_type=EventType.EMBEDDINGS,
+        kwargs,
+        MagicMock(),
+        event_type=EventType.EMBEDDINGS,
     )
     assert pc is not None
     assert pc.input == "phase 4 litellm string capture"
@@ -220,7 +226,9 @@ def test_litellm_embeddings_capture_list_input() -> None:
         "input": ["a", "b"],
     }
     pc = provider.extract_content(
-        kwargs, MagicMock(), event_type=EventType.EMBEDDINGS,
+        kwargs,
+        MagicMock(),
+        event_type=EventType.EMBEDDINGS,
     )
     assert pc is not None
     assert pc.input == ["a", "b"]

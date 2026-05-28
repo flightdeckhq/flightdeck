@@ -11,6 +11,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from flightdeck_sensor.core.types import _DEFAULT_GRACE_PERIOD_MS
+
 
 class DirectivePayloadSchema(BaseModel):
     """Payload for action='custom' directives."""
@@ -48,7 +50,7 @@ class DirectiveResponseSchema(BaseModel):
 
     action: str
     reason: str | None = None
-    grace_period_ms: int = 5000
+    grace_period_ms: int = _DEFAULT_GRACE_PERIOD_MS
     degrade_to: str | None = None
     payload: dict[str, Any] | None = None
 

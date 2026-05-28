@@ -148,6 +148,12 @@ _PREFLIGHT_TIMEOUT_SECS = 1
 # directive queue but NOT event throughput.
 _CUSTOM_DIRECTIVE_HANDLER_TIMEOUT_SECS = 5
 
+# Per-(provider, request_id) retry-counter LRU bound. Eviction-on-overflow
+# keeps memory flat for long-lived sessions making millions of calls; the
+# counter only answers a short-window question ("did this retry chain give
+# up"), so dropping the oldest entries is safe.
+_RETRY_COUNTER_LRU_SIZE = 256
+
 # D126 § 6 sub-agent message routing thresholds.
 #
 # Bodies up to ``SUBAGENT_INLINE_THRESHOLD_BYTES`` ride inline on the
@@ -404,7 +410,7 @@ class Session:
             current = self._retry_counters.get(key, 0) + 1
             self._retry_counters[key] = current
             self._retry_counters.move_to_end(key)
-            while len(self._retry_counters) > 256:
+            while len(self._retry_counters) > _RETRY_COUNTER_LRU_SIZE:
                 self._retry_counters.popitem(last=False)
             return current
 

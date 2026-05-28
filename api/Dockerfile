@@ -17,5 +17,7 @@ COPY --from=builder /api /usr/local/bin/api
 # FLIGHTDECK_PRICING_PATH to a different location. See DECISIONS.md
 # D102 and CONTRIBUTING.md ("Updating pricing data").
 COPY pricing.yaml /etc/flightdeck/pricing.yaml
+RUN addgroup -S flightdeck && adduser -S flightdeck -G flightdeck
+USER flightdeck
 EXPOSE 8081
 CMD ["api"]

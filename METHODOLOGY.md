@@ -272,7 +272,7 @@ false alarms that crowd out real issues.
 ### L7 — Patch the protocol contract, not the framework adapter
 
 When a protocol or wire layer is mediated by multiple framework
-adapters (Phase 5: MCP via langchain-mcp-adapters, langgraph,
+adapters (for example, MCP via langchain-mcp-adapters, langgraph,
 llama-index-tools-mcp, mcpadapt, plus the raw `mcp` SDK), patch
 the protocol's canonical client class — not each adapter. The
 adapters share one upstream and drift independently; one patch
@@ -280,15 +280,15 @@ surface against the upstream covers them all and tracks one
 release cadence instead of N. Framework attribution lives on the
 existing per-event `framework` field, not on the patched layer.
 
-Applied first in Phase 5 with `ClientSession`-level patching for
-MCP (D117). The same principle applies to any future protocol
+Applied first with `ClientSession`-level patching for
+MCP. The same principle applies to any future protocol
 that grows multi-framework adoption (a hypothetical
 agent-to-agent transport, structured tool schemas, etc.) — find
 the single contract every adapter shares and patch there.
 
 ### L8 — Surface failures on the row, not only inside the event
 
-Phase 5's MCP event family ships in three colour families
+The MCP event family ships in three colour families
 (cyan/green/purple) regardless of success vs. failure. Pre-fix,
 an operator scanning the session-drawer event feed could not
 distinguish a successful `mcp_tool_call` from a failed one

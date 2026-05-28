@@ -118,6 +118,8 @@ def _resolve_user_name() -> str:
 
         return pwd.getpwuid(os.getuid()).pw_name
     except Exception:
+        # pwd missing or UID unmapped (distroless, scratch, Windows):
+        # fall through to the env-var probes below.
         pass
     for key in ("USER", "USERNAME", "LOGNAME"):
         v = os.environ.get(key)

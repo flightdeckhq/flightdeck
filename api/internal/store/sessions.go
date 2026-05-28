@@ -224,6 +224,10 @@ func BuildContextFilterClause(
 		args = append(args, v)
 		argIdx++
 	}
+	// key is interpolated (not parameterized) but safe: the allowlist
+	// check above rejects any key outside allowedContextFilterSet, so it
+	// can never carry caller-controlled input. Never interpolate a key
+	// that has not passed that guard. Values are always parameterized.
 	clause = fmt.Sprintf(
 		"s.context->>'%s' IN (%s)",
 		key, strings.Join(placeholders, ", "),

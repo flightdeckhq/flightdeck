@@ -157,6 +157,7 @@ export function DateRangePicker({
         <div className="flex items-center gap-2" data-testid="custom-inputs">
           <input
             type="datetime-local"
+            aria-label="From date and time"
             data-testid="custom-from"
             value={customFrom}
             onChange={(e) => {
@@ -168,6 +169,7 @@ export function DateRangePicker({
           <span className="text-xs text-text-muted">to</span>
           <input
             type="datetime-local"
+            aria-label="To date and time"
             data-testid="custom-to"
             value={customTo}
             onChange={(e) => {

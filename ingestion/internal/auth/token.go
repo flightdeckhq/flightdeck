@@ -155,13 +155,14 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (ValidationRe
 	}
 
 	// Cache hit -- both accept and (intentionally) reject results.
-	// Caching dev-mode rejects keyed on the raw token is safe because
-	// the gate's input is (raw token, ENVIRONMENT) and ENVIRONMENT is
-	// stable for the life of the process. A flip would require a
-	// restart, which clears the cache anyway.
-	cacheKey := rawToken
+	// Caching dev-mode rejects is safe because the gate's input is
+	// (raw token, ENVIRONMENT) and ENVIRONMENT is stable for the life of
+	// the process. A flip would require a restart, which clears the cache
+	// anyway. The cache is keyed on the SHA-256 of the token so the
+	// plaintext bearer secret is never held as a map key.
+	key := cacheKey(rawToken)
 	v.mu.RLock()
-	entry, found := v.cache[cacheKey]
+	entry, found := v.cache[key]
 	v.mu.RUnlock()
 	if found && time.Since(entry.validAt) < cacheTTL {
 		return entry.result, nil
@@ -181,7 +182,7 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (ValidationRe
 		if len(v.cache) >= cacheMaxSize {
 			v.evictOldest()
 		}
-		v.cache[cacheKey] = cacheEntry{result: result, validAt: time.Now()}
+		v.cache[key] = cacheEntry{result: result, validAt: time.Now()}
 		v.mu.Unlock()
 	}
 
@@ -260,6 +261,14 @@ func (v *Validator) evictOldest() {
 	if oldestKey != "" {
 		delete(v.cache, oldestKey)
 	}
+}
+
+// cacheKey derives the in-memory validation-cache key from the raw token.
+// The cache is keyed on the SHA-256 of the token, never the plaintext, so the
+// bearer secret is not recoverable from a heap dump of the cache map.
+func cacheKey(rawToken string) string {
+	sum := sha256.Sum256([]byte(rawToken))
+	return hex.EncodeToString(sum[:])
 }
 
 // hashWithSalt returns hex(SHA256(salt || raw_token)). The salt is

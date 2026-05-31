@@ -14,10 +14,13 @@ import (
 )
 
 const (
-	streamName   = "FLIGHTDECK"
-	durableName  = "flightdeck-workers"
-	subjectAll   = "events.>"
-	maxDeliver   = 3
+	streamName  = "FLIGHTDECK"
+	durableName = "flightdeck-workers"
+	subjectAll  = "events.>"
+	// maxDeliver caps redelivery attempts (1 initial delivery + 2 retries)
+	// before JetStream treats the message as a poison pill, so a single
+	// malformed event can't loop forever against the consumer.
+	maxDeliver = 3
 )
 
 // EventPayload is the raw event received from NATS.

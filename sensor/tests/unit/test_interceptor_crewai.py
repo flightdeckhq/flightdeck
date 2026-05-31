@@ -22,6 +22,7 @@ capture_prompts gate inside ``Session``).
 
 from __future__ import annotations
 
+import contextlib
 import threading
 from typing import Any
 from unittest.mock import MagicMock
@@ -91,10 +92,8 @@ def sensor_session() -> Any:
         yield session, client
     finally:
         flightdeck_sensor._session = prior
-        try:
+        with contextlib.suppress(Exception):
             session.event_queue.close()
-        except Exception:  # noqa: BLE001
-            pass
 
 
 @pytest.fixture()
@@ -165,6 +164,7 @@ def _make_agent_with_role(role: str = "Researcher") -> Any:
 
 def _make_task(description: str = "Find something interesting") -> Any:
     from crewai import Task
+
     return Task(
         description=description,
         expected_output="a brief finding",
@@ -264,7 +264,8 @@ def test_same_role_re_executing_produces_same_agent_id(
 
 
 def test_capture_off_omits_incoming_and_outgoing(
-    sensor_session: Any, crewai_agent_cls: Any,
+    sensor_session: Any,
+    crewai_agent_cls: Any,
 ) -> None:
     _CrewAIAgent = crewai_agent_cls
     """``capture_prompts=False`` must omit incoming_message and
@@ -335,7 +336,8 @@ def test_exception_in_execute_task_emits_state_error(patched_crewai: Any) -> Non
 
 
 def test_no_active_session_passes_through(
-    sensor_session: Any, crewai_agent_cls: Any,
+    sensor_session: Any,
+    crewai_agent_cls: Any,
 ) -> None:
     _CrewAIAgent = crewai_agent_cls
     """When ``flightdeck_sensor._session`` is None, the patched
@@ -369,7 +371,8 @@ def test_no_active_session_passes_through(
 
 
 def test_patch_idempotent(
-    sensor_session: Any, crewai_agent_cls: Any,
+    sensor_session: Any,
+    crewai_agent_cls: Any,
 ) -> None:
     _CrewAIAgent = crewai_agent_cls
     """Two consecutive ``patch_crewai_classes`` calls are

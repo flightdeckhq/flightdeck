@@ -20,7 +20,7 @@ export function useAnalytics(params: AnalyticsParams) {
     setError(null);
 
     try {
-      const result = await fetchAnalytics(params);
+      const result = await fetchAnalytics(params, controller.signal);
       if (!controller.signal.aborted) {
         setData(result);
         setLoading(false);

@@ -25,7 +25,7 @@ from __future__ import annotations
 import os
 import sys
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -66,8 +66,15 @@ def test_init_strips_version_suffix_and_records_bare_framework(
     # detect so the assertion measures the langchain attribution
     # specifically.
     for mod_name in (
-        "langchain_core", "langgraph", "llama_index", "crewai",
-        "autogen", "haystack", "dspy", "smolagents", "pydantic_ai",
+        "langchain_core",
+        "langgraph",
+        "llama_index",
+        "crewai",
+        "autogen",
+        "haystack",
+        "dspy",
+        "smolagents",
+        "pydantic_ai",
     ):
         sys.modules.pop(mod_name, None)
     fake_lc = MagicMock()
@@ -97,8 +104,16 @@ def test_init_no_framework_keeps_session_framework_none() -> None:
     # classifier. ``anthropic`` / ``openai`` are not classifier
     # targets, so a bare-SDK session gets framework=None.
     for mod_name in (
-        "langchain", "langchain_core", "langgraph", "llama_index", "crewai",
-        "autogen", "haystack", "dspy", "smolagents", "pydantic_ai",
+        "langchain",
+        "langchain_core",
+        "langgraph",
+        "llama_index",
+        "crewai",
+        "autogen",
+        "haystack",
+        "dspy",
+        "smolagents",
+        "pydantic_ai",
     ):
         sys.modules.pop(mod_name, None)
     fd.init(
@@ -140,8 +155,10 @@ def test_init_picks_first_classifier_match(
     if classifier order changes -- the test asserts the *first* of a
     known pair, not a literal name."""
     _reset_sensor()
-    lc = MagicMock(); lc.__version__ = "0.3.27"
-    lg = MagicMock(); lg.__version__ = "0.2.50"
+    lc = MagicMock()
+    lc.__version__ = "0.3.27"
+    lg = MagicMock()
+    lg.__version__ = "0.2.50"
     monkeypatch.setitem(sys.modules, "langchain", lc)
     monkeypatch.setitem(sys.modules, "langgraph", lg)
 
@@ -166,10 +183,9 @@ def test_post_call_event_carries_framework(
     event payload. Mocks the transport to inspect the payload
     enqueued for drain rather than going to a live server."""
     _reset_sensor()
-    fake_lc = MagicMock(); fake_lc.__version__ = "0.3.27"
+    fake_lc = MagicMock()
+    fake_lc.__version__ = "0.3.27"
     monkeypatch.setitem(sys.modules, "langchain", fake_lc)
-
-    enqueued_payloads: list[dict[str, Any]] = []
 
     fd.init(
         server="http://localhost:4000/ingest",
@@ -184,5 +200,6 @@ def test_post_call_event_carries_framework(
     # we want to see that subsequent events also pick up the
     # framework. Build a payload via _build_payload and check.
     from flightdeck_sensor.core.types import EventType
+
     payload = fd._session._build_payload(EventType.POST_CALL, model="x")
     assert payload["framework"] == "langchain"

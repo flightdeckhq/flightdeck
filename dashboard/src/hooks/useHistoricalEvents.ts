@@ -1,15 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { fetchBulkEvents } from "@/lib/api";
 import type { AgentEvent } from "@/lib/types";
-import type { TimeRange } from "@/pages/Fleet";
-
-const TIME_RANGE_MS: Record<TimeRange, number> = {
-  "1m": 60 * 1000,
-  "5m": 5 * 60 * 1000,
-  "15m": 15 * 60 * 1000,
-  "30m": 30 * 60 * 1000,
-  "1h": 60 * 60 * 1000,
-};
+import { TIMELINE_RANGE_MS, type TimeRange } from "@/lib/constants";
 
 /**
  * Fetches all events for the selected time range in one bulk request.
@@ -32,7 +24,7 @@ export function useHistoricalEvents(timeRange: TimeRange) {
   const inflightControllerRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async (append = false) => {
-    const rangeMs = TIME_RANGE_MS[timeRange];
+    const rangeMs = TIMELINE_RANGE_MS[timeRange];
     const from = new Date(Date.now() - rangeMs).toISOString();
     const offset = append ? offsetRef.current : 0;
 

@@ -23,7 +23,6 @@ from flightdeck_sensor.compat.crewai_mcp import (
     crewai_mcp_schema_fixup,
 )
 
-
 # ---------------------------------------------------------------------
 # Schema-cleaning matrix
 # ---------------------------------------------------------------------
@@ -107,9 +106,7 @@ def test_clean_schema_recurses_into_nested_properties() -> None:
     }
     cleaned = _clean_schema_dict(schema)
     assert "anyOf" not in cleaned["properties"]["outer"]["properties"]["inner"]
-    assert (
-        cleaned["properties"]["outer"]["properties"]["inner"]["type"] == "string"
-    )
+    assert cleaned["properties"]["outer"]["properties"]["inner"]["type"] == "string"
 
 
 def test_empty_anyof_with_int_default_infers_integer_type() -> None:
@@ -218,6 +215,7 @@ def _make_agent(*tool_schemas: type[BaseModel]) -> SimpleNamespace:
 
 
 def test_fixup_cleans_schema_in_place_on_a_single_tool_agent() -> None:
+    pytest.importorskip("crewai")
     schema_cls = _make_pydantic_class_with_bug("echo")
     agent = _make_agent(schema_cls)
 
@@ -237,6 +235,7 @@ def test_fixup_cleans_schema_in_place_on_a_single_tool_agent() -> None:
 
 
 def test_fixup_is_idempotent_on_repeated_calls() -> None:
+    pytest.importorskip("crewai")
     schema_cls = _make_pydantic_class_with_bug("echo")
     agent = _make_agent(schema_cls)
 
@@ -250,6 +249,7 @@ def test_fixup_is_idempotent_on_repeated_calls() -> None:
 
 
 def test_fixup_cleans_each_tool_independently_on_multi_tool_agent() -> None:
+    pytest.importorskip("crewai")
     echo_cls = _make_pydantic_class_with_bug("echo")
     add_cls = _make_pydantic_class_with_bug("add")
     agent = _make_agent(echo_cls, add_cls)
@@ -265,6 +265,7 @@ def test_fixup_cleans_each_tool_independently_on_multi_tool_agent() -> None:
 def test_fixup_handles_agent_with_no_tools() -> None:
     """An agent with an empty tools list must not raise — operators
     may share a helper-call site across agents whose tools vary."""
+    pytest.importorskip("crewai")
     agent = _make_agent()
     crewai_mcp_schema_fixup(agent)  # no exception
     assert agent.tools == []
@@ -273,6 +274,7 @@ def test_fixup_handles_agent_with_no_tools() -> None:
 def test_fixup_skips_tools_with_no_args_schema() -> None:
     """Some CrewAI tools (free-form text agents) have no
     ``args_schema``. The fixup must skip those rather than crash."""
+    pytest.importorskip("crewai")
     agent = SimpleNamespace(
         tools=[
             SimpleNamespace(args_schema=None),

@@ -166,11 +166,7 @@ def _override_from_status_and_code(
     # OpenAI sometimes returns 503 "engine overloaded"; distinguish on
     # the message hint when present. The combined condition keeps ruff's
     # SIM102 happy without losing the 503-vs-500 branch clarity.
-    if (
-        http_status == 503
-        and provider_error_code
-        and "overload" in provider_error_code.lower()
-    ):
+    if http_status == 503 and provider_error_code and "overload" in provider_error_code.lower():
         return ErrorType.OVERLOADED
     if http_status == 400 and provider_error_code:
         code = provider_error_code.lower()

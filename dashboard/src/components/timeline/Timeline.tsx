@@ -1,8 +1,8 @@
 import React, { useLayoutEffect, useMemo, useState, useEffect, useCallback, useRef } from "react";
 import { scaleTime } from "d3-scale";
 import type { FlavorSummary } from "@/lib/types";
-import type { TimeRange } from "@/pages/Fleet";
 import {
+  type TimeRange,
   TIMELINE_RANGE_MS,
   TIMELINE_WIDTH_PX,
   LEFT_PANEL_MIN_WIDTH,
@@ -26,7 +26,7 @@ import {
   type SubAgentConnectorSpec,
 } from "./SubAgentConnector";
 import { bucketFor, groupChildrenUnderParents } from "@/lib/fleet-ordering";
-import { deriveRelationship } from "@/lib/relationship";
+import { deriveRelationship, scrollToAgentRow } from "@/lib/relationship";
 import { eventsCache } from "@/hooks/useSessionEvents";
 
 interface TimelineProps {
@@ -574,15 +574,7 @@ export function Timeline({
             // lib/relationship.ts::scrollToAgentRow for the shared
             // rationale on the intentional querySelector bypass of
             // React refs.
-            const target = document.querySelector(
-              `[data-agent-id="${CSS.escape(agentId)}"]`,
-            );
-            if (target && "scrollIntoView" in target) {
-              (target as HTMLElement).scrollIntoView({
-                behavior: "smooth",
-                block: "center",
-              });
-            }
+            scrollToAgentRow(agentId);
           }}
         />,
       );

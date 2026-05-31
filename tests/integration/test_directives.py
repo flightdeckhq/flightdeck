@@ -28,7 +28,6 @@ from .conftest import (
     make_event,
     post_event,
     session_exists_in_fleet,
-    wait_for_session_in_fleet,
     wait_until,
 )
 

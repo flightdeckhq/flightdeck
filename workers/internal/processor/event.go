@@ -487,6 +487,8 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	// Insert the event record
 	ts, err := time.Parse(time.RFC3339, e.Timestamp)
 	if err != nil {
+		slog.Warn("event timestamp not RFC3339; using receive time",
+			"event_type", e.EventType, "raw_timestamp", e.Timestamp)
 		ts = time.Now().UTC()
 	}
 	extra, extraErr := BuildEventExtra(e)

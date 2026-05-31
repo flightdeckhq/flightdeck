@@ -85,9 +85,11 @@ Flightdeck conventions (see `CLAUDE.md` rules 33, 41–45):
 - **Living docs (rules 41–45).** `ARCHITECTURE.md` describes the system as it
   stands today. No phase tags. No "was added in Phase X". No "previously did
   Y". That history lives in `CHANGELOG.md`, `DECISIONS.md`, and PR/commit
-  bodies. D-numbers (e.g. `D094`, `D126`, `D148`) ARE allowed in
-  `ARCHITECTURE.md` when they explain why the system is shaped a particular
-  way — they point at durable `DECISIONS.md` entries. The 51-rule
+  bodies. D-numbers (e.g. `D094`, `D126`, `D148`) are NOT allowed in
+  `ARCHITECTURE.md` — they belong in `DECISIONS.md` / ADRs, `CHANGELOG.md`,
+  and PR/commit bodies (see the hard rule above; CLAUDE.md rule 41). The
+  prose must state the architectural fact directly, with the WHY in plain
+  English. The 51-rule
   methodology in `CLAUDE.md` is the source of truth for review discipline.
 - **Drift surfaces.** Flightdeck has three contract surfaces where drift is
   most likely to bite: (a) sensor event payload vs ingestion validator,

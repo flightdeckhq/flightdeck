@@ -37,6 +37,7 @@ def _safe_pct(used: int, limit: int | None) -> int:
         return 0
     return (used * 100) // limit
 
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
     from types import TracebackType
@@ -159,7 +160,12 @@ def call_stream(
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
     return GuardedStream(
-        real_fn, call_kwargs, session, provider, estimated, estimated_via,
+        real_fn,
+        call_kwargs,
+        session,
+        provider,
+        estimated,
+        estimated_via,
     )
 
 
@@ -180,7 +186,12 @@ def call_stream_async(
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
     return GuardedAsyncStream(
-        real_fn, call_kwargs, session, provider, estimated, estimated_via,
+        real_fn,
+        call_kwargs,
+        session,
+        provider,
+        estimated,
+        estimated_via,
     )
 
 
@@ -301,9 +312,7 @@ class GuardedStream:
             # already propagating.
             try:
                 is_stream_error = self._first_chunk_t is not None
-                abort_reason = (
-                    "error_mid_stream" if is_stream_error else "error_before_stream"
-                )
+                abort_reason = "error_mid_stream" if is_stream_error else "error_before_stream"
                 # Re-examine the exception class: APITimeoutError and
                 # plain TimeoutError both map to ``timeout`` per
                 # taxonomy, but abort_reason stays more descriptive.
@@ -345,7 +354,8 @@ class GuardedStream:
             )
         except Exception:
             _log.warning(
-                "Failed to post stream reconciliation event", exc_info=True,
+                "Failed to post stream reconciliation event",
+                exc_info=True,
             )
 
     # Iterator protocol. Self-iterating so we can timestamp every chunk
@@ -521,6 +531,7 @@ class GuardedAsyncStream:
             # ``AttributeError: coroutine object has no
             # attribute '__aenter__'`` (caught by Rule 40d smoke).
             import inspect
+
             if inspect.iscoroutine(self._ctx):
                 self._ctx = await self._ctx
             self._stream = await self._ctx.__aenter__()
@@ -564,9 +575,7 @@ class GuardedAsyncStream:
         if exc_val is not None:
             try:
                 is_stream_error = self._first_chunk_t is not None
-                abort_reason = (
-                    "error_mid_stream" if is_stream_error else "error_before_stream"
-                )
+                abort_reason = "error_mid_stream" if is_stream_error else "error_before_stream"
                 if type(exc_val).__name__ in ("APITimeoutError", "TimeoutError"):
                     abort_reason = "timeout"
                 _emit_error(
@@ -602,7 +611,8 @@ class GuardedAsyncStream:
             )
         except Exception:
             _log.warning(
-                "Failed to post async stream reconciliation event", exc_info=True,
+                "Failed to post async stream reconciliation event",
+                exc_info=True,
             )
 
     def __aiter__(self) -> Any:
@@ -723,8 +733,7 @@ def _pre_call(
             warn_token_limit = session.policy.token_limit
         pre_call_decision = PolicyDecisionSummary(
             policy_id=result.policy_id or ("local" if local_warn else ""),
-            scope=result.matched_policy_scope
-            or ("local_failsafe" if local_warn else ""),
+            scope=result.matched_policy_scope or ("local_failsafe" if local_warn else ""),
             decision="warn",
             reason=(
                 f"Pre-call check: {session.tokens_used + estimated}/"
@@ -846,8 +855,7 @@ def _pre_call(
         local_warn = warn_source == "local"
         warn_decision = PolicyDecisionSummary(
             policy_id=result.policy_id or ("local" if local_warn else ""),
-            scope=result.matched_policy_scope
-            or ("local_failsafe" if local_warn else ""),
+            scope=result.matched_policy_scope or ("local_failsafe" if local_warn else ""),
             decision="warn",
             reason=(
                 f"Token usage {session.tokens_used}/{warn_token_limit} "
@@ -1013,15 +1021,12 @@ def _post_call(
     try:
         post_result = session.policy.check(session_total, 0)
         if post_result.decision in (PolicyDecision.WARN, PolicyDecision.BLOCK):
-            decision_str = (
-                "warn" if post_result.decision == PolicyDecision.WARN else "block"
-            )
+            decision_str = "warn" if post_result.decision == PolicyDecision.WARN else "block"
             post_source = post_result.source or "server"
             local = post_source == "local"
             post_decision = PolicyDecisionSummary(
                 policy_id=post_result.policy_id or ("local" if local else ""),
-                scope=post_result.matched_policy_scope
-                or ("local_failsafe" if local else ""),
+                scope=post_result.matched_policy_scope or ("local_failsafe" if local else ""),
                 decision=decision_str,
                 reason=(
                     f"Post-call cumulative usage crossed {decision_str} "
@@ -1084,6 +1089,7 @@ def _post_call(
                 from flightdeck_sensor.interceptor.mcp import (
                     _build_tool_capture_content,
                 )
+
                 capture_content = _build_tool_capture_content(
                     tool_input=inv.tool_input,
                     tool_output=None,
@@ -1161,9 +1167,7 @@ def _emit_error(
         # str at runtime. cast(str, ...) tells mypy the result is str
         # without manufacturing a third "" fallback that would conflate
         # missing-key, present-but-None, and present-but-empty cases.
-        provider_name = cast(
-            "str", error_payload.get("provider") or getattr(provider, "name", "")
-        )
+        provider_name = cast("str", error_payload.get("provider") or getattr(provider, "name", ""))
         # Trust-boundary check: error_payload is sensor-internal but
         # composed from provider-supplied error attributes (request_id
         # is whatever the SDK exposed). isinstance enforces the

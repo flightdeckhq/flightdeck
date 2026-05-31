@@ -9,6 +9,7 @@ with one only matching node names get child sessions.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -71,10 +72,8 @@ def sensor_session() -> Any:
         yield session, client
     finally:
         flightdeck_sensor._session = prior
-        try:
+        with contextlib.suppress(Exception):
             session.event_queue.close()
-        except Exception:  # noqa: BLE001
-            pass
         # Reset module-level pattern so other tests start clean.
         set_agent_node_pattern(None)
 
@@ -227,7 +226,8 @@ def test_default_no_pattern_wraps_every_node(patched_langgraph: Any) -> None:
 
 
 def test_no_active_session_passes_through(
-    sensor_session: Any, StateGraph: Any,
+    sensor_session: Any,
+    StateGraph: Any,
 ) -> None:
     _, client = sensor_session
     flightdeck_sensor._session = None  # type: ignore[assignment]

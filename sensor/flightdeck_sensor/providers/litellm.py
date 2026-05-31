@@ -78,7 +78,9 @@ class LitellmProvider:
         what is reachable on the ModelResponse object."""
         try:
             request_id = getattr(response, "id", None) or getattr(
-                response, "_request_id", None,
+                response,
+                "_request_id",
+                None,
             )
             model = getattr(response, "model", None)
             out: dict[str, Any] = {}
@@ -172,9 +174,7 @@ class LitellmProvider:
                         vectors = []
                         for entry in data:
                             emb = getattr(entry, "embedding", None) or (
-                                entry.get("embedding")
-                                if isinstance(entry, dict)
-                                else None
+                                entry.get("embedding") if isinstance(entry, dict) else None
                             )
                             if emb is not None:
                                 vectors.append(list(emb))

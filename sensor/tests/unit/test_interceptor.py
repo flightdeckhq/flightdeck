@@ -38,8 +38,11 @@ def _make_session_and_provider(
     block_at_pct: int = 100,
 ) -> tuple[Session, AnthropicProvider]:
     config = SensorConfig(
-        server="http://localhost:9999", token="tok",
-        agent_flavor="test", agent_type="production", quiet=True,
+        server="http://localhost:9999",
+        token="tok",
+        agent_flavor="test",
+        agent_type="production",
+        quiet=True,
     )
     client = MagicMock(spec=ControlPlaneClient)
     client.post_event.return_value = (None, False)
@@ -65,7 +68,10 @@ def test_degrade_swaps_model_without_mutating_original() -> None:
     session.policy.degrade_to = "claude-haiku-4-5-20251001"
     session._tokens_used = 600
 
-    original_kwargs = {"model": "claude-sonnet-4-20250514", "messages": [{"role": "user", "content": "hi"}]}
+    original_kwargs = {
+        "model": "claude-sonnet-4-20250514",
+        "messages": [{"role": "user", "content": "hi"}],
+    }
     original_model = original_kwargs["model"]
 
     mock_response = _Resp(
@@ -157,9 +163,7 @@ def test_async_call_intercept() -> None:
         return mock_response
 
     kwargs = {"model": "test", "messages": []}
-    result = asyncio.run(
-        base.call_async(mock_fn, kwargs, session, provider)
-    )
+    result = asyncio.run(base.call_async(mock_fn, kwargs, session, provider))
     assert result is mock_response
     assert session.tokens_used > 0
 
@@ -210,15 +214,19 @@ def _captured_events(session: Session) -> list[dict[str, Any]]:
     regardless of timing.
     """
     import time as _time
+
     # The drain is a daemon thread; wait briefly for it to drain what we
     # just enqueued before reading the mock's call history.
     deadline = _time.monotonic() + 1.0
+    prev_count = -1
     while _time.monotonic() < deadline:
-        if session.client.post_event.call_count > 0:  # type: ignore[attr-defined]
-            # Let the mock absorb a couple more events if there are any
-            # queued behind the first.
-            _time.sleep(0.05)
+        count = session.client.post_event.call_count  # type: ignore[attr-defined]
+        # Break once at least one event has arrived AND the count has stopped
+        # growing between polls (the drain has settled) rather than assuming a
+        # fixed straggler-grace window.
+        if count > 0 and count == prev_count:
             break
+        prev_count = count
         _time.sleep(0.01)
     out: list[dict[str, Any]] = []
     for call in session.client.post_event.call_args_list:  # type: ignore[attr-defined]
@@ -280,7 +288,14 @@ def test_call_with_event_type_embeddings_emits_embeddings_event() -> None:
     real_fn = MagicMock(return_value=mock_response)
 
     from flightdeck_sensor.core.types import EventType
-    base.call(real_fn, {"model": "voyage-2", "input": ["hi"]}, session, provider, event_type=EventType.EMBEDDINGS)
+
+    base.call(
+        real_fn,
+        {"model": "voyage-2", "input": ["hi"]},
+        session,
+        provider,
+        event_type=EventType.EMBEDDINGS,
+    )
 
     events = _captured_events(session)
     embeddings = [e for e in events if e["event_type"] == "embeddings"]
@@ -303,6 +318,7 @@ def test_call_async_with_event_type_embeddings_emits_embeddings_event() -> None:
         return mock_response
 
     from flightdeck_sensor.core.types import EventType
+
     asyncio.run(
         base.call_async(
             mock_fn,
@@ -363,7 +379,9 @@ def test_streaming_emits_llm_error_on_mid_stream_exception() -> None:
     class _BoomStream:
         def __iter__(self):
             return self
+
         _count = 0
+
         def __next__(self):
             self._count += 1
             if self._count <= 2:
@@ -377,10 +395,9 @@ def test_streaming_emits_llm_error_on_mid_stream_exception() -> None:
 
     kwargs = {"model": "claude-sonnet-4-6", "messages": []}
     guarded = base.call_stream(real_fn, kwargs, session, provider)
-    with pytest.raises(RateLimitError):
-        with guarded as stream:
-            for _ in stream:
-                pass
+    with pytest.raises(RateLimitError), guarded as stream:
+        for _ in stream:
+            pass
 
     events = _captured_events(session)
     post_calls = [e for e in events if e["event_type"] == "post_call"]
@@ -406,7 +423,7 @@ def test_async_streaming_populates_ttft_and_chunk_count() -> None:
             self.model = "claude-sonnet-4-6"
             self._i = 0
 
-        def __aiter__(self) -> "_AStream":
+        def __aiter__(self) -> _AStream:
             return self
 
         async def __anext__(self) -> dict[str, int]:
@@ -452,7 +469,7 @@ def test_async_streaming_emits_llm_error_on_mid_stream_exception() -> None:
         def __init__(self) -> None:
             self._i = 0
 
-        def __aiter__(self) -> "_AStream":
+        def __aiter__(self) -> _AStream:
             return self
 
         async def __anext__(self) -> Any:
@@ -501,9 +518,8 @@ def test_streaming_emits_error_before_stream_when_context_enter_raises() -> None
 
     kwargs = {"model": "claude-sonnet-4-6", "messages": []}
     guarded = base.call_stream(real_fn, kwargs, session, provider)
-    with pytest.raises(RateLimitError):
-        with guarded:
-            pass
+    with pytest.raises(RateLimitError), guarded:
+        pass
 
     events = _captured_events(session)
     llm_errors = [e for e in events if e["event_type"] == "llm_error"]

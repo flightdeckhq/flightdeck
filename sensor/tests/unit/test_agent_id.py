@@ -4,6 +4,7 @@ D115 locks the namespace UUID and the fixture vector -- the assertions
 here guarantee the Python and Node implementations stay in lock-step
 and that the namespace is never accidentally rotated.
 """
+
 from __future__ import annotations
 
 from uuid import UUID
@@ -29,7 +30,7 @@ class TestNamespace:
         # Doubles as migration-history documentation in code.
         from uuid import NAMESPACE_DNS, uuid5
 
-        assert NAMESPACE_FLIGHTDECK == uuid5(NAMESPACE_DNS, "flightdeck.dev")
+        assert uuid5(NAMESPACE_DNS, "flightdeck.dev") == NAMESPACE_FLIGHTDECK
 
 
 class TestDeriveAgentId:
@@ -72,9 +73,7 @@ class TestDeriveAgentId:
             {"agent_name": "batch-job"},
         ],
     )
-    def test_different_inputs_different_uuids(
-        self, override: dict[str, str]
-    ) -> None:
+    def test_different_inputs_different_uuids(self, override: dict[str, str]) -> None:
         base = dict(
             agent_type="production",
             user="alice",
@@ -137,9 +136,7 @@ class TestSubAgentRoleDerivation:
         assert str(aid) == "ee76931b-06fa-5da6-a019-5a8237efd496"
 
     @pytest.mark.parametrize("role", ["", "   ", "\t\n", " \n  \t "])
-    def test_empty_or_whitespace_role_collapses_to_5tuple(
-        self, role: str
-    ) -> None:
+    def test_empty_or_whitespace_role_collapses_to_5tuple(self, role: str) -> None:
         # Empty, all-spaces, all-tabs, mixed-whitespace — none of
         # these carry semantic identity, so the derivation must
         # collapse to the 5-tuple form. A sensor or framework that
@@ -156,24 +153,16 @@ class TestSubAgentRoleDerivation:
         # distinct agent_ids despite sharing the rest of the
         # 5-tuple.
         root = derive_agent_id(**self._root_kwargs())
-        researcher = derive_agent_id(
-            **self._root_kwargs(), agent_role="Researcher"
-        )
-        writer = derive_agent_id(
-            **self._root_kwargs(), agent_role="Writer"
-        )
+        researcher = derive_agent_id(**self._root_kwargs(), agent_role="Researcher")
+        writer = derive_agent_id(**self._root_kwargs(), agent_role="Writer")
         assert root != researcher
         assert root != writer
         assert researcher != writer
 
     def test_role_is_deterministic(self) -> None:
         # Same role string deterministically produces the same hash.
-        a = derive_agent_id(
-            **self._root_kwargs(), agent_role="Researcher"
-        )
-        b = derive_agent_id(
-            **self._root_kwargs(), agent_role="Researcher"
-        )
+        a = derive_agent_id(**self._root_kwargs(), agent_role="Researcher")
+        b = derive_agent_id(**self._root_kwargs(), agent_role="Researcher")
         assert a == b
 
     def test_role_whitespace_is_trimmed(self) -> None:
@@ -182,15 +171,9 @@ class TestSubAgentRoleDerivation:
         # without normalising shouldn't fork identity over a
         # spurious trailing newline. Trimmed value is what hits the
         # path.
-        bare = derive_agent_id(
-            **self._root_kwargs(), agent_role="Researcher"
-        )
-        padded = derive_agent_id(
-            **self._root_kwargs(), agent_role="  Researcher  "
-        )
-        newlined = derive_agent_id(
-            **self._root_kwargs(), agent_role="\nResearcher\n"
-        )
+        bare = derive_agent_id(**self._root_kwargs(), agent_role="Researcher")
+        padded = derive_agent_id(**self._root_kwargs(), agent_role="  Researcher  ")
+        newlined = derive_agent_id(**self._root_kwargs(), agent_role="\nResearcher\n")
         assert bare == padded == newlined
 
     def test_role_internal_whitespace_is_preserved(self) -> None:
@@ -198,15 +181,9 @@ class TestSubAgentRoleDerivation:
         # part of the role. ``"Senior Researcher"`` is a different
         # role from ``"Researcher"`` and from ``"SeniorResearcher"``
         # — the derivation must reflect that.
-        single = derive_agent_id(
-            **self._root_kwargs(), agent_role="Researcher"
-        )
-        compound = derive_agent_id(
-            **self._root_kwargs(), agent_role="Senior Researcher"
-        )
-        nospace = derive_agent_id(
-            **self._root_kwargs(), agent_role="SeniorResearcher"
-        )
+        single = derive_agent_id(**self._root_kwargs(), agent_role="Researcher")
+        compound = derive_agent_id(**self._root_kwargs(), agent_role="Senior Researcher")
+        nospace = derive_agent_id(**self._root_kwargs(), agent_role="SeniorResearcher")
         assert single != compound
         assert compound != nospace
         assert single != nospace

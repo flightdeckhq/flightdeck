@@ -647,12 +647,15 @@ export async function fetchSessions(params: SessionsParams, signal?: AbortSignal
   return fetchJson<SessionsResponse>(`/v1/sessions?${sp.toString()}`, { signal });
 }
 
-export function fetchAnalytics(params: AnalyticsParams): Promise<AnalyticsResponse> {
+export function fetchAnalytics(
+  params: AnalyticsParams,
+  signal?: AbortSignal,
+): Promise<AnalyticsResponse> {
   const searchParams = new URLSearchParams();
   Object.entries(params).forEach(([key, value]) => {
     if (value) searchParams.set(key, value);
   });
-  return fetchJson<AnalyticsResponse>(`/v1/analytics?${searchParams.toString()}`);
+  return fetchJson<AnalyticsResponse>(`/v1/analytics?${searchParams.toString()}`, { signal });
 }
 
 // ---- Access tokens (D095/D096) --------------------------------------

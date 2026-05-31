@@ -10,5 +10,7 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o /ingestion ./cmd/
 FROM alpine:3.20
 RUN apk --no-cache add ca-certificates wget
 COPY --from=builder /ingestion /usr/local/bin/ingestion
+RUN addgroup -S flightdeck && adduser -S flightdeck -G flightdeck
+USER flightdeck
 EXPOSE 8080
 CMD ["ingestion"]

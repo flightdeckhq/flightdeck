@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 )
@@ -677,7 +678,9 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 
 	prevArgs := append([]any{prevStart, start}, filterArgs[2:]...)
 	var prevTotal float64
-	_ = s.pool.QueryRow(ctx, prevSQL, prevArgs...).Scan(&prevTotal)
+	if err := s.pool.QueryRow(ctx, prevSQL, prevArgs...).Scan(&prevTotal); err != nil {
+		slog.Warn("analytics previous-period total query failed; reporting 0% change", "err", err)
+	}
 
 	var changePct float64
 	if prevTotal > 0 {
@@ -1015,7 +1018,9 @@ func (s *Store) querySubagentAnalytics(
 
 	prevArgs := append([]any{prevStart, start}, filterArgs[2:]...)
 	var prevTotal float64
-	_ = s.pool.QueryRow(ctx, prevSQL, prevArgs...).Scan(&prevTotal)
+	if err := s.pool.QueryRow(ctx, prevSQL, prevArgs...).Scan(&prevTotal); err != nil {
+		slog.Warn("subagent analytics previous-period total query failed; reporting 0% change", "err", err)
+	}
 
 	var changePct float64
 	if prevTotal > 0 {

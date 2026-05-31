@@ -114,10 +114,13 @@ def _run_mcp(session_id: str) -> None:
         raise AssertionError(f"no mcp_tool_call observed; events={events!r}")
     payload = tcs[-1].get("payload") or {}
     server_ok = payload.get("server_name") == "flightdeck-mcp-reference"
-    args_ok = (payload.get("arguments") or {}).get("text") == "hello from langgraph playground"
+    # MCP tool args are captured to event_content.tool_input (fetched via
+    # /v1/events/:id/content), not inline in the event payload; the event
+    # carries has_content=true to signal operators to fetch.
+    args_ok = tcs[-1].get("has_content") is True and "arguments" not in payload
     tool_ok = tcs[-1].get("tool_name") == "echo"
     print_result("mcp payload.server_name", server_ok, 0)
-    print_result("mcp payload.arguments round-trip", args_ok, 0)
+    print_result("mcp args captured to event_content (not inline)", args_ok, 0)
     print_result("mcp tool_name=echo", tool_ok, 0)
     if not (server_ok and args_ok and tool_ok):
         raise AssertionError(f"mcp_tool_call payload mismatch: {tcs[-1]!r}")

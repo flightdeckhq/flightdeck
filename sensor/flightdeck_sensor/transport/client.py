@@ -58,9 +58,7 @@ class ControlPlaneClient:
     # Public API
     # ------------------------------------------------------------------
 
-    def post_event(
-        self, payload: dict[str, Any]
-    ) -> tuple[Directive | None, bool]:
+    def post_event(self, payload: dict[str, Any]) -> tuple[Directive | None, bool]:
         """POST an event to ``/v1/events``.
 
         Returns ``(directive, attached)``:
@@ -149,9 +147,7 @@ class ControlPlaneClient:
     # Internals
     # ------------------------------------------------------------------
 
-    def _post(
-        self, path: str, body: dict[str, Any]
-    ) -> tuple[Directive | None, bool]:
+    def _post(self, path: str, body: dict[str, Any]) -> tuple[Directive | None, bool]:
         """POST JSON and parse the response envelope for directive + attached."""
         url = f"{self._base_url}{path}"
         data = json.dumps(body).encode()
@@ -517,8 +513,7 @@ class EventQueue:
         # + RuntimeError surfaces the contract violation.
         if self._directive_queue is None or self._directive_handler is None:
             raise RuntimeError(
-                "_directive_loop started without a queue/handler — "
-                "constructor invariant violated",
+                "_directive_loop started without a queue/handler — constructor invariant violated",
             )
         while True:
             try:

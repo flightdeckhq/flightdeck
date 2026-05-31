@@ -15,11 +15,10 @@ Exit: 0 iff every file returned 0 (PASS) or 2 (SKIP).
 
 from __future__ import annotations
 
-import glob
-import os
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 # Python-version gate. The project bound is 3.10–3.13 (sensor/pyproject
 # .toml requires-python = ">=3.10,<3.14"). crewai 1.x metadata bars
@@ -45,12 +44,12 @@ def _tag(rc: int) -> str:
 
 
 def main() -> int:
-    here = os.path.dirname(os.path.abspath(__file__))
+    here = Path(__file__).resolve().parent
     # Numbered framework demos run first (01..15), then the policy
     # demo set. Both globs are sorted independently so the summary
     # table reads in stable order across runs.
-    numbered = sorted(glob.glob(os.path.join(here, "[0-9]*.py")))
-    policies = sorted(glob.glob(os.path.join(here, "policy_demo_*.py")))
+    numbered = sorted(here.glob("[0-9]*.py"))
+    policies = sorted(here.glob("policy_demo_*.py"))
     files = numbered + policies
     if not files:
         print("no playground files found", file=sys.stderr)
@@ -58,7 +57,7 @@ def main() -> int:
 
     rows: list[tuple[str, int, float, str]] = []
     for path in files:
-        name = os.path.basename(path)
+        name = path.name
         # Per-script subprocess timeout. 60s covers single-call
         # demos comfortably; the D126 multi-agent demos
         # (16_subagents_crewai, 17_subagents_langgraph) make

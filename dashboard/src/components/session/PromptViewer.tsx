@@ -56,6 +56,8 @@ function Section({
   return (
     <div>
       <button
+        type="button"
+        aria-expanded={open}
         className="flex w-full items-center gap-2 py-2.5 text-[13px] font-semibold cursor-pointer"
         style={{ color: "var(--text)", borderBottom: "1px solid var(--border-subtle)" }}
         onClick={() => setOpen(!open)}
@@ -250,6 +252,8 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
             {(["pretty", "raw"] as const).map((mode) => (
               <button
                 key={mode}
+                type="button"
+                aria-pressed={responseMode === mode}
                 className="text-[11px] capitalize pb-0.5"
                 style={responseMode === mode
                   ? { color: "var(--text)", borderBottom: "1px solid var(--accent)" }

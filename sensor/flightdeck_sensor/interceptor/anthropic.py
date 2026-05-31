@@ -94,6 +94,7 @@ try:
     from anthropic.resources.beta.beta import (
         Beta as _OrigBetaImported,
     )
+
     _OrigAnthropic: type | None = _anthropic_module.Anthropic
     _OrigAsyncAnthropic: type | None = _anthropic_module.AsyncAnthropic
     # The Beta / AsyncBeta classes are imported at module load so the
@@ -162,7 +163,10 @@ class SensorMessages:
         """
         if self._is_async:
             return base.call_stream_async(
-                self._real.stream, kwargs, self._session, self._provider,
+                self._real.stream,
+                kwargs,
+                self._session,
+                self._provider,
             )
         return base.call_stream(self._real.stream, kwargs, self._session, self._provider)
 
@@ -425,19 +429,27 @@ def patch_anthropic_classes(quiet: bool = False) -> None:
         return
 
     _patch_one_class(
-        _OrigAnthropic, is_async=False, quiet=quiet,
+        _OrigAnthropic,
+        is_async=False,
+        quiet=quiet,
         descriptor_cls=_AnthropicMessagesDescriptor,
     )
     _patch_one_class(
-        _OrigAsyncAnthropic, is_async=True, quiet=quiet,
+        _OrigAsyncAnthropic,
+        is_async=True,
+        quiet=quiet,
         descriptor_cls=_AnthropicMessagesDescriptor,
     )
     _patch_one_class(
-        _OrigBeta, is_async=False, quiet=quiet,
+        _OrigBeta,
+        is_async=False,
+        quiet=quiet,
         descriptor_cls=_AnthropicBetaMessagesDescriptor,
     )
     _patch_one_class(
-        _OrigAsyncBeta, is_async=True, quiet=quiet,
+        _OrigAsyncBeta,
+        is_async=True,
+        quiet=quiet,
         descriptor_cls=_AnthropicBetaMessagesDescriptor,
     )
 

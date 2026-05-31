@@ -59,6 +59,10 @@ import {
 } from "./remembered_decisions.mjs";
 import { uuid5 } from "./uuid5.mjs";
 
+// Abort the fire-and-forget event POST after 2s. The hook runs inline in the
+// Claude Code tool lifecycle, so a hung or unreachable control plane must
+// never block the user's session; 2s is generous for a local stack and a hard
+// ceiling for a slow one.
 const TIMEOUT_MS = 2000;
 
 // Plugin version stamped on every session_start (parity with the
@@ -630,6 +634,27 @@ function buildFingerprintFromSpec(name, spec) {
 // JSONL transcript so post_call events carry real tokens + model.
 // ---------------------------------------------------------------------
 
+// Claude Code stamps ``model: "<synthetic>"`` on assistant records it
+// synthesises into the transcript itself — tool-result coordination
+// turns, internal Agent SDK orchestration messages, etc. — that did
+// not originate from a real LLM call. Forwarding that literal as the
+// pre_call / post_call model name pollutes the events table (the
+// model facet ends up with a ``<synthetic>`` bucket) and breaks
+// downstream provider detection. The constant is exported so the
+// test suite can verify the skip without re-spelling the literal.
+export const SYNTHETIC_MODEL = "<synthetic>";
+
+/**
+ * Returns ``true`` when ``model`` is a usable LLM identifier — i.e.,
+ * non-empty AND not Claude Code's synthetic-turn sentinel. Callers
+ * use this when picking the most recent ``message.model`` out of a
+ * transcript: synthetic-turn records are skipped in favour of the
+ * preceding real assistant turn (or the cached SessionStart model).
+ */
+export function isRealModel(model) {
+  return Boolean(model) && model !== SYNTHETIC_MODEL;
+}
+
 /**
  * Read a JSONL transcript and return every LLM turn, in order.
  *
@@ -697,11 +722,19 @@ export function readTurns(transcriptPath) {
     } else if (rec.type === "assistant") {
       const messageId = rec.message?.id;
       if (!messageId) continue;
+      // Synthetic-turn records (model="<synthetic>", no real LLM
+      // call) must never set the group's model. Real turns can land
+      // in any order relative to the synthetic ones in the same
+      // message-id group; ``isRealModel`` is the gate so a synthetic
+      // record arriving first does not poison the bucket. A later
+      // real record can still upgrade ``model`` once the gate
+      // passes.
+      const recModel = rec.message?.model;
       let group = groups.get(messageId);
       if (!group) {
         group = {
           messageId,
-          model: rec.message?.model || null,
+          model: isRealModel(recModel) ? recModel : null,
           firstTimestamp: rec.timestamp,
           lastTimestamp: rec.timestamp,
           usage: rec.message?.usage || null,
@@ -710,6 +743,8 @@ export function readTurns(transcriptPath) {
         };
         groups.set(messageId, group);
         groupOrder.push(messageId);
+      } else if (!isRealModel(group.model) && isRealModel(recModel)) {
+        group.model = recModel;
       }
       group.lastTimestamp = rec.timestamp || group.lastTimestamp;
       if (rec.message?.usage) group.usage = rec.message.usage;
@@ -1522,10 +1557,26 @@ function readCachedModel(sessionId) {
  * assistant record in the transcript (captures mid-session model
  * switches), falls back to the SessionStart-cached model, and finally
  * to the hook payload itself.
+ *
+ * ``isRealModel`` filters each candidate so Claude Code's synthetic-
+ * turn sentinel (``<synthetic>``) never propagates into a pre_call.
+ * ``readTurns`` already skips synthetic records when assigning a
+ * group's model, so ``latest?.model`` is non-synthetic by
+ * construction — the guard here is belt-and-suspenders for cached
+ * and hook-payload fallbacks, both of which read external data this
+ * function does not control.
  */
 function resolvePreCallModel(sessionId, hookEvent, transcriptPath) {
   const latest = readLatestTurn(transcriptPath);
-  return latest?.model || readCachedModel(sessionId) || hookEvent.model || null;
+  const candidates = [
+    latest?.model,
+    readCachedModel(sessionId),
+    hookEvent.model,
+  ];
+  for (const candidate of candidates) {
+    if (isRealModel(candidate)) return candidate;
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------
@@ -1653,6 +1704,12 @@ async function flushPostCallTurns({
     const latencyMs = computeLatencyMs(turn.userTurn, turn.lastTimestamp);
     const hasContent = capturePrompts;
     const content = hasContent ? buildContent(turn) : null;
+    // Both sources are already synthetic-filtered (``readTurns``
+    // skips synthetic records when assigning a group's model;
+    // ``basePayload.model`` is gated by ``isRealModel`` at
+    // construction). Leave the fallback chain unguarded so a future
+    // upstream change does not silently bypass the filter — the
+    // upstream gates are the contract.
     const resolvedModel = turn.model || basePayload.model;
     cacheSessionModel(sessionId, resolvedModel);
     await postEvent(cfg.server, cfg.token, sessionId, {
@@ -2061,7 +2118,12 @@ async function main() {
     hostname: identityHostname,
     host: osHostname(),
     framework: "claude-code",
-    model: hookEvent.model || null,
+    // ``hookEvent.model`` may carry Claude Code's synthetic-turn
+    // sentinel for orchestration hooks; gate via ``isRealModel`` so
+    // it never leaks into the basePayload that downstream branches
+    // (post_call resolvedModel fallback, MCP content stub, etc.)
+    // read when their own primary model source is null.
+    model: isRealModel(hookEvent.model) ? hookEvent.model : null,
     tokens_input: 0,
     tokens_output: 0,
     tokens_total: 0,
@@ -2129,7 +2191,8 @@ async function main() {
   // and mark the dedup file so later hooks skip the backstop.
   if (hookName === "SessionStart") {
     const turn = getLatestTurn();
-    const model = hookEvent.model || turn?.model || null;
+    const hookModel = isRealModel(hookEvent.model) ? hookEvent.model : null;
+    const model = hookModel || (isRealModel(turn?.model) ? turn.model : null);
     cacheSessionModel(sessionId, model);
     await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, {
       model,
@@ -2197,7 +2260,7 @@ async function main() {
   // backstop so an initial hook that is NOT SessionStart still produces
   // a session row.
   await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, {
-    model: hookEvent.model || null,
+    model: isRealModel(hookEvent.model) ? hookEvent.model : null,
     claudeCodeVersion: hookEvent.version || null,
   });
 

@@ -14,9 +14,9 @@ Flightdeck follows [Semantic Versioning](https://semver.org/):
 ### 1. Run the release script
 
 ```bash
-make release VERSION=v0.1.0
+make release VERSION=vX.Y.Z
 # or
-./scripts/release.sh v0.1.0
+./scripts/release.sh vX.Y.Z
 ```
 
 The script:
@@ -28,7 +28,7 @@ The script:
    `dirty=false`. Do not tag a release with dirty migrations.
 5. Updates `version` in `sensor/pyproject.toml`
 6. Runs `make test` to verify all tests pass
-7. Commits: `chore: release v0.1.0`
+7. Commits: `chore: release vX.Y.Z`
 8. Creates an annotated git tag
 9. Pushes the commit and tag to origin
 

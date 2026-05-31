@@ -445,5 +445,3 @@ Apache 2.0. See [LICENSE](LICENSE).
 ## Acknowledgements
 
 The fleet timeline UI was inspired by [agent-observe](https://github.com/simple10/agents-observe) by [@simple10](https://github.com/simple10), a great tool for observing individual Claude Code sessions. The sensor builds on the foundation of [tokencap](https://github.com/pykul/tokencap), an open source token budget enforcement library.
-</content>
-</invoke>

@@ -81,6 +81,7 @@ _log = logging.getLogger("flightdeck_sensor.interceptor.openai")
 
 try:
     import openai as _openai_module
+
     _OrigOpenAI: type | None = _openai_module.OpenAI
     _OrigAsyncOpenAI: type | None = _openai_module.AsyncOpenAI
     _OPENAI_AVAILABLE = True
@@ -144,6 +145,7 @@ class SensorCompletions:
                         self._session,
                         self._provider,
                     )
+
                 return _async_stream_create()
             return base.call_stream(
                 self._real.create,
@@ -226,9 +228,7 @@ class _SensorCompletionsRawResponseWrapper:
         """Intercept the raw-response create closure with the sensor pipeline."""
         real_fn = self._real.create
         if self._is_async:
-            return base.call_async(
-                real_fn, kwargs, self._session, self._provider
-            )
+            return base.call_async(real_fn, kwargs, self._session, self._provider)
         return base.call(real_fn, kwargs, self._session, self._provider)
 
     def __getattr__(self, name: str) -> Any:
@@ -300,9 +300,7 @@ class SensorResponses:
         """Intercept responses.create() -- sync or async dispatch."""
         real_fn = self._real.create
         if self._is_async:
-            return base.call_async(
-                real_fn, kwargs, self._session, self._provider
-            )
+            return base.call_async(real_fn, kwargs, self._session, self._provider)
         return base.call(real_fn, kwargs, self._session, self._provider)
 
     def __getattr__(self, name: str) -> Any:
@@ -352,13 +350,20 @@ class SensorEmbeddings:
         """
         real_fn = self._real.create
         from flightdeck_sensor.core.types import EventType
+
         if self._is_async:
             return base.call_async(
-                real_fn, kwargs, self._session, self._provider,
+                real_fn,
+                kwargs,
+                self._session,
+                self._provider,
                 event_type=EventType.EMBEDDINGS,
             )
         return base.call(
-            real_fn, kwargs, self._session, self._provider,
+            real_fn,
+            kwargs,
+            self._session,
+            self._provider,
             event_type=EventType.EMBEDDINGS,
         )
 

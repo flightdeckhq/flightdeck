@@ -74,10 +74,7 @@ def derive_agent_id(
     Returns a :class:`uuid.UUID`. Callers that need the canonical
     string form use ``str(derive_agent_id(...))``.
     """
-    path = (
-        f"flightdeck://{agent_type}/{user}@{hostname}"
-        f"/{client_type}/{agent_name}"
-    )
+    path = f"flightdeck://{agent_type}/{user}@{hostname}/{client_type}/{agent_name}"
     if agent_role is not None:
         trimmed = agent_role.strip()
         if trimmed:

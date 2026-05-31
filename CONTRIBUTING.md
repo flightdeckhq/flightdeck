@@ -252,8 +252,10 @@ build time, and the docker-compose dev overlay mounts the repo copy
 over that path so local edits take effect on `docker compose restart
 api` without a rebuild.
 
-See DECISIONS.md D101 (cache-aware formula) and D102 (externalized
-pricing data) for design rationale.
+The cost formula is cache-aware (cache-read and cache-creation tokens are
+priced separately from input/output), and the pricing data is externalized to
+`pricing.yaml` rather than hardcoded so list-price changes need no code
+change. See DECISIONS.md for the full design rationale.
 
 ## Reporting Bugs
 

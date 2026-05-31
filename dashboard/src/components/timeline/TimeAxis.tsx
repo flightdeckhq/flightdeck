@@ -1,7 +1,6 @@
 import { useMemo } from "react";
 import { scaleTime } from "d3-scale";
-import type { TimeRange } from "@/pages/Fleet";
-import { TIMELINE_RANGE_MS } from "@/lib/constants";
+import { TIMELINE_RANGE_MS, type TimeRange } from "@/lib/constants";
 import { formatRelativeLabel } from "@/lib/time";
 
 /**

@@ -12,9 +12,9 @@ import pytest
 from flightdeck_sensor.core.exceptions import DirectiveError
 from flightdeck_sensor.core.types import Directive, DirectiveAction
 from flightdeck_sensor.transport.client import (
+    _MAX_QUEUE_SIZE,
     ControlPlaneClient,
     EventQueue,
-    _MAX_QUEUE_SIZE,
 )
 from flightdeck_sensor.transport.retry import with_retry
 
@@ -28,10 +28,12 @@ def test_post_event_returns_none_on_null_directive(mock_control_plane: Any) -> N
 
 
 def test_post_event_returns_directive_when_present(mock_control_plane: Any) -> None:
-    mock_control_plane["set_response"]({
-        "status": "ok",
-        "directive": {"action": "shutdown", "reason": "kill_switch", "grace_period_ms": 3000},
-    })
+    mock_control_plane["set_response"](
+        {
+            "status": "ok",
+            "directive": {"action": "shutdown", "reason": "kill_switch", "grace_period_ms": 3000},
+        }
+    )
     client = ControlPlaneClient(mock_control_plane["url"], "tok")
     directive, attached = client.post_event({"session_id": "123", "event_type": "post_call"})
     assert directive is not None
@@ -48,15 +50,15 @@ def test_post_event_returns_attached_true_when_backend_attaches(
     whose session_id maps to an existing sessions row. The sensor
     surfaces the flag alongside the directive so Session._post_event
     can emit the INFO log."""
-    mock_control_plane["set_response"]({
-        "status": "ok",
-        "directive": None,
-        "attached": True,
-    })
-    client = ControlPlaneClient(mock_control_plane["url"], "tok")
-    directive, attached = client.post_event(
-        {"session_id": "abc", "event_type": "session_start"}
+    mock_control_plane["set_response"](
+        {
+            "status": "ok",
+            "directive": None,
+            "attached": True,
+        }
     )
+    client = ControlPlaneClient(mock_control_plane["url"], "tok")
+    directive, attached = client.post_event({"session_id": "abc", "event_type": "session_start"})
     assert directive is None
     assert attached is True
 
@@ -127,9 +129,7 @@ class TestEventQueue:
         finally:
             eq.close()
 
-    def test_drop_warning_fires_once_per_drop(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
+    def test_drop_warning_fires_once_per_drop(self, caplog: pytest.LogCaptureFixture) -> None:
         """Each forced drop emits its own warning -- no rate-limiting.
 
         Regression guard: an earlier iteration of this code added a
@@ -154,16 +154,12 @@ class TestEventQueue:
             for i in range(_MAX_QUEUE_SIZE + 50):
                 eq.enqueue({"i": i})
             caplog.clear()
-            with caplog.at_level(
-                logging.WARNING, logger="flightdeck_sensor.transport.client"
-            ):
+            with caplog.at_level(logging.WARNING, logger="flightdeck_sensor.transport.client"):
                 # 10 forced drops -> expect 10 warning lines, no
                 # summarization, no rate-limiting.
                 for i in range(10):
                     eq.enqueue({"overflow": i})
-            warn_lines = [
-                r for r in caplog.records if "Event queue full" in r.message
-            ]
+            warn_lines = [r for r in caplog.records if "Event queue full" in r.message]
             assert len(warn_lines) == 10, (
                 f"expected one warning per drop (10 total), got "
                 f"{len(warn_lines)}: {[r.message for r in warn_lines]}"

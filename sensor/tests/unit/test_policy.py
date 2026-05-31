@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import threading
 
-from flightdeck_sensor.core.types import PolicyDecision
 from flightdeck_sensor.core.policy import PolicyCache
+from flightdeck_sensor.core.types import PolicyDecision
 
 
 def test_allow_below_all_thresholds() -> None:
@@ -31,7 +31,11 @@ def test_warn_fires_only_once_per_session() -> None:
 
 def test_degrade_at_threshold() -> None:
     cache = PolicyCache(
-        token_limit=1000, warn_at_pct=80, degrade_at_pct=90, block_at_pct=100, degrade_to="gpt-4o-mini"
+        token_limit=1000,
+        warn_at_pct=80,
+        degrade_at_pct=90,
+        block_at_pct=100,
+        degrade_to="gpt-4o-mini",
     )
     result = cache.check(tokens_used=850, estimated=100)
     assert result.decision == PolicyDecision.DEGRADE
@@ -89,9 +93,12 @@ def test_most_restrictive_threshold_fires_first() -> None:
     # Server warns at 80% of 100k = 80k, local warns at 80% of 50k = 40k
     # Local fires first because 40k < 80k
     cache = PolicyCache(
-        token_limit=100000, warn_at_pct=80,
-        degrade_at_pct=90, block_at_pct=100,
-        local_limit=50000, local_warn_at=0.8,
+        token_limit=100000,
+        warn_at_pct=80,
+        degrade_at_pct=90,
+        block_at_pct=100,
+        local_limit=50000,
+        local_warn_at=0.8,
     )
     result = cache.check(tokens_used=40000, estimated=1000)
     assert result.decision == PolicyDecision.WARN
@@ -112,9 +119,12 @@ def test_most_restrictive_wins_local_and_server() -> None:
     # Server warns at 80% of 100k = 80k, local warns at 80% of 50k = 40k
     # When at 41k tokens, local fires first (lower absolute threshold)
     cache = PolicyCache(
-        token_limit=100000, warn_at_pct=80,
-        degrade_at_pct=90, block_at_pct=100,
-        local_limit=50000, local_warn_at=0.8,
+        token_limit=100000,
+        warn_at_pct=80,
+        degrade_at_pct=90,
+        block_at_pct=100,
+        local_limit=50000,
+        local_warn_at=0.8,
     )
     # At 41k: local threshold (40k) crossed, server threshold (80k) not crossed
     result1 = cache.check(tokens_used=41000, estimated=0)

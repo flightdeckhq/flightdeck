@@ -8,7 +8,13 @@ init()s are the thing to avoid).
 """
 from __future__ import annotations
 
-import json, os, sys, time, urllib.error, urllib.request, uuid
+import json
+import os
+import sys
+import time
+import urllib.error
+import urllib.request
+import uuid
 
 try:
     import anthropic

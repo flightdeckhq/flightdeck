@@ -17,6 +17,9 @@ export const DIMENSIONS = [
   // LangGraph node, Claude Code Task agent_type). Sessions with
   // null agent_role bucket as ``(root)`` server-side.
   { value: "agent_role", label: "Sub-agent Role" },
+  // ``provider`` is a valid analytics dimension but intentionally omitted
+  // here — it has a dedicated ProviderBarChart, so it isn't offered in the
+  // generic group-by picker.
 ] as const;
 
 /** Resolve a group_by value to the human-readable label used in the

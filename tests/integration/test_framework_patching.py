@@ -68,7 +68,6 @@ from flightdeck_sensor import _directive_registry
 from .conftest import (
     INGESTION_URL,
     TOKEN,
-    wait_until,
 )
 from .test_sensor_e2e import (
     ANTHROPIC_RESPONSE,

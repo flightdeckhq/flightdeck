@@ -1085,8 +1085,6 @@ def test_sensor_custom_directive_unknown_fingerprint(
     audit). Verifies the rejection is enforced and no directive row is
     created.
     """
-    flavor = unique_flavor
-
     flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
     session_id = flightdeck_sensor.get_status().session_id
 
@@ -2295,8 +2293,10 @@ def test_pattern_c_ki15_singleton_limitation(
 
             t1 = threading.Thread(target=_call, args=("from-a",))
             t2 = threading.Thread(target=_call, args=("from-b",))
-            t1.start(); t2.start()
-            t1.join(timeout=15); t2.join(timeout=15)
+            t1.start()
+            t2.start()
+            t1.join(timeout=15)
+            t2.join(timeout=15)
             assert errors == []
 
             # Both calls landed under flavor_a -- there is no flavor_b

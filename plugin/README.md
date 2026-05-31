@@ -75,7 +75,7 @@ Each row is what the dashboard shows for a given Claude Code hook.
 | SessionEnd | Final transcript sweep (any last-turn `post_call` missed by Stop) followed by `session_end`. |
 | PreCompact | Synthetic `tool_call` with `tool_name=compact_context` so the timeline shows when Claude Code compacted its context window. |
 
-Every event carries `flavor=claude-code`, `agent_type=developer`, and `framework=claude-code`.
+Every event carries `flavor=claude-code`, `agent_type=coding`, and `framework=claude-code`.
 
 Sub-agent tracking: when the `Task` tool fires, the `tool_call` event sets `is_subagent_call=true` and `parent_session_id=<current session id>` so a future sub-agent emitter can correlate.
 
@@ -85,7 +85,7 @@ The plugin sees MCP traffic as `mcp__<server>__<tool>` tool invocations on `Post
 
 Known limits — by design, not a TODO:
 
-- **`mcp_tool_call` only.** Resource reads, prompt gets, and list operations (`mcp_resource_list/read`, `mcp_prompt_list/get`, `mcp_tool_list`) are invisible from the hook surface. The Python sensor patches the MCP SDK directly and emits all six event types; the plugin emits one. See Phase 5 D1 in DECISIONS.md.
+- **`mcp_tool_call` only.** Resource reads, prompt gets, and list operations (`mcp_resource_list/read`, `mcp_prompt_list/get`, `mcp_tool_list`) are invisible from the hook surface. The Python sensor patches the MCP SDK directly and emits all six event types; the plugin emits one — a deliberate trade-off recorded in DECISIONS.md.
 - **Tool-name parse is best-effort.** Claude Code uses `__` (double underscore) as the server/tool delimiter. A server whose name contains `__` is unparseable from the tool-name string alone; the plugin emits `server_name=null`, `tool_name=<rest>`, and writes one stderr line per occurrence. Avoid `__` in MCP server names.
 - **Mid-session reconnects are not observable.** A server added via `claude mcp add` after the session started is seen at tool-call time but won't appear in `session_start.context.mcp_servers` (which is captured once and never refreshed). Transport falls back to `null` for that server until the next Claude Code invocation rebuilds the fingerprint cache.
 - **Sanitiser bypassed for MCP arguments.** The whitelist that drops fields like file bodies on generic tools doesn't apply to MCP — its keep-list (`file_path`, `command`, `query`, `pattern`, `prompt`) would empty most MCP payloads. `captureToolInputs=false` still strips the `arguments` field entirely.

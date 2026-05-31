@@ -1168,10 +1168,12 @@ The ingestion handler rejects events with 400 when:
   more than 5m in the future (`maxClockSkewFuture`). The 48h past
   bound accommodates retry-after-long-outage windows.
 - Any `tokens_*` field is negative.
-- `event_type=session_end` arrives for a `session_id` Flightdeck has never
-  seen (orphan session_end). The handler logs a warning, increments
-  `dropped_events_total{reason="orphan_session_end"}`, and ACKs the NATS
-  message (nothing to recover).
+
+A `session_end` for a `session_id` Flightdeck has never seen (an orphan
+`session_end`) is **not** rejected at ingestion — the event is accepted and
+published, then dropped downstream by the worker, which logs a warning,
+increments `dropped_events_total{reason="orphan_session_end"}`, and ACKs the
+NATS message (there is nothing to recover).
 
 `dropped_events_total{reason}` is exposed via `/metrics`.
 
@@ -1477,13 +1479,13 @@ CREATE TABLE agents (
     first_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW,
     last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW,
     total_sessions  BIGINT NOT NULL DEFAULT 0,
-    total_tokens    BIGINT NOT NULL DEFAULT 0
+    total_tokens    BIGINT NOT NULL DEFAULT 0,
+    policy_id       UUID REFERENCES token_policies(id)
 );
 
-CREATE INDEX agents_agent_name_idx ON agents (agent_name);
-CREATE INDEX agents_last_seen_idx ON agents (last_seen_at DESC);
-CREATE INDEX agents_agent_type_idx ON agents (agent_type);
-CREATE INDEX agents_client_type_idx ON agents (client_type);
+CREATE INDEX idx_agents_last_seen_at ON agents (last_seen_at DESC);
+CREATE INDEX idx_agents_client_type ON agents (client_type);
+CREATE INDEX idx_agents_agent_type ON agents (agent_type);
 ```
 
 `total_sessions` / `total_tokens` are denormalized rollups maintained by the
@@ -1497,7 +1499,7 @@ CREATE TABLE sessions (
     agent_id             UUID NOT NULL REFERENCES agents(agent_id),
     agent_name           TEXT NOT NULL,             -- denorm from agents
     agent_type           TEXT NOT NULL,             -- denorm from agents
-    client_type          TEXT NOT NULL,             -- denorm from agents
+    client_type          TEXT,                      -- denorm from agents (nullable on sessions)
     flavor               TEXT NOT NULL,             -- legacy label
     framework            TEXT,                      -- bare name (e.g. "langchain")
     host                 TEXT,
@@ -1516,7 +1518,9 @@ CREATE TABLE sessions (
     context              JSONB DEFAULT '{}'::jsonb,
     token_id             UUID REFERENCES access_tokens(id) ON DELETE SET NULL,
     token_name           TEXT,
-    parent_session_id    UUID REFERENCES sessions(session_id),      agent_role           TEXT                                   );
+    parent_session_id    UUID REFERENCES sessions(session_id),
+    agent_role           TEXT
+);
 
 CREATE INDEX sessions_agent_id_idx ON sessions (agent_id);
 CREATE INDEX sessions_state_idx ON sessions (state);
@@ -1607,12 +1611,12 @@ CREATE INDEX events_type_idx    ON events (event_type, occurred_at);
 
 ```sql
 CREATE TABLE event_content (
-    event_id    UUID PRIMARY KEY REFERENCES events(id) ON DELETE CASCADE,
-    session_id  UUID NOT NULL REFERENCES sessions(session_id) ON DELETE CASCADE,
+    event_id    UUID PRIMARY KEY,
+    session_id  UUID NOT NULL REFERENCES sessions(session_id),
     provider    TEXT NOT NULL,
-    model       TEXT,
-    "system" TEXT, -- Anthropic system prompt
-    messages    JSONB NOT NULL DEFAULT '[]'::jsonb,
+    model       TEXT NOT NULL,
+    system_prompt TEXT, -- Anthropic system prompt
+    messages    JSONB,
     tools       JSONB,
     response    JSONB NOT NULL,
     "input" JSONB, -- embeddings input (string or list of strings)
@@ -1803,6 +1807,7 @@ authoritative parameter-level reference.
 | `DELETE` | `/v1/policies/:id` | Delete a policy |
 | `POST` | `/v1/directives` | Create a `shutdown`, `shutdown_flavor`, or `custom` directive |
 | `GET` | `/v1/directives/custom` | List registered custom directives; optional `flavor` filter |
+| `DELETE` | `/v1/directives/custom` | Delete custom directives by name prefix (dev/test utility; `name_prefix` query param) |
 | `POST` | `/v1/directives/sync` | Sensor uploads its registered fingerprints; returns unknowns |
 | `POST` | `/v1/directives/register` | Sensor uploads full directive schemas for unknown fingerprints |
 | `GET` | `/v1/analytics` | Flexible breakdown query; see Analytics |
@@ -2055,8 +2060,7 @@ the same scope. The recursion is bounded by the actual tree depth
 the size of the parent's descendant set. The traversal is accurate
 but unindexed at the deep-recursion frontier, so analytics over
 large historical windows on parents with many descendants pay a
-seq-scan-like cost on the recursive step. for the
-known-performance-characteristic note.
+seq-scan-like cost on the recursive step.
 
 ### Per-agent activity summary
 

@@ -230,6 +230,46 @@ func TestEventsHandler_AgentIdentityValidation(t *testing.T) {
 	}
 }
 
+func TestEventsHandler_EventTypeValidation(t *testing.T) {
+	const validAgentID = "11111111-1111-4111-8111-111111111111"
+	const ids = `"session_id":"22222222-2222-4222-8222-222222222222","agent_id":"` + validAgentID + `","agent_type":"production","client_type":"flightdeck_sensor"`
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			// policy_mcp_warn must carry the MCP-policy decision fields
+			// (server_name, fingerprint, policy_id, decision_path, ...)
+			// plus the shared policy_decision block; an identity-only
+			// payload is rejected at the ingestion boundary.
+			name: "policy_mcp_warn_missing_decision_fields",
+			body: `{` + ids + `,"event_type":"policy_mcp_warn"}`,
+		},
+		{
+			name: "policy_mcp_block_missing_decision_fields",
+			body: `{` + ids + `,"event_type":"policy_mcp_block"}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			handler := handlers.EventsHandler(
+				&mockValidator{valid: true},
+				&mockPublisher{},
+				&mockDirStore{},
+				nil,
+				nil,
+			)
+			req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(tc.body))
+			req.Header.Set("Authorization", "Bearer valid-token")
+			w := httptest.NewRecorder()
+			handler(w, req)
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("expected 400, got %d (body=%s)", w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
 func TestEventsHandler_ValidToken_Returns200WithNullDirective(t *testing.T) {
 	pub := &mockPublisher{}
 	handler := handlers.EventsHandler(

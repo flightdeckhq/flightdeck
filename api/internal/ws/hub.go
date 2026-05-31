@@ -12,11 +12,18 @@ import (
 
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
 	"github.com/gorilla/websocket"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// notifyReconnectDelay is how long listenOnce waits before re-acquiring a
+// pool connection after the Postgres LISTEN loop drops — fast enough to
+// recover quickly, slow enough not to hammer a database that is restarting.
 const notifyReconnectDelay = 3 * time.Second
 
+// broadcastChannelBuffer bounds each client's outbound queue. A slow
+// WebSocket client that backs up beyond this many fleet updates is dropped
+// rather than allowed to balloon hub memory unboundedly.
 const broadcastChannelBuffer = 256
 
 // Fleet update message types broadcast to dashboard WebSocket clients.
@@ -193,13 +200,13 @@ func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 		// no-op. We want the cleanup to land regardless.
 		uctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
-		if _, uErr := conn.Exec(uctx, "UNLISTEN "+store.NotifyChannel); uErr != nil {
+		if _, uErr := conn.Exec(uctx, fmt.Sprintf("UNLISTEN %s", pgx.Identifier{store.NotifyChannel}.Sanitize())); uErr != nil {
 			slog.Debug("UNLISTEN failed during release", "err", uErr)
 		}
 		conn.Release()
 	}()
 
-	_, err = conn.Exec(ctx, "LISTEN "+store.NotifyChannel)
+	_, err = conn.Exec(ctx, fmt.Sprintf("LISTEN %s", pgx.Identifier{store.NotifyChannel}.Sanitize()))
 	if err != nil {
 		return fmt.Errorf("LISTEN failed: %w", err)
 	}

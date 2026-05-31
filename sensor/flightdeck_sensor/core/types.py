@@ -235,13 +235,20 @@ class SensorConfig:
             self.api_url = self.server
 
 
+# Default directive grace period (ms): the window an agent gets to wind down
+# the current call before an enforcement action (degrade / block / shutdown)
+# takes effect. Mirrored as the default in DirectiveResponseSchema so a
+# wire-absent value resolves identically.
+_DEFAULT_GRACE_PERIOD_MS = 5000
+
+
 @dataclass(frozen=True)
 class Directive:
     """A control-plane directive received in the event response envelope."""
 
     action: DirectiveAction
     reason: str
-    grace_period_ms: int = 5000
+    grace_period_ms: int = _DEFAULT_GRACE_PERIOD_MS
     payload: dict[str, Any] = field(default_factory=dict)
 
 

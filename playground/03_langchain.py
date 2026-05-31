@@ -183,13 +183,16 @@ def _run_mcp(session_id: str) -> None:
     payload = tcs[-1].get("payload") or {}
     server_ok = payload.get("server_name") == "flightdeck-mcp-reference"
     transport_ok = payload.get("transport") == "stdio"
-    args_ok = (payload.get("arguments") or {}).get("text") == "hello from langchain playground"
+    # MCP tool args are captured to event_content.tool_input (fetched via
+    # /v1/events/:id/content), not inline in the event payload; the event
+    # carries has_content=true to signal operators to fetch.
+    args_ok = tcs[-1].get("has_content") is True and "arguments" not in payload
     print_result("mcp payload.server_name", server_ok, 0)
     print_result("mcp payload.transport", transport_ok, 0,
                  f"transport={payload.get('transport')!r}")
-    print_result("mcp arguments round-trip", args_ok, 0)
+    print_result("mcp args captured to event_content (not inline)", args_ok, 0)
     if not (server_ok and transport_ok and args_ok):
-        raise AssertionError(f"mcp_tool_call payload mismatch: {payload!r}")
+        raise AssertionError(f"mcp_tool_call payload mismatch: {tcs[-1]!r}")
 
 
 def main() -> None:

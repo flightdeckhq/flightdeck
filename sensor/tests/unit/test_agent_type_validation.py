@@ -6,16 +6,20 @@ The sensor raises ConfigurationError for any value outside
 ``supervised``, ``batch``, ``developer``) are a breaking change
 documented in CHANGELOG.md.
 """
+
 from __future__ import annotations
 
 import os
 from contextlib import contextmanager
-from typing import Iterator
+from typing import TYPE_CHECKING
 
 import pytest
 
 import flightdeck_sensor
 from flightdeck_sensor import ConfigurationError
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 @contextmanager
@@ -26,11 +30,7 @@ def _clean_env() -> Iterator[None]:
     have added AND restores whatever was there at entry -- the test
     must not leak env mutations into sibling tests.
     """
-    saved = {
-        k: v
-        for k, v in os.environ.items()
-        if k.startswith(("FLIGHTDECK_", "AGENT_"))
-    }
+    saved = {k: v for k, v in os.environ.items() if k.startswith(("FLIGHTDECK_", "AGENT_"))}
     for k in list(saved):
         os.environ.pop(k, None)
     try:
@@ -38,10 +38,7 @@ def _clean_env() -> Iterator[None]:
     finally:
         # Strip anything the test added (including keys that were
         # not in `saved`) and then restore the original snapshot.
-        for k in [
-            k for k in os.environ
-            if k.startswith(("FLIGHTDECK_", "AGENT_"))
-        ]:
+        for k in [k for k in os.environ if k.startswith(("FLIGHTDECK_", "AGENT_"))]:
             os.environ.pop(k, None)
         os.environ.update(saved)
 

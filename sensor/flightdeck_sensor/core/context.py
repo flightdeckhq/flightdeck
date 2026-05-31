@@ -33,6 +33,7 @@ import re
 import socket
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any, Protocol
 
 # Subprocess timeout for ``git`` invocations in GitCollector (M-5).
@@ -80,7 +81,7 @@ class ProcessCollector(BaseCollector):
         result["pid"] = os.getpid()
         argv0 = sys.argv[0] if sys.argv else ""
         if argv0:
-            result["process_name"] = os.path.basename(argv0)
+            result["process_name"] = Path(argv0).name
         return result
 
 
@@ -96,11 +97,7 @@ class OSCollector(BaseCollector):
 class UserCollector(BaseCollector):
     def _gather(self) -> dict[str, Any]:
         # USER on Unix, USERNAME on Windows, LOGNAME as final fallback.
-        user = (
-            os.environ.get("USER")
-            or os.environ.get("USERNAME")
-            or os.environ.get("LOGNAME")
-        )
+        user = os.environ.get("USER") or os.environ.get("USERNAME") or os.environ.get("LOGNAME")
         return {"user": user} if user else {}
 
 
@@ -149,7 +146,7 @@ class GitCollector(BaseCollector):
         if remote:
             # Strip embedded credentials before extracting the repo name.
             clean = re.sub(r"https?://[^@]+@", "https://", remote)
-            repo = os.path.basename(clean.rstrip("/"))
+            repo = Path(clean.rstrip("/")).name
             if repo.endswith(".git"):
                 repo = repo[:-4]
             if repo:
@@ -186,10 +183,7 @@ class KubernetesCollector(BaseCollector):
 
 class DockerComposeCollector(BaseCollector):
     def applies(self) -> bool:
-        return bool(
-            os.environ.get("COMPOSE_PROJECT_NAME")
-            or os.environ.get("COMPOSE_SERVICE")
-        )
+        return bool(os.environ.get("COMPOSE_PROJECT_NAME") or os.environ.get("COMPOSE_SERVICE"))
 
     def _gather(self) -> dict[str, Any]:
         result: dict[str, Any] = {"orchestration": "docker-compose"}
@@ -207,7 +201,7 @@ class DockerCollector(BaseCollector):
         # /.dockerenv only exists inside Linux containers; on Windows
         # or Mac hosts running Python natively this collector
         # correctly returns nothing.
-        return os.path.exists("/.dockerenv")
+        return Path("/.dockerenv").exists()
 
     def _gather(self) -> dict[str, Any]:
         return {"orchestration": "docker"}
@@ -224,7 +218,7 @@ class AWSECSCollector(BaseCollector):
         result: dict[str, Any] = {"orchestration": "aws-ecs"}
         task = os.environ.get("ECS_TASK_DEFINITION")
         if task:
-            result["ecs_task"] = os.path.basename(task)
+            result["ecs_task"] = Path(task).name
         return result
 
 
@@ -397,6 +391,7 @@ def collect() -> dict[str, Any]:
             if collector.applies():
                 ctx.update(collector.collect())
         except Exception:
+            # best-effort: a single broken collector must never crash init().
             pass
 
     for collector in ORCHESTRATION_COLLECTORS:
@@ -405,6 +400,7 @@ def collect() -> dict[str, Any]:
                 ctx.update(collector.collect())
                 break
         except Exception:
+            # best-effort: a single broken collector must never crash init().
             pass
 
     for collector in OTHER_COLLECTORS:
@@ -412,6 +408,7 @@ def collect() -> dict[str, Any]:
             if collector.applies():
                 ctx.update(collector.collect())
         except Exception:
+            # best-effort: a single broken collector must never crash init().
             pass
 
     return ctx

@@ -194,6 +194,7 @@ class AnthropicProvider:
                     # MessageStream returns a real Message which
                     # ``model_dump`` handles cleanly.
                     import inspect
+
                     if not inspect.iscoroutine(candidate):
                         response = candidate
                     else:
@@ -209,6 +210,7 @@ class AnthropicProvider:
                 # are not JSON-serialisable so the wire payload stays
                 # valid even on exotic response shapes.
                 import json
+
                 resp_dict = {}
                 for k, v in dict(response.__dict__).items():
                     try:

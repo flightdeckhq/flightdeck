@@ -140,7 +140,7 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (ValidationRe
 	}
 
 	v.mu.RLock()
-	entry, found := v.cache[rawToken]
+	entry, found := v.cache[cacheKey(rawToken)]
 	v.mu.RUnlock()
 	if found && time.Since(entry.validAt) < cacheTTL {
 		return entry.result, nil
@@ -156,7 +156,7 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (ValidationRe
 		if len(v.cache) >= cacheMaxSize {
 			v.evictOldest()
 		}
-		v.cache[rawToken] = cacheEntry{result: result, validAt: time.Now()}
+		v.cache[cacheKey(rawToken)] = cacheEntry{result: result, validAt: time.Now()}
 		v.mu.Unlock()
 	}
 
@@ -228,6 +228,14 @@ func (v *Validator) evictOldest() {
 	if oldestKey != "" {
 		delete(v.cache, oldestKey)
 	}
+}
+
+// cacheKey derives the in-memory validation-cache key from the raw token.
+// The cache is keyed on the SHA-256 of the token, never the plaintext, so the
+// bearer secret is not recoverable from a heap dump of the cache map.
+func cacheKey(rawToken string) string {
+	sum := sha256.Sum256([]byte(rawToken))
+	return hex.EncodeToString(sum[:])
 }
 
 func hashWithSalt(salt, raw string) string {

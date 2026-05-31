@@ -10,7 +10,9 @@ This file tests both by pointing the sensor at a dead port.
 """
 from __future__ import annotations
 
-import os, sys, uuid
+import os
+import sys
+import uuid
 
 try:
     import anthropic

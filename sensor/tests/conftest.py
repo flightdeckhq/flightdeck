@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from typing import Any, Generator
+from typing import TYPE_CHECKING, Any
 
 import pytest
 
 from flightdeck_sensor.core.types import SensorConfig
 from flightdeck_sensor.transport.client import ControlPlaneClient
+
+if TYPE_CHECKING:
+    from collections.abc import Generator
 
 
 class _MockHandler(BaseHTTPRequestHandler):
@@ -90,9 +93,7 @@ class MockUsage:
 class MockResponse:
     """Simple response object with usage and model. Iterable for streaming mocks."""
 
-    def __init__(
-        self, usage: MockUsage, model: str, chunks: list[str] | None = None
-    ) -> None:
+    def __init__(self, usage: MockUsage, model: str, chunks: list[str] | None = None) -> None:
         self.usage = usage
         self.model = model
         self._chunks = chunks or []

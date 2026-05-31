@@ -1,7 +1,7 @@
 {{- /*
 Bundled Postgres StatefulSet. Suppressed entirely when postgres.externalUrl
 is set -- operators are expected to point at a managed database in that case.
-See values.yaml for the rationale: v0.5.1 does not ship HA or backups.
+See values.yaml for the rationale: v0.5.2 does not ship HA or backups.
 */ -}}
 {{- if not .Values.postgres.externalUrl -}}
 {{- $component := "postgres" -}}

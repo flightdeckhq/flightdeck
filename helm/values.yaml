@@ -1,7 +1,7 @@
 # Default values for the flightdeck chart.
 # All values are documented with their production implications.
 #
-# Image tags are pinned to v0.5.1, the latest published release tag.
+# Image tags are pinned to v0.5.2, the latest published release tag.
 # Override image.tag (or a per-component tag) to deploy a different release.
 
 nameOverride: ""
@@ -10,7 +10,7 @@ fullnameOverride: ""
 image:
   registry: docker.io
   repository: flightdeckhq
-  tag: "v0.5.1"
+  tag: "v0.5.2"
   pullPolicy: IfNotPresent
   pullSecrets: []
 
@@ -132,7 +132,7 @@ dashboard:
   affinity: {}
 
 nats:
-  enabled: true  # There is no external-NATS escape hatch in v0.5.1.
+  enabled: true  # There is no external-NATS escape hatch in v0.5.2.
   image:
     repository: nats
     tag: "2.10.22-alpine"
@@ -161,7 +161,7 @@ postgres:
   # DSN (e.g. postgres://user:pass@host:5432/flightdeck?sslmode=require) the
   # bundled StatefulSet and Service are not rendered and every dependent
   # service reads this DSN from the generated secret. When empty the chart
-  # ships its own single-instance StatefulSet. v0.5.1 does not provide HA or
+  # ships its own single-instance StatefulSet. v0.5.2 does not provide HA or
   # backups for the bundled database; use externalUrl for either.
   externalUrl: ""
   image:

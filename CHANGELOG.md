@@ -2,6 +2,197 @@
 
 All notable changes to Flightdeck are documented here.
 
+## Unreleased
+
+## v0.5.2 — 2026-05-31
+
+Quality + observability release. Wraps up the full-repo audit
+findings (every reviewer DIRTY item closed) and ships two
+operator-visible follow-on fixes surfaced by reviewing the v0.5.1
+audit branch against the live dashboard: a generic
+``clientIncursMeteredCost`` predicate so subscription-style coding
+agents (Claude Code today; Codex / Cursor / future additions
+automatically) get cost UI suppressed without per-component
+edits, and gating of Claude Code's ``<synthetic>`` model literal
+so it can no longer leak into emitted pre_call / post_call /
+session_start events. No schema migrations, no Helm-operator
+breakage; safe to upgrade in place.
+
+### Fixed
+
+- **Claude Code's ``<synthetic>`` model literal no longer leaks
+  into emitted events.** Claude Code stamps
+  ``model: "<synthetic>"`` on assistant transcript records it
+  synthesises for internal orchestration (Agent SDK observer
+  sessions, tool-result coordination passes). The plugin's
+  ``resolvePreCallModel`` was forwarding that literal verbatim,
+  producing pre_call / post_call / session_start events whose
+  MODEL column rendered as the literal string ``<synthetic>``
+  in the dashboard's Events table. Adds ``SYNTHETIC_MODEL``
+  constant and ``isRealModel(model)`` predicate to
+  ``plugin/hooks/scripts/observe_cli.mjs`` and gates the five
+  model-resolution sites (``readTurns`` group assignment with
+  upgrade-on-real-record-after-synthetic logic,
+  ``resolvePreCallModel`` candidate chain, ``basePayload.model``,
+  SessionStart resolution, ``ensureSessionStarted`` fallback).
+  Historical rows are left in place — the source is now fixed
+  and future events will not accumulate.
+- **Per-agent swimlane modal hides ``Cost (7d)`` for
+  subscription clients.** The agents table already rendered an
+  em-dash for Claude Code rows (no per-call cost attributable
+  for an Anthropic subscription), but the per-agent swimlane
+  modal still showed a meaningless ``Cost (7d)`` KPI tile.
+  Introduces ``clientIncursMeteredCost(clientType)`` in
+  ``dashboard/src/lib/agent-identity.ts`` — returns ``true``
+  only for the Flightdeck sensor; every other client type
+  (Claude Code, ``null``, ``undefined``, future additions)
+  defaults to subscription-style and inherits the suppressed
+  treatment with zero component edits. ``AgentTableRow.tsx``
+  swaps its direct ``ClientType.ClaudeCode`` check for the
+  predicate; the modal omits the tile entirely rather than
+  rendering a placeholder em-dash. Opt-in extension via an
+  ``||`` chain alongside an entry in ``api/internal/store/
+  pricing.go`` when a future client *does* incur metered cost.
+
+### Reliability + correctness (Go)
+
+- ``workers/internal/writer/postgres.go::ReconcileStaleSessions``
+  swaps string-concatenated INTERVAL fragments for
+  ``make_interval(secs => $1)`` with ``time.Duration``-typed
+  thresholds, eliminating an interpolation surface and tying
+  the SQL to the typed Go constant.
+- ``api/internal/ws/hub.go`` LISTEN / UNLISTEN now route the
+  channel-name identifier through ``pgx.Identifier.Sanitize``
+  before interpolation. ``NotifyChannel`` is a package-level
+  constant so the surface was already closed in practice; the
+  explicit sanitiser blocks a future refactor from accidentally
+  opening it.
+- ``slog.Warn`` on three previously-discarded error sites
+  (analytics prev-period scan, ``BumpAgentSessionCount``,
+  timestamp-parse fallback) so transient failures surface in
+  structured logs instead of silently degrading.
+- Token validation cache (api + ingestion) now keys on
+  ``hex(sha256(token))`` rather than the raw token string, so
+  a memory dump of the cache map cannot yield plaintext
+  credentials.
+
+### Observability + UX (TypeScript / React)
+
+- ``fetchAnalytics`` accepts an ``AbortSignal`` and the
+  ``useAnalytics`` hook threads it through, so in-flight
+  analytics requests are cancelled when the caller re-renders
+  with new params (no stale-data race).
+- ``TimeRange`` imports unified onto ``@/lib/constants``;
+  ``TIMELINE_RANGE_MS`` deduplicated.
+- ``ALL_AGENTS_SENTINEL`` named constant replaces the
+  ``"__all__"`` magic string at every site that round-trips
+  the "All Agents" filter selection.
+- Browser feature-detection moves from the deprecated
+  ``navigator.platform`` to ``navigator.userAgent``.
+- Shared ``scrollToAgentRow`` helper extracted so swimlane
+  + table both target the same row geometry.
+- Buttons get explicit ``type="button"`` and
+  ``aria-expanded`` / ``aria-pressed`` attributes where they
+  toggle visible state; ``DateRangePicker`` inputs get
+  ``aria-label``.
+
+### Python (sensor / playground / tests)
+
+- ``ruff format`` + ``ruff check --fix`` swept across the
+  sensor library, playground demos, and tests (unused
+  imports, f-string normalisation, ``SIM105`` →
+  ``contextlib.suppress``, etc.).
+- ``os.path`` → ``pathlib.Path`` migration in
+  ``sensor/flightdeck_sensor/core/context.py`` and
+  ``playground/run_all.py``.
+- Extracted named constants
+  (``_RETRY_COUNTER_LRU_SIZE``,
+  ``_DEFAULT_GRACE_PERIOD_MS``) with docblocks explaining
+  the chosen values.
+- Rationale comments added to fail-open ``except`` blocks
+  (``mcp_policy.py``, ``context.py``).
+- Per-file-ignores in ``pyproject.toml`` for intentional
+  framework-name test doubles.
+
+### Security + supply chain
+
+- ``api/Dockerfile``, ``ingestion/Dockerfile``,
+  ``workers/Dockerfile`` switch to a non-root ``USER``
+  (``flightdeck`` system account on the Alpine base).
+  ``.github/workflows/ci.yml`` asserts ``id -u != 0`` at
+  test time as a regression gate.
+- ``dashboard/nginx.conf`` adds browser security headers
+  (``X-Frame-Options: DENY``, ``X-Content-Type-Options:
+  nosniff``, ``Referrer-Policy: strict-origin-when-cross-
+  origin``, baseline ``Content-Security-Policy``) on every
+  ``location`` block — nginx's ``add_header`` inheritance
+  rules require the duplication.
+- Every third-party GitHub Action in ``.github/workflows/
+  ci.yml`` (notably ``azure/setup-helm``) is pinned to an
+  immutable commit SHA with a human-readable tag comment.
+
+### Architecture + docs
+
+- ``ARCHITECTURE.md`` events / event_content / sessions /
+  agents DDL blocks and the endpoint inventory reconciled
+  against ``docker/postgres/migrations/`` and the current
+  router registrations; pre-existing phantom-column and
+  index-name drift from D158 closed.
+- ``RELEASING.md`` filled in (was a placeholder);
+  ``CONTRIBUTING.md`` and ``METHODOLOGY.md`` phase
+  references cleaned per the "no D-numbers in living docs"
+  rule.
+- Plugin ``README.md`` ``agent_type`` corrected from
+  ``developer`` to ``coding`` to match the locked
+  vocabulary (CLAUDE.md rule 40a.A).
+- New ``SECURITY.md`` (vulnerability reporting via the
+  GitHub Security advisory path) and ``CODE_OF_CONDUCT.md``
+  (contributor-covenant style).
+- Reviewer guidelines: ``no D-number references in living
+  docs`` rule reconciled across CLAUDE.md and
+  ``.claude/agents/guidelines/architecture.md``.
+
+### Tests
+
+- ``dashboard/tests/unit/agent-identity.test.ts`` (new) —
+  four predicate cases for
+  ``clientIncursMeteredCost``: sensor, ClaudeCode, null /
+  undefined, and a future-client cast.
+- ``dashboard/tests/unit/PerAgentSwimlaneModal.test.tsx``
+  — split the KPI-tile coverage into 4-tile (ClaudeCode)
+  and 5-tile (sensor) cases.
+- ``dashboard/tests/e2e/T114-per-agent-modal-cost-tile-
+  conditional.spec.ts`` (new) — locks the 4-vs-5 contract
+  end-to-end against the seeded dev stack under both themes.
+- ``plugin/tests/observe_cli.test.mjs`` — ``isRealModel``
+  predicate block, ``readTurns`` synthetic-skip + null-when-
+  only-synthetic tests, and a SessionStart integration test
+  asserting a ``<synthetic>`` hook payload resolves to
+  ``model: null`` in the emitted ``session_start`` event.
+- ``crewai`` test imports guarded with ``importorskip`` so
+  the suite is green when the optional dependency is
+  absent; deadline-poll + poll-until-settle flake fixes;
+  new ingestion event-type validator boundary test; four
+  framework playground demos updated for the MCP-args →
+  ``event_content.tool_input`` migration.
+
+### Verified against branch HEAD
+
+- ``golangci-lint run`` clean across ``api`` / ``ingestion``
+  / ``workers``; ``go test ./...`` green.
+- ``ruff check .`` + ``ruff format --check .`` + ``mypy
+  --strict flightdeck_sensor/`` clean; 503 sensor unit
+  tests pass.
+- Vitest **1153** / 1153; plugin Node ``--test``
+  **100** / 100; 213 integration; 384 Playwright e2e
+  under both ``neon-dark`` and ``clean-light``.
+- Fresh-venv playground: 28 PASS / 1 SKIP / 1 pre-existing
+  FAIL (``policy_demo_warn``, flagged separately as a
+  pre-existing roadmap item).
+- All 7 ``/audit-repo`` reviewers CLEAN; ts-principal +
+  qa-engineer CLEAN on the cost-gate + synthetic follow-on
+  fixes.
+
 ## v0.5.1 (2026-05-27)
 
 Patch release on top of v0.5.0 with one user-visible bugfix, one

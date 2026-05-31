@@ -1,6 +1,6 @@
 import { memo, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
-import { ClientType } from "@/lib/agent-identity";
+import { ClientType, clientIncursMeteredCost } from "@/lib/agent-identity";
 import type { AgentSummary } from "@/lib/types";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
@@ -251,18 +251,21 @@ function AgentTableRowImpl({
       </TableCell>
 
       {/* Cost USD 7d — number first, sparkline trailing. Estimated
-          cost only applies to sensor-instrumented agents — Claude
-          Code agents bill independently and Flightdeck has no
-          pricing for them, so their cell renders a bare em-dash
-          and skips the sparkline regardless of any summary
-          totals. */}
+          cost only applies to clients whose LLM usage is billed per
+          call on the operator's bill (sensor-instrumented production
+          agents). Subscription-style coding agents — Claude Code
+          today, Codex / Cursor / etc. in the future — bill
+          independently of per-call usage, so the cell renders a
+          bare em-dash and skips the sparkline. The
+          ``clientIncursMeteredCost`` predicate in
+          ``@/lib/agent-identity`` is the single source of truth so
+          new client types inherit the correct treatment without a
+          row-component edit. */}
       <TableCell
         mono
         data-testid={`agent-row-cost-${agent.agent_id}`}
       >
-        {agent.client_type === ClientType.ClaudeCode ? (
-          <span className="text-text">—</span>
-        ) : (
+        {clientIncursMeteredCost(agent.client_type) ? (
           <div className="flex items-center gap-2">
             <span
               className="min-w-[50px] text-text"
@@ -277,6 +280,8 @@ function AgentTableRowImpl({
               height={SPARKLINE_HEIGHT}
             />
           </div>
+        ) : (
+          <span className="text-text">—</span>
         )}
       </TableCell>
 

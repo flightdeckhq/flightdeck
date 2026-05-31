@@ -10,6 +10,7 @@ import { dirname, join } from "node:path";
 
 import {
   EVENT_MAP,
+  SYNTHETIC_MODEL,
   _subagentChildSessionId,
   _subagentCorrelator,
   _subagentRole,
@@ -18,6 +19,7 @@ import {
   collectContext,
   computeLatencyMs,
   getSessionId,
+  isRealModel,
   loadMcpServerFingerprints,
   parseBool,
   parseMcpToolName,
@@ -1110,6 +1112,81 @@ describe("observe_cli helpers", () => {
       assert.deepEqual(readTurns("/tmp/does-not-exist-999.jsonl"), []);
     });
 
+    it("skips Claude Code's synthetic-turn sentinel when assigning model", () => {
+      // Claude Code stamps ``model: "<synthetic>"`` on transcript
+      // records it synthesises for internal orchestration (tool-
+      // result coordination, Agent SDK passes, etc.). Those records
+      // share a ``message.id`` group with real assistant turns; the
+      // reader must not let a synthetic record set the group's
+      // ``model`` field or the literal leaks into the next
+      // pre_call's MODEL column. A real record arriving in the
+      // same group AFTER a synthetic one must upgrade the model.
+      const path = writeTranscript([
+        {
+          type: "user",
+          timestamp: "2026-04-17T10:00:00Z",
+          message: { role: "user", content: "synthesise something" },
+        },
+        {
+          type: "assistant",
+          timestamp: "2026-04-17T10:00:01Z",
+          message: {
+            id: "msg_mixed",
+            model: SYNTHETIC_MODEL,
+            content: [{ type: "text", text: "coordination" }],
+            usage: { input_tokens: 0, output_tokens: 0 },
+          },
+        },
+        {
+          type: "assistant",
+          timestamp: "2026-04-17T10:00:02Z",
+          message: {
+            id: "msg_mixed",
+            model: "claude-opus-4-7",
+            content: [{ type: "text", text: "real" }],
+            usage: { input_tokens: 5, output_tokens: 4 },
+          },
+        },
+      ]);
+      try {
+        const turns = readTurns(path);
+        assert.equal(turns.length, 1);
+        assert.equal(turns[0].model, "claude-opus-4-7");
+      } finally {
+        rmSync(dirname(path), { recursive: true, force: true });
+      }
+    });
+
+    it("returns null model when the only record in a group is synthetic", () => {
+      // Pre-call resolution treats null as "no real model known";
+      // letting "<synthetic>" through would short-circuit the cache
+      // / hook-payload fallback chain in ``resolvePreCallModel``.
+      const path = writeTranscript([
+        {
+          type: "user",
+          timestamp: "2026-04-17T10:00:00Z",
+          message: { role: "user", content: "trigger" },
+        },
+        {
+          type: "assistant",
+          timestamp: "2026-04-17T10:00:01Z",
+          message: {
+            id: "msg_synth_only",
+            model: SYNTHETIC_MODEL,
+            content: [{ type: "text", text: "orchestration only" }],
+            usage: {},
+          },
+        },
+      ]);
+      try {
+        const turn = readLatestTurn(path);
+        assert.equal(turn.messageId, "msg_synth_only");
+        assert.equal(turn.model, null);
+      } finally {
+        rmSync(dirname(path), { recursive: true, force: true });
+      }
+    });
+
     it("returns one entry per assistant message.id in order", () => {
       const path = writeTranscript([
         {
@@ -1237,6 +1314,32 @@ describe("observe_cli helpers", () => {
     });
   });
 
+  describe("isRealModel", () => {
+    it("accepts a normal LLM model identifier", () => {
+      assert.equal(isRealModel("claude-opus-4-7"), true);
+      assert.equal(isRealModel("gpt-5-mini"), true);
+    });
+
+    it("rejects Claude Code's synthetic-turn sentinel", () => {
+      // The literal `<synthetic>` (defined as ``SYNTHETIC_MODEL``)
+      // is Claude Code's own marker for internally synthesised
+      // assistant turns. Treating it as a real model name pollutes
+      // the events table's model column and the model facet.
+      assert.equal(isRealModel(SYNTHETIC_MODEL), false);
+      assert.equal(isRealModel("<synthetic>"), false);
+    });
+
+    it("rejects empty / null / undefined", () => {
+      // Callers chain ``isRealModel`` over fallback candidates;
+      // null/undefined must short-circuit so the chain falls
+      // through to the next source rather than emitting an empty
+      // model name.
+      assert.equal(isRealModel(""), false);
+      assert.equal(isRealModel(null), false);
+      assert.equal(isRealModel(undefined), false);
+    });
+  });
+
   describe("EVENT_MAP", () => {
     it("covers the v1 hook set (D100)", () => {
       assert.equal(EVENT_MAP.SessionStart, "session_start");
@@ -1295,6 +1398,43 @@ describe("observe_cli end-to-end (new fields)", () => {
     // The posted context must carry supports_directives=false so the
     // dashboard hides the kill switch for Claude Code sessions.
     assert.equal(sessionStart.context.supports_directives, false);
+  });
+
+  it("SessionStart with '<synthetic>' hook model emits session_start with model=null", async () => {
+    // Claude Code stamps ``model: "<synthetic>"`` on hook payloads
+    // for synthesised orchestration turns (Agent SDK observer
+    // sessions, internal coordination passes). Forwarding that
+    // literal to the ingestion API pollutes the events.model
+    // column and the model facet, so the plugin must gate the
+    // hook payload through ``isRealModel`` and emit ``model: null``
+    // when the only candidate is the synthetic sentinel.
+    const input = JSON.stringify({
+      hook_event_name: "SessionStart",
+      session_id: "sess-synth-model",
+      source: "startup",
+      model: SYNTHETIC_MODEL,
+    });
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-synth-model",
+    };
+    const result = await runScript(input, env);
+    assert.equal(result.code, 0);
+
+    const sessionStart = capture
+      .bodies()
+      .find(
+        (b) =>
+          b.event_type === "session_start" &&
+          b.session_id === "sess-synth-model",
+      );
+    assert.ok(sessionStart, "expected a session_start event");
+    assert.equal(
+      sessionStart.model,
+      null,
+      "synthetic-sentinel model must not leak into session_start",
+    );
   });
 
   it("subsequent hooks in the same session skip the session_start backstop", async () => {

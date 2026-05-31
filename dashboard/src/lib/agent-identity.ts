@@ -157,3 +157,27 @@ export const AGENT_TYPE_COLOR: Record<AgentType, ClientTypeColor> = {
     border: "color-mix(in srgb, var(--text-secondary) 32%, transparent)",
   },
 };
+
+/**
+ * Returns ``true`` when this client's LLM usage is billed per call on
+ * the operator's bill — i.e., the sensor instrumenting application
+ * code that calls metered LLM APIs (Anthropic / OpenAI / etc.)
+ * directly. Subscription-style coding agents (Claude Code, and any
+ * future Codex / Cursor / Windsurf-style addition) bill independently
+ * of per-call usage, so Flightdeck cannot meaningfully attribute a
+ * USD cost to them — the pricing table in ``api/internal/store/
+ * pricing.go`` covers public API list prices, which do not apply when
+ * the operator is using a flat-rate subscription.
+ *
+ * Cost-bearing UI (KPI tiles, table cells, sparklines) gates on this
+ * predicate so cost surfaces only for clients where the number is
+ * meaningful. New ``ClientType`` values default to subscription-style
+ * — opt in by extending the equality check below into an ``||`` chain
+ * (or refactoring to a ``switch``) alongside an accompanying entry in
+ * ``pricing.go``.
+ */
+export function clientIncursMeteredCost(
+  clientType: ClientType | null | undefined,
+): boolean {
+  return clientType === ClientType.FlightdeckSensor;
+}

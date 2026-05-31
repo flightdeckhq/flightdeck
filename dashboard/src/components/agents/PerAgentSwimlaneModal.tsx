@@ -10,6 +10,7 @@ import { useAgentSummary } from "@/hooks/useAgentSummary";
 import { eventsCache } from "@/hooks/useSessionEvents";
 import { useFleetStore } from "@/store/fleet";
 import { fetchSession } from "@/lib/api";
+import { clientIncursMeteredCost } from "@/lib/agent-identity";
 import {
   formatCost,
   formatLatencyMs,
@@ -395,10 +396,19 @@ export function PerAgentSwimlaneModal({
                   label="Sessions (7d)"
                   value={totals ? totals.sessions.toString() : "—"}
                 />
-                <KpiTile
-                  label="Cost (7d)"
-                  value={totals ? formatCost(totals.cost_usd) : "—"}
-                />
+                {/* Cost tile only renders for clients whose LLM usage
+                    is billed per call on the operator's bill. The
+                    ``clientIncursMeteredCost`` predicate (single
+                    source of truth in ``@/lib/agent-identity``)
+                    mirrors the table-row treatment, so adding a new
+                    subscription-style coding agent automatically
+                    hides the tile without touching this file. */}
+                {clientIncursMeteredCost(agent?.client_type) && (
+                  <KpiTile
+                    label="Cost (7d)"
+                    value={totals ? formatCost(totals.cost_usd) : "—"}
+                  />
+                )}
 
                 {/* Time range picker. */}
                 <div

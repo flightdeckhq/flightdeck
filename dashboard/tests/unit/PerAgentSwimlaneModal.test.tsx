@@ -146,14 +146,44 @@ describe("PerAgentSwimlaneModal", () => {
     expect(input.disabled).toBe(true);
   });
 
-  it("renders KPI tiles in the header", () => {
+  it("renders 4 KPI tiles for a Claude Code agent (Cost suppressed)", () => {
+    // Claude Code agents bill independently of per-call LLM usage so
+    // the Cost (7d) tile is omitted entirely — keeping a fixed em-
+    // dash tile would be visual noise in the modal header. The
+    // remaining four tiles (Tokens / Latency p95 / Errors /
+    // Sessions) carry meaningful values regardless of billing model.
     render(
       <MemoryRouter>
         <PerAgentSwimlaneModal agent={mkAgent()} onClose={() => {}} />
       </MemoryRouter>,
     );
     const tiles = screen.getAllByTestId("per-agent-swimlane-modal-kpi-tile");
+    expect(tiles.length).toBe(4);
+    const labels = tiles.map((t) => t.textContent || "");
+    // KpiTile renders the literal label "Cost (7d)" in DOM; CSS
+    // ``text-transform: uppercase`` is visual only and does not
+    // affect ``textContent``.
+    expect(labels.some((l) => l.includes("Cost"))).toBe(false);
+  });
+
+  it("renders 5 KPI tiles for a sensor agent (Cost included)", () => {
+    // Sensor-instrumented agents call paid LLM APIs directly so
+    // the Cost (7d) tile is meaningful and present. New
+    // ClientType values default to the Claude-Code treatment via
+    // ``clientIncursMeteredCost``; opt in by extending the
+    // predicate.
+    render(
+      <MemoryRouter>
+        <PerAgentSwimlaneModal
+          agent={mkAgent({ client_type: ClientType.FlightdeckSensor })}
+          onClose={() => {}}
+        />
+      </MemoryRouter>,
+    );
+    const tiles = screen.getAllByTestId("per-agent-swimlane-modal-kpi-tile");
     expect(tiles.length).toBe(5);
+    const labels = tiles.map((t) => t.textContent || "");
+    expect(labels.some((l) => l.includes("Cost"))).toBe(true);
   });
 
   it("calls onClose when the dialog is dismissed", () => {

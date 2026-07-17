@@ -13,6 +13,8 @@ Flightdeck follows [Semantic Versioning](https://semver.org/):
 
 ### 1. Run the release script
 
+Before running it, bump the plugin manifest versions and the marketplace pin to the new version (`plugin/.claude-plugin/plugin.json`, `plugin/package.json`, and `version` plus `source.ref` in `.claude-plugin/marketplace.json`): the bump must land before the tag is cut so the tagged plugin content always matches the marketplace entry that points at it.
+
 ```bash
 make release VERSION=vX.Y.Z
 # or

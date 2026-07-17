@@ -17,6 +17,8 @@ Coding agents attach via the Claude Code plugin in this repo.
 
 Production agents add the `flightdeck-sensor` Python package to their entrypoint - `init()` + `patch()`, no other code changes.
 
+Built and maintained by [Omri Arnon](https://github.com/pykul) ([LinkedIn](https://www.linkedin.com/in/omriarnon/)).
+
 ![Live fleet view: every agent on a shared timeline streaming events as agents run.](assets/fleet-demo.gif)
 
 ![Agents dashboard: every agent in your fleet with token, latency, error, and cost trends, plus a per-agent swimlane and feed.](assets/agents-table-demo.gif)
@@ -444,4 +446,4 @@ Apache 2.0. See [LICENSE](LICENSE).
 
 ## Acknowledgements
 
-The fleet timeline UI was inspired by [agent-observe](https://github.com/simple10/agents-observe) by [@simple10](https://github.com/simple10), a great tool for observing individual Claude Code sessions. The sensor builds on the foundation of [tokencap](https://github.com/pykul/tokencap), an open source token budget enforcement library.
+The fleet timeline UI was inspired by [agent-observe](https://github.com/simple10/agents-observe) by [@simple10](https://github.com/simple10), a great tool for observing individual Claude Code sessions. The sensor builds on the foundation of [tokencap](https://github.com/pykul/tokencap), the author's own open source token budget enforcement library.

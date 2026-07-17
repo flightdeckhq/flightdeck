@@ -15,8 +15,8 @@
       "homepage": "https://github.com/flightdeckhq/flightdeck",
       "license": "Apache-2.0",
       "author": {
-        "name": "Flightdeck",
-        "url": "https://github.com/flightdeckhq"
+        "name": "Omri Arnon",
+        "url": "https://github.com/pykul"
       },
       "source": {
         "source": "git-subdir",

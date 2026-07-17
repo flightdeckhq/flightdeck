@@ -1,5 +1,9 @@
 {
   "name": "flightdeck",
   "version": "0.5.1",
-  "description": "Flightdeck observability for Claude Code sessions"
+  "description": "Flightdeck observability for Claude Code sessions",
+  "author": {
+    "name": "Omri Arnon",
+    "url": "https://github.com/pykul"
+  }
 }

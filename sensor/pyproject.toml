@@ -8,6 +8,9 @@ version = "0.5.2"
 description = "In-process agent observability sensor for Flightdeck"
 readme = "README.md"
 license = "Apache-2.0"
+authors = [
+    { name = "Omri Arnon", email = "omri.arnon@gmail.com" },
+]
 requires-python = ">=3.10,<3.14"
 dependencies = [
     "pydantic>=2.0",
@@ -23,6 +26,9 @@ classifiers = [
     "Programming Language :: Python :: 3.13",
     "Typing :: Typed",
 ]
+
+[project.urls]
+Repository = "https://github.com/flightdeckhq/flightdeck"
 
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.20"]

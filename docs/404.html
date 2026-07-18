@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>404 · Flightdeck</title>
+<meta name="robots" content="noindex">
+<link rel="icon" type="image/png" sizes="32x32" href="/assets/favicon-32.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=B612:wght@400;700&family=B612+Mono:wght@400&display=swap" rel="stylesheet">
+<style>
+  :root{--bg:#0b0d13;--tile:#0e1018;--line:#1e2430;--ink:#f5f7fa;--dim:#93a0b4;--orange:#ff6a2b}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:var(--bg);color:var(--ink);font-family:"B612",system-ui,sans-serif;
+    min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;
+    background-image:repeating-linear-gradient(0deg, rgba(147,160,180,.035) 0 1px, transparent 1px 48px),
+                     repeating-linear-gradient(90deg, rgba(147,160,180,.035) 0 1px, transparent 1px 48px);
+  }
+  .card{max-width:460px;text-align:center}
+  .track{position:relative;height:16px;border-bottom:1px solid var(--line);margin:0 auto 34px;max-width:300px}
+  .pill{position:absolute;top:2px;height:12px;border-radius:3px;background:rgba(255,255,255,.35)}
+  .cursor{position:absolute;top:-6px;bottom:-6px;right:18%;border-left:1.5px dashed var(--orange);opacity:.85}
+  .cursor::before{content:"";position:absolute;top:-6px;left:-4px;width:7px;height:7px;border-radius:50%;background:var(--orange)}
+  h1{font-size:56px;font-weight:700;letter-spacing:-1px}
+  h1 span{color:var(--orange)}
+  p{color:var(--dim);margin:14px 0 30px;font-size:15px}
+  code{font-family:"B612 Mono",monospace;font-size:13px;color:var(--ink)}
+  a.btn{display:inline-block;background:var(--orange);color:#14100c;font-weight:700;font-size:14px;padding:11px 20px;border-radius:6px;text-decoration:none}
+  a.plain{display:inline-block;margin-left:14px;color:var(--dim);font-size:14px;text-decoration:none;border:1px solid var(--line);padding:11px 20px;border-radius:6px}
+  a.plain:hover{color:var(--ink)}
+</style>
+</head>
+<body>
+  <div class="card">
+    <div class="track">
+      <span class="pill" style="left:6%;width:26px"></span>
+      <span class="pill" style="left:24%;width:14px"></span>
+      <span class="pill" style="left:38%;width:34px"></span>
+      <span class="cursor"></span>
+    </div>
+    <h1>404<span>.</span></h1>
+    <p>No events on this timeline. The page at <code id="path"></code> doesn't exist.</p>
+    <a class="btn" href="/">Back to Flightdeck</a><a class="plain" href="https://github.com/flightdeckhq/flightdeck">GitHub</a>
+  </div>
+  <script>document.getElementById('path').textContent = location.pathname;</script>
+</body>
+</html>

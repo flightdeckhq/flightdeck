@@ -129,8 +129,23 @@
   .row{display:flex;align-items:center;gap:16px;padding:9px 0;border-top:1px solid var(--line)}
   .row:first-of-type{border-top:0}
   .callsign{flex:0 0 138px;font-size:12px;color:var(--dim);text-align:right;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  .track{flex:1;position:relative;height:14px}
+  .track{flex:1;position:relative;height:14px;overflow:hidden}
   .track::before{content:"";position:absolute;left:0;right:0;top:50%;height:1px;background:var(--line)}
+  .flow{position:absolute;inset:0;width:200%;display:flex}
+  .set{position:relative;flex:0 0 50%;height:100%}
+  @keyframes drift{to{transform:translateX(-50%)}}
+  .flow.go{animation:drift var(--speed,60s) linear infinite}
+  .strip:hover .flow.go{animation-play-state:paused}
+  .lbl-off{display:none}
+  .strip:hover .lbl-on{display:none}
+  .strip:hover .lbl-off{display:inline}
+  .strip:hover .live i{animation:none;opacity:.9}
+  .pill::after{content:"";position:absolute;inset:-7px}
+  .tip{
+    position:fixed;z-index:70;background:var(--raised);border:1px solid var(--line);border-radius:5px;
+    padding:6px 10px;font-size:10.5px;letter-spacing:.04em;color:var(--ink);white-space:nowrap;
+    box-shadow:0 10px 30px rgba(0,0,0,.5);pointer-events:none;
+  }
   .pill{
     position:absolute;top:50%;transform:translateY(-50%);
     height:12px;border-radius:3px;background:var(--cyan);
@@ -155,6 +170,7 @@
   @media (prefers-reduced-motion:reduce){
     .cursor,.live i{animation:none}
     .pill{animation:none}
+    .flow.go{animation:none}
   }
   .legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid var(--line);font-size:11px;color:var(--dim)}
   .legend span{display:inline-flex;align-items:center;gap:6px}
@@ -303,66 +319,66 @@
     <p class="meta-line mono">pip install flightdeck-sensor &nbsp;&middot;&nbsp; Claude Code plugin included</p>
   </div>
 
-  <div class="strip" role="img" aria-label="Illustration of the fleet view: four agent rows on a shared timeline with LLM calls, tool uses, MCP events, policy events, and a kill event, under an orange dashed now cursor.">
-    <div class="strip-head mono"><span>Fleet view</span><span class="live"><i></i>Streaming</span></div>
+  <div class="strip" role="group" aria-label="Illustration of the fleet view: four agent rows drifting on a shared timeline with LLM calls, tool uses, MCP events, policy events, and a kill event, under an orange dashed now cursor. Hover any event for details; hovering pauses the stream.">
+    <div class="strip-head mono"><span>Fleet view</span><span class="live"><i></i><span class="lbl-on">Streaming</span><span class="lbl-off">Paused</span></span></div>
     <div class="row">
       <span class="callsign mono">research-agent</span>
-      <span class="track">
-        <span class="pill p-run" style="left:3%"></span>
-        <span class="pill" style="left:6%;width:26px;--d:.05s"></span>
-        <span class="pill p-tool" style="left:13%;width:12px;--d:.1s"></span>
-        <span class="pill p-mcp" style="left:17%;width:18px;--d:.15s"></span>
-        <span class="pill" style="left:23%;width:34px;--d:.2s"></span>
-        <span class="pill p-tool" style="left:32%;width:10px;--d:.25s"></span>
-        <span class="pill" style="left:37%;width:20px;--d:.3s"></span>
-        <span class="pill p-mcp" style="left:45%;width:14px;--d:.35s"></span>
-        <span class="pill" style="left:52%;width:40px;--d:.4s"></span>
-        <span class="pill p-tool" style="left:63%;width:12px;--d:.45s"></span>
-        <span class="pill" style="left:70%;width:24px;--d:.5s"></span>
-        <span class="pill" style="left:80%;width:16px;--d:.55s"></span>
-      </span>
+      <span class="track" style="--speed:58s"><span class="flow"><span class="set">
+        <span class="pill p-run" data-tip="run started" style="left:3%"></span>
+        <span class="pill" data-tip="llm_call &middot; claude-sonnet-4-6 &middot; 1,204 tok &middot; 830 ms" style="left:6%;width:26px;--d:.05s"></span>
+        <span class="pill p-tool" data-tip="tool_use &middot; web_search &middot; 412 ms" style="left:13%;width:12px;--d:.1s"></span>
+        <span class="pill p-mcp" data-tip="mcp_tool_call &middot; github &middot; list_issues" style="left:17%;width:18px;--d:.15s"></span>
+        <span class="pill" data-tip="llm_call &middot; claude-opus-4-7 &middot; 29,307 tok &middot; 2,644 ms" style="left:23%;width:34px;--d:.2s"></span>
+        <span class="pill p-tool" data-tip="tool_use &middot; Read" style="left:32%;width:10px;--d:.25s"></span>
+        <span class="pill" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 260 tok &middot; 750 ms" style="left:37%;width:20px;--d:.3s"></span>
+        <span class="pill p-mcp" data-tip="mcp_tool_call &middot; filesystem &middot; read_file" style="left:45%;width:14px;--d:.35s"></span>
+        <span class="pill" data-tip="llm_call &middot; claude-sonnet-4-6 &middot; 8,113 tok &middot; 1,978 ms" style="left:52%;width:40px;--d:.4s"></span>
+        <span class="pill p-tool" data-tip="tool_use &middot; draft_response &middot; 96 ms" style="left:63%;width:12px;--d:.45s"></span>
+        <span class="pill" data-tip="llm_call &middot; claude-sonnet-4-6 &middot; 2,431 tok &middot; 1,102 ms" style="left:70%;width:24px;--d:.5s"></span>
+        <span class="pill" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 512 tok &middot; 388 ms" style="left:80%;width:16px;--d:.55s"></span>
+      </span></span></span>
     </div>
     <div class="row">
       <span class="callsign mono">support-triage</span>
-      <span class="track">
-        <span class="pill" style="left:5%;width:22px;--d:.1s"></span>
-        <span class="pill" style="left:14%;width:30px;--d:.15s"></span>
-        <span class="pill p-tool" style="left:24%;width:10px;--d:.2s"></span>
-        <span class="pill p-warn" style="left:32%;width:16px;--d:.25s"></span>
-        <span class="pill" style="left:40%;width:26px;--d:.3s"></span>
-        <span class="pill p-deg" style="left:52%;width:18px;--d:.35s"></span>
-        <span class="pill" style="left:61%;width:20px;--d:.4s"></span>
-        <span class="pill p-block" style="left:74%;width:20px;--d:.45s"></span>
-      </span>
+      <span class="track" style="--speed:66s"><span class="flow"><span class="set">
+        <span class="pill" data-tip="llm_call &middot; claude-sonnet-4-6 &middot; 3,318 tok &middot; 1,240 ms" style="left:5%;width:22px;--d:.1s"></span>
+        <span class="pill" data-tip="llm_call &middot; claude-sonnet-4-6 &middot; 5,902 tok &middot; 1,655 ms" style="left:14%;width:30px;--d:.15s"></span>
+        <span class="pill p-tool" data-tip="tool_use &middot; fetch_ticket &middot; 88 ms" style="left:24%;width:10px;--d:.2s"></span>
+        <span class="pill p-warn" data-tip="policy_warn &middot; 81% of token budget" style="left:32%;width:16px;--d:.25s"></span>
+        <span class="pill" data-tip="llm_call &middot; claude-sonnet-4-6 &middot; 7,466 tok &middot; 1,830 ms" style="left:40%;width:26px;--d:.3s"></span>
+        <span class="pill p-deg" data-tip="policy_degrade &middot; swapped to claude-haiku-4-5" style="left:52%;width:18px;--d:.35s"></span>
+        <span class="pill" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 1,088 tok &middot; 512 ms" style="left:61%;width:20px;--d:.4s"></span>
+        <span class="pill p-block" data-tip="policy_block &middot; budget exhausted &middot; BudgetExceededError" style="left:74%;width:20px;--d:.45s"></span>
+      </span></span></span>
     </div>
     <div class="row">
       <span class="callsign mono">claude-code &middot; omri</span>
-      <span class="track">
-        <span class="pill p-run" style="left:9%"></span>
-        <span class="pill p-tool" style="left:12%;width:10px;--d:.15s"></span>
-        <span class="pill p-tool" style="left:16%;width:14px;--d:.2s"></span>
-        <span class="pill" style="left:21%;width:24px;--d:.25s"></span>
-        <span class="pill p-tool" style="left:29%;width:10px;--d:.3s"></span>
-        <span class="pill p-tool" style="left:33%;width:12px;--d:.35s"></span>
-        <span class="pill" style="left:39%;width:30px;--d:.4s"></span>
-        <span class="pill p-mcp" style="left:49%;width:16px;--d:.45s"></span>
-        <span class="pill p-tool" style="left:56%;width:10px;--d:.5s"></span>
-        <span class="pill" style="left:61%;width:26px;--d:.55s"></span>
-        <span class="pill p-tool" style="left:70%;width:12px;--d:.6s"></span>
-        <span class="pill" style="left:76%;width:18px;--d:.65s"></span>
-        <span class="pill p-run" style="left:84%"></span>
-      </span>
+      <span class="track" style="--speed:50s"><span class="flow"><span class="set">
+        <span class="pill p-run" data-tip="run started" style="left:9%"></span>
+        <span class="pill p-tool" data-tip="tool_use &middot; Read" style="left:12%;width:10px;--d:.15s"></span>
+        <span class="pill p-tool" data-tip="tool_use &middot; Grep" style="left:16%;width:14px;--d:.2s"></span>
+        <span class="pill" data-tip="llm_call &middot; claude-opus-4-7 &middot; 12,904 tok &middot; 2,101 ms" style="left:21%;width:24px;--d:.25s"></span>
+        <span class="pill p-tool" data-tip="tool_use &middot; Edit" style="left:29%;width:10px;--d:.3s"></span>
+        <span class="pill p-tool" data-tip="tool_use &middot; Bash" style="left:33%;width:12px;--d:.35s"></span>
+        <span class="pill" data-tip="llm_call &middot; claude-opus-4-7 &middot; 18,442 tok &middot; 2,930 ms" style="left:39%;width:30px;--d:.4s"></span>
+        <span class="pill p-mcp" data-tip="mcp_tool_call &middot; flightdeck &middot; get_fleet_status" style="left:49%;width:16px;--d:.45s"></span>
+        <span class="pill p-tool" data-tip="tool_use &middot; Write" style="left:56%;width:10px;--d:.5s"></span>
+        <span class="pill" data-tip="llm_call &middot; claude-opus-4-7 &middot; 9,871 tok &middot; 1,644 ms" style="left:61%;width:26px;--d:.55s"></span>
+        <span class="pill p-tool" data-tip="tool_use &middot; Edit" style="left:70%;width:12px;--d:.6s"></span>
+        <span class="pill" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 302 tok &middot; 296 ms" style="left:76%;width:18px;--d:.65s"></span>
+        <span class="pill p-run" data-tip="run ended" style="left:84%"></span>
+      </span></span></span>
     </div>
     <div class="row">
       <span class="callsign mono">etl-summarizer</span>
-      <span class="track">
-        <span class="pill" style="left:7%;width:28px;--d:.2s"></span>
-        <span class="pill" style="left:18%;width:22px;--d:.25s"></span>
-        <span class="pill p-tool" style="left:28%;width:12px;--d:.3s"></span>
-        <span class="pill" style="left:36%;width:32px;--d:.35s"></span>
-        <span class="pill" style="left:49%;width:24px;--d:.4s"></span>
-        <span class="pill p-kill" style="left:62%;--d:.45s"></span>
-      </span>
+      <span class="track" style="--speed:62s"><span class="flow"><span class="set">
+        <span class="pill" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 2,240 tok &middot; 664 ms" style="left:7%;width:28px;--d:.2s"></span>
+        <span class="pill" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 1,986 tok &middot; 590 ms" style="left:18%;width:22px;--d:.25s"></span>
+        <span class="pill p-tool" data-tip="tool_use &middot; load_batch &middot; 1,204 ms" style="left:28%;width:12px;--d:.3s"></span>
+        <span class="pill" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 2,511 tok &middot; 703 ms" style="left:36%;width:32px;--d:.35s"></span>
+        <span class="pill" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 2,048 tok &middot; 615 ms" style="left:49%;width:24px;--d:.4s"></span>
+        <span class="pill p-kill" data-tip="kill &middot; stop directive delivered on next call" style="left:62%;--d:.45s"></span>
+      </span></span></span>
     </div>
     <span class="cursor" aria-hidden="true"></span>
     <div class="legend mono">
@@ -373,7 +389,7 @@
       <span><i class="chip" style="background:var(--red)"></i>policy_block / kill</span>
     </div>
   </div>
-  <p class="strip-caption">One row per agent, sub-agents nested under their parents, events plotted as they arrive.</p>
+  <p class="strip-caption">One row per agent, sub-agents nested under their parents, events plotted as they arrive. Hover any event to inspect it; hovering pauses the stream.</p>
 
   <section id="features">
     <p class="sec-label mono">What it does</p>
@@ -490,6 +506,8 @@ flightdeck_sensor.patch()</pre>
   <span class="lb-hint mono">Esc or click outside to close</span>
 </div>
 
+<div class="tip mono" id="tip" role="tooltip" hidden></div>
+
 <script>
   (function(){
     var reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -546,6 +564,34 @@ flightdeck_sensor.patch()</pre>
     lbC.addEventListener('click', closeLb);
     lb.addEventListener('click', function(e){ if (e.target === lb) closeLb(); });
     document.addEventListener('keydown', function(e){ if (e.key === 'Escape' && lb.classList.contains('open')) closeLb(); });
+
+    document.querySelectorAll('.strip .flow').forEach(function(f){
+      var set = f.querySelector('.set');
+      if (set) f.appendChild(set.cloneNode(true));
+      if (!reduce) f.classList.add('go');
+    });
+
+    var tip = document.getElementById('tip');
+    function showTip(el){
+      tip.textContent = el.getAttribute('data-tip');
+      tip.hidden = false;
+      var r = el.getBoundingClientRect();
+      var x = Math.min(Math.max(8, r.left + r.width/2 - tip.offsetWidth/2), window.innerWidth - tip.offsetWidth - 8);
+      var y = r.top - tip.offsetHeight - 10;
+      if (y < 8) y = r.bottom + 10;
+      tip.style.left = x + 'px';
+      tip.style.top = y + 'px';
+    }
+    function hideTip(){ tip.hidden = true; }
+    document.querySelectorAll('.strip').forEach(function(s){
+      s.addEventListener('pointerover', function(e){
+        var p = e.target.closest('[data-tip]');
+        if (p) showTip(p); else hideTip();
+      });
+      s.addEventListener('pointerleave', hideTip);
+    });
+    window.addEventListener('scroll', hideTip, {passive:true});
+    document.addEventListener('pointerdown', function(e){ if (!e.target.closest('[data-tip]')) hideTip(); });
   })();
 </script>
 

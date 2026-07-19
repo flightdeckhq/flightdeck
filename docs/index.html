@@ -138,11 +138,17 @@
   .set{position:relative;flex:0 0 50%;height:100%}
   @keyframes drift{to{transform:translateX(-50%)}}
   .flow.go{animation:drift var(--speed,60s) linear infinite}
-  .strip:hover .flow.go{animation-play-state:paused}
   .lbl-off{display:none}
-  .strip:hover .lbl-on{display:none}
-  .strip:hover .lbl-off{display:inline}
-  .strip:hover .live i{animation:none;opacity:.9}
+  @media (hover:hover) and (pointer:fine){
+    .strip:hover .flow.go{animation-play-state:paused}
+    .strip:hover .lbl-on{display:none}
+    .strip:hover .lbl-off{display:inline}
+    .strip:hover .live i{animation:none;opacity:.9}
+  }
+  .strip.hold .flow.go{animation-play-state:paused}
+  .strip.hold .lbl-on{display:none}
+  .strip.hold .lbl-off{display:inline}
+  .strip.hold .live i{animation:none;opacity:.9}
   .pill::after{content:"";position:absolute;inset:-7px}
   .tip{
     position:fixed;z-index:70;background:var(--raised);border:1px solid var(--line);border-radius:5px;
@@ -258,9 +264,14 @@
 
   @media (max-width:740px){
     .caps,.qs,.duo{grid-template-columns:1fr}
-    .callsign{flex-basis:92px;font-size:11px}
+    .callsign{flex-basis:78px;font-size:10.5px}
     .hero{padding-top:52px}
     .bar svg{height:46px}
+    .m-hide{display:none}
+    .pill{max-width:24px}
+    .row{gap:10px}
+    .strip{padding:12px 12px 10px}
+    .legend{gap:10px;font-size:10px}
   }
 
   /* icons and polish */
@@ -370,28 +381,28 @@
       <span class="track" style="--speed:58s"><span class="flow"><span class="set">
         <span class="pill p-run" data-tip="run started" style="left:3%"></span>
         <span class="pill" data-tip="llm_call &middot; claude-sonnet-4-6 &middot; 1,204 tok &middot; 830 ms" style="left:6%;width:26px;--d:.05s"></span>
-        <span class="pill p-tool" data-tip="tool_use &middot; web_search &middot; 412 ms" style="left:13%;width:12px;--d:.1s"></span>
+        <span class="pill m-hide p-tool" data-tip="tool_use &middot; web_search &middot; 412 ms" style="left:13%;width:12px;--d:.1s"></span>
         <span class="pill p-mcp" data-tip="mcp_tool_call &middot; github &middot; list_issues" style="left:17%;width:18px;--d:.15s"></span>
         <span class="pill" data-tip="llm_call &middot; claude-opus-4-7 &middot; 29,307 tok &middot; 2,644 ms" style="left:23%;width:34px;--d:.2s"></span>
-        <span class="pill p-tool" data-tip="tool_use &middot; Read" style="left:32%;width:10px;--d:.25s"></span>
+        <span class="pill m-hide p-tool" data-tip="tool_use &middot; Read" style="left:32%;width:10px;--d:.25s"></span>
         <span class="pill" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 260 tok &middot; 750 ms" style="left:37%;width:20px;--d:.3s"></span>
         <span class="pill p-mcp" data-tip="mcp_tool_call &middot; filesystem &middot; read_file" style="left:45%;width:14px;--d:.35s"></span>
         <span class="pill" data-tip="llm_call &middot; claude-sonnet-4-6 &middot; 8,113 tok &middot; 1,978 ms" style="left:52%;width:40px;--d:.4s"></span>
-        <span class="pill p-tool" data-tip="tool_use &middot; draft_response &middot; 96 ms" style="left:63%;width:12px;--d:.45s"></span>
+        <span class="pill m-hide p-tool" data-tip="tool_use &middot; draft_response &middot; 96 ms" style="left:63%;width:12px;--d:.45s"></span>
         <span class="pill" data-tip="llm_call &middot; claude-sonnet-4-6 &middot; 2,431 tok &middot; 1,102 ms" style="left:70%;width:24px;--d:.5s"></span>
-        <span class="pill" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 512 tok &middot; 388 ms" style="left:80%;width:16px;--d:.55s"></span>
+        <span class="pill m-hide" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 512 tok &middot; 388 ms" style="left:80%;width:16px;--d:.55s"></span>
       </span></span></span>
     </div>
     <div class="row">
       <span class="callsign mono">support-triage</span>
       <span class="track" style="--speed:66s"><span class="flow"><span class="set">
         <span class="pill" data-tip="llm_call &middot; claude-sonnet-4-6 &middot; 3,318 tok &middot; 1,240 ms" style="left:5%;width:22px;--d:.1s"></span>
-        <span class="pill" data-tip="llm_call &middot; claude-sonnet-4-6 &middot; 5,902 tok &middot; 1,655 ms" style="left:14%;width:30px;--d:.15s"></span>
+        <span class="pill m-hide" data-tip="llm_call &middot; claude-sonnet-4-6 &middot; 5,902 tok &middot; 1,655 ms" style="left:14%;width:30px;--d:.15s"></span>
         <span class="pill p-tool" data-tip="tool_use &middot; fetch_ticket &middot; 88 ms" style="left:24%;width:10px;--d:.2s"></span>
         <span class="pill p-warn" data-tip="policy_warn &middot; 81% of token budget" style="left:32%;width:16px;--d:.25s"></span>
         <span class="pill" data-tip="llm_call &middot; claude-sonnet-4-6 &middot; 7,466 tok &middot; 1,830 ms" style="left:40%;width:26px;--d:.3s"></span>
         <span class="pill p-deg" data-tip="policy_degrade &middot; swapped to claude-haiku-4-5" style="left:52%;width:18px;--d:.35s"></span>
-        <span class="pill" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 1,088 tok &middot; 512 ms" style="left:61%;width:20px;--d:.4s"></span>
+        <span class="pill m-hide" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 1,088 tok &middot; 512 ms" style="left:61%;width:20px;--d:.4s"></span>
         <span class="pill p-block" data-tip="policy_block &middot; budget exhausted &middot; BudgetExceededError" style="left:74%;width:20px;--d:.45s"></span>
       </span></span></span>
     </div>
@@ -400,16 +411,16 @@
       <span class="track" style="--speed:50s"><span class="flow"><span class="set">
         <span class="pill p-run" data-tip="run started" style="left:9%"></span>
         <span class="pill p-tool" data-tip="tool_use &middot; Read" style="left:12%;width:10px;--d:.15s"></span>
-        <span class="pill p-tool" data-tip="tool_use &middot; Grep" style="left:16%;width:14px;--d:.2s"></span>
+        <span class="pill m-hide p-tool" data-tip="tool_use &middot; Grep" style="left:16%;width:14px;--d:.2s"></span>
         <span class="pill" data-tip="llm_call &middot; claude-opus-4-7 &middot; 12,904 tok &middot; 2,101 ms" style="left:21%;width:24px;--d:.25s"></span>
         <span class="pill p-tool" data-tip="tool_use &middot; Edit" style="left:29%;width:10px;--d:.3s"></span>
-        <span class="pill p-tool" data-tip="tool_use &middot; Bash" style="left:33%;width:12px;--d:.35s"></span>
+        <span class="pill m-hide p-tool" data-tip="tool_use &middot; Bash" style="left:33%;width:12px;--d:.35s"></span>
         <span class="pill" data-tip="llm_call &middot; claude-opus-4-7 &middot; 18,442 tok &middot; 2,930 ms" style="left:39%;width:30px;--d:.4s"></span>
         <span class="pill p-mcp" data-tip="mcp_tool_call &middot; flightdeck &middot; get_fleet_status" style="left:49%;width:16px;--d:.45s"></span>
         <span class="pill p-tool" data-tip="tool_use &middot; Write" style="left:56%;width:10px;--d:.5s"></span>
         <span class="pill" data-tip="llm_call &middot; claude-opus-4-7 &middot; 9,871 tok &middot; 1,644 ms" style="left:61%;width:26px;--d:.55s"></span>
-        <span class="pill p-tool" data-tip="tool_use &middot; Edit" style="left:70%;width:12px;--d:.6s"></span>
-        <span class="pill" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 302 tok &middot; 296 ms" style="left:76%;width:18px;--d:.65s"></span>
+        <span class="pill m-hide p-tool" data-tip="tool_use &middot; Edit" style="left:70%;width:12px;--d:.6s"></span>
+        <span class="pill m-hide" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 302 tok &middot; 296 ms" style="left:76%;width:18px;--d:.65s"></span>
         <span class="pill p-run" data-tip="run ended" style="left:84%"></span>
       </span></span></span>
     </div>
@@ -417,7 +428,7 @@
       <span class="callsign mono">etl-summarizer</span>
       <span class="track" style="--speed:62s"><span class="flow"><span class="set">
         <span class="pill" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 2,240 tok &middot; 664 ms" style="left:7%;width:28px;--d:.2s"></span>
-        <span class="pill" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 1,986 tok &middot; 590 ms" style="left:18%;width:22px;--d:.25s"></span>
+        <span class="pill m-hide" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 1,986 tok &middot; 590 ms" style="left:18%;width:22px;--d:.25s"></span>
         <span class="pill p-tool" data-tip="tool_use &middot; load_batch &middot; 1,204 ms" style="left:28%;width:12px;--d:.3s"></span>
         <span class="pill" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 2,511 tok &middot; 703 ms" style="left:36%;width:32px;--d:.35s"></span>
         <span class="pill" data-tip="llm_call &middot; claude-haiku-4-5 &middot; 2,048 tok &middot; 615 ms" style="left:49%;width:24px;--d:.4s"></span>
@@ -632,6 +643,8 @@ flightdeck_sensor.patch()</pre>
     });
 
     var tip = document.getElementById('tip');
+    var coarse = window.matchMedia('(hover: none), (pointer: coarse)').matches;
+    var tipTimer = null;
     function showTip(el){
       tip.textContent = el.getAttribute('data-tip');
       tip.hidden = false;
@@ -641,8 +654,18 @@ flightdeck_sensor.patch()</pre>
       if (y < 8) y = r.bottom + 10;
       tip.style.left = x + 'px';
       tip.style.top = y + 'px';
+      if (coarse) {
+        var st = el.closest('.strip');
+        if (st) st.classList.add('hold');
+        clearTimeout(tipTimer);
+        tipTimer = setTimeout(hideTip, 2600);
+      }
     }
-    function hideTip(){ tip.hidden = true; }
+    function hideTip(){
+      tip.hidden = true;
+      clearTimeout(tipTimer);
+      document.querySelectorAll('.strip.hold').forEach(function(s){ s.classList.remove('hold'); });
+    }
     document.querySelectorAll('.strip').forEach(function(s){
       s.addEventListener('pointerover', function(e){
         var p = e.target.closest('[data-tip]');

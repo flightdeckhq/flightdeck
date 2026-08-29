@@ -1357,6 +1357,9 @@ async function emitSubagentEvent({
   // doesn't need it but having the field doesn't break anything.
   if (hookName === "SubagentStart") {
     payload.sensor_version = PLUGIN_VERSION;
+    // Declare capture posture so the worker enforces it server-side
+    // for the child session too (parity with the parent session_start).
+    payload.capture_prompts = cfg.capturePrompts;
   }
 
   // D126 § 6 — sub-agent message routing. Body size decides
@@ -1608,6 +1611,11 @@ async function ensureSessionStarted(server, token, sessionId, basePayload, extra
     // "what build emitted this session" and the plugin's own version
     // satisfies that.
     sensor_version: PLUGIN_VERSION,
+    // Declare capture posture on session_start so the worker can
+    // enforce it server-side (parity with the Python sensor). Without
+    // this the server treats the session as capture-off and drops the
+    // plugin's captured content even though capturePrompts is on.
+    capture_prompts: Boolean(extras.capturePrompts),
   };
   const startContext = safeCollectContext({
     claudeCodeVersion: extras.claudeCodeVersion,
@@ -2197,6 +2205,7 @@ async function main() {
     await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, {
       model,
       claudeCodeVersion: turn?.claudeCodeVersion || hookEvent.version || null,
+      capturePrompts: cfg.capturePrompts,
     });
     // D139 — fetch + cache the MCP Protection Policy and emit
     // policy_mcp_warn / policy_mcp_block events for any non-allow
@@ -2262,6 +2271,7 @@ async function main() {
   await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, {
     model: isRealModel(hookEvent.model) ? hookEvent.model : null,
     claudeCodeVersion: hookEvent.version || null,
+    capturePrompts: cfg.capturePrompts,
   });
 
   // Stop: every un-emitted LLM turn in the transcript becomes a

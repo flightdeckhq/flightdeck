@@ -10,11 +10,12 @@ if (!rootEl) {
 }
 
 // Resolve the access token before mounting React so every downstream
-// caller of getAccessTokenSync() finds a populated localStorage. On
-// first load this fetches /runtime-config.json (cache: no-store); on
-// subsequent loads it short-circuits to the cached localStorage
-// value. Bootstrap failures render an inline message instead of an
-// empty page so the operator sees the fix path verbatim.
+// caller of getAccessTokenSync() finds a populated in-memory token.
+// This fetches /runtime-config.json (cache: no-store) on every page
+// load — the token is memory-only and never persisted, so there is no
+// cached value to short-circuit to. Bootstrap failures render an
+// inline message instead of an empty page so the operator sees the
+// fix path verbatim.
 ensureAccessToken()
   .then(() => {
     ReactDOM.createRoot(rootEl).render(

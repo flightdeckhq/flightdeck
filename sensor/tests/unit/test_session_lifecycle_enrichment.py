@@ -128,3 +128,51 @@ def test_other_event_types_skip_session_end_close_reason() -> None:
     s = _make_session()
     payload = s._build_payload(EventType.POST_CALL)
     assert "close_reason" not in payload
+
+
+# ------------------------------------------------------------------
+# C-01 — capture posture on session_start
+# ------------------------------------------------------------------
+
+
+def _make_session_with_capture(capture: bool) -> Session:
+    config = SensorConfig(
+        server="http://localhost/ingest",
+        token="tok_dev",
+        agent_id=str(uuid.uuid4()),
+        agent_name="test-agent",
+        user_name="test",
+        hostname="test-host",
+        client_type="flightdeck_sensor",
+        api_url="http://localhost/api",
+        agent_flavor="e2e-test",
+        agent_type="coding",
+        session_id=str(uuid.uuid4()),
+        capture_prompts=capture,
+        quiet=True,
+    )
+    s = Session(config, client=MagicMock())
+    s.event_queue = MagicMock()
+    return s
+
+
+def test_session_start_carries_capture_prompts_true() -> None:
+    s = _make_session_with_capture(True)
+    payload = s._build_payload(EventType.SESSION_START)
+    assert payload["capture_prompts"] is True
+
+
+def test_session_start_carries_capture_prompts_false() -> None:
+    s = _make_session_with_capture(False)
+    payload = s._build_payload(EventType.SESSION_START)
+    # Present and correct — the field must ship even when off so the
+    # server records the posture authoritatively.
+    assert payload["capture_prompts"] is False
+
+
+def test_session_start_capture_prompts_default_false() -> None:
+    """The default _make_session helper (no capture kwarg) reflects the
+    sensor's False default posture on session_start."""
+    s = _make_session()
+    payload = s._build_payload(EventType.SESSION_START)
+    assert payload["capture_prompts"] is False

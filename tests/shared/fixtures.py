@@ -334,6 +334,12 @@ def make_event(
         "tool_result": None,
         "has_content": False,
         "content": None,
+        # Server-authoritative capture posture (migration 000026). The
+        # worker persists this from session_start and gates all prompt
+        # content storage on it. Fixtures represent capture-on sessions
+        # so their content persists; the worker only reads it from the
+        # session_start event.
+        "capture_prompts": True,
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     payload.update(identity)

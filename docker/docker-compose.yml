@@ -9,7 +9,11 @@ services:
       - postgres_data:/var/lib/postgresql/data
       - ./postgres/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     ports:
-      - "5432:5432"
+      # Bind to loopback only: the database must never be reachable
+      # from the LAN in a dev loop. Prod strips this publish entirely
+      # (docker-compose.prod.yml). Use 127.0.0.1 so `docker compose`
+      # does not default-publish on 0.0.0.0.
+      - "127.0.0.1:5432:5432"
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-flightdeck}"]
       interval: 5s
@@ -27,8 +31,11 @@ services:
     volumes:
       - nats_data:/data
     ports:
-      - "4222:4222"
-      - "8222:8222"
+      # Loopback only: the message bus (unauthenticated in dev by
+      # design, D047) and its monitoring port must not be LAN-reachable.
+      # Prod strips these publishes entirely (docker-compose.prod.yml).
+      - "127.0.0.1:4222:4222"
+      - "127.0.0.1:8222:8222"
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8222/healthz || exit 1"]
       interval: 5s

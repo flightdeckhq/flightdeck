@@ -1146,9 +1146,19 @@ bodies above 8 KiB use the overflow path with a 2 MiB hard
 cap. When `capture_prompts=false` both fields are absent and
 `has_content=false`.
 
-When `capture_prompts=true`, the `content` field contains a `PromptContent`
-object. The worker stores it in `event_content` and sets `has_content=true`
-on the event row.
+Capture posture is server-authoritative. The `session_start` payload
+carries a top-level `capture_prompts` boolean; the worker persists it
+write-once onto `sessions.capture_prompts` (the first authoritative
+`session_start` pins it and no later event can flip an established
+session's posture). Every content sink — the `event_content` table and
+the inline MCP `content` projection into `events.payload` — is gated on
+that stored session value, not on the per-event `has_content` flag.
+Content whose session posture is off (or not yet known) is dropped and
+`has_content` is forced false on the stored row. This prevents a forged
+event on the message bus from persisting prompt content for a
+capture-off session. When `capture_prompts=true` for the session, the
+`content` field contains a `PromptContent` object the worker stores in
+`event_content`, setting `has_content=true` on the event row.
 
 `session_start` events additionally carry an optional top-level `context`
 field with the runtime context dict (orchestration, git, frameworks, etc.).

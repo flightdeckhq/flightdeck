@@ -68,6 +68,13 @@ type EventPayload struct {
 	ToolName        *string         `json:"tool_name"`
 	HasContent      bool            `json:"has_content"`
 	Content         json.RawMessage `json:"content"`
+	// CapturePrompts is the session's declared capture posture, carried
+	// on the session_start event. The worker persists it write-once on
+	// the sessions row and gates all prompt-content storage on the
+	// stored value -- never on the per-event HasContent flag, which is
+	// attacker-controllable on the message bus. Absent => false =>
+	// content is not stored (fail-safe). See migration 000026.
+	CapturePrompts  bool            `json:"capture_prompts"`
 	Timestamp       string          `json:"timestamp"`
 
 	// Directive metadata (directive_result events only).
@@ -461,7 +468,24 @@ func (c *Consumer) worker(ctx context.Context, sub *nats.Subscription, id int) {
 				continue
 			}
 
-			if err := c.processor.Process(ctx, event); err != nil {
+			// Process inside a recover barrier: a panic on one hostile
+			// or malformed message (a message on the bus is an
+			// untrusted trust boundary) must not crash the whole
+			// worker pool -- an unrecovered panic in any goroutine is
+			// process-fatal in Go. On panic we log, convert to an
+			// error, and Nak the single message so the loop continues.
+			procErr := func() (err error) {
+				defer func() {
+					if r := recover(); r != nil {
+						metrics.IncrDropped(metrics.ReasonProcessPanic)
+						slog.Error("recovered panic processing message",
+							"worker", id, "event_type", event.EventType, "panic", r)
+						err = fmt.Errorf("panic: %v", r)
+					}
+				}()
+				return c.processor.Process(ctx, event)
+			}()
+			if procErr != nil {
 				// Phase 4: when the JetStream delivery count has
 				// crossed maxDeliver, the message is about to go to
 				// the DLQ rather than be redelivered again. Bump a
@@ -472,7 +496,7 @@ func (c *Consumer) worker(ctx context.Context, sub *nats.Subscription, id int) {
 				if meta, mErr := msg.Metadata(); mErr == nil && meta.NumDelivered >= maxDeliver {
 					metrics.IncrDropped(metrics.ReasonMaxRetriesExhausted)
 				}
-				slog.Error("process error", "worker", id, "event_type", event.EventType, "err", err)
+				slog.Error("process error", "worker", id, "event_type", event.EventType, "err", procErr)
 				_ = msg.Nak()
 				continue
 			}

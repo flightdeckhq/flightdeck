@@ -420,7 +420,12 @@ def test_init_appends_ingest_suffix_when_missing(
     monkeypatch.delenv("FLIGHTDECK_SERVER", raising=False)
     monkeypatch.delenv("FLIGHTDECK_TOKEN", raising=False)
     flightdeck_sensor.teardown()
-    flightdeck_sensor.init(server="http://stack.internal", token="tok", quiet=True)
+    flightdeck_sensor.init(
+        server="http://stack.internal",
+        token="tok",
+        quiet=True,
+        allow_insecure_transport=True,
+    )
     try:
         assert flightdeck_sensor._session is not None
         assert flightdeck_sensor._session.config.server == "http://stack.internal/ingest"
@@ -445,6 +450,7 @@ def test_init_preserves_ingest_suffix_when_present(
         server="http://stack.internal/ingest",
         token="tok",
         quiet=True,
+        allow_insecure_transport=True,
     )
     try:
         assert flightdeck_sensor._session is not None
@@ -472,6 +478,7 @@ def test_init_preserves_ingest_with_trailing_slash(
         server="http://stack.internal/ingest/",
         token="tok",
         quiet=True,
+        allow_insecure_transport=True,
     )
     try:
         assert flightdeck_sensor._session is not None

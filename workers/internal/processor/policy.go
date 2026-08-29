@@ -54,6 +54,22 @@ func (pe *PolicyEvaluator) InvalidateCache(flavor string) {
 	delete(pe.cache, "org:")
 }
 
+// ForgetSession drops all per-session state (the fired-directives set
+// and any session-scoped policy cache entry) when a session closes.
+// Without this, both maps are keyed on unbounded session_id values and
+// never shrink, so a flood of distinct session ids -- which an attacker
+// on the message bus can manufacture -- grows them without limit
+// (memory-exhaustion DoS). Called from the session_end path.
+func (pe *PolicyEvaluator) ForgetSession(sessionID string) {
+	pe.firedMu.Lock()
+	delete(pe.fired, sessionID)
+	pe.firedMu.Unlock()
+
+	pe.cacheMu.Lock()
+	delete(pe.cache, "session:"+sessionID)
+	pe.cacheMu.Unlock()
+}
+
 // getPolicy returns the effective policy for a session, using cache when possible.
 // Lookup order: session scope -> flavor scope -> org scope -> nil (no policy).
 func (pe *PolicyEvaluator) getPolicy(ctx context.Context, flavor, sessionID string) *CachedPolicy {

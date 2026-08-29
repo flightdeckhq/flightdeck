@@ -3,9 +3,87 @@
 from __future__ import annotations
 
 import enum
+import ipaddress
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
+from urllib.parse import urlparse
+
+# Schemes the sensor is willing to egress control-plane traffic over.
+# Anything else (file://, ftp://, gopher://, a bare host with no
+# scheme, ...) is rejected outright — the sensor only speaks HTTP(S)
+# to the control plane, and an unexpected scheme is almost always a
+# misconfiguration or an attempt to redirect egress somewhere it does
+# not belong.
+_ALLOWED_EGRESS_SCHEMES = frozenset({"https", "http"})
+
+
+def _is_local_host(host: str) -> bool:
+    """Return True when *host* is a local/loopback/private target for
+    which plain ``http://`` is acceptable without an explicit opt-in.
+
+    Covers ``localhost`` (and ``*.localhost``), loopback IPs
+    (127.0.0.0/8, ::1), RFC1918 / ULA private ranges, and link-local
+    addresses. Everything else — public hostnames and public IPs —
+    is treated as remote and must use TLS unless the operator opts in.
+    """
+    if not host:
+        return False
+    h = host.lower()
+    if h == "localhost" or h.endswith(".localhost"):
+        return True
+    try:
+        ip = ipaddress.ip_address(h)
+    except ValueError:
+        # Not an IP literal and not a localhost name → treat as a
+        # public host. DNS is deliberately NOT resolved here: the
+        # sensor must never make a blocking network call on the config
+        # path (Sensor Rule 27), and resolving would also open a
+        # rebinding hole. Operators pointing at a private hostname that
+        # only resolves to an RFC1918 address use the opt-in flag.
+        return False
+    return ip.is_loopback or ip.is_private or ip.is_link_local
+
+
+def validate_egress_url(
+    url: str,
+    *,
+    field_name: str,
+    allow_insecure_transport: bool = False,
+) -> None:
+    """Validate a resolved control-plane egress URL (H-01).
+
+    Raises :class:`ValueError` when:
+
+    - the URL does not parse to a scheme in ``{"https", "http"}`` — this
+      rejects ``file://``, ``ftp://``, scheme-less strings, etc.; or
+    - the URL uses plain ``http://`` for a non-local host and the
+      operator has not opted into insecure transport
+      (``allow_insecure_transport`` / ``FLIGHTDECK_ALLOW_INSECURE_TRANSPORT``).
+
+    ``field_name`` is the config field being checked (``"server"`` /
+    ``"api_url"``) and is woven into the error message so a
+    misconfiguration is self-describing.
+    """
+    parsed = urlparse(url)
+    scheme = parsed.scheme.lower()
+    if scheme not in _ALLOWED_EGRESS_SCHEMES:
+        raise ValueError(
+            f"{field_name} must use an http:// or https:// URL; got "
+            f"scheme {scheme or '(none)'!r} in {url!r}. The sensor only "
+            "egresses control-plane traffic over HTTP(S)."
+        )
+    if scheme == "http" and not allow_insecure_transport:
+        host = parsed.hostname or ""
+        if not _is_local_host(host):
+            raise ValueError(
+                f"{field_name} uses insecure http:// for non-local host "
+                f"{host or '(none)'!r} ({url!r}). Use https://, or opt in "
+                "to plaintext transport by setting allow_insecure_transport"
+                "=True (env FLIGHTDECK_ALLOW_INSECURE_TRANSPORT=true). "
+                "Plaintext control-plane traffic to a remote host exposes "
+                "the access token and event payloads on the wire."
+            )
 
 
 class SessionState(enum.Enum):
@@ -215,6 +293,13 @@ class SensorConfig:
     client_type: str = "flightdeck_sensor"
     api_url: str = ""
     capture_prompts: bool = False
+    # H-01: opt-in to plaintext http:// egress for a non-local control
+    # plane. Default False forces https:// for any public host; local /
+    # loopback / private targets are always allowed over http regardless.
+    # Env-readable via FLIGHTDECK_ALLOW_INSECURE_TRANSPORT (resolved in
+    # init()). Never flip this on for a real deployment — it exposes the
+    # access token and event payloads on the wire.
+    allow_insecure_transport: bool = False
     unavailable_policy: str = "continue"
     agent_flavor: str = "unknown"
     agent_type: str = "production"
@@ -233,6 +318,19 @@ class SensorConfig:
     def __post_init__(self) -> None:
         if not self.api_url:
             self.api_url = self.server
+        # H-01: validate the resolved control-plane egress URLs. Both
+        # ``server`` (ingestion) and ``api_url`` (control-plane API) are
+        # checked so every egress target is covered by the single helper.
+        validate_egress_url(
+            self.server,
+            field_name="server",
+            allow_insecure_transport=self.allow_insecure_transport,
+        )
+        validate_egress_url(
+            self.api_url,
+            field_name="api_url",
+            allow_insecure_transport=self.allow_insecure_transport,
+        )
 
 
 # Default directive grace period (ms): the window an agent gets to wind down

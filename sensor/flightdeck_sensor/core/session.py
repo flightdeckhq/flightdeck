@@ -1273,6 +1273,11 @@ class Session:
             # "what budget/MCP rules were in effect at session start"
             # without joining time-windowed policy state.
             payload["sensor_version"] = _sensor_version()
+            # C-01: emit the session's capture posture authoritatively at
+            # session_start so the server can persist whether this session
+            # is capturing prompt content. Sourced directly from the
+            # resolved config — the single source of truth for the flag.
+            payload["capture_prompts"] = self.config.capture_prompts
             iv = _collect_interceptor_versions()
             if iv:
                 payload["interceptor_versions"] = iv

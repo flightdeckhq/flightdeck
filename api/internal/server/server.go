@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"time"
 
 	apidocs "github.com/flightdeckhq/flightdeck/api/docs"
@@ -120,7 +121,14 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 	mux.Handle("POST /v1/directives/register", gate(handlers.RegisterDirectivesHandler(s)))
 
 	mux.Handle("GET /v1/directives/custom", gate(handlers.GetCustomDirectivesHandler(s)))
-	mux.Handle("DELETE /v1/directives/custom", gate(handlers.DeleteCustomDirectivesHandler(s)))
+	// The bulk-delete of custom directives is a dev/test-only helper
+	// (it can wipe arbitrary custom_directives rows by name_prefix).
+	// Mirror the tok_dev gate: mount it only when ENVIRONMENT=dev so a
+	// production token cannot invoke it. In every other environment the
+	// route is absent and a DELETE returns 404.
+	if os.Getenv("ENVIRONMENT") == "dev" {
+		mux.Handle("DELETE /v1/directives/custom", gate(handlers.DeleteCustomDirectivesHandler(s)))
+	}
 	mux.Handle("GET /v1/events", gate(handlers.EventsListHandler(s)))
 	mux.Handle("GET /v1/analytics", gate(handlers.AnalyticsHandler(s)))
 	mux.Handle("GET /v1/search", gate(handlers.SearchHandler(s)))

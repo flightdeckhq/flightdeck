@@ -8,22 +8,24 @@
 // as before: anyone on the dashboard origin can fetch the file.
 //
 // Bootstrap order at app start:
-//   1. Read localStorage. If a token is set, use it (operator-pasted
-//      override always wins; honoured for token rotation testing).
-//   2. Fetch /runtime-config.json. Validate. Write the token to
-//      localStorage. Return it.
-//   3. If both fail, surface a clear error so the operator knows what
-//      to do — silent fall-through to a broken state is the failure
-//      mode we want to avoid.
+//   1. Fetch /runtime-config.json. Validate. Hold the token in memory.
+//      Return it.
+//   2. If the fetch fails, surface a clear error so the operator knows
+//      what to do — silent fall-through to a broken state is the
+//      failure mode we want to avoid.
+//
+// SECURITY: the bearer token is held IN MEMORY ONLY (the module-level
+// ``accessToken`` variable below). It is never written to localStorage
+// or sessionStorage, so it is not persisted across reloads and cannot
+// be exfiltrated by an XSS payload reading web storage — a fresh page
+// load always re-fetches it from /runtime-config.json (same-origin).
 //
 // The fetch promise is cached so concurrent ensureAccessToken() calls
-// share one network round-trip. Once the bootstrap resolves,
-// localStorage holds the token and downstream callers use the
+// share one network round-trip. Once the bootstrap resolves, the
+// in-memory token is populated and downstream callers use the
 // synchronous getAccessTokenSync() helper.
 
 import { DISABLE_KEEPALIVE_WS_STORAGE_KEY } from "./constants";
-
-export const ACCESS_TOKEN_STORAGE_KEY = "flightdeck-access-token";
 
 // Re-export so existing callers that import the key from this
 // module continue to work. The canonical definition now lives in
@@ -61,28 +63,29 @@ export function isKeepaliveWsDisabled(): boolean {
 
 let bootstrapPromise: Promise<string> | null = null;
 
+// SECURITY: the resolved access token lives here, in memory, for the
+// lifetime of the page load only. It is intentionally NOT persisted to
+// localStorage/sessionStorage — not written on bootstrap, not read on
+// reload — so it cannot survive a reload or be exfiltrated by an XSS
+// payload scraping web storage. Each fresh load re-fetches it from
+// /runtime-config.json (same-origin).
+let accessToken: string | null = null;
+
 /**
- * Sync read of the active access token from localStorage. Returns
- * ``null`` if no token is set; callers that need a guarantee should
- * await {@link ensureAccessToken} once at app start, after which
- * this helper is guaranteed to return a non-null value.
+ * Sync read of the active in-memory access token. Returns ``null`` if
+ * no token has been resolved yet; callers that need a guarantee should
+ * await {@link ensureAccessToken} once at app start, after which this
+ * helper is guaranteed to return a non-null value for the lifetime of
+ * the page.
  */
 export function getAccessTokenSync(): string | null {
-  if (typeof window === "undefined") return null;
-  try {
-    const stored = window.localStorage.getItem(ACCESS_TOKEN_STORAGE_KEY);
-    return stored && stored.length > 0 ? stored : null;
-  } catch {
-    // localStorage may be unavailable (SSR, strict iframe); the
-    // caller's downstream behaviour decides what to do with null.
-    return null;
-  }
+  return accessToken;
 }
 
 /**
  * Idempotent access-token bootstrap. First call fetches
- * ``/runtime-config.json`` if localStorage is empty, writes the
- * resolved token into localStorage, and returns it. Concurrent calls
+ * ``/runtime-config.json``, stores the resolved token in the
+ * module-level in-memory variable, and returns it. Concurrent calls
  * share the same in-flight promise, so multiple components racing the
  * bootstrap pay one fetch.
  *
@@ -99,19 +102,10 @@ export function getAccessTokenSync(): string | null {
 export function ensureAccessToken(): Promise<string> {
   if (bootstrapPromise) return bootstrapPromise;
   const pending = (async () => {
-    const stored = getAccessTokenSync();
-    if (stored) return stored;
     const config = await fetchRuntimeConfig();
-    try {
-      window.localStorage.setItem(
-        ACCESS_TOKEN_STORAGE_KEY,
-        config.access_token,
-      );
-    } catch {
-      // localStorage unavailable; the access token is still returned
-      // so the in-memory promise cache satisfies subsequent reads
-      // for the lifetime of the page load.
-    }
+    // Memory-only: hold the token in the module-level variable so
+    // getAccessTokenSync() can serve it synchronously. Never persisted.
+    accessToken = config.access_token;
     return config.access_token;
   })();
   pending.catch(() => {
@@ -121,11 +115,12 @@ export function ensureAccessToken(): Promise<string> {
   return pending;
 }
 
-/** Reset the bootstrap cache. Tests only — production code never
- *  calls this. Allows a Vitest spec to re-exercise the fetch path
- *  across cases with different mocks. */
+/** Reset the bootstrap cache and in-memory token. Tests only —
+ *  production code never calls this. Allows a Vitest spec to
+ *  re-exercise the fetch path across cases with different mocks. */
 export function _resetBootstrapForTest(): void {
   bootstrapPromise = null;
+  accessToken = null;
 }
 
 // Bootstrap fetch deadline. Tighter than the API REQUEST_TIMEOUT_MS
@@ -136,9 +131,9 @@ export function _resetBootstrapForTest(): void {
 const BOOTSTRAP_TIMEOUT_MS = 10_000;
 
 async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
-  const helpHint =
-    `Set localStorage.${ACCESS_TOKEN_STORAGE_KEY} manually, or ` +
-    `configure ${RUNTIME_CONFIG_URL} on the server.`;
+  // Memory-only token: there is no localStorage override to suggest;
+  // the only fix path is configuring the file the server serves.
+  const helpHint = `Configure ${RUNTIME_CONFIG_URL} on the server.`;
   let resp: Response;
   try {
     resp = await fetch(RUNTIME_CONFIG_URL, {

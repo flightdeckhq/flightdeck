@@ -2,8 +2,8 @@ apiVersion: v2
 name: flightdeck
 description: Flightdeck control plane for Kubernetes (bundled Postgres + NATS).
 type: application
-version: 0.5.2
-appVersion: "0.5.2"
+version: 0.5.3
+appVersion: "0.5.3"
 kubeVersion: ">=1.25.0-0"
 home: https://github.com/flightdeckhq/flightdeck
 sources:

@@ -4,6 +4,67 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+## v0.5.3 — 2026-08-30
+
+Security release. Remediates the findings of a local SAST + DAST
+security assessment across all components: server-side capture-posture
+enforcement, sensor egress validation, NATS hardening, dashboard token
+handling, and several worker/API hardening fixes. Ships one schema
+migration (000026, `sessions.capture_prompts`); migrations run
+automatically when workers start. **Upgrade note:** production Helm
+renders now fail closed unless `api.auth.jwtSecret` is set and
+`api.corsOrigin` is non-wildcard, and the production compose overlay
+requires `FLIGHTDECK_NATS_TOKEN` — set these before upgrading.
+
+### Security
+
+- **Capture posture is now server-authoritative.** A new
+  `sessions.capture_prompts` column is set write-once from the
+  authenticated `session_start`; the worker gates both content sinks
+  (the `event_content` table and the inline MCP projection into
+  `events.payload`) on the stored value, not the per-event
+  `has_content` flag. Fail-safe: unknown/false drops content and
+  forces `has_content=false`. Closes a bypass where a forged bus
+  message could store prompt content for a capture-off session.
+- **Sensor validates the control-plane egress URL.** Scheme
+  allowlist; `https` required for non-local hosts unless
+  `allow_insecure_transport`; warns when `FLIGHTDECK_SERVER`
+  overrides an explicitly configured server. Blocks token/content
+  exfiltration to an arbitrary host.
+- **NATS hardening.** Dev compose binds postgres/NATS to
+  `127.0.0.1`; the production overlay requires
+  `FLIGHTDECK_NATS_TOKEN` (`--auth` plus authenticated client URLs,
+  fail-closed); the Helm chart gains NetworkPolicies restricting
+  postgres/NATS ingress to app pods.
+- **Dashboard bearer token is memory-only** (no `localStorage`),
+  removing the XSS-exfiltration-across-reloads + wildcard-CORS
+  replay chain. Dashboard CSP `connect-src` scoped to `'self'`.
+- **Helm fail-closed production guards** for `api.auth.jwtSecret`
+  and non-wildcard `api.corsOrigin` when `env=production`; CI
+  renders a complete valid production config and asserts each guard
+  fires with an actionable message, plus that both security
+  NetworkPolicies render.
+- `DELETE /v1/directives/custom` is mounted only when
+  `ENVIRONMENT=dev` — 404 in production.
+- The ingestion rate limiter keys on the SHA-256 of the bearer
+  token instead of the raw secret.
+- `pg_notify($1, $2)` replaces string-built `NOTIFY`; the worker
+  gains a per-message `recover()` barrier so one poison message
+  cannot crash the pool; `PolicyEvaluator` maps are evicted on
+  `session_end` (memory-exhaustion DoS).
+- `@remix-run/router` bumped past the open-redirect advisory
+  GHSA-2j2x-hqr9-3h42.
+
+### Fixed
+
+- **The Claude Code plugin declares `capture_prompts` on
+  `session_start`.** The plugin defaults capture on and emits
+  captured content, but its `session_start` payloads did not declare
+  `capture_prompts`; under the new server-authoritative gate the
+  worker would have treated those sessions as capture-off and
+  dropped the plugin's content. Both the parent and sub-agent
+  `session_start` payloads now stamp it, matching the Python sensor.
+
 ## v0.5.2 — 2026-05-31
 
 Quality + observability release. Wraps up the full-repo audit

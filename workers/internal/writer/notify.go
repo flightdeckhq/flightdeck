@@ -40,8 +40,12 @@ func NotifyFleetChange(ctx context.Context, pool *pgxpool.Pool, sessionID, event
 	if err != nil {
 		return fmt.Errorf("marshal notify payload: %w", err)
 	}
+	// Use pg_notify($1,$2) with bound parameters rather than a
+	// string-built NOTIFY. The payload embeds session_id/event_type,
+	// and a bound parameter cannot break out of the SQL statement even
+	// if an upstream validation is ever relaxed (defense in depth).
 	payload := string(data)
-	_, err = pool.Exec(ctx, fmt.Sprintf("NOTIFY %s, '%s'", notifyChannel, payload))
+	_, err = pool.Exec(ctx, "SELECT pg_notify($1, $2)", notifyChannel, payload)
 	if err != nil {
 		return fmt.Errorf("notify %s: %w", notifyChannel, err)
 	}

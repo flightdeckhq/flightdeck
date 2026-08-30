@@ -21,6 +21,36 @@ import (
 //
 // This is an exported helper so it can be unit-tested directly without
 // needing to wire a mock writer through the Processor.
+// stripExtraContent removes the inline "content" key (the MCP
+// argument/result/resource projection that BuildEventExtra places in
+// events.payload) from an already-marshaled extra blob. It is the
+// capture-posture guard for the inline content sink: called only when
+// the session's stored capture posture is off. Returns nil when the
+// blob becomes empty so the payload column stays NULL, and returns the
+// input unchanged if it cannot be parsed (fail-closed is handled by the
+// caller's separate event_content gate).
+func stripExtraContent(extra []byte) []byte {
+	if len(extra) == 0 {
+		return extra
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(extra, &m); err != nil {
+		return extra
+	}
+	if _, ok := m["content"]; !ok {
+		return extra
+	}
+	delete(m, "content")
+	if len(m) == 0 {
+		return nil
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return nil
+	}
+	return out
+}
+
 func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	// Pre-Phase-4 this function only produced payload for
 	// directive_result events. Phase 4 opens it up to any event that
@@ -397,6 +427,9 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 		if err := p.session.HandleSessionEnd(ctx, e); err != nil {
 			return err
 		}
+		// Release per-session policy-evaluator state so the cache and
+		// fired-directive maps stay bounded (see ForgetSession).
+		p.policy.ForgetSession(e.SessionID)
 	case "heartbeat":
 		if err := p.session.HandleHeartbeat(ctx, e); err != nil {
 			return err
@@ -496,6 +529,21 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 		// Non-fatal: log and proceed without payload metadata.
 		slog.Warn("build event extra error", "err", extraErr, "event_type", e.EventType)
 	}
+	// Server-authoritative capture gate. Prompt/MCP content may be
+	// persisted only when the session's stored capture posture permits
+	// it -- never on the per-event HasContent flag, which an attacker
+	// on the message bus can forge. This covers BOTH content sinks:
+	// the event_content table (below) and the MCP inline projection
+	// that BuildEventExtra places in extra["content"]. Look the flag up
+	// only for content-bearing events; drop content fail-safe when
+	// capture is off or the session's posture is not yet known.
+	captureOn := true
+	if e.HasContent || len(e.Content) > 0 {
+		captureOn = p.w.SessionCaptureEnabled(ctx, e.SessionID)
+		if !captureOn {
+			extra = stripExtraContent(extra)
+		}
+	}
 	// Phase 7 Step 4 (D152): worker-side enrichment for session_end
 	// (policy_actions_summary + last_event_id) and
 	// mcp_server_name_changed (policy_entries_orphaned). Computed
@@ -511,18 +559,24 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	// Phase 7 Step 2 (D149): pass the sensor-minted event id (from
 	// payload.id) into InsertEvent. Empty string → DB-side
 	// gen_random_uuid() fallback via COALESCE.
+	// Keep the persisted has_content flag consistent with the capture
+	// gate: if content is not permitted for this session, the event row
+	// must not advertise content the /content endpoint can never serve.
+	hasContent := e.HasContent && captureOn
 	eventID, err := p.w.InsertEvent(
 		ctx, e.ID, e.SessionID, e.Flavor, e.EventType, e.Model,
 		e.TokensInput, e.TokensOutput, e.TokensTotal,
 		e.TokensCacheRead, e.TokensCacheCreation,
-		e.LatencyMs, e.ToolName, e.HasContent, ts, extra,
+		e.LatencyMs, e.ToolName, hasContent, ts, extra,
 	)
 	if err != nil {
 		return err
 	}
 
-	// Store prompt content when capture is enabled
-	if e.HasContent && len(e.Content) > 0 {
+	// Store prompt content only when the session's server-authoritative
+	// capture posture permits it (captureOn), not merely when the event
+	// claims has_content. This is the core capture-posture contract.
+	if captureOn && e.HasContent && len(e.Content) > 0 {
 		if err := p.w.InsertEventContent(ctx, eventID, e.SessionID, e.Content); err != nil {
 			slog.Warn("insert event content error", "err", err)
 		}

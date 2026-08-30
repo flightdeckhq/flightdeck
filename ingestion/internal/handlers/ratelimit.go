@@ -1,6 +1,8 @@
 package handlers
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"sync"
 	"time"
 )
@@ -61,7 +63,14 @@ func NewRateLimiter(max int) *RateLimiter {
 
 // Allow returns true if the token has not exceeded the rate limit.
 // Returns (allowed, secondsUntilReset).
-func (rl *RateLimiter) Allow(tokenHash string) (bool, int) {
+//
+// The raw bearer token is hashed before it is used as a map key so the
+// plaintext secret is never held in the limiter's in-memory state (a
+// heap dump cannot recover it), mirroring the auth validator's cache.
+func (rl *RateLimiter) Allow(rawToken string) (bool, int) {
+	sum := sha256.Sum256([]byte(rawToken))
+	tokenHash := hex.EncodeToString(sum[:])
+
 	rl.mu.RLock()
 	tw, ok := rl.windows[tokenHash]
 	rl.mu.RUnlock()

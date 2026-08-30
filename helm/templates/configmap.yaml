@@ -10,6 +10,9 @@ data:
   FLIGHTDECK_WORKER_POOL_SIZE: {{ .Values.workers.poolSize | quote }}
   FLIGHTDECK_MIGRATIONS_DIR: {{ .Values.workers.migrationsDir | quote }}
   FLIGHTDECK_RATE_LIMIT_PER_MINUTE: {{ .Values.ingestion.rateLimitPerMinute | quote }}
+  {{- if and (eq .Values.api.env "production") (eq .Values.api.corsOrigin "*") }}
+  {{- required "api.corsOrigin must not be \"*\" for a production install: set it to your dashboard origin (e.g. https://flightdeck.example.com). A wildcard CORS origin on the bearer-token API is unsafe." "" }}
+  {{- end }}
   FLIGHTDECK_CORS_ORIGIN: {{ .Values.api.corsOrigin | quote }}
   SHUTDOWN_TIMEOUT_SECS: {{ .Values.api.shutdownTimeoutSecs | quote }}
   # Agent-side defaults -- consumed only if an operator wires them into an

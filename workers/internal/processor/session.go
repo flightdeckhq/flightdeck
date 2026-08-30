@@ -333,6 +333,7 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 		contextJSON,
 		e.TokenID, e.TokenName,
 		e.ParentSessionID, e.AgentRole,
+		e.CapturePrompts,
 	)
 	if err != nil {
 		return fmt.Errorf("session start: %w", err)

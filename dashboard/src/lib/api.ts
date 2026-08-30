@@ -31,18 +31,17 @@ import { getAccessTokenSync } from "./runtime-config";
 const BASE = import.meta.env.VITE_API_BASE_URL || "/api";
 
 // All authenticated request paths read the active access token from
-// localStorage via getAccessTokenSync(). main.tsx awaits
+// the in-memory value via getAccessTokenSync(). main.tsx awaits
 // ensureAccessToken() before rendering App, so by the time any
 // component calls these helpers a token is guaranteed to be present.
-// If localStorage is somehow empty after bootstrap (e.g. cleared
-// mid-session) every request lands as "Bearer " and the API returns
-// 401 — surfaces visibly rather than failing silently.
+// The token is never persisted (memory-only, security hardening); if
+// it is somehow empty after bootstrap every request lands as
+// "Bearer " and the API returns 401 — surfaces visibly rather than
+// failing silently.
 
 /** Sync read of the active bearer for the WebSocket query-string
  *  variant (browsers cannot attach Authorization on the WS upgrade).
- *  The value resolves at call time so an operator who pasted a
- *  different token via DevTools and reloaded picks it up on the next
- *  WebSocket reconnect. */
+ *  The value resolves at call time from the in-memory token. */
 export function wsAccessTokenQuery(): string {
   return `token=${encodeURIComponent(getAccessTokenSync() ?? "")}`;
 }

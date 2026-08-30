@@ -131,6 +131,14 @@ dashboard:
   tolerations: []
   affinity: {}
 
+# NetworkPolicy hardening: restrict ingress to Postgres and NATS to the
+# flightdeck server pods only (see templates/networkpolicy.yaml). The
+# NATS bus is unauthenticated (D047), so this is the primary in-cluster
+# control preventing arbitrary pods from reading/forging the event bus.
+# Requires a CNI that enforces NetworkPolicy; set false to disable.
+networkPolicy:
+  enabled: true
+
 nats:
   enabled: true  # There is no external-NATS escape hatch in v0.5.2.
   image:

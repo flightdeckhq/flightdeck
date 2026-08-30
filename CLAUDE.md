@@ -3,6 +3,10 @@
 > These rules exist because something went wrong or almost went wrong without them.
 > Follow them without exception. If a rule conflicts with a task instruction, raise
 > the conflict with the Supervisor before proceeding.
+>
+> Component-specific rules live in `dashboard/CLAUDE.md` (frontend + E2E
+> discipline) and `sensor/CLAUDE.md` (sensor + framework coverage). They load
+> automatically when working on files under those directories.
 
 ---
 
@@ -47,24 +51,7 @@
 10. **Integration tests:** pytest. Full pipeline. Real NATS and Postgres in Docker
     Compose. Run with `make test-integration`.
 
-11. **Frontend unit tests:** Vitest + React Testing Library. Every component that
-    handles data or state must have unit tests.
-
-12. **E2E tests:** Playwright. Full user flows in both neon dark and clean light.
-
-13. **Never use MUI, Ant Design, or Chakra UI.** shadcn/ui and custom components only.
-
-14. **Both themes must work at all times.** After any frontend change, verify both
-    neon dark and clean light render correctly. Breaking one theme is an incomplete task.
-
-15. **Never casually edit globals.css or themes.css.** These define both themes.
-    Only edit with explicit Supervisor approval.
-
-16. **D3 is used for math only.** In the timeline component, D3 is used exclusively
-    for `d3-scale` and `d3-time` calculations. D3 must never manipulate the DOM.
-
-17. **No placeholder UI.** If a feature is not ready it does not appear in the UI.
-    No grey boxes, no "coming soon" panels, no disabled stubs for incomplete features.
+Frontend code rules (11-17) live in `dashboard/CLAUDE.md`.
 
 ---
 
@@ -132,28 +119,7 @@
 
 ## Sensor Rules
 
-27. **The sensor must never add meaningful latency to the agent's hot path.**
-    All control plane communication is fire-and-forget or background.
-    Never introduce synchronous blocking calls in the LLM call intercept path.
-
-28. **The sensor must fail open.** If the control plane is unreachable and
-    FLIGHTDECK_UNAVAILABLE_POLICY=continue, the agent proceeds with no enforcement.
-    Do not raise exceptions for connectivity failures.
-
-29. **Token counting carries over from tokencap.** Do not rewrite the counting logic.
-    Extend it. Pre-call estimation, post-call reconciliation, delta correction -- these
-    are proven and must not be changed without Supervisor approval.
-
-30. **capture_prompts defaults to False.** The default init() call never captures
-    content. Always verify this default has not been accidentally changed.
-
-31. **init() limit param fires WARN only.** Never upgrade a local limit to BLOCK
-    or DEGRADE regardless of what the server policy says. See DECISIONS.md D035.
-
-32. **The sensor is a library wrapper, not an OS agent.** Never add background
-    threads, polling loops, or daemon threads to the sensor beyond the existing
-    event queue drain thread. If a feature requires background activity
-    independent of LLM calls, it does not belong in the sensor.
+Sensor rules (27-32) live in `sensor/CLAUDE.md`.
 
 ---
 
@@ -235,11 +201,7 @@
      - ``agent_type = "coding"`` (dev smoke matching the D114 vocabulary)
      - ``flavor = "playground-<script-name>"``
 
-     Enforced by ``playground/_helpers.py::init_sensor`` -- ``flavor`` is a
-     required keyword-only parameter with no default, ``agent_type`` defaults
-     to ``"coding"``. Scripts that need a flavor-scoped policy or directive
-     (currently ``07_directives.py``, ``08_enforcement.py``) append a hex
-     suffix for per-run uniqueness (``playground-directives-a1b2c3``).
+     Enforced mechanically by ``playground/_helpers.py::init_sensor``.
 
      Without this rule every playground run lands as ``flavor="unknown"`` /
      ``agent_type="autonomous"`` -- the sensor's pre-D114 defaults -- which
@@ -290,161 +252,9 @@
      works," 40b says "and that verification happens before the
      commit, not after push-to-CI."
 
-40c. **E2E test discipline.** Every phase that adds or changes
-     user-visible UI behavior adds corresponding E2E tests at
-     `dashboard/tests/e2e/` covering the new behavior. Tests are
-     named after the user journey they cover
-     (``Tnn-<kebab-case-journey>.spec.ts``), one journey per file so
-     a failing test's filename tells you what's broken without
-     opening the trace. The V-pass for any UI phase MUST list the
-     E2E tests that will be added before implementation starts.
+40c. E2E discipline rules (40c through 40c.4) live in `dashboard/CLAUDE.md`.
 
-     Why: Phases 1 and 2 each shipped UI regressions (KI20 phantom
-     rows, KI22 font-mono collapse, PR #24 bucket-divider
-     misalignment) that unit tests missed. The common shape: a
-     single component's mock test passed while the rendered
-     dashboard misbehaved. E2E tests exercising the real dashboard
-     against a seeded dev stack would have caught each one. The
-     Phase 3 Playwright foundation exists so every post-v0.4.0 UI
-     change inherits that floor.
-
-     How to apply: when planning a UI-touching task, name the E2E
-     tests in the plan. When implementing, write those tests before
-     or alongside the behavior change -- not after. When reviewing,
-     reject a UI PR whose only test coverage is unit tests.
-
-40c.1. **E2E stability — tests that flake are fixed or deleted,
-     never merged as-is.** CI retry is a tolerance buffer for
-     genuine infrastructure blips (stack boot race, NATS reconnect,
-     WSL disk flush), NOT for tests. The Playwright config sets
-     ``retries: 1`` on CI and ``0`` locally so flakes surface on
-     the first run and get fixed. A test that fails on the second
-     sequential local run against unchanged code is a flake and
-     must not ship.
-
-     Why: flaky tests teach reviewers to ignore failures ("it's
-     just that flaky one") which is indistinguishable from
-     abandoned test coverage. One trusted test is worth ten flaky
-     ones.
-
-     How to apply: after writing a test, run the suite twice in a
-     row locally against a fresh dev stack + seed. Both must pass
-     cleanly. If any test flakes, debug the root cause (timing
-     assumption, race condition, implicit state) rather than
-     adding retry.
-
-40c.2. **E2E as the pre-commit smoke gate for UI work.** After any
-     UI edit, run ``cd dashboard && npm run test:e2e`` locally
-     BEFORE committing. The suite must pass against a fresh dev
-     stack + seed. This is the minimum verification bar for UI
-     changes, below which work is not considered complete.
-
-     Inherits from rule 40b (pre-commit live test): where 40b is
-     about runtime behaviour generally, 40c.2 specialises to the
-     dashboard and requires the Playwright suite specifically.
-
-40c.3. **E2E theme coverage.** Tests run under both ``neon-dark``
-     and ``clean-light`` theme projects via Playwright's
-     ``projects`` config. Tests MUST NOT hardcode theme-specific
-     selectors or computed colour values; assertions are
-     theme-agnostic. Any new theme-dependent rendering logic
-     requires E2E coverage that passes under both themes. The
-     config already wires storageState per project; spec authors
-     just keep assertions structural.
-
-     Why: rule 14 requires both themes to work at all times.
-     Without automated per-theme coverage, "both themes work"
-     degrades to "dark theme works, light theme breaks on Tuesdays"
-     -- which is exactly the regression shape KI22 had until a
-     manual light-theme pass caught it.
-
-40c.4. **Live-load Chrome verification after every dashboard
-     step.** When a step touches dashboard chrome (a page route,
-     a panel, a route-level component, or any UI surface end
-     users navigate to), the step does not close until the dev
-     stack has been built with branch HEAD AND the affected
-     surfaces have been opened in a real Chrome window AND the
-     happy-path interaction has been performed manually. Mock-
-     based unit tests, Vitest passing, and TypeScript clean are
-     all necessary but insufficient — they verify the contract
-     between component and props, not the contract between
-     component and the live API / WebSocket / theme stylesheet
-     / fleet store under real network conditions.
-
-     The verification log for the step must list:
-     - Which routes were opened (e.g. ``/mcp-policies``,
-       ``/investigate``, ``/fleet``).
-     - Which interactions were exercised (e.g. open dialog →
-       fill required fields → submit; trigger 403 path; open
-       SessionDrawer on a session emitting target events).
-     - Which themes were checked (rule 14 requires both).
-     - The dev-stack build SHA (so the verification is pinned to
-       branch HEAD, not a stale prod-image layer per Rule 40b).
-
-     Inherits from Rule 40a (live-stack verification). Where 40a
-     is "exercise new runtime code paths against the live stack
-     before claiming they work" and 40b is "rebuild the stack
-     with branch HEAD before pre-commit testing", 40c.4 is the
-     specialisation for dashboard chrome: a live Chrome session
-     is the only thing that surfaces theme-token gaps, fleet-WS
-     re-fetch wiring, focus traps inside Radix portals, and the
-     "Mock said handler fires, real stack says backend 500"
-     class of bug.
-
-     Why: every step in the MCP Protection Policy work surfaced
-     at least one polish gap that mocks missed and Chrome caught
-     — empty MCP SERVERS panel on a live session (D140), tab
-     overflow on small viewports, hardcoded amber-500 in the
-     soft-launch banner, "Admin token required" without an
-     actionable hint. Two-hat Chrome verification (operator
-     pretends to be a fresh user, then a hostile auditor) is the
-     only methodology that reliably surfaces these without
-     shipping them. Step 6.6 codifies the pattern after step 6
-     proved its value the hard way.
-
-40d. **Framework coverage discipline.** Any phase that adds
-     framework support OR changes framework-emission behaviour
-     MUST include BOTH:
-
-     1. **Real-provider playground demos** per affected framework --
-        manual, NOT in CI (they cost money and need live API
-        credentials). Live under ``playground/`` and self-skip
-        (exit 2) when the relevant API key / framework / optional
-        gateway URL is missing so ``make playground-all`` runs
-        cleanly on any box. Driven via ``make playground-<script>``
-        targets. Each demo asserts payload shape inline using
-        ``print_result`` + ``raise AssertionError``; ``run_all.py``
-        exits 0 only when every script returned 0 (PASS) or 2
-        (SKIP). Results documented in the phase's audit doc before
-        PR merge.
-     2. **Integration tests** per framework × behaviour combo,
-        mock-free (or lightly mocked at the network boundary),
-        running in CI via the existing Integration job. Seed a
-        realistic event payload for each new framework + behaviour
-        combination and verify end-to-end landing.
-
-     V-pass for such a phase MUST enumerate the playground demos
-     and integration tests that will be added before
-     implementation starts. Skipping either is a phase-gate
-     failure.
-
-     Why: Phase 4 (agent communication coverage hardening) shipped
-     embeddings, streaming semantics, structured error events, and
-     session-lifecycle edge-case fixes. Mock-only coverage would
-     have let a future SDK upgrade silently break the classifier
-     (anthropic renames ``RateLimitError`` to ``QuotaError`` and
-     our classifier falls through to ``other``; no CI gate catches
-     it). The playground matrix is the only thing that exercises
-     the real class hierarchy every provider ships.
-
-     Applies to: every phase from Phase 4 onwards that touches
-     ``sensor/flightdeck_sensor/interceptor/*``, adds a new
-     interceptor file, or changes the event-emission shape for an
-     existing framework.
-
-     Does NOT apply to: non-framework sensor work (transport,
-     policy, directives) — those are covered by the standard unit
-     + integration suites.
+40d. Framework coverage rules live in `sensor/CLAUDE.md`.
 
 40e. **Pre-push lint is a hard rule.** Before pushing any code,
      run the appropriate linter for every component touched and
@@ -715,17 +525,6 @@ When main moves forward and the feature branch needs updates:
 Never silently rebase a feature branch onto main. Squash merges from PRs
 create non-linear history that rebase does not handle cleanly -- the
 rebase earlier in this project kept only one commit and dropped 27.
-
-### When something goes wrong
-
-1. Do not panic-fix with another destructive operation.
-2. `git reflog` is your friend. Every HEAD movement for the last 30+
-   days is recoverable from the reflog.
-3. `git fsck --lost-found` finds dangling commits not reachable from any
-   ref.
-4. Orphaned commits stay in the object store for at least 30 days
-   (default `gc.pruneExpire`) before `git gc` removes them. Move fast
-   but don't panic.
 
 ### PR and merge workflow
 

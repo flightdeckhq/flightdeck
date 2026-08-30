@@ -51,6 +51,7 @@ const (
 	ReasonClosedSessionSkip   DropReason = "closed_session_skip"
 	ReasonFKViolation         DropReason = "fk_violation"
 	ReasonMaxRetriesExhausted DropReason = "max_retries_exhausted"
+	ReasonProcessPanic        DropReason = "process_panic"
 )
 
 // CloseReason mirrors the close_reason values stamped on session_end

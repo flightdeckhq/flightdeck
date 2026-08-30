@@ -235,6 +235,7 @@ def init(
     agent_name: str | None = None,
     langgraph_agent_node_pattern: str | None = None,
     mcp_block_on_uncertainty: bool = False,
+    allow_insecure_transport: bool = False,
 ) -> None:
     """Initialize the sensor and start the run.
 
@@ -298,6 +299,16 @@ def init(
       for k8s pod grouping)
     - ``FLIGHTDECK_UNAVAILABLE_POLICY`` -- ``"continue"`` or ``"halt"``
     - ``FLIGHTDECK_CAPTURE_PROMPTS`` -- ``"true"`` to enable
+    - ``FLIGHTDECK_ALLOW_INSECURE_TRANSPORT`` -- ``"true"`` to allow plain
+      ``http://`` egress to a non-local control plane (overrides
+      *allow_insecure_transport*)
+
+    ``allow_insecure_transport`` opts in to plaintext ``http://`` egress
+    for a **non-local** control-plane host. Off by default: the resolved
+    ``server`` / ``api_url`` must use ``https://`` for any public host, or
+    init raises. Local / loopback / private hosts (``localhost``,
+    ``127.0.0.1``, RFC1918, ...) are always allowed over ``http``. A URL
+    with any scheme other than ``http`` / ``https`` is rejected outright.
 
     ``langgraph_agent_node_pattern`` (D126) is an optional regex
     string that narrows which LangGraph nodes the sub-agent
@@ -316,12 +327,35 @@ def init(
                 _log.warning("flightdeck_sensor.init() called twice; ignoring")
             return
 
+        # H-01: env-var precedence is preserved (env wins over the kwarg,
+        # matching every other init() knob), but a silent override of an
+        # explicitly-passed value is the vulnerability — a stale/hostile
+        # FLIGHTDECK_SERVER in the environment could redirect egress with
+        # no signal. Warn (naming both values) when the environment
+        # overrides a non-empty caller-supplied server with a different
+        # value, then keep the env value.
+        env_server = os.environ.get(_env.ENV_SERVER)
+        if env_server is not None and server and env_server != server:
+            _log.warning(
+                "%s=%r overrides the server=%r passed to init(); using the "
+                "environment value. Unset %s if this was not intended.",
+                _env.ENV_SERVER,
+                env_server,
+                server,
+                _env.ENV_SERVER,
+            )
         resolved_server = os.environ.get(_env.ENV_SERVER, server)
         resolved_token = os.environ.get(_env.ENV_TOKEN, token)
         if not resolved_server:
             raise ConfigurationError("server URL is required")
         if not resolved_token:
             raise ConfigurationError("token is required")
+
+        # H-01: resolve the plaintext-transport opt-in. Env wins over the
+        # kwarg (same precedence as every other flag); default False.
+        resolved_allow_insecure = _env_bool(
+            _env.ENV_ALLOW_INSECURE_TRANSPORT, allow_insecure_transport
+        )
 
         # KI20: normalize ``FLIGHTDECK_SERVER`` / ``server`` kwarg to
         # always carry the ``/ingest`` suffix. The Claude Code plugin
@@ -334,6 +368,17 @@ def init(
         if "/ingest" not in resolved_server:
             resolved_server = resolved_server.rstrip("/") + "/ingest"
 
+        # H-01: same silent-override guard for the control-plane API URL.
+        env_api_url = os.environ.get(_env.ENV_API_URL)
+        if env_api_url and api_url and env_api_url != api_url:
+            _log.warning(
+                "%s=%r overrides the api_url=%r passed to init(); using the "
+                "environment value. Unset %s if this was not intended.",
+                _env.ENV_API_URL,
+                env_api_url,
+                api_url,
+                _env.ENV_API_URL,
+            )
         resolved_api_url = os.environ.get(_env.ENV_API_URL) or api_url
         if not resolved_api_url:
             resolved_api_url = resolved_server.rstrip("/").replace("/ingest", "/api")
@@ -419,6 +464,7 @@ def init(
             "token": resolved_token,
             "api_url": resolved_api_url,
             "capture_prompts": capture,
+            "allow_insecure_transport": resolved_allow_insecure,
             "unavailable_policy": os.environ.get(_env.ENV_UNAVAILABLE_POLICY, "continue"),
             # Legacy wire-level ``flavor`` field stays populated for
             # backward compat with every downstream surface that still

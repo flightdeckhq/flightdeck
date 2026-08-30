@@ -41,6 +41,9 @@ ENV_AGENT_FLAVOR_LEGACY = "AGENT_FLAVOR"
 # ----------------------------------------------------------------
 ENV_CAPTURE_PROMPTS = "FLIGHTDECK_CAPTURE_PROMPTS"
 ENV_UNAVAILABLE_POLICY = "FLIGHTDECK_UNAVAILABLE_POLICY"
+# H-01: opt-in to plaintext http:// egress for a non-local control
+# plane. Bool-coerced; default False forces https:// for public hosts.
+ENV_ALLOW_INSECURE_TRANSPORT = "FLIGHTDECK_ALLOW_INSECURE_TRANSPORT"
 
 
 # Stable list of every FLIGHTDECK_* env var the sensor consults, in
@@ -56,4 +59,5 @@ ALL_ENV_VARS: tuple[str, ...] = (
     ENV_HOSTNAME,
     ENV_CAPTURE_PROMPTS,
     ENV_UNAVAILABLE_POLICY,
+    ENV_ALLOW_INSECURE_TRANSPORT,
 )

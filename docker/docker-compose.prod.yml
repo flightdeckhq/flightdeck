@@ -47,6 +47,13 @@ services:
   nats:
     restart: unless-stopped
     ports: !override []
+    # Require token auth on the bus in production. Unlike dev (D047),
+    # prod must not run an open bus: an unauthenticated NATS lets any
+    # workload that reaches it forge ingestion events or drain the
+    # queue. FLIGHTDECK_NATS_TOKEN is mandatory -- compose refuses to
+    # start if it is unset. The command replaces the base JetStream
+    # args (Compose replaces, not merges, `command`).
+    command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222", "--auth", "${FLIGHTDECK_NATS_TOKEN:?FLIGHTDECK_NATS_TOKEN must be set for a production deployment}"]
     mem_limit: 1g
     mem_reservation: 256m
     cpus: 1.0
@@ -60,12 +67,16 @@ services:
       # unset so the seed row is rejected with 401.
       ENVIRONMENT: ""
       FLIGHTDECK_ENV: production
+      # Authenticate to the token-protected prod NATS bus.
+      FLIGHTDECK_NATS_URL: "nats://:${FLIGHTDECK_NATS_TOKEN:?FLIGHTDECK_NATS_TOKEN must be set for a production deployment}@nats:4222"
     mem_limit: 1g
     mem_reservation: 256m
     cpus: 1.0
 
   workers:
     restart: unless-stopped
+    environment:
+      FLIGHTDECK_NATS_URL: "nats://:${FLIGHTDECK_NATS_TOKEN:?FLIGHTDECK_NATS_TOKEN must be set for a production deployment}@nats:4222"
     mem_limit: 1g
     mem_reservation: 256m
     cpus: 1.0

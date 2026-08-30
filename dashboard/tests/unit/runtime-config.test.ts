@@ -1,16 +1,15 @@
 // Tests for the runtime-config-driven access-token bootstrap.
-// Covers the three bootstrap paths the operator can hit:
-//   (a) localStorage already has a token → fetch is skipped.
-//   (b) localStorage empty + fetch succeeds → token written to
-//       localStorage and returned.
-//   (c) localStorage empty + fetch fails → actionable Error.
+// The token is MEMORY-ONLY (security hardening): it is never written
+// to or read from localStorage/sessionStorage. Covers:
+//   (a) fetch succeeds → token held in memory and returned; a second
+//       ensureAccessToken() call reuses it without re-fetching.
+//   (b) fetch fails → actionable Error, in-memory token stays null.
 // Also covers the in-flight promise cache so concurrent callers
 // share one fetch.
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
-  ACCESS_TOKEN_STORAGE_KEY,
   _resetBootstrapForTest,
   ensureAccessToken,
   getAccessTokenSync,
@@ -57,18 +56,32 @@ function mockFetchNetworkError(message: string): ReturnType<typeof vi.fn> {
 }
 
 describe("runtime-config bootstrap", () => {
-  it("returns the localStorage token without fetching when one is already set", async () => {
-    window.localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, "operator-pasted-token");
-    const fetchMock = mockFetchOk({ access_token: "should-not-be-used" });
+  it("holds the fetched token in memory and reuses it without re-fetching on a second call", async () => {
+    const fetchMock = mockFetchOk({ access_token: "ftd_runtime_abc" });
 
-    const token = await ensureAccessToken();
+    const first = await ensureAccessToken();
+    expect(first).toBe("ftd_runtime_abc");
+    expect(getAccessTokenSync()).toBe("ftd_runtime_abc");
 
-    expect(token).toBe("operator-pasted-token");
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(getAccessTokenSync()).toBe("operator-pasted-token");
+    // Second call short-circuits to the cached in-flight promise; the
+    // fetch is never repeated.
+    const second = await ensureAccessToken();
+    expect(second).toBe("ftd_runtime_abc");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it("fetches /runtime-config.json, writes the token to localStorage, and returns it on first run", async () => {
+  it("never persists the token to localStorage/sessionStorage", async () => {
+    mockFetchOk({ access_token: "ftd_runtime_abc" });
+
+    await ensureAccessToken();
+
+    // Security invariant: the bearer must not be recoverable from web
+    // storage across reloads or by an XSS payload scraping it.
+    expect(window.localStorage.length).toBe(0);
+    expect(window.sessionStorage.length).toBe(0);
+  });
+
+  it("fetches /runtime-config.json with cache: no-store and returns the token on first run", async () => {
     const fetchMock = mockFetchOk({ access_token: "ftd_runtime_abc" });
 
     const token = await ensureAccessToken();
@@ -85,7 +98,7 @@ describe("runtime-config bootstrap", () => {
     mockFetchNetworkError("connection refused");
 
     await expect(ensureAccessToken()).rejects.toThrow(
-      /No access token configured.*connection refused.*flightdeck-access-token/,
+      /No access token configured.*connection refused.*runtime-config\.json/,
     );
     expect(getAccessTokenSync()).toBeNull();
   });
@@ -94,7 +107,7 @@ describe("runtime-config bootstrap", () => {
     mockFetchHttpError(404);
 
     await expect(ensureAccessToken()).rejects.toThrow(
-      /No access token configured.*HTTP 404.*flightdeck-access-token/,
+      /No access token configured.*HTTP 404.*runtime-config\.json/,
     );
     expect(getAccessTokenSync()).toBeNull();
   });
@@ -132,17 +145,19 @@ describe("runtime-config bootstrap", () => {
 });
 
 describe("getAccessTokenSync", () => {
-  it("returns null when localStorage is empty", () => {
+  it("returns null before the bootstrap has resolved a token", () => {
     expect(getAccessTokenSync()).toBeNull();
   });
 
-  it("returns the stored token when present", () => {
-    window.localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, "ftd_dev_xyz");
+  it("returns the in-memory token after ensureAccessToken resolves", async () => {
+    mockFetchOk({ access_token: "ftd_dev_xyz" });
+    await ensureAccessToken();
     expect(getAccessTokenSync()).toBe("ftd_dev_xyz");
   });
 
-  it("returns null for an empty-string entry (treats it as unset)", () => {
-    window.localStorage.setItem(ACCESS_TOKEN_STORAGE_KEY, "");
+  it("stays null after a failed bootstrap (no token is persisted)", async () => {
+    mockFetchHttpError(500);
+    await expect(ensureAccessToken()).rejects.toThrow();
     expect(getAccessTokenSync()).toBeNull();
   });
 });

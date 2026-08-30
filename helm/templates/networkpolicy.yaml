@@ -1,0 +1,62 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- /*
+Security hardening: restrict who may reach the stateful backends. The
+NATS bus is unauthenticated in v0.5.x (DECISIONS.md D047), so without a
+NetworkPolicy any pod in the cluster could publish/subscribe to the
+event bus (forge events, drain the queue) or read/write Postgres. These
+policies deny all ingress to postgres/nats except from the flightdeck
+server pods that legitimately need it. Requires a CNI that enforces
+NetworkPolicy (Calico, Cilium, etc.); disable via networkPolicy.enabled
+on clusters without one.
+*/ -}}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "flightdeck.componentName" (dict "root" . "component" "postgres") }}
+  labels:
+    {{- include "flightdeck.labels" (dict "root" . "component" "postgres") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "flightdeck.selectorLabels" (dict "root" . "component" "postgres") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- range $c := list "api" "ingestion" "workers" }}
+        - podSelector:
+            matchLabels:
+              {{- include "flightdeck.selectorLabels" (dict "root" $ "component" $c) | nindent 14 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: 5432
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "flightdeck.componentName" (dict "root" . "component" "nats") }}
+  labels:
+    {{- include "flightdeck.labels" (dict "root" . "component" "nats") | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "flightdeck.selectorLabels" (dict "root" . "component" "nats") | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    # Client port: only the services that publish (ingestion) or
+    # consume (workers) events. NATS peers also need the cluster port
+    # when replicas > 1.
+    - from:
+        {{- range $c := list "ingestion" "workers" "nats" }}
+        - podSelector:
+            matchLabels:
+              {{- include "flightdeck.selectorLabels" (dict "root" $ "component" $c) | nindent 14 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.nats.clientPort }}
+        - protocol: TCP
+          port: 6222
+{{- end }}

@@ -126,6 +126,7 @@ func (w *Writer) UpsertSession(
 	contextJSON []byte,
 	tokenID, tokenName string,
 	parentSessionID, agentRole string,
+	capturePrompts bool,
 ) (created bool, err error) {
 	// session_start is the authoritative context source; an empty
 	// context dict from the sensor ("I tried, there was nothing to
@@ -147,14 +148,14 @@ func (w *Writer) UpsertSession(
 			session_id, flavor, agent_type, host, framework, model, state,
 			started_at, last_seen_at, context, token_id, token_name,
 			agent_id, client_type, agent_name,
-			parent_session_id, agent_role
+			parent_session_id, agent_role, capture_prompts
 		)
 		VALUES (
 			$1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7,
 			NOW(), NOW(), $8,
 			NULLIF($9, '')::uuid, NULLIF($10, ''),
 			$11::uuid, $12, $13,
-			NULLIF($14, '')::uuid, NULLIF($15, '')
+			NULLIF($14, '')::uuid, NULLIF($15, ''), $16
 		)
 		ON CONFLICT (session_id) DO UPDATE
 		SET state = EXCLUDED.state,
@@ -194,17 +195,43 @@ func (w *Writer) UpsertSession(
 		    -- the parent itself isn't a sub-agent.
 		    parent_session_id = COALESCE(
 		        sessions.parent_session_id, EXCLUDED.parent_session_id),
-		    agent_role = COALESCE(sessions.agent_role, EXCLUDED.agent_role)
+		    agent_role = COALESCE(sessions.agent_role, EXCLUDED.agent_role),
+		    -- Capture posture is write-once: the first authoritative
+		    -- session_start pins it, and no later session_start (forged
+		    -- or otherwise) can flip an established session's posture.
+		    -- COALESCE keeps the already-stored value when present.
+		    capture_prompts = COALESCE(
+		        sessions.capture_prompts, EXCLUDED.capture_prompts)
 		RETURNING (xmax = 0)
 	`, sessionID, flavor, agentType, host, framework, model, state,
 		contextJSON, tokenID, tokenName,
 		agentID, clientType, agentName,
-		parentSessionID, agentRole,
+		parentSessionID, agentRole, capturePrompts,
 	).Scan(&wasInsert)
 	if err != nil {
 		return false, fmt.Errorf("upsert session %s: %w", sessionID, err)
 	}
 	return wasInsert, nil
+}
+
+// SessionCaptureEnabled reports whether the session was started with
+// capture posture enabled. It is the server-authoritative gate for all
+// prompt-content storage: content is persisted only when this returns
+// true. A missing session row, a NULL posture (no authoritative
+// session_start seen yet), or an explicit false all yield false so
+// content is dropped fail-safe. See migration 000026 and SECURITY.md.
+func (w *Writer) SessionCaptureEnabled(ctx context.Context, sessionID string) bool {
+	var enabled bool
+	err := w.pool.QueryRow(ctx,
+		`SELECT COALESCE(capture_prompts, false) FROM sessions WHERE session_id = $1::uuid`,
+		sessionID,
+	).Scan(&enabled)
+	if err != nil {
+		// No row yet (race with session_start) or query error: fail
+		// safe -- do not store content.
+		return false
+	}
+	return enabled
 }
 
 // UpgradeSessionContext fills in the sessions.context column on a row

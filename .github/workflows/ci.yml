@@ -654,12 +654,12 @@ jobs:
         run: make down || true
 
   # Helm chart lint + render. Catches Chart.yaml/values.yaml schema
-  # drift before release. Specifically guards the v0.5.1 fail-fast
-  # contract on postgres.password — values.yaml leaves it empty so a
-  # bare `helm template` should fail with the required-value message,
-  # and supplying --set postgres.password=... should succeed. Both
-  # branches asserted explicitly so a future refactor that drops the
-  # required-value guard surfaces immediately.
+  # drift before release. Asserts the production fail-fast contract:
+  # a production render requires postgres.password (v0.5.1), a JWT
+  # secret, and a non-wildcard CORS origin, and refuses each when
+  # unset/unsafe with an actionable message. Also asserts the
+  # security NetworkPolicies render. Every branch is checked explicitly
+  # so a future refactor that drops a guard surfaces immediately.
   helm:
     name: Helm chart lint
     runs-on: ubuntu-latest
@@ -676,8 +676,12 @@ jobs:
       - name: helm lint
         run: helm lint helm/
 
-      - name: helm template with password set succeeds
-        run: helm template flightdeck helm/ --set postgres.password=ci-test-password > /dev/null
+      - name: helm template with production secrets succeeds
+        run: |
+          helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set api.corsOrigin=https://dashboard.example.com > /dev/null
 
       - name: helm template WITHOUT password fails with actionable message
         run: |
@@ -692,10 +696,66 @@ jobs:
             exit 1
           fi
 
+      # Fail-closed production guards (security hardening). A production
+      # install must supply a JWT secret and must not run wildcard CORS
+      # on the bearer-token API. Both branches asserted so a future
+      # refactor that drops a guard surfaces immediately.
+      - name: helm template WITHOUT jwtSecret fails in production
+        run: |
+          if helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.corsOrigin=https://dashboard.example.com \
+            > /tmp/helm-out 2> /tmp/helm-err; then
+            echo "EXPECTED FAILURE: production render should fail when api.auth.jwtSecret is unset"
+            cat /tmp/helm-out
+            exit 1
+          fi
+          if ! grep -q "jwtSecret must be set" /tmp/helm-err; then
+            echo "Expected actionable 'jwtSecret must be set' message; got:"
+            cat /tmp/helm-err
+            exit 1
+          fi
+
+      - name: helm template with wildcard CORS fails in production
+        run: |
+          if helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            > /tmp/helm-out 2> /tmp/helm-err; then
+            echo "EXPECTED FAILURE: production render should fail when api.corsOrigin is '*'"
+            cat /tmp/helm-out
+            exit 1
+          fi
+          if ! grep -q "corsOrigin must not be" /tmp/helm-err; then
+            echo "Expected actionable 'corsOrigin must not be' message; got:"
+            cat /tmp/helm-err
+            exit 1
+          fi
+
+      - name: helm template renders NetworkPolicies for postgres and nats
+        run: |
+          count=$(helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set api.corsOrigin=https://dashboard.example.com \
+            | grep -c 'kind: NetworkPolicy')
+          if [ "$count" -ne 2 ]; then
+            echo "Expected 2 NetworkPolicy resources, got $count"
+            exit 1
+          fi
+
+      - name: helm template in development mode renders with defaults
+        run: |
+          helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.env=development > /dev/null
+
       - name: helm template with externalUrl skips password requirement
         run: |
           helm template flightdeck helm/ \
-            --set postgres.externalUrl=postgres://u:p@h:5432/d?sslmode=require > /dev/null
+            --set postgres.externalUrl=postgres://u:p@h:5432/d?sslmode=require \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set api.corsOrigin=https://dashboard.example.com > /dev/null
 
   # Schema-validate the Claude Code plugin marketplace manifest. The
   # plugin install path (``/plugin marketplace add flightdeckhq/flightdeck``

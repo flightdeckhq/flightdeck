@@ -677,6 +677,63 @@ describe("observe_cli.mjs", () => {
       "context.os should be populated from platform()",
     );
   });
+
+  it("session_start declares capture_prompts=true by default (server-authoritative capture gate)", async () => {
+    // The worker gates content storage on the session's capture posture,
+    // set from session_start. The plugin defaults capturePrompts on, so
+    // its session_start must declare capture_prompts=true or the worker
+    // drops the plugin's captured content.
+    clearAllPluginMarkers();
+    const input = JSON.stringify({
+      hook_event_name: "PostToolUse",
+      tool_name: "Read",
+      session_id: "sess-cap-on",
+    });
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-cap-on",
+    };
+    const result = await runScript(input, env);
+    assert.equal(result.code, 0);
+    const start = capture
+      .bodies()
+      .filter((b) => b && b.event_type === "session_start")
+      .at(-1);
+    assert.ok(start, "expected a session_start POST");
+    assert.equal(
+      start.capture_prompts,
+      true,
+      "session_start must declare capture_prompts=true by default",
+    );
+  });
+
+  it("session_start capture_prompts=false when FLIGHTDECK_CAPTURE_PROMPTS=false", async () => {
+    clearAllPluginMarkers();
+    const input = JSON.stringify({
+      hook_event_name: "PostToolUse",
+      tool_name: "Read",
+      session_id: "sess-cap-off",
+    });
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-cap-off",
+      FLIGHTDECK_CAPTURE_PROMPTS: "false",
+    };
+    const result = await runScript(input, env);
+    assert.equal(result.code, 0);
+    const start = capture
+      .bodies()
+      .filter((b) => b && b.event_type === "session_start")
+      .at(-1);
+    assert.ok(start, "expected a session_start POST");
+    assert.equal(
+      start.capture_prompts,
+      false,
+      "FLIGHTDECK_CAPTURE_PROMPTS=false must yield capture_prompts=false",
+    );
+  });
 });
 
 describe("observe_cli helpers", () => {

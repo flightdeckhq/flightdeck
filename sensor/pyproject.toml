@@ -33,7 +33,7 @@ Repository = "https://github.com/flightdeckhq/flightdeck"
 [project.optional-dependencies]
 anthropic = ["anthropic>=0.20"]
 openai = ["openai>=1.0", "tiktoken>=0.5"]
-# KI21: litellm is a framework-level router that aggregates multiple
+# litellm is a framework-level router that aggregates multiple
 # underlying providers. Installing the extra pulls in litellm; the
 # sensor's SensorLitellm wrapper then intercepts ``litellm.completion``
 # / ``litellm.acompletion`` via module-level patching.
@@ -47,7 +47,11 @@ litellm = ["litellm>=1.0"]
 # below LlamaIndex tool-mcp's ``mcp >=1.24,<2`` and CrewAI mcpadapt's
 # ``mcp[ws]>=1.10.1`` to cover both transitively without forcing a
 # bump on either.
-mcp = ["mcp>=1.20"]
+# The upper bound keeps pip off mcp 2.x: that line renamed McpError to
+# MCPError and reshaped the client surface the interceptor patches, so
+# the import guard fails and MCP calls go unobserved. Lift the cap
+# together with the 2.x port (tracked on the README Roadmap).
+mcp = ["mcp>=1.20,<2"]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
@@ -61,7 +65,7 @@ dev = [
     "respx>=0.20",
     "anthropic>=0.20",
     "openai>=1.0",
-    # KI21: unit-test-time litellm so tests/unit/test_patch.py and
+    # Unit-test-time litellm so tests/unit/test_patch.py and
     # tests/unit/test_providers.py can import litellm and exercise the
     # SensorLitellm interceptor + LitellmProvider extractor. Unit tests
     # do not make real API calls -- they mock ``litellm.completion``'s
@@ -118,7 +122,7 @@ dev = [
     # anyio streams, apply the patch, and assert event-emission shape.
     # The smoke matrix uses the same package against a real reference
     # MCP server subprocess. Both share this dev install.
-    "mcp>=1.20",
+    "mcp>=1.20,<2",
 ]
 
 [tool.hatch.build.targets.wheel]

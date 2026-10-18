@@ -1,6 +1,6 @@
-"""Unit tests for the Phase 5 MCP interceptor.
+"""Unit tests for the MCP interceptor.
 
-Coverage discipline (Phase 5 Direction A):
+Coverage discipline:
     Floor ~20 tests. The mcp SDK is async-only, so there is no sync /
     async doubling that would otherwise pad the count. Every patched
     operation gets one happy-path test, one capture_prompts gate test,
@@ -52,6 +52,24 @@ from flightdeck_sensor.interceptor.mcp import (
     unpatch_mcp_classes,
 )
 from flightdeck_sensor.transport.client import ControlPlaneClient
+
+
+def _mcp_distribution_installed() -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec("mcp") is not None
+
+
+# An installed-but-unimportable mcp (for example an unsupported major
+# version) must fail this module loudly: skipping would hide the whole
+# MCP interceptor suite behind a green run.
+if _mcp_distribution_installed() and not mcp_interceptor._MCP_AVAILABLE:
+    pytest.fail(
+        "mcp is installed but the sensor's import guard failed "
+        f"({mcp_interceptor._MCP_IMPORT_ERROR}); refusing to skip the MCP "
+        f"interceptor suite silently. Supported: {mcp_interceptor._MCP_SUPPORTED_RANGE}.",
+        pytrace=False,
+    )
 
 pytestmark = pytest.mark.skipif(
     not mcp_interceptor._MCP_AVAILABLE,
@@ -132,16 +150,16 @@ def _last_enqueue(session: Session) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------
-# Patch-table structural commitment (Phase 5 addition E)
+# Patch-table structural commitment
 # ---------------------------------------------------------------------
 
 
 def test_patch_table_lists_six_phase_five_event_types() -> None:
-    """Phase 5 D2(a): exactly six MCP event types are emitted.
+    """Exactly six MCP event types are emitted.
 
     Adding a future plumbing op (complete / ping / progress / logging /
     roots) is one entry in _PATCH_TABLE plus one _emit_* function. If
-    a future PR expands this set without an explicit Phase 6+ scope
+    a future PR expands this set without an explicit scope
     decision, this test starts failing as a structural reminder.
     """
     expected = {
@@ -219,10 +237,9 @@ async def test_call_tool_with_capture_prompts_includes_arguments_and_result(
     await wrapped(receiver, "add", {"a": 1, "b": 41})
 
     payload = _last_enqueue(install_capturing_session)
-    # Phase 7 Step 3.b (D150): tool args + result migrated from
-    # inline payload to event_content.tool_input / tool_output.
-    # Payload no longer carries arguments/result inline; instead
-    # has_content=true triggers the event_content fetch path.
+    # Tool args + result live in event_content.tool_input /
+    # tool_output. Payload does not carry arguments/result inline;
+    # instead has_content=true triggers the event_content fetch path.
     assert "arguments" not in payload
     assert "result" not in payload
     assert payload["has_content"] is True
@@ -239,7 +256,7 @@ async def test_call_tool_with_capture_prompts_includes_arguments_and_result(
 async def test_call_tool_error_path_emits_structured_error_and_reraises(
     install_session: Session,
 ) -> None:
-    """Phase 5: failure path lands an event AND re-raises."""
+    """Failure path lands an event AND re-raises."""
     from mcp.shared.exceptions import McpError
     from mcp.types import ErrorData
 
@@ -291,13 +308,13 @@ async def test_no_active_session_calls_orig_directly(
 
 
 # ---------------------------------------------------------------------
-# List operations -- count + item_names (Phase 7 Step 3)
+# List operations -- count + item_names
 # ---------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
 async def test_list_tools_emits_count_and_item_names(install_session: Session) -> None:
-    """Phase 7 Step 3: discovery family carries item_names so the
+    """Discovery family carries item_names so the
     drift-detection workflow can answer "did this server's tool
     inventory change last week" without a separate query."""
 
@@ -385,7 +402,7 @@ async def test_read_resource_emits_uri_and_content_bytes_when_capture_off(
     assert payload["resource_uri"] == "mem://demo"
     assert payload["content_bytes"] == 3  # len("abc".encode("utf-8"))
     # mime_type and content are MCP-only fields gated by capture_prompts.
-    # Phase 5 lean payload: when capture is off the wrapper does NOT
+    # Lean payload: when capture is off the wrapper does NOT
     # add either field, and the base payload no longer carries the
     # legacy LLM ``content`` placeholder for MCP events.
     assert "mime_type" not in payload
@@ -493,10 +510,9 @@ async def test_get_prompt_capture_on_includes_arguments_and_rendered(
     await wrapped(_bound_receiver(), "greet", {"name": "Ada"})
 
     payload = _last_enqueue(install_capturing_session)
-    # Phase 7 Step 3.b (D150): prompt arguments + rendered messages
-    # migrated from inline payload to event_content's dedicated
-    # tool_input / tool_output columns. Same migration shape as
-    # mcp_tool_call.
+    # Prompt arguments + rendered messages live in event_content's
+    # dedicated tool_input / tool_output columns, not inline on the
+    # payload. Same shape as mcp_tool_call.
     assert "arguments" not in payload
     assert "rendered" not in payload
     assert payload["has_content"] is True
@@ -517,7 +533,7 @@ async def test_get_prompt_capture_on_includes_arguments_and_rendered(
 async def test_initialize_records_server_fingerprint_and_emits_attached(
     install_session: Session,
 ) -> None:
-    """D140 step 6.6 A2 — initialize records the fingerprint AND
+    """initialize records the fingerprint AND
     emits one ``mcp_server_attached`` event so the worker UPSERTs
     the dashboard's ``sessions.context.mcp_servers`` array live."""
     fake_caps = SimpleNamespace()
@@ -548,7 +564,7 @@ async def test_initialize_records_server_fingerprint_and_emits_attached(
     assert fp.name == "demo-server"
     assert fp.version == "1.0.0"
 
-    # D140 — exactly one mcp_server_attached event enqueued.
+    # Exactly one mcp_server_attached event enqueued.
     enqueue = install_session.event_queue.enqueue  # type: ignore[attr-defined]
     assert enqueue.call_count == 1
     payload = enqueue.call_args[0][0]
@@ -563,7 +579,7 @@ async def test_initialize_records_server_fingerprint_and_emits_attached(
         "resources": None,
         "prompts": None,
     }
-    # fingerprint is the 16-hex display form per D127.
+    # fingerprint is the 16-hex display form.
     assert isinstance(payload["fingerprint"], str)
     assert len(payload["fingerprint"]) == 16
     # attached_at is an ISO 8601 timestamp.
@@ -579,7 +595,7 @@ async def test_initialize_records_server_fingerprint_and_emits_attached(
 async def test_initialize_dedup_does_not_re_emit_attached(
     install_session: Session,
 ) -> None:
-    """D140 idempotency at the source — a second initialize on the
+    """Idempotency at the source — a second initialize on the
     same (name, transport) pair must not re-broadcast the attached
     event. Worker dedups again at the sink, but suppressing the
     duplicate at the source keeps the wire quiet."""
@@ -694,7 +710,7 @@ def test_session_start_payload_includes_mcp_servers_in_context() -> None:
 
 
 def test_session_start_payload_carries_int_protocol_version_unchanged() -> None:
-    """Phase 5 override: don't stringify SDK ``protocolVersion`` (str | int)."""
+    """Don't stringify SDK ``protocolVersion`` (str | int)."""
     session = _make_sensor_session()
     session.record_mcp_server(
         MCPServerFingerprint(
@@ -711,7 +727,7 @@ def test_session_start_payload_carries_int_protocol_version_unchanged() -> None:
 
 
 def test_mcp_event_payload_omits_llm_baseline_fields() -> None:
-    """Phase 5 lean MCP payload (override 2).
+    """Lean MCP payload.
 
     MCP events must NOT carry the LLM-baseline columns that are perpetually
     null for MCP traffic. This test is the structural floor: any future
@@ -742,7 +758,7 @@ def test_mcp_event_payload_omits_llm_baseline_fields() -> None:
     leaked = forbidden & payload.keys()
     assert leaked == set(), (
         f"MCP payload leaked LLM-baseline fields: {sorted(leaked)}. "
-        "See Phase 5 override 2 — MCP events must not carry LLM-shape "
+        "MCP events must not carry LLM-shape "
         "columns. Re-tag MCP-specific extras explicitly if needed."
     )
     # Common fields that DO carry through to MCP events.
@@ -940,17 +956,17 @@ def _big_dict(approx_bytes: int) -> dict[str, Any]:
 
 
 @pytest.mark.asyncio
-async def test_d150_call_tool_capture_routes_to_event_content_dedicated_columns(
+async def test_call_tool_capture_routes_to_event_content_dedicated_columns(
     install_capturing_session: Session,
 ) -> None:
-    """Phase 7 Step 3.b (D150): tool args + result always route
-    through event_content.tool_input / tool_output regardless of
-    size. The pre-Step-3.b inline-vs-overflow split (small inline
-    on payload, large overflowed to event_content with input/
-    response repurposing) is REMOVED — operator queries
-    event_content.tool_input directly without column-name
-    semantics gymnastics. has_content=true triggers the
-    /v1/events/:id/content fetch path."""
+    """Tool args + result always route through
+    event_content.tool_input / tool_output regardless of size.
+    There is no inline-vs-overflow split (small inline on payload,
+    large overflowed to event_content with input/response
+    repurposing) — the operator queries event_content.tool_input
+    directly without column-name semantics gymnastics.
+    has_content=true triggers the /v1/events/:id/content fetch
+    path."""
     fake_result = SimpleNamespace(content=[])
     fake_result.model_dump = lambda mode="json": {"content": []}  # noqa: ARG005
 
@@ -980,13 +996,13 @@ async def test_d150_call_tool_capture_routes_to_event_content_dedicated_columns(
 
 
 @pytest.mark.asyncio
-async def test_d150_call_tool_large_payload_lands_via_same_path(
+async def test_call_tool_large_payload_lands_via_same_path(
     install_capturing_session: Session,
 ) -> None:
-    """Pre-Step-3.b: large payloads triggered an overflow code
-    path with truncation markers. Post-Step-3.b: ALL captured
-    content goes through event_content via the same code path —
-    no size threshold splitting, no truncation markers. The
+    """Large payloads do not trigger a separate overflow code
+    path with truncation markers: ALL captured content goes
+    through event_content via the same code path — no size
+    threshold splitting, no truncation markers. The
     operator-actionable contract is uniform regardless of
     payload size."""
     big = _big_dict(20 * 1024)  # 20 KiB
@@ -1008,9 +1024,9 @@ async def test_d150_call_tool_large_payload_lands_via_same_path(
     assert "result" not in payload
     assert payload["has_content"] is True
     # Full payload preserved in event_content.tool_output — no
-    # truncation marker, no size cap (the 2 MiB hard cap from the
-    # pre-Step-3.b _gate_mcp_field path is gone for tool capture;
-    # it lives only on resource_read body overflow).
+    # truncation marker, no size cap (the 2 MiB hard cap of the
+    # _gate_mcp_field path does not apply to tool capture; it
+    # lives only on resource_read body overflow).
     assert payload["content"]["tool_output"] == big
 
 
@@ -1087,14 +1103,13 @@ async def test_b6_resource_read_small_content_stays_inline(
 
 
 @pytest.mark.asyncio
-async def test_d150_prompt_get_capture_routes_to_event_content(
+async def test_prompt_get_capture_routes_to_event_content(
     install_capturing_session: Session,
 ) -> None:
-    """Phase 7 Step 3.b (D150): prompt arguments + rendered
-    messages migrated from inline payload to event_content's
-    dedicated tool_input / tool_output columns. Same migration
-    shape as mcp_tool_call — no size-threshold split, all
-    captured content in event_content."""
+    """Prompt arguments + rendered messages live in
+    event_content's dedicated tool_input / tool_output columns, not
+    inline on the payload. Same shape as mcp_tool_call — no
+    size-threshold split, all captured content in event_content."""
     big_msg_text = "x" * (15 * 1024)
     msg = SimpleNamespace(role="user", content=big_msg_text)
     msg.model_dump = lambda mode="json": {  # noqa: ARG005

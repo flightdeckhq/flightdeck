@@ -761,6 +761,13 @@ class Session:
         # session is observed by the same sensor build.
         if event_type == EventType.SESSION_START:
             out["sensor_version"] = _sensor_version()
+            # The control plane persists the capture posture from the
+            # first session_start it sees for a session id and gates
+            # every later content sink on that stored value. Without
+            # the flag the child row defaults to "not capturing" and
+            # the overflow content routed by the caller is dropped
+            # server-side even though the parent captures.
+            out["capture_prompts"] = self.config.capture_prompts
             # Inherit the parent's runtime context (os, hostname, user,
             # git_branch, frameworks, etc.) so the dashboard's swimlane
             # renders the same os/hostname pills on the sub-agent row
@@ -1332,10 +1339,42 @@ class Session:
         """
         if directive.action == DirectiveAction.WARN:
             _log.warning("[flightdeck] policy warning: %s", directive.reason)
+            # Snapshot the counters under the lock, then use the captured
+            # values verbatim (same discipline as the DEGRADE branch).
+            with self._lock:
+                tokens_used = self._tokens_used
+                token_limit = self._token_limit
+            # The ingestion API rejects every policy_* event that lacks
+            # the shared policy_decision block, so a warn directive that
+            # arrived without one was answered with HTTP 400 and never
+            # reached the dashboard. policy_id / scope come from the
+            # policy fetched at session start; when the directive stems
+            # from a policy the sensor never fetched (created after the
+            # session started) both fall back to "server" so the event
+            # still clears the validator and names its origin.
+            from flightdeck_sensor.core.types import PolicyDecisionSummary
+
+            warn_pct = self.policy.warn_at_pct
+            denom = token_limit if token_limit and token_limit > 0 else 1
+            warn_decision = PolicyDecisionSummary(
+                policy_id=self.policy.policy_id or "server",
+                scope=self.policy.matched_policy_scope or "server",
+                decision="warn",
+                reason=(
+                    f"Token usage {tokens_used}/{token_limit} "
+                    f"({(tokens_used * 100) // denom}%) "
+                    f"crossed warn threshold ({warn_pct}%, server policy): "
+                    f"{directive.reason}"
+                ),
+            )
             payload = self._build_payload(
                 EventType.POLICY_WARN,
                 source="server",
                 reason=directive.reason,
+                threshold_pct=warn_pct,
+                tokens_used=tokens_used,
+                token_limit=token_limit,
+                policy_decision=warn_decision.as_payload_dict(),
             )
             self.event_queue.enqueue(payload)
 
@@ -1370,8 +1409,8 @@ class Session:
             degrade_pct = self.policy.degrade_at_pct
             denom = token_limit if token_limit and token_limit > 0 else 1
             degrade_decision = PolicyDecisionSummary(
-                policy_id=self.policy.policy_id or "",
-                scope=self.policy.matched_policy_scope or "",
+                policy_id=self.policy.policy_id or "server",
+                scope=self.policy.matched_policy_scope or "server",
                 decision="degrade",
                 reason=(
                     f"Token usage {tokens_used}/{token_limit} "

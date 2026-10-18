@@ -3666,10 +3666,13 @@ state metadata. Always included regardless of `capture_prompts`.
 
 Required fields on every policy event:
 
-- `policy_id` — UUID of the policy row (or `"local"` for sensor-
-  side init(limit=...) thresholds).
+- `policy_id` — UUID of the policy row, `"local"` for sensor-side
+  init(limit=...) thresholds, or `"server"` when a warn / degrade
+  directive arrives for a policy the sensor never fetched (one created
+  after the session started).
 - `scope` — `"org"` / `"flavor:<v>"` / `"session:<v>"` /
-  `"global"` / `"local_failsafe"` / `"fail_open"`.
+  `"global"` / `"local_failsafe"` / `"fail_open"` / `"server"` (the
+  same unfetched-policy case as `policy_id="server"`).
 - `decision` — `"warn"` / `"degrade"` / `"block"` / `"allow"` /
   `"deny"`.
 - `reason` — sensor-built operator-readable single-line string

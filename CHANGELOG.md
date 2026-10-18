@@ -40,6 +40,24 @@ after upgrading the server.
   extra and dev dependency are capped at `<2`; when an installed `mcp`
   cannot be imported the sensor logs a WARNING instead of a debug line,
   and the MCP interceptor test module fails instead of skipping.
+- **Sensor: sub-agent content was dropped server-side.** Child
+  `session_start` events (CrewAI, LangGraph) did not carry the
+  `capture_prompts` flag, so the server stored the child session as
+  not capturing and discarded the parent's incoming message and the
+  child's reply even when the parent captured. The child now inherits
+  the parent's posture.
+- **Sensor: server-issued `policy_warn` events were rejected.** The warn
+  directive handler built the event without the `policy_decision` block,
+  so ingestion answered 400 and the warning never reached the dashboard.
+  Warn (and degrade) events now carry the block, naming `server` as the
+  policy when the sensor never fetched the policy row.
+- **Analytics API.** Sub-agent metrics grouped by `framework` returned
+  500 (the dimension's lateral join was missing from that query path);
+  `parent_to_first_child_latency_ms` returned 500 whenever a bucket held
+  a childless session (NULL average); and the previous-period
+  comparison query failed on most metric / dimension pairs and silently
+  reported a 0% change. The previous-period total now runs the same
+  series query over the preceding window.
 - **Pricing table refreshed** for the Claude 5 family, GPT-6 / GPT-5.x
   and Gemini 4 / 3.x list prices, with retired ids kept and annotated;
   Claude Opus 4 corrected to $15 / $75.

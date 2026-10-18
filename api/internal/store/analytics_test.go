@@ -12,7 +12,7 @@ import (
 // group_by=framework report real framework names instead of collapsing
 // every row to 'unknown'. The sensor writes framework versions to
 // sessions.context->'frameworks' (a JSONB array), so the dimension
-// expression must reference the unnested alias ``fw`` and the
+// expression must reference the unnested alias “fw“ and the
 // dimensionSource must contribute a LATERAL join fragment that the
 // FROM clause builder appends to the query.
 func TestFrameworkDimensionUsesLateralUnnest(t *testing.T) {
@@ -169,7 +169,7 @@ func TestQueryAnalytics_TwoDimRejectsInvalidSecondary(t *testing.T) {
 
 // TestQueryAnalytics_SingleDimRegression confirms that a single-dim
 // query with the new code path returns DataPoints with NO
-// ``Breakdown`` field set. The wire shape promise in D126 § 6.4 is
+// “Breakdown“ field set. The wire shape promise in D126 § 6.4 is
 // "Single-dim queries (no comma) preserve the pre-D126 wire shape
 // exactly"; the omitempty tag handles the JSON layer, but the Go
 // struct must also reflect the contract so a future caller reading
@@ -496,5 +496,202 @@ func TestAppendBreakdownPoint_SumInvariant(t *testing.T) {
 	}
 	if len(series.Data[1].Breakdown) != 1 {
 		t.Errorf("bucket2 breakdown len=%d, want 1", len(series.Data[1].Breakdown))
+	}
+}
+
+// seedSessionRow inserts one closed session with optional parent,
+// role and context for the analytics tests below. tokens lands on
+// sessions.tokens_used, which the sub-agent metrics read.
+func seedSessionRow(
+	t *testing.T, s *Store, sessionID, agentID, flavor string,
+	parentID, role *string, contextJSON string, startedAt time.Time, tokens int,
+) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO sessions (
+			session_id, agent_id, flavor, state, started_at, last_seen_at,
+			tokens_used, agent_type, client_type, parent_session_id,
+			agent_role, context
+		) VALUES (
+			$1::uuid, $2::uuid, $3, 'closed', $4, $4,
+			$5, 'production', 'flightdeck_sensor', $6::uuid,
+			$7, $8::jsonb
+		)
+	`, sessionID, agentID, flavor, startedAt, tokens, parentID, role, contextJSON); err != nil {
+		t.Fatalf("seed session %s: %v", sessionID, err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.pool.Exec(ctx, `DELETE FROM events WHERE session_id = $1::uuid`, sessionID)
+		_, _ = s.pool.Exec(ctx, `DELETE FROM sessions WHERE session_id = $1::uuid`, sessionID)
+	})
+}
+
+// TestQueryAnalytics_SubagentMetricsAcceptFrameworkDimension pins the
+// sub-agent query path's FROM clause: the framework dimension projects
+// the “fw“ alias of a LATERAL unnest, and without that join every
+// sub-agent metric grouped by framework failed with "column fw does
+// not exist".
+func TestQueryAnalytics_SubagentMetricsAcceptFrameworkDimension(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	flavor := "test-subagent-framework-" + randomUUID(t)[:8]
+	agentID := randomUUID(t)
+	seedAgent(t, s, agentID, now.Add(-2*time.Hour), now.Add(-30*time.Minute), 2, 300)
+	parentID := randomUUID(t)
+	childID := randomUUID(t)
+	researcher := "Researcher"
+	seedSessionRow(t, s, parentID, agentID, flavor, nil, nil,
+		`{"frameworks": ["langgraph/0.6.11"]}`, now.Add(-40*time.Minute), 100)
+	seedSessionRow(t, s, childID, agentID, flavor, &parentID, &researcher,
+		`{"frameworks": ["langgraph/0.6.11"]}`, now.Add(-39*time.Minute), 200)
+
+	for _, metric := range []string{
+		"parent_token_sum", "child_token_sum", "child_count", "parent_to_first_child_latency_ms",
+	} {
+		resp, err := s.QueryAnalytics(ctx, AnalyticsParams{
+			Metric: metric, GroupBy: "framework", Range: "custom",
+			From: now.Add(-time.Hour), To: now, Granularity: "day",
+			FilterFlavor: flavor,
+		})
+		if err != nil {
+			t.Fatalf("%s grouped by framework: %v", metric, err)
+		}
+		if len(resp.Series) != 1 || resp.Series[0].Dimension != "langgraph/0.6.11" {
+			t.Fatalf("%s: expected one series for langgraph/0.6.11, got %+v", metric, resp.Series)
+		}
+	}
+	// Two-dim shape with framework as the secondary axis takes the
+	// same join.
+	if _, err := s.QueryAnalytics(ctx, AnalyticsParams{
+		Metric: "child_count", GroupBy: "flavor", GroupBySecondary: "framework",
+		Range: "custom", From: now.Add(-time.Hour), To: now, Granularity: "day",
+		FilterFlavor: flavor,
+	}); err != nil {
+		t.Fatalf("child_count flavor x framework: %v", err)
+	}
+}
+
+// TestQueryAnalytics_SubagentLatencySkipsChildlessParents pins the
+// latency metric's behaviour on a bucket that mixes a childless
+// session with a real parent: the childless row contributes no
+// NULL to the average (which previously broke the scan with "cannot
+// scan NULL into *float64") and the average reflects the real
+// parent only.
+func TestQueryAnalytics_SubagentLatencySkipsChildlessParents(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	flavor := "test-subagent-latency-" + randomUUID(t)[:8]
+	agentID := randomUUID(t)
+	seedAgent(t, s, agentID, now.Add(-2*time.Hour), now.Add(-30*time.Minute), 3, 300)
+	lonerID := randomUUID(t)
+	parentID := randomUUID(t)
+	childID := randomUUID(t)
+	writer := "Writer"
+	seedSessionRow(t, s, lonerID, agentID, flavor, nil, nil, `{}`, now.Add(-45*time.Minute), 100)
+	seedSessionRow(t, s, parentID, agentID, flavor, nil, nil, `{}`, now.Add(-40*time.Minute), 100)
+	seedSessionRow(t, s, childID, agentID, flavor, &parentID, &writer, `{}`,
+		now.Add(-40*time.Minute).Add(1500*time.Millisecond), 100)
+
+	// The loner alone: no parent spawned anything, so the metric has
+	// no series at all rather than a NULL row.
+	resp, err := s.QueryAnalytics(ctx, AnalyticsParams{
+		Metric: "parent_to_first_child_latency_ms", GroupBy: "flavor", Range: "custom",
+		From: now.Add(-50 * time.Minute), To: now.Add(-42 * time.Minute), Granularity: "day",
+		FilterFlavor: flavor,
+	})
+	if err != nil {
+		t.Fatalf("latency over childless window: %v", err)
+	}
+	if len(resp.Series) != 0 {
+		t.Fatalf("expected no series for a childless window, got %+v", resp.Series)
+	}
+
+	// Loner + parent in one bucket: the average is the parent's 1500ms.
+	resp, err = s.QueryAnalytics(ctx, AnalyticsParams{
+		Metric: "parent_to_first_child_latency_ms", GroupBy: "flavor", Range: "custom",
+		From: now.Add(-time.Hour), To: now, Granularity: "day",
+		FilterFlavor: flavor,
+	})
+	if err != nil {
+		t.Fatalf("latency over mixed window: %v", err)
+	}
+	if len(resp.Series) != 1 || len(resp.Series[0].Data) != 1 {
+		t.Fatalf("expected one series with one bucket, got %+v", resp.Series)
+	}
+	if got := resp.Series[0].Data[0].Value; got < 1499 || got > 1501 {
+		t.Fatalf("expected ~1500ms latency, got %v", got)
+	}
+}
+
+// TestQueryAnalytics_PeriodChangeComparesPreviousWindow pins
+// period_change_pct: the previous-period total is the same series
+// query over the window before the requested one. Before the fix the
+// previous-period query referenced table aliases that did not exist
+// in its outer scope, failed on most metric / dimension pairs and
+// silently reported a 0% change.
+func TestQueryAnalytics_PeriodChangeComparesPreviousWindow(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	flavor := "test-period-change-" + randomUUID(t)[:8]
+	agentID := randomUUID(t)
+	seedAgent(t, s, agentID, now.Add(-3*time.Hour), now.Add(-30*time.Minute), 1, 400)
+	sessionID := randomUUID(t)
+	seedSessionRow(t, s, sessionID, agentID, flavor, nil, nil, `{}`, now.Add(-90*time.Minute), 400)
+	for _, ev := range []struct {
+		at     time.Time
+		tokens int
+	}{
+		{now.Add(-90 * time.Minute), 100}, // previous window
+		{now.Add(-30 * time.Minute), 300}, // current window
+	} {
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO events (
+				id, session_id, flavor, event_type, model, tokens_total,
+				tokens_input, tokens_output, latency_ms, occurred_at, has_content
+			) VALUES (
+				gen_random_uuid(), $1::uuid, $2, 'post_call', 'claude-sonnet-4-6',
+				$3, $3, 0, 250, $4, false
+			)
+		`, sessionID, flavor, ev.tokens, ev.at); err != nil {
+			t.Fatalf("seed event: %v", err)
+		}
+	}
+
+	for _, metric := range []string{"tokens", "latency_avg", "latency_p95", "estimated_cost"} {
+		for _, dim := range []string{"flavor", "model", "framework", "host", "agent_role"} {
+			resp, err := s.QueryAnalytics(ctx, AnalyticsParams{
+				Metric: metric, GroupBy: dim, Range: "custom",
+				From: now.Add(-time.Hour), To: now, Granularity: "day",
+				FilterFlavor: flavor,
+			})
+			if err != nil {
+				t.Fatalf("%s by %s: %v", metric, dim, err)
+			}
+			switch metric {
+			case "tokens":
+				if resp.Totals.PeriodChangePct < 199.9 || resp.Totals.PeriodChangePct > 200.1 {
+					t.Fatalf("tokens by %s: expected +200%% change, got %v", dim, resp.Totals.PeriodChangePct)
+				}
+			case "latency_avg", "latency_p95":
+				// Same latency in both windows: no change.
+				if resp.Totals.PeriodChangePct != 0 {
+					t.Fatalf("%s by %s: expected 0%% change, got %v", metric, dim, resp.Totals.PeriodChangePct)
+				}
+			case "estimated_cost":
+				if resp.Totals.PeriodChangePct <= 0 {
+					t.Fatalf("estimated_cost by %s: expected a positive change, got %v", dim, resp.Totals.PeriodChangePct)
+				}
+			}
+		}
 	}
 }

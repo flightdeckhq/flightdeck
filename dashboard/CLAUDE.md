@@ -38,8 +38,8 @@
      opening the trace. The V-pass for any UI phase MUST list the
      E2E tests that will be added before implementation starts.
 
-     Why: Phases 1 and 2 each shipped UI regressions (KI20 phantom
-     rows, KI22 font-mono collapse, PR #24 bucket-divider
+     Why: Phases 1 and 2 each shipped UI regressions (phantom
+     rows, font-mono size collapse, PR #24 bucket-divider
      misalignment) that unit tests missed. The common shape: a
      single component's mock test passed while the rendered
      dashboard misbehaved. E2E tests exercising the real dashboard
@@ -94,7 +94,7 @@
      Why: rule 14 requires both themes to work at all times.
      Without automated per-theme coverage, "both themes work"
      degrades to "dark theme works, light theme breaks on Tuesdays"
-     -- which is exactly the regression shape KI22 had until a
+     -- which is exactly the regression shape the font-mono collapse had until a
      manual light-theme pass caught it.
 
 40c.4. **Live-load Chrome verification after every dashboard

@@ -111,6 +111,23 @@ each pass focused exclusively on that role's concerns.
    (results pasted into PR description), lint passes per Rule 40e,
    the cross-cutting L3 / L4 / L5 / L6 / L8 checklist evidenced.
 
+### Severity scale
+
+Every finding, audit row and plan item uses one scale:
+
+- **P0** -- breaks, crashes, or silently loses data on a default or
+  fresh install today (a fail-open control, a silent zero-event path,
+  wrong numbers persisted).
+- **P1** -- a table-stakes capability is missing, a reported number is
+  wrong, or a runtime or dependency is end-of-life or unsupported.
+- **P2** -- valuable; improves coverage, fidelity, or operator workflow.
+- **P3** -- nice-to-have or hygiene.
+
+Every severity carries an evidence grade: **A** executed (a probe, a
+test run, or a live-stack observation), **B** static primary source
+with file:line, **C** fetched documentation with a date, **D**
+secondary. Only A or B evidence supports a P0.
+
 ### Finding categorization
 
 Each hat produces a list of findings. Findings are classified into

@@ -477,7 +477,7 @@
 
     <div class="callout r">
       <p class="k mono">Architecture</p>
-      <p><strong>Not a proxy.</strong> The sensor wraps SDK clients inside your agent's own process: <code class="mono">init()</code> + <code class="mono">patch()</code>, no other code changes, and calls go straight to the provider. Prompt capture is opt-in and off by default.</p>
+      <p><strong>Not a proxy.</strong> The sensor wraps SDK clients inside your agent's own process: <code class="mono">init()</code> + <code class="mono">patch()</code>, no other code changes, and calls go straight to the provider. Prompt capture is off by default in the sensor; the Claude Code plugin captures your own session by default and can be turned off.</p>
     </div>
 
     <div class="coverage mono r">

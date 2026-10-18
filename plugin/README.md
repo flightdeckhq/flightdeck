@@ -32,7 +32,7 @@ Two independent privacy knobs control what content leaves your machine: `capture
 
 ## Privacy
 
-**Prompt content is captured by default.** This is the opposite of the Python sensor default (`capture_prompts=False`). The reasoning is specific to Claude Code: you are observing your own session on your own machine, and an empty Prompts tab makes the feature useless without improving privacy. See DECISIONS.md D103.
+**Prompt content is captured by default.** This is the opposite of the Python sensor default (`capture_prompts=False`). The reasoning is specific to Claude Code: you are observing your own session on your own machine, and an empty Prompts tab makes the feature useless without improving privacy.
 
 To disable either capture knob:
 
@@ -66,18 +66,21 @@ Each row is what the dashboard shows for a given Claude Code hook.
 
 | Claude Code hook | Dashboard events |
 |---|---|
-| SessionStart | `session_start` with runtime context (hostname, git, frameworks, `supports_directives=false`). Sent once per session id. |
+| SessionStart | `session_start` with runtime context (hostname, git, frameworks, `supports_directives=false`). Sent once per session id. When an MCP Protection Policy applies, also one `policy_mcp_warn` / `policy_mcp_block` per declared MCP server whose decision is not `allow`. |
 | UserPromptSubmit | `pre_call` with cached model name and the user prompt (if `capturePrompts=true`). |
+| PreToolUse (MCP) | No dashboard event. For tools named `mcp__<server>__<tool>` the plugin applies the MCP Protection Policy cached at SessionStart and writes a Claude Code hook decision to stdout: `deny` when the server is blocked, `allow` when an earlier approval was remembered, `ask` when the server is unknown to an allowlist-mode policy (a `yes` is remembered on PostToolUse and reported as `mcp_policy_user_remembered`). Non-MCP tools, allowed or warned servers, and servers missing from `.mcp.json` fall through to Claude Code's default approval flow. |
 | PostToolUse | Any un-emitted assistant turns from the transcript flush as `post_call` events first (token counts, model, response body when capture is on), then the tool execution itself emits a `tool_call`. Mid-turn LLM activity is flushed on every tool invocation instead of only at turn end. |
 | PostToolUse (MCP) | When the tool name matches `mcp__<server>__<tool>` the plugin emits `mcp_tool_call` instead of the generic `tool_call`. See *MCP coverage* below. |
 | PostToolUseFailure (MCP) | Same routing — emits `mcp_tool_call` with a populated `error` block (`error_class=PluginToolError`). Non-MCP tool failures are dropped (no generic tool-failure event type today). |
 | Stop | `post_call` backstop for the final assistant turn that had no tool follow-up. Turns already flushed by PostToolUse are skipped via per-message dedup. |
 | SessionEnd | Final transcript sweep (any last-turn `post_call` missed by Stop) followed by `session_end`. |
 | PreCompact | Synthetic `tool_call` with `tool_name=compact_context` so the timeline shows when Claude Code compacted its context window. |
+| SubagentStart | Child `session_start` under the sub-agent's own `session_id`, with `parent_session_id` pointing at the outer session and `agent_role` naming the sub-agent type. Hooks that fire while the sub-agent runs are emitted under the child session id. |
+| SubagentStop | Child `session_end` for that same sub-agent session, after flushing any un-emitted turns from the sub-agent's transcript. |
 
 Every event carries `flavor=claude-code`, `agent_type=coding`, and `framework=claude-code`.
 
-Sub-agent tracking: when the `Task` tool fires, the `tool_call` event sets `is_subagent_call=true` and `parent_session_id=<current session id>` so a future sub-agent emitter can correlate.
+Sub-agent tracking: `SubagentStart` / `SubagentStop` emit the sub-agent's own `session_start` / `session_end` (see the table above), linked to the outer session through `parent_session_id` and labelled with `agent_role`, and the sub-agent's interior hooks are emitted under that child session id. On the legacy `Task` tool path the parent's `tool_call` event additionally sets `is_subagent_call=true` and `parent_session_id=<current session id>` as an informational hint.
 
 ## MCP coverage
 
@@ -90,15 +93,17 @@ Known limits — by design, not a TODO:
 - **Mid-session reconnects are not observable.** A server added via `claude mcp add` after the session started is seen at tool-call time but won't appear in `session_start.context.mcp_servers` (which is captured once and never refreshed). Transport falls back to `null` for that server until the next Claude Code invocation rebuilds the fingerprint cache.
 - **Sanitiser bypassed for MCP arguments.** The whitelist that drops fields like file bodies on generic tools doesn't apply to MCP — its keep-list (`file_path`, `command`, `query`, `pattern`, `prompt`) would empty most MCP payloads. `captureToolInputs=false` still strips the `arguments` field entirely.
 
+Enforcement. `SessionStart` fetches the global and `claude-code` flavor MCP policies from `$FLIGHTDECK_SERVER/api` and caches them for the invocation; it also emits one `policy_mcp_warn` / `policy_mcp_block` event per declared server whose decision is not `allow`. `PreToolUse` then gates every `mcp__<server>__<tool>` call through Claude Code's hook decision contract (`hookSpecificOutput.permissionDecision`): a blocked server answers `deny` with the reason `MCP policy blocked tool call to <server> (<scope>, <path>)`, a server unknown to an allowlist-mode policy answers `ask` so Claude Code shows its own permission prompt (an approval is remembered on this machine and answers `allow` next time), and allowed or warned servers get no decision so Claude Code's normal flow applies. Policy evaluation fails open: with no cached policy, calls proceed.
+
 ## Observer-class limitation
 
-The plugin is observation-only. It reports what Claude Code does; it cannot change what Claude Code does.
+Apart from the MCP policy gate (see MCP coverage), the plugin is observation-only. It reports what Claude Code does; it cannot stop a session or change what the model does.
 
 - No Stop Agent button on claude-code sessions in the dashboard.
 - No kill switch, no mid-call interruption.
-- No token-budget enforcement, no model degradation, no policy blocking.
+- No token-budget enforcement and no model degradation.
 
-The plugin sets `context.supports_directives=false` on session start so the dashboard hides directive UI for these sessions rather than showing controls that silently fail. This is a deliberate trade-off: the plugin is non-intrusive by design and can never interfere with your Claude Code work. If you need kill-switch or policy-enforcement behavior on actual production agents, use the Python sensor (which sits in the LLM call path and can act on returned directives). See DECISIONS.md D109.
+The plugin sets `context.supports_directives=false` on session start so the dashboard hides directive UI for these sessions rather than showing controls that silently fail. This is a deliberate trade-off: the plugin is non-intrusive by design and can never interfere with your Claude Code work. If you need kill-switch or policy-enforcement behavior on actual production agents, use the Python sensor (which sits in the LLM call path and can act on returned directives).
 
 ## Troubleshooting
 
@@ -122,7 +127,7 @@ The plugin logs one line per failed POST, capped at two lines per hook invocatio
 
 ### Server was down when Claude Code started; events resume on recovery
 
-Each hook invocation is a fresh Node process with no disk-persisted mute state. When the Flightdeck stack comes back up mid-session, the next hook's POST lands automatically. The server lazy-creates the session row from that first post-recovery event (see DECISIONS.md D106) so the session appears in the dashboard with tokens counted from the recovery point onward. No manual cleanup of `$TMPDIR/flightdeck-plugin` is needed.
+Each hook invocation is a fresh Node process with no disk-persisted mute state. When the Flightdeck stack comes back up mid-session, the next hook's POST lands automatically. The server lazy-creates the session row from that first post-recovery event so the session appears in the dashboard with tokens counted from the recovery point onward. No manual cleanup of `$TMPDIR/flightdeck-plugin` is needed.
 
 Outage-window events (LLM calls that fired while the server was unreachable) are not retroactively recovered; the plugin is intentionally unbuffered so it cannot block Claude Code on a stuck queue. You lose the pre-recovery events and gain every post-recovery event.
 
@@ -132,13 +137,13 @@ Check `FLIGHTDECK_CAPTURE_PROMPTS`. If it's `false` or `0` or `off`, prompt cont
 
 ### Mid-turn tokens don't update in real time
 
-Token counts surface on `post_call` events. The plugin flushes `post_call` on every `PostToolUse` (see D107), so turns that include tool calls surface immediately. Turns with no tool calls (e.g. a plain text response) only produce a `post_call` on `Stop`, which fires after Claude Code finishes responding. This is expected: without a tool use there is no earlier hook to flush on.
+Token counts surface on `post_call` events. The plugin flushes `post_call` on every `PostToolUse`, so turns that include tool calls surface immediately. Turns with no tool calls (e.g. a plain text response) only produce a `post_call` on `Stop`, which fires after Claude Code finishes responding. This is expected: without a tool use there is no earlier hook to flush on.
 
 ### Sessions appear with no LLM calls
 
 Most `post_call` events land via the PostToolUse flush. `Stop` and `SessionEnd` act as backstops for the final turn that had no tool follow-up. If turns are still missing:
 
-- Make sure `SessionEnd` is wired in `plugin/hooks/hooks.json` (the plugin ships with all six hooks; a custom `hooks.json` override might have dropped some).
+- Make sure `SessionEnd` is wired in `plugin/hooks/hooks.json` (the plugin ships with all ten hooks -- `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `SessionEnd`, `PreCompact`, `SubagentStart`, `SubagentStop` -- and a custom `hooks.json` override might have dropped some).
 - Check that Claude Code's JSONL transcript is readable at the path the hooks pass in.
 - Confirm the session did not exit via `SIGKILL` before the last hook could run.
 
@@ -162,20 +167,21 @@ Confirm with `/bin/sh -c 'node --version'`. The plugin works with Node v20+.
 
 Fire-and-forget HTTP. Claude Code invokes each hook as a detached child process. The plugin reads the hook event from stdin, resolves session identity (see below), builds an event payload, POSTs it to `$FLIGHTDECK_SERVER/ingest/v1/events`, and exits. On failure the plugin logs one stderr line and exits 0. Claude Code never blocks on the plugin.
 
-Session identity resolution (D113). Precedence, top wins:
+Session identity resolution. Precedence, top wins:
 
 1. `CLAUDE_SESSION_ID` env var.
 2. `ANTHROPIC_CLAUDE_SESSION_ID` env var.
-3. RFC 4122 v5 UUID derived from `(user, hostname, repo remote, branch)`. Same laptop + same repo + same branch converges on the same session across Claude Code spawns, so a developer running `claude` daily in one repo sees one ongoing session row instead of 30+ fleet-view rows.
-4. Marker file cache at `$TMPDIR/flightdeck-plugin/session-<sha256(cwd)[:16]>.txt`. The first hook to run populates it; subsequent hooks in the same cwd read it directly and skip the git probes.
-5. `session_id` from the hook event payload (Claude Code's own per-spawn id). Demoted safety net -- used only when env vars are unset, git is unavailable, and the marker file can't be written.
-6. `sha256(cwd)[:32]` as the final deterministic fallback when `$TMPDIR` itself is broken.
+3. Marker file cache at `$TMPDIR/flightdeck-plugin/session-<sha256(hook session_id)[:16]>.txt`, keyed on the per-invocation `session_id` Claude Code puts on every hook event. The first hook of an invocation writes it; every later hook in the same run reads it verbatim.
+4. A fresh random UUID (RFC 4122 v4), written to that marker file. Each Claude Code invocation is therefore one session row; continuity across invocations lives in `agent_id`, a stable UUID derived from agent type, `user@hostname`, client type and agent name.
+5. When the hook event carries no `session_id` (a caller other than Claude Code), the marker is keyed on `sha256(cwd)[:16]` and the plugin prints one stderr warning.
+6. An ephemeral `sha256(time, pid, cwd)[:32]` when `$TMPDIR` itself is unusable.
 
-Branch is part of the identity: intentionally switching branches produces a different session. Detached HEAD maps to `detached-<short_sha>`. Mid-session branch switches reuse the cached UUID until the Claude Code invocation ends (clear `$TMPDIR/flightdeck-plugin/` to start a fresh identity cycle).
+`SessionEnd` deletes the marker, so `/clear` or a new `claude` run mints a fresh session id (delete `$TMPDIR/flightdeck-plugin/` by hand to force one earlier).
 
 No background threads. No polling. The only state the plugin persists across hook invocations is a small set of markers in `$TMPDIR/flightdeck-plugin/`:
 
-- `session-<hash>.txt`: the resolved session id for a given cwd (normally the derived stable UUID).
+- `session-<hash>.txt`: the session id for the current Claude Code invocation (a random UUID), keyed on the hook event's `session_id`.
+- `mcp-policy-<sid>.json`: the MCP policy fetched at `SessionStart` and read by every `PreToolUse`; deleted at `SessionEnd`.
 - `started-<sid>.txt`: marks that session_start was attempted (so subsequent hooks don't duplicate).
 - `model-<sid>.txt`: caches the model name so `pre_call` events on older Claude Code versions can carry a non-null model.
 - `emitted-<messageId>.txt`: per-message dedup so Stop / SessionEnd don't re-emit turns that PostToolUse already flushed.
@@ -194,6 +200,16 @@ node --test tests/*.test.mjs
 ```
 
 Or via the top-level Makefile: `make test-plugin`. The suite covers the uuid5 helper (Python-canonical vectors), the session-identity resolution chain, and the end-to-end hook flow against an in-process capture server.
+
+## Updating
+
+A marketplace install stays on the version it was installed at. Claude Code auto-updates plugins only from a marketplace whose auto-update you turned on (**Marketplaces** in `/plugin`, select `flightdeck-plugins`, **Enable auto-update**); otherwise run:
+
+```bash
+claude plugin update flightdeck@flightdeck-plugins
+```
+
+or `/plugin marketplace update flightdeck-plugins` inside a session. A new copy is fetched only when the plugin version changes, which every Flightdeck release does. `claude --plugin-dir` loads the checkout directly, so there a `git pull` is the update.
 
 ## Uninstall
 

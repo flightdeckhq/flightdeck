@@ -9346,3 +9346,485 @@ body row in each table picks up the hover-highlight class
 contract, under both ``neon-dark`` and ``clean-light``
 projects per Rule 40c.3.
 
+
+---
+
+## D164 -- One severity scale for audits, plans and findings
+
+**Date:** 2026-10-18
+
+**Decision:** Every finding, audit row and plan item uses one four-level
+scale. P0: breaks, crashes, or silently loses data on a default or fresh
+install today. P1: a table-stakes capability is missing, a reported number
+is wrong, or a runtime or dependency is end-of-life or unsupported. P2:
+valuable. P3: nice-to-have or hygiene. Severities carry an evidence grade
+(A executed, B static primary source with file:line, C fetched
+documentation with a date, D secondary); only A or B evidence supports a
+P0. The scale is recorded in METHODOLOGY.md.
+
+**Reasoning:** The October 2026 research sweep produced nineteen reports
+that used three different meanings of "P0" (broken today, end-of-life,
+incompatible), so the same gap carried P0 in one report and P2 in another.
+A plan cannot be sequenced on an inconsistent scale.
+
+**Rejected alternative:** Per-area scales (security CVSS-style for
+toolchain, correctness-based for the sensor). Rejected because every
+release mixes areas and the Supervisor needs one ordering.
+
+---
+
+## D165 -- The README Roadmap is restored as the single deferral destination
+
+**Date:** 2026-10-18
+
+**Decision:** `README.md` carries a `## Roadmap` section again. It is the
+only place deferred, declined-for-now and planned work is listed (rule 49).
+The section was removed on 2026-05-24 during the per-agent landing page
+work with no decision record; that removal is recorded here retroactively
+and reversed.
+
+**Reasoning:** Rules 49 and 51, METHODOLOGY.md and seven earlier decision
+entries route deferred work to the Roadmap. Without the section, ten
+deferred items (continuous live-API smoke runs, NATS auth in Helm, nginx
+rate limiting, litellm streaming, Voyage embeddings, AutoGen, MCP policy
+history/dry-run/YAML, the CrewAI MCP compat helper, 400-error surfacing)
+existed only in git history. A public, user-prioritisable list is the
+reason rule 49 chose the README in the first place.
+
+**Rejected alternative:** A separate `ROADMAP.md` (less visible to users
+than the README), or amending rule 49 to drop the Roadmap (recreates the
+indefinite-deferral bucket rule 49 retired).
+
+---
+
+## D166 -- `client_type` becomes a registry with a locked, extensible vocabulary
+
+**Date:** 2026-10-18
+
+**Decision:** `client_type` is no longer a two-value literal duplicated
+across ingestion, two database CHECK constraints, two API validators and
+the dashboard. One source list defines the vocabulary and is mirrored into
+Go, TypeScript, Python and SQL with a parity test. The initial values are
+`claude_code`, `flightdeck_sensor`, `claude_agent_sdk`, `codex`,
+`copilot`, `opencode`, `gemini_cli`, `cursor` and `otlp`. Each value
+carries two flags: `observer_class` (hook- or export-based clients that
+cannot act on directives) and `metered_cost` (API-key billed clients whose
+cost the dashboard shows). Adding a value is a registry edit plus a
+migration that recasts the CHECK constraints; the dashboard renders unknown
+values with a neutral fallback instead of crashing.
+
+**Reasoning:** Every planned source (Claude Agent SDK, OTLP, Codex, Copilot,
+OpenCode, Gemini CLI, Cursor) is blocked by the closed enum: unknown values
+400 at ingestion, violate the CHECKs, and crash `ClientTypePill` at four
+call sites. Five research reports proposed five different vocabularies;
+one list ends that drift.
+
+**Rejected alternative:** Reusing `flightdeck_sensor` plus the `framework`
+field for new sources (no migration, but the dashboard's client-type
+filter, cost gate and Stop-button gate would all need special cases on
+framework strings). Also rejected: one value per source with no flags
+(every new client would need the eight logo call sites, the cost gate and
+the directive gate edited by hand).
+
+---
+
+## D167 -- OTLP ingest is in scope, as an observer-class source
+
+**Date:** 2026-10-18
+
+**Decision:** The ingestion service will accept OpenTelemetry (OTLP/HTTP)
+logs and traces, map them onto Flightdeck sessions and events, and treat
+the resulting sessions as observer class (no directives, no kill switch,
+no token-budget enforcement). This lands in the release that builds the
+receiver; until then ARCHITECTURE.md does not describe it.
+
+**Reasoning:** Claude Code, Codex CLI, Gemini CLI and GitHub Copilot export
+OpenTelemetry natively; so do Pydantic AI, Google ADK, Strands and the
+Microsoft Agent Framework, and Anthropic's platform exports spans for all
+organisation traffic. Twenty-five of twenty-eight observability products
+accept OTLP. Without a receiver Flightdeck cannot observe the TypeScript
+Agent SDK, headless and cloud Claude Code sessions, or any coding agent
+whose hooks carry no token data. The in-process sensor remains the only
+control path, which keeps the "not a proxy" and "sensor acts in-band"
+properties intact.
+
+**Rejected alternative:** Keeping Flightdeck hook-and-sensor only (leaves
+the largest 2026 telemetry surface unreachable), or emitting OTel from the
+sensor instead of receiving it (does not help ingest third-party agents and
+would duplicate the sensor's wire protocol).
+
+---
+
+## D168 -- Token-model schema additions
+
+**Date:** 2026-10-18
+
+**Decision:** The event payload and the `events` table gain columns for
+reasoning tokens, the serving provider, agent-reported cost with its
+source, and the requested versus served model id. The payload additionally
+carries the prompt-cache TTL split (five-minute and one-hour creation
+tokens), server-tool request counters, service tier, inference speed, data
+residency, stop reason and the provider request id. Columns are reserved
+for fields that analytics group or sum by; everything else stays in the
+JSONB payload.
+
+**Reasoning:** Every current model is a reasoning model and the schema has
+no field for reasoning tokens; Anthropic bills one-hour cache writes at
+2x and the newest tiers read cache at 0.025x-0.05x; OpenAI now charges
+cache writes; Claude Code and Codex report their own cost; the served
+model can differ from the requested one on server-side fallback. None of
+this is representable with five token counters and one model string.
+
+**Rejected alternative:** Payload-only storage for everything (cheap to
+add, but cost and provider rollups would scan JSONB), or a full
+per-modality token breakdown now (the per-modality counters are not yet
+consumed by any surface).
+
+---
+
+## D169 -- Pricing source of truth: vendored litellm catalogue with YAML overrides
+
+**Date:** 2026-10-18
+
+**Decision:** Model pricing is loaded from a pruned, vendored copy of
+litellm's `model_prices_and_context_window.json` (chat, responses and
+embedding modes only), refreshed by a scripted pull request, with
+`pricing.yaml` kept as the operator override layer for negotiated or
+private prices. The per-model cache read, cache write, one-hour write,
+reasoning and context-tier rates come from the catalogue. Cost is computed
+against a `model_pricing` table rather than one SQL CASE arm per model.
+The API makes no outbound calls by default; a runtime refresh is a later
+opt-in. As an interim measure before the engine lands, `pricing.yaml` is
+refreshed by hand with the current catalogue so that current models stop
+costing $0.
+
+**Reasoning:** The hand-maintained table froze in April 2026, six of its
+twenty-five ids are retired, and its two uniform cache ratios are wrong for
+OpenAI and for the newest Claude tiers. The litellm file carries 4,200
+models with per-model cache and reasoning rates and deprecation dates,
+changes roughly ten times a day, and is MIT licensed; it is also the file
+litellm itself prices with, so litellm-reported cost and Flightdeck's
+number agree.
+
+**Rejected alternative:** Keep hand-maintaining `pricing.yaml` (proven not
+to happen), or fetch the catalogue at runtime from GitHub (adds an outbound
+dependency the API does not have today and breaks air-gapped installs).
+
+---
+
+## D170 -- `provider` is stamped by the sensor; `gateway` is metadata
+
+**Date:** 2026-10-18
+
+**Decision:** The sensor stamps `provider` on every post-call event from the
+SDK it intercepted and the client's platform marker; the analytics
+`provider` dimension reads that column and falls back to the model-prefix
+CASE only for rows that predate it. The gateway or platform a call went
+through (Bedrock, Vertex, Foundry, OpenRouter, Portkey, a local server) is
+recorded as event metadata and shown in the drawer, but is not an
+analytics dimension. Only the registered host or a mapped gateway token is
+stored, never the full base URL.
+
+**Reasoning:** Provider derivation by model prefix mis-attributes bare
+`o1`/`o3`, every gateway-prefixed id and every cloud-platform id; the
+sensor knows the provider with certainty at call time. A `gateway`
+dimension would change the locked dimension list and the analytics
+contract; metadata delivers the operator value (which gateway served a
+call) without that change, and the dimension can follow if demanded.
+
+**Rejected alternative:** Adding `gateway` as a tenth analytics dimension
+now, or keeping prefix derivation and extending the CASE with every known
+prefix (never complete).
+
+---
+
+## D171 -- Python support window moves to 3.11 through 3.14
+
+**Date:** 2026-10-18
+
+**Decision:** `flightdeck-sensor` requires `>=3.11,<3.15`; classifiers list
+3.11 through 3.14; CI runs a 3.11, 3.12, 3.13 and 3.14 matrix. The
+framework development extra marks `crewai` as 3.13-only until crewai lifts
+its own cap. The sensor's development dependencies split into two CI
+lanes, one with the framework pins and one with the current SDK majors,
+because the two sets cannot resolve together.
+
+**Reasoning:** Python 3.10 reached end-of-life on 2026-10-01; 3.14 has
+been generally available since 2025-10-07 and 3.15 since 2026-10-09, and
+the `<3.14` cap refuses both, including the default interpreter on the
+maintainer's own machine. Peer frameworks already require 3.11 or newer.
+
+**Rejected alternative:** Keep 3.10 in the window (end-of-life), or jump
+the floor to 3.12 (excludes still-supported 3.11 deployments).
+
+---
+
+## D172 -- The Claude Code plugin becomes a control-class client
+
+**Date:** 2026-10-18
+
+**Decision:** The Claude Code plugin will enforce the kill switch, token
+budget warn/degrade/block decisions and MCP policy deny through
+`PreToolUse` decisions, and will report `supports_directives=true` once it
+does. Whether a client supports directives becomes a per-client-type flag
+instead of a hard-coded assumption that hook-based clients are observers.
+
+**Reasoning:** Claude Code hooks can deny a tool call, and a `PreToolUse`
+callback returning a deny decision is honoured by the current CLI even in
+bypass-permissions mode. Every observability vendor that watches Claude
+Code is telemetry-only; enforcement for coding agents without a gateway is
+the least-contested position Flightdeck can hold, and it is the product's
+existing posture for production agents.
+
+**Rejected alternative:** Keeping the plugin observation-only (the earlier
+design choice, made when hooks could not reliably block and when the
+plugin had no control-plane fetch).
+
+---
+
+## D173 -- MCP policy identity keys on URL or command only
+
+**Date:** 2026-10-18
+
+**Decision:** An MCP policy entry matches on the canonical server URL (HTTP
+transports) or canonical command line (stdio). The server's self-reported
+name is recorded as metadata and drives the name-drift event, but is no
+longer part of the fingerprint the policy resolves on. Stored entry
+fingerprints are recomputed by a migration.
+
+**Reasoning:** With the name inside the fingerprint, a server declared
+under a new name with the same URL misses its blocklist deny entry and is
+allowed. The MCP specification and Claude Code's managed-MCP documentation
+both state that server names are not security controls. The interceptor's
+own docstring already claimed the decision "resolves on URL".
+
+**Rejected alternative:** Keeping `(url, name)` as the key and relying on
+the drift event to warn operators (the bypass still happens before anyone
+reads the event).
+
+---
+
+## D174 -- The sensor supports both the mcp 1.x and 2.x SDK lines
+
+**Date:** 2026-10-18
+
+**Decision:** The MCP interceptor supports mcp 1.x and 2.x simultaneously,
+tested in two CI lanes. As an immediate stop-gap the optional dependency is
+capped at `<2` and the interceptor logs at WARNING level, with accurate
+text, when the package is importable but the interceptor could not load.
+
+**Reasoning:** A fresh install resolves mcp 2.3.0, on which the interceptor
+imported a renamed exception class, swallowed the error, logged a DEBUG
+line saying mcp was not installed, and silently disabled both MCP
+observability and MCP Protection Policy. The 2.x client also constructs
+sessions without streams and negotiates with `server/discover`, so the 1.x
+identity capture yields nothing. crewai still pins mcp 1.28 while fastmcp
+4, LangChain 1.x, llama-index-tools-mcp, pydantic-ai, agno and litellm
+require 2.x; supporting one line would exclude the other half of the
+ecosystem.
+
+**Rejected alternative:** Capping at `<2` permanently (loses every 2.x
+consumer), or dropping 1.x (loses crewai).
+
+---
+
+## D175 -- Anthropic interception moves to the resource layer; SDK floors rise
+
+**Date:** 2026-10-18
+
+**Decision:** The Anthropic interceptor patches the SDK's `Messages` and
+`AsyncMessages` resource classes (stable and beta) at `create`, `stream`
+and `parse` instead of replacing the `messages` descriptor on four client
+classes. Raw-response and streaming-response accessors are proxied. The
+sensor's floors move to `anthropic>=1,<2` and `openai>=2,<4` in the release
+that ships the cost model, and the SDK's own `Middleware` hook is adopted
+as the long-term choke point once the `anthropic>=1` floor is in place.
+
+**Reasoning:** `AnthropicBedrock`, `AnthropicBedrockMantle`,
+`AnthropicVertex` and `AnthropicFoundry` assign `messages` as an instance
+attribute in `__init__`, so no class-level descriptor can intercept them,
+and Vertex and Bedrock use a vertex-local beta resource; eight of the
+fourteen client classes are invisible today. The resource layer is shared
+by every client class and also covers `parse()` (structured outputs and
+non-streaming tool-runner turns) and the `with_raw_response` path that
+LangChain 1.x uses.
+
+**Rejected alternative:** Adding more `_patch_one_class` calls (cannot work
+for instance attributes), or adopting the SDK's OpenTelemetry spans as the
+in-process hook (observe-only, 1.x-only, and cannot distinguish Foundry
+from the direct API).
+
+---
+
+## D176 -- Evaluations and prompt management are explicitly out of scope
+
+**Date:** 2026-10-18
+
+**Decision:** Evaluations (including LLM-as-judge) and prompt management or
+a prompt playground are added to the "IS NOT" list. Notifications stay out
+of scope; a generic outbound webhook on policy events is a separate
+question not decided here.
+
+**Reasoning:** Twenty-three and nineteen of twenty-eight observability
+products ship these respectively, so their absence must be a recorded
+choice rather than an omission. Neither belongs to a control plane whose
+value is runtime visibility and enforcement.
+
+**Rejected alternative:** Building a minimal evaluation surface to match
+the market (dilutes the product and duplicates mature tools).
+
+---
+
+## D177 -- Frameworks whose LLM calls cannot be intercepted
+
+**Date:** 2026-10-18
+
+**Decision:** DSPy gets a callback adapter (its default engine since 3.4
+ships its own HTTP transport that bypasses both SDKs and litellm). BAML
+(Rust runtime), Letta (out of process), MetaGPT (unmaintained, pins
+ancient SDKs) and CAMEL (pins conflict with current SDKs) are documented
+as unsupported.
+
+**Reasoning:** Each has no in-process seam the sensor can patch, or no
+realistic user base on current SDK majors.
+
+**Rejected alternative:** Silent omission (readers assume coverage).
+
+---
+
+## D178 -- boto3 Bedrock Converse is interceptable; other native SDKs are not
+
+**Date:** 2026-10-18
+
+**Decision:** The sensor gains an interceptor for the boto3 `bedrock-runtime`
+Converse API, because it is the default model path for Strands Agents and
+AWS AgentCore and an option in CrewAI, Pydantic AI and smolagents. Voyage,
+Mistral, Cohere and other native SDKs stay out of scope; their
+OpenAI-compatible endpoints are covered by the OpenAI interceptor.
+
+**Reasoning:** Strands has tens of millions of monthly downloads and is
+invisible by default without it. The earlier "no SDK class to patch"
+exclusion predates these frameworks.
+
+**Rejected alternative:** Keeping boto3 out of scope (loses the AWS agent
+ecosystem by default).
+
+---
+
+## D179 -- Coding-agent adapter order; Antigravity, Roo Code and Continue declined
+
+**Date:** 2026-10-18
+
+**Decision:** Adapters beyond Claude Code are built in this order: OpenAI
+Codex CLI, GitHub Copilot (CLI, VS Code and the cloud coding agent through
+one hooks file), OpenCode, Gemini CLI (enterprise and API-key audience),
+Cursor. Antigravity CLI is declined until it exposes telemetry or token
+data; Roo Code (shut down 2026-05-15) and Continue (repository read-only)
+are removed from roadmap text.
+
+**Reasoning:** Ranking by adoption and feasibility with verified evidence:
+Codex hooks are Claude-Code-compatible and its transcript carries per-call
+usage; Copilot has the largest enterprise install base and native
+OpenTelemetry; OpenCode's plugin bus carries tokens and cost; Gemini CLI's
+free tiers migrated to Antigravity on 2026-06-18 so its audience is
+enterprise only; Cursor needs an Admin API connector for tokens.
+
+**Rejected alternative:** Building the Gemini CLI extension first (richest
+hook payload, but a shrinking audience), or Cursor second (no token data in
+hooks; CLI hook support unverified).
+
+---
+
+## D180 -- A `user` analytics dimension will be added after identity v2
+
+**Date:** 2026-10-18
+
+**Decision:** `user` joins the locked analytics dimension list once the
+identity model carries a reliable per-developer identity for every client
+type. Rule 25 and ARCHITECTURE.md are updated in the release that ships it.
+
+**Reasoning:** Per-user or per-developer cost is the primary axis of every
+coding-agent cost view in the market and of Anthropic's own usage report;
+Flightdeck can group only by flavor, host and team.
+
+**Rejected alternative:** Deriving per-user cost from `flavor` conventions
+(not reliable across client types).
+
+---
+
+## D181 -- OIDC login, two roles and an audit log on the control plane
+
+**Date:** 2026-10-18
+
+**Decision:** The dashboard and API gain OIDC single sign-on with viewer
+and admin roles, and every control-plane mutation (policies, directives,
+tokens) writes an audit-log row. This is single-tenant access control, not
+multi-tenancy, which stays out of scope.
+
+**Reasoning:** A kill switch and policy mutations behind one shared bearer
+token is a hard sell to the regulated, self-hosting buyers the product
+targets; seventeen of twenty-eight competitors gate viewer versus admin.
+
+**Rejected alternative:** Keeping single-tier bearer auth (the current
+design, chosen when the only operator was the maintainer).
+
+---
+
+## D182 -- No Node or TypeScript sensor; OTLP covers non-Python runtimes
+
+**Date:** 2026-10-18
+
+**Decision:** Flightdeck does not build an in-process sensor for Node or
+TypeScript agents. The OTLP receiver is the path for the TypeScript Agent
+SDK, Vercel AI SDK, Mastra and similar runtimes, all of which export
+OpenTelemetry.
+
+**Reasoning:** A second sensor doubles the interception surface to
+maintain; every major TypeScript agent runtime already emits OTel.
+
+**Rejected alternative:** A Node sensor mirroring the Python one (large,
+and it would still not cover compiled or hosted runtimes).
+
+---
+
+## D183 -- Tailwind 4 migration is a separate change after React 19
+
+**Date:** 2026-10-18
+
+**Decision:** The dashboard moves to Tailwind 4 in its own pull request
+after the React 19 and Vite 8 upgrades, not as part of the toolchain
+currency batch.
+
+**Reasoning:** Tailwind 3.4 is supported until 2027-02-28, so there is no
+urgency, and the migration renames roughly 130 utility call sites and
+replaces the PostCSS pipeline, which needs a dedicated both-theme
+verification pass.
+
+**Rejected alternative:** Bundling it with the mechanical upgrades (hides a
+large visual diff inside an otherwise behaviour-neutral change).
+
+---
+
+## D184 -- Plugin hook decisions use the current Claude Code contract; the policy cache lives for the session
+
+**Date:** 2026-10-18
+
+**Decision:** The plugin's `PreToolUse` MCP-policy gate writes
+`hookSpecificOutput.permissionDecision` (`allow`, `ask` or `deny`) with a
+`permissionDecisionReason`, the documented contract, instead of a top-level
+`decision` field. The per-session MCP policy cache is removed at
+`SessionEnd`, not at `Stop`. The `claude-code` flavor policy is fetched
+whether or not `AGENT_FLAVOR` is exported, using the same flavor the
+plugin stamps on its events.
+
+**Reasoning:** Claude Code 2.1.302 validates hook output and accepts only
+the legacy `approve|block` values at top level, so the plugin's
+`allow|ask|deny` were discarded as non-blocking errors and every block
+failed open. `Stop` fires after every assistant turn, so deleting the
+cache there disabled enforcement from the second turn of every session.
+Events are stamped `flavor=claude-code`, so fetching the policy for a
+different flavor name meant the flavor policy never applied.
+
+**Rejected alternative:** Emitting the deprecated top-level
+`approve|block` (works today but is scheduled for removal), or exiting with
+code 2 on deny (blocks reliably but discards the structured reason).

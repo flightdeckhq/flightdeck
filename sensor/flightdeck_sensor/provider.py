@@ -30,19 +30,20 @@ class Provider(str, Enum):
       and ``anthropic.AsyncAnthropic``.
     * ``Provider.OPENAI`` — class-level patch on ``openai.OpenAI`` and
       ``openai.AsyncOpenAI``.
-    * ``Provider.LITELLM`` — module-level patch on ``litellm.completion``
-      and ``litellm.acompletion`` (KI21).
+    * ``Provider.LITELLM`` — module-level patch on ``litellm.completion``,
+      ``litellm.acompletion``, ``litellm.embedding`` and
+      ``litellm.aembedding``.
     * ``Provider.MCP`` — class-level patch on
       ``mcp.client.session.ClientSession`` plus the four transport
-      factories (Phase 5 / D117).
+      factories.
     * ``Provider.CREWAI`` — context-manager wrap around
       ``crewai.Agent.execute_task`` / ``aexecute_task`` for
-      sub-agent observability (D126).
+      sub-agent observability.
     * ``Provider.LANGGRAPH`` — wrap around the registered callable
       on ``StateGraph.add_node`` for sub-agent observability;
       agent-bearing predicate is default-on per node, narrowable
       via the optional regex override
-      ``init(langgraph_agent_node_pattern=…)`` (D126).
+      ``init(langgraph_agent_node_pattern=…)``.
 
     Each member's ``.value`` is the canonical string name. The string
     name is what ``patch()`` matches against internally, so passing

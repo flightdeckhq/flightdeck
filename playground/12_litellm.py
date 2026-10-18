@@ -3,14 +3,14 @@ embeddings capture round-trip, and invalid-model error classification.
 
 litellm.completion routes to many underlying providers through a single
 entry point. The Anthropic route uses raw httpx instead of the
-Anthropic SDK -- the case KI21 was filed for. After
+Anthropic SDK -- the gap the litellm interceptor exists to close. After
 ``flightdeck_sensor.patch()`` the module-level ``litellm.completion``
 is swapped with a wrapper that routes every call through the sensor's
 pre/post-call plumbing (see ``interceptor/litellm.py``). The OpenAI
-route would also be intercepted via the OpenAI SDK patch, but
-post-KI21 lands through the litellm wrapper instead. Both routes
-covered here so an SDK-class-rename in either provider can't escape
-the canary.
+route would also be intercepted via the OpenAI SDK patch, but with
+the litellm interceptor installed it lands through the litellm
+wrapper instead. Both routes covered here so an SDK-class-rename in
+either provider can't escape the canary.
 """
 from __future__ import annotations
 
@@ -43,7 +43,7 @@ def main() -> None:
     flightdeck_sensor.patch(quiet=True)
     print(f"[playground:12_litellm] session_id={session_id}")
 
-    # Anthropic route -- the KI21 bypass case.
+    # Anthropic route -- the raw-httpx bypass case.
     t0 = time.monotonic()
     litellm.completion(
         model="claude-haiku-4-5-20251001",

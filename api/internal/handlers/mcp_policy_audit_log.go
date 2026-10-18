@@ -1,7 +1,6 @@
-// MCP Protection Policy audit-log handler + shared path-parsing
-// helpers. Originally these lived in ``mcp_policy_versions.go``
-// alongside the version-history handlers; D142 retired the version
-// handlers (step 6.8 cleanup) but audit-log + the helpers stay.
+// MCP Protection Policy audit-log handler + the path / query
+// parsing helpers (scope + value, limit / offset, time params)
+// shared by the other mcp_policy_* handlers.
 
 package handlers
 
@@ -68,7 +67,7 @@ func parseTimeParam(r *http.Request, name string) (*time.Time, string) {
 // docs entry).
 //
 // @Summary      List flavor MCP policy audit log
-// @Description  Returns operator-initiated mutation history in DESC time order, paginated. event_type query filters to one mutation kind. Sensor-observed system state (decision events, name drift) lives in the events pipeline (D131), NOT here.
+// @Description  Returns operator-initiated mutation history in DESC time order, paginated. event_type query filters to one mutation kind. Sensor-observed system state (decision events, name drift) lives in the events pipeline, NOT here.
 // @Tags         mcp-policy
 // @Produce      json
 // @Param        flavor      path   string  true   "Agent flavor"

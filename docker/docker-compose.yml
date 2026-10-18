@@ -24,7 +24,7 @@ services:
   # single-host developer loop and a token/NKey round-trip just
   # complicates the feedback cycle. Prod NATS auth (Helm chart +
   # docker-compose.prod.yml) is on the Roadmap in README.md under
-  # "Production deployment hardening". See DECISIONS.md D047.
+  # "Production deployment hardening".
   nats:
     image: nats:2.10-alpine
     command: ["--jetstream", "--store_dir", "/data", "--http_port", "8222"]
@@ -32,7 +32,7 @@ services:
       - nats_data:/data
     ports:
       # Loopback only: the message bus (unauthenticated in dev by
-      # design, D047) and its monitoring port must not be LAN-reachable.
+      # design) and its monitoring port must not be LAN-reachable.
       # Prod strips these publishes entirely (docker-compose.prod.yml).
       - "127.0.0.1:4222:4222"
       - "127.0.0.1:8222:8222"
@@ -50,7 +50,7 @@ services:
       FLIGHTDECK_POSTGRES_URL: postgres://flightdeck:flightdeck_dev@postgres:5432/flightdeck?sslmode=disable
       FLIGHTDECK_NATS_URL: nats://nats:4222
       FLIGHTDECK_ENV: development
-      # D095: tok_dev is only accepted when ENVIRONMENT=dev. The dev
+      # tok_dev is only accepted when ENVIRONMENT=dev. The dev
       # compose deliberately opts in; production deployments omit this
       # env var so the seed token becomes inert.
       ENVIRONMENT: dev
@@ -89,11 +89,11 @@ services:
       FLIGHTDECK_PORT: "8081"
       FLIGHTDECK_POSTGRES_URL: postgres://flightdeck:flightdeck_dev@postgres:5432/flightdeck?sslmode=disable
       FLIGHTDECK_ENV: development
-      # D095: tok_dev only works when ENVIRONMENT=dev.
+      # tok_dev only works when ENVIRONMENT=dev.
       ENVIRONMENT: dev
       SHUTDOWN_TIMEOUT_SECS: "30"
     volumes:
-      # D102: mount the repo-level pricing.yaml into the production
+      # Mount the repo-level pricing.yaml into the production
       # default path so a dev operator can edit prices and restart the
       # api without rebuilding the image. Production deployments that
       # use the baked-in copy instead can drop this mount.

@@ -338,13 +338,13 @@ def test_wrap_still_wraps_when_not_patched(sensor_init: Any) -> None:
 
 
 # ----------------------------------------------------------------------
-# KI17: SensorBeta gives wrap() parity with patch() for beta.messages
+# SensorBeta gives wrap() parity with patch() for beta.messages
 # ----------------------------------------------------------------------
 
 
 def test_wrap_intercepts_beta_messages_via_sensor_beta(sensor_init: Any) -> None:
     """wrap() returns a SensorAnthropic whose .beta is a SensorBeta whose
-    .messages is a SensorMessages. KI17 fix -- previously the chain was
+    .messages is a SensorMessages. Previously the chain was
     SensorAnthropic.beta.messages, where .beta passed through to the raw
     Beta resource and bypassed sensor interception entirely.
     """
@@ -599,7 +599,7 @@ def test_descriptor_no_session_then_init_openai() -> None:
 
 
 # ----------------------------------------------------------------------
-# litellm interceptor tests (KI21)
+# litellm interceptor tests
 # ----------------------------------------------------------------------
 #
 # litellm exposes two module-level entry points (completion /
@@ -800,10 +800,10 @@ def test_litellm_streaming_raises_not_implemented(
     sensor_init: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """stream=True raises NotImplementedError with KI26 reference.
+    """stream=True raises NotImplementedError with a Roadmap pointer.
 
-    Streaming support is deferred; KI21's scope is non-streaming sync
-    and async only. The error message points users to KI26 so they
+    Streaming support is deferred; the interceptor's scope is non-streaming
+    sync and async only. The error message points users to the Roadmap so they
     can find the tracking issue rather than hit an opaque crash.
     """
     monkeypatch.setattr(_litellm, "completion", MagicMock())
@@ -815,7 +815,7 @@ def test_litellm_streaming_raises_not_implemented(
             messages=[{"role": "user", "content": "hi"}],
             stream=True,
         )
-    assert "KI26" in str(exc_info.value)
+    assert "Roadmap" in str(exc_info.value)
     assert "stream" in str(exc_info.value).lower()
 
 
@@ -880,7 +880,7 @@ def test_sensor_litellm_streaming_raises_not_implemented(
     sensor_init: Any,
 ) -> None:
     """SensorLitellm's per-instance path also rejects stream=True
-    with the same KI26 message as the patched path. Ensures the two
+    with the same Roadmap message as the patched path. Ensures the two
     intercept paths present a consistent streaming contract.
     """
     session = flightdeck_sensor._session
@@ -892,4 +892,4 @@ def test_sensor_litellm_streaming_raises_not_implemented(
             messages=[{"role": "user", "content": "hi"}],
             stream=True,
         )
-    assert "KI26" in str(exc_info.value)
+    assert "Roadmap" in str(exc_info.value)

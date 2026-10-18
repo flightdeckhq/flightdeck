@@ -48,7 +48,7 @@ Interception hierarchy for per-instance wrapping::
       │   ├── create()        →  call() or call_async()
       │   ├── stream()        →  call_stream() or NotImplementedError (async)
       │   └── __getattr__     →  pass-through
-      ├── @property beta      →  SensorBeta            (KI17 fix)
+      ├── @property beta      →  SensorBeta            (wrap() parity with patch())
       │   └── @property messages → SensorMessages
       ├── with_options()      →  new SensorAnthropic
       ├── with_raw_response   →  new SensorAnthropic
@@ -77,7 +77,7 @@ _log = logging.getLogger("flightdeck_sensor.interceptor.anthropic")
 # These are captured at module import time, BEFORE patch() can run, so
 # isinstance() checks below survive any later mutation of the
 # ``anthropic`` module attributes. Using these captured references is
-# the fix for the Phase 4.5 audit Finding 2 crash where _is_async_client
+# the fix for the crash where _is_async_client
 # called ``isinstance(client, AsyncAnthropic)`` against an
 # ``AsyncAnthropic`` reference that the patch path had replaced with a
 # function thunk -- ``isinstance(x, function)`` raises ``TypeError``.
@@ -154,7 +154,7 @@ class SensorMessages:
     def stream(self, **kwargs: Any) -> Any:
         """Intercept messages.stream() -- returns a guarded context manager.
 
-        Phase 4: async streaming is now supported. Sync ``messages.stream``
+        Async streaming is supported. Sync ``messages.stream``
         returns a :class:`base.GuardedStream`; async
         ``AsyncAnthropic.messages.stream`` returns a
         :class:`base.GuardedAsyncStream` with awaitable
@@ -183,12 +183,11 @@ class SensorBeta:
     and ``.stream()`` calls. Without this wrapper, code that did
     ``client = wrap(anthropic.Anthropic())`` and then
     ``client.beta.messages.create(...)`` bypassed the sensor
-    entirely (KI17, resolved per D087).
+    entirely.
 
     Pass-through for any other ``beta.*`` attribute the SDK exposes;
     only ``beta.messages`` is intercepted because that is the only
-    LLM-inference entry point on the beta surface (matches the
-    descriptor table in D087).
+    LLM-inference entry point on the beta surface.
     """
 
     def __init__(
@@ -253,7 +252,7 @@ class SensorAnthropic:
     @property
     def beta(self) -> SensorBeta:
         """Return a :class:`SensorBeta` proxy so ``client.beta.messages``
-        is intercepted on the ``wrap()`` code path (KI17 fix per D087)."""
+        is intercepted on the ``wrap()`` code path too."""
         return SensorBeta(
             self._client.beta,
             self._session,

@@ -19,7 +19,7 @@ import (
 
 const reconcilerInterval = 60 * time.Second
 
-// identityFromEvent extracts the D115 agent identity fields from an
+// identityFromEvent extracts the agent identity fields from an
 // event payload. The ingestion API has already validated them (UUID
 // shape, vocabulary), so the worker trusts the values verbatim.
 func identityFromEvent(e consumer.EventPayload) writer.AgentIdentity {
@@ -49,9 +49,9 @@ func NewSessionProcessor(w *writer.Writer, pool *pgxpool.Pool) *SessionProcessor
 //
 //   - closed -> warn + skip (caller returns nil). The user explicitly
 //     ended the session; reviving would contradict an explicit exit.
-//   - stale/lost -> warn + revive to active + advance last_seen_at
-//     (D105). Caller proceeds with normal processing.
-//   - not-found (pgx.ErrNoRows) -> D106 lazy-create a new row from
+//   - stale/lost -> warn + revive to active + advance last_seen_at.
+//     Caller proceeds with normal processing.
+//   - not-found (pgx.ErrNoRows) -> lazy-create a new row from
 //     the event's best-effort identity fields, then caller proceeds.
 //     Without this the caller's UPDATE queries no-op silently and
 //     the subsequent InsertEvent FK-violates, so the event is
@@ -63,7 +63,7 @@ func NewSessionProcessor(w *writer.Writer, pool *pgxpool.Pool) *SessionProcessor
 // event's downstream UPDATE + InsertEvent have a chance to succeed.
 //
 // HandleSessionEnd uses isClosed instead -- closing a stale/lost
-// session should transition directly via CloseSession, and D106 does
+// session should transition directly via CloseSession, and we do
 // not lazy-create on session_end (a teardown signal for a session we
 // never saw should not retroactively manifest a closed row).
 func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.EventPayload) (skip bool) {
@@ -72,7 +72,7 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 		"SELECT state FROM sessions WHERE session_id = $1::uuid", e.SessionID,
 	).Scan(&state)
 	if errors.Is(err, pgx.ErrNoRows) {
-		// D106: session never seen. Lazy-create from event fields.
+		// Session never seen. Lazy-create from event fields.
 		occurredAt, tsErr := time.Parse(time.RFC3339, e.Timestamp)
 		if tsErr != nil {
 			occurredAt = time.Now().UTC()
@@ -86,8 +86,8 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 		if cErr != nil {
 			// Lazy-create failed. Log and fail open -- InsertEvent
 			// will then FK-violate and the consumer will Nak+retry,
-			// which is the pre-D106 behaviour for this failure mode.
-			slog.Error("lazy-create session failed (D106)",
+			// so a transient DB failure costs a redelivery, not the event.
+			slog.Error("lazy-create session failed",
 				"session_id", e.SessionID,
 				"event_type", e.EventType,
 				"err", cErr,
@@ -95,7 +95,7 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 			return false
 		}
 		if created {
-			slog.Info("lazy-created session on event (D106)",
+			slog.Info("lazy-created session on event",
 				"session_id", e.SessionID,
 				"event_type", e.EventType,
 				"flavor", e.Flavor,
@@ -137,7 +137,7 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 		)
 		return true
 	case "stale", "lost":
-		slog.Warn("reviving stale/lost session on event (D105)",
+		slog.Warn("reviving stale/lost session on event",
 			"session_id", e.SessionID,
 			"event_type", e.EventType,
 			"prior_state", state,
@@ -166,12 +166,12 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 
 // upgradeContextIfPresent fills in sessions.context when the incoming
 // event carries one. Called from every non-closed branch of
-// handleSessionGuard so lazy-created rows (D106) and already-active
+// handleSessionGuard so lazy-created rows and already-active
 // rows whose session_start never landed both pick up context from the
 // first event that actually reaches the worker.
 //
 // Scoped to the context column only. Flavor, agent_type, token_id,
-// and token_name remain session_start-only writes to preserve D094
+// and token_name remain session_start-only writes to preserve
 // attribution semantics: a non-session_start event has no authoritative
 // source for those columns.
 //
@@ -205,8 +205,8 @@ func (sp *SessionProcessor) upgradeContextIfPresent(ctx context.Context, e consu
 // sessionLookup is the result of sessionLookupState. "missing" distinguishes
 // "unknown session_id" from "known but closed" so HandleSessionEnd can emit
 // a WARN + dropped-events counter increment for the former while treating
-// the latter as an idempotent no-op. Phase 4 D2: orphan session_end was
-// previously dropped via a silent FK-violation + NATS Nak loop; this
+// the latter as an idempotent no-op. Without it an orphan session_end
+// would be dropped via a silent FK-violation + NATS Nak loop; the
 // three-way result surfaces it cleanly.
 type sessionLookup int
 
@@ -245,22 +245,22 @@ func (sp *SessionProcessor) sessionLookupState(ctx context.Context, sessionID st
 
 // HandleSessionStart upserts the agent and creates (or revives) a session.
 //
-// D094: session_start events are the attach path. The ingestion API
+// session_start events are the attach path. The ingestion API
 // has already revived the row synchronously (flipping state back to
 // active and recording a session_attachments row) so by the time this
 // runs the row is state=active and UpsertSession's ON CONFLICT branch
 // only has to refresh last_seen_at and the optional identity fields.
-// Skipping session_start here (the old KI13 behaviour) would undo the
+// Skipping session_start here (as an earlier design did) would undo the
 // attachment because the response envelope has already been sent to
 // the sensor.
 //
-// D105 generalised the terminal policy: heartbeat, post_call, tool_call,
-// pre_call, and directive_result now run through handleSessionGuard,
-// which revives stale/lost sessions on the fly, skips only closed ones,
-// and (since D106) lazily creates the row when it doesn't exist.
+// Terminal policy: heartbeat, post_call, tool_call, pre_call, and
+// directive_result run through handleSessionGuard, which revives
+// stale/lost sessions on the fly, skips only closed ones, and lazily
+// creates the row when it doesn't exist.
 // session_end uses isClosed (a closed session's session_end is a
 // no-op; a stale or lost session_end goes straight to closed via
-// CloseSession rather than flickering through active). D106's
+// CloseSession rather than flickering through active). The
 // lazy-create path deliberately excludes session_end -- a teardown
 // signal for a session we never saw should not retroactively manifest
 // a closed row.
@@ -288,7 +288,7 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 		}
 	}
 
-	// D126 § 3 forward-reference soft-link. When this event is a
+	// Forward-reference soft-link. When this event is a
 	// sub-agent session_start whose parent_session_id is not yet in
 	// the DB, INSERT a parent-stub row first so the child's UpsertSession
 	// satisfies the new parent_session_id FK. The real parent's later
@@ -423,7 +423,7 @@ func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.Event
 		if err := sp.w.UpdateTokensUsed(ctx, e.SessionID, delta); err != nil {
 			return fmt.Errorf("post call: %w", err)
 		}
-		// D115 agent-level rollup. Non-fatal on error so a
+		// Agent-level rollup. Non-fatal on error so a
 		// transient UPDATE failure does not fail the whole event
 		// -- the session-level tokens_used is authoritative, the
 		// agent-level total_tokens is a dashboard convenience.
@@ -451,16 +451,16 @@ func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.Event
 // CloseSession, not flicker through active. Already-closed sessions are
 // an idempotent no-op.
 //
-// Phase 4 D2: orphan session_end (session_end for an unknown
-// session_id) is now handled explicitly. Pre-Phase-4 behaviour was a
-// silent FK-violation at InsertEvent → NATS Nak → redelivery loop → DLQ,
-// with an opaque "process error" log that didn't distinguish "orphan"
-// from "real problem". The new path looks up the session state before
+// Orphan session_end (session_end for an unknown session_id) is
+// handled explicitly. Letting it through would mean a silent
+// FK-violation at InsertEvent → NATS Nak → redelivery loop → DLQ,
+// with an opaque "process error" log that doesn't distinguish "orphan"
+// from "real problem". Instead we look up the session state before
 // CloseSession runs; a missing row yields a WARN log + dropped-events
 // counter increment + nil return so the consumer ACKs cleanly (there is
 // nothing to recover from redelivery).
 // HandleMCPServerAttached UPSERTs an MCP server fingerprint into
-// “sessions.context.mcp_servers“ (D140 step 6.6 A2). Routed
+// “sessions.context.mcp_servers“. Routed
 // from Process() alongside HandlePostCall (which advances
 // last_seen_at) so the per-server dict lands and the dashboard
 // SessionDrawer panel reflects it within ~2-3 s of attach via
@@ -481,7 +481,7 @@ func (sp *SessionProcessor) HandleMCPServerAttached(
 ) error {
 	// Build the per-server dict matching the existing context shape.
 	// Field omissions: AttachedAt (audit-only), Fingerprint (dedup-
-	// only — D127 (canonical_url, name) tuple uniquely determines
+	// only — the (canonical_url, name) tuple uniquely determines
 	// it). The dashboard SessionDrawer reads this dict's name /
 	// transport / protocol_version / version / capabilities /
 	// instructions / server_url fields directly.
@@ -539,7 +539,7 @@ func nilIfEmpty(s string) any {
 func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.EventPayload) error {
 	switch sp.sessionLookupState(ctx, e.SessionID) {
 	case sessionLookupMissing:
-		// D106 deliberately does NOT lazy-create on session_end -- a
+		// We deliberately do NOT lazy-create on session_end -- a
 		// teardown signal for a session we never saw should not
 		// retroactively manifest a closed row. Log + counter + ACK.
 		metrics.IncrDropped(metrics.ReasonOrphanSessionEnd)

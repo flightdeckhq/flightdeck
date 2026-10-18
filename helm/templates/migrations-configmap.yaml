@@ -5,8 +5,8 @@ from docker/postgres/migrations. In Helm the SQL files are packaged as a
 ConfigMap and mounted into every workers pod.
 
 The ConfigMap is built from the helm/migrations/ directory via
-.Files.Glob. helm/migrations/ is a build artifact (gitignored; see
-DECISIONS.md D136), populated by `make -C helm sync-migrations` which
+.Files.Glob. helm/migrations/ is a build artifact (gitignored),
+populated by `make -C helm sync-migrations` which
 copies from docker/postgres/migrations/ (the canonical source). The
 Makefile wires sync-migrations as a prerequisite of `lint` / `template`
 / `install` / `upgrade`, so any of those targets refreshes the chart

@@ -207,7 +207,6 @@ def test_configuration_error_on_empty_server(monkeypatch: pytest.MonkeyPatch) ->
     # Scrub FLIGHTDECK_SERVER / FLIGHTDECK_TOKEN so a shell with these
     # vars set (dev loop, release workflow) doesn't let init() resolve
     # a server from env and mask the empty-kwarg ConfigurationError.
-    # KI25.
     monkeypatch.delenv("FLIGHTDECK_SERVER", raising=False)
     monkeypatch.delenv("FLIGHTDECK_TOKEN", raising=False)
     import flightdeck_sensor
@@ -244,7 +243,7 @@ def test_get_status_returns_correct_fields() -> None:
 
 
 # ------------------------------------------------------------------
-# D094 -- session_id hint + backend attachment
+# session_id hint + backend attachment
 # ------------------------------------------------------------------
 
 
@@ -252,7 +251,7 @@ def test_init_custom_session_id_emits_warning(
     caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """When a caller supplies session_id (kwarg or env var), init()
-    logs a single WARNING with the exact wording documented in D094
+    logs a single WARNING with the documented attachment wording
     so operators can see attachment semantics kicked in."""
     import flightdeck_sensor
 
@@ -348,7 +347,7 @@ def test_init_non_uuid_session_id_falls_back_and_warns(
 
 def test_init_env_var_overrides_kwarg(monkeypatch: pytest.MonkeyPatch) -> None:
     """FLIGHTDECK_SESSION_ID env var wins over the init() kwarg, same
-    pattern as FLIGHTDECK_SERVER and AGENT_FLAVOR (D094)."""
+    pattern as FLIGHTDECK_SERVER and AGENT_FLAVOR."""
     import flightdeck_sensor
 
     env_sid = "22222222-2222-4222-8222-222222222222"
@@ -395,7 +394,7 @@ def test_post_event_attached_logs_info_once(
 
 
 # ---------------------------------------------------------------------
-# KI20 -- FLIGHTDECK_SERVER URL normalization at init()
+# FLIGHTDECK_SERVER URL normalization at init()
 # ---------------------------------------------------------------------
 #
 # The Claude Code plugin uses FLIGHTDECK_SERVER without the /ingest

@@ -4,8 +4,7 @@
 // entry land atomically.
 //
 // See ARCHITECTURE.md "MCP Protection Policy" → "Audit" for the
-// transaction shape and DECISIONS.md D128 for the storage schema
-// rationale (D142 retired the version-history column + table).
+// transaction shape.
 
 package store
 
@@ -22,8 +21,8 @@ import (
 )
 
 // EnsureGlobalMCPPolicy is a boot-time idempotent retry. Migration
-// 000019 seeds the global empty-blocklist row at install time per
-// D141, which closes the cold-boot race where api beat workers to a
+// 000019 seeds the global empty-blocklist row at install time,
+// which closes the cold-boot race where api beat workers to a
 // fresh postgres and 500'd until manual restart. This hook stays as
 // a defensive noop for install paths where api may run before the
 // migrator (e.g. future operator-managed Helm charts). Race-safe
@@ -325,7 +324,7 @@ func (s *Store) DeleteMCPPolicy(ctx context.Context, flavor string, actorTokenID
 	return nil
 }
 
-// ResolveMCPPolicy implements the D135 algorithm: flavor entry →
+// ResolveMCPPolicy implements the resolution algorithm: flavor entry →
 // global entry → global mode default. The caller passes the
 // fingerprint that the API-side identity helper has already computed
 // from server_url + server_name. Returns a non-nil result on every
@@ -404,7 +403,7 @@ func (s *Store) ResolveMCPPolicy(ctx context.Context, flavor, fingerprint string
 		return nil, fmt.Errorf("resolve global mode default: %w", err)
 	}
 
-	// Per-flavor block_on_uncertainty (D135). When global mode is
+	// Per-flavor block_on_uncertainty. When global mode is
 	// allowlist AND flavor's BOU is true, fall-through still
 	// resolves to block but with the audit-grade signal.
 	flavorBOU := false
@@ -510,7 +509,7 @@ func (s *Store) ListMCPPolicyAuditLog(ctx context.Context, scope, scopeValue, ev
 
 // granularityForPeriod maps the period query param to the
 // time-bucket granularity used by date_trunc / generate_series in
-// the metrics SQL. Locked in step 6.5: 24h → hour, 7d / 30d → day.
+// the metrics SQL: 24h → hour, 7d / 30d → day.
 // Hour-level buckets at 30d would be 720 buckets per server which
 // is too noisy for a sparkline; day-level at 24h would be a single
 // data point which defeats the trend visualization.
@@ -534,8 +533,7 @@ func granularityInterval(granularity string) string {
 // events scoped to the flavor's policy. Returns BOTH time-bucketed
 // series (zero-filled via generate_series so the dashboard sparkline
 // renders honest gaps) AND per-server aggregate totals (used for the
-// header summary table). Step 6.5 reshape — pre-step-6.5 callers
-// only saw the aggregates. The aggregates are still computed in the
+// header summary table). The aggregates are computed in the
 // SAME query as a separate windowed pass so the response stays
 // single-fetch.
 func (s *Store) GetMCPPolicyMetrics(ctx context.Context, scope, scopeValue, period string) (*MCPPolicyMetrics, error) {
@@ -619,8 +617,7 @@ func (s *Store) GetMCPPolicyMetrics(ctx context.Context, scope, scopeValue, peri
 	// timestamp in the window at the chosen granularity even when no
 	// matching event landed in that bucket — sparse data on a
 	// security dashboard would render a flat-then-spike as a gradual
-	// ramp, which misleads the operator (Step 6.5 PR Part B
-	// rationale).
+	// ramp, which misleads the operator.
 	bucketSQL := fmt.Sprintf(`
 		WITH window_buckets AS (
 			SELECT generate_series(

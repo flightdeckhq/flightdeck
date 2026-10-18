@@ -1223,7 +1223,7 @@ const docTemplate = `{
         },
         "/v1/mcp-policies/global": {
             "get": {
-                "description": "Returns the singleton global policy + entries. Auto-created at API boot per D133, so this endpoint always returns 200.",
+                "description": "Returns the singleton global policy + entries. Seeded by migration and ensured at API boot, so this endpoint always returns 200.",
                 "produces": [
                     "application/json"
                 ],
@@ -1253,7 +1253,7 @@ const docTemplate = `{
                 }
             },
             "put": {
-                "description": "Replaces global policy state — mode, entries, block_on_uncertainty. Bumps version, writes a snapshot, writes an audit-log entry. Single-shot transaction (D128).",
+                "description": "Replaces global policy state — mode, entries, block_on_uncertainty. Writes an audit-log entry in the same transaction.",
                 "consumes": [
                     "application/json"
                 ],
@@ -1450,7 +1450,7 @@ const docTemplate = `{
         },
         "/v1/mcp-policies/templates": {
             "get": {
-                "description": "Returns the three locked templates (D138) with metadata + YAML body. Read-only scope; any valid bearer token. The strict-with-common-allows template carries a maintenance warning in its description.",
+                "description": "Returns the three locked templates with metadata + YAML body. Read-only scope; any valid bearer token. The strict-with-common-allows template carries a maintenance warning in its description.",
                 "produces": [
                     "application/json"
                 ],
@@ -1530,7 +1530,7 @@ const docTemplate = `{
                 }
             },
             "put": {
-                "description": "Replaces flavor policy state — entries, block_on_uncertainty. Mode is global-only (D134) and rejected here. Same atomic version + audit semantics as the global PUT.",
+                "description": "Replaces flavor policy state — entries, block_on_uncertainty. Mode is global-only and rejected here. Same atomic version + audit semantics as the global PUT.",
                 "consumes": [
                     "application/json"
                 ],
@@ -1777,7 +1777,7 @@ const docTemplate = `{
         },
         "/v1/mcp-policies/{flavor}/audit-log": {
             "get": {
-                "description": "Returns operator-initiated mutation history in DESC time order, paginated. event_type query filters to one mutation kind. Sensor-observed system state (decision events, name drift) lives in the events pipeline (D131), NOT here.",
+                "description": "Returns operator-initiated mutation history in DESC time order, paginated. event_type query filters to one mutation kind. Sensor-observed system state (decision events, name drift) lives in the events pipeline, NOT here.",
                 "produces": [
                     "application/json"
                 ],

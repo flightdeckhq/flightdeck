@@ -1,8 +1,4 @@
 // Handler tests for MCP Protection Policy metrics + templates.
-// Originally these lived in ``mcp_policy_power_test.go`` alongside
-// dry-run and YAML import/export tests; step 6.8 cleanup retired
-// those features (D142, D143, D144) and the legacy "power" name
-// died with them.
 
 package handlers
 
@@ -180,7 +176,7 @@ func TestMetricsHandlerRejectsInvalidPeriod(t *testing.T) {
 }
 
 func TestYamlToMutationRejectsModeOnFlavor(t *testing.T) {
-	// D134 lock: mode is global-only. A shipped template would never
+	// Mode is global-only. A shipped template would never
 	// produce this shape (templates are flavor-scoped and omit mode),
 	// but the guard is the API-boundary defence and gets exercised
 	// directly here to confirm the rejection message stays stable.
@@ -194,7 +190,7 @@ func TestYamlToMutationRejectsModeOnFlavor(t *testing.T) {
 		t.Fatal("yamlToMutation should reject mode-on-flavor; got empty error")
 	}
 	if !strings.Contains(msg, "mode is global-only") {
-		t.Errorf("rejection message should cite the D134 contract; got %q", msg)
+		t.Errorf("rejection message should say mode is global-only; got %q", msg)
 	}
 }
 

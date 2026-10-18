@@ -118,7 +118,7 @@ def init_sensor(
     prevent. Convention: ``playground-<script-name>``.
 
     ``agent_type`` defaults to ``"coding"`` -- playground scripts are
-    developer-facing smoke, matching the D114 vocabulary for
+    developer-facing smoke, matching the locked agent_type vocabulary for
     developer-driven sessions. Override only if the script is
     exercising a non-coding persona on purpose.
 
@@ -136,7 +136,7 @@ def init_sensor(
     Env overrides: FLIGHTDECK_SERVER (default http://localhost:4000/ingest),
     FLIGHTDECK_TOKEN (default tok_dev), FLIGHTDECK_API_URL (derived).
 
-    KI20: the sensor's ``init()`` now normalises a plugin-style
+    The sensor's ``init()`` normalises a plugin-style
     ``FLIGHTDECK_SERVER`` (no ``/ingest`` suffix) on its own, so this
     helper no longer needs to. We still compute ``api_url`` by replacing
     ``/ingest`` with ``/api`` for the default case so the

@@ -2,7 +2,7 @@
 # pre-populated allows for well-known MCP servers.
 #
 # IMPORTANT: the pre-populated server URLs reflect well-known MCP
-# server endpoints as of the v0.6 release; verify against your
+# server endpoints as of August 2026; verify against your
 # provider's current documentation before relying on them in
 # production. The maintenance commitment for these URLs is on the
 # operator who applies this template — Flightdeck does NOT track

@@ -1,5 +1,5 @@
 // MCP Protection Policy templates handler. Three locked templates
-// (D138) ship embedded via embed.FS:
+// ship embedded via embed.FS:
 //   - strict-baseline
 //   - permissive-dev
 //   - strict-with-common-allows
@@ -55,7 +55,7 @@ var templateCatalog = []templateMetaConfig{
 	{
 		Name: "strict-with-common-allows",
 		Description: "Allowlist mode with block_on_uncertainty=true plus three pre-populated allow entries for well-known MCP servers (filesystem npx package, github HTTPS endpoint, slack HTTPS endpoint). " +
-			"WARNING: the pre-populated server URLs reflect well-known MCP server endpoints as of the v0.6 release; verify against your provider's current documentation before relying on them in production.",
+			"WARNING: the pre-populated server URLs reflect well-known MCP server endpoints as of August 2026; verify against your provider's current documentation before relying on them in production.",
 		RecommendedFor: "Production flavor with immediate productivity for the most common public MCP servers; expect to maintain the URL list as upstream providers evolve.",
 		File:           "mcp_policy_templates/strict-with-common-allows.yaml",
 	},
@@ -71,7 +71,7 @@ type templateMetaConfig struct {
 // ListMCPPolicyTemplatesHandler handles GET /v1/mcp-policies/templates.
 //
 // @Summary      List shipped MCP policy templates
-// @Description  Returns the three locked templates (D138) with metadata + YAML body. Read-only scope; any valid bearer token. The strict-with-common-allows template carries a maintenance warning in its description.
+// @Description  Returns the three locked templates with metadata + YAML body. Read-only scope; any valid bearer token. The strict-with-common-allows template carries a maintenance warning in its description.
 // @Tags         mcp-policy
 // @Produce      json
 // @Success      200  {array}  templateMeta
@@ -124,7 +124,7 @@ func ApplyMCPPolicyTemplateHandler(s store.Querier) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		flavor := flavorFromPath(r)
 		if flavor == "" || isReservedFlavorSegment(flavor) || flavor == "global" {
-			// D138 + D134: shipped templates carry per-entry
+			// Shipped templates carry per-entry
 			// enforcement and (permissive-dev) mode; mode is
 			// global-only and yamlToMutation rejects it on
 			// flavor scope. Templates therefore apply to flavor
@@ -194,10 +194,9 @@ func lookupTemplateConfig(name string) (templateMetaConfig, bool) {
 }
 
 // policyYAML is the wire shape of a shipped template's YAML body.
-// Originally also used by the YAML import/export endpoints; D144
-// retired those (step 6.8 cleanup) so the type is now templates-
-// internal. The shipped templates are the only YAML the API still
-// accepts as policy input.
+// Templates-internal: the shipped templates are the only YAML the
+// API accepts as policy input (there are no YAML import/export
+// endpoints).
 type policyYAML struct {
 	Scope              string      `yaml:"scope"`
 	ScopeValue         string      `yaml:"scope_value,omitempty"`
@@ -216,14 +215,14 @@ type entryYAML struct {
 // yamlToMutation converts a parsed template YAML into the store's
 // MCPPolicyMutation shape. The scope arg is the apply target (always
 // "flavor" for the shipped templates) and rejects YAML that carries
-// mode on a flavor scope (D134).
+// mode on a flavor scope (mode is global-only).
 func yamlToMutation(doc policyYAML, scope string) (store.MCPPolicyMutation, string) {
 	mut := store.MCPPolicyMutation{
 		BlockOnUncertainty: doc.BlockOnUncertainty,
 	}
 	if doc.Mode != "" {
 		if scope == "flavor" {
-			return mut, "mode is global-only; flavor YAML must omit mode (D134)"
+			return mut, "mode is global-only; flavor YAML must omit mode"
 		}
 		mode := doc.Mode
 		mut.Mode = &mode

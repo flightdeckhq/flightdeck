@@ -2,5 +2,8 @@
   "name": "flightdeck-plugin",
   "version": "0.5.3",
   "private": true,
-  "type": "module"
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  }
 }

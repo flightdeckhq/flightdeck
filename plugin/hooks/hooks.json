@@ -5,7 +5,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs\""
           }
         ]
       }
@@ -15,7 +15,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs\""
           }
         ]
       }
@@ -26,7 +26,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs\""
           }
         ]
       }
@@ -37,7 +37,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs\""
           }
         ]
       }
@@ -48,7 +48,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs\""
           }
         ]
       }
@@ -58,7 +58,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs\""
           }
         ]
       }
@@ -68,7 +68,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs\""
           }
         ]
       }
@@ -78,7 +78,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs\""
           }
         ]
       }
@@ -88,7 +88,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs\""
           }
         ]
       }
@@ -98,7 +98,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs"
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs\""
           }
         ]
       }

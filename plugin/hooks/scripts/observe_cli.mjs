@@ -10,7 +10,7 @@
 //     response envelope for every assistant turn, including model name,
 //     usage object (input/output/cache tokens), and the message body.
 //     The plugin reads that file to emit real post_call events rather
-//     than the old "tokens_total = 0" placeholder (D100).
+//     than the old "tokens_total = 0" placeholder.
 //   * Every hook is a fresh Node child process. State that must survive
 //     across invocations (session id, session-start de-dup, Stop dedup
 //     per message.id, connection-refused one-shot log) lives on disk
@@ -47,6 +47,7 @@ import { fileURLToPath } from "node:url";
 import { deriveAgentId, NAMESPACE_FLIGHTDECK } from "./agent_id.mjs";
 import { canonicalizeUrl as _mcpCanonicalizeUrl } from "./mcp_identity.mjs";
 import {
+  buildPolicyDecisionBlock,
   classifyServer,
   clearSessionPolicyCache,
   fetchPolicies,
@@ -84,7 +85,7 @@ const PLUGIN_VERSION = (() => {
 })();
 
 // ---------------------------------------------------------------------
-// Env var resolution + defaults (D100 zero-config flow).
+// Env var resolution + defaults (zero-config flow).
 // ---------------------------------------------------------------------
 
 /**
@@ -131,7 +132,7 @@ export function parseBool(value, fallback) {
  *     session, and the Prompts tab is empty without captured LLM
  *     call content. The Python sensor keeps ``capture_prompts=False``
  *     as its default because it runs in production where prompts
- *     may carry PII and proprietary context (D019, D103). Users can
+ *     may carry PII and proprietary context. Users can
  *     opt out on the plugin with ``FLIGHTDECK_CAPTURE_PROMPTS=false``.
  */
 export function resolveConfig(env = process.env) {
@@ -146,7 +147,7 @@ export function resolveConfig(env = process.env) {
   // there; a production server that hasn't seeded tok_dev will refuse
   // the request with 401 (which the existing unreachable-line handler
   // surfaces). FLIGHTDECK_QUIET=1 suppresses the line so suites that
-  // intentionally exercise the default-token path (D100 / zero-config)
+  // intentionally exercise the default-token path (zero-config)
   // don't pollute their captured stderr assertions.
   if (!explicitToken && env.FLIGHTDECK_QUIET !== "1") {
     process.stderr.write(
@@ -164,22 +165,19 @@ export function resolveConfig(env = process.env) {
 }
 
 // ---------------------------------------------------------------------
-// Session id -- v0.4.0 Phase 1 (D115): uuid4 random, cached once per
-// Claude Code invocation in a marker file keyed on the
-// Claude-Code-supplied invocation id so every hook in the same run
-// shares one session_id -- regardless of ``cd`` or whatever cwd the
-// hook process happens to inherit.
+// Session id: uuid4 random, cached once per Claude Code invocation
+// in a marker file keyed on the Claude-Code-supplied invocation id so
+// every hook in the same run shares one session_id -- regardless of
+// ``cd`` or whatever cwd the hook process happens to inherit.
 //
-// The v0.3-era derivation (D113) keyed on ``sha256(user, host, repo,
-// branch)`` and produced a stable uuid5; stability now lives in
-// ``agent_id`` so ``session_id`` can be a per-invocation random
-// uuid4. An earlier Phase 1 implementation briefly keyed the marker
-// on ``sha256(cwd)[:16]`` which broke the "one session per
-// invocation" invariant whenever a user ran ``cd`` between hooks --
-// three sessions landed for one Claude Code invocation in the audit
-// smoke. Keying on ``hookEvent.session_id`` closes that regression
-// because Claude Code guarantees a stable per-invocation id on every
-// hook event.
+// Stability lives in ``agent_id`` (a deterministic function of the
+// identity tuple), which is what frees ``session_id`` to be a
+// per-invocation random uuid4. Keying the marker on
+// ``sha256(cwd)[:16]`` instead breaks the "one session per
+// invocation" invariant whenever a user runs ``cd`` between hooks --
+// three sessions landed for one Claude Code invocation that way.
+// ``hookEvent.session_id`` is the key because Claude Code guarantees
+// a stable per-invocation id on every hook event.
 // ---------------------------------------------------------------------
 
 /**
@@ -389,14 +387,14 @@ export function collectContext(extras = {}) {
   }
 
   // Identify Claude Code itself in context.frameworks so the FRAMEWORK
-  // facet in Investigate picks it up alongside sensor-reported frameworks
-  // (D100). Version comes from the transcript when available.
+  // facet in Investigate picks it up alongside sensor-reported frameworks.
+  // Version comes from the transcript when available.
   const version = extras.claudeCodeVersion;
   frameworks.push(version ? `claude-code/${version}` : "claude-code");
   ctx.frameworks = frameworks;
 
-  // Phase 5 — MCP server fingerprint capture from .mcp.json + ~/.claude.json.
-  // Per Phase 5 D1, the Claude Code plugin emits MCP_TOOL_CALL events
+  // MCP server fingerprint capture from .mcp.json + ~/.claude.json.
+  // The Claude Code plugin emits MCP_TOOL_CALL events
   // and the session-level mcp_servers context but cannot observe MCP
   // resource reads / prompt fetches / list operations (those bypass
   // the hook surface entirely). The mcp_servers fingerprint list
@@ -467,7 +465,7 @@ export function sanitizeToolInput(input) {
 }
 
 // ---------------------------------------------------------------------
-// Phase 5 — MCP tool-name parsing + server fingerprint discovery.
+// MCP tool-name parsing + server fingerprint discovery.
 //
 // Claude Code namespaces MCP tools as ``mcp__<server>__<tool>``. The
 // hook payload's ``tool_name`` is the prefixed string; this helper
@@ -514,7 +512,7 @@ export function parseMcpToolName(name) {
 // malformed files yield an empty list (we never crash a hook on
 // corrupt user config). Fields per server entry mirror the
 // MCPServerFingerprint shape the Python sensor emits, with one
-// asymmetry per Phase 5 D1: the plugin cannot inspect the actual
+// asymmetry: the plugin cannot inspect the actual
 // MCP handshake (handshakes are invisible to hooks), so capability
 // discovery + server version are best-effort or absent. Operators
 // reading the dashboard see name + transport + command/URL — the
@@ -783,7 +781,7 @@ export function readLatestTurn(transcriptPath) {
 
 /**
  * Compute token fields from a transcript usage object, matching the
- * Python sensor's AnthropicProvider semantics (D100):
+ * Python sensor's AnthropicProvider semantics:
  *   tokens_input = uncached + cache_read + cache_creation
  *   tokens_cache_read / tokens_cache_creation surfaced separately
  *   tokens_output = output_tokens
@@ -836,12 +834,12 @@ export const EVENT_MAP = {
 };
 
 // ---------------------------------------------------------------------
-// Phase 5 — MCP tool-call emission (Claude Code plugin path).
+// MCP tool-call emission (Claude Code plugin path).
 //
-// Per Phase 5 D1, the plugin emits MCP_TOOL_CALL only — resource
+// The plugin emits MCP_TOOL_CALL only — resource
 // reads, prompt fetches, and list operations are invisible to the
 // hook surface. The wire shape matches what the Python sensor's
-// MCP interceptor produces (Phase 5 addition C parity check):
+// MCP interceptor produces:
 //
 //   server_name, transport, tool_name, arguments, result, duration_ms
 //
@@ -859,7 +857,7 @@ export const EVENT_MAP = {
 //     plugin doesn't get JSON-RPC error codes — those live below the
 //     hook surface — so the taxonomy stays coarse.
 //   * ``arguments`` and ``result`` capture is gated on the existing
-//     captureToolInputs / capturePrompts knobs (D4 + D103). MCP
+//     captureToolInputs / capturePrompts knobs. MCP
 //     bypasses the sanitiser whitelist (the keep-list would drop
 //     every MCP arg shape).
 // ---------------------------------------------------------------------
@@ -891,7 +889,8 @@ async function emitMCPToolCallEvent({
     /* silent */
   }
 
-  // Capture-on arguments: bypass the whitelist sanitiser per D4.
+  // Capture-on arguments: bypass the whitelist sanitiser (its
+  // keep-list would drop every MCP arg shape).
   const argumentsCapture =
     cfg.captureToolInputs && hookEvent.tool_input != null
       ? hookEvent.tool_input
@@ -940,14 +939,12 @@ async function emitMCPToolCallEvent({
     timestamp: new Date().toISOString(),
   };
 
-  // Phase 7 Step 3.b (D150): tool args + result migrate from inline
-  // payload to event_content's dedicated tool_input / tool_output
-  // columns. Plugin parity with the sensor's
-  // _build_tool_capture_content envelope — wire shape is
-  // byte-identical so the worker's InsertEventContent consumes
-  // both surfaces uniformly. captureToolInputs flag stays
-  // unchanged; the storage destination changes, the gating
-  // doesn't.
+  // Tool args + result live in event_content's dedicated tool_input /
+  // tool_output columns, not inline on the payload. Plugin parity
+  // with the sensor's _build_tool_capture_content envelope — wire
+  // shape is byte-identical so the worker's InsertEventContent
+  // consumes both surfaces uniformly. captureToolInputs gates
+  // whether they are captured, not where they land.
   if (argumentsCapture != null || resultCapture != null) {
     payload.has_content = true;
     payload.content = buildToolCaptureContent({
@@ -963,16 +960,17 @@ async function emitMCPToolCallEvent({
 }
 
 /**
- * Phase 7 Step 3.b (D150) — build the event_content envelope for
- * tool capture using the dedicated ``tool_input`` / ``tool_output``
- * columns added by migration 000021. Mirrors the sensor's
- * ``_build_tool_capture_content`` wire shape byte-for-byte so the
- * worker's ``InsertEventContent`` consumes both surfaces uniformly.
+ * Build the event_content envelope for tool capture using the
+ * dedicated ``tool_input`` / ``tool_output`` columns (migration
+ * 000021). Mirrors the sensor's ``_build_tool_capture_content``
+ * wire shape byte-for-byte so the worker's ``InsertEventContent``
+ * consumes both surfaces uniformly.
  *
  * ``response: {}`` ships explicitly because event_content.response
- * is NOT NULL in the pre-D150 schema — see the sensor helper for
- * the same constraint workaround. The operationally-meaningful
- * tool capture lives in tool_input / tool_output.
+ * is a NOT NULL column that predates tool capture — see the sensor
+ * helper for the same constraint workaround. The
+ * operationally-meaningful tool capture lives in tool_input /
+ * tool_output.
  */
 export function buildToolCaptureContent({
   toolInput,
@@ -997,7 +995,7 @@ export function buildToolCaptureContent({
 }
 
 // ---------------------------------------------------------------------
-// D126 — SubagentStart / SubagentStop emission.
+// SubagentStart / SubagentStop emission.
 //
 // The plugin's standard dispatch emits events for the OUTER session
 // — the one Claude Code invocation owns. When a Task subagent
@@ -1021,10 +1019,10 @@ export function buildToolCaptureContent({
 // disk-marker plumbing. ``parent_session_id`` carries the outer
 // session's id so the worker writes the relationship column.
 // ``agent_role`` joins the agent_id derivation as the conditional
-// 6th input (D126 § 1) — same uuid the Python sensor produces for
+// 6th input — same uuid the Python sensor produces for
 // a parent / role pair on the same identity 5-tuple.
 //
-// SubagentStop is the canonical child end-of-life signal (D126 § 5).
+// SubagentStop is the canonical child end-of-life signal.
 // PostToolUseFailure on a Task tool stays in the existing tool_call
 // dispatch path (parent's event with the error block); we do NOT
 // emit a child session_end here, because a delayed real
@@ -1084,7 +1082,7 @@ export function _subagentChildSessionId(outerSessionId, correlator) {
   );
 }
 
-// D126 — derive the subagent's per-execution transcript path from
+// Derive the subagent's per-execution transcript path from
 // the parent's transcript path and the subagent's agent_id.
 //
 // Claude Code stores each subagent's LLM turns in a SEPARATE JSONL
@@ -1125,7 +1123,7 @@ export function _subagentTranscriptPath(parentTranscriptPath, subagentAgentId) {
   return join(parentDir, parentBase, "subagents", `agent-${subagentAgentId}.jsonl`);
 }
 
-// D126 — interior-event routing for Claude Code subagents.
+// Interior-event routing for Claude Code subagents.
 //
 // When Claude Code runs an Agent-tool subagent, every interior hook
 // (PostToolUse, PreToolUse, Stop, etc.) fires with the OUTER session's
@@ -1143,14 +1141,13 @@ export function _subagentTranscriptPath(parentTranscriptPath, subagentAgentId) {
 // execution and the event must land under the CHILD session, not
 // the parent.
 //
-// Pre-fix the plugin used the parent's session_id for these interior
-// events, leaving the child session row empty in the dashboard while
-// the parent collected the subagent's tool calls and LLM turns —
-// architecturally wrong, and the gap that survived the playground/14
-// synthetic harness because the harness never simulates the
-// SubagentStart → interior-PostToolUse → SubagentStop sequence (it
-// fires the boundary events alone). See DECISIONS.md D126 § 5
-// "interior-event routing" for the lesson.
+// Using the parent's session_id for these interior events would
+// leave the child session row empty in the dashboard while the
+// parent collected the subagent's tool calls and LLM turns. The
+// playground/14 synthetic harness cannot catch that regression
+// because it never simulates the SubagentStart →
+// interior-PostToolUse → SubagentStop sequence (it fires the
+// boundary events alone); only a real Claude Code run exercises it.
 //
 // Returns null when the hook is NOT in subagent context (parent's
 // own event); returns a context object with the remapped child
@@ -1220,7 +1217,7 @@ function _captureMessage(body) {
   };
 }
 
-// D126 § 6 sub-agent message routing thresholds. Mirror the
+// Sub-agent message routing thresholds. Mirror the
 // constants in sensor/flightdeck_sensor/core/session.py so the
 // plugin and Python sensor produce identical wire shapes for
 // equivalent body sizes — same inline / overflow / hard-reject
@@ -1229,7 +1226,7 @@ function _captureMessage(body) {
 // Bodies up to SUBAGENT_INLINE_THRESHOLD_BYTES ride inline on the
 // payload's ``incoming_message`` / ``outgoing_message`` field;
 // bodies above the threshold but at or below SUBAGENT_HARD_CAP_BYTES
-// route through the existing D119 event_content path
+// route through the existing event_content path
 // (has_content=true on the event, full body on payload.content
 // in the PromptContent envelope shape the worker's
 // InsertEventContent expects); bodies above the hard cap are
@@ -1240,7 +1237,7 @@ const SUBAGENT_OVERFLOW_PROVIDER = "flightdeck-subagent";
 
 /**
  * Resolve a sub-agent message into ``{stubOrInline, contentEnvelope}``
- * per D126 § 6. Mirrors :py:meth:`Session._route_subagent_message`
+ * by body size. Mirrors :py:meth:`Session._route_subagent_message`
  * on the sensor side — same byte-size measurement (JSON-encoded
  * body), same threshold values, same wire shapes for inline / stub
  * / overflow envelopes.
@@ -1262,7 +1259,7 @@ function _routeSubagentMessage(body, capturePrompts, direction) {
     process.stderr.write(
       `flightdeck: sub-agent ${direction}_message body exceeds ` +
         `${SUBAGENT_HARD_CAP_BYTES}-byte hard cap (size=${size} ` +
-        `bytes); dropped per D126 § 6.\n`,
+        `bytes); dropped.\n`,
     );
     return { stubOrInline: null, contentEnvelope: null };
   }
@@ -1272,7 +1269,7 @@ function _routeSubagentMessage(body, capturePrompts, direction) {
       contentEnvelope: null,
     };
   }
-  // Overflow → event_content via the existing D119 path. The
+  // Overflow → event_content via the existing prompt-capture path. The
   // PromptContent envelope's NOT NULL columns
   // (``messages`` default ``[]``, ``response`` JSONB NOT NULL) are
   // satisfied by an empty messages list and a response object that
@@ -1362,9 +1359,9 @@ async function emitSubagentEvent({
     payload.capture_prompts = cfg.capturePrompts;
   }
 
-  // D126 § 6 — sub-agent message routing. Body size decides
+  // Sub-agent message routing. Body size decides
   // whether the message lives inline on payload (≤ 8 KiB) or rides
-  // through the existing D119 event_content path (> 8 KiB and ≤ 2
+  // through the existing event_content path (> 8 KiB and ≤ 2
   // MiB). _routeSubagentMessage handles capture-off + hard-cap
   // rejection inline; here we just stamp whatever it returns.
   if (hookName === "SubagentStart") {
@@ -1395,8 +1392,7 @@ async function emitSubagentEvent({
     //      versions or subtle layout differences still work.
     //
     //   2. Stamp ``outgoing_message`` with the subagent's response
-    //      back to the parent (D126 § 6 cross-agent message
-    //      capture).
+    //      back to the parent (cross-agent message capture).
     const subagentTranscript =
       (typeof hookEvent.agent_transcript_path === "string" &&
         hookEvent.agent_transcript_path) ||
@@ -1422,8 +1418,8 @@ async function emitSubagentEvent({
         // Transcript-read failures are not fatal — we still emit
         // the session_end so the child session closes cleanly. The
         // missing post_calls just means the subagent's final turn
-        // won't show in the dashboard; D106 lazy-create still
-        // tracks the session itself.
+        // won't show in the dashboard; the worker's lazy-create
+        // path still tracks the session itself.
         process.stderr.write(
           `flightdeck: SubagentStop transcript flush failed for ` +
             `${childSessionId}: ${err?.message || err}\n`,
@@ -1462,8 +1458,7 @@ async function emitSubagentEvent({
 // so transient outages turned into permanent session mute. Retrying
 // each hook's POST costs at most two stderr lines on a dead stack
 // and unlocks the "server recovers mid-session, events resume
-// landing" path that D106 handles on the server side. See KI18
-// resolution / commit 4a.
+// landing" path that the worker's lazy-create handles server-side.
 // ---------------------------------------------------------------------
 
 /**
@@ -1658,7 +1653,7 @@ function markEmittedTurn(messageId) {
 }
 
 // ---------------------------------------------------------------------
-// Build content payload for prompt capture (D100). Mirrors the Python
+// Build content payload for prompt capture. Mirrors the Python
 // sensor's AnthropicProvider.extract_content shape: provider, model,
 // messages (user turn), tools (assistant tool_use blocks), response
 // (assistant text + thinking blocks). system is null -- Claude Code's
@@ -1737,7 +1732,7 @@ async function flushPostCallTurns({
 }
 
 // ---------------------------------------------------------------------
-// MCP Protection Policy hook dispatchers (D139).
+// MCP Protection Policy hook dispatchers.
 //
 // Three entry points exposed for the main() dispatch loop:
 //
@@ -1746,8 +1741,14 @@ async function flushPostCallTurns({
 //     declared MCP server's non-allow decision.
 //   * dispatchMcpPolicyPreToolUse — reads the per-session cache +
 //     remembered-decisions file fresh, writes a Claude Code hook
-//     decision (allow/deny/ask) on stdout. Returns true when a
-//     decision was emitted.
+//     decision on stdout as ``hookSpecificOutput.permissionDecision``
+//     (allow / deny / ask) with a ``permissionDecisionReason``. This
+//     is the contract Claude Code validates; the older top-level
+//     ``decision`` field is rejected by current versions (only the
+//     deprecated ``approve|block`` pair is still accepted there), and
+//     a rejected decision is treated as a non-blocking error, which
+//     means the tool call proceeds. Returns true when a decision was
+//     emitted.
 //   * dispatchMcpPolicyPostToolUse — when an mcp__<server>__<tool>
 //     succeeded AND the server was unknown-allowlist on this session
 //     AND no remembered decision exists yet: writes the
@@ -1777,7 +1778,12 @@ export async function dispatchMcpPolicySessionStart({
     // session_start for the common case of non-MCP projects.
     return;
   }
-  const flavor = process.env.AGENT_FLAVOR || null;
+  // Fetch the flavor policy for the flavor the plugin stamps on its
+  // own events (``basePayload.flavor``), so the policy that applies is
+  // the one the dashboard shows next to these sessions. AGENT_FLAVOR is
+  // honoured only as a fallback when the payload carries no flavor.
+  const flavor =
+    (basePayload && basePayload.flavor) || process.env.AGENT_FLAVOR || "claude-code";
   // The plugin's ``cfg.server`` is the ingestion-side base
   // (default http://localhost:4000); the API endpoints live under
   // ``/api``. process.env.FLIGHTDECK_API_URL overrides for prod
@@ -1813,12 +1819,38 @@ export async function dispatchMcpPolicySessionStart({
       policy_id: decision.policyId,
       scope: decision.scope,
       decision_path: decision.decisionPath,
+      // The ingestion API rejects every policy_mcp_* event that does
+      // not carry the shared policy_decision block (HTTP 400), and
+      // postEvent fails open, so without this block the event is
+      // silently dropped and the dashboard never sees the block.
+      policy_decision: buildPolicyDecisionBlock(decision),
     };
     if (eventType === "policy_mcp_block") {
       payload.block_on_uncertainty = false;
     }
     await postEvent(cfg.server, cfg.token, sessionId, payload);
   }
+}
+
+/**
+ * Write a PreToolUse permission decision to stdout in the shape Claude
+ * Code validates: ``{"hookSpecificOutput": {"hookEventName":
+ * "PreToolUse", "permissionDecision": "allow"|"deny"|"ask",
+ * "permissionDecisionReason": "..."}}``. The reason is shown to the
+ * user for ``ask`` and ``deny`` and recorded in the transcript.
+ *
+ * @param {"allow"|"deny"|"ask"} permissionDecision
+ * @param {string} permissionDecisionReason
+ */
+export function writeHookDecision(permissionDecision, permissionDecisionReason) {
+  const out = {
+    hookSpecificOutput: {
+      hookEventName: "PreToolUse",
+      permissionDecision,
+      permissionDecisionReason,
+    },
+  };
+  process.stdout.write(JSON.stringify(out) + "\n");
 }
 
 export function dispatchMcpPolicyPreToolUse(cfg, hookEvent) {
@@ -1856,7 +1888,7 @@ export function dispatchMcpPolicyPreToolUse(cfg, hookEvent) {
     return false;
   }
 
-  // D139 fresh-read: consult the remembered-decisions file on
+  // Fresh-read: consult the remembered-decisions file on
   // every PreToolUse so concurrent sessions see each other's
   // approvals in real time.
   const decision = classifyServer(policies, fp.endpoint, fp.name);
@@ -1866,22 +1898,26 @@ export function dispatchMcpPolicyPreToolUse(cfg, hookEvent) {
     );
     if (remembered) {
       // Previously approved — proceed silently.
-      process.stdout.write(JSON.stringify({ decision: "allow" }) + "\n");
+      writeHookDecision(
+        "allow",
+        `MCP server ${fp.name} was previously approved on this machine (remembered decision)`,
+      );
       return true;
     }
     // No remembered approval — defer to Claude Code's built-in
     // ask flow. The user gets a yes/no prompt; if they say yes,
     // PostToolUse below catches the de-facto approval.
-    process.stdout.write(JSON.stringify({ decision: "ask" }) + "\n");
+    writeHookDecision(
+      "ask",
+      `MCP policy: ${fp.name} is not on the allowlist for this flavor; approve to proceed`,
+    );
     return true;
   }
   if (decision.classification === "block") {
     const reason =
       `MCP policy blocked tool call to ${fp.name} `
       + `(${decision.decision.scope}, ${decision.decision.decisionPath})`;
-    process.stdout.write(
-      JSON.stringify({ decision: "deny", reason }) + "\n",
-    );
+    writeHookDecision("deny", reason);
     return true;
   }
   // allow / warn → no explicit decision; default flow applies.
@@ -1985,18 +2021,18 @@ async function main() {
   const hookName = hookEvent.hook_event_name || hookEvent.event || "";
   const eventType = EVENT_MAP[hookName];
   // PostToolUseFailure is intentionally absent from EVENT_MAP — it is
-  // observable for MCP tools only (Phase 5 D1) and is dropped for
+  // observable for MCP tools only and is dropped for
   // generic Claude Code tool failures. Let it through so the MCP
   // dispatch branch below can route it to mcp_tool_call; non-MCP
   // PostToolUseFailure falls through and is dropped after that branch.
   //
-  // D126 — SubagentStart and SubagentStop are also intentionally
+  // SubagentStart and SubagentStop are also intentionally
   // absent from EVENT_MAP because they emit CHILD session_start /
   // session_end events (different session_id from the outer hook),
   // not parent events. Routed to a dedicated dispatch below.
   const isSubagentHook =
     hookName === "SubagentStart" || hookName === "SubagentStop";
-  // D139: PreToolUse fires for the MCP Protection Policy gate.
+  // PreToolUse fires for the MCP Protection Policy gate.
   // It has no entry in EVENT_MAP because PreToolUse itself doesn't
   // emit a wire event — it returns a hook decision (allow / deny /
   // ask) on stdout. The branch lives in dispatchMcpPolicyPreToolUse
@@ -2012,7 +2048,7 @@ async function main() {
     return;
   }
 
-  // D139 — PreToolUse MCP Protection Policy gate. Runs before the
+  // PreToolUse MCP Protection Policy gate. Runs before the
   // rest of the dispatch because it returns a Claude Code hook
   // decision on stdout; the hook's job here is to gate the call,
   // NOT to emit a wire event. (warn/block events emit at
@@ -2055,7 +2091,7 @@ async function main() {
   //
   // ``context`` is attached here so *every* event type (pre_call,
   // post_call, tool_call, session_end) carries it -- not only
-  // session_start. The worker's D106 lazy-create path and the
+  // session_start. The worker's lazy-create path and the
   // UpgradeSessionContext upgrade depend on seeing context on the first
   // event that actually reaches the server. Without this, a session
   // whose session_start POST failed (stack down at start, dead-TLS
@@ -2066,7 +2102,7 @@ async function main() {
   // COALESCE upgrade treats "missing" and "empty dict" identically.
   const baseContext = safeCollectContext();
 
-  // D115 agent identity. Plugin emits hardcoded agent_type="coding"
+  // Agent identity. Plugin emits hardcoded agent_type="coding"
   // and client_type="claude_code"; agent_name defaults to
   // "{user}@{hostname}" and can be overridden via
   // FLIGHTDECK_AGENT_NAME env var. The user/hostname come from the
@@ -2088,7 +2124,7 @@ async function main() {
     agent_name: baseAgentName,
   });
 
-  // D126 interior-event routing. When this hook fired inside a
+  // Interior-event routing. When this hook fired inside a
   // subagent's execution, swap (sessionId, agentId, agentName) to
   // the CHILD identity so every downstream emission lands under
   // the right session — and stamp parent_session_id / agent_role
@@ -2118,7 +2154,7 @@ async function main() {
     session_id: sessionId,
     flavor: "claude-code",
     agent_type: "coding",
-    // D115 identity on every event.
+    // Agent identity on every event.
     agent_id: agentId,
     agent_name: agentName,
     client_type: "claude_code",
@@ -2164,20 +2200,20 @@ async function main() {
     return turns.length > 0 ? turns.at(-1) : null;
   };
 
-  // SubagentStart / SubagentStop (D126). Emit a child session_start /
+  // SubagentStart / SubagentStop. Emit a child session_start /
   // session_end whose session_id is distinct from the outer
   // (parent) session, with parent_session_id pointing back at the
   // outer one and agent_role labeling the subagent's type. SubagentStop
   // is the canonical end-of-life signal; PostToolUseFailure on a
   // Task tool keeps emitting the parent's tool_call event with the
   // structured error block and does NOT duplicate-emit a child
-  // session_end (D126 § 6 disambiguation). Crashes that never reach
-  // a clean SubagentStop fall through the worker's existing state-
-  // revival path (active → stale → lost).
+  // session_end (a delayed real SubagentStop would race a synthetic
+  // one). Crashes that never reach a clean SubagentStop fall through
+  // the worker's existing state-revival path (active → stale → lost).
   if (isSubagentHook) {
     // emitSubagentEvent derives the child's agent_id and display
-    // name from the PARENT's agent_name (D126 § 1 — agent_role is
-    // the conditional 6th input on top of the parent's 5-tuple).
+    // name from the PARENT's agent_name (agent_role is the
+    // conditional 6th input on top of the parent's 5-tuple).
     // Pass ``baseAgentName`` explicitly so the right value flows
     // even if a future change makes ``agentName`` carry the child's
     // composed form for some other reason.
@@ -2207,7 +2243,7 @@ async function main() {
       claudeCodeVersion: turn?.claudeCodeVersion || hookEvent.version || null,
       capturePrompts: cfg.capturePrompts,
     });
-    // D139 — fetch + cache the MCP Protection Policy and emit
+    // Fetch + cache the MCP Protection Policy and emit
     // policy_mcp_warn / policy_mcp_block events for any non-allow
     // decisions per declared MCP server. Best-effort; failures
     // fail-open per Rule 28.
@@ -2262,6 +2298,11 @@ async function main() {
     // session and the dashboard shows the row as closed/stale even
     // while events keep landing.
     clearSessionCacheFiles(hookEvent, sessionId);
+    // Remove the per-session MCP policy cache so
+    // $TMPDIR/flightdeck-plugin/mcp-policy-*.json does not accumulate.
+    // Keyed on the outer session id: interior (sub-agent) hooks share
+    // the parent's policy cache.
+    clearSessionPolicyCache(outerSessionId);
     return;
   }
 
@@ -2291,10 +2332,10 @@ async function main() {
       turns: getTurns(),
       capturePrompts: cfg.capturePrompts,
     });
-    // D139 — clean up the per-session MCP policy marker file so
-    // $TMPDIR/flightdeck-plugin/mcp-policy-*.json doesn't grow
-    // unbounded.
-    clearSessionPolicyCache(outerSessionId);
+    // The per-session MCP policy cache deliberately survives Stop:
+    // Stop fires after every assistant turn, and PreToolUse reads the
+    // cache on every MCP tool call for the life of the session. It is
+    // removed on SessionEnd below.
     return;
   }
 
@@ -2378,7 +2419,7 @@ async function main() {
         `flightdeck: post_call flush on PostToolUse failed: ${err?.message || err}\n`,
       );
     }
-    // D139 — reactive de-facto-approval write. When an
+    // Reactive de-facto-approval write. When an
     // mcp__<server>__<tool> call succeeded AND the server was
     // unknown-allowlist on this session AND no remembered
     // decision exists yet for the active token: write the
@@ -2404,19 +2445,18 @@ async function main() {
     }
   }
 
-  // PreToolUse / PostToolUse: tool-lifecycle events. Keep the same
-  // sanitised-whitelist capture semantics the plugin has shipped since
-  // Phase 4.
+  // PreToolUse / PostToolUse: tool-lifecycle events. Same
+  // sanitised-whitelist capture semantics as every other tool event.
   const toolName =
     hookEvent.tool_name ||
     hookEvent.tool_use?.name ||
     hookEvent.tool ||
     null;
 
-  // Phase 5 — MCP tool calls are namespaced as ``mcp__<server>__<tool>``
+  // MCP tool calls are namespaced as ``mcp__<server>__<tool>``
   // by Claude Code. Detect via prefix and route to the dedicated MCP
-  // emit branch BEFORE the standard tool sanitiser runs. Per Phase 5
-  // D4, the whitelist sanitiser is BYPASSED for MCP tools — its keep-
+  // emit branch BEFORE the standard tool sanitiser runs. The
+  // whitelist sanitiser is BYPASSED for MCP tools — its keep-
   // list (file_path / command / query / pattern / prompt) drops every
   // MCP-specific argument shape and would render the plugin-sourced
   // MCP_TOOL_CALL payload empty. The MCP path captures the raw
@@ -2442,7 +2482,7 @@ async function main() {
   }
 
   // Non-MCP PostToolUseFailure is dropped — there is no generic
-  // tool_failure event_type today (Phase 5 D1: failure granularity is
+  // tool_failure event_type today (failure granularity is
   // MCP-only). Avoids POSTing a payload with event_type=undefined.
   if (!eventType) return;
 
@@ -2459,8 +2499,7 @@ async function main() {
   // has_content=false, so the drawer rendered shallow metadata only).
   // Privacy tiers: input is gated on captureToolInputs (default ON);
   // output is gated on capturePrompts (default ON for the plugin,
-  // OFF for the Python sensor -- see resolveConfig rationale and
-  // DECISIONS.md D103).
+  // OFF for the Python sensor -- see resolveConfig rationale).
   let content = null;
   let hasContent = false;
   if (cfg.captureToolInputs && toolName && sanitizedInput) {
@@ -2487,10 +2526,10 @@ async function main() {
     hasContent = true;
   }
 
-  // D126 — preserve basePayload's parent_session_id when interior
+  // Preserve basePayload's parent_session_id when interior
   // subagent context set it (the modern Agent tool path). Fall back
   // to the legacy ``isSubagentCall ? sessionId : null`` shape for
-  // the deprecated Task-tool informational hint (D100, retained as
+  // the deprecated Task-tool informational hint (retained as
   // forward-compat on the parent's tool_call event for any consumer
   // still reading it). The two paths are mutually exclusive — when
   // interior context is active, basePayload.parent_session_id is

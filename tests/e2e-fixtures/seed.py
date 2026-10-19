@@ -1105,6 +1105,13 @@ def seed(mode: str = "full") -> None:
     seeded: int = 0
     skipped: int = 0
     backdated: int = 0
+    # Agents that received at least one new session this run. Only
+    # these need the fleet-visibility wait: an agent whose every role
+    # was skipped is already persisted, and its backdated roles
+    # (ancient-only sits nine days in the past) are legitimately
+    # outside the fleet window, so waiting for it on a re-seed can
+    # never succeed.
+    touched_agents: list[str] = []
 
     if mode == "full":
         for agent_cfg in agents_cfg:
@@ -1125,15 +1132,19 @@ def seed(mode: str = "full") -> None:
                     role_cfg=role_cfg,
                 )
                 seeded += 1
+                if agent_cfg["agent_name"] not in touched_agents:
+                    touched_agents.append(agent_cfg["agent_name"])
                 print(
                     f"  seeded {agent_cfg['agent_name']}/{role} ({session_id[:8]}) — {posted} events"
                 )
 
-        expected_agent_names = [a["agent_name"] for a in agents_cfg]
-        print(
-            f"[seed] waiting for worker to persist {len(expected_agent_names)} agents ..."
-        )
-        _wait_for_fleet_visibility(expected_agent_names, timeout=SEED_READY_TIMEOUT_SEC)
+        if touched_agents:
+            print(
+                f"[seed] waiting for worker to persist {len(touched_agents)} agents ..."
+            )
+            _wait_for_fleet_visibility(touched_agents, timeout=SEED_READY_TIMEOUT_SEC)
+        else:
+            print("[seed] every canonical session already present; no fleet wait needed")
 
     # Backdate aged-closed / stale sessions so their visible timestamps
     # match the declared offsets. Done AFTER the fleet-visibility wait

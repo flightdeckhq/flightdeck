@@ -297,8 +297,22 @@ class SensorResponses:
         self._is_async = is_async
 
     def create(self, **kwargs: Any) -> Any:
-        """Intercept responses.create() -- sync or async dispatch."""
+        """Intercept responses.create() -- sync or async dispatch.
+
+        ``stream=True`` takes the stream guard: Responses streams carry
+        their usage on the ``response.completed`` event, which the guard
+        reads as the chunk passes through. No ``stream_options`` injection
+        is needed on this API.
+        """
         real_fn = self._real.create
+        if kwargs.get("stream"):
+            if self._is_async:
+
+                async def _async_stream_create() -> base.GuardedAsyncStream:
+                    return base.call_stream_async(real_fn, kwargs, self._session, self._provider)
+
+                return _async_stream_create()
+            return base.call_stream(real_fn, kwargs, self._session, self._provider)
         if self._is_async:
             return base.call_async(real_fn, kwargs, self._session, self._provider)
         return base.call(real_fn, kwargs, self._session, self._provider)

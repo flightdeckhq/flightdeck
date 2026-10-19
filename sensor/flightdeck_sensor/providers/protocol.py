@@ -51,6 +51,26 @@ class Provider(Protocol):
         """Extract actual token counts from the provider response. Never raises."""
         ...
 
+    def usage_from_stream_chunk(self, chunk: Any) -> TokenUsage | None:
+        """Token usage carried by one streamed chunk or event, or ``None``
+        when this chunk carries none.
+
+        The stream guard merges successive non-None results field by
+        field (a later non-zero count replaces the earlier one), which
+        covers both cumulative deltas (Anthropic ``message_delta``) and a
+        single final usage chunk (OpenAI). Never raises.
+        """
+        ...
+
+    def usage_from_finished_stream(self, stream: Any) -> TokenUsage | None:
+        """Usage an exhausted stream object can report after the fact
+        (Anthropic's ``MessageStream.get_final_message().usage``), or
+        ``None``. Only called once the caller consumed the whole stream,
+        never on an early exit, because reading the final message may
+        consume the rest of the stream. Never raises.
+        """
+        ...
+
     def extract_content(
         self,
         request_kwargs: dict[str, Any],

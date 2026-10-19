@@ -7,6 +7,7 @@ implementation with no dependency on tokencap.
 from __future__ import annotations
 
 import contextlib
+import inspect
 import logging
 from typing import Any
 
@@ -144,6 +145,63 @@ class AnthropicProvider:
             )
         except Exception:
             return TokenUsage()
+
+    def usage_from_stream_chunk(self, chunk: Any) -> TokenUsage | None:
+        """Usage carried by a streamed Anthropic event.
+
+        ``message_start`` carries the input and cache counts (plus the
+        first output token); every ``message_delta`` carries the
+        cumulative output count and, on newer API versions, cumulative
+        input counts. Both the raw ``Stream[RawMessageStreamEvent]`` and
+        the ``messages.stream()`` helper yield these event types.
+        """
+        try:
+            kind = getattr(chunk, "type", None)
+            if kind == "message_start":
+                usage = getattr(getattr(chunk, "message", None), "usage", None)
+            elif kind == "message_delta":
+                usage = getattr(chunk, "usage", None)
+            else:
+                return None
+            if usage is None:
+                return None
+            input_tokens = getattr(usage, "input_tokens", None) or 0
+            cache_read = getattr(usage, "cache_read_input_tokens", None) or 0
+            cache_creation = getattr(usage, "cache_creation_input_tokens", None) or 0
+            output_tokens = getattr(usage, "output_tokens", None) or 0
+            return TokenUsage(
+                input_tokens=input_tokens + cache_read + cache_creation,
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read,
+                cache_creation_tokens=cache_creation,
+            )
+        except Exception:
+            return None
+
+    def usage_from_finished_stream(self, stream: Any) -> TokenUsage | None:
+        """``MessageStream.get_final_message().usage`` once the helper
+        stream is exhausted; ``None`` for raw streams and for the async
+        helper, whose final message is a coroutine the sync guard cannot
+        await (the per-chunk path covers it)."""
+        try:
+            final = getattr(stream, "get_final_message", None)
+            if not callable(final):
+                return None
+            # The helper's snapshot carries stop_reason once message_delta
+            # arrived; before that, get_final_message() would read the
+            # rest of the stream, which an early-exiting caller does not
+            # want.
+            snapshot = getattr(stream, "current_message_snapshot", None)
+            if snapshot is None or getattr(snapshot, "stop_reason", None) is None:
+                return None
+            message = final()
+            if inspect.iscoroutine(message):
+                message.close()
+                return None
+            usage = self.extract_usage(message)
+            return usage if usage.total > 0 else None
+        except Exception:
+            return None
 
     def extract_content(
         self,

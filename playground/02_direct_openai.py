@@ -32,6 +32,9 @@ from _helpers import (
 )
 
 MODEL = "gpt-4o-mini"
+# Streamed calls made above: sync chat stream, async chat stream, plain
+# chat iteration, Responses stream; each must land one metered post_call.
+EXPECTED_STREAMED_CALLS = 4
 HI = [{"role": "user", "content": "hi"}]
 
 
@@ -86,6 +89,31 @@ def main() -> None:
     asyncio.run(_async_stream())
     print_result("AsyncOpenAI().chat.completions (async stream)", True, int((time.monotonic() - t0) * 1000))
 
+    # Chat stream iterated with no ``with`` block, the pattern in the
+    # OpenAI README.
+    t0 = time.monotonic()
+    plain_chunks = 0
+    for _ in openai.OpenAI().chat.completions.create(
+        model=MODEL, max_tokens=5, messages=HI, stream=True,
+    ):
+        plain_chunks += 1
+    print_result(
+        "OpenAI().chat.completions (plain iteration)", plain_chunks > 0,
+        int((time.monotonic() - t0) * 1000), f"{plain_chunks} chunks",
+    )
+
+    # Responses API stream: usage arrives on response.completed.
+    t0 = time.monotonic()
+    resp_events = 0
+    for _ in openai.OpenAI().responses.create(
+        model=MODEL, input="hi", max_output_tokens=16, stream=True,
+    ):
+        resp_events += 1
+    print_result(
+        "OpenAI().responses.create(stream=True)", resp_events > 0,
+        int((time.monotonic() - t0) * 1000), f"{resp_events} events",
+    )
+
     t0 = time.monotonic()
     openai.OpenAI().responses.create(model=MODEL, input="hi", max_output_tokens=16)
     print_result("OpenAI().responses.create", True, int((time.monotonic() - t0) * 1000))
@@ -125,6 +153,23 @@ def main() -> None:
     )
     if not ttft_ok:
         raise AssertionError(f"no post_call carried streaming.ttft_ms; events={events!r}")
+
+    # Every streamed post_call must carry the token counts the provider
+    # sent inside the stream, not the pre-call estimate with zero output.
+    metered = [
+        e for e in streamed
+        if (e.get("tokens_output") or 0) > 0 and (e.get("tokens_input") or 0) > 0
+    ]
+    metered_ok = len(streamed) >= EXPECTED_STREAMED_CALLS and len(metered) == len(streamed)
+    print_result(
+        "streamed post_call events carry real token usage", metered_ok, 0,
+        f"{len(metered)}/{len(streamed)} streamed post_calls metered "
+        f"(expected at least {EXPECTED_STREAMED_CALLS})",
+    )
+    if not metered_ok:
+        raise AssertionError(
+            f"streamed post_call without real usage; events={events!r}",
+        )
 
     # Embeddings event-shape + capture round-trip. Two embedding events
     # land (single + list); fetch_events_for_session returns as soon as

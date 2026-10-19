@@ -195,42 +195,53 @@ def call_stream_async(
     )
 
 
+def _merge_usage(current: TokenUsage | None, new: TokenUsage) -> TokenUsage:
+    """Fold a usage snapshot read from a chunk into the running total.
+
+    A later non-zero count replaces the earlier one field by field, so
+    a cumulative ``message_delta`` output count supersedes the first
+    one, while a delta that carries no input count leaves the input
+    read from ``message_start`` untouched.
+    """
+    if current is None:
+        return new
+    return TokenUsage(
+        input_tokens=new.input_tokens or current.input_tokens,
+        output_tokens=new.output_tokens or current.output_tokens,
+        cache_read_tokens=new.cache_read_tokens or current.cache_read_tokens,
+        cache_creation_tokens=new.cache_creation_tokens or current.cache_creation_tokens,
+    )
+
+
+def _abort_reason_for(exc: BaseException, saw_chunk: bool) -> tuple[bool, str]:
+    """Classify a stream failure for the llm_error partial block."""
+    is_stream_error = saw_chunk
+    abort_reason = "error_mid_stream" if saw_chunk else "error_before_stream"
+    if type(exc).__name__ in ("APITimeoutError", "TimeoutError"):
+        abort_reason = "timeout"
+    return is_stream_error, abort_reason
+
+
 class GuardedStream:
-    """Context manager wrapping a streaming LLM response.
+    """Guard around a streaming LLM response.
 
-    Phase 4 (v0.5.0) adds comprehensive streaming semantics capture:
-
-    * **TTFT** -- milliseconds from the request kwargs being dispatched to
-      the first chunk arriving.
-    * **Chunk count** -- total number of chunks the caller iterated.
-    * **Inter-chunk gap stats** -- p50 / p95 / max gap between consecutive
-      chunks (ring-buffered to 1000 entries so a long stream cannot bloat
-      memory).
-    * **Final outcome** -- ``"completed"`` if the stream exhausted cleanly,
-      ``"aborted"`` if the caller broke out early or an exception unwound
-      the context.
-    * **Abort reason** -- ``"client_aborted"`` (break or explicit close),
-      ``"error_mid_stream"`` (exception after first chunk), or
-      ``"timeout"`` (APITimeoutError), ``"error_before_stream"`` (exception
-      before any chunk arrived).
-
-    The wrapper yields the caller's original chunk objects verbatim -- no
-    content is buffered or copied. Only arrival timestamps and a chunk
-    counter are tracked, so a latency-sensitive caller pays at most a
-    ``time.monotonic()`` call per chunk.
-
-    Reconciliation of token usage still happens on ``__exit__`` (including
-    early exit via ``break`` or exception). The streaming sub-object is
-    appended to the ``post_call`` payload; non-streaming callers see no
-    wire-shape change.
-
-    ``__exit__`` never raises. An internal failure building the streaming
-    summary falls through to a logged warning.
+    Works as a context manager (``with guard as s: for chunk in s``) and
+    as a plain iterator (``for chunk in guard``) because the SDKs
+    document both patterns. The underlying call is made lazily on first
+    use so a guard that is never iterated never opens a connection. As
+    chunks pass through, the provider reads any token usage they carry
+    (``usage_from_stream_chunk``) and the guard keeps the merged result,
+    so ``post_call`` reports the counts the provider sent inside the
+    stream rather than the pre-call estimate. The event is emitted
+    exactly once, at the first of: the stream being exhausted,
+    ``close()``, or leaving the ``with`` block; a failure emits
+    ``llm_error`` instead. Every other attribute (``text_stream``,
+    ``get_final_message``, ``response``) is proxied to the SDK stream.
     """
 
-    # A generous cap on the inter-chunk gap ring buffer. Large enough for
-    # every interactive chat completion, small enough that a 10 000-chunk
-    # edge case cannot bloat the sensor's working set.
+    # Inter-chunk gaps are kept for the p50 / p95 / max stats. 1000
+    # entries is plenty for those percentiles on any realistic stream
+    # and bounds memory on a very long one (the first 1000 gaps are kept).
     _MAX_GAPS_TRACKED = 1000
 
     def __init__(
@@ -251,24 +262,39 @@ class GuardedStream:
         self._stream: Any = None
         self._ctx: Any = None
         self._t0: float = 0.0
-        # Streaming metrics populated as the caller iterates chunks.
         self._first_chunk_t: float | None = None
         self._last_chunk_t: float | None = None
         self._chunk_count: int = 0
         self._inter_chunk_ms: list[float] = []
         self._stream_iter: Any = None
+        self._usage: TokenUsage | None = None
+        self._entered = False
+        self._exhausted = False
+        self._finalized = False
 
-    def __enter__(self) -> Any:
+    # -- lifecycle -----------------------------------------------------
+
+    def _enter_stream(self) -> None:
+        """Make the underlying call once. ``self._stream`` is the SDK
+        object the caller iterates; ``self._ctx`` is whatever the call
+        returned (a context manager for ``messages.stream()``, the
+        stream itself for ``create(stream=True)``)."""
+        if self._entered:
+            return
+        self._entered = True
         self._t0 = time.monotonic()
         try:
             self._ctx = self._real_fn(**self._kwargs)
-            self._stream = self._ctx.__enter__()
+            if hasattr(self._ctx, "__enter__"):
+                self._stream = self._ctx.__enter__()
+            else:
+                self._stream = self._ctx
         except BaseException as exc:
-            # Python's context-manager protocol does NOT call __exit__ when
-            # __enter__ raises. Emit the llm_error here so pre-stream
-            # exceptions (rate-limit, auth failure before the stream
-            # opens) don't drop silently. The caller still sees the
-            # exception propagate via the re-raise.
+            # The context-manager protocol does not call __exit__ when
+            # __enter__ raises, and a plain iterator has no __exit__ at
+            # all, so pre-stream failures (rate limit, auth) are reported
+            # here before the exception reaches the caller.
+            self._finalized = True
             latency_ms = int((time.monotonic() - self._t0) * 1000)
             try:
                 _emit_error(
@@ -289,6 +315,9 @@ class GuardedStream:
                     exc_info=True,
                 )
             raise
+
+    def __enter__(self) -> GuardedStream:
+        self._enter_stream()
         return self
 
     def __exit__(
@@ -297,51 +326,73 @@ class GuardedStream:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
+        self._close_underlying(exc_type, exc_val, exc_tb)
+        if exc_val is not None:
+            self._emit_stream_error(exc_val)
+            return
+        self._finalize()
+
+    def close(self) -> None:
+        """Close the SDK stream and settle the accounting. Lets callers
+        that iterate without a ``with`` block stop early and still get
+        their ``post_call``."""
+        self._close_underlying(None, None, None)
+        self._finalize()
+
+    def _close_underlying(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         try:
-            if self._ctx is not None:
+            if self._ctx is not None and hasattr(self._ctx, "__exit__"):
                 self._ctx.__exit__(exc_type, exc_val, exc_tb)
+            elif self._stream is not None and hasattr(self._stream, "close"):
+                self._stream.close()
         except Exception:
             _log.debug("Exception closing underlying stream", exc_info=True)
 
-        latency_ms = int((time.monotonic() - self._t0) * 1000)
-
-        if exc_val is not None:
-            # Mid-stream or pre-stream exception: emit llm_error with a
-            # stream_error classification and partial-token accounting.
-            # Never surface from __exit__ -- the caller's exception is
-            # already propagating.
-            try:
-                is_stream_error = self._first_chunk_t is not None
-                abort_reason = "error_mid_stream" if is_stream_error else "error_before_stream"
-                # Re-examine the exception class: APITimeoutError and
-                # plain TimeoutError both map to ``timeout`` per
-                # taxonomy, but abort_reason stays more descriptive.
-                if type(exc_val).__name__ in ("APITimeoutError", "TimeoutError"):
-                    abort_reason = "timeout"
-                _emit_error(
-                    self._session,
-                    self._provider,
-                    exc_val,
-                    latency_ms,
-                    self._kwargs,
-                    is_stream_error=is_stream_error,
-                    partial={
-                        "abort_reason": abort_reason,
-                        "partial_chunks": self._chunk_count,
-                    },
-                )
-            except Exception:
-                _log.warning(
-                    "Failed to emit llm_error for stream exception",
-                    exc_info=True,
-                )
+    def _emit_stream_error(self, exc_val: BaseException) -> None:
+        if self._finalized:
             return
-
-        # Clean exit. Determine whether the caller actually exhausted the
-        # stream (``final_outcome="completed"``) or broke out early
-        # (``final_outcome="aborted"`` with ``abort_reason="client_aborted"``).
+        self._finalized = True
+        latency_ms = int((time.monotonic() - self._t0) * 1000)
         try:
-            streaming = self._build_streaming_summary()
+            is_stream_error, abort_reason = _abort_reason_for(
+                exc_val, self._first_chunk_t is not None
+            )
+            _emit_error(
+                self._session,
+                self._provider,
+                exc_val,
+                latency_ms,
+                self._kwargs,
+                is_stream_error=is_stream_error,
+                partial={
+                    "abort_reason": abort_reason,
+                    "partial_chunks": self._chunk_count,
+                },
+            )
+        except Exception:
+            _log.warning(
+                "Failed to emit llm_error for stream exception",
+                exc_info=True,
+            )
+
+    def _finalize(self) -> None:
+        """Emit the post_call once, with the usage read from the stream."""
+        if self._finalized or not self._entered:
+            return
+        self._finalized = True
+        latency_ms = int((time.monotonic() - self._t0) * 1000)
+        try:
+            # Helper streams can report the final message's usage once
+            # they are complete; the provider returns None while the
+            # stream is still open so an early exit never reads further.
+            final = self._provider.usage_from_finished_stream(self._stream)
+            if final is not None:
+                self._usage = _merge_usage(self._usage, final)
             _post_call(
                 self._session,
                 self._provider,
@@ -349,8 +400,9 @@ class GuardedStream:
                 self._estimated,
                 latency_ms,
                 self._kwargs,
-                streaming=streaming,
+                streaming=self._build_streaming_summary(),
                 estimated_via=self._estimated_via,
+                usage_override=self._usage,
             )
         except Exception:
             _log.warning(
@@ -358,22 +410,28 @@ class GuardedStream:
                 exc_info=True,
             )
 
-    # Iterator protocol. Self-iterating so we can timestamp every chunk
-    # without copying it. The caller sees the underlying SDK's chunk
-    # objects verbatim.
+    # -- iteration -----------------------------------------------------
+
     def __iter__(self) -> Iterator[Any]:
+        self._enter_stream()
         if self._stream_iter is None:
             self._stream_iter = iter(self._stream)
         return self
 
     def __next__(self) -> Any:
+        self._enter_stream()
         if self._stream_iter is None:
             self._stream_iter = iter(self._stream)
         try:
             chunk = next(self._stream_iter)
         except StopIteration:
-            # Natural end-of-stream -- caller's for-loop will fall out.
+            self._exhausted = True
+            self._finalize()
             raise
+        self._record_chunk(chunk)
+        return chunk
+
+    def _record_chunk(self, chunk: Any) -> None:
         now = time.monotonic()
         if self._first_chunk_t is None:
             self._first_chunk_t = now
@@ -383,21 +441,23 @@ class GuardedStream:
                 self._inter_chunk_ms.append(gap_ms)
         self._last_chunk_t = now
         self._chunk_count += 1
-        return chunk
+        try:
+            found = self._provider.usage_from_stream_chunk(chunk)
+        except Exception:
+            found = None
+        if found is not None:
+            self._usage = _merge_usage(self._usage, found)
 
-    # ------------------------------------------------------------------
-    # Summary construction
-    # ------------------------------------------------------------------
+    def __getattr__(self, name: str) -> Any:
+        # Reached only for names the guard itself does not define. Keep
+        # private / dunder lookups local so hasattr() probes and copy /
+        # pickle machinery never trigger the underlying call.
+        if name.startswith("_"):
+            raise AttributeError(name)
+        self._enter_stream()
+        return getattr(self._stream, name)
 
     def _build_streaming_summary(self) -> dict[str, Any]:
-        """Delegate to the module-level helper.
-
-        Kept as an instance method so the sync wrapper's call sites
-        above read naturally (``self._build_streaming_summary()``).
-        :class:`GuardedAsyncStream` binds the same delegator so both
-        classes share one implementation without mypy's bound-method
-        self-type mismatch.
-        """
         return _build_streaming_summary(
             self._t0,
             self._first_chunk_t,
@@ -477,19 +537,12 @@ def _build_streaming_summary(
 class GuardedAsyncStream:
     """Async counterpart of :class:`GuardedStream`.
 
-    The SDK-async streaming pattern looks like::
-
-        async with client.messages.stream(...) as stream:
-            async for chunk in stream:
-                ...
-
-    so both ``__aenter__`` / ``__aexit__`` and ``__aiter__`` / ``__anext__``
-    must be implemented. The measurement policy is identical to the sync
-    path: TTFT on first chunk, inter-chunk gap stats, abort reason.
-
-    Python's async-CM protocol (same as the sync protocol): if
-    ``__aenter__`` raises, ``__aexit__`` is NOT invoked -- so the
-    pre-stream exception handling lives inside ``__aenter__`` explicitly.
+    Supports ``async with client.messages.stream(...) as s: async for
+    chunk in s`` as well as ``async for chunk in await
+    client.chat.completions.create(..., stream=True)`` with no ``async
+    with``. Metering, emission and attribute proxying follow the sync
+    guard; the only difference is that the underlying call may return a
+    coroutine that resolves to the stream, which is awaited once.
     """
 
     _MAX_GAPS_TRACKED = GuardedStream._MAX_GAPS_TRACKED
@@ -517,25 +570,32 @@ class GuardedAsyncStream:
         self._chunk_count: int = 0
         self._inter_chunk_ms: list[float] = []
         self._stream_iter: Any = None
+        self._usage: TokenUsage | None = None
+        self._entered = False
+        self._exhausted = False
+        self._finalized = False
 
-    async def __aenter__(self) -> Any:
+    async def _enter_stream(self) -> None:
+        if self._entered:
+            return
+        self._entered = True
         self._t0 = time.monotonic()
         try:
             self._ctx = self._real_fn(**self._kwargs)
-            # Some SDKs (OpenAI's AsyncOpenAI.chat.completions.create
-            # with stream=True) return a coroutine that resolves to
-            # the async stream. Others (Anthropic's
-            # AsyncAnthropic.messages.stream) return the async
-            # context-manager directly. Detect and await once.
-            # Pre-fix the OpenAI path raised
-            # ``AttributeError: coroutine object has no
-            # attribute '__aenter__'`` (caught by Rule 40d smoke).
+            # AsyncOpenAI.chat.completions.create(stream=True) returns a
+            # coroutine resolving to the async stream; AsyncAnthropic's
+            # messages.stream() returns the async context manager
+            # directly. Await once, then enter if it is a context manager.
             import inspect
 
             if inspect.iscoroutine(self._ctx):
                 self._ctx = await self._ctx
-            self._stream = await self._ctx.__aenter__()
+            if hasattr(self._ctx, "__aenter__"):
+                self._stream = await self._ctx.__aenter__()
+            else:
+                self._stream = self._ctx
         except BaseException as exc:
+            self._finalized = True
             latency_ms = int((time.monotonic() - self._t0) * 1000)
             try:
                 _emit_error(
@@ -556,6 +616,9 @@ class GuardedAsyncStream:
                     exc_info=True,
                 )
             raise
+
+    async def __aenter__(self) -> GuardedAsyncStream:
+        await self._enter_stream()
         return self
 
     async def __aexit__(
@@ -564,41 +627,70 @@ class GuardedAsyncStream:
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
+        await self._close_underlying(exc_type, exc_val, exc_tb)
+        if exc_val is not None:
+            self._emit_stream_error(exc_val)
+            return
+        self._finalize()
+
+    async def close(self) -> None:
+        """Close the SDK stream and settle the accounting (mirrors the
+        SDKs' ``await stream.close()``)."""
+        await self._close_underlying(None, None, None)
+        self._finalize()
+
+    async def _close_underlying(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
         try:
-            if self._ctx is not None:
+            if self._ctx is not None and hasattr(self._ctx, "__aexit__"):
                 await self._ctx.__aexit__(exc_type, exc_val, exc_tb)
+            elif self._stream is not None and hasattr(self._stream, "close"):
+                result = self._stream.close()
+                if hasattr(result, "__await__"):
+                    await result
         except Exception:
             _log.debug("Exception closing underlying async stream", exc_info=True)
 
-        latency_ms = int((time.monotonic() - self._t0) * 1000)
-
-        if exc_val is not None:
-            try:
-                is_stream_error = self._first_chunk_t is not None
-                abort_reason = "error_mid_stream" if is_stream_error else "error_before_stream"
-                if type(exc_val).__name__ in ("APITimeoutError", "TimeoutError"):
-                    abort_reason = "timeout"
-                _emit_error(
-                    self._session,
-                    self._provider,
-                    exc_val,
-                    latency_ms,
-                    self._kwargs,
-                    is_stream_error=is_stream_error,
-                    partial={
-                        "abort_reason": abort_reason,
-                        "partial_chunks": self._chunk_count,
-                    },
-                )
-            except Exception:
-                _log.warning(
-                    "Failed to emit llm_error for async stream exception",
-                    exc_info=True,
-                )
+    def _emit_stream_error(self, exc_val: BaseException) -> None:
+        if self._finalized:
             return
-
+        self._finalized = True
+        latency_ms = int((time.monotonic() - self._t0) * 1000)
         try:
-            streaming = self._build_streaming_summary()
+            is_stream_error, abort_reason = _abort_reason_for(
+                exc_val, self._first_chunk_t is not None
+            )
+            _emit_error(
+                self._session,
+                self._provider,
+                exc_val,
+                latency_ms,
+                self._kwargs,
+                is_stream_error=is_stream_error,
+                partial={
+                    "abort_reason": abort_reason,
+                    "partial_chunks": self._chunk_count,
+                },
+            )
+        except Exception:
+            _log.warning(
+                "Failed to emit llm_error for async stream exception",
+                exc_info=True,
+            )
+
+    def _finalize(self) -> None:
+        if self._finalized or not self._entered:
+            return
+        self._finalized = True
+        latency_ms = int((time.monotonic() - self._t0) * 1000)
+        try:
+            final = self._provider.usage_from_finished_stream(self._stream)
+            if final is not None:
+                self._usage = _merge_usage(self._usage, final)
             _post_call(
                 self._session,
                 self._provider,
@@ -606,8 +698,9 @@ class GuardedAsyncStream:
                 self._estimated,
                 latency_ms,
                 self._kwargs,
-                streaming=streaming,
+                streaming=self._build_streaming_summary(),
                 estimated_via=self._estimated_via,
+                usage_override=self._usage,
             )
         except Exception:
             _log.warning(
@@ -615,18 +708,23 @@ class GuardedAsyncStream:
                 exc_info=True,
             )
 
-    def __aiter__(self) -> Any:
-        if self._stream_iter is None:
-            self._stream_iter = self._stream.__aiter__()
+    def __aiter__(self) -> GuardedAsyncStream:
         return self
 
     async def __anext__(self) -> Any:
+        await self._enter_stream()
         if self._stream_iter is None:
             self._stream_iter = self._stream.__aiter__()
         try:
             chunk = await self._stream_iter.__anext__()
         except StopAsyncIteration:
+            self._exhausted = True
+            self._finalize()
             raise
+        self._record_chunk(chunk)
+        return chunk
+
+    def _record_chunk(self, chunk: Any) -> None:
         now = time.monotonic()
         if self._first_chunk_t is None:
             self._first_chunk_t = now
@@ -636,11 +734,22 @@ class GuardedAsyncStream:
                 self._inter_chunk_ms.append(gap_ms)
         self._last_chunk_t = now
         self._chunk_count += 1
-        return chunk
+        try:
+            found = self._provider.usage_from_stream_chunk(chunk)
+        except Exception:
+            found = None
+        if found is not None:
+            self._usage = _merge_usage(self._usage, found)
+
+    def __getattr__(self, name: str) -> Any:
+        # Attribute proxying needs the stream to exist; it cannot be
+        # awaited from here, so before the first ``async with`` /
+        # ``async for`` the SDK attributes are simply not available.
+        if name.startswith("_") or self._stream is None:
+            raise AttributeError(name)
+        return getattr(self._stream, name)
 
     def _build_streaming_summary(self) -> dict[str, Any]:
-        """Delegate to the module-level helper — identical shape to
-        the sync variant so a future tweak lands in one place."""
         return _build_streaming_summary(
             self._t0,
             self._first_chunk_t,
@@ -893,6 +1002,7 @@ def _post_call(
     event_type: EventType = EventType.POST_CALL,
     streaming: dict[str, Any] | None = None,
     estimated_via: str = "none",
+    usage_override: TokenUsage | None = None,
 ) -> None:
     """Extract actual usage, reconcile with estimate, post event.
 
@@ -905,7 +1015,14 @@ def _post_call(
     :class:`GuardedStream`. Omitted entirely for non-streaming calls so the
     wire shape stays identical to the pre-Phase-4 behaviour.
     """
-    actual = provider.extract_usage(response)
+    # ``usage_override`` carries the counts a stream guard read from the
+    # provider's in-stream usage events; stream objects themselves expose
+    # no usage, so without it every streamed call would fall back to the
+    # estimate.
+    if usage_override is not None and usage_override.total > 0:
+        actual = usage_override
+    else:
+        actual = provider.extract_usage(response)
 
     # Use actual if available, otherwise fall back to estimate
     if actual.total > 0:

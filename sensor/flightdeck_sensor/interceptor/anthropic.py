@@ -145,8 +145,24 @@ class SensorMessages:
         self._is_async = is_async
 
     def create(self, **kwargs: Any) -> Any:
-        """Intercept messages.create() -- sync or async depending on client type."""
+        """Intercept messages.create() -- sync or async depending on client type.
+
+        ``stream=True`` returns the SDK's raw event stream, so it takes
+        the same guard as ``messages.stream()``: usage is metered from the
+        ``message_start`` / ``message_delta`` events as they pass through,
+        and the guard iterates like the SDK ``Stream`` with or without a
+        ``with`` block. The async form returns a coroutine resolving to
+        the guard, matching ``await client.messages.create(..., stream=True)``.
+        """
         real_fn = self._real.create
+        if kwargs.get("stream"):
+            if self._is_async:
+
+                async def _async_stream_create() -> base.GuardedAsyncStream:
+                    return base.call_stream_async(real_fn, kwargs, self._session, self._provider)
+
+                return _async_stream_create()
+            return base.call_stream(real_fn, kwargs, self._session, self._provider)
         if self._is_async:
             return base.call_async(real_fn, kwargs, self._session, self._provider)
         return base.call(real_fn, kwargs, self._session, self._provider)

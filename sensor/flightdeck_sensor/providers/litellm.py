@@ -136,6 +136,21 @@ class LitellmProvider:
         except Exception:
             return TokenUsage(input_tokens=0, output_tokens=0)
 
+    def usage_from_stream_chunk(self, chunk: Any) -> TokenUsage | None:
+        """Usage on litellm's final streaming chunk (present when the
+        request asked for ``stream_options.include_usage``)."""
+        try:
+            if getattr(chunk, "usage", None) is None:
+                return None
+            result = self.extract_usage(chunk)
+            return result if result.total > 0 else None
+        except Exception:
+            return None
+
+    def usage_from_finished_stream(self, stream: Any) -> TokenUsage | None:
+        """litellm stream wrappers report nothing after the fact."""
+        return None
+
     def extract_content(
         self,
         request_kwargs: dict[str, Any],

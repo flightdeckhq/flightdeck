@@ -177,7 +177,15 @@ class OpenAIProvider:
             usage = getattr(obj, "usage", None)
             if usage is None:
                 return TokenUsage(input_tokens=0, output_tokens=0)
+            return self._usage_from_object(usage)
+        except Exception:
+            return TokenUsage(input_tokens=0, output_tokens=0)
 
+    def _usage_from_object(self, usage: Any) -> TokenUsage:
+        """Read either usage shape (chat ``prompt_tokens`` /
+        ``completion_tokens`` or Responses ``input_tokens`` /
+        ``output_tokens``) off a usage object. Never raises."""
+        try:
             prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
             completion_tokens = getattr(usage, "completion_tokens", 0) or 0
 
@@ -202,6 +210,30 @@ class OpenAIProvider:
             )
         except Exception:
             return TokenUsage(input_tokens=0, output_tokens=0)
+
+    def usage_from_stream_chunk(self, chunk: Any) -> TokenUsage | None:
+        """Usage carried by a streamed OpenAI chunk or event.
+
+        Chat streams carry ``usage`` on the final chunk when the request
+        asked for it (the sensor injects ``stream_options.include_usage``);
+        Responses streams carry it on ``response.completed`` (and the
+        ``incomplete`` / ``failed`` terminal events) under
+        ``event.response.usage``.
+        """
+        try:
+            usage = getattr(chunk, "usage", None)
+            if usage is None:
+                usage = getattr(getattr(chunk, "response", None), "usage", None)
+            if usage is None:
+                return None
+            result = self._usage_from_object(usage)
+            return result if result.total > 0 else None
+        except Exception:
+            return None
+
+    def usage_from_finished_stream(self, stream: Any) -> TokenUsage | None:
+        """OpenAI stream objects report nothing after the fact."""
+        return None
 
     def extract_content(
         self,

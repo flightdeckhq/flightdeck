@@ -29,6 +29,9 @@ from _helpers import (
 )
 
 MODEL = "claude-haiku-4-5-20251001"
+# Streamed calls made above: sync stream helper, async stream helper, raw
+# create(stream=True); each must land one metered post_call.
+EXPECTED_STREAMED_CALLS = 3
 HI = [{"role": "user", "content": "hi"}]
 
 
@@ -71,6 +74,19 @@ def main() -> None:
     asyncio.run(_async_stream())
     print_result("AsyncAnthropic().messages.stream", True, int((time.monotonic() - t0) * 1000))
 
+    # Raw event stream, iterated with no ``with`` block: the SDK's own
+    # documented pattern for messages.create(stream=True).
+    t0 = time.monotonic()
+    raw_events = 0
+    for _ in anthropic.Anthropic().messages.create(
+        model=MODEL, max_tokens=5, messages=HI, stream=True,
+    ):
+        raw_events += 1
+    print_result(
+        "Anthropic().messages.create(stream=True) plain iteration", raw_events > 0,
+        int((time.monotonic() - t0) * 1000), f"{raw_events} events",
+    )
+
     t0 = time.monotonic()
     anthropic.Anthropic().beta.messages.create(
         model=MODEL, max_tokens=5, messages=HI, betas=["prompt-caching-2024-07-31"])
@@ -102,6 +118,23 @@ def main() -> None:
     if not ttft_ok:
         raise AssertionError(
             f"no post_call carried streaming.ttft_ms; events={events!r}",
+        )
+
+    # Every streamed post_call must carry the token counts the provider
+    # sent inside the stream, not the pre-call estimate with zero output.
+    metered = [
+        e for e in streamed
+        if (e.get("tokens_output") or 0) > 0 and (e.get("tokens_input") or 0) > 0
+    ]
+    metered_ok = len(streamed) >= EXPECTED_STREAMED_CALLS and len(metered) == len(streamed)
+    print_result(
+        "streamed post_call events carry real token usage", metered_ok, 0,
+        f"{len(metered)}/{len(streamed)} streamed post_calls metered "
+        f"(expected at least {EXPECTED_STREAMED_CALLS})",
+    )
+    if not metered_ok:
+        raise AssertionError(
+            f"streamed post_call without real usage; events={events!r}",
         )
 
     # Invalid-model llm_error: the sensor's classifier must categorize

@@ -119,7 +119,7 @@ class AnthropicProvider:
         total so policy/budget arithmetic sees every billed input token, AND
         also reported as separate ``cache_read_tokens`` /
         ``cache_creation_tokens`` fields on :class:`TokenUsage` so cache
-        economics are visible in analytics (D100).
+        economics are visible in analytics.
         """
         try:
             obj = response
@@ -215,8 +215,8 @@ class AnthropicProvider:
         Preserves Anthropic terminology: ``system`` as a separate field.
 
         ``event_type`` is accepted for protocol symmetry with the
-        OpenAI / litellm providers (Phase 4 polish: per-event-type
-        content extraction). Anthropic has no native embeddings API
+        OpenAI / litellm providers (per-event-type content
+        extraction). Anthropic has no native embeddings API
         in this SDK -- users go via litellm → Voyage. So no
         EMBEDDINGS branch here; if a caller ever passes that
         event_type the chat-shaped extraction runs and ``messages``
@@ -237,7 +237,7 @@ class AnthropicProvider:
             # ``.get_final_message()`` after the stream has
             # exhausted, returning the accumulated ``Message``
             # pydantic object — that's the safe shape to capture.
-            # Phase 4 polish: pre-fix the post_call drain
+            # Previously the post_call drain
             # serialised an AsyncStream into the JSON payload and
             # the worker rejected the event with a JSON-encode
             # error (caught by Rule 40d smoke).

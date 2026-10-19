@@ -246,7 +246,7 @@ class OpenAIProvider:
         Returns ``None`` when capture_prompts is False. Never raises.
         OpenAI has no separate system field -- system role is in messages.
 
-        Phase 4 polish: when ``event_type == EventType.EMBEDDINGS``
+        When ``event_type == EventType.EMBEDDINGS``
         the request shape is ``{"input": <str | list[str]>, "model":
         ...}`` -- there are no messages, system, tools, or generated
         response content (the response is just an array of vectors,
@@ -317,9 +317,9 @@ class OpenAIProvider:
                 # Streaming responses surface a ``Stream`` /
                 # ``AsyncStream`` whose ``__dict__`` carries the
                 # underlying httpx response + async generator —
-                # neither JSON-serialisable. Phase 4 polish: drop
+                # neither JSON-serialisable. Drop
                 # any field that fails ``json.dumps`` so the wire
-                # payload stays valid for stream calls. Pre-fix
+                # payload stays valid for stream calls. Previously
                 # the post_call drain rejected streams with
                 # ``Object of type AsyncStream is not JSON
                 # serializable`` (caught by Rule 40d smoke).

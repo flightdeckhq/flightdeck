@@ -5,7 +5,7 @@ Runs as:
     python3 tests/e2e-fixtures/seed.py
 
 Reads ``canonical.json`` (sibling file) and emits events to the
-ingestion API with identity fields that match the D115 vocabulary.
+ingestion API with identity fields that match the agent identity vocabulary.
 Session IDs derive deterministically from ``uuid5(NAMESPACE,
 'flightdeck-e2e/<agent_name>/<role>')`` so each seed run addresses
 the same sessions and the operation is idempotent — a repeat run
@@ -193,9 +193,7 @@ def _post_session_events(
     # the ancient session shows up correctly post-fix.
     MAX_SAFE_EVENT_OFFSET = -3600  # 1h ago, well inside the 48h bound
     event_started = max(started, MAX_SAFE_EVENT_OFFSET)
-    event_ended = (
-        max(int(ended), MAX_SAFE_EVENT_OFFSET + 60) if ended is not None else None
-    )
+    event_ended = max(int(ended), MAX_SAFE_EVENT_OFFSET + 60) if ended is not None else None
 
     identity = {
         "agent_type": agent_cfg["agent_type"],
@@ -204,11 +202,11 @@ def _post_session_events(
         "hostname": agent_cfg["hostname"],
         "agent_name": agent_cfg["agent_name"],
     }
-    # D126 § 2 — when the role declares ``agent_role``, thread it
+    # When the role declares ``agent_role``, thread it
     # through every event so the agent_id derivation upstream
     # (fixtures.py::_identity_fields) places the child under a
-    # distinct UUID from the parent. Skipped for non-D126 roles so
-    # the existing fixtures stay byte-identical to pre-step-8.
+    # distinct UUID from the parent. Skipped for roles without one so
+    # the existing fixtures stay byte-identical.
     role_for_id = role_cfg.get("agent_role")
     if role_for_id:
         identity["agent_role"] = role_for_id
@@ -220,7 +218,7 @@ def _post_session_events(
 
     # 1. session_start, then wait for persistence.
     #
-    # Phase 5 T25: when the role declares ``mcp_servers``, attach the
+    # T25: when the role declares ``mcp_servers``, attach the
     # fingerprint list as ``context.mcp_servers`` on session_start so
     # the worker persists it into ``sessions.context`` (set-once
     # semantics — see ARCHITECTURE.md). Subsequent reads via the
@@ -233,10 +231,10 @@ def _post_session_events(
     if role_mcp_servers:
         session_start_kwargs["context"] = {"mcp_servers": role_mcp_servers}
 
-    # D126 § 3 — sub-agent linkage. When the role declares
+    # Sub-agent linkage. When the role declares
     # ``parent_role`` + ``parent_agent``, resolve the parent's
     # session_id deterministically and stamp ``parent_session_id``
-    # on session_start. Per D126 § 3 the parent_session_id FK is
+    # on session_start. The parent_session_id FK is
     # enforced; the agents-order in canonical.json guarantees the
     # parent's session lands before this child's session_start.
     parent_role_ref = role_cfg.get("parent_role")
@@ -247,11 +245,11 @@ def _post_session_events(
             parent_role_ref,
         )
 
-    # D126 § 6 — cross-agent message capture. ``captured_input``
+    # Cross-agent message capture. ``captured_input``
     # rides on session_start as ``incoming_message``; ``captured_
     # output`` rides on session_end as ``outgoing_message``. The
     # special sentinel ``"OVERFLOW"`` for captured_input synthesises
-    # a >8 KiB body via the D119 overflow path: ``has_content=true``
+    # a >8 KiB body via the content-overflow path: ``has_content=true``
     # on the inline incoming_message + the full body in the wire-
     # level ``content`` envelope so the worker lands it in
     # event_content (and ``GET /v1/events/{id}/content`` resolves).
@@ -361,7 +359,7 @@ def _post_session_events(
         session_end_kwargs: dict[str, Any] = {}
         captured_output = role_cfg.get("captured_output")
         if captured_output:
-            # D126 § 6 — outgoing_message rides on session_end. No
+            # outgoing_message rides on session_end. No
             # overflow case for output bodies in this fixture set;
             # all canonical outputs fit inline. Wire shape mirrors
             # workers/internal/consumer/nats.go::SubagentMessage.
@@ -386,7 +384,7 @@ def _post_session_events(
         )
         posted += 1
 
-    # 5. Phase 4 polish extras. ``role_cfg["phase4_extras"]`` lists
+    # 5. Extras. ``role_cfg["phase4_extras"]`` lists
     # additional event-shape strings the seeder emits on top of the
     # base timeline; canonical.json carries the per-role list. Each
     # extra is timestamped relative to ``started`` so the ordering
@@ -545,7 +543,7 @@ def _post_session_events(
             #   policy_block     -- threshold crossed; call refused.
             # Source is hardcoded "server" because that's where the
             # closed-vocabulary fixtures need to land for the T17 spec
-            # (see audit-phase-4.md methodology lessons + DECISIONS D035).
+            # (local sensor thresholds only ever fire warnings).
             policy_event_type = extra
             base_payload: dict[str, Any] = {
                 "source": "server",
@@ -579,7 +577,7 @@ def _post_session_events(
             )
             posted += 1
         elif extra.startswith("mcp_"):
-            # Phase 5 — MCP event extras. Six event types, lean wire
+            # MCP event extras. Six event types, lean wire
             # shape (no LLM-baseline fields). The seeded ``server_name``
             # / ``transport`` use the first entry on the role's
             # ``mcp_servers`` list so per-event attribution lines up
@@ -644,7 +642,7 @@ def _post_session_events(
                 )
                 posted += 1
             elif extra == "mcp_tool_call_failed":
-                # Phase 5 — failed MCP tool call. Anchors the
+                # Failed MCP tool call. Anchors the
                 # MCPErrorIndicator E2E assertion (T25-16). The wire
                 # ``error`` shape mirrors
                 # sensor/flightdeck_sensor/interceptor/mcp.py::
@@ -661,9 +659,7 @@ def _post_session_events(
                         error={
                             "error_type": "invalid_params",
                             "error_class": "McpError",
-                            "message": (
-                                "Invalid SQL: 'banned' is not a recognized status"
-                            ),
+                            "message": ("Invalid SQL: 'banned' is not a recognized status"),
                             "code": -32602,
                         },
                         **mcp_common,
@@ -701,9 +697,7 @@ def _post_session_events(
                                 {
                                     "uri": "mem://demo",
                                     "mimeType": "text/plain",
-                                    "text": (
-                                        "hello from the flightdeck reference MCP server"
-                                    ),
+                                    "text": ("hello from the flightdeck reference MCP server"),
                                 },
                             ],
                         },
@@ -886,13 +880,13 @@ def _session_is_complete(
             "mcp_prompt_list",
             "mcp_prompt_get",
         ):
-            # Phase 5: each MCP extras tag maps directly to its own
+            # Each MCP extras tag maps directly to its own
             # event_type row. Counted independently so a session
             # declaring all six needs six events of distinct types
             # to be considered complete.
             expected_counts[tag] = expected_counts.get(tag, 0) + 1
         elif tag == "mcp_tool_call_failed":
-            # Phase 5 D-MCP-FAIL — failed mcp_tool_call. Same event_type
+            # Failed mcp_tool_call. Same event_type
             # as the success variant but disambiguated by payload.error
             # in the actual_counts loop below. Counted under a private
             # synthetic key so the success and failure variants can
@@ -960,7 +954,7 @@ def _backdate_session(
     leave the state alone and let the reconciler classify naturally
     based on last_seen_at.
 
-    Phase 4.5 L-17 / L-18 hardening: although every input here comes
+    Hardening: although every input here comes
     from hardcoded Python literals in canonical.json or int-coerced
     offsets (so the code is unreachable as a SQLi vector in practice),
     we explicitly:
@@ -982,9 +976,7 @@ def _backdate_session(
     try:
         UUID(session_id)
     except (TypeError, ValueError) as exc:
-        raise ValueError(
-            f"_backdate_session: session_id {session_id!r} is not a UUID"
-        ) from exc
+        raise ValueError(f"_backdate_session: session_id {session_id!r} is not a UUID") from exc
     started_secs = abs(int(started_offset_sec))
     started_expr = f"NOW() - INTERVAL '{started_secs} seconds'"
     parts = [
@@ -1084,7 +1076,7 @@ def seed(mode: str = "full") -> None:
     Used by the Playwright globalSetup keep-alive watchdog so the workers'
     reconciler (postgres.go:651, 60-second tick, 2-min stale threshold)
     cannot age the seeded "fresh"-class fixtures past ``state='active'``
-    while the test suite runs. D126 added 13 E2E specs (T28–T40) that
+    while the test suite runs. The sub-agent E2E specs (T28–T40)
     push the suite past 5 minutes — well beyond the original 2-min
     seed-to-test-completion window the no-keep-alive design assumed.
     """
@@ -1098,9 +1090,7 @@ def seed(mode: str = "full") -> None:
     agents_cfg: list[dict[str, Any]] = cfg["agents"]
 
     total_sessions = sum(len(a["session_roles"]) for a in agents_cfg)
-    print(
-        f"[seed] canonical dataset: {len(agents_cfg)} agents, {total_sessions} sessions"
-    )
+    print(f"[seed] canonical dataset: {len(agents_cfg)} agents, {total_sessions} sessions")
 
     seeded: int = 0
     skipped: int = 0
@@ -1139,9 +1129,7 @@ def seed(mode: str = "full") -> None:
                 )
 
         if touched_agents:
-            print(
-                f"[seed] waiting for worker to persist {len(touched_agents)} agents ..."
-            )
+            print(f"[seed] waiting for worker to persist {len(touched_agents)} agents ...")
             _wait_for_fleet_visibility(touched_agents, timeout=SEED_READY_TIMEOUT_SEC)
         else:
             print("[seed] every canonical session already present; no fleet wait needed")
@@ -1198,7 +1186,7 @@ def seed(mode: str = "full") -> None:
                 # session_start only; subsequent tool_call events
                 # don't touch the agents row, so without this manual
                 # pin the agent's last_seen_at stays frozen at
-                # original seed time. Result pre-fix: the agent ranks
+                # original seed time. Without the pin the agent ranks
                 # in a "stale" bucket and the IntersectionObserver
                 # virtualizes its row off-screen at default viewport
                 # — connectors and event circles never materialize
@@ -1255,7 +1243,7 @@ def seed(mode: str = "full") -> None:
                     }
                     # Emit a fresh tool_call event in active-only
                     # mode ONLY for the two specific sessions
-                    # that anchor the Phase 2 SubAgentConnector
+                    # that anchor the SubAgentConnector
                     # overlay: the ``fresh-subagent-in-window``
                     # child and its parent ``e2e-test-coding-
                     # agent/fresh-active`` root. Without an
@@ -1297,9 +1285,7 @@ def seed(mode: str = "full") -> None:
                             "tool_call",
                             timestamp=_shift_timestamp(-5),
                             tool_name="e2e_refresh",
-                            tool_input={
-                                "reason": "seed keeps fresh-active in 1m swimlane window"
-                            },
+                            tool_input={"reason": "seed keeps fresh-active in 1m swimlane window"},
                             tool_result={"ok": True},
                             **event_kwargs,
                         )
@@ -1379,7 +1365,7 @@ def seed(mode: str = "full") -> None:
                     )
                 continue
             if role == "mcp-active":
-                # Phase 5 (B-5b live verification) — re-emit the six
+                # Re-emit the six
                 # MCP_* events with timestamp=NOW each seed run so the
                 # Fleet swimlane window (max 1h) always carries fresh
                 # MCP traffic for the Supervisor's Chrome walkthrough
@@ -1477,10 +1463,7 @@ def seed(mode: str = "full") -> None:
                                 "error": {
                                     "error_type": "invalid_params",
                                     "error_class": "McpError",
-                                    "message": (
-                                        "Invalid SQL: 'banned' is not a "
-                                        "recognized status"
-                                    ),
+                                    "message": ("Invalid SQL: 'banned' is not a recognized status"),
                                     "code": -32602,
                                 },
                             },
@@ -1586,9 +1569,7 @@ def seed(mode: str = "full") -> None:
                         "session_id": session_id,
                         "event_id": "",
                         "captured_at": (
-                            datetime.now(timezone.utc)
-                            .isoformat()
-                            .replace("+00:00", "Z")
+                            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
                         ),
                     }
                     post_event(
@@ -1621,8 +1602,8 @@ def seed(mode: str = "full") -> None:
                 # canonical events age out of every Fleet time-range
                 # button (max 1h) within hours of the first seed.
                 #
-                # Parallel rationale to ``mcp-active`` above (Phase 5
-                # B-5b live verification): the fixture role exists to
+                # Parallel rationale to ``mcp-active`` above: the
+                # fixture role exists to
                 # anchor a UI surface whose data must stay fresh
                 # across seed runs. Re-emitting the extras only — not
                 # session_start — keeps the worker's UpsertSession ON
@@ -1742,7 +1723,7 @@ def seed(mode: str = "full") -> None:
             # tests asserting on those rows.
             if mode != "full":
                 continue
-            # D126 § 7.fix step 8 — generic ``force_state`` opt-in.
+            # Generic ``force_state`` opt-in.
             # Any role that declares ``force_state`` in canonical.json
             # gets a backdate with that state, regardless of whether
             # it's one of the legacy aged-closed / stale / ancient-only
@@ -1776,7 +1757,7 @@ def seed(mode: str = "full") -> None:
                 forced_state = "lost"
             elif role == "ancient-only":
                 # T5b anchor (V-DRAWER fix): session > 7 days old, the
-                # window the API's pre-fix default would have hidden.
+                # window the API's earlier default would have hidden.
                 # Forced to 'closed' so the swimlane row reads cleanly
                 # (the session_end at -8 days actually emits, but the
                 # reconciler hasn't pinned the state yet on a freshly-

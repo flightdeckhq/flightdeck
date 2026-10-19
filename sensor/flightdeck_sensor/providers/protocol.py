@@ -129,7 +129,7 @@ class PromptContent:
     Provider terminology is preserved exactly -- no normalization.
     Anthropic uses 'system' as a separate field; OpenAI embeds it in messages.
 
-    Phase 4 polish: ``input`` is the embeddings-shaped slot. Embedding
+    ``input`` is the embeddings-shaped slot. Embedding
     calls (OpenAI ``embeddings.create``, ``litellm.embedding``,
     LangChain ``OpenAIEmbeddings.embed_*`` transitively) put the
     request's ``input`` parameter (a string or list of strings) here

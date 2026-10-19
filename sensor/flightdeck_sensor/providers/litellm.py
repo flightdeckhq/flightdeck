@@ -163,7 +163,7 @@ class LitellmProvider:
         no separate system field -- system role (when present) is in
         the messages list, same as OpenAI. Never raises.
 
-        Phase 4 polish: when ``event_type == EventType.EMBEDDINGS``
+        When ``event_type == EventType.EMBEDDINGS``
         the request is ``litellm.embedding(model=..., input=<str |
         list[str]>)``; capture the input parameter into
         ``PromptContent.input`` and leave the chat-shaped slots

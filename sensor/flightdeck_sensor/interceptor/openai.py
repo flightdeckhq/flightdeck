@@ -76,8 +76,7 @@ _log = logging.getLogger("flightdeck_sensor.interceptor.openai")
 #
 # Captured at module import time, BEFORE patch() can run, so isinstance()
 # checks below survive any later mutation. See the matching block in
-# interceptor/anthropic.py for the rationale and the Phase 4.5 audit
-# Finding 2 backstory.
+# interceptor/anthropic.py for the rationale.
 
 try:
     import openai as _openai_module
@@ -121,7 +120,7 @@ class SensorCompletions:
         When ``stream=True``, injects ``stream_options`` so OpenAI includes
         token usage in the final streaming chunk.
 
-        Phase 4: async streaming is now supported via
+        Async streaming is supported via
         :func:`base.call_stream_async`. Sync and async streaming go through
         guarded wrappers that measure TTFT, chunk count, and abort
         reasons.
@@ -131,13 +130,13 @@ class SensorCompletions:
             if self._is_async:
                 # Native ``AsyncOpenAI.chat.completions.create(stream=
                 # True)`` returns a coroutine that resolves to an
-                # ``AsyncStream``. Pre-fix the sensor returned a
+                # ``AsyncStream``. An earlier version returned a
                 # ``GuardedAsyncStream`` synchronously, so calls
                 # written ``await client.chat.completions.create(
                 # stream=True)`` raised ``TypeError: GuardedAsyncStream
                 # object can't be awaited``. Wrap the call in a
                 # coroutine so the awaited shape matches native
-                # behaviour. Caught by Rule 40d smoke (Phase 4 polish).
+                # behaviour. Caught by the playground smoke run.
                 async def _async_stream_create() -> base.GuardedAsyncStream:
                     return base.call_stream_async(
                         self._real.create,
@@ -356,7 +355,7 @@ class SensorEmbeddings:
     def create(self, **kwargs: Any) -> Any:
         """Intercept embeddings.create() -- sync or async dispatch.
 
-        Phase 4: emits ``event_type="embeddings"`` (not the generic
+        Emits ``event_type="embeddings"`` (not the generic
         ``post_call``) so the dashboard can render embedding calls
         distinctly. Token accounting stays identical -- embeddings carry
         input tokens only, ``output_tokens=0`` as returned by

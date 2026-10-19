@@ -68,7 +68,7 @@ def call(
     3. Extract actual usage, reconcile, post event (``event_type`` — default
        POST_CALL; callers pass EMBEDDINGS for embedding-model calls).
     4. On provider exception, emit a structured LLM_ERROR event via the
-       Phase 4 taxonomy and re-raise.
+       error taxonomy and re-raise.
     """
     estimated, estimated_via = provider.estimate_tokens(kwargs)
     call_kwargs = _pre_call(session, provider, kwargs, estimated, estimated_via)
@@ -177,8 +177,7 @@ def call_stream_async(
 ) -> GuardedAsyncStream:
     """Async streaming call intercept.
 
-    Phase 4 lift of the pre-existing ``NotImplementedError`` for async
-    streams. Semantically identical to :func:`call_stream` with awaitable
+    Semantically identical to :func:`call_stream` with awaitable
     context-manager + async-iterator protocols. Pre-call policy check
     still runs synchronously before the context is returned so BLOCK is
     honoured before the first network byte.
@@ -472,7 +471,7 @@ def _build_streaming_summary(
     chunk_count: int,
     inter_chunk_ms: list[float],
 ) -> dict[str, Any]:
-    """Phase 4 streaming sub-object attached to the post_call payload.
+    """Streaming sub-object attached to the post_call payload.
 
     Free function so both :class:`GuardedStream` and
     :class:`GuardedAsyncStream` can share one implementation without
@@ -796,8 +795,8 @@ def _pre_call(
 
     * BLOCK: emit :attr:`EventType.POLICY_BLOCK`, flush the event queue
       so the event lands before the process exit, then raise
-      :class:`BudgetExceededError`. Source is always ``"server"`` per
-      D035 (local thresholds fire WARN only).
+      :class:`BudgetExceededError`. Source is always ``"server"``
+      (local thresholds fire WARN only).
     * DEGRADE: returns a *copy* of kwargs with swapped model. POLICY_
       DEGRADE is NOT emitted here — it fires once on
       ``_apply_directive(DEGRADE)`` arrival. Per-call swaps are visible
@@ -881,12 +880,12 @@ def _pre_call(
     session.event_queue.enqueue(pre_call_payload)
 
     if decision == PolicyDecision.BLOCK:
-        # POLICY_BLOCK: source hardcoded ``"server"`` per D035 — local
+        # POLICY_BLOCK: source hardcoded ``"server"`` — local
         # PolicyCache fires WARN only, never BLOCK. ``intended_model``
         # captures the model the blocked call was going to use so the
         # operator can answer "which call hit the limit?".
         intended_model = provider.get_model(kwargs)
-        # Phase 7 Step 2 (D148): shared policy_decision block. Reason
+        # Shared policy_decision block. Reason
         # follows the locked pattern: <what happened> + <by what
         # mechanism> + <relevant context>.
         block_pct = session.policy.block_at_pct
@@ -960,7 +959,7 @@ def _pre_call(
         else:
             warn_threshold_pct = session.policy.warn_at_pct or 0
             warn_token_limit = session.policy.token_limit
-        # Phase 7 Step 2 (D148): shared policy_decision block.
+        # Shared policy_decision block.
         local_warn = warn_source == "local"
         warn_decision = PolicyDecisionSummary(
             policy_id=result.policy_id or ("local" if local_warn else ""),
@@ -1010,7 +1009,7 @@ def _post_call(
     :attr:`EventType.EMBEDDINGS` for embedding-model calls so the dashboard
     can render them distinctly.
 
-    ``streaming`` carries the Phase 4 streaming sub-object (``ttft_ms``,
+    ``streaming`` carries the streaming sub-object (``ttft_ms``,
     chunk stats, ``final_outcome``) when the response came from
     :class:`GuardedStream`. Omitted entirely for non-streaming calls so the
     wire shape stays identical to the pre-Phase-4 behaviour.
@@ -1089,7 +1088,7 @@ def _post_call(
     # capture order, _build_payload would read self._tokens_used after
     # other threads' record_usage calls had already advanced it,
     # producing duplicate or skipped values on the dashboard token
-    # curve. Phase 4.5 audit B-G fix.
+    # curve.
     session_total = session.record_usage(usage)
     session.record_model(resp_model)
 
@@ -1181,9 +1180,9 @@ def _post_call(
         invocations = []
     for inv in invocations:
         try:
-            # Phase 7 Step 3.b (D150): LLM-side tool_call routes
-            # tool_input via event_content's dedicated tool_input
-            # column when capture is on. Pre-Step-3.b path stamped
+            # LLM-side tool_call routes tool_input via
+            # event_content's dedicated tool_input column when capture
+            # is on. The earlier path stamped
             # tool_input directly on the events row's payload; the
             # new path keeps events.payload lean and matches the
             # MCP tool_call capture posture (single content store
@@ -1227,7 +1226,7 @@ def _post_call(
 
 
 # ------------------------------------------------------------------
-# Phase 4 error-event emission. Classifies the live exception against
+# Error-event emission. Classifies the live exception against
 # the 14-entry taxonomy (see ``core/errors.py``), constructs an
 # LLM_ERROR event with the structured ``error`` sub-object, and enqueues
 # it for transport. Never raises -- classification itself is best-effort,

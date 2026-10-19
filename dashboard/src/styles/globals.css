@@ -126,7 +126,7 @@ body {
  * Font-family only -- size is set per-consumer via Tailwind
  * text-[Npx] / text-xs / inline fontSize so each mono span can
  * match its local typographic context instead of being forced to
- * 12px globally. KI22. */
+ * 12px globally. */
 .font-mono {
   font-family: var(--font-mono);
 }
@@ -160,7 +160,7 @@ body {
   border-radius: 2px;
 }
 
-/* D126 UX revision 2026-05-03 — sub-agent row styling. The
+/* Sub-agent row styling. The
    ``data-topology="child"`` attribute is stamped on swimlane row
    containers (left panel) and Investigate inline-expansion sub-
    rows by their parent components; the variable itself lives in
@@ -170,7 +170,7 @@ body {
    children sits clearly under-and-right-of its parent's first
    column, narrow enough to keep depth-2 trees from running off
    the panel. The 2px ``--accent``-coloured left border (the
-   "thin vertical line" from D126 § 4.1) lights up the group
+   "thin vertical line" from the sub-agent UX spec) lights up the group
    visually so a parent-and-children block reads as a unit
    rather than free-floating rows. The Supervisor's spec marked
    the vertical line optional; the inline-expansion drawer in

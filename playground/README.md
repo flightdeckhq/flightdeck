@@ -2,7 +2,7 @@
 
 Working examples for every framework Flightdeck supports. Each file is a minimal, copy-pasteable developer script showing how to wire `flightdeck-sensor` into a specific stack. Pick the file that matches your framework, copy it, adapt to your code.
 
-The suite also doubles as Flightdeck's canonical Rule 40d manual-exercise surface (D124): `make playground-all` runs every script against a live Flightdeck stack with real provider API keys and asserts on the event shapes that land on the wire. Total cost under $0.05 per full run.
+The suite also doubles as Flightdeck's canonical Rule 40d manual-exercise surface: `make playground-all` runs every script against a live Flightdeck stack with real provider API keys and asserts on the event shapes that land on the wire. Total cost ~$0.50 per full run (each script costs cents).
 
 ## Files
 
@@ -23,6 +23,17 @@ The suite also doubles as Flightdeck's canonical Rule 40d manual-exercise surfac
 | `13_mcp.py` | bare `mcp` SDK | All six MCP event types against the in-tree reference server, plus a multi-server attribution scenario using a sibling secondary server (`_secondary_mcp_server.py`). Verifies `transport=stdio` on every event. |
 | `14_claude_code_plugin.py` | Claude Code plugin (`observe_cli.mjs` over Node 20+) | Synthetic `PostToolUse` + `PostToolUseFailure` hooks → `mcp_tool_call` event with parsed server attribution, plus `PluginToolError` structured-error path |
 | `15_bifrost.py` | bifrost gateway (optional, opt-in via `BIFROST_URL`) | openai SDK and anthropic SDK pointed at bifrost; both protocols intercepted independently |
+| `16_subagents_crewai.py` | `crewai` | Real two-agent Crew (Researcher + Writer) through the CrewAI sub-agent interceptor: each `Agent.execute_task` lands as its own child session with `parent_session_id`, `agent_role` from `Agent.role`, and incoming / outgoing message capture |
+| `17_subagents_langgraph.py` | `langgraph`, `langchain-anthropic` | Real two-node graph through the LangGraph sub-agent interceptor: each `StateGraph.add_node` body lands as its own child session; exercises both the inline (≤ 8 KiB) and the `event_content` overflow message paths |
+| `18_mcp_policy_warn.py` | bare `mcp` SDK + flavor policy | MCP Protection Policy warn enforcement: a flavor deny entry with `enforcement=warn` makes a tool call land `policy_mcp_warn`; no LLM key needed |
+| `19_mcp_policy_block.py` | bare `mcp` SDK + flavor policy | MCP Protection Policy block enforcement: `policy_mcp_block` lands and `MCPPolicyBlocked` is raised at `call_tool` time; no LLM key needed |
+| `20_mcp_policy_block_on_uncertainty.py` | bare `mcp` SDK (runs without the dev stack) | Block-on-uncertainty failsafe: unreachable control plane + `init(mcp_block_on_uncertainty=True)` resolves unmatched servers to block (`decision_path="mode_default"`, `scope="local_failsafe"`) |
+| `21_mcp_policy_blocklist.py` | bare `mcp` SDK + global policy | Blocklist mode + global deny entry: `PUT /v1/mcp-policies/global` deny blocks via `decision_path="global_entry"`, then the empty global policy is restored |
+| `22_mcp_policy_crewai.py` | `crewai` + `mcpadapt` | CrewAI transitive MCP policy coverage: a real CrewAI agent with an MCP tool trips a flavor warn policy through the shared `ClientSession` patch |
+| `23_mcp_policy_langgraph.py` | `langgraph` + `langchain-mcp-adapters` | LangGraph transitive MCP policy coverage: `create_react_agent` with an MCP tool trips a flavor warn policy |
+| `24_mcp_policy_langchain.py` | `langchain` + `langchain-mcp-adapters` | LangChain explicit MCP policy coverage: `AgentExecutor` + `create_tool_calling_agent` across WARN / BLOCK / ALLOW sub-scenarios |
+| `25_mcp_policy_llamaindex.py` | `llama-index-tools-mcp`, `llama-index-llms-anthropic` | LlamaIndex transitive MCP policy coverage: `FunctionAgent` + `McpToolSpec` across WARN / BLOCK / ALLOW sub-scenarios |
+| `26_mcp_policy_template_apply.py` | control-plane API + bare `mcp` SDK | MCP policy template apply: `POST /v1/mcp-policies/{flavor}/apply_template` across the three shipped templates (`strict-baseline`, `permissive-dev`, `strict-with-common-allows`) plus resolve-API verification; no LLM key needed |
 | `policy_demo_warn.py` | anthropic + flavor-scoped policy | server WARN directive emits `policy_warn` with `source=server` |
 | `policy_demo_block.py` | anthropic + flavor-scoped policy | server BLOCK pre-flight emits `policy_block` + `BudgetExceededError`; `intended_model` + `token_limit` round-trip |
 | `policy_demo_degrade.py` | anthropic + flavor-scoped policy | server DEGRADE swaps the model on threshold cross; `to_model` lands and post_calls show the swap |
@@ -30,7 +41,7 @@ The suite also doubles as Flightdeck's canonical Rule 40d manual-exercise surfac
 
 ## Prerequisites
 
-- **Python 3.10 ≤ x < 3.14.** Run via the project venv (`./sensor/.venv/bin/python` — see root `README.md` setup), or via `make playground-*` targets which resolve through `$(PYTHON)` to the venv. `run_all.py` refuses to run on the wrong interpreter so a misconfigured local box can't silently SKIP framework-touching demos. (D124.)
+- **Python 3.10 ≤ x < 3.14.** Run via the project venv (`./sensor/.venv/bin/python` — see root `README.md` setup), or via `make playground-*` targets which resolve through `$(PYTHON)` to the venv. `run_all.py` refuses to run on the wrong interpreter so a misconfigured local box can't silently SKIP framework-touching demos.
 - A running Flightdeck stack. Default: `make dev` on `localhost:4000`. Override via `FLIGHTDECK_SERVER` / `FLIGHTDECK_TOKEN` / `FLIGHTDECK_API_URL`.
 - `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` in the environment for the chat / embeddings demos.
 - Optional: `BIFROST_URL` (for `15_bifrost.py`), `node` 20+ (for `14_claude_code_plugin.py`).

@@ -21,7 +21,7 @@ image:
 flightdeck:
   agents:
     flavor: ""
-    # D114 / D115 vocabulary: ``coding`` (developer-driven sessions)
+    # Accepted vocabulary: ``coding`` (developer-driven sessions)
     # or ``production`` (long-running autonomous agents). Invalid
     # values cause flightdeck_sensor.init() to raise
     # ConfigurationError. Previous values ("autonomous",
@@ -133,7 +133,7 @@ dashboard:
 
 # NetworkPolicy hardening: restrict ingress to Postgres and NATS to the
 # flightdeck server pods only (see templates/networkpolicy.yaml). The
-# NATS bus is unauthenticated (D047), so this is the primary in-cluster
+# NATS bus is unauthenticated by design, so this is the primary in-cluster
 # control preventing arbitrary pods from reading/forging the event bus.
 # Requires a CNI that enforces NetworkPolicy; set false to disable.
 networkPolicy:

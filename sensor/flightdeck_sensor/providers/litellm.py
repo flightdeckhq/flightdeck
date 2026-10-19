@@ -7,8 +7,9 @@ OpenAI chat-completion schema. This adapter extracts model, usage, and
 tool invocations from that shape.
 
 It is deliberately NOT a subclass of :class:`OpenAIProvider` even
-though the wire formats are nearly identical -- KI21's whole point is
-that litellm-routed calls have distinct interception semantics
+though the wire formats are nearly identical -- the whole point of the
+litellm interceptor is that litellm-routed calls have distinct
+interception semantics
 (different entry point, different underlying transports), so keeping
 the adapter separate makes the boundary explicit for future readers.
 

@@ -91,7 +91,7 @@ const docTemplate = `{
         },
         "/v1/events": {
             "post": {
-                "description": "Validates bearer token, publishes event to NATS, returns directive envelope. On session_start events, also reports whether the session was attached to a pre-existing row (D094).",
+                "description": "Validates bearer token, publishes event to NATS, returns directive envelope. On session_start events, also reports whether the session was attached to a pre-existing row.",
                 "parameters": [
                     {
                         "description": "Bearer token",

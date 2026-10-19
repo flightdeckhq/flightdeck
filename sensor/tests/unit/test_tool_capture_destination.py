@@ -1,14 +1,13 @@
-"""Phase 7 Step 3.b (D150) — tool capture destination contract.
+"""Tool capture destination contract.
 
-Locks the migration: tool args + result for mcp_tool_call /
+Locks the contract: tool args + result for mcp_tool_call /
 mcp_prompt_get / LLM-side tool_call always route through
-event_content's dedicated tool_input / tool_output columns. The
-inline-vs-overflow split that the pre-Step-3.b code path used is
-gone for these event types.
+event_content's dedicated tool_input / tool_output columns. There
+is no inline-vs-overflow split for these event types.
 
-mcp_resource_read body capture stays on the existing inline-vs-
-overflow path (Q1 lock) — covered by the surviving B-6
-resource_read tests in test_mcp_interceptor.py.
+mcp_resource_read body capture stays on the inline-vs-overflow
+path — covered by the resource_read tests in
+test_mcp_interceptor.py.
 """
 
 from __future__ import annotations
@@ -19,9 +18,9 @@ from flightdeck_sensor.interceptor.mcp import (
 
 
 def test_capture_content_includes_tool_input_and_tool_output_keys() -> None:
-    """The wire envelope uses the dedicated D150 column names —
-    NOT the LLM-prompt-style input / response columns the
-    pre-Step-3.b _build_overflow_event_content helper repurposed."""
+    """The wire envelope uses the dedicated tool_input / tool_output
+    column names — NOT the LLM-prompt-style input / response columns
+    that _build_overflow_event_content repurposes for resource bodies."""
     content = _build_tool_capture_content(
         tool_input={"a": 1},
         tool_output={"r": 2},
@@ -33,7 +32,7 @@ def test_capture_content_includes_tool_input_and_tool_output_keys() -> None:
     assert content["tool_output"] == {"r": 2}
     # Legacy LLM-prompt fields are blanked — operator queries the
     # dedicated columns directly. ``response`` ships {} (NOT NULL
-    # column constraint from the pre-D150 schema); ``input`` /
+    # column constraint that predates tool capture); ``input`` /
     # ``messages`` are nullable so they ride empty.
     assert content["input"] is None
     assert content["response"] == {}

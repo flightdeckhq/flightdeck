@@ -25,7 +25,7 @@ jobs:
     permissions:
       id-token: write
     # Opt into Node 24 for every JavaScript-based action on this job
-    # ahead of GitHub's 2026-06-02 default flip. KI24.
+    # ahead of GitHub's 2026-06-02 default flip.
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     steps:
@@ -68,7 +68,7 @@ jobs:
     environment:
       name: docker-hub
       url: https://hub.docker.com/u/flightdeckhq
-    # KI24: opt this job's JavaScript actions (checkout, login-action,
+    # Opt this job's JavaScript actions (checkout, login-action,
     # setup-buildx, build-push-action) into Node 24.
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
@@ -106,8 +106,8 @@ jobs:
             flightdeckhq/flightdeck-workers:${{ steps.version.outputs.VERSION }}
             flightdeckhq/flightdeck-workers:latest
 
-      # pricing.yaml is the canonical source of truth at the repo root
-      # (D102). api/Dockerfile bakes it into the image at
+      # pricing.yaml is the canonical source of truth at the repo root.
+      # api/Dockerfile bakes it into the image at
       # /etc/flightdeck/pricing.yaml via `COPY pricing.yaml ...`, which
       # resolves relative to the Docker build context. The context
       # below is ./api, so stage the file into the context without
@@ -141,7 +141,7 @@ jobs:
     needs: [publish-sensor, publish-docker]
     permissions:
       contents: write
-    # KI24: opt this job's JavaScript actions (checkout, action-gh-release)
+    # Opt this job's JavaScript actions (checkout, action-gh-release)
     # into Node 24.
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"

@@ -4,7 +4,7 @@
 //
 // All handlers carry full swaggo annotations per Rule 50. Validation
 // happens at the API boundary per Rule 36; the storage layer's CHECK
-// constraints (D128 / D134) are the second line of defence.
+// constraints are the second line of defence.
 
 package handlers
 
@@ -20,7 +20,7 @@ import (
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
 )
 
-// validEnforcement is the closed set per D128 / ARCHITECTURE.md
+// validEnforcement is the closed set documented in ARCHITECTURE.md
 // "Storage schema". Empty string is allowed on allow entries
 // (no per-entry enforcement override).
 var validEnforcement = map[string]bool{
@@ -30,13 +30,13 @@ var validEnforcement = map[string]bool{
 	"interactive": true,
 }
 
-// validEntryKind is the closed set per D128.
+// validEntryKind is the closed set of entry kinds.
 var validEntryKind = map[string]bool{
 	"allow": true,
 	"deny":  true,
 }
 
-// validMode is the closed set per D128 / D134.
+// validMode is the closed set of global policy modes.
 var validMode = map[string]bool{
 	"allowlist": true,
 	"blocklist": true,
@@ -48,9 +48,9 @@ func validateMutation(mut store.MCPPolicyMutation, scope string) string {
 			return "mode must be one of: allowlist, blocklist (required on global)"
 		}
 	} else if mut.Mode != nil {
-		// flavor MUST NOT carry mode (D134); reject loudly so the
+		// flavor MUST NOT carry mode; reject loudly so the
 		// caller learns rather than silently dropping the field.
-		return "mode is global-only; flavor policies do not carry mode (D134)"
+		return "mode is global-only; flavor policies do not carry mode"
 	}
 	for i, e := range mut.Entries {
 		if !validEntryKind[e.EntryKind] {
@@ -140,7 +140,7 @@ func actorTokenIDFromContext(r *http.Request) *string {
 // GetGlobalMCPPolicyHandler handles GET /v1/mcp-policies/global.
 //
 // @Summary      Get global MCP protection policy
-// @Description  Returns the singleton global policy + entries. Auto-created at API boot per D133, so this endpoint always returns 200.
+// @Description  Returns the singleton global policy + entries. Seeded by migration and ensured at API boot, so this endpoint always returns 200.
 // @Tags         mcp-policy
 // @Produce      json
 // @Success      200  {object}  store.MCPPolicy
@@ -255,7 +255,7 @@ func CreateMCPPolicyHandler(s store.Querier) http.HandlerFunc {
 // UpdateGlobalMCPPolicyHandler handles PUT /v1/mcp-policies/global.
 //
 // @Summary      Update global MCP protection policy
-// @Description  Replaces global policy state — mode, entries, block_on_uncertainty. Bumps version, writes a snapshot, writes an audit-log entry. Single-shot transaction (D128).
+// @Description  Replaces global policy state — mode, entries, block_on_uncertainty. Writes an audit-log entry in the same transaction.
 // @Tags         mcp-policy
 // @Accept       json
 // @Produce      json
@@ -300,7 +300,7 @@ func UpdateGlobalMCPPolicyHandler(s store.Querier) http.HandlerFunc {
 // UpdateMCPPolicyHandler handles PUT /v1/mcp-policies/{flavor}.
 //
 // @Summary      Update flavor MCP protection policy
-// @Description  Replaces flavor policy state — entries, block_on_uncertainty. Mode is global-only (D134) and rejected here. Same atomic version + audit semantics as the global PUT.
+// @Description  Replaces flavor policy state — entries, block_on_uncertainty. Mode is global-only and rejected here. Same atomic version + audit semantics as the global PUT.
 // @Tags         mcp-policy
 // @Accept       json
 // @Produce      json

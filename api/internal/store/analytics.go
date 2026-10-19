@@ -664,22 +664,16 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 		series = append(series, *seriesMap[d])
 	}
 
-	// Previous-period grand total for period_change_pct. Same query
-	// shape, different time window. Uses the same filterArgs but
-	// with prevStart / start rather than start / end.
-	//
-	//nolint:gosec
-	prevSQL := fmt.Sprintf(`
-		SELECT COALESCE(%s, 0) FROM (
-			SELECT %s AS val FROM %s
-			WHERE %s%s >= $1 AND %s < $2 %s
-		) sub
-	`, spec.agg, spec.agg, fromClause, whereAnd, spec.timeCol, spec.timeCol, filterSQL)
-
+	// Previous-period grand total for period_change_pct: the same
+	// series query over the window immediately before this one,
+	// summed per dimension and bucket exactly like grand_total, so
+	// the two numbers are comparable for every aggregate (SUM and
+	// COUNT as well as AVG and percentiles).
 	prevArgs := append([]any{prevStart, start}, filterArgs[2:]...)
-	var prevTotal float64
-	if err := s.pool.QueryRow(ctx, prevSQL, prevArgs...).Scan(&prevTotal); err != nil {
+	prevTotal, err := s.sumSeriesValues(ctx, seriesSQL, prevArgs, hasSecondary)
+	if err != nil {
 		slog.Warn("analytics previous-period total query failed; reporting 0% change", "err", err)
+		prevTotal = 0
 	}
 
 	var changePct float64
@@ -792,37 +786,73 @@ const subagentRecursiveCTE = `
 // every session via the LEFT JOIN inside querySubagentAnalytics, and
 // the per-parent fan-out / latency expressions reference correlated
 // subqueries against the sessions table directly.
-func subagentMetricExpr(metric string) (selectExpr, aggregate string) {
+// sumSeriesValues runs a series-shaped query (the SELECT list used by
+// the main and sub-agent series queries) over an alternate window and
+// returns the sum of its per-bucket values. The previous-period total
+// is computed this way so it has the same shape as grand_total for
+// every aggregate: a single whole-window AVG or percentile is not
+// comparable to a sum of per-bucket values.
+func (s *Store) sumSeriesValues(
+	ctx context.Context, sql string, args []any, hasSecondary bool,
+) (float64, error) {
+	rows, err := s.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return 0, err
+	}
+	defer rows.Close()
+	var total float64
+	for rows.Next() {
+		var dimVal, subDimVal string
+		var bucket time.Time
+		var value float64
+		if hasSecondary {
+			err = rows.Scan(&dimVal, &subDimVal, &bucket, &value)
+		} else {
+			err = rows.Scan(&dimVal, &bucket, &value)
+		}
+		if err != nil {
+			return 0, err
+		}
+		total += value
+	}
+	return total, rows.Err()
+}
+
+// subagentMetricExpr returns the per-session SQL expression, the
+// aggregate and an extra WHERE fragment (empty for most metrics) for
+// the sub-agent metric.
+func subagentMetricExpr(metric string) (selectExpr, aggregate, whereExtra string) {
 	switch metric {
 	case "parent_token_sum":
 		// Per-row: total tokens across this session's subtree.
 		// Aggregate: SUM at bucket+dimension.
-		return "COALESCE(st.total_tokens, 0)", "SUM"
+		return "COALESCE(st.total_tokens, 0)", "SUM", ""
 	case "child_token_sum":
 		// Per-row: tokens contributed by descendants only.
 		// Aggregate: SUM.
-		return "COALESCE(st.child_tokens, 0)", "SUM"
+		return "COALESCE(st.child_tokens, 0)", "SUM", ""
 	case "child_count":
 		// Per-row: direct-child count for this session. Correlated
 		// subquery (no recursion needed for direct children).
 		// Aggregate: SUM at bucket+dimension (total children
 		// surfaced by parents in the bucket).
 		return `(SELECT COUNT(*) FROM sessions c
-		         WHERE c.parent_session_id = s.session_id)`, "SUM"
+		         WHERE c.parent_session_id = s.session_id)`, "SUM", ""
 	case "parent_to_first_child_latency_ms":
 		// Per-row: ms between this session's started_at and the
-		// earliest direct-child started_at. NULL for parents with
-		// no children — those rows drop out via the WHERE clause
-		// in the outer aggregate (AVG ignores NULL by default,
-		// matching the intent of "average across parents that
-		// actually spawned someone").
+		// earliest direct-child started_at. The WHERE fragment keeps
+		// only sessions that spawned at least one child, so the
+		// average is "across parents that actually spawned someone"
+		// and a bucket of childless sessions yields no row instead of
+		// a NULL the scanner cannot read.
 		return `EXTRACT(EPOCH FROM (
 		         (SELECT MIN(c.started_at) FROM sessions c
 		          WHERE c.parent_session_id = s.session_id)
 		         - s.started_at
-		     )) * 1000`, "AVG"
+		     )) * 1000`, "AVG",
+			" AND EXISTS (SELECT 1 FROM sessions c WHERE c.parent_session_id = s.session_id)"
 	}
-	return "", ""
+	return "", "", ""
 }
 
 func (s *Store) querySubagentAnalytics(
@@ -832,7 +862,7 @@ func (s *Store) querySubagentAnalytics(
 	secDim dimensionSource,
 	hasSecondary bool,
 ) (*AnalyticsResponse, error) {
-	selectExpr, aggregate := subagentMetricExpr(params.Metric)
+	selectExpr, aggregate, whereExtra := subagentMetricExpr(params.Metric)
 	if selectExpr == "" {
 		return nil, fmt.Errorf("invalid sub-agent metric: %s", params.Metric)
 	}
@@ -921,8 +951,21 @@ func (s *Store) querySubagentAnalytics(
 	// primary axis (parent_session_id) carries only sub-agent
 	// rows under their actual parent's UUID.
 	//
-	//nolint:gosec // dimExpr / selectExpr / aggregate from validated
-	// whitelists; granularity validated by the handler.
+	filterSQL += whereExtra
+
+	// The framework dimension projects an alias produced by a LATERAL
+	// unnest of sessions.context->'frameworks'; that join has to be in
+	// the FROM clause here just as it is on the standard path.
+	fromClause := "sessions s LEFT JOIN subtree_tokens st ON st.root_id = s.session_id"
+	if dim.fromExtras != "" {
+		fromClause += " " + dim.fromExtras
+	}
+	if hasSecondary && secDim.fromExtras != "" && secDim.fromExtras != dim.fromExtras {
+		fromClause += " " + secDim.fromExtras
+	}
+
+	//nolint:gosec // dimExpr / selectExpr / aggregate / fromClause from
+	// validated whitelists; granularity validated by the handler.
 	var seriesSQL string
 	if hasSecondary {
 		seriesSQL = subagentRecursiveCTE + fmt.Sprintf(`
@@ -930,26 +973,24 @@ func (s *Store) querySubagentAnalytics(
 				COALESCE(%s, 'unknown') AS dimension,
 				COALESCE(%s, 'unknown') AS sub_dimension,
 				date_trunc('%s', s.started_at)::date AS bucket,
-				%s(%s) AS value
-			FROM sessions s
-			LEFT JOIN subtree_tokens st ON st.root_id = s.session_id
+				COALESCE(%s(%s), 0) AS value
+			FROM %s
 			WHERE s.started_at >= $1 AND s.started_at < $2 %s
 			GROUP BY dimension, sub_dimension, bucket
 			ORDER BY dimension, bucket, sub_dimension
 		`, dimExpr, secDimExpr, params.Granularity, aggregate,
-			selectExpr, filterSQL)
+			selectExpr, fromClause, filterSQL)
 	} else {
 		seriesSQL = subagentRecursiveCTE + fmt.Sprintf(`
 			SELECT
 				COALESCE(%s, 'unknown') AS dimension,
 				date_trunc('%s', s.started_at)::date AS bucket,
-				%s(%s) AS value
-			FROM sessions s
-			LEFT JOIN subtree_tokens st ON st.root_id = s.session_id
+				COALESCE(%s(%s), 0) AS value
+			FROM %s
 			WHERE s.started_at >= $1 AND s.started_at < $2 %s
 			GROUP BY dimension, bucket
 			ORDER BY dimension, bucket
-		`, dimExpr, params.Granularity, aggregate, selectExpr, filterSQL)
+		`, dimExpr, params.Granularity, aggregate, selectExpr, fromClause, filterSQL)
 	}
 
 	rows, err := s.pool.Query(ctx, seriesSQL, filterArgs...)
@@ -1003,23 +1044,13 @@ func (s *Store) querySubagentAnalytics(
 		series = append(series, *seriesMap[d])
 	}
 
-	// Period-over-period grand total — same query shape, different
-	// window. AVG / SUM aggregate behaves correctly under empty
-	// windows (returns NULL for AVG, 0 for SUM via COALESCE-at-
-	// scan-site if needed; here we just take whatever Postgres
-	// returns and treat NULL as 0).
-	//nolint:gosec
-	prevSQL := subagentRecursiveCTE + fmt.Sprintf(`
-		SELECT COALESCE(%s(%s), 0)
-		FROM sessions s
-		LEFT JOIN subtree_tokens st ON st.root_id = s.session_id
-		WHERE s.started_at >= $1 AND s.started_at < $2 %s
-	`, aggregate, selectExpr, filterSQL)
-
+	// Period-over-period grand total: the same series query over the
+	// previous window, summed like grand_total (see sumSeriesValues).
 	prevArgs := append([]any{prevStart, start}, filterArgs[2:]...)
-	var prevTotal float64
-	if err := s.pool.QueryRow(ctx, prevSQL, prevArgs...).Scan(&prevTotal); err != nil {
+	prevTotal, err := s.sumSeriesValues(ctx, seriesSQL, prevArgs, hasSecondary)
+	if err != nil {
 		slog.Warn("subagent analytics previous-period total query failed; reporting 0% change", "err", err)
+		prevTotal = 0
 	}
 
 	var changePct float64

@@ -4,6 +4,80 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+Correctness patch for the Claude Code plugin and the sensor's MCP
+dependency, a pricing refresh, and a documentation truth-up. No schema
+migration. **Upgrade note:** marketplace installs of the plugin do not
+update themselves; run `claude plugin update flightdeck@flightdeck-plugins`
+after upgrading the server.
+
+### Fixed
+
+- **Plugin: MCP policy decisions were never applied.** `PreToolUse`
+  answered with the legacy top-level `decision` field, which Claude Code
+  2.1 rejects; the hook now writes
+  `hookSpecificOutput.permissionDecision` (`allow` / `ask` / `deny`) with
+  a reason. Verified against Claude Code 2.1.302: a flavor deny entry
+  refuses the `mcp__<server>__<tool>` call and the model sees the reason.
+- **Plugin: enforcement disarmed after the first turn.** The `Stop` hook
+  deleted the per-session policy cache, so every later tool call in the
+  same session fell through to fail-open. The cache now lives until
+  `SessionEnd`.
+- **Plugin: `policy_mcp_warn` / `policy_mcp_block` events were dropped.**
+  The payload lacked the `policy_decision` block the ingestion API
+  requires, so every one was rejected with 400 and the dashboard never
+  saw a plugin-side block. The block is attached and a contract test pins
+  the ingestion-required fields.
+- **Plugin: policy fetched for the wrong flavor.** `SessionStart` asked
+  for the `AGENT_FLAVOR` policy while stamping `claude-code` on its own
+  events; it now fetches the policy for the flavor it reports.
+- **Plugin packaging.** The skill now lives at
+  `skills/flightdeck/SKILL.md` (Claude Code never loaded the flat file)
+  and describes what the plugin really captures; hook commands quote
+  `${CLAUDE_PLUGIN_ROOT}` so a plugin path with spaces works; the
+  manifest declares `engines.node >= 22`, homepage, repository and
+  license.
+- **Sensor: `mcp` 2.x silently disabled MCP observation.** The `mcp`
+  extra and dev dependency are capped at `<2`; when an installed `mcp`
+  cannot be imported the sensor logs a WARNING instead of a debug line,
+  and the MCP interceptor test module fails instead of skipping.
+- **Sensor: sub-agent content was dropped server-side.** Child
+  `session_start` events (CrewAI, LangGraph) did not carry the
+  `capture_prompts` flag, so the server stored the child session as
+  not capturing and discarded the parent's incoming message and the
+  child's reply even when the parent captured. The child now inherits
+  the parent's posture.
+- **Sensor: server-issued `policy_warn` events were rejected.** The warn
+  directive handler built the event without the `policy_decision` block,
+  so ingestion answered 400 and the warning never reached the dashboard.
+  Warn (and degrade) events now carry the block, naming `server` as the
+  policy when the sensor never fetched the policy row.
+- **Analytics API.** Sub-agent metrics grouped by `framework` returned
+  500 (the dimension's lateral join was missing from that query path);
+  `parent_to_first_child_latency_ms` returned 500 whenever a bucket held
+  a childless session (NULL average); and the previous-period
+  comparison query failed on most metric / dimension pairs and silently
+  reported a 0% change. The previous-period total now runs the same
+  series query over the preceding window.
+- **Pricing table refreshed** for the Claude 5 family, GPT-6 / GPT-5.x
+  and Gemini 4 / 3.x list prices, with retired ids kept and annotated;
+  Claude Opus 4 corrected to $15 / $75.
+
+### Changed
+
+- **Docs match the code.** ARCHITECTURE.md now describes the repository
+  tree, the `sessions` / `agents` / `directives` / `custom_directives` /
+  `token_policies` DDL, migrations through 000026, plugin session identity
+  (one random id per Claude Code invocation), the MCP enforcement contract,
+  NATS subjects and authentication, service environment variable names,
+  the framework coverage caveats (langchain-openai 1.x, litellm streaming,
+  gateway attribution) and the fact that no service serves `/metrics`
+  yet. README gains a Roadmap section (replacing "Coming soon"), the
+  plugin README documents identity, enforcement and updating, METHODOLOGY
+  records the severity scale, and DECISIONS.md records D164 to D184.
+- **Repository hygiene.** Retired known-issue identifiers and decision
+  pointers in source, CI and Helm comments; `sensor/.venv` is no longer
+  tracked; test files and functions no longer carry decision numbers.
+
 ## v0.5.3 — 2026-08-30
 
 Security release. Remediates the findings of a local SAST + DAST

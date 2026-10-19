@@ -109,9 +109,11 @@ Frontend code rules (11-17) live in `dashboard/CLAUDE.md`.
     `latency_p50`, `latency_p95`, `policy_events`, `estimated_cost`,
     `parent_token_sum`, `child_token_sum`, `child_count`,
     `parent_to_first_child_latency_ms`. Same rule applies. `estimated_cost`
-    uses the static pricing table in `api/internal/store/pricing.go` (D099);
-    update the table when provider list prices change. The four sub-agent-aware
-    metrics (D126) operate over the parent / child relationship via recursive
+    uses the pricing table in `pricing.yaml` at the repo root, loaded at
+    API startup by `api/internal/store/pricing_loader.go` (D099); update the
+    YAML when provider list prices change (CONTRIBUTING.md has the steps).
+    The four sub-agent-aware metrics (D126) operate over the parent / child
+    relationship via recursive
     CTE on `parent_session_id`; see ARCHITECTURE.md analytics endpoint section
     for the contract and the known-performance-characteristic note.
 
@@ -192,8 +194,10 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
         <paths>; live verification deferred to <mechanism>.
 
      Never silently claim verification that wasn't done. Mock-only coverage
-     has shipped real bugs in this repo (KI21 pre-fix, workers binary pre-D105
-     drift, KI24 Node-20 annotations). The rule is the lesson.
+     has shipped real bugs in this repo (a litellm interceptor that passed
+     mocked tests and never fired live, a workers binary that drifted from
+     its source, CI annotations that only surfaced on Node 20). The rule is
+     the lesson.
 
 40a.A. **Every playground script must declare a meaningful ``agent_type`` and
      ``flavor``.** Never ``"unknown"``, never empty, never inherited defaults.
@@ -348,7 +352,7 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
 49. **No indefinite deferral bucket.** Issues land in one of three states:
     fixed in the release they are filed in, declined with a documented reason
     (typically in the commit body or DECISIONS.md), or on the Roadmap in
-    `README.md` as a user-prioritizable post-v0.4.0 bullet. The prior
+    `README.md` (the `## Roadmap` section) as a user-prioritizable bullet. The prior
     `KNOWN_ISSUES.md` / `Deferred to v0.4.0` bucket was retired; it had
     become a dumping ground where items sat for months. The Roadmap is
     public (user-facing README) so the work is visible and user demand can

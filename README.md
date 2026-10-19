@@ -63,6 +63,8 @@ claude
 
 To use a local checkout instead of the marketplace: `claude --plugin-dir /path/to/flightdeck/plugin`.
 
+Marketplace installs do not update themselves: after a Flightdeck release run `claude plugin update flightdeck@flightdeck-plugins` (or enable auto-update for the `flightdeck-plugins` marketplace under `/plugin`).
+
 ### Production agents
 
 Install the sensor and point your agent at it:
@@ -121,7 +123,7 @@ Each script self-skips when its API keys aren't set, so `make playground-all` ru
 |-----------|------|------------|-----------|--------|
 | Anthropic | `messages.create`, `messages.stream`, `beta.messages.*` (sync + async) | route via litellm to Voyage | sync + async | 14-entry `llm_error` taxonomy |
 | OpenAI    | `chat.completions.create`, `responses.create` (sync + async) | `embeddings.create` (sync + async) | sync + async | same |
-| litellm   | `litellm.completion`, `litellm.acompletion` (chat path only) | `litellm.embedding`, `litellm.aembedding` | sync only | same |
+| litellm   | `litellm.completion`, `litellm.acompletion` (chat path only) | `litellm.embedding`, `litellm.aembedding` | not yet (`stream=True` raises `NotImplementedError`; see Roadmap) | same |
 
 Streaming events expose `payload.streaming = {ttft_ms, chunk_count, inter_chunk_ms, final_outcome, abort_reason}`. Mid-stream aborts emit `llm_error{error_type="stream_error"}` with partial-chunk and partial-token data.
 
@@ -167,6 +169,8 @@ Direct SDK calls outside a multi-agent framework emit root sessions; identity is
 ### MCP
 
 Flightdeck observes MCP traffic as a first-class event surface alongside chat and embeddings. Six event types (`mcp_tool_list`, `mcp_tool_call`, `mcp_resource_list`, `mcp_resource_read`, `mcp_prompt_list`, `mcp_prompt_get`) emit per operation. The sensor patches `mcp.client.session.ClientSession` directly, so every framework that mediates MCP through the official SDK is observed: LangChain via `langchain-mcp-adapters`, LangGraph via the same, LlamaIndex via `llama-index-tools-mcp`, CrewAI via `mcpadapt`, plus the raw `mcp` SDK.
+
+The sensor supports the official `mcp` SDK from 1.20 up to, but not including, 2.0 (the `mcp` extra pins `<2`); the 2.x line renamed and reshaped the client surface and is on the Roadmap.
 
 The Claude Code plugin's MCP coverage is limited to tool calls; resource reads and prompt fetches are below the plugin hook layer.
 
@@ -228,7 +232,7 @@ env:
         key: token
 ```
 
-Agents without `AGENT_FLAVOR` appear as `unknown`. That is how agents deployed outside your blessed config become visible.
+Agents without `AGENT_FLAVOR` appear as `{user}@{hostname}`. That is how agents deployed outside your blessed config become visible.
 
 ### Orchestrator re-attachment
 
@@ -421,7 +425,7 @@ The chart is at `version` 0.5.3 with `appVersion` 0.5.3; the default `image.tag`
 ## What Flightdeck is NOT
 
 - **Not a proxy.** The sensor wraps SDK client classes inside the agent's own process; calls go directly to the provider. Nothing routes through Flightdeck.
-- **Not a content inspector by default.** Prompt and embedding-input capture is opt-in (`capture_prompts=True`). With capture off, event payloads carry token counts, model names, latency, framework, and tool names only.
+- **Not a content inspector by default for production agents.** The Python sensor defaults to `capture_prompts=False`; with capture off, event payloads carry token counts, model names, latency, framework, and tool names only. The Claude Code plugin is the one exception: it captures prompts and sanitised tool inputs by default because you are observing your own session on your own machine, and `FLIGHTDECK_CAPTURE_PROMPTS=false` turns that off.
 - **Not an orchestrator.** Flightdeck observes; it does not decide what an agent should do next. Directives (kill switch, model swap, custom handlers) are explicit operator actions.
 - **Not a billing system.** `estimated_cost` is an approximation from public list prices. Treat as a sanity check.
 - **Not a notification platform.** No Slack, email, or PagerDuty integrations.
@@ -430,9 +434,42 @@ The chart is at `version` 0.5.3 with `appVersion` 0.5.3; the default `image.tag`
 
 ---
 
-## Coming soon
+## Roadmap
 
-Broader coding-agent support is the next batch of work: Codex, Cursor, and other agents with a hook surface comparable to Claude Code's. Continuous live-API smoke runs across every supported framework so SDK class renames don't break the sensor silently.
+Deferred and planned work lives here so it stays visible and user demand can prioritise it. Items are added when a release declines or defers them and removed when they ship. The sequence below is the October 2026 update plan; status reflects `main`.
+
+### Next up (v0.6.0 and v0.7.0)
+
+- Sensor correctness on current SDKs: streaming token accounting, LangChain 1.x and structured-output paths, litellm streaming, Bedrock / Vertex / Foundry clients, mcp 2.x support.
+- Toolchain currency: Node 24, Go 1.27, Python 3.11 through 3.14, Vite 8 / Vitest 5 / React 19, current Postgres, NATS and nginx images, dependency automation and vulnerability scanning in CI.
+- Operations: serve the workers' metrics counters over HTTP (the Prometheus-text handler exists but is not mounted) and add request-latency histograms to the Go services.
+- Token and cost model: reasoning tokens, the prompt-cache TTL split, per-model cache ratios, a current model catalogue (Claude 5, GPT-6, Gemini 4), agent-reported cost, and model-id normalisation for gateway and cloud-platform ids.
+- Identity model v2: an extensible `client_type` registry and entrypoint detection for headless, SDK and CI runs.
+- Claude Code plugin v2: the remaining hook events (API errors, permission prompts, compaction, model switches, teams and worktrees), native cost from the transcript, async hooks, plugin `userConfig`, and enforcement (kill switch, token budgets and MCP deny) for Claude Code sessions.
+- Claude Agent SDK interceptor for Python agents built on the SDK.
+
+### Planned (v0.8.0 and later)
+
+- OTLP / OpenTelemetry ingest (observer class) for Claude Code native telemetry, Codex CLI, Gemini CLI, GitHub Copilot and OTel-instrumented frameworks.
+- Google provider (`google-genai`) and Google ADK; OpenAI Agents SDK, Pydantic AI, LlamaIndex, Strands (Bedrock Converse), Microsoft Agent Framework, Agno, Haystack and smolagents sub-agent coverage; a DSPy callback adapter.
+- Coding-agent adapters, in this order: Codex CLI, GitHub Copilot, OpenCode, Gemini CLI, Cursor.
+- MCP: server-side MCP (the OpenAI Responses `mcp` tool and the Anthropic MCP connector) observation and policy, per-tool allow / deny with annotation awareness, tool-definition drift detection, and the MCP 2.x surfaces (discover, elicitation, tasks).
+- Run-drawer span and turn tree, a per-user cost dimension, PII and secret redaction before storage, OIDC login with roles and an audit log, vendor usage import (Claude Code Analytics API, Codex, Cursor, Copilot), and agent version-drift signals.
+
+### Carried over
+
+- Continuous live-API smoke runs (a scheduled playground job).
+- NATS authentication in the Helm chart (the compose production overlay already requires it).
+- nginx rate limiting at the edge (a per-token limiter exists in ingestion).
+- Dashboard authentication beyond the single bearer token (lands with OIDC above).
+- MCP policy version history, dry-run preview and YAML import / export (dropped from the first MCP policy release; reinstated on demand).
+- Removal of the CrewAI MCP schema compat helper once `mcpadapt` no longer needs it.
+- Surfacing API 400 validation errors in the dashboard.
+
+### Declined
+
+- Antigravity CLI adapter (its hooks expose no telemetry or token data yet), Roo Code (shut down), Continue (repository read-only), AutoGen (archived; superseded by the Microsoft Agent Framework item above).
+- Evaluations and LLM-as-judge, prompt management, notifications, a proxy or gateway mode, and multi-tenant SaaS (see "What Flightdeck is NOT").
 
 ---
 

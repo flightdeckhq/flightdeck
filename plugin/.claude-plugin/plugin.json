@@ -5,5 +5,8 @@
   "author": {
     "name": "Omri Arnon",
     "url": "https://github.com/pykul"
-  }
+  },
+  "homepage": "https://github.com/flightdeckhq/flightdeck",
+  "repository": "https://github.com/flightdeckhq/flightdeck",
+  "license": "Apache-2.0"
 }

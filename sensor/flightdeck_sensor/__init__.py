@@ -89,13 +89,13 @@ __all__ = [
 
 _log = logging.getLogger("flightdeck_sensor")
 
-# D114 / D115 vocabulary lock. Any other value raises ConfigurationError
-# at init time. See CHANGELOG.md for the v0.4.0 Phase 1 breaking change
-# that narrowed this from {autonomous, supervised, batch, developer}.
+# Agent-type vocabulary lock. Any other value raises ConfigurationError
+# at init time. See CHANGELOG.md for the v0.4.0 breaking change that
+# narrowed this from {autonomous, supervised, batch, developer}.
 _VALID_AGENT_TYPES = frozenset({"coding", "production"})
 
-# L-7: scattered ``"unknown"`` magic-string sentinel across init
-# fallbacks and the lazy-create path (D106). Centralising as a named
+# Scattered ``"unknown"`` magic-string sentinel across init
+# fallbacks and the worker's lazy-create path. Centralising as a named
 # constant so the worker's UpsertSession ON CONFLICT CASE-upgrade
 # (which matches exactly this string) and the sensor's fallbacks
 # stay byte-identical. A typo (``"Unknown"`` etc.) elsewhere would
@@ -131,7 +131,7 @@ def _resolve_user_name() -> str:
 # Global state -- protected by _lock.
 # v1 design: process-wide singleton. Multi-session-in-one-process is a
 # v2 concern; users who need isolated sessions should run separate
-# processes (one sensor per process). See DECISIONS.md D091.
+# processes (one sensor per process).
 _lock = threading.Lock()
 _patch_lock = threading.Lock()
 _session: Session | None = None
@@ -199,7 +199,7 @@ def directive(
        value, int)`` inside the handler. Type mismatches that crash
        the handler are caught by the runtime and logged, but bad
        input data may produce surprising side effects before the
-       crash. Phase 4.5 audit Hat 4 finding.
+       crash.
     """
 
     def decorator(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -247,7 +247,8 @@ def init(
     those live under ``tokens_input`` / ``tokens_output`` fields
     and never flow through this parameter. The kwarg name (and the
     ``FLIGHTDECK_TOKEN`` env var) deliberately stayed as ``token``
-    after the D096 rename so existing integrations don't break.
+    when access tokens were introduced so existing integrations
+    don't break.
 
     ``api_url`` is the base URL for control-plane calls (directive
     registration, directive sync, policy prefetch).  When *None*,
@@ -256,7 +257,7 @@ def init(
 
     ``limit`` sets a local WARN-only token threshold. Never blocks. Never
     degrades. Most restrictive threshold wins when both local and server
-    policies are active. See DECISIONS.md D035.
+    policies are active.
 
     ``session_id`` is an optional caller-supplied run identifier.
     When provided (or when ``FLIGHTDECK_SESSION_ID`` is set, which
@@ -268,9 +269,8 @@ def init(
     that confirms attachment. Primary use case: orchestrators
     (Temporal workflows, Airflow DAGs) that re-run the same logical
     workflow and want a single correlatable run in the fleet view.
-    See DECISIONS.md D094.
 
-    ``agent_type`` selects the D114 / D115 agent classification. Must
+    ``agent_type`` selects the agent classification. Must
     be one of ``"coding"`` or ``"production"`` -- any other value
     raises :class:`ConfigurationError` at init time. Default
     ``"production"`` because the Python sensor runs inside production
@@ -310,7 +310,7 @@ def init(
     ``127.0.0.1``, RFC1918, ...) are always allowed over ``http``. A URL
     with any scheme other than ``http`` / ``https`` is rejected outright.
 
-    ``langgraph_agent_node_pattern`` (D126) is an optional regex
+    ``langgraph_agent_node_pattern`` is an optional regex
     string that narrows which LangGraph nodes the sub-agent
     interceptor wraps. When unset, every node added via
     ``StateGraph.add_node`` gets wrapped (default-on, accepts false
@@ -357,7 +357,7 @@ def init(
             _env.ENV_ALLOW_INSECURE_TRANSPORT, allow_insecure_transport
         )
 
-        # KI20: normalize ``FLIGHTDECK_SERVER`` / ``server`` kwarg to
+        # Normalize ``FLIGHTDECK_SERVER`` / ``server`` kwarg to
         # always carry the ``/ingest`` suffix. The Claude Code plugin
         # uses the same env var without the suffix (it appends
         # ``/ingest/v1/events`` itself), so a developer running both
@@ -417,7 +417,7 @@ def init(
                 resolved_session_id,
             )
 
-        # D115: resolve agent identity. Precedence is
+        # Resolve agent identity. Precedence is
         # kwarg > env > default, matching every other init() param.
         # ``FLIGHTDECK_AGENT_TYPE`` wins over the legacy ``AGENT_TYPE``
         # env var so operators migrating from v0.3.x can set either;
@@ -434,7 +434,7 @@ def init(
                 f"Must be one of {sorted(_VALID_AGENT_TYPES)}. "
                 "Pre-v0.4.0 values ('autonomous', 'supervised', "
                 "'batch', 'developer') are no longer accepted -- "
-                "see CHANGELOG.md for the v0.4.0 Phase 1 migration."
+                "see CHANGELOG.md for the v0.4.0 migration."
             )
 
         resolved_hostname = os.environ.get(_env.ENV_HOSTNAME) or socket.gethostname()
@@ -447,7 +447,7 @@ def init(
         )
 
         # Agent identity UUID. Deterministic function of the tuple --
-        # same tuple on two processes = same agent_id. See D115 and
+        # same tuple on two processes = same agent_id. See
         # flightdeck_sensor.core.agent_id.
         resolved_agent_id = str(
             derive_agent_id(
@@ -508,12 +508,12 @@ def init(
             runtime_ctx = _collect_context()
         _session.set_context(runtime_ctx)
 
-        # Phase 4 polish: derive the per-event ``framework`` field
-        # from the FrameworkCollector's first detected entry. Pre-fix
-        # ``Session.record_framework()`` had zero callers, so every
-        # event's ``framework`` field was ``null`` -- the dashboard's
+        # Derive the per-event ``framework`` field from the
+        # FrameworkCollector's first detected entry. Without this
+        # call ``Session.record_framework()`` has no caller, every
+        # event's ``framework`` field is ``null``, and the dashboard's
         # FRAMEWORK facet, the analytics group_by=framework, and the
-        # ``/v1/sessions?framework=`` filter all silently misbehaved.
+        # ``/v1/sessions?framework=`` filter all silently misbehave.
         # Strip the ``/<version>`` suffix so the per-event field uses
         # the bare analytics dimension (``langchain``); the versioned
         # form (``langchain/0.3.x``) stays in
@@ -524,8 +524,8 @@ def init(
         # CrewAI, etc.) it wins over the SDK transport that handled
         # the call. A LangChain pipeline routing through litellm
         # routing through OpenAI reports ``framework="langchain"``
-        # because that's the user's mental model. Phase 5 (MCP) and
-        # beyond inherit this rule.
+        # because that's the user's mental model. MCP and every
+        # later interceptor inherit this rule.
         frameworks = runtime_ctx.get("frameworks") or []
         if frameworks:
             first = frameworks[0]
@@ -533,7 +533,7 @@ def init(
             if bare:
                 _session.record_framework(bare)
 
-        # D126: wire the LangGraph agent-node regex (if any) into the
+        # Wire the LangGraph agent-node regex (if any) into the
         # langgraph interceptor's module state before patch_langgraph_classes
         # might run. Setting None clears any previously-set pattern, so
         # multi-test scenarios start clean.
@@ -625,12 +625,18 @@ def patch(
             members are ``ANTHROPIC`` (anthropic SDK class patch),
             ``OPENAI`` (openai SDK class patch), ``LITELLM``
             (module-level ``litellm.completion`` / ``litellm.acompletion``
-            wrap, KI21; streaming raises ``NotImplementedError`` per
-            KI26), and ``MCP`` (Phase 5 / D117 — patches
-            ``mcp.client.session.ClientSession`` so every framework
+            / ``litellm.embedding`` / ``litellm.aembedding`` wrap;
+            ``stream=True`` raises ``NotImplementedError`` because
+            litellm streaming is not yet intercepted), ``MCP``
+            (patches ``mcp.client.session.ClientSession`` so every framework
             that uses the official Python ``mcp`` SDK emits
             ``mcp_tool_call`` / ``mcp_*_list`` / ``mcp_resource_read``
-            / ``mcp_prompt_get`` events). Silent no-op when a target's
+            / ``mcp_prompt_get`` events), ``CREWAI`` (wraps
+            ``crewai.Agent.execute_task`` / ``aexecute_task`` so each
+            Crew member's turn lands as a child session) and
+            ``LANGGRAPH`` (wraps the callable registered via
+            ``StateGraph.add_node`` so each agent-bearing node run
+            lands as a child session). Silent no-op when a target's
             SDK is not installed; raw strings outside the canonical
             set are silently ignored to preserve backward compat.
 

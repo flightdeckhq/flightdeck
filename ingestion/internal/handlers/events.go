@@ -17,13 +17,13 @@ import (
 
 const maxRequestBodyBytes = 1 << 20 // 1MB
 
-// Phase 4 timestamp bounds. An event whose ``timestamp`` falls outside
+// Timestamp bounds. An event whose ``timestamp`` falls outside
 // this window is rejected at the wire boundary with 400. Motivation:
 // a sensor whose clock drifts (backwards) can backdate a session so
 // the reconciler instantly marks it lost; a sensor whose clock drifts
 // (forwards) can freeze a session in active forever because
-// ``last_seen_at > NOW()`` trips no staleness condition. Both are
-// observable in prod but silent today (D7/D8 in audit-phase-4.md).
+// ``last_seen_at > NOW()`` trips no staleness condition. Both would
+// otherwise be silent in prod.
 //
 // Bounds are deliberately generous:
 //   maxClockSkewPast  — 48h: covers retry-after-long-outage scenarios,
@@ -41,13 +41,13 @@ const (
 	maxClockSkewFuture = 5 * time.Minute
 )
 
-// D114 / D115 vocabulary lock, enforced at the wire boundary so a
-// non-conforming third-party emitter gets a 400 instead of polluting
-// the database. The Python sensor and Claude Code plugin emit these
-// values already; the schema's CHECK constraints enforce them at the
-// storage layer -- this middleware rejection produces a cleaner
-// error message than a Postgres constraint violation surfaced through
-// the NATS worker path. See DECISIONS.md D115, D116.
+// Agent-type / client-type vocabulary lock, enforced at the wire
+// boundary so a non-conforming third-party emitter gets a 400 instead
+// of polluting the database. The Python sensor and Claude Code plugin
+// emit these values already; the schema's CHECK constraints enforce
+// them at the storage layer -- this middleware rejection produces a
+// cleaner error message than a Postgres constraint violation surfaced
+// through the NATS worker path.
 var validAgentTypes = map[string]bool{
 	"coding":     true,
 	"production": true,
@@ -58,7 +58,7 @@ var validClientTypes = map[string]bool{
 	"flightdeck_sensor": true,
 }
 
-// maxAgentRoleLen caps the length of D126's optional ``agent_role``
+// maxAgentRoleLen caps the length of the optional sub-agent ``agent_role``
 // field on the wire. CrewAI ``Agent.role`` labels and LangGraph node
 // names are typically a few words (10-40 chars) — 256 is a generous
 // ceiling that admits every realistic role string while blocking the
@@ -79,16 +79,16 @@ var uuidRegex = regexp.MustCompile(
 )
 
 // Session-state admission (closed vs lost vs stale) is enforced on the
-// worker side by processor.handleSessionGuard (D105 revive-on-event,
-// D106 lazy-create). The ingestion handler intentionally stays
+// worker side by processor.handleSessionGuard (revive-on-event,
+// lazy-create). The ingestion handler intentionally stays
 // state-unaware: admitting every event lets a live sensor recover
 // from a stale server-side view without the ingestion and worker
-// having to share a session-state cache. KI13 resolved.
+// having to share a session-state cache.
 
 // TokenValidator resolves bearer tokens to an access_tokens row. The
 // resolved (id, name) are injected into the NATS payload for
 // session_start events so the worker's UpsertSession can persist them
-// onto the new session row (D095).
+// onto the new session row.
 type TokenValidator interface {
 	Validate(ctx context.Context, rawToken string) (auth.ValidationResult, error)
 }
@@ -106,7 +106,7 @@ type DirectiveLookup interface {
 // SessionAttacher reports whether a session_start event is attaching
 // to a pre-existing session row, and (for terminal rows) revives the
 // row synchronously so the sensor's next event lands on state=active.
-// See ingestion/internal/session/store.go and DECISIONS.md D094.
+// See ingestion/internal/session/store.go.
 type SessionAttacher interface {
 	Attach(ctx context.Context, sessionID string) (attached bool, priorState string, err error)
 }
@@ -117,9 +117,8 @@ type SessionAttacher interface {
 // it contains directive_name / fingerprint / parameters which the sensor's
 // DirectivePayloadSchema validates before dispatching to the registered
 // handler. It must be projected through from directive.Directive in the
-// adapter; previously the adapter dropped it, leaving the sensor with an
-// empty payload and a Pydantic validation error on every custom directive.
-// Phase 4.5 audit B-F fix.
+// adapter; dropping it leaves the sensor with an empty payload and a
+// Pydantic validation error on every custom directive.
 type DirectiveResponse struct {
 	ID            string           `json:"id"`
 	Action        string           `json:"action"`
@@ -131,7 +130,7 @@ type DirectiveResponse struct {
 
 // EventResponse is the response envelope for POST /v1/events.
 //
-// Attached surfaces the D094 backend-attachment decision to the sensor.
+// Attached surfaces the backend-attachment decision to the sensor.
 // It is set exclusively on session_start responses (non-session_start
 // event types always return Attached=false). When true, the sensor's
 // Session._post_event logs a single INFO line so operators can trace
@@ -145,7 +144,7 @@ type EventResponse struct {
 // EventsHandler handles POST /v1/events.
 //
 // @Summary      Submit agent event
-// @Description  Validates bearer token, publishes event to NATS, returns directive envelope. On session_start events, also reports whether the session was attached to a pre-existing row (D094).
+// @Description  Validates bearer token, publishes event to NATS, returns directive envelope. On session_start events, also reports whether the session was attached to a pre-existing row.
 // @Tags         events
 // @Accept       json
 // @Produce      json
@@ -167,7 +166,7 @@ func EventsHandler(
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 
-		// Auth. Phase 4.5 N-1: error string aligned with the
+		// Auth. Error string aligned with the
 		// api-side wording in api/internal/auth/token.go for
 		// operator-clarity parity.
 		token := extractBearerToken(r)
@@ -221,24 +220,24 @@ func EventsHandler(
 			return
 		}
 
-		// D10 (Phase 4): reject non-UUID session_ids at the wire
-		// boundary. Previously a malformed session_id propagated to
-		// the worker and fell over at Postgres's ``::uuid`` cast
-		// (SQLSTATE 22P02) with a cryptic redelivery loop. The
-		// regex mirrors the agent_id check below; enforcing at the
-		// same layer keeps both UUID fields symmetric.
+		// Reject non-UUID session_ids at the wire boundary. Otherwise
+		// a malformed session_id propagates to the worker and falls
+		// over at Postgres's ``::uuid`` cast (SQLSTATE 22P02) with a
+		// cryptic redelivery loop. The regex mirrors the agent_id
+		// check below; enforcing at the same layer keeps both UUID
+		// fields symmetric.
 		if !uuidRegex.MatchString(sessionID) {
 			writeError(w, http.StatusBadRequest, "session_id must be a canonical UUID")
 			return
 		}
 
-		// D7/D8 (Phase 4): reject events whose ``timestamp`` falls
-		// outside [NOW()-24h, NOW()+5m]. See maxClockSkewPast/Future
-		// comment above for motivation. Timestamp is RFC 3339; if
-		// the field is missing or not a string we do NOT reject --
-		// the worker's Processor.Process substitutes NOW() and
-		// proceeds, matching pre-Phase-4 behaviour for older sensors
-		// that pre-date timestamp injection.
+		// Reject events whose ``timestamp`` falls outside the
+		// [NOW()-maxClockSkewPast, NOW()+maxClockSkewFuture] window.
+		// See the constants' comment above for motivation. Timestamp
+		// is RFC 3339; if the field is missing or not a string we do
+		// NOT reject -- the worker's Processor.Process substitutes
+		// NOW() and proceeds, so older sensors that pre-date timestamp
+		// injection keep working.
 		if tsRaw, ok := payload["timestamp"].(string); ok && tsRaw != "" {
 			ts, terr := time.Parse(time.RFC3339, tsRaw)
 			if terr != nil {
@@ -247,11 +246,10 @@ func EventsHandler(
 				return
 			}
 			now := time.Now().UTC()
-			// Phase 4.5 M-1: don't reveal the exact validation
-			// window in the client-facing message. The previous
-			// strings ("more than 24h in the past", "more than 5m
-			// in the future") leaked the policy bounds to anyone
-			// who could submit an event. Log the precise reason
+			// Don't reveal the exact validation window in the
+			// client-facing message: strings like "more than 24h in
+			// the past" would leak the policy bounds to anyone who
+			// could submit an event. Log the precise reason
 			// server-side; surface a generic clock-skew error.
 			if ts.Before(now.Add(-maxClockSkewPast)) {
 				slog.Warn("event timestamp clock-skew (past)",
@@ -277,7 +275,7 @@ func EventsHandler(
 			}
 		}
 
-		// D15 (Phase 4): reject negative token counts. JSON-decoded
+		// Reject negative token counts. JSON-decoded
 		// numbers land as float64 in the map[string]any payload; we
 		// inspect only the three fields that carry real LLM usage.
 		// Missing values are fine (many events don't carry usage);
@@ -292,9 +290,9 @@ func EventsHandler(
 			}
 		}
 
-		// D115 / D116: agent identity validation at the wire boundary.
+		// Agent identity validation at the wire boundary.
 		// Every event payload must carry a valid agent_id (UUID
-		// canonical form), agent_type from the D114 vocabulary, and
+		// canonical form), agent_type from the locked vocabulary, and
 		// client_type from the closed set {claude_code,
 		// flightdeck_sensor}. Rejecting at ingestion means a
 		// misbehaving third-party emitter gets an immediate 400 with
@@ -322,7 +320,7 @@ func EventsHandler(
 			return
 		}
 
-		// D126 — sub-agent identity validation. parent_session_id
+		// Sub-agent identity validation. parent_session_id
 		// (when present) must be canonical UUID; agent_role
 		// (when present) must be a non-empty string within a
 		// reasonable length cap. Both fields are optional on every
@@ -367,7 +365,7 @@ func EventsHandler(
 			}
 		}
 
-		// D131 — MCP Protection Policy event payload validation.
+		// MCP Protection Policy event payload validation.
 		// Reject the three new event types at the wire boundary
 		// (Rule 36) when their required fields are missing rather
 		// than letting the worker's pgx insert succeed with a
@@ -375,10 +373,9 @@ func EventsHandler(
 		// against.
 		switch eventType {
 		case "policy_warn", "policy_degrade", "policy_block":
-			// Phase 7 Step 2 (D148): hard cutover — the shared
-			// policy_decision block is required on every token-budget
-			// policy event. Sensor + plugin + ingestion + workers ship
-			// together per the no-compat-tax memory.
+			// The shared policy_decision block is required on every
+			// token-budget policy event. No compatibility fallback:
+			// sensor + plugin + ingestion + workers ship together.
 			if msg := validateTokenBudgetPolicyPayload(payload, eventType); msg != "" {
 				writeError(w, http.StatusBadRequest, msg)
 				return
@@ -404,20 +401,19 @@ func EventsHandler(
 				return
 			}
 		case "session_start":
-			// Phase 7 Step 4 (D152): require sensor_version on every
-			// session_start so the dashboard's "did this run under
-			// the buggy build" triage workflow always has the field
-			// to read. Hard cutover per pre-v0.6 no-compat-tax.
+			// Require sensor_version on every session_start so the
+			// dashboard's "did this run under the buggy build" triage
+			// workflow always has the field to read. No compatibility
+			// fallback for emitters that omit it.
 			if msg := validateSessionStartPayload(payload); msg != "" {
 				writeError(w, http.StatusBadRequest, msg)
 				return
 			}
 		case "session_end":
-			// Phase 7 Step 4 (D152): close_reason is optional from
-			// the sensor (worker fills the orphan-detector +
-			// sigkill paths). When present, validate against the
-			// enum so a malformed value can't poison dashboard
-			// renderers downstream.
+			// close_reason is optional from the sensor (worker fills
+			// the orphan-detector + sigkill paths). When present,
+			// validate against the enum so a malformed value can't
+			// poison dashboard renderers downstream.
 			if msg := validateSessionEndPayload(payload); msg != "" {
 				writeError(w, http.StatusBadRequest, msg)
 				return
@@ -446,7 +442,7 @@ func EventsHandler(
 
 		// On session_start, attach the resolved token id/name so the
 		// worker's UpsertSession can persist them onto the new session
-		// row (D095). Subsequent events carry no token fields -- a
+		// row. Subsequent events carry no token fields -- a
 		// session belongs to whichever token opened it. We re-encode
 		// the payload only in the session_start branch to avoid paying
 		// the marshal cost on the hot post_call/heartbeat path.
@@ -455,13 +451,13 @@ func EventsHandler(
 			payload["token_name"] = result.Name
 			rebuilt, mErr := json.Marshal(payload)
 			if mErr != nil {
-				// Phase 4.5 M-10: silent fallback would have dropped
-				// token_id/token_name from the worker's UpsertSession
-				// (D095), leaving the session row without its owning
-				// token. The map was just successfully unmarshaled from
-				// `body` so re-marshal can only fail on pathological
-				// inputs (NaN/Inf floats). Surface as 500 rather than
-				// silently dropping audit fields.
+				// A silent fallback would drop token_id/token_name from
+				// the worker's UpsertSession, leaving the session row
+				// without its owning token. The map was just
+				// successfully unmarshaled from `body` so re-marshal
+				// can only fail on pathological inputs (NaN/Inf
+				// floats). Surface as 500 rather than silently
+				// dropping audit fields.
 				slog.Error("re-marshal session_start payload with token",
 					"session_id", sessionID, "err", mErr,
 				)
@@ -476,8 +472,8 @@ func EventsHandler(
 		// the moment the ingestion API commits to the response -- a
 		// worker that hasn't yet consumed the event cannot change
 		// what we already told the sensor. For any non-session_start
-		// event type, attached is forced to false (D094: "Only
-		// session_start responses carry attached=true").
+		// event type, attached is forced to false: only
+		// session_start responses carry attached=true.
 		//
 		// On DB error we log and fall through with attached=false
 		// rather than failing the request: the attach flag is
@@ -552,20 +548,18 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 
 // validateMCPPolicyDecisionPayload enforces the required-field set
 // for policy_mcp_warn and policy_mcp_block events at the API
-// boundary (D131 / Rule 36). Returns an empty string when the
+// boundary (Rule 36). Returns an empty string when the
 // payload is valid; returns a user-facing error message otherwise.
 //
-// Phase 7 Step 2 (D148): adds the shared ``policy_decision`` block
-// to the required-field set. Hard cutover per the no-compat-tax
-// memory — pre-v0.6 has no users to protect; sensor + plugin +
-// ingestion + workers ship together.
+// The shared ``policy_decision`` block is part of the required-field
+// set with no compatibility fallback: sensor + plugin + ingestion +
+// workers ship together.
 func validateMCPPolicyDecisionPayload(payload map[string]any, eventType string) string {
-	// Phase 7 Step 3 (D151): enforcement extends to all six MCP
-	// server-access paths. ``tool_name`` is method-specific (only
-	// call_tool / read_resource / get_prompt populate it; the
-	// list_* methods have no per-item identifier). Validation
-	// drops it from the required-field set; the sensor stamps
-	// it when applicable.
+	// Enforcement covers all six MCP server-access paths.
+	// ``tool_name`` is method-specific (only call_tool /
+	// read_resource / get_prompt populate it; the list_* methods
+	// have no per-item identifier). Validation drops it from the
+	// required-field set; the sensor stamps it when applicable.
 	for _, field := range []string{
 		"server_url", "server_name", "fingerprint",
 		"policy_id", "decision_path",
@@ -590,23 +584,24 @@ func validateMCPPolicyDecisionPayload(payload map[string]any, eventType string) 
 }
 
 // validatePolicyDecisionBlock enforces the shared policy_decision
-// payload block (D148). Required on the 5 policy event types
+// payload block. Required on the 5 policy event types
 // (policy_warn, policy_degrade, policy_block, policy_mcp_warn,
-// policy_mcp_block). Phase 7 Step 2 hard cutover.
+// policy_mcp_block); no compatibility fallback for emitters that
+// omit it.
 func validatePolicyDecisionBlock(payload map[string]any, eventType string) string {
 	raw, ok := payload["policy_decision"]
 	if !ok {
-		return fmt.Sprintf("policy_decision block is required for %s (D148)", eventType)
+		return fmt.Sprintf("policy_decision block is required for %s", eventType)
 	}
 	block, ok := raw.(map[string]any)
 	if !ok {
-		return fmt.Sprintf("policy_decision must be an object on %s (D148)", eventType)
+		return fmt.Sprintf("policy_decision must be an object on %s", eventType)
 	}
 	for _, field := range []string{"policy_id", "scope", "decision", "reason"} {
 		v, ok := block[field].(string)
 		if !ok || v == "" {
 			return fmt.Sprintf(
-				"policy_decision.%s is required for %s (D148)", field, eventType,
+				"policy_decision.%s is required for %s", field, eventType,
 			)
 		}
 	}
@@ -615,16 +610,14 @@ func validatePolicyDecisionBlock(payload map[string]any, eventType string) strin
 
 // validateTokenBudgetPolicyPayload enforces the policy_decision
 // shared block on token-budget enforcement events (policy_warn,
-// policy_degrade, policy_block). Phase 7 Step 2 (D148) hard
-// cutover. The legacy fields (source / threshold_pct /
-// tokens_used / token_limit) remain on the wire for backwards
-// compatibility with the existing dashboard renderers; Step 6
-// will consolidate.
+// policy_degrade, policy_block). The legacy fields (source /
+// threshold_pct / tokens_used / token_limit) remain on the wire
+// because the existing dashboard renderers still read them.
 func validateTokenBudgetPolicyPayload(payload map[string]any, eventType string) string {
 	return validatePolicyDecisionBlock(payload, eventType)
 }
 
-// validateSessionStartPayload enforces D152 sensor_version
+// validateSessionStartPayload enforces sensor_version
 // presence on session_start events. interceptor_versions +
 // policy_snapshot are optional — empty when no frameworks are
 // installed / no policy is configured.
@@ -642,7 +635,7 @@ func validateSessionStartPayload(payload map[string]any) string {
 	return ""
 }
 
-// validateSessionEndPayload enforces the D152 close_reason enum
+// validateSessionEndPayload enforces the close_reason enum
 // when the field is present. Sensor-knowable values plus the
 // worker-filled values; missing field is fine (worker fills on
 // the orphan-detector / sigkill path).
@@ -668,7 +661,7 @@ func validateSessionEndPayload(payload map[string]any) string {
 
 // validateMCPPolicyUserRememberedPayload enforces the required-
 // field set for mcp_policy_user_remembered events emitted by the
-// Claude Code plugin's PostToolUse de-facto-approval path (D139).
+// Claude Code plugin's PostToolUse de-facto-approval path.
 // Required fields cover both the operator-visibility surface
 // (fingerprint, server_url_canonical, server_name, flavor) AND
 // the audit timestamp (decided_at).
@@ -688,12 +681,12 @@ func validateMCPPolicyUserRememberedPayload(payload map[string]any) string {
 }
 
 // validateMCPServerAttachedPayload enforces the required-field
-// set for mcp_server_attached events (D140 step 6.6 A2). The
+// set for mcp_server_attached events. The
 // event is sensor-emitted at ClientSession.initialize time; the
 // worker UPSERTs sessions.context.mcp_servers from this payload
 // so the dashboard's SessionDrawer panel populates live.
 //
-// Required non-empty fields: fingerprint (16-hex per D127),
+// Required non-empty fields: fingerprint (16-hex short form),
 // server_name, attached_at. server_url_canonical is required as
 // a string but allowed empty — the sensor legitimately emits
 // "" when the transport didn't expose a URL marker (rare; stdio
@@ -717,7 +710,7 @@ func validateMCPServerAttachedPayload(payload map[string]any) string {
 
 // validateMCPServerNameChangedPayload enforces the required-field
 // set for mcp_server_name_changed events. The event is sensor-
-// emitted observation only (D131); validation here protects
+// emitted observation only; validation here protects
 // against malformed payloads from third-party emitters.
 func validateMCPServerNameChangedPayload(payload map[string]any) string {
 	for _, field := range []string{

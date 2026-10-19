@@ -1,6 +1,6 @@
 """litellm proxy: intercepts ``litellm.completion()`` and ``litellm.acompletion()``.
 
-KI21 context. litellm routes calls to many underlying providers via
+Why this module exists. litellm routes calls to many underlying providers via
 two module-level entry points. Its Anthropic route uses raw
 ``httpx.Client.post()`` instead of constructing ``anthropic.Anthropic``,
 so the sensor's SDK-class descriptors (see
@@ -30,13 +30,13 @@ litellm module globals.
 of litellm integrations. Frameworks that route through lower-level
 litellm entry points (e.g. ``litellm.llms.custom_httpx.http_handler``
 directly, or via an internal ``llm_request()`` helper) still bypass
-this interceptor. KI21's original diagnosis listed an httpx-level
-interceptor as the broader alternative; that is out of scope for the
-KI21 fix here and will be filed separately if framework reports
-surface it.
+this interceptor. An httpx-level interceptor would be the broader
+alternative; it is out of scope here and will be filed separately if
+framework reports surface it.
 
-**Streaming is not supported in v1.** ``stream=True`` calls raise
-``NotImplementedError``. See KI26 for the streaming follow-up.
+**Streaming is not yet supported.** ``stream=True`` calls raise
+``NotImplementedError``. TODO: intercept litellm streaming (listed
+under "Known limitations" in the root README.md).
 """
 
 from __future__ import annotations
@@ -58,7 +58,8 @@ _log = logging.getLogger("flightdeck_sensor.interceptor.litellm")
 # of how the call was routed into the sensor.
 _STREAMING_NOT_SUPPORTED_MSG = (
     "flightdeck-sensor does not yet support litellm streaming calls. "
-    "For now, use stream=False. See KI26 for streaming support."
+    "For now, use stream=False. Streaming support is tracked on the "
+    "project README Roadmap."
 )
 
 
@@ -142,8 +143,8 @@ class SensorLitellm:
     def completion(self, **kwargs: Any) -> Any:
         """Intercept ``litellm.completion(**kwargs)``.
 
-        Raises ``NotImplementedError`` on ``stream=True`` -- streaming
-        support is tracked as KI26.
+        Raises ``NotImplementedError`` on ``stream=True`` -- litellm
+        streaming is not yet intercepted.
         """
         if kwargs.get("stream"):
             raise NotImplementedError(_STREAMING_NOT_SUPPORTED_MSG)
@@ -152,8 +153,8 @@ class SensorLitellm:
     async def acompletion(self, **kwargs: Any) -> Any:
         """Intercept ``litellm.acompletion(**kwargs)``.
 
-        Raises ``NotImplementedError`` on ``stream=True`` -- streaming
-        support is tracked as KI26.
+        Raises ``NotImplementedError`` on ``stream=True`` -- litellm
+        streaming is not yet intercepted.
         """
         if kwargs.get("stream"):
             raise NotImplementedError(_STREAMING_NOT_SUPPORTED_MSG)
@@ -230,7 +231,7 @@ def patch_litellm_functions(quiet: bool = False) -> None:
     the raw resource in that state.
 
     ``stream=True`` raises ``NotImplementedError`` with a clear message
-    pointing at KI26.
+    saying streaming is not yet supported.
     """
     if not _LITELLM_AVAILABLE:
         if not quiet:

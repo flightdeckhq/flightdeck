@@ -45,7 +45,7 @@ services:
       # overlay sets its own, so the pricing.yaml mount from the base
       # docker-compose.yml needs to be re-declared here for dev runs.
       # Without it, LoadPricing falls back to the safety map and cost
-      # estimates cover only four models (D102).
+      # estimates cover only four models.
       - ../pricing.yaml:/etc/flightdeck/pricing.yaml:ro
     # See the matching comment on ``ingestion`` above. Same cold-start
     # issue, same dev-only override.

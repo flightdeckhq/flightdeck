@@ -44,18 +44,23 @@ no single point of failure introduced into the agent's execution path.
   inside the agent, configured centrally.
 - A kill switch: stop any agent or every agent of a flavor from a dashboard
   click.
-- A prompt and embedding-input recorder, opt-in via `capture_prompts`.
-- A Claude Code observer via a hook plugin (observation-only, no
-  enforcement).
+- A prompt and embedding-input recorder, gated by `capture_prompts` (off by
+  default in the sensor, on by default in the Claude Code plugin).
+- A Claude Code observer via a hook plugin. It reports every hook event
+  and denies MCP tool calls that the flavor's MCP policy blocks; it has no
+  kill switch and no token-budget enforcement.
 - An analytics surface across tokens, sessions, latency, policy events, and
   estimated cost — flexible group-by across `flavor`, `model`, `framework`,
-  `host`, `agent_type`, `team`, `provider`.
+  `host`, `agent_type`, `team`, `provider`, `agent_role`,
+  `parent_session_id`.
 
 **IS NOT:**
 
 - Not a proxy. Never intercepts LLM traffic on the network.
-- Not a content inspector by default. Prompt capture is opt-in
-  (`capture_prompts=False` is the default).
+- Not a content inspector by default. The sensor ships with prompt capture
+  off (`capture_prompts=False`); the Claude Code plugin, which observes a
+  developer's own session, ships with it on, and
+  `FLIGHTDECK_CAPTURE_PROMPTS=false` turns it off.
 - Not an orchestrator. Never tells agents what to do.
 - Not a billing system. `estimated_cost` approximates from public list
   prices; actual invoices differ.
@@ -198,21 +203,36 @@ flightdeck/
 ├── METHODOLOGY.md              # Supervisor/Executor build methodology
 ├── CHANGELOG.md                # Version history (Keep-a-Changelog)
 ├── README.md                   # User-facing documentation
+├── SECURITY.md                 # Security policy: supported versions, reporting, capture posture
+├── CODE_OF_CONDUCT.md
+├── LICENSE                     # Apache-2.0
 ├── Makefile                    # Root Makefile -- orchestrates all components
+├── pricing.yaml                # Model list prices (USD per 1M tokens) the api loads at startup for estimated_cost
+├── .claude-plugin/marketplace.json  # Claude Code plugin marketplace manifest (points at plugin/ by release tag)
+├── .claude/                    # Repo-local Claude Code config: review-pipeline agents + guidelines, /audit-repo command, settings
+├── assets/                     # Demo GIFs embedded in README.md
+├── scripts/release.sh          # Release script behind `make release VERSION=vX.Y.Z`
+├── docs/                       # GitHub Pages landing site (index.html, 404.html, CNAME, assets/)
 │
 ├── sensor/                     # flightdeck-sensor Python package (PyPI)
 │   ├── Makefile
 │   ├── pyproject.toml
+│   ├── README.md               # Package-level user docs
+│   ├── CLAUDE.md               # Sensor + framework-coverage rules for Claude Code sessions
 │   ├── flightdeck_sensor/
 │   │   ├── __init__.py         # Public API: init, wrap, patch, get_status, teardown, directive
 │   │   ├── py.typed            # PEP 561 marker
+│   │   ├── config.py           # Single source of truth for FLIGHTDECK_* env var names
+│   │   ├── provider.py         # Provider enum: canonical interceptor target names accepted by patch()
 │   │   ├── core/
 │   │   │   ├── types.py        # SessionState, EventType, DirectiveAction, SensorConfig, PromptContent
 │   │   │   ├── session.py      # Session: lifecycle, identity, atexit/signal handlers, runtime context
 │   │   │   ├── policy.py       # PolicyCache: local token enforcement, threshold evaluation
+│   │   │   ├── mcp_policy.py   # MCP Protection Policy cache + per-server resolution (preflight fetch, hot-path evaluation)
 │   │   │   ├── context.py      # Pluggable runtime context collectors + framework classifiers
 │   │   │   ├── schemas.py      # Pydantic v2 control-plane envelope validation
 │   │   │   ├── agent_id.py     # 5-tuple → deterministic agent_id derivation
+│   │   │   ├── errors.py       # Provider exception → structured llm_error taxonomy + payload builder
 │   │   │   └── exceptions.py   # BudgetExceededError, DirectiveError, ConfigurationError
 │   │   ├── transport/
 │   │   │   ├── client.py       # ControlPlaneClient + EventQueue (drain + directive threads)
@@ -221,23 +241,52 @@ flightdeck/
 │   │   │   ├── base.py         # call, call_async, call_stream: provider-agnostic intercept
 │   │   │   ├── anthropic.py    # SensorAnthropic + descriptor-based class-level patch
 │   │   │   ├── openai.py       # SensorOpenAI + chat / responses / embeddings descriptors
-│   │   │   └── litellm.py      # SensorLitellm: module-level completion / embedding patch
-│   │   └── providers/
-│   │       ├── protocol.py     # Provider Protocol: token estimation, usage extraction, content extraction
-│   │       ├── anthropic.py    # AnthropicProvider: handles system, messages, tools, response
-│   │       └── openai.py       # OpenAIProvider: handles messages, tools, response, embeddings input
+│   │   │   ├── litellm.py      # SensorLitellm: module-level completion / embedding patch
+│   │   │   ├── mcp.py          # mcp.client.session.ClientSession patch: every MCP operation, every transport
+│   │   │   ├── mcp_identity.py # MCP server identity: canonical URL form + SHA-256 fingerprint
+│   │   │   ├── crewai.py       # CrewAI Agent.execute_task patch → one child session per agent turn
+│   │   │   └── langgraph.py    # LangGraph StateGraph.add_node patch → one child session per node invocation
+│   │   ├── providers/
+│   │   │   ├── protocol.py     # Provider Protocol: token estimation, usage extraction, content extraction
+│   │   │   ├── anthropic.py    # AnthropicProvider: handles system, messages, tools, response
+│   │   │   ├── openai.py       # OpenAIProvider: handles messages, tools, response, embeddings input
+│   │   │   └── litellm.py      # LitellmProvider: ModelResponse usage / tool-invocation extraction
+│   │   └── compat/
+│   │       └── crewai_mcp.py   # Opt-in fixup for the mcpadapt → CrewAI args_schema JSON Schema bug
 │   └── tests/
-│       ├── unit/
-│       │   ├── test_session.py
-│       │   ├── test_policy.py
-│       │   ├── test_interceptor.py
-│       │   ├── test_transport.py
-│       │   ├── test_providers.py
-│       │   ├── test_prompt_capture.py
-│       │   ├── test_context.py
-│       │   ├── test_framework_attribution.py
-│       │   └── test_agent_id.py
-│       └── conftest.py         # Mock control plane + provider fixtures
+│       ├── conftest.py         # Mock control plane + provider fixtures
+│       └── unit/               # 31 files
+│           ├── test_agent_id.py
+│           ├── test_agent_type_validation.py
+│           ├── test_compat_crewai_mcp.py
+│           ├── test_context.py
+│           ├── test_cross_agent_messages.py
+│           ├── test_custom_directives.py
+│           ├── test_tool_capture_destination.py
+│           ├── test_egress_url_validation.py
+│           ├── test_errors.py
+│           ├── test_framework_attribution.py
+│           ├── test_interceptor.py
+│           ├── test_interceptor_crewai.py
+│           ├── test_interceptor_langgraph.py
+│           ├── test_llm_event_enrichment.py
+│           ├── test_mcp_identity.py
+│           ├── test_mcp_interceptor.py
+│           ├── test_mcp_policy_emission_enriched.py
+│           ├── test_mcp_policy_enforcement.py
+│           ├── test_mcp_policy_enforcement_all_paths.py
+│           ├── test_originating_event_id.py
+│           ├── test_patch.py
+│           ├── test_policy.py
+│           ├── test_policy_decision_summary.py
+│           ├── test_policy_emission_enriched.py
+│           ├── test_policy_events.py
+│           ├── test_prompt_capture.py
+│           ├── test_provider_enum.py
+│           ├── test_providers.py
+│           ├── test_session.py
+│           ├── test_session_lifecycle_enrichment.py
+│           └── test_transport.py
 │
 ├── ingestion/                  # Ingestion API (Go)
 │   ├── Makefile                # build target runs swag init before go build
@@ -251,6 +300,7 @@ flightdeck/
 │   │   │   ├── events.go       # POST /v1/events: validate, publish NATS, return directive
 │   │   │   ├── heartbeat.go    # POST /v1/heartbeat
 │   │   │   ├── health.go       # GET /health
+│   │   │   ├── ratelimit.go    # Per-token sliding-window rate limiter (in-memory, keyed by token hash; auth runs first)
 │   │   │   └── (Swagger UI route)
 │   │   ├── auth/token.go       # Bearer token validation against access_tokens
 │   │   ├── nats/publisher.go   # JetStream publisher (event_type → subject routing)
@@ -261,10 +311,12 @@ flightdeck/
 ├── workers/                    # Go event processing workers (no HTTP port)
 │   ├── Makefile
 │   ├── Dockerfile
-│   ├── cmd/main.go             # Entry, NATS consumer pool, graceful shutdown
+│   ├── cmd/main.go             # Entry, applies migrations, NATS consumer pool, graceful shutdown
 │   ├── internal/
 │   │   ├── config/config.go
 │   │   ├── consumer/nats.go    # JetStream consumer goroutine pool, ack handling
+│   │   ├── migrate/migrate.go  # golang-migrate runner: applies docker/postgres/migrations at boot
+│   │   ├── metrics/metrics.go  # Atomic, reason-labelled dropped / closed / revived counters + Snapshot + text Handler (not mounted on any listener)
 │   │   ├── processor/
 │   │   │   ├── event.go        # Route incoming event to session, writer, policy evaluator
 │   │   │   ├── session.go      # State machine: active/idle/stale/closed/lost + reconciler
@@ -273,7 +325,11 @@ flightdeck/
 │   │   │   ├── postgres.go     # Upsert agents, sessions, events, event_content via pgx
 │   │   │   └── notify.go       # Postgres NOTIFY after each write (real-time dashboard push)
 │   │   └── models/             # Go structs mirroring all Postgres tables
-│   └── tests/processor_test.go
+│   └── tests/
+│       ├── processor_test.go
+│       ├── build_event_extra_test.go           # events.payload projection: llm_error + streaming sub-objects
+│       ├── build_event_extra_mcp_test.go       # events.payload projection: MCP event fields
+│       └── build_event_extra_subagent_test.go  # events.payload projection: sub-agent fields
 │
 ├── api/                        # Query API (Go)
 │   ├── Makefile                # build target runs swag init before go build
@@ -283,27 +339,44 @@ flightdeck/
 │   ├── internal/
 │   │   ├── config/config.go
 │   │   ├── server/server.go    # Router, CORS, auth middleware, withRESTTimeout
+│   │   ├── auth/token.go       # Bearer token validation against access_tokens (same rules as ingestion's)
+│   │   ├── mcp_identity/identity.go  # MCP server identity canonicalisation + fingerprint (Go twin of the sensor / plugin helpers)
 │   │   ├── handlers/
 │   │   │   ├── fleet.go            # GET /v1/fleet
-│   │   │   ├── sessions.go         # GET /v1/sessions, GET /v1/sessions/:id
+│   │   │   ├── sessions.go         # GET /v1/sessions/:id
+│   │   │   ├── sessions_list.go    # GET /v1/sessions (filters, sort, pagination)
 │   │   │   ├── agents.go           # GET /v1/agents, /v1/agents/:id/summary
 │   │   │   ├── content.go          # GET /v1/events/:id/content
 │   │   │   ├── search.go           # GET /v1/search
 │   │   │   ├── directives.go       # POST /v1/directives
-│   │   │   ├── custom_directives.go# POST /v1/directives/sync, /register; GET /v1/directives/custom
-│   │   │   ├── policies.go         # GET/POST /v1/policies, GET /v1/policy
+│   │   │   ├── custom_directives.go# POST /v1/directives/sync, /register; GET + DELETE /v1/directives/custom
+│   │   │   ├── policies.go         # GET/POST /v1/policies, PUT/DELETE /v1/policies/:id, GET /v1/policy
+│   │   │   ├── mcp_policy.go       # /v1/mcp-policies/global + /v1/mcp-policies/:flavor CRUD
+│   │   │   ├── mcp_policy_resolve.go    # GET /v1/mcp-policies/resolve (sensor / plugin preflight)
+│   │   │   ├── mcp_policy_audit_log.go  # GET /v1/mcp-policies/{global,:flavor}/audit-log + shared scope path parsing
+│   │   │   ├── mcp_policy_metrics.go    # GET /v1/mcp-policies/:flavor/metrics
+│   │   │   ├── mcp_policy_templates.go  # GET /v1/mcp-policies/templates, POST /v1/mcp-policies/:flavor/apply_template
+│   │   │   ├── mcp_policy_templates/    # Embedded YAML templates: strict-baseline, permissive-dev, strict-with-common-allows
 │   │   │   ├── analytics.go        # GET /v1/analytics
 │   │   │   ├── events_list.go      # GET /v1/events (bulk, paginated)
 │   │   │   ├── access_tokens.go    # /v1/access-tokens CRUD
 │   │   │   ├── admin_reconcile.go  # POST /v1/admin/reconcile-agents
 │   │   │   ├── stream.go           # WS /v1/stream
+│   │   │   ├── uuid.go             # Shared UUID path / query param validator
 │   │   │   └── health.go
 │   │   ├── store/
-│   │   │   ├── postgres.go         # Fleet, session, event, agents queries via pgx
-│   │   │   ├── analytics.go        # GROUP BY queries across all dimensions
-│   │   │   ├── pricing.go          # Static pricing table for estimated_cost
-│   │   │   ├── events.go           # Bulk events query
+│   │   │   ├── postgres.go         # Store + pool; fleet, session detail, session events, token policies,
+│   │   │   │                       # directives, custom directives, event content, context facets via pgx
 │   │   │   ├── sessions.go         # Listing + filters (framework, error_type)
+│   │   │   ├── events.go           # Bulk events query + event facets
+│   │   │   ├── agents.go           # Agents listing: filters, sort, search, pagination; agent by id
+│   │   │   ├── agent_summary.go    # Per-agent windowed activity summary
+│   │   │   ├── agents_reconcile.go # Recompute agents.total_sessions / total_tokens rollups
+│   │   │   ├── analytics.go        # GROUP BY queries across all dimensions
+│   │   │   ├── pricing.go          # Per-model price map + cache ratios for estimated_cost; built-in fallback entries
+│   │   │   ├── pricing_loader.go   # Loads pricing.yaml at startup (FLIGHTDECK_PRICING_PATH → /etc/flightdeck → ./)
+│   │   │   ├── mcp_policy_store.go # MCP Protection Policy SQL (transactional entries replace + audit row)
+│   │   │   ├── mcp_policy_types.go # Go structs for mcp_policies / mcp_policy_entries rows and API DTOs
 │   │   │   ├── access_tokens.go
 │   │   │   └── search.go
 │   │   └── ws/hub.go               # WebSocket hub: client registry, broadcast on PG NOTIFY
@@ -320,39 +393,71 @@ flightdeck/
 │   ├── postcss.config.js
 │   ├── tailwind.config.js      # CSS variable-based theme colors
 │   ├── eslint.config.js
+│   ├── vitest.config.ts
+│   ├── playwright.config.ts
+│   ├── CLAUDE.md               # Frontend + E2E discipline rules for Claude Code sessions
+│   ├── public/                 # runtime-config.json (access-token bootstrap), favicons, brand lockups
 │   ├── src/
 │   │   ├── main.tsx
 │   │   ├── App.tsx
-│   │   ├── pages/              # Fleet, Events (Investigate.tsx), Session, Analytics, Policies, Directives, Settings
+│   │   ├── pages/              # Fleet.tsx, Agents.tsx, Investigate.tsx (Events), Analytics.tsx,
+│   │   │                       # Policies.tsx, Directives.tsx, Settings.tsx, NotFound.tsx
 │   │   ├── components/
-│   │   │   ├── timeline/       # Timeline, SwimLane, SessionEventRow, EventNode, TimeAxis,
-│   │   │   │                   # RunBracket, AgentStatusBadge, SubAgentConnector
+│   │   │   ├── timeline/       # Timeline, SwimLane, VirtualizedSwimLane, SessionEventRow, EventNode,
+│   │   │   │                   # TimeAxis, RunBracket, AgentStatusBadge, SubAgentConnector
 │   │   │   ├── fleet/          # FleetPanel, SessionStateBar, LiveFeed,
 │   │   │   │                   # EventDetailDrawer, EventFilterBar, TopologyCell
-│   │   │   ├── session/        # SessionDrawer, SessionTimeline, EventDetail, PromptViewer,
-│   │   │   │                   # EmbeddingsContentViewer, ErrorEventDetails, TokenUsageBar
-│   │   │   ├── analytics/      # KpiRow, DimensionChart, TimeSeries, Ranking, Donut, DimensionPicker
-│   │   │   ├── search/         # CommandPalette, SearchResults
-│   │   │   ├── policy/         # PolicyEditor, PolicyTable
+│   │   │   ├── agents/         # AgentTable, AgentTableRow, AgentFacetSidebar, AgentSparkline,
+│   │   │   │                   # AgentDrawer, AgentDrawerEventsTab, AgentDrawerRunsTab, PerAgentSwimlaneModal
+│   │   │   ├── events/         # EnrichmentSummary, SurroundingEventsList
+│   │   │   ├── session/        # SessionDrawer, SessionTimeline, EventRow, EventDetail, PromptViewer,
+│   │   │   │                   # EmbeddingsContentViewer, ErrorEventDetails, MCPEventDetails,
+│   │   │   │                   # PolicyEventDetails, SubAgentsTab, TokenUsageBar, AccordionHeader
+│   │   │   ├── analytics/      # SummaryCards, ChartCard, DimensionChart, DimensionPicker, TimeSeriesChart,
+│   │   │   │                   # StackedSeriesChart, TokenUsageOverTime, RankingChart, DonutChart, CostChart,
+│   │   │   │                   # LatencyDistribution, ModelBarChart, ProviderBarChart, ParentChildBreakdownChart
+│   │   │   ├── facets/         # AgentTypeBadge, ClientTypePill, EventTypePill, FrameworkPill,
+│   │   │   │                   # RelationshipPill, SubAgentRolePill, FacetIcon
+│   │   │   ├── search/         # CommandPalette, SearchResults, RecentAgents, Highlight, StateChip
+│   │   │   ├── policy/         # PolicyEditor, PolicyTable, MCPProtectionTab, MCPPolicyHeader,
+│   │   │   │                   # MCPPolicyEntryTable, MCPPolicyEntryDialog, MCPPolicyResolvePanel,
+│   │   │   │                   # MCPPolicyAuditPanel, MCPQuickStartTemplates, MCPServerDecisionText
 │   │   │   ├── directives/     # DirectiveCard
-│   │   │   └── ui/             # shadcn/ui components (owned, copied into project)
-│   │   ├── hooks/              # useFleet, useSession, useAnalytics, useSearch, useWebSocket,
-│   │   │                       # useHistoricalEvents
-│   │   ├── store/fleet.ts      # Zustand: fleet state, session map, WebSocket stream
-│   │   ├── lib/                # api, time, types, utils, events, models, constants, directives
+│   │   │   └── ui/             # shadcn/ui primitives (owned, copied into project) plus DateRangePicker,
+│   │   │                       # Pagination, TruncatedText, OSIcon, OrchestrationIcon, provider icons / logos
+│   │   ├── hooks/              # useFleet, useSession, useSessionEvents, useAnalytics, useSearch, useWebSocket,
+│   │   │                       # useHistoricalEvents, useAgentSummary, useAgentEvents, useAgentRuns,
+│   │   │                       # useDebouncedValue, useTheme
+│   │   ├── store/
+│   │   │   ├── fleet.ts        # Zustand: fleet state, session map, WebSocket stream
+│   │   │   └── quickStart.ts   # Zustand: per-scope dismissal of the MCP quick-start template link (not persisted)
+│   │   ├── lib/                # api, time, types, utils, events, models, constants, directives, runtime-config,
+│   │   │                       # agent-identity, agent-status, agents-filter, agents-format, agents-sort,
+│   │   │                       # fleet-ordering, relationship, policy-scope-labels, swimlane-lost-sub-agent,
+│   │   │                       # useSwimlaneScroll, allRowCollapsed, discoveryEventsPref, leftPanelWidth,
+│   │   │                       # investigate-sidebar-width
+│   │   ├── types/context.ts    # Runtime-context types shared by the CONTEXT sidebar and the session drawer
 │   │   └── styles/             # globals.css, themes.css
-│   └── tests/                  # unit (Vitest + RTL), e2e (Playwright)
+│   └── tests/                  # unit (Vitest + RTL), e2e (Playwright), setup.ts
 │
 ├── plugin/                     # Claude Code hook plugin
-│   ├── Makefile
-│   ├── package.json
-│   ├── .claude-plugin/plugin.json
+│   ├── README.md               # Install, configuration, what gets reported
+│   ├── package.json            # Zero runtime dependencies
+│   ├── .claude-plugin/plugin.json  # Plugin manifest (name, version, author)
 │   ├── hooks/
-│   │   ├── hooks.json          # SessionStart, UserPromptSubmit, PostToolUse,
+│   │   ├── hooks.json          # SessionStart, UserPromptSubmit, PreToolUse, PostToolUse,
 │   │   │                       # PostToolUseFailure, Stop, SessionEnd, PreCompact,
-│   │   │                       # SubagentStart, SubagentStop
-│   │   └── scripts/observe_cli.mjs
-│   └── skills/flightdeck.md    # /flightdeck skill
+│   │   │                       # SubagentStart, SubagentStop -- every hook runs observe_cli.mjs
+│   │   └── scripts/
+│   │       ├── observe_cli.mjs           # Hook entry: reads the hook event + transcript JSONL, POSTs events
+│   │       ├── agent_id.mjs              # agent_id derivation (Node twin of sensor core/agent_id.py)
+│   │       ├── uuid5.mjs                 # RFC 4122 v5 UUID, no npm dependency
+│   │       ├── mcp_identity.mjs          # MCP server identity (Node twin of sensor interceptor/mcp_identity.py)
+│   │       ├── mcp_policy.mjs            # MCP policy fetch, per-session policy cache, per-server classification
+│   │       └── remembered_decisions.mjs  # Per-token cache of operator approvals for unknown MCP servers
+│   ├── skills/flightdeck/SKILL.md  # /flightdeck skill
+│   └── tests/                  # node --test: observe_cli, dispatchers, agent_id, uuid5,
+│                               # mcp_identity, mcp_policy, remembered_decisions
 │
 ├── playground/                 # Working examples per supported framework
 │   ├── _helpers.py             # init_sensor with required flavor + capture defaults
@@ -366,7 +471,9 @@ flightdeck/
 ├── docker/                     # docker-compose.{yml,dev.yml,prod.yml}, nginx, postgres/migrations
 ├── tests/
 │   ├── integration/            # Full-pipeline pytest suite (real NATS + Postgres)
-│   └── e2e-fixtures/           # Canonical seed dataset for Playwright dev-stack runs
+│   ├── e2e-fixtures/           # Canonical seed dataset for Playwright dev-stack runs
+│   ├── fixtures/               # mcp_identity_vectors.json: cross-language MCP identity vectors (sensor, plugin, api)
+│   └── shared/                 # fixtures.py: pytest-free helpers shared by the integration conftest and the e2e seeder
 └── .github/workflows/          # ci.yml, release.yml
 ```
 
@@ -623,13 +730,13 @@ clients internally are intercepted without user-side wrapping.
 
 | Framework | Path covered |
 |---|---|
-| LangChain | `ChatAnthropic.invoke` (langchain-anthropic), `ChatOpenAI.invoke` (langchain-openai), `OpenAIEmbeddings.embed_*` (transitive) |
+| LangChain | `ChatAnthropic.invoke` (langchain-anthropic); `ChatOpenAI.invoke` on langchain-openai 0.x, which calls `chat.completions.create`; `OpenAIEmbeddings.embed_*` (transitive). langchain-openai 1.x sends chat through `with_raw_response.create`, which the OpenAI interceptor does not wrap, so those calls are not observed (README Roadmap) |
 | LangGraph | Transitive via LangChain — graphs routing through `ChatAnthropic` / `ChatOpenAI`, including `langgraph.prebuilt.create_react_agent` tool loops |
 | LlamaIndex | `llama-index-llms-anthropic.complete`, `llama-index-llms-openai.complete` |
 | CrewAI 1.14+ | `LLM(model=...).call` via the native Anthropic and OpenAI provider classes. Model strings without a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm |
-| litellm | `litellm.completion` / `acompletion` chat path; `embedding` / `aembedding` |
+| litellm | `litellm.completion` / `acompletion` chat path, non-streaming only (`stream=True` raises `NotImplementedError`; README Roadmap); `embedding` / `aembedding` |
 | Claude Code plugin | Observational hook-based path; emits the same event shape as the sensor |
-| bifrost | Multi-protocol gateway. Point the openai SDK at bifrost's `base_url` and the OpenAI interceptor fires; point the anthropic SDK at bifrost and the Anthropic interceptor fires. Both protocols are supported as deployment topologies |
+| bifrost | Multi-protocol gateway. Point the openai SDK at bifrost's `base_url` and the OpenAI interceptor fires; point the anthropic SDK at bifrost and the Anthropic interceptor fires. Both protocols are supported as deployment topologies. Events are attributed to the SDK protocol in use (`provider` reads openai or anthropic); the gateway itself is not recorded today |
 
 ### Framework attribution
 
@@ -677,9 +784,8 @@ identity is unchanged for those paths.
 
 Sub-agent coverage tracks the LLM-interception coverage matrix above
 — a framework lands here only after Flightdeck observes its plain
-LLM calls. AutoGen support is on the Roadmap (LLM-call interception
-plus sub-agent observability for both the 0.4 rewrite and the 0.2
-legacy package).
+LLM calls. Microsoft Agent Framework (the successor to AutoGen) is on
+the README Roadmap; the archived AutoGen packages are not planned.
 
 Cross-agent message capture rides on the same
 `capture_prompts` gate as LLM prompt content. Each
@@ -869,19 +975,23 @@ sessions. This is the observer-session class.
 `getSessionId` resolves in this order:
 
 1. `CLAUDE_SESSION_ID` / `ANTHROPIC_CLAUDE_SESSION_ID` env vars.
-2. RFC 4122 v5 UUID derived from `(user, hostname, repo remote, branch)`
-   so same-laptop + same-repo + same-branch Claude Code spawns converge on
-   one session row.
-3. A marker file at
-   `$TMPDIR/flightdeck-plugin/session-${sha256(cwd)[:16]}.txt` that caches
-   whichever candidate was picked on first run.
-4. `hookEvent.session_id` as a demoted safety net.
-5. `sha256(cwd)[:32]`.
+2. A marker file at
+   `$TMPDIR/flightdeck-plugin/session-${sha256(hookEvent.session_id)[:16]}.txt`,
+   keyed on the per-invocation `session_id` Claude Code stamps on every
+   hook event. The first hook of an invocation writes it; every later
+   hook in the same run reads it verbatim.
+3. A fresh RFC 4122 v4 UUID, written to that marker, so each Claude Code
+   invocation is one session row. Cross-invocation continuity lives in
+   `agent_id`, not in the session id.
+4. When the hook event carries no `session_id` (a caller other than
+   Claude Code), the marker is keyed on `sha256(cwd)[:16]` and one stderr
+   warning is printed.
+5. An ephemeral `sha256(time, pid, cwd)[:32]` when `$TMPDIR` is unusable.
 
 The marker file exists because every hook invocation runs as a separate
 Node child process — pid-based fallbacks would create one session row per
-tool call. Branch is part of identity: switching branches produces a
-distinct session.
+tool call. `SessionEnd` deletes the marker, so `/clear` or a new `claude`
+run mints a new session id.
 
 ### `session_start` with context
 
@@ -1185,7 +1295,9 @@ published, then dropped downstream by the worker, which logs a warning,
 increments `dropped_events_total{reason="orphan_session_end"}`, and ACKs the
 NATS message (there is nothing to recover).
 
-`dropped_events_total{reason}` is exposed via `/metrics`.
+The worker counts the drop as `dropped_events_total{reason}` in its
+in-process metrics registry and logs it; no service serves that registry
+over HTTP today (README Roadmap).
 
 ### Response envelope
 
@@ -1233,11 +1345,11 @@ control plane honours end-to-end:
    arrival of a `session_start` event the ingestion API calls
    `session.Store.Attach(session_id)` against Postgres BEFORE publishing
    the NATS envelope. If the row exists in `{closed, lost}` the store
-   flips state to `active` and stamps `last_attached_at = NOW`. If the
-   row exists in `{active, idle, stale}` the store only stamps
-   `last_attached_at`. `started_at` and `ended_at` are never touched. If
-   the row does not exist the store is a no-op and the worker creates it
-   downstream.
+   flips state to `active` and clears `ended_at`; in every other state
+   the row is left as it is. Each arrival inserts one `session_attachments`
+   row, which is how the API returns the full re-attachment history.
+   `started_at` is never touched. If the row does not exist the store is
+   a no-op and the worker creates it downstream.
 3. **Response envelope — `attached: true` when the row pre-existed.**
 4. **Sensor — INFO log on the first attached response.** Per-process
    guard so subsequent envelopes do not duplicate the log.
@@ -1260,9 +1372,8 @@ and the worker's `UpsertSession ON CONFLICT` branch is a no-op refresh.
 produces them).
 
 `GET /health` returns `{"status":"ok","service":"ingestion"}`.
-`GET /metrics` exposes Prometheus counters and gauges including
-`dropped_events_total{reason}` and request-latency histograms.
-`GET /docs/index.html` serves the Swagger UI.
+`GET /docs/index.html` serves the Swagger UI. The ingestion API serves no
+metrics endpoint.
 
 ---
 
@@ -1281,13 +1392,10 @@ acks on success, naks on error (up to `MaxDeliver` retries before dead
 letter).
 
 The ingestion API publishes one subject per event type — `events.<type>`
-where `<type>` mirrors the sensor's `EventType` enum value. Concrete
-subjects in use:
-
-`events.session_start`, `events.session_end`, `events.pre_call`,
-`events.post_call`, `events.tool_call`, `events.embeddings`,
-`events.llm_error`, `events.policy_warn`, `events.policy_degrade`,
-`events.policy_block`, `events.directive_result`.
+where `<type>` is the `event_type` the validator accepted, so every event
+type in the vocabulary (lifecycle, LLM, tool, MCP, policy and directive
+events) has its own subject, for example `events.session_start`,
+`events.post_call`, `events.mcp_tool_call` and `events.policy_mcp_block`.
 
 The worker subscribes via the `events.>` catch-all so all event types
 route to a single processor without per-type subscription wiring.
@@ -1329,8 +1437,8 @@ sessions that have been silent past `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`
 `payload.close_reason = "orphan_timeout"` so the dashboard's
 close-reason facet surfaces the reconciler's verdict alongside
 happy-path shutdowns, and bumps
-`sessions_closed_total{reason="orphan_timeout"}` on the worker's
-`/metrics` endpoint. The reaper exists because plugin / sensor
+`sessions_closed_total{reason="orphan_timeout"}` in the worker's
+in-process metrics registry. The reaper exists because plugin / sensor
 crashes, `kill -9`, and missed lifecycle hooks would otherwise leave
 `lost` rows pinned forever; without the timeout the Fleet view
 accumulates dead rows that look indistinguishable from a long pause.
@@ -1345,8 +1453,8 @@ sub-agents (Claude Code Task subagents, CrewAI hand-off, LangGraph
 nodes) would age to `stale → lost → orphan_timeout` closure while
 its children clearly streamed events. Closed parents are
 untouched (terminal state). Revivals via this path bump
-`sessions_revived_total{trigger="child_event"}` on the worker's
-`/metrics` endpoint so operators can chart parent-via-child
+`sessions_revived_total{trigger="child_event"}` in the worker's
+in-process metrics registry so a future exposition can chart parent-via-child
 revivals separately from any future revival path. Scope is direct
 parent only — transitive ancestor revival is deferred until a
 framework that exercises depth>2 trees ships.
@@ -1454,7 +1562,8 @@ post_call event:
 - Compare cumulative `tokens_used` against `warn_at_pct`,
   `degrade_at_pct`, `block_at_pct`.
 - When a threshold is crossed, write a directive row to `directives`
-  (`action=warn`, `degrade`, `block`). The directive lives in Postgres;
+  (`action=warn`, `degrade`, or `shutdown` with reason
+  `token_budget_exceeded` at the block threshold). The directive lives in Postgres;
   delivery happens via the ingestion API on the sensor's next POST.
 - Platform engineers cannot POST `degrade` / `warn` / `policy_update`
   directly; only `shutdown`, `shutdown_flavor`, and `custom` are
@@ -1485,12 +1594,12 @@ CREATE TABLE agents (
     client_type     TEXT NOT NULL CHECK (client_type IN ('claude_code', 'flightdeck_sensor')),
     agent_name      TEXT NOT NULL,
     user_name       TEXT NOT NULL,         -- wire field is "user"; column avoids the SQL reserved word
-    hostname        TEXT,
+    hostname        TEXT NOT NULL,
+    policy_id       UUID REFERENCES token_policies(id),
     first_seen_at   TIMESTAMPTZ NOT NULL DEFAULT NOW,
     last_seen_at    TIMESTAMPTZ NOT NULL DEFAULT NOW,
-    total_sessions  BIGINT NOT NULL DEFAULT 0,
-    total_tokens    BIGINT NOT NULL DEFAULT 0,
-    policy_id       UUID REFERENCES token_policies(id)
+    total_sessions  INTEGER NOT NULL DEFAULT 0,
+    total_tokens    BIGINT NOT NULL DEFAULT 0
 );
 
 CREATE INDEX idx_agents_last_seen_at ON agents (last_seen_at DESC);
@@ -1506,46 +1615,60 @@ worker. Healed by `POST /v1/admin/reconcile-agents` on demand.
 ```sql
 CREATE TABLE sessions (
     session_id           UUID PRIMARY KEY,
-    agent_id             UUID NOT NULL REFERENCES agents(agent_id),
-    agent_name           TEXT NOT NULL,             -- denorm from agents
+    agent_id             UUID REFERENCES agents(agent_id),          -- nullable: parent-stub rows carry no identity yet
+    agent_name           TEXT,                      -- denorm from agents (nullable on sessions)
     agent_type           TEXT NOT NULL,             -- denorm from agents
-    client_type          TEXT,                      -- denorm from agents (nullable on sessions)
+    client_type          TEXT CHECK (client_type IN ('claude_code', 'flightdeck_sensor')),  -- denorm from agents (nullable)
     flavor               TEXT NOT NULL,             -- legacy label
     framework            TEXT,                      -- bare name (e.g. "langchain")
     host                 TEXT,
     model                TEXT,
-    state                TEXT NOT NULL CHECK (state IN ('active','idle','stale','lost','closed')),
-    tokens_used          BIGINT NOT NULL DEFAULT 0,
-    tokens_input         BIGINT NOT NULL DEFAULT 0,
-    tokens_output        BIGINT NOT NULL DEFAULT 0,
-    tokens_cache_read    BIGINT NOT NULL DEFAULT 0,
-    tokens_cache_creation BIGINT NOT NULL DEFAULT 0,
-    token_limit          BIGINT,
-    started_at           TIMESTAMPTZ NOT NULL,
+    state                TEXT NOT NULL DEFAULT 'active',  -- active / idle / stale / lost / closed; vocabulary enforced by the worker, not a CHECK
+    tokens_used          INTEGER NOT NULL DEFAULT 0,
+    token_limit          INTEGER,
+    started_at           TIMESTAMPTZ NOT NULL DEFAULT NOW,
+    last_seen_at         TIMESTAMPTZ NOT NULL DEFAULT NOW,
     ended_at             TIMESTAMPTZ,
-    last_seen_at         TIMESTAMPTZ NOT NULL,
-    last_attached_at     TIMESTAMPTZ,
+    metadata             JSONB,                     -- unused: no write path populates it
     context              JSONB DEFAULT '{}'::jsonb,
     token_id             UUID REFERENCES access_tokens(id) ON DELETE SET NULL,
     token_name           TEXT,
     parent_session_id    UUID REFERENCES sessions(session_id),
-    agent_role           TEXT
+    agent_role           TEXT,
+    capture_prompts      BOOLEAN                    -- server-authoritative capture posture; NULL = not yet declared (treated as off)
 );
 
-CREATE INDEX sessions_agent_id_idx ON sessions (agent_id);
+CREATE INDEX idx_sessions_agent_id ON sessions (agent_id);
+CREATE INDEX sessions_agent_id_started_at_desc_idx ON sessions (agent_id, started_at DESC);
 CREATE INDEX sessions_state_idx ON sessions (state);
-CREATE INDEX sessions_last_seen_idx ON sessions (last_seen_at DESC);
+CREATE INDEX sessions_last_seen_idx ON sessions (last_seen_at);
 CREATE INDEX sessions_flavor_idx ON sessions (flavor);
-CREATE INDEX sessions_framework_idx ON sessions (framework);
-CREATE INDEX sessions_started_at_idx ON sessions (started_at DESC);
+CREATE INDEX sessions_started_idx ON sessions (started_at);
+CREATE INDEX sessions_token_id_idx ON sessions (token_id);
 CREATE INDEX sessions_context_gin ON sessions USING GIN (context);
 CREATE INDEX sessions_parent_session_id_idx ON sessions (parent_session_id)
     WHERE parent_session_id IS NOT NULL;       -- partial
+-- Plus nine partial expression indexes, one per runtime-context facet
+-- key (os, arch, hostname, user, git_branch, git_repo, orchestration,
+-- python_version, process_name), each named sessions_context_<key>_idx
+-- ON ((context->>'<key>')) WHERE (context->>'<key>') IS NOT NULL. They
+-- back the /events runtime-context facet filters and counts; the GIN
+-- index does not serve ->> equality predicates.
 ```
 
 `agent_name`, `agent_type`, and `client_type` are denormalized from
 `agents` so list endpoints can avoid a join. The worker populates them on
-`UpsertSession`.
+`UpsertSession`. `agent_id`, `agent_name`, and `client_type` are nullable
+because the worker's parent-stub lazy-create path inserts a placeholder
+row with no identity when a child's `session_start` arrives before its
+parent's; the real parent `session_start` fills them in. There is no
+index on `framework`.
+
+`tokens_used` is the only token rollup on `sessions`; per-call input /
+output / cache counts live on `events`. `capture_prompts` is the
+server-authoritative capture posture, written once from the first
+authoritative `session_start` (see Ingestion API above); the worker
+treats NULL as capture-off.
 
 `framework` is the bare-name analytics dimension. The full
 `context.frameworks[]` JSONB array carries versioned strings
@@ -1573,7 +1696,7 @@ CREATE TABLE session_attachments (
     attached_at TIMESTAMPTZ NOT NULL DEFAULT NOW
 );
 
-CREATE INDEX session_attachments_session_id_idx ON session_attachments (session_id, attached_at DESC);
+CREATE INDEX session_attachments_session_idx ON session_attachments (session_id, attached_at);
 ```
 
 One row per re-attachment (subsequent `session_start` for an existing
@@ -1636,7 +1759,7 @@ CREATE TABLE event_content (
     captured_at TIMESTAMPTZ NOT NULL DEFAULT NOW
 );
 
-CREATE INDEX event_content_session_id_idx ON event_content (session_id);
+CREATE INDEX event_content_session_idx ON event_content (session_id);
 ```
 
 `event_content` is fetched on demand via `GET /v1/events/:id/content`,
@@ -1668,17 +1791,19 @@ bodies are blobs, not request/response shapes.
 ```sql
 CREATE TABLE token_policies (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid,
-    scope           TEXT NOT NULL CHECK (scope IN ('org', 'flavor', 'session')),
-    scope_value     TEXT,
-    token_limit     BIGINT NOT NULL,
+    scope           TEXT NOT NULL,                   -- org / flavor / session; validated by the API handler, not a CHECK
+    scope_value     TEXT NOT NULL DEFAULT '',        -- '' for org scope
+    token_limit     BIGINT,
     warn_at_pct     INT,
     degrade_at_pct  INT,
     degrade_to      TEXT,
     block_at_pct    INT,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW,
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW,
+    UNIQUE (scope, scope_value)                      -- constraint token_policies_scope_scope_value_key
 );
 
-CREATE UNIQUE INDEX token_policies_scope_idx ON token_policies (scope, scope_value);
+CREATE INDEX idx_token_policies_scope ON token_policies (scope, scope_value);
 ```
 
 Lookup precedence: session > flavor > org > no-limit. Workers join against
@@ -1691,17 +1816,19 @@ CREATE TABLE directives (
     id              UUID PRIMARY KEY DEFAULT gen_random_uuid,
     session_id      UUID,                            -- NULL for flavor-wide
     flavor          TEXT,                            -- NULL for session-scoped
-    action          TEXT NOT NULL,                   -- shutdown / shutdown_flavor / degrade / warn / custom / policy_update
+    action          TEXT NOT NULL,                   -- shutdown / degrade / warn / custom (a shutdown_flavor request fans out into per-session shutdown rows)
     reason          TEXT,
-    grace_period_ms INT,
-    degrade_to      TEXT,
-    payload         JSONB,                           -- custom directive parameters
+    grace_period_ms INTEGER NOT NULL DEFAULT 5000,
+    issued_by       TEXT NOT NULL DEFAULT 'platform',
+    issued_at       TIMESTAMPTZ NOT NULL DEFAULT NOW,
     delivered_at    TIMESTAMPTZ,
-    created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW
+    acknowledged_at TIMESTAMPTZ,
+    degrade_to      TEXT,
+    payload         JSONB                            -- custom directive parameters
 );
 
-CREATE INDEX directives_session_id_idx ON directives (session_id) WHERE delivered_at IS NULL;
-CREATE INDEX directives_flavor_idx ON directives (flavor) WHERE delivered_at IS NULL;
+CREATE INDEX directives_session_pending_idx ON directives (session_id) WHERE delivered_at IS NULL;
+CREATE INDEX directives_flavor_pending_idx ON directives (flavor) WHERE delivered_at IS NULL;
 ```
 
 `LookupPending(sessionID)` does an atomic UPDATE...RETURNING that combines
@@ -1714,23 +1841,27 @@ not re-delivered on subsequent POSTs.
 ```sql
 CREATE TABLE custom_directives (
     id            UUID PRIMARY KEY DEFAULT gen_random_uuid,
-    fingerprint   TEXT NOT NULL UNIQUE,
+    fingerprint   TEXT NOT NULL,
     name          TEXT NOT NULL,
     description   TEXT,
     flavor        TEXT NOT NULL,
     parameters    JSONB,
     registered_at TIMESTAMPTZ DEFAULT NOW,
-    last_seen_at  TIMESTAMPTZ DEFAULT NOW
+    last_seen_at  TIMESTAMPTZ DEFAULT NOW,
+    UNIQUE (fingerprint, flavor)                     -- constraint custom_directives_fingerprint_flavor_key
 );
 
 CREATE INDEX custom_directives_flavor_idx ON custom_directives (flavor);
 CREATE INDEX custom_directives_fp_idx ON custom_directives (fingerprint);
 ```
 
-The sensor registers handlers via `/v1/directives/sync` (which lookups by
-fingerprint and bumps `last_seen_at` for known ones, returning unknown
-fingerprints) and `/v1/directives/register` (which upserts the schema on
-fingerprint conflict). On register, the same transaction issues
+Uniqueness is scoped to `(fingerprint, flavor)`: the same handler
+fingerprint registered by two flavors is two rows. The sensor registers
+handlers via `/v1/directives/sync` (which looks up by fingerprint within
+the flavor and bumps `last_seen_at` for known ones, returning unknown
+fingerprints) and `/v1/directives/register` (which inserts the schema, or
+only bumps `last_seen_at` when the `(fingerprint, flavor)` pair already
+exists). On register, the same transaction issues
 `pg_notify('flightdeck_fleet', 'directive_registered')` so the dashboard
 hub broadcasts a fleet update and the Directives page / FleetPanel
 sidebar refresh in real time when the sensor registers a brand new
@@ -1775,7 +1906,7 @@ always create a new numbered migration.
 | 000006 | `sessions.context` JSONB + GIN index |
 | 000007 | `custom_directives` unique key recast to `(fingerprint, flavor)` |
 | 000008 | `sessions.last_attached_at` column |
-| 000009 | `session_attachments` table |
+| 000009 | `session_attachments` table; drops `sessions.last_attached_at` (one row per re-attachment replaces the single timestamp) |
 | 000010 | Salted `access_tokens` schema |
 | 000011 | `sessions.token_id` FK + `token_name` column |
 | 000012 | Rename `api_tokens` → `access_tokens` |
@@ -1790,6 +1921,9 @@ always create a new numbered migration.
 | 000021 | `event_content.tool_input` + `tool_output` JSONB columns for tool / prompt capture |
 | 000022 | `event_content.embedding_output` JSONB column for embeddings vector capture |
 | 000023 | `events` partial expression indexes (`model` + payload-JSONB facet keys) for `/events` event-grain facet filtering and counts |
+| 000024 | `sessions` partial expression indexes on the nine runtime-context keys (`context->>'os'`, `arch`, `hostname`, `user`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name`) for `/events` runtime-context facet filtering and counts |
+| 000025 | `sessions (agent_id, started_at DESC)` composite index backing the per-agent latest-session lookup |
+| 000026 | `sessions.capture_prompts` nullable BOOLEAN: server-authoritative capture posture written once from `session_start` |
 
 ---
 
@@ -1817,7 +1951,7 @@ authoritative parameter-level reference.
 | `DELETE` | `/v1/policies/:id` | Delete a policy |
 | `POST` | `/v1/directives` | Create a `shutdown`, `shutdown_flavor`, or `custom` directive |
 | `GET` | `/v1/directives/custom` | List registered custom directives; optional `flavor` filter |
-| `DELETE` | `/v1/directives/custom` | Delete custom directives by name prefix (dev/test utility; `name_prefix` query param) |
+| `DELETE` | `/v1/directives/custom` | Delete custom directives by name prefix (`name_prefix` query param). Registered only when `ENVIRONMENT=dev`; the route does not exist otherwise |
 | `POST` | `/v1/directives/sync` | Sensor uploads its registered fingerprints; returns unknowns |
 | `POST` | `/v1/directives/register` | Sensor uploads full directive schemas for unknown fingerprints |
 | `GET` | `/v1/analytics` | Flexible breakdown query; see Analytics |
@@ -1841,7 +1975,6 @@ authoritative parameter-level reference.
 | `POST` | `/v1/mcp-policies/:flavor/apply_template` | Apply a named template to a flavor policy |
 | `WS` | `/v1/stream` | Real-time WebSocket fleet updates |
 | `GET` | `/health` | Liveness check |
-| `GET` | `/metrics` | Prometheus exposition |
 | `GET` | `/docs/` | Swagger UI |
 
 ### Authentication
@@ -1895,7 +2028,7 @@ token fields — a session belongs to whichever token opened it.
 #### Endpoint auth scope
 
 Every `/v1/*` route on the Query API is wrapped in the auth middleware,
-except `/health`, `/metrics`, and `/docs/`. The WebSocket `/v1/stream`
+except `/health` and `/docs/`. The WebSocket `/v1/stream`
 accepts the token via `?token=` because browsers cannot set
 `Authorization` on the upgrade handshake.
 
@@ -3392,8 +3525,8 @@ Operator-actionable enrichment:
   path: when the reconciler's reaper closes a `lost` session past
   `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`, it emits a synthetic
   `session_end` event with `payload.close_reason="orphan_timeout"`
-  and bumps `sessions_closed_total{reason="orphan_timeout"}` so the
-  facet aggregate and `/metrics` endpoint reflect the verdict.
+  and bumps `sessions_closed_total{reason="orphan_timeout"}` in the
+  worker's metrics registry so the facet aggregate and the counter agree.
   `sigkill_detected` is part of the locked enum but no path
   populates it today. `unknown` is the catch-all when no path
   resolves.
@@ -3533,10 +3666,13 @@ state metadata. Always included regardless of `capture_prompts`.
 
 Required fields on every policy event:
 
-- `policy_id` — UUID of the policy row (or `"local"` for sensor-
-  side init(limit=...) thresholds).
+- `policy_id` — UUID of the policy row, `"local"` for sensor-side
+  init(limit=...) thresholds, or `"server"` when a warn / degrade
+  directive arrives for a policy the sensor never fetched (one created
+  after the session started).
 - `scope` — `"org"` / `"flavor:<v>"` / `"session:<v>"` /
-  `"global"` / `"local_failsafe"` / `"fail_open"`.
+  `"global"` / `"local_failsafe"` / `"fail_open"` / `"server"` (the
+  same unfetched-policy case as `policy_id="server"`).
 - `decision` — `"warn"` / `"degrade"` / `"block"` / `"allow"` /
   `"deny"`.
 - `reason` — sensor-built operator-readable single-line string
@@ -3922,14 +4058,16 @@ empty data. Not 403. 404 — the resource does not exist.
 | `shutdown_flavor` | Operator (`POST /v1/directives` with `flavor`, fans out via `GetActiveSessionIDsByFlavor`) | Same as `shutdown` per session |
 | `degrade` | Worker policy evaluator | Sets `_forced_degrade` + `degrade_to`; subsequent `check` returns `DEGRADE` |
 | `warn` | Worker policy evaluator | Fires `WARN` callback once per session at `warn_at_pct` (fire-once rule) |
-| `policy_update` | Operator | Calls `PolicyCache.update(policy_dict)`; clears `_forced_degrade` |
+| `policy_update` | No issuer today (the sensor keeps the handler) | Calls `PolicyCache.update(policy_dict)`; clears `_forced_degrade` |
 | `custom` | Operator (with registered fingerprint) | Validates payload via `DirectivePayloadSchema`, looks up handler, runs with timeout, emits `directive_result` |
 
 `degrade` / `warn` / `policy_update` are NOT user-creatable via
-`POST /v1/directives` — they are server-side directives written by the
-worker's policy evaluator when a session crosses a threshold, OR by the
-policy mutation endpoints. The only way to trigger a `degrade` is to create
-a token policy and let the worker fire it on the next `post_call` event.
+`POST /v1/directives`. `degrade` and `warn` are written by the worker's
+policy evaluator when a session crosses a threshold, so the only way to
+trigger a `degrade` is to create a token policy and let the worker fire it
+on the next `post_call` event. `policy_update` has a sensor-side handler
+but no server path issues it: the policy mutation endpoints do not write
+directives, so a running sensor keeps the policy it fetched at init.
 
 There is no `block` `DirectiveAction` value. When the worker's policy
 evaluator detects that a session has crossed `block_at_pct`, it writes
@@ -4028,8 +4166,9 @@ deployment; locking down a flavor is opt-in.
 For an `(URL, name)` evaluated against `(global, flavor)`:
 
 1. If the per-flavor policy has an entry whose canonical URL matches,
-   use that entry's enforcement decision (allow / deny + warn / block /
-   interactive).
+   use that entry's enforcement decision (allow / deny + warn / block;
+   `interactive` is accepted on entries but enforced as block, see
+   Enforcement).
 2. Else if the global policy has an entry whose canonical URL matches,
    use that.
 3. Else apply the global mode default: `allowlist` mode → block;
@@ -4054,12 +4193,13 @@ Per-entry decisions carry an enforcement value:
 - `warn` — emit `policy_mcp_warn`, let the call proceed.
 - `block` — emit `policy_mcp_block`, raise `flightdeck.MCPPolicyBlocked`
   before the wire request leaves the agent.
-- `interactive` — Claude Code plugin only. The plugin's `SessionStart`
-  hook prompts the user via `PermissionRequest` for unknown servers in
-  `allowlist` mode. The sensor's per-call path never sees `interactive`
-  (the plugin resolves the prompt before the session starts; resolved
-  decisions become standard allow / deny entries on the policy or are
-  remembered locally — see Plugin remembered decisions below).
+- `interactive` — accepted by the API and offered in the dashboard's
+  entry dialog, but no enforcement path implements it: the sensor and the
+  plugin both treat a deny entry marked `interactive` as `block`. The
+  interactive flow that does exist is the plugin's unknown-server prompt:
+  in `allowlist` mode a server with no entry makes the `PreToolUse` hook
+  answer `ask`, Claude Code shows its own permission prompt, and an
+  approval is remembered locally — see Plugin remembered decisions below.
 
 `block_on_uncertainty` is a per-flavor boolean toggle, default false,
 only meaningful in `allowlist` mode. When true, the resolution
@@ -4133,8 +4273,7 @@ CREATE INDEX mcp_policy_audit_log_policy_idx
 
 Three live tables: `mcp_policies`, `mcp_policy_entries`,
 `mcp_policy_audit_log`. The `mcp_policy_versions` table that
-migration 000018 created was dropped by 000020 in step 6.8 cleanup
- — the audit log is the durable modification trail; per-PUT
+migration 000018 created was dropped by 000020; the audit log is the durable modification trail; per-PUT
 snapshots and the diff endpoint are gone. The `version` column on
 `mcp_policies` was dropped by the same migration.
 
@@ -4168,9 +4307,9 @@ cache until the TTL expires, at which point the next start re-fetches.
 Cache miss + control plane unreachable produces the same fail-open
 behaviour as the sensor.
 
-**Dashboard.** Direct REST against the new policy endpoints (see
-Enforcement contracts below). No client-side cache beyond the standard
-React-Query window.
+**Dashboard.** Direct REST against the policy endpoints (see
+Enforcement contracts below). No client-side cache: the MCP Protection
+tab loads on mount and reloads after every mutation.
 
 ### Enforcement contracts
 
@@ -4200,7 +4339,9 @@ multiple hook events; the script branches on `hook_event_name`.
   `GET /v1/mcp-policies/{flavor}`. Cached to a per-session marker
   file at `$TMPDIR/flightdeck-plugin/mcp-policy-<session_id>.json`
   so subsequent `PreToolUse` invocations don't repeat the HTTP
-  fetch on the agent hot path. SessionStart additionally emits
+  fetch on the agent hot path. The cache lives for the whole Claude
+  Code invocation: `Stop` leaves it in place so later turns stay
+  enforced, and `SessionEnd` deletes it. SessionStart additionally emits
   `policy_mcp_warn` / `policy_mcp_block` events for any
   non-`allow` decision so operators see fleet-level enforcement
   activity at session boot. Fail-open: any HTTP error produces an
@@ -4212,17 +4353,19 @@ multiple hook events; the script branches on `hook_event_name`.
   `SessionStart` — concurrent Claude Code sessions on the same
   machine see each other's remembered decisions in real time),
   and emit a hook decision:
-  - **block** decision → return `{decision: "deny", reason:
-    "..."}`. Claude Code surfaces the failure to the agent reasoning
-    loop. Block in plugin context is the per-call deny rather than
+  - **block** decision → write
+    `{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: "..."}}`
+    to stdout. Claude Code refuses the call and surfaces the reason to
+    the agent reasoning loop. Block in plugin context is the per-call deny rather than
     a session-wide unreachability flag, mirroring the sensor's
     architecture of "block at call_tool" rather than "block at
     initialize".
-  - **unknown-allowlist + interactive** decision → return
-    `{decision: "ask"}`. Claude Code's built-in approval flow
-    prompts the user yes / no.
-  - **allow** / **warn** / **remembered allow** → return
-    normally; Claude Code proceeds.
+  - **unknown-allowlist** decision → `permissionDecision: "ask"` in
+    the same envelope. Claude Code's built-in approval flow prompts the
+    user yes / no; a previously remembered approval answers `allow`
+    instead.
+  - **allow** / **warn** → write nothing; Claude Code's normal
+    permission flow applies.
 - **`PostToolUse`** — the de-facto-approval write path. When
   an `mcp__<server>__<tool>` call succeeded AND the server was
   unknown-allowlist on this session AND no remembered decision
@@ -4313,7 +4456,7 @@ Three templates ship with the API, embedded via `embed.FS` from
 The third template carries a maintenance warning in its YAML
 header and in the `description` field surfaced via
 `GET /v1/mcp-policies/templates`: the pre-populated server URLs
-reflect well-known MCP server endpoints as of the v0.6 release;
+reflect well-known MCP server endpoints as of August 2026;
 operators are expected to verify against their provider's current
 documentation before relying on them in production. The other two
 templates ship with no embedded URLs and carry no equivalent
@@ -4446,9 +4589,8 @@ MCP Protection lives as a sub-tab under the unified `/policies`
 route. The other sub-tab is Token Budget (existing
 token-budget-policy management content, unchanged from the prior
 `/policies` page). Default tab on visit is Token Budget; the
-`?policy=mcp` query param deep-links to MCP Protection. The old
-`/mcp-policies` route is removed entirely (hard 404, no redirect;
-pre-v0.6 has no users to protect against broken bookmarks ).
+`?policy=mcp` query param deep-links to MCP Protection. There is no
+`/mcp-policies` route (hard 404, no redirect).
 
 #### Layout (MCP Protection sub-tab)
 
@@ -4513,8 +4655,8 @@ deep-links and browser back/forward survive.
 
 The `MCPServersPanel` in `SessionDrawer.tsx` lists each declared
 MCP server with the policy decision rendered as inline coloured
-text next to the server name, NOT a pill (the pill design was
-attempted twice in step 6.7 and failed the 1-second-glance bar):
+text next to the server name, NOT a pill (a pill design failed the
+1-second-glance bar):
 
 ```
 [server-name] · ALLOW
@@ -4600,29 +4742,34 @@ Constraint #4).
 
 | Variable | Purpose |
 |---|---|
-| `PORT` | HTTP port (default 8080) |
-| `POSTGRES_URL` | Postgres DSN |
-| `NATS_URL` | NATS connection URL |
+| `FLIGHTDECK_PORT` | HTTP port (default 8080) |
+| `FLIGHTDECK_POSTGRES_URL` | Postgres DSN (required) |
+| `FLIGHTDECK_NATS_URL` | NATS connection URL (default `nats://nats:4222`). The production compose overlay starts NATS with `--auth` and embeds the token here (`nats://:<FLIGHTDECK_NATS_TOKEN>@nats:4222`); the dev stack runs NATS unauthenticated and bound to 127.0.0.1 |
 | `ENVIRONMENT` | `dev` enables `tok_dev` token; any other value rejects it with 401 |
-| `SHUTDOWN_TIMEOUT_SECS` | Graceful shutdown deadline |
+| `SHUTDOWN_TIMEOUT_SECS` | Graceful shutdown deadline (default 30) |
 
 **Workers:**
 
 | Variable | Purpose |
 |---|---|
-| `POSTGRES_URL` | DSN |
-| `NATS_URL` | NATS URL |
-| `WORKER_POOL_SIZE` | NATS consumer goroutine count |
-| `SHUTDOWN_TIMEOUT_SECS` | Graceful shutdown deadline |
+| `FLIGHTDECK_POSTGRES_URL` | DSN (required) |
+| `FLIGHTDECK_NATS_URL` | NATS URL, same token convention as the ingestion API |
+| `FLIGHTDECK_WORKER_POOL_SIZE` | NATS consumer goroutine count (default 10) |
+| `FLIGHTDECK_MIGRATE_ONLY` | `true` applies pending migrations and exits without consuming |
+| `SHUTDOWN_TIMEOUT_SECS` | Graceful shutdown deadline (default 30) |
 
 **Query API:**
 
 | Variable | Purpose |
 |---|---|
-| `PORT` | HTTP port (default 8081) |
-| `POSTGRES_URL` | DSN |
-| `ENVIRONMENT` | Same `tok_dev` semantics as ingestion |
-| `CORS_ORIGIN` | `Access-Control-Allow-Origin`; lock to dashboard origin in prod |
+| `FLIGHTDECK_PORT` | HTTP port (default 8081) |
+| `FLIGHTDECK_POSTGRES_URL` | DSN (required) |
+| `ENVIRONMENT` | Same `tok_dev` semantics as ingestion; also registers the dev-only `DELETE /v1/directives/custom` route |
+| `FLIGHTDECK_CORS_ORIGIN` | `Access-Control-Allow-Origin` (default `*`); lock to the dashboard origin in prod |
+| `FLIGHTDECK_JWT_SECRET` | Signs dashboard login tokens; production Helm renders fail unless it is set |
+| `FLIGHTDECK_ADMIN_EMAIL` / `FLIGHTDECK_ADMIN_PASSWORD` | Seed the initial dashboard login |
+| `FLIGHTDECK_PRICING_PATH` | Overrides the location of `pricing.yaml` |
+| `SHUTDOWN_TIMEOUT_SECS` | Graceful shutdown deadline (default 30) |
 
 **flightdeck-sensor (agent environment):**
 
@@ -4653,7 +4800,8 @@ liveness probe.
 
 ### Metrics
 
-Ingestion API and Workers expose Prometheus exposition at `/metrics`:
+The workers keep an in-process, reason-labelled counter registry
+(`workers/internal/metrics`):
 
 - `dropped_events_total{reason}` — orphan session_end, validation
   failure, NATS publish failure, etc.
@@ -4661,23 +4809,20 @@ Ingestion API and Workers expose Prometheus exposition at `/metrics`:
   worker performs directly (today: `orphan_timeout` via the
   reaper). The dashboard's close-reason facet still reads from
   `events.payload->>'close_reason'`; this counter is the time-
-  series shape for the same verdict so SREs can chart non-clean-
-  shutdown rate without aggregating per-event payloads.
+  series shape for the same verdict.
 - `sessions_revived_total{trigger}` — worker-side revival paths
   that flipped a session from `stale` / `lost` back to `active`.
   Today's only trigger is `child_event` (parent-bump propagation:
   any event for a child session whose `parent_session_id` is set
   bumps the parent's `last_seen_at` and revives the parent if it
-  was stale/lost). Future revival paths (e.g. operator manual
-  revive) would land under their own trigger label.
-- `events_received_total{event_type}`
-- `events_processed_total{event_type, status}`
-- `event_processing_duration_seconds` (histogram, per event_type)
-- `nats_consumer_lag_seconds` (gauge, per consumer)
-- HTTP request latency histograms.
+  was stale/lost).
 
-The Query API exposes the same shape: per-handler latency and
-per-endpoint request counts.
+The package ships a Prometheus-text `Handler`, but the workers open no
+HTTP listener and no service mounts it, so the counters cannot be read
+from outside the process today; the worker's log lines for the same
+events (drops, reaper closes, revivals) are the operator's signal.
+Serving the registry, and adding request-latency histograms to the
+ingestion and query APIs, is on the README Roadmap.
 
 ### Operator endpoints
 

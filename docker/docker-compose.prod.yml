@@ -10,7 +10,7 @@
 #     service ports are exposed to the host -- ingestion, api, and
 #     dashboard are reachable only through nginx.
 #   * Leaves ENVIRONMENT unset on ingestion and api so the seed
-#     ``tok_dev`` row becomes inert (D095). Operators mint real
+#     ``tok_dev`` row becomes inert. Operators mint real
 #     ``ftd_`` tokens from the Settings page after first boot.
 #   * ``restart: unless-stopped`` on every service.
 #   * Memory and CPU ceilings on every service so a runaway worker
@@ -47,7 +47,7 @@ services:
   nats:
     restart: unless-stopped
     ports: !override []
-    # Require token auth on the bus in production. Unlike dev (D047),
+    # Require token auth on the bus in production. Unlike dev,
     # prod must not run an open bus: an unauthenticated NATS lets any
     # workload that reaches it forge ingestion events or drain the
     # queue. FLIGHTDECK_NATS_TOKEN is mandatory -- compose refuses to
@@ -62,7 +62,7 @@ services:
     restart: unless-stopped
     ports: !override []
     environment:
-      # D095: seed tok_dev is only accepted when ENVIRONMENT=dev. The
+      # Seed tok_dev is only accepted when ENVIRONMENT=dev. The
       # base compose opts in for developer workstations; prod leaves it
       # unset so the seed row is rejected with 401.
       ENVIRONMENT: ""

@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- **Go** 1.22+
+- **Go** 1.26+
 - **Python** 3.10+
 - **Node.js** 20+
 - **Docker** and Docker Compose

@@ -19,7 +19,7 @@ python3.12 -m venv sensor/.venv
 overrides via env (`PYTHON=python make -C sensor test`) where
 `actions/setup-python` already pinned the interpreter.
 
-## Optional `session_id` hint (D094)
+## Optional `session_id` hint
 
 By default `init()` auto-generates a fresh UUID every time the process
 starts. Orchestrators that re-run the same logical workflow (Temporal,
@@ -69,23 +69,29 @@ class MyWorkflow:
 The sensor logs a single WARNING at `init()` time whenever a custom
 `session_id` is in play so the behaviour is visible in operational
 logs, and an INFO line on the first response where the backend
-confirms attachment. See DECISIONS.md D094 and ARCHITECTURE.md
-("Session attachment flow") for the full protocol.
+confirms attachment. See ARCHITECTURE.md ("Session attachment flow")
+for the full protocol.
 
 ## Framework support
 
-`flightdeck_sensor.patch()` installs three class-level (or module-
-level) interceptors process-wide. Every LLM call that flows through
-a patched entry point emits a `pre_call` / `post_call` event pair
-without any framework-specific wiring.
+`flightdeck_sensor.patch()` installs six interceptors process-wide:
+three LLM-call interceptors (class-level or module-level), one MCP
+interceptor, and two sub-agent interceptors. Every LLM call that
+flows through a patched entry point emits a `pre_call` / `post_call`
+event pair without any framework-specific wiring; the MCP and
+sub-agent interceptors emit their own event types, described in the
+table.
 
 | Framework | Interceptor | Entry points |
 | --- | --- | --- |
 | Anthropic SDK (direct or via a framework that constructs `Anthropic()` internally — LangChain, LlamaIndex, CrewAI native) | `patch_anthropic_classes` | `Anthropic.messages.create` / `.stream`, async + sync, beta resources |
 | OpenAI SDK (direct or via a framework that constructs `OpenAI()` internally — LangChain, LlamaIndex, CrewAI native) | `patch_openai_classes` | `OpenAI.chat.completions.create`, `.responses.create`, `.embeddings.create`, async + sync |
-| litellm (router that aggregates many providers behind one function surface) | `patch_litellm_functions` | `litellm.completion`, `litellm.acompletion` |
+| litellm (router that aggregates many providers behind one function surface) | `patch_litellm_functions` | `litellm.completion`, `litellm.acompletion`, `litellm.embedding`, `litellm.aembedding` |
+| MCP (official Python `mcp` SDK, reached transitively by `langchain-mcp-adapters`, `llama-index-tools-mcp` and `mcpadapt`) | `patch_mcp_classes` | `mcp.client.session.ClientSession.initialize` (server fingerprint capture), `.list_tools`, `.call_tool`, `.list_resources`, `.read_resource`, `.list_prompts`, `.get_prompt` (one `mcp_*` event type each), plus the stdio / SSE / streamable-HTTP / websocket transport client factories for transport attribution. `call_tool` also enforces the MCP Protection Policy. Supported SDK range: `mcp>=1.20,<2` (2.x is on the README Roadmap). |
+| CrewAI (sub-agent sessions) | `patch_crewai_classes` | `crewai.Agent.execute_task` / `.aexecute_task` — each Crew member's turn lands as a child session (`session_start` / `session_end`) with `parent_session_id`, `agent_role` taken from `Agent.role`, and incoming / outgoing message capture gated on `capture_prompts` |
+| LangGraph (sub-agent sessions) | `patch_langgraph_classes` | `langgraph.graph.StateGraph.add_node` — the registered node callable is wrapped so each node run lands as a child session with `agent_role` taken from the node name; every node is treated as agent-bearing unless narrowed with `init(langgraph_agent_node_pattern=...)` |
 
-### litellm example (KI21)
+### litellm example
 
 litellm's Anthropic route uses raw httpx instead of the Anthropic
 SDK, so it bypasses the SDK-class patches. The litellm interceptor
@@ -121,21 +127,22 @@ Install the optional dependency: `pip install flightdeck-sensor[litellm]`.
 integrations, including the default chat-completion surface exposed
 by user code, Router, and frameworks that route through the public
 API (CrewAI non-native flavors, langchain-community's litellm
-adapter, etc.).
+adapter, etc.). Embedding calls through `litellm.embedding(**kwargs)`
+and `litellm.aembedding(**kwargs)` are wrapped the same way, so
+embedding-model token usage lands too (`12_litellm.py` in the
+playground exercises the capture round-trip).
 
 **Does NOT catch.**
-- **Streaming.** `stream=True` raises `NotImplementedError` in v1
-  with a pointer to KI26 (the tracked follow-up). Use
-  `stream=False` or reconstruct the stream downstream of the call.
+- **Streaming.** `stream=True` raises `NotImplementedError`; litellm
+  streaming is not yet intercepted (listed under "Known limitations"
+  in the root `README.md`). Use `stream=False` or reconstruct the
+  stream downstream of the call.
 - **Lower-level litellm entry points.** Some integrations reach
   past `completion` into `litellm.llms.custom_httpx.http_handler`
   or other internal helpers directly. Those calls bypass the
   module-level wrapper. A broader httpx-level interceptor was
-  considered during the KI21 scoping and deferred — if framework
-  reports surface calls that slip past the current coverage, file
-  a new issue.
-- **Embeddings (`litellm.embedding` / `aembedding`).** Not wrapped
-  in v1. Out of scope; embeddings have no policy/budget surface
-  in the current session layer.
+  considered when the litellm interceptor was scoped and deferred —
+  if framework reports surface calls that slip past the current
+  coverage, file a new issue.
 - **`litellm.text_completion`.** Legacy completion API, not
   wrapped.

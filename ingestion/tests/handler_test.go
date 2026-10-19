@@ -695,7 +695,7 @@ func makeMCPPolicyDecisionPayload(eventType string) map[string]any {
 		"policy_id":     "p1",
 		"scope":         "flavor:production",
 		"decision_path": "flavor_entry",
-		// Phase 7 Step 2 (D148): shared policy_decision block.
+		// Shared policy_decision block required on every policy event.
 		"policy_decision": map[string]any{
 			"policy_id":     "p1",
 			"scope":         "flavor:production",
@@ -772,7 +772,7 @@ func TestEventsHandler_PolicyMCPWarn_BadDecisionPathReturns400(t *testing.T) {
 	}
 }
 
-// ----- Phase 7 Step 2 (D148) policy_decision block validation -----
+// ----- policy_decision block validation -----
 
 func TestEventsHandler_PolicyMCPWarn_MissingPolicyDecisionBlock_Returns400(t *testing.T) {
 	payload := makeMCPPolicyDecisionPayload("policy_mcp_warn")
@@ -781,8 +781,8 @@ func TestEventsHandler_PolicyMCPWarn_MissingPolicyDecisionBlock_Returns400(t *te
 	if code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d body=%s", code, body)
 	}
-	if !strings.Contains(body, "policy_decision") || !strings.Contains(body, "D148") {
-		t.Errorf("expected policy_decision/D148 in error body, got %s", body)
+	if !strings.Contains(body, "policy_decision block is required") {
+		t.Errorf("expected the policy_decision requirement in error body, got %s", body)
 	}
 }
 
@@ -835,8 +835,8 @@ func TestEventsHandler_PolicyBlock_MissingPolicyDecision_Returns400(t *testing.T
 	if code != http.StatusBadRequest {
 		t.Errorf("expected 400, got %d body=%s", code, body)
 	}
-	if !strings.Contains(body, "policy_decision") || !strings.Contains(body, "D148") {
-		t.Errorf("expected D148 mention in error body, got %s", body)
+	if !strings.Contains(body, "policy_decision block is required") {
+		t.Errorf("expected the policy_decision requirement in error body, got %s", body)
 	}
 }
 

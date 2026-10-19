@@ -36,7 +36,7 @@ uninstall:
 
 # Sync bundled Postgres migrations from docker/postgres/migrations into the
 # chart directory so `.Files.Glob` can package them. The destination
-# `migrations/` is a build artifact (gitignored; see DECISIONS.md D136);
+# `migrations/` is a build artifact (gitignored);
 # the canonical source is `docker/postgres/migrations/`. The lint /
 # template / install / upgrade targets all gate on this prerequisite so
 # chart commands always render against an in-sync set of migrations.

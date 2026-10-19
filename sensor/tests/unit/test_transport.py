@@ -46,7 +46,7 @@ def test_post_event_returns_directive_when_present(mock_control_plane: Any) -> N
 def test_post_event_returns_attached_true_when_backend_attaches(
     mock_control_plane: Any,
 ) -> None:
-    """D094: ingestion sets attached=true on session_start envelopes
+    """Ingestion sets attached=true on session_start envelopes
     whose session_id maps to an existing sessions row. The sensor
     surfaces the flag alongside the directive so Session._post_event
     can emit the INFO log."""
@@ -135,7 +135,7 @@ class TestEventQueue:
         Regression guard: an earlier iteration of this code added a
         rate-limited warning that summarized N drops in a single line.
         That hid the real cardinality of dropped events from operators
-        and was reverted (KI16) -- the production design intent is
+        and was reverted -- the production design intent is
         that the queue cannot fill in normal operation because real
         LLM provider latency throttles the producer naturally, so a
         drop is supposed to be loud and rare. This test asserts the

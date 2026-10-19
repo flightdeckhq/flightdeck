@@ -30,12 +30,16 @@ import {
   tokensFromUsage,
 } from "../hooks/scripts/observe_cli.mjs";
 import { deriveAgentId } from "../hooks/scripts/agent_id.mjs";
+import {
+  readSessionPolicyCache,
+  writeSessionPolicyCache,
+} from "../hooks/scripts/mcp_policy.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, "..", "hooks", "scripts", "observe_cli.mjs");
 
 function clearSessionMarkers() {
-  // Nukes every ``session-*.txt`` in the plugin tmpdir. Post-D115 the
+  // Nukes every ``session-*.txt`` in the plugin tmpdir. The
   // marker key derives from ``hookEvent.session_id``, not cwd, so
   // targeting one specific name would miss the files the test just
   // wrote. Glob-style clean keeps the helper resilient to future
@@ -113,7 +117,7 @@ function startCaptureServer() {
  * and counts every request. Used by the graceful-fail tests to
  * verify the plugin treats HTTP non-2xx the same as connection
  * refused: log on every failed POST, exit 0, and let the next hook
- * invocation try again fresh. (KI18 fix: the pre-4a design wrote a
+ * invocation try again fresh. (An earlier design wrote a
  * disk-persisted unreachable flag on the first failure and then
  * silently dropped every subsequent POST for the session's lifetime,
  * which broke reconnect after transient outages.)
@@ -136,7 +140,7 @@ function startFailingServer(status) {
       const port = server.address().port;
       // requestCount() counts POSTs only — the contract these tests
       // assert is about the ingestion POST path, not unrelated GETs
-      // from D139 SessionStart MCP-policy fetch (which hit the same
+      // from the SessionStart MCP-policy fetch (which hit the same
       // host:port in test fixtures because FLIGHTDECK_SERVER points
       // at the failing server).
       resolve({
@@ -191,7 +195,7 @@ describe("observe_cli.mjs", () => {
     assert.equal(capture.bodies().length, before);
   });
 
-  it("UserPromptSubmit skips pre_call emission when model is unresolved (D100)", async () => {
+  it("UserPromptSubmit skips pre_call emission when model is unresolved", async () => {
     clearAllPluginMarkers();
     // No SessionStart, no transcript -- model is unresolvable. The
     // plugin must NOT emit a pre_call that would render as "unknown".
@@ -215,7 +219,7 @@ describe("observe_cli.mjs", () => {
     );
   });
 
-  it("UserPromptSubmit emits pre_call when model is cached by a prior Stop (D100)", async () => {
+  it("UserPromptSubmit emits pre_call when model is cached by a prior Stop", async () => {
     clearAllPluginMarkers();
     // Simulate a prior Stop that cached the model for this session.
     const transcriptPath = writeTranscript([
@@ -294,7 +298,7 @@ describe("observe_cli.mjs", () => {
     assert.equal(body.tool_name, "Read");
   });
 
-  it("maps Stop to post_call with transcript tokens and model (D100)", async () => {
+  it("maps Stop to post_call with transcript tokens and model", async () => {
     const transcriptPath = writeTranscript([
       {
         type: "user",
@@ -324,7 +328,7 @@ describe("observe_cli.mjs", () => {
     });
     // Pin CAPTURE_PROMPTS=false so this test stays focused on token +
     // model mapping regardless of the default (which is now ON for
-    // the plugin -- see DECISIONS.md D103).
+    // the plugin -- see resolveConfig's rationale).
     const env = {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
@@ -365,6 +369,39 @@ describe("observe_cli.mjs", () => {
     // CLOSE REASON facet reads this; without an explicit value it would
     // fall through to the worker's unknown-default.
     assert.equal(body.close_reason, "normal_exit");
+  });
+
+  it("Stop keeps the per-session MCP policy cache armed; SessionEnd removes it", async () => {
+    // Stop fires after every assistant turn. The PreToolUse MCP gate
+    // reads the per-session policy cache on every MCP tool call, so
+    // the cache must survive Stop and go away only at SessionEnd.
+    const sid = "sess-policy-lifetime-1";
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: sid,
+    };
+    writeSessionPolicyCache(sid, {
+      global: { scope: "global", mode: "blocklist", entries: [] },
+      flavor: null,
+    });
+    assert.ok(readSessionPolicyCache(sid), "precondition: cache written");
+    const stop = await runScript(
+      JSON.stringify({ hook_event_name: "Stop", session_id: sid }),
+      env,
+    );
+    assert.equal(stop.code, 0);
+    assert.ok(readSessionPolicyCache(sid), "policy cache must survive Stop");
+    const end = await runScript(
+      JSON.stringify({ hook_event_name: "SessionEnd", session_id: sid }),
+      env,
+    );
+    assert.equal(end.code, 0);
+    assert.equal(
+      readSessionPolicyCache(sid),
+      null,
+      "policy cache must be removed on SessionEnd",
+    );
   });
 
   it("SessionEnd invalidates the session cache so the next hook mints a fresh session_id", async () => {
@@ -415,7 +452,7 @@ describe("observe_cli.mjs", () => {
     );
   });
 
-  it("defaults FLIGHTDECK_SERVER/TOKEN when unset (zero-config path, D100)", async () => {
+  it("defaults FLIGHTDECK_SERVER/TOKEN when unset (zero-config path)", async () => {
     // Point at the capture server but leave TOKEN unset so we verify
     // the default `tok_dev` is sent.
     clearAllPluginMarkers();
@@ -458,7 +495,7 @@ describe("observe_cli.mjs", () => {
       );
       // Exactly one server request: the initial POST that got the 500.
       assert.equal(failing.requestCount(), 1);
-      // KI18 fix: no disk-persisted unreachable flag is written. Each
+      // No disk-persisted unreachable flag is written. Each
       // hook invocation is a fresh process, so "log once per POST"
       // naturally bounds stderr without locking the session out of
       // future retries after a transient failure.
@@ -495,7 +532,7 @@ describe("observe_cli.mjs", () => {
     }
   });
 
-  it("subsequent hooks retry after a failure so the plugin recovers from transient outages (KI18)", async () => {
+  it("subsequent hooks retry after a failure so the plugin recovers from transient outages", async () => {
     clearAllPluginMarkers();
     // First server: always 500. The first hook fires against this,
     // fails, logs. Before the pre-4a fix this would write a
@@ -524,7 +561,7 @@ describe("observe_cli.mjs", () => {
       assert.equal(failing.requestCount(), 1);
 
       // Second hook in the same session hits the server AGAIN. With
-      // the KI18 fix, each hook tries fresh; the same failing server
+      // the retry-fresh design, each hook tries fresh; the same failing server
       // therefore sees a new request (and another "cannot reach"
       // line on stderr -- bounded at one per failed POST).
       const secondSameServer = await runScript(
@@ -551,8 +588,9 @@ describe("observe_cli.mjs", () => {
 
     // Third hook: the "server" has recovered. Point the plugin at a
     // fresh capture server on a new port and confirm the event
-    // actually lands. This is the reconnect path that D106 relies on
-    // and that the pre-4a flag persistence would have prevented.
+    // actually lands. This is the reconnect path that the worker's
+    // lazy-create relies on and that a persisted unreachable flag
+    // would have prevented.
     const recovered = await startCaptureServer();
     try {
       const sid = "sess-reconnect-1";
@@ -637,10 +675,10 @@ describe("observe_cli.mjs", () => {
   it("PostToolUse tool_call carries runtime context (session_start safety net)", async () => {
     // Production repro: plugin's SessionStart POST failed because the
     // stack was down at claude start, the on-disk dedup marker blocks a
-    // retry, and the first event to land is a PostToolUse. Pre-fix that
-    // payload carried no context so the worker's D106 lazy-create
-    // produced a row with NULL context that never got enriched -- no
-    // OS, no hostname, no RUNTIME panel. The fix: context rides on
+    // retry, and the first event to land is a PostToolUse. If that
+    // payload carried no context the worker's lazy-create would
+    // produce a row with NULL context that never got enriched -- no
+    // OS, no hostname, no RUNTIME panel. Hence: context rides on
     // every event, not only session_start.
     clearAllPluginMarkers();
     const input = JSON.stringify({
@@ -668,7 +706,7 @@ describe("observe_cli.mjs", () => {
     assert.equal(
       toolCall.context.supports_directives,
       false,
-      "context.supports_directives must be false on observer sessions (D109)",
+      "context.supports_directives must be false on observer sessions",
     );
     // At least one real-identity field must be present -- os comes from
     // platform() which is deterministic across test environments.
@@ -769,10 +807,10 @@ describe("observe_cli helpers", () => {
   });
 
   describe("resolveConfig", () => {
-    it("defaults capturePrompts to TRUE when FLIGHTDECK_CAPTURE_PROMPTS is unset (D103)", () => {
+    it("defaults capturePrompts to TRUE when FLIGHTDECK_CAPTURE_PROMPTS is unset", () => {
       // Plugin-only flip: developers observing their own Claude Code
       // session need the Prompts tab populated with LLM call content.
-      // The Python sensor keeps capture_prompts=False (D019) --
+      // The Python sensor keeps capture_prompts=False --
       // different product surfaces, different safe defaults.
       assert.equal(resolveConfig({}).capturePrompts, true);
     });
@@ -873,7 +911,7 @@ describe("observe_cli helpers", () => {
       clearSessionMarkers();
     });
 
-    // Precedence chain under test (v0.4.0 Phase 1, D115):
+    // Precedence chain under test:
     //   1. CLAUDE_SESSION_ID env var
     //   2. ANTHROPIC_CLAUDE_SESSION_ID env var
     //   3. Marker file keyed on sha256(hookEvent.session_id)
@@ -884,9 +922,8 @@ describe("observe_cli helpers", () => {
     //      carries no session_id
     //   6. Ephemeral sha256(cwd)[:32] backstop when $TMPDIR is unusable
     //
-    // D113's uuid5-from-(user, host, repo, branch) derivation was
-    // removed; stability moved to ``agent_id``, ``session_id`` is
-    // now per-invocation random.
+    // Stability lives in ``agent_id``; ``session_id`` is
+    // per-invocation random.
 
     const V4_UUID_RE =
       /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -1398,7 +1435,7 @@ describe("observe_cli helpers", () => {
   });
 
   describe("EVENT_MAP", () => {
-    it("covers the v1 hook set (D100)", () => {
+    it("covers the v1 hook set", () => {
       assert.equal(EVENT_MAP.SessionStart, "session_start");
       assert.equal(EVENT_MAP.UserPromptSubmit, "pre_call");
       assert.equal(EVENT_MAP.PostToolUse, "tool_call");
@@ -1630,7 +1667,7 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.equal(body.content, null);
   });
 
-  it("Stop with CAPTURE_PROMPTS=true attaches content payload (D100)", async () => {
+  it("Stop with CAPTURE_PROMPTS=true attaches content payload", async () => {
     const transcriptPath = writeTranscript([
       {
         type: "user",
@@ -1987,12 +2024,12 @@ describe("observe_cli end-to-end (new fields)", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
-  // Phase 5 — MCP tool-call emission. The plugin emits MCP_TOOL_CALL
+  // MCP tool-call emission. The plugin emits MCP_TOOL_CALL
   // (not the generic tool_call) when the hook payload's tool_name
-  // starts with the ``mcp__<server>__<tool>`` namespace. Per Phase 5
-  // D1 + D4, the whitelist sanitiser is bypassed for MCP tools so the
+  // starts with the ``mcp__<server>__<tool>`` namespace. The
+  // whitelist sanitiser is bypassed for MCP tools so the
   // arguments survive the round-trip.
-  it("Phase 5 — PostToolUse on mcp__server__tool emits mcp_tool_call", async () => {
+  it("PostToolUse on mcp__server__tool emits mcp_tool_call", async () => {
     clearAllPluginMarkers();
     const before = capture.bodies().length;
     const result = await runScript(
@@ -2017,16 +2054,16 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.ok(mcpEvent, "expected mcp_tool_call event");
     assert.equal(mcpEvent.server_name, "filesystem");
     assert.equal(mcpEvent.tool_name, "read_file");
-    // Phase 7 Step 3.b (D150): tool args + result migrate from
-    // inline payload to event_content's dedicated tool_input /
-    // tool_output columns. Plugin emits has_content=true + the
-    // event_content envelope (byte-identical to sensor's
-    // _build_tool_capture_content output).
+    // Tool args + result land in event_content's dedicated
+    // tool_input / tool_output columns, not inline on the payload.
+    // Plugin emits has_content=true + the event_content envelope
+    // (byte-identical to sensor's _build_tool_capture_content
+    // output).
     assert.equal(mcpEvent.has_content, true);
     assert.equal(mcpEvent.arguments, undefined);
     assert.equal(mcpEvent.result, undefined);
     assert.equal(mcpEvent.content.provider, "mcp");
-    // Whitelist sanitiser BYPASSED for MCP per D4 — anything_else
+    // Whitelist sanitiser BYPASSED for MCP — anything_else
     // survives in tool_input.
     assert.deepEqual(mcpEvent.content.tool_input, {
       path: "/etc/hosts",
@@ -2034,13 +2071,13 @@ describe("observe_cli end-to-end (new fields)", () => {
     });
     // capturePrompts=true → result captured into tool_output.
     assert.ok(mcpEvent.content.tool_output, "tool_output must be present with capturePrompts=true");
-    // event_content.response is NOT NULL in the pre-D150 schema —
+    // event_content.response is a NOT NULL column —
     // envelope ships {} so the worker INSERT satisfies the
     // constraint. tool_output is the operationally-meaningful field.
     assert.deepEqual(mcpEvent.content.response, {});
   });
 
-  it("Phase 5 — PostToolUseFailure on MCP tool emits mcp_tool_call with error", async () => {
+  it("PostToolUseFailure on MCP tool emits mcp_tool_call with error", async () => {
     clearAllPluginMarkers();
     const before = capture.bodies().length;
     const result = await runScript(
@@ -2066,11 +2103,10 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.ok(mcpEvent.error, "error must be populated on failure path");
     assert.equal(mcpEvent.error.error_class, "PluginToolError");
     assert.match(mcpEvent.error.message, /Unauthorized/);
-    // Phase 7 Step 3.b (D150): even on the failure path with
-    // CAPTURE_TOOL_INPUTS default-on, the tool_input migrates to
-    // event_content. The error sub-object stays inline on payload
-    // (operator-readable failure context) — only args + result
-    // migrate.
+    // Even on the failure path with CAPTURE_TOOL_INPUTS default-on,
+    // the tool_input lands in event_content. The error sub-object
+    // stays inline on payload (operator-readable failure context) —
+    // only args + result move.
     assert.equal(mcpEvent.has_content, true);
     assert.deepEqual(mcpEvent.content.tool_input, { repo: "x/y" });
     // No tool_output on failure path (no tool_response in the
@@ -2078,13 +2114,13 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.equal(mcpEvent.content.tool_output, null);
   });
 
-  // Phase 7 Step 3.b (D150) regression guards: capture-off paths
+  // Tool-capture regression guards: capture-off paths
   // must NOT produce an event_content envelope. Without these,
   // a future regression that emits an empty has_content=true
   // would pass the worker's NOT NULL response constraint check
   // but ship operationally meaningless rows.
 
-  it("D150: mcp_tool_call with capture flags off skips the event_content envelope", async () => {
+  it("mcp_tool_call with capture flags off skips the event_content envelope", async () => {
     clearAllPluginMarkers();
     const before = capture.bodies().length;
     const result = await runScript(
@@ -2149,7 +2185,7 @@ describe("observe_cli end-to-end (new fields)", () => {
 
 
 // =====================================================================
-// D126 — SubagentStart / SubagentStop hooks (sub-agent observability)
+// SubagentStart / SubagentStop hooks (sub-agent observability)
 // =====================================================================
 
 describe("subagent helpers", () => {
@@ -2250,7 +2286,7 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
       FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
       FLIGHTDECK_TOKEN: "tok_test",
       CLAUDE_SESSION_ID: "sess-outer-1",
-      // Plugin defaults capture-on per D103, but make it explicit
+      // Plugin defaults capture-on, but make it explicit
       // here so the test is robust to any default change.
       FLIGHTDECK_CAPTURE_PROMPTS: "true",
     });
@@ -2286,7 +2322,7 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
     );
     // Capture-on stamps the Task prompt as incoming_message.
     // has_content stays false — sub-agent messages route inline
-    // via events.payload (D126 § 6 v1), not event_content. Setting
+    // via events.payload, not event_content. Setting
     // has_content=true without LLM PromptContent shape would trip
     // the dashboard's /v1/events/{id}/content path with a 404
     // (Rule 37).
@@ -2420,7 +2456,7 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
     );
   });
 
-  it("interior-event routing: PostToolUse fired during a subagent lands under the CHILD session, not the parent (D126 § 5)", async () => {
+  it("interior-event routing: PostToolUse fired during a subagent lands under the CHILD session, not the parent", async () => {
     // Regression test for the gap that survived to manual Supervisor
     // smoke. Real Claude Code (Opus 4.7+) fires the full sequence:
     //
@@ -2431,8 +2467,8 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
     // The parent's own session_id appears on every hook including
     // interior ones; the only discriminator that "this hook fired
     // inside subagent context" is hookEvent.agent_id being set
-    // (it's null on parent-context hooks). Pre-fix, the plugin
-    // used the parent's session_id for interior events, so the
+    // (it's null on parent-context hooks). Using the parent's
+    // session_id for interior events would mean the
     // subagent's tool calls and LLM turns landed under the
     // PARENT row in the dashboard while the child session row
     // sat empty. The mock unit tests pinned only the SubagentStart
@@ -2479,8 +2515,8 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
     assert.equal(r1.code, 0);
 
     // 2. Interior PostToolUse — fires WITH the parent's session_id
-    //    AND the subagent's agent_id. Pre-fix this landed under
-    //    PARENT_ID; post-fix it must land under expectedChildId.
+    //    AND the subagent's agent_id. Must land under
+    //    expectedChildId, never PARENT_ID.
     const interiorInput = JSON.stringify({
       hook_event_name: "PostToolUse",
       session_id: PARENT_ID,
@@ -2597,7 +2633,7 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
       "parent-context event must NOT remap to child",
     );
     // For non-Task parent tools the legacy emission path stamps
-    // parent_session_id explicitly to null (pre-D126 wire shape
+    // parent_session_id explicitly to null (legacy wire shape
     // preserved for downstream consumers; ingestion validator
     // treats absent and null identically). agent_role is omitted
     // entirely on parent-context events because basePayload's
@@ -2607,7 +2643,7 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
   });
 
   it("missing subagent_type produces empty role and the parent's agent_id", async () => {
-    // No role field on the hook event. Per D126 § 1, the agent_id
+    // No role field on the hook event. The agent_id
     // derivation collapses to the 5-tuple form when role is empty
     // / whitespace, so the child session lands under the parent's
     // own agent_id. Edge-case but must not crash.
@@ -2634,8 +2670,8 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
     assert.equal(childStart.agent_role, null);
   });
 
-  it("PostToolUseFailure on a Task tool stays in the parent tool_call path (D126 § 5 disambiguation)", async () => {
-    // Per D126 § 5, a failed Task tool emits the parent's
+  it("PostToolUseFailure on a Task tool stays in the parent tool_call path", async () => {
+    // A failed Task tool emits the parent's
     // tool_call event with the existing structured-error block
     // (already covered for non-Task tools by the standard
     // PostToolUseFailure → MCP path / drop). The plugin must NOT
@@ -2669,7 +2705,7 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
   });
 
   // ---------------------------------------------------------------
-  // D126 § 6 size-based routing
+  // Size-based sub-agent message routing
   // ---------------------------------------------------------------
 
   it("inline path: prompt just under 8 KiB lands on incoming_message; has_content stays false", async () => {
@@ -2704,7 +2740,7 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
     assert.equal(childStart.content, null);
   });
 
-  it("overflow path: prompt just over 8 KiB rides through event_content via D119", async () => {
+  it("overflow path: prompt just over 8 KiB rides through event_content", async () => {
     // 8 KiB + 1 KiB — comfortably over the inline threshold.
     const body = "x".repeat(8 * 1024 + 1024);
     const input = JSON.stringify({

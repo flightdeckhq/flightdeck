@@ -1,4 +1,4 @@
-// D139 dispatcher flow tests for observe_cli.mjs.
+// MCP Protection Policy dispatcher flow tests for observe_cli.mjs.
 //
 // The helpers (mcp_policy.mjs, remembered_decisions.mjs) have
 // independent test suites. This file tests the dispatchers that
@@ -31,6 +31,7 @@ import { join } from "node:path";
 
 import {
   dispatchMcpPolicyPreToolUse,
+  writeHookDecision,
   dispatchMcpPolicyPostToolUse,
   dispatchMcpPolicySessionStart,
 } from "../hooks/scripts/observe_cli.mjs";
@@ -255,15 +256,20 @@ describe("dispatchMcpPolicySessionStart", () => {
   it("fetches global + flavor on session start and writes the marker", async () => {
     const sid = "sess-ss-fetch-1";
     writeProjectMcpJson({ x: { command: "npx", args: ["-y", "x"] } });
+    const basePayload = basePayloadFixture(sid);
+    // The flavor policy fetched is the flavor stamped on the plugin's
+    // own events, not whatever AGENT_FLAVOR happens to say -- the
+    // policy the dashboard shows next to these sessions is the one
+    // that applies to them.
     const calls = stubFetch([
       ["/v1/mcp-policies/global", jsonResponse(200, globalDoc())],
       [
-        "/v1/mcp-policies/production",
-        jsonResponse(200, flavorDoc({ scopeValue: "production" })),
+        `/v1/mcp-policies/${basePayload.flavor}`,
+        jsonResponse(200, flavorDoc({ scopeValue: basePayload.flavor })),
       ],
     ]);
     const capture = await startCaptureServer();
-    process.env.AGENT_FLAVOR = "production";
+    process.env.AGENT_FLAVOR = "env-flavor-that-must-not-win";
     try {
       await dispatchMcpPolicySessionStart({
         cfg: {
@@ -272,10 +278,18 @@ describe("dispatchMcpPolicySessionStart", () => {
         },
         hookEvent: { cwd: scratchProject },
         sessionId: sid,
-        basePayload: basePayloadFixture(sid),
+        basePayload,
       });
-      // Two HTTP GETs: global + flavor.
+      // Two HTTP GETs: global + flavor, flavor taken from the payload.
       assert.equal(calls.length, 2);
+      assert.ok(
+        calls.some((c) => c.url.includes(`/v1/mcp-policies/${basePayload.flavor}`)),
+        `expected a fetch for the payload flavor, got ${JSON.stringify(calls)}`,
+      );
+      assert.ok(
+        !calls.some((c) => c.url.includes("env-flavor-that-must-not-win")),
+        "AGENT_FLAVOR must not override the payload flavor",
+      );
       // Per-session marker written.
       const markerPath = join(
         scratchTmp, "flightdeck-plugin", `mcp-policy-${sid}.json`,
@@ -329,9 +343,91 @@ describe("dispatchMcpPolicySessionStart", () => {
       );
       assert.equal(blockOrWarn[0].server_name, "maps");
       assert.equal(blockOrWarn[0].decision_path, "mode_default");
+      // The mode-default emission must also clear the ingestion
+      // validator, which requires the shared policy_decision block.
+      const pd = blockOrWarn[0].policy_decision;
+      assert.equal(pd.policy_id, "global-id");
+      assert.equal(pd.scope, "global");
+      assert.equal(pd.decision, "block");
+      assert.ok(pd.reason.length > 0);
     } finally {
       capture.server.close();
       delete process.env.AGENT_FLAVOR;
+    }
+  });
+
+  it("policy events carry every field the ingestion API validates", async () => {
+    // The ingestion API answers HTTP 400 to policy_mcp_warn /
+    // policy_mcp_block unless the payload carries server_url,
+    // server_name, fingerprint, policy_id and decision_path, plus a
+    // policy_decision block with non-empty policy_id, scope, decision
+    // and reason. postEvent fails open on 400, so a payload missing
+    // any of these is dropped without a trace. This test pins the
+    // plugin side of that contract against a flavor deny entry.
+    const sid = "sess-ss-contract-1";
+    writeProjectMcpJson({ x: { command: "npx", args: ["-y", "x"] } });
+    const expectedFp = fingerprintShort(canonicalizeUrl("npx -y x"), "x");
+    stubFetch([
+      ["/v1/mcp-policies/global", jsonResponse(200, globalDoc())],
+      [
+        "/v1/mcp-policies/production",
+        jsonResponse(
+          200,
+          flavorDoc({
+            entries: [
+              policyEntry({
+                url: "npx -y x", name: "x",
+                kind: "deny", enforcement: "block",
+              }),
+            ],
+          }),
+        ),
+      ],
+    ]);
+    const capture = await startCaptureServer();
+    try {
+      await dispatchMcpPolicySessionStart({
+        cfg: {
+          server: `http://127.0.0.1:${capture.port}`,
+          token: "tok-test",
+        },
+        hookEvent: { cwd: scratchProject },
+        sessionId: sid,
+        basePayload: basePayloadFixture(sid),
+      });
+      const blocks = capture
+        .bodies()
+        .filter((e) => e.event_type === "policy_mcp_block");
+      assert.equal(blocks.length, 1, JSON.stringify(capture.bodies()));
+      const ev = blocks[0];
+      for (const field of [
+        "server_url", "server_name", "fingerprint", "policy_id", "decision_path",
+      ]) {
+        assert.equal(typeof ev[field], "string", `${field} must be a string`);
+        assert.notEqual(ev[field], "", `${field} must be non-empty`);
+      }
+      assert.equal(ev.server_url, "npx -y x");
+      assert.equal(ev.server_name, "x");
+      assert.equal(ev.fingerprint, expectedFp);
+      assert.equal(ev.policy_id, "flavor-production-id");
+      assert.equal(ev.decision_path, "flavor_entry");
+      assert.equal(ev.block_on_uncertainty, false);
+      const pd = ev.policy_decision;
+      assert.equal(typeof pd, "object");
+      for (const field of ["policy_id", "scope", "decision", "reason"]) {
+        assert.equal(
+          typeof pd[field], "string", `policy_decision.${field} must be a string`,
+        );
+        assert.notEqual(pd[field], "", `policy_decision.${field} must be non-empty`);
+      }
+      assert.equal(pd.policy_id, "flavor-production-id");
+      assert.equal(pd.scope, "flavor:production");
+      assert.equal(pd.decision, "block");
+      assert.equal(pd.decision_path, "flavor_entry");
+      assert.equal(pd.matched_entry_id, "entry-x");
+      assert.equal(pd.matched_entry_label, "x");
+    } finally {
+      capture.server.close();
     }
   });
 
@@ -483,8 +579,11 @@ describe("dispatchMcpPolicyPreToolUse", () => {
       assert.equal(handled, true);
       const decisions = out.decisions();
       assert.equal(decisions.length, 1);
-      assert.equal(decisions[0].decision, "deny");
-      assert.match(decisions[0].reason, /MCP policy blocked/);
+      assert.equal(decisions[0].hookSpecificOutput.permissionDecision, "deny");
+      assert.match(
+        decisions[0].hookSpecificOutput.permissionDecisionReason,
+        /MCP policy blocked/,
+      );
     } finally {
       out.restore();
       if (savedEnvSid === undefined) delete process.env.CLAUDE_SESSION_ID;
@@ -516,7 +615,7 @@ describe("dispatchMcpPolicyPreToolUse", () => {
         },
       );
       assert.equal(handled, true);
-      assert.equal(out.decisions()[0].decision, "ask");
+      assert.equal(out.decisions()[0].hookSpecificOutput.permissionDecision, "ask");
     } finally {
       out.restore();
       if (savedEnvSid === undefined) delete process.env.CLAUDE_SESSION_ID;
@@ -591,11 +690,38 @@ describe("dispatchMcpPolicyPreToolUse", () => {
         },
       );
       assert.equal(handled, true);
-      assert.equal(out.decisions()[0].decision, "allow");
+      assert.equal(out.decisions()[0].hookSpecificOutput.permissionDecision, "allow");
     } finally {
       out.restore();
       if (savedEnvSid === undefined) delete process.env.CLAUDE_SESSION_ID;
       else process.env.CLAUDE_SESSION_ID = savedEnvSid;
+    }
+  });
+
+  it("decisions use the hookSpecificOutput contract and never a top-level decision", () => {
+    // Claude Code validates PreToolUse output: the top-level
+    // ``decision`` field accepts only the deprecated approve|block
+    // pair, and an invalid value is a non-blocking error that lets the
+    // tool run. Every decision the plugin writes must therefore use
+    // ``hookSpecificOutput.permissionDecision`` with a reason.
+    for (const kind of ["allow", "ask", "deny"]) {
+      const out = captureStdout();
+      try {
+        writeHookDecision(kind, `reason for ${kind}`);
+      } finally {
+        out.restore();
+      }
+      const lines = out.decisions();
+      assert.equal(lines.length, 1);
+      assert.deepEqual(lines[0], {
+        hookSpecificOutput: {
+          hookEventName: "PreToolUse",
+          permissionDecision: kind,
+          permissionDecisionReason: `reason for ${kind}`,
+        },
+      });
+      assert.deepEqual(Object.keys(lines[0]), ["hookSpecificOutput"]);
+      assert.equal("decision" in lines[0], false);
     }
   });
 

@@ -15,6 +15,8 @@ Flightdeck follows [Semantic Versioning](https://semver.org/):
 
 Before running it, bump the plugin manifest versions and the marketplace pin to the new version (`plugin/.claude-plugin/plugin.json`, `plugin/package.json`, and `version` plus `source.ref` in `.claude-plugin/marketplace.json`): the bump must land before the tag is cut so the tagged plugin content always matches the marketplace entry that points at it.
 
+Installed plugins do not pick up a release on their own. Claude Code's background auto-update is off for third-party marketplaces unless each user enables it under **Marketplaces** in `/plugin` (or an admin sets `autoUpdate` in managed settings), and even then a user receives a new copy only when the plugin's `version` changes. So: keep `version` identical in `plugin/.claude-plugin/plugin.json` and the marketplace entry, bump it on every release, and tell users in the release notes to run `claude plugin update flightdeck@flightdeck-plugins` (or `/plugin marketplace update flightdeck-plugins` inside a session). To pin installs to the exact tested commit rather than the tag name, set `source.sha` on the marketplace entry in a follow-up commit on `main` once the tag exists (`claude plugin validate .` checks the file).
+
 ```bash
 make release VERSION=vX.Y.Z
 # or

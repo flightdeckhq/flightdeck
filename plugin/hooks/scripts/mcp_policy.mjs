@@ -1,4 +1,4 @@
-// MCP Protection Policy plugin helper — D127 / D135 / D139.
+// MCP Protection Policy plugin helper.
 //
 // Imported by observe_cli.mjs from three hook branches:
 //
@@ -12,14 +12,13 @@
 //   * Stop — clearSessionPolicyCache to clean up the per-session
 //     marker file.
 //
-// Imports the step-2 mcp_identity primitive so the canonical-URL
+// Imports the mcp_identity primitive so the canonical-URL
 // + fingerprint contract stays cross-language identical with the
 // sensor and the API.
 //
 // Pure Node built-ins (node:crypto via mcp_identity.mjs, node:fs,
 // node:path, node:os, fetch, AbortController). No npm
-// dependencies — preserves the plugin's zero-dep posture
-// (D113 / D115 / D127 precedent).
+// dependencies — preserves the plugin's zero-dep posture.
 
 import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -103,7 +102,8 @@ async function fetchOne(apiUrl, token, scopeSegment) {
 }
 
 /**
- * Per-D135 evaluation against the cached policies. Returns a
+ * Evaluate a server against the cached policies (flavor entry →
+ * global entry → global mode default). Returns a
  * decision record matching the sensor's MCPPolicyDecision shape so
  * downstream event-payload construction stays uniform.
  *
@@ -164,7 +164,7 @@ export function evaluateServer(policies, serverUrl, serverName) {
 
 /**
  * Coarse-grained classifier used by PreToolUse to decide which
- * Claude Code hook decision to emit. Maps the D135 decision plus
+ * Claude Code hook decision to emit. Maps the policy decision plus
  * cache state to one of:
  *
  *   * "allow" — allow / warn / remembered allow → no hook decision
@@ -187,7 +187,7 @@ export function classifyServer(policies, serverUrl, serverName) {
   // Step 1: if the decision came from the mode_default branch
   // AND the global mode is allowlist, treat it as "ask" — the
   // user gets prompted yes/no instead of an automatic block.
-  // This is the unknown-allowlist case the D139 reactive flow
+  // This is the unknown-allowlist case the reactive-approval flow
   // is built around. Explicit deny entries (decisionPath =
   // flavor_entry / global_entry with decision=block) still
   // classify as block.
@@ -237,17 +237,17 @@ function decisionFromEntry(entry, decisionPath, policyDoc, fingerprint) {
     policyId: policyDoc?.id || "",
     scope,
     fingerprint,
-    // Phase 7 Step 2 (D148): matched_entry surface for the shared
-    // policy_decision block. Plugin-side parity with the sensor's
-    // MCPPolicyDecision shape so emissions across both surfaces
-    // produce byte-identical wire payloads.
+    // matched_entry surface for the shared policy_decision block.
+    // Plugin-side parity with the sensor's MCPPolicyDecision shape
+    // so emissions across both surfaces produce byte-identical
+    // wire payloads.
     matchedEntryId: entry.id || "",
     matchedEntryLabel: entry.server_name || "",
   };
 }
 
 /**
- * Build the shared policy_decision block (D148) for plugin-side
+ * Build the shared policy_decision block for plugin-side
  * policy_mcp_warn / policy_mcp_block emissions. Mirrors the sensor's
  * PolicyDecisionSummary.as_payload_dict shape byte-for-byte.
  *
@@ -274,7 +274,7 @@ export function buildPolicyDecisionBlock(decision) {
 }
 
 /**
- * Operator-readable single-line reason per the locked Step 2
+ * Operator-readable single-line reason following the locked
  * pattern: "<what happened> + <by what mechanism> + <relevant
  * context>". Plugin parity with the sensor's
  * _build_mcp_policy_reason. No newlines, no jargon.
@@ -342,8 +342,10 @@ export function readSessionPolicyCache(sessionId) {
 
 /**
  * Best-effort cleanup of the per-session policy cache. Called by
- * the Stop hook so $TMPDIR/flightdeck-plugin/mcp-policy-*.json
- * doesn't accumulate.
+ * the SessionEnd hook (never by Stop, which fires after every
+ * assistant turn) so $TMPDIR/flightdeck-plugin/mcp-policy-*.json
+ * doesn't accumulate while enforcement stays armed for the whole
+ * session.
  *
  * @param {string} sessionId
  */

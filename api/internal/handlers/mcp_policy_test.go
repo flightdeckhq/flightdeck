@@ -188,7 +188,7 @@ func TestCreateMCPPolicyHandlerRejectsModeOnFlavor(t *testing.T) {
 		t.Errorf("status = %d, want 400", rec.Code)
 	}
 	if !strings.Contains(rec.Body.String(), "mode is global-only") {
-		t.Errorf("expected D134 message in body, got: %s", rec.Body.String())
+		t.Errorf("expected the mode-is-global-only message in body, got: %s", rec.Body.String())
 	}
 }
 

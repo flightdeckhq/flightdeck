@@ -76,10 +76,21 @@ def test_events_agent_id_filter_scopes_to_one_agent() -> None:
     assert events["total"] >= 1, (
         f"agent {agent_id} has sessions but /v1/events?agent_id= returned no events"
     )
+    # Resolve each event's owner through the session detail endpoint
+    # rather than against the listing above: the listing is capped
+    # (an agent on a shared dev stack can own hundreds of sessions) and
+    # sessions other tests just created may land between the two
+    # queries, so a membership check against that snapshot reports
+    # false leaks.
+    owner_by_session: dict[str, str] = {}
     for ev in events["events"]:
-        assert ev["session_id"] in session_ids, (
-            f"event {ev['id']} from session {ev['session_id']} is not "
-            f"one of agent {agent_id}'s sessions — the agent_id "
+        sid = ev["session_id"]
+        if sid not in owner_by_session:
+            detail = _get(f"/v1/sessions/{sid}", {})
+            owner_by_session[sid] = str((detail.get("session") or {}).get("agent_id"))
+        assert owner_by_session[sid] == agent_id, (
+            f"event {ev['id']} from session {sid} belongs to agent "
+            f"{owner_by_session[sid]}, not {agent_id} — the agent_id "
             "subquery leaked"
         )
 

@@ -1,7 +1,7 @@
 """MCP Protection Policy -- CrewAI transitive coverage via mcpadapt.
 
 CrewAI integrates MCP through the ``mcpadapt`` adapter. The sensor's
-``ClientSession`` patch (D117) is on the canonical seam, so CrewAI's
+``ClientSession`` patch is on the canonical seam, so CrewAI's
 MCP usage flows through the same call_tool wrapper that emits
 POLICY_MCP_WARN / POLICY_MCP_BLOCK events for the direct mcp SDK
 case. This demo provisions a flavor warn policy and runs a real

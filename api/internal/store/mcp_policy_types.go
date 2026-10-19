@@ -1,8 +1,8 @@
 // MCP Protection Policy types — Go structs mirroring the live schema
-// (migration 000018 minus what 000020 dropped per D142) and the API
+// (migration 000018 minus the version history 000020 dropped) and the API
 // DTOs. See ARCHITECTURE.md "MCP Protection Policy" → "Storage
-// schema" for the canonical contract and D128 for the rationale
-// behind the table split.
+// schema" for the canonical contract and the rationale behind the
+// table split.
 
 package store
 
@@ -18,7 +18,7 @@ type MCPPolicy struct {
 	ID                 string           `json:"id"`
 	Scope              string           `json:"scope"`                 // "global" | "flavor"
 	ScopeValue         *string          `json:"scope_value,omitempty"` // NULL for global
-	Mode               *string          `json:"mode,omitempty"`        // global only — D134
+	Mode               *string          `json:"mode,omitempty"`        // global only
 	BlockOnUncertainty bool             `json:"block_on_uncertainty"`
 	CreatedAt          time.Time        `json:"created_at"`
 	UpdatedAt          time.Time        `json:"updated_at"`
@@ -26,7 +26,7 @@ type MCPPolicy struct {
 }
 
 // MCPPolicyEntry is one allow / deny entry on a policy. server_url
-// is stored canonical (per D127); fingerprint is the first 16 hex
+// is stored canonical; fingerprint is the first 16 hex
 // chars of sha256(canonical_url + 0x00 + name).
 type MCPPolicyEntry struct {
 	ID                 string    `json:"id"`
@@ -41,7 +41,7 @@ type MCPPolicyEntry struct {
 
 // MCPPolicyAuditLog is one operator-initiated mutation record.
 // Sensor-observed system state (decision events, name drift) lives
-// in the events pipeline, NOT here (D131).
+// in the events pipeline, NOT here.
 type MCPPolicyAuditLog struct {
 	ID         string          `json:"id"`
 	PolicyID   *string         `json:"policy_id,omitempty"` // NULL after policy deletion
@@ -52,8 +52,8 @@ type MCPPolicyAuditLog struct {
 }
 
 // MCPPolicyResolveResult is the response shape for GET /resolve.
-// decision_path tells the caller which step in the D135 algorithm
-// produced the decision.
+// decision_path tells the caller which precedence step (flavor entry,
+// global entry, or global-mode default) produced the decision.
 type MCPPolicyResolveResult struct {
 	Decision     string `json:"decision"`      // "allow" | "warn" | "block"
 	DecisionPath string `json:"decision_path"` // "flavor_entry" | "global_entry" | "mode_default"
@@ -102,7 +102,7 @@ type ServerCountBucket struct {
 
 // MCPPolicyMutation is the input shape accepted by Create / Update
 // handlers. Mode is ignored on flavor-policy operations (storage
-// CHECK enforces D134 at the SQL boundary).
+// CHECK enforces mode-is-global-only at the SQL boundary).
 type MCPPolicyMutation struct {
 	Mode               *string                  `json:"mode,omitempty"`
 	BlockOnUncertainty bool                     `json:"block_on_uncertainty"`

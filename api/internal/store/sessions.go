@@ -17,11 +17,11 @@ type SessionsParams struct {
 	Query   string   // Full-text search (ILIKE across multiple fields)
 	States  []string // active, idle, stale, closed, lost
 	Flavors []string
-	// AgentID filters sessions to one specific agent (D115). The
+	// AgentID filters sessions to one specific agent. The
 	// Investigate page surfaces this via the ``agent_id`` URL param
 	// and the AGENT sidebar facet. Empty string = no agent filter.
 	AgentID string
-	// AgentTypes filters sessions by the agent_type column. D114
+	// AgentTypes filters sessions by the agent_type column. Locked
 	// vocabulary (``coding``, ``production``); other values are
 	// accepted but yield empty results.
 	AgentTypes []string
@@ -61,7 +61,7 @@ type SessionsParams struct {
 	// session_start with set-once semantics, parallel to the
 	// frameworks[] pattern. Empty slice = no MCP-server filter.
 	MCPServers []string
-	// D126 sub-agent observability filters. Each field is independent;
+	// Sub-agent observability filters. Each field is independent;
 	// passing more than one composes via AND in the WHERE clause so a
 	// caller asking for ``?has_sub_agents=true&agent_role=Researcher``
 	// gets parents whose Researcher children are visible elsewhere on
@@ -97,7 +97,7 @@ type SessionsParams struct {
 	// returned sessions[] may exceed Total when extra parents
 	// land in the response.
 	IncludeParents bool
-	// IncludePureChildren (D126 UX revision 2026-05-03). When nil
+	// IncludePureChildren gates the Investigate default scope. When nil
 	// the listing returns every session matching the other filters
 	// (existing behaviour preserved for any client that doesn't
 	// know about the flag). When set to false, excludes pure
@@ -243,7 +243,7 @@ type SessionListItem struct {
 	SessionID string `json:"session_id"`
 	Flavor    string `json:"flavor"`
 	AgentType string `json:"agent_type"`
-	// D115 identity (nullable for lazy-created rows awaiting an
+	// Agent identity (nullable for lazy-created rows awaiting an
 	// authoritative session_start).
 	AgentID    *string    `json:"agent_id,omitempty"`
 	AgentName  *string    `json:"agent_name,omitempty"`
@@ -264,7 +264,7 @@ type SessionListItem struct {
 	TokenLimit     *int64                 `json:"token_limit"`
 	Context        map[string]interface{} `json:"context"`
 	CaptureEnabled bool                   `json:"capture_enabled"`
-	// D095: attribution for the access_tokens row that opened this
+	// Attribution for the access_tokens row that opened this
 	// session. TokenID is nullable because revocation clears the FK
 	// (ON DELETE SET NULL); TokenName is preserved for auditability
 	// so the UI can still render "Created via: Staging K8s (revoked)"
@@ -287,7 +287,8 @@ type SessionListItem struct {
 	// ``policy_block``) and the MCP Protection Policy axis
 	// (``policy_mcp_warn`` / ``policy_mcp_block`` /
 	// ``mcp_server_name_changed`` / ``mcp_policy_user_remembered``,
-	// per D131). Always present on the wire (empty array when the
+	// the MCP Protection Policy family). Always present on the wire
+	// (empty array when the
 	// session carries no policy events). Same surfacing pattern as
 	// ErrorTypes — correlated subquery on the listing query so the
 	// dashboard renders the POLICY + MCP POLICY facets and
@@ -340,7 +341,7 @@ type SessionListItem struct {
 	MatchedEntryIDs         []string `json:"matched_entry_ids"`
 	OriginatingCallContexts []string `json:"originating_call_contexts"`
 
-	// D126 sub-agent observability columns. Both nullable, both
+	// Sub-agent observability columns. Both nullable, both
 	// populated only on sub-agent sessions (Claude Code Task
 	// subagent, CrewAI agent execution, LangGraph agent-bearing
 	// node). The dashboard's swimlane relationship pill,
@@ -348,7 +349,7 @@ type SessionListItem struct {
 	// columns and TOPOLOGY / ROLE facets read these directly.
 	ParentSessionID *string `json:"parent_session_id,omitempty"`
 	AgentRole       *string `json:"agent_role,omitempty"`
-	// ChildCount (D126 UX revision 2026-05-03) — derived count of
+	// ChildCount — derived count of
 	// sessions whose parent_session_id equals this row's
 	// session_id. Always present on the wire (zero on lone agents
 	// and on pure children that have no descendants of their
@@ -576,7 +577,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		conditions = append(conditions, fmt.Sprintf("s.flavor IN (%s)", strings.Join(placeholders, ", ")))
 	}
 
-	// Single-agent filter (D115). The Investigate page sends this
+	// Single-agent filter. The Investigate page sends this
 	// both via URL deep-link and the AGENT sidebar facet click.
 	// Parameterised against the uuid column so a malformed value
 	// produces a cast error rather than a bypassed filter.
@@ -660,7 +661,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		argIdx++
 	}
 
-	// D126 sub-agent observability filters. ParentSessionID,
+	// Sub-agent observability filters. ParentSessionID,
 	// AgentRoles, HasSubAgents, IsSubAgent compose via AND so a
 	// caller asking for ``?has_sub_agents=true&agent_role=Researcher``
 	// gets the intersection (parents whose Researcher children
@@ -680,10 +681,10 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		args = append(args, params.AgentRoles)
 		argIdx++
 	}
-	// D126 TOPOLOGY filters. Single flag → AND'd into the WHERE
+	// TOPOLOGY filters. Single flag → AND'd into the WHERE
 	// clause as expected. Both flags set simultaneously → OR'd
-	// together (D126 § 7.fix.F: "Both selectable simultaneously
-	// (the OR of the two)"). The OR composition is the union of
+	// together (the facet offers both checkboxes at once and reads
+	// them as the OR of the two). The OR composition is the union of
 	// "is sub-agent" and "has sub-agents", which renders as "any
 	// sub-agent relationship" — what an operator scanning the
 	// whole sub-agent graph wants. AND'ing both would only match
@@ -706,14 +707,14 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		// index. Operator note: at the data volumes the index covers
 		// (sub-agent sessions are a minority of the overall fleet),
 		// the planner picks the index lookup; the analytics
-		// known-perf-characteristic in D126 § "Accepted properties"
-		// applies to the recursive CTE in 6f, not to this filter.
+		// known performance characteristic of the sub-agent metrics
+		// applies to their recursive CTE, not to this filter.
 		conditions = append(conditions,
 			"EXISTS (SELECT 1 FROM sessions child "+
 				"WHERE child.parent_session_id = s.session_id)")
 	}
 
-	// D126 UX revision 2026-05-03 — IncludePureChildren=false
+	// IncludePureChildren=false
 	// excludes pure children (rows whose parent_session_id is set
 	// AND who themselves have no descendants). Rendered in SQL as
 	// the negation of the pure-child predicate so a row passes
@@ -846,9 +847,9 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 	//
 	// The OR-combined filter keeps existing versioned-string callers
 	// working while making the new bare-name attribution path
-	// queryable too. Pre-fix the filter only consulted the JSONB
-	// array, so a session with ``framework=langchain`` (bare) and an
-	// empty context array silently returned empty for any filter
+	// queryable too. Consulting only the JSONB array would mean a
+	// session with ``framework=langchain`` (bare) and an empty
+	// context array silently returns empty for any filter
 	// value -- the cross-cut bug the supervisor's V-pass addition
 	// flagged.
 	if len(params.Frameworks) > 0 {

@@ -71,7 +71,7 @@ describe("MCPQuickStartTemplates", () => {
     ).toBeTruthy();
   });
 
-  it("hides the link on the global scope — apply_template returns 400 by design (D138 + D134)", () => {
+  it("hides the link on the global scope — apply_template returns 400 by design", () => {
     render(
       <MCPQuickStartTemplates
         flavor="global"

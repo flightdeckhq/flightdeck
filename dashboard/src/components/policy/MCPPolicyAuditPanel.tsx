@@ -41,7 +41,7 @@ export interface MCPPolicyAuditPanelProps {
  * Calls ``GET /v1/mcp-policies/:flavorOrGlobal/audit-log`` with
  * event_type / from / to / limit / offset filters. Each row
  * expands to reveal the full payload JSON via the existing
- * ``SyntaxJson`` component (D128 — payload is the full mutation
+ * ``SyntaxJson`` component (payload is the full mutation
  * body so the operator can replay or inspect any change).
  *
  * Actor is rendered as the token UUID; token-name enrichment is
@@ -78,7 +78,7 @@ export function MCPPolicyAuditPanel({
       });
       setRows(list);
     } catch (err) {
-      // GET audit-log is read-open per D147; no admin-wall special-
+      // GET audit-log is read-open; no admin-wall special-
       // case — surface real errors as real errors.
       setError(err instanceof Error ? err.message : "Failed to load audit log");
     } finally {
@@ -129,7 +129,7 @@ export function MCPPolicyAuditPanel({
           className="text-[11px]"
           style={{ color: "var(--text-muted)" }}
         >
-          mutation history per D128
+          mutation history
         </span>
       </header>
 

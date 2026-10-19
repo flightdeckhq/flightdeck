@@ -22,7 +22,7 @@ import {
 } from "@/lib/fleet-ordering";
 import { isAgentType, isClientType } from "@/lib/agent-identity";
 
-// D114 vocabulary -- ``coding`` or ``production``. ``all`` suppresses
+// Locked agent_type vocabulary -- ``coding`` or ``production``. ``all`` suppresses
 // the filter at the query layer.
 export type AgentTypeFilter = "all" | "coding" | "production";
 
@@ -93,7 +93,7 @@ interface FleetState {
   /**
    * Last event received via the fleet WebSocket. Updated on every
    * event-bearing ``FleetUpdate``. Subscribers (e.g.
-   * SessionDrawer's D140 mcp_server_attached re-fetch trigger)
+   * SessionDrawer's mcp_server_attached re-fetch trigger)
    * select this field and useEffect off it. The same instance
    * is shared across all subscribers — a subscriber that wants
    * to filter on event_type / session_id does so in its own
@@ -101,7 +101,7 @@ interface FleetState {
    */
   lastEvent: AgentEvent | null;
   /**
-   * D140 step 6.6 dispatch — called from useFleet's WS handler
+   * Dispatch — called from useFleet's WS handler
    * for every event-bearing message regardless of whether the
    * envelope carries a session diff. Replaces ``lastEvent`` so
    * SessionDrawer subscribers fire their re-fetch effect.
@@ -111,7 +111,7 @@ interface FleetState {
   selectSession: (id: string | null) => void;
   markShuttingDown: (sessionId: string) => void;
   /**
-   * Kept for FleetPanel's per-flavor Stop-All button. Under D115 a
+   * Kept for FleetPanel's per-flavor Stop-All button. A
    * "flavor" value is usually an agent_id; the helper walks the
    * sessions under that flavor and marks each active/idle one as
    * shutting down client-side so the UI reacts before the next
@@ -145,14 +145,14 @@ function listItemToSession(li: SessionListItem): Session {
     context: (li.context ?? {}) as Record<string, unknown>,
     capture_enabled: li.capture_enabled,
     token_name: li.token_name ?? null,
-    // D126 — preserve sub-agent linkage so SwimLane's
+    // Preserve sub-agent linkage so SwimLane's
     // ``deriveRelationship`` (and any other downstream consumer)
     // can render the relationship pill, the L8 lost-dot, and the
     // SubAgentsTab's parent / child links off the same Session
     // shape that read directly from the session-detail endpoint.
     // Stripping these fields silently drops every sub-agent
-    // surface on the swimlane — a step-7.fix gap that surfaced in
-    // step 8 when the seeded D126 fixtures rendered without pills.
+    // surface on the swimlane — a gap that surfaced when the seeded
+    // sub-agent fixtures rendered without pills.
     parent_session_id: li.parent_session_id ?? null,
     agent_role: li.agent_role ?? null,
   };
@@ -165,8 +165,8 @@ function listItemToSession(li: SessionListItem): Session {
 // ``recent_sessions`` patched live so the
 // ``deriveFamilyDescendantSet`` parent / child resolver finds
 // ``parent_session_id`` immediately — without waiting for the
-// next ``load()`` refetch to repopulate the rollup. Pre-fix the
-// resolver only saw fresh ``parent_session_id`` linkage after a
+// next ``load()`` refetch to repopulate the rollup. Without it the
+// resolver only sees fresh ``parent_session_id`` linkage after a
 // full browser refresh; that's the regression this helper
 // addresses.
 function sessionToRecentSession(
@@ -408,7 +408,7 @@ export const useFleetStore = create<FleetState>((set, get) => ({
 
   applyUpdate: (update: FleetUpdate) => {
     const { flavors, agents, shuttingDown, enteredBucketAt } = get();
-    // D115: the swimlane row key is agent_id (stored under the legacy
+    // The swimlane row key is agent_id (stored under the legacy
     // ``flavor`` field name). Updates for sessions without an
     // agent_id (legacy rows awaiting enrichment) land under the
     // session's flavor string as a fallback so they still render.

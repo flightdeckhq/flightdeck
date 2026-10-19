@@ -190,7 +190,7 @@ function buildComparator(
  * ``recent_sessions`` wins when both sources cover a session_id
  * because the per-agent slice is immune to wall-clock churn.
  *
- * Pre-D158 deployments may have ``recent_sessions`` absent — the
+ * Older deployments may have ``recent_sessions`` absent — the
  * function treats undefined the same as an empty slice; affected
  * agents collapse to lone families (no grouping) but never crash.
  *

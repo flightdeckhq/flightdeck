@@ -73,7 +73,7 @@ export function EventFilterBar({ activeFilter, onFilterChange }: EventFilterBarP
           </button>
         );
       })}
-      {/* D122 — Show MCP discovery events toggle. Right-aligned via
+      {/* Show MCP discovery events toggle. Right-aligned via
           ml-auto. Pill geometry mirrors the filter pills above so the
           two read as one strip; aria-pressed exposes the boolean
           state to assistive tech. */}

@@ -3,7 +3,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import type { AgentTopology } from "@/lib/types";
 
 /**
- * D126 sub-agent role pill. Renders ``↳ <role>`` with the
+ * Sub-agent role pill. Renders ``↳ <role>`` with the
  * leftward-arrow glyph signaling "this row is a child agent" and
  * the framework-supplied role string (CrewAI Agent.role, LangGraph
  * node name, Claude Code Task agent_type) as the label. Sized to
@@ -63,7 +63,7 @@ export function SubAgentRolePill({
 }
 
 /**
- * D126 § L8 red-dot indicator. Mirrors the pattern established by
+ * L8 red-dot indicator. Mirrors the pattern established by
  * the llm_error and mcp_error session-row dots: surface a row-level
  * failure cue so an operator scanning a list immediately spots
  * trouble without expanding the row.

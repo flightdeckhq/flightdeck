@@ -380,8 +380,8 @@ def test_embeddings_content_input_roundtrips() -> None:
 
 
 def test_session_framework_filter_matches_attributed_sessions() -> None:
-    """Phase 4 polish: the per-event ``framework`` field is now
-    actively populated (pre-fix it was always null because
+    """The per-event ``framework`` field is
+    actively populated (the guarded regression left it always null because
     ``Session.record_framework`` had no callers). ``/v1/sessions
     ?framework=langchain`` must return sessions whose events emit
     ``framework=langchain``.

@@ -8,9 +8,9 @@ import (
 	"github.com/flightdeckhq/flightdeck/workers/internal/processor"
 )
 
-// D126 § 6 — sub-agent observability fields project inline into
+// Sub-agent observability fields project inline into
 // events.payload via BuildEventExtra. Small bodies route here; the
-// 8 KiB → event_content overflow path is deferred (D126 v1).
+// 8 KiB → event_content overflow path is deferred.
 //
 // has_content stays false on sub-agent events: setting has_content=true
 // without the LLM PromptContent shape (provider / model / messages /
@@ -81,7 +81,7 @@ func TestBuildEventExtra_SubagentSessionStart_ProjectsIncomingMessage(t *testing
 }
 
 func TestBuildEventExtra_SubagentSessionStart_ProjectsOverflowStub(t *testing.T) {
-	// Overflow path (D126 § 6): bodies > 8 KiB live in event_content
+	// Overflow path: bodies > 8 KiB live in event_content
 	// and the wire stub on payload.incoming_message carries
 	// {has_content, content_bytes, captured_at} so the dashboard can
 	// render a "load full message" affordance with the size hint
@@ -97,7 +97,7 @@ func TestBuildEventExtra_SubagentSessionStart_ProjectsOverflowStub(t *testing.T)
 			ContentBytes: &contentBytes,
 			CapturedAt:   "2026-05-02T19:00:00Z",
 			// Body intentionally absent on the overflow path —
-			// it lives in event_content via the existing D119
+			// it lives in event_content via the existing
 			// InsertEventContent flow driven by the event-level
 			// HasContent + Content fields, not on the
 			// SubagentMessage envelope.
@@ -178,7 +178,7 @@ func TestBuildEventExtra_SubagentSessionEnd_ProjectsOutgoingAndState(t *testing.
 
 func TestBuildEventExtra_RootSession_OmitsSubagentFields(t *testing.T) {
 	// A regular session_start with no sub-agent fields must not
-	// project any of the D126 keys into events.payload — every
+	// project any of the sub-agent keys into events.payload — every
 	// existing root session would otherwise carry a NULL
 	// parent_session_id / agent_role pair into the JSONB and bloat
 	// the column without value.
@@ -196,7 +196,7 @@ func TestBuildEventExtra_RootSession_OmitsSubagentFields(t *testing.T) {
 }
 
 func TestBuildEventExtra_PreservesBodyShape(t *testing.T) {
-	// The D126 § 6 body-preservation invariant: framework-supplied
+	// The body-preservation invariant: framework-supplied
 	// objects (CrewAI Task description string vs LangGraph state
 	// dict) round-trip through events.payload unchanged. The
 	// dashboard's MESSAGES sub-section reads them verbatim.

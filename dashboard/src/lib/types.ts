@@ -29,7 +29,7 @@ export type EventType =
   | "mcp_resource_read"
   | "mcp_prompt_list"
   | "mcp_prompt_get"
-  // MCP Protection Policy event types (D131). Two enforcement
+  // MCP Protection Policy event types. Two enforcement
   // (warn / block, amber / red chroma) and two FYI (server name
   // drift + plugin user-remembered, purple/info chroma). Filterable
   // on Investigate via ``policy_event_type`` query param; not
@@ -38,7 +38,7 @@ export type EventType =
   | "policy_mcp_block"
   | "mcp_server_name_changed"
   | "mcp_policy_user_remembered"
-  // D140 step 6.6 A2 — emitted by the sensor on
+  // Emitted by the sensor on
   // ClientSession.initialize so the dashboard's SessionDrawer
   // re-fetches sessions.context.mcp_servers and the MCP SERVERS
   // panel populates live for in-flight sessions.
@@ -162,9 +162,9 @@ export interface Agent {
 }
 
 /**
- * D126 sub-agent message capture. Populated on the wire when
+ * Sub-agent message capture. Populated on the wire when
  * ``capture_prompts=true`` and the body fits inline. Bodies above
- * the 8 KiB inline threshold route through the D119 overflow path
+ * the 8 KiB inline threshold route through the event_content overflow path
  * (``has_content=true`` + ``content_bytes`` on the parent
  * session_start / session_end event; the full body lives in
  * ``event_content`` and is fetched via
@@ -192,7 +192,7 @@ export interface Session {
   session_id: string;
   flavor: string;
   agent_type: string;
-  /** D115 identity columns. Nullable for sessions lazy-created
+  /** Agent identity columns. Nullable for sessions lazy-created
    *  before the authoritative session_start arrived. */
   agent_id?: string | null;
   agent_name?: string | null;
@@ -207,7 +207,7 @@ export interface Session {
   tokens_used: number;
   token_limit: number | null;
   /**
-   * D126 sub-agent linkage. ``parent_session_id`` points back to
+   * Sub-agent linkage. ``parent_session_id`` points back to
    * the outer session that spawned this child; ``agent_role`` is
    * the framework-supplied role string (CrewAI Agent.role, LangGraph
    * node name, Claude Code Task agent_type). Both fields are null
@@ -233,8 +233,9 @@ export interface Session {
    */
   capture_enabled?: boolean;
   /**
-   * Name of the access_tokens row that opened this session (D095).
-   * Null for tok_dev-authenticated sessions and pre-Phase-5 rows.
+   * Name of the access_tokens row that opened this session.
+   * Null for tok_dev-authenticated sessions and rows that predate
+   * token attribution.
    * Preserved across token revocation so historical sessions keep
    * their attribution snapshot.
    */
@@ -251,7 +252,7 @@ export interface Session {
  * /v1/events/:id/content fetch.
  */
 /**
- * Phase 7 Step 2 (D148): shared policy_decision payload block.
+ * Shared policy_decision payload block.
  * Populated on every policy enforcement event (policy_warn,
  * policy_degrade, policy_block, policy_mcp_warn, policy_mcp_block)
  * regardless of capture_prompts — operator-actionable state metadata,
@@ -269,7 +270,7 @@ export interface PolicyDecisionBlock {
 }
 
 /**
- * Phase 7 Step 2 (D149): originating_call_context enum. Set on MCP-
+ * originating_call_context enum. Set on MCP-
  * policy events to identify the agent operation that tripped the
  * policy decision.
  */
@@ -283,7 +284,7 @@ export type OriginatingCallContext =
   | "session_boot";
 
 /**
- * Phase 7 Step 4 (D152): close_reason taxonomy on session_end.
+ * close_reason taxonomy on session_end.
  * Sensor-knowable: normal_exit / directive_shutdown / policy_block.
  * Worker-filled (orphan-detector / sigkill-detector / post-mortem):
  * orphan_timeout / sigkill_detected / unknown.
@@ -297,7 +298,7 @@ export type CloseReason =
   | "unknown";
 
 /**
- * Phase 7 Step 4 (D152): policy_actions_summary on session_end —
+ * policy_actions_summary on session_end —
  * worker-computed tally of every policy enforcement event for the
  * session. Operationally key for the audit's "did the operator's
  * policy fire as expected" tuning workflow.
@@ -311,7 +312,7 @@ export interface PolicyActionsSummary {
 }
 
 /**
- * Phase 7 Step 4 (D152): policy_entries_orphaned on
+ * policy_entries_orphaned on
  * mcp_server_name_changed. Worker-computed from mcp_policy_entries
  * matching the OLD fingerprint.
  */
@@ -336,16 +337,12 @@ export interface OutputDimensions {
 }
 
 export interface EventPayloadFields {
-  // Phase 7 Step 2 (D148/D149): operator-actionable enrichment.
-  // Schema acceptance only in this commit; renderers land in Step 6.
+  // Operator-actionable enrichment.
   policy_decision?: PolicyDecisionBlock;
   originating_event_id?: string;
   originating_call_context?: OriginatingCallContext;
 
-  // Phase 7 Step 4 (D152): session lifecycle + MCP server attach
-  // enrichment. Schema acceptance only; rendering deferred to Step 6
-  // EXCEPT mcp_server_name_changed which gains an inline renderer
-  // here because it had no events.ts switch case before.
+  // Session lifecycle + MCP server attach enrichment.
   sensor_version?: string;
   interceptor_versions?: Record<string, string>;
   policy_snapshot?: {
@@ -389,7 +386,7 @@ export interface EventPayloadFields {
   // Policy enforcement fields. Populated on ``policy_warn`` /
   // ``policy_degrade`` / ``policy_block`` events. ``source`` is
   // ``"local"`` (init() limit) or ``"server"`` (server policy);
-  // BLOCK is always ``"server"`` per D035.
+  // BLOCK is always ``"server"`` (local limits fire WARN only).
   source?: "local" | "server";
   threshold_pct?: number | null;
   tokens_used?: number;
@@ -437,13 +434,13 @@ export interface EventPayloadFields {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   content?: any;
   /**
-   * D126 cross-agent message capture. ``incoming_message`` is the
+   * Cross-agent message capture. ``incoming_message`` is the
    * parent's input to the child (CrewAI task description, LangGraph
    * inbound state, Claude Code Task ``prompt`` argument); stamped on
    * the child ``session_start`` payload. ``outgoing_message`` is the
    * child's response back; stamped on the child ``session_end``
    * payload. When the inline body would exceed 8 KiB the body
-   * routes through the D119 overflow path: ``has_content=true`` on
+   * routes through the event_content overflow path: ``has_content=true`` on
    * the body and the full message lives in ``event_content``,
    * fetched via ``GET /v1/events/{id}/content``. Absent entirely
    * when ``capture_prompts=false`` for the session.
@@ -530,12 +527,12 @@ export interface EventFacets {
 }
 
 /**
- * v0.4.0 Phase 1 (D115): the swimlane still renders ``FlavorSummary``
+ * The swimlane renders ``FlavorSummary``
  * rows but each row now represents an **agent** rather than a flavor
  * string. The ``flavor`` field carries the agent_id (kept under the
  * old name so the existing swimlane code does not need to be
  * retyped); optional ``agent_id`` / ``agent_name`` / ``client_type``
- * fields carry the D115 identity tuple the label renders. Sessions
+ * fields carry the identity tuple the label renders. Sessions
  * inside are the sessions belonging to that agent_id.
  *
  * Populated by the fleet store by fetching the agents roster plus a
@@ -550,7 +547,7 @@ export interface FlavorSummary {
   active_count: number;
   tokens_used_total: number;
   sessions: Session[];
-  /** D115 identity fields. Populated when the summary was built from
+  /** Identity fields. Populated when the summary was built from
    *  agent-grouped data; absent for legacy consumers. */
   agent_id?: string;
   agent_name?: string;
@@ -561,7 +558,7 @@ export interface FlavorSummary {
 }
 
 /**
- * D126 sub-agent topology classification of an agent's place in the
+ * Sub-agent topology classification of an agent's place in the
  * sub-agent graph:
  *   * ``lone``   — none of this agent's sessions carry a
  *                  parent_session_id and no other agent's sessions
@@ -578,7 +575,7 @@ export type AgentTopology = "lone" | "parent" | "child";
 
 /**
  * Agent (persistent fleet entity) as returned by GET /v1/fleet in
- * the v0.4.0 Phase 1 shape (D115). Each row aggregates multiple
+ * the agent-level shape. Each row aggregates multiple
  * sessions under one agent_id.
  */
 export interface AgentSummary {
@@ -597,7 +594,7 @@ export interface AgentSummary {
    *  when the agent has no sessions yet. */
   state: SessionState | "";
   /**
-   * D126 sub-agent rollup fields. ``agent_role`` is null for root
+   * Sub-agent rollup fields. ``agent_role`` is null for root
    * agents; carries the framework-supplied role string when this
    * agent represents a sub-agent identity. ``topology`` always
    * present (defaults to ``"lone"`` server-side).
@@ -738,7 +735,7 @@ export interface SessionDetail {
   /**
    * Chronological list of timestamps where an agent re-attached to
    * this session using the same session_id. Excludes the initial
-   * session_start. Populated by the ingestion session store (D094);
+   * session_start. Populated by the ingestion session store;
    * empty for sessions that have only ever run once. Consumed by the
    * drawer's ATTACH badge and the swimlane's amber start circle.
    */
@@ -813,7 +810,7 @@ export interface AnalyticsParams {
   filter_agent_type?: string;
   filter_provider?: string;
   /**
-   * D126 sub-agent-aware analytics filters. Compose AND with every
+   * Sub-agent-aware analytics filters. Compose AND with every
    * other filter. ``filter_parent_session_id`` scopes to children
    * of one specific parent UUID; ``filter_is_sub_agent`` restricts
    * to child sessions only (parent_session_id IS NOT NULL);
@@ -825,7 +822,7 @@ export interface AnalyticsParams {
 }
 
 /**
- * D126 § 6.4 — one segment of a two-dim DataPoint. ``key`` is the
+ * One segment of a two-dim DataPoint. ``key`` is the
  * secondary-axis bucket value (e.g. an ``agent_role`` string when
  * the chart's primary axis is ``parent_session_id``); ``value`` is
  * the metric aggregate for that primary × secondary × time-bucket
@@ -840,8 +837,8 @@ export interface BreakdownBucket {
 }
 
 /** A single time-series data point. ``breakdown`` is populated only
- *  for two-dim ``group_by`` queries (D126 § 6.4); single-dim queries
- *  leave it undefined to preserve the pre-6.4 wire shape exactly. */
+ *  for two-dim ``group_by`` queries; single-dim queries
+ *  leave it undefined to preserve the single-axis wire shape exactly. */
 export interface DataPoint {
   date: string;
   value: number;
@@ -871,7 +868,7 @@ export interface AnalyticsResponse {
   totals: AnalyticsTotals;
   /** True when metric=estimated_cost and the window contains post_call
    *  rows for models without a pricing entry. UI shows a partial-
-   *  estimate disclaimer when set. See DECISIONS.md D099. */
+   *  estimate disclaimer when set. */
   partial_estimate?: boolean;
 }
 
@@ -989,12 +986,12 @@ export interface SessionListItem {
   session_id: string;
   flavor: string;
   /**
-   * D114 vocabulary: ``coding`` or ``production``. Populated from
+   * Locked vocabulary: ``coding`` or ``production``. Populated from
    * sessions.agent_type. Drives the AGENT TYPE facet on the
    * Investigate page.
    */
   agent_type: AgentType;
-  /** D115 identity fields (nullable for legacy / lazy-created rows). */
+  /** Identity fields (nullable for legacy / lazy-created rows). */
   agent_id?: string | null;
   agent_name?: string | null;
   client_type?: ClientType | null;
@@ -1020,8 +1017,8 @@ export interface SessionListItem {
    * Drives the camera icon in the Investigate table and the SessionDrawer.
    */
   capture_enabled?: boolean;
-  /** D095 attribution -- nullable when token was revoked or the row
-   *  predates Phase 5. */
+  /** Token attribution -- nullable when token was revoked or the row
+   *  predates token attribution. */
   token_id?: string | null;
   token_name?: string | null;
   /**
@@ -1079,7 +1076,7 @@ export interface SessionListItem {
    */
   mcp_error_types?: string[];
   /**
-   * D126 sub-agent linkage. Both null on root sessions; both
+   * Sub-agent linkage. Both null on root sessions; both
    * populated together on sub-agent sessions. ``parent_session_id``
    * powers the Investigate PARENT column (clicking deep-links to
    * the parent's detail) and the SubAgentsTab "Spawned from"
@@ -1088,7 +1085,7 @@ export interface SessionListItem {
   parent_session_id?: string | null;
   agent_role?: string | null;
   /**
-   * D126 UX revision 2026-05-03 — count of sessions whose
+   * Count of sessions whose
    * ``parent_session_id`` equals this row's ``session_id``.
    * Always present (zero on lone agents and on pure children that
    * have no descendants of their own). Surfaced server-side via a
@@ -1116,7 +1113,7 @@ export interface SessionsResponse {
   has_more: boolean;
 }
 
-/** One row in the GET /v1/access-tokens response (D095/D096). */
+/** One row in the GET /v1/access-tokens response. */
 export interface AccessToken {
   id: string;
   name: string;
@@ -1138,9 +1135,9 @@ export interface CreatedAccessToken {
   created_at: string;
 }
 
-// ----- MCP Protection Policy (D128 / D131 / D139) -----
+// ----- MCP Protection Policy -----
 
-/** D128 — one row in mcp_policy_entries. */
+/** One row in mcp_policy_entries. */
 export interface MCPPolicyEntry {
   id: string;
   policy_id: string;
@@ -1152,7 +1149,7 @@ export interface MCPPolicyEntry {
   created_at: string;
 }
 
-/** D128 — one mcp_policies row + entries. */
+/** One mcp_policies row + entries. */
 export interface MCPPolicy {
   id: string;
   scope: "global" | "flavor";
@@ -1171,14 +1168,14 @@ export interface MCPPolicyMutationEntry {
   enforcement?: "warn" | "block" | "interactive" | null;
 }
 
-/** D128 — request body for POST/PUT mutations. */
+/** Request body for POST/PUT mutations. */
 export interface MCPPolicyMutation {
   mode?: "allowlist" | "blocklist" | null;
   block_on_uncertainty: boolean;
   entries: MCPPolicyMutationEntry[];
 }
 
-/** D135 — resolve endpoint result. */
+/** Resolve endpoint result. */
 export interface MCPPolicyResolveResult {
   decision: "allow" | "warn" | "block";
   decision_path: "flavor_entry" | "global_entry" | "mode_default";
@@ -1187,7 +1184,7 @@ export interface MCPPolicyResolveResult {
   fingerprint: string;
 }
 
-/** D128 — audit log row. */
+/** Audit log row. */
 export interface MCPPolicyAuditLog {
   id: string;
   policy_id?: string | null;
@@ -1197,8 +1194,8 @@ export interface MCPPolicyAuditLog {
   occurred_at: string;
 }
 
-/** D131 — one (fingerprint, server_name, count) tuple inside an
- *  aggregate or a time bucket. Step 6.5 renamed this from the
+/** One (fingerprint, server_name, count) tuple inside an
+ *  aggregate or a time bucket. Renamed from the
  *  generic ``MCPPolicyMetricsBucket`` to free the bucket name for
  *  the new time-bucket type. */
 export interface MCPPolicyServerCountBucket {
@@ -1222,14 +1219,14 @@ export interface MCPPolicyMetricsBucket {
 
 export interface MCPPolicyMetrics {
   period: string;
-  /** "hour" for period=24h, "day" for period=7d|30d (D131 step 6.5). */
+  /** "hour" for period=24h, "day" for period=7d|30d. */
   granularity: string;
   buckets: MCPPolicyMetricsBucket[];
   blocks_per_server: MCPPolicyServerCountBucket[];
   warns_per_server: MCPPolicyServerCountBucket[];
 }
 
-/** D138 — template metadata returned by GET /templates. */
+/** Template metadata returned by GET /templates. */
 export interface MCPPolicyTemplate {
   name: string;
   description: string;

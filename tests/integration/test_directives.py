@@ -97,8 +97,7 @@ def _sync_directives(
 ) -> tuple[int, dict[str, Any]]:
     """POST /v1/directives/sync with the given flavor and fingerprints.
 
-    The query API requires a bearer token on this endpoint as a stopgap
-    until Phase 5 JWT auth lands (see DECISIONS.md D073).
+    The query API requires a bearer token on this endpoint.
     """
     body = {
         "flavor": flavor,
@@ -396,7 +395,7 @@ def test_directive_result_appears_in_timeline() -> None:
     )
 
 
-# test_shutdown_directive_delivered -- removed in Phase 4.5 audit Task 1.
+# test_shutdown_directive_delivered -- removed.
 # Duplicate of test_killswitch.py::test_single_agent_kill, which already
 # verifies the same flow: POST shutdown → POST event → directive in
 # envelope → directive marked delivered.
@@ -425,8 +424,7 @@ def test_directive_last_seen_updated() -> None:
         # NOW() value inside the SyncDirectives transaction to be
         # strictly greater than first_last_seen, and no longer. This
         # is much faster than the worst case of the old fixed sleep,
-        # and removes a flake source from the suite (Phase 4.5 audit
-        # Section C).
+        # and removes a flake source from the suite.
         latest: dict[str, Any] = {}
 
         def _resync_and_check() -> bool:
@@ -526,7 +524,7 @@ def test_sensor_endpoint_requires_auth(
 ) -> None:
     """Both sensor-facing endpoints (/v1/directives/sync and
     /v1/directives/register) reject requests without a bearer token.
-    Phase 4.5 audit Task 1 -- merged from
+    Merged from
     test_sync_endpoint_requires_auth + test_register_endpoint_requires_auth.
     """
     code, resp = _post_json(path, body_factory(), bearer=None)

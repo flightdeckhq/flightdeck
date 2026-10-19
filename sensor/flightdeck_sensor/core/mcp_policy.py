@@ -1,8 +1,8 @@
-"""MCP Protection Policy cache + evaluation (D128 / D135).
+"""MCP Protection Policy cache + evaluation.
 
 The sensor fetches the global + flavor MCP policies at session
 preflight (alongside the existing token-policy fetch) and caches the
-inputs to the D135 resolution algorithm in memory for the session's
+inputs to the resolution algorithm in memory for the session's
 lifetime. Per-call ``ClientSession.call_tool`` enforcement consults
 this cache, NOT the control plane — Rule 27 forbids latency on the
 agent hot path.
@@ -20,8 +20,8 @@ the agent opted into the local failsafe via
 URLs in an empty cache return ``block`` with
 ``decision_path="mode_default"`` and ``scope="local_failsafe"``.
 
-See DECISIONS.md D127-D132, D134-D147 and ARCHITECTURE.md
-"MCP Protection Policy" for the contract this module implements.
+See ARCHITECTURE.md "MCP Protection Policy" for the contract this
+module implements.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ class MCPPolicyDecision:
     plugin can produce byte-identical event payloads from the same
     policy state.
 
-    Phase 7 Step 2 (D148): adds ``matched_entry_id`` and
+    Carries ``matched_entry_id`` and
     ``matched_entry_label`` to feed the shared ``policy_decision``
     payload block. Both are ``None`` on the mode-default fall-through
     path where no entry matched; populated when the decision came
@@ -79,8 +79,7 @@ class MCPPolicyDecision:
     # Set when the decision came from the mode-default fall-through
     # AND the flavor's block_on_uncertainty toggle was true at lookup
     # time. The emit path uses this to populate the
-    # ``block_on_uncertainty`` field on POLICY_MCP_BLOCK payloads
-    # per D131.
+    # ``block_on_uncertainty`` field on POLICY_MCP_BLOCK payloads.
     block_on_uncertainty: bool = False
     matched_entry_id: str | None = None
     matched_entry_label: str | None = None  # entry's server_name
@@ -93,7 +92,7 @@ class _PolicyEntry:
     canonical URL + fingerprint are precomputed at cache populate
     time so per-call lookup is O(1).
 
-    Phase 7 Step 2 (D148): captures the API's per-entry ``id`` (UUID)
+    Captures the API's per-entry ``id`` (UUID)
     so MCP-policy emissions can populate ``matched_entry_id`` on the
     shared ``policy_decision`` block.
     """
@@ -149,7 +148,7 @@ class MCPPolicyCache:
         self._populated = False
         self._local_failsafe = mcp_block_on_uncertainty
         # Indexed by fingerprint. flavor entries take precedence at
-        # lookup time over global entries (D135 step 1 → step 2);
+        # lookup time over global entries;
         # populating the dicts separately keeps that contract clear.
         self._flavor_entries: dict[str, _PolicyEntry] = {}
         self._global_entries: dict[str, _PolicyEntry] = {}
@@ -264,10 +263,11 @@ class MCPPolicyCache:
     # ------------------------------------------------------------------
 
     def evaluate(self, server_url: str, server_name: str) -> MCPPolicyDecision:
-        """Apply the D135 resolution algorithm to the cached policy.
+        """Apply the resolution algorithm (flavor entry → global entry
+        → global-mode default) to the cached policy.
 
         Returns the canonical decision the emit path acts on directly —
-        v0.6 enforces as configured per D145.
+        the sensor enforces as configured, with no soft-launch override.
         """
         canonical = canonicalize_url(server_url)
         fp = fingerprint_short(canonical, server_name)
@@ -287,7 +287,7 @@ class MCPPolicyCache:
             return self._mode_default_decision(fp)
 
     def _mode_default_decision(self, fp: str) -> MCPPolicyDecision:
-        """D135 step 3 fall-through. Three sub-cases:
+        """Mode-default fall-through (no entry matched). Three sub-cases:
 
         - cache populated + global allowlist → block
         - cache populated + global blocklist → allow
@@ -339,7 +339,7 @@ class MCPPolicyCache:
     # ------------------------------------------------------------------
 
     def snapshot_identity(self) -> dict[str, Any]:
-        """Phase 7 Step 4 (D152): identity-only snapshot of the cached
+        """Identity-only snapshot of the cached
         policy state for the session_start payload's policy_snapshot
         block. Returns empty dict when the cache hasn't populated
         (preflight failed) — caller's session_start emission omits

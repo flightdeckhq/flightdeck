@@ -26,13 +26,13 @@ const (
 // EventPayload is the raw event received from NATS.
 //
 // The Directive* fields are populated for directive_result events
-// emitted by the sensor when it acknowledges or executes a directive
-// (D072). They are JSON-decoded directly from the top-level keys on
+// emitted by the sensor when it acknowledges or executes a directive.
+// They are JSON-decoded directly from the top-level keys on
 // the event payload that the sensor POSTs to /v1/events. The worker
 // processor projects these fields into the events.payload JSONB
 // column via processor.BuildEventExtra().
 type EventPayload struct {
-	// Phase 7 Step 2 (D149): sensor mints the event UUID and sends
+	// The sensor mints the event UUID and sends
 	// it in ``id``. Worker passes through to InsertEvent, which uses
 	// it via COALESCE($1::uuid, gen_random_uuid()) so legacy callers
 	// without the field stay compatible. ON CONFLICT (id,
@@ -41,9 +41,9 @@ type EventPayload struct {
 	SessionID       string          `json:"session_id"`
 	Flavor          string          `json:"flavor"`
 	AgentType       string          `json:"agent_type"`
-	// D115 identity fields. The ingestion API validates agent_id is
+	// Agent identity fields. The ingestion API validates agent_id is
 	// a canonical UUID, and agent_type / client_type are from their
-	// respective D114 / D116 vocabularies, so by the time the worker
+	// respective locked vocabularies, so by the time the worker
 	// sees a payload here these values are known-good.
 	AgentID         string          `json:"agent_id"`
 	AgentName       string          `json:"agent_name"`
@@ -57,7 +57,7 @@ type EventPayload struct {
 	TokensInput     *int            `json:"tokens_input"`
 	TokensOutput    *int            `json:"tokens_output"`
 	TokensTotal     *int            `json:"tokens_total"`
-	// D100: Anthropic cache-token breakdown. Populated by the Python sensor's
+	// Anthropic cache-token breakdown. Populated by the Python sensor's
 	// AnthropicProvider.extract_usage and by the Claude Code plugin's
 	// transcript reader. Absent on OpenAI events and on non-LLM events.
 	TokensCacheRead     *int64      `json:"tokens_cache_read,omitempty"`
@@ -118,11 +118,11 @@ type EventPayload struct {
 	// other event type calls UpgradeSessionContext to fill in the
 	// context column when a prior session_start never landed (e.g.,
 	// the plugin's session_start POST failed because the stack was
-	// down at process start -- D106 lazy-creates the row with NULL
+	// down at process start -- the worker lazy-creates the row with NULL
 	// context, and a later event's context finally populates it).
 	Context map[string]interface{} `json:"context,omitempty"`
 
-	// Token attribution (D095). Injected by the ingestion API on
+	// Token attribution. Injected by the ingestion API on
 	// session_start events only -- the API resolves the authenticating
 	// access_tokens row and stamps the id/name into the payload before
 	// publishing to NATS. UpsertSession persists them onto the new
@@ -166,7 +166,7 @@ type EventPayload struct {
 	PromptName   string          `json:"prompt_name,omitempty"`
 	Rendered     json.RawMessage `json:"rendered,omitempty"`
 
-	// D126 — sub-agent observability. Populated only on sub-agent
+	// Sub-agent observability. Populated only on sub-agent
 	// session_start / session_end events:
 	//
 	//   * ParentSessionID — the outer (parent) session's UUID.
@@ -190,7 +190,7 @@ type EventPayload struct {
 	//     description string, LangGraph state dict, Claude Code
 	//     Task ``prompt`` argument string) — Rule 20 forbids
 	//     normalising it. Small bodies project inline into
-	//     events.payload via BuildEventExtra (D126 § 6 v1 path);
+	//     events.payload via BuildEventExtra;
 	//     the 8 KiB → event_content overflow path is deferred.
 	//   * State — overrides the default session_end → state=closed
 	//     projection. Currently used only to surface
@@ -203,7 +203,7 @@ type EventPayload struct {
 	OutgoingMessage *SubagentMessage `json:"outgoing_message,omitempty"`
 	State           string           `json:"state,omitempty"`
 
-	// D131 — MCP Protection Policy event fields. Populated on
+	// MCP Protection Policy event fields. Populated on
 	// policy_mcp_warn / policy_mcp_block / mcp_server_name_changed
 	// events; otherwise omitted from the wire shape via omitempty.
 	//
@@ -227,13 +227,13 @@ type EventPayload struct {
 	NameOld            string `json:"name_old,omitempty"`
 	NameNew            string `json:"name_new,omitempty"`
 
-	// D139 — mcp_policy_user_remembered de-facto-approval event
+	// mcp_policy_user_remembered de-facto-approval event
 	// emitted by the Claude Code plugin's PostToolUse path. The
 	// other fields (Fingerprint, ServerURLCanonical, ServerName,
 	// Flavor) already exist above; this is the one new field.
 	DecidedAt string `json:"decided_at,omitempty"`
 
-	// D140 step 6.6 A2 — mcp_server_attached event extra fields.
+	// mcp_server_attached event extra fields.
 	// ServerName / Transport / Fingerprint / ServerURLCanonical
 	// already declared above; the worker also needs the full
 	// fingerprint to write into sessions.context.mcp_servers.
@@ -246,7 +246,7 @@ type EventPayload struct {
 	Instructions    string          `json:"instructions,omitempty"`
 	AttachedAt      string          `json:"attached_at,omitempty"`
 
-	// Phase 7 Step 2 (D148/D149) — operator-actionable enrichment.
+	// Operator-actionable enrichment.
 	// PolicyDecision projects through the worker into events.payload
 	// unchanged; OriginatingEventID + OriginatingCallContext travel
 	// alongside on chained event types. Both are state metadata,
@@ -255,16 +255,16 @@ type EventPayload struct {
 	OriginatingEventID      string          `json:"originating_event_id,omitempty"`
 	OriginatingCallContext  string          `json:"originating_call_context,omitempty"`
 
-	// Phase 7 Step 3 (D151): MCP discovery family carries the list
+	// MCP discovery family carries the list
 	// of identifiers the server returned. Sensor caps at 100 +
 	// stamps Truncated when over the cap. Operationally key for
 	// drift detection ("did this server's tool inventory change").
 	ItemNames []string `json:"item_names,omitempty"`
 	Truncated bool     `json:"truncated,omitempty"`
 
-	// Phase 7 Step 4 (D152): session lifecycle + MCP server attach
+	// Session lifecycle + MCP server attach
 	// operator-actionable enrichment. All fields are state metadata
-	// (always-included regardless of capture_prompts per Phase 7 Q2).
+	// (always included regardless of capture_prompts).
 	//
 	// session_start:
 	//   * SensorVersion / InterceptorVersions — answers "did this
@@ -318,7 +318,7 @@ type EventPayload struct {
 
 // SubagentMessageBody is the framework-supplied body of a single
 // cross-agent message — verbatim JSON bytes the worker preserves
-// without normalising (Rule 20 + D126 § 6). The actual shape varies
+// without normalising (Rule 20). The actual shape varies
 // by framework:
 //
 //   * CrewAI ``Agent.execute_task`` — string (task description) or
@@ -341,7 +341,7 @@ type EventPayload struct {
 type SubagentMessageBody = json.RawMessage
 
 // SubagentMessage is the wire envelope for a single cross-agent
-// message body captured at a sub-agent session boundary (D126 § 6).
+// message body captured at a sub-agent session boundary.
 //
 // On a sub-agent ``session_start`` event the sensor or plugin
 // stamps ``IncomingMessage`` with the parent's input to the child.
@@ -351,7 +351,7 @@ type SubagentMessageBody = json.RawMessage
 // land on the wire with both fields nil and the worker has nothing
 // to project.
 //
-// Two routing shapes per D126 § 6:
+// Two routing shapes:
 //
 //   * **Inline** (body ≤ 8 KiB) — ``Body`` + ``CapturedAt``
 //     populated. The body lands in events.payload via
@@ -362,7 +362,7 @@ type SubagentMessageBody = json.RawMessage
 //     ``CapturedAt`` populated, ``Body`` empty. The full body
 //     rides on the event payload's separate ``content`` field
 //     (PromptContent shape with ``provider="flightdeck-subagent"``)
-//     and lands in event_content via the existing D119
+//     and lands in event_content via the existing
 //     InsertEventContent path; the dashboard fetches it via
 //     ``GET /v1/events/{id}/content``. The stub here lets the
 //     dashboard render a size-aware "load full message" affordance

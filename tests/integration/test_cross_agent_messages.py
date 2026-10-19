@@ -1,4 +1,4 @@
-"""D126 § 6 cross-agent message-capture integration tests.
+"""Cross-agent message-capture integration tests.
 
 Wire-seeded: hand-crafts sub-agent ``session_start`` / ``session_end``
 event payloads, POSTs them through the real ingestion API, and
@@ -14,7 +14,7 @@ Covers:
   on the events row; no event_content row written;
   ``GET /v1/events/{id}/content`` returns 404.
 * **IT-XAGENT-2** — Overflow path. Body > 8 KiB rides through the
-  existing D119 event_content path with
+  existing event_content path with
   ``provider="flightdeck-subagent"`` discriminator. The wire stub on
   the payload field carries
   ``{has_content, content_bytes, captured_at}`` so the dashboard can
@@ -29,8 +29,8 @@ Covers:
 Methodology mirrors ``test_mcp_events.py`` IT-MCP-3 (``has_content``
 + overflow content round-trip) — the plumbing that makes the MCP
 overflow path work is the same plumbing that makes the sub-agent
-overflow path work, by design (D126 § 6 explicitly reuses the D119
-contract).
+overflow path work, by design (sub-agent capture deliberately reuses
+the MCP overflow contract).
 """
 
 from __future__ import annotations
@@ -205,7 +205,7 @@ def test_inline_subagent_message_roundtrips_via_events_payload() -> None:
 
 def test_overflow_subagent_message_roundtrips_via_event_content() -> None:
     """Body > 8 KiB rides through event_content via the existing
-    D119 path. The listing row carries ``has_content=true``; the
+    event_content path. The listing row carries ``has_content=true``; the
     payload field becomes a stub
     ``{has_content, content_bytes, captured_at}``;
     GET /v1/events/{id}/content returns the full body

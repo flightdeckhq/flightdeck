@@ -1,4 +1,4 @@
-"""Phase 7 Step 2 (D148) — token-budget policy event enrichment tests.
+"""Token-budget policy event enrichment tests.
 
 Confirms that policy_warn / policy_block emissions from the
 interceptor's _pre_call carry the shared policy_decision block,

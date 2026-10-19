@@ -1,4 +1,4 @@
-"""Phase 7 Step 2 (D148) — PolicyDecisionSummary contract tests.
+"""PolicyDecisionSummary contract tests.
 
 Locks the canonical wire shape and the token-budget vs MCP
 population paths so a future commit can't silently drift the

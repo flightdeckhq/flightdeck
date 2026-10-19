@@ -1,4 +1,4 @@
-"""LangGraph sub-agent interceptor (D126).
+"""LangGraph sub-agent interceptor.
 
 Patches ``langgraph.graph.StateGraph.add_node`` so that every node
 the user registers gets wrapped with sub-agent observability:
@@ -24,7 +24,7 @@ surfaces were considered:
   async) is preserved because we hand back a callable of the same
   shape. This is the patch point.
 
-Agent-bearing predicate. D126 specifies "nodes whose body
+Agent-bearing predicate. The design specifies "nodes whose body
 invokes a patched LLM client OR whose name matches the regex
 supplied via ``init(langgraph_agent_node_pattern=…)``". Detecting
 "body invokes a patched LLM client" cleanly requires either
@@ -38,7 +38,7 @@ indirect calls). v1 takes the simpler path:
   positives on data-transform nodes that don't invoke an LLM.
   Operators with noisy graphs use the regex to narrow the set.
 
-The "wrap every node" default is louder than D126's text might
+The "wrap every node" default is louder than the design's text might
 suggest but it's the conservative shape: under-emission silently
 hides agent activity (a real bug); over-emission shows extra
 rows in the fleet view (cosmetic). The pattern override lets

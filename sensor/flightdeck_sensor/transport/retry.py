@@ -11,14 +11,14 @@ _T = TypeVar("_T")
 
 _log = logging.getLogger("flightdeck_sensor.transport.retry")
 
-# Phase 4.5 M-7: tighten retry budget so the event-drain thread (the
-# only background thread in the sensor, per Rule 32) is not blocked
-# for >0.25s on transient failures. Worst-case blocking is one sleep
-# of ``_DEFAULT_BACKOFF_BASE`` between two attempts. Pre-fix this was
-# 3 attempts with 0.5s base → up to 1.5s blocked, long enough to fill
-# the 1000-slot event queue under hot-path emission and start
-# dropping events. Tighter budget fails fast, drops fewer events
-# in steady-state failure conditions.
+# Tight retry budget so the event-drain thread (the only background
+# thread in the sensor, per Rule 32) is not blocked for >0.25s on
+# transient failures. Worst-case blocking is one sleep of
+# ``_DEFAULT_BACKOFF_BASE`` between two attempts. A looser budget
+# (3 attempts with 0.5s base → up to 1.5s blocked) is long enough to
+# fill the 1000-slot event queue under hot-path emission and start
+# dropping events. The tighter budget fails fast and drops fewer
+# events in steady-state failure conditions.
 _DEFAULT_MAX_ATTEMPTS = 2
 _DEFAULT_BACKOFF_BASE = 0.25
 

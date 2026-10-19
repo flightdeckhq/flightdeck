@@ -21,7 +21,7 @@ vi.mock("@/store/fleet", () => ({
     selector({ customDirectives: mockCustomDirectives }),
 }));
 
-// D115 pill-pair fixture covering the two client types: Claude Code
+// Pill-pair fixture covering the two client types: Claude Code
 // (hook-based coding agent) and Python sensor (coding agent invoked
 // from outside the Claude Code plugin). Both flavors carry
 // agent_type=coding so the CodingAgentBadge fires for each; the

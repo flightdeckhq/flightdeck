@@ -50,7 +50,7 @@ const MCP_EVENT_TYPES = [
 // Verb-based labels (CALL / READ / FETCHED / DISCOVERED) carry the
 // invoked-vs-discovered distinction — the singular/plural-s pairs we
 // considered (MCP TOOL / MCP TOOLS) collided on a single 's'.
-// D123 restored the "MCP " prefix on top of the verb labels because
+// The "MCP " prefix sits on top of the verb labels because
 // Fleet's live feed table renders badges WITHOUT the swimlane hexagon
 // shape, putting "TOOL CALL" right next to the non-MCP "TOOL" badge —
 // that's verb-tense disambiguation, not category disambiguation.
@@ -524,7 +524,7 @@ test.describe("T25 — MCP observability rendering", () => {
     }
   });
 
-  // T25-18 (D122) — MCP discovery events hidden by default in Fleet's
+  // T25-18 — MCP discovery events hidden by default in Fleet's
   // live feed. Three sub-cases:
   //   * default state: discovery events absent from the feed even
   //     though the canonical seed emits them.

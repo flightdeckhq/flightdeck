@@ -1,4 +1,4 @@
-"""CrewAI sub-agent interceptor (D126).
+"""CrewAI sub-agent interceptor.
 
 Patches ``crewai.Agent.execute_task`` and ``aexecute_task`` (the
 per-agent execution boundary) so each Crew member's turn lands as

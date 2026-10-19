@@ -25,7 +25,7 @@ class DirectivePayloadSchema(BaseModel):
 class PolicyResponseSchema(BaseModel):
     """Response from GET /v1/policy (preflight).
 
-    Phase 7 Step 2 (D148): capture ``id`` + ``scope`` + ``scope_value``
+    Captures ``id`` + ``scope`` + ``scope_value``
     so the sensor can populate ``policy_decision.policy_id`` /
     ``policy_decision.scope`` on policy_warn / policy_degrade /
     policy_block emissions. The API has always returned these on the

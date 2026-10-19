@@ -138,7 +138,7 @@ def test_non_session_start_event_populates_context_when_session_start_was_empty(
     runtime context but the stack was down, so the POST failed; the
     plugin's on-disk ``started-*.txt`` marker was written anyway so no
     retry ever happens. The user's first UserPromptSubmit lands later
-    once the stack is up -- pre-fix that event carried no context and
+    once the stack is up -- in the guarded regression that event carried no context and
     the session row stayed with NULL context forever.
 
     Fix path exercised here:
@@ -189,7 +189,7 @@ def test_non_session_start_event_populates_context_on_lazy_created_session() -> 
     This is the live-production repro: the plugin's session_start POST
     failed (e.g. connection refused at startup), the on-disk dedup
     marker blocks a retry, and the first event that actually reaches
-    the server is a pre_call or tool_call. D106 lazy-creates the row
+    the server is a pre_call or tool_call. The worker lazy-creates the row
     with context=NULL; UpgradeSessionContext then promotes the event's
     context onto that fresh row.
     """

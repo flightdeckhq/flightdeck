@@ -1,7 +1,7 @@
-// D139: tests for plugin/hooks/scripts/mcp_policy.mjs.
+// Tests for plugin/hooks/scripts/mcp_policy.mjs.
 //
 // Covers fetchPolicies (HTTP path with mocked fetch), evaluateServer
-// (D135 algorithm against synthesized policy docs), classifyServer
+// (resolution precedence against synthesized policy docs), classifyServer
 // (PreToolUse decision-mapping), and the per-session policy cache
 // I/O round-trip.
 
@@ -62,9 +62,9 @@ function flavorDoc({ scopeValue = "production", entries = [] } = {}) {
   };
 }
 
-// ----- evaluateServer (D135 algorithm) -----------------------------
+// ----- evaluateServer (resolution precedence) -----------------------
 
-describe("evaluateServer — D135 resolution", () => {
+describe("evaluateServer — policy resolution", () => {
   it("flavor allow entry returns allow / flavor_entry", () => {
     const policies = {
       global: globalDoc({ mode: "allowlist" }),
@@ -434,9 +434,9 @@ describe("per-session policy cache I/O", () => {
   });
 });
 
-// ----- D135 ordering invariants ----------------------------------
+// ----- Precedence ordering invariants ----------------------------
 
-describe("D135 ordering invariants", () => {
+describe("precedence ordering invariants", () => {
   it("flavor entry takes precedence over global mode default", () => {
     // Global allowlist mode would normally block any unlisted server.
     // The flavor's explicit allow entry wins step 1.
@@ -482,9 +482,9 @@ describe("D135 ordering invariants", () => {
   });
 });
 
-// ----- Phase 7 Step 2 (D148) — shared policy_decision block ------
+// ----- Shared policy_decision block ------------------------------
 
-describe("buildPolicyDecisionBlock (D148 plugin parity)", () => {
+describe("buildPolicyDecisionBlock (plugin parity)", () => {
   it("produces 4-key block on token-budget-style decision (no entry, no path)", () => {
     const block = buildPolicyDecisionBlock({
       policyId: "p",

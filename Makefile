@@ -11,9 +11,9 @@
 #
 # Required Python: 3.10 ≤ x < 3.14 (sensor/pyproject.toml requires-python).
 # Reasoning: crewai 1.x metadata declares <3.14, our floor matches the
-# project's classifier list. The single 3.12 venv discipline (D124) is
+# project's classifier list. The single 3.12 venv discipline is
 # what eliminates the "silent skip on wrong Python" failure mode that
-# bit us pre-D124 when ambient ``python`` was 3.14.
+# bites when ambient ``python`` is 3.14.
 # ---------------------------------------------------------------------------
 PYTHON ?= ./sensor/.venv/bin/python
 
@@ -96,20 +96,20 @@ playground-claude-code: ## Rule 40d playground: Claude Code plugin MCP-emission 
 playground-bifrost: ## Rule 40d playground: bifrost gateway (optional). Requires BIFROST_URL.
 	$(PYTHON) playground/15_bifrost.py
 
-# D126 § 11.9 sub-agent observability demos. The Claude Code plugin
+# Sub-agent observability demos. The Claude Code plugin
 # variant lives in playground/14_claude_code_plugin.py (already
 # covered by playground-claude-code above — its third demo block
 # exercises synthetic SubagentStart / SubagentStop). The CrewAI and
 # LangGraph variants run real multi-agent flows against live APIs
 # and emit child sessions per agent / node.
 
-playground-subagents-crewai: ## Rule 40d D126 playground: real CrewAI Crew (Researcher + Writer). Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
+playground-subagents-crewai: ## Rule 40d sub-agent playground: real CrewAI Crew (Researcher + Writer). Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
 	$(PYTHON) playground/16_subagents_crewai.py
 
-playground-subagents-langgraph: ## Rule 40d D126 playground: real LangGraph (two agent-bearing nodes). Requires ANTHROPIC_API_KEY.
+playground-subagents-langgraph: ## Rule 40d sub-agent playground: real LangGraph (two agent-bearing nodes). Requires ANTHROPIC_API_KEY.
 	$(PYTHON) playground/17_subagents_langgraph.py
 
-# MCP Protection Policy (D128 / D130 / D131) demos. Demos 18-21 do
+# MCP Protection Policy demos. Demos 18-21 do
 # not require LLM API keys — the policy decision fires at call_tool
 # time against the in-tree reference MCP server. Demos 22 / 23 do
 # require API keys (CrewAI / LangGraph drive real LLM-led MCP calls).
@@ -138,7 +138,7 @@ playground-mcp-policy-langchain: ## Rule 40d MCP policy: LangChain explicit (war
 playground-mcp-policy-llamaindex: ## Rule 40d MCP policy: LlamaIndex explicit (warn + block + allow) via llama-index-tools-mcp. Requires ANTHROPIC_API_KEY.
 	$(PYTHON) playground/25_mcp_policy_llamaindex.py
 
-playground-mcp-policy-template-apply: ## Rule 40d MCP policy: D138 apply_template across the three shipped templates. Mutates global mode for one scenario; restores at end. No API key required.
+playground-mcp-policy-template-apply: ## Rule 40d MCP policy: apply_template across the three shipped templates. Mutates global mode for one scenario; restores at end. No API key required.
 	$(PYTHON) playground/26_mcp_policy_template_apply.py
 
 playground-policies: ## Rule 40d playground: policy WARN / DEGRADE / BLOCK / forced-DEGRADE demos via real Anthropic.

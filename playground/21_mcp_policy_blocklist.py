@@ -7,7 +7,7 @@ then restore the global to its empty state so subsequent demos
 don't see the lingering deny.
 
 Demonstrates that the global-policy entry takes precedence over
-the mode default (D135 step 2). Even though blocklist mode would
+the mode default. Even though blocklist mode would
 normally allow unmatched URLs, an explicit global deny still
 blocks.
 """

@@ -85,8 +85,8 @@ describe("eventBadgeConfig — Phase 5 MCP entries (verb labels + MCP prefix)", 
   it("B-7: every Phase 5 badge label has no wrap hints and fits the layout cap", () => {
     // The badge container is ``min-w-[88px] px-2`` and accepts
     // two-line wrap on the longest labels (the longest is "MCP
-    // RESOURCES DISCOVERED" at 24 chars after the D123 prefix
-    // restore). We can't measure pixel width in jsdom, but we CAN
+    // RESOURCES DISCOVERED" at 24 chars including the "MCP "
+    // prefix). We can't measure pixel width in jsdom, but we CAN
     // pin the structural floor: no newlines, no leading/trailing
     // whitespace, and a 30-char ceiling so a future label that
     // grows past two reasonable wrap lines triggers this test as
@@ -107,10 +107,10 @@ describe("eventBadgeConfig — Phase 5 MCP entries (verb labels + MCP prefix)", 
     }
   });
 
-  it("regression guard: every MCP badge label carries the 'MCP ' prefix (D123)", () => {
-    // D123 restored the "MCP " prefix on every MCP badge label after
-    // B-4 had dropped it. Rationale lives in the lib/events.ts
-    // comment block + DECISIONS.md: the Fleet live feed table
+  it("regression guard: every MCP badge label carries the 'MCP ' prefix", () => {
+    // The "MCP " prefix is kept on every MCP badge label.
+    // Rationale lives in the lib/events.ts
+    // comment block: the Fleet live feed table
     // renders badges without the swimlane hexagon, so without the
     // prefix "TOOL CALL" sits next to "TOOL" with only verb-tense
     // disambiguation, not category disambiguation. This guard

@@ -1,4 +1,4 @@
-"""Phase 7 Step 4 (D152) — session lifecycle + MCP server attach
+"""Session lifecycle + MCP server attach
 operator-actionable enrichment contract tests."""
 
 from __future__ import annotations

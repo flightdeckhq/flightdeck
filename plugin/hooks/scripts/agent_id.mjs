@@ -3,7 +3,7 @@
 //
 // Both implementations MUST produce byte-identical UUIDs for identical
 // inputs. The fixture vector in plugin/tests/agent_id.test.mjs asserts
-// this against the Python canonical value. See DECISIONS.md D115.
+// this against the Python canonical value.
 //
 // Uses only Node built-ins plus the existing hand-rolled uuid5 helper
 // in ./uuid5.mjs so the plugin preserves its zero-npm-dependency
@@ -32,7 +32,7 @@ export const NAMESPACE_FLIGHTDECK =
 /**
  * Derive the deterministic agent_id for the given identity tuple.
  *
- * Grammar (D115 — five path segments, every one required, no
+ * Grammar (five path segments, every one required, no
  * optional components):
  *
  *     flightdeck://{agent_type}/{user}@{hostname}/{client_type}/{agent_name}
@@ -40,7 +40,7 @@ export const NAMESPACE_FLIGHTDECK =
  * Callers substitute "unknown" for any component they cannot
  * determine -- empty strings would collide distinct identities.
  *
- * D126 extension — when ``agent_role`` is supplied with a non-
+ * Sub-agent extension — when ``agent_role`` is supplied with a non-
  * empty value (after String.prototype.trim()) it joins as a 6th
  * path segment:
  *
@@ -48,7 +48,7 @@ export const NAMESPACE_FLIGHTDECK =
  *
  * Null / undefined / "" / whitespace-only role collapses to the
  * 5-tuple form, so root and direct-SDK agent_ids stay byte-for-
- * byte unchanged from the D115 fixture vector. Trim semantics
+ * byte unchanged from the root fixture vector. Trim semantics
  * mirror the Python sensor's :func:`derive_agent_id` so a
  * framework-supplied role with leading / trailing whitespace
  * lands under the same uuid on both sides of the wire.

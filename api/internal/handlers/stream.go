@@ -24,7 +24,7 @@ var upgrader = websocket.Upgrader{
 // header first, then query string -- and the connection is rejected
 // with 401 before upgrade if neither resolves to a valid token.
 // Passing validator=nil skips auth entirely and is only used by
-// NewForTesting. See DECISIONS.md D095.
+// NewForTesting.
 //
 // @Summary      Real-time fleet stream
 // @Description  WebSocket connection for real-time fleet state updates. Upgrades HTTP to WebSocket. Accepts bearer token via the Authorization header OR ``?token=`` query parameter (browsers cannot set headers on the WS upgrade).

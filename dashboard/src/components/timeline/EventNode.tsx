@@ -42,8 +42,8 @@ const eventTypeConfig: Record<
   // any size. ListChecks is the discovery shape; FileText reads as a
   // document for resource reads; Folder reads as the resource bucket;
   // MessageSquare for prompt fetches; List for prompt enumeration.
-  // Phase 5 MCP — Title-Case "MCP " prefix matches the badge labels
-  // in lib/events.ts (D123 restores the prefix). A hover tooltip on
+  // Title-Case "MCP " prefix matches the badge labels
+  // in lib/events.ts. A hover tooltip on
   // the swimlane circle now reads identically to the badge of the
   // corresponding drawer row, including the category prefix.
   mcp_tool_call: { cssVar: "var(--event-mcp-tool)", Icon: Wrench, label: "MCP Tool Call" },

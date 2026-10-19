@@ -10,8 +10,8 @@ This file is marked ``@pytest.mark.manual`` so it is excluded from
 
     pytest tests/integration/test_ui_demo.py -v -s --no-header
 
-Phase 4.5 audit Task 1 reclassified this from a CI test to a manual
-data-population tool. The original "DELETE THIS FILE AFTER USE"
+This is a manual data-population tool, not a CI test. The original
+"DELETE THIS FILE AFTER USE"
 comment was removed because the file is genuinely useful as a demo
 harness; gating it on the ``manual`` marker keeps it out of the CI
 budget without throwing away the work.
@@ -44,7 +44,7 @@ from .conftest import (
 
 # ---- Agent configuration ----
 
-# D115: each entry declares the full agent_type + client_type pair.
+# Each entry declares the full agent_type + client_type pair.
 # The pair is semantically bound:
 #   - research-agent / code-agent (production) -> flightdeck_sensor
 #     (that's what a deployed SDK-driven agent looks like on the wire)
@@ -355,7 +355,7 @@ def register_custom_directives() -> int:
     """POST each flavor's directive catalog to /v1/directives/register.
 
     The endpoint is authed with the same bearer token as the
-    ingestion API (D073 stopgap auth). Returns the total number of
+    ingestion API. Returns the total number of
     directives registered across all flavors so the caller can print
     a summary line.
     """
@@ -475,7 +475,7 @@ def test_ui_demo() -> None:
         # ---- PHASE 1.5: Orchestrator-driven re-attachments ----
         #
         # Simulates a Temporal / Airflow workflow that re-runs the same
-        # logical job under a stable session_id (D094). Each end/start
+        # logical job under a stable session_id. Each end/start
         # cycle appends one row to session_attachments; after N cycles
         # GET /v1/sessions/:id returns {..., attachments: [t1, ..., tN]}
         # and the drawer draws one "New execution attached" separator
@@ -768,7 +768,7 @@ def test_ui_demo() -> None:
 
     assert total_events > 50, f"Expected > 50 events, got {total_events}"
 
-    # Verify D094 attachment history landed in the detail endpoint.
+    # Verify the attachment history landed in the detail endpoint.
     # The drawer uses this array to draw run separators, so any break
     # in the pipeline (ingestion attach store, worker session revive,
     # api Querier.GetSessionAttachments) surfaces here. Non-fatal:

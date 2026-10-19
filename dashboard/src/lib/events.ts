@@ -88,8 +88,7 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
   // (B-4). Verbs (CALL / READ / FETCHED / DISCOVERED) carry the
   // operation distinction.
   //
-  // The "MCP " prefix is RESTORED on every label (D123, supersedes
-  // B-4's no-prefix decision in 89333a8). Rationale: the Fleet live
+  // The "MCP " prefix is kept on every label. Rationale: the Fleet live
   // feed table renders badges in a tabular row WITHOUT hexagons
   // (hexagon clip-paths are swimlane-only), right next to the
   // non-MCP TOOL badge. In that context "TOOL CALL" vs "TOOL" is
@@ -132,8 +131,8 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
     label: "MCP PROMPTS DISCOVERED",
     filled: false,
   },
-  // MCP Protection Policy events (D131). The chroma map is locked in
-  // step 6 of the Protection Policy plan and ARCHITECTURE.md →
+  // MCP Protection Policy events. The chroma map is locked in
+  // ARCHITECTURE.md →
   // "Adjacent surfaces": amber/red carry the enforcement axis (warn
   // and block — same chromas as policy_warn / policy_block) and
   // purple-info carries the FYI axis (name drift and the plugin's
@@ -160,8 +159,8 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
   // chroma family as name-changed and user-remembered (info-purple
   // via --event-result) — they're informational, not enforcement,
   // and operators reading the timeline want them to read as the
-  // same axis at a glance. Pre-fix the type fell through to the
-  // grey defaultBadge.
+  // same axis at a glance. Without an entry the type falls through
+  // to the grey defaultBadge.
   mcp_server_attached: {
     cssVar: "var(--event-result)",
     label: "MCP SERVER ATTACHED",
@@ -172,7 +171,7 @@ export const defaultBadge: BadgeConfig = { cssVar: "var(--event-lifecycle)", lab
 
 /**
  * Badge for a session_start event whose timestamp lines up with an
- * entry in the session's attachments array (D094). Amber, distinct
+ * entry in the session's attachments array. Amber, distinct
  * from the default lifecycle blue, not alarming. Used by the drawer
  * EventFeed and surfaced as the swimlane circle colour via EventNode's
  * isAttachment prop.
@@ -333,7 +332,7 @@ export function getEventDetail(event: AgentEvent): string {
     case "session_start":
       return "run started";
     case "session_end": {
-      // Phase 7 Step 4 (D152): close_reason chip — operator sees
+      // close_reason chip — operator sees
       // why the session ended without opening the drawer.
       const reason = event.payload?.close_reason;
       if (reason && reason !== "normal_exit") {
@@ -342,8 +341,8 @@ export function getEventDetail(event: AgentEvent): string {
       return "run ended";
     }
     case "mcp_server_name_changed": {
-      // Phase 7 Step 4 (D152) — pre-Step-4 events.ts had no case
-      // for this type so rows rendered as untyped fallback. The
+      // Without a case for this type rows would render as the
+      // untyped fallback. The
       // drift-detection workflow needs to see the rename + the
       // orphaned-entries count inline so the operator can act on
       // it without opening the drawer.
@@ -501,7 +500,7 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
     case "session_end":
       return [["Event", "run ended"]];
     case "mcp_server_name_changed": {
-      // Phase 7 Step 4 (D152) — drawer view for the name-drift
+      // Drawer view for the name-drift
       // event. Worker enriches policy_entries_orphaned when any
       // mcp_policy_entries row matched the OLD fingerprint;
       // operator-actionable signal that policy entries silently
@@ -652,7 +651,7 @@ export const EVENT_TYPE_GROUPS: Record<string, string[]> = {
   "Embeddings": ["embeddings"],
   "Errors": ["llm_error"],
   "Policy": ["policy_warn", "policy_block", "policy_degrade"],
-  // D131 MCP Protection Policy event types live in their own facet
+  // MCP Protection Policy event types live in their own facet
   // group so token-budget policy filtering and MCP-server access
   // policy filtering stay distinct in the operator's mental model.
   // Step 6.6 A1 split — they previously co-habited the "Policy"
@@ -709,11 +708,11 @@ export function isEventVisible(eventType: string, activeFilter: string | null | 
  * to fire in bursts at session start and again whenever the agent
  * needs to refresh its capability picture, which is operationally
  * useful for audit but visually noisy in the Fleet live feed when
- * an MCP-heavy session is active. D122 hides them by default in the
+ * an MCP-heavy session is active. They are hidden by default in the
  * Fleet surfaces with a toggle to restore.
  *
- * The list is closed — the six MCP event types are pinned by D119
- * (lean wire payload) and only the three ``_list`` / ``_get?`` no,
+ * The list is closed — the six MCP event types are pinned by the
+ * lean wire payload contract and only the three ``_list`` / ``_get?`` no,
  * the three ``_list``-style event types qualify as discovery. The
  * three ``_call`` / ``_read`` / ``_get`` event types represent
  * actual MCP usage and are never discovery.

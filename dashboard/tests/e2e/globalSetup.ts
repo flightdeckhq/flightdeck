@@ -68,9 +68,9 @@ export default async function globalSetup(): Promise<void> {
   // refresh they age past stale within ~2-3 min of CI runtime, after
   // which tests filtering ``?state=active`` return 0 results.
   //
-  // D126 added 13 new E2E specs (T28-T40) that pushed total CI suite
+  // The sub-agent E2E specs (T28-T40) pushed total CI suite
   // runtime past 5 minutes — well beyond the seed-once-then-test
-  // assumption. Pre-D126 the suite finished inside the 2-min window
+  // assumption. Before them the suite finished inside the 2-min window
   // and got away with no keep-alive. T14, T15, T25-18 fail in
   // neon-dark (the second-half of the test queue) for exactly this
   // reason; the same tests pass in clean-light because clean-light

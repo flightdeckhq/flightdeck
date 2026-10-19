@@ -1,9 +1,9 @@
 """Prompt capture -- OFF (default) vs ON.
 
-`capture_prompts=False` (D019 default) writes metadata only;
+`capture_prompts=False` (the default) writes metadata only;
 `/v1/events/{id}/content` returns 404. Opt in and the endpoint returns
 provider / system / messages / response blocks. Two sequential sessions
-in one process with teardown between (singleton is D091; *overlapping*
+in one process with teardown between (init() is a process-wide singleton; *overlapping*
 init()s are the thing to avoid).
 """
 from __future__ import annotations

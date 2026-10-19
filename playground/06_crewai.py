@@ -11,8 +11,8 @@ The MCP section uses ``mcpadapt`` directly. ``mcpadapt`` is the
 production path for CrewAI tools and is what ``crewai-tools[mcp]``
 installs under the hood; importing ``mcpadapt`` directly here gives
 us a version canary that fires when a future ``crewai-tools`` upgrade
-silently bumps to an incompatible mcpadapt release. D5 / D120 pin
-mcpadapt in the sensor's optional ``[dev]`` extras for the same reason.
+silently bumps to an incompatible mcpadapt release. The sensor pins
+mcpadapt in its optional extras for the same reason.
 """
 from __future__ import annotations
 

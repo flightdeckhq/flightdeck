@@ -2,7 +2,7 @@
  * T84 — the /events table EventRow carries the session-identity
  * enrichment.
  *
- * D157 Fix 5 contract: GET /v1/events joins `sessions` to project
+ * Contract: GET /v1/events joins `sessions` to project
  * framework / client_type / agent_type onto every event row. The
  * EventRow renders them inline within the existing seven columns —
  * the AGENT cell gains the client_type pill + agent_type badge, the

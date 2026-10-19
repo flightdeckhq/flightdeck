@@ -1,7 +1,7 @@
 /**
  * T112 — Cost + Sessions sparkline coverage on /agents.
  *
- * Pre-fix the only KPI columns with a sparkline were Tokens,
+ * Guarded regression: the only KPI columns with a sparkline were Tokens,
  * Latency p95, and Errors; the Cost and Sessions cells were
  * bare numbers. The fix wires `AgentSparkline` into both cells
  * (with the cost sparkline gated off for ClaudeCode agents

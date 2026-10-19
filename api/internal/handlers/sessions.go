@@ -14,8 +14,8 @@ import (
 // sessionEventsMaxLimit caps the events_limit query param on
 // GET /v1/sessions/{id}. The drawer's page-size pill tops out at 100;
 // 1000 leaves meaningful headroom for automation or future UI without
-// exposing the unbounded-fetch footgun that motivated D113's pagination
-// work in the first place.
+// exposing the unbounded-fetch footgun that motivated drawer pagination
+// in the first place.
 const sessionEventsMaxLimit = 1000
 
 // SessionResponse is the response body for GET /v1/sessions/{id}.
@@ -25,7 +25,7 @@ const sessionEventsMaxLimit = 1000
 // an existing row). It excludes the initial session_start that
 // created the row. Empty when the session has only ever run once;
 // carries one entry per re-execution for orchestrator-driven agents
-// that reuse a stable session_id. See DECISIONS.md D094.
+// that reuse a stable session_id.
 type SessionResponse struct {
 	Session     *store.Session `json:"session"`
 	Events      []store.Event  `json:"events"`

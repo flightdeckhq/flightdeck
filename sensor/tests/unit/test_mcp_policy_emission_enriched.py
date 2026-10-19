@@ -1,4 +1,4 @@
-"""Phase 7 Step 2 (D148/D149) — MCP-policy event enrichment tests.
+"""MCP-policy event enrichment tests.
 
 Confirms policy_mcp_warn / policy_mcp_block carry the shared
 policy_decision block (with matched_entry_id + matched_entry_label

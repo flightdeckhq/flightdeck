@@ -46,7 +46,7 @@ import type { AgentEvent, Session as SessionType } from "@/lib/types";
 
 export type DrawerTab = "timeline" | "prompts" | "sub-agents" | "directives";
 
-// D113 drawer pagination. Flat pill selector (mirrors Fleet's time-range
+// Drawer pagination. Flat pill selector (mirrors Fleet's time-range
 // pills at Fleet.tsx:492-515) in place of a dropdown so the control
 // reads as inline chrome rather than a form field. Default 100 matches
 // the Supervisor-approved initial cap; 50 gives operators a lighter
@@ -247,7 +247,7 @@ interface SessionDrawerProps {
    */
   initialTab?: DrawerTab;
   /**
-   * D126: switch the drawer to a different session_id without
+   * Switch the drawer to a different session_id without
    * closing it. Wired by the SubAgentsTab parent / child links so
    * "open the parent" / "open the child" rebinds the drawer in
    * place. When omitted (legacy callers) the sub-agent navigation
@@ -290,7 +290,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   // updates cannot clobber each other's bumps.
   const [paginationVersion, setPaginationVersion] = useState(0);
 
-  // D140 step 6.6 A2 — re-fetch on mcp_server_attached events for
+  // Re-fetch on mcp_server_attached events for
   // the open session so the MCP SERVERS panel populates live.
   // Subscribes to the fleet store's lastEvent (broadcast by every
   // WebSocket-delivered event); bumps revalidationKey when the
@@ -353,7 +353,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
     );
   }, [customDirectives, data?.session.flavor]);
 
-  // D126 — gate the Sub-agents tab. The tab surfaces when EITHER
+  // Gate the Sub-agents tab. The tab surfaces when EITHER
   // this session is a sub-agent (has parent_session_id) OR it has
   // spawned at least one child. The cheap-check here only knows
   // about the parent linkage; the children-spawned case needs a
@@ -395,7 +395,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   // Parent agent display name for the headline "↳ <parentName>" pill.
   // Only fired when the current session is a child (parent_session_id
   // is set). Falls back to the parent's flavor when agent_name is null
-  // (legacy / pre-D115 sessions). Failure is silent — the pill simply
+  // (legacy sessions without identity). Failure is silent — the pill simply
   // collapses to "(unknown parent)" rather than blocking the drawer.
   const [parentAgentLabel, setParentAgentLabel] = useState<string | null>(null);
   useEffect(() => {
@@ -749,7 +749,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
 
           {/* Mode 1: Session view. Body renders whenever ``data`` is
               present — independent of how many events the session
-              has. D126 sub-agent task children commonly close without
+              has. Sub-agent task children commonly close without
               ever making an LLM call (the Task tool returned a
               cached / non-LLM result), so ``displayEvents`` is
               legitimately empty. The original guard
@@ -891,7 +891,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                   session's flavor has at least one registered
                   custom directive. "Sub-agents" tab only renders when
                   the session is a sub-agent (has parent_session_id)
-                  or has spawned children — D126's "no placeholder
+                  or has spawned children — the "no placeholder
                   UI" floor (Rule 17): the tab is gated on its
                   content, not always-on. Hidden entirely otherwise
                   so users aren't confronted with a dead tab. */}
@@ -1168,9 +1168,9 @@ interface MCPServerEntry {
   version?: string | null;
   capabilities?: Record<string, unknown>;
   instructions?: string | null;
-  /** D127 — server URL captured at initialize time. Empty string
+  /** Server URL captured at initialize time. Empty string
    *  when the transport didn't expose a URL marker. Required for
-   *  the MCP Protection Policy resolve pill (D131). */
+   *  the MCP Protection Policy resolve pill. */
   server_url?: string;
 }
 
@@ -1200,7 +1200,7 @@ function MCPServersPanel({ context, flavor, expanded, onToggle }: MCPServersPane
     return raw.filter((s): s is MCPServerEntry => typeof s === "object" && s !== null);
   }, [context]);
 
-  // Per-server policy decision (D131). Lazy-loaded on first
+  // Per-server policy decision. Lazy-loaded on first
   // expand so a session that never opens the panel doesn't fire
   // resolve calls. Stored keyed by ``${name}|${url}`` so two
   // servers with the same display name but different URLs each
@@ -1756,7 +1756,7 @@ interface EventFeedProps {
   onToggleExpand: (id: string) => void;
   onViewPrompts: (eventId: string) => void;
   onOpenDetail?: (event: AgentEvent) => void;
-  // D113 pagination controls. The pill selector renders above the
+  // Pagination controls. The pill selector renders above the
   // event map regardless of whether any events are loaded yet, so the
   // user can tune the cap from an empty state; the "Show older"
   // button renders below the list and only when more history may
@@ -1791,7 +1791,7 @@ function EventFeed({
       ) : (
         // Per-row rendering lives in ./EventRow so the SubAgentsTab
         // inline mini-timeline can share the exact same component
-        // (D126 UX revision 2026-05-04: Timeline-fidelity event
+        // (Timeline-fidelity event
         // rendering inside the Sub-agents tab — colour-pill badges,
         // streaming pills, MCP error indicators, provider logos,
         // expand-into-ExpandedEvent on click — all match this tab
@@ -1829,11 +1829,10 @@ function EventFeed({
 }
 
 // ``MCPErrorIndicator`` and ``StreamingPill`` moved to ./EventRow
-// alongside the per-event row component (D126 UX revision
-// 2026-05-04 — Sub-agents tab inline mini-timeline shares
-// rendering with the Timeline tab).
+// alongside the per-event row component (the Sub-agents tab
+// inline mini-timeline shares rendering with the Timeline tab).
 
-/* ---- Events-limit pill selector (D113) ---- */
+/* ---- Events-limit pill selector ---- */
 
 /**
  * Flat two-button pill selector shown at the top of the Timeline tab
@@ -1900,9 +1899,8 @@ function EventsLimitPills({
 }
 
 // ``ExpandedEvent`` moved to ./EventRow alongside the per-event
-// row component it pairs with (D126 UX revision 2026-05-04 —
-// Sub-agents tab inline mini-timeline shares the exact same
-// expanded-row rendering).
+// row component it pairs with (the Sub-agents tab inline
+// mini-timeline shares the exact same expanded-row rendering).
 
 /* ---- Event detail view (Mode 2) ---- */
 

@@ -6,8 +6,8 @@ demos 22 (CrewAI via mcpadapt) and 23/24 (LangGraph + LangChain via
 langchain-mcp-adapters) exercise. Drift surface is independent: a
 LlamaIndex-internal change to how ``BasicMCPClient`` /
 ``McpToolSpec`` invokes the underlying MCP ``ClientSession`` could
-silently bypass the sensor's ``ClientSession.call_tool`` patch
-(D117). This demo exercises the explicit FunctionAgent path so a
+silently bypass the sensor's ``ClientSession.call_tool`` patch.
+This demo exercises the explicit FunctionAgent path so a
 future SDK shift is caught by the playground gate.
 
 Three sub-scenarios run back-to-back per Step 6.5 PR Part A spec:

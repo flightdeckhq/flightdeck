@@ -36,7 +36,7 @@ func New(pool *pgxpool.Pool) *Writer {
 
 // AgentIdentity bundles the columns that identify an agent in the
 // v0.4.0+ schema. agent_id is derived deterministically by the sensor
-// and plugin from the other five fields (see D115); the derivation is
+// and plugin from the other five fields; the derivation is
 // verified at the ingestion boundary, so the worker trusts the tuple
 // it receives here.
 type AgentIdentity struct {
@@ -100,20 +100,20 @@ func (w *Writer) IncrementAgentTokens(ctx context.Context, agentID string, delta
 // Pass nil for events that don't carry context (only session_start
 // does). When non-nil, it is stored in sessions.context (JSONB).
 //
-// ON CONFLICT enrichment semantics (D094 write-once + D106 sentinel
+// ON CONFLICT enrichment semantics (write-once identity + sentinel
 // upgrade):
 //
 //   - identity columns (host, framework, model) -- COALESCE, keep the
 //     existing value when the incoming side is NULL.
 //   - context, token_id, token_name -- COALESCE. Originally these were
-//     write-once-on-insert with D094 explicitly forbidding overwrites.
-//     D106 loosened this to COALESCE so that a lazily-created row
+//     write-once-on-insert with overwrites explicitly forbidden.
+//     Lazy session creation loosened this to COALESCE so that a lazily-created row
 //     (ReviveOrCreateSession) with NULL context/token columns gets
 //     enriched by a later session_start arrival. Real values remain
 //     write-once: once sessions.context is non-null, COALESCE returns
 //     the stored value and the incoming EXCLUDED is ignored.
 //   - flavor, agent_type -- CASE upgrade from the sentinel "unknown".
-//     "unknown" is the value D106 writes when a non-session_start
+//     "unknown" is the value the lazy-create path writes when a non-session_start
 //     event lacks flavor/agent_type data. A legitimate session_start
 //     never writes "unknown", so the CASE is a no-op for every row
 //     that was created via an authoritative path. "Unknown is a
@@ -134,7 +134,7 @@ func (w *Writer) UpsertSession(
 	// ReviveOrCreateSession writes NULL context -- the sentinel
 	// "nobody has tried yet, please enrich me" state that the
 	// COALESCE branch below converts back into real data on the
-	// session_start arrival. See D106 for the {} vs NULL split.
+	// session_start arrival.
 	if contextJSON == nil {
 		contextJSON = []byte("{}")
 	}
@@ -163,14 +163,14 @@ func (w *Writer) UpsertSession(
 		    host = COALESCE(EXCLUDED.host, sessions.host),
 		    framework = COALESCE(EXCLUDED.framework, sessions.framework),
 		    model = COALESCE(EXCLUDED.model, sessions.model),
-		    -- D106: COALESCE the write-once columns so a lazily-created
+		    -- COALESCE the write-once columns so a lazily-created
 		    -- row with NULL context / token columns picks up the real
 		    -- values when session_start later arrives. Real values are
 		    -- preserved (COALESCE returns the stored side first).
 		    context = COALESCE(sessions.context, EXCLUDED.context),
 		    token_id = COALESCE(sessions.token_id, EXCLUDED.token_id),
 		    token_name = COALESCE(sessions.token_name, EXCLUDED.token_name),
-		    -- D106 sentinel upgrade: "unknown" on flavor / agent_type
+		    -- Sentinel upgrade: "unknown" on flavor / agent_type
 		    -- means "we lazy-created without authoritative data".
 		    -- Replace it when a real session_start brings the truth.
 		    flavor = CASE WHEN sessions.flavor = 'unknown'
@@ -179,14 +179,14 @@ func (w *Writer) UpsertSession(
 		    agent_type = CASE WHEN sessions.agent_type = 'unknown'
 		                      THEN EXCLUDED.agent_type
 		                      ELSE sessions.agent_type END,
-		    -- D115: identity is write-once once non-null. A lazy-create
+		    -- Identity is write-once once non-null. A lazy-create
 		    -- writes NULL for agent_id / client_type / agent_name; the
 		    -- first authoritative session_start fills them in. Real
 		    -- values (non-null) are preserved by COALESCE.
 		    agent_id = COALESCE(sessions.agent_id, EXCLUDED.agent_id),
 		    client_type = COALESCE(sessions.client_type, EXCLUDED.client_type),
 		    agent_name = COALESCE(sessions.agent_name, EXCLUDED.agent_name),
-		    -- D126: sub-agent columns. Write-once on insert; preserved
+		    -- Sub-agent columns. Write-once on insert; preserved
 		    -- on conflict so a child's session_start can't accidentally
 		    -- rewrite the parent row's null parent_session_id /
 		    -- agent_role. The lazy-create-parent-stub branch
@@ -235,7 +235,7 @@ func (w *Writer) SessionCaptureEnabled(ctx context.Context, sessionID string) bo
 }
 
 // UpgradeSessionContext fills in the sessions.context column on a row
-// whose context is either NULL (D106 lazy-create) or the empty JSON
+// whose context is either NULL (lazy-create) or the empty JSON
 // object “{}“. Once the column holds real data, the COALESCE branch
 // short-circuits to the stored value and the incoming payload is
 // ignored -- write-once semantics for real context are preserved across
@@ -245,7 +245,7 @@ func (w *Writer) SessionCaptureEnabled(ctx context.Context, sessionID string) bo
 // fails (stack was down at claude start, transient DNS outage, ...)
 // leaves the per-session dedup marker on disk, so session_start is
 // never retried. Every subsequent event then flows through
-// handleSessionGuard's D106 lazy-create which writes flavor="unknown"
+// handleSessionGuard's lazy-create which writes flavor="unknown"
 // and context=NULL. Without this helper the RUNTIME panel stays empty
 // forever. Attaching context to every event and running this upgrade
 // lets the first event that actually reaches the server populate the
@@ -279,7 +279,7 @@ func (w *Writer) UpgradeSessionContext(ctx context.Context, sessionID string, co
 }
 
 // AppendMCPServerToContext UPSERTs a single MCP server fingerprint
-// dict into “sessions.context.mcp_servers“ (D140 step 6.6 A2).
+// dict into “sessions.context.mcp_servers“.
 // Idempotent dedup by (name, server_url) tuple — re-emitted
 // “mcp_server_attached“ events from a framework reconnecting to
 // the same server become no-ops at the row level. Drives live
@@ -290,7 +290,7 @@ func (w *Writer) UpgradeSessionContext(ctx context.Context, sessionID string, co
 // The dedup key intentionally uses the (name, server_url) tuple
 // rather than the wire fingerprint hex so the stored dict shape
 // stays exactly as “sessions.context.mcp_servers“ was on
-// session_start (no schema bump). Per D127 the (canonical_url,
+// session_start (no schema bump). The (canonical_url,
 // name) pair uniquely determines the fingerprint hex, so tuple
 // dedup is information-equivalent to fingerprint dedup.
 //
@@ -374,7 +374,7 @@ func (w *Writer) InsertEvent(
 	if tokensCacheCreation != nil {
 		cacheCreation = *tokensCacheCreation
 	}
-	// Phase 7 Step 2 (D149): sensor mints the event UUID and ships
+	// The sensor mints the event UUID and ships
 	// it in payload.id (string form). NULLIF + COALESCE: empty
 	// string → NULL → DB-side gen_random_uuid() default kicks in
 	// (legacy callers without sensor-supplied id keep working). ON
@@ -412,7 +412,7 @@ func (w *Writer) InsertEvent(
 // viewer (PromptViewer for chat, EmbeddingsContentViewer for
 // embeddings). See migration 000016_event_content_input.up.sql.
 //
-// D150 (Phase 7 Step 3.b): adds “ToolInput“ + “ToolOutput“
+// Adds “ToolInput“ + “ToolOutput“
 // keys for the tool-capture migration. mcp_tool_call /
 // mcp_prompt_get / LLM-side tool_call route arguments + results
 // through these dedicated columns instead of the LLM-prompt-style
@@ -498,7 +498,7 @@ func (w *Writer) UpdateLastSeen(ctx context.Context, sessionID string) error {
 }
 
 // ReviveIfRevivable flips a stale or lost session back to active and
-// advances last_seen_at. D105 generalises D094's session_start
+// advances last_seen_at. This generalises session_start's
 // attach-on-terminal semantics to every event type: every
 // non-session_start handler runs this before its normal side effects,
 // so sessions that go stale/lost during interactive idle windows
@@ -509,17 +509,17 @@ func (w *Writer) UpdateLastSeen(ctx context.Context, sessionID string) error {
 // contract (columns touched, state predicate) must be applied to
 // all four:
 //
-//  1. Ingestion: “session.Store.Attach“ (D094) runs synchronously on
+//  1. Ingestion: “session.Store.Attach“ runs synchronously on
 //     “session_start“ so the HTTP response can report “attached=true“.
 //     Scope: closed, lost -> active; records a session_attachments row.
-//  2. Worker, “UpsertSession“ ON CONFLICT branch (D094 worker side,
-//     extended by D106). Scope: any prior state -> whatever the
+//  2. Worker, “UpsertSession“ ON CONFLICT branch. Scope: any prior
+//     state -> whatever the
 //     session_start event asks for (always “active“), with identity-
-//     column refresh and D106 enrichment of the “unknown“ sentinel
+//     column refresh and enrichment of the “unknown“ sentinel
 //     and NULL context/token columns that a lazy-create left behind.
-//  3. Worker, “ReviveIfRevivable“ (this function, D105). Scope:
+//  3. Worker, “ReviveIfRevivable“ (this function). Scope:
 //     stale, lost -> active. No identity refresh, no attachment row.
-//  4. Worker, “ReviveOrCreateSession“ (D106). Scope: delegates to
+//  4. Worker, “ReviveOrCreateSession“. Scope: delegates to
 //     ReviveIfRevivable when the row exists, INSERTs a new row with
 //     best-effort identity + “unknown“ sentinels when it does not.
 //     Called by every non-session_start handler so an event for an
@@ -625,7 +625,7 @@ func (w *Writer) BumpParentLastSeen(
 	}
 }
 
-// ReviveOrCreateSession is the D106 lazy-create path. Called by every
+// ReviveOrCreateSession is the lazy-create path. Called by every
 // non-session_start handler before its normal side effects.
 //
 // Semantics:
@@ -670,7 +670,7 @@ func (w *Writer) ReviveOrCreateSession(
 		sessionID,
 	).Scan(&state)
 	if sErr == nil {
-		// Row exists. Delegate to the D105 revive path -- it's a
+		// Row exists. Delegate to the revive path -- it's a
 		// no-op for active/idle/closed and flips stale/lost.
 		if _, rerr := w.ReviveIfRevivable(ctx, sessionID); rerr != nil {
 			return false, fmt.Errorf("revive-or-create %s: %w", sessionID, rerr)
@@ -692,7 +692,7 @@ func (w *Writer) ReviveOrCreateSession(
 		agentType = "unknown"
 	}
 
-	// D115: upsert the agents row first so the sessions FK lands
+	// Upsert the agents row first so the sessions FK lands
 	// cleanly. Even a lazy-create path knows the authoritative agent
 	// identity because the ingestion handler validated it on the
 	// way in.
@@ -783,7 +783,7 @@ func (w *Writer) BackfillSubAgentLinkage(
 
 // SessionExists reports whether a session row with the given session_id
 // is present in the sessions table. Used by HandleSessionStart's
-// parent-stub branch (D126 § 3) to decide whether the parent of an
+// parent-stub branch to decide whether the parent of an
 // incoming sub-agent session_start is already in the DB or needs a
 // stub INSERT before the child's UpsertSession runs.
 //
@@ -804,8 +804,8 @@ func (w *Writer) SessionExists(ctx context.Context, sessionID string) (bool, err
 	return true, nil
 }
 
-// UpsertParentStub is the D126 § 3 forward-reference soft-link
-// extension to D106's lazy-create primitive. Triggered when a
+// UpsertParentStub is the forward-reference soft-link extension
+// to the lazy-create primitive. Triggered when a
 // sub-agent “session_start“ arrives with a “parent_session_id“
 // that doesn't yet exist in “sessions“ — without a row at the
 // parent end, the child's INSERT fails the new
@@ -821,7 +821,7 @@ func (w *Writer) SessionExists(ctx context.Context, sessionID string) (bool, err
 // fills in the stub's flavor / agent_type / agent_id /
 // client_type / agent_name from the EXCLUDED row. Identity fields
 // in the stub are NULL on insert; COALESCE in UpsertSession's
-// conflict branch upgrades them once. Same primitive as D106's
+// conflict branch upgrades them once. Same primitive as the
 // create-on-unknown, different trigger (FK-satisfaction vs
 // unknown-session-id event); kept as a separate helper so
 // callers don't need to express the parent-stub-specific shape

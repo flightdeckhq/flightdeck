@@ -12,12 +12,12 @@ export interface MCPPolicyEntryTableProps {
   mode: "allowlist" | "blocklist" | null;
   scopeKey: string;
   /** "global" or the flavor name — passed through to the quick-start
-   *  templates element rendered inside the empty state (D146). */
+   *  templates element rendered inside the empty state. */
   flavor: string;
   /** Discriminates the global policy from a flavor policy. The
    *  quick-start templates element is hidden on the global scope
    *  because POST /v1/mcp-policies/global/apply_template returns
-   *  400 by design (D138 + D134 — templates apply to flavor
+   *  400 by design (templates apply to flavor
    *  policies only). Without this gate the empty state on the
    *  Global tab rendered an Apply button that the API rejected. */
   scope: "global" | "flavor";
@@ -27,13 +27,13 @@ export interface MCPPolicyEntryTableProps {
   onDelete: (entry: MCPPolicyEntry) => Promise<void>;
   /** Caller's reload callback. Threaded through to the quick-start
    *  templates apply flow so the empty state refreshes with the
-   *  freshly applied entries (D146). */
+   *  freshly applied entries. */
   onApplied: () => Promise<void>;
 }
 
 /**
  * Renders the entries on a policy as a searchable, sortable
- * table (D128 + ARCHITECTURE.md → "Entry table"). Each row
+ * table (ARCHITECTURE.md → "Entry table"). Each row
  * shows a chroma-coded status pill — green for allow, red /
  * amber / purple for deny depending on the per-entry
  * enforcement override — plus inline edit / delete actions.

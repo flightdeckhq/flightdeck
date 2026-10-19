@@ -177,8 +177,8 @@ def _assert_session_in_fleet_with_context(flavor: str) -> dict[str, Any]:
     )
 
     # Reach for the public sessions API: verify the session is visible
-    # through GET /v1/sessions (not just sitting in the DB). D115
-    # retired the flavor-grouped fleet response, so the equivalent
+    # through GET /v1/sessions (not just sitting in the DB). The fleet
+    # response is agent-level, not flavor-grouped, so the equivalent
     # check is "does a /v1/sessions row for this session_id exist?".
     from .conftest import get_fleet
     fleet = get_fleet()

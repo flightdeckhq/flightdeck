@@ -41,7 +41,7 @@ def _setup_searchable(agent_name: str, host: str, tool_name: str) -> str:
     label. The flavor field carries the same string so flavor-scoped
     session queries (e.g. ``test_directives::test_directive_filter_by_flavor``)
     still see a recognizable value -- only agent-level search keys on
-    ``agent_name`` under D115.
+    ``agent_name``.
     """
     sid = str(uuid.uuid4())
     post_event(make_event(
@@ -75,7 +75,7 @@ def searchable_fixture() -> dict[str, str]:
     agent_name / host / tool name are all unique strings, then let
     every search-by-X test run against the same session.
 
-    D115: the agent-level search dimension is ``agent_name`` (the
+    The agent-level search dimension is ``agent_name`` (the
     flavor column was dropped from the agents table in migration
     000015). Integration tests drive a unique ``agent_name`` via the
     conftest ``agent_name=`` kwarg so the search query has a

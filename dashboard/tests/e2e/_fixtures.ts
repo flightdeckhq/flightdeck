@@ -229,7 +229,7 @@ export async function bringSwimlaneRowIntoView(
   // sampling window (rootMargin=200 around the visible band)
   // overlapping between adjacent steps, so a row that materializes
   // briefly between scrolls is always re-checked before it
-  // virtualizes again. Pre-fix stepPx=600 routinely overshot the
+  // virtualizes again. A larger stepPx=600 routinely overshot the
   // 5-7 row materialization band (rootMargin 200 + clientHeight 320
   // ≈ 720px of materialized DOM at any one time) and the helper
   // could miss a row that briefly mounted between samples.
@@ -259,7 +259,7 @@ export async function bringSwimlaneRowIntoView(
   // Wrap the scroll in try/catch — under parallel-suite load the row
   // can detach mid-call as the virtualized swimlane re-renders on
   // incoming WebSocket events from other concurrent tests, throwing
-  // a 2000ms timeout that pre-fix bubbled all the way up and failed
+  // a 2000ms timeout that would otherwise bubble all the way up and fail
   // the test outright. Falling through to the snap-to-top + scroll
   // loop below recovers cleanly because those steps re-evaluate
   // ``target.count()`` after each scroll.
@@ -271,7 +271,7 @@ export async function bringSwimlaneRowIntoView(
       /* fall through to the scroll loop below */
     }
   }
-  // D126 step 8: agents may live ABOVE the initial viewport (top
+  // Agents may live ABOVE the initial viewport (top
   // of the activity bucket — fresh sub-agents that closed seconds
   // ago land high in the swimlane sort but the initial scroll
   // position is mid-list on a populated fleet). Try a snap to the
@@ -293,7 +293,7 @@ export async function bringSwimlaneRowIntoView(
     }
   });
   // Poll for the target to materialise after the snap-to-top.
-  // Replaces a pre-fix ``waitForTimeout(150)`` fixed sleep that
+  // Replaces a ``waitForTimeout(150)`` fixed sleep that
   // violated qa.md ("no waitForTimeout for synchronization") and
   // was the mechanical root cause of T34's parallel-worker flake
   // — under workers=4 contention the 150 ms pause was not long
@@ -343,7 +343,7 @@ export async function bringSwimlaneRowIntoView(
     // Poll the target's mount state instead of sleeping. The
     // IntersectionObserver fires synchronously on layout and
     // React commits within a few ms; under parallel-worker load
-    // the fixed-sleep pre-fix (waitForTimeout(150)) was sometimes
+    // a fixed sleep (waitForTimeout(150)) was sometimes
     // shorter than the commit cycle and the helper would skip
     // past a briefly-materialised row. ``pollForMount`` caps at
     // 500 ms — generous enough to absorb a slow commit, short

@@ -370,9 +370,9 @@ def test_error_classification_is_frozen() -> None:
 # ---------------------------------------------------------------------------
 #
 # Provider exceptions (notably content_filter rejections) echo the
-# offending prompt fragment in their str() representation. Pre-fix,
-# _redacted_message included str(exc) verbatim regardless of
-# capture_prompts. classify_exception now accepts capture_prompts and
+# offending prompt fragment in their str() representation. Including
+# str(exc) verbatim regardless of capture_prompts would leak them, so
+# classify_exception accepts capture_prompts and
 # threads it through so capture-off returns class-name only.
 
 

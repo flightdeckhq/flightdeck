@@ -28,17 +28,16 @@ import type {
 } from "@/lib/types";
 
 /**
- * MCP Protection Policy management surface (D128 / D131 / D135 /
- * D139 / D146 / D147).
+ * MCP Protection Policy management surface.
  *
- * MCP Protection sub-tab on the unified ``/policies`` page (D146).
+ * MCP Protection sub-tab on the unified ``/policies`` page.
  * Internal scope picker plus one panel per scope (Global + flavors).
  * Each panel renders the per-scope toolbar (mode segmented control
  * + BOU switch), the searchable entry table with chroma-coded
  * chips, and an add / edit dialog with debounced (300ms) live
  * resolve preview.
  *
- * Mutations follow the D128 replace-semantics: a single
+ * Mutations follow replace semantics: a single
  * ``MCPPolicyMutation`` carries the full intended state and is
  * PUT'd atomically. The component builds the mutation from the
  * current policy + the operator's diff (toolbar change OR entry
@@ -100,7 +99,7 @@ export function MCPProtectionTab() {
         >
           Gate which MCP servers your agents may talk to. Decisions
           fall through flavor entry &rarr; global entry &rarr; mode
-          default (D135).
+          default.
         </p>
       </header>
 
@@ -380,7 +379,7 @@ function FlavorPanel({
         modeEditable={false}
         globalMode={globalMode}
         onModeChange={async () => {
-          throw new Error("Mode is global-only (D134).");
+          throw new Error("Mode is global-only.");
         }}
         onBlockOnUncertaintyChange={async (next) => {
           await updateFlavorMCPPolicy(
@@ -498,8 +497,8 @@ function removeEntry(
   return buildMutation(policy, { entries: remaining });
 }
 
-// Step 6.7 (d): searchable scope picker. The pre-fix dropdown was a
-// Radix Select rendering all flavors alphabetically; with 67+
+// Searchable scope picker. A plain Radix Select rendering all
+// flavors alphabetically doesn't scale; with 67+
 // flavors the list became impossible to scan. Standard pattern for
 // any dropdown over ~20 items is type-to-filter.
 //

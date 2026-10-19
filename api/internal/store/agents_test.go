@@ -545,7 +545,7 @@ func TestGetAgentByID_HitMiss(t *testing.T) {
 	}
 }
 
-// --- D126 sub-agent rollup (agent_role + topology) ---
+// --- Sub-agent rollup (agent_role + topology) ---
 
 // seedSubagentLink seeds a parent agent + a child agent with one
 // session each, where the child session's parent_session_id points

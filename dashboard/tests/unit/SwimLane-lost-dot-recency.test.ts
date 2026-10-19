@@ -64,9 +64,9 @@ describe("findLostSubAgent", () => {
 	});
 
 	it("does NOT fire when an old-lost session is followed by a healthy retry for the same role", () => {
-		// The stickiness regression: pre-fix, the dot lit as soon as
+		// The stickiness regression: the dot lit as soon as
 		// any historical session for the role was in ``lost`` state.
-		// Post-fix, only the most-recent session per role counts.
+		// Now only the most-recent session per role counts.
 		const sessions = [
 			mkSession({
 				id: "old-lost",

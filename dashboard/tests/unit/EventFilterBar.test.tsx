@@ -47,10 +47,10 @@ describe("EventFilterBar", () => {
   });
 });
 
-// D122 — Show discovery events toggle. Right-aligned switch in the
+// Show discovery events toggle. Right-aligned switch in the
 // filter bar. Default off, persists in localStorage. Off / on style
 // mirrors the muted / active filter pills above.
-describe("EventFilterBar — D122 discovery toggle", () => {
+describe("EventFilterBar — discovery toggle", () => {
   beforeEach(() => {
     localStorage.clear();
   });

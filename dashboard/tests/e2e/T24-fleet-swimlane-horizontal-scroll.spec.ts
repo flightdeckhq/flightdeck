@@ -11,7 +11,7 @@ import {
 // scrollable edges, keeps the agent-name column sticky as the
 // timeline scrolls under it, and accepts ArrowLeft / ArrowRight
 // keyboard navigation. The bug this fixes was a dead-end UX class:
-// pre-fix the ``overflow-x: hidden`` on Fleet's main-content div
+// an ``overflow-x: hidden`` on Fleet's main-content div
 // silently amputated the older end of the timeline at viewports
 // where leftPanelWidth + 900px exceeded the available width
 // (typical MacBook screens at 1280-1440px).
@@ -86,7 +86,7 @@ test.describe("T24 — Fleet swimlane horizontal scroll", () => {
     await waitForFleetReady(page);
 
     // Scroll the swimlane until the coding-agent row is mounted —
-    // the seeded D126 fixture set adds 12+ extra agent rows so
+    // the seeded sub-agent fixture set adds 12+ extra agent rows so
     // the IntersectionObserver virtualizer no longer renders
     // every agent on initial mount at narrow viewport.
     const row = await bringSwimlaneRowIntoView(page, CODING_AGENT.name);

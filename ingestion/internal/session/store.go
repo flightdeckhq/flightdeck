@@ -8,8 +8,7 @@
 //
 // Store reads and (for closed/lost revivals) mutates the sessions row
 // directly in Postgres, mirroring the directive.Store pattern already
-// used for synchronous directive lookup. See ARCHITECTURE.md and
-// DECISIONS.md D094.
+// used for synchronous directive lookup. See ARCHITECTURE.md.
 package session
 
 import (
@@ -38,7 +37,7 @@ func NewStore(pool *pgxpool.Pool) *Store {
 //     will later create it via UpsertSession.
 //   - Session row exists with state in {closed, lost} → flips state to
 //     active, sets last_attached_at = NOW(), leaves started_at /
-//     ended_at untouched (see D094), returns (true, priorState, nil).
+//     ended_at untouched, returns (true, priorState, nil).
 //     The caller logs INFO.
 //   - Session row exists with state in {active, idle, stale} → touches
 //     last_attached_at only, returns (true, priorState, nil). The
@@ -65,7 +64,7 @@ func (s *Store) Attach(ctx context.Context, sessionID string) (bool, string, err
 	// Revive closed/lost → active. started_at and ended_at stay as they
 	// were on the original close; the dashboard's run separator draws
 	// off session_attachments, so we don't need to clear ended_at to
-	// distinguish runs. See DECISIONS.md D094.
+	// distinguish runs.
 	if priorState == "closed" || priorState == "lost" {
 		// Clear ended_at on revive so the session no longer looks
 		// "finished at time X" while state=active. Without this, the

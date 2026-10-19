@@ -468,7 +468,7 @@ def test_enforce_warn_emits_event_returns_none() -> None:
     )
     assert blocked is None
     fake.event_queue.enqueue.assert_called_once()
-    # Phase 7 Step 2 (D148/D149): policy_decision shared block +
+    # policy_decision shared block +
     # originating_call_context (defaults to "tool_call") added to the
     # extras. Legacy top-level fields (policy_id, scope, decision_path)
     # remain on the wire for backwards compatibility with the
@@ -620,7 +620,7 @@ def test_mcp_policy_blocked_carries_attribution() -> None:
 
 
 def test_mcp_policy_blocked_inherits_from_exception_only() -> None:
-    """Per the D130 implementation note: MCPPolicyBlocked is a
+    """MCPPolicyBlocked is a
     sibling exception in the BudgetExceededError pattern, NOT a
     subclass of DirectiveError."""
     from flightdeck_sensor.core.exceptions import DirectiveError

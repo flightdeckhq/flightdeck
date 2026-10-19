@@ -114,6 +114,6 @@ def test_heartbeat_updates_last_seen() -> None:
     )
 
 
-# test_session_end_sets_closed -- removed in Phase 4.5 audit Task 1.
+# test_session_end_sets_closed -- removed.
 # Exact duplicate of test_session_states.py::test_session_transitions_to_closed
 # which already verifies session_end → state=closed AND ended_at is set.

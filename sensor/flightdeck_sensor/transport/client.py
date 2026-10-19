@@ -268,7 +268,7 @@ class EventQueue:
       directive at a time. Single-consumer means at-most-once
       execution for free -- no dedup state needed.
 
-    This is the two-queue pattern mandated by Phase 4.5 audit B-H.
+    This is the two-queue pattern.
     The previous design called the directive callback inline on the
     drain thread, which let a slow handler stall the entire event
     pipeline (silent event loss after 1000 backed-up events) and
@@ -327,8 +327,7 @@ class EventQueue:
         LLM provider latency (hundreds of ms per call) throttles
         event generation naturally, so the 1000-slot queue only
         fills under pathological synthetic load. Micro-batching
-        was considered and rejected for v1 -- see DECISIONS.md
-        D091 for the trade-offs.
+        was considered and rejected for v1.
         """
         try:
             self._queue.put_nowait(payload)
@@ -500,7 +499,7 @@ class EventQueue:
         defensive ``sys.exit()`` or any other ``BaseException``
         subclass would silently kill this daemon thread under
         ``except Exception`` and the directive queue would back up
-        with no recovery (Phase 4.5 audit Hat 4 finding). The wider
+        with no recovery. The wider
         clause is safe in this daemon-thread context because Python
         signals are delivered to the main thread, not background
         threads, so the usual concern about catching

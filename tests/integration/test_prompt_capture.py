@@ -61,7 +61,7 @@ def _get_event_ids(session_id: str) -> list[str]:
 
 def test_capture_off_no_row_and_404() -> None:
     """capture=off ⇒ zero event_content rows AND GET /events/:id/content
-    returns 404. Phase 4.5 audit Task 1: merged from
+    returns 404. Merged from
     test_capture_off_no_event_content_row + test_get_content_returns_404_when_off
     -- both tested the capture-off path with the same setup.
     """
@@ -101,7 +101,7 @@ def test_capture_off_no_row_and_404() -> None:
 def test_capture_on_writes_row_and_serves_content() -> None:
     """capture=on ⇒ exactly one event_content row AND GET
     /events/:id/content returns 200 with the original content fields.
-    Phase 4.5 audit Task 1: merged from test_capture_on_stores_content
+    Merged from test_capture_on_stores_content
     + test_get_content_endpoint_returns_200 -- both tested the
     capture-on path with the same setup, the second one only added
     the GET round-trip on top.

@@ -141,7 +141,7 @@ def test_analytics_invalid_metric_returns_400() -> None:
 
 
 # ---------------------------------------------------------------
-# D157 Phase 1 — per-agent landing page backend
+# Per-agent landing page backend
 # ---------------------------------------------------------------
 
 

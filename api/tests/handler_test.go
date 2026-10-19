@@ -267,7 +267,7 @@ func (m *mockStore) DeletePolicy(_ context.Context, id string) error {
 	return pgx.ErrNoRows
 }
 
-// --- Token CRUD (D095) ---
+// --- Token CRUD ---
 
 func (m *mockStore) ListAccessTokens(_ context.Context) ([]store.AccessTokenRow, error) {
 	return append([]store.AccessTokenRow(nil), m.tokens...), nil
@@ -812,7 +812,7 @@ func TestSessionsHandler_ReturnsEventsInOrder(t *testing.T) {
 	}
 }
 
-// D094: the session detail response must always include the
+// The session detail response must always include the
 // "attachments" key -- empty array for sessions that have only ever
 // run once, chronological list of ISO-8601 timestamps otherwise.
 // Missing key is a contract break; the dashboard drawer relies on it
@@ -859,7 +859,7 @@ func TestSessionsHandler_UnknownID_Returns404(t *testing.T) {
 	}
 }
 
-// D113 drawer pagination: without events_limit the handler must pass
+// Drawer pagination: without events_limit the handler must pass
 // limit=0 to the store so the full session history is returned.
 // Guards against a regression where a future default silently caps
 // the payload and breaks non-drawer callers.
@@ -1551,7 +1551,7 @@ func TestGetAnalyticsCustomRangeValid(t *testing.T) {
 	}
 }
 
-// --- D126 sub-agent analytics tests ---
+// --- Sub-agent analytics tests ---
 
 func TestGetAnalyticsAcceptsAgentRoleDimension(t *testing.T) {
 	s := &mockStore{}
@@ -2211,7 +2211,7 @@ func TestGetEventsHasMoreFormula(t *testing.T) {
 	}
 }
 
-// D113 drawer pagination: “before“ keyset cursor threads from the
+// Drawer pagination: “before“ keyset cursor threads from the
 // query string into EventsParams.Before as an RFC3339-parsed time.
 func TestGetEvents_Before_ThreadsToStore(t *testing.T) {
 	s := &mockStore{}
@@ -2691,7 +2691,7 @@ func TestSearchReturnsExtendedSessionFields(t *testing.T) {
 	}
 }
 
-// --- Token CRUD (D095) ---
+// --- Token CRUD ---
 
 func TestTokensListHandler_ReturnsRows(t *testing.T) {
 	s := &mockStore{tokens: []store.AccessTokenRow{{ID: "a", Name: "Dev", Prefix: "ftd_aaaa"}}}
@@ -3313,10 +3313,10 @@ func TestAdminReconcileHandler_400_OnMalformedOrphanThreshold(t *testing.T) {
 	}
 }
 
-// ----- MCP Protection Policy stubs (D128) -----------------------------
+// ----- MCP Protection Policy stubs ------------------------------------
 //
 // These stubs let the existing mockStore continue to satisfy the
-// Querier interface after step 3 added 13 new methods. Tests in this
+// Querier interface after the MCP policy store added 13 new methods. Tests in this
 // file don't exercise MCP policy behaviour; the handler-level MCP
 // policy tests live in api/internal/handlers/mcp_policy_test.go and
 // mcp_policy_versions_test.go with their own focused stubs.

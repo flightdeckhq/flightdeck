@@ -9,7 +9,7 @@ import {
 // reads "→ 2" (two distinct child agents); each child renders its
 // own swimlane row with a child-mode pill pointing back at the
 // parent. Both themes per Rule 40c.3.
-// Tall viewport so the seeded D126 fixtures all fit without
+// Tall viewport so the seeded sub-agent fixtures all fit without
 // IntersectionObserver virtualization evicting rows that are
 // just-off-screen. The swimlane mounts ~16 agent rows + the ALL
 // row + bucket dividers under our seed; 1800px gives them all a

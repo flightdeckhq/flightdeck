@@ -1,7 +1,7 @@
-"""Integration tests for the MCP Protection Policy control-plane API
-(D128 / D135). Exercises the full chain: handler → store → Postgres
+"""Integration tests for the MCP Protection Policy control-plane API.
+Exercises the full chain: handler → store → Postgres
 → migration 000018. Requires `make dev` to be running with API
-boot-time auto-create having executed at least once (D133).
+boot-time auto-create having executed at least once.
 
 Each test creates an isolated flavor (random UUID) so concurrent
 runs don't collide on the (scope, scope_value) uniqueness invariant.
@@ -42,7 +42,7 @@ def _delete_flavor(flavor: str) -> None:
 
 
 def test_global_policy_auto_created_at_boot() -> None:
-    """D133: API boot ensures the empty blocklist global policy exists."""
+    """API boot ensures the empty blocklist global policy exists."""
     r = requests.get(f"{API_URL}/v1/mcp-policies/global", headers=_read_headers(), timeout=5)
     assert r.status_code == 200, r.text
     body = r.json()
@@ -139,7 +139,7 @@ def test_post_duplicate_flavor_returns_409() -> None:
 def test_post_with_mode_on_flavor_rejected() -> None:
     flavor = _unique_flavor()
     body = {
-        "mode": "allowlist",  # D134 violation: mode is global-only
+        "mode": "allowlist",  # invalid here: mode is global-only
         "block_on_uncertainty": False,
         "entries": [],
     }
@@ -181,7 +181,7 @@ def test_audit_log_records_each_mutation() -> None:
         _delete_flavor(flavor)
 
 
-# ----- resolve precedence (D135) -----------------------------------
+# ----- resolve precedence -------------------------------------------
 
 
 def test_resolve_returns_decision_path() -> None:
@@ -219,7 +219,7 @@ def test_resolve_returns_decision_path() -> None:
         _delete_flavor(flavor)
 
 
-# Step 6.7 A2 — resolve cascade contract (D135).
+# Resolve cascade contract.
 #
 # The dashboard's MCPServerPolicyPill drives a `decision_path`-aware
 # render: flavor_entry / global_entry returns explicit chroma; only
@@ -231,10 +231,10 @@ def test_resolve_returns_decision_path() -> None:
 def test_resolve_falls_through_flavor_to_global_entry() -> None:
     """When the flavor's policy has NO matching entry but the global
     policy does, resolve must return decision_path=global_entry with
-    the global entry's enforcement decision. Pre-D135 a buggy
+    the global entry's enforcement decision. A buggy
     resolver could short-circuit on flavor with a missing-match → no
     fall-through; this test would catch that regression."""
-    # The global policy is auto-created at API boot (D133) and is
+    # The global policy is auto-created at API boot and is
     # initially empty. We mutate it for this test, then restore it
     # at teardown so other tests aren't affected.
     flavor = _unique_flavor()

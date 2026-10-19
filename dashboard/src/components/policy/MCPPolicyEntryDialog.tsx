@@ -39,7 +39,7 @@ const inputClass =
 /**
  * Add / edit dialog for an MCP policy entry. While the operator
  * types into the URL or Name fields, the dialog fires a debounced
- * (300ms — D135 § "Add / edit dialog") ``GET /v1/mcp-policies/
+ * (300ms) ``GET /v1/mcp-policies/
  * resolve`` and renders the server's authoritative decision in a
  * preview pill alongside the canonical fingerprint that will be
  * stored. This is the operator's loop-closer: they see exactly what
@@ -48,7 +48,7 @@ const inputClass =
  *
  * Mutations are submitted as a single ``MCPPolicyMutationEntry`` to
  * the parent; the parent bundles the change with the rest of the
- * draft and PUTs the whole policy (D128 — replace semantics).
+ * draft and PUTs the whole policy (replace semantics).
  */
 export function MCPPolicyEntryDialog({
   open,

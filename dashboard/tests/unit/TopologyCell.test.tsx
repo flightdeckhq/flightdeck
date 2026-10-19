@@ -75,7 +75,7 @@ describe("TopologyCell", () => {
   });
 
   it("renders all three modes as a rounded tinted pill with the canonical class signature", () => {
-    // D163 pill contract: every TopologyCell variant carries the
+    // Pill contract: every TopologyCell variant carries the
     // shared inline-flex / rounded-full / px-2 py-0.5 / font-mono
     // text-[11px] / whitespace-nowrap class signature so the
     // column reads as a member of the same badge family. The

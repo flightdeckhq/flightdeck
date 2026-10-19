@@ -194,7 +194,7 @@ export const INVESTIGATE_SIDEBAR_WIDTH_KEY =
 
 /**
  * LocalStorage key for the "Show MCP discovery events" toggle in the
- * Fleet event filter bar. Default off (D122) — the three MCP
+ * Fleet event filter bar. Default off — the three MCP
  * discovery event types (``mcp_tool_list`` / ``mcp_resource_list`` /
  * ``mcp_prompt_list``) are hidden from Fleet's LiveFeed and dimmed
  * in the swimlane when this preference is unset or false. Per the

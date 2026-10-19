@@ -9,7 +9,7 @@
  * from those sessions via the merge in
  * ``dashboard/src/store/fleet.ts::buildFlavors``.
  *
- * Pre-fix shape of the bug: 16 of 17 sub-agent rows had
+ * Shape of the guarded bug: 16 of 17 sub-agent rows had
  * ``data-topology="child"`` but rendered with zero event circles
  * regardless of which time window the operator selected, because
  * ``buildFlavors`` couldn't find sessions for them in the

@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 _log = logging.getLogger("flightdeck_sensor.core.session")
 
 
-# Phase 7 Step 4 (D152): operator-actionable session_start enrichment.
+# Operator-actionable session_start enrichment.
 # These helpers populate sensor_version + interceptor_versions +
 # policy_snapshot so the dashboard's triage workflow can answer
 # "did this run under the buggy build" / "what policy was in effect
@@ -112,8 +112,8 @@ def _build_policy_snapshot(
 ) -> dict[str, Any]:
     """Snapshot the policy state in effect at session_start.
 
-    Token-budget side: ``policy_id`` + ``scope`` already captured
-    in PolicyCache by Step 2 (D148); pass through.
+    Token-budget side: ``policy_id`` + ``scope`` are already captured
+    in PolicyCache; pass through.
 
     MCP side: ``MCPPolicyCache`` exposes ``snapshot_identity()``
     when populated; returns ``{global_policy_id, flavor_policy_id,
@@ -156,13 +156,13 @@ _CUSTOM_DIRECTIVE_HANDLER_TIMEOUT_SECS = 5
 # up"), so dropping the oldest entries is safe.
 _RETRY_COUNTER_LRU_SIZE = 256
 
-# D126 § 6 sub-agent message routing thresholds.
+# Sub-agent message routing thresholds.
 #
 # Bodies up to ``SUBAGENT_INLINE_THRESHOLD_BYTES`` ride inline on the
 # event payload's ``incoming_message`` / ``outgoing_message`` field
 # and are projected into ``events.payload`` JSONB by the worker's
 # BuildEventExtra. Bodies above the inline threshold but at or below
-# ``SUBAGENT_HARD_CAP_BYTES`` route through the existing D119
+# ``SUBAGENT_HARD_CAP_BYTES`` route through the existing
 # event_content path: the wire stub on the payload field becomes
 # ``{has_content: True, content_bytes: <int>, captured_at: ...}``,
 # the full body lands on the wire's PromptContent envelope under
@@ -209,7 +209,7 @@ class Session:
             local_limit=config.limit,
             local_warn_at=config.warn_at,
         )
-        # MCP Protection Policy cache (D128 / D129). Populated at
+        # MCP Protection Policy cache. Populated at
         # session preflight from GET /v1/mcp-policies/global +
         # /:flavor; refreshed on policy_update directive arrival.
         # Empty until populate runs; fail-open per Rule 28 unless
@@ -247,7 +247,7 @@ class Session:
 
         # Set by _post_event on the first response envelope where the
         # ingestion API reports attached=true (always the session_start
-        # response per D094). Guards the INFO log so it fires exactly
+        # response). Guards the INFO log so it fires exactly
         # once per process even if a future protocol extension sends
         # attached=true on subsequent events.
         self._attached_logged = False
@@ -265,7 +265,7 @@ class Session:
         # same multi-thread reasons as _tokens_used / _model.
         self._mcp_servers: list[MCPServerFingerprint] = []
 
-        # Phase 7 Step 2 (D149): originating_event_id chain. Tracks the
+        # originating_event_id chain. Tracks the
         # UUID of the most-recent ``pre_call`` emission so downstream
         # events fired during the same LLM call (tool_call, llm_error,
         # mcp_*, policy_mcp_*, policy_warn/degrade/block) can stamp
@@ -291,7 +291,7 @@ class Session:
 
         # Wire _apply_directive as the directive HANDLER (not the
         # drain-thread callback). EventQueue's two-queue pattern
-        # (Phase 4.5 audit B-H) runs the handler on a dedicated
+        # runs the handler on a dedicated
         # ``flightdeck-directive-queue`` daemon thread, so:
         #   * a slow custom handler cannot back up the event queue
         #   * flush() called from inside _apply_directive (e.g. on
@@ -381,8 +381,7 @@ class Session:
         capture **their own** contribution without re-reading
         ``self._tokens_used`` after the lock is released, which would
         otherwise let another thread's increment leak into this
-        thread's reported ``tokens_used_session`` (Phase 4.5 audit
-        B-G fix).
+        thread's reported ``tokens_used_session``.
         """
         with self._lock:
             self._tokens_used += usage.total
@@ -394,7 +393,7 @@ class Session:
             self._model = model
 
     # ------------------------------------------------------------------
-    # Originating-event-id chain (D149)
+    # Originating-event-id chain
     # ------------------------------------------------------------------
 
     def set_current_call_event_id(self, event_id: str | None) -> None:
@@ -452,7 +451,7 @@ class Session:
 
         Returns ``True`` when the fingerprint is a new addition,
         ``False`` when it was de-duplicated. The interceptor uses
-        the boolean to gate D140 ``mcp_server_attached`` emission —
+        the boolean to gate ``mcp_server_attached`` emission —
         a duplicate initialize must not re-broadcast the attach event
         (idempotency at the source matches the worker's idempotency
         at the sink).
@@ -468,7 +467,7 @@ class Session:
             return True
 
     # ------------------------------------------------------------------
-    # Sub-agent emission (D126)
+    # Sub-agent emission
     # ------------------------------------------------------------------
     #
     # Framework interceptors (CrewAI Agent.execute, LangGraph
@@ -535,7 +534,7 @@ class Session:
         direction: str,
     ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         """Resolve a sub-agent message into (payload_field, content_envelope)
-        per D126 § 6.
+        by body size.
 
         ``direction`` is ``"incoming"`` or ``"outgoing"`` — written
         into the content envelope so the dashboard's content-fetch
@@ -559,7 +558,7 @@ class Session:
             stamps ``stub`` into the payload field, sets
             ``has_content=True``, and stamps ``content_envelope``
             into ``payload['content']`` so the worker's existing
-            D119 InsertEventContent path stores the full body in
+            InsertEventContent path stores the full body in
             ``event_content``. The dashboard fetches via
             ``GET /v1/events/{id}/content``; the
             ``provider="flightdeck-subagent"`` discriminator picks
@@ -577,7 +576,7 @@ class Session:
         if size > SUBAGENT_HARD_CAP_BYTES:
             _log.warning(
                 "sub-agent %s_message body exceeds %d-byte hard cap "
-                "(size=%d bytes); dropped per D126 § 6 — capture "
+                "(size=%d bytes); dropped — capture "
                 "the trailing tail elsewhere if needed",
                 direction,
                 SUBAGENT_HARD_CAP_BYTES,
@@ -639,7 +638,7 @@ class Session:
         ``incoming_message`` carries the parent's input to the child
         (CrewAI task description, LangGraph inbound state, Claude
         Code Task ``prompt`` argument). Routing depends on body size
-        per D126 § 6 — see :meth:`_route_subagent_message`.
+        — see :meth:`_route_subagent_message`.
         ``capture_prompts=False`` drops the body at this boundary
         regardless of size.
         """
@@ -887,7 +886,7 @@ class Session:
 
         Populates PolicyCache before the first LLM call. On any failure
         (network error, 404, parse error), logs at debug level and proceeds
-        with empty cache. Fail open per D007.
+        with empty cache. Fail open.
         """
         try:
             url = (
@@ -921,10 +920,9 @@ class Session:
                     policy_fields["degrade_to"] = parsed.degrade_to
                 if parsed.block_at_pct is not None:
                     policy_fields["block_at_pct"] = parsed.block_at_pct
-                # Phase 7 Step 2 (D148): API now surfaces id + scope on
-                # the effective-policy response (always has — the
-                # ``store.Policy`` JSON tags include them; the sensor
-                # schema previously stripped them on parse). Pass through
+                # The API surfaces id + scope on the effective-policy
+                # response (the ``store.Policy`` JSON tags include
+                # them). Pass through
                 # so policy_warn / policy_degrade / policy_block emissions
                 # can populate the shared policy_decision block.
                 if parsed.id is not None:
@@ -941,7 +939,7 @@ class Session:
 
     def _preflight_mcp_policy(self) -> None:
         """Populate the MCP Protection Policy cache from the control
-        plane at session start (D129). Fetches global + flavor policies
+        plane at session start. Fetches global + flavor policies
         in two HTTP calls (sequential, ~1s each timeout). Failures
         fail-open per Rule 28 — the cache stays empty and per-call
         evaluation falls back on the local-failsafe toggle if set.
@@ -1029,7 +1027,7 @@ class Session:
         ``directive_result`` / ``directive_error``, none of which the
         worker decoded -- causing the success flag, the handler return
         value, and any handler error message to be silently dropped at
-        the ingestion boundary. Phase 4.5 audit B-D fix.
+        the ingestion boundary.
         """
         payload = self._build_payload(
             EventType.DIRECTIVE_RESULT,
@@ -1064,7 +1062,7 @@ class Session:
         ``@flightdeck_sensor.directive``) is used to compute the
         fingerprint and to render the dashboard form -- it is NOT
         enforced on incoming directive parameters. Handlers must
-        validate their own inputs. Phase 4.5 audit Hat 4 finding.
+        validate their own inputs.
         """
         from flightdeck_sensor import _directive_registry
         from flightdeck_sensor.core.schemas import DirectivePayloadSchema
@@ -1154,7 +1152,7 @@ class Session:
         """Build the full event payload and POST it to the control plane."""
         payload = self._build_payload(event_type, **extra)
         directive, attached = self.client.post_event(payload)
-        # Per D094, the ingestion response's ``attached`` flag only
+        # The ingestion response's ``attached`` flag only
         # ever surfaces true on the session_start envelope (the
         # synchronous lookup runs exactly once, at session_start
         # arrival). Guarding on _attached_logged keeps the behaviour
@@ -1185,7 +1183,7 @@ class Session:
 
         is_mcp = event_type.value.startswith("mcp_")
 
-        # Phase 7 Step 2 (D149): mint a sensor-side UUID per event so
+        # Mint a sensor-side UUID per event so
         # the originating_event_id chain works without round-tripping
         # the worker. Worker's InsertEvent uses this id directly when
         # present, falling back to gen_random_uuid() only for legacy
@@ -1203,7 +1201,7 @@ class Session:
             "session_id": self.config.session_id,
             "flavor": self.config.agent_flavor,
             "agent_type": self.config.agent_type,
-            # D115 identity fields on every event.
+            # Agent identity fields on every event.
             "agent_id": self.config.agent_id,
             "agent_name": self.config.agent_name,
             "client_type": self.config.client_type,
@@ -1217,7 +1215,7 @@ class Session:
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        # Phase 7 Step 2 (D149): originating_event_id chain. Stamp the
+        # originating_event_id chain. Stamp the
         # current call window's originator event id (post_call, or
         # pre_call when post_call hasn't fired yet) onto every
         # downstream emission so the dashboard can render the call →
@@ -1227,8 +1225,7 @@ class Session:
         #     call);
         #   - call-window-independent events (SESSION_*, MCP_SERVER_*,
         #     DIRECTIVE_RESULT) that don't belong to any LLM call.
-        # The set is the "downstream of an LLM call" types per the
-        # Phase 7 audit § originating_event_id chain.
+        # The set is the "downstream of an LLM call" types.
         chained_event_types = {
             EventType.TOOL_CALL,
             EventType.LLM_ERROR,
@@ -1262,7 +1259,7 @@ class Session:
                     "tokens_input": None,
                     "tokens_output": None,
                     "tokens_total": None,
-                    # D100: cache-token breakdown. Default 0 so the worker
+                    # Cache-token breakdown. Default 0 so the worker
                     # always receives a non-null value for the NOT NULL
                     # DEFAULT 0 columns.
                     "tokens_cache_read": 0,
@@ -1295,7 +1292,7 @@ class Session:
                     ctx["mcp_servers"] = [fp.to_dict() for fp in self._mcp_servers]
             if ctx:
                 payload["context"] = ctx
-            # Phase 7 Step 4 (D152): operator-actionable triage
+            # Operator-actionable triage
             # enrichment. sensor_version + interceptor_versions answer
             # "did this session run under the buggy build" without
             # requiring a separate log dive. policy_snapshot answers
@@ -1314,7 +1311,7 @@ class Session:
             if ps:
                 payload["policy_snapshot"] = ps
 
-        # Phase 7 Step 4 (D152): session_end carries close_reason for
+        # session_end carries close_reason for
         # the sensor-knowable paths. Worker fills the rest (orphan
         # timeout / sigkill detection) on the session-table-update
         # path because those decisions live worker-side.
@@ -1329,7 +1326,7 @@ class Session:
     def _sensor_close_reason(self) -> str | None:
         """Return what the sensor knows about why this session ended.
 
-        Phase 7 Step 4 (D152). Sensor-knowable values:
+        Sensor-knowable values:
           * ``directive_shutdown`` — _apply_directive(SHUTDOWN) set
             _shutdown_requested before end() fired.
           * ``normal_exit`` — end() fired with no shutdown flag and
@@ -1419,10 +1416,10 @@ class Session:
             # Fires ONCE per directive arrival (not per subsequent call) —
             # per-call swaps are visible via post_call.model only. Source
             # is always ``"server"`` because DEGRADE never originates from
-            # a local init(limit=...) threshold (D035 — local fires WARN
+            # a local init(limit=...) threshold (local fires WARN
             # only).
             #
-            # Phase 7 Step 2 (D148): shared policy_decision block.
+            # Shared policy_decision block.
             # Built inline here (not via PolicyDecisionSummary import) to
             # keep this module dependency-light; the dict shape mirrors
             # PolicyDecisionSummary.as_payload_dict() byte-for-byte.

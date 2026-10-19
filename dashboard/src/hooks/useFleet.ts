@@ -49,7 +49,7 @@ export function useFleet(onEvent?: (event: AgentEvent) => void) {
           applyUpdate(update);
         }
         if (update.last_event) {
-          // D140 step 6.6 — broadcast the event into the fleet store
+          // Broadcast the event into the fleet store
           // so subscribers (SessionDrawer's mcp_server_attached
           // re-fetch trigger) react regardless of whether the
           // envelope carries a session diff.

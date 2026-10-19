@@ -249,12 +249,12 @@ class BaseClassifier:
     list/tuple of module names. When multiple are listed they're
     treated as aliases — any one being in ``sys.modules`` is enough
     to consider the framework present, and the detected version
-    comes from the first match. Pre-fix the classifier required the
-    bare canonical name (``langchain``) which is no longer imported
-    when callers use only the split packages (``langchain_openai``,
-    ``langchain_anthropic``); the LangChain detector silently
-    missed every modern install and the per-event ``framework``
-    field stayed null. Confirmed via Rule 40d smoke.
+    comes from the first match. Requiring only the bare canonical
+    name (``langchain``) would miss callers that import just the
+    split packages (``langchain_openai``, ``langchain_anthropic``):
+    the LangChain detector silently missed every modern install and
+    the per-event ``framework`` field stayed null. Confirmed via
+    Rule 40d smoke.
     """
 
     name: str = ""

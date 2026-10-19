@@ -17,7 +17,7 @@ import type { AgentTopology } from "@/lib/types";
 // ``topology`` field is consulted first as the cheap-fast hint so
 // the relationship walk runs only for non-lone rows.
 //
-// Visual contract (D163): all three modes render as a rounded
+// Visual contract: all three modes render as a rounded
 // tinted pill of the same shape so the column reads as a member
 // of the same badge family as ClientTypePill / agent_type badge.
 // child + parent use an accent tint (clickable), lone uses a
@@ -53,9 +53,9 @@ export function TopologyCell({
   // Accent pill style for child + parent. Foreground reads from
   // ``--topology-pill-fg`` (defined per theme block in themes.css)
   // so the colour tracks the live html.dark / html.light class
-  // and recolours instantly on the Nav's theme toggle. Pre-fix
-  // useTheme()'s per-component useState held a stale local copy
-  // until the cell remounted, leaving the dark-theme lightened
+  // and recolours instantly on the Nav's theme toggle. Reading
+  // useTheme()'s per-component useState instead holds a stale local
+  // copy until the cell remounts, leaving the dark-theme lightened
   // accent on the light surface after a live toggle. Background
   // and border are color-mix derivatives of --accent (theme-
   // agnostic by construction) so only the foreground needs the

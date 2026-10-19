@@ -1,6 +1,6 @@
 """Server-side budget enforcement -- BudgetExceededError on second call.
 
-D035: init(limit=...) is WARN-only. Real blocking is server-side via
+init(limit=...) is WARN-only. Real blocking is server-side via
 `/v1/policies` with `block_at_pct`. The sensor's preflight loads the
 thresholds locally; the PolicyCache evaluates projected tokens
 (running total + estimated input) against block_at_pct on every call.

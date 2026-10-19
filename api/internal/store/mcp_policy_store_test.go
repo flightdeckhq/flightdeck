@@ -16,7 +16,7 @@ import (
 	"testing"
 )
 
-// fingerprintLiteral mirrors the canonical D127 hash without
+// fingerprintLiteral mirrors the canonical identity hash without
 // importing the api/internal/mcp_identity package (would be a
 // cyclic-test artifact for store-only tests). The store's
 // ResolveMCPPolicy takes the fingerprint as input from the
@@ -434,9 +434,9 @@ func TestUpdateMissingPolicyReturnsNotFound(t *testing.T) {
 	}
 }
 
-// TestMigration000020DroppedVersioningSchema asserts the post-D142
+// TestMigration000020DroppedVersioningSchema asserts the no-version-history
 // invariants: ``mcp_policy_versions`` table doesn't exist and
-// ``mcp_policies`` has no ``version`` column. Mirrors the D141 seed-
+// ``mcp_policies`` has no ``version`` column. Mirrors the global-policy seed-
 // migration regression test pattern. Guards against a future
 // rollback or accidental migration revert.
 func TestMigration000020DroppedVersioningSchema(t *testing.T) {

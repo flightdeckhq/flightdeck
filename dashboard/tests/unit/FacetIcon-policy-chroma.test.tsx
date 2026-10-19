@@ -16,7 +16,7 @@ import { render } from "@testing-library/react";
 import { FacetIcon } from "@/components/facets/FacetIcon";
 import { eventBadgeConfig } from "@/lib/events";
 
-describe("FacetIcon — POLICY / MCP POLICY chroma dots (step 6.7 A1)", () => {
+describe("FacetIcon — POLICY / MCP POLICY chroma dots", () => {
   it("renders a chroma dot for each token-budget POLICY chip", () => {
     for (const eventType of ["policy_warn", "policy_block", "policy_degrade"]) {
       const { container } = render(

@@ -40,7 +40,7 @@ const docTemplate = `{
         },
         "/v1/access-tokens": {
             "get": {
-                "description": "Returns every access_tokens row. Hash and salt are never exposed; the raw token itself is available only on the POST response at creation time (D095).",
+                "description": "Returns every access_tokens row. Hash and salt are never exposed; the raw token itself is available only on the POST response at creation time.",
                 "produces": [
                     "application/json"
                 ],
@@ -73,7 +73,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Mints an opaque ftd_ bearer token. The plaintext token is returned exactly once in the response; the platform cannot recover it afterwards. See DECISIONS.md D095.",
+                "description": "Mints an opaque ftd_ bearer token. The plaintext token is returned exactly once in the response; the platform cannot recover it afterwards.",
                 "consumes": [
                     "application/json"
                 ],
@@ -125,7 +125,7 @@ const docTemplate = `{
         },
         "/v1/access-tokens/{id}": {
             "delete": {
-                "description": "Deletes the access_tokens row. The seeded Development Token row is protected and returns 403. Sessions previously authenticated with the token keep their token_name for auditability (sessions.token_id is set to NULL via ON DELETE SET NULL). See DECISIONS.md D095.",
+                "description": "Deletes the access_tokens row. The seeded Development Token row is protected and returns 403. Sessions previously authenticated with the token keep their token_name for auditability (sessions.token_id is set to NULL via ON DELETE SET NULL).",
                 "tags": [
                     "access-tokens"
                 ],
@@ -299,7 +299,7 @@ const docTemplate = `{
         },
         "/v1/agents": {
             "get": {
-                "description": "Returns agents matching the supplied filters. Multi-value filters (state, agent_type, client_type, hostname, user, os, orchestration) accept comma-separated values and repeated query params; values within a dimension are OR, values across dimensions are AND. “search“ is a case-insensitive substring match against “agent_name“ and “hostname“. “updated_since“ filters on “last_seen_at \u003e= ts“. State is computed via LATERAL subquery against the most-recent session. Each row also carries D126 sub-agent rollup fields (“agent_role“ — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; “topology“ — one of “lone“ / “parent“ / “child“, computed from whether this agent's sessions carry a parent_session_id and whether they are referenced as a parent by other agents). Pagination defaults to 25/page, max 100.",
+                "description": "Returns agents matching the supplied filters. Multi-value filters (state, agent_type, client_type, hostname, user, os, orchestration) accept comma-separated values and repeated query params; values within a dimension are OR, values across dimensions are AND. “search“ is a case-insensitive substring match against “agent_name“ and “hostname“. “updated_since“ filters on “last_seen_at \u003e= ts“. State is computed via LATERAL subquery against the most-recent session. Each row also carries sub-agent rollup fields (“agent_role“ — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; “topology“ — one of “lone“ / “parent“ / “child“, computed from whether this agent's sessions carry a parent_session_id and whether they are referenced as a parent by other agents). Pagination defaults to 25/page, max 100.",
                 "produces": [
                     "application/json"
                 ],
@@ -493,13 +493,13 @@ const docTemplate = `{
                 "parameters": [
                     {
                         "type": "string",
-                        "description": "Metric: tokens, sessions, latency_avg, latency_p50, latency_p95, policy_events, estimated_cost, parent_token_sum, child_token_sum, child_count, parent_to_first_child_latency_ms (default: tokens). The four sub-agent metrics (D126) operate over the parent / child relationship via recursive CTE on parent_session_id.",
+                        "description": "Metric: tokens, sessions, latency_avg, latency_p50, latency_p95, policy_events, estimated_cost, parent_token_sum, child_token_sum, child_count, parent_to_first_child_latency_ms (default: tokens). The four sub-agent metrics operate over the parent / child relationship via recursive CTE on parent_session_id.",
                         "name": "metric",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "Dimension(s) (default: flavor). One or two dimensions, comma-separated (D126 § 6.4): ?group_by=dim1 keeps the pre-D126 single-axis shape; ?group_by=dim1,dim2 returns a two-key rollup where dim1 is the primary (outer) axis and dim2 is the secondary (inner) axis. Allowed values in either position: flavor, model, framework, host, agent_type, team, provider, agent_role, parent_session_id. agent_role (D126) groups by the framework-supplied sub-agent role string and parent_session_id (D126 § 6.4) groups by parent UUID; both bucket nulls as '(root)'. Two-dim payloads carry per-DataPoint “breakdown[]“ segments (key+value); single-dim payloads keep the flat “value“ shape exactly.",
+                        "description": "Dimension(s) (default: flavor). One or two dimensions, comma-separated: ?group_by=dim1 keeps the single-axis shape; ?group_by=dim1,dim2 returns a two-key rollup where dim1 is the primary (outer) axis and dim2 is the secondary (inner) axis. Allowed values in either position: flavor, model, framework, host, agent_type, team, provider, agent_role, parent_session_id. agent_role groups by the framework-supplied sub-agent role string and parent_session_id groups by parent UUID; both bucket nulls as '(root)'. Two-dim payloads carry per-DataPoint “breakdown[]“ segments (key+value); single-dim payloads keep the flat “value“ shape exactly.",
                         "name": "group_by",
                         "in": "query"
                     },
@@ -559,19 +559,19 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "D126: filter analytics scope to children of one specific parent session (UUID).",
+                        "description": "Filter analytics scope to children of one specific parent session (UUID).",
                         "name": "filter_parent_session_id",
                         "in": "query"
                     },
                     {
                         "type": "boolean",
-                        "description": "D126: when true, restrict to parent sessions only (those referenced as a parent_session_id by at least one other session).",
+                        "description": "When true, restrict to parent sessions only (those referenced as a parent_session_id by at least one other session).",
                         "name": "filter_has_sub_agents",
                         "in": "query"
                     },
                     {
                         "type": "boolean",
-                        "description": "D126: when true, restrict to child sessions only (parent_session_id IS NOT NULL).",
+                        "description": "When true, restrict to child sessions only (parent_session_id IS NOT NULL).",
                         "name": "filter_is_sub_agent",
                         "in": "query"
                     }
@@ -1177,14 +1177,14 @@ const docTemplate = `{
         },
         "/v1/fleet": {
             "get": {
-                "description": "Returns agents with aggregated state rollup and pagination. Each row also carries D126 sub-agent rollup fields (` + "`" + `` + "`" + `agent_role` + "`" + `` + "`" + ` — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; ` + "`" + `` + "`" + `topology` + "`" + `` + "`" + ` — one of ` + "`" + `` + "`" + `lone` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `parent` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `child` + "`" + `` + "`" + `). Includes runtime context facets aggregated across all non-terminal sessions for the dashboard CONTEXT sidebar.",
+                "description": "Returns agents with aggregated state rollup and pagination. Each row also carries sub-agent rollup fields (` + "`" + `` + "`" + `agent_role` + "`" + `` + "`" + ` — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; ` + "`" + `` + "`" + `topology` + "`" + `` + "`" + ` — one of ` + "`" + `` + "`" + `lone` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `parent` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `child` + "`" + `` + "`" + `). Includes runtime context facets aggregated across all non-terminal sessions for the dashboard CONTEXT sidebar.",
                 "produces": [
                     "application/json"
                 ],
                 "tags": [
                     "fleet"
                 ],
-                "summary": "Get fleet state (agent-level, D115)",
+                "summary": "Get fleet state (agent-level)",
                 "parameters": [
                     {
                         "type": "integer",
@@ -1200,7 +1200,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Filter by D114 agent type: 'coding', 'production', or empty for all",
+                        "description": "Filter by agent type: 'coding', 'production', or empty for all",
                         "name": "agent_type",
                         "in": "query"
                     }
@@ -1390,7 +1390,7 @@ const docTemplate = `{
         },
         "/v1/mcp-policies/resolve": {
             "get": {
-                "description": "Sensor / plugin preflight. Returns the per-D135 decision (allow / warn / block) for a (flavor, server_url, server_name) tuple, plus the decision_path that produced it (flavor_entry / global_entry / mode_default). The server canonicalizes the URL using the same algorithm as the Python and JS identity primitives.",
+                "description": "Sensor / plugin preflight. Returns the decision (allow / warn / block) for a (flavor, server_url, server_name) tuple -- a flavor entry wins, then a global entry, then the global-mode default -- plus the decision_path that produced it (flavor_entry / global_entry / mode_default). The server canonicalizes the URL using the same algorithm as the Python and JS identity primitives.",
                 "produces": [
                     "application/json"
                 ],
@@ -2215,7 +2215,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Filter to a single agent (D115 UUID; deep-linked from the Fleet agent table and Investigate AGENT facet)",
+                        "description": "Filter to a single agent (agent UUID; deep-linked from the Fleet agent table and Investigate AGENT facet)",
                         "name": "agent_id",
                         "in": "query"
                     },
@@ -2305,25 +2305,25 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "D126: filter to children of one specific parent session (UUID). Used by the SessionDrawer Sub-agents tab to fetch the per-parent child list.",
+                        "description": "Filter to children of one specific parent session (UUID). Used by the SessionDrawer Sub-agents tab to fetch the per-parent child list.",
                         "name": "parent_session_id",
                         "in": "query"
                     },
                     {
                         "type": "string",
-                        "description": "D126: filter by sub-agent role string (repeatable/comma). CrewAI Agent.role, LangGraph node name, Claude Code Task agent_type. Backs the Investigate ROLE facet.",
+                        "description": "Filter by sub-agent role string (repeatable/comma). CrewAI Agent.role, LangGraph node name, Claude Code Task agent_type. Backs the Investigate ROLE facet.",
                         "name": "agent_role",
                         "in": "query"
                     },
                     {
                         "type": "boolean",
-                        "description": "D126: when true, restrict to parent sessions only (those referenced as a parent_session_id by at least one other session). Backs the Investigate TOPOLOGY facet 'Has sub-agents' checkbox.",
+                        "description": "When true, restrict to parent sessions only (those referenced as a parent_session_id by at least one other session). Backs the Investigate TOPOLOGY facet 'Has sub-agents' checkbox.",
                         "name": "has_sub_agents",
                         "in": "query"
                     },
                     {
                         "type": "boolean",
-                        "description": "D126: when true, restrict to child sessions only (parent_session_id IS NOT NULL). Backs the Investigate TOPOLOGY facet 'Is sub-agent' checkbox.",
+                        "description": "When true, restrict to child sessions only (parent_session_id IS NOT NULL). Backs the Investigate TOPOLOGY facet 'Is sub-agent' checkbox.",
                         "name": "is_sub_agent",
                         "in": "query"
                     },
@@ -2335,7 +2335,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "boolean",
-                        "description": "D126 UX revision 2026-05-03: when false, exclude pure children (rows whose parent_session_id is set AND that themselves have no descendants), leaving parents-with-children + lone sessions. Default scope of the Investigate page. Omit or set true to preserve the legacy 'all sessions' behaviour.",
+                        "description": "When false, exclude pure children (rows whose parent_session_id is set AND that themselves have no descendants), leaving parents-with-children + lone sessions. Default scope of the Investigate page. Omit or set true to preserve the legacy 'all sessions' behaviour.",
                         "name": "include_pure_children",
                         "in": "query"
                     },
@@ -2788,7 +2788,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "agent_role": {
-                    "description": "AgentRole is the framework-supplied sub-agent role string\n(CrewAI Agent.role, LangGraph node name, Claude Code Task\nagent_type) when this agent represents a sub-agent identity;\nnil for root agents. Read from any one of the agent's sessions\n— by D126 derivation every session under an agent_id shares\nthe same 6-tuple input, so agent_role is uniform across them.",
+                    "description": "AgentRole is the framework-supplied sub-agent role string\n(CrewAI Agent.role, LangGraph node name, Claude Code Task\nagent_type) when this agent represents a sub-agent identity;\nnil for root agents. Read from any one of the agent's sessions\n— by the identity derivation every session under an agent_id shares\nthe same 6-tuple input, so agent_role is uniform across them.",
                     "type": "string"
                 },
                 "agent_type": {
@@ -2840,7 +2840,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "topology": {
-                    "description": "Topology classifies this agent's place in the sub-agent graph\n(D126):\n  \"lone\"   — none of this agent's sessions carry a\n             parent_session_id and no other agent's sessions\n             reference one of ours as a parent\n  \"child\"  — at least one session has parent_session_id IS NOT\n             NULL (i.e. this agent runs as a sub-agent under\n             someone else's parent session). Wins over \"parent\"\n             when both apply: a sub-agent role's defining\n             property is that its sessions are spawned by a\n             parent, secondary nesting is incidental.\n  \"parent\" — this agent's sessions are referenced as a\n             parent_session_id by at least one other session,\n             and the agent itself is not a child.",
+                    "description": "Topology classifies this agent's place in the sub-agent graph:\n  \"lone\"   — none of this agent's sessions carry a\n             parent_session_id and no other agent's sessions\n             reference one of ours as a parent\n  \"child\"  — at least one session has parent_session_id IS NOT\n             NULL (i.e. this agent runs as a sub-agent under\n             someone else's parent session). Wins over \"parent\"\n             when both apply: a sub-agent role's defining\n             property is that its sessions are spawned by a\n             parent, secondary nesting is incidental.\n  \"parent\" — this agent's sessions are referenced as a\n             parent_session_id by at least one other session,\n             and the agent itself is not a child.",
                     "type": "string"
                 },
                 "total_sessions": {
@@ -3146,11 +3146,11 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "tokens_cache_creation": {
-                    "description": "D100",
+                    "description": "0 when the provider reports none",
                     "type": "integer"
                 },
                 "tokens_cache_read": {
-                    "description": "D100",
+                    "description": "prompt-cache token split",
                     "type": "integer"
                 },
                 "tokens_input": {
@@ -3192,7 +3192,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "tool_input": {
-                    "description": "D150 (Phase 7 Step 3.b): tool_input + tool_output carry the\ncaptured arguments and result for mcp_tool_call / mcp_prompt_get\n/ LLM-side tool_call events. The dashboard branches on event_type\nto render the appropriate viewer; without these fields landing\nin the response the operator-paid-for capture is silently lost\nat the read boundary."
+                    "description": "tool_input + tool_output carry the\ncaptured arguments and result for mcp_tool_call / mcp_prompt_get\n/ LLM-side tool_call events. The dashboard branches on event_type\nto render the appropriate viewer; without these fields landing\nin the response the operator-paid-for capture is silently lost\nat the read boundary."
                 },
                 "tool_output": {},
                 "tools": {}
@@ -3240,7 +3240,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "mode": {
-                    "description": "global only — D134",
+                    "description": "global only",
                     "type": "string"
                 },
                 "scope": {
@@ -3673,7 +3673,7 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "agent_id": {
-                    "description": "D115 identity columns (nullable for sessions that predate the\nmigration OR for lazy-created rows whose authoritative\nsession_start never arrived; UpsertSession's COALESCE\nenrichment promotes these from NULL to real values on the\nfirst session_start).",
+                    "description": "Agent identity columns (nullable for sessions that predate the\nmigration OR for lazy-created rows whose authoritative\nsession_start never arrived; UpsertSession's COALESCE\nenrichment promotes these from NULL to real values on the\nfirst session_start).",
                     "type": "string"
                 },
                 "agent_name": {
@@ -3729,7 +3729,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "parent_session_id": {
-                    "description": "D126 sub-agent observability columns. Both nullable, both\npopulated only on sub-agent sessions (Claude Code Task\nsubagent, CrewAI agent execution, LangGraph agent-bearing\nnode). Root sessions and direct-SDK sessions carry NULL on\nboth. The dashboard's swimlane relationship pill, Sub-agents\ntab, Investigate ROLE / PARENT columns, and Investigate\nTOPOLOGY facets read these directly.",
+                    "description": "Sub-agent observability columns. Both nullable, both\npopulated only on sub-agent sessions (Claude Code Task\nsubagent, CrewAI agent execution, LangGraph agent-bearing\nnode). Root sessions and direct-SDK sessions carry NULL on\nboth. The dashboard's swimlane relationship pill, Sub-agents\ntab, Investigate ROLE / PARENT columns, and Investigate\nTOPOLOGY facets read these directly.",
                     "type": "string"
                 },
                 "policy_token_limit": {
@@ -3749,7 +3749,7 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "token_name": {
-                    "description": "TokenName is the human-readable name of the access_tokens row\nthat authenticated the session_start event (D095). Nullable:\ntok_dev-authenticated sessions and pre-Phase-5 rows carry NULL.\nPreserved across token revocation (sessions.token_id clears via\nON DELETE SET NULL but sessions.token_name is a static snapshot\nso the dashboard can attribute historical sessions even after\nthe token row is gone). Mirrors the SessionListItem.TokenName\nreturned by GetSessions.",
+                    "description": "TokenName is the human-readable name of the access_tokens row\nthat authenticated the session_start event. Nullable:\ntok_dev-authenticated sessions and rows that predate token\nattribution carry NULL.\nPreserved across token revocation (sessions.token_id clears via\nON DELETE SET NULL but sessions.token_name is a static snapshot\nso the dashboard can attribute historical sessions even after\nthe token row is gone). Mirrors the SessionListItem.TokenName\nreturned by GetSessions.",
                     "type": "string"
                 },
                 "tokens_used": {
@@ -3764,7 +3764,7 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "agent_id": {
-                    "description": "D115 identity (nullable for lazy-created rows awaiting an\nauthoritative session_start).",
+                    "description": "Agent identity (nullable for lazy-created rows awaiting an\nauthoritative session_start).",
                     "type": "string"
                 },
                 "agent_name": {
@@ -3784,7 +3784,7 @@ const docTemplate = `{
                     "type": "boolean"
                 },
                 "child_count": {
-                    "description": "ChildCount (D126 UX revision 2026-05-03) — derived count of\nsessions whose parent_session_id equals this row's\nsession_id. Always present on the wire (zero on lone agents\nand on pure children that have no descendants of their\nown). Surfaced server-side via a correlated subquery on the\nlisting query so the Investigate parent-row pill (` + "`" + `` + "`" + `→ N` + "`" + `` + "`" + `)\nrenders without a per-row follow-up fetch — same pattern as\nErrorTypes / PolicyEventTypes / MCPErrorTypes above. Hits\nthe existing ` + "`" + `` + "`" + `sessions_parent_session_id_idx` + "`" + `` + "`" + ` partial\nindex.",
+                    "description": "ChildCount — derived count of\nsessions whose parent_session_id equals this row's\nsession_id. Always present on the wire (zero on lone agents\nand on pure children that have no descendants of their\nown). Surfaced server-side via a correlated subquery on the\nlisting query so the Investigate parent-row pill (` + "`" + `` + "`" + `→ N` + "`" + `` + "`" + `)\nrenders without a per-row follow-up fetch — same pattern as\nErrorTypes / PolicyEventTypes / MCPErrorTypes above. Hits\nthe existing ` + "`" + `` + "`" + `sessions_parent_session_id_idx` + "`" + `` + "`" + ` partial\nindex.",
                     "type": "integer"
                 },
                 "client_type": {
@@ -3863,11 +3863,11 @@ const docTemplate = `{
                     }
                 },
                 "parent_session_id": {
-                    "description": "D126 sub-agent observability columns. Both nullable, both\npopulated only on sub-agent sessions (Claude Code Task\nsubagent, CrewAI agent execution, LangGraph agent-bearing\nnode). The dashboard's swimlane relationship pill,\nSessionDrawer Sub-agents tab, Investigate ROLE / PARENT\ncolumns and TOPOLOGY / ROLE facets read these directly.",
+                    "description": "Sub-agent observability columns. Both nullable, both\npopulated only on sub-agent sessions (Claude Code Task\nsubagent, CrewAI agent execution, LangGraph agent-bearing\nnode). The dashboard's swimlane relationship pill,\nSessionDrawer Sub-agents tab, Investigate ROLE / PARENT\ncolumns and TOPOLOGY / ROLE facets read these directly.",
                     "type": "string"
                 },
                 "policy_event_types": {
-                    "description": "PolicyEventTypes lists every distinct policy enforcement\n` + "`" + `` + "`" + `event_type` + "`" + `` + "`" + ` observed in the session. Includes both the\ntoken-budget axis (` + "`" + `` + "`" + `policy_warn` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `policy_degrade` + "`" + `` + "`" + ` /\n` + "`" + `` + "`" + `policy_block` + "`" + `` + "`" + `) and the MCP Protection Policy axis\n(` + "`" + `` + "`" + `policy_mcp_warn` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `policy_mcp_block` + "`" + `` + "`" + ` /\n` + "`" + `` + "`" + `mcp_server_name_changed` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `mcp_policy_user_remembered` + "`" + `` + "`" + `,\nper D131). Always present on the wire (empty array when the\nsession carries no policy events). Same surfacing pattern as\nErrorTypes — correlated subquery on the listing query so the\ndashboard renders the POLICY + MCP POLICY facets and\nseverity-ranked session-row indicator without a per-session\nfollow-up fetch. The dashboard splits the unified array into\ntwo sidebar facets via the EVENT_TYPE_GROUPS classification.",
+                    "description": "PolicyEventTypes lists every distinct policy enforcement\n` + "`" + `` + "`" + `event_type` + "`" + `` + "`" + ` observed in the session. Includes both the\ntoken-budget axis (` + "`" + `` + "`" + `policy_warn` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `policy_degrade` + "`" + `` + "`" + ` /\n` + "`" + `` + "`" + `policy_block` + "`" + `` + "`" + `) and the MCP Protection Policy axis\n(` + "`" + `` + "`" + `policy_mcp_warn` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `policy_mcp_block` + "`" + `` + "`" + ` /\n` + "`" + `` + "`" + `mcp_server_name_changed` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `mcp_policy_user_remembered` + "`" + `` + "`" + `,\nthe MCP Protection Policy family). Always present on the wire\n(empty array when the\nsession carries no policy events). Same surfacing pattern as\nErrorTypes — correlated subquery on the listing query so the\ndashboard renders the POLICY + MCP POLICY facets and\nseverity-ranked session-row indicator without a per-session\nfollow-up fetch. The dashboard splits the unified array into\ntwo sidebar facets via the EVENT_TYPE_GROUPS classification.",
                     "type": "array",
                     "items": {
                         "type": "string"
@@ -3883,7 +3883,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "token_id": {
-                    "description": "D095: attribution for the access_tokens row that opened this\nsession. TokenID is nullable because revocation clears the FK\n(ON DELETE SET NULL); TokenName is preserved for auditability\nso the UI can still render \"Created via: Staging K8s (revoked)\"\nlong after the token row is gone.",
+                    "description": "Attribution for the access_tokens row that opened this\nsession. TokenID is nullable because revocation clears the FK\n(ON DELETE SET NULL); TokenName is preserved for auditability\nso the UI can still render \"Created via: Staging K8s (revoked)\"\nlong after the token row is gone.",
                     "type": "string"
                 },
                 "token_limit": {

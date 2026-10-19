@@ -56,7 +56,7 @@ vi.mock("@/hooks/useSession", () => ({
       error: null,
     };
   },
-  // Drawer's D113 pill-change handler calls invalidateSessionCache
+  // Drawer's pill-change handler calls invalidateSessionCache
   // before re-fetching; the mock just needs to be a no-op so the
   // drawer code path runs without a "not exported" module error.
   invalidateSessionCache: vi.fn(),
@@ -78,12 +78,12 @@ vi.mock("@/lib/api", () => ({
   createDirective: vi.fn(() => Promise.resolve({ id: "dir-1" })),
   fetchEventContent: vi.fn(() => Promise.resolve(null)),
   triggerCustomDirective: vi.fn(() => Promise.resolve()),
-  // Default: no older events. D113 pagination tests below reassign
+  // Default: no older events. Pagination tests below reassign
   // this mock per case to exercise the merge-and-sort logic.
   fetchOlderEvents: vi.fn(() =>
     Promise.resolve({ events: [], total: 0, limit: 50, offset: 0, has_more: false }),
   ),
-  // D126: SessionDrawer probes for child sessions to gate the
+  // SessionDrawer probes for child sessions to gate the
   // Sub-agents tab. Default mock returns an empty list so the tab
   // hides; tests covering the sub-agent surface re-mock per case.
   fetchSessions: vi.fn(() =>
@@ -713,7 +713,7 @@ describe("SessionDrawer", () => {
     expect(badges[badges.length - 1].textContent).toBe("START");
   });
 
-  // ---- D094 ATTACH badge ----
+  // ---- ATTACH badge ----
 
   it("session_start matching the attachments array renders an ATTACH badge and original keeps START", () => {
     // e1 is the original session_start at 10:00:00. Add a second
@@ -759,7 +759,7 @@ describe("SessionDrawer", () => {
     expect(styleAttr).toContain("color-mix(in srgb, var(--warning) 15%");
   });
 
-  it("ATTACH badge surfaces the D094 tooltip on hover via Radix Tooltip", async () => {
+  it("ATTACH badge surfaces the attachment tooltip on hover via Radix Tooltip", async () => {
     // Radix Tooltip renders its content in a portal only while the
     // trigger has pointer focus, so we drive a real hover + poll for
     // the content to appear. getByRole('tooltip') is the reliable
@@ -963,7 +963,7 @@ describe("SessionDrawer — headline relationship pill", () => {
 });
 
 // -----------------------------------------------------------------------
-// D113: drawer events pagination
+// Drawer events pagination
 // -----------------------------------------------------------------------
 
 import { fetchOlderEvents } from "@/lib/api";
@@ -972,7 +972,7 @@ import { invalidateSessionCache } from "@/hooks/useSession";
 const mockFetchOlderEvents = fetchOlderEvents as ReturnType<typeof vi.fn>;
 const mockInvalidateSessionCache = invalidateSessionCache as ReturnType<typeof vi.fn>;
 
-describe("SessionDrawer pagination (D113)", () => {
+describe("SessionDrawer pagination", () => {
   beforeEach(() => {
     mockSessionOverride = {};
     mockEventsOverride = null;
@@ -1179,7 +1179,7 @@ describe("SessionDrawer pagination (D113)", () => {
 // -----------------------------------------------------------------------
 // Phase 5 — MCP failure surfacing on event-feed rows
 //
-// Pre-fix the drawer's event feed rendered every MCP row in the
+// Guarded regression: the drawer's event feed rendered every MCP row in the
 // family colour (cyan / green / purple) regardless of success vs.
 // failure. An operator scanning the list could not tell a successful
 // mcp_tool_call from a failed one without expanding the row to read

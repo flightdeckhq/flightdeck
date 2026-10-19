@@ -4,8 +4,8 @@
 Phase 2 post-smoke Path A cleanup: a manual run of
 ``test_ui_demo.py`` left the dev DB with an anomalous agent row
 (``agent_type=coding`` + ``client_type=flightdeck_sensor``). The
-pair is mechanically allowed by the ingestion validator (D116) but
-semantically nonsensical -- coding agents in D115 are the Claude Code
+pair is mechanically allowed by the ingestion validator but
+semantically nonsensical -- coding agents are the Claude Code
 plugin, sensor-routed events are SDK workloads. The combination
 produced a visible Fleet sidebar bug: a CODING AGENT badge next to a
 SENSOR pill on the same row, with two near-identical rows for the
@@ -115,8 +115,8 @@ def test_ui_demo_agents_list_uses_canonical_pairs() -> None:
         assert at_match is not None, f"entry lacks agent_type: {line!r}"
         assert ct_match is not None, (
             f"entry lacks client_type -- conftest default of "
-            f"flightdeck_sensor would apply, which is the pre-fix "
-            f"anti-pattern: {line!r}"
+            f"flightdeck_sensor would apply, which is the "
+            f"anti-pattern this test guards against: {line!r}"
         )
         agent_type = at_match.group(1)
         client_type = ct_match.group(1)

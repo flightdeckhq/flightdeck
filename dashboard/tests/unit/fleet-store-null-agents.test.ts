@@ -58,7 +58,7 @@ describe("useFleetStore.load -- JSON-null agents guard", () => {
     });
     fetchCustomDirectivesMock.mockResolvedValue([]);
 
-    // Pre-fix this call would throw "Cannot read properties of null
+    // Guarded regression: this call would throw "Cannot read properties of null
     // (reading 'map')" from either buildFlavors or seedBucketEntries.
     await expect(useFleetStore.getState().load()).resolves.toBeUndefined();
 

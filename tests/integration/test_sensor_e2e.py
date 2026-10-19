@@ -6,10 +6,9 @@ These are the FIRST integration tests that drive `flightdeck_sensor.init()`,
 not need real Anthropic / OpenAI tokens. Everything else (sensor →
 ingestion → NATS → workers → Postgres → query API) runs for real.
 
-Per Phase 4.5 audit Part 5 (Hat 1 finding: 0 REAL_PIPELINE coverage in
-the existing tests/integration/ suite -- every other file in this
-directory POSTs hand-crafted payloads directly to /v1/events and bypasses
-the sensor entirely).
+This file exists because every other file in this directory POSTs
+hand-crafted payloads directly to /v1/events and bypasses the sensor
+entirely; without it the real sensor pipeline has no coverage.
 
 NOTE on directive delivery via the post_call queue path: the EventQueue
 drain thread calls ``ControlPlaneClient.post_event(item)`` and discards
@@ -306,9 +305,9 @@ def _mock_anthropic_messages(
     the respx mock and overflow the sensor's 1000-slot event queue
     on a slow CI runner. Real LLM providers take hundreds of
     milliseconds per call, so the unbounded producer rate is a test
-    artifact, not a production scenario. KI16 covers the optional
-    Phase 4.9 batch ingestion improvement that would raise the
-    drain ceiling further; the 50 ms tick here is the minimum
+    artifact, not a production scenario. Batch ingestion would raise
+    the drain ceiling further but was declined for v1; the 50 ms tick
+    here is the minimum
     necessary to make the test scenario match production.
     """
     body = response or ANTHROPIC_RESPONSE
@@ -396,9 +395,9 @@ def _register_directive_via_api(
 ) -> None:
     """Pre-register a custom directive via /api/v1/directives/register.
 
-    Workaround for KI14 -- the sensor's auto-sync URL is broken in dev,
-    so the multithreading tests register the directive directly via the
-    API to make it triggerable from POST /v1/directives.
+    The multithreading tests register the directive directly via the
+    API (rather than relying on the sensor's auto-sync) to make it
+    triggerable from POST /v1/directives.
     """
     body = {
         "flavor": flavor,
@@ -618,15 +617,13 @@ def test_sensor_capture_prompts_true(
 # Test 4 -- Custom directive registered AND triggered end-to-end
 # ======================================================================
 #
-# Strengthened in the Part 5 follow-up commit that fixed B-A (drain
-# thread now applies directives via the directive_callback wired
-# through Session.__init__) and B-D (directive_result events use the
-# worker-schema field names so directive_status / result / error
-# survive ingestion).
+# The drain thread applies directives via the directive_callback
+# wired through Session.__init__, and directive_result events use
+# the worker-schema field names so directive_status / result / error
+# survive ingestion.
 #
-# B-B is still open (KI14): the sensor's auto-sync URL routing
-# targets /ingest/v1/directives/sync which 404s in dev. The test
-# works around this by pre-registering the directive via the
+# The test does not depend on the sensor's auto-sync reaching the
+# control plane: it pre-registers the directive via the
 # auth-bearing /api/v1/directives/register endpoint directly. The
 # sensor's local registry is still populated via the @directive
 # decorator, init() still calls sync (which fails open), and the
@@ -664,9 +661,9 @@ def test_sensor_custom_directive_registered_and_triggered(
     assert "e2e_test_action" in _directive_registry
     fingerprint = _directive_registry["e2e_test_action"].fingerprint
 
-    # KI14 workaround: pre-register the directive via the API directly
-    # so the fingerprint exists in custom_directives by the time the
-    # POST below runs (the sensor's sync_directives 404s in dev).
+    # Pre-register the directive via the API directly so the
+    # fingerprint exists in custom_directives by the time the POST
+    # below runs, independent of the sensor's own sync.
     register_body = {
         "flavor": flavor,
         "directives": [{
@@ -1321,7 +1318,7 @@ def test_context_facets_aggregation(
 
 
 # ======================================================================
-# MULTITHREADING TESTS (Phase 4.5 audit Part 3)
+# MULTITHREADING TESTS
 # ======================================================================
 #
 # All tests below exercise the sensor under realistic concurrent
@@ -1335,7 +1332,7 @@ def test_context_facets_aggregation(
 # Patterns covered:
 #   A -- single-threaded agent (test_pattern_a_*)
 #   B -- multithreaded agent sharing one Session (test_pattern_b_*)
-#   C -- one init() per thread (DOCUMENTS KI15 -- not supported)
+#   C -- one init() per thread (DOCUMENTS the singleton limitation -- not supported)
 #   D -- long-running agent receiving directives mid-flight
 #
 # These are the FIRST tests that exercise the sensor's threading
@@ -1374,7 +1371,7 @@ def test_pattern_b_concurrent_calls_no_data_loss(
         # 50 ms mock latency simulates real LLM provider RTT so the
         # 4 concurrent workers cannot fire faster than the drain
         # thread can flush. See _mock_anthropic_messages docstring
-        # and KI16 for the rationale.
+        # for the rationale.
         _mock_anthropic_messages(rmock, latency_ms=50)
 
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
@@ -1816,7 +1813,7 @@ def test_slow_handler_does_not_block_event_throughput(
         # fires 5 calls in a tight loop while the directive handler
         # thread is blocked. Real LLM RTT is the only natural
         # producer brake, so the mock simulates it. See
-        # _mock_anthropic_messages docstring and KI16.
+        # _mock_anthropic_messages docstring.
         _mock_anthropic_messages(rmock, latency_ms=50)
 
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
@@ -2092,7 +2089,7 @@ def test_pattern_b_degrade_seen_by_all_threads(
         # 50 ms latency simulates real LLM provider RTT so the four
         # concurrent workers cannot fire faster than the drain
         # thread can flush. See _mock_anthropic_messages docstring
-        # and KI16 for the rationale.
+        # for the rationale.
         time.sleep(0.05)
         body = json.loads(request.content)
         model = body.get("model", "claude-sonnet-4-6")
@@ -2210,21 +2207,20 @@ def test_pattern_b_degrade_seen_by_all_threads(
 
 
 # ======================================================================
-# Test M8 -- Pattern C: KI15 singleton limitation (DOCUMENTS the bug)
+# Test M8 -- Pattern C: init() singleton limitation (DOCUMENTS the behaviour)
 # ======================================================================
 
 
 def test_pattern_c_ki15_singleton_limitation(
     sensor_reset: None,
 ) -> None:
-    """KI15: ``init()`` is process-wide. The second call is a no-op.
+    """``init()`` is process-wide. The second call is a no-op.
 
     This test does NOT use the ``unique_flavor`` fixture because the
     point is to set TWO flavors and demonstrate that only one wins.
-    Per Phase 4.5 audit Part 1 finding B-I/B-J, this is a tracked
-    architectural limitation; future developers reading this test
-    should NOT "fix" it without resolving KI15 first (the resolution
-    is a Session-handle API change tracked for Phase 5).
+    This is an accepted architectural limitation (closed as v1
+    won't-fix); future developers reading this test should NOT "fix"
+    it without a Session-handle API change.
 
     If this assertion ever flips -- e.g. if per-thread Sessions
     become supported -- update this test to verify the new behaviour.
@@ -2277,9 +2273,9 @@ def test_pattern_c_ki15_singleton_limitation(
         # flavor_a (the env var Thread A set before its init).
         status = flightdeck_sensor.get_status()
         assert status.flavor == flavor_a, (
-            f"KI15: expected the singleton to be the first init's "
+            f"expected the singleton to be the first init's "
             f"flavor ({flavor_a}), got {status.flavor}. If this "
-            f"assertion now fails, KI15 has been resolved -- update "
+            f"assertion now fails, the singleton limitation has been resolved -- update "
             f"this test."
         )
 
@@ -2325,10 +2321,10 @@ def test_pattern_c_ki15_singleton_limitation(
 
             sess_b = _query_session_for_flavor(flavor_b)
             assert sess_b is None, (
-                f"KI15: expected NO session for flavor_b, got "
+                f"expected NO session for flavor_b, got "
                 f"{sess_b}. If this is None, the singleton is still "
                 f"in effect (current behaviour). If this returns a "
-                f"row, KI15 has been resolved -- update this test."
+                f"row, the singleton limitation has been resolved -- update this test."
             )
     finally:
         os.environ.pop("AGENT_FLAVOR", None)

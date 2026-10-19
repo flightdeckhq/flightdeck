@@ -9828,3 +9828,33 @@ different flavor name meant the flavor policy never applied.
 **Rejected alternative:** Emitting the deprecated top-level
 `approve|block` (works today but is scheduled for removal), or exiting with
 code 2 on deny (blocks reliably but discards the structured reason).
+
+## D185 -- Streamed calls are metered from the provider's in-stream usage events
+
+**Date:** 2026-10-19
+
+**Decision:** The sensor's stream guard records token usage from the
+chunks the provider sends (Anthropic `message_start` / `message_delta`,
+OpenAI chat's `include_usage` final chunk, Responses `response.completed`,
+litellm's final usage chunk) and emits `post_call` once, at the first of
+stream exhaustion, `close()` or leaving the `with` block. The guard is a
+plain iterator as well as a context manager, so `for chunk in create(...,
+stream=True)` and `async for` work without `with`. `messages.create(
+stream=True)` and `responses.create(stream=True)` route through the same
+guard as the stream helpers. The pre-call estimate is used only when the
+stream carried no usage at all.
+
+**Reasoning:** The SDK stream objects (`anthropic.Stream`,
+`MessageStream`, `openai.Stream`) have no `usage` attribute, so reading
+usage from them after exit always returned zero and every streamed call
+was billed at the estimate with zero output tokens; the unit test passed
+only because its mock stream had a `usage` attribute no real stream has.
+The usage lives in the events that pass through the guard, which is where
+metering has to happen.
+
+**Rejected alternatives:** Re-fetching usage after the stream (no such
+endpoint; `count_tokens` would double the cost and still miss cache
+fields). Waiting for `get_final_message()` on early exit (it consumes the
+rest of the stream, defeating the caller's `break`). Keeping the estimate
+on streams and documenting it (streaming is the default in most agent
+frameworks, so budgets and cost would stay wrong for most sessions).

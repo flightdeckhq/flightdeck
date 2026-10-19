@@ -121,11 +121,11 @@ Each script self-skips when its API keys aren't set, so `make playground-all` ru
 
 | Provider  | Chat | Embeddings | Streaming | Errors |
 |-----------|------|------------|-----------|--------|
-| Anthropic | `messages.create`, `messages.stream`, `beta.messages.*` (sync + async) | route via litellm to Voyage | sync + async | 14-entry `llm_error` taxonomy |
-| OpenAI    | `chat.completions.create`, `responses.create` (sync + async) | `embeddings.create` (sync + async) | sync + async | same |
+| Anthropic | `messages.create`, `messages.stream`, `beta.messages.*` (sync + async) | route via litellm to Voyage | `messages.stream` and `messages.create(stream=True)`, sync + async, with or without `with`; tokens metered from the stream's usage events | 14-entry `llm_error` taxonomy |
+| OpenAI    | `chat.completions.create`, `responses.create` (sync + async) | `embeddings.create` (sync + async) | chat and Responses, sync + async, with or without `with`; tokens from the final usage chunk | same |
 | litellm   | `litellm.completion`, `litellm.acompletion` (chat path only) | `litellm.embedding`, `litellm.aembedding` | not yet (`stream=True` raises `NotImplementedError`; see Roadmap) | same |
 
-Streaming events expose `payload.streaming = {ttft_ms, chunk_count, inter_chunk_ms, final_outcome, abort_reason}`. Mid-stream aborts emit `llm_error{error_type="stream_error"}` with partial-chunk and partial-token data.
+Streaming events expose `payload.streaming = {ttft_ms, chunk_count, inter_chunk_ms, final_outcome, abort_reason}` and carry the real token counts the provider sends inside the stream. Mid-stream aborts emit `llm_error{error_type="stream_error"}` with partial-chunk and partial-token data.
 
 ### Frameworks
 
@@ -440,7 +440,7 @@ Deferred and planned work lives here so it stays visible and user demand can pri
 
 ### Next up (v0.6.0 and v0.7.0)
 
-- Sensor correctness on current SDKs: streaming token accounting, LangChain 1.x and structured-output paths, litellm streaming, Bedrock / Vertex / Foundry clients, mcp 2.x support.
+- Sensor correctness on current SDKs: LangChain 1.x and structured-output paths, litellm streaming, Bedrock / Vertex / Foundry clients, mcp 2.x support, prompt-content capture for raw event streams (`messages.create(stream=True)` / `responses.create(stream=True)` land tokens and metadata but no content row today).
 - Toolchain currency: Node 24, Go 1.27, Python 3.11 through 3.14, Vite 8 / Vitest 5 / React 19, current Postgres, NATS and nginx images, dependency automation and vulnerability scanning in CI.
 - Operations: serve the workers' metrics counters over HTTP (the Prometheus-text handler exists but is not mounted) and add request-latency histograms to the Go services.
 - Token and cost model: reasoning tokens, the prompt-cache TTL split, per-model cache ratios, a current model catalogue (Claude 5, GPT-6, Gemini 4), agent-reported cost, and model-id normalisation for gateway and cloud-platform ids.

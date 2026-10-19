@@ -665,7 +665,8 @@ the actual class object in place.
 The patched resource slots are:
 
 - **Anthropic** — `Anthropic.messages`, `AsyncAnthropic.messages`,
-  `Beta.messages`, `AsyncBeta.messages` (the `Beta` class lives at
+  `Beta.messages`, `AsyncBeta.messages`; `create`, `create(stream=True)`
+  and `stream()` are intercepted (the `Beta` class lives at
   `anthropic.resources.beta.beta`; patching its `messages` cached_property
   is the leaf-level fix for `client.beta.messages.create` / `.stream` used
   by Claude 4 adaptive-thinking).
@@ -3588,6 +3589,28 @@ When `stream=true` on the underlying request, the payload also carries:
 `final_outcome` is `"completed"` or `"aborted"`. `abort_reason` is set
 on aborted streams (`"client_aborted"`, `"provider_error"`, etc.). The
 streaming sub-object is omitted entirely for non-streaming calls.
+
+#### Streaming metering
+
+A streamed call is metered from the usage the provider sends inside the
+stream itself, never from the stream object: Anthropic's `message_start`
+event carries input and cache tokens and its `message_delta` events carry
+the cumulative output count (the `messages.stream()` helper additionally
+exposes `get_final_message().usage`, which is taken as authoritative once
+the stream is exhausted); OpenAI chat streams carry a final usage chunk
+because the sensor injects `stream_options.include_usage`; Responses
+streams carry usage on `response.completed`. The sensor wraps the SDK
+stream in a guard that records usage as chunks pass through and emits the
+`post_call` once, at the first of: the caller exhausting the stream,
+closing it, or leaving the `with` block. Plain iteration without a `with`
+block (`for chunk in client.chat.completions.create(..., stream=True)`)
+and `async for` are supported; `messages.create(stream=True)` and
+`responses.create(stream=True)` take the same path as the stream helpers.
+A stream that ends before any usage event arrived (an early `break`
+before the final chunk) reports whatever usage was seen so far and falls
+back to the pre-call estimate for input only when nothing was seen. The
+guard proxies every other attribute (`text_stream`, `get_final_message`,
+`response`) to the SDK stream.
 
 ### `tool_call`
 

@@ -12,6 +12,16 @@ after upgrading the server.
 
 ### Fixed
 
+- **Sensor: streamed calls now report real token usage.** Every streamed
+  `post_call` used to carry the pre-call estimate as `tokens_input` and
+  `tokens_output = 0`, because the usage was read from the stream object
+  (which has none) instead of the stream's own usage events; plain
+  iteration without a `with` block raised under `patch()`, and
+  `messages.create(stream=True)` / `responses.create(stream=True)` were
+  not treated as streams at all. Usage is now metered from `message_start`
+  / `message_delta` (Anthropic), the final usage chunk (OpenAI chat) and
+  `response.completed` (Responses); iteration without `with` and
+  `async for` work; the guard proxies the SDK stream's attributes.
 - **Plugin: MCP policy decisions were never applied.** `PreToolUse`
   answered with the legacy top-level `decision` field, which Claude Code
   2.1 rejects; the hook now writes

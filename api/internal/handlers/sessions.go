@@ -89,6 +89,13 @@ func SessionsHandler(s store.Querier) http.HandlerFunc {
 			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
 		}
+		// The worker commits the sessions row before the event row,
+		// so a freshly started session can have no events yet. The
+		// list is still an empty array, never null: clients iterate
+		// it without a guard.
+		if events == nil {
+			events = []store.Event{}
+		}
 
 		// Attachments failure is non-fatal: the session + events are
 		// load-bearing for the drawer; the attachment list only adds

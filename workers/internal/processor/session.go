@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/workers/internal/consumer"
@@ -37,11 +36,54 @@ func identityFromEvent(e consumer.EventPayload) writer.AgentIdentity {
 type SessionProcessor struct {
 	w    *writer.Writer
 	pool *pgxpool.Pool
+
+	// lookupSession reports the session row's state. The DB-backed
+	// default is sessionLookupState; unit tests substitute a stub.
+	lookupSession func(ctx context.Context, sessionID string) (sessionLookup, error)
+	// sessionEndGrace / sessionEndPoll bound how long HandleSessionEnd
+	// waits for a missing session row before it declares an orphan;
+	// see sessionEndStartGrace for the rationale behind the defaults.
+	sessionEndGrace time.Duration
+	sessionEndPoll  time.Duration
 }
+
+// ErrEventDropped is returned by a handler that has deliberately
+// discarded its event. Process turns it into a clean ACK: no event row
+// is inserted and the consumer does not redeliver. Today only an orphan
+// session_end takes this path.
+var ErrEventDropped = errors.New("event dropped")
+
+// The consumer pool fetches from one NATS consumer in parallel, so two
+// events of the same session are processed concurrently whenever they
+// are published close together, as a short-lived process does when it
+// starts, makes one call and exits. A session_end can therefore reach a
+// goroutine before the goroutine holding the session_start has
+// committed the sessions row. Treating that session_end as an orphan
+// loses it, and the session stays active until the reconciler reaps it.
+//
+// sessionEndStartGrace bounds how long HandleSessionEnd waits for the
+// row to appear before declaring an orphan. A session_start's write
+// path is a handful of round trips (agent upsert, optional parent stub,
+// session upsert, rollup bump), tens of milliseconds on a loaded
+// database, so two seconds covers it with a wide margin while a
+// genuinely orphan session_end holds a goroutine for at most that long.
+// sessionEndStartPoll is the re-check interval: each check is a
+// primary-key SELECT, so the usual race resolves within a poll or two.
+const (
+	sessionEndStartGrace = 2 * time.Second
+	sessionEndStartPoll  = 25 * time.Millisecond
+)
 
 // NewSessionProcessor creates a SessionProcessor.
 func NewSessionProcessor(w *writer.Writer, pool *pgxpool.Pool) *SessionProcessor {
-	return &SessionProcessor{w: w, pool: pool}
+	sp := &SessionProcessor{
+		w:               w,
+		pool:            pool,
+		sessionEndGrace: sessionEndStartGrace,
+		sessionEndPoll:  sessionEndStartPoll,
+	}
+	sp.lookupSession = sp.sessionLookupState
+	return sp
 }
 
 // handleSessionGuard enforces the revive-or-create-or-skip policy
@@ -217,30 +259,53 @@ const (
 )
 
 // sessionLookupState reports whether the session row is missing, present
-// and closed, or present and non-closed. Fails open on a DB error (returns
-// Missing) so the close path still runs -- matching the pre-Phase-4
-// isClosed-returns-false fallback.
-func (sp *SessionProcessor) sessionLookupState(ctx context.Context, sessionID string) sessionLookup {
+// and closed, or present and non-closed. Only "no such row" is reported
+// as missing; any other database error is returned so the caller NAKs
+// and the event is redelivered, rather than mistaking an outage for an
+// orphan and discarding a session_end for good.
+func (sp *SessionProcessor) sessionLookupState(ctx context.Context, sessionID string) (sessionLookup, error) {
 	var state string
 	err := sp.pool.QueryRow(ctx,
 		"SELECT state FROM sessions WHERE session_id = $1::uuid", sessionID,
 	).Scan(&state)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return sessionLookupMissing, nil
+	}
 	if err != nil {
-		// pgx surfaces "no rows" as pgx.ErrNoRows; any other error
-		// (network, malformed UUID cast, etc.) also funnels here.
-		// Matching substring on error text keeps the import surface
-		// small -- pgx.ErrNoRows is the only sentinel we care about
-		// distinguishing, and the rest collapse to "assume missing,
-		// let the caller decide".
-		if strings.Contains(err.Error(), "no rows in result set") {
-			return sessionLookupMissing
-		}
-		return sessionLookupMissing
+		return sessionLookupMissing, err
 	}
 	if state == "closed" {
-		return sessionLookupClosed
+		return sessionLookupClosed, nil
 	}
-	return sessionLookupOpen
+	return sessionLookupOpen, nil
+}
+
+// awaitSessionRow re-runs lookup until it reports a row, the grace
+// window elapses, or ctx ends. The first lookup runs immediately, so
+// the common case costs one query. A lookup error is returned as is.
+func awaitSessionRow(
+	ctx context.Context,
+	lookup func(context.Context) (sessionLookup, error),
+	grace, poll time.Duration,
+) (sessionLookup, error) {
+	deadline := time.Now().Add(grace)
+	for {
+		state, err := lookup(ctx)
+		if err != nil || state != sessionLookupMissing {
+			return state, err
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return sessionLookupMissing, nil
+		}
+		timer := time.NewTimer(min(poll, remaining))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return sessionLookupMissing, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 // HandleSessionStart upserts the agent and creates (or revives) a session.
@@ -451,14 +516,17 @@ func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.Event
 // CloseSession, not flicker through active. Already-closed sessions are
 // an idempotent no-op.
 //
-// Orphan session_end (session_end for an unknown session_id) is
-// handled explicitly. Letting it through would mean a silent
-// FK-violation at InsertEvent → NATS Nak → redelivery loop → DLQ,
-// with an opaque "process error" log that doesn't distinguish "orphan"
-// from "real problem". Instead we look up the session state before
-// CloseSession runs; a missing row yields a WARN log + dropped-events
-// counter increment + nil return so the consumer ACKs cleanly (there is
-// nothing to recover from redelivery).
+// A missing session row does not immediately mean an orphan: the
+// session's session_start may still be in flight on a sibling worker
+// goroutine, so the handler waits up to sessionEndStartGrace for the
+// row to appear and then closes the session normally. Only a row that
+// never appears is an orphan session_end (session_end for a session_id
+// the server has never seen): that yields a WARN log, a dropped-events
+// counter increment and ErrEventDropped, which Process turns into a
+// clean ACK with no event row. Letting the insert run would FK-violate
+// against the missing session, NAK, and redeliver until the retry
+// budget is spent, with an opaque "process error" log that does not
+// distinguish "orphan" from "real problem".
 // HandleMCPServerAttached UPSERTs an MCP server fingerprint into
 // “sessions.context.mcp_servers“. Routed
 // from Process() alongside HandlePostCall (which advances
@@ -537,17 +605,25 @@ func nilIfEmpty(s string) any {
 }
 
 func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.EventPayload) error {
-	switch sp.sessionLookupState(ctx, e.SessionID) {
+	state, err := awaitSessionRow(ctx, func(c context.Context) (sessionLookup, error) {
+		return sp.lookupSession(c, e.SessionID)
+	}, sp.sessionEndGrace, sp.sessionEndPoll)
+	if err != nil {
+		return fmt.Errorf("session end: look up %s: %w", e.SessionID, err)
+	}
+	switch state {
 	case sessionLookupMissing:
 		// We deliberately do NOT lazy-create on session_end -- a
 		// teardown signal for a session we never saw should not
-		// retroactively manifest a closed row. Log + counter + ACK.
+		// retroactively manifest a closed row. Log + counter + ACK
+		// without an event row (ErrEventDropped).
 		metrics.IncrDropped(metrics.ReasonOrphanSessionEnd)
 		slog.Warn("dropped orphan session_end",
 			"session_id", e.SessionID,
 			"reason", string(metrics.ReasonOrphanSessionEnd),
+			"waited", sp.sessionEndGrace,
 		)
-		return nil
+		return ErrEventDropped
 	case sessionLookupClosed:
 		// Duplicate session_end. Idempotent by design; log and skip.
 		metrics.IncrDropped(metrics.ReasonClosedSessionSkip)

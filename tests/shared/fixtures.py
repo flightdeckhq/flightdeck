@@ -557,7 +557,7 @@ def get_session_event_count(session_id: str) -> int:
     """Return the number of events for a session."""
     try:
         detail = get_session_detail(session_id)
-        return len(detail.get("events", []))
+        return len(detail.get("events") or [])
     except Exception:
         return 0
 

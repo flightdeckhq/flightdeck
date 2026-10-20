@@ -352,7 +352,7 @@ def test_directive_result_appears_in_timeline() -> None:
             detail = get_session(sid)
         except Exception:
             return False
-        for ev in detail.get("events", []):
+        for ev in detail.get("events") or []:
             if ev.get("event_type") != "directive_result":
                 continue
             payload = ev.get("payload") or {}
@@ -371,7 +371,7 @@ def test_directive_result_appears_in_timeline() -> None:
 
     detail = get_session(sid)
     result_events = [
-        ev for ev in detail.get("events", [])
+        ev for ev in detail.get("events") or []
         if ev.get("event_type") == "directive_result"
     ]
     assert len(result_events) >= 1, (

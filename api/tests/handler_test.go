@@ -36,6 +36,9 @@ type mockStore struct {
 	// mock to simulate time-window filtering.
 	lastEventsParams       *store.EventsParams
 	lastSessionEventsLimit int
+	// sessionEventsNone makes GetSessionEvents return a nil slice, as
+	// the real store does for a session with no event rows yet.
+	sessionEventsNone bool
 
 	// Admin-reconcile handler-test plumbing. The handler calls
 	// ReconcileAgents unconditionally; tests inject the desired
@@ -148,6 +151,9 @@ func (m *mockStore) GetSession(_ context.Context, id string) (*store.Session, er
 
 func (m *mockStore) GetSessionEvents(_ context.Context, _ string, limit int) ([]store.Event, error) {
 	m.lastSessionEventsLimit = limit
+	if m.sessionEventsNone {
+		return nil, nil
+	}
 	events := []store.Event{
 		{ID: "e1", EventType: "session_start", OccurredAt: time.Now().Add(-time.Minute)},
 		{ID: "e2", EventType: "post_call", OccurredAt: time.Now()},
@@ -1191,6 +1197,28 @@ func TestGetSession_PolicyFieldsNullWhenNoPolicy(t *testing.T) {
 	}
 	if session["block_at_pct"] != nil {
 		t.Errorf("expected block_at_pct=nil, got %v", session["block_at_pct"])
+	}
+}
+
+// The worker commits the sessions row before the event row, so a
+// freshly started session can be fetched with no events yet. The list
+// must still be an empty array: clients iterate it without a guard.
+func TestGetSession_EventsIsAnEmptyArrayBeforeAnyEventLands(t *testing.T) {
+	s := &mockStore{sessionEventsNone: true}
+	handler := handlers.SessionsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions/sess-fresh", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp map[string]json.RawMessage
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got := string(resp["events"]); got != "[]" {
+		t.Fatalf("expected events to serialise as [], got %s", got)
 	}
 }
 

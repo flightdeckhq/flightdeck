@@ -13,6 +13,19 @@ server.
 
 ### Fixed
 
+- **Worker: a short-lived session could stay active for good.** The
+  worker pool processes one session's events concurrently, so a
+  `session_end` published a few milliseconds after its `session_start`
+  could be handled first, be mistaken for an orphan, and then fail the
+  event insert on the sessions foreign key three times before NATS gave
+  up on it; the session never closed until the reconciler reaped it.
+  The worker now waits up to two seconds for the session row before it
+  calls a `session_end` an orphan, and a true orphan is acknowledged
+  once, without an insert attempt. In the mirror-image order, a
+  `session_start` processed after its own `session_end` no longer
+  reopens the closed session.
+- **API: `GET /v1/sessions/:id` returned `events: null`** for a session
+  whose event rows had not landed yet. The field is now always an array.
 - **Sensor: streamed calls recorded the estimate and zero output tokens.**
   A streamed `post_call` carried the pre-call estimate as `tokens_input`
   and `tokens_output = 0` because the sensor read usage from the stream

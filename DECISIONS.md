@@ -9922,3 +9922,65 @@ provider errors away from the call that the SDK raises them on). Keeping
 the estimate on streams and documenting it (streaming is the default in
 most agent frameworks, so budgets and cost would stay wrong for most
 sessions).
+
+## D186 -- A session_end waits for its session_start before it counts as an orphan
+
+**Date:** 2026-10-20
+
+**Decision:** The worker's `session_end` handler waits up to two seconds,
+re-checking every 25 ms, for the session row to exist before it treats
+the event as an orphan. A row that appears within the window is closed
+normally. A row that never appears is still dropped, but the handler now
+returns a sentinel that the processor turns into a clean ACK with no
+event-row insert. A database error during the lookup is returned, so the
+message is NAKed and redelivered rather than read as "missing". In the
+mirror-image order, the `session_start` upsert keeps a row that is
+already `closed` closed instead of setting it back to `active`.
+
+**Why:** The consumer pool fetches from one NATS consumer with ten
+goroutines, so two events of one session are processed concurrently when
+they are published close together. A process that starts, makes one call
+and exits publishes `session_start`, `post_call` and `session_end` within
+tens of milliseconds, and the `session_end` could be handled before the
+`session_start`'s row was committed. It was then declared an orphan, the
+processor still ran the event insert, the insert failed the sessions
+foreign key, NATS redelivered it twice more within the same window, and
+the event was lost. Posting start, call and end back-to-back for 200
+sessions against the dev stack left 94 of them active for good, with 171
+`session_end` rows for 106 closed sessions where the row had landed
+between the orphan verdict and the insert. The 2026-10-20 main CI run
+lost `test_langchain_openai_stream_is_metered` this way.
+
+**Rejected:**
+
+- *Delayed NAK and retry.* Non-blocking, but the durable consumer's retry
+  budget is three deliveries and raising it means re-creating the consumer
+  on upgrade; two fixed-delay retries also cover a narrower window than a
+  two-second poll.
+- *Serialising a session's events on one goroutine.* Removes the
+  concurrency but not the ordering problem: the goroutine that fetched the
+  later message can still reach the database first.
+- *Lazy-creating a closed row on an orphan `session_end`.* A teardown
+  signal for a session the server never saw would manifest a session that
+  never existed, and the session's `session_start`, if it arrived later,
+  would reopen it.
+
+The `session_start` side showed up while testing the fix: when a
+`post_call` overtakes the `session_start` the worker lazy-creates the
+row, the waiting `session_end` closes it, and the late `session_start`'s
+`ON CONFLICT SET state = EXCLUDED.state` then reopened it. Re-attachment
+of a finished session is settled synchronously by the ingestion API
+before the event is published, so a closed row at upsert time can only
+mean this ordering, and it is preserved.
+
+**Consequences:** A genuine orphan `session_end` holds one worker goroutine
+for at most two seconds. `GET /v1/sessions/:id` serialises `events` as an
+empty array, never `null`, for a session whose row the worker has committed
+ahead of its first event row; the integration helpers that poll the detail
+also tolerate `null` from older binaries. One ordering remains by design:
+a `post_call` that reaches the guard after its session was closed is
+recorded as an event row but does not roll its tokens into the session,
+the closed-session rule that keeps late stragglers from reviving an
+explicitly ended session. With the `session_end` now waiting for the row,
+that window is a single poll interval, and 430 back-to-back sessions
+against the dev stack never hit it.

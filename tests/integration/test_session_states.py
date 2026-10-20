@@ -7,6 +7,7 @@ non-session_start event. Requires `make dev` to be running.
 
 from __future__ import annotations
 
+import subprocess
 import uuid
 
 from .conftest import (
@@ -78,7 +79,7 @@ def test_session_with_heartbeats_only_stays_active() -> None:
 
     # Wait until heartbeat is processed (event count increases)
     wait_until(
-        lambda: len(get_session_detail(sid).get("events", [])) >= 1,
+        lambda: len(get_session_detail(sid).get("events") or []) >= 1,
         timeout=10,
         msg=f"heartbeat not processed for session {sid}",
     )
@@ -679,6 +680,128 @@ def test_session_end_on_unknown_session_id_does_not_lazy_create() -> None:
         f"session_end on unknown session_id should not lazy-create a row; "
         f"found {raw} row(s) for {sid}"
     )
+
+
+def _worker_log_lines(needle: str) -> list[str]:
+    """Recent worker-container log lines that mention ``needle``.
+
+    The worker logs through slog's text handler on stderr; ``docker
+    logs`` merges both streams. Mirrors the ``docker exec`` psql helpers:
+    the dev stack's container names are the contract.
+    """
+    out = subprocess.run(
+        ["docker", "logs", "--since", "5m", "docker-workers-1"],
+        capture_output=True,
+        text=True,
+        timeout=20,
+        check=False,
+    )
+    return [line for line in (out.stdout + out.stderr).splitlines() if needle in line]
+
+
+def _count_session_end_rows(flavor: str) -> int:
+    return int(
+        exec_sql(
+            "SELECT COUNT(*) FROM events "
+            "WHERE flavor = :'flavor' AND event_type = 'session_end'",
+            flavor=flavor,
+        )
+    )
+
+
+def test_session_end_that_overtakes_its_session_start_still_closes_it() -> None:
+    """The worker pool processes one session's events concurrently, so a
+    session_end can reach a goroutine before the goroutine holding the
+    session_start has committed the row. Publishing the session_end first
+    reproduces that ordering deterministically: the worker must wait for
+    the row rather than drop the session_end as an orphan, and the
+    session must end up closed with exactly one session_end row.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-end-first-{uuid.uuid4().hex[:6]}"
+
+    post_event(make_event(sid, flavor, "session_end"))
+    post_event(make_event(sid, flavor, "session_start"))
+
+    wait_for_state(sid, "closed", timeout=10)
+    assert _count_session_end_rows(flavor) == 1, (
+        f"expected exactly one session_end row for {sid}"
+    )
+
+
+def test_short_lived_sessions_published_back_to_back_all_close() -> None:
+    """A burst of sessions that each start, make one call and end within
+    a few milliseconds is the real-world shape of the ordering race
+    (one-shot scripts, test runs). Every one of them must close and keep
+    its session_end row; before the grace wait roughly half stayed active
+    for good.
+    """
+    flavor = f"test-burst-{uuid.uuid4().hex[:6]}"
+    sids = [str(uuid.uuid4()) for _ in range(50)]
+
+    for sid in sids:
+        post_event(make_event(sid, flavor, "session_start"))
+        post_event(
+            make_event(
+                sid,
+                flavor,
+                "post_call",
+                model="gpt-4o",
+                tokens_input=5,
+                tokens_output=3,
+                tokens_total=8,
+                latency_ms=10,
+            )
+        )
+        post_event(make_event(sid, flavor, "session_end"))
+
+    def _all_closed() -> bool:
+        closed = exec_sql(
+            "SELECT COUNT(*) FROM sessions "
+            "WHERE flavor = :'flavor' AND state = 'closed'",
+            flavor=flavor,
+        )
+        return closed == str(len(sids))
+
+    wait_until(
+        _all_closed,
+        timeout=30,
+        msg=f"not every {flavor} session closed",
+    )
+    assert _count_session_end_rows(flavor) == len(sids), (
+        f"expected {len(sids)} session_end rows for {flavor}"
+    )
+
+
+def test_orphan_session_end_is_dropped_once_without_redelivery() -> None:
+    """A session_end whose session never appears is an orphan: dropped
+    with one warning and acknowledged, never handed to the event insert
+    (which would fail the sessions foreign key and be redelivered until
+    the retry budget ran out, logging the same warning once per attempt).
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-orphan-end-{uuid.uuid4().hex[:6]}"
+    needle = f"dropped orphan session_end session_id={sid}"
+
+    post_event(make_event(sid, flavor, "session_end"))
+    wait_until(
+        lambda: len(_worker_log_lines(needle)) >= 1,
+        timeout=15,
+        msg=f"worker never logged the orphan drop for {sid}",
+    )
+
+    # A redelivery is immediate, so by the time an event published after
+    # the drop has landed, any repeat of the warning would be in the log.
+    control = str(uuid.uuid4())
+    post_event(make_event(control, flavor, "session_start"))
+    assert wait_for_session_in_fleet(control, timeout=10) is not None
+
+    assert len(_worker_log_lines(needle)) == 1, _worker_log_lines(needle)
+    raw = exec_sql(
+        "SELECT COUNT(*) FROM sessions WHERE session_id = :'sid'::uuid",
+        sid=sid,
+    )
+    assert raw == "0", f"orphan session_end must not create a row; found {raw}"
 
 
 # ---------------------------------------------------------------------------

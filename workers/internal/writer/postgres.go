@@ -112,6 +112,11 @@ func (w *Writer) IncrementAgentTokens(ctx context.Context, agentID string, delta
 //     enriched by a later session_start arrival. Real values remain
 //     write-once: once sessions.context is non-null, COALESCE returns
 //     the stored value and the incoming EXCLUDED is ignored.
+//   - state -- EXCLUDED.state (active) unless the row is already
+//     closed, which is preserved: the ingestion API settles
+//     re-attachment synchronously before publishing, so a closed row
+//     at this point means the session's own session_end was processed
+//     ahead of its session_start.
 //   - flavor, agent_type -- CASE upgrade from the sentinel "unknown".
 //     "unknown" is the value D106 writes when a non-session_start
 //     event lacks flavor/agent_type data. A legitimate session_start
@@ -158,7 +163,15 @@ func (w *Writer) UpsertSession(
 			NULLIF($14, '')::uuid, NULLIF($15, ''), $16
 		)
 		ON CONFLICT (session_id) DO UPDATE
-		SET state = EXCLUDED.state,
+		SET -- A closed row stays closed. Re-attachment is settled by the
+		    -- ingestion API before the event is published, so a closed
+		    -- row seen here means the session's own session_end was
+		    -- processed first (the worker pool handles a session's
+		    -- events concurrently); flipping it back would reopen a
+		    -- finished session for good.
+		    state = CASE WHEN sessions.state = 'closed'
+		                 THEN sessions.state
+		                 ELSE EXCLUDED.state END,
 		    last_seen_at = NOW(),
 		    host = COALESCE(EXCLUDED.host, sessions.host),
 		    framework = COALESCE(EXCLUDED.framework, sessions.framework),

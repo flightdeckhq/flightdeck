@@ -3,6 +3,7 @@ package processor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -425,6 +426,12 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 		}
 	case "session_end":
 		if err := p.session.HandleSessionEnd(ctx, e); err != nil {
+			if errors.Is(err, ErrEventDropped) {
+				// The handler discarded the event (orphan
+				// session_end): nothing to insert, and the
+				// consumer ACKs on a nil return.
+				return nil
+			}
 			return err
 		}
 		// Release per-session policy-evaluator state so the cache and

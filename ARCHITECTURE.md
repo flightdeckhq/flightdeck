@@ -1350,9 +1350,17 @@ The ingestion handler rejects events with 400 when:
 
 A `session_end` for a `session_id` Flightdeck has never seen (an orphan
 `session_end`) is **not** rejected at ingestion — the event is accepted and
-published, then dropped downstream by the worker, which logs a warning,
-increments `dropped_events_total{reason="orphan_session_end"}`, and ACKs the
-NATS message (there is nothing to recover).
+published. The worker pool processes a session's events concurrently, so a
+`session_end` can reach a worker goroutine before the goroutine holding the
+same session's `session_start` has committed the sessions row; the worker
+therefore waits up to two seconds for the row to appear and then closes
+the session normally. Only a row that never appears is an orphan: the
+worker logs a warning, increments
+`dropped_events_total{reason="orphan_session_end"}`, and ACKs the NATS
+message without inserting an event row (there is nothing to recover, and
+a retroactive closed row would describe a session the server never saw).
+A database error during that lookup is not read as "missing": the event is
+NAKed and redelivered instead.
 
 The worker counts the drop as `dropped_events_total{reason}` in its
 in-process metrics registry and logs it; no service serves that registry
@@ -1422,6 +1430,11 @@ The race between step 2 (synchronous) and the worker's
 API locks the answer in the HTTP response the instant the attach commits.
 By the time the worker consumes the event, the row is already `active`,
 and the worker's `UpsertSession ON CONFLICT` branch is a no-op refresh.
+That branch never reopens a row that is already `closed`: the worker pool
+handles a session's events concurrently, so a closed row at that point
+means the session's own `session_end` was processed ahead of its
+`session_start`, and flipping it back would leave a finished session
+active for good.
 
 ### Heartbeat and health
 

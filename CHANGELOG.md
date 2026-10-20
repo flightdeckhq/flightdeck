@@ -22,15 +22,18 @@ server.
   and `estimated_cost` include streamed output.
 - **Sensor: streams used without a `with` block raised under `patch()`.**
   `stream.text_stream`, iterating without a `with` block and `async for`
-  all work; a plain loop left with `break` is reported at the next
-  intercept after the stream object is collected, or when the session
-  ends. `create(stream=True)` on Anthropic messages and
-  OpenAI Responses is metered as a stream and sends its request at the
-  call, as the SDK does. Under `patch()`, `messages.create(stream=True)`
-  and `responses.create(stream=True)` now return the sensor's stream guard
-  rather than the SDK `Stream`, so an `isinstance(stream, anthropic.Stream)`
-  check no longer matches; iteration, `close()` and `with` behave as
-  before.
+  all work; a plain loop left with `break` is reported at the next LLM
+  call the sensor intercepts after the stream object is collected, or
+  when the session ends. Every `create(stream=True)` is metered as a
+  stream and sends its request at the call, as the SDK does (Anthropic
+  messages and OpenAI Responses used to take the non-stream path, and
+  OpenAI chat used to open on first use). Under `patch()` those calls
+  return the sensor's stream guard rather than the SDK `Stream`
+  (`anthropic.Stream`, `openai.Stream`), so `isinstance` checks against
+  those classes no longer match; iteration, `close()` and `with` behave as
+  before. The usage chunk the sensor asks OpenAI for (empty `choices`) is
+  dropped before it reaches a caller who did not ask for it, so the usual
+  loop body keeps working.
 - **Sensor: stream outcomes.** The streaming sub-object reports
   `final_outcome="aborted"` when a caller leaves a stream early, and a
   mid-stream failure's `llm_error` carries the chunks and tokens delivered
@@ -40,8 +43,10 @@ server.
   stores the accumulated snapshot as it stands instead of reading the rest
   of the stream. Stopping at the event that ends the response (Anthropic's
   `message_stop`, OpenAI's usage chunk, a Responses `response.completed`)
-  counts as completed; a cancellation, interrupt or the sensor's own policy
-  exception leaving a `with` block is a client abort, not an `llm_error`;
+  counts as completed; a cancellation, interrupt, the sensor's own policy
+  exception or the caller's own exception leaving a `with` block is the
+  caller leaving (completed if the response had been read in full, else
+  aborted), not an `llm_error`;
   a stream still open when the session ends is reported before the session
   closes; and an aborted stream's `latency_ms` runs to its last chunk.
 - **Plugin: MCP policy decisions were never applied.** `PreToolUse`

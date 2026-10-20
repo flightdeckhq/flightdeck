@@ -610,8 +610,8 @@ class Provider(Protocol):
 
     def usage_from_stream_chunk(self, chunk: Any) -> TokenUsage | None:
         """Usage carried by one streamed chunk or event, or None. The stream
-        guard merges successive results field by field (a later non-zero
-        count replaces an earlier one). Never raises."""
+        guard merges successive results field by field, the larger value
+        winning (the counters are cumulative). Never raises."""
 
     def usage_from_finished_stream(self, stream: Any) -> TokenUsage | None:
         """Usage the SDK stream object holds when the guard settles
@@ -637,7 +637,7 @@ class Provider(Protocol):
     def chunk_completes_stream(self, chunk: Any) -> bool:
         """Whether this streamed event ends the response (Anthropic
         message_stop or a message_delta with stop_reason; an OpenAI chat
-        chunk with finish_reason or usage; a Responses terminal event), so
+        chunk carrying usage; a Responses terminal event), so
         a consumer that stops at it has read the whole response. Never
         raises."""
 
@@ -773,7 +773,7 @@ The class-level patch deliberately does NOT intercept:
 |---|---|
 | `OpenAI.beta.chat.completions.parse` / `.stream` | Structured-output path on a separate `OpenAI.beta` `cached_property`. Not yet observed in any framework's default flow. |
 | `OpenAI.chat.completions.stream` / `.parse`, `OpenAI.responses.stream` / `.parse` | `.stream()` calls the unwrapped resource's `create` internally and `.parse()` posts through the resource's own `_post`, so neither passes the sensor wrapper; `create(stream=True)` on the same resources is intercepted. The `parse` structured-output path is on the README Roadmap. |
-| `OpenAI.chat.completions.with_raw_response.create(stream=True)`, `OpenAI.responses.with_raw_response.*` | The raw-response wrapper is intercepted for non-streaming chat calls only: a streamed call through it records the pre-call estimate with no `streaming` block, and the Responses raw-response path passes through unintercepted. langchain-openai takes the chat path when `include_response_headers=True`. On the README Roadmap. |
+| `OpenAI.chat.completions.with_raw_response.create(stream=True)`, `OpenAI.responses.with_raw_response.*` | The raw-response wrapper is intercepted, but metered correctly only for non-streaming chat calls: a streamed call through it records the pre-call estimate with no `streaming` block, and the Responses raw-response path passes through unintercepted. langchain-openai takes the chat path when `include_response_headers=True`. On the README Roadmap. |
 | `OpenAI.audio.*`, `images.*`, `moderations.*`, `files.*`, `fine_tuning.*`, `completions.*` (legacy) | Utility resources unrelated to LLM inference events. |
 | `Anthropic.completions.*` | Legacy completions API; superseded by `messages` / `beta.messages`. |
 | Frameworks that bypass the SDK entirely (raw httpx, boto3 bedrock-runtime, vertexai) | No SDK class to patch. |
@@ -788,7 +788,7 @@ clients internally are intercepted without user-side wrapping.
 
 | Framework | Path covered |
 |---|---|
-| LangChain | `ChatAnthropic.invoke` (langchain-anthropic); `ChatOpenAI.invoke` on langchain-openai 0.x, which calls `chat.completions.create`; `OpenAIEmbeddings.embed_*` (transitive). langchain-openai 1.x sends chat through `with_raw_response.create`, which the OpenAI interceptor does not wrap, so those calls are not observed (README Roadmap) |
+| LangChain | `ChatAnthropic.invoke` (langchain-anthropic); `ChatOpenAI.invoke` (langchain-openai 0.3+ sends it through `chat.completions.with_raw_response.create`, which is intercepted as a non-streaming chat call); `OpenAIEmbeddings.embed_*` (transitive). `ChatOpenAI.stream` goes through the same raw-response wrapper and is metered with the pre-call estimate (see "Patch surface — out of scope"); the Responses raw-response path and `.parse()` are not observed (README Roadmap) |
 | LangGraph | Transitive via LangChain — graphs routing through `ChatAnthropic` / `ChatOpenAI`, including `langgraph.prebuilt.create_react_agent` tool loops |
 | LlamaIndex | `llama-index-llms-anthropic.complete`, `llama-index-llms-openai.complete` |
 | CrewAI 1.14+ | `LLM(model=...).call` via the native Anthropic and OpenAI provider classes. Model strings without a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm |
@@ -3647,11 +3647,14 @@ When `stream=true` on the underlying request, the payload also carries:
 `final_outcome` is `"completed"` when the response was read in full: the
 stream reached its end, the caller stopped at the event that ends the
 response (Anthropic's `message_stop` or the `message_delta` carrying
-`stop_reason`, OpenAI's chunk with `usage` or `finish_reason`, a Responses
+`stop_reason`, OpenAI's usage chunk, a Responses
 `response.completed`), or a helper stream reports its message complete. It
 is `"aborted"` when the caller left before that (`break`, `close()`,
 leaving the `with` block, a cancellation), in which case `abort_reason` is
-`"client_aborted"` and `latency_ms` runs to the last chunk read. A stream
+`"client_aborted"`. `latency_ms` runs to the last chunk the guard delivered
+unless the guard read the stream to its end, or a helper read it to
+completion itself; with no chunk delivered it runs to the moment the
+response opened. A stream
 that fails emits `llm_error` instead (`abort_reason` `error_before_stream`,
 `error_mid_stream` or `timeout`). The streaming sub-object is omitted
 entirely for non-streaming calls.
@@ -3671,9 +3674,15 @@ metered from the usage the provider sends inside the stream:
   message without reading the trailing `message_stop` frame, and content
   capture and tool-call extraction see the full response.
 - **OpenAI chat.** The final chunk carries `usage`; the sensor injects
-  `stream_options.include_usage` so the provider sends it. This overrides
-  an explicit `include_usage: false`, and the usage chunk (empty
-  `choices`) reaches the caller and counts in `chunk_count`.
+  `stream_options.include_usage` so the provider sends it. That chunk has
+  empty `choices`, which the usual loop body (`chunk.choices[0]`) does
+  not expect, so a caller who did not ask for usage never sees it: the
+  guard records its usage and drops it, the stream looks exactly as it
+  does without the sensor, and `chunk_count` counts the chunks the caller
+  saw. A caller who set `include_usage` themselves receives it as usual.
+  The usage chunk is the event that ends the response; stopping at the
+  `finish_reason` chunk before it leaves the usage unread, and that call
+  reports `aborted` with the pre-call estimate.
 - **OpenAI Responses.** `response.completed` carries `usage`.
 
 The sensor wraps the SDK stream in a guard (`GuardedStream`, or
@@ -3681,15 +3690,23 @@ The sensor wraps the SDK stream in a guard (`GuardedStream`, or
 records usage as events pass through it and emits the `post_call` once, at
 the first of: the stream being read to its end, `close()`, leaving the
 `with` block, the guard being garbage-collected (a plain `for` loop left
-with `break`), or the session ending while the stream is still open.
-Leaving the `with` block on a provider exception emits `llm_error`
-instead; a cancellation or interrupt (`CancelledError`, `GeneratorExit`,
-`KeyboardInterrupt`) and the sensor's own policy exceptions count as the
-caller leaving. The garbage-collection path never settles inline: the
-cyclic collector can run a finalizer on any thread, inside a critical
-section of the session, its policy cache or its event queue, and none of
-those locks is re-entrant, so the finalizer queues the settle and the next
-intercept, or the session's end, runs it. `messages.stream()`, `messages.create(stream=True)`,
+with `break`), or the session ending while the stream is still open; in
+that last case the events are flushed before `session_end` goes out, so
+the workers roll the tokens up on an open session.
+Leaving the `with` block on an exception emits `llm_error` only when the
+error classifier knows the exception's class (an SDK or transport error
+raised by a helper method that read the stream itself; an error raised
+while reading through the guard is reported as it happens). Cancellations
+and interrupts (`CancelledError`, `GeneratorExit`, `KeyboardInterrupt`),
+the sensor's own policy exceptions (`BudgetExceededError`,
+`DirectiveError`, `MCPPolicyBlocked`) and the caller's own exceptions
+count as the caller leaving: the call is reported as completed when the
+response had been read in full, else as aborted. The garbage-collection
+path never settles inline: the cyclic collector can run a finalizer on
+any thread, inside a critical section of the session, its policy cache or
+its event queue, and none of those locks is re-entrant, so the finalizer
+queues the settle and the next LLM call the sensor intercepts, or the
+session's end, runs it. `messages.stream()`, `messages.create(stream=True)`,
 `chat.completions.create(stream=True)` and `responses.create(stream=True)`
 all take this path, with or without a `with` block
 (`for chunk in client.chat.completions.create(..., stream=True)`) and with
@@ -3789,17 +3806,19 @@ Plus `provider`, `http_status`, `provider_error_code`, `request_id`,
 `retry_after`, `is_retryable`. For a streamed call, `abort_reason` and the
 `partial_*` counts below sit with these under `payload.error`
 (`retry_attempt` and `terminal` are top-level payload fields). A failure
-before the first chunk keeps the classification of the error it raised,
-with `abort_reason` `error_before_stream` (or `timeout`) and
-`partial_chunks=0`. A failure after the first chunk emits
-`error_type=stream_error` with `abort_reason` `error_mid_stream` (or
-`timeout`), `partial_chunks` (chunks read before the failure) and, when
-the stream had delivered usage, `partial_tokens_input` /
-`partial_tokens_output`. The provider bills those tokens, so the sensor
+while opening the stream keeps the classification of the error it raised,
+with `abort_reason=error_before_stream` and `partial_chunks=0`; a failure
+on the first read gets `error_before_stream` or `timeout`. A failure once
+data had arrived (a chunk through the guard, or usage accumulated by a
+helper the caller read through `get_final_message()`, which leaves
+`partial_chunks=0`) emits `error_type=stream_error` with `abort_reason`
+`error_mid_stream` (or `timeout`), `partial_chunks` (chunks read before
+the failure) and, when the stream had delivered usage,
+`partial_tokens_input` / `partial_tokens_output`. The provider bills those tokens, so the sensor
 adds them to the in-process session counter that drives its local budget
 checks; server-side session totals, the `tokens` metric and
-`estimated_cost` are computed from `post_call` events and do not include
-them (README Roadmap).
+`estimated_cost` are computed from the events that carry `tokens_total`
+(`post_call` and `embeddings`) and do not include them (README Roadmap).
 
 Operator-actionable retry-chain context:
 

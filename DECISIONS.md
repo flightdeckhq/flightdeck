@@ -9875,14 +9875,20 @@ re-entrant, so a guard that is both abandoned and part of a reference
 cycle could be finalised while the same thread holds one of them; the
 policy cache's lock is a third, taken on every policy check. The finalizer
 therefore never settles inline: it queues the settle (a lock-free deque
-append) and the next intercept, or the session's end, runs it. Checking
-whether a lock is held was rejected because the list of locks the settle
-path takes would rot. A session that ends with streams
-still open settles them first, before its event queue closes, so a stream
-left in a variable until exit is still reported. Cancellations
-(`CancelledError`, `GeneratorExit`, `KeyboardInterrupt`) and the sensor's
-own policy exceptions leaving a `with` block are the caller leaving, not a
-provider failure: they produce the aborted post_call, not `llm_error`.
+append) and the next intercepted LLM call, or the session's end, runs it.
+Checking whether a lock is held was rejected because the list of locks the
+settle path takes would rot. The SIGTERM / SIGINT handler that runs
+`Session.end()` can interrupt the main thread inside the same critical
+sections; that hazard predates this decision (posting `session_end`
+already takes the session lock) and is not addressed here. A session that ends with streams
+still open settles them first and flushes their events before posting
+`session_end`, so a stream left in a variable until exit is still reported
+and rolled up on an open session. Cancellations
+(`CancelledError`, `GeneratorExit`, `KeyboardInterrupt`), the sensor's own
+policy exceptions and the caller's own exceptions leaving a `with` block
+are the caller leaving, not a provider failure: they produce a post_call
+(completed if the response had been read in full, else aborted), not
+`llm_error`; only an exception the error classifier knows is a failure.
 
 **Reasoning:** The SDK stream objects (`anthropic.Stream`,
 `MessageStream`, `openai.Stream`) have no `usage` attribute, so reading

@@ -46,6 +46,12 @@ def _try_tiktoken_count(messages: list[Any], model: str) -> int | None:
         return None
 
 
+# Responses API events after which no further output arrives.
+_RESPONSES_TERMINAL_EVENTS = frozenset(
+    {"response.completed", "response.incomplete", "response.failed"}
+)
+
+
 class OpenAIProvider:
     """Provider adapter for the OpenAI Python SDK.
 
@@ -243,6 +249,25 @@ class OpenAIProvider:
         """OpenAI stream objects assemble no final message."""
         return None
 
+    def text_from_stream_chunk(self, chunk: Any) -> str | None:
+        """OpenAI stream objects have no ``text_stream``."""
+        return None
+
+    def chunk_completes_stream(self, chunk: Any) -> bool:
+        """A chat chunk carrying ``finish_reason`` or ``usage`` (the usage
+        chunk is the last one before ``[DONE]``), or a Responses terminal
+        event."""
+        try:
+            kind = getattr(chunk, "type", None)
+            if isinstance(kind, str):
+                return kind in _RESPONSES_TERMINAL_EVENTS
+            if getattr(chunk, "usage", None) is not None:
+                return True
+            choices = getattr(chunk, "choices", None) or []
+            return any(getattr(c, "finish_reason", None) is not None for c in choices)
+        except Exception:
+            return False
+
     def extract_content(
         self,
         request_kwargs: dict[str, Any],
@@ -324,13 +349,10 @@ class OpenAIProvider:
             elif hasattr(response, "__dict__"):
                 # Streaming responses surface a ``Stream`` /
                 # ``AsyncStream`` whose ``__dict__`` carries the
-                # underlying httpx response + async generator —
-                # neither JSON-serialisable. Drop
-                # any field that fails ``json.dumps`` so the wire
-                # payload stays valid for stream calls. Previously
-                # the post_call drain rejected streams with
-                # ``Object of type AsyncStream is not JSON
-                # serializable`` (caught by Rule 40d smoke).
+                # underlying httpx response + async generator, neither
+                # JSON-serialisable. Drop any field that fails
+                # ``json.dumps`` so the wire payload stays valid for
+                # stream calls instead of being rejected by the drain.
                 import json as _json
 
                 resp_dict = {}

@@ -80,12 +80,29 @@ class Provider(Protocol):
         ...
 
     def final_message(self, stream: Any) -> Any | None:
-        """The assembled message of a complete helper stream (Anthropic's
-        ``get_final_message()``), or ``None`` for raw streams and for a
-        helper that is not complete. May return an awaitable for async
-        helpers; the async guard awaits it and the sync guard discards it.
-        Only called when ``stream_completed`` is true, so it never reads
-        further from the stream. Never raises.
+        """The complete message of a helper stream (Anthropic's accumulated
+        ``current_message_snapshot`` once ``stop_reason`` is set), or
+        ``None`` for raw streams and for a helper that is not complete.
+        May return an awaitable; the async guard awaits it and the sync
+        guard discards it. Only called when ``stream_completed`` is true
+        and must never read further from the stream. Never raises.
+        """
+        ...
+
+    def text_from_stream_chunk(self, chunk: Any) -> str | None:
+        """Text carried by one streamed event, for the guard's
+        ``text_stream`` (Anthropic ``content_block_delta`` /
+        ``text_delta``); ``None`` when the event carries none or the
+        provider's streams have no text stream. Never raises.
+        """
+        ...
+
+    def chunk_completes_stream(self, chunk: Any) -> bool:
+        """Whether this streamed event ends the response (Anthropic
+        ``message_stop`` or a ``message_delta`` with ``stop_reason``; an
+        OpenAI chat chunk with ``finish_reason`` or ``usage``; a Responses
+        terminal event), so a consumer that stops at it has read the
+        whole response. Never raises.
         """
         ...
 

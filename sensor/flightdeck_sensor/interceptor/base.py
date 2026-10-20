@@ -14,14 +14,21 @@ them and emit the ``post_call`` once the stream settles.
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import copy
 import inspect
 import logging
 import time
+import weakref
 from typing import TYPE_CHECKING, Any, cast
 
-from flightdeck_sensor.core.errors import classify_exception
+from flightdeck_sensor.core.errors import (
+    TIMEOUT_EXCEPTION_NAMES,
+    AbortReason,
+    StreamOutcome,
+    classify_exception,
+)
 from flightdeck_sensor.core.exceptions import BudgetExceededError, DirectiveError
 from flightdeck_sensor.core.types import (
     EventType,
@@ -43,13 +50,51 @@ def _safe_pct(used: int, limit: int | None) -> int:
 
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator, Iterator
+    from collections.abc import AsyncIterator, Callable, Iterator
     from types import TracebackType
 
     from flightdeck_sensor.core.session import Session
     from flightdeck_sensor.providers.protocol import Provider
 
 _log = logging.getLogger("flightdeck_sensor.interceptor.base")
+
+# Keys of the stream fields a failed stream's llm_error carries under
+# payload.error, next to the classification fields.
+_KEY_ABORT_REASON = "abort_reason"
+_KEY_PARTIAL_CHUNKS = "partial_chunks"
+_KEY_PARTIAL_TOKENS_INPUT = "partial_tokens_input"
+_KEY_PARTIAL_TOKENS_OUTPUT = "partial_tokens_output"
+
+# Settles queued by guards' finalizers (see _GuardCore._defer_settle),
+# drained at the next intercept and when the session ends. deque.append
+# is atomic under the GIL, so the finalizer itself takes no lock.
+_DEFERRED_SETTLES: collections.deque[Callable[[], None]] = collections.deque()
+
+
+def drain_deferred_settles() -> None:
+    """Run the settles that guards' finalizers queued."""
+    while _DEFERRED_SETTLES:
+        try:
+            _DEFERRED_SETTLES.popleft()()
+        except BaseException:
+            _log.debug("Deferred stream settle failed", exc_info=True)
+
+
+# Every guard that has sent its request and not yet settled, so a session
+# ending with streams still open reports them before its queue closes.
+_OPEN_GUARDS: weakref.WeakSet[_GuardCore] = weakref.WeakSet()
+
+
+def settle_open_guards(session: Session) -> None:
+    """Settle every open stream guard of ``session``; the session calls
+    this as it ends, before its event queue closes, because a guard
+    collected after that could no longer report."""
+    for guard in list(_OPEN_GUARDS):
+        try:
+            if guard._session is session and guard._entered and not guard._finalized:
+                guard._settle_now()
+        except BaseException:
+            _log.debug("Settling an open stream at session end failed", exc_info=True)
 
 
 # ------------------------------------------------------------------
@@ -202,52 +247,55 @@ def call_stream_async(
 def _merge_usage(current: TokenUsage | None, new: TokenUsage) -> TokenUsage:
     """Fold a usage snapshot read from a chunk into the running total.
 
-    A later non-zero count replaces the earlier one field by field, so
-    a cumulative ``message_delta`` output count supersedes the first
-    one, while a delta that carries no input count leaves the input
-    read from ``message_start`` untouched.
+    The counters are cumulative, so the larger value wins field by field:
+    a later ``message_delta`` output count supersedes the first one, while
+    a delta that carries a smaller or no input count leaves the input read
+    from ``message_start`` untouched.
     """
     if current is None:
         return new
     return TokenUsage(
-        input_tokens=new.input_tokens or current.input_tokens,
-        output_tokens=new.output_tokens or current.output_tokens,
-        cache_read_tokens=new.cache_read_tokens or current.cache_read_tokens,
-        cache_creation_tokens=new.cache_creation_tokens or current.cache_creation_tokens,
+        input_tokens=max(new.input_tokens, current.input_tokens),
+        output_tokens=max(new.output_tokens, current.output_tokens),
+        cache_read_tokens=max(new.cache_read_tokens, current.cache_read_tokens),
+        cache_creation_tokens=max(new.cache_creation_tokens, current.cache_creation_tokens),
     )
 
 
-def _abort_reason_for(exc: BaseException, saw_chunk: bool) -> tuple[bool, str]:
-    """Classify a stream failure for the llm_error partial block."""
-    is_stream_error = saw_chunk
-    abort_reason = "error_mid_stream" if saw_chunk else "error_before_stream"
-    if type(exc).__name__ in ("APITimeoutError", "TimeoutError"):
-        abort_reason = "timeout"
-    return is_stream_error, abort_reason
+def _is_provider_failure(exc_val: BaseException | None) -> bool:
+    """Whether an exception leaving a ``with`` block is the stream failing,
+    as opposed to the caller leaving it: cancellations and interrupts are
+    not ``Exception`` subclasses, and the sensor's own policy exceptions
+    come from another intercepted call inside the block."""
+    return (
+        exc_val is not None
+        and isinstance(exc_val, Exception)
+        and not isinstance(exc_val, (BudgetExceededError, DirectiveError))
+    )
 
 
-def _text_delta(event: Any) -> str | None:
-    """The text of an Anthropic ``content_block_delta`` / ``text_delta``
-    event, else ``None``."""
-    if getattr(event, "type", None) != "content_block_delta":
-        return None
-    delta = getattr(event, "delta", None)
-    if getattr(delta, "type", None) != "text_delta":
-        return None
-    text = getattr(delta, "text", None)
-    return text if isinstance(text, str) else None
+def _abort_reason_for(exc: BaseException, saw_chunk: bool) -> str:
+    """``abort_reason`` of a failed stream: where it failed, or ``timeout``
+    whatever the position when the exception is a timeout."""
+    if type(exc).__name__ in TIMEOUT_EXCEPTION_NAMES:
+        return AbortReason.TIMEOUT.value
+    if saw_chunk:
+        return AbortReason.ERROR_MID_STREAM.value
+    return AbortReason.ERROR_BEFORE_STREAM.value
 
 
 def _text_deltas(guard: Any) -> Iterator[str]:
+    """Text deltas read through the guard; the provider knows the event
+    shape, the guard only meters."""
     for event in guard:
-        text = _text_delta(event)
+        text = guard._provider.text_from_stream_chunk(event)
         if text is not None:
             yield text
 
 
 async def _async_text_deltas(guard: Any) -> AsyncIterator[str]:
     async for event in guard:
-        text = _text_delta(event)
+        text = guard._provider.text_from_stream_chunk(event)
         if text is not None:
             yield text
 
@@ -289,6 +337,42 @@ class _GuardCore:
         self._entered = False
         self._exhausted = False
         self._finalized = False
+        self._saw_terminal_chunk = False
+        self._hook_failure_logged = False
+        self._open_error: BaseException | None = None
+        drain_deferred_settles()
+
+    def _hook_failed(self, hook: str) -> None:
+        """A provider stream hook raised. The guard carries on without it
+        (metering falls back to what the other hooks and the estimate
+        give) and says so once per stream rather than per chunk."""
+        if not self._hook_failure_logged:
+            self._hook_failure_logged = True
+            _log.debug("Provider %s hook raised; stream metering degraded", hook, exc_info=True)
+
+    def _require_stream(self) -> Any:
+        """The SDK stream once the call succeeded; a guard whose call
+        raised stays unusable and says why instead of failing on None."""
+        if self._stream is None:
+            raise RuntimeError("the stream never opened") from self._open_error
+        return self._stream
+
+    def _settle_now(self) -> None:
+        """Settle synchronously with what the guard holds; the sync guard
+        finalizes, the async guard settles on the snapshot usage."""
+        raise NotImplementedError
+
+    def _defer_settle(self) -> None:
+        """Queue the settle for the next intercept or the session's end.
+
+        A finalizer never settles inline: the cyclic collector can run it
+        on any thread at any allocation, including inside a critical
+        section of the session, its policy cache or its event queue, and
+        none of those locks is re-entrant. The settle path takes all
+        three, so running it from ``__del__`` could deadlock the sensor;
+        a deque append takes no lock.
+        """
+        _DEFERRED_SETTLES.append(self._settle_now)
 
     def _emit_pre_stream_error(self, exc: BaseException) -> None:
         # The context-manager protocol does not call __exit__ when
@@ -305,10 +389,17 @@ class _GuardCore:
                 latency_ms,
                 self._kwargs,
                 is_stream_error=False,
-                partial={"abort_reason": "error_before_stream", "partial_chunks": 0},
+                partial={
+                    _KEY_ABORT_REASON: AbortReason.ERROR_BEFORE_STREAM.value,
+                    _KEY_PARTIAL_CHUNKS: 0,
+                },
             )
-        except Exception:
-            _log.warning("Failed to emit llm_error for pre-stream exception", exc_info=True)
+        except Exception as emit_exc:
+            # No exc_info: the provider exception is the active context and
+            # may echo prompt text; the failure class is enough.
+            _log.warning(
+                "Failed to emit llm_error for pre-stream exception (%s)", type(emit_exc).__name__
+            )
 
     def _record_chunk(self, chunk: Any) -> None:
         now = time.monotonic()
@@ -323,9 +414,15 @@ class _GuardCore:
         try:
             found = self._provider.usage_from_stream_chunk(chunk)
         except Exception:
+            self._hook_failed("usage_from_stream_chunk")
             found = None
         if found is not None:
             self._usage = _merge_usage(self._usage, found)
+        try:
+            if self._provider.chunk_completes_stream(chunk):
+                self._saw_terminal_chunk = True
+        except Exception:
+            self._hook_failed("chunk_completes_stream")
 
     def _merge_settled_usage(self) -> None:
         """Fold in the usage the SDK stream object holds at settle time
@@ -334,16 +431,22 @@ class _GuardCore:
         try:
             settled = self._provider.usage_from_finished_stream(self._stream)
         except Exception:
+            self._hook_failed("usage_from_finished_stream")
             settled = None
         if settled is not None:
             self._usage = _merge_usage(self._usage, settled)
 
     def _is_complete(self) -> bool:
-        if self._exhausted:
+        """Whether the response was read in full: the SDK iterator ended, a
+        terminal event passed through the guard (a consumer that stops at
+        it has read the whole response), or a helper stream reports its
+        message complete."""
+        if self._exhausted or self._saw_terminal_chunk:
             return True
         try:
             return bool(self._provider.stream_completed(self._stream))
         except Exception:
+            self._hook_failed("stream_completed")
             return False
 
     def _emit_stream_error(self, exc_val: BaseException) -> None:
@@ -352,31 +455,42 @@ class _GuardCore:
         self._finalized = True
         latency_ms = int((time.monotonic() - self._t0) * 1000)
         try:
+            # A helper consumed through get_final_message() bypasses the
+            # guard's iterator, so whether data had arrived is judged by
+            # the chunks the guard saw or the usage the stream object had
+            # accumulated by the time it failed.
+            self._merge_settled_usage()
+            saw_data = self._first_chunk_t is not None or (
+                self._usage is not None and self._usage.total > 0
+            )
             _emit_error(
                 self._session,
                 self._provider,
                 exc_val,
                 latency_ms,
                 self._kwargs,
-                is_stream_error=self._first_chunk_t is not None,
-                partial=self._partial_block(exc_val),
+                is_stream_error=saw_data,
+                partial=self._partial_block(exc_val, saw_data),
             )
-        except Exception:
-            _log.warning("Failed to emit llm_error for stream exception", exc_info=True)
+        except Exception as emit_exc:
+            # No exc_info: the provider exception is the active context and
+            # may echo prompt text; the failure class is enough.
+            _log.warning(
+                "Failed to emit llm_error for stream exception (%s)", type(emit_exc).__name__
+            )
 
-    def _partial_block(self, exc_val: BaseException) -> dict[str, Any]:
+    def _partial_block(self, exc_val: BaseException, saw_data: bool) -> dict[str, Any]:
         """The llm_error partial block for a failed stream: abort reason,
         chunks read, and the tokens the provider had already delivered
         (which it bills, so they also count against the session)."""
-        _, abort_reason = _abort_reason_for(exc_val, self._first_chunk_t is not None)
-        self._merge_settled_usage()
+        abort_reason = _abort_reason_for(exc_val, saw_data)
         partial: dict[str, Any] = {
-            "abort_reason": abort_reason,
-            "partial_chunks": self._chunk_count,
+            _KEY_ABORT_REASON: abort_reason,
+            _KEY_PARTIAL_CHUNKS: self._chunk_count,
         }
         if self._usage is not None and self._usage.total > 0:
-            partial["partial_tokens_input"] = self._usage.input_tokens
-            partial["partial_tokens_output"] = self._usage.output_tokens
+            partial[_KEY_PARTIAL_TOKENS_INPUT] = self._usage.input_tokens
+            partial[_KEY_PARTIAL_TOKENS_OUTPUT] = self._usage.output_tokens
             with contextlib.suppress(Exception):
                 self._session.record_usage(self._usage)
         return partial
@@ -389,7 +503,13 @@ class _GuardCore:
         if self._finalized or not self._entered:
             return
         self._finalized = True
-        latency_ms = int((time.monotonic() - self._t0) * 1000)
+        # An aborted stream is timed to its last chunk: a settle that runs
+        # at close() or collection long after the caller stopped reading
+        # would otherwise report idle time as latency.
+        end_t = time.monotonic()
+        if not completed and self._last_chunk_t is not None:
+            end_t = self._last_chunk_t
+        latency_ms = int((end_t - self._t0) * 1000)
         try:
             self._merge_settled_usage()
             _post_call(
@@ -409,8 +529,10 @@ class _GuardCore:
                 estimated_via=self._estimated_via,
                 usage_override=self._usage,
             )
-        except Exception:
-            _log.warning("Failed to post stream reconciliation event", exc_info=True)
+        except Exception as emit_exc:
+            # No exc_info: the provider exception is the active context and
+            # may echo prompt text; the failure class is enough.
+            _log.warning("Failed to post stream reconciliation event (%s)", type(emit_exc).__name__)
 
 
 class GuardedStream(_GuardCore):
@@ -446,7 +568,9 @@ class GuardedStream(_GuardCore):
                 self._stream = self._ctx.__enter__()
             else:
                 self._stream = self._ctx
+            _OPEN_GUARDS.add(self)
         except BaseException as exc:
+            self._open_error = exc
             self._emit_pre_stream_error(exc)
             raise
 
@@ -468,12 +592,16 @@ class GuardedStream(_GuardCore):
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        if exc_val is not None:
+        if exc_val is not None and _is_provider_failure(exc_val):
             self._close_underlying(exc_type, exc_val, exc_tb)
             self._emit_stream_error(exc_val)
             return
+        # No exception, a cancellation / interrupt (GeneratorExit,
+        # KeyboardInterrupt) or the sensor's own policy exception: the
+        # caller left the stream, which is an aborted post_call, not a
+        # provider failure.
         self._finalize()
-        self._close_underlying(None, None, None)
+        self._close_underlying(exc_type, exc_val, exc_tb)
 
     def close(self) -> None:
         """Settle the accounting and close the SDK stream. Lets callers
@@ -503,11 +631,12 @@ class GuardedStream(_GuardCore):
         message: Any = None
         if completed:
             # A complete helper stream hands over its assembled message.
-            # Async helpers return an awaitable here, which this sync
-            # path cannot use; the snapshot usage still applies.
+            # An awaitable here cannot be used on this sync path; the
+            # snapshot usage still applies.
             try:
                 message = self._provider.final_message(self._stream)
             except Exception:
+                self._hook_failed("final_message")
                 message = None
             if inspect.isawaitable(message):
                 with contextlib.suppress(Exception):
@@ -517,27 +646,31 @@ class GuardedStream(_GuardCore):
 
     def __del__(self) -> None:
         # A plain loop abandoned with ``break`` reaches neither close()
-        # nor __exit__; settle when the guard is collected so the call is
-        # still reported. Everything is suppressed: __del__ can run at
-        # interpreter shutdown or inside another thread's collection.
+        # nor __exit__; queue the settle when the guard is collected so
+        # the call is still reported. Everything is suppressed: __del__
+        # can run at interpreter shutdown or inside another thread's
+        # collection.
         try:
             if self._entered and not self._finalized:
-                self._finalize()
+                self._defer_settle()
         except BaseException:
             pass
+
+    def _settle_now(self) -> None:
+        self._finalize()
 
     # -- iteration -----------------------------------------------------
 
     def __iter__(self) -> Iterator[Any]:
         self._enter_stream()
         if self._stream_iter is None:
-            self._stream_iter = iter(self._stream)
+            self._stream_iter = iter(self._require_stream())
         return self
 
     def __next__(self) -> Any:
         self._enter_stream()
         if self._stream_iter is None:
-            self._stream_iter = iter(self._stream)
+            self._stream_iter = iter(self._require_stream())
         try:
             chunk = next(self._stream_iter)
         except StopIteration:
@@ -557,9 +690,15 @@ class GuardedStream(_GuardCore):
 
     @property
     def text_stream(self) -> Iterator[str]:
-        """Text deltas of an Anthropic helper stream, iterated through the
-        guard so chunk stats and usage are recorded; the SDK's own
-        ``text_stream`` would bypass the guard."""
+        """Text deltas of a helper stream, iterated through the guard so
+        chunk stats and usage are recorded; the SDK's own ``text_stream``
+        would bypass the guard. Absent, as on the SDK object, when the
+        stream has no ``text_stream`` of its own."""
+        # The SDK helpers set ``text_stream`` on the instance in __init__
+        # (the class carries only the annotation), so probe the object.
+        self._enter_stream()
+        if not hasattr(self._stream, "text_stream"):
+            raise AttributeError("text_stream")
         return _text_deltas(self)
 
     def __getattr__(self, name: str) -> Any:
@@ -569,6 +708,8 @@ class GuardedStream(_GuardCore):
         if name.startswith("_"):
             raise AttributeError(name)
         self._enter_stream()
+        if self._stream is None:
+            raise AttributeError(name)
         return getattr(self._stream, name)
 
 
@@ -588,8 +729,9 @@ def _build_streaming_summary(
     * ``inter_chunk_ms`` -- ``{"p50", "p95", "max"}`` over the captured
       gaps; ``None`` when fewer than two chunks arrived.
     * ``final_outcome`` -- ``"completed"`` when the stream was read to
-      its end (the guard saw the last chunk, or a helper stream reports
-      its message complete), else ``"aborted"``.
+      its end (the SDK iterator ended, a terminal event passed through
+      the guard, or a helper stream reports its message complete), else
+      ``"aborted"``.
     * ``abort_reason`` -- ``"client_aborted"`` on an aborted stream, else
       ``None``. Provider failures never reach this helper: they emit
       ``llm_error`` with their own abort reason.
@@ -611,8 +753,8 @@ def _build_streaming_summary(
         "ttft_ms": ttft_ms,
         "chunk_count": chunk_count,
         "inter_chunk_ms": inter_chunk,
-        "final_outcome": "completed" if completed else "aborted",
-        "abort_reason": None if completed else "client_aborted",
+        "final_outcome": (StreamOutcome.COMPLETED if completed else StreamOutcome.ABORTED).value,
+        "abort_reason": None if completed else AbortReason.CLIENT_ABORTED.value,
     }
 
 
@@ -648,7 +790,9 @@ class GuardedAsyncStream(_GuardCore):
                 self._stream = await self._ctx.__aenter__()
             else:
                 self._stream = self._ctx
+            _OPEN_GUARDS.add(self)
         except BaseException as exc:
+            self._open_error = exc
             self._emit_pre_stream_error(exc)
             raise
 
@@ -667,12 +811,15 @@ class GuardedAsyncStream(_GuardCore):
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        if exc_val is not None:
+        if exc_val is not None and _is_provider_failure(exc_val):
             await self._close_underlying(exc_type, exc_val, exc_tb)
             self._emit_stream_error(exc_val)
             return
+        # No exception, a cancellation (asyncio.CancelledError,
+        # GeneratorExit) or the sensor's own policy exception: the caller
+        # left the stream.
         await self._finalize()
-        await self._close_underlying(None, None, None)
+        await self._close_underlying(exc_type, exc_val, exc_tb)
 
     async def close(self) -> None:
         """Settle the accounting and close the SDK stream (mirrors the
@@ -691,7 +838,7 @@ class GuardedAsyncStream(_GuardCore):
                 await self._ctx.__aexit__(exc_type, exc_val, exc_tb)
             elif self._stream is not None and hasattr(self._stream, "close"):
                 result = self._stream.close()
-                if hasattr(result, "__await__"):
+                if inspect.isawaitable(result):
                     await result
         except Exception:
             _log.debug("Exception closing underlying async stream", exc_info=True)
@@ -707,15 +854,21 @@ class GuardedAsyncStream(_GuardCore):
                 if inspect.isawaitable(message):
                     message = await message
             except Exception:
+                self._hook_failed("final_message")
                 message = None
         self._settle(message, completed)
 
+    def _settle_now(self) -> None:
+        # An awaitable final message cannot be awaited here, so the settle
+        # uses the snapshot usage and the complete snapshot when there is
+        # one.
+        self._settle(None, self._is_complete())
+
     def __del__(self) -> None:
-        # See GuardedStream.__del__; the awaitable final message cannot be
-        # awaited here, so the settle uses the snapshot usage only.
+        # See GuardedStream.__del__.
         try:
             if self._entered and not self._finalized:
-                self._settle(None, self._is_complete())
+                self._defer_settle()
         except BaseException:
             pass
 
@@ -725,7 +878,7 @@ class GuardedAsyncStream(_GuardCore):
     async def __anext__(self) -> Any:
         await self._enter_stream()
         if self._stream_iter is None:
-            self._stream_iter = self._stream.__aiter__()
+            self._stream_iter = self._require_stream().__aiter__()
         try:
             chunk = await self._stream_iter.__anext__()
         except StopAsyncIteration:
@@ -740,8 +893,11 @@ class GuardedAsyncStream(_GuardCore):
 
     @property
     def text_stream(self) -> AsyncIterator[str]:
-        """Async text deltas of an Anthropic helper stream, iterated
-        through the guard (see :attr:`GuardedStream.text_stream`)."""
+        """Async text deltas of a helper stream, iterated through the guard
+        (see :attr:`GuardedStream.text_stream`); reachable once the stream
+        is open, like every other proxied attribute."""
+        if self._stream is None or not hasattr(self._stream, "text_stream"):
+            raise AttributeError("text_stream")
         return _async_text_deltas(self)
 
     def __getattr__(self, name: str) -> Any:
@@ -799,6 +955,7 @@ def _pre_call(
       log warning, return original kwargs.
     * ALLOW: returns original kwargs unchanged.
     """
+    drain_deferred_settles()
     with session._lock:
         shutdown = session._shutdown_requested
         reason = session._shutdown_reason
@@ -1173,13 +1330,10 @@ def _post_call(
         invocations = []
     for inv in invocations:
         try:
-            # LLM-side tool_call routes tool_input via
-            # event_content's dedicated tool_input column when capture
-            # is on. The earlier path stamped
-            # tool_input directly on the events row's payload; the
-            # new path keeps events.payload lean and matches the
-            # MCP tool_call capture posture (single content store
-            # with dedicated columns).
+            # LLM-side tool_call routes tool_input via event_content's
+            # dedicated tool_input column when capture is on, which keeps
+            # events.payload lean and matches the MCP tool_call capture
+            # posture (single content store with dedicated columns).
             tool_payload = session._build_payload(
                 EventType.TOOL_CALL,
                 model=resp_model,
@@ -1244,11 +1398,11 @@ def _emit_error(
             exc,
             provider_hint=provider_hint,
             is_stream_error=is_stream_error,
-            # H-2 fix: gate provider-controlled exception text on
-            # capture_prompts. content_filter exceptions echo the
+            # Provider-controlled exception text is gated on
+            # capture_prompts: content_filter exceptions echo the
             # offending prompt fragment in their str(); when capture
-            # is off, _redacted_message returns class name only so
-            # the prompt fragment stays out of events.payload.
+            # is off, _redacted_message returns the class name only so
+            # the fragment stays out of events.payload.
             capture_prompts=session.config.capture_prompts,
         )
 
@@ -1299,5 +1453,7 @@ def _emit_error(
         payload["retry_attempt"] = retry_attempt
         payload["terminal"] = terminal
         session.event_queue.enqueue(payload)
-    except Exception:
-        _log.warning("Failed to emit llm_error event", exc_info=True)
+    except Exception as emit_exc:
+        # No exc_info: the provider exception is the active context and
+        # may echo prompt text; the failure class is enough.
+        _log.warning("Failed to emit llm_error event (%s)", type(emit_exc).__name__)

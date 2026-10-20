@@ -19,6 +19,14 @@ _DEFAULT_COUNT_TOKENS_MODEL = "claude-sonnet-4-20250514"
 _CHARS_PER_TOKEN_ESTIMATE = 4
 
 
+# Anthropic stream event discriminators, as the SDK names them.
+_EVENT_MESSAGE_START = "message_start"
+_EVENT_MESSAGE_DELTA = "message_delta"
+_EVENT_MESSAGE_STOP = "message_stop"
+_EVENT_CONTENT_BLOCK_DELTA = "content_block_delta"
+_DELTA_TEXT = "text_delta"
+
+
 class AnthropicProvider:
     """Provider adapter for the Anthropic Python SDK.
 
@@ -156,9 +164,9 @@ class AnthropicProvider:
         """
         try:
             kind = getattr(chunk, "type", None)
-            if kind == "message_start":
+            if kind == _EVENT_MESSAGE_START:
                 usage = getattr(getattr(chunk, "message", None), "usage", None)
-            elif kind == "message_delta":
+            elif kind == _EVENT_MESSAGE_DELTA:
                 usage = getattr(chunk, "usage", None)
             else:
                 return None
@@ -168,7 +176,7 @@ class AnthropicProvider:
             cache_read = getattr(usage, "cache_read_input_tokens", None)
             cache_creation = getattr(usage, "cache_creation_input_tokens", None)
             input_tokens = getattr(usage, "input_tokens", None)
-            if kind == "message_delta" and (cache_read is None or cache_creation is None):
+            if kind == _EVENT_MESSAGE_DELTA and (cache_read is None or cache_creation is None):
                 # A delta that reports input_tokens without the cache
                 # fields must not replace the message_start total, which
                 # includes the cache reads; report the output count only.
@@ -218,17 +226,40 @@ class AnthropicProvider:
             return None
 
     def final_message(self, stream: Any) -> Any | None:
-        """``get_final_message()`` of a complete helper stream: a
-        ``Message`` for the sync helper, a coroutine for the async one. The
-        caller must have checked :meth:`stream_completed`, because on an
-        open stream this call reads the rest of it."""
+        """The complete message of a helper stream, or ``None`` while it is
+        still open. Once ``stop_reason`` is set the accumulated snapshot is
+        the full message (content blocks are finalised before
+        ``message_delta`` arrives), so it stands in for
+        ``get_final_message()``, which would still read the trailing
+        ``message_stop`` frame. Sync and async helpers alike."""
         try:
-            final = getattr(stream, "get_final_message", None)
-            if not callable(final) or not self.stream_completed(stream):
+            if not self.stream_completed(stream):
                 return None
-            return final()
+            return self._snapshot(stream)
         except Exception:
             return None
+
+    def text_from_stream_chunk(self, chunk: Any) -> str | None:
+        """Text of a ``content_block_delta`` / ``text_delta`` event, else
+        ``None``."""
+        if getattr(chunk, "type", None) != _EVENT_CONTENT_BLOCK_DELTA:
+            return None
+        delta = getattr(chunk, "delta", None)
+        if getattr(delta, "type", None) != _DELTA_TEXT:
+            return None
+        text = getattr(delta, "text", None)
+        return text if isinstance(text, str) else None
+
+    def chunk_completes_stream(self, chunk: Any) -> bool:
+        """``message_stop``, or a ``message_delta`` carrying ``stop_reason``:
+        after either the response is complete and only ``message_stop``
+        can follow."""
+        kind = getattr(chunk, "type", None)
+        if kind == _EVENT_MESSAGE_STOP:
+            return True
+        if kind == _EVENT_MESSAGE_DELTA:
+            return getattr(getattr(chunk, "delta", None), "stop_reason", None) is not None
+        return False
 
     def extract_content(
         self,
@@ -256,37 +287,18 @@ class AnthropicProvider:
         try:
             from datetime import datetime, timezone
 
-            # Streaming responses surface a ``MessageStream`` /
-            # ``MessageStreamManager`` whose ``__dict__`` carries
-            # non-serializable httpx state (raw event source, async
-            # generator). Calling ``model_dump`` on those objects
-            # yields the unparsed wrapper. Anthropic exposes
-            # ``.get_final_message()`` after the stream has
-            # exhausted, returning the accumulated ``Message``
-            # pydantic object — that's the safe shape to capture.
-            # Previously the post_call drain
-            # serialised an AsyncStream into the JSON payload and
-            # the worker rejected the event with a JSON-encode
-            # error (caught by Rule 40d smoke).
-            stream_msg = getattr(response, "get_final_message", None)
-            if callable(stream_msg):
-                with contextlib.suppress(Exception):
-                    candidate = stream_msg()
-                    # Async streams return a coroutine here -- we
-                    # can't ``await`` in a sync ``extract_content``
-                    # path, so detect and fall through to the
-                    # ``__dict__`` scrubbing branch instead. Sync
-                    # MessageStream returns a real Message which
-                    # ``model_dump`` handles cleanly.
-                    import inspect
-
-                    if not inspect.iscoroutine(candidate):
-                        response = candidate
-                    else:
-                        # Discard the orphan coroutine so the warn-
-                        # on-never-awaited message doesn't pollute
-                        # the smoke output.
-                        candidate.close()
+            # A helper stream (``MessageStream`` / ``AsyncMessageStream``)
+            # reaching this point was still open when the call settled:
+            # the guard hands over the helper's final message once the
+            # message is complete. Capture the helper's accumulated
+            # snapshot instead, which never reads further from the
+            # network; ``get_final_message()`` would drain the rest of
+            # the stream and defeat the caller's early exit. The snapshot
+            # is also the only JSON-safe shape here, because the stream
+            # object's ``__dict__`` carries httpx state.
+            snapshot = self._snapshot(response)
+            if snapshot is not None:
+                response = snapshot
             resp_dict: dict[str, Any] = {}
             if hasattr(response, "model_dump"):
                 resp_dict = response.model_dump()

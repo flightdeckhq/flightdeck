@@ -159,6 +159,21 @@ class LitellmProvider:
         """litellm stream wrappers assemble no final message."""
         return None
 
+    def text_from_stream_chunk(self, chunk: Any) -> str | None:
+        """litellm stream wrappers have no ``text_stream``."""
+        return None
+
+    def chunk_completes_stream(self, chunk: Any) -> bool:
+        """A chunk carrying ``usage`` or a ``finish_reason`` (litellm
+        mirrors the OpenAI chat chunk shape)."""
+        try:
+            if getattr(chunk, "usage", None) is not None:
+                return True
+            choices = getattr(chunk, "choices", None) or []
+            return any(getattr(c, "finish_reason", None) is not None for c in choices)
+        except Exception:
+            return False
+
     def extract_content(
         self,
         request_kwargs: dict[str, Any],

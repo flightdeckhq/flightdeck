@@ -10,10 +10,22 @@ from typing import TYPE_CHECKING, Any
 import pytest
 
 from flightdeck_sensor.core.types import SensorConfig
+from flightdeck_sensor.providers.anthropic import AnthropicProvider
 from flightdeck_sensor.transport.client import ControlPlaneClient
 
 if TYPE_CHECKING:
     from collections.abc import Generator
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_provider_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unit tests never reach a provider. Strip the API keys a developer's
+    shell may carry and the Anthropic estimator's cached client, so the
+    ``count_tokens`` estimate cannot turn into a real request."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    monkeypatch.setattr(AnthropicProvider, "_client", None)
 
 
 class _MockHandler(BaseHTTPRequestHandler):

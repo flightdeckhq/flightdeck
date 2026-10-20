@@ -332,6 +332,12 @@ class Session:
         if self._state == SessionState.CLOSED:
             return
         self._state = SessionState.CLOSED
+        # Streams still open on this session settle now, before the queue
+        # closes; a guard collected later could no longer report.
+        from flightdeck_sensor.interceptor import base as _base
+
+        _base.drain_deferred_settles()
+        _base.settle_open_guards(self)
         self._post_event(EventType.SESSION_END)
         self.event_queue.flush()
         self.event_queue.close()

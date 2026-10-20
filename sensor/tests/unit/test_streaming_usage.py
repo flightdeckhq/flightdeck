@@ -35,7 +35,7 @@ from anthropic.types import (
 from openai.types.chat import ChatCompletionChunk
 from openai.types.responses import Response, ResponseCompletedEvent, ResponseUsage
 
-from flightdeck_sensor.core.exceptions import BudgetExceededError
+from flightdeck_sensor.core.exceptions import BudgetExceededError, DirectiveError
 from flightdeck_sensor.core.policy import PolicyCache
 from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import SensorConfig, TokenUsage
@@ -49,6 +49,7 @@ from flightdeck_sensor.providers.protocol import Provider
 from flightdeck_sensor.transport.client import ControlPlaneClient
 
 PROMPT = "SECRET-PROMPT-TEXT-7f3a"
+TOOL_MARKER = "SECRET-CITY-4b1c"
 
 # ----- real SDK events --------------------------------------------------
 
@@ -108,6 +109,68 @@ def _anthropic_events(delta_usage: dict[str, Any] | None = None) -> list[Any]:
                 "type": "message_delta",
                 "delta": {"stop_reason": "end_turn", "stop_sequence": None},
                 "usage": delta_usage or {"output_tokens": 9},
+            }
+        ),
+        RawMessageStopEvent.model_validate({"type": "message_stop"}),
+    ]
+
+
+def _tool_use_events() -> list[Any]:
+    """A streamed tool_use response: the tool input arrives as JSON deltas
+    and carries a marker that must never leak when capture is off."""
+    return [
+        RawMessageStartEvent.model_validate(
+            {
+                "type": "message_start",
+                "message": {
+                    "id": "msg_tool",
+                    "type": "message",
+                    "role": "assistant",
+                    "model": "claude-haiku-4-5",
+                    "content": [],
+                    "stop_reason": None,
+                    "stop_sequence": None,
+                    "usage": {
+                        "input_tokens": 12,
+                        "output_tokens": 1,
+                        "cache_read_input_tokens": 4,
+                        "cache_creation_input_tokens": 0,
+                    },
+                },
+            }
+        ),
+        RawContentBlockStartEvent.model_validate(
+            {
+                "type": "content_block_start",
+                "index": 0,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "toolu_1",
+                    "name": "get_weather",
+                    "input": {},
+                },
+            }
+        ),
+        RawContentBlockDeltaEvent.model_validate(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": '{"city": "' + TOOL_MARKER},
+            }
+        ),
+        RawContentBlockDeltaEvent.model_validate(
+            {
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "input_json_delta", "partial_json": '"}'},
+            }
+        ),
+        RawContentBlockStopEvent.model_validate({"type": "content_block_stop", "index": 0}),
+        RawMessageDeltaEvent.model_validate(
+            {
+                "type": "message_delta",
+                "delta": {"stop_reason": "tool_use", "stop_sequence": None},
+                "usage": {"output_tokens": 9},
             }
         ),
         RawMessageStopEvent.model_validate({"type": "message_stop"}),
@@ -224,6 +287,33 @@ class _ExplodingAsyncStream(_FakeAsyncStream):
         return _gen()
 
 
+class _CountingStream(_FakeStream):
+    """Raw stream that counts the events the helper pulled from it."""
+
+    def __init__(self, events: list[Any]) -> None:
+        super().__init__(events)
+        self.pulled = 0
+
+    def __iter__(self) -> Any:
+        for e in self._events:
+            self.pulled += 1
+            yield e
+
+
+class _CountingAsyncStream(_FakeAsyncStream):
+    def __init__(self, events: list[Any]) -> None:
+        super().__init__(events)
+        self.pulled = 0
+
+    def __aiter__(self) -> Any:
+        async def _gen() -> Any:
+            for e in self._events:
+                self.pulled += 1
+                yield e
+
+        return _gen()
+
+
 class _SyncManager:
     """What ``messages.stream()`` returns: a context manager yielding the
     real ``MessageStream`` built over a fake raw stream."""
@@ -267,9 +357,9 @@ def _session(
     )
     client = MagicMock(spec=ControlPlaneClient)
     client.post_event.return_value = (None, False)
-    session = Session(config=config, client=client)
+    # Inject the queue so no drain threads start for a test session.
+    session = Session(config=config, client=client, event_queue=MagicMock())
     session.policy = PolicyCache(token_limit=token_limit, block_at_pct=block_at_pct)
-    session.event_queue = MagicMock()
     return session
 
 
@@ -356,7 +446,7 @@ def test_close_after_plain_iteration_break_emits_one_post_call() -> None:
     assert pc["streaming"]["final_outcome"] == "aborted"
 
 
-def test_abandoned_plain_loop_settles_when_the_guard_is_collected() -> None:
+def test_abandoned_plain_loop_settles_at_the_next_intercept_after_collection() -> None:
     session = _session()
     guarded = _stream(session, _anthropic_events())
     for _ in guarded:
@@ -364,9 +454,417 @@ def test_abandoned_plain_loop_settles_when_the_guard_is_collected() -> None:
     assert _post_calls(session) == []
     del guarded
     gc.collect()
+    # A finalizer never settles inline (it may run under a sensor lock);
+    # the next intercept runs the queued settle.
+    assert _post_calls(session) == []
+    base.call_stream(MagicMock(), dict(KW), session, AnthropicProvider())
     (pc,) = _post_calls(session)
     assert (pc["tokens_input"], pc["tokens_output"]) == (16, 1)
     assert pc["streaming"]["final_outcome"] == "aborted"
+
+
+def test_abandoned_async_plain_loop_settles_when_the_guard_is_collected() -> None:
+    session = _session()
+    stream = _FakeAsyncStream(_anthropic_events())
+
+    async def _run() -> None:
+        guarded = base.call_stream_async(
+            lambda **kw: stream, dict(KW), session, AnthropicProvider()
+        )
+        async for _ in guarded:
+            break
+        assert _post_calls(session) == []
+        del guarded
+        gc.collect()
+        assert _post_calls(session) == []  # queued, not settled inline
+
+    asyncio.run(_run())
+    base.call_stream(MagicMock(), dict(KW), session, AnthropicProvider())  # drains
+    (pc,) = _post_calls(session)
+    assert (pc["tokens_input"], pc["tokens_output"]) == (16, 1)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+
+
+def test_caller_exception_inside_with_emits_llm_error_not_post_call() -> None:
+    session = _session()
+    guarded = _stream(session, _anthropic_events())
+    with pytest.raises(ValueError), guarded as s:
+        next(iter(s))
+        raise ValueError("caller bug")
+    assert _post_calls(session) == []
+    (err,) = _llm_errors(session)
+    assert err["error"]["abort_reason"] == "error_mid_stream"
+    assert err["error"]["partial_chunks"] == 1
+
+
+def test_async_caller_exception_inside_with_emits_llm_error_not_post_call() -> None:
+    session = _session()
+
+    async def _run() -> None:
+        guarded = base.call_stream_async(
+            lambda **kw: _FakeAsyncStream(_anthropic_events()),
+            dict(KW),
+            session,
+            AnthropicProvider(),
+        )
+        async with guarded as s:
+            async for _ in s:
+                raise ValueError("caller bug")
+
+    with pytest.raises(ValueError):
+        asyncio.run(_run())
+    assert _post_calls(session) == []
+    (err,) = _llm_errors(session)
+    assert err["error"]["abort_reason"] == "error_mid_stream"
+    assert err["error"]["partial_chunks"] == 1
+
+
+def test_guards_expose_text_stream_only_when_the_sdk_stream_has_one() -> None:
+    session = _session()
+    raw_guard = _stream(session, _anthropic_events())  # raw stream shape: no text_stream
+    assert not hasattr(raw_guard, "text_stream")
+    raw_guard.close()
+    helper_guard = base.call_stream(
+        lambda **kw: _SyncManager(_anthropic_events()), dict(KW), session, AnthropicProvider()
+    )
+    with helper_guard as s:
+        assert hasattr(s, "text_stream")
+
+
+def test_raw_anthropic_break_at_message_stop_is_completed() -> None:
+    session = _session()
+    guarded = _stream(session, _anthropic_events())
+    with guarded as s:
+        for event in s:
+            if event.type == "message_stop":
+                break
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "completed"
+    assert (pc["tokens_input"], pc["tokens_output"]) == (16, 9)
+
+
+def test_responses_break_at_the_completed_event_is_completed() -> None:
+    session = _session()
+    guarded = base.call_stream(
+        lambda **kw: _FakeStream(_responses_events()), dict(OPENAI_KW), session, OpenAIProvider()
+    )
+    for event in guarded:
+        if event.type == "response.completed":
+            break
+    guarded.close()
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "completed"
+    assert (pc["tokens_input"], pc["tokens_output"]) == (15, 6)
+
+
+def test_chat_break_at_the_usage_chunk_is_completed() -> None:
+    session = _session()
+    guarded = base.call_stream(
+        lambda **kw: _FakeStream(_openai_chat_events()),
+        dict(OPENAI_KW),
+        session,
+        OpenAIProvider(),
+    )
+    for chunk in guarded:
+        if chunk.usage is not None:
+            break
+    guarded.close()
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "completed"
+    assert (pc["tokens_input"], pc["tokens_output"]) == (20, 7)
+
+
+def test_keyboard_interrupt_inside_with_is_an_aborted_post_call() -> None:
+    session = _session()
+    guarded = _stream(session, _anthropic_events())
+    with pytest.raises(KeyboardInterrupt), guarded as s:
+        next(iter(s))
+        raise KeyboardInterrupt
+    assert _llm_errors(session) == []
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+
+
+def test_cancellation_inside_async_with_is_an_aborted_post_call() -> None:
+    session = _session()
+
+    async def _run() -> None:
+        guarded = base.call_stream_async(
+            lambda **kw: _FakeAsyncStream(_anthropic_events()),
+            dict(KW),
+            session,
+            AnthropicProvider(),
+        )
+        async with guarded as s:
+            async for _ in s:
+                raise asyncio.CancelledError
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(_run())
+    assert _llm_errors(session) == []
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+
+
+@pytest.mark.parametrize("lock_name", ["session", "policy"])
+def test_collection_under_a_sensor_lock_defers_the_settle_to_the_next_intercept(
+    lock_name: str,
+) -> None:
+    # The cyclic collector can finalise a guard while the same thread holds
+    # the session lock or the policy cache's lock (both non-reentrant and
+    # both taken on the settle path); settling inline would deadlock.
+    session = _session()
+    guarded = _stream(session, _anthropic_events())
+    for _ in guarded:
+        break
+    guarded.self_cycle = guarded  # type: ignore[attr-defined]  # only the cyclic collector frees it
+    del guarded
+    lock = session._lock if lock_name == "session" else session.policy._lock
+    with lock:
+        gc.collect()  # the finalizer runs here and must neither block nor emit
+        assert _post_calls(session) == []
+    base.call_stream(MagicMock(), dict(KW), session, AnthropicProvider())  # next intercept drains
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+
+
+def test_stream_failure_echoing_the_prompt_is_redacted_when_capture_is_off() -> None:
+    session = _session(capture_prompts=False)
+
+    class _Echoing(_FakeStream):
+        def __iter__(self) -> Any:
+            yield self._events[0]
+            raise RuntimeError(f"prompt flagged: {PROMPT}")
+
+    guarded = base.call_stream(
+        lambda **kw: _Echoing(_anthropic_events()), dict(KW), session, AnthropicProvider()
+    )
+    with pytest.raises(RuntimeError), guarded as s:
+        list(s)
+    everything = json.dumps([c.args[0] for c in session.event_queue.enqueue.call_args_list])
+    assert PROMPT not in everything
+    (err,) = _llm_errors(session)
+    assert err["error"]["abort_reason"] == "error_mid_stream"
+
+
+def test_a_guard_whose_call_failed_says_so_on_reuse() -> None:
+    session = _session()
+    guarded = base.call_stream(
+        MagicMock(side_effect=RuntimeError("boom")), dict(KW), session, AnthropicProvider()
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        guarded.open()
+    with pytest.raises(RuntimeError, match="never opened"):
+        next(iter(guarded))
+    assert not hasattr(guarded, "request_id")
+    (err,) = _llm_errors(session)
+    assert err["error"]["abort_reason"] == "error_before_stream"
+
+
+def test_merge_keeps_the_larger_cumulative_count_per_field() -> None:
+    merged = base._merge_usage(
+        TokenUsage(input_tokens=16, output_tokens=9, cache_read_tokens=4),
+        TokenUsage(input_tokens=4, output_tokens=3),
+    )
+    assert (merged.input_tokens, merged.output_tokens, merged.cache_read_tokens) == (16, 9, 4)
+
+
+def test_message_delta_with_every_cumulative_counter_keeps_the_totals() -> None:
+    session = _session()
+    delta = {
+        "input_tokens": 12,
+        "output_tokens": 9,
+        "cache_read_input_tokens": 4,
+        "cache_creation_input_tokens": 0,
+    }
+    guarded = _stream(session, _anthropic_events(delta_usage=delta))
+    with guarded as s:
+        for _ in s:
+            pass
+    (pc,) = _post_calls(session)
+    assert (pc["tokens_input"], pc["tokens_output"]) == (16, 9)
+
+
+def test_sync_helper_exit_after_message_delta_is_completed_without_reading_message_stop() -> None:
+    session = _session(capture_prompts=True)
+    raw = _CountingStream(_anthropic_events())
+    manager = _SyncManager([])
+    manager.raw, manager.helper = raw, MessageStream(raw, output_format=NOT_GIVEN)  # type: ignore[arg-type]
+    guarded = base.call_stream(
+        lambda **kw: manager, dict(KW), session, AnthropicProvider(capture_prompts=True)
+    )
+    with guarded as s:
+        for event in s:
+            if event.type == "message_delta":
+                break
+        pulled_before_exit = raw.pulled
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "completed"
+    assert (pc["tokens_input"], pc["tokens_output"]) == (16, 9)
+    assert pc["content"]["response"]["stop_reason"] == "end_turn"
+    assert raw.pulled == pulled_before_exit == N_EVENTS - 1  # message_stop stays unread
+
+
+def test_sync_helper_never_iterated_with_capture_on_reads_nothing() -> None:
+    session = _session(capture_prompts=True)
+    raw = _CountingStream(_anthropic_events())
+    manager = _SyncManager([])
+    manager.raw, manager.helper = raw, MessageStream(raw, output_format=NOT_GIVEN)  # type: ignore[arg-type]
+    guarded = base.call_stream(
+        lambda **kw: manager, dict(KW), session, AnthropicProvider(capture_prompts=True)
+    )
+    with guarded:
+        pass
+    (pc,) = _post_calls(session)
+    assert raw.pulled == 0
+    assert pc["streaming"]["final_outcome"] == "aborted"
+    assert pc["streaming"]["chunk_count"] == 0 and pc["streaming"]["ttft_ms"] is None
+    assert pc["tokens_input"] > 0 and pc["tokens_output"] == 0  # the estimate
+
+
+def test_helper_failure_consumed_through_get_final_message_is_a_mid_stream_error() -> None:
+    session = _session()
+    raw = _ExplodingStream(_anthropic_events())
+    manager = _SyncManager([])
+    manager.raw, manager.helper = raw, MessageStream(raw, output_format=NOT_GIVEN)  # type: ignore[arg-type]
+    guarded = base.call_stream(lambda **kw: manager, dict(KW), session, AnthropicProvider())
+    with pytest.raises(RuntimeError), guarded as s:
+        s.get_final_message()
+    assert _post_calls(session) == []
+    (err,) = _llm_errors(session)
+    assert err["error"]["error_type"] == "stream_error"
+    assert err["error"]["abort_reason"] == "error_mid_stream"
+    assert (err["error"]["partial_tokens_input"], err["error"]["partial_tokens_output"]) == (16, 1)
+
+
+@pytest.mark.parametrize("capture", [True, False])
+def test_helper_tool_use_emits_one_tool_call_and_honours_capture(capture: bool) -> None:
+    session = _session(capture_prompts=capture)
+    guarded = base.call_stream(
+        lambda **kw: _SyncManager(_tool_use_events()),
+        dict(KW),
+        session,
+        AnthropicProvider(capture_prompts=capture),
+    )
+    with guarded as s:
+        list(s)
+    (tool_call,) = _events_of(session, "tool_call")
+    assert "get_weather" in json.dumps(tool_call)
+    everything = json.dumps([c.args[0] for c in session.event_queue.enqueue.call_args_list])
+    assert (TOOL_MARKER in everything) is capture
+    # A raw event stream is never assembled into a message: no tool_call.
+    list(_stream(session, _tool_use_events()))
+    assert len(_events_of(session, "tool_call")) == 1
+
+
+def test_sensor_policy_exception_inside_with_is_a_client_abort() -> None:
+    session = _session()
+    guarded = _stream(session, _anthropic_events())
+    with pytest.raises(DirectiveError), guarded as s:
+        next(iter(s))
+        raise DirectiveError("shutdown", "another intercepted call was blocked")
+    assert _llm_errors(session) == []
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+
+
+def test_stream_still_referenced_at_session_end_is_reported() -> None:
+    config = SensorConfig(
+        server="http://localhost:9999",
+        token="tok",
+        agent_flavor="test",
+        agent_type="production",
+        quiet=True,
+    )
+    client = MagicMock(spec=ControlPlaneClient)
+    client.post_event.return_value = (None, False)
+    session = Session(config=config, client=client)  # a real queue: the teardown path
+    session.policy = PolicyCache(token_limit=None, block_at_pct=100)
+    guarded = _stream(session, _anthropic_events())
+    for _ in guarded:
+        break
+    session.end()
+    posted = [c.args[0]["event_type"] for c in client.post_event.call_args_list]
+    assert "post_call" in posted
+    guarded.close()  # already settled: a no-op
+    assert posted.count("post_call") == 1
+
+
+def test_building_a_guard_sends_no_request(monkeypatch: pytest.MonkeyPatch) -> None:
+    import httpx
+
+    sent: list[Any] = []
+    monkeypatch.setattr(httpx.Client, "send", lambda self, request, **kw: sent.append(request))
+    session = _session()
+    _stream(session, _anthropic_events()).close()
+    assert sent == []
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize("path", ["exhaust", "break_close", "error"])
+@pytest.mark.parametrize("shape", ["raw", "helper", "chat", "responses"])
+def test_capture_off_leaks_nothing_on_any_settle_path(
+    shape: str, path: str, is_async: bool
+) -> None:
+    session = _session(capture_prompts=False)
+    exploding = path == "error"
+    if shape in ("raw", "helper"):
+        events, kwargs, provider = _anthropic_events(), dict(KW), AnthropicProvider()
+    elif shape == "chat":
+        events, kwargs, provider = _openai_chat_events(), dict(OPENAI_KW), OpenAIProvider()
+    else:
+        events = _responses_events()
+        kwargs, provider = {"model": "gpt-5.5", "input": PROMPT, "stream": True}, OpenAIProvider()
+    if is_async:
+        raw: Any = (_ExplodingAsyncStream if exploding else _FakeAsyncStream)(events)
+    else:
+        raw = (_ExplodingStream if exploding else _FakeStream)(events)
+    target: Any = raw
+    if shape == "helper" and is_async:
+        target = _AsyncManager([])
+        target.raw, target.helper = raw, AsyncMessageStream(raw, output_format=NOT_GIVEN)
+    elif shape == "helper":
+        target = _SyncManager([])
+        target.raw, target.helper = raw, MessageStream(raw, output_format=NOT_GIVEN)
+
+    if is_async:
+        guarded_async = base.call_stream_async(lambda **kw: target, kwargs, session, provider)
+
+        async def _run() -> None:
+            if path == "exhaust":
+                async with guarded_async as s:
+                    async for _ in s:
+                        pass
+            elif path == "break_close":
+                async for _ in guarded_async:
+                    break
+                await guarded_async.close()
+            else:
+                with pytest.raises(RuntimeError):
+                    async with guarded_async as s:
+                        async for _ in s:
+                            pass
+
+        asyncio.run(_run())
+    else:
+        guarded = base.call_stream(lambda **kw: target, kwargs, session, provider)
+        if path == "exhaust":
+            with guarded as s:
+                list(s)
+        elif path == "break_close":
+            for _ in guarded:
+                break
+            guarded.close()
+        else:
+            with pytest.raises(RuntimeError), guarded as s:
+                list(s)
+
+    enqueued = [c.args[0] for c in session.event_queue.enqueue.call_args_list]
+    assert enqueued, "the call must be reported"
+    everything = json.dumps(enqueued)
+    assert PROMPT not in everything and "Hello" not in everything
+    for event in enqueued:
+        assert not event.get("has_content") and event.get("content") is None
 
 
 def test_close_on_a_never_iterated_guard_opens_nothing_and_emits_nothing() -> None:
@@ -427,8 +925,10 @@ def test_pre_stream_failure_emits_llm_error_on_plain_iteration() -> None:
 
 def test_timeout_classification_of_stream_failure() -> None:
     timeout_cls = type("APITimeoutError", (Exception,), {})
-    assert base._abort_reason_for(timeout_cls(), True) == (True, "timeout")
-    assert base._abort_reason_for(RuntimeError(), False) == (False, "error_before_stream")
+    assert base._abort_reason_for(timeout_cls(), True) == "timeout"
+    assert base._abort_reason_for(timeout_cls(), False) == "timeout"
+    assert base._abort_reason_for(RuntimeError(), True) == "error_mid_stream"
+    assert base._abort_reason_for(RuntimeError(), False) == "error_before_stream"
 
 
 # ----- Anthropic helper stream (real MessageStream classes) ------------------
@@ -458,6 +958,97 @@ def test_sync_helper_early_exit_uses_snapshot_usage_and_is_aborted() -> None:
     assert pc["streaming"]["final_outcome"] == "aborted"
 
 
+def test_sync_helper_early_exit_with_capture_on_stores_the_snapshot_unread() -> None:
+    # With capture on, settling an early-exited helper must not call
+    # get_final_message(): that reads the rest of the stream and defeats
+    # the caller's break. The accumulated snapshot is stored as it stands.
+    session = _session(capture_prompts=True)
+    raw = _CountingStream(_anthropic_events())
+    manager = _SyncManager([])
+    manager.raw, manager.helper = raw, MessageStream(raw, output_format=NOT_GIVEN)  # type: ignore[arg-type]
+    guarded = base.call_stream(
+        lambda **kw: manager, dict(KW), session, AnthropicProvider(capture_prompts=True)
+    )
+    with guarded as s:
+        for i, _ in enumerate(s):
+            if i == 2:
+                break
+        pulled_before_exit = raw.pulled  # read before the settle, so a drain shows
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+    assert pc["has_content"] is True
+    assert pc["content"]["response"]["stop_reason"] is None  # the snapshot, not the final message
+    assert raw.pulled == pulled_before_exit < N_EVENTS
+    assert manager.helper.current_message_snapshot.stop_reason is None
+
+
+def test_async_helper_early_exit_with_capture_on_stores_the_snapshot_unread() -> None:
+    session = _session(capture_prompts=True)
+    raw = _CountingAsyncStream(_anthropic_events())
+    manager = _AsyncManager([])
+    manager.raw, manager.helper = raw, AsyncMessageStream(raw, output_format=NOT_GIVEN)  # type: ignore[arg-type]
+    guarded = base.call_stream_async(
+        lambda **kw: manager, dict(KW), session, AnthropicProvider(capture_prompts=True)
+    )
+
+    async def _run() -> int:
+        async with guarded as s:
+            seen = 0
+            async for _ in s:
+                seen += 1
+                if seen == 3:
+                    break
+            return raw.pulled  # read before the settle, so a drain shows
+
+    pulled_before_exit = asyncio.run(_run())
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+    assert pc["has_content"] is True
+    assert pc["content"]["response"]["stop_reason"] is None
+    assert raw.pulled == pulled_before_exit < N_EVENTS
+
+
+def test_sync_helper_close_with_capture_on_stores_the_snapshot_unread() -> None:
+    session = _session(capture_prompts=True)
+    raw = _CountingStream(_anthropic_events())
+    manager = _SyncManager([])
+    manager.raw, manager.helper = raw, MessageStream(raw, output_format=NOT_GIVEN)  # type: ignore[arg-type]
+    guarded = base.call_stream(
+        lambda **kw: manager, dict(KW), session, AnthropicProvider(capture_prompts=True)
+    )
+    for i, _ in enumerate(guarded):
+        if i == 2:
+            break
+    pulled_at_break = raw.pulled
+    guarded.close()
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+    assert pc["has_content"] is True
+    assert pc["content"]["response"]["stop_reason"] is None
+    assert raw.pulled == pulled_at_break < N_EVENTS
+
+
+def test_sync_helper_collected_with_capture_on_stores_the_snapshot_unread() -> None:
+    session = _session(capture_prompts=True)
+    raw = _CountingStream(_anthropic_events())
+    manager = _SyncManager([])
+    manager.raw, manager.helper = raw, MessageStream(raw, output_format=NOT_GIVEN)  # type: ignore[arg-type]
+    guarded = base.call_stream(
+        lambda **kw: manager, dict(KW), session, AnthropicProvider(capture_prompts=True)
+    )
+    for i, _ in enumerate(guarded):
+        if i == 2:
+            break
+    pulled_at_break = raw.pulled
+    del guarded
+    gc.collect()
+    base.call_stream(MagicMock(), dict(KW), session, AnthropicProvider())  # drains
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+    assert pc["content"]["response"]["stop_reason"] is None
+    assert raw.pulled == pulled_at_break < N_EVENTS
+
+
 def test_sync_helper_get_final_message_is_the_captured_response() -> None:
     session = _session(capture_prompts=True)
     manager = _SyncManager(_anthropic_events())
@@ -473,6 +1064,10 @@ def test_sync_helper_get_final_message_is_the_captured_response() -> None:
     assert (pc["tokens_input"], pc["tokens_output"]) == (16, 9)
     assert pc["has_content"] is True
     assert pc["content"]["response"]["content"][0]["text"] == "Hello"
+    # The helper read the stream itself, so the guard saw no chunks; the
+    # outcome still comes from the complete snapshot.
+    assert pc["streaming"]["chunk_count"] == 0 and pc["streaming"]["ttft_ms"] is None
+    assert pc["streaming"]["final_outcome"] == "completed"
 
 
 def test_async_helper_text_stream_is_metered_and_captures_the_final_message() -> None:

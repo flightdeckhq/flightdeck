@@ -130,13 +130,11 @@ class SensorCompletions:
             if self._is_async:
                 # Native ``AsyncOpenAI.chat.completions.create(stream=
                 # True)`` returns a coroutine that resolves to an
-                # ``AsyncStream``. An earlier version returned a
-                # ``GuardedAsyncStream`` synchronously, so calls
-                # written ``await client.chat.completions.create(
-                # stream=True)`` raised ``TypeError: GuardedAsyncStream
-                # object can't be awaited``. Wrap the call in a
-                # coroutine so the awaited shape matches native
-                # behaviour. Caught by the playground smoke run.
+                # ``AsyncStream``, so the guarded call is wrapped in a
+                # coroutine too; returning the guard synchronously would
+                # make ``await client.chat.completions.create(stream=
+                # True)`` raise ``TypeError: GuardedAsyncStream object
+                # can't be awaited``.
                 async def _async_stream_create() -> base.GuardedAsyncStream:
                     guard = base.call_stream_async(
                         self._real.create,

@@ -125,10 +125,18 @@ class ErrorClassification:
 # SDKs here because the sensor must stay install-optional (a user with
 # ``openai`` but not ``anthropic`` installed cannot pay a hard import cost).
 #
-# Exception class names (SDK and stdlib) that mean the request timed out.
-# Shared with the stream guard, which reports such a failure with
-# ``abort_reason=timeout`` whatever its classification.
-TIMEOUT_EXCEPTION_NAMES: tuple[str, ...] = ("APITimeoutError", "TimeoutError")
+# Exception class names (SDK, stdlib and httpx) that mean the request or
+# the response timed out. Shared with the stream guard, which reports such
+# a failure with ``abort_reason=timeout`` whatever its classification.
+TIMEOUT_EXCEPTION_NAMES: tuple[str, ...] = (
+    "APITimeoutError",
+    "TimeoutError",
+    "TimeoutException",
+    "ConnectTimeout",
+    "ReadTimeout",
+    "WriteTimeout",
+    "PoolTimeout",
+)
 
 
 class StreamOutcome(str, enum.Enum):

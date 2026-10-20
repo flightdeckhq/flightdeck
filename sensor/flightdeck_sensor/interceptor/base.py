@@ -298,12 +298,13 @@ def _is_provider_failure(exc_val: BaseException | None) -> bool:
     SDK errors raised while reading through the guard are reported in
     ``__next__`` / ``__anext__``; an exception reaching ``__exit__`` came
     from the caller's own body or from a helper method that read the
-    stream itself. It is a provider failure only when the error
-    classifier knows the exception class (an SDK or transport error) and
-    no intercept has reported it already. Cancellations and interrupts
-    are not ``Exception`` subclasses, the sensor's own policy exceptions
-    come from another intercepted call inside the block, and the caller's
-    own bugs are the caller leaving.
+    stream itself. It is a provider failure only when no intercept has
+    reported it already and either the error classifier knows its class
+    or it comes from a transport or SDK module (or is a ConnectionError),
+    whoever raised it. Cancellations and interrupts are not ``Exception``
+    subclasses, the sensor's own policy exceptions come from another
+    intercepted call inside the block, and the caller's own bugs are the
+    caller leaving.
     """
     if exc_val is None or not isinstance(exc_val, Exception):
         return False

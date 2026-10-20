@@ -46,9 +46,10 @@ server.
   counts as completed; a cancellation, interrupt, the sensor's own policy
   exception or the caller's own exception leaving a `with` block is the
   caller leaving (completed if the response had been read in full, else
-  aborted), not an `llm_error`, unless the error classifier knows the
-  exception's class (such as the builtin `TimeoutError`) and the response
-  was still incomplete;
+  aborted), not an `llm_error`, unless the response was still incomplete
+  and the exception is one the error classifier knows (such as the builtin
+  `TimeoutError`) or a transport error (`httpx` and friends, a connection
+  reset) that a helper method let through;
   a stream still open when the session ends is reported before the session
   closes; and an aborted stream's `latency_ms` runs to its last chunk.
 - **Plugin: MCP policy decisions were never applied.** `PreToolUse`

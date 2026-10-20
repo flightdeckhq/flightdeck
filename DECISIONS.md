@@ -9886,8 +9886,8 @@ collection as it would without the sensor; only the guard with its settle
 record (and the request kwargs capture needs) waits for the drain. The SIGTERM / SIGINT handler that runs
 `Session.end()` can interrupt the main thread inside the same critical
 sections; that hazard predates this decision (posting `session_end`
-already takes the session lock), the session-end settle now also takes
-the policy cache lock and the queue mutex on that path, and it is not
+already takes the session lock and the queue mutex), the session-end
+settle now also takes the policy cache lock on that path, and it is not
 addressed here (README Roadmap). A session that ends with streams
 still open settles them first and flushes their events before posting
 `session_end`, so a stream left in a variable until exit is still reported
@@ -9896,9 +9896,13 @@ and rolled up on an open session. Cancellations
 policy exceptions and the caller's own exceptions leaving a `with` block
 are the caller leaving, not a provider failure: they produce a post_call
 (completed if the response had been read in full, else aborted), not
-`llm_error`. Only an exception the error classifier knows is a failure,
-and only while the response had not been read in full and no intercept
-had already reported it.
+`llm_error`. An exception is a failure only while the response had not
+been read in full and no intercept had already reported it, and only when
+the error classifier knows its class or it comes from the transport or SDK
+modules (httpx, httpcore, anyio, h11, anthropic, openai) or is a
+`ConnectionError`: the SDKs wrap only the request, so a response body that
+dies raises the transport's own class through helper methods such as
+`get_final_message()`.
 
 **Reasoning:** The SDK stream objects (`anthropic.Stream`,
 `MessageStream`, `openai.Stream`) have no `usage` attribute, so reading

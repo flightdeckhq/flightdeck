@@ -583,16 +583,19 @@ def test_error_a_nested_intercepted_call_reported_is_the_caller_leaving() -> Non
 
 
 @pytest.mark.parametrize(
-    "make",
+    ("make", "reason"),
     [
-        lambda: httpx.RemoteProtocolError("peer closed connection without sending a complete body"),
-        lambda: httpx.ReadTimeout("timed out"),
-        lambda: ConnectionResetError(104, "connection reset by peer"),
+        (
+            lambda: httpx.RemoteProtocolError("peer closed connection without a complete body"),
+            "error_mid_stream",
+        ),
+        (lambda: httpx.ReadTimeout("timed out"), "timeout"),
+        (lambda: ConnectionResetError(104, "connection reset by peer"), "error_mid_stream"),
     ],
     ids=["remote_protocol", "read_timeout", "connection_reset"],
 )
 def test_transport_error_from_a_helper_method_inside_with_is_a_stream_failure(
-    make: Any,
+    make: Any, reason: str
 ) -> None:
     # The SDKs wrap only the request; a response body that dies raises the
     # transport's own class through get_final_message() and friends.
@@ -604,7 +607,7 @@ def test_transport_error_from_a_helper_method_inside_with_is_a_stream_failure(
     assert _post_calls(session) == []
     (err,) = _llm_errors(session)
     assert err["error"]["error_type"] == "stream_error"
-    assert err["error"]["abort_reason"] in ("error_mid_stream", "timeout")
+    assert err["error"]["abort_reason"] == reason
 
 
 def test_sdk_error_from_a_helper_method_inside_with_is_a_stream_failure() -> None:

@@ -3700,7 +3700,9 @@ exception's class or module (an SDK error, a raw transport error such as
 method that read the stream itself, a connection reset, or a look-alike
 such as the builtin `TimeoutError` or `PermissionError`; an error raised
 while reading through the guard is reported as it happens, and one that
-another intercepted call already reported is not reported again). Cancellations
+another intercepted call already reported is not reported again; such an
+exception counts whoever raised it, so a failing `httpx` call of the
+caller's own inside the block is attributed to the stream). Cancellations
 and interrupts (`CancelledError`, `GeneratorExit`, `KeyboardInterrupt`),
 the sensor's own policy exceptions (`BudgetExceededError`,
 `DirectiveError`, `MCPPolicyBlocked`) and the caller's own exceptions

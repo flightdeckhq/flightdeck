@@ -9829,20 +9829,34 @@ different flavor name meant the flavor policy never applied.
 `approve|block` (works today but is scheduled for removal), or exiting with
 code 2 on deny (blocks reliably but discards the structured reason).
 
+---
+
 ## D185 -- Streamed calls are metered from the provider's in-stream usage events
 
 **Date:** 2026-10-19
 
 **Decision:** The sensor's stream guard records token usage from the
 chunks the provider sends (Anthropic `message_start` / `message_delta`,
-OpenAI chat's `include_usage` final chunk, Responses `response.completed`,
-litellm's final usage chunk) and emits `post_call` once, at the first of
-stream exhaustion, `close()` or leaving the `with` block. The guard is a
-plain iterator as well as a context manager, so `for chunk in create(...,
-stream=True)` and `async for` work without `with`. `messages.create(
-stream=True)` and `responses.create(stream=True)` route through the same
-guard as the stream helpers. The pre-call estimate is used only when the
-stream carried no usage at all.
+OpenAI chat's `include_usage` final chunk, Responses `response.completed`)
+and, for the Anthropic `messages.stream()` helper, from the helper's
+accumulated `current_message_snapshot.usage`, which never reads further
+from the network; once the helper's message is complete its
+`get_final_message()` (awaited on the async helper) becomes the response,
+so content capture and tool calls come from the assembled message. The
+guard emits `post_call` once, at the first of stream exhaustion, `close()`,
+leaving the `with` block normally, or the guard being garbage-collected; a
+failure emits `llm_error` carrying the tokens delivered before it, which
+are added to the session total. The guard is a plain iterator as well as a
+context manager, so `for chunk in create(..., stream=True)` and `async
+for` work without `with`. `messages.create(stream=True)` and
+`responses.create(stream=True)` route through the same guard as
+`messages.stream()` and `chat.completions.create(stream=True)`, and send
+the request inside the call as the SDK does. The pre-call estimate is used
+only when the stream carried no usage at all. The `Provider` protocol
+gains `usage_from_stream_chunk()`, `usage_from_finished_stream()`,
+`stream_completed()` and `final_message()`; the litellm provider
+implements them, but litellm `stream=True` still raises
+`NotImplementedError`, so that path is not exercised yet.
 
 **Reasoning:** The SDK stream objects (`anthropic.Stream`,
 `MessageStream`, `openai.Stream`) have no `usage` attribute, so reading
@@ -9852,9 +9866,12 @@ only because its mock stream had a `usage` attribute no real stream has.
 The usage lives in the events that pass through the guard, which is where
 metering has to happen.
 
-**Rejected alternatives:** Re-fetching usage after the stream (no such
+**Rejected alternative:** Re-fetching usage after the stream (no such
 endpoint; `count_tokens` would double the cost and still miss cache
-fields). Waiting for `get_final_message()` on early exit (it consumes the
-rest of the stream, defeating the caller's `break`). Keeping the estimate
-on streams and documenting it (streaming is the default in most agent
-frameworks, so budgets and cost would stay wrong for most sessions).
+fields). Calling `get_final_message()` whenever the guard settles (on an
+early exit it reads the rest of the stream, defeating the caller's
+`break`). Opening `create(stream=True)` lazily on first iteration (moves
+provider errors away from the call that the SDK raises them on). Keeping
+the estimate on streams and documenting it (streaming is the default in
+most agent frameworks, so budgets and cost would stay wrong for most
+sessions).

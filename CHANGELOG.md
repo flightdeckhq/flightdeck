@@ -4,24 +4,30 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
-Correctness patch for the Claude Code plugin and the sensor's MCP
-dependency, a pricing refresh, and a documentation truth-up. No schema
+Correctness patch for the Claude Code plugin, the sensor's streaming
+token accounting and its MCP dependency, a pricing refresh, and a
+documentation truth-up. No schema
 migration. **Upgrade note:** marketplace installs of the plugin do not
 update themselves; run `claude plugin update flightdeck@flightdeck-plugins`
 after upgrading the server.
 
 ### Fixed
 
-- **Sensor: streamed calls now report real token usage.** Every streamed
-  `post_call` used to carry the pre-call estimate as `tokens_input` and
-  `tokens_output = 0`, because the usage was read from the stream object
-  (which has none) instead of the stream's own usage events; plain
-  iteration without a `with` block raised under `patch()`, and
-  `messages.create(stream=True)` / `responses.create(stream=True)` were
-  not treated as streams at all. Usage is now metered from `message_start`
-  / `message_delta` (Anthropic), the final usage chunk (OpenAI chat) and
-  `response.completed` (Responses); iteration without `with` and
-  `async for` work; the guard proxies the SDK stream's attributes.
+- **Sensor: streamed calls recorded the estimate and zero output tokens.**
+  A streamed `post_call` carried the pre-call estimate as `tokens_input`
+  and `tokens_output = 0` because the sensor read usage from the stream
+  object, which has none. Usage now comes from the stream's own events
+  (`message_start` / `message_delta` for Anthropic, the final usage chunk
+  for OpenAI chat, `response.completed` for Responses), so token budgets
+  and `estimated_cost` include streamed output. Under `patch()`,
+  `stream.text_stream` and iterating without a `with` block used to
+  raise; both now work, as does `async for`, and `create(stream=True)` on
+  Anthropic messages and OpenAI Responses is metered as a stream and
+  sends its request at the call, as the SDK does. The streaming sub-object
+  reports `final_outcome="aborted"` when a caller leaves a stream early, a
+  plain loop left with `break` is reported when the stream object is
+  collected, and a mid-stream failure's `llm_error` carries the tokens
+  delivered before it, which now count against the session.
 - **Plugin: MCP policy decisions were never applied.** `PreToolUse`
   answered with the legacy top-level `decision` field, which Claude Code
   2.1 rejects; the hook now writes
@@ -83,7 +89,7 @@ after upgrading the server.
   gateway attribution) and the fact that no service serves `/metrics`
   yet. README gains a Roadmap section (replacing "Coming soon"), the
   plugin README documents identity, enforcement and updating, METHODOLOGY
-  records the severity scale, and DECISIONS.md records D164 to D184.
+  records the severity scale, and DECISIONS.md records D164 to D185.
 - **Repository hygiene.** Retired known-issue identifiers and decision
   pointers in source, CI and Helm comments; `sensor/.venv` is no longer
   tracked; test files and functions no longer carry decision numbers.

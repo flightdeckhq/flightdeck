@@ -29,9 +29,10 @@ from _helpers import (
 )
 
 MODEL = "claude-haiku-4-5-20251001"
-# Streamed calls made above: sync stream helper, async stream helper, raw
-# create(stream=True); each must land one metered post_call.
-EXPECTED_STREAMED_CALLS = 3
+# Streamed calls made above: sync stream helper, async stream helper, async
+# helper read via text_stream, async helper settled via get_final_message,
+# raw create(stream=True); each must land one metered post_call.
+EXPECTED_STREAMED_CALLS = 5
 HI = [{"role": "user", "content": "hi"}]
 
 
@@ -46,8 +47,13 @@ def main() -> None:
     print_result("Anthropic().messages.create", True, int((time.monotonic() - t0) * 1000),
                  f"{r.usage.output_tokens} output tokens")
 
+    # Each async section closes its client with ``async with`` while its
+    # event loop is alive: the SDK's httpx wrapper otherwise schedules its
+    # own close from a destructor, which lands on whatever loop is running
+    # when the client is collected and prints "Event loop is closed".
     async def _async_call() -> None:
-        await anthropic.AsyncAnthropic().messages.create(model=MODEL, max_tokens=5, messages=HI)
+        async with anthropic.AsyncAnthropic() as client:
+            await client.messages.create(model=MODEL, max_tokens=5, messages=HI)
     t0 = time.monotonic()
     asyncio.run(_async_call())
     print_result("AsyncAnthropic().messages.create", True, int((time.monotonic() - t0) * 1000))
@@ -64,8 +70,7 @@ def main() -> None:
     # so GuardedAsyncStream's __anext__ fires per chunk and the
     # post_call event carries a populated streaming.ttft_ms field.
     async def _async_stream() -> None:
-        client = anthropic.AsyncAnthropic()
-        async with client.messages.stream(
+        async with anthropic.AsyncAnthropic() as client, client.messages.stream(
             model=MODEL, max_tokens=8, messages=HI,
         ) as stream:
             async for _ in stream:
@@ -73,6 +78,31 @@ def main() -> None:
     t0 = time.monotonic()
     asyncio.run(_async_stream())
     print_result("AsyncAnthropic().messages.stream", True, int((time.monotonic() - t0) * 1000))
+
+    # Async helper consumed through text_stream only: the guard sees no
+    # events, so the usage must come from the awaited final message.
+    async def _async_text_stream() -> None:
+        async with anthropic.AsyncAnthropic() as client, client.messages.stream(
+            model=MODEL, max_tokens=8, messages=HI,
+        ) as stream:
+            async for _ in stream.text_stream:
+                pass
+    t0 = time.monotonic()
+    asyncio.run(_async_text_stream())
+    print_result("AsyncAnthropic().messages.stream via text_stream", True,
+                 int((time.monotonic() - t0) * 1000))
+
+    # Async helper settled only through get_final_message(), no iteration.
+    async def _async_final_message() -> int:
+        async with anthropic.AsyncAnthropic() as client, client.messages.stream(
+            model=MODEL, max_tokens=8, messages=HI,
+        ) as stream:
+            message = await stream.get_final_message()
+        return message.usage.output_tokens
+    t0 = time.monotonic()
+    final_out = asyncio.run(_async_final_message())
+    print_result("AsyncAnthropic().messages.stream via get_final_message", final_out > 0,
+                 int((time.monotonic() - t0) * 1000), f"{final_out} output tokens")
 
     # Raw event stream, iterated with no ``with`` block: the SDK's own
     # documented pattern for messages.create(stream=True).
@@ -99,14 +129,21 @@ def main() -> None:
     # at all, so the post_call event for an async stream never carried
     # streaming.ttft_ms). Look at all post_call events with a streaming
     # sub-object; require at least one populated ttft_ms.
-    events = fetch_events_for_session(
-        session_id, expect_event_types=["post_call"], timeout_s=8.0,
-    )
-    streamed = [
-        e for e in events
-        if e.get("event_type") == "post_call"
-        and (e.get("payload") or {}).get("streaming")
-    ]
+    # Poll until every streamed call has landed; the first post_call to
+    # appear is not enough since the later streams flush asynchronously.
+    deadline = time.monotonic() + 20.0
+    while True:
+        events = fetch_events_for_session(
+            session_id, expect_event_types=["post_call"], timeout_s=8.0,
+        )
+        streamed = [
+            e for e in events
+            if e.get("event_type") == "post_call"
+            and (e.get("payload") or {}).get("streaming")
+        ]
+        if len(streamed) >= EXPECTED_STREAMED_CALLS or time.monotonic() > deadline:
+            break
+        time.sleep(0.5)
     ttft_ok = any(
         (e["payload"]["streaming"].get("ttft_ms") is not None)
         for e in streamed

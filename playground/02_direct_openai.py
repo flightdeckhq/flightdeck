@@ -60,9 +60,11 @@ def main() -> None:
     print_result("OpenAI().chat.completions.create", True, int((time.monotonic() - t0) * 1000),
                  f"{r.usage.total_tokens} tokens")
 
+    # Async clients are closed with ``async with`` while their loop is
+    # alive; 01_direct_anthropic.py explains why.
     async def _async_chat() -> None:
-        await openai.AsyncOpenAI().chat.completions.create(
-            model=MODEL, max_tokens=5, messages=HI)
+        async with openai.AsyncOpenAI() as client:
+            await client.chat.completions.create(model=MODEL, max_tokens=5, messages=HI)
     t0 = time.monotonic()
     asyncio.run(_async_chat())
     print_result("AsyncOpenAI().chat.completions.create", True, int((time.monotonic() - t0) * 1000))
@@ -78,13 +80,13 @@ def main() -> None:
     # Async streaming -- must actually exercise async iteration so
     # GuardedAsyncStream populates streaming.ttft_ms on post_call.
     async def _async_stream() -> None:
-        client = openai.AsyncOpenAI()
-        s = await client.chat.completions.create(
-            model=MODEL, max_tokens=8, messages=HI, stream=True,
-        )
-        async with s:
-            async for _ in s:
-                pass
+        async with openai.AsyncOpenAI() as client:
+            s = await client.chat.completions.create(
+                model=MODEL, max_tokens=8, messages=HI, stream=True,
+            )
+            async with s:
+                async for _ in s:
+                    pass
     t0 = time.monotonic()
     asyncio.run(_async_stream())
     print_result("AsyncOpenAI().chat.completions (async stream)", True, int((time.monotonic() - t0) * 1000))
@@ -135,14 +137,21 @@ def main() -> None:
     assert_event_landed(session_id, "post_call", timeout=8)
 
     # Async-streaming TTFT regression guard.
-    events = fetch_events_for_session(
-        session_id, expect_event_types=["post_call"], timeout_s=8.0,
-    )
-    streamed = [
-        e for e in events
-        if e.get("event_type") == "post_call"
-        and (e.get("payload") or {}).get("streaming")
-    ]
+    # Poll until every streamed call has landed; the first post_call to
+    # appear is not enough since the later streams flush asynchronously.
+    deadline = time.monotonic() + 20.0
+    while True:
+        events = fetch_events_for_session(
+            session_id, expect_event_types=["post_call"], timeout_s=8.0,
+        )
+        streamed = [
+            e for e in events
+            if e.get("event_type") == "post_call"
+            and (e.get("payload") or {}).get("streaming")
+        ]
+        if len(streamed) >= EXPECTED_STREAMED_CALLS or time.monotonic() > deadline:
+            break
+        time.sleep(0.5)
     ttft_ok = any(
         (e["payload"]["streaming"].get("ttft_ms") is not None)
         for e in streamed

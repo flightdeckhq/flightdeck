@@ -3705,8 +3705,10 @@ response had been read in full, else as aborted. The garbage-collection
 path never settles inline: the cyclic collector can run a finalizer on
 any thread, inside a critical section of the session, its policy cache or
 its event queue, and none of those locks is re-entrant, so the finalizer
-queues the settle and the next LLM call the sensor intercepts, or the
-session's end, runs it. `messages.stream()`, `messages.create(stream=True)`,
+records what the settle needs, drops the SDK stream (whose connection
+then closes at collection, as it would without the sensor) and queues the
+settle; the next LLM call the sensor intercepts, or the session's end,
+runs it. `messages.stream()`, `messages.create(stream=True)`,
 `chat.completions.create(stream=True)` and `responses.create(stream=True)`
 all take this path, with or without a `with` block
 (`for chunk in client.chat.completions.create(..., stream=True)`) and with
@@ -3739,7 +3741,9 @@ than for `create(stream=True)` on the same response.
 With `capture_prompts` on, only the `messages.stream()` helper stores a
 response: when its message is complete the assembled final message is the
 response, and when the caller leaves early the helper's accumulated
-snapshot is stored as it stands, without reading further. Raw event
+snapshot is stored as it stands, without reading further (a stream
+reported from collection stores no partial content: the finalizer drops
+the stream before the settle runs). Raw event
 streams (`create(stream=True)` on any provider) are never assembled into a
 message, so they store the request (for `responses.create`, nothing of its
 `input`) but no response text, and emit no `tool_call`. OpenAI's

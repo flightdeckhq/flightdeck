@@ -9877,7 +9877,10 @@ policy cache's lock is a third, taken on every policy check. The finalizer
 therefore never settles inline: it queues the settle (a lock-free deque
 append) and the next intercepted LLM call, or the session's end, runs it.
 Checking whether a lock is held was rejected because the list of locks the
-settle path takes would rot. The SIGTERM / SIGINT handler that runs
+settle path takes would rot. The finalizer reads what the settle needs and
+drops the SDK stream, so an abandoned stream's connection closes at
+collection as it would without the sensor; only the small settle record
+waits for the drain. The SIGTERM / SIGINT handler that runs
 `Session.end()` can interrupt the main thread inside the same critical
 sections; that hazard predates this decision (posting `session_end`
 already takes the session lock) and is not addressed here. A session that ends with streams

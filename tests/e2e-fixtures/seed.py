@@ -193,7 +193,9 @@ def _post_session_events(
     # the ancient session shows up correctly post-fix.
     MAX_SAFE_EVENT_OFFSET = -3600  # 1h ago, well inside the 48h bound
     event_started = max(started, MAX_SAFE_EVENT_OFFSET)
-    event_ended = max(int(ended), MAX_SAFE_EVENT_OFFSET + 60) if ended is not None else None
+    event_ended = (
+        max(int(ended), MAX_SAFE_EVENT_OFFSET + 60) if ended is not None else None
+    )
 
     identity = {
         "agent_type": agent_cfg["agent_type"],
@@ -658,7 +660,9 @@ def _post_session_events(
                         error={
                             "error_type": "invalid_params",
                             "error_class": "McpError",
-                            "message": ("Invalid SQL: 'banned' is not a recognized status"),
+                            "message": (
+                                "Invalid SQL: 'banned' is not a recognized status"
+                            ),
                             "code": -32602,
                         },
                         **mcp_common,
@@ -696,7 +700,9 @@ def _post_session_events(
                                 {
                                     "uri": "mem://demo",
                                     "mimeType": "text/plain",
-                                    "text": ("hello from the flightdeck reference MCP server"),
+                                    "text": (
+                                        "hello from the flightdeck reference MCP server"
+                                    ),
                                 },
                             ],
                         },
@@ -975,7 +981,9 @@ def _backdate_session(
     try:
         UUID(session_id)
     except (TypeError, ValueError) as exc:
-        raise ValueError(f"_backdate_session: session_id {session_id!r} is not a UUID") from exc
+        raise ValueError(
+            f"_backdate_session: session_id {session_id!r} is not a UUID"
+        ) from exc
     started_secs = abs(int(started_offset_sec))
     started_expr = f"NOW() - INTERVAL '{started_secs} seconds'"
     parts = [
@@ -1089,7 +1097,9 @@ def seed(mode: str = "full") -> None:
     agents_cfg: list[dict[str, Any]] = cfg["agents"]
 
     total_sessions = sum(len(a["session_roles"]) for a in agents_cfg)
-    print(f"[seed] canonical dataset: {len(agents_cfg)} agents, {total_sessions} sessions")
+    print(
+        f"[seed] canonical dataset: {len(agents_cfg)} agents, {total_sessions} sessions"
+    )
 
     seeded: int = 0
     skipped: int = 0
@@ -1128,10 +1138,14 @@ def seed(mode: str = "full") -> None:
                 )
 
         if touched_agents:
-            print(f"[seed] waiting for worker to persist {len(touched_agents)} agents ...")
+            print(
+                f"[seed] waiting for worker to persist {len(touched_agents)} agents ..."
+            )
             _wait_for_fleet_visibility(touched_agents, timeout=SEED_READY_TIMEOUT_SEC)
         else:
-            print("[seed] every canonical session already present; no fleet wait needed")
+            print(
+                "[seed] every canonical session already present; no fleet wait needed"
+            )
 
     # Backdate aged-closed / stale sessions so their visible timestamps
     # match the declared offsets. Done AFTER the fleet-visibility wait
@@ -1284,7 +1298,9 @@ def seed(mode: str = "full") -> None:
                             "tool_call",
                             timestamp=_shift_timestamp(-5),
                             tool_name="e2e_refresh",
-                            tool_input={"reason": "seed keeps fresh-active in 1m swimlane window"},
+                            tool_input={
+                                "reason": "seed keeps fresh-active in 1m swimlane window"
+                            },
                             tool_result={"ok": True},
                             **event_kwargs,
                         )
@@ -1462,7 +1478,9 @@ def seed(mode: str = "full") -> None:
                                 "error": {
                                     "error_type": "invalid_params",
                                     "error_class": "McpError",
-                                    "message": ("Invalid SQL: 'banned' is not a recognized status"),
+                                    "message": (
+                                        "Invalid SQL: 'banned' is not a recognized status"
+                                    ),
                                     "code": -32602,
                                 },
                             },
@@ -1568,7 +1586,9 @@ def seed(mode: str = "full") -> None:
                         "session_id": session_id,
                         "event_id": "",
                         "captured_at": (
-                            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+                            datetime.now(timezone.utc)
+                            .isoformat()
+                            .replace("+00:00", "Z")
                         ),
                     }
                     post_event(

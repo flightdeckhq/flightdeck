@@ -34,7 +34,9 @@ def _unique_flavor() -> str:
 
 def _delete_flavor(flavor: str) -> None:
     requests.delete(
-        f"{API_URL}/v1/mcp-policies/{flavor}", headers=_admin_headers(json_body=False), timeout=5
+        f"{API_URL}/v1/mcp-policies/{flavor}",
+        headers=_admin_headers(json_body=False),
+        timeout=5,
     )
 
 
@@ -43,7 +45,9 @@ def _delete_flavor(flavor: str) -> None:
 
 def test_global_policy_auto_created_at_boot() -> None:
     """API boot ensures the empty blocklist global policy exists."""
-    r = requests.get(f"{API_URL}/v1/mcp-policies/global", headers=_read_headers(), timeout=5)
+    r = requests.get(
+        f"{API_URL}/v1/mcp-policies/global", headers=_read_headers(), timeout=5
+    )
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["scope"] == "global"
@@ -52,7 +56,9 @@ def test_global_policy_auto_created_at_boot() -> None:
 
 def test_get_missing_flavor_returns_404() -> None:
     flavor = _unique_flavor()
-    r = requests.get(f"{API_URL}/v1/mcp-policies/{flavor}", headers=_read_headers(), timeout=5)
+    r = requests.get(
+        f"{API_URL}/v1/mcp-policies/{flavor}", headers=_read_headers(), timeout=5
+    )
     assert r.status_code == 404, r.text
 
 
@@ -75,14 +81,19 @@ def test_full_crud_round_trip() -> None:
             ],
         }
         r = requests.post(
-            f"{API_URL}/v1/mcp-policies/{flavor}", headers=_admin_headers(), json=body, timeout=5
+            f"{API_URL}/v1/mcp-policies/{flavor}",
+            headers=_admin_headers(),
+            json=body,
+            timeout=5,
         )
         assert r.status_code == 201, r.text
         created = r.json()
         assert len(created["entries"]) == 1
 
         # GET
-        r = requests.get(f"{API_URL}/v1/mcp-policies/{flavor}", headers=_read_headers(), timeout=5)
+        r = requests.get(
+            f"{API_URL}/v1/mcp-policies/{flavor}", headers=_read_headers(), timeout=5
+        )
         assert r.status_code == 200, r.text
         assert r.json()["block_on_uncertainty"] is True
 
@@ -99,7 +110,10 @@ def test_full_crud_round_trip() -> None:
             ],
         }
         r = requests.put(
-            f"{API_URL}/v1/mcp-policies/{flavor}", headers=_admin_headers(), json=body2, timeout=5
+            f"{API_URL}/v1/mcp-policies/{flavor}",
+            headers=_admin_headers(),
+            json=body2,
+            timeout=5,
         )
         assert r.status_code == 200, r.text
         updated = r.json()
@@ -114,7 +128,9 @@ def test_full_crud_round_trip() -> None:
         assert r.status_code == 204, r.text
 
         # GET after delete
-        r = requests.get(f"{API_URL}/v1/mcp-policies/{flavor}", headers=_read_headers(), timeout=5)
+        r = requests.get(
+            f"{API_URL}/v1/mcp-policies/{flavor}", headers=_read_headers(), timeout=5
+        )
         assert r.status_code == 404
     finally:
         _delete_flavor(flavor)
@@ -125,11 +141,17 @@ def test_post_duplicate_flavor_returns_409() -> None:
     body = {"block_on_uncertainty": False, "entries": []}
     try:
         r = requests.post(
-            f"{API_URL}/v1/mcp-policies/{flavor}", headers=_admin_headers(), json=body, timeout=5
+            f"{API_URL}/v1/mcp-policies/{flavor}",
+            headers=_admin_headers(),
+            json=body,
+            timeout=5,
         )
         assert r.status_code == 201
         r = requests.post(
-            f"{API_URL}/v1/mcp-policies/{flavor}", headers=_admin_headers(), json=body, timeout=5
+            f"{API_URL}/v1/mcp-policies/{flavor}",
+            headers=_admin_headers(),
+            json=body,
+            timeout=5,
         )
         assert r.status_code == 409
     finally:
@@ -145,7 +167,10 @@ def test_post_with_mode_on_flavor_rejected() -> None:
     }
     try:
         r = requests.post(
-            f"{API_URL}/v1/mcp-policies/{flavor}", headers=_admin_headers(), json=body, timeout=5
+            f"{API_URL}/v1/mcp-policies/{flavor}",
+            headers=_admin_headers(),
+            json=body,
+            timeout=5,
         )
         assert r.status_code == 400
         assert "mode is global-only" in r.text
@@ -161,11 +186,17 @@ def test_audit_log_records_each_mutation() -> None:
     try:
         body = {"block_on_uncertainty": False, "entries": []}
         requests.post(
-            f"{API_URL}/v1/mcp-policies/{flavor}", headers=_admin_headers(), json=body, timeout=5
+            f"{API_URL}/v1/mcp-policies/{flavor}",
+            headers=_admin_headers(),
+            json=body,
+            timeout=5,
         )
         body["block_on_uncertainty"] = True
         requests.put(
-            f"{API_URL}/v1/mcp-policies/{flavor}", headers=_admin_headers(), json=body, timeout=5
+            f"{API_URL}/v1/mcp-policies/{flavor}",
+            headers=_admin_headers(),
+            json=body,
+            timeout=5,
         )
         r = requests.get(
             f"{API_URL}/v1/mcp-policies/{flavor}/audit-log",
@@ -199,7 +230,10 @@ def test_resolve_returns_decision_path() -> None:
             ],
         }
         requests.post(
-            f"{API_URL}/v1/mcp-policies/{flavor}", headers=_admin_headers(), json=body, timeout=5
+            f"{API_URL}/v1/mcp-policies/{flavor}",
+            headers=_admin_headers(),
+            json=body,
+            timeout=5,
         )
         r = requests.get(
             f"{API_URL}/v1/mcp-policies/resolve",
@@ -378,7 +412,10 @@ def test_metrics_returns_empty_pre_step_4() -> None:
     try:
         body = {"block_on_uncertainty": False, "entries": []}
         requests.post(
-            f"{API_URL}/v1/mcp-policies/{flavor}", headers=_admin_headers(), json=body, timeout=5
+            f"{API_URL}/v1/mcp-policies/{flavor}",
+            headers=_admin_headers(),
+            json=body,
+            timeout=5,
         )
         r = requests.get(
             f"{API_URL}/v1/mcp-policies/{flavor}/metrics?period=24h",
@@ -408,7 +445,9 @@ def test_metrics_returns_empty_pre_step_4() -> None:
 
 
 def test_templates_list_includes_three() -> None:
-    r = requests.get(f"{API_URL}/v1/mcp-policies/templates", headers=_read_headers(), timeout=5)
+    r = requests.get(
+        f"{API_URL}/v1/mcp-policies/templates", headers=_read_headers(), timeout=5
+    )
     assert r.status_code == 200, r.text
     templates = r.json()
     names = {t["name"] for t in templates}
@@ -420,7 +459,10 @@ def test_apply_template_writes_audit_log_entry() -> None:
     try:
         body = {"block_on_uncertainty": False, "entries": []}
         requests.post(
-            f"{API_URL}/v1/mcp-policies/{flavor}", headers=_admin_headers(), json=body, timeout=5
+            f"{API_URL}/v1/mcp-policies/{flavor}",
+            headers=_admin_headers(),
+            json=body,
+            timeout=5,
         )
         r = requests.post(
             f"{API_URL}/v1/mcp-policies/{flavor}/apply_template",

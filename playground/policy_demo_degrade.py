@@ -13,6 +13,7 @@ are visible via ``post_call.model`` only.
 
 Run: ``python playground/policy_demo_degrade.py``
 """
+
 from __future__ import annotations
 
 import json
@@ -25,7 +26,8 @@ import uuid
 try:
     import anthropic
 except ImportError:
-    print("SKIP: pip install anthropic"); sys.exit(2)
+    print("SKIP: pip install anthropic")
+    sys.exit(2)
 import flightdeck_sensor
 from flightdeck_sensor import Provider
 from _helpers import init_sensor, print_result
@@ -49,12 +51,19 @@ def main() -> None:
     haiku = "claude-haiku-4-5-20251001"
     # token_limit large enough that BLOCK never fires; DEGRADE at 1%
     # so the first call's tokens already cross the threshold.
-    policy = _api("POST", "/v1/policies", {
-        "scope": "flavor", "scope_value": flavor,
-        "token_limit": 1000,
-        "warn_at_pct": 1, "degrade_at_pct": 2, "block_at_pct": 99,
-        "degrade_to": haiku,
-    })
+    policy = _api(
+        "POST",
+        "/v1/policies",
+        {
+            "scope": "flavor",
+            "scope_value": flavor,
+            "token_limit": 1000,
+            "warn_at_pct": 1,
+            "degrade_at_pct": 2,
+            "block_at_pct": 99,
+            "degrade_to": haiku,
+        },
+    )
     try:
         init_sensor(session_id, flavor=flavor)
         flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
@@ -63,11 +72,14 @@ def main() -> None:
         for i in range(3):
             t0 = time.monotonic()
             r = c.messages.create(
-                model=sonnet, max_tokens=5,
+                model=sonnet,
+                max_tokens=5,
                 messages=[{"role": "user", "content": "hi"}],
             )
             print_result(
-                f"call {i+1}", True, int((time.monotonic() - t0) * 1000),
+                f"call {i + 1}",
+                True,
+                int((time.monotonic() - t0) * 1000),
                 f"model={r.model} tokens={r.usage.input_tokens + r.usage.output_tokens}",
             )
         flightdeck_sensor.teardown()
@@ -98,7 +110,9 @@ def main() -> None:
         payload = degrades[0].get("payload") or {}
         to_ok = payload.get("to_model") == haiku
         print_result(
-            "policy_degrade.to_model=haiku", to_ok, 0,
+            "policy_degrade.to_model=haiku",
+            to_ok,
+            0,
             f"from_model={payload.get('from_model')!r} to_model={payload.get('to_model')!r}",
         )
         if not to_ok:
@@ -106,7 +120,9 @@ def main() -> None:
         haiku_calls = sum(1 for pc in post_calls if pc.get("model") == haiku)
         swap_landed = haiku_calls >= 1
         print_result(
-            "post_call.model swapped to haiku at least once", swap_landed, 0,
+            "post_call.model swapped to haiku at least once",
+            swap_landed,
+            0,
             f"post_calls={len(post_calls)} of which {haiku_calls} on the degraded model",
         )
         if not swap_landed:

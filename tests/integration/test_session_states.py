@@ -444,7 +444,10 @@ def _read_session_identity(session_id: str) -> dict[str, str]:
 
 
 def _first_event_payload(
-    session_id: str, flavor: str, event_type: str, **extra: object,
+    session_id: str,
+    flavor: str,
+    event_type: str,
+    **extra: object,
 ) -> dict[str, object]:
     """Build an event payload for a session_id that Flightdeck has
     never seen. Differs from make_event() only in that no session_start
@@ -504,9 +507,7 @@ def test_unknown_session_id_lazy_creates_on_tool_call() -> None:
     sid = str(uuid.uuid4())
     flavor = f"test-d106-toolcall-{uuid.uuid4().hex[:6]}"
 
-    post_event(
-        _first_event_payload(sid, flavor, "tool_call", tool_name="Bash")
-    )
+    post_event(_first_event_payload(sid, flavor, "tool_call", tool_name="Bash"))
     wait_for_session_in_fleet(sid, timeout=10.0)
 
     row = _read_session_row(sid)
@@ -670,6 +671,7 @@ def test_session_end_on_unknown_session_id_does_not_lazy_create() -> None:
     # The session row must not exist. Direct DB lookup rather than
     # wait_for -- there's nothing to wait for.
     import time as _time
+
     _time.sleep(1.0)  # brief pause for worker to (not) process
     raw = exec_sql(
         "SELECT COUNT(*) FROM sessions WHERE session_id = :'sid'::uuid",

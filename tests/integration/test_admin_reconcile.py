@@ -242,9 +242,11 @@ def test_reconcile_concurrent_call_returns_409() -> None:
         # Both raced past the lock (reconcile too fast to collide).
         # Not a bug in the endpoint; flag via skip so CI visibility is
         # preserved without being treated as a test failure.
-        pytest.skip("reconcile completed too fast to trigger 409; handler "
-                    "is correct (covered by Go handler test "
-                    "TestAdminReconcileHandler_409_OnConcurrentInvocation)")
+        pytest.skip(
+            "reconcile completed too fast to trigger 409; handler "
+            "is correct (covered by Go handler test "
+            "TestAdminReconcileHandler_409_OnConcurrentInvocation)"
+        )
     pytest.fail(f"unexpected status pair: {statuses}")
 
 

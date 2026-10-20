@@ -135,8 +135,7 @@ def test_ws_broadcasts_tightly_paired_post_call_and_tool_call() -> None:
     # tool_call on this session, in occurred_at order.
     expected_ids = _get_event_ids(sid, ("post_call", "tool_call"))
     assert len(expected_ids) == 2, (
-        f"expected two rows (post_call + tool_call) in DB for {sid}, "
-        f"got {expected_ids}"
+        f"expected two rows (post_call + tool_call) in DB for {sid}, got {expected_ids}"
     )
 
     received_ids = [e["id"] for e in received]

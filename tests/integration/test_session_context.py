@@ -129,7 +129,9 @@ def test_context_not_overwritten_by_later_event() -> None:
     )
 
 
-def test_non_session_start_event_populates_context_when_session_start_was_empty() -> None:
+def test_non_session_start_event_populates_context_when_session_start_was_empty() -> (
+    None
+):
     """A later event's context fills in sessions.context when session_start
     arrived with an empty dict.
 

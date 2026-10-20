@@ -59,15 +59,22 @@ def test_embeddings_event_roundtrips_with_input_only_tokens() -> None:
 
     post_event(make_event(sid, flavor, "session_start"))
     wait_until(
-        lambda: session_exists_in_fleet(sid), timeout=10,
+        lambda: session_exists_in_fleet(sid),
+        timeout=10,
         msg=f"session {sid} did not appear",
     )
 
-    post_event(make_event(
-        sid, flavor, "embeddings",
-        model="text-embedding-3-small",
-        tokens_input=42, tokens_output=0, tokens_total=42,
-    ))
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "embeddings",
+            model="text-embedding-3-small",
+            tokens_input=42,
+            tokens_output=0,
+            tokens_total=42,
+        )
+    )
     _wait_for_event_count(sid, 2)
     events = _fetch_session_events(sid)
     embed = next((e for e in events if e["event_type"] == "embeddings"), None)
@@ -83,7 +90,8 @@ def test_llm_error_event_roundtrips_with_structured_error() -> None:
 
     post_event(make_event(sid, flavor, "session_start"))
     wait_until(
-        lambda: session_exists_in_fleet(sid), timeout=10,
+        lambda: session_exists_in_fleet(sid),
+        timeout=10,
         msg=f"session {sid} did not appear",
     )
 
@@ -97,12 +105,16 @@ def test_llm_error_event_roundtrips_with_structured_error() -> None:
         "retry_after": 30,
         "is_retryable": True,
     }
-    post_event(make_event(
-        sid, flavor, "llm_error",
-        model="claude-sonnet-4-6",
-        latency_ms=120,
-        error=error_payload,
-    ))
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "llm_error",
+            model="claude-sonnet-4-6",
+            latency_ms=120,
+            error=error_payload,
+        )
+    )
     _wait_for_event_count(sid, 2)
     events = _fetch_session_events(sid)
     err_evt = next((e for e in events if e["event_type"] == "llm_error"), None)
@@ -122,7 +134,8 @@ def test_streaming_post_call_preserves_ttft_and_chunk_stats() -> None:
 
     post_event(make_event(sid, flavor, "session_start"))
     wait_until(
-        lambda: session_exists_in_fleet(sid), timeout=10,
+        lambda: session_exists_in_fleet(sid),
+        timeout=10,
         msg=f"session {sid} did not appear",
     )
 
@@ -133,13 +146,19 @@ def test_streaming_post_call_preserves_ttft_and_chunk_stats() -> None:
         "final_outcome": "completed",
         "abort_reason": None,
     }
-    post_event(make_event(
-        sid, flavor, "post_call",
-        model="claude-sonnet-4-6",
-        tokens_input=100, tokens_output=200, tokens_total=300,
-        latency_ms=1500,
-        streaming=streaming,
-    ))
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "post_call",
+            model="claude-sonnet-4-6",
+            tokens_input=100,
+            tokens_output=200,
+            tokens_total=300,
+            latency_ms=1500,
+            streaming=streaming,
+        )
+    )
     _wait_for_event_count(sid, 2)
     events = _fetch_session_events(sid)
     pc = next((e for e in events if e["event_type"] == "post_call"), None)
@@ -171,37 +190,57 @@ def test_sessions_error_type_filter_narrows_result() -> None:
         msg="sessions did not appear",
     )
 
-    post_event(make_event(
-        sid_rl, flavor_rl, "llm_error",
-        error={
-            "error_type": "rate_limit", "provider": "anthropic",
-            "http_status": 429, "provider_error_code": None,
-            "error_message": "x", "request_id": None,
-            "retry_after": None, "is_retryable": True,
-        },
-    ))
-    post_event(make_event(
-        sid_to, flavor_to, "llm_error",
-        error={
-            "error_type": "timeout", "provider": "openai",
-            "http_status": None, "provider_error_code": None,
-            "error_message": "x", "request_id": None,
-            "retry_after": None, "is_retryable": True,
-        },
-    ))
+    post_event(
+        make_event(
+            sid_rl,
+            flavor_rl,
+            "llm_error",
+            error={
+                "error_type": "rate_limit",
+                "provider": "anthropic",
+                "http_status": 429,
+                "provider_error_code": None,
+                "error_message": "x",
+                "request_id": None,
+                "retry_after": None,
+                "is_retryable": True,
+            },
+        )
+    )
+    post_event(
+        make_event(
+            sid_to,
+            flavor_to,
+            "llm_error",
+            error={
+                "error_type": "timeout",
+                "provider": "openai",
+                "http_status": None,
+                "provider_error_code": None,
+                "error_message": "x",
+                "request_id": None,
+                "retry_after": None,
+                "is_retryable": True,
+            },
+        )
+    )
     _wait_for_event_count(sid_rl, 2)
     _wait_for_event_count(sid_to, 2)
 
     def _fetch(error_type: str) -> list[str]:
-        qs = urllib.parse.urlencode({
-            "error_type": error_type,
-            "from": "2020-01-01T00:00:00Z",
-            "limit": 100,
-        })
+        qs = urllib.parse.urlencode(
+            {
+                "error_type": error_type,
+                "from": "2020-01-01T00:00:00Z",
+                "limit": 100,
+            }
+        )
         req = urllib.request.Request(
-            f"{API_URL}/v1/sessions?{qs}", headers=auth_headers(),
+            f"{API_URL}/v1/sessions?{qs}",
+            headers=auth_headers(),
         )
         import json as _json
+
         with urllib.request.urlopen(req, timeout=5) as resp:
             body = _json.loads(resp.read())
         return [s["session_id"] for s in body.get("sessions", [])]
@@ -233,47 +272,65 @@ def test_sessions_listing_exposes_error_types_per_session() -> None:
     for sid in (sid_clean, sid_one, sid_many):
         post_event(make_event(sid, flavor, "session_start"))
     wait_until(
-        lambda: all(
-            session_exists_in_fleet(s) for s in (sid_clean, sid_one, sid_many)
-        ),
+        lambda: all(session_exists_in_fleet(s) for s in (sid_clean, sid_one, sid_many)),
         timeout=10,
         msg="sessions did not appear",
     )
 
-    post_event(make_event(
-        sid_one, flavor, "llm_error",
-        error={
-            "error_type": "rate_limit", "provider": "anthropic",
-            "http_status": 429, "provider_error_code": None,
-            "error_message": "x", "request_id": None,
-            "retry_after": 30, "is_retryable": True,
-        },
-    ))
+    post_event(
+        make_event(
+            sid_one,
+            flavor,
+            "llm_error",
+            error={
+                "error_type": "rate_limit",
+                "provider": "anthropic",
+                "http_status": 429,
+                "provider_error_code": None,
+                "error_message": "x",
+                "request_id": None,
+                "retry_after": 30,
+                "is_retryable": True,
+            },
+        )
+    )
     # Two distinct error_types on sid_many, plus a duplicate of one
     # of them so the DISTINCT in the aggregate has something to
     # collapse.
     for et in ("authentication", "context_overflow", "authentication"):
-        post_event(make_event(
-            sid_many, flavor, "llm_error",
-            error={
-                "error_type": et, "provider": "openai",
-                "http_status": 400, "provider_error_code": None,
-                "error_message": "x", "request_id": None,
-                "retry_after": None, "is_retryable": False,
-            },
-        ))
+        post_event(
+            make_event(
+                sid_many,
+                flavor,
+                "llm_error",
+                error={
+                    "error_type": et,
+                    "provider": "openai",
+                    "http_status": 400,
+                    "provider_error_code": None,
+                    "error_message": "x",
+                    "request_id": None,
+                    "retry_after": None,
+                    "is_retryable": False,
+                },
+            )
+        )
     _wait_for_event_count(sid_one, 2)
     _wait_for_event_count(sid_many, 4)
 
-    qs = urllib.parse.urlencode({
-        "flavor": flavor,
-        "from": "2020-01-01T00:00:00Z",
-        "limit": 100,
-    })
+    qs = urllib.parse.urlencode(
+        {
+            "flavor": flavor,
+            "from": "2020-01-01T00:00:00Z",
+            "limit": 100,
+        }
+    )
     req = urllib.request.Request(
-        f"{API_URL}/v1/sessions?{qs}", headers=auth_headers(),
+        f"{API_URL}/v1/sessions?{qs}",
+        headers=auth_headers(),
     )
     import json as _json
+
     with urllib.request.urlopen(req, timeout=5) as resp:
         body = _json.loads(resp.read())
 
@@ -308,49 +365,58 @@ def test_embeddings_content_input_roundtrips() -> None:
 
     post_event(make_event(sid, flavor, "session_start"))
     wait_until(
-        lambda: session_exists_in_fleet(sid), timeout=10,
+        lambda: session_exists_in_fleet(sid),
+        timeout=10,
         msg=f"session {sid} did not appear",
     )
 
     # Single-string input
-    post_event(make_event(
-        sid, flavor, "embeddings",
-        model="text-embedding-3-small",
-        tokens_input=24,
-        has_content=True,
-        content={
-            "provider": "openai",
-            "model": "text-embedding-3-small",
-            "system": None,
-            "messages": [],
-            "tools": None,
-            "response": {},
-            "input": "phase 4 e2e single-string capture",
-            "session_id": sid,
-            "event_id": "",
-            "captured_at": "2026-04-25T00:00:00Z",
-        },
-    ))
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "embeddings",
+            model="text-embedding-3-small",
+            tokens_input=24,
+            has_content=True,
+            content={
+                "provider": "openai",
+                "model": "text-embedding-3-small",
+                "system": None,
+                "messages": [],
+                "tools": None,
+                "response": {},
+                "input": "phase 4 e2e single-string capture",
+                "session_id": sid,
+                "event_id": "",
+                "captured_at": "2026-04-25T00:00:00Z",
+            },
+        )
+    )
 
     # List-of-strings input
-    post_event(make_event(
-        sid, flavor, "embeddings",
-        model="text-embedding-3-small",
-        tokens_input=42,
-        has_content=True,
-        content={
-            "provider": "openai",
-            "model": "text-embedding-3-small",
-            "system": None,
-            "messages": [],
-            "tools": None,
-            "response": {},
-            "input": ["item one", "item two", "item three"],
-            "session_id": sid,
-            "event_id": "",
-            "captured_at": "2026-04-25T00:00:00Z",
-        },
-    ))
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "embeddings",
+            model="text-embedding-3-small",
+            tokens_input=42,
+            has_content=True,
+            content={
+                "provider": "openai",
+                "model": "text-embedding-3-small",
+                "system": None,
+                "messages": [],
+                "tools": None,
+                "response": {},
+                "input": ["item one", "item two", "item three"],
+                "session_id": sid,
+                "event_id": "",
+                "captured_at": "2026-04-25T00:00:00Z",
+            },
+        )
+    )
 
     _wait_for_event_count(sid, 3)
 
@@ -361,6 +427,7 @@ def test_embeddings_content_input_roundtrips() -> None:
     assert len(embed_events) == 2
 
     import json as _json
+
     found_string = False
     found_list = False
     for e in embed_events:
@@ -399,9 +466,14 @@ def test_session_framework_filter_matches_attributed_sessions() -> None:
         (sid_lc, flavor_lc, "langchain"),
         (sid_oa, flavor_oa, "openai"),
     ):
-        post_event(make_event(
-            sid, flavor, "session_start", framework=framework,
-        ))
+        post_event(
+            make_event(
+                sid,
+                flavor,
+                "session_start",
+                framework=framework,
+            )
+        )
     wait_until(
         lambda: session_exists_in_fleet(sid_lc) and session_exists_in_fleet(sid_oa),
         timeout=10,
@@ -410,23 +482,25 @@ def test_session_framework_filter_matches_attributed_sessions() -> None:
 
     # Filter the listing on framework=langchain. The langchain session
     # must surface; the openai session must not.
-    qs = urllib.parse.urlencode({
-        "framework": "langchain",
-        "from": "2020-01-01T00:00:00Z",
-        "limit": 100,
-    })
+    qs = urllib.parse.urlencode(
+        {
+            "framework": "langchain",
+            "from": "2020-01-01T00:00:00Z",
+            "limit": 100,
+        }
+    )
     req = urllib.request.Request(
-        f"{API_URL}/v1/sessions?{qs}", headers=auth_headers(),
+        f"{API_URL}/v1/sessions?{qs}",
+        headers=auth_headers(),
     )
     import json as _json
+
     with urllib.request.urlopen(req, timeout=5) as resp:
         body = _json.loads(resp.read())
     matched = [s["session_id"] for s in body.get("sessions", [])]
     assert sid_lc in matched, (
-        f"framework=langchain filter must include the langchain session: "
-        f"got {matched}"
+        f"framework=langchain filter must include the langchain session: got {matched}"
     )
     assert sid_oa not in matched, (
-        f"framework=langchain filter must NOT include the openai session: "
-        f"got {matched}"
+        f"framework=langchain filter must NOT include the openai session: got {matched}"
     )

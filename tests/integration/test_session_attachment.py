@@ -165,8 +165,7 @@ def test_session_attachment_invalid_uuid_warns(
     # Re-scan log to ensure the "Custom session_id provided" line
     # did NOT fire for the bad string.
     assert not any(
-        "Custom session_id provided: 'not-a-uuid'" in r.message
-        for r in caplog.records
+        "Custom session_id provided: 'not-a-uuid'" in r.message for r in caplog.records
     )
 
 

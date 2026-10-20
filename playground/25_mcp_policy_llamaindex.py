@@ -67,7 +67,7 @@ for _modname in (
         )
         sys.exit(2)
 
-from _helpers import (
+from _helpers import (  # noqa: E402  (after the optional-dependency guard above)
     API_URL,
     fetch_events_for_session,
     init_sensor,
@@ -76,7 +76,7 @@ from _helpers import (
     wait_for_dev_stack,
 )
 
-import flightdeck_sensor
+import flightdeck_sensor  # noqa: E402  (after the optional-dependency guard above)
 
 
 def _admin_headers(content_type: str | None = None) -> dict[str, str]:

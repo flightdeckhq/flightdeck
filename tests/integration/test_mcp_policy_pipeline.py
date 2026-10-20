@@ -44,7 +44,9 @@ def _post_event(payload: dict) -> int:
     return r.status_code
 
 
-def _wait_for_event(session_id: str, event_type: str, timeout: float = 5.0) -> dict | None:
+def _wait_for_event(
+    session_id: str, event_type: str, timeout: float = 5.0
+) -> dict | None:
     """Poll GET /v1/sessions/{id} until an event of the requested
     type appears, or return None on timeout."""
     deadline = time.monotonic() + timeout
@@ -415,7 +417,9 @@ def test_mcp_server_attached_populates_session_context() -> None:
     assert _post_event(_attached_event(sid, flavor)) == 200
 
     server = _wait_for_context_mcp_server(sid, "maps", timeout=10.0)
-    assert server is not None, "mcp_server_attached did not populate context.mcp_servers within 10s"
+    assert server is not None, (
+        "mcp_server_attached did not populate context.mcp_servers within 10s"
+    )
     assert server["name"] == "maps"
     assert server["server_url"] == "https://maps.example.com/sse"
     assert server["transport"] == "sse"
@@ -550,7 +554,9 @@ def test_listing_aggregates_all_four_mcp_policy_event_types() -> None:
         "mcp_server_name_changed",
         "mcp_policy_user_remembered",
     ):
-        assert _wait_for_event(sid, et, timeout=10.0) is not None, f"{et} did not land within 10s"
+        assert _wait_for_event(sid, et, timeout=10.0) is not None, (
+            f"{et} did not land within 10s"
+        )
 
     # The list endpoint's policy_event_types[] aggregation must
     # include all four MCP-policy types alongside any token-budget

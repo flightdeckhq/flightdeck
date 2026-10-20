@@ -166,9 +166,7 @@ def _session_lifecycle() -> Any:
                     "tool_result": None,
                     "has_content": False,
                     "content": None,
-                    "timestamp": time.strftime(
-                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
-                    ),
+                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 }
                 payload.update(_identity_fields())
                 post_event(payload)

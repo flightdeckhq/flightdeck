@@ -12,6 +12,7 @@ operator can answer "which call hit the limit?".
 
 Run: ``python playground/policy_demo_block.py``
 """
+
 from __future__ import annotations
 
 import json
@@ -24,7 +25,8 @@ import uuid
 try:
     import anthropic
 except ImportError:
-    print("SKIP: pip install anthropic"); sys.exit(2)
+    print("SKIP: pip install anthropic")
+    sys.exit(2)
 import flightdeck_sensor
 from flightdeck_sensor import BudgetExceededError, Provider
 from _helpers import init_sensor, print_result
@@ -45,10 +47,16 @@ def main() -> None:
     session_id = str(uuid.uuid4())
     flavor = f"playground-policy-block-{uuid.uuid4().hex[:6]}"
     intended = "claude-haiku-4-5-20251001"
-    policy = _api("POST", "/v1/policies", {
-        "scope": "flavor", "scope_value": flavor,
-        "token_limit": 20, "block_at_pct": 50,
-    })
+    policy = _api(
+        "POST",
+        "/v1/policies",
+        {
+            "scope": "flavor",
+            "scope_value": flavor,
+            "token_limit": 20,
+            "block_at_pct": 50,
+        },
+    )
     try:
         init_sensor(session_id, flavor=flavor)
         flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
@@ -56,16 +64,20 @@ def main() -> None:
         c = anthropic.Anthropic()
         t0 = time.monotonic()
         r = c.messages.create(
-            model=intended, max_tokens=5,
+            model=intended,
+            max_tokens=5,
             messages=[{"role": "user", "content": "hi"}],
         )
         print_result(
-            "first call succeeds", True, int((time.monotonic() - t0) * 1000),
+            "first call succeeds",
+            True,
+            int((time.monotonic() - t0) * 1000),
             f"{r.usage.input_tokens + r.usage.output_tokens} tokens burned",
         )
         try:
             c.messages.create(
-                model=intended, max_tokens=5,
+                model=intended,
+                max_tokens=5,
                 messages=[{"role": "user", "content": "hi"}],
             )
             print_result("second call blocked", False, 0, "no BudgetExceededError")
@@ -82,7 +94,8 @@ def main() -> None:
         block_count_ok = len(blocks) >= 1
         print_result(
             "policy_block event landed",
-            block_count_ok, 0,
+            block_count_ok,
+            0,
             f"got {len(blocks)} policy_block events",
         )
         if not block_count_ok:
@@ -94,15 +107,21 @@ def main() -> None:
         intended_ok = payload.get("intended_model") == intended
         limit_ok = payload.get("token_limit") == 20
         print_result(
-            "policy_block.source=server", source_ok, 0,
+            "policy_block.source=server",
+            source_ok,
+            0,
             f"source={payload.get('source')!r}",
         )
         print_result(
-            "policy_block.intended_model", intended_ok, 0,
+            "policy_block.intended_model",
+            intended_ok,
+            0,
             f"intended_model={payload.get('intended_model')!r}",
         )
         print_result(
-            "policy_block.token_limit=20", limit_ok, 0,
+            "policy_block.token_limit=20",
+            limit_ok,
+            0,
             f"token_limit={payload.get('token_limit')!r} tokens_used={payload.get('tokens_used')!r}",
         )
         if not (source_ok and intended_ok and limit_ok):

@@ -58,16 +58,76 @@ from .conftest import (
 # ``client_type=flightdeck_sensor`` only applies to entries that omit
 # the kwarg.
 AGENTS = [
-    {"flavor": "research-agent", "agent_type": "production", "client_type": "flightdeck_sensor", "model": "claude-sonnet-4-6", "provider": "anthropic"},
-    {"flavor": "research-agent", "agent_type": "production", "client_type": "flightdeck_sensor", "model": "claude-sonnet-4-6", "provider": "anthropic"},
-    {"flavor": "research-agent", "agent_type": "production", "client_type": "flightdeck_sensor", "model": "claude-sonnet-4-6", "provider": "anthropic"},
-    {"flavor": "research-agent", "agent_type": "production", "client_type": "flightdeck_sensor", "model": "claude-sonnet-4-6", "provider": "anthropic"},
-    {"flavor": "code-agent", "agent_type": "production", "client_type": "flightdeck_sensor", "model": "gpt-4o", "provider": "openai"},
-    {"flavor": "code-agent", "agent_type": "production", "client_type": "flightdeck_sensor", "model": "gpt-4o", "provider": "openai"},
-    {"flavor": "code-agent", "agent_type": "production", "client_type": "flightdeck_sensor", "model": "gpt-4o", "provider": "openai"},
-    {"flavor": "code-agent", "agent_type": "production", "client_type": "flightdeck_sensor", "model": "gpt-4o", "provider": "openai"},
-    {"flavor": "claude-code", "agent_type": "coding", "client_type": "claude_code", "model": "claude-sonnet-4-6", "provider": "anthropic"},
-    {"flavor": "claude-code", "agent_type": "coding", "client_type": "claude_code", "model": "claude-sonnet-4-6", "provider": "anthropic"},
+    {
+        "flavor": "research-agent",
+        "agent_type": "production",
+        "client_type": "flightdeck_sensor",
+        "model": "claude-sonnet-4-6",
+        "provider": "anthropic",
+    },
+    {
+        "flavor": "research-agent",
+        "agent_type": "production",
+        "client_type": "flightdeck_sensor",
+        "model": "claude-sonnet-4-6",
+        "provider": "anthropic",
+    },
+    {
+        "flavor": "research-agent",
+        "agent_type": "production",
+        "client_type": "flightdeck_sensor",
+        "model": "claude-sonnet-4-6",
+        "provider": "anthropic",
+    },
+    {
+        "flavor": "research-agent",
+        "agent_type": "production",
+        "client_type": "flightdeck_sensor",
+        "model": "claude-sonnet-4-6",
+        "provider": "anthropic",
+    },
+    {
+        "flavor": "code-agent",
+        "agent_type": "production",
+        "client_type": "flightdeck_sensor",
+        "model": "gpt-4o",
+        "provider": "openai",
+    },
+    {
+        "flavor": "code-agent",
+        "agent_type": "production",
+        "client_type": "flightdeck_sensor",
+        "model": "gpt-4o",
+        "provider": "openai",
+    },
+    {
+        "flavor": "code-agent",
+        "agent_type": "production",
+        "client_type": "flightdeck_sensor",
+        "model": "gpt-4o",
+        "provider": "openai",
+    },
+    {
+        "flavor": "code-agent",
+        "agent_type": "production",
+        "client_type": "flightdeck_sensor",
+        "model": "gpt-4o",
+        "provider": "openai",
+    },
+    {
+        "flavor": "claude-code",
+        "agent_type": "coding",
+        "client_type": "claude_code",
+        "model": "claude-sonnet-4-6",
+        "provider": "anthropic",
+    },
+    {
+        "flavor": "claude-code",
+        "agent_type": "coding",
+        "client_type": "claude_code",
+        "model": "claude-sonnet-4-6",
+        "provider": "anthropic",
+    },
 ]
 
 # Per-agent runtime context attached to each session_start. Matches
@@ -80,74 +140,133 @@ AGENTS = [
 AGENT_CONTEXTS: list[dict] = [
     # research-agent (0-3): mix of k8s namespaces + a bare Docker dev box
     {
-        "hostname": "k8s-prod-a1", "os": "Linux", "arch": "x86_64",
-        "python_version": "3.12.3", "user": "ci-runner",
-        "orchestration": "kubernetes", "k8s_namespace": "agents",
-        "k8s_node": "node-prod-1", "k8s_pod": "research-a1",
-        "git_commit": "abc1234", "git_branch": "main", "git_repo": "flightdeck",
+        "hostname": "k8s-prod-a1",
+        "os": "Linux",
+        "arch": "x86_64",
+        "python_version": "3.12.3",
+        "user": "ci-runner",
+        "orchestration": "kubernetes",
+        "k8s_namespace": "agents",
+        "k8s_node": "node-prod-1",
+        "k8s_pod": "research-a1",
+        "git_commit": "abc1234",
+        "git_branch": "main",
+        "git_repo": "flightdeck",
         "frameworks": ["langchain/0.1.12"],
     },
     {
-        "hostname": "k8s-prod-a2", "os": "Linux", "arch": "x86_64",
-        "python_version": "3.12.3", "user": "ci-runner",
-        "orchestration": "kubernetes", "k8s_namespace": "research",
-        "k8s_node": "node-prod-1", "k8s_pod": "research-a2",
-        "git_commit": "abc1234", "git_branch": "main", "git_repo": "flightdeck",
+        "hostname": "k8s-prod-a2",
+        "os": "Linux",
+        "arch": "x86_64",
+        "python_version": "3.12.3",
+        "user": "ci-runner",
+        "orchestration": "kubernetes",
+        "k8s_namespace": "research",
+        "k8s_node": "node-prod-1",
+        "k8s_pod": "research-a2",
+        "git_commit": "abc1234",
+        "git_branch": "main",
+        "git_repo": "flightdeck",
         "frameworks": ["langchain/0.1.12"],
     },
     {
-        "hostname": "k8s-prod-b1", "os": "Linux", "arch": "arm64",
-        "python_version": "3.11.9", "user": "ci-runner",
-        "orchestration": "kubernetes", "k8s_namespace": "agents",
-        "k8s_node": "node-prod-2", "k8s_pod": "research-b1",
-        "git_commit": "def5678", "git_branch": "feat/crewai", "git_repo": "flightdeck",
+        "hostname": "k8s-prod-b1",
+        "os": "Linux",
+        "arch": "arm64",
+        "python_version": "3.11.9",
+        "user": "ci-runner",
+        "orchestration": "kubernetes",
+        "k8s_namespace": "agents",
+        "k8s_node": "node-prod-2",
+        "k8s_pod": "research-b1",
+        "git_commit": "def5678",
+        "git_branch": "feat/crewai",
+        "git_repo": "flightdeck",
         "frameworks": ["crewai/0.42.0", "langchain/0.1.12"],
     },
     {
-        "hostname": "mac-laptop-alice", "os": "Darwin", "arch": "x86_64",
-        "python_version": "3.12.3", "user": "alice",
+        "hostname": "mac-laptop-alice",
+        "os": "Darwin",
+        "arch": "x86_64",
+        "python_version": "3.12.3",
+        "user": "alice",
         "orchestration": "docker",
-        "git_commit": "abc1234", "git_branch": "main", "git_repo": "flightdeck",
+        "git_commit": "abc1234",
+        "git_branch": "main",
+        "git_repo": "flightdeck",
     },
     # code-agent (4-7): docker-compose build pipeline + ECS + bare Mac
     {
-        "hostname": "compose-build-1", "os": "Linux", "arch": "x86_64",
-        "python_version": "3.11.9", "user": "ci-runner",
-        "orchestration": "docker-compose", "compose_project": "build-pipeline",
+        "hostname": "compose-build-1",
+        "os": "Linux",
+        "arch": "x86_64",
+        "python_version": "3.11.9",
+        "user": "ci-runner",
+        "orchestration": "docker-compose",
+        "compose_project": "build-pipeline",
         "compose_service": "coder-1",
-        "git_commit": "abc1234", "git_branch": "main", "git_repo": "flightdeck",
+        "git_commit": "abc1234",
+        "git_branch": "main",
+        "git_repo": "flightdeck",
         "frameworks": ["autogen/0.2.34"],
     },
     {
-        "hostname": "compose-build-2", "os": "Linux", "arch": "x86_64",
-        "python_version": "3.11.9", "user": "ci-runner",
-        "orchestration": "docker-compose", "compose_project": "build-pipeline",
+        "hostname": "compose-build-2",
+        "os": "Linux",
+        "arch": "x86_64",
+        "python_version": "3.11.9",
+        "user": "ci-runner",
+        "orchestration": "docker-compose",
+        "compose_project": "build-pipeline",
         "compose_service": "coder-2",
-        "git_commit": "abc1234", "git_branch": "main", "git_repo": "flightdeck",
+        "git_commit": "abc1234",
+        "git_branch": "main",
+        "git_repo": "flightdeck",
     },
     {
-        "hostname": "ecs-prod-3", "os": "Linux", "arch": "arm64",
-        "python_version": "3.12.3", "user": "ci-runner",
-        "orchestration": "aws-ecs", "ecs_task": "code-agent:42",
-        "git_commit": "def5678", "git_branch": "feat/crewai", "git_repo": "flightdeck",
+        "hostname": "ecs-prod-3",
+        "os": "Linux",
+        "arch": "arm64",
+        "python_version": "3.12.3",
+        "user": "ci-runner",
+        "orchestration": "aws-ecs",
+        "ecs_task": "code-agent:42",
+        "git_commit": "def5678",
+        "git_branch": "feat/crewai",
+        "git_repo": "flightdeck",
     },
     {
-        "hostname": "mac-laptop-bob", "os": "Darwin", "arch": "arm64",
-        "python_version": "3.12.3", "user": "bob",
-        "git_commit": "abc1234", "git_branch": "main", "git_repo": "flightdeck",
+        "hostname": "mac-laptop-bob",
+        "os": "Darwin",
+        "arch": "arm64",
+        "python_version": "3.12.3",
+        "user": "bob",
+        "git_commit": "abc1234",
+        "git_branch": "main",
+        "git_repo": "flightdeck",
     },
     # claude-code (8-9): dev laptops, Node.js runtime instead of Python
     {
-        "hostname": "alice-mbp", "os": "Darwin", "arch": "arm64",
-        "node_version": "v22.11.0", "user": "alice",
+        "hostname": "alice-mbp",
+        "os": "Darwin",
+        "arch": "arm64",
+        "node_version": "v22.11.0",
+        "user": "alice",
         "process_name": "claude-code",
-        "git_commit": "abc1234", "git_branch": "main", "git_repo": "flightdeck",
+        "git_commit": "abc1234",
+        "git_branch": "main",
+        "git_repo": "flightdeck",
     },
     {
-        "hostname": "carol-win", "os": "Windows", "arch": "x86_64",
-        "node_version": "v24.14.0", "user": "carol",
+        "hostname": "carol-win",
+        "os": "Windows",
+        "arch": "x86_64",
+        "node_version": "v24.14.0",
+        "user": "carol",
         "process_name": "claude-code",
-        "git_commit": "feedbeef", "git_branch": "feat/ui", "git_repo": "flightdeck",
+        "git_commit": "feedbeef",
+        "git_branch": "feat/ui",
+        "git_repo": "flightdeck",
     },
 ]
 
@@ -161,41 +280,127 @@ ANTHROPIC_PROMPTS = [
     {
         "system": "You are a research assistant. Be thorough and cite sources.",
         "messages": [
-            {"role": "user", "content": "Summarize the latest developments in LLM agent frameworks."},
-            {"role": "assistant", "content": "Based on recent developments, several frameworks have emerged as leaders in the LLM agent space including LangChain, CrewAI, and AutoGen..."},
+            {
+                "role": "user",
+                "content": "Summarize the latest developments in LLM agent frameworks.",
+            },
+            {
+                "role": "assistant",
+                "content": "Based on recent developments, several frameworks have emerged as leaders in the LLM agent space including LangChain, CrewAI, and AutoGen...",
+            },
         ],
-        "tools": [{"name": "web_search", "description": "Search the web", "input_schema": {"type": "object", "properties": {"query": {"type": "string"}}}}],
-        "response": {"model": "claude-sonnet-4-6", "usage": {"input_tokens": 450, "output_tokens": 312}, "content": [{"type": "text", "text": "Based on recent developments, several frameworks have emerged..."}]},
+        "tools": [
+            {
+                "name": "web_search",
+                "description": "Search the web",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                },
+            }
+        ],
+        "response": {
+            "model": "claude-sonnet-4-6",
+            "usage": {"input_tokens": 450, "output_tokens": 312},
+            "content": [
+                {
+                    "type": "text",
+                    "text": "Based on recent developments, several frameworks have emerged...",
+                }
+            ],
+        },
     },
     {
         "system": "You are a data analyst specializing in market trends.",
         "messages": [
-            {"role": "user", "content": "Analyze token usage patterns across our agent fleet for the past week."},
-            {"role": "assistant", "content": "Looking at the fleet data, I can see several patterns emerging in token consumption across flavors..."},
+            {
+                "role": "user",
+                "content": "Analyze token usage patterns across our agent fleet for the past week.",
+            },
+            {
+                "role": "assistant",
+                "content": "Looking at the fleet data, I can see several patterns emerging in token consumption across flavors...",
+            },
         ],
         "tools": [],
-        "response": {"model": "claude-sonnet-4-6", "usage": {"input_tokens": 280, "output_tokens": 190}, "content": [{"type": "text", "text": "Looking at the fleet data..."}]},
+        "response": {
+            "model": "claude-sonnet-4-6",
+            "usage": {"input_tokens": 280, "output_tokens": 190},
+            "content": [{"type": "text", "text": "Looking at the fleet data..."}],
+        },
     },
 ]
 
 OPENAI_PROMPTS = [
     {
         "messages": [
-            {"role": "system", "content": "You are an expert software engineer. Write clean, tested code."},
-            {"role": "user", "content": "Implement a binary search function in Python with full type hints and docstring."},
-            {"role": "assistant", "content": "Here is a complete binary search implementation with type hints..."},
+            {
+                "role": "system",
+                "content": "You are an expert software engineer. Write clean, tested code.",
+            },
+            {
+                "role": "user",
+                "content": "Implement a binary search function in Python with full type hints and docstring.",
+            },
+            {
+                "role": "assistant",
+                "content": "Here is a complete binary search implementation with type hints...",
+            },
         ],
-        "tools": [{"type": "function", "function": {"name": "run_tests", "description": "Run the test suite", "parameters": {"type": "object", "properties": {"test_file": {"type": "string"}}}}}],
-        "response": {"model": "gpt-4o", "usage": {"prompt_tokens": 320, "completion_tokens": 280}, "choices": [{"message": {"role": "assistant", "content": "Here is a complete binary search implementation..."}}]},
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "run_tests",
+                    "description": "Run the test suite",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"test_file": {"type": "string"}},
+                    },
+                },
+            }
+        ],
+        "response": {
+            "model": "gpt-4o",
+            "usage": {"prompt_tokens": 320, "completion_tokens": 280},
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Here is a complete binary search implementation...",
+                    }
+                }
+            ],
+        },
     },
     {
         "messages": [
-            {"role": "system", "content": "You are a code reviewer. Be constructive and specific."},
-            {"role": "user", "content": "Review this pull request diff and identify any issues."},
-            {"role": "assistant", "content": "I reviewed the diff and found 3 issues worth addressing..."},
+            {
+                "role": "system",
+                "content": "You are a code reviewer. Be constructive and specific.",
+            },
+            {
+                "role": "user",
+                "content": "Review this pull request diff and identify any issues.",
+            },
+            {
+                "role": "assistant",
+                "content": "I reviewed the diff and found 3 issues worth addressing...",
+            },
         ],
         "tools": [],
-        "response": {"model": "gpt-4o", "usage": {"prompt_tokens": 180, "completion_tokens": 240}, "choices": [{"message": {"role": "assistant", "content": "I reviewed the diff and found 3 issues..."}}]},
+        "response": {
+            "model": "gpt-4o",
+            "usage": {"prompt_tokens": 180, "completion_tokens": 240},
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "I reviewed the diff and found 3 issues...",
+                    }
+                }
+            ],
+        },
     },
 ]
 
@@ -400,20 +605,22 @@ def test_ui_demo() -> None:
     for i, agent in enumerate(AGENTS):
         sid = str(uuid.uuid4())
         ctx = AGENT_CONTEXTS[i]
-        sessions.append({
-            "session_id": sid,
-            "flavor": agent["flavor"],
-            "agent_type": agent["agent_type"],
-            "client_type": agent["client_type"],
-            "model": agent["model"],
-            "provider": agent["provider"],
-            # Use the context hostname so the drawer Host field and
-            # the swimlane hostname label show the same value for
-            # each demo session.
-            "host": ctx["hostname"],
-            "context": ctx,
-            "tokens_used_session": 0,
-        })
+        sessions.append(
+            {
+                "session_id": sid,
+                "flavor": agent["flavor"],
+                "agent_type": agent["agent_type"],
+                "client_type": agent["client_type"],
+                "model": agent["model"],
+                "provider": agent["provider"],
+                # Use the context hostname so the drawer Host field and
+                # the swimlane hostname label show the same value for
+                # each demo session.
+                "host": ctx["hostname"],
+                "context": ctx,
+                "tokens_used_session": 0,
+            }
+        )
 
     research_sessions = [s for s in sessions if s["flavor"] == "research-agent"]
     code_sessions = [s for s in sessions if s["flavor"] == "code-agent"]
@@ -450,7 +657,9 @@ def test_ui_demo() -> None:
                 f"{len(CUSTOM_DIRECTIVES)} flavors"
             )
         except urllib.error.HTTPError as e:
-            print(f"  WARN: register failed ({e.code}) -- UI directives tab will be empty")
+            print(
+                f"  WARN: register failed ({e.code}) -- UI directives tab will be empty"
+            )
 
         # ---- PHASE 1: Start all 10 sessions ----
         print("\n=== PHASE 1: Starting 10 sessions ===")
@@ -460,8 +669,13 @@ def test_ui_demo() -> None:
             # dashboard CONTEXT sidebar / RUNTIME drawer panel have
             # real data to render.
             evt = make_event(
-                s["session_id"], s["flavor"], "session_start",
-                agent_type=s["agent_type"], client_type=s["client_type"], host=s["host"], model=s["model"],
+                s["session_id"],
+                s["flavor"],
+                "session_start",
+                agent_type=s["agent_type"],
+                client_type=s["client_type"],
+                host=s["host"],
+                model=s["model"],
                 context=s["context"],
             )
             _safe_post(evt)
@@ -500,7 +714,7 @@ def test_ui_demo() -> None:
         print("\n=== PHASE 1.5: Orchestrator re-attachment cycles ===")
         attach_targets = [
             (research_sessions[3], 3),  # 3 attachments → 4 total runs
-            (code_sessions[3], 4),       # 4 attachments → 5 total runs
+            (code_sessions[3], 4),  # 4 attachments → 5 total runs
         ]
 
         def _run_events_briefly(sess: dict) -> None:
@@ -510,27 +724,41 @@ def test_ui_demo() -> None:
             to = random.randint(80, 200)
             tt = ti + to
             sess["tokens_used_session"] += tt
-            _safe_post(make_event(
-                sess["session_id"], sess["flavor"], "post_call",
-                agent_type=sess["agent_type"], host=sess["host"],
-                model=sess["model"],
-                tokens_input=ti, tokens_output=to, tokens_total=tt,
-                tokens_used_session=sess["tokens_used_session"],
-                latency_ms=random.randint(300, 1200),
-            ))
+            _safe_post(
+                make_event(
+                    sess["session_id"],
+                    sess["flavor"],
+                    "post_call",
+                    agent_type=sess["agent_type"],
+                    host=sess["host"],
+                    model=sess["model"],
+                    tokens_input=ti,
+                    tokens_output=to,
+                    tokens_total=tt,
+                    tokens_used_session=sess["tokens_used_session"],
+                    latency_ms=random.randint(300, 1200),
+                )
+            )
             tool = (
                 random.choice(RESEARCH_TOOLS)
                 if sess["flavor"] == "research-agent"
                 else random.choice(CODE_TOOLS)
             )
-            _safe_post(make_event(
-                sess["session_id"], sess["flavor"], "tool_call",
-                agent_type=sess["agent_type"], host=sess["host"],
-                tool_name=tool,
-                latency_ms=random.randint(50, 400),
-                tokens_input=0, tokens_output=0, tokens_total=0,
-                tokens_used_session=sess["tokens_used_session"],
-            ))
+            _safe_post(
+                make_event(
+                    sess["session_id"],
+                    sess["flavor"],
+                    "tool_call",
+                    agent_type=sess["agent_type"],
+                    host=sess["host"],
+                    tool_name=tool,
+                    latency_ms=random.randint(50, 400),
+                    tokens_input=0,
+                    tokens_output=0,
+                    tokens_total=0,
+                    tokens_used_session=sess["tokens_used_session"],
+                )
+            )
 
         for target, attach_count in attach_targets:
             # The initial session_start from PHASE 1 already created
@@ -538,18 +766,31 @@ def test_ui_demo() -> None:
             # below appends one row to session_attachments.
             _run_events_briefly(target)
             for cycle in range(attach_count):
-                _safe_post(make_event(
-                    target["session_id"], target["flavor"], "session_end",
-                    agent_type=target["agent_type"], client_type=target["client_type"], host=target["host"],
-                ))
+                _safe_post(
+                    make_event(
+                        target["session_id"],
+                        target["flavor"],
+                        "session_end",
+                        agent_type=target["agent_type"],
+                        client_type=target["client_type"],
+                        host=target["host"],
+                    )
+                )
                 # Small gap so the worker commits state=closed before
                 # the next session_start races in.
                 time.sleep(0.6)
-                resp = post_event(make_event(
-                    target["session_id"], target["flavor"], "session_start",
-                    agent_type=target["agent_type"], client_type=target["client_type"], host=target["host"],
-                    model=target["model"], context=target["context"],
-                ))
+                resp = post_event(
+                    make_event(
+                        target["session_id"],
+                        target["flavor"],
+                        "session_start",
+                        agent_type=target["agent_type"],
+                        client_type=target["client_type"],
+                        host=target["host"],
+                        model=target["model"],
+                        context=target["context"],
+                    )
+                )
                 print(
                     f"  {target['session_id'][:8]} ({target['flavor']}) "
                     f"cycle {cycle + 1}/{attach_count}: "
@@ -576,75 +817,122 @@ def test_ui_demo() -> None:
             if elapsed >= 60 and not flow1_done:
                 flow1_done = True
                 target = research_sessions[1]["session_id"]
-                _safe_post(make_event(target, "research-agent", "directive_result",
-                    agent_type="production", host=research_sessions[1]["host"],
-                    directive_name="clear_cache", directive_action="custom",
-                    directive_status="success",
-                ))
+                _safe_post(
+                    make_event(
+                        target,
+                        "research-agent",
+                        "directive_result",
+                        agent_type="production",
+                        host=research_sessions[1]["host"],
+                        directive_name="clear_cache",
+                        directive_action="custom",
+                        directive_status="success",
+                    )
+                )
                 print(f"  ** Flow 1: clear_cache directive result for {target[:8]}")
 
             # ---- Flow 2: Degrade result at 75s ----
             if elapsed >= 75 and not flow2_done:
                 flow2_done = True
                 target = research_sessions[2]["session_id"]
-                _safe_post(make_event(target, "research-agent", "directive_result",
-                    agent_type="production", host=research_sessions[2]["host"],
-                    directive_name="degrade", directive_action="degrade",
-                    directive_status="acknowledged",
-                ))
+                _safe_post(
+                    make_event(
+                        target,
+                        "research-agent",
+                        "directive_result",
+                        agent_type="production",
+                        host=research_sessions[2]["host"],
+                        directive_name="degrade",
+                        directive_action="degrade",
+                        directive_status="acknowledged",
+                    )
+                )
                 print(f"  ** Flow 2: degrade result for {target[:8]}")
 
             # ---- PHASE 3: Policy at 90 seconds ----
             if elapsed >= 90 and not policy_created:
                 policy = create_policy(
-                    scope="flavor", scope_value="research-agent",
-                    token_limit=50000, warn_at_pct=80,
+                    scope="flavor",
+                    scope_value="research-agent",
+                    token_limit=50000,
+                    warn_at_pct=80,
                 )
                 policy_id = policy.get("id")
                 policy_created = True
-                print(f"  ** Created warn policy for research-agent at {elapsed}s (id={policy_id})")
+                print(
+                    f"  ** Created warn policy for research-agent at {elapsed}s (id={policy_id})"
+                )
 
             # ---- Flow 3: Failed directive at 90s ----
             if elapsed >= 90 and not flow3_done:
                 flow3_done = True
                 target = code_sessions[0]["session_id"]
-                _safe_post(make_event(target, "code-agent", "directive_result",
-                    agent_type="production", host=code_sessions[0]["host"],
-                    directive_name="unknown_action", directive_action="custom",
-                    directive_status="error",
-                ))
+                _safe_post(
+                    make_event(
+                        target,
+                        "code-agent",
+                        "directive_result",
+                        agent_type="production",
+                        host=code_sessions[0]["host"],
+                        directive_name="unknown_action",
+                        directive_action="custom",
+                        directive_status="error",
+                    )
+                )
                 print(f"  ** Flow 3: failed directive result for {target[:8]}")
 
             # ---- Flow 4 + PHASE 4: Shutdown with ack at 135 seconds ----
             if elapsed >= 135 and not directive_sent:
                 target_sid = research_sessions[0]["session_id"]
                 post_directive(
-                    action="shutdown", session_id=target_sid,
-                    reason="demo kill switch", grace_period_ms=5000,
+                    action="shutdown",
+                    session_id=target_sid,
+                    reason="demo kill switch",
+                    grace_period_ms=5000,
                 )
                 time.sleep(2)
                 # Post acknowledgement result
-                _safe_post(make_event(target_sid, "research-agent", "directive_result",
-                    agent_type="production", host=research_sessions[0]["host"],
-                    directive_name="shutdown", directive_action="shutdown",
-                    directive_status="acknowledged",
-                ))
+                _safe_post(
+                    make_event(
+                        target_sid,
+                        "research-agent",
+                        "directive_result",
+                        agent_type="production",
+                        host=research_sessions[0]["host"],
+                        directive_name="shutdown",
+                        directive_action="shutdown",
+                        directive_status="acknowledged",
+                    )
+                )
                 # Post session_end so the swimlane shows a clean END marker
                 # and mark the session inactive so the event loop stops
                 # posting to it from this tick onward.
-                _safe_post(make_event(
-                    target_sid, "research-agent", "session_end",
-                    agent_type="production", host=research_sessions[0]["host"],
-                ))
+                _safe_post(
+                    make_event(
+                        target_sid,
+                        "research-agent",
+                        "session_end",
+                        agent_type="production",
+                        host=research_sessions[0]["host"],
+                    )
+                )
                 inactive_sessions.add(target_sid)
                 directive_sent = True
-                print(f"  ** Flow 4: shutdown acknowledged and session ended for {target_sid[:8]}")
+                print(
+                    f"  ** Flow 4: shutdown acknowledged and session ended for {target_sid[:8]}"
+                )
 
             # Filter sessions by inactive set BEFORE the per-session loop
             # so events are only posted to currently-active sessions.
-            active_research = [s for s in research_sessions if s["session_id"] not in inactive_sessions]
-            active_code = [s for s in code_sessions if s["session_id"] not in inactive_sessions]
-            active_claude = [s for s in claude_sessions if s["session_id"] not in inactive_sessions]
+            active_research = [
+                s for s in research_sessions if s["session_id"] not in inactive_sessions
+            ]
+            active_code = [
+                s for s in code_sessions if s["session_id"] not in inactive_sessions
+            ]
+            active_claude = [
+                s for s in claude_sessions if s["session_id"] not in inactive_sessions
+            ]
 
             if not (active_research or active_code or active_claude):
                 print("  All sessions inactive -- ending event loop early")
@@ -687,9 +975,15 @@ def test_ui_demo() -> None:
 
                     # Build event with prompt capture for research-agent and code-agent
                     extra: dict = dict(
-                        agent_type=s["agent_type"], client_type=s["client_type"], host=s["host"], model=s["model"],
-                        tokens_input=ti, tokens_output=to, tokens_total=tt,
-                        tokens_used_session=s["tokens_used_session"], latency_ms=lat,
+                        agent_type=s["agent_type"],
+                        client_type=s["client_type"],
+                        host=s["host"],
+                        model=s["model"],
+                        tokens_input=ti,
+                        tokens_output=to,
+                        tokens_total=tt,
+                        tokens_used_session=s["tokens_used_session"],
+                        latency_ms=lat,
                     )
 
                     if flavor == "research-agent":
@@ -716,7 +1010,9 @@ def test_ui_demo() -> None:
                     evt = make_event(s["session_id"], s["flavor"], "post_call", **extra)
                     _safe_post(evt)
                     cap = " +prompts" if extra.get("has_content") else ""
-                    print(f"  {s['session_id'][:8]} ({flavor}) -> post_call {s['model']} ({tt} tok){cap}")
+                    print(
+                        f"  {s['session_id'][:8]} ({flavor}) -> post_call {s['model']} ({tt} tok){cap}"
+                    )
                 else:
                     if flavor == "research-agent":
                         tool = random.choice(RESEARCH_TOOLS)
@@ -729,9 +1025,17 @@ def test_ui_demo() -> None:
                         lat = random.randint(30, 300)
 
                     evt = make_event(
-                        s["session_id"], s["flavor"], "tool_call",
-                        agent_type=s["agent_type"], client_type=s["client_type"], host=s["host"], tool_name=tool,
-                        latency_ms=lat, tokens_input=0, tokens_output=0, tokens_total=0,
+                        s["session_id"],
+                        s["flavor"],
+                        "tool_call",
+                        agent_type=s["agent_type"],
+                        client_type=s["client_type"],
+                        host=s["host"],
+                        tool_name=tool,
+                        latency_ms=lat,
+                        tokens_input=0,
+                        tokens_output=0,
+                        tokens_total=0,
                         tokens_used_session=s["tokens_used_session"],
                     )
                     _safe_post(evt)
@@ -745,8 +1049,12 @@ def test_ui_demo() -> None:
             if s["session_id"] in inactive_sessions:
                 continue
             evt = make_event(
-                s["session_id"], s["flavor"], "session_end",
-                agent_type=s["agent_type"], client_type=s["client_type"], host=s["host"],
+                s["session_id"],
+                s["flavor"],
+                "session_end",
+                agent_type=s["agent_type"],
+                client_type=s["client_type"],
+                host=s["host"],
             )
             _safe_post(evt)
             inactive_sessions.add(s["session_id"])

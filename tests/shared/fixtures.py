@@ -217,7 +217,9 @@ def get_session(session_id: str) -> dict[str, Any]:
         return json.loads(resp.read())  # type: ignore[no-any-return]
 
 
-def wait_for_session_in_fleet(session_id: str, timeout: float = 5.0) -> dict[str, Any] | None:
+def wait_for_session_in_fleet(
+    session_id: str, timeout: float = 5.0
+) -> dict[str, Any] | None:
     """Poll GET /v1/sessions/:id until the worker persists the row or timeout.
 
     The fleet endpoint does not nest sessions under agents,
@@ -366,7 +368,11 @@ def make_event(
     # validation override via **extra.
     if event_type in _POLICY_EVENT_TYPES and "policy_decision" not in payload:
         decision = (
-            "warn" if "warn" in event_type else "degrade" if "degrade" in event_type else "block"
+            "warn"
+            if "warn" in event_type
+            else "degrade"
+            if "degrade" in event_type
+            else "block"
         )
         payload["policy_decision"] = {
             "policy_id": payload.get("policy_id") or INTEGRATION_TEST_POLICY_ID,
@@ -502,9 +508,17 @@ def exec_sql(sql: str, **bindings: Any) -> str:
     ``docker exec -i``) and pass the bindings as ``-v`` flags.
     """
     args = [
-        "docker", "exec", "-i", "docker-postgres-1", "psql",
-        "-U", "flightdeck", "-d", "flightdeck",
-        "-t", "-A",
+        "docker",
+        "exec",
+        "-i",
+        "docker-postgres-1",
+        "psql",
+        "-U",
+        "flightdeck",
+        "-d",
+        "flightdeck",
+        "-t",
+        "-A",
     ]
     for name, value in bindings.items():
         args.extend(["-v", f"{name}={value}"])
@@ -888,4 +902,6 @@ def _psql_exec(sql: str) -> None:
         check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"psql exec failed (exit {result.returncode}): {result.stderr.strip()}")
+        raise RuntimeError(
+            f"psql exec failed (exit {result.returncode}): {result.stderr.strip()}"
+        )

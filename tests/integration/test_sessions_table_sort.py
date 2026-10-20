@@ -71,8 +71,7 @@ def test_state_sort_ascending_orders_by_severity_ordinal() -> None:
     post_event(make_event(sid_closed, flavor, "session_start"))
     wait_until(
         lambda: (
-            session_exists_in_fleet(sid_active)
-            and session_exists_in_fleet(sid_closed)
+            session_exists_in_fleet(sid_active) and session_exists_in_fleet(sid_closed)
         ),
         timeout=10,
         msg="both sessions did not appear",
@@ -104,8 +103,7 @@ def test_state_sort_descending_reverses_severity_ordinal() -> None:
     post_event(make_event(sid_closed, flavor, "session_start"))
     wait_until(
         lambda: (
-            session_exists_in_fleet(sid_active)
-            and session_exists_in_fleet(sid_closed)
+            session_exists_in_fleet(sid_active) and session_exists_in_fleet(sid_closed)
         ),
         timeout=10,
     )
@@ -159,9 +157,7 @@ def test_last_seen_at_listing_field_is_populated() -> None:
     detail = get_session(sid)
     # GET /v1/sessions/{id} doesn't expose last_seen_at the same way as
     # the listing endpoint, so verify via the listing.
-    rows = _list_sessions(
-        {"from": "1970-01-01T00:00:00Z", "flavor": flavor}
-    )
+    rows = _list_sessions({"from": "1970-01-01T00:00:00Z", "flavor": flavor})
     row = next((r for r in rows if r["session_id"] == sid), None)
     assert row is not None, f"seeded session {sid} missing from listing"
     assert "last_seen_at" in row, (

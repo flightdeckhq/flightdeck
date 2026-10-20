@@ -71,7 +71,8 @@ def _fetch_event_content(event_id: str) -> dict[str, Any] | None:
     None when the API returns 404.
     """
     req = urllib.request.Request(
-        f"{API_URL}/v1/events/{event_id}/content", headers=auth_headers(),
+        f"{API_URL}/v1/events/{event_id}/content",
+        headers=auth_headers(),
     )
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -97,7 +98,9 @@ def _post_subagent_session_start(
     so the worker sees the same envelope it would see in production.
     """
     payload = make_event(
-        child_session_id, flavor, "session_start",
+        child_session_id,
+        flavor,
+        "session_start",
         parent_session_id=parent_session_id,
         agent_role=agent_role,
     )
@@ -120,7 +123,9 @@ def _post_subagent_session_end(
     content: dict[str, Any] | None = None,
 ) -> None:
     payload = make_event(
-        child_session_id, flavor, "session_end",
+        child_session_id,
+        flavor,
+        "session_end",
         parent_session_id=parent_session_id,
         agent_role=agent_role,
     )
@@ -188,9 +193,7 @@ def test_inline_subagent_message_roundtrips_via_events_payload() -> None:
     assert incoming.get("body") == inline_body, (
         f"inline body did not round-trip: got {incoming!r}"
     )
-    assert "has_content" not in incoming, (
-        "inline stub form must not carry has_content"
-    )
+    assert "has_content" not in incoming, "inline stub form must not carry has_content"
 
     # Rule 37: capture is enabled but the body lives inline, so
     # /v1/events/{id}/content has no row to return — 404 is the

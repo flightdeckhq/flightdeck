@@ -87,15 +87,11 @@ def test_capture_off_no_row_and_404() -> None:
     assert len(event_ids) > 0, f"no events found for session {sid}"
 
     rows = _query_event_content_rows(event_ids[0])
-    assert rows == 0, (
-        f"expected 0 event_content rows when capture is off, got {rows}"
-    )
+    assert rows == 0, f"expected 0 event_content rows when capture is off, got {rows}"
 
     # GET /v1/events/:id/content must 404 when there is no content row
     result = _get_event_content(event_ids[0])
-    assert result is None, (
-        f"expected 404 when capture is off, got content: {result}"
-    )
+    assert result is None, f"expected 404 when capture is off, got content: {result}"
 
 
 def test_capture_on_writes_row_and_serves_content() -> None:
@@ -123,17 +119,19 @@ def test_capture_on_writes_row_and_serves_content() -> None:
         "messages": [{"role": "user", "content": "Hello"}],
         "tools": None,
         "response": {
-            "choices": [
-                {"message": {"role": "assistant", "content": "Hi"}}
-            ],
+            "choices": [{"message": {"role": "assistant", "content": "Hi"}}],
         },
     }
-    post_event(make_event(
-        sid, flavor, "post_call",
-        tokens_total=50,
-        has_content=True,
-        content=content,
-    ))
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "post_call",
+            tokens_total=50,
+            has_content=True,
+            content=content,
+        )
+    )
     wait_until(
         lambda: get_session_event_count(sid) >= 2,
         timeout=10,
@@ -144,9 +142,7 @@ def test_capture_on_writes_row_and_serves_content() -> None:
     assert len(event_ids) > 0, f"no post_call events for session {sid}"
 
     rows = _query_event_content_rows(event_ids[0])
-    assert rows == 1, (
-        f"expected 1 event_content row when capture is on, got {rows}"
-    )
+    assert rows == 1, f"expected 1 event_content row when capture is on, got {rows}"
 
     result = _get_event_content(event_ids[0])
     assert result is not None, (

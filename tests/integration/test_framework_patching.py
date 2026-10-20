@@ -128,24 +128,22 @@ def unique_flavor() -> Iterator[str]:
 
 def _mock_anthropic_with_latency(rmock: respx.MockRouter) -> None:
     """Mock https://api.anthropic.com/v1/messages with 50 ms latency."""
+
     def _delayed(_request: httpx.Request) -> httpx.Response:
         time.sleep(0.05)
         return httpx.Response(200, json=ANTHROPIC_RESPONSE)
 
-    rmock.post("https://api.anthropic.com/v1/messages").mock(
-        side_effect=_delayed
-    )
+    rmock.post("https://api.anthropic.com/v1/messages").mock(side_effect=_delayed)
 
 
 def _mock_openai_with_latency(rmock: respx.MockRouter) -> None:
     """Mock https://api.openai.com/v1/chat/completions with 50 ms latency."""
+
     def _delayed(_request: httpx.Request) -> httpx.Response:
         time.sleep(0.05)
         return httpx.Response(200, json=OPENAI_RESPONSE)
 
-    rmock.post("https://api.openai.com/v1/chat/completions").mock(
-        side_effect=_delayed
-    )
+    rmock.post("https://api.openai.com/v1/chat/completions").mock(side_effect=_delayed)
 
 
 # ----------------------------------------------------------------------
@@ -172,15 +170,14 @@ def _assert_session_in_fleet_with_context(flavor: str) -> dict[str, Any]:
     ctx = sess.get("context") or {}
     assert "hostname" in ctx, f"hostname missing from context: {ctx}"
     assert "os" in ctx, f"os missing from context: {ctx}"
-    assert "python_version" in ctx, (
-        f"python_version missing from context: {ctx}"
-    )
+    assert "python_version" in ctx, f"python_version missing from context: {ctx}"
 
     # Reach for the public sessions API: verify the session is visible
     # through GET /v1/sessions (not just sitting in the DB). The fleet
     # response is agent-level, not flavor-grouped, so the equivalent
     # check is "does a /v1/sessions row for this session_id exist?".
     from .conftest import get_fleet
+
     fleet = get_fleet()
     found = any(
         s.get("session_id") == sess["session_id"]
@@ -229,9 +226,7 @@ def _assert_full_pipeline_event_chain(
     )
     # The framework may pass through whatever model name the user
     # supplied; we accept any non-empty string but log it for debugging.
-    assert post_call.get("model"), (
-        f"post_call has no model field: {post_call}"
-    )
+    assert post_call.get("model"), f"post_call has no model field: {post_call}"
     return post_call
 
 
@@ -241,7 +236,8 @@ def _assert_full_pipeline_event_chain(
 
 
 def test_langchain_anthropic_patched_intercepts_call(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """ChatAnthropic with no client kwarg is intercepted via patch().
 
@@ -294,7 +290,8 @@ def test_langchain_anthropic_patched_intercepts_call(
 
 
 def test_langchain_openai_patched_intercepts_call(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """ChatOpenAI with no client kwarg is intercepted via patch()."""
     flavor = unique_flavor
@@ -325,7 +322,8 @@ def test_langchain_openai_patched_intercepts_call(
 
 
 def test_langgraph_patched_intercepts_call(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """LangGraph routes its LLM calls through LangChain's ChatOpenAI /
     ChatAnthropic, so the existing patch() already intercepts them.
@@ -382,7 +380,8 @@ def test_langgraph_patched_intercepts_call(
 
 
 def test_llama_index_anthropic_patched_intercepts_call(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """llama-index-llms-anthropic Anthropic LLM is intercepted via patch().
 
@@ -421,7 +420,8 @@ def test_llama_index_anthropic_patched_intercepts_call(
 
 
 def test_llama_index_openai_patched_intercepts_call(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """llama-index-llms-openai OpenAI LLM is intercepted via patch().
 
@@ -525,7 +525,8 @@ def test_llama_index_openai_patched_intercepts_call(
 
 
 def test_crewai_native_openai_patched_intercepts_call(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """CrewAI's native OpenAICompletion is intercepted via patch().
 
@@ -583,7 +584,8 @@ def test_crewai_native_openai_patched_intercepts_call(
 
 
 def test_captured_anthropic_reference_intercepted_after_patch(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """Captured ``from anthropic import Anthropic`` works after patch().
 
@@ -641,7 +643,8 @@ def test_captured_anthropic_reference_intercepted_after_patch(
 
 
 def test_pre_existing_instance_not_intercepted(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """Documented limitation: instances created BEFORE patch() are NOT wrapped.
 
@@ -689,8 +692,7 @@ def test_pre_existing_instance_not_intercepted(
         client = anthropic.Anthropic(api_key="test-key")
         _ = client.messages  # populates instance.__dict__["messages"]
         assert "messages" in vars(client), (
-            "precondition: messages must be cached on the instance "
-            "before patch() runs"
+            "precondition: messages must be cached on the instance before patch() runs"
         )
 
         # NOW patch the class. The descriptor lands on
@@ -843,39 +845,37 @@ def _mock_anthropic_beta_with_latency(rmock: respx.MockRouter) -> None:
     ``anthropic-beta`` request header. respx ignores request headers
     by default, so matching only on method + URL is sufficient.
     """
+
     def _delayed(_request: httpx.Request) -> httpx.Response:
         time.sleep(0.05)
         return httpx.Response(200, json=_ANTHROPIC_BETA_RESPONSE)
 
-    rmock.post("https://api.anthropic.com/v1/messages").mock(
-        side_effect=_delayed
-    )
+    rmock.post("https://api.anthropic.com/v1/messages").mock(side_effect=_delayed)
 
 
 def _mock_openai_responses_with_latency(rmock: respx.MockRouter) -> None:
     """Mock https://api.openai.com/v1/responses with 50 ms latency."""
+
     def _delayed(_request: httpx.Request) -> httpx.Response:
         time.sleep(0.05)
         return httpx.Response(200, json=_OPENAI_RESPONSES_RESPONSE)
 
-    rmock.post("https://api.openai.com/v1/responses").mock(
-        side_effect=_delayed
-    )
+    rmock.post("https://api.openai.com/v1/responses").mock(side_effect=_delayed)
 
 
 def _mock_openai_embeddings_with_latency(rmock: respx.MockRouter) -> None:
     """Mock https://api.openai.com/v1/embeddings with 50 ms latency."""
+
     def _delayed(_request: httpx.Request) -> httpx.Response:
         time.sleep(0.05)
         return httpx.Response(200, json=_OPENAI_EMBEDDINGS_RESPONSE)
 
-    rmock.post("https://api.openai.com/v1/embeddings").mock(
-        side_effect=_delayed
-    )
+    rmock.post("https://api.openai.com/v1/embeddings").mock(side_effect=_delayed)
 
 
 def test_anthropic_beta_messages_intercepted(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """``client.beta.messages.create()`` is intercepted via patch().
 
@@ -917,7 +917,8 @@ def test_anthropic_beta_messages_intercepted(
 
 
 def test_openai_responses_intercepted(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """``client.responses.create()`` is intercepted via patch().
 
@@ -959,7 +960,8 @@ def test_openai_responses_intercepted(
 
 
 def test_openai_embeddings_intercepted(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """``client.embeddings.create()`` is intercepted via patch().
 
@@ -1004,8 +1006,7 @@ def test_openai_embeddings_intercepted(
             f"expected tokens_input=10, got {embed.get('tokens_input')}"
         )
         assert embed["tokens_output"] == 0, (
-            f"expected tokens_output=0 for embeddings, "
-            f"got {embed.get('tokens_output')}"
+            f"expected tokens_output=0 for embeddings, got {embed.get('tokens_output')}"
         )
 
         _assert_session_in_fleet_with_context(flavor)

@@ -65,12 +65,8 @@ def test_conftest_default_pair_is_canonical() -> None:
     shared = _load_shared("fixtures.py")
     m_at = re.search(r'DEFAULT_AGENT_TYPE\s*=\s*"([^"]+)"', shared)
     m_ct = re.search(r'DEFAULT_CLIENT_TYPE\s*=\s*"([^"]+)"', shared)
-    assert m_at is not None, (
-        "tests/shared/fixtures.py must declare DEFAULT_AGENT_TYPE"
-    )
-    assert m_ct is not None, (
-        "tests/shared/fixtures.py must declare DEFAULT_CLIENT_TYPE"
-    )
+    assert m_at is not None, "tests/shared/fixtures.py must declare DEFAULT_AGENT_TYPE"
+    assert m_ct is not None, "tests/shared/fixtures.py must declare DEFAULT_CLIENT_TYPE"
     agent_type = m_at.group(1)
     client_type = m_ct.group(1)
     assert client_type in ALLOWED_PAIRS, (
@@ -162,9 +158,7 @@ def test_no_test_file_emits_the_anomalous_pair(relative_path: str) -> None:
     # Find every ``agent_type="coding"`` or ``"agent_type": "coding"``
     # occurrence. Skip matches inside comments (# ...) and docstrings
     # -- those are commentary about the rule itself, not emit sites.
-    pattern = re.compile(
-        r'(?:agent_type\s*=\s*"coding"|"agent_type"\s*:\s*"coding")'
-    )
+    pattern = re.compile(r'(?:agent_type\s*=\s*"coding"|"agent_type"\s*:\s*"coding")')
     for match in pattern.finditer(src):
         # Find the start-of-line for this match; skip if the line is
         # inside a comment.
@@ -178,12 +172,15 @@ def test_no_test_file_emits_the_anomalous_pair(relative_path: str) -> None:
         # Look for a ``client_type`` declaration within 120 chars
         # either direction. If the caller passed client_type
         # explicitly, the anomaly cannot happen.
-        window = src[max(0, match.start() - 200):min(len(src), match.end() + 200)]
-        assert 'client_type="claude_code"' in window or '"client_type": "claude_code"' in window, (
-            f"{relative_path}: ``agent_type=\"coding\"`` emitted without "
-            f"an explicit ``client_type=\"claude_code\"`` nearby. Under "
+        window = src[max(0, match.start() - 200) : min(len(src), match.end() + 200)]
+        assert (
+            'client_type="claude_code"' in window
+            or '"client_type": "claude_code"' in window
+        ), (
+            f'{relative_path}: ``agent_type="coding"`` emitted without '
+            f'an explicit ``client_type="claude_code"`` nearby. Under '
             f"conftest's defaults this produces the Phase 2 anomaly "
             f"(agent_type=coding + client_type=flightdeck_sensor). "
-            f"Fix: pass client_type=\"claude_code\" on the make_event "
+            f'Fix: pass client_type="claude_code" on the make_event '
             f"call. Offending context:\n{window!r}"
         )

@@ -18,6 +18,7 @@ Run with ``make dev`` up. Open the dashboard and watch the session
 appear with eight MCP rows on the timeline (six from the reference
 server, two from the secondary server).
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -54,7 +55,10 @@ SECONDARY_MODULE = "playground._secondary_mcp_server"
 async def _exercise_reference_server() -> None:
     """Open a session against the reference server and exercise every
     op the sensor patches so the six MCP event types all land."""
-    async with _mcp_stdio.stdio_client(mcp_server_params(REFERENCE_MODULE)) as (read, write):
+    async with _mcp_stdio.stdio_client(mcp_server_params(REFERENCE_MODULE)) as (
+        read,
+        write,
+    ):
         async with ClientSession(read, write) as session:
             t0 = time.monotonic()
             await session.initialize()
@@ -68,7 +72,8 @@ async def _exercise_reference_server() -> None:
             t0 = time.monotonic()
             tools = await session.list_tools()
             print_result(
-                "session.list_tools", True,
+                "session.list_tools",
+                True,
                 int((time.monotonic() - t0) * 1000),
                 f"{len(tools.tools)} tools",
             )
@@ -76,14 +81,16 @@ async def _exercise_reference_server() -> None:
             t0 = time.monotonic()
             await session.call_tool("echo", {"text": "hello mcp"})
             print_result(
-                "session.call_tool(echo)", True,
+                "session.call_tool(echo)",
+                True,
                 int((time.monotonic() - t0) * 1000),
             )
 
             t0 = time.monotonic()
             resources = await session.list_resources()
             print_result(
-                "session.list_resources", True,
+                "session.list_resources",
+                True,
                 int((time.monotonic() - t0) * 1000),
                 f"{len(resources.resources)} resources",
             )
@@ -91,14 +98,16 @@ async def _exercise_reference_server() -> None:
             t0 = time.monotonic()
             await session.read_resource("mem://demo")
             print_result(
-                "session.read_resource(mem://demo)", True,
+                "session.read_resource(mem://demo)",
+                True,
                 int((time.monotonic() - t0) * 1000),
             )
 
             t0 = time.monotonic()
             prompts = await session.list_prompts()
             print_result(
-                "session.list_prompts", True,
+                "session.list_prompts",
+                True,
                 int((time.monotonic() - t0) * 1000),
                 f"{len(prompts.prompts)} prompts",
             )
@@ -106,7 +115,8 @@ async def _exercise_reference_server() -> None:
             t0 = time.monotonic()
             await session.get_prompt("greet", {"name": "playground"})
             print_result(
-                "session.get_prompt(greet)", True,
+                "session.get_prompt(greet)",
+                True,
                 int((time.monotonic() - t0) * 1000),
             )
 
@@ -114,7 +124,10 @@ async def _exercise_reference_server() -> None:
 async def _exercise_secondary_server() -> None:
     """Sequential, not gathered: deterministic event ordering for live
     inspection in the dashboard."""
-    async with _mcp_stdio.stdio_client(mcp_server_params(SECONDARY_MODULE)) as (read, write):
+    async with _mcp_stdio.stdio_client(mcp_server_params(SECONDARY_MODULE)) as (
+        read,
+        write,
+    ):
         async with ClientSession(read, write) as session:
             await session.initialize()
             t0 = time.monotonic()
@@ -158,10 +171,7 @@ def _assert_six_event_types_with_payload_contract(session_id: str) -> None:
     # arguments round-trip. Pick the reference-server's ``echo`` call
     # specifically -- the secondary server's ``reverse`` call lands
     # in the same bucket and would be selected by ``[-1]``.
-    echo_calls = [
-        e for e in by_type["mcp_tool_call"]
-        if e.get("tool_name") == "echo"
-    ]
+    echo_calls = [e for e in by_type["mcp_tool_call"] if e.get("tool_name") == "echo"]
     if not echo_calls:
         raise AssertionError(
             f"no mcp_tool_call carrying tool_name='echo'; calls: "
@@ -192,8 +202,12 @@ def _assert_six_event_types_with_payload_contract(session_id: str) -> None:
     uri_ok = rr_payload.get("resource_uri") == "mem://demo"
     bytes_ok = (rr_payload.get("content_bytes") or 0) > 0
     print_result("mcp_resource_read.resource_uri", uri_ok, 0)
-    print_result("mcp_resource_read.content_bytes>0", bytes_ok, 0,
-                 f"content_bytes={rr_payload.get('content_bytes')}")
+    print_result(
+        "mcp_resource_read.content_bytes>0",
+        bytes_ok,
+        0,
+        f"content_bytes={rr_payload.get('content_bytes')}",
+    )
     if not (uri_ok and bytes_ok):
         raise AssertionError(f"mcp_resource_read payload mismatch: {rr!r}")
 
@@ -210,7 +224,9 @@ def _assert_six_event_types_with_payload_contract(session_id: str) -> None:
     print_result("mcp_prompt_get.has_content=True", pg_has_content_ok, 0)
     print_result("mcp_prompt_get no inline arguments", pg_no_inline_args, 0)
     print_result("mcp_prompt_get no inline rendered", pg_no_inline_rendered, 0)
-    if not (name_ok and pg_has_content_ok and pg_no_inline_args and pg_no_inline_rendered):
+    if not (
+        name_ok and pg_has_content_ok and pg_no_inline_args and pg_no_inline_rendered
+    ):
         raise AssertionError(f"mcp_prompt_get payload mismatch: {pg!r}")
 
     # Per-event server_name + transport consistency on EVERY MCP event.
@@ -218,13 +234,15 @@ def _assert_six_event_types_with_payload_contract(session_id: str) -> None:
     # secondary-server events carry flightdeck-mcp-secondary. Transport
     # is stdio for every event regardless of server.
     bad = [
-        e for e in events
+        e
+        for e in events
         if e.get("event_type", "").startswith("mcp_")
         and (e.get("payload") or {}).get("transport") != "stdio"
     ]
     print_result(
         "every mcp_* event carries transport=stdio",
-        not bad, 0,
+        not bad,
+        0,
         f"{len(bad)} events with wrong transport" if bad else "",
     )
     if bad:
@@ -258,7 +276,9 @@ def _assert_multi_server_attribution(session_id: str) -> None:
             f"observed {seen!r} on session {session_id}"
         )
     print_result(
-        "multi-server attribution", True, 0,
+        "multi-server attribution",
+        True,
+        0,
         f"both server names landed on the wire: {sorted(seen)}",
     )
 

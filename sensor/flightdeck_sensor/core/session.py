@@ -332,12 +332,18 @@ class Session:
         if self._state == SessionState.CLOSED:
             return
         self._state = SessionState.CLOSED
-        # Streams still open on this session settle now, before the queue
-        # closes; a guard collected later could no longer report.
+        # Streams still open on this session settle now and their events
+        # are flushed before session_end goes out, so the workers see the
+        # post_call on an open session and roll its tokens up; a guard
+        # collected later could no longer report at all.
         from flightdeck_sensor.interceptor import base as _base
 
-        _base.drain_deferred_settles()
-        _base.settle_open_guards(self)
+        try:
+            _base.drain_deferred_settles()
+            _base.settle_open_guards(self)
+            self.event_queue.flush()
+        except Exception:
+            _log.debug("Settling open streams at session end failed", exc_info=True)
         self._post_event(EventType.SESSION_END)
         self.event_queue.flush()
         self.event_queue.close()

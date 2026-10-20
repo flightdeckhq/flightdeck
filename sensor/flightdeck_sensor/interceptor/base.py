@@ -19,6 +19,7 @@ import contextlib
 import copy
 import inspect
 import logging
+import threading
 import time
 import weakref
 from typing import TYPE_CHECKING, Any, cast
@@ -26,10 +27,15 @@ from typing import TYPE_CHECKING, Any, cast
 from flightdeck_sensor.core.errors import (
     TIMEOUT_EXCEPTION_NAMES,
     AbortReason,
+    ErrorType,
     StreamOutcome,
     classify_exception,
 )
-from flightdeck_sensor.core.exceptions import BudgetExceededError, DirectiveError
+from flightdeck_sensor.core.exceptions import (
+    BudgetExceededError,
+    DirectiveError,
+    MCPPolicyBlocked,
+)
 from flightdeck_sensor.core.types import (
     EventType,
     PolicyDecision,
@@ -82,14 +88,19 @@ def drain_deferred_settles() -> None:
 
 # Every guard that has sent its request and not yet settled, so a session
 # ending with streams still open reports them before its queue closes.
+# Registration and the end-of-session snapshot share a lock, because a
+# weak set cannot be iterated while another thread adds to it.
 _OPEN_GUARDS: weakref.WeakSet[_GuardCore] = weakref.WeakSet()
+_OPEN_GUARDS_LOCK = threading.Lock()
 
 
 def settle_open_guards(session: Session) -> None:
     """Settle every open stream guard of ``session``; the session calls
     this as it ends, before its event queue closes, because a guard
     collected after that could no longer report."""
-    for guard in list(_OPEN_GUARDS):
+    with _OPEN_GUARDS_LOCK:
+        guards = list(_OPEN_GUARDS)
+    for guard in guards:
         try:
             if guard._session is session and guard._entered and not guard._finalized:
                 guard._settle_now()
@@ -200,6 +211,8 @@ def call_stream(
     kwargs: dict[str, Any],
     session: Session,
     provider: Provider,
+    *,
+    hide_chunk: Callable[[Any], bool] | None = None,
 ) -> GuardedStream:
     """Streaming call intercept.
 
@@ -216,6 +229,7 @@ def call_stream(
         provider,
         estimated,
         estimated_via,
+        hide_chunk=hide_chunk,
     )
 
 
@@ -224,6 +238,8 @@ def call_stream_async(
     kwargs: dict[str, Any],
     session: Session,
     provider: Provider,
+    *,
+    hide_chunk: Callable[[Any], bool] | None = None,
 ) -> GuardedAsyncStream:
     """Async streaming call intercept.
 
@@ -241,6 +257,7 @@ def call_stream_async(
         provider,
         estimated,
         estimated_via,
+        hide_chunk=hide_chunk,
     )
 
 
@@ -263,15 +280,22 @@ def _merge_usage(current: TokenUsage | None, new: TokenUsage) -> TokenUsage:
 
 
 def _is_provider_failure(exc_val: BaseException | None) -> bool:
-    """Whether an exception leaving a ``with`` block is the stream failing,
-    as opposed to the caller leaving it: cancellations and interrupts are
-    not ``Exception`` subclasses, and the sensor's own policy exceptions
-    come from another intercepted call inside the block."""
-    return (
-        exc_val is not None
-        and isinstance(exc_val, Exception)
-        and not isinstance(exc_val, (BudgetExceededError, DirectiveError))
-    )
+    """Whether an exception leaving a ``with`` block is the stream failing.
+
+    SDK errors raised while reading through the guard are reported in
+    ``__next__`` / ``__anext__``; an exception reaching ``__exit__`` came
+    from the caller's own body or from a helper method that read the
+    stream itself. It is a provider failure only when the error
+    classifier knows the exception class (an SDK or transport error).
+    Cancellations and interrupts are not ``Exception`` subclasses, the
+    sensor's own policy exceptions come from another intercepted call
+    inside the block, and the caller's own bugs are the caller leaving.
+    """
+    if exc_val is None or not isinstance(exc_val, Exception):
+        return False
+    if isinstance(exc_val, (BudgetExceededError, DirectiveError, MCPPolicyBlocked)):
+        return False
+    return classify_exception(exc_val, provider_hint=None).error_type is not ErrorType.OTHER
 
 
 def _abort_reason_for(exc: BaseException, saw_chunk: bool) -> str:
@@ -284,18 +308,29 @@ def _abort_reason_for(exc: BaseException, saw_chunk: bool) -> str:
     return AbortReason.ERROR_BEFORE_STREAM.value
 
 
+def _text_of(guard: Any, event: Any) -> str | None:
+    """The provider's text for one event; a failing hook degrades the
+    text stream to empty rather than breaking the caller's loop."""
+    try:
+        text = guard._provider.text_from_stream_chunk(event)
+    except Exception:
+        guard._hook_failed("text_from_stream_chunk")
+        return None
+    return text if isinstance(text, str) else None
+
+
 def _text_deltas(guard: Any) -> Iterator[str]:
     """Text deltas read through the guard; the provider knows the event
     shape, the guard only meters."""
     for event in guard:
-        text = guard._provider.text_from_stream_chunk(event)
+        text = _text_of(guard, event)
         if text is not None:
             yield text
 
 
 async def _async_text_deltas(guard: Any) -> AsyncIterator[str]:
     async for event in guard:
-        text = guard._provider.text_from_stream_chunk(event)
+        text = _text_of(guard, event)
         if text is not None:
             yield text
 
@@ -318,6 +353,7 @@ class _GuardCore:
         provider: Provider,
         estimated: int,
         estimated_via: str = "none",
+        hide_chunk: Callable[[Any], bool] | None = None,
     ) -> None:
         self._real_fn = real_fn
         self._kwargs = kwargs
@@ -325,9 +361,13 @@ class _GuardCore:
         self._provider = provider
         self._estimated = estimated
         self._estimated_via = estimated_via
+        # Chunks the guard absorbs instead of handing to the caller (the
+        # usage chunk the sensor asked OpenAI for); None hides nothing.
+        self._hide_chunk = hide_chunk
         self._stream: Any = None
         self._ctx: Any = None
         self._t0: float = 0.0
+        self._opened_t: float | None = None
         self._first_chunk_t: float | None = None
         self._last_chunk_t: float | None = None
         self._chunk_count: int = 0
@@ -362,6 +402,20 @@ class _GuardCore:
         finalizes, the async guard settles on the snapshot usage."""
         raise NotImplementedError
 
+    def _settle_collected(self) -> None:
+        """The settle a finalizer queues; the sync guard also releases the
+        SDK stream, which nothing else references once the guard is
+        collected."""
+        self._settle_now()
+
+    def _hidden(self, chunk: Any) -> bool:
+        if self._hide_chunk is None:
+            return False
+        try:
+            return bool(self._hide_chunk(chunk))
+        except Exception:
+            return False
+
     def _defer_settle(self) -> None:
         """Queue the settle for the next intercept or the session's end.
 
@@ -372,7 +426,7 @@ class _GuardCore:
         three, so running it from ``__del__`` could deadlock the sensor;
         a deque append takes no lock.
         """
-        _DEFERRED_SETTLES.append(self._settle_now)
+        _DEFERRED_SETTLES.append(self._settle_collected)
 
     def _emit_pre_stream_error(self, exc: BaseException) -> None:
         # The context-manager protocol does not call __exit__ when
@@ -401,16 +455,20 @@ class _GuardCore:
                 "Failed to emit llm_error for pre-stream exception (%s)", type(emit_exc).__name__
             )
 
-    def _record_chunk(self, chunk: Any) -> None:
-        now = time.monotonic()
-        if self._first_chunk_t is None:
-            self._first_chunk_t = now
-        else:
-            gap_ms = (now - (self._last_chunk_t or now)) * 1000
-            if len(self._inter_chunk_ms) < self._MAX_GAPS_TRACKED:
-                self._inter_chunk_ms.append(gap_ms)
-        self._last_chunk_t = now
-        self._chunk_count += 1
+    def _record_chunk(self, chunk: Any, *, visible: bool = True) -> None:
+        """Meter one chunk. A hidden chunk (one the guard absorbs instead of
+        handing to the caller) contributes usage and completion but no
+        count or timing, so the stats describe what the caller saw."""
+        if visible:
+            now = time.monotonic()
+            if self._first_chunk_t is None:
+                self._first_chunk_t = now
+            else:
+                gap_ms = (now - (self._last_chunk_t or now)) * 1000
+                if len(self._inter_chunk_ms) < self._MAX_GAPS_TRACKED:
+                    self._inter_chunk_ms.append(gap_ms)
+            self._last_chunk_t = now
+            self._chunk_count += 1
         try:
             found = self._provider.usage_from_stream_chunk(chunk)
         except Exception:
@@ -503,12 +561,15 @@ class _GuardCore:
         if self._finalized or not self._entered:
             return
         self._finalized = True
-        # An aborted stream is timed to its last chunk: a settle that runs
-        # at close() or collection long after the caller stopped reading
-        # would otherwise report idle time as latency.
+        # A settle may run long after the caller stopped reading (close(),
+        # collection, session end, a stop at the terminal event), so only a
+        # stream the guard read to its end, or a helper the caller read to
+        # completion itself, is timed to the settle; otherwise latency runs
+        # to the last chunk delivered, or to the moment the response opened
+        # when no chunk was.
         end_t = time.monotonic()
-        if not completed and self._last_chunk_t is not None:
-            end_t = self._last_chunk_t
+        if not self._exhausted and not (completed and self._last_chunk_t is None):
+            end_t = self._last_chunk_t or self._opened_t or end_t
         latency_ms = int((end_t - self._t0) * 1000)
         try:
             self._merge_settled_usage()
@@ -568,7 +629,9 @@ class GuardedStream(_GuardCore):
                 self._stream = self._ctx.__enter__()
             else:
                 self._stream = self._ctx
-            _OPEN_GUARDS.add(self)
+            with _OPEN_GUARDS_LOCK:
+                _OPEN_GUARDS.add(self)
+            self._opened_t = time.monotonic()
         except BaseException as exc:
             self._open_error = exc
             self._emit_pre_stream_error(exc)
@@ -659,6 +722,10 @@ class GuardedStream(_GuardCore):
     def _settle_now(self) -> None:
         self._finalize()
 
+    def _settle_collected(self) -> None:
+        self._finalize()
+        self._close_underlying(None, None, None)
+
     # -- iteration -----------------------------------------------------
 
     def __iter__(self) -> Iterator[Any]:
@@ -671,22 +738,26 @@ class GuardedStream(_GuardCore):
         self._enter_stream()
         if self._stream_iter is None:
             self._stream_iter = iter(self._require_stream())
-        try:
-            chunk = next(self._stream_iter)
-        except StopIteration:
-            self._exhausted = True
-            self._finalize()
-            raise
-        except Exception as exc:
-            # A provider error raised while reading (an error event, a
-            # connection reset) is reported here so a caller iterating
-            # without a with block, whose __exit__ never runs, still gets
-            # the llm_error; the with form is idempotent through
-            # _finalized.
-            self._emit_stream_error(exc)
-            raise
-        self._record_chunk(chunk)
-        return chunk
+        while True:
+            try:
+                chunk = next(self._stream_iter)
+            except StopIteration:
+                self._exhausted = True
+                self._finalize()
+                raise
+            except Exception as exc:
+                # A provider error raised while reading (an error event, a
+                # connection reset) is reported here so a caller iterating
+                # without a with block, whose __exit__ never runs, still
+                # gets the llm_error; the with form is idempotent through
+                # _finalized.
+                self._emit_stream_error(exc)
+                raise
+            if self._hidden(chunk):
+                self._record_chunk(chunk, visible=False)
+                continue
+            self._record_chunk(chunk)
+            return chunk
 
     @property
     def text_stream(self) -> Iterator[str]:
@@ -790,7 +861,9 @@ class GuardedAsyncStream(_GuardCore):
                 self._stream = await self._ctx.__aenter__()
             else:
                 self._stream = self._ctx
-            _OPEN_GUARDS.add(self)
+            with _OPEN_GUARDS_LOCK:
+                _OPEN_GUARDS.add(self)
+            self._opened_t = time.monotonic()
         except BaseException as exc:
             self._open_error = exc
             self._emit_pre_stream_error(exc)
@@ -859,10 +932,22 @@ class GuardedAsyncStream(_GuardCore):
         self._settle(message, completed)
 
     def _settle_now(self) -> None:
-        # An awaitable final message cannot be awaited here, so the settle
-        # uses the snapshot usage and the complete snapshot when there is
-        # one.
-        self._settle(None, self._is_complete())
+        # No event loop here: the provider's final message is taken only
+        # when it is a plain object (the Anthropic snapshot), never an
+        # awaitable.
+        completed = self._is_complete()
+        message: Any = None
+        if completed:
+            try:
+                message = self._provider.final_message(self._stream)
+            except Exception:
+                self._hook_failed("final_message")
+                message = None
+            if inspect.isawaitable(message):
+                with contextlib.suppress(Exception):
+                    message.close()  # type: ignore[attr-defined]
+                message = None
+        self._settle(message, completed)
 
     def __del__(self) -> None:
         # See GuardedStream.__del__.
@@ -879,17 +964,21 @@ class GuardedAsyncStream(_GuardCore):
         await self._enter_stream()
         if self._stream_iter is None:
             self._stream_iter = self._require_stream().__aiter__()
-        try:
-            chunk = await self._stream_iter.__anext__()
-        except StopAsyncIteration:
-            self._exhausted = True
-            await self._finalize()
-            raise
-        except Exception as exc:
-            self._emit_stream_error(exc)
-            raise
-        self._record_chunk(chunk)
-        return chunk
+        while True:
+            try:
+                chunk = await self._stream_iter.__anext__()
+            except StopAsyncIteration:
+                self._exhausted = True
+                await self._finalize()
+                raise
+            except Exception as exc:
+                self._emit_stream_error(exc)
+                raise
+            if self._hidden(chunk):
+                self._record_chunk(chunk, visible=False)
+                continue
+            self._record_chunk(chunk)
+            return chunk
 
     @property
     def text_stream(self) -> AsyncIterator[str]:

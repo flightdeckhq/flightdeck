@@ -23,6 +23,7 @@ def _no_ambient_provider_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     shell may carry and the Anthropic estimator's cached client, so the
     ``count_tokens`` estimate cannot turn into a real request."""
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
     monkeypatch.setattr(AnthropicProvider, "_client", None)

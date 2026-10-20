@@ -56,9 +56,9 @@ class Provider(Protocol):
         when this chunk carries none.
 
         The stream guard merges successive non-None results field by
-        field (a later non-zero count replaces the earlier one), which
-        covers both cumulative deltas (Anthropic ``message_delta``) and a
-        single final usage chunk (OpenAI). Never raises.
+        field, the larger value winning (the counters are cumulative),
+        which covers both cumulative deltas (Anthropic ``message_delta``)
+        and a single final usage chunk (OpenAI). Never raises.
         """
         ...
 
@@ -100,9 +100,9 @@ class Provider(Protocol):
     def chunk_completes_stream(self, chunk: Any) -> bool:
         """Whether this streamed event ends the response (Anthropic
         ``message_stop`` or a ``message_delta`` with ``stop_reason``; an
-        OpenAI chat chunk with ``finish_reason`` or ``usage``; a Responses
-        terminal event), so a consumer that stops at it has read the
-        whole response. Never raises.
+        OpenAI chat chunk carrying ``usage``; a Responses terminal
+        event), so a consumer that stops at it has read the whole
+        response. Never raises.
         """
         ...
 

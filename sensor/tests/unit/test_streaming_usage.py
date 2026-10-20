@@ -17,8 +17,9 @@ from __future__ import annotations
 import asyncio
 import gc
 import json
+import threading
 from typing import Any
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from anthropic import NOT_GIVEN
@@ -33,15 +34,24 @@ from anthropic.types import (
     RawMessageStopEvent,
 )
 from openai.types.chat import ChatCompletionChunk
-from openai.types.responses import Response, ResponseCompletedEvent, ResponseUsage
+from openai.types.responses import (
+    Response,
+    ResponseCompletedEvent,
+    ResponseIncompleteEvent,
+    ResponseUsage,
+)
 
-from flightdeck_sensor.core.exceptions import BudgetExceededError, DirectiveError
+from flightdeck_sensor.core.exceptions import BudgetExceededError, DirectiveError, MCPPolicyBlocked
 from flightdeck_sensor.core.policy import PolicyCache
 from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import SensorConfig, TokenUsage
 from flightdeck_sensor.interceptor import base
 from flightdeck_sensor.interceptor.anthropic import SensorMessages
-from flightdeck_sensor.interceptor.openai import SensorResponses
+from flightdeck_sensor.interceptor.openai import (
+    SensorCompletions,
+    SensorResponses,
+    _inject_stream_options,
+)
 from flightdeck_sensor.providers.anthropic import AnthropicProvider
 from flightdeck_sensor.providers.litellm import LitellmProvider
 from flightdeck_sensor.providers.openai import OpenAIProvider
@@ -247,12 +257,18 @@ class _FakeStream:
         self.closed = True
 
 
+# A transport error as the SDKs name it; the error classifier knows the
+# name, which is what tells a stream failure from the caller's own bug at
+# with-exit.
+_ConnectionReset = type("APIConnectionError", (RuntimeError,), {})
+
+
 class _ExplodingStream(_FakeStream):
     """Yields message_start, then fails mid-stream."""
 
     def __iter__(self) -> Any:
         yield self._events[0]
-        raise RuntimeError("connection reset")
+        raise _ConnectionReset("connection reset")
 
 
 class _FakeAsyncStream:
@@ -282,7 +298,7 @@ class _ExplodingAsyncStream(_FakeAsyncStream):
     def __aiter__(self) -> Any:
         async def _gen() -> Any:
             yield self._events[0]
-            raise RuntimeError("connection reset")
+            raise _ConnectionReset("connection reset")
 
         return _gen()
 
@@ -463,7 +479,7 @@ def test_abandoned_plain_loop_settles_at_the_next_intercept_after_collection() -
     assert pc["streaming"]["final_outcome"] == "aborted"
 
 
-def test_abandoned_async_plain_loop_settles_when_the_guard_is_collected() -> None:
+def test_abandoned_async_plain_loop_settles_at_the_next_intercept_after_collection() -> None:
     session = _session()
     stream = _FakeAsyncStream(_anthropic_events())
 
@@ -485,19 +501,36 @@ def test_abandoned_async_plain_loop_settles_when_the_guard_is_collected() -> Non
     assert pc["streaming"]["final_outcome"] == "aborted"
 
 
-def test_caller_exception_inside_with_emits_llm_error_not_post_call() -> None:
+def test_caller_exception_inside_with_is_the_caller_leaving() -> None:
     session = _session()
     guarded = _stream(session, _anthropic_events())
     with pytest.raises(ValueError), guarded as s:
         next(iter(s))
         raise ValueError("caller bug")
-    assert _post_calls(session) == []
-    (err,) = _llm_errors(session)
-    assert err["error"]["abort_reason"] == "error_mid_stream"
-    assert err["error"]["partial_chunks"] == 1
+    assert _llm_errors(session) == []
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+    assert pc["streaming"]["chunk_count"] == 1
 
 
-def test_async_caller_exception_inside_with_emits_llm_error_not_post_call() -> None:
+def test_caller_exception_after_the_terminal_chunk_keeps_the_completed_post_call() -> None:
+    session = _session()
+    guarded = base.call_stream(
+        lambda **kw: _FakeStream(_openai_chat_events()),
+        dict(OPENAI_KW),
+        session,
+        OpenAIProvider(),
+    )
+    with pytest.raises(IndexError), guarded as s:
+        for chunk in s:
+            chunk.choices[0]  # the documented loop body; the usage chunk has no choices
+    assert _llm_errors(session) == []
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "completed"
+    assert (pc["tokens_input"], pc["tokens_output"]) == (20, 7)
+
+
+def test_async_caller_exception_inside_with_is_the_caller_leaving() -> None:
     session = _session()
 
     async def _run() -> None:
@@ -513,10 +546,202 @@ def test_async_caller_exception_inside_with_emits_llm_error_not_post_call() -> N
 
     with pytest.raises(ValueError):
         asyncio.run(_run())
+    assert _llm_errors(session) == []
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+
+
+def test_sdk_error_from_a_helper_method_inside_with_is_a_stream_failure() -> None:
+    session = _session()
+    guarded = _stream(session, _anthropic_events())
+    with pytest.raises(_ConnectionReset), guarded as s:
+        next(iter(s))
+        raise _ConnectionReset("connection reset")  # as get_final_message() would
     assert _post_calls(session) == []
     (err,) = _llm_errors(session)
     assert err["error"]["abort_reason"] == "error_mid_stream"
-    assert err["error"]["partial_chunks"] == 1
+
+
+def test_chat_stream_hides_the_injected_usage_chunk_unless_the_caller_asked() -> None:
+    session = _session()
+    real = MagicMock()
+    real.create = MagicMock(side_effect=lambda **kw: _FakeStream(_openai_chat_events()))
+    completions = SensorCompletions(real, session, OpenAIProvider())
+    messages = [{"role": "user", "content": PROMPT}]
+
+    seen = list(completions.create(model="gpt-5.5", messages=messages, stream=True))
+    assert len(seen) == 2 and all(chunk.choices for chunk in seen)
+    assert real.create.call_args.kwargs["stream_options"] == {"include_usage": True}
+    (pc,) = _post_calls(session)
+    assert (pc["tokens_input"], pc["tokens_output"]) == (20, 7)
+    assert pc["streaming"]["final_outcome"] == "completed"
+    assert pc["streaming"]["chunk_count"] == 2
+
+    seen = list(
+        completions.create(
+            model="gpt-5.5",
+            messages=messages,
+            stream=True,
+            stream_options={"include_usage": True},
+        )
+    )
+    assert len(seen) == 3  # the caller asked for usage: the chunk is theirs
+    assert _post_calls(session)[-1]["streaming"]["chunk_count"] == 3
+
+
+def test_async_chat_stream_hides_the_injected_usage_chunk() -> None:
+    session = _session()
+    real = MagicMock()
+    real.create = AsyncMock(side_effect=lambda **kw: _FakeAsyncStream(_openai_chat_events()))
+    completions = SensorCompletions(real, session, OpenAIProvider(), is_async=True)
+
+    async def _run() -> list[Any]:
+        stream = await completions.create(
+            model="gpt-5.5", messages=[{"role": "user", "content": PROMPT}], stream=True
+        )
+        return [chunk async for chunk in stream]
+
+    seen = asyncio.run(_run())
+    assert len(seen) == 2 and all(chunk.choices for chunk in seen)
+    (pc,) = _post_calls(session)
+    assert (pc["tokens_input"], pc["tokens_output"]) == (20, 7)
+    assert pc["streaming"]["final_outcome"] == "completed"
+
+
+def test_chat_break_at_finish_reason_leaves_the_usage_unread_and_is_aborted() -> None:
+    session = _session()
+    finished = ChatCompletionChunk.model_validate(
+        {
+            "id": "chunk",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "gpt-5.5",
+            "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            "usage": None,
+        }
+    )
+    events = [_openai_chunk(None), finished, _openai_chat_events()[-1]]
+    guarded = base.call_stream(
+        lambda **kw: _FakeStream(events), dict(OPENAI_KW), session, OpenAIProvider()
+    )
+    for chunk in guarded:
+        if chunk.choices and chunk.choices[0].finish_reason:
+            break
+    guarded.close()
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+    assert pc["tokens_output"] == 0  # the usage chunk was never read
+
+
+def test_async_helper_settled_without_a_loop_carries_the_complete_snapshot() -> None:
+    session = _session(capture_prompts=True)
+    manager = _AsyncManager(_tool_use_events())
+    guarded = base.call_stream_async(
+        lambda **kw: manager, dict(KW), session, AnthropicProvider(capture_prompts=True)
+    )
+
+    async def _run() -> None:
+        async for event in guarded:
+            if event.type == "message_stop":
+                break  # complete, never closed
+
+    asyncio.run(_run())
+    base.settle_open_guards(session)  # the session-end path: no event loop
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "completed"
+    assert pc["content"]["response"]["stop_reason"] == "tool_use"
+    assert len(_events_of(session, "tool_call")) == 1
+
+
+def test_async_open_failure_emits_one_llm_error_and_raises_at_the_await() -> None:
+    session = _session()
+    guarded = base.call_stream_async(
+        MagicMock(side_effect=RuntimeError("boom")), dict(KW), session, AnthropicProvider()
+    )
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(guarded.open())
+    (err,) = _llm_errors(session)
+    assert err["error"]["abort_reason"] == "error_before_stream"
+    assert _post_calls(session) == []
+
+
+def test_responses_incomplete_event_carries_the_usage_and_completes() -> None:
+    session = _session()
+    incomplete = ResponseIncompleteEvent.model_construct(
+        type="response.incomplete",
+        sequence_number=3,
+        response=Response.model_construct(
+            id="resp_1",
+            model="gpt-5.5",
+            usage=ResponseUsage.model_construct(input_tokens=15, output_tokens=16, total_tokens=31),
+        ),
+    )
+    guarded = base.call_stream(
+        lambda **kw: _FakeStream([_responses_events()[0], incomplete]),
+        dict(OPENAI_KW),
+        session,
+        OpenAIProvider(),
+    )
+    list(guarded)
+    (pc,) = _post_calls(session)
+    assert (pc["tokens_input"], pc["tokens_output"]) == (15, 16)
+    assert pc["streaming"]["final_outcome"] == "completed"
+
+
+def test_inject_stream_options_merges_and_reports_who_asked_for_usage() -> None:
+    sent, asked = _inject_stream_options({"stream": True})
+    assert sent["stream_options"] == {"include_usage": True} and asked is False
+    sent, asked = _inject_stream_options(
+        {"stream": True, "stream_options": {"include_usage": False, "chunk_size": 1}}
+    )
+    assert sent["stream_options"] == {"include_usage": True, "chunk_size": 1} and asked is False
+    sent, asked = _inject_stream_options(
+        {"stream": True, "stream_options": {"include_usage": True}}
+    )
+    assert asked is True
+
+
+def test_late_settle_of_an_aborted_stream_is_timed_to_its_last_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session()
+    guarded = _stream(session, _anthropic_events())
+    for i, _ in enumerate(guarded):
+        if i == 1:
+            break
+    real_monotonic = base.time.monotonic
+    monkeypatch.setattr(base.time, "monotonic", lambda: real_monotonic() + 600.0)
+    guarded.close()  # ten minutes "later"
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+    assert pc["latency_ms"] < 5000
+
+
+def test_never_iterated_stream_is_timed_to_its_opening(monkeypatch: pytest.MonkeyPatch) -> None:
+    session = _session()
+    guarded = _stream(session, _anthropic_events())
+    real_monotonic = base.time.monotonic
+    with guarded:
+        monkeypatch.setattr(base.time, "monotonic", lambda: real_monotonic() + 3600.0)
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+    assert pc["latency_ms"] < 5000
+
+
+def test_late_settle_of_a_completed_stream_is_timed_to_its_last_chunk(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _session()
+    guarded = _stream(session, _anthropic_events())
+    for event in guarded:
+        if event.type == "message_stop":
+            break
+    real_monotonic = base.time.monotonic
+    monkeypatch.setattr(base.time, "monotonic", lambda: real_monotonic() + 30.0)
+    guarded.close()  # thirty seconds "later"
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "completed"
+    assert pc["latency_ms"] < 5000
 
 
 def test_guards_expose_text_stream_only_when_the_sdk_stream_has_one() -> None:
@@ -585,6 +810,17 @@ def test_keyboard_interrupt_inside_with_is_an_aborted_post_call() -> None:
     assert pc["streaming"]["final_outcome"] == "aborted"
 
 
+def test_generator_exit_inside_with_is_an_aborted_post_call() -> None:
+    session = _session()
+    guarded = _stream(session, _anthropic_events())
+    with pytest.raises(GeneratorExit), guarded as s:
+        next(iter(s))
+        raise GeneratorExit  # a closed web-handler generator
+    assert _llm_errors(session) == []
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+
+
 def test_cancellation_inside_async_with_is_an_aborted_post_call() -> None:
     session = _session()
 
@@ -620,8 +856,13 @@ def test_collection_under_a_sensor_lock_defers_the_settle_to_the_next_intercept(
     guarded.self_cycle = guarded  # type: ignore[attr-defined]  # only the cyclic collector frees it
     del guarded
     lock = session._lock if lock_name == "session" else session.policy._lock
+    # Collect on another thread so a regression shows as a failure, not a
+    # hung test run.
+    collector = threading.Thread(target=gc.collect, daemon=True)
     with lock:
-        gc.collect()  # the finalizer runs here and must neither block nor emit
+        collector.start()
+        collector.join(timeout=5)
+        assert not collector.is_alive(), "the finalizer blocked on a sensor lock"
         assert _post_calls(session) == []
     base.call_stream(MagicMock(), dict(KW), session, AnthropicProvider())  # next intercept drains
     (pc,) = _post_calls(session)
@@ -757,12 +998,21 @@ def test_helper_tool_use_emits_one_tool_call_and_honours_capture(capture: bool) 
     assert len(_events_of(session, "tool_call")) == 1
 
 
-def test_sensor_policy_exception_inside_with_is_a_client_abort() -> None:
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: DirectiveError("shutdown", "another intercepted call was blocked"),
+        lambda: MCPPolicyBlocked.__new__(MCPPolicyBlocked),  # a blocked MCP call in the body
+        lambda: BudgetExceededError.__new__(BudgetExceededError),  # a blocked call in the body
+    ],
+    ids=["directive", "mcp_policy", "budget"],
+)
+def test_sensor_policy_exception_inside_with_is_a_client_abort(make: Any) -> None:
     session = _session()
     guarded = _stream(session, _anthropic_events())
-    with pytest.raises(DirectiveError), guarded as s:
+    with pytest.raises((DirectiveError, MCPPolicyBlocked, BudgetExceededError)), guarded as s:
         next(iter(s))
-        raise DirectiveError("shutdown", "another intercepted call was blocked")
+        raise make()
     assert _llm_errors(session) == []
     (pc,) = _post_calls(session)
     assert pc["streaming"]["final_outcome"] == "aborted"
@@ -785,7 +1035,9 @@ def test_stream_still_referenced_at_session_end_is_reported() -> None:
         break
     session.end()
     posted = [c.args[0]["event_type"] for c in client.post_event.call_args_list]
-    assert "post_call" in posted
+    # Flushed before session_end goes out, so the workers roll it up on an
+    # open session.
+    assert posted.index("post_call") < posted.index("session_end")
     guarded.close()  # already settled: a no-op
     assert posted.count("post_call") == 1
 

@@ -164,13 +164,11 @@ class LitellmProvider:
         return None
 
     def chunk_completes_stream(self, chunk: Any) -> bool:
-        """A chunk carrying ``usage`` or a ``finish_reason`` (litellm
-        mirrors the OpenAI chat chunk shape)."""
+        """A chunk carrying ``usage``, the last one (litellm mirrors the
+        OpenAI chat chunk shape, where the usage chunk follows the
+        ``finish_reason`` chunk)."""
         try:
-            if getattr(chunk, "usage", None) is not None:
-                return True
-            choices = getattr(chunk, "choices", None) or []
-            return any(getattr(c, "finish_reason", None) is not None for c in choices)
+            return getattr(chunk, "usage", None) is not None
         except Exception:
             return False
 

@@ -254,17 +254,14 @@ class OpenAIProvider:
         return None
 
     def chunk_completes_stream(self, chunk: Any) -> bool:
-        """A chat chunk carrying ``finish_reason`` or ``usage`` (the usage
-        chunk is the last one before ``[DONE]``), or a Responses terminal
-        event."""
+        """A chat chunk carrying ``usage`` (the last one before ``[DONE]``;
+        the sensor always asks for it), or a Responses terminal event. The
+        ``finish_reason`` chunk is not the end: the usage chunk follows it."""
         try:
             kind = getattr(chunk, "type", None)
             if isinstance(kind, str):
                 return kind in _RESPONSES_TERMINAL_EVENTS
-            if getattr(chunk, "usage", None) is not None:
-                return True
-            choices = getattr(chunk, "choices", None) or []
-            return any(getattr(c, "finish_reason", None) is not None for c in choices)
+            return getattr(chunk, "usage", None) is not None
         except Exception:
             return False
 

@@ -126,7 +126,10 @@ class SensorCompletions:
         reasons.
         """
         if kwargs.get("stream"):
-            call_kwargs = _inject_stream_options(kwargs)
+            call_kwargs, caller_asked_for_usage = _inject_stream_options(kwargs)
+            # A caller who did not ask for usage gets the stream exactly as
+            # it would be without the sensor; the guard keeps the usage.
+            hide_chunk = None if caller_asked_for_usage else _is_usage_only_chunk
             if self._is_async:
                 # Native ``AsyncOpenAI.chat.completions.create(stream=
                 # True)`` returns a coroutine that resolves to an
@@ -141,6 +144,7 @@ class SensorCompletions:
                         call_kwargs,
                         self._session,
                         self._provider,
+                        hide_chunk=hide_chunk,
                     )
                     # Opened eagerly so provider errors surface at the
                     # awaited create(), as on the unguarded SDK.
@@ -152,6 +156,7 @@ class SensorCompletions:
                 call_kwargs,
                 self._session,
                 self._provider,
+                hide_chunk=hide_chunk,
             ).open()
 
         real_fn = self._real.create
@@ -462,20 +467,30 @@ class SensorOpenAI:
         return getattr(self._client, name)
 
 
-def _inject_stream_options(kwargs: dict[str, Any]) -> dict[str, Any]:
+def _inject_stream_options(kwargs: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """Inject ``stream_options={"include_usage": True}`` into a copy of kwargs.
 
     OpenAI does not return token usage in streaming responses by default.
-    This option causes the final chunk to include a ``usage`` field.
+    This option makes the final chunk carry a ``usage`` field. Returns the
+    kwargs to send and whether the caller had asked for usage themselves,
+    in which case that chunk is theirs; otherwise the guard absorbs it.
     """
     result = copy.copy(kwargs)
     existing = result.get("stream_options")
+    caller_asked = isinstance(existing, dict) and existing.get("include_usage") is True
     if isinstance(existing, dict):
         existing = {**existing, "include_usage": True}
         result["stream_options"] = existing
     else:
         result["stream_options"] = {"include_usage": True}
-    return result
+    return result, caller_asked
+
+
+def _is_usage_only_chunk(chunk: Any) -> bool:
+    """The chunk OpenAI appends when usage was requested: it carries
+    ``usage`` and an empty ``choices`` list, which the usual loop body
+    (``chunk.choices[0]``) does not expect."""
+    return getattr(chunk, "usage", None) is not None and not getattr(chunk, "choices", None)
 
 
 # ----------------------------------------------------------------------

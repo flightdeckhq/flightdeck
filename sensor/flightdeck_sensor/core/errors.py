@@ -31,7 +31,7 @@ from typing import Any
 
 
 class ErrorType(str, enum.Enum):
-    """14-entry Phase 4 taxonomy. Values are the wire-level strings."""
+    """The 14-entry error taxonomy. Values are the wire-level strings."""
 
     RATE_LIMIT = "rate_limit"
     QUOTA_EXCEEDED = "quota_exceeded"
@@ -222,7 +222,7 @@ def classify_exception(
     is_stream_error: bool = False,
     capture_prompts: bool = False,
 ) -> ErrorClassification:
-    """Classify a live provider exception against the Phase 4 taxonomy.
+    """Classify a live provider exception against the error taxonomy.
 
     ``provider_hint`` lets the caller override module-based inference (for
     cases where the exception type is re-raised across a wrapping layer and

@@ -37,53 +37,34 @@ type SessionProcessor struct {
 	w    *writer.Writer
 	pool *pgxpool.Pool
 
-	// lookupSession reports the session row's state. The DB-backed
-	// default is sessionLookupState; unit tests substitute a stub.
-	lookupSession func(ctx context.Context, sessionID string) (sessionLookup, error)
-	// sessionEndGrace / sessionEndPoll bound how long HandleSessionEnd
-	// waits for a missing session row before it declares an orphan;
-	// see sessionEndStartGrace for the rationale behind the defaults.
-	sessionEndGrace time.Duration
-	sessionEndPoll  time.Duration
+	// lookupSession and closeSession are the database touch points of
+	// HandleSessionEnd. Nil means the real store; unit tests set stubs.
+	lookupSession func(ctx context.Context, sessionID string) (sessionRow, error)
+	closeSession  func(ctx context.Context, sessionID string, closedSeq uint64) error
 }
 
-// ErrEventDropped is returned by a handler that has deliberately
-// discarded its event. Process turns it into a clean ACK: no event row
-// is inserted and the consumer does not redeliver. Today only an orphan
-// session_end takes this path.
-var ErrEventDropped = errors.New("event dropped")
-
-// The consumer pool fetches from one NATS consumer in parallel, so two
-// events of the same session are processed concurrently whenever they
-// are published close together, as a short-lived process does when it
-// starts, makes one call and exits. A session_end can therefore reach a
-// goroutine before the goroutine holding the session_start has
-// committed the sessions row. Treating that session_end as an orphan
-// loses it, and the session stays active until the reconciler reaps it.
-//
-// sessionEndStartGrace bounds how long HandleSessionEnd waits for the
-// row to appear before declaring an orphan. A session_start's write
-// path is a handful of round trips (agent upsert, optional parent stub,
-// session upsert, rollup bump), tens of milliseconds on a loaded
-// database, so two seconds covers it with a wide margin while a
-// genuinely orphan session_end holds a goroutine for at most that long.
-// sessionEndStartPoll is the re-check interval: each check is a
-// primary-key SELECT, so the usual race resolves within a poll or two.
-const (
-	sessionEndStartGrace = 2 * time.Second
-	sessionEndStartPoll  = 25 * time.Millisecond
-)
+// ErrEventDropped is returned by HandleSessionEnd when it discards an
+// orphan session_end. Process turns it into a nil return, so the
+// consumer ACKs the message and no event row is inserted.
+var ErrEventDropped = errors.New("processor: event dropped")
 
 // NewSessionProcessor creates a SessionProcessor.
 func NewSessionProcessor(w *writer.Writer, pool *pgxpool.Pool) *SessionProcessor {
-	sp := &SessionProcessor{
-		w:               w,
-		pool:            pool,
-		sessionEndGrace: sessionEndStartGrace,
-		sessionEndPoll:  sessionEndStartPoll,
+	return &SessionProcessor{w: w, pool: pool}
+}
+
+func (sp *SessionProcessor) lookup(ctx context.Context, sessionID string) (sessionRow, error) {
+	if sp.lookupSession != nil {
+		return sp.lookupSession(ctx, sessionID)
 	}
-	sp.lookupSession = sp.sessionLookupState
-	return sp
+	return sp.sessionLookupState(ctx, sessionID)
+}
+
+func (sp *SessionProcessor) close(ctx context.Context, sessionID string, closedSeq uint64) error {
+	if sp.closeSession != nil {
+		return sp.closeSession(ctx, sessionID, closedSeq)
+	}
+	return sp.w.CloseSession(ctx, sessionID, closedSeq)
 }
 
 // handleSessionGuard enforces the revive-or-create-or-skip policy
@@ -104,7 +85,7 @@ func NewSessionProcessor(w *writer.Writer, pool *pgxpool.Pool) *SessionProcessor
 // sessions only). All other states / failure modes fall open so the
 // event's downstream UPDATE + InsertEvent have a chance to succeed.
 //
-// HandleSessionEnd uses isClosed instead -- closing a stale/lost
+// HandleSessionEnd does its own lookup instead -- closing a stale/lost
 // session should transition directly via CloseSession, and we do
 // not lazy-create on session_end (a teardown signal for a session we
 // never saw should not retroactively manifest a closed row).
@@ -124,6 +105,7 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 			e.Host, e.Framework, e.Model,
 			identityFromEvent(e), occurredAt,
 			e.ParentSessionID, e.AgentRole,
+			e.StreamSeq,
 		)
 		if cErr != nil {
 			// Lazy-create failed. Log and fail open -- InsertEvent
@@ -147,8 +129,8 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 		return false
 	}
 	if err != nil {
-		// Non-ErrNoRows DB error -- fail open. Matches the prior
-		// handleTerminalGuard posture. Skip the context upgrade: we
+		// Non-ErrNoRows DB error -- fail open, like the rest of this
+		// guard. Skip the context upgrade: we
 		// have no confirmation the row exists, so the UPDATE would
 		// no-op silently, and a transient DB blip should not trigger
 		// extra write pressure.
@@ -258,54 +240,39 @@ const (
 	sessionLookupOpen
 )
 
-// sessionLookupState reports whether the session row is missing, present
-// and closed, or present and non-closed. Only "no such row" is reported
-// as missing; any other database error is returned so the caller NAKs
-// and the event is redelivered, rather than mistaking an outage for an
-// orphan and discarding a session_end for good.
-func (sp *SessionProcessor) sessionLookupState(ctx context.Context, sessionID string) (sessionLookup, error) {
-	var state string
-	err := sp.pool.QueryRow(ctx,
-		"SELECT state FROM sessions WHERE session_id = $1::uuid", sessionID,
-	).Scan(&state)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return sessionLookupMissing, nil
-	}
-	if err != nil {
-		return sessionLookupMissing, err
-	}
-	if state == "closed" {
-		return sessionLookupClosed, nil
-	}
-	return sessionLookupOpen, nil
+// sessionRow is what HandleSessionEnd needs to know about a session:
+// whether the row is missing, closed or open, and the stream sequence
+// of the event that opened the current run (zero when unknown).
+type sessionRow struct {
+	state    sessionLookup
+	startSeq uint64
 }
 
-// awaitSessionRow re-runs lookup until it reports a row, the grace
-// window elapses, or ctx ends. The first lookup runs immediately, so
-// the common case costs one query. A lookup error is returned as is.
-func awaitSessionRow(
-	ctx context.Context,
-	lookup func(context.Context) (sessionLookup, error),
-	grace, poll time.Duration,
-) (sessionLookup, error) {
-	deadline := time.Now().Add(grace)
-	for {
-		state, err := lookup(ctx)
-		if err != nil || state != sessionLookupMissing {
-			return state, err
-		}
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			return sessionLookupMissing, nil
-		}
-		timer := time.NewTimer(min(poll, remaining))
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return sessionLookupMissing, ctx.Err()
-		case <-timer.C:
-		}
+// sessionLookupState reads the session row's state and start sequence.
+// Only "no such row" is reported as missing; any other database error
+// is returned so the caller NAKs and the event is redelivered, rather
+// than mistaking an outage for an orphan and discarding a session_end
+// for good.
+func (sp *SessionProcessor) sessionLookupState(ctx context.Context, sessionID string) (sessionRow, error) {
+	var state string
+	var startSeq *int64
+	err := sp.pool.QueryRow(ctx,
+		"SELECT state, start_seq FROM sessions WHERE session_id = $1::uuid", sessionID,
+	).Scan(&state, &startSeq)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return sessionRow{state: sessionLookupMissing}, nil
 	}
+	if err != nil {
+		return sessionRow{state: sessionLookupMissing}, err
+	}
+	row := sessionRow{state: sessionLookupOpen}
+	if state == "closed" {
+		row.state = sessionLookupClosed
+	}
+	if startSeq != nil && *startSeq > 0 {
+		row.startSeq = uint64(*startSeq)
+	}
+	return row, nil
 }
 
 // HandleSessionStart upserts the agent and creates (or revives) a session.
@@ -323,7 +290,7 @@ func awaitSessionRow(
 // directive_result run through handleSessionGuard, which revives
 // stale/lost sessions on the fly, skips only closed ones, and lazily
 // creates the row when it doesn't exist.
-// session_end uses isClosed (a closed session's session_end is a
+// session_end does its own lookup (a closed session's session_end is a
 // no-op; a stale or lost session_end goes straight to closed via
 // CloseSession rather than flickering through active). The
 // lazy-create path deliberately excludes session_end -- a teardown
@@ -399,6 +366,7 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 		e.TokenID, e.TokenName,
 		e.ParentSessionID, e.AgentRole,
 		e.CapturePrompts,
+		e.StreamSeq,
 	)
 	if err != nil {
 		return fmt.Errorf("session start: %w", err)
@@ -510,23 +478,6 @@ func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.Event
 	return nil
 }
 
-// HandleSessionEnd closes the session. Unlike the other handlers,
-// session_end deliberately bypasses handleTerminalGuard -- closing a
-// stale or lost session should transition it directly to closed via
-// CloseSession, not flicker through active. Already-closed sessions are
-// an idempotent no-op.
-//
-// A missing session row does not immediately mean an orphan: the
-// session's session_start may still be in flight on a sibling worker
-// goroutine, so the handler waits up to sessionEndStartGrace for the
-// row to appear and then closes the session normally. Only a row that
-// never appears is an orphan session_end (session_end for a session_id
-// the server has never seen): that yields a WARN log, a dropped-events
-// counter increment and ErrEventDropped, which Process turns into a
-// clean ACK with no event row. Letting the insert run would FK-violate
-// against the missing session, NAK, and redeliver until the retry
-// budget is spent, with an opaque "process error" log that does not
-// distinguish "orphan" from "real problem".
 // HandleMCPServerAttached UPSERTs an MCP server fingerprint into
 // “sessions.context.mcp_servers“. Routed
 // from Process() alongside HandlePostCall (which advances
@@ -604,15 +555,38 @@ func nilIfEmpty(s string) any {
 	return s
 }
 
-func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.EventPayload) error {
-	state, err := awaitSessionRow(ctx, func(c context.Context) (sessionLookup, error) {
-		return sp.lookupSession(c, e.SessionID)
-	}, sp.sessionEndGrace, sp.sessionEndPoll)
+// HandleSessionEnd closes the session and reports whether it did.
+// Unlike the other handlers, session_end deliberately bypasses
+// handleSessionGuard: closing a stale or lost session should transition
+// it directly to closed via CloseSession, not flicker through active,
+// and a teardown signal for a session the server never saw must not
+// lazy-create a closed row.
+//
+// The worker pool handles a session's events concurrently, so the row
+// can be missing because its session_start is still being written on
+// another goroutine. A missing row therefore asks the consumer for a
+// delayed redelivery (consumer.ErrRetryLater) instead of holding this
+// goroutine; only on the final delivery is it an orphan session_end:
+// WARN, counter, and ErrEventDropped, which Process turns into a clean
+// ACK with no event row. Letting the insert run would fail the sessions
+// foreign key and spend the retry budget on an opaque "process error".
+//
+// An open row is closed only when this session_end was published after
+// the event that opened the current run (sessions.start_seq); an end
+// published before it belongs to an earlier run of a re-attached
+// session and is recorded without closing anything. A closed row makes
+// the event an idempotent no-op. Unknown sequences (zero) stand the
+// ordering rule down.
+func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.EventPayload) (closed bool, err error) {
+	row, err := sp.lookup(ctx, e.SessionID)
 	if err != nil {
-		return fmt.Errorf("session end: look up %s: %w", e.SessionID, err)
+		return false, fmt.Errorf("session end: look up %s: %w", e.SessionID, err)
 	}
-	switch state {
+	switch row.state {
 	case sessionLookupMissing:
+		if !e.FinalDelivery {
+			return false, consumer.ErrRetryLater
+		}
 		// We deliberately do NOT lazy-create on session_end -- a
 		// teardown signal for a session we never saw should not
 		// retroactively manifest a closed row. Log + counter + ACK
@@ -621,9 +595,8 @@ func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.Eve
 		slog.Warn("dropped orphan session_end",
 			"session_id", e.SessionID,
 			"reason", string(metrics.ReasonOrphanSessionEnd),
-			"waited", sp.sessionEndGrace,
 		)
-		return ErrEventDropped
+		return false, ErrEventDropped
 	case sessionLookupClosed:
 		// Duplicate session_end. Idempotent by design; log and skip.
 		metrics.IncrDropped(metrics.ReasonClosedSessionSkip)
@@ -631,9 +604,22 @@ func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.Eve
 			"session_id", e.SessionID,
 			"event_type", "session_end",
 		)
-		return nil
+		return false, nil
 	}
-	return sp.w.CloseSession(ctx, e.SessionID)
+	if e.StreamSeq != 0 && row.startSeq > e.StreamSeq {
+		metrics.IncrDropped(metrics.ReasonSupersededSessionEnd)
+		slog.Warn("session_end predates the session's current run; left open",
+			"session_id", e.SessionID,
+			"reason", string(metrics.ReasonSupersededSessionEnd),
+			"start_seq", row.startSeq,
+			"end_seq", e.StreamSeq,
+		)
+		return false, nil
+	}
+	if err := sp.close(ctx, e.SessionID, e.StreamSeq); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // StartReconciler runs a background loop every 60s to mark stale/lost

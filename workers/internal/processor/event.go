@@ -425,18 +425,26 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 			return err
 		}
 	case "session_end":
-		if err := p.session.HandleSessionEnd(ctx, e); err != nil {
+		closed, err := p.session.HandleSessionEnd(ctx, e)
+		if err != nil {
 			if errors.Is(err, ErrEventDropped) {
 				// The handler discarded the event (orphan
 				// session_end): nothing to insert, and the
 				// consumer ACKs on a nil return.
 				return nil
 			}
+			// Includes consumer.ErrRetryLater, which the consumer
+			// turns into a delayed redelivery.
 			return err
 		}
-		// Release per-session policy-evaluator state so the cache and
-		// fired-directive maps stay bounded (see ForgetSession).
-		p.policy.ForgetSession(e.SessionID)
+		if closed {
+			// Release per-session policy-evaluator state so the cache
+			// and fired-directive maps stay bounded (see
+			// ForgetSession). A session_end that closed nothing (a
+			// duplicate, or one superseded by a re-attachment) leaves
+			// the live session's state alone.
+			p.policy.ForgetSession(e.SessionID)
+		}
 	case "heartbeat":
 		if err := p.session.HandleHeartbeat(ctx, e); err != nil {
 			return err

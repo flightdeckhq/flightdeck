@@ -100,30 +100,36 @@ func (w *Writer) IncrementAgentTokens(ctx context.Context, agentID string, delta
 // Pass nil for events that don't carry context (only session_start
 // does). When non-nil, it is stored in sessions.context (JSONB).
 //
-// ON CONFLICT enrichment semantics (D094 write-once + D106 sentinel
-// upgrade):
+// ON CONFLICT enrichment semantics: identity and context columns are
+// write-once, the lazy-create sentinels are upgradable, and the state
+// follows the publication order of the session's events.
 //
 //   - identity columns (host, framework, model) -- COALESCE, keep the
 //     existing value when the incoming side is NULL.
-//   - context, token_id, token_name -- COALESCE. Originally these were
-//     write-once-on-insert with D094 explicitly forbidding overwrites.
-//     D106 loosened this to COALESCE so that a lazily-created row
-//     (ReviveOrCreateSession) with NULL context/token columns gets
+//   - context, token_id, token_name -- COALESCE, so a lazily-created
+//     row (ReviveOrCreateSession) with NULL context/token columns gets
 //     enriched by a later session_start arrival. Real values remain
 //     write-once: once sessions.context is non-null, COALESCE returns
 //     the stored value and the incoming EXCLUDED is ignored.
-//   - state -- EXCLUDED.state (active) unless the row is already
-//     closed, which is preserved: the ingestion API settles
-//     re-attachment synchronously before publishing, so a closed row
-//     at this point means the session's own session_end was processed
-//     ahead of its session_start.
+//   - state -- EXCLUDED.state (active), which also reopens a closed row
+//     for a re-attachment (clearing ended_at and closed_seq), unless the
+//     session_end that closed the row was published after this
+//     session_start: the worker pool handles a session's events
+//     concurrently, so an end can be processed before its own start,
+//     and the row then stays closed. Re-attachment is normally settled
+//     by the ingestion API before the event is published; the sequence
+//     comparison covers the start that arrives while the previous
+//     run's end is still queued. A closed row without closed_seq (the
+//     reconciler's close, or an earlier release) always reopens.
+//   - start_seq -- the greater of the stored value and this event's
+//     stream sequence, so the row records the start of its latest run.
 //   - flavor, agent_type -- CASE upgrade from the sentinel "unknown".
-//     "unknown" is the value D106 writes when a non-session_start
-//     event lacks flavor/agent_type data. A legitimate session_start
-//     never writes "unknown", so the CASE is a no-op for every row
-//     that was created via an authoritative path. "Unknown is a
-//     sentinel, not a value" -- upgrading it on enrichment is not
-//     overwriting data.
+//     "unknown" is the value the lazy-create path writes when a
+//     non-session_start event lacks flavor/agent_type data. A
+//     legitimate session_start never writes "unknown", so the CASE is
+//     a no-op for every row that was created via an authoritative
+//     path. "Unknown is a sentinel, not a value" -- upgrading it on
+//     enrichment is not overwriting data.
 func (w *Writer) UpsertSession(
 	ctx context.Context,
 	sessionID, flavor, agentType, host, framework, model, state string,
@@ -132,6 +138,7 @@ func (w *Writer) UpsertSession(
 	tokenID, tokenName string,
 	parentSessionID, agentRole string,
 	capturePrompts bool,
+	startSeq uint64,
 ) (created bool, err error) {
 	// session_start is the authoritative context source; an empty
 	// context dict from the sensor ("I tried, there was nothing to
@@ -153,37 +160,49 @@ func (w *Writer) UpsertSession(
 			session_id, flavor, agent_type, host, framework, model, state,
 			started_at, last_seen_at, context, token_id, token_name,
 			agent_id, client_type, agent_name,
-			parent_session_id, agent_role, capture_prompts
+			parent_session_id, agent_role, capture_prompts,
+			start_seq
 		)
 		VALUES (
 			$1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7,
 			NOW(), NOW(), $8,
 			NULLIF($9, '')::uuid, NULLIF($10, ''),
 			$11::uuid, $12, $13,
-			NULLIF($14, '')::uuid, NULLIF($15, ''), $16
+			NULLIF($14, '')::uuid, NULLIF($15, ''), $16,
+			NULLIF($17::bigint, 0)
 		)
 		ON CONFLICT (session_id) DO UPDATE
-		SET -- A closed row stays closed. Re-attachment is settled by the
-		    -- ingestion API before the event is published, so a closed
-		    -- row seen here means the session's own session_end was
-		    -- processed first (the worker pool handles a session's
-		    -- events concurrently); flipping it back would reopen a
-		    -- finished session for good.
+		SET -- A closed row reopens for a re-attachment, but stays closed
+		    -- when the session_end that closed it was published after
+		    -- this session_start: the worker pool handles a session's
+		    -- events concurrently, so an end can be processed before
+		    -- its own start. An unknown sequence (NULL on either side)
+		    -- reopens, which is the plain state rule.
 		    state = CASE WHEN sessions.state = 'closed'
+		                  AND sessions.closed_seq > NULLIF($17::bigint, 0)
 		                 THEN sessions.state
 		                 ELSE EXCLUDED.state END,
+		    ended_at = CASE WHEN sessions.state = 'closed'
+		                     AND sessions.closed_seq > NULLIF($17::bigint, 0)
+		                    THEN sessions.ended_at
+		                    ELSE NULL END,
+		    closed_seq = CASE WHEN sessions.state = 'closed'
+		                       AND sessions.closed_seq > NULLIF($17::bigint, 0)
+		                      THEN sessions.closed_seq
+		                      ELSE NULL END,
+		    start_seq = GREATEST(sessions.start_seq, NULLIF($17::bigint, 0)),
 		    last_seen_at = NOW(),
 		    host = COALESCE(EXCLUDED.host, sessions.host),
 		    framework = COALESCE(EXCLUDED.framework, sessions.framework),
 		    model = COALESCE(EXCLUDED.model, sessions.model),
-		    -- D106: COALESCE the write-once columns so a lazily-created
+		    -- COALESCE the write-once columns so a lazily-created
 		    -- row with NULL context / token columns picks up the real
 		    -- values when session_start later arrives. Real values are
 		    -- preserved (COALESCE returns the stored side first).
 		    context = COALESCE(sessions.context, EXCLUDED.context),
 		    token_id = COALESCE(sessions.token_id, EXCLUDED.token_id),
 		    token_name = COALESCE(sessions.token_name, EXCLUDED.token_name),
-		    -- D106 sentinel upgrade: "unknown" on flavor / agent_type
+		    -- Sentinel upgrade: "unknown" on flavor / agent_type
 		    -- means "we lazy-created without authoritative data".
 		    -- Replace it when a real session_start brings the truth.
 		    flavor = CASE WHEN sessions.flavor = 'unknown'
@@ -192,14 +211,14 @@ func (w *Writer) UpsertSession(
 		    agent_type = CASE WHEN sessions.agent_type = 'unknown'
 		                      THEN EXCLUDED.agent_type
 		                      ELSE sessions.agent_type END,
-		    -- D115: identity is write-once once non-null. A lazy-create
+		    -- Identity is write-once once non-null. A lazy-create
 		    -- writes NULL for agent_id / client_type / agent_name; the
 		    -- first authoritative session_start fills them in. Real
 		    -- values (non-null) are preserved by COALESCE.
 		    agent_id = COALESCE(sessions.agent_id, EXCLUDED.agent_id),
 		    client_type = COALESCE(sessions.client_type, EXCLUDED.client_type),
 		    agent_name = COALESCE(sessions.agent_name, EXCLUDED.agent_name),
-		    -- D126: sub-agent columns. Write-once on insert; preserved
+		    -- Sub-agent columns. Write-once on insert; preserved
 		    -- on conflict so a child's session_start can't accidentally
 		    -- rewrite the parent row's null parent_session_id /
 		    -- agent_role. The lazy-create-parent-stub branch
@@ -220,6 +239,7 @@ func (w *Writer) UpsertSession(
 		contextJSON, tokenID, tokenName,
 		agentID, clientType, agentName,
 		parentSessionID, agentRole, capturePrompts,
+		int64(startSeq),
 	).Scan(&wasInsert)
 	if err != nil {
 		return false, fmt.Errorf("upsert session %s: %w", sessionID, err)
@@ -522,22 +542,25 @@ func (w *Writer) UpdateLastSeen(ctx context.Context, sessionID string) error {
 // contract (columns touched, state predicate) must be applied to
 // all four:
 //
-//  1. Ingestion: “session.Store.Attach“ (D094) runs synchronously on
+//  1. Ingestion: “session.Store.Attach“ runs synchronously on
 //     “session_start“ so the HTTP response can report “attached=true“.
 //     Scope: closed, lost -> active; records a session_attachments row.
-//  2. Worker, “UpsertSession“ ON CONFLICT branch (D094 worker side,
-//     extended by D106). Scope: any prior state -> whatever the
-//     session_start event asks for (always “active“), with identity-
-//     column refresh and D106 enrichment of the “unknown“ sentinel
-//     and NULL context/token columns that a lazy-create left behind.
-//  3. Worker, “ReviveIfRevivable“ (this function, D105). Scope:
+//  2. Worker, “UpsertSession“ ON CONFLICT branch. Scope: any prior
+//     state -> whatever the session_start event asks for (always
+//     “active“, clearing ended_at), except a closed row whose
+//     session_end was published after this session_start, which stays
+//     closed; with identity-column refresh and enrichment of the
+//     “unknown“ sentinel and NULL context/token columns that a
+//     lazy-create left behind. Records the start's stream sequence.
+//  3. Worker, “ReviveIfRevivable“ (this function). Scope:
 //     stale, lost -> active. No identity refresh, no attachment row.
-//  4. Worker, “ReviveOrCreateSession“ (D106). Scope: delegates to
+//  4. Worker, “ReviveOrCreateSession“. Scope: delegates to
 //     ReviveIfRevivable when the row exists, INSERTs a new row with
-//     best-effort identity + “unknown“ sentinels when it does not.
-//     Called by every non-session_start handler so an event for an
-//     unknown session_id lazily manifests the row instead of
-//     FK-violating at InsertEvent.
+//     best-effort identity + “unknown“ sentinels when it does not,
+//     recording the creating event's stream sequence as the run's
+//     start. Called by every handler except session_start and
+//     session_end so an event for an unknown session_id lazily
+//     manifests the row instead of FK-violating at InsertEvent.
 //
 // Scope of this helper:
 //   - state IN ('stale', 'lost') -> UPDATE, returns (true, nil).
@@ -676,6 +699,7 @@ func (w *Writer) ReviveOrCreateSession(
 	identity AgentIdentity,
 	occurredAt time.Time,
 	parentSessionID, agentRole string,
+	startSeq uint64,
 ) (created bool, err error) {
 	var state string
 	sErr := w.pool.QueryRow(ctx,
@@ -727,18 +751,18 @@ func (w *Writer) ReviveOrCreateSession(
 			session_id, flavor, agent_type, host, framework, model, state,
 			started_at, last_seen_at, context,
 			agent_id, client_type, agent_name,
-			parent_session_id, agent_role
+			parent_session_id, agent_role, start_seq
 		)
 		VALUES (
 			$1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''),
 			'active', $7, $7, NULL,
 			$8::uuid, $9, $10,
-			NULLIF($11, '')::uuid, NULLIF($12, '')
+			NULLIF($11, '')::uuid, NULLIF($12, ''), NULLIF($13::bigint, 0)
 		)
 		ON CONFLICT (session_id) DO NOTHING
 	`, sessionID, flavor, agentType, host, framework, model, occurredAt,
 		identity.AgentID, identity.ClientType, identity.AgentName,
-		parentSessionID, agentRole)
+		parentSessionID, agentRole, int64(startSeq))
 	if iErr != nil {
 		return false, fmt.Errorf("revive-or-create %s: insert: %w", sessionID, iErr)
 	}
@@ -888,13 +912,18 @@ func (w *Writer) BumpAgentSessionCount(ctx context.Context, agentID string) erro
 	return nil
 }
 
-// CloseSession sets state=closed and ended_at on a session.
-func (w *Writer) CloseSession(ctx context.Context, sessionID string) error {
+// CloseSession sets state=closed and ended_at on a session and records
+// the stream sequence of the session_end that closed it, which
+// UpsertSession compares against a later session_start to tell a
+// re-attachment from a start that its own end overtook. A zero
+// sequence (unknown) is stored as NULL.
+func (w *Writer) CloseSession(ctx context.Context, sessionID string, closedSeq uint64) error {
 	_, err := w.pool.Exec(ctx, `
 		UPDATE sessions
-		SET state = 'closed', ended_at = NOW(), last_seen_at = NOW()
+		SET state = 'closed', ended_at = NOW(), last_seen_at = NOW(),
+		    closed_seq = NULLIF($2::bigint, 0)
 		WHERE session_id = $1::uuid
-	`, sessionID)
+	`, sessionID, int64(closedSeq))
 	if err != nil {
 		return fmt.Errorf("close session %s: %w", sessionID, err)
 	}

@@ -27,6 +27,20 @@ from flightdeck_sensor.core.agent_id import derive_agent_id
 
 INGESTION_URL = "http://localhost:4000/ingest"
 API_URL = "http://localhost:4000/api"
+# The dev stack's container names are the contract for the helpers that
+# shell into it (psql below, the worker log reader) and the NATS
+# monitoring port docker/docker-compose.yml publishes on loopback.
+POSTGRES_CONTAINER = "docker-postgres-1"
+WORKER_CONTAINER = "docker-workers-1"
+JETSTREAM_MONITOR_URL = "http://127.0.0.1:8222/jsz?consumers=true&streams=true"
+WORKERS_DURABLE_CONSUMER = "flightdeck-workers"
+# A docker CLI call against a healthy daemon returns well within this;
+# the bound only keeps a hung daemon from stalling a poll forever.
+DOCKER_CLI_TIMEOUT_SECS = 20
+# Lines of worker log a reader looks back over. The worker logs about
+# one line per dropped or retried event, so this covers a whole
+# integration run; readers scope matches by session id anyway.
+WORKER_LOG_TAIL_LINES = 5000
 INGEST_HEALTH = f"{INGESTION_URL}/health"
 API_HEALTH = f"{API_URL}/health"
 TOKEN = "tok_dev"
@@ -446,7 +460,7 @@ def query_directives(session_id: str) -> list[dict[str, Any]]:
         [
             "docker",
             "exec",
-            "docker-postgres-1",
+            POSTGRES_CONTAINER,
             "psql",
             "-U",
             "flightdeck",
@@ -503,7 +517,7 @@ def exec_sql(sql: str, **bindings: Any) -> str:
     ``docker exec -i``) and pass the bindings as ``-v`` flags.
     """
     args = [
-        "docker", "exec", "-i", "docker-postgres-1", "psql",
+        "docker", "exec", "-i", POSTGRES_CONTAINER, "psql",
         "-U", "flightdeck", "-d", "flightdeck",
         "-t", "-A",
     ]
@@ -553,13 +567,71 @@ def session_exists_in_fleet(session_id: str) -> bool:
         raise
 
 
+def session_events(detail: dict[str, Any]) -> list[dict[str, Any]]:
+    """The ``events`` list of a session detail, never ``None``.
+
+    The API serialises an empty list as ``[]``; older binaries sent
+    ``null`` for a session whose event rows had not landed, so readers
+    that poll go through this helper rather than ``detail["events"]``.
+    """
+    return detail.get("events") or []
+
+
 def get_session_event_count(session_id: str) -> int:
-    """Return the number of events for a session."""
+    """Return the number of events for a session, 0 while it is unreachable."""
     try:
-        detail = get_session_detail(session_id)
-        return len(detail.get("events") or [])
-    except Exception:
+        return len(session_events(get_session_detail(session_id)))
+    except (urllib.error.URLError, ValueError):
         return 0
+
+
+def worker_log_lines(*needles: str, tail: int = WORKER_LOG_TAIL_LINES) -> list[str]:
+    """Recent worker-container log lines that contain every needle.
+
+    The worker logs through slog's default handler on stderr
+    (``2026/10/20 12:18:37 WARN dropped orphan session_end session_id=…``);
+    ``docker logs`` returns both streams. Raises when the CLI fails so a
+    missing container reads as an infrastructure error, not as "the
+    worker never logged it".
+    """
+    proc = subprocess.run(
+        ["docker", "logs", "--tail", str(tail), WORKER_CONTAINER],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=DOCKER_CLI_TIMEOUT_SECS,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"docker logs {WORKER_CONTAINER} failed ({proc.returncode}): "
+            f"{proc.stderr.strip()}"
+        )
+    return [
+        line
+        for line in (proc.stdout + proc.stderr).splitlines()
+        if all(needle in line for needle in needles)
+    ]
+
+
+def jetstream_consumer() -> dict[str, Any]:
+    """The workers' durable consumer as NATS' monitoring endpoint reports it.
+
+    ``delivered.consumer_seq`` counts every delivery including
+    redeliveries, ``delivered.stream_seq`` the stream position reached;
+    the difference between two snapshots' deltas is the number of
+    redeliveries in between. ``num_ack_pending`` is the number of
+    deliveries not yet acknowledged.
+    """
+    with urllib.request.urlopen(JETSTREAM_MONITOR_URL, timeout=5) as resp:
+        data = json.loads(resp.read())
+    for account in data.get("account_details") or []:
+        for stream in account.get("stream_detail") or []:
+            for consumer in stream.get("consumer_detail") or []:
+                if consumer.get("name") == WORKERS_DURABLE_CONSUMER:
+                    return consumer  # type: ignore[no-any-return]
+    raise LookupError(f"consumer {WORKERS_DURABLE_CONSUMER} not reported by NATS")
 
 
 def wait_for_state(
@@ -624,7 +696,7 @@ def directive_has_delivered_at(directive_id: str) -> bool:
         [
             "docker",
             "exec",
-            "docker-postgres-1",
+            POSTGRES_CONTAINER,
             "psql",
             "-U",
             "flightdeck",
@@ -839,7 +911,7 @@ def get_agent_rollup(agent_id: str) -> dict[str, Any] | None:
         [
             "docker",
             "exec",
-            "docker-postgres-1",
+            POSTGRES_CONTAINER,
             "psql",
             "-U",
             "flightdeck",
@@ -872,7 +944,7 @@ def _psql_exec(sql: str) -> None:
         [
             "docker",
             "exec",
-            "docker-postgres-1",
+            POSTGRES_CONTAINER,
             "psql",
             "-U",
             "flightdeck",

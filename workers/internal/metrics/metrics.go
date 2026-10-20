@@ -13,10 +13,15 @@
 //
 //   - unmarshal_error       — NATS payload failed json.Unmarshal; the
 //                             consumer Terms the message.
-//   - orphan_session_end    — session_end arrived for an unknown
-//                             session_id. Previously Nak'd with an
-//                             opaque FK-violation; now ACK'd with a
-//                             structured WARN + counter bump.
+//   - orphan_session_end    — session_end for a session_id the server
+//                             never saw, once the retry budget has
+//                             given its session_start time to land.
+//                             ACK'd with a WARN + counter bump and no
+//                             event row.
+//   - superseded_session_end — session_end published before the
+//                             session's current run began (the
+//                             session was re-attached first). Recorded
+//                             as an event; the row stays open.
 //   - closed_session_skip   — non-session_end event arrived for a
 //                             session already in state=closed. The
 //                             handler skips work; the counter records
@@ -46,12 +51,13 @@ import (
 type DropReason string
 
 const (
-	ReasonUnmarshalError      DropReason = "unmarshal_error"
-	ReasonOrphanSessionEnd    DropReason = "orphan_session_end"
-	ReasonClosedSessionSkip   DropReason = "closed_session_skip"
-	ReasonFKViolation         DropReason = "fk_violation"
-	ReasonMaxRetriesExhausted DropReason = "max_retries_exhausted"
-	ReasonProcessPanic        DropReason = "process_panic"
+	ReasonUnmarshalError       DropReason = "unmarshal_error"
+	ReasonOrphanSessionEnd     DropReason = "orphan_session_end"
+	ReasonSupersededSessionEnd DropReason = "superseded_session_end"
+	ReasonClosedSessionSkip    DropReason = "closed_session_skip"
+	ReasonFKViolation          DropReason = "fk_violation"
+	ReasonMaxRetriesExhausted  DropReason = "max_retries_exhausted"
+	ReasonProcessPanic         DropReason = "process_panic"
 )
 
 // CloseReason mirrors the close_reason values stamped on session_end

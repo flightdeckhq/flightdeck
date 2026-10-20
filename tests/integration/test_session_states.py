@@ -7,19 +7,22 @@ non-session_start event. Requires `make dev` to be running.
 
 from __future__ import annotations
 
-import subprocess
 import uuid
+from typing import Any
 
 from .conftest import (
     exec_sql,
     get_session,
     get_session_detail,
+    jetstream_consumer,
     make_event,
     post_event,
     post_heartbeat,
+    session_events,
     wait_for_session_in_fleet,
     wait_for_state,
     wait_until,
+    worker_log_lines,
 )
 
 
@@ -79,7 +82,7 @@ def test_session_with_heartbeats_only_stays_active() -> None:
 
     # Wait until heartbeat is processed (event count increases)
     wait_until(
-        lambda: len(get_session_detail(sid).get("events") or []) >= 1,
+        lambda: len(session_events(get_session_detail(sid))) >= 1,
         timeout=10,
         msg=f"heartbeat not processed for session {sid}",
     )
@@ -654,68 +657,95 @@ def test_order_independence_pc_then_ss_matches_ss_then_pc() -> None:
     )
 
 
-def test_session_end_on_unknown_session_id_does_not_lazy_create() -> None:
-    """D106 deliberately excludes session_end from lazy-create. A
-    teardown signal for a session we never saw should not
-    retroactively manifest a closed row. This mirrors D105's
-    rationale for excluding session_end from the revive path.
-    """
-    sid = str(uuid.uuid4())
-    flavor = f"test-d106-end-{uuid.uuid4().hex[:6]}"
+# ---------------------------------------------------------------------------
+# Event ordering across the worker pool. The pool processes one session's
+# events concurrently, so a session_end can reach the database before
+# its session_start, and a re-attaching session_start before the previous
+# run's session_end. The worker orders a session's start and end by NATS
+# stream sequence and gives a session_end whose row is missing two
+# delayed redeliveries before it calls the event an orphan.
+# ---------------------------------------------------------------------------
 
-    # session_end on an unknown session_id. Pre-D106 and post-D106
-    # both drop this at InsertEvent (FK) -- the only difference is
-    # that post-D106 doesn't create a zombie closed row.
-    post_event(make_event(sid, flavor, "session_end"))
+# The worker redelivers a session_end whose row is missing after one
+# second and again after two before the orphan verdict; polls that wait
+# for the verdict allow that budget plus processing slack.
+WORKER_RETRY_WINDOW_SECS = 3.0
+ORPHAN_VERDICT_TIMEOUT_SECS = WORKER_RETRY_WINDOW_SECS + 10.0
+# Several times FLIGHTDECK_WORKER_POOL_SIZE (10), so many sessions are in
+# flight across goroutines at once while the burst itself (three POSTs
+# per session) still takes about two seconds.
+BURST_SESSIONS = 50
+BURST_TIMEOUT_SECS = 30.0
+# What the worker logs on the orphan path, on a session_end that predates
+# the session's current run, and on any failed attempt.
+ORPHAN_WARNING = "dropped orphan session_end"
+SUPERSEDED_WARNING = "session_end predates the session's current run"
+PROCESS_ERROR_MARKER = "process error"
+# Tokens the probe post_call carries; the session row must show them.
+PROBE_CALL_TOKENS = 8
 
-    # The session row must not exist. Direct DB lookup rather than
-    # wait_for -- there's nothing to wait for.
-    import time as _time
-    _time.sleep(1.0)  # brief pause for worker to (not) process
-    raw = exec_sql(
-        "SELECT COUNT(*) FROM sessions WHERE session_id = :'sid'::uuid",
-        sid=sid,
+
+def _probe_call(sid: str, flavor: str) -> dict[str, Any]:
+    return make_event(
+        sid,
+        flavor,
+        "post_call",
+        model="gpt-4o",
+        tokens_input=5,
+        tokens_output=3,
+        tokens_total=PROBE_CALL_TOKENS,
+        latency_ms=10,
     )
-    assert raw == "0", (
-        f"session_end on unknown session_id should not lazy-create a row; "
-        f"found {raw} row(s) for {sid}"
-    )
 
 
-def _worker_log_lines(needle: str) -> list[str]:
-    """Recent worker-container log lines that mention ``needle``.
-
-    The worker logs through slog's text handler on stderr; ``docker
-    logs`` merges both streams. Mirrors the ``docker exec`` psql helpers:
-    the dev stack's container names are the contract.
-    """
-    out = subprocess.run(
-        ["docker", "logs", "--since", "5m", "docker-workers-1"],
-        capture_output=True,
-        text=True,
-        timeout=20,
-        check=False,
-    )
-    return [line for line in (out.stdout + out.stderr).splitlines() if needle in line]
-
-
-def _count_session_end_rows(flavor: str) -> int:
+def _count_rows(flavor: str, event_type: str) -> int:
     return int(
         exec_sql(
             "SELECT COUNT(*) FROM events "
-            "WHERE flavor = :'flavor' AND event_type = 'session_end'",
+            "WHERE flavor = :'flavor' AND event_type = :'event_type'",
             flavor=flavor,
+            event_type=event_type,
         )
     )
 
 
-def test_session_end_that_overtakes_its_session_start_still_closes_it() -> None:
-    """The worker pool processes one session's events concurrently, so a
-    session_end can reach a goroutine before the goroutine holding the
-    session_start has committed the row. Publishing the session_end first
-    reproduces that ordering deterministically: the worker must wait for
-    the row rather than drop the session_end as an orphan, and the
-    session must end up closed with exactly one session_end row.
+def _count_sessions(flavor: str, state: str) -> int:
+    return int(
+        exec_sql(
+            "SELECT COUNT(*) FROM sessions WHERE flavor = :'flavor' AND state = :'state'",
+            flavor=flavor,
+            state=state,
+        )
+    )
+
+
+def _wait_for_rows(flavor: str, event_type: str, expected: int, timeout: float) -> None:
+    """Poll until exactly ``expected`` rows of ``event_type`` exist.
+
+    The worker inserts an event row after the session side effects, so
+    once the rows are there the state they imply is already committed.
+    """
+    seen = -1
+
+    def _landed() -> bool:
+        nonlocal seen
+        seen = _count_rows(flavor, event_type)
+        return seen == expected
+
+    try:
+        wait_until(_landed, timeout=timeout, msg=f"{flavor}: {event_type} rows")
+    except TimeoutError as exc:
+        raise TimeoutError(f"{exc}: saw {seen} of {expected}") from exc
+
+
+def test_session_end_published_before_its_session_start_does_not_close_it() -> None:
+    """A session_end that precedes the session_start in the stream is
+    not this run's end: the worker retries it while the row is missing,
+    and once the start has created the row, records the end as an event
+    without closing the session, because publication order says the run
+    began after it. (The ordering the pool can introduce on its own,
+    an end published after its start but processed first, is exercised
+    by the burst test below.)
     """
     sid = str(uuid.uuid4())
     flavor = f"test-end-first-{uuid.uuid4().hex[:6]}"
@@ -723,85 +753,124 @@ def test_session_end_that_overtakes_its_session_start_still_closes_it() -> None:
     post_event(make_event(sid, flavor, "session_end"))
     post_event(make_event(sid, flavor, "session_start"))
 
-    wait_for_state(sid, "closed", timeout=10)
-    assert _count_session_end_rows(flavor) == 1, (
-        f"expected exactly one session_end row for {sid}"
+    _wait_for_rows(flavor, "session_end", 1, ORPHAN_VERDICT_TIMEOUT_SECS)
+    assert get_session_detail(sid)["session"]["state"] == "active"
+    assert worker_log_lines(SUPERSEDED_WARNING, f"session_id={sid}"), (
+        "worker did not report the superseded session_end"
     )
 
 
 def test_short_lived_sessions_published_back_to_back_all_close() -> None:
-    """A burst of sessions that each start, make one call and end within
-    a few milliseconds is the real-world shape of the ordering race
-    (one-shot scripts, test runs). Every one of them must close and keep
-    its session_end row; before the grace wait roughly half stayed active
-    for good.
+    """Sessions that each start, make one call and end within a few
+    milliseconds are the real-world shape of the race (one-shot scripts,
+    test runs). Every one must end up closed with its session_end row.
     """
     flavor = f"test-burst-{uuid.uuid4().hex[:6]}"
-    sids = [str(uuid.uuid4()) for _ in range(50)]
+    sids = [str(uuid.uuid4()) for _ in range(BURST_SESSIONS)]
 
     for sid in sids:
         post_event(make_event(sid, flavor, "session_start"))
-        post_event(
-            make_event(
-                sid,
-                flavor,
-                "post_call",
-                model="gpt-4o",
-                tokens_input=5,
-                tokens_output=3,
-                tokens_total=8,
-                latency_ms=10,
-            )
-        )
+        post_event(_probe_call(sid, flavor))
         post_event(make_event(sid, flavor, "session_end"))
 
-    def _all_closed() -> bool:
-        closed = exec_sql(
-            "SELECT COUNT(*) FROM sessions "
-            "WHERE flavor = :'flavor' AND state = 'closed'",
-            flavor=flavor,
-        )
-        return closed == str(len(sids))
-
-    wait_until(
-        _all_closed,
-        timeout=30,
-        msg=f"not every {flavor} session closed",
-    )
-    assert _count_session_end_rows(flavor) == len(sids), (
-        f"expected {len(sids)} session_end rows for {flavor}"
-    )
+    _wait_for_rows(flavor, "session_end", len(sids), BURST_TIMEOUT_SECS)
+    closed = _count_sessions(flavor, "closed")
+    assert closed == len(sids), f"{closed} of {len(sids)} {flavor} sessions closed"
 
 
-def test_orphan_session_end_is_dropped_once_without_redelivery() -> None:
-    """A session_end whose session never appears is an orphan: dropped
-    with one warning and acknowledged, never handed to the event insert
-    (which would fail the sessions foreign key and be redelivered until
-    the retry budget ran out, logging the same warning once per attempt).
+def test_orphan_session_end_is_dropped_once_after_the_retry_budget() -> None:
+    """A session_end whose session never appears is an orphan. The worker
+    must not lazy-create a closed row for it (a teardown signal for a
+    session the server never saw), must spend its retry budget on it in
+    case the session_start is merely late (two delayed redeliveries),
+    and must then acknowledge it once: one warning, no failed attempt,
+    no event row.
     """
     sid = str(uuid.uuid4())
     flavor = f"test-orphan-end-{uuid.uuid4().hex[:6]}"
-    needle = f"dropped orphan session_end session_id={sid}"
-
-    post_event(make_event(sid, flavor, "session_end"))
-    wait_until(
-        lambda: len(_worker_log_lines(needle)) >= 1,
-        timeout=15,
-        msg=f"worker never logged the orphan drop for {sid}",
+    sid_needle = f"session_id={sid}"
+    before = jetstream_consumer()
+    errors_before = set(
+        worker_log_lines(PROCESS_ERROR_MARKER, "event_type=session_end")
     )
 
-    # A redelivery is immediate, so by the time an event published after
-    # the drop has landed, any repeat of the warning would be in the log.
-    control = str(uuid.uuid4())
-    post_event(make_event(control, flavor, "session_start"))
-    assert wait_for_session_in_fleet(control, timeout=10) is not None
+    post_event(make_event(sid, flavor, "session_end"))
 
-    assert len(_worker_log_lines(needle)) == 1, _worker_log_lines(needle)
-    raw = exec_sql(
+    wait_until(
+        lambda: bool(worker_log_lines(ORPHAN_WARNING, sid_needle)),
+        timeout=ORPHAN_VERDICT_TIMEOUT_SECS,
+        msg=f"worker never logged the orphan drop for {sid}",
+    )
+    wait_until(
+        lambda: jetstream_consumer()["num_ack_pending"] == 0,
+        timeout=10,
+        msg="the orphan session_end was never acknowledged",
+    )
+    after = jetstream_consumer()
+
+    deliveries = (
+        after["delivered"]["consumer_seq"] - before["delivered"]["consumer_seq"]
+    )
+    messages = after["delivered"]["stream_seq"] - before["delivered"]["stream_seq"]
+    assert deliveries - messages == 2, (
+        f"expected the two delayed redeliveries, saw {deliveries - messages}"
+    )
+    warnings = worker_log_lines(ORPHAN_WARNING, sid_needle)
+    assert len(warnings) == 1, warnings
+    new_errors = (
+        set(worker_log_lines(PROCESS_ERROR_MARKER, "event_type=session_end"))
+        - errors_before
+    )
+    assert not new_errors, new_errors
+    rows = exec_sql(
         "SELECT COUNT(*) FROM sessions WHERE session_id = :'sid'::uuid",
         sid=sid,
     )
-    assert raw == "0", f"orphan session_end must not create a row; found {raw}"
+    assert rows == "0", f"orphan session_end must not create a row; found {rows}"
+    assert _count_rows(flavor, "session_end") == 0
+
+
+def test_reattach_published_right_after_session_end_keeps_the_session_open() -> None:
+    """A session_start for a session whose previous run's session_end is
+    still queued is a re-attachment, whichever of the two the worker
+    processes first: the end must not close the new run and the start
+    must not leave it closed. A call made once both have landed must
+    still roll its tokens into the open session.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-reattach-{uuid.uuid4().hex[:6]}"
+    post_event(make_event(sid, flavor, "session_start"))
+    wait_for_state(sid, "active", timeout=10)
+
+    post_event(make_event(sid, flavor, "session_end"))
+    post_event(make_event(sid, flavor, "session_start"))
+    _wait_for_rows(flavor, "session_start", 2, ORPHAN_VERDICT_TIMEOUT_SECS)
+    _wait_for_rows(flavor, "session_end", 1, ORPHAN_VERDICT_TIMEOUT_SECS)
+
+    post_event(_probe_call(sid, flavor))
+    _wait_for_rows(flavor, "post_call", 1, 10.0)
+    session = get_session_detail(sid)["session"]
+    assert session["state"] == "active", session
+    assert session["tokens_used"] == PROBE_CALL_TOKENS, session
+    assert session.get("ended_at") is None, session
+
+
+def test_reattached_run_that_ends_at_once_closes() -> None:
+    """The mirror of the previous test: a re-attachment whose own
+    session_end follows at once must end closed, whichever of the two
+    the worker processes first.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-reattach-end-{uuid.uuid4().hex[:6]}"
+    post_event(make_event(sid, flavor, "session_start"))
+    post_event(make_event(sid, flavor, "session_end"))
+    wait_for_state(sid, "closed", timeout=10)
+
+    post_event(make_event(sid, flavor, "session_start"))
+    post_event(make_event(sid, flavor, "session_end"))
+    _wait_for_rows(flavor, "session_end", 2, ORPHAN_VERDICT_TIMEOUT_SECS)
+    assert get_session_detail(sid)["session"]["state"] == "closed"
+
 
 
 # ---------------------------------------------------------------------------

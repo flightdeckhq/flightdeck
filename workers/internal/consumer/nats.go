@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/flightdeckhq/flightdeck/workers/internal/metrics"
 	"github.com/nats-io/nats.go"
@@ -21,6 +22,17 @@ const (
 	// before JetStream treats the message as a poison pill, so a single
 	// malformed event can't loop forever against the consumer.
 	maxDeliver = 3
+	// retryDelayBase spaces out the redeliveries of a message the
+	// processor could not act on yet: a session_end whose session_start
+	// is still being written by another goroutine, or any transient
+	// database error. The delay grows with the delivery number (one
+	// second after the first delivery, two after the second, within the
+	// three-delivery budget), so a message is retried for about three
+	// seconds in total without holding a pool goroutine. Immediate
+	// redelivery spent the whole budget within a few milliseconds, and
+	// waiting inside the handler parked a goroutine per message, which
+	// a flood of orphan session_ends turned into a stalled pool.
+	retryDelayBase = time.Second
 )
 
 // EventPayload is the raw event received from NATS.
@@ -314,6 +326,19 @@ type EventPayload struct {
 	OutputDimensions   map[string]int         `json:"output_dimensions,omitempty"`
 	RetryAttempt       *int                   `json:"retry_attempt,omitempty"`
 	Terminal           *bool                  `json:"terminal,omitempty"`
+
+	// StreamSeq and FinalDelivery are set by the consumer from the
+	// JetStream metadata of each delivery, never from the wire.
+	// StreamSeq is the event's position in the stream, the order in
+	// which ingestion accepted the events; the session processor
+	// compares the sequences of a session's start and end to tell a
+	// re-attachment from an end that overtook its own start. It is
+	// zero when the metadata is unavailable, and the ordering rules
+	// then stand down. FinalDelivery is true on the last delivery the
+	// retry budget allows; the processor must settle the event then
+	// instead of asking for another retry.
+	StreamSeq     uint64 `json:"-"`
+	FinalDelivery bool   `json:"-"`
 }
 
 // SubagentMessageBody is the framework-supplied body of a single
@@ -383,6 +408,23 @@ type SubagentMessage struct {
 	CapturedAt   string              `json:"captured_at"`
 	HasContent   bool                `json:"has_content,omitempty"`
 	ContentBytes *int64              `json:"content_bytes,omitempty"`
+}
+
+// ErrRetryLater is returned by the processor when an event cannot be
+// settled yet because state another goroutine is still writing has not
+// landed (a session_end whose session_start is in flight). The consumer
+// NAKs the message with a delay instead of logging a processing error,
+// and the message comes back on its next delivery.
+var ErrRetryLater = errors.New("consumer: retry later")
+
+// retryDelay is how long a message waits before its next delivery:
+// retryDelayBase times the number of deliveries so far, so the gaps
+// grow with the budget already spent.
+func retryDelay(deliveries uint64) time.Duration {
+	if deliveries < 1 {
+		deliveries = 1
+	}
+	return retryDelayBase * time.Duration(deliveries)
 }
 
 // Processor processes a single event payload.
@@ -468,6 +510,19 @@ func (c *Consumer) worker(ctx context.Context, sub *nats.Subscription, id int) {
 				continue
 			}
 
+			// Delivery metadata: the stream position orders a session's
+			// events and the delivery count tells the processor when the
+			// retry budget is spent. Both are missing only for a message
+			// that did not come through JetStream, which this consumer
+			// never receives; treat that as a final delivery so nothing
+			// can retry forever.
+			deliveries := uint64(maxDeliver)
+			if meta, mErr := msg.Metadata(); mErr == nil {
+				event.StreamSeq = meta.Sequence.Stream
+				deliveries = meta.NumDelivered
+			}
+			event.FinalDelivery = deliveries >= maxDeliver
+
 			// Process inside a recover barrier: a panic on one hostile
 			// or malformed message (a message on the bus is an
 			// untrusted trust boundary) must not crash the whole
@@ -485,19 +540,30 @@ func (c *Consumer) worker(ctx context.Context, sub *nats.Subscription, id int) {
 				}()
 				return c.processor.Process(ctx, event)
 			}()
+			if errors.Is(procErr, ErrRetryLater) {
+				// Expected while a sibling goroutine is still writing
+				// the row this event needs; not a processing error.
+				delay := retryDelay(deliveries)
+				slog.Info("event redelivery scheduled",
+					"worker", id, "event_type", event.EventType,
+					"session_id", event.SessionID,
+					"delivery", deliveries, "delay", delay)
+				_ = msg.NakWithDelay(delay)
+				continue
+			}
 			if procErr != nil {
-				// Phase 4: when the JetStream delivery count has
-				// crossed maxDeliver, the message is about to go to
-				// the DLQ rather than be redelivered again. Bump a
-				// distinct counter so operators can see
-				// retries-exhausted distinct from per-attempt errors.
-				// Use NumDelivered on the message metadata -- NATS
-				// increments it per delivery, starting at 1.
-				if meta, mErr := msg.Metadata(); mErr == nil && meta.NumDelivered >= maxDeliver {
+				// When the JetStream delivery count has crossed
+				// maxDeliver, the message is about to be dropped rather
+				// than redelivered again. Bump a distinct counter so
+				// operators can see retries-exhausted distinct from
+				// per-attempt errors. NumDelivered starts at 1.
+				if deliveries >= maxDeliver {
 					metrics.IncrDropped(metrics.ReasonMaxRetriesExhausted)
 				}
 				slog.Error("process error", "worker", id, "event_type", event.EventType, "err", procErr)
-				_ = msg.Nak()
+				// A delayed NAK gives a transient database error time to
+				// clear; an immediate one spent the budget in milliseconds.
+				_ = msg.NakWithDelay(retryDelay(deliveries))
 				continue
 			}
 

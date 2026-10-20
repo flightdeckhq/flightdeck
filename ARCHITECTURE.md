@@ -1350,17 +1350,22 @@ The ingestion handler rejects events with 400 when:
 
 A `session_end` for a `session_id` Flightdeck has never seen (an orphan
 `session_end`) is **not** rejected at ingestion — the event is accepted and
-published. The worker pool processes a session's events concurrently, so a
-`session_end` can reach a worker goroutine before the goroutine holding the
-same session's `session_start` has committed the sessions row; the worker
-therefore waits up to two seconds for the row to appear and then closes
-the session normally. Only a row that never appears is an orphan: the
-worker logs a warning, increments
-`dropped_events_total{reason="orphan_session_end"}`, and ACKs the NATS
-message without inserting an event row (there is nothing to recover, and
-a retroactive closed row would describe a session the server never saw).
-A database error during that lookup is not read as "missing": the event is
-NAKed and redelivered instead.
+published, and the worker decides what to do with it.
+
+The worker pool handles a session's events concurrently, so a `session_end`
+can be picked up while the same session's `session_start` is still being
+written. A `session_end` whose `sessions` row is missing is therefore not
+dropped on sight: the worker asks NATS to redeliver it after one second,
+and once more after two, holding no goroutine in the meantime; a row that
+has appeared by then is closed normally. Only on the last delivery the
+budget allows is the event an orphan: the worker logs a warning,
+increments `dropped_events_total{reason="orphan_session_end"}`, and ACKs
+the message without inserting an event row (there is nothing to recover,
+and a closed row created for it would describe a session the server never
+saw). A `session_start` that lands later than that leaves its session open
+until the orphan-timeout reaper closes it. A database error during the
+lookup is not read as "missing": the worker NAKs the message and NATS
+redelivers it.
 
 The worker counts the drop as `dropped_events_total{reason}` in its
 in-process metrics registry and logs it; no service serves that registry
@@ -1430,11 +1435,18 @@ The race between step 2 (synchronous) and the worker's
 API locks the answer in the HTTP response the instant the attach commits.
 By the time the worker consumes the event, the row is already `active`,
 and the worker's `UpsertSession ON CONFLICT` branch is a no-op refresh.
-That branch never reopens a row that is already `closed`: the worker pool
-handles a session's events concurrently, so a closed row at that point
-means the session's own `session_end` was processed ahead of its
-`session_start`, and flipping it back would leave a finished session
-active for good.
+That branch also reopens a `closed` row, clearing `ended_at`, when the
+re-attaching `session_start` was ingested while the previous run's
+`session_end` was still queued, so that the attach check above saw an
+`active` row and did nothing. It tells that case apart from a
+`session_start` that its own `session_end` overtook (the worker pool
+handles a session's events concurrently) by publication order: every row
+records the NATS stream sequence of the event that opened its current run
+(`start_seq`) and of the `session_end` that closed it (`closed_seq`), and
+a `session_start` published before the `session_end` that closed the row
+leaves it closed. In the other direction, a `session_end` published
+before the row's current run began is recorded as an event but closes
+nothing.
 
 ### Heartbeat and health
 
@@ -1459,9 +1471,24 @@ NOTIFY events.
 ### NATS consumer
 
 `workers/internal/consumer/nats.go::Consumer` connects to NATS and starts
-`WorkerPoolSize` goroutines consuming from the stream. Each goroutine
-acks on success, naks on error (up to `MaxDeliver` retries before dead
-letter).
+`WorkerPoolSize` goroutines pulling from one durable consumer, each
+fetching one message at a time. A message has three outcomes: ACK when
+the processor returns nil (including the orphan `session_end` path, which
+inserts nothing), a delayed NAK when the processor cannot act yet or
+fails, and Term for a payload that does not parse. A NAK redelivers after
+one second times the number of deliveries so far; `MaxDeliver` is three
+deliveries in total, after which NATS stops redelivering (there is no
+dead-letter stream; the worker counts the drop as
+`max_retries_exhausted`). Each delivery carries the message's stream
+sequence and its delivery count to the processor.
+
+Nothing orders a session's events across goroutines: two events of one
+session published a few milliseconds apart are processed concurrently.
+Correctness under that rests on the session-row rules below — lazy
+creation on any event but `session_end`, the parent stub, the delayed
+redelivery of a `session_end` that arrives before its row, the stream
+sequence comparison between a session's start and end, and the
+closed-session skip.
 
 The ingestion API publishes one subject per event type — `events.<type>`
 where `<type>` is the `event_type` the validator accepted, so every event
@@ -1487,12 +1514,16 @@ processor switch update — the NATS subject lands automatically.
                 └─────────────────┴─────────┘
                   any event  (revive)
 
-   any event for unknown session_id
+   any event but session_end for unknown session_id
                 │
                 ▼
         lazy-create (active)
 
-   closed + any event → skipped with warn log (handleSessionGuard)
+   session_end for unknown session_id → redelivered after 1 s and 2 s,
+   then dropped as an orphan (no row is created)
+
+   closed + any event → session side effects skipped with warn log
+   (handleSessionGuard); the event row is still stored
 ```
 
 **Thresholds.** 2 min silence after the last signal triggers `active →
@@ -1533,28 +1564,43 @@ framework that exercises depth>2 trees ships.
 
 **Terminal-state handling.** `closed` is terminal and final. `session_end`
 at any non-closed state transitions directly to `closed`;
-`handleSessionGuard` skips any subsequent event for a closed session with
-a warn log. Revival on `stale` / `lost` is a correctness fix; reviving a
-`closed` session would contradict the user's explicit end signal.
+`handleSessionGuard` skips the session side effects (token roll-up,
+freshness, revival) of any later event for a closed session with a warn
+log, while the event row itself is still stored. Revival on `stale` /
+`lost` is a correctness fix; reviving a `closed` session would contradict
+the user's explicit end signal. The one exception is a re-attachment: a
+`session_start` reopens a closed row unless its own `session_end` was
+published after it (see the re-attachment section).
 
 ### Handlers
 
 `workers/internal/processor/session.go` exposes:
 
-- `HandleSessionStart`: upsert agent, insert session with state=active.
-- `HandlePostCall`: update tokens_used, advance last_seen_at, evaluate
-  policy thresholds, emit directive when crossed.
-- `HandleToolCall`, `HandleEmbeddings`, `HandleLlmError`: write the
-  event, advance last_seen_at.
-- `HandleSessionEnd`: set state=closed, set ended_at.
+- `HandleSessionStart`: upsert agent, upsert the session with
+  state=active (a closed row reopens unless its own `session_end` was
+  published after this start), record the start's stream sequence.
+- `HandlePostCall`: update tokens_used and the session's model, advance
+  last_seen_at; the policy evaluator then runs for `post_call`. The same
+  handler serves `pre_call`, `tool_call`, `embeddings`, `llm_error`,
+  `directive_result`, the policy events and the MCP events, which carry
+  no token delta and only advance freshness.
+- `HandleSessionEnd`: close the session (state=closed, ended_at, the
+  end's stream sequence) when the row exists and the end was published
+  after the run's start; ask for a delayed redelivery while the row is
+  missing, drop the event as an orphan on the last delivery, and leave a
+  row alone when it is already closed or when the end predates the
+  current run.
 - `HandleHeartbeat`: advance last_seen_at.
+- `HandleMCPServerAttached`: merge the server fingerprint into
+  `sessions.context.mcp_servers` after the freshness update.
 
-Every non-`session_start` handler runs `handleSessionGuard` before its
-write: `closed` sessions are skipped with a warn log; `stale` and `lost`
-sessions are revived to `active` with `last_seen_at` advanced; unknown
-`session_id`s are lazy-created so the event lands instead of
-FK-violating at `InsertEvent`. The event's normal side effects then
-proceed.
+Every handler except `HandleSessionStart` and `HandleSessionEnd` runs
+`handleSessionGuard` before its write: `closed` sessions skip the session
+side effects with a warn log; `stale` and `lost` sessions are revived to
+`active` with `last_seen_at` advanced; unknown `session_id`s are
+lazy-created so the event lands instead of FK-violating at `InsertEvent`.
+The event's normal side effects then proceed, and the event row is
+inserted in every case.
 
 SIGKILL bypasses all handlers. Affected sessions transition to stale
 after 2 minutes and lost after 30 minutes via the background reconciler;
@@ -1577,10 +1623,14 @@ four focused functions:
    The only writer of `session_attachments` rows; the only path that
    clears `ended_at` on revive.
 2. **`workers/internal/writer/postgres.go::UpsertSession`**.
-   Called on every `session_start`. Refreshes identity columns from the
-   event payload; COALESCE and CASE branches let a lazy-created row
-   absorb the real session_start data when it arrives. Real values are
-   write-once; only the `"unknown"` sentinel is upgradable.
+   Called on every `session_start`. Sets the state to `active` from any
+   prior state, clearing `ended_at`, except a `closed` row whose
+   `closed_seq` is greater than this start's stream sequence, which stays
+   closed; records the start's sequence in `start_seq`. Refreshes
+   identity columns from the event payload; COALESCE and CASE branches
+   let a lazy-created row absorb the real session_start data when it
+   arrives. Real values are write-once; only the `"unknown"` sentinel is
+   upgradable.
 3. **`workers/internal/writer/postgres.go::ReviveIfRevivable`**.
    State flip only: `{stale, lost} → active` plus `last_seen_at = NOW`.
    Called by `handleSessionGuard` before any non-`session_start` side
@@ -1588,7 +1638,8 @@ four focused functions:
 4. **`workers/internal/writer/postgres.go::ReviveOrCreateSession`**.
    Delegates to `ReviveIfRevivable` when the row exists; INSERTs a new
    row with best-effort identity + `"unknown"` / NULL sentinels when it
-   does not.
+   does not, recording the creating event's stream sequence as
+   `start_seq`.
 
 Any change to the revival contract (columns touched, state predicate)
 must be applied to all four sites. The cross-reference comment on
@@ -1996,6 +2047,7 @@ always create a new numbered migration.
 | 000024 | `sessions` partial expression indexes on the nine runtime-context keys (`context->>'os'`, `arch`, `hostname`, `user`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name`) for `/events` runtime-context facet filtering and counts |
 | 000025 | `sessions (agent_id, started_at DESC)` composite index backing the per-agent latest-session lookup |
 | 000026 | `sessions.capture_prompts` nullable BOOLEAN: server-authoritative capture posture written once from `session_start` |
+| 000027 | `sessions.start_seq` and `sessions.closed_seq` nullable BIGINT: NATS stream sequence of the event that opened the current run and of the `session_end` that closed it, so the worker orders a session's start and end without holding events back |
 
 ---
 
@@ -2011,7 +2063,7 @@ authoritative parameter-level reference.
 |---|---|---|
 | `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, recent_sessions rollup, and runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — sourced from the agent's most recent session's `context` JSONB via a `LEFT JOIN LATERAL`), context_facets |
 | `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `include_parents`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`), `child_count`, and `attachment_count` (the number of re-attachments to the session, surfaced as the agent drawer Runs-tab attached pill) |
-| `GET` | `/v1/sessions/:id` | Session detail: metadata + chronological events + attachments array |
+| `GET` | `/v1/sessions/:id` | Session detail: metadata + chronological events (always an array, empty until the first event row lands) + attachments array |
 | `GET` | `/v1/agents` | Paginated agent listing; filters: `agent_type`, `client_type`, `state`, `hostname`, `user`, `os`, `orchestration` (multi-value — OR within a dimension, AND across; `os` and `orchestration` use any-session EXISTS semantics on `sessions.context`), `search` (case-insensitive substring on `agent_name` + `hostname`), `updated_since`; `sort` + `order`; `limit` (default 25, max 100) + `offset`. Each row carries the sub-agent rollup fields `agent_role` and `topology` (`lone` / `parent` / `child`) plus the runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — latest-session-only, same source as the `/v1/fleet` projection) |
 | `GET` | `/v1/agents/:id/summary` | Per-agent activity summary (totals + per-bucket series) over a 1h/24h/7d/30d window. Powers the per-agent landing page. |
 | `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `agent_id`, `model`, payload-JSONB facet filters (`error_type`, `close_reason`, `estimated_via`, `matched_entry_id`, `originating_call_context`, `mcp_server`, `terminal`), `framework` (`agent_id` + `framework` resolve via a `sessions` subquery), session-context facet filters (`os`, `arch`, `host`, `user`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — resolved via the sessions JOIN against partial expression indexes on `sessions((context->>'<key>'))` from migration 000024), `q` (free-text ILIKE search across event_type / model / session_id / agent_name / framework), `before` (keyset cursor) + `order` (`asc`/`desc`) for newest-first drawer pagination, `facets=true` to return per-dimension chip counts over the filtered set instead of the event list, `limit` (default 500, max 2000), `offset` (max 100000) |
@@ -3583,9 +3635,10 @@ Operator-actionable enrichment:
 
 ### `session_end`
 
-Marks the session terminal with `state=closed`, stamps `ended_at`. Orphan
-`session_end` for a session_id Flightdeck has never seen is rejected at
-ingestion.
+Marks the session terminal with `state=closed`, stamps `ended_at`. A
+`session_end` for a `session_id` Flightdeck has never seen is accepted at
+ingestion; the worker redelivers it twice in case its `session_start` is
+still in flight and then drops it as an orphan (see Validation rules).
 
 Operator-actionable enrichment:
 

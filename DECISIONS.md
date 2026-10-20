@@ -9923,64 +9923,101 @@ the estimate on streams and documenting it (streaming is the default in
 most agent frameworks, so budgets and cost would stay wrong for most
 sessions).
 
-## D186 -- A session_end waits for its session_start before it counts as an orphan
+---
+
+## D186 -- A `session_end` that arrives before its row is redelivered, and a session's start and end are ordered by stream sequence
 
 **Date:** 2026-10-20
 
-**Decision:** The worker's `session_end` handler waits up to two seconds,
-re-checking every 25 ms, for the session row to exist before it treats
-the event as an orphan. A row that appears within the window is closed
-normally. A row that never appears is still dropped, but the handler now
-returns a sentinel that the processor turns into a clean ACK with no
-event-row insert. A database error during the lookup is returned, so the
-message is NAKed and redelivered rather than read as "missing". In the
-mirror-image order, the `session_start` upsert keeps a row that is
-already `closed` closed instead of setting it back to `active`.
+**Decision:** The worker's `session_end` handler no longer drops a
+`session_end` whose `sessions` row is missing on sight. It returns
+`consumer.ErrRetryLater`, and the consumer NAKs the message with a delay
+of one second times the deliveries so far, within the existing budget of
+three deliveries; only on the last delivery is the event an orphan, which
+the handler reports with `ErrEventDropped` so the processor ACKs it
+without an event-row insert. A database error during the lookup is
+returned, so the message is NAKed and redelivered rather than read as
+"missing". Every other processing error is NAKed with the same growing
+delay instead of immediately.
 
-**Why:** The consumer pool fetches from one NATS consumer with ten
-goroutines, so two events of one session are processed concurrently when
-they are published close together. A process that starts, makes one call
-and exits publishes `session_start`, `post_call` and `session_end` within
-tens of milliseconds, and the `session_end` could be handled before the
-`session_start`'s row was committed. It was then declared an orphan, the
-processor still ran the event insert, the insert failed the sessions
-foreign key, NATS redelivered it twice more within the same window, and
-the event was lost. Posting start, call and end back-to-back for 200
-sessions against the dev stack left 94 of them active for good, with 171
-`session_end` rows for 106 closed sessions where the row had landed
-between the orphan verdict and the insert. The 2026-10-20 main CI run
-lost `test_langchain_openai_stream_is_metered` this way.
+Each session row records the NATS stream sequence of the event that
+opened its current run (`start_seq`: the latest `session_start`, or the
+event that lazily created the row) and of the `session_end` that closed
+it (`closed_seq`), both nullable, added by migration 000027. The
+`session_start` upsert reopens a closed row (clearing `ended_at`) unless
+`closed_seq` is greater than the start's sequence, and the `session_end`
+handler closes an open row only when the end's sequence is greater than
+`start_seq`; an earlier end is recorded as an event and counted as
+`superseded_session_end`. Unknown sequences (rows from earlier releases,
+the reconciler's close, the e2e seed) stand the rules down.
 
-**Rejected:**
+`GET /v1/sessions/:id` serialises `events` as `[]`, never `null`.
 
-- *Delayed NAK and retry.* Non-blocking, but the durable consumer's retry
-  budget is three deliveries and raising it means re-creating the consumer
-  on upgrade; two fixed-delay retries also cover a narrower window than a
-  two-second poll.
-- *Serialising a session's events on one goroutine.* Removes the
-  concurrency but not the ordering problem: the goroutine that fetched the
-  later message can still reach the database first.
-- *Lazy-creating a closed row on an orphan `session_end`.* A teardown
-  signal for a session the server never saw would manifest a session that
-  never existed, and the session's `session_start`, if it arrived later,
-  would reopen it.
+**Supersedes:** the part of D106 that rejected waiting for
+`session_start` at the worker and left an orphan `session_end` to fail at
+`InsertEvent`, and the part of D094's worker-side upsert contract that
+set every prior state to `active`.
 
-The `session_start` side showed up while testing the fix: when a
-`post_call` overtakes the `session_start` the worker lazy-creates the
-row, the waiting `session_end` closes it, and the late `session_start`'s
-`ON CONFLICT SET state = EXCLUDED.state` then reopened it. Re-attachment
-of a finished session is settled synchronously by the ingestion API
-before the event is published, so a closed row at upsert time can only
-mean this ordering, and it is preserved.
+**Reasoning:** The consumer pool fetches one NATS consumer with ten
+goroutines by default, so two events of one session are processed
+concurrently when they are published close together. A process that
+starts, makes one call and exits publishes `session_start`, `post_call`
+and `session_end` within tens of milliseconds, and the `session_end`
+could be handled before the `session_start`'s row was committed. It was
+then declared an orphan, the processor still ran the event insert, the
+insert failed the `sessions` foreign key, NATS redelivered it twice more
+within the same window, and the event was lost. Posting start, call and
+end back-to-back for 200 sessions against the dev stack left 94 of them
+unclosed; 171 of the 200 had a `session_end` row, so for 65 of the
+unclosed sessions the row had landed between the orphan verdict and the
+insert (the event was stored but closed nothing) and the other 29 lost
+the event outright. The 2026-10-20 main CI run lost
+`test_langchain_openai_stream_is_metered` this way.
 
-**Consequences:** A genuine orphan `session_end` holds one worker goroutine
-for at most two seconds. `GET /v1/sessions/:id` serialises `events` as an
-empty array, never `null`, for a session whose row the worker has committed
-ahead of its first event row; the integration helpers that poll the detail
-also tolerate `null` from older binaries. One ordering remains by design:
-a `post_call` that reaches the guard after its session was closed is
-recorded as an event row but does not roll its tokens into the session,
-the closed-session rule that keeps late stragglers from reviving an
-explicitly ended session. With the `session_end` now waiting for the row,
-that window is a single poll interval, and 430 back-to-back sessions
-against the dev stack never hit it.
+D106 rejected waiting for `session_start` at the worker because it meant
+a per-session buffer that reorders events. A delayed redelivery buffers
+nothing in the worker: the message stays in NATS and comes back on its
+own, and no goroutine is held. The first version of this fix polled the
+row for up to two seconds inside the handler; measured under a flood of
+300 orphan `session_end`s at the default per-token ingestion rate
+(1000 events a minute), that parked every goroutine of the pool and
+raised the latency of an unrelated `session_start` from 28 ms to 18 s at
+the median and 42 s at worst, while the delayed-NAK design absorbed the
+same flood at a 32 ms median. One ingestion token could have stalled the
+pipeline for as long as it kept sending.
+
+The stream sequence settles the other direction. With the `session_end`
+no longer lost, a `post_call` that overtook its `session_start` lazily
+created the row, the `session_end` closed it, and the late
+`session_start` reopened it (4 of 30 sessions in the first run of the
+burst test). Keeping a closed row closed unconditionally fixed that but
+regressed re-attachment: when a run ends and the same session starts
+again before the end has been processed, the ingestion API's attach
+check sees an `active` row and does nothing, the worker closes the row,
+and the new run's `session_start` must reopen it (measured: 30 of 30
+such sessions left closed with the new run's tokens unaccounted). Only
+publication order tells the two cases apart, and the stream sequence is
+that order without any clock: ingestion publishes events as it accepts
+them.
+
+**Rejected alternative:** Waiting for the row inside the handler (the
+measured stall above). Capping the number of concurrent waiters (a cap
+of two protected the pool but dropped 28 of 30 legitimate `session_end`s
+during the flood). Serialising a session's events on one goroutine
+(removes the concurrency but not the ordering problem while each
+goroutine fetches its own message). Lazy-creating a closed row on an
+orphan `session_end` (it would manifest a closed session the server
+never saw, which tells operators nothing they can act on, the reason
+D106 gave). Stamping the attach verdict on the published `session_start`
+(covers the queued previous end but not a re-attached run whose own end
+overtakes its start, nor an attach check that failed open). Comparing
+event timestamps instead of sequences (a re-attachment from another host
+within the clock skew ingestion tolerates would read as the wrong
+order).
+
+One ordering remains by design: a `post_call` whose closed-session guard
+runs after its own `session_end` has closed the session is stored as an
+event row, but its tokens are not added to the session. That is the
+closed-session rule, which keeps late events from reviving a session the
+user ended; 430 back-to-back sessions against the dev stack never hit
+it.

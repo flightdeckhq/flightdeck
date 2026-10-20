@@ -82,7 +82,7 @@ def drain_deferred_settles() -> None:
     while _DEFERRED_SETTLES:
         try:
             _DEFERRED_SETTLES.popleft()()
-        except BaseException:
+        except Exception:
             _log.debug("Deferred stream settle failed", exc_info=True)
 
 
@@ -104,7 +104,7 @@ def settle_open_guards(session: Session) -> None:
         try:
             if guard._session is session and guard._entered and not guard._finalized:
                 guard._settle_now()
-        except BaseException:
+        except Exception:
             _log.debug("Settling an open stream at session end failed", exc_info=True)
 
 
@@ -402,11 +402,20 @@ class _GuardCore:
         finalizes, the async guard settles on the snapshot usage."""
         raise NotImplementedError
 
-    def _settle_collected(self) -> None:
-        """The settle a finalizer queues; the sync guard also releases the
-        SDK stream, which nothing else references once the guard is
-        collected."""
-        self._settle_now()
+    def _plain_final_message(self) -> Any | None:
+        """The provider's final message when it is a plain object; an
+        awaitable (an async helper's coroutine) is closed and dropped,
+        because the callers of this helper have no event loop."""
+        try:
+            message = self._provider.final_message(self._stream)
+        except Exception:
+            self._hook_failed("final_message")
+            return None
+        if inspect.isawaitable(message):
+            with contextlib.suppress(Exception):
+                message.close()  # type: ignore[attr-defined]
+            return None
+        return message
 
     def _hidden(self, chunk: Any) -> bool:
         if self._hide_chunk is None:
@@ -425,8 +434,24 @@ class _GuardCore:
         none of those locks is re-entrant. The settle path takes all
         three, so running it from ``__del__`` could deadlock the sensor;
         a deque append takes no lock.
+
+        Everything the settle needs is read here with plain attribute
+        reads (the merged usage, whether the response completed, a
+        complete helper's snapshot), then the SDK stream and the call are
+        dropped, so the collection frees the stream, and with it its HTTP
+        connection, at once; a stream kept until the drain would keep the
+        provider generating. Closing it here is not an option either, as
+        the SDK's close takes the connection pool's lock.
         """
-        _DEFERRED_SETTLES.append(self._settle_collected)
+        self._merge_settled_usage()
+        completed = self._is_complete()
+        message = self._plain_final_message() if completed else None
+        self._saw_terminal_chunk = completed  # the stream can no longer be asked
+        self._stream = None
+        self._ctx = None
+        self._stream_iter = None
+        self._real_fn = None
+        _DEFERRED_SETTLES.append(lambda: self._settle(message, completed))
 
     def _emit_pre_stream_error(self, exc: BaseException) -> None:
         # The context-manager protocol does not call __exit__ when
@@ -684,28 +709,19 @@ class GuardedStream(_GuardCore):
                 self._ctx.__exit__(exc_type, exc_val, exc_tb)
             elif self._stream is not None and hasattr(self._stream, "close"):
                 self._stream.close()
-        except Exception:
-            _log.debug("Exception closing underlying stream", exc_info=True)
+        except Exception as exc:
+            # No exc_info: a provider error may be the active context and
+            # echo prompt text.
+            _log.debug("Exception closing underlying stream (%s)", type(exc).__name__)
 
     def _finalize(self) -> None:
         if self._finalized or not self._entered:
             return
         completed = self._is_complete()
-        message: Any = None
-        if completed:
-            # A complete helper stream hands over its assembled message.
-            # An awaitable here cannot be used on this sync path; the
-            # snapshot usage still applies.
-            try:
-                message = self._provider.final_message(self._stream)
-            except Exception:
-                self._hook_failed("final_message")
-                message = None
-            if inspect.isawaitable(message):
-                with contextlib.suppress(Exception):
-                    message.close()  # type: ignore[attr-defined]
-                message = None
-        self._settle(message, completed)
+        # A complete helper stream hands over its assembled message; an
+        # awaitable cannot be used on this sync path, the snapshot usage
+        # still applies.
+        self._settle(self._plain_final_message() if completed else None, completed)
 
     def __del__(self) -> None:
         # A plain loop abandoned with ``break`` reaches neither close()
@@ -721,10 +737,6 @@ class GuardedStream(_GuardCore):
 
     def _settle_now(self) -> None:
         self._finalize()
-
-    def _settle_collected(self) -> None:
-        self._finalize()
-        self._close_underlying(None, None, None)
 
     # -- iteration -----------------------------------------------------
 
@@ -913,8 +925,8 @@ class GuardedAsyncStream(_GuardCore):
                 result = self._stream.close()
                 if inspect.isawaitable(result):
                     await result
-        except Exception:
-            _log.debug("Exception closing underlying async stream", exc_info=True)
+        except Exception as exc:
+            _log.debug("Exception closing underlying async stream (%s)", type(exc).__name__)
 
     async def _finalize(self) -> None:
         if self._finalized or not self._entered:
@@ -933,21 +945,9 @@ class GuardedAsyncStream(_GuardCore):
 
     def _settle_now(self) -> None:
         # No event loop here: the provider's final message is taken only
-        # when it is a plain object (the Anthropic snapshot), never an
-        # awaitable.
+        # when it is a plain object (the Anthropic snapshot).
         completed = self._is_complete()
-        message: Any = None
-        if completed:
-            try:
-                message = self._provider.final_message(self._stream)
-            except Exception:
-                self._hook_failed("final_message")
-                message = None
-            if inspect.isawaitable(message):
-                with contextlib.suppress(Exception):
-                    message.close()  # type: ignore[attr-defined]
-                message = None
-        self._settle(message, completed)
+        self._settle(self._plain_final_message() if completed else None, completed)
 
     def __del__(self) -> None:
         # See GuardedStream.__del__.

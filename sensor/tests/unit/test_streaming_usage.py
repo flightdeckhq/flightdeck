@@ -18,6 +18,7 @@ import asyncio
 import gc
 import json
 import threading
+import weakref
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -869,6 +870,27 @@ def test_collection_under_a_sensor_lock_defers_the_settle_to_the_next_intercept(
     assert pc["streaming"]["final_outcome"] == "aborted"
 
 
+def test_collection_releases_the_sdk_stream_before_the_deferred_settle_runs() -> None:
+    # Abandoning a stream is how callers cancel generation: the SDK stream
+    # (and its connection) must go at collection, not at the next intercept.
+    session = _session()
+    stream = _FakeStream(_anthropic_events())
+    ref = weakref.ref(stream)
+    pending = [stream]
+    guarded = base.call_stream(lambda **kw: pending.pop(), dict(KW), session, AnthropicProvider())
+    for _ in guarded:
+        break
+    guarded.self_cycle = guarded  # type: ignore[attr-defined]
+    del guarded, stream
+    gc.collect()
+    assert ref() is None, "the SDK stream outlived the guard's collection"
+    assert _post_calls(session) == []
+    base.call_stream(MagicMock(), dict(KW), session, AnthropicProvider())  # drains
+    (pc,) = _post_calls(session)
+    assert (pc["tokens_input"], pc["tokens_output"]) == (16, 1)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+
+
 def test_stream_failure_echoing_the_prompt_is_redacted_when_capture_is_off() -> None:
     session = _session(capture_prompts=False)
 
@@ -1280,7 +1302,10 @@ def test_sync_helper_close_with_capture_on_stores_the_snapshot_unread() -> None:
     assert raw.pulled == pulled_at_break < N_EVENTS
 
 
-def test_sync_helper_collected_with_capture_on_stores_the_snapshot_unread() -> None:
+def test_sync_helper_collected_with_capture_on_settles_from_the_snapshot_unread() -> None:
+    # The finalizer drops the SDK stream so its connection closes at
+    # collection; the settle keeps the snapshot's usage but stores no
+    # partial content (the with-exit and close() paths do).
     session = _session(capture_prompts=True)
     raw = _CountingStream(_anthropic_events())
     manager = _SyncManager([])
@@ -1297,7 +1322,8 @@ def test_sync_helper_collected_with_capture_on_stores_the_snapshot_unread() -> N
     base.call_stream(MagicMock(), dict(KW), session, AnthropicProvider())  # drains
     (pc,) = _post_calls(session)
     assert pc["streaming"]["final_outcome"] == "aborted"
-    assert pc["content"]["response"]["stop_reason"] is None
+    assert (pc["tokens_input"], pc["tokens_output"]) == (16, 1)
+    assert pc["has_content"] is True and "stop_reason" not in pc["content"]["response"]
     assert raw.pulled == pulled_at_break < N_EVENTS
 
 

@@ -218,7 +218,7 @@ func TestProcess_RoutesMCPServerNameChanged(t *testing.T) {
 // surface contract of the writer-level helpers that the guard leans on.
 
 func TestReviveIfRevivable_ReturnsTrueOnlyWhenRowUpdated(t *testing.T) {
-	// ReviveIfRevivable's bool return is used by handleTerminalGuard
+	// ReviveIfRevivable's bool return is used by handleSessionGuard
 	// only for logging; the function itself is a thin wrapper around
 	// UPDATE ... WHERE state IN ('stale', 'lost'). We verify the
 	// contract via the mockWriter surface area: a revive call counts

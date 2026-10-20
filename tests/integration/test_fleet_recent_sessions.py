@@ -27,6 +27,7 @@ from __future__ import annotations
 import json
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from typing import Any
 
 from .conftest import API_URL, auth_headers
@@ -36,6 +37,11 @@ from .conftest import API_URL, auth_headers
 # paired with bumping this constant. Lifted to module scope so the
 # value is unmistakable when the test fails on length.
 PER_AGENT_CAP = 5
+
+
+def _instant(stamp: str) -> datetime:
+    """Parse an RFC 3339 timestamp from the API, with or without fractions."""
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
 
 
 def _list_fleet(params: dict[str, str]) -> dict[str, Any]:
@@ -105,13 +111,16 @@ def test_fleet_response_attaches_recent_sessions() -> None:
             )
 
     # Descending started_at across the slice — pins the SQL
-    # ROW_NUMBER ordering contract that the swimlane relies on.
+    # ROW_NUMBER ordering contract that the swimlane relies on. The
+    # timestamps are compared as instants, not as strings: a row created
+    # from an event with a whole-second timestamp serialises without a
+    # fractional part, and "…:44Z" sorts after "…:44.45Z" as text.
     for a in agents:
         rs = a.get("recent_sessions")
         if not rs or len(rs) < 2:
             continue
         for i in range(1, len(rs)):
-            assert rs[i - 1]["started_at"] >= rs[i]["started_at"], (
+            assert _instant(rs[i - 1]["started_at"]) >= _instant(rs[i]["started_at"]), (
                 f"recent_sessions not descending by started_at on "
                 f"agent {a['agent_id']}: position {i - 1} = "
                 f"{rs[i - 1]['started_at']} < position {i} = "

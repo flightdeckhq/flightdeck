@@ -2,14 +2,15 @@
 //
 // Kept deliberately dependency-free: no Prometheus client library. The
 // counters are plain ``sync/atomic`` uint64s exposed via a small HTTP
-// handler (Snapshot + ServeHTTP). A future phase can swap in
-// prometheus/client_golang without changing the call sites. Choosing
+// handler (Snapshot + ServeHTTP). Swapping in prometheus/client_golang
+// later would not change the call sites. Choosing
 // no-dep here avoids adding a library to the worker that isn't needed
 // by any other package yet.
 //
-// The single counter is ``dropped_events_total``
-// with a ``reason`` label. Every known drop path in the worker
-// pipeline increments it:
+// The package keeps three counter families: ``dropped_events_total``
+// with a ``reason`` label, ``sessions_closed_total`` and
+// ``sessions_revived_total``. Every known drop path in the worker
+// pipeline increments the first:
 //
 //   - unmarshal_error       — NATS payload failed json.Unmarshal; the
 //                             consumer Terms the message.
@@ -22,8 +23,9 @@
 //                             session's current run began (the
 //                             session was re-attached first). Recorded
 //                             as an event; the row stays open.
-//   - closed_session_skip   — non-session_end event arrived for a
-//                             session already in state=closed. The
+//   - closed_session_skip   — event arrived for a session already in
+//                             state=closed (a duplicate session_end
+//                             included). The
 //                             handler skips work; the counter records
 //                             how often this happens.
 //   - fk_violation          — residual bucket for Postgres FK errors

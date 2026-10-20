@@ -22,13 +22,13 @@ import pytest
 
 from .conftest import (
     API_URL,
+    TOKEN,
     exec_sql,
     get_session,
     make_event,
     post_event,
     session_events,
     session_exists_in_fleet,
-    TOKEN,
     wait_until,
 )
 

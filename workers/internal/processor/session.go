@@ -37,10 +37,10 @@ type SessionProcessor struct {
 	w    *writer.Writer
 	pool *pgxpool.Pool
 
-	// lookupSession and closeSession are the database touch points of
+	// lookupSession and settleEnd are the database touch points of
 	// HandleSessionEnd. Nil means the real store; unit tests set stubs.
-	lookupSession func(ctx context.Context, sessionID string) (sessionRow, error)
-	closeSession  func(ctx context.Context, sessionID string, closedSeq uint64) error
+	lookupSession func(ctx context.Context, sessionID string) (sessionLookup, error)
+	settleEnd     func(ctx context.Context, sessionID string, closedSeq uint64) (applied, closedNow bool, err error)
 }
 
 // ErrEventDropped is returned by HandleSessionEnd when it discards an
@@ -53,18 +53,18 @@ func NewSessionProcessor(w *writer.Writer, pool *pgxpool.Pool) *SessionProcessor
 	return &SessionProcessor{w: w, pool: pool}
 }
 
-func (sp *SessionProcessor) lookup(ctx context.Context, sessionID string) (sessionRow, error) {
+func (sp *SessionProcessor) lookupRow(ctx context.Context, sessionID string) (sessionLookup, error) {
 	if sp.lookupSession != nil {
 		return sp.lookupSession(ctx, sessionID)
 	}
 	return sp.sessionLookupState(ctx, sessionID)
 }
 
-func (sp *SessionProcessor) close(ctx context.Context, sessionID string, closedSeq uint64) error {
-	if sp.closeSession != nil {
-		return sp.closeSession(ctx, sessionID, closedSeq)
+func (sp *SessionProcessor) settleRow(ctx context.Context, sessionID string, closedSeq uint64) (applied, closedNow bool, err error) {
+	if sp.settleEnd != nil {
+		return sp.settleEnd(ctx, sessionID, closedSeq)
 	}
-	return sp.w.CloseSession(ctx, sessionID, closedSeq)
+	return sp.w.SettleSessionEnd(ctx, sessionID, closedSeq)
 }
 
 // handleSessionGuard enforces the revive-or-create-or-skip policy
@@ -86,7 +86,7 @@ func (sp *SessionProcessor) close(ctx context.Context, sessionID string, closedS
 // event's downstream UPDATE + InsertEvent have a chance to succeed.
 //
 // HandleSessionEnd does its own lookup instead -- closing a stale/lost
-// session should transition directly via CloseSession, and we do
+// session should transition directly via SettleSessionEnd, and we do
 // not lazy-create on session_end (a teardown signal for a session we
 // never saw should not retroactively manifest a closed row).
 func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.EventPayload) (skip bool) {
@@ -105,7 +105,6 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 			e.Host, e.Framework, e.Model,
 			identityFromEvent(e), occurredAt,
 			e.ParentSessionID, e.AgentRole,
-			e.StreamSeq,
 		)
 		if cErr != nil {
 			// Lazy-create failed. Log and fail open -- InsertEvent
@@ -240,39 +239,25 @@ const (
 	sessionLookupOpen
 )
 
-// sessionRow is what HandleSessionEnd needs to know about a session:
-// whether the row is missing, closed or open, and the stream sequence
-// of the event that opened the current run (zero when unknown).
-type sessionRow struct {
-	state    sessionLookup
-	startSeq uint64
-}
-
-// sessionLookupState reads the session row's state and start sequence.
-// Only "no such row" is reported as missing; any other database error
-// is returned so the caller NAKs and the event is redelivered, rather
-// than mistaking an outage for an orphan and discarding a session_end
-// for good.
-func (sp *SessionProcessor) sessionLookupState(ctx context.Context, sessionID string) (sessionRow, error) {
+// sessionLookupState reads the session row's state. Only "no such row"
+// is reported as missing; any other database error is returned so the
+// caller NAKs and the event is redelivered within the retry budget,
+// rather than mistaking an outage for an orphan.
+func (sp *SessionProcessor) sessionLookupState(ctx context.Context, sessionID string) (sessionLookup, error) {
 	var state string
-	var startSeq *int64
 	err := sp.pool.QueryRow(ctx,
-		"SELECT state, start_seq FROM sessions WHERE session_id = $1::uuid", sessionID,
-	).Scan(&state, &startSeq)
+		"SELECT state FROM sessions WHERE session_id = $1::uuid", sessionID,
+	).Scan(&state)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return sessionRow{state: sessionLookupMissing}, nil
+		return sessionLookupMissing, nil
 	}
 	if err != nil {
-		return sessionRow{state: sessionLookupMissing}, err
+		return sessionLookupMissing, err
 	}
-	row := sessionRow{state: sessionLookupOpen}
 	if state == "closed" {
-		row.state = sessionLookupClosed
+		return sessionLookupClosed, nil
 	}
-	if startSeq != nil && *startSeq > 0 {
-		row.startSeq = uint64(*startSeq)
-	}
-	return row, nil
+	return sessionLookupOpen, nil
 }
 
 // HandleSessionStart upserts the agent and creates (or revives) a session.
@@ -292,7 +277,7 @@ func (sp *SessionProcessor) sessionLookupState(ctx context.Context, sessionID st
 // creates the row when it doesn't exist.
 // session_end does its own lookup (a closed session's session_end is a
 // no-op; a stale or lost session_end goes straight to closed via
-// CloseSession rather than flickering through active). The
+// SettleSessionEnd rather than flickering through active). The
 // lazy-create path deliberately excludes session_end -- a teardown
 // signal for a session we never saw should not retroactively manifest
 // a closed row.
@@ -558,9 +543,19 @@ func nilIfEmpty(s string) any {
 // HandleSessionEnd closes the session and reports whether it did.
 // Unlike the other handlers, session_end deliberately bypasses
 // handleSessionGuard: closing a stale or lost session should transition
-// it directly to closed via CloseSession, not flicker through active,
-// and a teardown signal for a session the server never saw must not
-// lazy-create a closed row.
+// it directly to closed, not flicker through active, and a teardown
+// signal for a session the server never saw must not lazy-create a
+// closed row.
+//
+// The end is applied in one guarded statement (SettleSessionEnd): an
+// open row whose current run began before the end was published is
+// closed with the end's sequence; a row that is already closed keeps
+// its close and takes the greater closed_seq, so a session_start queued
+// between a run's end and the next run's end cannot revive a session
+// whose later run has also ended; an end published before the row's
+// current run began matches nothing and is recorded as an event
+// without closing anything (superseded_session_end). Unknown sequences
+// (zero) stand the ordering rule down.
 //
 // The worker pool handles a session's events concurrently, so the row
 // can be missing because its session_start is still being written on
@@ -570,56 +565,60 @@ func nilIfEmpty(s string) any {
 // WARN, counter, and ErrEventDropped, which Process turns into a clean
 // ACK with no event row. Letting the insert run would fail the sessions
 // foreign key and spend the retry budget on an opaque "process error".
-//
-// An open row is closed only when this session_end was published after
-// the event that opened the current run (sessions.start_seq); an end
-// published before it belongs to an earlier run of a re-attached
-// session and is recorded without closing anything. A closed row makes
-// the event an idempotent no-op. Unknown sequences (zero) stand the
-// ordering rule down.
 func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.EventPayload) (closed bool, err error) {
-	row, err := sp.lookup(ctx, e.SessionID)
-	if err != nil {
-		return false, fmt.Errorf("session end: look up %s: %w", e.SessionID, err)
-	}
-	switch row.state {
-	case sessionLookupMissing:
-		if !e.FinalDelivery {
-			return false, consumer.ErrRetryLater
+	// At most two attempts: a statement that matched nothing because
+	// the row did not exist yet is repeated once the read finds the row
+	// (another goroutine lazily created or upserted it in between), so
+	// a second miss means the row really predates this end.
+	for attempt := 0; ; attempt++ {
+		applied, closedNow, err := sp.settleRow(ctx, e.SessionID, e.StreamSeq)
+		if err != nil {
+			return false, err
 		}
-		// We deliberately do NOT lazy-create on session_end -- a
-		// teardown signal for a session we never saw should not
-		// retroactively manifest a closed row. Log + counter + ACK
-		// without an event row (ErrEventDropped).
-		metrics.IncrDropped(metrics.ReasonOrphanSessionEnd)
-		slog.Warn("dropped orphan session_end",
-			"session_id", e.SessionID,
-			"reason", string(metrics.ReasonOrphanSessionEnd),
-		)
-		return false, ErrEventDropped
-	case sessionLookupClosed:
-		// Duplicate session_end. Idempotent by design; log and skip.
-		metrics.IncrDropped(metrics.ReasonClosedSessionSkip)
-		slog.Warn("skipping event for closed session",
-			"session_id", e.SessionID,
-			"event_type", "session_end",
-		)
-		return false, nil
-	}
-	if e.StreamSeq != 0 && row.startSeq > e.StreamSeq {
+		if applied {
+			if closedNow {
+				return true, nil
+			}
+			// Duplicate session_end on a closed row. Idempotent by
+			// design; log and skip (a later end has left its
+			// sequence behind).
+			metrics.IncrDropped(metrics.ReasonClosedSessionSkip)
+			slog.Warn("skipping event for closed session",
+				"session_id", e.SessionID,
+				"event_type", "session_end",
+			)
+			return false, nil
+		}
+		state, err := sp.lookupRow(ctx, e.SessionID)
+		if err != nil {
+			return false, fmt.Errorf("session end: look up %s: %w", e.SessionID, err)
+		}
+		if state == sessionLookupMissing {
+			if !e.FinalDelivery {
+				return false, consumer.ErrRetryLater
+			}
+			// We deliberately do NOT lazy-create on session_end -- a
+			// teardown signal for a session we never saw should not
+			// retroactively manifest a closed row. Log + counter + ACK
+			// without an event row (ErrEventDropped).
+			metrics.IncrDropped(metrics.ReasonOrphanSessionEnd)
+			slog.Warn("dropped orphan session_end",
+				"session_id", e.SessionID,
+				"reason", string(metrics.ReasonOrphanSessionEnd),
+			)
+			return false, ErrEventDropped
+		}
+		if attempt == 0 {
+			continue
+		}
 		metrics.IncrDropped(metrics.ReasonSupersededSessionEnd)
 		slog.Warn("session_end predates the session's current run; left open",
 			"session_id", e.SessionID,
 			"reason", string(metrics.ReasonSupersededSessionEnd),
-			"start_seq", row.startSeq,
 			"end_seq", e.StreamSeq,
 		)
 		return false, nil
 	}
-	if err := sp.close(ctx, e.SessionID, e.StreamSeq); err != nil {
-		return false, err
-	}
-	return true, nil
 }
 
 // StartReconciler runs a background loop every 60s to mark stale/lost

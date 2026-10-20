@@ -28,10 +28,11 @@ const (
 	// database error. The delay grows with the delivery number (one
 	// second after the first delivery, two after the second, within the
 	// three-delivery budget), so a message is retried for about three
-	// seconds in total without holding a pool goroutine. Immediate
-	// redelivery spent the whole budget within a few milliseconds, and
-	// waiting inside the handler parked a goroutine per message, which
-	// a flood of orphan session_ends turned into a stalled pool.
+	// seconds in total. A delayed NAK frees the goroutine for other
+	// messages; an immediate one would spend the whole budget within
+	// milliseconds, and waiting inside the handler would park a goroutine
+	// per message, which a flood of orphan session_ends turns into a
+	// stalled pool.
 	retryDelayBase = time.Second
 )
 
@@ -427,9 +428,12 @@ func retryDelay(deliveries uint64) time.Duration {
 	return retryDelayBase * time.Duration(deliveries)
 }
 
-// Processor processes a single event payload.
+// Processor processes a single event payload. StreamReady is called once
+// the stream exists, with its current last sequence, before any event is
+// processed.
 type Processor interface {
 	Process(ctx context.Context, event EventPayload) error
+	StreamReady(ctx context.Context, lastSeq uint64) error
 }
 
 // Consumer subscribes to NATS JetStream and dispatches events
@@ -460,6 +464,14 @@ func (c *Consumer) Start(ctx context.Context) error {
 	})
 	if err != nil {
 		return fmt.Errorf("ensure stream %s: %w", streamName, err)
+	}
+
+	info, err := js.StreamInfo(streamName)
+	if err != nil {
+		return fmt.Errorf("stream info %s: %w", streamName, err)
+	}
+	if err := c.processor.StreamReady(ctx, info.State.LastSeq); err != nil {
+		return fmt.Errorf("stream ready: %w", err)
 	}
 
 	sub, err := js.PullSubscribe(subjectAll, durableName, nats.MaxDeliver(maxDeliver))
@@ -541,6 +553,17 @@ func (c *Consumer) worker(ctx context.Context, sub *nats.Subscription, id int) {
 				return c.processor.Process(ctx, event)
 			}()
 			if errors.Is(procErr, ErrRetryLater) {
+				if deliveries >= maxDeliver {
+					// A retry request on the last delivery has no
+					// budget left; count the loss instead of letting
+					// a silent NAK hide it.
+					metrics.IncrDropped(metrics.ReasonMaxRetriesExhausted)
+					slog.Warn("retry requested on the final delivery; dropping",
+						"worker", id, "event_type", event.EventType,
+						"session_id", event.SessionID)
+					_ = msg.Term()
+					continue
+				}
 				// Expected while a sibling goroutine is still writing
 				// the row this event needs; not a processing error.
 				delay := retryDelay(deliveries)
@@ -548,6 +571,9 @@ func (c *Consumer) worker(ctx context.Context, sub *nats.Subscription, id int) {
 					"worker", id, "event_type", event.EventType,
 					"session_id", event.SessionID,
 					"delivery", deliveries, "delay", delay)
+				// A NAK that fails to reach the server is recovered by
+				// the consumer's ack wait: the message is redelivered
+				// once it expires, only later.
 				_ = msg.NakWithDelay(delay)
 				continue
 			}
@@ -557,12 +583,19 @@ func (c *Consumer) worker(ctx context.Context, sub *nats.Subscription, id int) {
 				// than redelivered again. Bump a distinct counter so
 				// operators can see retries-exhausted distinct from
 				// per-attempt errors. NumDelivered starts at 1.
-				if deliveries >= maxDeliver {
-					metrics.IncrDropped(metrics.ReasonMaxRetriesExhausted)
-				}
 				slog.Error("process error", "worker", id, "event_type", event.EventType, "err", procErr)
+				if deliveries >= maxDeliver {
+					// No budget left: NATS would not redeliver, and a
+					// delayed NAK would only hold an ack-pending slot
+					// for the length of the delay. Terminate instead.
+					metrics.IncrDropped(metrics.ReasonMaxRetriesExhausted)
+					_ = msg.Term()
+					continue
+				}
 				// A delayed NAK gives a transient database error time to
-				// clear; an immediate one spent the budget in milliseconds.
+				// clear where an immediate one spends the budget in
+				// milliseconds; a NAK that fails to reach the server is
+				// recovered by the ack wait, only later.
 				_ = msg.NakWithDelay(retryDelay(deliveries))
 				continue
 			}

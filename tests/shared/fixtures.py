@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import json
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 import time
 import urllib.error
 import urllib.request
@@ -28,12 +30,9 @@ from flightdeck_sensor.core.agent_id import derive_agent_id
 INGESTION_URL = "http://localhost:4000/ingest"
 API_URL = "http://localhost:4000/api"
 # The dev stack's container names are the contract for the helpers that
-# shell into it (psql below, the worker log reader) and the NATS
-# monitoring port docker/docker-compose.yml publishes on loopback.
+# shell into it (psql below, the worker log reader).
 POSTGRES_CONTAINER = "docker-postgres-1"
 WORKER_CONTAINER = "docker-workers-1"
-JETSTREAM_MONITOR_URL = "http://127.0.0.1:8222/jsz?consumers=true&streams=true"
-WORKERS_DURABLE_CONSUMER = "flightdeck-workers"
 # A docker CLI call against a healthy daemon returns well within this;
 # the bound only keeps a hung daemon from stalling a poll forever.
 DOCKER_CLI_TIMEOUT_SECS = 20
@@ -581,8 +580,37 @@ def get_session_event_count(session_id: str) -> int:
     """Return the number of events for a session, 0 while it is unreachable."""
     try:
         return len(session_events(get_session_detail(session_id)))
-    except (urllib.error.URLError, ValueError):
+    except (OSError, ValueError):
+        # URLError and HTTPError are OSErrors, as are the socket
+        # timeouts and resets a poll must simply retry through.
         return 0
+
+
+@contextmanager
+def worker_paused() -> Iterator[None]:
+    """Pause the worker container for the duration of the block.
+
+    Events published meanwhile queue in NATS, and when the worker resumes
+    its goroutine pool drains the backlog concurrently, which makes the
+    orderings the pool can introduce between a session's events
+    reproducible instead of timing-dependent. The container is resumed
+    even if the block raises.
+    """
+    subprocess.run(
+        ["docker", "pause", WORKER_CONTAINER],
+        check=True,
+        capture_output=True,
+        timeout=DOCKER_CLI_TIMEOUT_SECS,
+    )
+    try:
+        yield
+    finally:
+        subprocess.run(
+            ["docker", "unpause", WORKER_CONTAINER],
+            check=True,
+            capture_output=True,
+            timeout=DOCKER_CLI_TIMEOUT_SECS,
+        )
 
 
 def worker_log_lines(*needles: str, tail: int = WORKER_LOG_TAIL_LINES) -> list[str]:
@@ -613,25 +641,6 @@ def worker_log_lines(*needles: str, tail: int = WORKER_LOG_TAIL_LINES) -> list[s
         for line in (proc.stdout + proc.stderr).splitlines()
         if all(needle in line for needle in needles)
     ]
-
-
-def jetstream_consumer() -> dict[str, Any]:
-    """The workers' durable consumer as NATS' monitoring endpoint reports it.
-
-    ``delivered.consumer_seq`` counts every delivery including
-    redeliveries, ``delivered.stream_seq`` the stream position reached;
-    the difference between two snapshots' deltas is the number of
-    redeliveries in between. ``num_ack_pending`` is the number of
-    deliveries not yet acknowledged.
-    """
-    with urllib.request.urlopen(JETSTREAM_MONITOR_URL, timeout=5) as resp:
-        data = json.loads(resp.read())
-    for account in data.get("account_details") or []:
-        for stream in account.get("stream_detail") or []:
-            for consumer in stream.get("consumer_detail") or []:
-                if consumer.get("name") == WORKERS_DURABLE_CONSUMER:
-                    return consumer  # type: ignore[no-any-return]
-    raise LookupError(f"consumer {WORKERS_DURABLE_CONSUMER} not reported by NATS")
 
 
 def wait_for_state(

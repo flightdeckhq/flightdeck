@@ -2190,6 +2190,10 @@ fallback is acceptable.
 
 ## D094 -- Optional session_id hint in init() with backend attachment
 
+**Status:** Partly superseded by D186 — the worker-side upsert no longer
+sets every prior state to `active`; a closed row stays closed when the
+`session_end` that closed it was published after the `session_start`.
+
 **Problem:** Agents spawned repeatedly by orchestrators (Temporal
 workflows, Airflow DAGs, cron-driven batch jobs) get a different
 sensor-generated UUID on every run. The fleet view therefore
@@ -3127,6 +3131,10 @@ reconciler-driven transition to `lost` at ~05:42:28Z,
 ---
 
 ## D106 -- Lazy session creation on events with unknown session_id
+
+**Status:** Partly superseded by D186 — a `session_end` for a missing
+row is redelivered with a delay before it counts as an orphan, and an
+orphan is acknowledged without reaching `InsertEvent`.
 
 **Date:** 2026-04-18
 **Phase:** 5
@@ -9925,9 +9933,14 @@ sessions).
 
 ---
 
-## D186 -- A `session_end` that arrives before its row is redelivered, and a session's start and end are ordered by stream sequence
+## D186 -- An early `session_end` is redelivered, and a session's start and end are ordered by stream sequence
 
 **Date:** 2026-10-20
+
+**Supersedes:** the part of D106 that rejected waiting for
+`session_start` at the worker and left an orphan `session_end` to fail at
+`InsertEvent`, and the part of D094's worker-side upsert contract that
+set every prior state to `active`.
 
 **Decision:** The worker's `session_end` handler no longer drops a
 `session_end` whose `sessions` row is missing on sight. It returns
@@ -9944,19 +9957,27 @@ Each session row records the NATS stream sequence of the event that
 opened its current run (`start_seq`: the latest `session_start`, or the
 event that lazily created the row) and of the `session_end` that closed
 it (`closed_seq`), both nullable, added by migration 000027. The
-`session_start` upsert reopens a closed row (clearing `ended_at`) unless
+`session_start` upsert revives a closed row (clearing `ended_at`) unless
 `closed_seq` is greater than the start's sequence, and the `session_end`
-handler closes an open row only when the end's sequence is greater than
-`start_seq`; an earlier end is recorded as an event and counted as
-`superseded_session_end`. Unknown sequences (rows from earlier releases,
-the reconciler's close, the e2e seed) stand the rules down.
+handler closes an open row, in one guarded UPDATE, only when the end's
+sequence is greater than `start_seq`; an earlier end is recorded as an
+event and counted as `superseded_session_end`. A `session_end` that
+finds the row already closed advances `closed_seq` when it was published
+later, so a `session_start` queued between a run's end and the next
+run's end cannot revive a session whose later run has also ended. The
+ingestion API stamps a re-attaching `session_start`'s sequence on the
+row as soon as it has published it, so the previous run's queued end
+never closes the re-attached run and the run's first calls keep their
+tokens. A lazily created row records no `start_seq`, so a straggler
+published after a run's end cannot read as the run's start. An emitter
+that publishes its `session_end` before its `session_start` leaves the
+session open until the reaper closes it. Unknown sequences (rows from
+earlier releases, the reconciler's close, the e2e seed, a recreated
+stream) stand the rules down; the worker clears stored sequences above
+the stream's last sequence when it starts, since sequences are only
+comparable within one incarnation of the stream.
 
 `GET /v1/sessions/:id` serialises `events` as `[]`, never `null`.
-
-**Supersedes:** the part of D106 that rejected waiting for
-`session_start` at the worker and left an orphan `session_end` to fail at
-`InsertEvent`, and the part of D094's worker-side upsert contract that
-set every prior state to `active`.
 
 **Reasoning:** The consumer pool fetches one NATS consumer with ten
 goroutines by default, so two events of one session are processed
@@ -9989,12 +10010,12 @@ pipeline for as long as it kept sending.
 The stream sequence settles the other direction. With the `session_end`
 no longer lost, a `post_call` that overtook its `session_start` lazily
 created the row, the `session_end` closed it, and the late
-`session_start` reopened it (4 of 30 sessions in the first run of the
+`session_start` revived it (4 of 30 sessions in the first run of the
 burst test). Keeping a closed row closed unconditionally fixed that but
 regressed re-attachment: when a run ends and the same session starts
 again before the end has been processed, the ingestion API's attach
 check sees an `active` row and does nothing, the worker closes the row,
-and the new run's `session_start` must reopen it (measured: 30 of 30
+and the new run's `session_start` must revive it (measured: 30 of 30
 such sessions left closed with the new run's tokens unaccounted). Only
 publication order tells the two cases apart, and the stream sequence is
 that order without any clock: ingestion publishes events as it accepts
@@ -10015,9 +10036,9 @@ event timestamps instead of sequences (a re-attachment from another host
 within the clock skew ingestion tolerates would read as the wrong
 order).
 
-One ordering remains by design: a `post_call` whose closed-session guard
-runs after its own `session_end` has closed the session is stored as an
-event row, but its tokens are not added to the session. That is the
-closed-session rule, which keeps late events from reviving a session the
-user ended; 430 back-to-back sessions against the dev stack never hit
-it.
+**Remaining ordering:** A `post_call` whose closed-session guard runs
+after a `session_end` has closed the session is stored as an event row,
+but its tokens are not added to the session. That is the closed-session
+rule, which keeps late events from reviving a session the user ended;
+430 back-to-back sessions against the dev stack never hit it, and a
+re-attached run's calls are covered by the ingestion stamp above.

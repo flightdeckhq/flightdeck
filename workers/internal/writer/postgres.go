@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -111,7 +112,7 @@ func (w *Writer) IncrementAgentTokens(ctx context.Context, agentID string, delta
 //     enriched by a later session_start arrival. Real values remain
 //     write-once: once sessions.context is non-null, COALESCE returns
 //     the stored value and the incoming EXCLUDED is ignored.
-//   - state -- EXCLUDED.state (active), which also reopens a closed row
+//   - state -- EXCLUDED.state (active), which also revives a closed row
 //     for a re-attachment (clearing ended_at and closed_seq), unless the
 //     session_end that closed the row was published after this
 //     session_start: the worker pool handles a session's events
@@ -120,7 +121,7 @@ func (w *Writer) IncrementAgentTokens(ctx context.Context, agentID string, delta
 //     by the ingestion API before the event is published; the sequence
 //     comparison covers the start that arrives while the previous
 //     run's end is still queued. A closed row without closed_seq (the
-//     reconciler's close, or an earlier release) always reopens.
+//     reconciler's close, or an earlier release) is always revived.
 //   - start_seq -- the greater of the stored value and this event's
 //     stream sequence, so the row records the start of its latest run.
 //   - flavor, agent_type -- CASE upgrade from the sentinel "unknown".
@@ -172,12 +173,12 @@ func (w *Writer) UpsertSession(
 			NULLIF($17::bigint, 0)
 		)
 		ON CONFLICT (session_id) DO UPDATE
-		SET -- A closed row reopens for a re-attachment, but stays closed
+		SET -- A closed row is revived for a re-attachment, but stays closed
 		    -- when the session_end that closed it was published after
 		    -- this session_start: the worker pool handles a session's
 		    -- events concurrently, so an end can be processed before
 		    -- its own start. An unknown sequence (NULL on either side)
-		    -- reopens, which is the plain state rule.
+		    -- revives, which is the plain state rule.
 		    state = CASE WHEN sessions.state = 'closed'
 		                  AND sessions.closed_seq > NULLIF($17::bigint, 0)
 		                 THEN sessions.state
@@ -239,7 +240,7 @@ func (w *Writer) UpsertSession(
 		contextJSON, tokenID, tokenName,
 		agentID, clientType, agentName,
 		parentSessionID, agentRole, capturePrompts,
-		int64(startSeq),
+		seqParam(startSeq),
 	).Scan(&wasInsert)
 	if err != nil {
 		return false, fmt.Errorf("upsert session %s: %w", sessionID, err)
@@ -556,11 +557,12 @@ func (w *Writer) UpdateLastSeen(ctx context.Context, sessionID string) error {
 //     stale, lost -> active. No identity refresh, no attachment row.
 //  4. Worker, “ReviveOrCreateSession“. Scope: delegates to
 //     ReviveIfRevivable when the row exists, INSERTs a new row with
-//     best-effort identity + “unknown“ sentinels when it does not,
-//     recording the creating event's stream sequence as the run's
-//     start. Called by every handler except session_start and
-//     session_end so an event for an unknown session_id lazily
-//     manifests the row instead of FK-violating at InsertEvent.
+//     best-effort identity + “unknown“ sentinels when it does not, and
+//     no start sequence: a straggler published after the run's end
+//     must not read as the run's start. Called by every handler except
+//     session_start and session_end so an event for an unknown
+//     session_id lazily manifests the row instead of FK-violating at
+//     InsertEvent.
 //
 // Scope of this helper:
 //   - state IN ('stale', 'lost') -> UPDATE, returns (true, nil).
@@ -699,7 +701,6 @@ func (w *Writer) ReviveOrCreateSession(
 	identity AgentIdentity,
 	occurredAt time.Time,
 	parentSessionID, agentRole string,
-	startSeq uint64,
 ) (created bool, err error) {
 	var state string
 	sErr := w.pool.QueryRow(ctx,
@@ -707,7 +708,7 @@ func (w *Writer) ReviveOrCreateSession(
 		sessionID,
 	).Scan(&state)
 	if sErr == nil {
-		// Row exists. Delegate to the D105 revive path -- it's a
+		// Row exists. Delegate to the revive path -- it's a
 		// no-op for active/idle/closed and flips stale/lost.
 		if _, rerr := w.ReviveIfRevivable(ctx, sessionID); rerr != nil {
 			return false, fmt.Errorf("revive-or-create %s: %w", sessionID, rerr)
@@ -729,7 +730,7 @@ func (w *Writer) ReviveOrCreateSession(
 		agentType = "unknown"
 	}
 
-	// D115: upsert the agents row first so the sessions FK lands
+	// Upsert the agents row first so the sessions FK lands
 	// cleanly. Even a lazy-create path knows the authoritative agent
 	// identity because the ingestion handler validated it on the
 	// way in.
@@ -751,18 +752,18 @@ func (w *Writer) ReviveOrCreateSession(
 			session_id, flavor, agent_type, host, framework, model, state,
 			started_at, last_seen_at, context,
 			agent_id, client_type, agent_name,
-			parent_session_id, agent_role, start_seq
+			parent_session_id, agent_role
 		)
 		VALUES (
 			$1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''),
 			'active', $7, $7, NULL,
 			$8::uuid, $9, $10,
-			NULLIF($11, '')::uuid, NULLIF($12, ''), NULLIF($13::bigint, 0)
+			NULLIF($11, '')::uuid, NULLIF($12, '')
 		)
 		ON CONFLICT (session_id) DO NOTHING
 	`, sessionID, flavor, agentType, host, framework, model, occurredAt,
 		identity.AgentID, identity.ClientType, identity.AgentName,
-		parentSessionID, agentRole, int64(startSeq))
+		parentSessionID, agentRole)
 	if iErr != nil {
 		return false, fmt.Errorf("revive-or-create %s: insert: %w", sessionID, iErr)
 	}
@@ -912,22 +913,67 @@ func (w *Writer) BumpAgentSessionCount(ctx context.Context, agentID string) erro
 	return nil
 }
 
-// CloseSession sets state=closed and ended_at on a session and records
-// the stream sequence of the session_end that closed it, which
-// UpsertSession compares against a later session_start to tell a
-// re-attachment from a start that its own end overtook. A zero
-// sequence (unknown) is stored as NULL.
-func (w *Writer) CloseSession(ctx context.Context, sessionID string, closedSeq uint64) error {
-	_, err := w.pool.Exec(ctx, `
+// SettleSessionEnd applies a session_end to its row in one statement:
+// an open row whose current run began before the end was published
+// (start_seq below the end's sequence, or either unknown) is closed and
+// records the end's sequence; a row that is already closed keeps its
+// close but takes the greater closed_seq, so a session_start queued
+// between a run's end and the next run's end cannot revive a session
+// whose later run has also ended. The predicate is part of the UPDATE
+// so that a re-attaching session_start committed between a read and
+// this write cannot be closed by the previous run's end. Returns
+// whether a row matched and whether it was closed by this call; no
+// match means the row is missing or this end predates the row's
+// current run, which the caller tells apart with a read.
+func (w *Writer) SettleSessionEnd(ctx context.Context, sessionID string, closedSeq uint64) (applied, closedNow bool, err error) {
+	err = w.pool.QueryRow(ctx, `
 		UPDATE sessions
-		SET state = 'closed', ended_at = NOW(), last_seen_at = NOW(),
-		    closed_seq = NULLIF($2::bigint, 0)
+		SET state = 'closed',
+		    ended_at = CASE WHEN state = 'closed' THEN ended_at ELSE NOW() END,
+		    last_seen_at = CASE WHEN state = 'closed' THEN last_seen_at ELSE NOW() END,
+		    closed_seq = CASE WHEN state = 'closed'
+		                      THEN GREATEST(closed_seq, NULLIF($2::bigint, 0))
+		                      ELSE NULLIF($2::bigint, 0) END
 		WHERE session_id = $1::uuid
-	`, sessionID, int64(closedSeq))
-	if err != nil {
-		return fmt.Errorf("close session %s: %w", sessionID, err)
+		  AND (start_seq IS NULL OR $2::bigint = 0 OR start_seq < $2::bigint)
+		RETURNING ended_at = NOW()
+	`, sessionID, seqParam(closedSeq)).Scan(&closedNow)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, nil
 	}
-	return nil
+	if err != nil {
+		return false, false, fmt.Errorf("settle session end %s: %w", sessionID, err)
+	}
+	return true, closedNow, nil
+}
+
+// seqParam converts a stream sequence for a bigint parameter. Zero means
+// unknown throughout, and a value beyond the bigint range (which no
+// stream will reach) is treated as unknown rather than wrapped.
+func seqParam(seq uint64) int64 {
+	if seq > math.MaxInt64 {
+		return 0
+	}
+	return int64(seq)
+}
+
+// ClearSequencesAbove forgets every stored stream sequence greater than
+// lastSeq, the FLIGHTDECK stream's current last sequence. Sequences are
+// only comparable within one incarnation of the stream: after an
+// operator recreates it, numbering restarts at one and every stored
+// value would outrank every new event, so the rows fall back to the
+// plain state rules. Returns the number of rows touched.
+func (w *Writer) ClearSequencesAbove(ctx context.Context, lastSeq uint64) (int64, error) {
+	tag, err := w.pool.Exec(ctx, `
+		UPDATE sessions
+		SET start_seq = CASE WHEN start_seq > $1::bigint THEN NULL ELSE start_seq END,
+		    closed_seq = CASE WHEN closed_seq > $1::bigint THEN NULL ELSE closed_seq END
+		WHERE start_seq > $1::bigint OR closed_seq > $1::bigint
+	`, seqParam(lastSeq))
+	if err != nil {
+		return 0, fmt.Errorf("clear sequences above %d: %w", lastSeq, err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // ReconcileStaleSessions sets stale after `staleThreshold` silence,

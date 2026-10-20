@@ -7,14 +7,16 @@ non-session_start event. Requires `make dev` to be running.
 
 from __future__ import annotations
 
+import subprocess
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from .conftest import (
     exec_sql,
     get_session,
     get_session_detail,
-    jetstream_consumer,
     make_event,
     post_event,
     post_heartbeat,
@@ -23,7 +25,9 @@ from .conftest import (
     wait_for_state,
     wait_until,
     worker_log_lines,
+    worker_paused,
 )
+from .conftest import DOCKER_CLI_TIMEOUT_SECS, POSTGRES_CONTAINER
 
 
 def _force_state(session_id: str, state: str) -> None:
@@ -667,22 +671,97 @@ def test_order_independence_pc_then_ss_matches_ss_then_pc() -> None:
 # ---------------------------------------------------------------------------
 
 # The worker redelivers a session_end whose row is missing after one
-# second and again after two before the orphan verdict; polls that wait
-# for the verdict allow that budget plus processing slack.
+# second and again after two before the orphan verdict; polls that may
+# span that budget allow it plus the slack any other poll gets.
 WORKER_RETRY_WINDOW_SECS = 3.0
-ORPHAN_VERDICT_TIMEOUT_SECS = WORKER_RETRY_WINDOW_SECS + 10.0
+# Room for the worker to process a handful of events on a loaded runner.
+PROCESSING_SLACK_SECS = 10.0
+STATE_TIMEOUT_SECS = PROCESSING_SLACK_SECS
+RETRY_WINDOW_TIMEOUT_SECS = WORKER_RETRY_WINDOW_SECS + PROCESSING_SLACK_SECS
 # Several times FLIGHTDECK_WORKER_POOL_SIZE (10), so many sessions are in
 # flight across goroutines at once while the burst itself (three POSTs
 # per session) still takes about two seconds.
 BURST_SESSIONS = 50
 BURST_TIMEOUT_SECS = 30.0
-# What the worker logs on the orphan path, on a session_end that predates
-# the session's current run, and on any failed attempt.
+# Sessions per shape in the paused-worker backlog test: enough that the
+# ten goroutines draining the backlog overlap on every shape many times.
+BACKLOG_SESSIONS = 30
+# What the worker logs when it schedules a redelivery, on the orphan
+# path, on a session_end that predates the session's current run, and on
+# any failed attempt.
+REDELIVERY_NOTICE = "event redelivery scheduled"
 ORPHAN_WARNING = "dropped orphan session_end"
 SUPERSEDED_WARNING = "session_end predates the session's current run"
 PROCESS_ERROR_MARKER = "process error"
-# Tokens the probe post_call carries; the session row must show them.
-PROBE_CALL_TOKENS = 8
+# Redeliveries the worker grants a session_end whose row is missing
+# before the orphan verdict (the three-delivery budget minus the first).
+ORPHAN_REDELIVERIES = 2
+# Token counts and latency the probe post_call carries; the session row
+# must show the total.
+PROBE_INPUT_TOKENS = 5
+PROBE_OUTPUT_TOKENS = 3
+PROBE_CALL_TOKENS = PROBE_INPUT_TOKENS + PROBE_OUTPUT_TOKENS
+PROBE_LATENCY_MS = 10
+
+
+@contextmanager
+def _agent_row_locked(agent_id: str) -> Iterator[None]:
+    """Hold the agents row FOR NO KEY UPDATE for the duration of the block.
+
+    HandleSessionStart's first write is the agents upsert, so every
+    session_start of that agent blocks in the worker until the block
+    ends while the other handlers (which only take KEY SHARE locks on the
+    row through the sessions foreign key) proceed. The lock belongs to a
+    psql session kept open on stdin; the block starts once Postgres
+    reports that session idle in its transaction.
+    """
+    tag = f"lock-{uuid.uuid4().hex[:8]}"
+    proc = subprocess.Popen(
+        [
+            "docker",
+            "exec",
+            "-i",
+            POSTGRES_CONTAINER,
+            "psql",
+            "-U",
+            "flightdeck",
+            "-d",
+            "flightdeck",
+            "-q",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    assert proc.stdin is not None
+    try:
+        proc.stdin.write(
+            f"BEGIN; SELECT 1 /* {tag} */ FROM agents "
+            f"WHERE agent_id = '{agent_id}'::uuid FOR NO KEY UPDATE;\n"
+        )
+        proc.stdin.flush()
+        wait_until(
+            lambda: (
+                exec_sql(
+                    "SELECT COUNT(*) FROM pg_stat_activity "
+                    "WHERE state = 'idle in transaction' AND query LIKE :'tag'",
+                    tag=f"%{tag}%",
+                )
+                == "1"
+            ),
+            timeout=STATE_TIMEOUT_SECS,
+            msg="the agent row lock was never taken",
+        )
+        yield
+    finally:
+        try:
+            proc.stdin.write("COMMIT;\n")
+            proc.stdin.flush()
+            proc.stdin.close()
+        except OSError:
+            pass
+        proc.wait(timeout=DOCKER_CLI_TIMEOUT_SECS)
 
 
 def _probe_call(sid: str, flavor: str) -> dict[str, Any]:
@@ -691,10 +770,10 @@ def _probe_call(sid: str, flavor: str) -> dict[str, Any]:
         flavor,
         "post_call",
         model="gpt-4o",
-        tokens_input=5,
-        tokens_output=3,
+        tokens_input=PROBE_INPUT_TOKENS,
+        tokens_output=PROBE_OUTPUT_TOKENS,
         tokens_total=PROBE_CALL_TOKENS,
-        latency_ms=10,
+        latency_ms=PROBE_LATENCY_MS,
     )
 
 
@@ -753,11 +832,17 @@ def test_session_end_published_before_its_session_start_does_not_close_it() -> N
     post_event(make_event(sid, flavor, "session_end"))
     post_event(make_event(sid, flavor, "session_start"))
 
-    _wait_for_rows(flavor, "session_end", 1, ORPHAN_VERDICT_TIMEOUT_SECS)
+    _wait_for_rows(flavor, "session_end", 1, RETRY_WINDOW_TIMEOUT_SECS)
     assert get_session_detail(sid)["session"]["state"] == "active"
-    assert worker_log_lines(SUPERSEDED_WARNING, f"session_id={sid}"), (
-        "worker did not report the superseded session_end"
+    wait_until(
+        lambda: bool(worker_log_lines(SUPERSEDED_WARNING, f"session_id={sid}")),
+        timeout=STATE_TIMEOUT_SECS,
+        msg="worker did not report the superseded session_end",
     )
+
+    # The session is still live and a later end closes it as usual.
+    post_event(make_event(sid, flavor, "session_end"))
+    wait_for_state(sid, "closed", timeout=STATE_TIMEOUT_SECS)
 
 
 def test_short_lived_sessions_published_back_to_back_all_close() -> None:
@@ -789,7 +874,6 @@ def test_orphan_session_end_is_dropped_once_after_the_retry_budget() -> None:
     sid = str(uuid.uuid4())
     flavor = f"test-orphan-end-{uuid.uuid4().hex[:6]}"
     sid_needle = f"session_id={sid}"
-    before = jetstream_consumer()
     errors_before = set(
         worker_log_lines(PROCESS_ERROR_MARKER, "event_type=session_end")
     )
@@ -798,23 +882,12 @@ def test_orphan_session_end_is_dropped_once_after_the_retry_budget() -> None:
 
     wait_until(
         lambda: bool(worker_log_lines(ORPHAN_WARNING, sid_needle)),
-        timeout=ORPHAN_VERDICT_TIMEOUT_SECS,
+        timeout=RETRY_WINDOW_TIMEOUT_SECS,
         msg=f"worker never logged the orphan drop for {sid}",
     )
-    wait_until(
-        lambda: jetstream_consumer()["num_ack_pending"] == 0,
-        timeout=10,
-        msg="the orphan session_end was never acknowledged",
-    )
-    after = jetstream_consumer()
 
-    deliveries = (
-        after["delivered"]["consumer_seq"] - before["delivered"]["consumer_seq"]
-    )
-    messages = after["delivered"]["stream_seq"] - before["delivered"]["stream_seq"]
-    assert deliveries - messages == 2, (
-        f"expected the two delayed redeliveries, saw {deliveries - messages}"
-    )
+    redeliveries = worker_log_lines(REDELIVERY_NOTICE, sid_needle)
+    assert len(redeliveries) == ORPHAN_REDELIVERIES, redeliveries
     warnings = worker_log_lines(ORPHAN_WARNING, sid_needle)
     assert len(warnings) == 1, warnings
     new_errors = (
@@ -832,27 +905,161 @@ def test_orphan_session_end_is_dropped_once_after_the_retry_budget() -> None:
 
 def test_reattach_published_right_after_session_end_keeps_the_session_open() -> None:
     """A session_start for a session whose previous run's session_end is
-    still queued is a re-attachment, whichever of the two the worker
-    processes first: the end must not close the new run and the start
-    must not leave it closed. A call made once both have landed must
-    still roll its tokens into the open session.
+    still queued is a re-attachment: the end must not close the new run
+    and the start must not leave it closed. A call made once both have
+    landed rolls its tokens into the open session, and the new run can
+    still be ended.
     """
     sid = str(uuid.uuid4())
     flavor = f"test-reattach-{uuid.uuid4().hex[:6]}"
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_state(sid, "active", timeout=10)
+    wait_for_state(sid, "active", timeout=STATE_TIMEOUT_SECS)
 
     post_event(make_event(sid, flavor, "session_end"))
     post_event(make_event(sid, flavor, "session_start"))
-    _wait_for_rows(flavor, "session_start", 2, ORPHAN_VERDICT_TIMEOUT_SECS)
-    _wait_for_rows(flavor, "session_end", 1, ORPHAN_VERDICT_TIMEOUT_SECS)
+    _wait_for_rows(flavor, "session_start", 2, RETRY_WINDOW_TIMEOUT_SECS)
+    _wait_for_rows(flavor, "session_end", 1, RETRY_WINDOW_TIMEOUT_SECS)
 
     post_event(_probe_call(sid, flavor))
-    _wait_for_rows(flavor, "post_call", 1, 10.0)
+    _wait_for_rows(flavor, "post_call", 1, STATE_TIMEOUT_SECS)
     session = get_session_detail(sid)["session"]
     assert session["state"] == "active", session
     assert session["tokens_used"] == PROBE_CALL_TOKENS, session
     assert session.get("ended_at") is None, session
+
+    post_event(make_event(sid, flavor, "session_end"))
+    wait_for_state(sid, "closed", timeout=STATE_TIMEOUT_SECS)
+
+
+def test_reattachment_with_the_previous_end_queued_keeps_its_first_calls() -> None:
+    """A call made right after the re-attaching session_start, while the
+    previous run's session_end is still queued, must roll its tokens into
+    the session: the ingestion API stamps the start's stream sequence on
+    the row as it accepts the start, so the queued end reads as
+    superseded and never closes the re-attached run.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-reattach-call-{uuid.uuid4().hex[:6]}"
+    post_event(make_event(sid, flavor, "session_start"))
+    wait_for_state(sid, "active", timeout=STATE_TIMEOUT_SECS)
+
+    post_event(make_event(sid, flavor, "session_end"))
+    post_event(make_event(sid, flavor, "session_start"))
+    post_event(_probe_call(sid, flavor))
+    _wait_for_rows(flavor, "session_start", 2, RETRY_WINDOW_TIMEOUT_SECS)
+    _wait_for_rows(flavor, "session_end", 1, RETRY_WINDOW_TIMEOUT_SECS)
+    _wait_for_rows(flavor, "post_call", 1, RETRY_WINDOW_TIMEOUT_SECS)
+
+    session = get_session_detail(sid)["session"]
+    assert session["state"] == "active", session
+    assert session["tokens_used"] == PROBE_CALL_TOKENS, session
+
+    post_event(make_event(sid, flavor, "session_end"))
+    wait_for_state(sid, "closed", timeout=STATE_TIMEOUT_SECS)
+
+
+def test_reattachment_processed_after_both_runs_ended_stays_closed() -> None:
+    """Force the worst order: the previous run's end and the new run's
+    end are both processed while the re-attaching session_start is held
+    back (the agents row it must upsert first is locked). The later end
+    must leave its mark on the closed row, so the start, once released,
+    cannot revive a session whose new run has already ended.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-reattach-held-{uuid.uuid4().hex[:6]}"
+    agent_name = f"held-{uuid.uuid4().hex[:8]}"
+    post_event(make_event(sid, flavor, "session_start", agent_name=agent_name))
+    wait_for_state(sid, "active", timeout=STATE_TIMEOUT_SECS)
+    agent_id = exec_sql(
+        "SELECT agent_id FROM sessions WHERE session_id = :'sid'::uuid", sid=sid
+    )
+
+    with _agent_row_locked(agent_id):
+        post_event(make_event(sid, flavor, "session_end", agent_name=agent_name))
+        post_event(make_event(sid, flavor, "session_start", agent_name=agent_name))
+        post_event(make_event(sid, flavor, "session_end", agent_name=agent_name))
+        _wait_for_rows(flavor, "session_end", 2, RETRY_WINDOW_TIMEOUT_SECS)
+        assert get_session_detail(sid)["session"]["state"] == "closed"
+
+    _wait_for_rows(flavor, "session_start", 2, RETRY_WINDOW_TIMEOUT_SECS)
+    assert get_session_detail(sid)["session"]["state"] == "closed"
+
+
+def test_reattachment_that_ends_at_once_with_the_previous_end_queued_closes() -> None:
+    """The previous run's end, the re-attaching start and the new run's end
+    are all queued together. Whichever order the pool processes them in,
+    the session must end closed: in particular, when both ends are
+    processed before the start, the later end must leave its mark so the
+    start cannot revive a session whose new run has already ended.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-reattach-both-{uuid.uuid4().hex[:6]}"
+    post_event(make_event(sid, flavor, "session_start"))
+    wait_for_state(sid, "active", timeout=STATE_TIMEOUT_SECS)
+
+    post_event(make_event(sid, flavor, "session_end"))
+    post_event(make_event(sid, flavor, "session_start"))
+    post_event(make_event(sid, flavor, "session_end"))
+    _wait_for_rows(flavor, "session_start", 2, RETRY_WINDOW_TIMEOUT_SECS)
+    _wait_for_rows(flavor, "session_end", 2, RETRY_WINDOW_TIMEOUT_SECS)
+    assert get_session_detail(sid)["session"]["state"] == "closed"
+
+
+def test_backlog_of_reattachments_drains_to_the_right_states() -> None:
+    """Queue every re-attachment shape behind a paused worker, then let
+    the pool drain the backlog concurrently. Whatever order the
+    goroutines pick, a session whose latest event is a session_end must
+    end closed and one whose latest event is a session_start must end
+    active with its call's tokens.
+    """
+    flavor = f"test-backlog-{uuid.uuid4().hex[:6]}"
+    ending = [str(uuid.uuid4()) for _ in range(BACKLOG_SESSIONS)]
+    resuming = [str(uuid.uuid4()) for _ in range(BACKLOG_SESSIONS)]
+    for sid in ending + resuming:
+        post_event(make_event(sid, flavor, "session_start"))
+    _wait_for_rows(
+        flavor, "session_start", len(ending) + len(resuming), BURST_TIMEOUT_SECS
+    )
+
+    with worker_paused():
+        for sid in ending:
+            post_event(make_event(sid, flavor, "session_end"))
+            post_event(make_event(sid, flavor, "session_start"))
+            post_event(make_event(sid, flavor, "session_end"))
+        for sid in resuming:
+            post_event(make_event(sid, flavor, "session_end"))
+            post_event(make_event(sid, flavor, "session_start"))
+            post_event(_probe_call(sid, flavor))
+
+    _wait_for_rows(
+        flavor, "session_start", 2 * (len(ending) + len(resuming)), BURST_TIMEOUT_SECS
+    )
+    _wait_for_rows(
+        flavor, "session_end", 2 * len(ending) + len(resuming), BURST_TIMEOUT_SECS
+    )
+    _wait_for_rows(flavor, "post_call", len(resuming), BURST_TIMEOUT_SECS)
+
+    closed = exec_sql(
+        "SELECT COUNT(*) FROM sessions WHERE session_id = ANY(:'ids'::uuid[]) AND state = 'closed'",
+        ids="{" + ",".join(ending) + "}",
+    )
+    assert closed == str(len(ending)), (
+        f"{closed} of {len(ending)} ended sessions closed"
+    )
+    live = exec_sql(
+        "SELECT COUNT(*) FROM sessions WHERE session_id = ANY(:'ids'::uuid[]) "
+        "AND state = 'active' AND tokens_used = :tokens",
+        ids="{" + ",".join(resuming) + "}",
+        tokens=PROBE_CALL_TOKENS,
+    )
+    assert live == str(len(resuming)), (
+        f"{live} of {len(resuming)} resumed sessions active with their call's tokens"
+    )
+    for sid in resuming:
+        post_event(make_event(sid, flavor, "session_end"))
+    _wait_for_rows(
+        flavor, "session_end", 2 * (len(ending) + len(resuming)), BURST_TIMEOUT_SECS
+    )
 
 
 def test_reattached_run_that_ends_at_once_closes() -> None:
@@ -864,11 +1071,11 @@ def test_reattached_run_that_ends_at_once_closes() -> None:
     flavor = f"test-reattach-end-{uuid.uuid4().hex[:6]}"
     post_event(make_event(sid, flavor, "session_start"))
     post_event(make_event(sid, flavor, "session_end"))
-    wait_for_state(sid, "closed", timeout=10)
+    wait_for_state(sid, "closed", timeout=STATE_TIMEOUT_SECS)
 
     post_event(make_event(sid, flavor, "session_start"))
     post_event(make_event(sid, flavor, "session_end"))
-    _wait_for_rows(flavor, "session_end", 2, ORPHAN_VERDICT_TIMEOUT_SECS)
+    _wait_for_rows(flavor, "session_end", 2, RETRY_WINDOW_TIMEOUT_SECS)
     assert get_session_detail(sid)["session"]["state"] == "closed"
 
 

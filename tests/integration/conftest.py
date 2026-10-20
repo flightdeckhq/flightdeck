@@ -25,6 +25,7 @@ from ..shared.fixtures import (
     # Constants
     API_HEALTH,
     API_URL,
+    DOCKER_CLI_TIMEOUT_SECS,
     DEFAULT_AGENT_TYPE,
     DEFAULT_CLIENT_TYPE,
     DEFAULT_HOSTNAME,
@@ -34,6 +35,7 @@ from ..shared.fixtures import (
     INGESTION_URL,
     MAX_WAIT_SECS,
     POLL_INTERVAL,
+    POSTGRES_CONTAINER,
     TOKEN,
     # Public helpers
     auth_headers,
@@ -48,7 +50,6 @@ from ..shared.fixtures import (
     get_session,
     get_session_detail,
     get_session_event_count,
-    jetstream_consumer,
     make_event,
     post_admin_reconcile,
     post_directive,
@@ -62,6 +63,7 @@ from ..shared.fixtures import (
     wait_for_state,
     wait_until,
     worker_log_lines,
+    worker_paused,
     # Private helpers + trackers used by the lifecycle fixture
     _ended_sessions,
     _identity_fields,
@@ -74,6 +76,7 @@ from ..shared.fixtures import (
 __all__ = [
     "API_HEALTH",
     "API_URL",
+    "DOCKER_CLI_TIMEOUT_SECS",
     "DEFAULT_AGENT_TYPE",
     "DEFAULT_CLIENT_TYPE",
     "DEFAULT_HOSTNAME",
@@ -83,6 +86,7 @@ __all__ = [
     "INGESTION_URL",
     "MAX_WAIT_SECS",
     "POLL_INTERVAL",
+    "POSTGRES_CONTAINER",
     "TOKEN",
     "auth_headers",
     "create_drifted_agent",
@@ -96,7 +100,6 @@ __all__ = [
     "get_session",
     "get_session_detail",
     "get_session_event_count",
-    "jetstream_consumer",
     "make_event",
     "post_admin_reconcile",
     "post_directive",
@@ -109,6 +112,7 @@ __all__ = [
     "wait_for_state",
     "wait_until",
     "worker_log_lines",
+    "worker_paused",
 ]
 
 

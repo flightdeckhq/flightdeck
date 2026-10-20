@@ -24,5 +24,5 @@ COMMENT ON COLUMN sessions.closed_seq IS
     'NATS stream sequence of the session_end that closed the session. A '
     'session_start published before it was overtaken by its own '
     'session_end and leaves the row closed; one published after it is a '
-    're-attachment and reopens the row. NULL when the reconciler closed '
+    're-attachment and revives the row. NULL when the reconciler closed '
     'the session.';

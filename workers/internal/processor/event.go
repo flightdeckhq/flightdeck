@@ -416,6 +416,23 @@ func NewProcessor(pool *pgxpool.Pool) *Processor {
 	}
 }
 
+// StreamReady runs once the consumer has the FLIGHTDECK stream: stored
+// session sequences above the stream's last sequence cannot have come
+// from this incarnation of the stream and are forgotten, so the
+// ordering rules stand down for those rows instead of misreading every
+// new event as older.
+func (p *Processor) StreamReady(ctx context.Context, lastSeq uint64) error {
+	cleared, err := p.w.ClearSequencesAbove(ctx, lastSeq)
+	if err != nil {
+		return err
+	}
+	if cleared > 0 {
+		slog.Warn("forgot session sequences from a previous stream incarnation",
+			"rows", cleared, "stream_last_seq", lastSeq)
+	}
+	return nil
+}
+
 // Process handles a single event from NATS.
 func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error {
 	// Route to the correct session handler

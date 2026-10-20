@@ -93,9 +93,11 @@ type TokenValidator interface {
 	Validate(ctx context.Context, rawToken string) (auth.ValidationResult, error)
 }
 
-// EventPublisher publishes event payloads to the message queue.
+// EventPublisher publishes event payloads to the message queue and
+// reports the stream sequence the message was stored at (0 when the
+// publish was given up on).
 type EventPublisher interface {
-	Publish(subject string, data []byte) error
+	Publish(subject string, data []byte) (uint64, error)
 }
 
 // DirectiveLookup finds pending directives for a given session.
@@ -106,9 +108,13 @@ type DirectiveLookup interface {
 // SessionAttacher reports whether a session_start event is attaching
 // to a pre-existing session row, and (for terminal rows) revives the
 // row synchronously so the sensor's next event lands on state=active.
-// See ingestion/internal/session/store.go.
+// RecordStart then stamps the published session_start's stream
+// sequence on the row, so the worker treats a previous run's
+// session_end that is still queued as superseded instead of closing
+// the re-attached run. See ingestion/internal/session/store.go.
 type SessionAttacher interface {
 	Attach(ctx context.Context, sessionID string) (attached bool, priorState string, err error)
+	RecordStart(ctx context.Context, sessionID string, seq uint64) error
 }
 
 // DirectiveResponse represents the directive payload returned in the response envelope.
@@ -500,10 +506,28 @@ func EventsHandler(
 
 		// Publish to NATS
 		subject := inats.SubjectForEventType(eventType)
-		if err := publisher.Publish(subject, body); err != nil {
+		seq, err := publisher.Publish(subject, body)
+		if err != nil {
 			slog.Error("NATS publish error", "subject", subject, "err", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 			return
+		}
+
+		// A re-attaching session_start records its own stream sequence
+		// on the row it attaches to. The worker handles a session's
+		// events concurrently, so the previous run's session_end may
+		// still be queued; with the start's sequence on the row that
+		// end reads as superseded and the re-attached run is never
+		// closed by it. Best effort: the worker's own ordering rules
+		// still apply if this write fails.
+		if attached && seq > 0 && sessAttacher != nil {
+			if err := sessAttacher.RecordStart(ctx, sessionID, seq); err != nil {
+				slog.Warn("record session_start sequence failed",
+					"session_id", sessionID,
+					"seq", seq,
+					"err", err,
+				)
+			}
 		}
 
 		// Look up pending directive

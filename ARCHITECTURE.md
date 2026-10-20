@@ -1357,13 +1357,18 @@ can be picked up while the same session's `session_start` is still being
 written. A `session_end` whose `sessions` row is missing is therefore not
 dropped on sight: the worker asks NATS to redeliver it after one second,
 and once more after two, holding no goroutine in the meantime; a row that
-has appeared by then is closed normally. Only on the last delivery the
-budget allows is the event an orphan: the worker logs a warning,
+has appeared by then is closed if its current run began before the end
+was published, and otherwise keeps the end as an event (an emitter that
+sends its end before its start leaves the session open). Only if the row
+is still missing
+on the third and last delivery is the event an orphan: the worker logs a
+warning,
 increments `dropped_events_total{reason="orphan_session_end"}`, and ACKs
 the message without inserting an event row (there is nothing to recover,
 and a closed row created for it would describe a session the server never
-saw). A `session_start` that lands later than that leaves its session open
-until the orphan-timeout reaper closes it. A database error during the
+saw). A `session_start` that lands later than that leaves its session
+`active` until it ages to `stale` and `lost` and the orphan-timeout reaper
+closes it. A database error during the
 lookup is not read as "missing": the worker NAKs the message and NATS
 redelivers it.
 
@@ -1417,11 +1422,14 @@ control plane honours end-to-end:
    arrival of a `session_start` event the ingestion API calls
    `session.Store.Attach(session_id)` against Postgres BEFORE publishing
    the NATS envelope. If the row exists in `{closed, lost}` the store
-   flips state to `active` and clears `ended_at`; in every other state
-   the row is left as it is. Each arrival inserts one `session_attachments`
-   row, which is how the API returns the full re-attachment history.
-   `started_at` is never touched. If the row does not exist the store is
-   a no-op and the worker creates it downstream.
+   flips state to `active` and clears `ended_at` and `closed_seq`; in
+   every other state the row is left as it is. Each arrival inserts one
+   `session_attachments` row, which is how the API returns the full
+   re-attachment history. `started_at` is never touched. Once the
+   envelope is published, the store records its stream sequence in
+   `start_seq` when the row pre-existed (best effort: the worker's
+   rules still apply if the write fails). If the row does not exist the
+   store is a no-op and the worker creates it downstream.
 3. **Response envelope — `attached: true` when the row pre-existed.**
 4. **Sensor — INFO log on the first attached response.** Per-process
    guard so subsequent envelopes do not duplicate the log.
@@ -1433,20 +1441,35 @@ control plane honours end-to-end:
 The race between step 2 (synchronous) and the worker's
 `HandleSessionStart` (asynchronous, via NATS) is bounded: the ingestion
 API locks the answer in the HTTP response the instant the attach commits.
-By the time the worker consumes the event, the row is already `active`,
-and the worker's `UpsertSession ON CONFLICT` branch is a no-op refresh.
-That branch also reopens a `closed` row, clearing `ended_at`, when the
-re-attaching `session_start` was ingested while the previous run's
-`session_end` was still queued, so that the attach check above saw an
-`active` row and did nothing. It tells that case apart from a
-`session_start` that its own `session_end` overtook (the worker pool
-handles a session's events concurrently) by publication order: every row
-records the NATS stream sequence of the event that opened its current run
-(`start_seq`) and of the `session_end` that closed it (`closed_seq`), and
-a `session_start` published before the `session_end` that closed the row
-leaves it closed. In the other direction, a `session_end` published
-before the row's current run began is recorded as an event but closes
-nothing.
+By the time the worker consumes the event, the row is normally already
+`active`, and the worker's `UpsertSession ON CONFLICT` branch only
+refreshes it. Two orderings differ, and publication order tells them
+apart: every `session_start` records its NATS stream sequence in
+`sessions.start_seq` (a re-attaching one already at ingestion, see step
+2), and the `session_end` that closes a row records its own in
+`sessions.closed_seq`.
+
+- A re-attaching `session_start` can be ingested while the previous run's
+  `session_end` is still queued. The attach check then finds the row
+  `active`, leaves its state alone and stamps the start's sequence on it,
+  so the queued end reads as older than the current run and closes
+  nothing; a call of the new run that reaches the worker before the
+  start therefore keeps its tokens. Should the stamp be missed, the
+  worker closes the row and the `session_start`, published after that
+  end, revives it and clears `ended_at`.
+- A `session_start` can be processed after its own `session_end`, because
+  the worker pool handles a session's events concurrently. It was
+  published before the end that closed the row, so the row stays closed.
+
+In the other direction, a `session_end` published before the row's
+current run began (`start_seq`) is recorded as an event but closes
+nothing, and a `session_end` that finds the row already closed advances
+`closed_seq` when it was published after the end that closed it, so a
+`session_start` queued between a run's end and the next run's end cannot
+revive a session whose later run has also ended. A row without a
+sequence (written by an earlier release, closed by the reaper, or seeded)
+follows the plain state rules: a `session_start` revives a closed row and
+a `session_end` closes an open one.
 
 ### Heartbeat and health
 
@@ -1479,8 +1502,8 @@ fails, and Term for a payload that does not parse. A NAK redelivers after
 one second times the number of deliveries so far; `MaxDeliver` is three
 deliveries in total, after which NATS stops redelivering (there is no
 dead-letter stream; the worker counts the drop as
-`max_retries_exhausted`). Each delivery carries the message's stream
-sequence and its delivery count to the processor.
+`max_retries_exhausted`). Each delivery hands the processor the message's
+stream sequence and whether it is the last delivery the budget allows.
 
 Nothing orders a session's events across goroutines: two events of one
 session published a few milliseconds apart are processed concurrently.
@@ -1521,6 +1544,9 @@ processor switch update — the NATS subject lands automatically.
 
    session_end for unknown session_id → redelivered after 1 s and 2 s,
    then dropped as an orphan (no row is created)
+
+   session_start on closed (re-attachment) → active, unless its own
+   session_end is later in the stream
 
    closed + any event → session side effects skipped with warn log
    (handleSessionGuard); the event row is still stored
@@ -1563,38 +1589,44 @@ parent only — transitive ancestor revival is deferred until a
 framework that exercises depth>2 trees ships.
 
 **Terminal-state handling.** `closed` is terminal and final. `session_end`
-at any non-closed state transitions directly to `closed`;
+at any non-closed state transitions directly to `closed`, unless it was
+published before the row's current run began;
 `handleSessionGuard` skips the session side effects (token roll-up,
 freshness, revival) of any later event for a closed session with a warn
 log, while the event row itself is still stored. Revival on `stale` /
 `lost` is a correctness fix; reviving a `closed` session would contradict
 the user's explicit end signal. The one exception is a re-attachment: a
-`session_start` reopens a closed row unless its own `session_end` was
-published after it (see the re-attachment section).
+`session_start` revives a closed row unless its own `session_end` was
+published after it (see Session attachment flow).
 
 ### Handlers
 
 `workers/internal/processor/session.go` exposes:
 
 - `HandleSessionStart`: upsert agent, upsert the session with
-  state=active (a closed row reopens unless its own `session_end` was
+  state=active (a closed row is revived unless its own `session_end` was
   published after this start), record the start's stream sequence.
-- `HandlePostCall`: update tokens_used and the session's model, advance
-  last_seen_at; the policy evaluator then runs for `post_call`. The same
-  handler serves `pre_call`, `tool_call`, `embeddings`, `llm_error`,
-  `directive_result`, the policy events and the MCP events, which carry
-  no token delta and only advance freshness.
+- `HandlePostCall`: add the event's `tokens_total`, when positive, to
+  `tokens_used`; update the session's model; advance last_seen_at. The
+  policy evaluator then runs for `post_call` only. The same handler
+  serves `pre_call`, `tool_call`, `embeddings`, `llm_error`,
+  `directive_result`, the policy events and the MCP events; one without a
+  positive token total (the policy and MCP events) only advances
+  freshness.
 - `HandleSessionEnd`: close the session (state=closed, ended_at, the
-  end's stream sequence) when the row exists and the end was published
-  after the run's start; ask for a delayed redelivery while the row is
-  missing, drop the event as an orphan on the last delivery, and leave a
-  row alone when it is already closed or when the end predates the
-  current run.
+  end's stream sequence) in one guarded UPDATE that applies only while
+  the row is open and its current run began before the end was
+  published; ask for a delayed redelivery while the row is missing, drop
+  the event as an orphan on the last delivery, record an end that
+  predates the current run without closing, and on an already closed
+  row advance `closed_seq` when this end was published after the one
+  that closed it.
 - `HandleHeartbeat`: advance last_seen_at.
 - `HandleMCPServerAttached`: merge the server fingerprint into
   `sessions.context.mcp_servers` after the freshness update.
 
-Every handler except `HandleSessionStart` and `HandleSessionEnd` runs
+Every handler except `HandleSessionStart`, `HandleSessionEnd` and
+`HandleMCPServerAttached` (which always follows `HandlePostCall`) runs
 `handleSessionGuard` before its write: `closed` sessions skip the session
 side effects with a warn log; `stale` and `lost` sessions are revived to
 `active` with `last_seen_at` advanced; unknown `session_id`s are
@@ -1620,8 +1652,7 @@ four focused functions:
    Synchronous on `session_start` so the HTTP response can report
    `attached=true`. Closed/lost → active; writes one
    `session_attachments` row per arrival; clears `ended_at` on revive.
-   The only writer of `session_attachments` rows; the only path that
-   clears `ended_at` on revive.
+   The only writer of `session_attachments` rows.
 2. **`workers/internal/writer/postgres.go::UpsertSession`**.
    Called on every `session_start`. Sets the state to `active` from any
    prior state, clearing `ended_at`, except a `closed` row whose
@@ -1638,8 +1669,8 @@ four focused functions:
 4. **`workers/internal/writer/postgres.go::ReviveOrCreateSession`**.
    Delegates to `ReviveIfRevivable` when the row exists; INSERTs a new
    row with best-effort identity + `"unknown"` / NULL sentinels when it
-   does not, recording the creating event's stream sequence as
-   `start_seq`.
+   does not, with no `start_seq`: a straggler published after the run's
+   end must not read as the run's start.
 
 Any change to the revival contract (columns touched, state predicate)
 must be applied to all four sites. The cross-reference comment on
@@ -1658,9 +1689,10 @@ event's assumption. Three scenarios, three code paths:
   session in `{stale, lost}` revives to `active` and advances
   `last_seen_at`. Drives interactive Claude Code sessions that pause
   during user think-time without being treated as lost by the reconciler.
-- **Create-on-unknown**. Any non-`session_start` event for a
-  `session_id` Flightdeck has never seen creates the row lazily from the
-  event payload with `state=active`, `started_at = event.occurred_at`,
+- **Create-on-unknown**. Any event except `session_start` and
+  `session_end` for a `session_id` Flightdeck has never seen creates the
+  row lazily from the event payload with `state=active`, no `start_seq`,
+  `started_at = event.occurred_at`,
   and `"unknown"` sentinels on fields the event doesn't carry (typically
   `flavor`, `agent_type`).
 - **Create-parent-stub**. A child `session_start`
@@ -1758,7 +1790,9 @@ CREATE TABLE sessions (
     token_name           TEXT,
     parent_session_id    UUID REFERENCES sessions(session_id),
     agent_role           TEXT,
-    capture_prompts      BOOLEAN                    -- server-authoritative capture posture; NULL = not yet declared (treated as off)
+    capture_prompts      BOOLEAN,                   -- server-authoritative capture posture; NULL = not yet declared (treated as off)
+    start_seq            BIGINT,                    -- NATS stream sequence of the event that opened the current run; NULL = unknown
+    closed_seq           BIGINT                     -- NATS stream sequence of the session_end that closed it; NULL = not closed by one, or unknown
 );
 
 CREATE INDEX idx_sessions_agent_id ON sessions (agent_id);
@@ -1778,6 +1812,10 @@ CREATE INDEX sessions_parent_session_id_idx ON sessions (parent_session_id)
 -- back the /events runtime-context facet filters and counts; the GIN
 -- index does not serve ->> equality predicates.
 ```
+
+`start_seq` and `closed_seq` let the worker order a session's start and end
+(see Session attachment flow); rows written without them follow the plain
+state rules.
 
 `agent_name`, `agent_type`, and `client_type` are denormalized from
 `agents` so list endpoints can avoid a join. The worker populates them on
@@ -5054,13 +5092,28 @@ serving traffic. `workers` has no HTTP surface — its readiness is
 derived from successful NATS subscription, surfaced via container
 liveness probe.
 
+### Stream sequences
+
+The sequences stored in `sessions.start_seq` and `sessions.closed_seq`
+are positions in the `FLIGHTDECK` stream and are only comparable within
+one incarnation of it. If an operator recreates the stream, numbering
+restarts at one and every stored value would outrank every new event,
+so the worker clears any stored sequence above the stream's last
+sequence when it starts (logging how many rows it touched) and those
+rows follow the plain state rules until their next `session_start` or
+`session_end`. `make dev-reset` wipes both volumes together and needs
+no such care.
+
 ### Metrics
 
 The workers keep an in-process, reason-labelled counter registry
 (`workers/internal/metrics`):
 
-- `dropped_events_total{reason}` — orphan session_end, validation
-  failure, NATS publish failure, etc.
+- `dropped_events_total{reason}` — events the worker did not apply:
+  `unmarshal_error`, `process_panic`, `max_retries_exhausted`,
+  `closed_session_skip`, `orphan_session_end`, and
+  `superseded_session_end` (a `session_end` published before the
+  session's current run began).
 - `sessions_closed_total{reason}` — non-event close paths the
   worker performs directly (today: `orphan_timeout` via the
   reaper). The dashboard's close-reason facet still reads from

@@ -17,21 +17,25 @@ server.
 
 - **Worker: a short-lived session could be left unclosed.** The worker
   pool processes one session's events concurrently, so a `session_end`
-  published within milliseconds of its `session_start` could be handled
-  first, be mistaken for an orphan, and then fail the event insert on the
-  `sessions` foreign key three times before NATS gave up on it. The
-  session was never closed: it aged to stale and lost, and only the
-  orphan-timeout reaper closed it, a day later by default. The worker now
-  asks NATS to redeliver such a `session_end` after one second and again
-  after two, holding no goroutine, and acknowledges a true orphan once,
-  without an insert attempt. A session's start and end are ordered by
-  their NATS stream sequence (two nullable columns on `sessions`,
-  migration 000027), so a `session_start` processed after its own
-  `session_end` leaves the session closed, a re-attachment whose previous
-  run's `session_end` was still queued reopens it, and a `session_end`
-  from a previous run no longer closes a re-attached session. Every
-  failed processing attempt is redelivered after a growing delay instead
-  of immediately.
+  published within tens of milliseconds of its `session_start` could be
+  handled first, be mistaken for an orphan, and then fail the event
+  insert on the `sessions` foreign key three times before NATS gave up
+  on it. The session was never closed: it aged to stale and lost, and
+  only the orphan-timeout reaper closed it, a day later by default. The
+  worker now asks NATS to redeliver such a `session_end` after one second
+  and again after two, holding no goroutine, and acknowledges a true
+  orphan once, without an insert attempt.
+- **Worker: a session's start and end are ordered by publication.** Each
+  `sessions` row records the NATS stream sequence of the event that
+  opened its current run and of the `session_end` that closed it (two
+  nullable columns, migration 000027), so a `session_start` processed
+  after its own `session_end` leaves the session closed, a re-attachment
+  whose previous run's `session_end` was still queued keeps its first
+  calls' tokens (the ingestion API stamps the start's sequence on the
+  row as it accepts it), and a `session_end` from a previous run no
+  longer closes a re-attached session. The worker forgets stored
+  sequences from a previous incarnation of the NATS stream when it
+  starts.
 - **API: `GET /v1/sessions/:id` returned `events: null` for a session
   whose event rows had not landed yet.** The field is now always an
   array.
@@ -126,9 +130,14 @@ server.
 
 ### Changed
 
+- **Worker: failed processing attempts are redelivered after a growing
+  delay** (one second times the deliveries so far, within the
+  three-delivery budget) instead of immediately, so a transient database
+  error no longer spends the whole budget within milliseconds.
+
 - **Docs match the code.** ARCHITECTURE.md now describes the repository
   tree, the `sessions` / `agents` / `directives` / `custom_directives` /
-  `token_policies` DDL, migrations through 000026, plugin session identity
+  `token_policies` DDL, migrations through 000027, plugin session identity
   (one random id per Claude Code invocation), the MCP enforcement contract,
   NATS subjects and authentication, service environment variable names,
   the framework coverage caveats (langchain-openai 1.x, litellm streaming,

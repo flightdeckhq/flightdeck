@@ -75,10 +75,13 @@ func (s *Store) Attach(ctx context.Context, sessionID string) (bool, string, err
 		// the previous run. started_at is still preserved so the
 		// original lifetime remains discoverable via
 		// session_attachments.
+		// closed_seq goes with ended_at: the row is no longer closed by
+		// any session_end, so the worker's ordering rules start afresh.
 		if _, err := s.pool.Exec(ctx, `
 			UPDATE sessions
 			SET state = 'active',
-			    ended_at = NULL
+			    ended_at = NULL,
+			    closed_seq = NULL
 			WHERE session_id = $1::uuid
 		`, sessionID); err != nil {
 			return false, priorState, fmt.Errorf("revive session %s: %w", sessionID, err)
@@ -97,4 +100,41 @@ func (s *Store) Attach(ctx context.Context, sessionID string) (bool, string, err
 		return false, priorState, fmt.Errorf("record attachment for %s: %w", sessionID, err)
 	}
 	return true, priorState, nil
+}
+
+// RecordStart stamps the stream sequence of a re-attaching session_start
+// on its session row (sessions.start_seq), keeping the greater of the
+// stored and the new value. The worker compares a session_end's sequence
+// against it: an end published before the start belongs to the previous
+// run and must not close the re-attached session.
+//
+// The previous run's session_end can be processed by the worker between
+// Attach's read and this write, closing the row that Attach found
+// active. Such a row (closed by an end published before this start, or
+// by the reconciler) is revived here, as Attach would have revived it a
+// moment earlier, so the new run's first events do not land on a closed
+// session. A row closed by a later end (the new run's own, which can
+// only be published after this start) stays closed. A zero sequence
+// (the publish was given up on) records nothing.
+func (s *Store) RecordStart(ctx context.Context, sessionID string, seq uint64) error {
+	if seq == 0 {
+		return nil
+	}
+	if _, err := s.pool.Exec(ctx, `
+		UPDATE sessions
+		SET start_seq = GREATEST(start_seq, $2::bigint),
+		    state = CASE WHEN state = 'closed'
+		                  AND (closed_seq IS NULL OR closed_seq < $2::bigint)
+		                 THEN 'active' ELSE state END,
+		    ended_at = CASE WHEN state = 'closed'
+		                     AND (closed_seq IS NULL OR closed_seq < $2::bigint)
+		                    THEN NULL ELSE ended_at END,
+		    closed_seq = CASE WHEN state = 'closed'
+		                       AND (closed_seq IS NULL OR closed_seq < $2::bigint)
+		                      THEN NULL ELSE closed_seq END
+		WHERE session_id = $1::uuid
+	`, sessionID, int64(seq)); err != nil {
+		return fmt.Errorf("record start sequence for %s: %w", sessionID, err)
+	}
+	return nil
 }

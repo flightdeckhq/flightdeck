@@ -7,6 +7,7 @@ non-session_start event. Requires `make dev` to be running.
 
 from __future__ import annotations
 
+import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
@@ -20,6 +21,7 @@ from .conftest import (
     post_event,
     post_heartbeat,
     session_events,
+    session_row_locked,
     wait_for_session_in_fleet,
     wait_for_state,
     wait_until,
@@ -241,8 +243,8 @@ def test_closed_session_stays_closed_on_post_call() -> None:
 
 def test_lost_session_closes_on_session_end() -> None:
     """Session in state=lost receiving session_end transitions to
-    closed (not active). CloseSession runs unconditionally; revival
-    is skipped to avoid flickering through active (D105)."""
+    closed (not active): the end settles the row directly, and revival
+    is skipped to avoid flickering through active."""
     sid = str(uuid.uuid4())
     flavor = f"test-lost-then-close-{uuid.uuid4().hex[:6]}"
 
@@ -688,6 +690,11 @@ BACKLOG_SESSIONS = 30
 # hot-session test: enough for requests to overlap on the row.
 HOT_SESSION_CLIENTS = 8
 HOT_SESSION_STARTS = 40
+# How long a re-attaching session_start may take while its row is held
+# by another writer: the stamp skips the row and retries once after
+# five milliseconds, so well under a second; a stamp that waited for the
+# lock would hang for the length of the block instead.
+HELD_ROW_RESPONSE_BOUND_SECS = 2.0
 # What the worker logs when it schedules a redelivery, on the orphan
 # path, on a session_end that predates the session's current run, and on
 # any failed attempt.
@@ -1046,16 +1053,36 @@ def test_many_concurrent_session_starts_on_one_session_id_stay_consistent() -> N
     post_event(make_event(sid, flavor, "session_start"))
     wait_for_state(sid, "active", timeout=STATE_TIMEOUT_SECS)
 
+    payloads = [
+        make_event(sid, flavor, "session_start") for _ in range(HOT_SESSION_STARTS)
+    ]
     with ThreadPoolExecutor(max_workers=HOT_SESSION_CLIENTS) as pool:
-        replies = list(
-            pool.map(
-                lambda _: post_event(make_event(sid, flavor, "session_start")),
-                range(HOT_SESSION_STARTS),
-            )
-        )
+        replies = list(pool.map(post_event, payloads))
     assert all(r.get("status") == "ok" for r in replies), replies
     _wait_for_rows(flavor, "session_start", 1 + HOT_SESSION_STARTS, BURST_TIMEOUT_SECS)
     assert get_session_detail(sid)["session"]["state"] == "active"
+
+    post_event(make_event(sid, flavor, "session_end"))
+    wait_for_state(sid, "closed", timeout=STATE_TIMEOUT_SECS)
+
+
+def test_reattaching_start_is_accepted_while_its_session_row_is_held() -> None:
+    """The re-attachment stamp must not wait for a session row another
+    writer holds: with the row locked for the whole request, the
+    session_start is still accepted at once (the stamp skips the row,
+    retries once and gives up), and the session stays usable.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-held-row-{uuid.uuid4().hex[:6]}"
+    post_event(make_event(sid, flavor, "session_start"))
+    wait_for_state(sid, "active", timeout=STATE_TIMEOUT_SECS)
+
+    with session_row_locked(sid):
+        started = time.monotonic()
+        reply = post_event(make_event(sid, flavor, "session_start"))
+        elapsed = time.monotonic() - started
+    assert reply.get("status") == "ok", reply
+    assert elapsed < HELD_ROW_RESPONSE_BOUND_SECS, f"re-attachment took {elapsed:.2f}s"
 
     post_event(make_event(sid, flavor, "session_end"))
     wait_for_state(sid, "closed", timeout=STATE_TIMEOUT_SECS)

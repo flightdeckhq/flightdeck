@@ -22,8 +22,10 @@
 //   - superseded_session_end — session_end published before the
 //                             session's current run began (a
 //                             re-attachment, or an emitter that sent
-//                             its end first). Recorded as an event;
-//                             the row's state is left as it is.
+//                             its end first) that found the row open.
+//                             Recorded as an event; the row's state is
+//                             left as it is. On a closed row the same
+//                             end counts as closed_session_skip.
 //   - closed_session_skip   — event arrived for a session already in
 //                             state=closed (a duplicate session_end
 //                             included). The
@@ -253,7 +255,7 @@ func Reset() {
 // Handler renders the counters as a metrics page (not mounted by any
 // service yet; see the README Roadmap). Trivial text format, one line
 // per (counter, reason) pair, to keep the worker free of the
-// prometheus client dependency until a future phase needs it.
+// prometheus client dependency until it is needed.
 func Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")

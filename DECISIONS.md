@@ -9963,21 +9963,24 @@ until its `session_start` lands) and of the `session_end` that closed it
 `closed_seq` is greater than the start's sequence, and the `session_end`
 handler closes an open row, in one guarded UPDATE, only when the end's
 sequence is greater than `start_seq`; an earlier end is recorded as an
-event and counted as `superseded_session_end`. A `session_end` that
+event and counted as `superseded_session_end` (on a closed row, as
+`closed_session_skip`). A `session_end` that
 finds the row already closed advances `closed_seq` when it was published
 later, so a `session_start` queued between a run's end and the next
 run's end cannot revive a session whose later run has also ended. The
 ingestion API stamps a re-attaching `session_start`'s sequence on the
 row as soon as it has published it, reviving the row if the previous
 run's queued end closed it between the attach check and the stamp, so
-that end closes nothing that stays closed and the run's first calls keep
-their tokens; the stamp is best effort (a row another transaction holds
-at that instant is skipped rather than waited for, so many clients
-re-attaching one session id cannot serialise the ingestion path on that
-row's lock), and if it is missed the worker's own rules still revive the
-row. A duplicate end at or below a closed row's `closed_seq` costs no
-write. A lazily created row records no
-`start_seq`, so a straggler
+that end leaves nothing closed and the run's first calls keep their
+tokens. The stamp is best effort: it skips a row another writer holds
+and tries once more after five milliseconds (its lock is `FOR NO KEY
+UPDATE`, so the KEY SHARE locks of event inserts do not make it skip),
+so many clients re-attaching one session id cannot serialise the
+ingestion path on that row's lock; a stamp that gives up is logged, the
+worker's own rules still revive the row, and calls handled before that
+revive are stored without rolling their tokens up. A duplicate end at
+or below a closed row's `closed_seq` costs no write. A lazily created
+row records no `start_seq`, so a straggler
 published after a run's end cannot read as the run's start. An emitter
 that publishes its `session_end` before its `session_start` leaves the
 session open until the reaper closes it. Unknown sequences (rows from
@@ -10060,7 +10063,7 @@ event timestamps instead of sequences (a re-attachment from another host
 within the clock skew ingestion tolerates would read as the wrong
 order).
 
-**Retry budget boundary:** the redelivery schedule gives a `session_end`
+**Retry budget boundary:** The redelivery schedule gives a `session_end`
 about three seconds for its `session_start` to land. A start held back
 longer than that (a four-second hold in a probe) leaves the end dropped
 as an orphan and the session open until the reaper; a hold within the
@@ -10072,4 +10075,5 @@ after a `session_end` has closed the session is stored as an event row,
 but its tokens are not added to the session. That is the closed-session
 rule, which keeps late events from reviving a session the user ended;
 430 back-to-back sessions against the dev stack never hit it, and a
-re-attached run's calls are covered by the ingestion stamp above.
+re-attached run's calls are covered by the ingestion stamp above unless
+the stamp gave up on a held row.

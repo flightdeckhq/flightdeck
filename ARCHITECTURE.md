@@ -1429,10 +1429,12 @@ control plane honours end-to-end:
    envelope is published, the store records its stream sequence in
    `start_seq` when the row pre-existed, and revives the row if the
    previous run's queued `session_end` closed it between the check and
-   the stamp (best effort: a row another transaction holds at that
-   instant is skipped rather than waited for, and the worker's rules
-   still apply if the write fails or is skipped). If the row does not
-   exist the store is a no-op and the worker creates it downstream.
+   the stamp. The stamp is best effort: it never waits for a row another
+   writer holds (it tries once more after five milliseconds, then logs
+   and gives up), so many clients re-attaching one session id cannot
+   queue ingestion behind that row's lock, and the worker's rules still
+   apply if the stamp is missed. If the row does not exist the store is
+   a no-op and the worker creates it downstream.
 3. **Response envelope — `attached: true` when the row pre-existed.**
 4. **Sensor — INFO log on the first attached response.** Per-process
    guard so subsequent envelopes do not duplicate the log.
@@ -1459,8 +1461,11 @@ apart: every `session_start` records its NATS stream sequence in
   closed the row by then, revives it (clearing `ended_at` and
   `closed_seq`). From there the old end reads as older than the current
   run, and a call of the new run that reaches the worker before the
-  start keeps its tokens. Should the stamp be missed, the worker closes
-  the row and the `session_start`, published after that end, revives it.
+  start keeps its tokens. Should the stamp be missed (the row was held
+  through both attempts), the queued end closes the row, calls the
+  worker handles before the start's own revive are stored without
+  rolling their tokens up, and the `session_start`, published after that
+  end, revives the row.
 - A `session_start` can be processed after its own `session_end`, because
   the worker pool handles a session's events concurrently. It was
   published before the end that closed the row, so the row stays closed.
@@ -1648,25 +1653,28 @@ the next event from any re-attached process revives the session (or
 lazy-creates one if the re-attach ended up on a fresh `session_id`). This
 is untrappable by design.
 
-### Revive / create trio
+### Revive / create sites
 
 Five code sites know how to ensure a session is usable for an incoming
 event. They mirror rather than consolidate; a unified primitive would need
 a 4-axis config surface (writes_attachment, refreshes_identity,
 creates_if_missing, allowed_prior_states) which is harder to read than
-four focused functions:
+five focused functions:
 
-1. **`ingestion/internal/session/store.go::Attach`** (only).
+1. **`ingestion/internal/session/store.go::Attach`**.
    Synchronous on `session_start` so the HTTP response can report
    `attached=true`. Closed/lost → active, clearing `ended_at` and
    `closed_seq`; writes one `session_attachments` row per arrival (the
-   only writer of those rows). `ingestion/internal/session/store.go::RecordStart`
-   runs once the event is published, when the row pre-existed: it stamps
-   the start's stream sequence on the row and revives a row that the
-   previous run's queued `session_end` closed in the meantime (closed by
-   an older end, or by no sequenced end → active, clearing `ended_at` and
-   `closed_seq`); no attachment row.
-2. **`workers/internal/writer/postgres.go::UpsertSession`**.
+   only writer of those rows).
+2. **`ingestion/internal/session/store.go::RecordStart`**.
+   Runs once the event is published, when the row pre-existed. Stamps the
+   start's stream sequence and revives a closed row whose `closed_seq` is
+   unknown or below that sequence (the previous run's queued `session_end`
+   closed it between the check and the stamp), clearing `ended_at` and
+   `closed_seq`. Best effort: it never waits for a row another writer
+   holds (one retry after five milliseconds, then it logs and gives up).
+   No attachment row.
+3. **`workers/internal/writer/postgres.go::UpsertSession`**.
    Called on every `session_start`. Sets the state to `active` from any
    prior state, clearing `ended_at`, except a `closed` row whose
    `closed_seq` is greater than this start's stream sequence, which stays
@@ -1675,11 +1683,11 @@ four focused functions:
    let a lazy-created row absorb the real session_start data when it
    arrives. Real values are write-once; only the `"unknown"` sentinel is
    upgradable.
-3. **`workers/internal/writer/postgres.go::ReviveIfRevivable`**.
+4. **`workers/internal/writer/postgres.go::ReviveIfRevivable`**.
    State flip only: `{stale, lost} → active` plus `last_seen_at = NOW`.
    Called by `handleSessionGuard` before any non-`session_start` side
    effects run. No identity refresh, no attachment row.
-4. **`workers/internal/writer/postgres.go::ReviveOrCreateSession`**.
+5. **`workers/internal/writer/postgres.go::ReviveOrCreateSession`**.
    Delegates to `ReviveIfRevivable` when the row exists; INSERTs a new
    row with best-effort identity + `"unknown"` / NULL sentinels when it
    does not, with no `start_seq`: a straggler published after the run's
@@ -1804,7 +1812,7 @@ CREATE TABLE sessions (
     parent_session_id    UUID REFERENCES sessions(session_id),
     agent_role           TEXT,
     capture_prompts      BOOLEAN,                   -- server-authoritative capture posture; NULL = not yet declared (treated as off)
-    start_seq            BIGINT,                    -- NATS stream sequence of the event that opened the current run; NULL = unknown
+    start_seq            BIGINT,                    -- NATS stream sequence of the session_start that opened the current run; NULL = unknown, or a row created lazily by another event
     closed_seq           BIGINT                     -- NATS stream sequence of the session_end that closed it; NULL = not closed by one, or unknown
 );
 
@@ -2098,7 +2106,7 @@ always create a new numbered migration.
 | 000024 | `sessions` partial expression indexes on the nine runtime-context keys (`context->>'os'`, `arch`, `hostname`, `user`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name`) for `/events` runtime-context facet filtering and counts |
 | 000025 | `sessions (agent_id, started_at DESC)` composite index backing the per-agent latest-session lookup |
 | 000026 | `sessions.capture_prompts` nullable BOOLEAN: server-authoritative capture posture written once from `session_start` |
-| 000027 | `sessions.start_seq` and `sessions.closed_seq` nullable BIGINT: NATS stream sequence of the event that opened the current run and of the `session_end` that closed it, so the worker orders a session's start and end without holding events back |
+| 000027 | `sessions.start_seq` and `sessions.closed_seq` nullable BIGINT: NATS stream sequence of the `session_start` that opened the current run and of the `session_end` that closed it, so the worker orders a session's start and end without holding events back |
 
 ---
 
@@ -5112,8 +5120,9 @@ are positions in the `FLIGHTDECK` stream and are only comparable within
 one incarnation of it. If an operator recreates the stream, numbering
 restarts at one and every stored value would outrank every new event,
 so the worker clears any stored sequence above the stream's last
-sequence when it starts (logging how many rows it touched) and those
-rows follow the plain state rules until their next `session_start` or
+sequence when it starts (logging how many rows it touched; a failed
+sweep is logged and the worker consumes anyway) and those rows follow
+the plain state rules until their next `session_start` or
 `session_end`. A stale value at or below the new stream's last sequence
 survives that sweep and is compared as if it belonged to the new stream
 until the row's next `session_start` or `session_end` replaces it. The

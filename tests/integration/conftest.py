@@ -58,6 +58,7 @@ from ..shared.fixtures import (
     query_directives,
     session_events,
     session_exists_in_fleet,
+    session_row_locked,
     wait_for_services,
     wait_for_session_in_fleet,
     wait_for_state,
@@ -107,6 +108,7 @@ __all__ = [
     "post_heartbeat",
     "query_directives",
     "session_events",
+    "session_row_locked",
     "session_exists_in_fleet",
     "wait_for_session_in_fleet",
     "wait_for_state",
@@ -122,7 +124,8 @@ def stack() -> None:
 
     Wraps the shared ``wait_for_services`` helper (which raises
     ``TimeoutError``) into a ``pytest.fail`` so the message surfaces
-    cleanly in the pytest output.
+    cleanly in the pytest output, then resumes the worker container if a
+    killed run left it paused (see ``worker_paused``).
     """
     try:
         wait_for_services(MAX_WAIT_SECS)

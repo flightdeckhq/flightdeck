@@ -547,22 +547,23 @@ func (w *Writer) UpdateLastSeen(ctx context.Context, sessionID string) error {
 //     “session_start“ so the HTTP response can report “attached=true“.
 //     Scope: closed, lost -> active, clearing ended_at and closed_seq;
 //     records a session_attachments row (the only writer of those).
-//     “session.Store.RecordStart“ then runs once the event is
-//     published, when the row pre-existed: stamps the start's stream
-//     sequence and revives a row the previous run's queued
-//     session_end closed in the meantime (closed by an older end, or
-//     by no sequenced end -> active, clearing ended_at and
-//     closed_seq); no attachment row.
-//  2. Worker, “UpsertSession“ ON CONFLICT branch. Scope: any prior
+//  2. Ingestion: “session.Store.RecordStart“ runs once the event is
+//     published, when the row pre-existed. Stamps the start's stream
+//     sequence and revives a closed row whose closed_seq is unknown or
+//     below that sequence (the previous run's queued session_end closed
+//     it between the check and the stamp), clearing ended_at and
+//     closed_seq. Best effort: skips a row another writer holds, with
+//     one retry. No attachment row.
+//  3. Worker, “UpsertSession“ ON CONFLICT branch. Scope: any prior
 //     state -> whatever the session_start event asks for (always
 //     “active“, clearing ended_at), except a closed row whose
 //     session_end was published after this session_start, which stays
 //     closed; with identity-column refresh and enrichment of the
 //     “unknown“ sentinel and NULL context/token columns that a
 //     lazy-create left behind. Records the start's stream sequence.
-//  3. Worker, “ReviveIfRevivable“ (this function). Scope:
+//  4. Worker, “ReviveIfRevivable“ (this function). Scope:
 //     stale, lost -> active. No identity refresh, no attachment row.
-//  4. Worker, “ReviveOrCreateSession“. Scope: delegates to
+//  5. Worker, “ReviveOrCreateSession“. Scope: delegates to
 //     ReviveIfRevivable when the row exists, INSERTs a new row with
 //     best-effort identity + “unknown“ sentinels when it does not, and
 //     no start sequence: a straggler published after the run's end

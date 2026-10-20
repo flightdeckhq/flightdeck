@@ -8,8 +8,8 @@
 //
 // Store reads and (for closed/lost revivals) mutates the sessions row
 // directly in Postgres, mirroring the directive.Store pattern already
-// used for synchronous directive lookup. See ARCHITECTURE.md and
-// DECISIONS.md D094.
+// used for synchronous directive lookup. See ARCHITECTURE.md (session
+// attachment flow).
 package session
 
 import (
@@ -123,11 +123,16 @@ func (s *Store) Attach(ctx context.Context, sessionID string) (bool, string, err
 // The stamp is best effort and must not queue behind other writers of
 // the row: many clients re-attaching one session id at once would
 // otherwise serialise every request on that row's lock and slow the
-// whole ingestion path. A row another transaction holds is therefore
-// skipped (SKIP LOCKED) and tried once more after recordStartRetryDelay,
-// which outlasts the single-statement close the worker may be applying
-// to the row at that instant; a row still held after that is left to
-// the worker's own ordering rules, which remain the backstop.
+// whole ingestion path. A row another writer holds is therefore skipped
+// (FOR NO KEY UPDATE SKIP LOCKED: the stamp writes no key column, so it
+// conflicts only with other row updates, not with the KEY SHARE locks
+// the worker's event inserts take through the sessions foreign key)
+// and tried once more after recordStartRetryDelay, which outlasts the
+// single-statement close the worker may be applying to the row at that
+// instant. A row still held after that is logged and left to the
+// worker's own ordering rules, which remain the backstop; calls of the
+// new run that the worker handles before the start's own revive are
+// then stored without rolling their tokens up.
 func (s *Store) RecordStart(ctx context.Context, sessionID string, seq uint64) error {
 	// Zero means unknown; a sequence beyond the bigint range (which no
 	// stream reaches) is treated the same rather than wrapped.
@@ -149,6 +154,10 @@ func (s *Store) RecordStart(ctx context.Context, sessionID string, seq uint64) e
 			return nil
 		}
 		if attempt > 0 {
+			slog.Warn("re-attachment stamp skipped; row held by another writer",
+				"session_id", sessionID,
+				"start_seq", seq,
+			)
 			return nil
 		}
 		select {
@@ -172,7 +181,7 @@ func (s *Store) recordStart(ctx context.Context, sessionID string, seq uint64) (
 			SELECT session_id, state, closed_seq
 			FROM sessions
 			WHERE session_id = $1::uuid
-			FOR UPDATE SKIP LOCKED
+			FOR NO KEY UPDATE SKIP LOCKED
 		)
 		UPDATE sessions AS s
 		SET start_seq = GREATEST(s.start_seq, $2::bigint),

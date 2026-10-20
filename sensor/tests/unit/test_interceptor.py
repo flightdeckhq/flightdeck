@@ -112,35 +112,40 @@ def test_streaming_pre_call_check_runs_before_context_manager() -> None:
         base.call_stream(real_fn, kwargs, session, provider)
 
 
+def _raw_anthropic_events() -> list[Any]:
+    """Real SDK stream events: no stream object carries ``usage``; the
+    counts live in message_start (input) and message_delta (output)."""
+    from anthropic.types import RawMessageDeltaEvent, RawMessageStartEvent
+
+    start = RawMessageStartEvent.model_validate(
+        {
+            "type": "message_start",
+            "message": {
+                "id": "msg_1",
+                "type": "message",
+                "role": "assistant",
+                "model": "claude-haiku-4-5",
+                "content": [],
+                "stop_reason": None,
+                "stop_sequence": None,
+                "usage": {"input_tokens": 30, "output_tokens": 1},
+            },
+        }
+    )
+    delta = RawMessageDeltaEvent.model_validate(
+        {
+            "type": "message_delta",
+            "delta": {"stop_reason": "end_turn", "stop_sequence": None},
+            "usage": {"output_tokens": 10},
+        }
+    )
+    return [start, delta]
+
+
 def test_streaming_reconciliation_on_normal_exit() -> None:
     session, provider = _make_session_and_provider()
-    mock_stream = _Resp(
-        usage=_Usage(input_tokens=30, output_tokens=10),
-        model="test",
-    )
-
     ctx = MagicMock()
-    ctx.__enter__ = MagicMock(return_value=mock_stream)
-    ctx.__exit__ = MagicMock(return_value=False)
-    real_fn = MagicMock(return_value=ctx)
-
-    kwargs = {"model": "test", "messages": []}
-    guarded = base.call_stream(real_fn, kwargs, session, provider)
-    with guarded:
-        pass
-    assert session.tokens_used > 0
-
-
-def test_streaming_reconciliation_on_early_exit() -> None:
-    session, provider = _make_session_and_provider()
-    mock_stream = _Resp(
-        usage=_Usage(input_tokens=30, output_tokens=10),
-        model="test",
-        chunks=["chunk1", "chunk2", "chunk3"],
-    )
-
-    ctx = MagicMock()
-    ctx.__enter__ = MagicMock(return_value=mock_stream)
+    ctx.__enter__ = MagicMock(return_value=iter(_raw_anthropic_events()))
     ctx.__exit__ = MagicMock(return_value=False)
     real_fn = MagicMock(return_value=ctx)
 
@@ -148,8 +153,23 @@ def test_streaming_reconciliation_on_early_exit() -> None:
     guarded = base.call_stream(real_fn, kwargs, session, provider)
     with guarded as stream:
         for _ in stream:
-            break  # early exit
-    assert session.tokens_used > 0
+            pass
+    assert session.tokens_used == 40  # 30 in + 10 out, read from the events
+
+
+def test_streaming_reconciliation_on_early_exit() -> None:
+    session, provider = _make_session_and_provider()
+    ctx = MagicMock()
+    ctx.__enter__ = MagicMock(return_value=iter(_raw_anthropic_events()))
+    ctx.__exit__ = MagicMock(return_value=False)
+    real_fn = MagicMock(return_value=ctx)
+
+    kwargs = {"model": "test", "messages": []}
+    guarded = base.call_stream(real_fn, kwargs, session, provider)
+    with guarded as stream:
+        for _ in stream:
+            break  # early exit after message_start
+    assert session.tokens_used == 31  # input + the first output token
 
 
 def test_async_call_intercept() -> None:
@@ -184,7 +204,7 @@ def test_shutdown_flag_raises_on_next_call() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Phase 4 — structured LLM_ERROR emission + event_type promotion
+# Structured llm_error emission and event_type promotion
 # ---------------------------------------------------------------------------
 
 
@@ -335,7 +355,7 @@ def test_call_async_with_event_type_embeddings_emits_embeddings_event() -> None:
 def test_streaming_populates_ttft_and_chunk_count_on_post_call() -> None:
     # Happy path streaming: caller enters the context, iterates every
     # chunk, exits cleanly. Reconciliation posts a post_call with the
-    # Phase 4 streaming sub-object populated.
+    # streaming sub-object populated.
     session, provider = _make_session_and_provider()
     mock_stream = _Resp(
         usage=_Usage(input_tokens=20, output_tokens=30),
@@ -412,9 +432,9 @@ def test_streaming_emits_llm_error_on_mid_stream_exception() -> None:
 
 
 def test_async_streaming_populates_ttft_and_chunk_count() -> None:
-    # Phase 4 lifts the async-streaming NotImplementedError. The async
-    # path uses GuardedAsyncStream which implements __aenter__/__aexit__
-    # and __aiter__/__anext__. Semantics must match the sync wrapper.
+    # The async path uses GuardedAsyncStream, which implements
+    # __aenter__/__aexit__ and __aiter__/__anext__. Semantics must match
+    # the sync wrapper.
     session, provider = _make_session_and_provider()
 
     class _AStream:

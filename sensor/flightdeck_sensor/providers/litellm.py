@@ -151,6 +151,14 @@ class LitellmProvider:
         """litellm stream wrappers report nothing after the fact."""
         return None
 
+    def stream_completed(self, stream: Any) -> bool | None:
+        """litellm stream wrappers do not track completion."""
+        return None
+
+    def final_message(self, stream: Any) -> Any | None:
+        """litellm stream wrappers assemble no final message."""
+        return None
+
     def extract_content(
         self,
         request_kwargs: dict[str, Any],

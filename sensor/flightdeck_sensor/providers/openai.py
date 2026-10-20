@@ -235,6 +235,14 @@ class OpenAIProvider:
         """OpenAI stream objects report nothing after the fact."""
         return None
 
+    def stream_completed(self, stream: Any) -> bool | None:
+        """OpenAI stream objects do not track completion."""
+        return None
+
+    def final_message(self, stream: Any) -> Any | None:
+        """OpenAI stream objects assemble no final message."""
+        return None
+
     def extract_content(
         self,
         request_kwargs: dict[str, Any],

@@ -45,8 +45,9 @@ Interception hierarchy for per-instance wrapping::
 
     SensorAnthropic (wraps anthropic.Anthropic or AsyncAnthropic)
       ├── @property messages  →  SensorMessages
-      │   ├── create()        →  call() or call_async()
-      │   ├── stream()        →  call_stream() or NotImplementedError (async)
+      │   ├── create()        →  call() / call_async(); with stream=True the
+      │   │                       stream guard (call_stream / call_stream_async)
+      │   ├── stream()        →  call_stream() or call_stream_async()
       │   └── __getattr__     →  pass-through
       ├── @property beta      →  SensorBeta            (wrap() parity with patch())
       │   └── @property messages → SensorMessages
@@ -156,13 +157,17 @@ class SensorMessages:
         """
         real_fn = self._real.create
         if kwargs.get("stream"):
+            # Opened eagerly: the unguarded SDK sends the request inside
+            # create(), so provider errors must surface here, not at the
+            # first iteration.
             if self._is_async:
 
                 async def _async_stream_create() -> base.GuardedAsyncStream:
-                    return base.call_stream_async(real_fn, kwargs, self._session, self._provider)
+                    guard = base.call_stream_async(real_fn, kwargs, self._session, self._provider)
+                    return await guard.open()
 
                 return _async_stream_create()
-            return base.call_stream(real_fn, kwargs, self._session, self._provider)
+            return base.call_stream(real_fn, kwargs, self._session, self._provider).open()
         if self._is_async:
             return base.call_async(real_fn, kwargs, self._session, self._provider)
         return base.call(real_fn, kwargs, self._session, self._provider)

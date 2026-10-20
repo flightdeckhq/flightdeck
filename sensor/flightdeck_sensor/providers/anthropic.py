@@ -7,7 +7,6 @@ implementation with no dependency on tokencap.
 from __future__ import annotations
 
 import contextlib
-import inspect
 import logging
 from typing import Any
 
@@ -165,41 +164,69 @@ class AnthropicProvider:
                 return None
             if usage is None:
                 return None
-            input_tokens = getattr(usage, "input_tokens", None) or 0
-            cache_read = getattr(usage, "cache_read_input_tokens", None) or 0
-            cache_creation = getattr(usage, "cache_creation_input_tokens", None) or 0
             output_tokens = getattr(usage, "output_tokens", None) or 0
+            cache_read = getattr(usage, "cache_read_input_tokens", None)
+            cache_creation = getattr(usage, "cache_creation_input_tokens", None)
+            input_tokens = getattr(usage, "input_tokens", None)
+            if kind == "message_delta" and (cache_read is None or cache_creation is None):
+                # A delta that reports input_tokens without the cache
+                # fields must not replace the message_start total, which
+                # includes the cache reads; report the output count only.
+                return TokenUsage(input_tokens=0, output_tokens=output_tokens)
             return TokenUsage(
-                input_tokens=input_tokens + cache_read + cache_creation,
+                input_tokens=(input_tokens or 0) + (cache_read or 0) + (cache_creation or 0),
                 output_tokens=output_tokens,
-                cache_read_tokens=cache_read,
-                cache_creation_tokens=cache_creation,
+                cache_read_tokens=cache_read or 0,
+                cache_creation_tokens=cache_creation or 0,
             )
         except Exception:
             return None
 
+    @staticmethod
+    def _snapshot(stream: Any) -> Any | None:
+        """The helper stream's accumulated message snapshot, or ``None``
+        for raw streams and before the first event (the SDK raises when
+        the property is read before ``message_start``)."""
+        try:
+            return getattr(stream, "current_message_snapshot", None)
+        except Exception:
+            return None
+
     def usage_from_finished_stream(self, stream: Any) -> TokenUsage | None:
-        """``MessageStream.get_final_message().usage`` once the helper
-        stream is exhausted; ``None`` for raw streams and for the async
-        helper, whose final message is a coroutine the sync guard cannot
-        await (the per-chunk path covers it)."""
+        """Usage accumulated on the helper stream's
+        ``current_message_snapshot`` (sync and async alike). The SDK
+        updates it as events arrive, so it is correct on early exit too and
+        reading it never touches the network."""
+        try:
+            snapshot = self._snapshot(stream)
+            if snapshot is None:
+                return None
+            usage = self.extract_usage(snapshot)
+            return usage if usage.total > 0 else None
+        except Exception:
+            return None
+
+    def stream_completed(self, stream: Any) -> bool | None:
+        """True once the helper snapshot carries ``stop_reason`` (set by
+        ``message_delta``); ``None`` for raw streams."""
+        try:
+            snapshot = self._snapshot(stream)
+            if snapshot is None:
+                return None
+            return getattr(snapshot, "stop_reason", None) is not None
+        except Exception:
+            return None
+
+    def final_message(self, stream: Any) -> Any | None:
+        """``get_final_message()`` of a complete helper stream: a
+        ``Message`` for the sync helper, a coroutine for the async one. The
+        caller must have checked :meth:`stream_completed`, because on an
+        open stream this call reads the rest of it."""
         try:
             final = getattr(stream, "get_final_message", None)
-            if not callable(final):
+            if not callable(final) or not self.stream_completed(stream):
                 return None
-            # The helper's snapshot carries stop_reason once message_delta
-            # arrived; before that, get_final_message() would read the
-            # rest of the stream, which an early-exiting caller does not
-            # want.
-            snapshot = getattr(stream, "current_message_snapshot", None)
-            if snapshot is None or getattr(snapshot, "stop_reason", None) is None:
-                return None
-            message = final()
-            if inspect.iscoroutine(message):
-                message.close()
-                return None
-            usage = self.extract_usage(message)
-            return usage if usage.total > 0 else None
+            return final()
         except Exception:
             return None
 

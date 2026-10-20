@@ -1,17 +1,16 @@
 """Tests for the class-level SDK patching path.
 
-Covers the Phase 4.5+ Phase 2 work that replaced the closure-based
-module-attribute replacement with class-level descriptor patching.
-The previous implementation had zero unit-test coverage of patch()
-and shipped a live TypeError crash on every patched-then-constructed
-client (Finding 2 of the empirical investigation).
+patch() mutates the SDK classes in place (class-level descriptor
+patching) rather than replacing module attributes with closures, so
+constructing a client after patch() must keep working and
+``isinstance`` checks against the SDK classes must still hold.
 
 Tests in this file:
 
-* ``test_patch_then_construct_does_not_crash``: regression guard for
-  Finding 2. The pre-fix code crashed because the post-patch
-  ``isinstance(client, AsyncAnthropic)`` resolved AsyncAnthropic to a
-  function thunk and ``isinstance(x, function)`` raises TypeError.
+* ``test_patch_then_construct_does_not_crash``: constructing a client
+  after patch() must not raise. Replacing the module attribute with a
+  function thunk would make ``isinstance(client, AsyncAnthropic)``
+  raise TypeError.
 * ``test_isinstance_after_patch_works``: ``isinstance(x, anthropic.
   Anthropic)`` and ``isinstance(x, _OrigAnthropic)`` both succeed
   after patch() because we mutate the class in place rather than
@@ -90,27 +89,26 @@ def sensor_init() -> Any:
 
 
 # ----------------------------------------------------------------------
-# Finding 2 regression -- the live patch() crash
+# Constructing clients after patch() must not raise
 # ----------------------------------------------------------------------
 
 
 def test_patch_then_construct_anthropic_does_not_crash(sensor_init: Any) -> None:
-    """Regression guard for Phase 4.5 audit Finding 2.
+    """Constructing an Anthropic client after patch() must not raise.
 
-    Pre-fix, calling patch() then constructing any Anthropic client
-    crashed inside _is_async_client because the post-patch
-    ``isinstance(client, AsyncAnthropic)`` resolved AsyncAnthropic to
-    a function thunk. Now _is_async_client uses _OrigAsyncAnthropic
-    captured at module import time, which is immune to patching.
+    _is_async_client uses _OrigAsyncAnthropic captured at module import
+    time, which is immune to patching; resolving the name through the
+    module after patch() would hand ``isinstance`` a function thunk and
+    raise TypeError.
     """
     flightdeck_sensor.patch(quiet=True)
-    # The crash was here pre-fix.
+    # Construction must succeed after patch().
     client = anthropic.Anthropic(api_key="test-key")
     assert client is not None
 
 
 def test_patch_then_construct_openai_does_not_crash(sensor_init: Any) -> None:
-    """Same regression guard for the OpenAI side of Finding 2."""
+    """Constructing an OpenAI client after patch() must not raise."""
     flightdeck_sensor.patch(quiet=True)
     client = openai.OpenAI(api_key="test-key")
     assert client is not None
@@ -188,11 +186,10 @@ def test_patch_is_idempotent_openai(sensor_init: Any) -> None:
 def test_double_patch_does_not_corrupt_unpatch(sensor_init: Any) -> None:
     """After patch+patch, unpatch must still restore the real original.
 
-    The pre-fix closure-based code corrupted ``_original_inits`` on the
-    second patch call (it stored the first thunk as the "original"),
-    so unpatch left the first thunk in place permanently. The new
-    code stores the original on ``cls._flightdeck_patched`` and the
-    second patch call short-circuits before overwriting it.
+    The original is stored on ``cls._flightdeck_patched`` and the second
+    patch call short-circuits before overwriting it; storing the first
+    wrapper as the "original" would leave that wrapper in place after
+    unpatch.
     """
     original_descriptor_type = type(anthropic.Anthropic.__dict__["messages"]).__name__
     assert original_descriptor_type == "cached_property"
@@ -443,20 +440,19 @@ def test_sensor_beta_messages_create_routes_through_intercept(
 
 
 # ----------------------------------------------------------------------
-# Async streaming: Phase 4 lifted the prior ``NotImplementedError``.
-# Both SDKs now route async streaming through ``GuardedAsyncStream``
-# which implements the awaitable CM protocol. The smoke tests exercise
-# a real provider; here we assert at the type level that the dispatch
-# returns the guarded wrapper rather than raising.
+# Async streaming: both SDKs route async streaming through
+# ``GuardedAsyncStream``, which implements the awaitable CM protocol.
+# The smoke tests exercise a real provider; here we assert at the type
+# level that the dispatch returns the guarded wrapper rather than
+# raising.
 # ----------------------------------------------------------------------
 
 
 def test_async_anthropic_streaming_returns_guarded_async_stream(sensor_init: Any) -> None:
     """SensorMessages.stream on an async client returns a GuardedAsyncStream.
 
-    Phase 4 lifted the prior NotImplementedError; async streaming now
-    produces a :class:`base.GuardedAsyncStream` with the same TTFT +
-    chunk + abort measurement policy as the sync wrapper.
+    Async streaming produces a :class:`base.GuardedAsyncStream` with the
+    same TTFT + chunk + abort measurement policy as the sync wrapper.
     """
     from flightdeck_sensor.interceptor import base
 
@@ -477,10 +473,9 @@ def test_async_openai_streaming_returns_guarded_async_stream(sensor_init: Any) -
     Native ``AsyncOpenAI.chat.completions.create(stream=True)`` returns a
     coroutine that resolves to ``AsyncStream``; the sensor wrapper now
     matches that shape so ``await client.chat.completions.create(stream=
-    True)`` works for production users. Pre-fix the wrapper returned
-    ``GuardedAsyncStream`` synchronously and ``await`` raised ``TypeError:
-    GuardedAsyncStream object can't be awaited``. Caught by Rule 40d
-    smoke (Phase 4 polish).
+    True)`` works for production users. A wrapper that returned
+    ``GuardedAsyncStream`` synchronously would make ``await`` raise
+    ``TypeError: GuardedAsyncStream object can't be awaited``.
     """
     import asyncio
     import inspect
@@ -488,6 +483,11 @@ def test_async_openai_streaming_returns_guarded_async_stream(sensor_init: Any) -
     from flightdeck_sensor.interceptor import base
 
     async_client = openai.AsyncOpenAI(api_key="test-key")
+    # The guard sends the request inside create(), as the SDK does; stub
+    # the resource so no network call is attempted here.
+    from unittest.mock import AsyncMock
+
+    async_client.chat.completions.create = AsyncMock(return_value=object())  # type: ignore[method-assign]
     wrapped = flightdeck_sensor.wrap(async_client)
     assert isinstance(wrapped, SensorOpenAI)
     coro = wrapped.chat.completions.create(

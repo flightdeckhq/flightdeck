@@ -63,11 +63,29 @@ class Provider(Protocol):
         ...
 
     def usage_from_finished_stream(self, stream: Any) -> TokenUsage | None:
-        """Usage an exhausted stream object can report after the fact
-        (Anthropic's ``MessageStream.get_final_message().usage``), or
-        ``None``. Only called once the caller consumed the whole stream,
-        never on an early exit, because reading the final message may
-        consume the rest of the stream. Never raises.
+        """Usage the SDK stream object holds when the guard settles
+        (Anthropic's helper accumulates it on
+        ``current_message_snapshot.usage``), or ``None`` for raw streams.
+        Called on every settle path, early exit included, so it must
+        never read further from the stream. Never raises.
+        """
+        ...
+
+    def stream_completed(self, stream: Any) -> bool | None:
+        """Whether the SDK stream object knows its message is complete
+        (Anthropic's helper snapshot carries ``stop_reason`` once
+        ``message_delta`` arrived); ``None`` when the object cannot tell.
+        Never reads from the stream. Never raises.
+        """
+        ...
+
+    def final_message(self, stream: Any) -> Any | None:
+        """The assembled message of a complete helper stream (Anthropic's
+        ``get_final_message()``), or ``None`` for raw streams and for a
+        helper that is not complete. May return an awaitable for async
+        helpers; the async guard awaits it and the sync guard discards it.
+        Only called when ``stream_completed`` is true, so it never reads
+        further from the stream. Never raises.
         """
         ...
 

@@ -138,12 +138,15 @@ class SensorCompletions:
                 # coroutine so the awaited shape matches native
                 # behaviour. Caught by the playground smoke run.
                 async def _async_stream_create() -> base.GuardedAsyncStream:
-                    return base.call_stream_async(
+                    guard = base.call_stream_async(
                         self._real.create,
                         call_kwargs,
                         self._session,
                         self._provider,
                     )
+                    # Opened eagerly so provider errors surface at the
+                    # awaited create(), as on the unguarded SDK.
+                    return await guard.open()
 
                 return _async_stream_create()
             return base.call_stream(
@@ -151,7 +154,7 @@ class SensorCompletions:
                 call_kwargs,
                 self._session,
                 self._provider,
-            )
+            ).open()
 
         real_fn = self._real.create
         if self._is_async:
@@ -270,12 +273,8 @@ class SensorResponses:
     OpenAI's Responses API (March 2025 and recommended for all new
     projects) lives at ``OpenAI.responses``, a direct sibling of
     ``OpenAI.chat``. The intercept surface is a single ``create()``
-    method -- streaming is intentionally not special-cased here; a
-    ``stream=True`` call currently flows through ``base.call`` and the
-    returned stream object is passed through unchanged. Reconciled
-    token counts for streaming Responses calls are tracked as a
-    future enhancement, symmetric to the async-stream limitation in
-    ``SensorCompletions.create``.
+    method: ``stream=True`` calls take the stream guard, and the
+    ``responses.stream()`` helper passes through unintercepted.
 
     Token usage extraction is handled by :class:`OpenAIProvider` which
     falls back to ``usage.input_tokens`` / ``usage.output_tokens``
@@ -308,10 +307,12 @@ class SensorResponses:
             if self._is_async:
 
                 async def _async_stream_create() -> base.GuardedAsyncStream:
-                    return base.call_stream_async(real_fn, kwargs, self._session, self._provider)
+                    guard = base.call_stream_async(real_fn, kwargs, self._session, self._provider)
+                    # Opened eagerly so provider errors surface at create().
+                    return await guard.open()
 
                 return _async_stream_create()
-            return base.call_stream(real_fn, kwargs, self._session, self._provider)
+            return base.call_stream(real_fn, kwargs, self._session, self._provider).open()
         if self._is_async:
             return base.call_async(real_fn, kwargs, self._session, self._provider)
         return base.call(real_fn, kwargs, self._session, self._provider)

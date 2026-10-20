@@ -1429,14 +1429,15 @@ control plane honours end-to-end:
    envelope is published, the store records its stream sequence in
    `start_seq` when the row pre-existed, and revives the row if the
    previous run's queued `session_end` closed it between the check and
-   the stamp. The stamp is best effort: it never waits for a row another
-   writer holds (it retries after pauses of 5, 10, 20 and 40 ms, which
-   cover the worker's own chain of updates to the row at a few
-   milliseconds of commit latency each, then logs and gives up), so many
-   clients re-attaching one session id cannot queue ingestion behind
-   that row's lock, and the worker's rules still apply if the stamp is
-   missed. If the row does not exist the store is a no-op and the worker
-   creates it downstream.
+   the stamp. The stamp is best effort: it skips a row another writer
+   holds instead of queueing on its lock, so many clients re-attaching one
+   session id cannot stall ingestion behind that row. It retries after
+   pauses of 5, 10, 20 and 40 ms (75 ms in all, holding no database
+   connection), long enough for the worker's own chain of updates to the
+   row at a few milliseconds of commit latency each, then logs and gives
+   up; the worker's rules still apply if the stamp is missed. If the row
+   does not exist the store is a no-op and the worker creates it
+   downstream.
 3. **Response envelope — `attached: true` when the row pre-existed.**
 4. **Sensor — INFO log on the first attached response.** Per-process
    guard so subsequent envelopes do not duplicate the log.
@@ -1673,9 +1674,10 @@ five focused functions:
    start's stream sequence and revives a closed row whose `closed_seq` is
    unknown or below that sequence (the previous run's queued `session_end`
    closed it between the check and the stamp), clearing `ended_at` and
-   `closed_seq`. Best effort: it never waits for a row another writer
-   holds (retries after 5, 10, 20 and 40 ms, then it logs and gives up,
-   at most once a second). No attachment row.
+   `closed_seq`. Best effort: it skips a row another writer holds instead
+   of queueing on its lock, retrying after pauses of 5, 10, 20 and 40 ms;
+   if the row is still held it gives up and logs that, at most one line a
+   second per process. No attachment row.
 3. **`workers/internal/writer/postgres.go::UpsertSession`**.
    Called on every `session_start`. Sets the state to `active` from any
    prior state, clearing `ended_at`, except a `closed` row whose

@@ -207,8 +207,8 @@ var recordStartRetryDelays = []time.Duration{
 var stampGiveUps = newGiveUpSampler(time.Now)
 
 // stampLogInterval bounds the give-up log to one line per interval per
-// process; a second is long enough to keep a hammer to a few lines a
-// minute and short enough that a real event is reported promptly.
+// process; a second keeps a hammer to at most sixty lines a minute and
+// still reports a real event promptly.
 const stampLogInterval = time.Second
 
 type giveUpSampler struct {

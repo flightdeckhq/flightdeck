@@ -9972,16 +9972,17 @@ re-attaching `session_start`'s sequence on the row as soon as it has
 published it, reviving the row if the previous run's queued end closed
 it between the attach check and the stamp, so that end leaves nothing
 closed and the run's first calls keep their tokens. The stamp is best
-effort: it skips a row another writer holds and retries after pauses of
-5, 10, 20 and 40 ms (its lock is `FOR NO KEY UPDATE`, so the KEY SHARE
-locks of event inserts do not make it skip; a single 5 ms retry kept
-the first call's tokens in as few as 2 of 100 sessions once each commit
-on the row took 3 ms more, the schedule kept 100 of 100), so many
-clients re-attaching one session id cannot serialise the ingestion path
-on that row's lock; a stamp that gives up is logged at most once a
-second with the count suppressed in between, the worker's own rules
-still revive the row, and calls handled before that revive are stored
-without rolling their tokens up. A duplicate end at or below a closed
+effort: it skips a row another writer holds instead of queueing on its
+lock, so many clients re-attaching one session id cannot serialise the
+ingestion path on that row, and retries after pauses of 5, 10, 20 and
+40 ms. Its lock is `FOR NO KEY UPDATE`, so the KEY SHARE locks of event
+inserts do not make it skip. With each commit on the row slowed by 3 ms
+in a probe, a single 5 ms retry kept the first call's tokens in as few
+as 2 of 100 sessions; the schedule kept 100 of 100. A stamp that gives
+up is logged at most once a second per process, the line carrying the
+number suppressed since the last; the worker's own rules still revive
+the row, and calls handled before that revive are stored without
+rolling their tokens up. A duplicate end at or below a closed
 row's `closed_seq` costs no write. A lazily created row records no
 `start_seq`, so a straggler published after a run's end cannot read as
 the run's start. An emitter that publishes its `session_end` before its
@@ -10050,11 +10051,13 @@ recorded its creating event's sequence as the run's start let a straggler
 published after the run's end supersede that end (about 40 percent of
 500 sessions on a multi-core worker); lazy creation now records none.
 
-Settling first costs an orphan `session_end` an UPDATE that matches
-nothing plus a read per delivery (about 10.4 against 7.0 CPU-seconds
-for 6,000 orphans in the security review's measurement); the happy path
-stays one statement, and orphans are rare outside the plugin's child
-ids, so that is the chosen side of the trade.
+The handler tries the guarded UPDATE first and reads the row only when it
+matched nothing, so an ordinary end is one statement. The cost falls on an
+orphan `session_end`, which pays an UPDATE that matches nothing plus a
+read on every delivery: about 10.4 CPU-seconds for 6,000 orphans against
+7.0 when the handler read first, in the security review's measurement.
+Orphans are rare outside the plugin's sub-agent sessions, so that is the
+chosen side of the trade.
 
 **Rejected alternative:** Waiting for the row inside the handler (the
 measured stall above). Capping the number of concurrent waiters (a cap

@@ -691,9 +691,9 @@ BACKLOG_SESSIONS = 30
 HOT_SESSION_CLIENTS = 8
 HOT_SESSION_STARTS = 40
 # How long a re-attaching session_start may take while its row is held
-# by another writer: the stamp skips the row and retries once after
-# five milliseconds, so well under a second; a stamp that waited for the
-# lock would hang for the length of the block instead.
+# by another writer: the stamp skips the row and retries after pauses
+# that add up to 75 ms, so well under a second; a stamp that waited for
+# the lock would hang for the length of the block instead.
 HELD_ROW_RESPONSE_BOUND_SECS = 2.0
 # What the worker logs when it schedules a redelivery, on the orphan
 # path, on a session_end that predates the session's current run, and on
@@ -726,6 +726,15 @@ def _probe_call(sid: str, flavor: str) -> dict[str, Any]:
         tokens_output=PROBE_OUTPUT_TOKENS,
         tokens_total=PROBE_CALL_TOKENS,
         latency_ms=PROBE_LATENCY_MS,
+    )
+
+
+def _start_seq(sid: str) -> int:
+    """The stream sequence recorded for the session's current run."""
+    return int(
+        exec_sql(
+            "SELECT start_seq FROM sessions WHERE session_id = :'sid'::uuid", sid=sid
+        )
     )
 
 
@@ -1070,7 +1079,7 @@ def test_reattaching_start_is_accepted_while_its_session_row_is_held() -> None:
     """The re-attachment stamp must not wait for a session row another
     writer holds: with the row locked for the whole request, the
     session_start is still accepted at once (the stamp skips the row,
-    retries once and gives up), and the session stays usable.
+    retries a few times and gives up), and the session stays usable.
     """
     sid = str(uuid.uuid4())
     flavor = f"test-held-row-{uuid.uuid4().hex[:6]}"
@@ -1085,6 +1094,40 @@ def test_reattaching_start_is_accepted_while_its_session_row_is_held() -> None:
     assert elapsed < HELD_ROW_RESPONSE_BOUND_SECS, f"re-attachment took {elapsed:.2f}s"
 
     post_event(make_event(sid, flavor, "session_end"))
+    wait_for_state(sid, "closed", timeout=STATE_TIMEOUT_SECS)
+
+
+def test_reattaching_start_is_stamped_while_an_event_insert_shares_its_row() -> None:
+    """The stamp must pass the KEY SHARE lock an in-flight event insert
+    holds on the session row through the foreign key, since a busy
+    session's row is shared that way for nearly every call: the stamp
+    locks the row FOR NO KEY UPDATE, which KEY SHARE does not conflict
+    with, where a plain FOR UPDATE would make it skip. The agents row is
+    held so the worker's own handling of the re-attaching start blocks
+    before it reaches the session row; the only writer that can move
+    start_seq during the hold is the ingestion stamp.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-shared-row-{uuid.uuid4().hex[:6]}"
+    post_event(make_event(sid, flavor, "session_start", agent_name=HELD_AGENT_NAME))
+    wait_for_state(sid, "active", timeout=STATE_TIMEOUT_SECS)
+    agent_id = exec_sql(
+        "SELECT agent_id FROM sessions WHERE session_id = :'sid'::uuid", sid=sid
+    )
+
+    with agent_row_locked(agent_id):
+        before = _start_seq(sid)
+        with session_row_locked(sid, mode="KEY SHARE"):
+            reply = post_event(
+                make_event(sid, flavor, "session_start", agent_name=HELD_AGENT_NAME)
+            )
+        assert reply.get("status") == "ok", reply
+        after = _start_seq(sid)
+    assert after > before, (
+        f"the stamp skipped a shared row: start_seq {before} -> {after}"
+    )
+
+    post_event(make_event(sid, flavor, "session_end", agent_name=HELD_AGENT_NAME))
     wait_for_state(sid, "closed", timeout=STATE_TIMEOUT_SECS)
 
 

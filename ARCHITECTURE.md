@@ -1430,11 +1430,13 @@ control plane honours end-to-end:
    `start_seq` when the row pre-existed, and revives the row if the
    previous run's queued `session_end` closed it between the check and
    the stamp. The stamp is best effort: it never waits for a row another
-   writer holds (it tries once more after five milliseconds, then logs
-   and gives up), so many clients re-attaching one session id cannot
-   queue ingestion behind that row's lock, and the worker's rules still
-   apply if the stamp is missed. If the row does not exist the store is
-   a no-op and the worker creates it downstream.
+   writer holds (it retries after pauses of 5, 10, 20 and 40 ms, which
+   cover the worker's own chain of updates to the row at a few
+   milliseconds of commit latency each, then logs and gives up), so many
+   clients re-attaching one session id cannot queue ingestion behind
+   that row's lock, and the worker's rules still apply if the stamp is
+   missed. If the row does not exist the store is a no-op and the worker
+   creates it downstream.
 3. **Response envelope — `attached: true` when the row pre-existed.**
 4. **Sensor — INFO log on the first attached response.** Per-process
    guard so subsequent envelopes do not duplicate the log.
@@ -1672,8 +1674,8 @@ five focused functions:
    unknown or below that sequence (the previous run's queued `session_end`
    closed it between the check and the stamp), clearing `ended_at` and
    `closed_seq`. Best effort: it never waits for a row another writer
-   holds (one retry after five milliseconds, then it logs and gives up).
-   No attachment row.
+   holds (retries after 5, 10, 20 and 40 ms, then it logs and gives up,
+   at most once a second). No attachment row.
 3. **`workers/internal/writer/postgres.go::UpsertSession`**.
    Called on every `session_start`. Sets the state to `active` from any
    prior state, clearing `ended_at`, except a `closed` row whose

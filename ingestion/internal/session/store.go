@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -127,21 +128,36 @@ func (s *Store) Attach(ctx context.Context, sessionID string) (bool, string, err
 // (FOR NO KEY UPDATE SKIP LOCKED: the stamp writes no key column, so it
 // conflicts only with other row updates, not with the KEY SHARE locks
 // the worker's event inserts take through the sessions foreign key)
-// and tried once more after recordStartRetryDelay, which outlasts the
-// single-statement close the worker may be applying to the row at that
-// instant. A row still held after that is logged and left to the
-// worker's own ordering rules, which remain the backstop; calls of the
-// new run that the worker handles before the start's own revive are
-// then stored without rolling their tokens up.
+// and tried again after each pause in recordStartRetryDelays, which
+// together cover the chain of row updates the worker may be applying
+// (the previous run's end, this start, the first call) at several
+// milliseconds of commit latency each. A row still held after that is
+// logged and left to the worker's own ordering rules, which remain the
+// backstop; calls of the new run that the worker handles before the
+// start's own revive are then stored without rolling their tokens up.
 func (s *Store) RecordStart(ctx context.Context, sessionID string, seq uint64) error {
 	// Zero means unknown; a sequence beyond the bigint range (which no
 	// stream reaches) is treated the same rather than wrapped.
 	if seq == 0 || seq > math.MaxInt64 {
 		return nil
 	}
+	return stampWithRetry(ctx, sessionID, seq, recordStartRetryDelays, s.recordStart)
+}
+
+// stampFunc is one attempt of the re-attachment stamp. applied is false
+// when the row was held by another writer or does not exist; revived
+// reports that the attempt reopened a closed row.
+type stampFunc func(ctx context.Context, sessionID string, startSeq int64) (revived, applied bool, err error)
+
+// stampWithRetry runs stamp until it applies, pausing between attempts
+// for each duration in delays in turn. A stamp still not applied after
+// the last pause is noted through stampGiveUps and abandoned; a context
+// that ends during a pause abandons it silently, since the request it
+// belonged to is over.
+func stampWithRetry(ctx context.Context, sessionID string, seq uint64, delays []time.Duration, stamp stampFunc) error {
 	startSeq := int64(seq)
 	for attempt := 0; ; attempt++ {
-		revived, applied, err := s.recordStart(ctx, sessionID, startSeq)
+		revived, applied, err := stamp(ctx, sessionID, startSeq)
 		if err != nil {
 			return err
 		}
@@ -154,32 +170,75 @@ func (s *Store) RecordStart(ctx context.Context, sessionID string, seq uint64) e
 			}
 			return nil
 		}
-		if attempt > 0 {
-			// Routine under a hammer on one session id, where nearly
-			// every request finds the row held; no operator action
-			// follows, so this is an Info line, not a warning.
-			slog.Info("re-attachment stamp not applied; row held by another writer or gone",
-				"session_id", sessionID,
-				"start_seq", seq,
-			)
+		if attempt >= len(delays) {
+			stampGiveUps.note(sessionID, seq)
 			return nil
 		}
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-time.After(recordStartRetryDelay):
+		case <-time.After(delays[attempt]):
 		}
 	}
 }
 
-// recordStartRetryDelay is the pause before the stamp's second attempt
-// on a row another transaction held. The worker's statements on a
-// session row are single UPDATEs whose lock lasts for the statement and
-// its commit, usually a millisecond or less and a few at most on a slow
-// disk, so five milliseconds cover the common case without adding
-// noticeable latency to the ingestion response; a row still held after
-// that is under contention the stamp must not wait for.
-const recordStartRetryDelay = 5 * time.Millisecond
+// recordStartRetryDelays are the pauses between the stamp's attempts on
+// a row another transaction holds. The worker's statements on a session
+// row are single UPDATEs whose lock lasts for the statement and its
+// commit, a millisecond or less on fast storage and several on a slow
+// disk, and the previous run's end, this start and the first call can
+// each hold it in turn; the schedule covers that chain (75 ms of pauses
+// in all, holding no database connection) while bounding what a
+// request under real contention adds to its response time.
+var recordStartRetryDelays = []time.Duration{
+	5 * time.Millisecond,
+	10 * time.Millisecond,
+	20 * time.Millisecond,
+	40 * time.Millisecond,
+}
+
+// stampGiveUps rate-limits the log line for a stamp that found its row
+// held through every attempt: routine under a hammer on one session id
+// (nearly every request), where one line per request would let a token
+// holder drive log volume. One line per stampLogInterval carries the
+// count suppressed since the previous one; the line stays, since it is
+// the operator's only signal that a run's first calls may have missed
+// their roll-up.
+var stampGiveUps = newGiveUpSampler(time.Now)
+
+// stampLogInterval bounds the give-up log to one line per interval per
+// process; a second is long enough to keep a hammer to a few lines a
+// minute and short enough that a real event is reported promptly.
+const stampLogInterval = time.Second
+
+type giveUpSampler struct {
+	now        func() time.Time
+	mu         sync.Mutex
+	lastLogged time.Time
+	suppressed int
+}
+
+func newGiveUpSampler(now func() time.Time) *giveUpSampler {
+	return &giveUpSampler{now: now}
+}
+
+func (g *giveUpSampler) note(sessionID string, seq uint64) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	now := g.now()
+	if now.Sub(g.lastLogged) < stampLogInterval {
+		g.suppressed++
+		return
+	}
+	suppressed := g.suppressed
+	g.suppressed = 0
+	g.lastLogged = now
+	slog.Info("re-attachment stamp not applied; row held by another writer or gone",
+		"session_id", sessionID,
+		"start_seq", seq,
+		"suppressed_since_last", suppressed,
+	)
+}
 
 // recordStart runs the stamp once; startSeq is already range-checked by
 // RecordStart.

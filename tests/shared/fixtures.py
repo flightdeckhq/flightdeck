@@ -25,7 +25,7 @@ import time
 import uuid
 import urllib.error
 import urllib.request
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from flightdeck_sensor.core.agent_id import derive_agent_id
 
@@ -642,8 +642,12 @@ def worker_paused() -> Iterator[None]:
     by ``ensure_worker_running`` at the next session start. A failing
     unpause surfaces unless the block itself already failed.
     """
-    _docker("pause", WORKER_CONTAINER)
     previous = signal.signal(signal.SIGTERM, _abort_on_signal)
+    try:
+        _docker("pause", WORKER_CONTAINER)
+    except BaseException:
+        signal.signal(signal.SIGTERM, previous)
+        raise
     failed = False
     try:
         yield
@@ -651,7 +655,9 @@ def worker_paused() -> Iterator[None]:
         failed = True
         raise
     finally:
-        signal.signal(signal.SIGTERM, previous)
+        # Resume first and give the signal handler back last, so no
+        # moment exists in which a SIGTERM could end the run with the
+        # container still paused.
         try:
             _docker("unpause", WORKER_CONTAINER)
         except RuntimeError as exc:
@@ -659,34 +665,47 @@ def worker_paused() -> Iterator[None]:
                 pass  # another run's guard already resumed it
             elif not failed:
                 raise  # the block passed, so a stuck pause must not be silent
+        finally:
+            signal.signal(signal.SIGTERM, previous)
 
 
-# Rows the ordering tests hold locks on: the table and key column are
-# code constants, so they are safe to place in SQL text; the value is
-# bound through psql.
+# Rows the ordering tests hold locks on, and the lock modes they use:
+# table, column and mode are code constants checked against these
+# allow-lists, so they are safe to place in SQL text; the value is bound
+# through psql.
 _LOCKABLE_ROWS = {"agents": "agent_id", "sessions": "session_id"}
+LockMode = Literal["KEY SHARE", "NO KEY UPDATE", "UPDATE"]
+# The mode a NOWAIT probe takes to prove each held lock: the weakest
+# mode the held one conflicts with. KEY SHARE is compatible with itself
+# (two event inserts share a session row), so only an UPDATE probe
+# detects it; the other modes conflict with themselves.
+_PROBE_MODES: dict[LockMode, LockMode] = {
+    "KEY SHARE": "UPDATE",
+    "NO KEY UPDATE": "NO KEY UPDATE",
+    "UPDATE": "UPDATE",
+}
 # A lock probe gives up on a row that nobody holds after this long.
 LOCK_PROOF_TIMEOUT_SECS = 10.0
 
 
 @contextmanager
-def _row_locked(table: str, row_id: str, mode: str) -> Iterator[None]:
+def _row_locked(table: str, row_id: str, mode: LockMode) -> Iterator[None]:
     """Hold a row lock for the duration of the block.
 
     The lock belongs to a psql session kept open on stdin and tagged
     through its application name; the block starts once a second
-    session's NOWAIT probe fails on the row, which proves the lock is
-    held (an unknown id locks nothing and is reported instead).
+    session's NOWAIT probe, in a mode the held lock conflicts with, fails
+    on the row, which proves the lock is held (an unknown id locks
+    nothing and is reported instead).
     """
     column = _LOCKABLE_ROWS[table]
+    probe_mode = _PROBE_MODES.get(mode)
+    if probe_mode is None:
+        raise ValueError(f"unsupported lock mode {mode!r}")
     row_id = str(uuid.UUID(row_id))
     tag = f"lock-{uuid.uuid4().hex[:8]}"
+    docker_exec = ["docker", "exec", "-i"]
     psql = [
-        "docker",
-        "exec",
-        "-i",
-        "-e",
-        f"PGAPPNAME={tag}",
         POSTGRES_CONTAINER,
         "psql",
         "-U",
@@ -699,8 +718,12 @@ def _row_locked(table: str, row_id: str, mode: str) -> Iterator[None]:
         "-v",
         f"row_id={row_id}",
     ]
+    # The holder carries the tag in its environment; the probe is the
+    # same client without it.
+    holder = [*docker_exec, "-e", f"PGAPPNAME={tag}", *psql]
+    prober = [*docker_exec, *psql]
     proc = subprocess.Popen(
-        psql,
+        holder,
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.PIPE,
@@ -722,10 +745,10 @@ def _row_locked(table: str, row_id: str, mode: str) -> Iterator[None]:
                 )
             # psql substitutes :'name' only in SQL read from stdin, not -c.
             probe = subprocess.run(
-                psql[:3] + psql[5:],  # the same client without the -e tag
+                prober,
                 input=(
                     f"SELECT 1 FROM {table} WHERE {column} = :'row_id'::uuid "
-                    f"FOR {mode} NOWAIT;\n"
+                    f"FOR {probe_mode} NOWAIT;\n"
                 ),
                 capture_output=True,
                 text=True,
@@ -770,14 +793,19 @@ def agent_row_locked(agent_id: str) -> Iterator[None]:
 
 
 @contextmanager
-def session_row_locked(session_id: str) -> Iterator[None]:
-    """Hold the sessions row FOR NO KEY UPDATE for the duration of the block.
+def session_row_locked(
+    session_id: str, mode: LockMode = "NO KEY UPDATE"
+) -> Iterator[None]:
+    """Hold the sessions row for the duration of the block.
 
-    Every update of the row by the worker or by the ingestion API's
-    re-attachment stamp waits on or skips this lock; event inserts, which
-    take KEY SHARE through the foreign key, proceed.
+    Under the default NO KEY UPDATE every update of the row by the worker
+    or by the ingestion API's re-attachment stamp waits on or skips the
+    lock, while event inserts, which take KEY SHARE through the foreign
+    key, proceed. KEY SHARE holds the row the way an in-flight event
+    insert does: updates of the row's other columns, the stamp among
+    them, must pass it.
     """
-    with _row_locked("sessions", session_id, "NO KEY UPDATE"):
+    with _row_locked("sessions", session_id, mode):
         yield
 
 

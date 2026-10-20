@@ -38,7 +38,7 @@ server.
   `final_outcome="aborted"` when a caller leaves a stream early, and a
   mid-stream failure's `llm_error` carries the chunks and tokens delivered
   before it. Those tokens count against the sensor's local session budget;
-  server-side totals and cost still come from `post_call` events. With
+  server-side totals and the cost metric do not include them. With
   `capture_prompts` on, an early exit from the `messages.stream()` helper
   stores the accumulated snapshot as it stands instead of reading the rest
   of the stream. Stopping at the event that ends the response (Anthropic's
@@ -46,7 +46,9 @@ server.
   counts as completed; a cancellation, interrupt, the sensor's own policy
   exception or the caller's own exception leaving a `with` block is the
   caller leaving (completed if the response had been read in full, else
-  aborted), not an `llm_error`;
+  aborted), not an `llm_error`, unless the error classifier knows the
+  exception's class (such as the builtin `TimeoutError`) and the response
+  was still incomplete;
   a stream still open when the session ends is reported before the session
   closes; and an aborted stream's `latency_ms` runs to its last chunk.
 - **Plugin: MCP policy decisions were never applied.** `PreToolUse`

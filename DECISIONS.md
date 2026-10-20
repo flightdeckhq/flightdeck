@@ -9867,9 +9867,10 @@ the guard's `text_stream` carries no provider event shapes) and
 ends the response is reported as completed, not aborted); the litellm
 provider implements them, but litellm `stream=True` still raises
 `NotImplementedError`, so that path is not exercised yet. Server-side
-session totals, the `tokens` metric and `estimated_cost` stay
-`post_call`-based; counting a failed stream's partial tokens server-side
-is a README Roadmap item, not part of this decision.
+session totals (`post_call` and `embeddings` events), the `tokens` metric
+and `estimated_cost` (`post_call`) do not include a failed stream's
+partial tokens; counting them server-side is a README Roadmap item, not
+part of this decision.
 
 **Finalizer safety:** Python's cyclic collector may run `__del__` on any
 thread, and neither the session lock nor the event queue's mutex is
@@ -9881,11 +9882,13 @@ append) and the next intercepted LLM call, or the session's end, runs it.
 Checking whether a lock is held was rejected because the list of locks the
 settle path takes would rot. The finalizer reads what the settle needs and
 drops the SDK stream, so an abandoned stream's connection closes at
-collection as it would without the sensor; only the small settle record
-waits for the drain. The SIGTERM / SIGINT handler that runs
+collection as it would without the sensor; only the guard with its settle
+record (and the request kwargs capture needs) waits for the drain. The SIGTERM / SIGINT handler that runs
 `Session.end()` can interrupt the main thread inside the same critical
 sections; that hazard predates this decision (posting `session_end`
-already takes the session lock) and is not addressed here. A session that ends with streams
+already takes the session lock), the session-end settle now also takes
+the policy cache lock and the queue mutex on that path, and it is not
+addressed here (README Roadmap). A session that ends with streams
 still open settles them first and flushes their events before posting
 `session_end`, so a stream left in a variable until exit is still reported
 and rolled up on an open session. Cancellations

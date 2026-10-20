@@ -931,7 +931,7 @@ func (w *Writer) BumpAgentSessionCount(ctx context.Context, agentID string) erro
 // so that a re-attaching session_start committed between a read and
 // this write cannot be closed by the previous run's end. A closed row
 // whose closed_seq is already at or past this end is left untouched,
-// so a flood of duplicate ends for one closed session costs no writes.
+// so a duplicate end at or below the stored closed_seq costs no write.
 // Returns whether a row matched and whether it was closed by this call;
 // no match means the row is missing, already closed by this or a later
 // end, or opened by a later start, which the caller tells apart with a

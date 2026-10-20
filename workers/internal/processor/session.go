@@ -569,8 +569,9 @@ func nilIfEmpty(s string) any {
 func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.EventPayload) (closed bool, err error) {
 	// At most two attempts: a statement that matched nothing because
 	// the row did not exist yet is repeated once the read finds the row
-	// (another goroutine lazily created or upserted it in between), so
-	// a second miss means the row really predates this end.
+	// (another goroutine lazily created, upserted or even closed it in
+	// between), so a second miss means the row really predates this end
+	// or is closed by an end at or past it.
 	for attempt := 0; ; attempt++ {
 		applied, closedNow, err := sp.settleRow(ctx, e.SessionID, e.StreamSeq)
 		if err != nil {
@@ -594,16 +595,6 @@ func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.Eve
 		if err != nil {
 			return false, fmt.Errorf("session end: look up %s: %w", e.SessionID, err)
 		}
-		if state == sessionLookupClosed {
-			// Already closed by this end or a later one: a duplicate,
-			// idempotent by design, that cost no write. Log and skip.
-			metrics.IncrDropped(metrics.ReasonClosedSessionSkip)
-			slog.Warn("skipping event for closed session",
-				"session_id", e.SessionID,
-				"event_type", "session_end",
-			)
-			return false, nil
-		}
 		if state == sessionLookupMissing {
 			if !e.FinalDelivery {
 				return false, consumer.ErrRetryLater
@@ -621,6 +612,16 @@ func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.Eve
 		}
 		if attempt == 0 {
 			continue
+		}
+		if state == sessionLookupClosed {
+			// Already closed by this end or a later one: a duplicate,
+			// idempotent by design, that cost no write. Log and skip.
+			metrics.IncrDropped(metrics.ReasonClosedSessionSkip)
+			slog.Warn("skipping event for closed session",
+				"session_id", e.SessionID,
+				"event_type", "session_end",
+			)
+			return false, nil
 		}
 		metrics.IncrDropped(metrics.ReasonSupersededSessionEnd)
 		slog.Warn("session_end predates the session's current run; recorded without closing",

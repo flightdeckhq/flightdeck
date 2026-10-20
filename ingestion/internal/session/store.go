@@ -139,8 +139,9 @@ func (s *Store) RecordStart(ctx context.Context, sessionID string, seq uint64) e
 	if seq == 0 || seq > math.MaxInt64 {
 		return nil
 	}
+	startSeq := int64(seq)
 	for attempt := 0; ; attempt++ {
-		revived, applied, err := s.recordStart(ctx, sessionID, seq)
+		revived, applied, err := s.recordStart(ctx, sessionID, startSeq)
 		if err != nil {
 			return err
 		}
@@ -154,7 +155,10 @@ func (s *Store) RecordStart(ctx context.Context, sessionID string, seq uint64) e
 			return nil
 		}
 		if attempt > 0 {
-			slog.Warn("re-attachment stamp skipped; row held by another writer",
+			// Routine under a hammer on one session id, where nearly
+			// every request finds the row held; no operator action
+			// follows, so this is an Info line, not a warning.
+			slog.Info("re-attachment stamp not applied; row held by another writer or gone",
 				"session_id", sessionID,
 				"start_seq", seq,
 			)
@@ -170,12 +174,16 @@ func (s *Store) RecordStart(ctx context.Context, sessionID string, seq uint64) e
 
 // recordStartRetryDelay is the pause before the stamp's second attempt
 // on a row another transaction held. The worker's statements on a
-// session row are single UPDATEs that hold the lock for well under a
-// millisecond, so a few milliseconds cover the common case without
-// adding noticeable latency to the ingestion response.
+// session row are single UPDATEs whose lock lasts for the statement and
+// its commit, usually a millisecond or less and a few at most on a slow
+// disk, so five milliseconds cover the common case without adding
+// noticeable latency to the ingestion response; a row still held after
+// that is under contention the stamp must not wait for.
 const recordStartRetryDelay = 5 * time.Millisecond
 
-func (s *Store) recordStart(ctx context.Context, sessionID string, seq uint64) (revived, applied bool, err error) {
+// recordStart runs the stamp once; startSeq is already range-checked by
+// RecordStart.
+func (s *Store) recordStart(ctx context.Context, sessionID string, startSeq int64) (revived, applied bool, err error) {
 	err = s.pool.QueryRow(ctx, `
 		WITH before AS (
 			SELECT session_id, state, closed_seq
@@ -198,7 +206,7 @@ func (s *Store) recordStart(ctx context.Context, sessionID string, seq uint64) (
 		WHERE s.session_id = before.session_id
 		RETURNING before.state = 'closed'
 		          AND (before.closed_seq IS NULL OR before.closed_seq < $2::bigint)
-	`, sessionID, int64(seq)).Scan(&revived)
+	`, sessionID, startSeq).Scan(&revived)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// The row is held by another transaction (skipped) or gone.
 		return false, false, nil

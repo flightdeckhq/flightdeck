@@ -50,13 +50,13 @@ func (s *scriptedSession) processor() *SessionProcessor {
 	return &SessionProcessor{lookupSession: s.lookup, settleEnd: s.settle}
 }
 
-func sessionEndEvent(seq uint64, finalDelivery bool) consumer.EventPayload {
+func sessionEndEvent(finalDelivery bool) consumer.EventPayload {
 	return consumer.EventPayload{
 		SessionID:     "7a3afb1b-232a-4dd8-a2ea-6886224bbb54",
 		Flavor:        "test-agent",
 		EventType:     "session_end",
 		Timestamp:     "2026-10-20T10:51:22Z",
-		StreamSeq:     seq,
+		StreamSeq:     testEndSeq,
 		FinalDelivery: finalDelivery,
 	}
 }
@@ -65,7 +65,7 @@ func TestHandleSessionEnd_ClosesAnOpenRowWithTheEndsSequence(t *testing.T) {
 	metrics.Reset()
 	s := &scriptedSession{applied: true, closedNow: true}
 
-	closed, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(testEndSeq, false))
+	closed, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(false))
 	if err != nil || !closed {
 		t.Fatalf("expected the session to be reported closed, closed=%v err=%v", closed, err)
 	}
@@ -83,7 +83,7 @@ func TestHandleSessionEnd_SkipsAnAlreadyClosedRow(t *testing.T) {
 	// end's greater sequence) but closed nothing now.
 	s := &scriptedSession{applied: true, closedNow: false}
 
-	closed, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(testEndSeq, false))
+	closed, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(false))
 	if err != nil || closed {
 		t.Fatalf("a duplicate session_end must be a no-op, closed=%v err=%v", closed, err)
 	}
@@ -94,16 +94,17 @@ func TestHandleSessionEnd_SkipsAnAlreadyClosedRow(t *testing.T) {
 
 func TestHandleSessionEnd_SkipsADuplicateEndThatMatchedNothing(t *testing.T) {
 	metrics.Reset()
-	// The statement matched nothing (the row is closed by this end or a
-	// later one, so no write was needed) and the read shows it closed.
+	// The statement matches nothing, twice (the row is closed by this
+	// end or a later one, so no write is needed), and the read shows it
+	// closed: a duplicate, not a superseded end.
 	s := &scriptedSession{state: sessionLookupClosed}
 
-	closed, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(testEndSeq, false))
+	closed, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(false))
 	if err != nil || closed {
 		t.Fatalf("a duplicate session_end must be a no-op, closed=%v err=%v", closed, err)
 	}
-	if len(s.settled) != 1 || s.lookups != 1 {
-		t.Fatalf("expected one settle and one read, got settles=%d lookups=%d", len(s.settled), s.lookups)
+	if len(s.settled) != 2 || s.lookups != 2 {
+		t.Fatalf("expected a second attempt before the duplicate verdict, got settles=%d lookups=%d", len(s.settled), s.lookups)
 	}
 	if got := metrics.Snapshot()[metrics.ReasonClosedSessionSkip]; got != 1 {
 		t.Fatalf("expected one closed_session_skip, got %d", got)
@@ -113,11 +114,31 @@ func TestHandleSessionEnd_SkipsADuplicateEndThatMatchedNothing(t *testing.T) {
 	}
 }
 
+func TestHandleSessionEnd_RecordsALaterEndOnARowClosedAfterTheFirstAttempt(t *testing.T) {
+	metrics.Reset()
+	// The first statement ran against a row that did not exist yet;
+	// other goroutines created and closed it before the read. The second
+	// attempt must still match, so this later end leaves its sequence on
+	// the row (applied without closing it now).
+	s := &scriptedSession{state: sessionLookupClosed, settleSeq: [][2]bool{{false, false}, {true, false}}}
+
+	closed, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(false))
+	if err != nil || closed {
+		t.Fatalf("expected a no-close duplicate verdict, closed=%v err=%v", closed, err)
+	}
+	if len(s.settled) != 2 {
+		t.Fatalf("expected the second attempt to run against the closed row, got %d settles", len(s.settled))
+	}
+	if got := metrics.Snapshot()[metrics.ReasonSupersededSessionEnd]; got != 0 {
+		t.Fatalf("a later end is not a superseded end, counter=%d", got)
+	}
+}
+
 func TestHandleSessionEnd_AsksForRedeliveryWhileTheRowIsMissing(t *testing.T) {
 	metrics.Reset()
 	s := &scriptedSession{state: sessionLookupMissing}
 
-	closed, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(testEndSeq, false))
+	closed, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(false))
 	if !errors.Is(err, consumer.ErrRetryLater) {
 		t.Fatalf("expected ErrRetryLater while the session_start may still land, got %v", err)
 	}
@@ -133,7 +154,7 @@ func TestHandleSessionEnd_DropsAnOrphanOnTheFinalDelivery(t *testing.T) {
 	metrics.Reset()
 	s := &scriptedSession{state: sessionLookupMissing}
 
-	closed, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(testEndSeq, true))
+	closed, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(true))
 	if !errors.Is(err, ErrEventDropped) {
 		t.Fatalf("expected ErrEventDropped for an orphan session_end, got %v", err)
 	}
@@ -152,7 +173,7 @@ func TestHandleSessionEnd_LeavesARowOpenedAfterThisEndAlone(t *testing.T) {
 	// was re-attached before the earlier run's end arrived).
 	s := &scriptedSession{state: sessionLookupOpen}
 
-	closed, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(testEndSeq, false))
+	closed, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(false))
 	if err != nil || closed {
 		t.Fatalf("a superseded session_end must not close the live run, closed=%v err=%v", closed, err)
 	}
@@ -170,7 +191,7 @@ func TestHandleSessionEnd_ClosesARowThatAppearedAfterTheFirstAttempt(t *testing.
 	// goroutine had created it, and the second attempt closes it.
 	s := &scriptedSession{state: sessionLookupOpen, settleSeq: [][2]bool{{false, false}, {true, true}}}
 
-	closed, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(testEndSeq, false))
+	closed, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(false))
 	if err != nil || !closed {
 		t.Fatalf("expected the second attempt to close the row, closed=%v err=%v", closed, err)
 	}
@@ -184,7 +205,7 @@ func TestHandleSessionEnd_PropagatesASettleError(t *testing.T) {
 	boom := errors.New("connection reset by peer")
 	s := &scriptedSession{settleErr: boom}
 
-	_, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(testEndSeq, true))
+	_, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(true))
 	if !errors.Is(err, boom) {
 		t.Fatalf("expected the database error so the consumer NAKs, got %v", err)
 	}
@@ -198,7 +219,7 @@ func TestHandleSessionEnd_PropagatesALookupError(t *testing.T) {
 	boom := errors.New("connection reset by peer")
 	s := &scriptedSession{lookupErr: boom}
 
-	_, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(testEndSeq, true))
+	_, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(true))
 	if !errors.Is(err, boom) {
 		t.Fatalf("expected the lookup error so the consumer NAKs, got %v", err)
 	}
@@ -215,7 +236,7 @@ func TestProcess_AcksADroppedSessionEndWithoutInsertingIt(t *testing.T) {
 	s := &scriptedSession{state: sessionLookupMissing}
 	p := &Processor{session: s.processor()}
 
-	if err := p.Process(context.Background(), sessionEndEvent(testEndSeq, true)); err != nil {
+	if err := p.Process(context.Background(), sessionEndEvent(true)); err != nil {
 		t.Fatalf("expected a clean ACK (nil) for a dropped session_end, got %v", err)
 	}
 	if got := metrics.Snapshot()[metrics.ReasonOrphanSessionEnd]; got != 1 {
@@ -228,7 +249,7 @@ func TestProcess_PassesARetryRequestToTheConsumer(t *testing.T) {
 	s := &scriptedSession{state: sessionLookupMissing}
 	p := &Processor{session: s.processor()}
 
-	err := p.Process(context.Background(), sessionEndEvent(testEndSeq, false))
+	err := p.Process(context.Background(), sessionEndEvent(false))
 	if !errors.Is(err, consumer.ErrRetryLater) {
 		t.Fatalf("expected ErrRetryLater to reach the consumer unchanged, got %v", err)
 	}

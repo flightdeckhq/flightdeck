@@ -5,7 +5,7 @@ import {
   waitForFleetReady,
 } from "./_fixtures";
 
-// T24 — Phase 4.5 S-SWIM-1..5: at narrow viewports the Fleet
+// T24 — at narrow viewports the Fleet
 // swimlane gets a horizontal scrollbar, lands the user on "now"
 // (rightmost) on mount, exposes fade-out gradients on the
 // scrollable edges, keeps the agent-name column sticky as the

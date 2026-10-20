@@ -54,8 +54,8 @@ export interface BadgeConfig {
   cssVar: string;
   label: string;
   /**
-   * Phase 5 MCP badge variants. ``filled`` defaults to ``true`` (solid
-   * fill, the existing single-style behaviour for every pre-Phase-5
+   * MCP badge variants. ``filled`` defaults to ``true`` (solid
+   * fill, the existing single-style behaviour for every non-MCP
    * event type). The list-style MCP badges set ``filled: false`` to
    * render as outline-only — operators distinguish "the agent
    * discovered N MCP tools" (outline) from "the agent invoked an MCP
@@ -75,13 +75,13 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
   directive_result: { cssVar: "var(--event-result)", label: "RESULT" },
   session_start: { cssVar: "var(--event-lifecycle)", label: "START" },
   session_end: { cssVar: "var(--event-lifecycle)", label: "END" },
-  // Phase 4 event-type additions. EMBED uses the cyan RAG family;
+  // EMBED uses the cyan RAG family;
   // ERROR uses the danger red so it reads as alarming without being
   // confused with a policy BLOCK (which is also red but stylistically
   // distinct via its badge family).
   embeddings: { cssVar: "var(--event-embeddings)", label: "EMBED" },
   llm_error: { cssVar: "var(--event-error)", label: "ERROR" },
-  // Phase 5 — MCP observability. Verb-based labels distinguish
+  // MCP observability. Verb-based labels distinguish
   // "agent invoked" vs "agent discovered" at a glance — the
   // singular/plural-only pairs we considered (MCP TOOL / MCP TOOLS)
   // put a single 's' between two fundamentally different operations
@@ -241,7 +241,7 @@ export function getEventDetail(event: AgentEvent): string {
   switch (event.event_type) {
     case "post_call": {
       const parts = [event.model ?? "unknown"];
-      // Phase 4 polish: streaming post_calls surface TTFT inline
+      // Streaming post_calls surface TTFT inline
       // ahead of the token + total-latency segments so an operator
       // scanning the timeline sees first-token latency on the same
       // row as the response. Non-streaming calls keep the original
@@ -367,7 +367,7 @@ export function getEventDetail(event: AgentEvent): string {
       return "directive result";
     }
     case "mcp_tool_call": {
-      // Phase 5: ``<server> · <tool> · <duration>``. The server is
+      // ``<server> · <tool> · <duration>``. The server is
       // useful enough at scan-time (multi-server agents are common)
       // that it earns the leading position; the tool name comes from
       // events.tool_name (top-level) for filter compatibility. The
@@ -433,7 +433,7 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
         ["Total tokens", event.tokens_total?.toLocaleString() ?? "—"],
         ["Latency", event.latency_ms != null ? `${event.latency_ms.toLocaleString()}ms` : "—"],
       ];
-      // Phase 4 polish: surface the streaming sub-object inline so
+      // Surface the streaming sub-object inline so
       // the expanded row shows everything the sensor recorded
       // without a separate PromptViewer round-trip. Non-streaming
       // post_calls keep the original five-row layout unchanged.
@@ -544,7 +544,7 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
       }
       if (event.payload?.error) {
         // directive_result events emit ``error`` as a plain string;
-        // the Phase 4 ``llm_error`` event type uses the same payload
+        // the ``llm_error`` event type uses the same payload
         // slot for a structured object. Narrow here so a future
         // directive_result that accidentally carries the structured
         // shape still renders instead of blowing up.
@@ -594,7 +594,7 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
       }
       return rows;
     }
-    // Phase 5 MCP rows. The MCPEventDetails component renders the
+    // MCP rows. The MCPEventDetails component renders the
     // bulk of the structured detail (arguments / result / rendered /
     // resource content); these summary rows are the at-a-glance
     // metadata the swimlane drawer surfaces above the accordion.
@@ -667,7 +667,7 @@ export const EVENT_TYPE_GROUPS: Record<string, string[]> = {
   ],
   "Directives": ["directive", "directive_result"],
   "Run": ["session_start", "session_end"],
-  // Phase 5 — MCP filter group spans all six MCP event types. The
+  // MCP filter group spans all six MCP event types. The
   // filter pill colour is the tool family's cyan (rather than the
   // resource green or prompt purple) because tool calls are the
   // dominant traffic shape; the per-event-type badge family is what
@@ -702,7 +702,7 @@ export function isEventVisible(eventType: string, activeFilter: string | null | 
 }
 
 /**
- * Phase 5 — the three MCP "list/discovery" event types. These represent
+ * The three MCP "list/discovery" event types. These represent
  * the agent ASKING the server "what's available" rather than actually
  * USING something (call_tool / read_resource / get_prompt). They tend
  * to fire in bursts at session start and again whenever the agent

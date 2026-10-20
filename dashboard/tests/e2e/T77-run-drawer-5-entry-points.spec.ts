@@ -2,7 +2,7 @@
  * T77 — the run drawer (SessionDrawer) opens from all five entry
  * points.
  *
- * Phase 4 contract — the run drawer is reachable from:
+ * The run drawer is reachable from:
  *   1. a swimlane event circle (Fleet);
  *   2. a swimlane run-bracket glyph (Fleet);
  *   3. a row in the agent drawer's Runs tab;

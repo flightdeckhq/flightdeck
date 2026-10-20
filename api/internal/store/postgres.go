@@ -239,7 +239,7 @@ type Event struct {
 	AgentType           *string        `json:"agent_type,omitempty"`
 }
 
-// AgentSummary is one row in the v0.4.0 Phase 1 agent-level fleet
+// AgentSummary is one row in the agent-level fleet
 // response. Each row represents a persistent fleet entity (an
 // “agents“ row) with aggregated state computed across its sessions.
 type AgentSummary struct {
@@ -1150,7 +1150,7 @@ func (s *Store) CreateDirective(ctx context.Context, d Directive) (*Directive, e
 
 // EventContent represents a row in the event_content table.
 //
-// Phase 4 polish: “Input“ carries the embedding request's “input“
+// “Input“ carries the embedding request's “input“
 // parameter (string or list of strings) for “event_type=embeddings“
 // events. Chat events leave Input null and populate Messages instead.
 // The dashboard's drawer branches on event_type to render via the

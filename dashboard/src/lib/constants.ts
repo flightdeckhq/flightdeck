@@ -184,7 +184,7 @@ export const FLEET_PILL_HIDE_MIN_WIDTH = 150;
  * narrowest layout that still fits the "STATE" facet header
  * comfortably with at least one pill on a line; ``DEFAULT_WIDTH``
  * of 260 leaves room for a typical agent_name pill on one line
- * without truncation. Phase 4.5.
+ * without truncation.
  */
 export const INVESTIGATE_SIDEBAR_MIN_WIDTH = 180;
 export const INVESTIGATE_SIDEBAR_MAX_VIEWPORT_FRACTION = 0.4;
@@ -270,8 +270,8 @@ export const DEFAULT_TIME_RANGE: TimeRange = "1m";
 
 /**
  * Default lookback window for the Investigate page on first
- * mount. Phase 4.5 L-20: previously hardcoded as ``7 * 24 * 3600
- * * 1000`` in two places (Investigate.tsx and AgentTable.tsx)
+ * mount. One constant instead of ``7 * 24 * 3600 * 1000`` inlined
+ * in two places (Investigate.tsx and AgentTable.tsx)
  * which let the two surfaces drift if either was tweaked. This
  * constant is the single source of truth.
  */
@@ -281,7 +281,7 @@ export const INVESTIGATE_DEFAULT_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
  * Display duration for ephemeral success / completion toasts and
  * inline acknowledgements (DirectiveCard "Saved", FleetPanel
  * "Stopping...", SessionDrawer "Acknowledged", Settings "Token
- * created"). Phase 4.5 L-21: extracted from four scattered inline
+ * created"). Extracted from four scattered inline
  * ``setTimeout(..., 2000)`` calls so a UX tuning that wants 1500
  * or 3000 ms changes ONE place.
  */

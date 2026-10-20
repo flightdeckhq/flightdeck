@@ -128,7 +128,7 @@ func TestBuildContextFilterClause_ErrorOnUnknownKey(t *testing.T) {
 }
 
 // TestBuildContextFilterClause_SQLInjectionInValuesParameterized is
-// the Phase 4.5 M-23 regression guard: every dynamic value MUST go
+// the SQL-injection regression guard: every dynamic value MUST go
 // through a $N placeholder, never get inlined into the WHERE
 // fragment. The clause shape is a literal "key IN ($1, $2, ...)"
 // with placeholder indices only -- the values themselves stay in

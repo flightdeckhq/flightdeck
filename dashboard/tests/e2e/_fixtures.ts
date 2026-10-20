@@ -48,12 +48,12 @@ export const SENSOR_AGENT = {
   flavor: "e2e-research-agent",
   model: "gpt-4o-mini",
   framework: "langchain",
-  // Phase 5 — ``mcp-active`` carries one event of each of the six
+  // ``mcp-active`` carries one event of each of the six
   // MCP types plus ``context.mcp_servers[]`` populated with two
-  // server fingerprints. T25 (Phase 5 dashboard E2E) deep-links to
+  // Server fingerprints. T25 deep-links to
   // a session of this role and asserts on badge / icon / drawer
   // panel / facet rendering. Only the sensor agent gets it because
-  // the Python sensor emits all six event types per Phase 5 D1;
+  // the Python sensor emits all six event types;
   // the Claude Code plugin path will be tested separately.
   sessionRoles: [
     "fresh-active",
@@ -64,7 +64,7 @@ export const SENSOR_AGENT = {
   ],
 } as const;
 
-/** Phase 5 — MCP fixture metadata. Mirrors the ``mcp-active`` role
+/** MCP fixture metadata. Mirrors the ``mcp-active`` role
  *  on the sensor agent in canonical.json. T25 reads these names to
  *  assert the MCP SERVER facet, the drawer's MCP SERVERS panel, and
  *  the session listing's ``mcp_server_names[]`` aggregation surface
@@ -149,7 +149,7 @@ export const SWIMLANE_LOOKBACK_SEC = 24 * 60 * 60;
 /**
  * Locate the swimlane row for an agent by agent_name. Swimlane rows
  * carry data-testid="swimlane-agent-row-<agent_name>" (added to
- * SwimLane.tsx header div in Phase 3). Use this rather than
+ * SwimLane.tsx header div). Use this rather than
  * getByText(agentName) because <TruncatedText> may collapse the
  * visible text to an ellipsis on narrow viewports -- the testid is
  * the authoritative handle.

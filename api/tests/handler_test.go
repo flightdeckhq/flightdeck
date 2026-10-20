@@ -2374,7 +2374,7 @@ func TestSessionsListHandler_LimitExceedsMax(t *testing.T) {
 }
 
 func TestSessionsListHandler_ErrorTypeFilter_MultiValue(t *testing.T) {
-	// Phase 4: the error_type filter accepts multi-value (comma or
+	// The error_type filter accepts multi-value (comma or
 	// repeated) and forwards it to the store. The store's EXISTS
 	// subquery is covered by integration tests; here we just prove
 	// the handler parses and threads the list through.
@@ -2401,7 +2401,7 @@ func TestSessionsListHandler_ErrorTypeFilter_MultiValue(t *testing.T) {
 }
 
 func TestSessionsListHandler_MCPServerFilter_MultiValue(t *testing.T) {
-	// Phase 5: ?mcp_server= forwards a comma-or-repeated list of names
+	// ?mcp_server= forwards a comma-or-repeated list of names
 	// to params.MCPServers. The store EXISTS subquery against
 	// jsonb_array_elements(sessions.context->'mcp_servers') is covered
 	// by integration tests; this case proves the handler parses and

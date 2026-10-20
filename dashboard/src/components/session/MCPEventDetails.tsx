@@ -5,7 +5,7 @@ import { AccordionHeader } from "./AccordionHeader";
 
 /**
  * Collapsible details block rendered inside the expanded view of any
- * Phase 5 MCP event (``mcp_tool_call`` / ``mcp_tool_list`` /
+ * MCP event (``mcp_tool_call`` / ``mcp_tool_list`` /
  * ``mcp_resource_read`` / ``mcp_resource_list`` / ``mcp_prompt_get`` /
  * ``mcp_prompt_list``). Sibling to ``ErrorEventDetails`` and
  * ``PolicyEventDetails`` — same accordion shape, same per-field testid

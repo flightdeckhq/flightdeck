@@ -64,7 +64,7 @@ func NewHub(s store.Querier) *Hub {
 }
 
 // closeAndRemove closes the client's send channel and removes it
-// from the hub map. Phase 4.5 L-19: extracted helper so every close
+// from the hub map. A shared helper so every close
 // path follows the same map-presence-then-close pattern. Caller
 // MUST hold ``h.mu`` (write lock) -- the helper does not acquire
 // the lock so it composes cleanly with multi-client iteration in
@@ -185,8 +185,8 @@ type fleetUpdate struct {
 }
 
 // listenOnce acquires a connection, issues LISTEN, and blocks reading
-// notifications until an error occurs or ctx is cancelled. Phase 4.5
-// M-24: issues UNLISTEN before release so a recycled pool conn does
+// notifications until an error occurs or ctx is cancelled. It
+// issues UNLISTEN before release so a recycled pool conn does
 // not surface stale subscriptions to an unrelated caller.
 func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 	conn, err := pool.Acquire(ctx)
@@ -301,7 +301,7 @@ func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 		// Build and broadcast the enriched payload. fleetUpdate is
 		// composed of typed *store.Session and *store.Event fields
 		// whose JSON tags use only Go-marshalable primitives, so
-		// json.Marshal cannot fail in practice. Phase 4.5 L-8: log
+		// json.Marshal cannot fail in practice. Log
 		// at debug rather than error and continue -- a real failure
 		// here would indicate corrupted db state surfacing through
 		// the typed structs and would already have been logged

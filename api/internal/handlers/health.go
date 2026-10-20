@@ -10,8 +10,8 @@ import (
 // at 256 KiB. The ingestion API has its own 1 MiB bound for sensor
 // event batches; the query API is for human-issued admin actions
 // (creating policies, directives, tokens, custom directives) where
-// 256 KiB is generously above any real payload. Phase 4.5 M-21:
-// previously these handlers used unbounded ``json.NewDecoder(r.Body)``
+// 256 KiB is generously above any real payload. Without it
+// these handlers would use unbounded ``json.NewDecoder(r.Body)``
 // which would happily allocate as much memory as a slow-loris client
 // could send in a single request.
 const MaxRequestBodyBytes = 256 * 1024

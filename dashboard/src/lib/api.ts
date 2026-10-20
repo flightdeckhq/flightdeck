@@ -277,7 +277,7 @@ export async function fetchSearch(query: string, signal?: AbortSignal): Promise<
 
 /**
  * Return distinct flavor strings seen across recent sessions. The
- * v0.4.0 Phase 1 fleet response is agent-keyed and no longer groups
+ * fleet response is agent-keyed and does not group
  * sessions by flavor, so this helper sources the list from the
  * paginated /v1/sessions endpoint. Used by the policy editor and
  * directive trigger forms that still scope on sessions.flavor.
@@ -491,7 +491,7 @@ export interface SessionsParams {
   git_repo?: string[];
   orchestration?: string[];
   /**
-   * Phase 4: filter to sessions that emitted an llm_error event of
+   * Filter to sessions that emitted an llm_error event of
    * one of the listed taxonomy values (rate_limit, authentication,
    * etc.). Repeatable; OR within the dimension, AND with every
    * other filter. Backed by an EXISTS subquery over the events
@@ -507,7 +507,7 @@ export interface SessionsParams {
    */
   policy_event_type?: string[];
   /**
-   * Phase 5: filter to sessions that connected to at least one MCP
+   * Filter to sessions that connected to at least one MCP
    * server with a matching name. Repeatable; OR within. Backed by an
    * EXISTS subquery against ``sessions.context.mcp_servers`` JSONB on
    * the API side. Powers the Investigate MCP SERVER facet.

@@ -4,7 +4,7 @@ import { fetchEventContent } from "@/lib/api";
 import type { EventContent } from "@/lib/types";
 
 /**
- * Embedding-shaped content viewer (Phase 4 polish, S-EMBED-5).
+ * Embedding-shaped content viewer.
  *
  * Modelled distinctly from ``PromptViewer`` because chat shape and
  * embedding shape are genuinely different surfaces -- chat is system

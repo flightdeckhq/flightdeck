@@ -30,7 +30,7 @@ type SessionsParams struct {
 	// Handler enforces the CHECK-constraint vocabulary so an invalid
 	// value 400s rather than silently matching nothing.
 	ClientTypes []string
-	// ErrorTypes (Phase 4) filters sessions to those that emitted at
+	// ErrorTypes filters sessions to those that emitted at
 	// least one ``llm_error`` event whose structured ``error_type``
 	// matches one of the listed values. Multi-value OR within. Backed
 	// by an EXISTS subquery over the events table, keyed on
@@ -53,7 +53,7 @@ type SessionsParams struct {
 	// array of strings like "langgraph/1.1.6"). Multi-value: any
 	// match across the array passes (``?|`` operator).
 	Frameworks []string
-	// MCPServers (Phase 5) filters sessions to those that connected
+	// MCPServers filters sessions to those that connected
 	// to at least one MCP server with a matching ``name``. Multi-
 	// value OR within. Backed by an EXISTS over jsonb_array_elements
 	// of ``sessions.context->'mcp_servers'`` rather than a session
@@ -296,7 +296,7 @@ type SessionListItem struct {
 	// follow-up fetch. The dashboard splits the unified array into
 	// two sidebar facets via the EVENT_TYPE_GROUPS classification.
 	PolicyEventTypes []string `json:"policy_event_types"`
-	// MCPServerNames (Phase 5) lists every distinct MCP server name
+	// MCPServerNames lists every distinct MCP server name
 	// the session connected to, derived at query time from
 	// ``sessions.context->'mcp_servers'`` JSONB. Always present on
 	// the wire (empty array when the session connected to no MCP
@@ -306,7 +306,7 @@ type SessionListItem struct {
 	// rides along on the detail endpoint via the existing context
 	// envelope. Mirrors the ErrorTypes / PolicyEventTypes shape.
 	MCPServerNames []string `json:"mcp_server_names"`
-	// MCPErrorTypes (Phase 5) lists every distinct
+	// MCPErrorTypes lists every distinct
 	// ``payload->'error'->>'error_type'`` observed across the
 	// session's MCP events (any event_type starting with ``mcp_``
 	// whose payload carries an ``error`` object). Always present on
@@ -613,7 +613,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		conditions = append(conditions, fmt.Sprintf("s.client_type IN (%s)", strings.Join(placeholders, ", ")))
 	}
 
-	// Phase 4: error-type filter. Uses an EXISTS subquery over the
+	// Error-type filter. Uses an EXISTS subquery over the
 	// events table so "sessions that had a rate_limit error" is the
 	// correct predicate, not "sessions whose most-recent event was a
 	// rate_limit error". The events table carries one llm_error row
@@ -817,7 +817,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		))
 	}
 
-	// MCP-server filter (Phase 5). Multi-value OR-within: a session
+	// MCP-server filter. Multi-value OR-within: a session
 	// passes when its context.mcp_servers list contains at least one
 	// entry whose ``name`` matches a supplied value. The aggregation
 	// reads sessions.context JSONB rather than touching events, so a
@@ -834,7 +834,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		argIdx++
 	}
 
-	// Framework filter. Phase 4 polish: this filter now matches BOTH
+	// Framework filter. This filter matches BOTH
 	// the new bare-name per-event attribution (``sessions.framework``,
 	// populated from ``Session.record_framework``) AND the legacy
 	// versioned ``context.frameworks[]`` array. A session's framework

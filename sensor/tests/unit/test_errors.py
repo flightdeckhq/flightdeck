@@ -1,4 +1,4 @@
-"""Unit tests for the Phase 4 error-classification taxonomy.
+"""Unit tests for the error-classification taxonomy.
 
 The classifier walks class name → taxonomy with HTTP status + provider error
 code overrides. These tests pin every taxonomy mapping so a future SDK

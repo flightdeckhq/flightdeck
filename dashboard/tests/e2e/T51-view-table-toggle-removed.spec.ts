@@ -1,8 +1,8 @@
 /**
  * T51 — The ``?view=table`` Fleet toggle is gone.
  *
- * Phase 2 dropped the swimlane/table view toggle and deleted the
- * AgentTable component. The URL param ``view`` is no longer read;
+ * The swimlane/table view toggle and the AgentTable component are
+ * gone. The URL param ``view`` is no longer read;
  * navigating to ``/?view=table`` renders the swimlane.
  *
  * Three guarantees:

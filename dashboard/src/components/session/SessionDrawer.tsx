@@ -875,7 +875,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                 onToggle={() => setRuntimeExpanded((v) => !v)}
               />
 
-              {/* Phase 5 — MCP servers panel. Hidden when the session
+              {/* MCP servers panel. Hidden when the session
                   connected to no MCP server (the array is missing or
                   empty). At-rest the row shows ``name · transport`` per
                   server; expanded reveals the full fingerprint
@@ -1144,7 +1144,7 @@ function RuntimePanel({ context, expanded, onToggle }: RuntimePanelProps) {
   );
 }
 
-/* ---- Phase 5 — MCP servers panel ---- */
+/* ---- MCP servers panel ---- */
 
 interface MCPServersPanelProps {
   context: Record<string, unknown> | undefined;

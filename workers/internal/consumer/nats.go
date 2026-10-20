@@ -83,13 +83,13 @@ type EventPayload struct {
 	DirectiveStatus string          `json:"directive_status,omitempty"`
 	Result          json.RawMessage `json:"result,omitempty"`
 	// ``Error`` is overloaded between directive_result (plain string) and
-	// Phase 4 llm_error (structured taxonomy object). Accept both via
+	// llm_error (structured taxonomy object). Accept both via
 	// json.RawMessage so unmarshal cannot fail on either shape; the
 	// event-extra builder preserves it verbatim into the payload JSONB
 	// column for the dashboard to narrow via typeof.
 	Error           json.RawMessage `json:"error,omitempty"`
 	DurationMs      *int64          `json:"duration_ms,omitempty"`
-	// Phase 4: optional streaming sub-object on post_call events.
+	// Optional streaming sub-object on post_call events.
 	// Populated by the sensor's GuardedStream / GuardedAsyncStream
 	// with TTFT + chunk stats + final_outcome. Absent for non-stream
 	// calls so the wire shape is unchanged for callers that never
@@ -133,8 +133,8 @@ type EventPayload struct {
 	TokenID   string `json:"token_id,omitempty"`
 	TokenName string `json:"token_name,omitempty"`
 
-	// Phase 5 MCP fields. Populated by the sensor's MCP interceptor on
-	// the six MCP_* event types only. Lean payload (Phase 5 override 2):
+	// MCP fields. Populated by the sensor's MCP interceptor on
+	// the six MCP_* event types only. Lean payload:
 	// these are the only MCP-specific fields on the wire; the LLM-
 	// baseline tokens_input/output/total/cache_*, model, latency_ms,
 	// tool_input, tool_result, has_content, content fields are absent
@@ -449,7 +449,7 @@ func (c *Consumer) worker(ctx context.Context, sub *nats.Subscription, id int) {
 
 		msgs, err := sub.Fetch(1, nats.MaxWait(nats.DefaultTimeout))
 		if err != nil {
-			// Phase 4.5 N-3: errors.Is unwraps wrapped sentinels;
+			// Errors.Is unwraps wrapped sentinels;
 			// direct `==` would miss a future caller that wraps the
 			// error to add context.
 			if errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.Canceled) {
@@ -486,7 +486,7 @@ func (c *Consumer) worker(ctx context.Context, sub *nats.Subscription, id int) {
 				return c.processor.Process(ctx, event)
 			}()
 			if procErr != nil {
-				// Phase 4: when the JetStream delivery count has
+				// When the JetStream delivery count has
 				// crossed maxDeliver, the message is about to go to
 				// the DLQ rather than be redelivered again. Bump a
 				// distinct counter so operators can see

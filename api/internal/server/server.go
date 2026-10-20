@@ -38,7 +38,7 @@ const (
 //
 // corsOrigin must be either "*" or a parseable absolute URL with a
 // non-empty scheme and host. Anything else fails fast at startup
-// (Phase 4.5 M-14) rather than rendering a non-functional CORS
+// Rather than rendering a non-functional CORS
 // surface in production.
 func New(addr string, s store.Querier, hub *ws.Hub, validator *auth.Validator, corsOrigin string) *http.Server {
 	if validator == nil {

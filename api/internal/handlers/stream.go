@@ -81,7 +81,7 @@ func StreamHandler(hub *ws.Hub, validator *auth.Validator) http.HandlerFunc {
 // Authorization header or the ?token= query parameter. Returns the
 // empty string when neither source provides a non-empty token.
 //
-// Phase 4.5 M-3 — known residual risk: a token in the URL may be
+// Known residual risk: a token in the URL may be
 // captured by reverse-proxy access logs, browser history, and CDN
 // caches. The standard browser WebSocket API cannot set custom
 // headers on the upgrade request, so we accept ?token= as a

@@ -194,7 +194,7 @@ describe("SessionDrawer", () => {
   });
 
   it("metadata Token cell is omitted when token_name is null", () => {
-    // Pre-Phase-5 sessions and tok_dev-opened sessions both carry
+    // Sessions without a token name and tok_dev-opened sessions both carry
     // null token_name; the cell should not render a "—" placeholder.
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
     expect(
@@ -1177,7 +1177,7 @@ describe("SessionDrawer pagination", () => {
 
 
 // -----------------------------------------------------------------------
-// Phase 5 — MCP failure surfacing on event-feed rows
+// MCP failure surfacing on event-feed rows
 //
 // Guarded regression: the drawer's event feed rendered every MCP row in the
 // family colour (cyan / green / purple) regardless of success vs.
@@ -1189,7 +1189,7 @@ describe("SessionDrawer pagination", () => {
 // payload.error is populated.
 // -----------------------------------------------------------------------
 
-describe("SessionDrawer MCP error surfacing (Phase 5)", () => {
+describe("SessionDrawer MCP error surfacing", () => {
   beforeEach(() => {
     mockSessionOverride = {};
     mockEventsOverride = null;

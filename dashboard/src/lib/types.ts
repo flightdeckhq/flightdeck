@@ -16,10 +16,10 @@ export type EventType =
   | "policy_degrade"
   | "directive"
   | "directive_result"
-  // Phase 4 additions (v0.5.0):
+  // 
   | "embeddings"
   | "llm_error"
-  // Phase 5 (v0.6.0) — MCP observability. The Python sensor emits all
+  // MCP observability. The Python sensor emits all
   // six; the Claude Code plugin emits MCP_TOOL_CALL only (asymmetric
   // by design — see README "MCP Observability by Source"). All six
   // share the same wire schema regardless of source.
@@ -63,7 +63,7 @@ export type LLMErrorType =
   | "other";
 
 /** Structured ``error`` sub-object attached to an ``llm_error`` event.
- *  Carries the Phase 4 taxonomy classification plus provider-side
+ *  Carries the taxonomy classification plus provider-side
  *  fields (http_status, provider_error_code, request_id, retry_after)
  *  so the dashboard can render a precise, actionable view without a
  *  second fetch. Optional ``partial_*`` fields appear when the error
@@ -86,7 +86,7 @@ export interface LLMErrorPayload {
 /** Per-chunk latency summary attached to a streaming ``post_call`` event.
  *  Populated only when the call was made with ``stream=true`` -- the
  *  field is omitted on non-streaming calls to keep the wire shape
- *  identical to pre-Phase-4 behaviour. */
+ *  identical to the legacy behaviour. */
 export interface StreamingMetrics {
   ttft_ms: number | null;
   chunk_count: number;
@@ -374,13 +374,13 @@ export interface EventPayloadFields {
   // result is provider-specific JSON -- intentionally untyped
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   result?: any;
-  // Phase 4: ``error`` is overloaded. Legacy directive_result events
+  // ``error`` is overloaded. Legacy directive_result events
   // emit a plain string here; the new llm_error events emit a
   // structured LLMErrorPayload. Components that read ``payload.error``
   // must narrow via ``typeof`` before accessing taxonomy fields.
   error?: string | LLMErrorPayload;
   duration_ms?: number;
-  // Phase 4 streaming sub-object; populated only on post_call events
+  // Streaming sub-object; populated only on post_call events
   // emitted from a ``stream=true`` call.
   streaming?: StreamingMetrics;
   // Policy enforcement fields. Populated on ``policy_warn`` /
@@ -397,10 +397,10 @@ export interface EventPayloadFields {
   // policy_block addition: the model the blocked call was going to use.
   intended_model?: string;
 
-  // Phase 5 MCP fields. Populated on the six MCP_* event types by the
+  // MCP fields. Populated on the six MCP_* event types by the
   // sensor's MCP interceptor (and on MCP_TOOL_CALL by the Claude Code
   // plugin). Absent on every other event type — the lean payload
-  // shape (Phase 5 override 2) means non-MCP events do not carry
+  // Shape means non-MCP events do not carry
   // these fields at all. Field semantics by event type:
   //
   //   mcp_tool_list / mcp_resource_list / mcp_prompt_list:
@@ -890,7 +890,7 @@ export interface EventContent {
   tools: unknown;
   response: unknown;
   /**
-   * Phase 4 polish: embedding-shaped content. Populated only on
+   * Embedding-shaped content. Populated only on
    * ``event_type=embeddings`` events; absent on chat events. Carries
    * the request's ``input`` parameter -- a string (single-input
    * embed) or list of strings (batch embed) per the OpenAI / litellm
@@ -899,9 +899,9 @@ export interface EventContent {
    * single-input or batch-list view.
    */
   // ``input`` is overloaded across event-content sources:
-  //   * Phase 4 ``embeddings``: string (single-input embed) or string[]
+  //   * ``embeddings``: string (single-input embed) or string[]
   //     (batch embed) — the OpenAI / litellm input parameter.
-  //   * Phase 5 ``mcp_tool_call`` / ``mcp_prompt_get`` overflow (B-6):
+  //   * ``mcp_tool_call`` / ``mcp_prompt_get`` overflow:
   //     dict carrying the call's full ``arguments`` when the inline
   //     payload field overflowed the 8 KiB threshold.
   // Components branch on the parent event's event_type to render
@@ -1022,7 +1022,7 @@ export interface SessionListItem {
   token_id?: string | null;
   token_name?: string | null;
   /**
-   * Phase 4 polish: every distinct ``payload->'error'->>'error_type'``
+   * Every distinct ``payload->'error'->>'error_type'``
    * observed across the session's ``llm_error`` events. Always
    * present on the wire (empty array when the session has no
    * errors) so the dashboard can read ``error_types.length > 0``
@@ -1040,7 +1040,7 @@ export interface SessionListItem {
    */
   policy_event_types?: string[];
   /**
-   * Phase 5: every distinct MCP server name the session connected to,
+   * Every distinct MCP server name the session connected to,
    * derived at query time from ``sessions.context.mcp_servers`` JSONB.
    * Always present on the wire (empty array when the session connected
    * to no MCP server). Drives the Investigate MCP SERVER facet
@@ -1066,7 +1066,7 @@ export interface SessionListItem {
    * call_tool / read_resource / list_tools / etc.). */
   originating_call_contexts?: string[];
   /**
-   * Phase 5: every distinct ``payload.error.error_type`` observed across
+   * Every distinct ``payload.error.error_type`` observed across
    * the session's MCP events (any event_type starting with ``mcp_`` whose
    * payload carries an ``error`` object). Always present on the wire
    * (empty array when no MCP event in the session failed). Drives the

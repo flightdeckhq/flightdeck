@@ -1,11 +1,11 @@
-"""Framework patching integration tests (Phase 4.5+ Phase 3).
+"""Framework patching integration tests.
 
 Proves that after ``flightdeck_sensor.init()`` and
 ``flightdeck_sensor.patch()``, LLM calls made *through* an agent
 framework -- without any explicit ``wrap()`` call -- are intercepted
 and reach the control plane DB and the fleet API.
 
-The empirical investigation in Phase 1 found that three of the four
+An empirical investigation found that three of the four
 frameworks tested have NO usable external-client injection point and
 the fourth (``llama-index-llms-openai``) requires the obscure
 ``openai_client=`` kwarg name. Class-level patching is the only
@@ -512,8 +512,7 @@ def test_llama_index_openai_patched_intercepts_call(
 #      out-of-scope utility resources).
 #
 # The previously listed ``OpenAI.responses`` and
-# ``Anthropic.beta.messages`` paths are now intercepted as of the
-# Phase 3 patch extension; the tests
+# ``Anthropic.beta.messages`` paths are intercepted; the tests
 # ``test_openai_responses_intercepted`` and
 # ``test_anthropic_beta_messages_intercepted`` below drive those
 # paths against the live stack.
@@ -663,7 +662,7 @@ def test_pre_existing_instance_not_intercepted(
     through this instance are NOT intercepted.
 
     This is a known limitation of any cached_property-based intercept
-    approach. The Phase 4.5+ Phase 2 design accepts it because:
+    approach. The design accepts it because:
 
     * Frameworks construct LLM clients during agent setup, well
       before any LLM call loop begins. ``init()`` + ``patch()``
@@ -971,7 +970,7 @@ def test_openai_embeddings_intercepted(
     on ``OpenAI.embeddings`` which wraps the raw ``Embeddings``
     resource in :class:`SensorEmbeddings` on first access.
 
-    Phase 4: embedding calls emit ``event_type="embeddings"`` rather
+    Embedding calls emit ``event_type="embeddings"`` rather
     than the generic ``post_call``, so the dashboard / analytics can
     distinguish them cleanly. Token accounting is unchanged --
     ``tokens_output=0`` is semantically correct for an embedding
@@ -996,7 +995,7 @@ def test_openai_embeddings_intercepted(
         assert response.model == "text-embedding-3-small"
         assert len(response.data) == 1
 
-        # Phase 4: embedding calls emit event_type="embeddings".
+        # Embedding calls emit event_type="embeddings".
         _wait_for_event_type(flavor, "session_start", timeout=10)
         embed = _wait_for_event_type(flavor, "embeddings", timeout=15)
         assert embed.get("model") == "text-embedding-3-small", (

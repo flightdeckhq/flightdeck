@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // This test guards the "Cannot read properties of null (reading 'map')"
-// runtime crash the user hit on the Phase 2 regression-fix branch.
+// runtime crash the user hit.
 // Root cause was ``api/internal/store/postgres.go::GetAgentFleet``
 // returning a nil Go slice on an empty fleet, which JSON-encoded to
 // ``null`` and crashed the dashboard's ``fleet.agents.map(...)`` in

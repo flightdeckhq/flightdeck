@@ -185,7 +185,7 @@ class PolicyDecisionSummary:
     ``policy_mcp_warn``, and ``policy_mcp_block``.
 
     Lands on the wire as ``payload["policy_decision"] = {...}``. Always
-    included regardless of ``capture_prompts`` per Phase 7 Q2 — this is
+    included regardless of ``capture_prompts``: this is
     state metadata, not content.
 
     The shape is canonical with optional MCP-specific fields. Token-

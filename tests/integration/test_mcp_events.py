@@ -1,6 +1,6 @@
-"""Phase 5 MCP event-shape integration tests.
+"""MCP event-shape integration tests.
 
-Wire-seeded (not sensor-driven): hand-crafts the six Phase 5 MCP event
+Wire-seeded (not sensor-driven): hand-crafts the six MCP event
 payloads, POSTs them through the real ingestion API, and asserts they
 round-trip through NATS + worker + Postgres + the Query API with the
 correct structured fields. Mirrors the methodology of

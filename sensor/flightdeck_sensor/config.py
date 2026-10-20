@@ -1,6 +1,6 @@
 """Single source of truth for FLIGHTDECK_* environment variable names.
 
-Pre-Phase-4.5 these were scattered as inline string literals across
+Centralised here rather than scattered as inline string literals across
 ``__init__.py``, ``transport/client.py``, and ``core/session.py``.
 Adding or renaming a var required grepping multiple files. This
 module owns the surface; call sites import the name constant rather
@@ -11,7 +11,7 @@ have different precedence rules and validation: e.g. ``AGENT_TYPE``
 falls back to a legacy unprefixed name; ``SESSION_ID`` requires UUID
 validation; ``CAPTURE_PROMPTS`` is bool-coerced). Centralizing JUST
 the names — not the logic — keeps the surface visible without
-changing the existing tested behaviour. Phase 4.5 M-26.
+changing the existing tested behaviour.
 """
 
 from __future__ import annotations

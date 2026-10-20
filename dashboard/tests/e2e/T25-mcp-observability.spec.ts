@@ -7,7 +7,7 @@ import {
   waitForInvestigateReady,
 } from "./_fixtures";
 
-// T25 — Phase 5: MCP observability rendering.
+// T25 — MCP observability rendering.
 //
 // The canonical seed (tests/e2e-fixtures/canonical.json + seed.py)
 // includes an ``mcp-active`` role on the sensor agent that:
@@ -15,7 +15,7 @@ import {
 //     ``context.mcp_servers`` is populated and the listing surfaces
 //     ``mcp_server_names: ["fixture-stdio-server",
 //     "fixture-http-server"]``.
-//   * emitted one event of each Phase 5 type (mcp_tool_list,
+//   * emitted one event of each MCP type (mcp_tool_list,
 //     mcp_tool_call, mcp_resource_list, mcp_resource_read,
 //     mcp_prompt_list, mcp_prompt_get) with capture_prompts=true so
 //     MCPEventDetails can render arguments / result / content /
@@ -269,7 +269,7 @@ test.describe("T25 — MCP observability rendering", () => {
     ).toBeVisible({ timeout: 10_000 });
   });
 
-  // (Phase 4 wave 2: the session-grain T25-12 / T25-17 session-row
+  // (The session-grain T25-12 / T25-17 session-row
   // MCP indicator dots were retired with the session-grain
   // /investigate table. At event grain an MCP event is its own row
   // on /events — surfaced directly rather than via a per-session
@@ -352,7 +352,7 @@ test.describe("T25 — MCP observability rendering", () => {
     expect((await loadedBody.textContent()) ?? "").toContain("xxxxx");
   });
 
-  // T25-15 (B-7) — every Phase 5 MCP badge fits inside the pill.
+  // T25-15 — every MCP badge fits inside the pill.
   // The pill container's bounding rect must not be smaller than the
   // text span's bounding rect (i.e. no clip).
   test("T25-15: MCP badges fit on a single line (no clip)", async ({

@@ -27,7 +27,7 @@ const WS_BASE_URL =
  * onEvent callback fires when a new event arrives via WebSocket.
  */
 export function useFleet(onEvent?: (event: AgentEvent) => void) {
-  // Phase 4.5 M-18: per-field selectors so a fleet-store mutation
+  // Per-field selectors so a fleet-store mutation
   // that does not change one of the consumed fields skips this
   // hook's downstream consumers (and thus their re-render).
   const load = useFleetStore((s) => s.load);

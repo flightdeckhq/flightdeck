@@ -1,7 +1,7 @@
 /**
  * T108 — nav search bar opens the command palette on click.
  *
- * Phase 0 confirmed the click handler is wired (App.tsx:76) and
+ * The click handler is wired (App.tsx:76) and
  * the original "search bar isn't clickable" report was stale.
  * This spec locks both the mouse-click trigger and the
  * Cmd/Ctrl+K keyboard trigger so a future Radix-portal regression

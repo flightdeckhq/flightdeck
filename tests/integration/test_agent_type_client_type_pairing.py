@@ -1,7 +1,7 @@
 """Regression guard for the semantic pairing of ``agent_type`` and
 ``client_type`` in integration test fixtures.
 
-Phase 2 post-smoke Path A cleanup: a manual run of
+Background: a manual run of
 ``test_ui_demo.py`` left the dev DB with an anomalous agent row
 (``agent_type=coding`` + ``client_type=flightdeck_sensor``). The
 pair is mechanically allowed by the ingestion validator but
@@ -32,8 +32,8 @@ def _load(name: str) -> str:
 def _load_shared(name: str) -> str:
     """Load a file from ``tests/shared/`` (sibling package).
 
-    Phase 3 extracted ``DEFAULT_AGENT_TYPE`` / ``DEFAULT_CLIENT_TYPE``
-    and friends out of ``conftest.py`` into ``tests/shared/fixtures.py``
+    ``DEFAULT_AGENT_TYPE`` / ``DEFAULT_CLIENT_TYPE`` and friends moved
+    out of ``conftest.py`` into ``tests/shared/fixtures.py``
     so the E2E fixture seeder can reuse the same event-builder contract
     without depending on pytest. The canonical-pair regression guard
     follows the constants to their new home.
@@ -52,11 +52,11 @@ ALLOWED_PAIRS = {
 
 def test_conftest_default_pair_is_canonical() -> None:
     """Default client_type must pair with its default agent_type.
-    Pre-Phase-2 the defaults were coding + flightdeck_sensor which was
+    The defaults used to be coding + flightdeck_sensor, which was
     the anomaly-producing pair.
 
-    The constants now live in ``tests/shared/fixtures.py`` (Phase 3
-    extraction) and are re-imported by ``conftest.py``. The test greps
+    The constants live in ``tests/shared/fixtures.py`` and are
+    re-imported by ``conftest.py``. The test greps
     the shared module for the literal declarations AND verifies
     ``conftest.py`` continues to import those names, so a future
     refactor cannot accidentally re-shadow them with a non-canonical
@@ -94,7 +94,7 @@ def test_conftest_default_pair_is_canonical() -> None:
 
 def test_ui_demo_agents_list_uses_canonical_pairs() -> None:
     """``test_ui_demo.py::AGENTS`` is the specific fixture whose
-    manual-run produced the Phase 2 Chrome-smoke anomaly. Assert each
+    manual-run produced the Chrome-smoke anomaly. Assert each
     entry declares a legitimate agent_type / client_type pair."""
     ui_demo = _load("test_ui_demo.py")
     # The AGENTS list entries carry explicit ``client_type`` +
@@ -179,7 +179,7 @@ def test_no_test_file_emits_the_anomalous_pair(relative_path: str) -> None:
         ), (
             f'{relative_path}: ``agent_type="coding"`` emitted without '
             f'an explicit ``client_type="claude_code"`` nearby. Under '
-            f"conftest's defaults this produces the Phase 2 anomaly "
+            f"conftest's defaults this produces the anomaly "
             f"(agent_type=coding + client_type=flightdeck_sensor). "
             f'Fix: pass client_type="claude_code" on the make_event '
             f"call. Offending context:\n{window!r}"

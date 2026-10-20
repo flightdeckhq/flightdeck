@@ -256,7 +256,7 @@ describe("FleetPanel sidebar width: gradual pill truncation", () => {
   // truncation CSS is deliberately kept inline so tests can observe
   // it.
 
-  it("pills never truncate at the 240 default (Phase 2 Supervisor smoke rule)", () => {
+  it("pills never truncate at the 240 default", () => {
     // Pre-rule: pills carried flex-shrink-100 + ellipsis so they
     // collapsed under narrow widths, producing the "SENS…" bug. Post-
     // rule: pills are flexShrink: 0 + white-space: nowrap, and the
@@ -295,7 +295,7 @@ describe("FleetPanel sidebar width: gradual pill truncation", () => {
     // Inverse of the prior rule: the name absorbs narrowing via the
     // shared <TruncatedText/> primitive (overflow: hidden + ellipsis
     // + native ``title`` on hover) while the pills keep their full
-    // intrinsic width. The old pre-Phase-2 "pills shrink first"
+    // intrinsic width. The rejected "pills shrink first"
     // design produced the "SENS…" truncated-mid-character bug.
     render(<FleetPanel flavors={mkFlavors()} />);
     const pill = screen.getAllByTestId("coding-agent-badge")[0];
@@ -319,7 +319,7 @@ describe("FleetPanel sidebar width: gradual pill truncation", () => {
   });
 
   it("flavor name is rendered through the <TruncatedText/> primitive", () => {
-    // Post-Phase-2: titles are now conditional (only when the
+    // Titles are conditional (only when the
     // ellipsis is actually rendered) via the shared primitive, so a
     // strict ``title=flavor`` assertion no longer matches in jsdom
     // where layout collapses to 0x0 and the auto-detector sees no

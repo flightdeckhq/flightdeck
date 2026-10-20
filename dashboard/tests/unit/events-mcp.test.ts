@@ -10,7 +10,7 @@ import {
 } from "@/lib/events";
 import type { AgentEvent } from "@/lib/types";
 
-// Phase 5 — MCP event taxonomy + rendering contract pinned at the
+// MCP event taxonomy + rendering contract pinned at the
 // pure-function layer. The dashboard's E2E spec (T25) replays the
 // frozen fixture against the live UI; this file pins the lib/events.ts
 // transformations so a refactor that quietly drops a badge or renames
@@ -34,7 +34,7 @@ function makeMCPEvent(overrides: Partial<AgentEvent>): AgentEvent {
   } as AgentEvent;
 }
 
-describe("eventBadgeConfig — Phase 5 MCP entries (verb labels + MCP prefix)", () => {
+describe("eventBadgeConfig — MCP entries (verb labels + MCP prefix)", () => {
   const expected: Record<string, { cssVar: string; label: string; filled?: boolean }> = {
     mcp_tool_call: { cssVar: "var(--event-mcp-tool)", label: "MCP TOOL CALL", filled: true },
     mcp_tool_list: {
@@ -82,7 +82,7 @@ describe("eventBadgeConfig — Phase 5 MCP entries (verb labels + MCP prefix)", 
     }
   });
 
-  it("B-7: every Phase 5 badge label has no wrap hints and fits the layout cap", () => {
+  it("every MCP badge label has no wrap hints and fits the layout cap", () => {
     // The badge container is ``min-w-[88px] px-2`` and accepts
     // two-line wrap on the longest labels (the longest is "MCP
     // RESOURCES DISCOVERED" at 24 chars including the "MCP "

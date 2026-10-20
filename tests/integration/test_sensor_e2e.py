@@ -1311,7 +1311,7 @@ def test_context_facets_aggregation(
     """GetContextFacets aggregates real sessions.context across the fleet.
 
     Part 5 SECTION D: this is the first integration test that exercises
-    the Phase 4.5 GetContextFacets path with REAL context data. Existing
+    the GetContextFacets path with REAL context data. Existing
     tests only ever insert empty contexts via fabricated session_start
     events.
     """
@@ -2137,8 +2137,8 @@ def test_pattern_b_degrade_seen_by_all_threads(
                 session_id = flightdeck_sensor.get_status().session_id
                 client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
 
-                # Phase tracking. Phase 1 = pre-degrade-ack,
-                # Phase 2 = post-degrade-ack. Calls in phase 2 from
+                # Stage tracking. Stage 1 = pre-degrade-ack,
+                # Stage 2 = post-degrade-ack. Calls in stage 2 from
                 # any thread must report the degraded model.
                 phase = [1]
                 phase_lock = threading.Lock()

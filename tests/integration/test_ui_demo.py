@@ -53,7 +53,7 @@ from .conftest import (
 #     ``agent_type=coding`` with ``client_type=flightdeck_sensor`` are
 #     the semantic anomaly the Supervisor caught in the Fleet sidebar
 #     -- a CODING AGENT badge next to a SENSOR pill on the same row).
-# Phase 2 post-smoke cleanup commit fixes this by threading client_type
+# This is fixed by threading client_type
 # through to ``make_event`` below; conftest's default
 # ``client_type=flightdeck_sensor`` only applies to entries that omit
 # the kwarg.

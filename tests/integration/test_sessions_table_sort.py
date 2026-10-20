@@ -1,4 +1,4 @@
-"""Integration tests for /v1/sessions sort ordering (Phase 4.5 S-TBL).
+"""Integration tests for /v1/sessions sort ordering.
 
 Covers:
 * ``?sort=last_seen_at`` — orders by max(events.occurred_at) projected

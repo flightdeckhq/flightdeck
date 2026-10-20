@@ -2299,7 +2299,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Filter to sessions that connected to an MCP server with the given name (repeatable/comma). Phase 5: backed by the JSONB array sessions.context.mcp_servers. Each row in the response carries mcp_server_names[] for facet rendering.",
+                        "description": "Filter to sessions that connected to an MCP server with the given name (repeatable/comma); backed by the JSONB array sessions.context.mcp_servers. Each row in the response carries mcp_server_names[] for facet rendering.",
                         "name": "mcp_server",
                         "in": "query"
                     },
@@ -3840,14 +3840,14 @@ const docTemplate = `{
                     }
                 },
                 "mcp_error_types": {
-                    "description": "MCPErrorTypes (Phase 5) lists every distinct\n` + "`" + `` + "`" + `payload-\u003e'error'-\u003e\u003e'error_type'` + "`" + `` + "`" + ` observed across the\nsession's MCP events (any event_type starting with ` + "`" + `` + "`" + `mcp_` + "`" + `` + "`" + `\nwhose payload carries an ` + "`" + `` + "`" + `error` + "`" + `` + "`" + ` object). Always present on\nthe wire (empty array when no MCP event in the session\nfailed). Mirrors the ErrorTypes correlated-subquery pattern,\nscoped to MCP rather than llm_error rows so the Investigate\nsession-row red MCP indicator can render without a per-session\nfollow-up fetch.",
+                    "description": "MCPErrorTypes lists every distinct\n` + "`" + `` + "`" + `payload-\u003e'error'-\u003e\u003e'error_type'` + "`" + `` + "`" + ` observed across the\nsession's MCP events (any event_type starting with ` + "`" + `` + "`" + `mcp_` + "`" + `` + "`" + `\nwhose payload carries an ` + "`" + `` + "`" + `error` + "`" + `` + "`" + ` object). Always present on\nthe wire (empty array when no MCP event in the session\nfailed). Mirrors the ErrorTypes correlated-subquery pattern,\nscoped to MCP rather than llm_error rows so the Investigate\nsession-row red MCP indicator can render without a per-session\nfollow-up fetch.",
                     "type": "array",
                     "items": {
                         "type": "string"
                     }
                 },
                 "mcp_server_names": {
-                    "description": "MCPServerNames (Phase 5) lists every distinct MCP server name\nthe session connected to, derived at query time from\n` + "`" + `` + "`" + `sessions.context-\u003e'mcp_servers'` + "`" + `` + "`" + ` JSONB. Always present on\nthe wire (empty array when the session connected to no MCP\nserver) so dashboard code treats the slice as non-nullable.\nNames only — the listing payload stays lean; the full\nfingerprint (transport, version, capabilities, instructions)\nrides along on the detail endpoint via the existing context\nenvelope. Mirrors the ErrorTypes / PolicyEventTypes shape.",
+                    "description": "MCPServerNames lists every distinct MCP server name\nthe session connected to, derived at query time from\n` + "`" + `` + "`" + `sessions.context-\u003e'mcp_servers'` + "`" + `` + "`" + ` JSONB. Always present on\nthe wire (empty array when the session connected to no MCP\nserver) so dashboard code treats the slice as non-nullable.\nNames only — the listing payload stays lean; the full\nfingerprint (transport, version, capabilities, instructions)\nrides along on the detail endpoint via the existing context\nenvelope. Mirrors the ErrorTypes / PolicyEventTypes shape.",
                     "type": "array",
                     "items": {
                         "type": "string"

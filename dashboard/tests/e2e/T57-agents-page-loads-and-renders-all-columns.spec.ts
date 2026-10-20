@@ -2,8 +2,8 @@
  * T57 — /agents page loads and every locked column header
  * renders.
  *
- * Phase 3 contract: the page mounts on `/agents`; the table
- * header row carries every column from the locked Phase 3
+ * The page mounts on `/agents`; the table
+ * header row carries every column from the locked
  * design (identity, topology, tokens 7d, latency p95 7d,
  * errors 7d, sessions 7d, cost USD 7d, last seen, status).
  *

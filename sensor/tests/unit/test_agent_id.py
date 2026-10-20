@@ -35,7 +35,7 @@ class TestNamespace:
 
 class TestDeriveAgentId:
     def test_fixture_vector(self) -> None:
-        # Locked by the v0.4.0 Phase 1 brief. Node twin asserts the
+        # A locked fixture vector. Node twin asserts the
         # same value in ``plugin/tests/agent_id.test.mjs``.
         aid = derive_agent_id(
             agent_type="coding",
@@ -108,7 +108,7 @@ class TestSubAgentRoleDerivation:
     """
 
     def _root_kwargs(self) -> dict[str, str]:
-        # The locked v0.4.0 Phase 1 fixture vector — root call shape
+        # The locked fixture vector — root call shape
         # with no role. Repeated here so each test is self-contained.
         return dict(
             agent_type="coding",

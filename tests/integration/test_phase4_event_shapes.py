@@ -1,4 +1,4 @@
-"""Phase 4 event-shape integration tests.
+"""Event-shape integration tests for embeddings, llm_error and streaming.
 
 Wire-seeded (not sensor-driven): hand-crafts ``embeddings`` and
 ``llm_error`` event payloads, POSTs them through the real ingestion
@@ -175,8 +175,7 @@ def test_sessions_error_type_filter_narrows_result() -> None:
     # Seed two sessions: one emits a rate_limit llm_error, the other
     # emits a timeout llm_error. /v1/sessions?error_type=rate_limit
     # returns only the first; error_type=timeout returns only the
-    # second. Lightweight end-to-end validation of the Phase 4 API
-    # filter landed in commit ``feat(api): Phase 4 /v1/sessions error_type filter``.
+    # second. Lightweight end-to-end validation of the API filter.
     sid_rl = str(uuid.uuid4())
     sid_to = str(uuid.uuid4())
     flavor_rl = f"test-phase4-filter-rl-{uuid.uuid4().hex[:6]}"
@@ -254,7 +253,7 @@ def test_sessions_error_type_filter_narrows_result() -> None:
 
 
 def test_sessions_listing_exposes_error_types_per_session() -> None:
-    # Phase 4 polish: the /v1/sessions listing carries a per-row
+    # The /v1/sessions listing carries a per-row
     # ``error_types: []string`` aggregate of every distinct
     # ``payload->'error'->>'error_type'`` observed across the
     # session's llm_error events. Powers the dashboard's ERROR TYPE
@@ -355,7 +354,7 @@ def test_sessions_listing_exposes_error_types_per_session() -> None:
 
 
 def test_embeddings_content_input_roundtrips() -> None:
-    """Phase 4 polish S-EMBED-4: ``content.input`` round-trips
+    """``content.input`` round-trips
     ingestion → worker → event_content table → ``GET
     /v1/events/{id}/content``. Asserts both the single-string and
     list-of-strings shapes survive intact (no normalisation /

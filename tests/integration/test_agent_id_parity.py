@@ -64,7 +64,7 @@ def test_agent_id_symmetric_for_sub_agent_fixture() -> None:
     )
     assert fleet_agent is not None, (
         "e2e-test-fresh-subagent must appear in the fleet roster — "
-        "seed.py declares it as a Phase 2 sub-agent anchor"
+        "seed.py declares it as the sub-agent anchor"
     )
     fleet_agent_id = fleet_agent["agent_id"]
 

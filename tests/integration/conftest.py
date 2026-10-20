@@ -1,6 +1,6 @@
 """Integration test fixtures.
 
-Phase 3 extracted the pure helpers + constants into
+The pure helpers + constants live in
 ``tests/shared/fixtures.py`` so the E2E fixture seeder
 (``tests/e2e-fixtures/seed.py``) can reuse the same event-builder
 contract without depending on pytest. This file now holds only the

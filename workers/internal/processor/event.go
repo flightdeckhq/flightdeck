@@ -52,13 +52,12 @@ func stripExtraContent(extra []byte) []byte {
 }
 
 func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
-	// Pre-Phase-4 this function only produced payload for
-	// directive_result events. Phase 4 opens it up to any event that
+	// This function produces payload for any event that
 	// carries structured extras -- llm_error events populate
-	// ``error`` with the Phase 4 taxonomy object, streaming post_call
+	// ``error`` with the error taxonomy object, streaming post_call
 	// events populate ``streaming`` with TTFT + chunk stats. The
 	// per-field guards below skip any field the event doesn't carry,
-	// so non-directive events that also have no Phase 4 extras
+	// so non-directive events that also have no structured extras
 	// short-circuit out via ``if len(extra) == 0`` at the bottom and
 	// the payload column stays NULL -- matching the prior behaviour
 	// for those events exactly.
@@ -81,7 +80,7 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 		}
 	}
 	if len(e.Error) > 0 {
-		// ``Error`` is json.RawMessage (Phase 4) to carry either the
+		// ``Error`` is json.RawMessage to carry either the
 		// legacy directive_result string OR the structured llm_error
 		// object. Unmarshal back to an interface so the encoded
 		// payload is one document.
@@ -94,7 +93,7 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 		extra["duration_ms"] = *e.DurationMs
 	}
 	if len(e.Streaming) > 0 {
-		// Phase 4 streaming sub-object. Same shape handling as Error
+		// Streaming sub-object. Same shape handling as Error
 		// above: decode + re-attach so the final payload is a single
 		// JSON document.
 		var v interface{}
@@ -131,7 +130,7 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	// types) + originating_event_id (chain) + originating_call_context
 	// (MCP-policy events) through to events.payload unchanged. Always
 	// included when present; capture_prompts does not gate state
-	// metadata per Phase 7 Q2.
+	// metadata.
 	if len(e.PolicyDecision) > 0 {
 		var v interface{}
 		if err := json.Unmarshal(e.PolicyDecision, &v); err == nil {
@@ -212,7 +211,7 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if e.Terminal != nil {
 		extra["terminal"] = *e.Terminal
 	}
-	// Phase 5 MCP fields. Project unconditionally when the sensor sent
+	// MCP fields. Project unconditionally when the sensor sent
 	// them — only MCP_* events carry these on the wire. The dashboard's
 	// MCPEventDetails component reads them directly from events.payload.
 	if e.ServerName != "" {
@@ -292,7 +291,7 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if e.DecidedAt != "" {
 		extra["decided_at"] = e.DecidedAt
 	}
-	// Phase 5 MCP_RESOURCE_READ content. The sensor's lean MCP payload
+	// MCP_RESOURCE_READ content. The sensor's lean MCP payload
 	// drops the ``has_content`` flag entirely, so the existing
 	// HasContent gate (which routes LLM PromptContent into the
 	// event_content table) never fires for MCP. Instead the MCP wrapper
@@ -378,7 +377,7 @@ func subagentMessageToMap(m *consumer.SubagentMessage) map[string]interface{} {
 	return out
 }
 
-// isMCPEventType reports whether ``eventType`` is one of the six Phase 5
+// isMCPEventType reports whether ``eventType`` is one of the six
 // MCP event types. Used by BuildEventExtra to gate the MCP-content
 // projection: ``content`` on MCP_RESOURCE_READ goes inline into
 // events.payload (small, render-inline), whereas ``content`` on LLM
@@ -439,16 +438,16 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 			return err
 		}
 	case "embeddings":
-		// Phase 4 addition. Embeddings are a post_call-shaped event
+		// Embeddings are a post_call-shaped event
 		// with no completion tokens; the ingestion layer validated
 		// the schema so we route through the same last-seen + tokens
 		// update path. Policy does not evaluate (separate budget
-		// surface if ever added; out of scope for Phase 4).
+		// surface if ever added).
 		if err := p.session.HandlePostCall(ctx, e); err != nil {
 			return err
 		}
 	case "llm_error":
-		// Phase 4 addition. Structured LLM API error. Route through
+		// Structured LLM API error. Route through
 		// the same last-seen update path so the session's freshness
 		// advances on failed calls too -- otherwise a session that
 		// only ever produces errors would age to stale.
@@ -497,7 +496,7 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 		"mcp_resource_list", "mcp_resource_read",
 		"mcp_prompt_list", "mcp_prompt_get",
 		"mcp_server_name_changed":
-		// Phase 5 MCP events. Route through HandlePostCall: the lean
+		// MCP events. Route through HandlePostCall: the lean
 		// MCP payload (override 2) carries no token deltas (TokensTotal
 		// is nil) and no model field, so HandlePostCall's branch logic
 		// short-circuits the token / model UPDATEs and just advances

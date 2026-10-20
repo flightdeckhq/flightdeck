@@ -8,8 +8,8 @@ import type { AgentTopology } from "@/lib/types";
 // TopologyCell renders the per-agent topology pill (``lone`` /
 // ``↳ child of <parent>`` / ``⤴ spawns N``) used by any agent
 // listing surface. Extracted into its own module so the same
-// primitive backs both the legacy fleet view (during the Phase 2
-// reshape transition) and the Phase 3 /agents page without
+// primitive backs both the legacy fleet view and the /agents page
+// without
 // duplicating the relationship lookup.
 //
 // ``deriveRelationship`` resolves the relationship from the fleet

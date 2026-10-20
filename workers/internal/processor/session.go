@@ -218,7 +218,7 @@ const (
 
 // sessionLookupState reports whether the session row is missing, present
 // and closed, or present and non-closed. Fails open on a DB error (returns
-// Missing) so the close path still runs -- matching the pre-Phase-4
+// Missing) so the close path still runs -- matching the established
 // isClosed-returns-false fallback.
 func (sp *SessionProcessor) sessionLookupState(ctx context.Context, sessionID string) sessionLookup {
 	var state string

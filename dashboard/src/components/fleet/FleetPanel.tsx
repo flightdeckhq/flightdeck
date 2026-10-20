@@ -843,7 +843,7 @@ function FlavorItem({
             keeps its default shrink-1 so the pills trim first. */}
         {sidebarWidth >= FLEET_PILL_HIDE_MIN_WIDTH &&
           flavor.agent_type === AgentType.Coding && (
-            // Pills never truncate (Phase 2 Supervisor smoke rule):
+            // Pills never truncate:
             // ``flex-shrink: 0`` so the sibling ``<TruncatedText/>``
             // agent_name is the shrink target instead.
             <CodingAgentBadge style={{ flexShrink: 0 }} />

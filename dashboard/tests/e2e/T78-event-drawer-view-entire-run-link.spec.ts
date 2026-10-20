@@ -2,7 +2,7 @@
  * T78 — the event detail drawer's "View entire run →" link opens
  * the run drawer for the event's run.
  *
- * Phase 4 contract — run-drawer entry point 4: the event detail
+ * Run-drawer entry point 4: the event detail
  * drawer metadata section carries a link that hands off to the
  * run drawer.
  *

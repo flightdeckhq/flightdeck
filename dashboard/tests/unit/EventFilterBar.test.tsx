@@ -3,7 +3,7 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { EventFilterBar } from "@/components/fleet/EventFilterBar";
 
 describe("EventFilterBar", () => {
-  it("renders all 8 pills (incl Phase 4 Embeddings + Errors)", () => {
+  it("renders all 8 pills (incl Embeddings + Errors)", () => {
     render(<EventFilterBar activeFilter={null} onFilterChange={() => {}} />);
     expect(screen.getByTestId("filter-pill-All")).toBeInTheDocument();
     expect(screen.getByTestId("filter-pill-LLM Calls")).toBeInTheDocument();
@@ -41,7 +41,7 @@ describe("EventFilterBar", () => {
   it("each non-All pill has a colored dot", () => {
     render(<EventFilterBar activeFilter={null} onFilterChange={() => {}} />);
     const dots = screen.getAllByTestId("filter-dot");
-    // 8 non-All pills: LLM Calls, Tools, Embeddings, MCP (Phase 5),
+    // 8 non-All pills: LLM Calls, Tools, Embeddings, MCP,
     // Errors, Policy, Directives, Session.
     expect(dots).toHaveLength(8);
   });

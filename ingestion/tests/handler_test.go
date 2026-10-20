@@ -158,7 +158,7 @@ func TestEventsHandler_AgentIdentityValidation(t *testing.T) {
 			name: "invalid_client_type",
 			body: `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"post_call","agent_id":"` + validAgentID + `","agent_type":"coding","client_type":"rogue"}`,
 		},
-		// Phase 4 additions (V-pass D7, D8, D10, D15):
+		// Structured-event additions:
 		{
 			name: "malformed_session_id",
 			body: `{"session_id":"not-a-uuid","event_type":"post_call","agent_id":"` + validAgentID + `","agent_type":"coding","client_type":"claude_code"}`,

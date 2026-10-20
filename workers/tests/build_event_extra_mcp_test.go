@@ -8,7 +8,7 @@ import (
 	"github.com/flightdeckhq/flightdeck/workers/internal/processor"
 )
 
-// Phase 5 — MCP event payload projection through BuildEventExtra.
+// MCP event payload projection through BuildEventExtra.
 //
 // The dashboard contract (dashboard/tests/e2e/fixtures/mcp-events.json)
 // is the source of truth for these field names + shapes. The tests

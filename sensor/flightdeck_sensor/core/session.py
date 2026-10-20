@@ -1250,8 +1250,8 @@ class Session:
             # LLM-shaped baseline. Fields are nullable for non-LLM event
             # types (e.g. policy_*, directive_result) where they don't
             # apply, but the columns are part of the established wire
-            # contract for everything except MCP events. Phase 5 split
-            # MCP events out so they don't carry six perpetually-null
+            # contract for everything except MCP events, which are split
+            # out so they don't carry six perpetually-null
             # LLM fields through every wire trip and Postgres row.
             payload.update(
                 {
@@ -1281,7 +1281,7 @@ class Session:
             ctx = dict(self._context) if self._context else {}
             with self._lock:
                 if self._mcp_servers:
-                    # Phase 5: merge the per-session MCP server fingerprint
+                    # Merge the per-session MCP server fingerprint
                     # list into context. The worker's UpsertSession ON
                     # CONFLICT writes context once and never updates it,
                     # so any MCP servers connected before session_start

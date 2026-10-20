@@ -405,7 +405,7 @@ func (w *Writer) InsertEvent(
 // InsertEventContent inserts prompt capture content into event_content.
 // Called only when event.HasContent is true.
 //
-// Phase 4 polish: “Input“ carries the embedding request's “input“
+// “Input“ carries the embedding request's “input“
 // parameter (string or list of strings) for “event_type=embeddings“
 // events. Chat events leave Input null and populate Messages instead.
 // The dashboard branches on event_type to render the appropriate

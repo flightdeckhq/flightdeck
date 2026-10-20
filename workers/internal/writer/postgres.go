@@ -538,14 +538,21 @@ func (w *Writer) UpdateLastSeen(ctx context.Context, sessionID string) error {
 // so sessions that go stale/lost during interactive idle windows
 // resume on the next event instead of freezing forever.
 //
-// Four places know how to revive or create a session. They mirror
+// Five places know how to revive or create a session. They mirror
 // each other rather than share a helper; any change to the revival
 // contract (columns touched, state predicate) must be applied to
-// all four:
+// all five:
 //
 //  1. Ingestion: “session.Store.Attach“ runs synchronously on
 //     “session_start“ so the HTTP response can report “attached=true“.
-//     Scope: closed, lost -> active; records a session_attachments row.
+//     Scope: closed, lost -> active, clearing ended_at and closed_seq;
+//     records a session_attachments row (the only writer of those).
+//     “session.Store.RecordStart“ then runs once the event is
+//     published, when the row pre-existed: stamps the start's stream
+//     sequence and revives a row the previous run's queued
+//     session_end closed in the meantime (closed by an older end, or
+//     by no sequenced end -> active, clearing ended_at and
+//     closed_seq); no attachment row.
 //  2. Worker, “UpsertSession“ ON CONFLICT branch. Scope: any prior
 //     state -> whatever the session_start event asks for (always
 //     “active“, clearing ended_at), except a closed row whose
@@ -917,14 +924,17 @@ func (w *Writer) BumpAgentSessionCount(ctx context.Context, agentID string) erro
 // an open row whose current run began before the end was published
 // (start_seq below the end's sequence, or either unknown) is closed and
 // records the end's sequence; a row that is already closed keeps its
-// close but takes the greater closed_seq, so a session_start queued
+// close but takes a greater closed_seq, so a session_start queued
 // between a run's end and the next run's end cannot revive a session
 // whose later run has also ended. The predicate is part of the UPDATE
 // so that a re-attaching session_start committed between a read and
-// this write cannot be closed by the previous run's end. Returns
-// whether a row matched and whether it was closed by this call; no
-// match means the row is missing or this end predates the row's
-// current run, which the caller tells apart with a read.
+// this write cannot be closed by the previous run's end. A closed row
+// whose closed_seq is already at or past this end is left untouched,
+// so a flood of duplicate ends for one closed session costs no writes.
+// Returns whether a row matched and whether it was closed by this call;
+// no match means the row is missing, already closed by this or a later
+// end, or opened by a later start, which the caller tells apart with a
+// read.
 func (w *Writer) SettleSessionEnd(ctx context.Context, sessionID string, closedSeq uint64) (applied, closedNow bool, err error) {
 	err = w.pool.QueryRow(ctx, `
 		UPDATE sessions
@@ -936,7 +946,8 @@ func (w *Writer) SettleSessionEnd(ctx context.Context, sessionID string, closedS
 		                      ELSE NULLIF($2::bigint, 0) END
 		WHERE session_id = $1::uuid
 		  AND (start_seq IS NULL OR $2::bigint = 0 OR start_seq < $2::bigint)
-		RETURNING ended_at = NOW()
+		  AND (state <> 'closed' OR closed_seq IS NULL OR closed_seq < $2::bigint)
+		RETURNING COALESCE(ended_at = NOW(), false)
 	`, sessionID, seqParam(closedSeq)).Scan(&closedNow)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, false, nil

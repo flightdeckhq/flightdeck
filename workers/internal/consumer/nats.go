@@ -466,12 +466,17 @@ func (c *Consumer) Start(ctx context.Context) error {
 		return fmt.Errorf("ensure stream %s: %w", streamName, err)
 	}
 
-	info, err := js.StreamInfo(streamName)
-	if err != nil {
-		return fmt.Errorf("stream info %s: %w", streamName, err)
-	}
-	if err := c.processor.StreamReady(ctx, info.State.LastSeq); err != nil {
-		return fmt.Errorf("stream ready: %w", err)
+	// The start-up clearing of stale session sequences is a safety net
+	// for a recreated stream, not a precondition for consuming: a
+	// failure here is logged and consumption goes ahead, since a pool
+	// that never subscribes would look healthy while nothing is
+	// processed.
+	if info, err := js.StreamInfo(streamName); err != nil {
+		slog.Error("stream info failed; stale session sequences not cleared",
+			"stream", streamName, "err", err)
+	} else if err := c.processor.StreamReady(ctx, info.State.LastSeq); err != nil {
+		slog.Error("clearing stale session sequences failed",
+			"stream", streamName, "err", err)
 	}
 
 	sub, err := js.PullSubscribe(subjectAll, durableName, nats.MaxDeliver(maxDeliver))
@@ -561,6 +566,10 @@ func (c *Consumer) worker(ctx context.Context, sub *nats.Subscription, id int) {
 					slog.Warn("retry requested on the final delivery; dropping",
 						"worker", id, "event_type", event.EventType,
 						"session_id", event.SessionID)
+					// A Term that fails to reach the server leaves the
+					// message ack-pending until the ack wait expires;
+					// on the final delivery nothing is redelivered
+					// either way.
 					_ = msg.Term()
 					continue
 				}
@@ -578,16 +587,16 @@ func (c *Consumer) worker(ctx context.Context, sub *nats.Subscription, id int) {
 				continue
 			}
 			if procErr != nil {
-				// When the JetStream delivery count has crossed
-				// maxDeliver, the message is about to be dropped rather
-				// than redelivered again. Bump a distinct counter so
-				// operators can see retries-exhausted distinct from
-				// per-attempt errors. NumDelivered starts at 1.
 				slog.Error("process error", "worker", id, "event_type", event.EventType, "err", procErr)
 				if deliveries >= maxDeliver {
 					// No budget left: NATS would not redeliver, and a
 					// delayed NAK would only hold an ack-pending slot
-					// for the length of the delay. Terminate instead.
+					// for the length of the delay. Count the message as
+					// retries-exhausted, distinct from per-attempt
+					// errors, and terminate it; a Term that fails to
+					// reach the server leaves it ack-pending until the
+					// ack wait expires, with nothing redelivered either
+					// way.
 					metrics.IncrDropped(metrics.ReasonMaxRetriesExhausted)
 					_ = msg.Term()
 					continue

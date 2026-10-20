@@ -62,9 +62,9 @@ func (m *mockWriter) UpdateLastSeen(_ context.Context, sessionID string) error {
 	return nil
 }
 
-func (m *mockWriter) CloseSession(_ context.Context, sessionID string) error {
+func (m *mockWriter) SettleSessionEnd(_ context.Context, sessionID string, _ uint64) (bool, bool, error) {
 	m.sessionsClosed = append(m.sessionsClosed, sessionID)
-	return nil
+	return true, true, nil
 }
 
 func (m *mockWriter) ReconcileStaleSessions(_ context.Context) error {
@@ -117,7 +117,7 @@ func TestPostCall_IncrementsTokensUsed(t *testing.T) {
 
 func TestSessionEnd_SetsStateClosed(t *testing.T) {
 	w := newMockWriter()
-	_ = w.CloseSession(context.Background(), "sess-001")
+	_, _, _ = w.SettleSessionEnd(context.Background(), "sess-001", 1)
 	if len(w.sessionsClosed) != 1 || w.sessionsClosed[0] != "sess-001" {
 		t.Error("expected session closed")
 	}
@@ -234,13 +234,13 @@ func TestReviveIfRevivable_ReturnsTrueOnlyWhenRowUpdated(t *testing.T) {
 
 func TestSessionEnd_DoesNotFlickerThroughActive(t *testing.T) {
 	// session_end on a stale/lost session should transition directly
-	// to closed. The mockWriter can only observe that CloseSession
+	// to closed. The mockWriter can only observe that SettleSessionEnd
 	// was invoked (not UpsertSession with state=active followed by
-	// CloseSession). Real state-machine ordering is covered by
+	// SettleSessionEnd). Real state-machine ordering is covered by
 	// tests/integration/test_session_states.py::
 	// test_lost_session_closes_on_session_end.
 	w := newMockWriter()
-	_ = w.CloseSession(context.Background(), "sess-lost")
+	_, _, _ = w.SettleSessionEnd(context.Background(), "sess-lost", 1)
 	if len(w.sessionsClosed) != 1 {
 		t.Error("expected session_end on stale/lost to close directly")
 	}

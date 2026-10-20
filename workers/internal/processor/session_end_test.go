@@ -9,12 +9,8 @@ import (
 	"github.com/flightdeckhq/flightdeck/workers/internal/metrics"
 )
 
-// Stream sequences the consumer would stamp on an in-order pair of
-// events: the start is published before the end.
-const (
-	testStartSeq uint64 = 100
-	testEndSeq   uint64 = 101
-)
+// The stream sequence the consumer would stamp on the session_end.
+const testEndSeq uint64 = 101
 
 // scriptedSession stands in for the sessions table: settle answers with
 // the scripted (applied, closedNow) pair, or with the next pair of
@@ -93,6 +89,27 @@ func TestHandleSessionEnd_SkipsAnAlreadyClosedRow(t *testing.T) {
 	}
 	if got := metrics.Snapshot()[metrics.ReasonClosedSessionSkip]; got != 1 {
 		t.Fatalf("expected one closed_session_skip, got %d", got)
+	}
+}
+
+func TestHandleSessionEnd_SkipsADuplicateEndThatMatchedNothing(t *testing.T) {
+	metrics.Reset()
+	// The statement matched nothing (the row is closed by this end or a
+	// later one, so no write was needed) and the read shows it closed.
+	s := &scriptedSession{state: sessionLookupClosed}
+
+	closed, err := s.processor().HandleSessionEnd(context.Background(), sessionEndEvent(testEndSeq, false))
+	if err != nil || closed {
+		t.Fatalf("a duplicate session_end must be a no-op, closed=%v err=%v", closed, err)
+	}
+	if len(s.settled) != 1 || s.lookups != 1 {
+		t.Fatalf("expected one settle and one read, got settles=%d lookups=%d", len(s.settled), s.lookups)
+	}
+	if got := metrics.Snapshot()[metrics.ReasonClosedSessionSkip]; got != 1 {
+		t.Fatalf("expected one closed_session_skip, got %d", got)
+	}
+	if got := metrics.Snapshot()[metrics.ReasonSupersededSessionEnd]; got != 0 {
+		t.Fatalf("a duplicate is not a superseded end, counter=%d", got)
 	}
 }
 

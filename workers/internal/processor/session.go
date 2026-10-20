@@ -53,7 +53,7 @@ func NewSessionProcessor(w *writer.Writer, pool *pgxpool.Pool) *SessionProcessor
 	return &SessionProcessor{w: w, pool: pool}
 }
 
-func (sp *SessionProcessor) lookupRow(ctx context.Context, sessionID string) (sessionLookup, error) {
+func (sp *SessionProcessor) lookupState(ctx context.Context, sessionID string) (sessionLookup, error) {
 	if sp.lookupSession != nil {
 		return sp.lookupSession(ctx, sessionID)
 	}
@@ -550,12 +550,13 @@ func nilIfEmpty(s string) any {
 // The end is applied in one guarded statement (SettleSessionEnd): an
 // open row whose current run began before the end was published is
 // closed with the end's sequence; a row that is already closed keeps
-// its close and takes the greater closed_seq, so a session_start queued
+// its close and takes a greater closed_seq, so a session_start queued
 // between a run's end and the next run's end cannot revive a session
-// whose later run has also ended; an end published before the row's
-// current run began matches nothing and is recorded as an event
-// without closing anything (superseded_session_end). Unknown sequences
-// (zero) stand the ordering rule down.
+// whose later run has also ended, while an end at or below the stored
+// closed_seq is a duplicate that costs no write; an end published
+// before the row's current run began matches nothing and is recorded as
+// an event without closing anything (superseded_session_end). Unknown
+// sequences (zero) stand the ordering rule down.
 //
 // The worker pool handles a session's events concurrently, so the row
 // can be missing because its session_start is still being written on
@@ -589,9 +590,19 @@ func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.Eve
 			)
 			return false, nil
 		}
-		state, err := sp.lookupRow(ctx, e.SessionID)
+		state, err := sp.lookupState(ctx, e.SessionID)
 		if err != nil {
 			return false, fmt.Errorf("session end: look up %s: %w", e.SessionID, err)
+		}
+		if state == sessionLookupClosed {
+			// Already closed by this end or a later one: a duplicate,
+			// idempotent by design, that cost no write. Log and skip.
+			metrics.IncrDropped(metrics.ReasonClosedSessionSkip)
+			slog.Warn("skipping event for closed session",
+				"session_id", e.SessionID,
+				"event_type", "session_end",
+			)
+			return false, nil
 		}
 		if state == sessionLookupMissing {
 			if !e.FinalDelivery {
@@ -612,7 +623,7 @@ func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.Eve
 			continue
 		}
 		metrics.IncrDropped(metrics.ReasonSupersededSessionEnd)
-		slog.Warn("session_end predates the session's current run; left open",
+		slog.Warn("session_end predates the session's current run; recorded without closing",
 			"session_id", e.SessionID,
 			"reason", string(metrics.ReasonSupersededSessionEnd),
 			"end_seq", e.StreamSeq,

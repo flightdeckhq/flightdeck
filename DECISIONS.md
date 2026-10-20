@@ -2193,6 +2193,7 @@ fallback is acceptable.
 **Status:** Partly superseded by D186 — the worker-side upsert no longer
 sets every prior state to `active`; a closed row stays closed when the
 `session_end` that closed it was published after the `session_start`.
+The rest of this record stands.
 
 **Problem:** Agents spawned repeatedly by orchestrators (Temporal
 workflows, Airflow DAGs, cron-driven batch jobs) get a different
@@ -3132,12 +3133,12 @@ reconciler-driven transition to `lost` at ~05:42:28Z,
 
 ## D106 -- Lazy session creation on events with unknown session_id
 
-**Status:** Partly superseded by D186 — a `session_end` for a missing
-row is redelivered with a delay before it counts as an orphan, and an
-orphan is acknowledged without reaching `InsertEvent`.
-
 **Date:** 2026-04-18
 **Phase:** 5
+**Status:** Partly superseded by D186 — a `session_end` for a missing
+row is redelivered with a delay before it counts as an orphan, and an
+orphan is acknowledged without reaching `InsertEvent`. The rest of this
+record stands.
 
 **Context.** Two user scenarios share one root cause. (1) Flightdeck
 server is down when Claude Code + plugin start, so the plugin's
@@ -9951,12 +9952,13 @@ the handler reports with `ErrEventDropped` so the processor ACKs it
 without an event-row insert. A database error during the lookup is
 returned, so the message is NAKed and redelivered rather than read as
 "missing". Every other processing error is NAKed with the same growing
-delay instead of immediately.
+delay instead of immediately, and a message that fails its last delivery
+is terminated and counted as `max_retries_exhausted`.
 
-Each session row records the NATS stream sequence of the event that
-opened its current run (`start_seq`: the latest `session_start`, or the
-event that lazily created the row) and of the `session_end` that closed
-it (`closed_seq`), both nullable, added by migration 000027. The
+Each session row records the NATS stream sequence of the `session_start`
+that opened its current run (`start_seq`; a lazily created row has none
+until its `session_start` lands) and of the `session_end` that closed it
+(`closed_seq`), both nullable, added by migration 000027. The
 `session_start` upsert revives a closed row (clearing `ended_at`) unless
 `closed_seq` is greater than the start's sequence, and the `session_end`
 handler closes an open row, in one guarded UPDATE, only when the end's
@@ -9966,9 +9968,16 @@ finds the row already closed advances `closed_seq` when it was published
 later, so a `session_start` queued between a run's end and the next
 run's end cannot revive a session whose later run has also ended. The
 ingestion API stamps a re-attaching `session_start`'s sequence on the
-row as soon as it has published it, so the previous run's queued end
-never closes the re-attached run and the run's first calls keep their
-tokens. A lazily created row records no `start_seq`, so a straggler
+row as soon as it has published it, reviving the row if the previous
+run's queued end closed it between the attach check and the stamp, so
+that end closes nothing that stays closed and the run's first calls keep
+their tokens; the stamp is best effort (a row another transaction holds
+at that instant is skipped rather than waited for, so many clients
+re-attaching one session id cannot serialise the ingestion path on that
+row's lock), and if it is missed the worker's own rules still revive the
+row. A duplicate end at or below a closed row's `closed_seq` costs no
+write. A lazily created row records no
+`start_seq`, so a straggler
 published after a run's end cannot read as the run's start. An emitter
 that publishes its `session_end` before its `session_start` leaves the
 session open until the reaper closes it. Unknown sequences (rows from
@@ -10021,6 +10030,20 @@ publication order tells the two cases apart, and the stream sequence is
 that order without any clock: ingestion publishes events as it accepts
 them.
 
+Three interleavings remained after that, each reproduced against the dev
+stack. The `session_end` handler read the row and then closed it in a
+second statement, so a re-attaching `session_start` that committed in
+between was closed by the previous run's end, and a later end's
+`closed_seq` advance was lost when a start revived the row first; the end
+is now one guarded UPDATE. With the previous run's end still queued, the
+re-attached run's first calls hit the closed-session guard and lost their
+tokens (30 of 30 in a probe); the ingestion API therefore stamps the
+start's sequence on the row once it has published it, reviving the row
+the queued end has usually closed by then. A lazily created row that
+recorded its creating event's sequence as the run's start let a straggler
+published after the run's end supersede that end (about 40 percent of
+500 sessions on a multi-core worker); lazy creation now records none.
+
 **Rejected alternative:** Waiting for the row inside the handler (the
 measured stall above). Capping the number of concurrent waiters (a cap
 of two protected the pool but dropped 28 of 30 legitimate `session_end`s
@@ -10029,12 +10052,20 @@ during the flood). Serialising a session's events on one goroutine
 goroutine fetches its own message). Lazy-creating a closed row on an
 orphan `session_end` (it would manifest a closed session the server
 never saw, which tells operators nothing they can act on, the reason
-D106 gave). Stamping the attach verdict on the published `session_start`
-(covers the queued previous end but not a re-attached run whose own end
-overtakes its start, nor an attach check that failed open). Comparing
+D106 gave). Carrying the attach verdict in the published `session_start`
+payload (covers the queued previous end but not a re-attached run whose
+own end overtakes its start, nor an attach check that failed open).
+Comparing
 event timestamps instead of sequences (a re-attachment from another host
 within the clock skew ingestion tolerates would read as the wrong
 order).
+
+**Retry budget boundary:** the redelivery schedule gives a `session_end`
+about three seconds for its `session_start` to land. A start held back
+longer than that (a four-second hold in a probe) leaves the end dropped
+as an orphan and the session open until the reaper; a hold within the
+window (one and a half seconds in the same probe) closes the session on
+the redelivery.
 
 **Remaining ordering:** A `post_call` whose closed-session guard runs
 after a `session_end` has closed the session is stored as an event row,

@@ -16,10 +16,10 @@ ALTER TABLE sessions
     ADD COLUMN IF NOT EXISTS closed_seq BIGINT;
 
 COMMENT ON COLUMN sessions.start_seq IS
-    'NATS stream sequence of the event that opened the current run: the '
-    'latest session_start, or the first event that lazily created the '
-    'row. A session_end published before it belongs to an earlier run '
-    'and does not close the session.';
+    'NATS stream sequence of the session_start that opened the current '
+    'run; NULL on a row created lazily by another event until its '
+    'session_start lands. A session_end published before it belongs to '
+    'an earlier run and does not close the session.';
 COMMENT ON COLUMN sessions.closed_seq IS
     'NATS stream sequence of the session_end that closed the session. A '
     'session_start published before it was overtaken by its own '

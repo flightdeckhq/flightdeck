@@ -25,7 +25,6 @@ from ..shared.fixtures import (
     # Constants
     API_HEALTH,
     API_URL,
-    DOCKER_CLI_TIMEOUT_SECS,
     DEFAULT_AGENT_TYPE,
     DEFAULT_CLIENT_TYPE,
     DEFAULT_HOSTNAME,
@@ -35,15 +34,16 @@ from ..shared.fixtures import (
     INGESTION_URL,
     MAX_WAIT_SECS,
     POLL_INTERVAL,
-    POSTGRES_CONTAINER,
     TOKEN,
     # Public helpers
+    agent_row_locked,
     auth_headers,
     create_drifted_agent,
     create_policy,
     delete_drifted_agent,
     delete_policy,
     directive_has_delivered_at,
+    ensure_worker_running,
     exec_sql,
     get_agent_rollup,
     get_fleet,
@@ -76,7 +76,6 @@ from ..shared.fixtures import (
 __all__ = [
     "API_HEALTH",
     "API_URL",
-    "DOCKER_CLI_TIMEOUT_SECS",
     "DEFAULT_AGENT_TYPE",
     "DEFAULT_CLIENT_TYPE",
     "DEFAULT_HOSTNAME",
@@ -86,14 +85,15 @@ __all__ = [
     "INGESTION_URL",
     "MAX_WAIT_SECS",
     "POLL_INTERVAL",
-    "POSTGRES_CONTAINER",
     "TOKEN",
+    "agent_row_locked",
     "auth_headers",
     "create_drifted_agent",
     "create_policy",
     "delete_drifted_agent",
     "delete_policy",
     "directive_has_delivered_at",
+    "ensure_worker_running",
     "exec_sql",
     "get_agent_rollup",
     "get_fleet",
@@ -126,6 +126,7 @@ def stack() -> None:
     """
     try:
         wait_for_services(MAX_WAIT_SECS)
+        ensure_worker_running()
     except TimeoutError as exc:
         pytest.fail(str(exc))
 

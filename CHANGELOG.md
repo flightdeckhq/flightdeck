@@ -25,17 +25,16 @@ server.
   worker now asks NATS to redeliver such a `session_end` after one second
   and again after two, holding no goroutine, and acknowledges a true
   orphan once, without an insert attempt.
-- **Worker: a session's start and end are ordered by publication.** Each
-  `sessions` row records the NATS stream sequence of the event that
-  opened its current run and of the `session_end` that closed it (two
-  nullable columns, migration 000027), so a `session_start` processed
-  after its own `session_end` leaves the session closed, a re-attachment
-  whose previous run's `session_end` was still queued keeps its first
-  calls' tokens (the ingestion API stamps the start's sequence on the
-  row as it accepts it), and a `session_end` from a previous run no
-  longer closes a re-attached session. The worker forgets stored
-  sequences from a previous incarnation of the NATS stream when it
-  starts.
+- **Worker: a re-attached session could be closed by its previous run's
+  `session_end`.** When a run ended and the same `session_id` started
+  again before that end had been processed, the end closed the new run
+  and the new run's first calls lost their tokens; a `session_start`
+  processed after its own `session_end` could likewise revive a finished
+  session. A session's start and end are now ordered by their NATS stream
+  sequence (two nullable columns on `sessions`, migration 000027), and
+  the ingestion API stamps a re-attaching start's sequence on the row as
+  soon as it has published it. The worker forgets stored sequences from a
+  previous incarnation of the NATS stream when it starts.
 - **API: `GET /v1/sessions/:id` returned `events: null` for a session
   whose event rows had not landed yet.** The field is now always an
   array.
@@ -134,7 +133,6 @@ server.
   delay** (one second times the deliveries so far, within the
   three-delivery budget) instead of immediately, so a transient database
   error no longer spends the whole budget within milliseconds.
-
 - **Docs match the code.** ARCHITECTURE.md now describes the repository
   tree, the `sessions` / `agents` / `directives` / `custom_directives` /
   `token_policies` DDL, migrations through 000027, plugin session identity

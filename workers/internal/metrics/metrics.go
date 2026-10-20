@@ -20,9 +20,10 @@
 //                             ACK'd with a WARN + counter bump and no
 //                             event row.
 //   - superseded_session_end — session_end published before the
-//                             session's current run began (the
-//                             session was re-attached first). Recorded
-//                             as an event; the row stays open.
+//                             session's current run began (a
+//                             re-attachment, or an emitter that sent
+//                             its end first). Recorded as an event;
+//                             the row's state is left as it is.
 //   - closed_session_skip   — event arrived for a session already in
 //                             state=closed (a duplicate session_end
 //                             included). The
@@ -82,7 +83,7 @@ const (
 // post_call / tool_call / etc. propagates freshness to its parent's
 // row, and when the parent was stale/lost it's revived to active.
 // Operators chart the rate via sessions_revived_total{trigger=...}
-// on the worker's /metrics endpoint.
+// through Handler, which no service mounts yet (README Roadmap).
 type RevivalTrigger string
 
 const (
@@ -249,7 +250,8 @@ func Reset() {
 	revivedSessions = map[RevivalTrigger]*atomic.Uint64{}
 }
 
-// Handler serves the /metrics endpoint. Trivial text format, one line
+// Handler renders the counters as a metrics page (not mounted by any
+// service yet; see the README Roadmap). Trivial text format, one line
 // per (counter, reason) pair, to keep the worker free of the
 // prometheus client dependency until a future phase needs it.
 func Handler() http.Handler {

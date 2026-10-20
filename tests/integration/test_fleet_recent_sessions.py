@@ -40,7 +40,11 @@ PER_AGENT_CAP = 5
 
 
 def _instant(stamp: str) -> datetime:
-    """Parse an RFC 3339 timestamp from the API, with or without fractions."""
+    """Parse an RFC 3339 timestamp from the API, with or without fractions.
+
+    The API emits fractions of one to six digits; ``fromisoformat``
+    accepts any width on the Python 3.11+ the suite runs on.
+    """
     return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
 
 

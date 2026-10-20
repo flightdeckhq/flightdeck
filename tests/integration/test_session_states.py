@@ -7,13 +7,12 @@ non-session_start event. Requires `make dev` to be running.
 
 from __future__ import annotations
 
-import subprocess
 import uuid
-from collections.abc import Iterator
-from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from .conftest import (
+    agent_row_locked,
     exec_sql,
     get_session,
     get_session_detail,
@@ -27,7 +26,6 @@ from .conftest import (
     worker_log_lines,
     worker_paused,
 )
-from .conftest import DOCKER_CLI_TIMEOUT_SECS, POSTGRES_CONTAINER
 
 
 def _force_state(session_id: str, state: str) -> None:
@@ -686,6 +684,10 @@ BURST_TIMEOUT_SECS = 30.0
 # Sessions per shape in the paused-worker backlog test: enough that the
 # ten goroutines draining the backlog overlap on every shape many times.
 BACKLOG_SESSIONS = 30
+# Concurrent clients and total starts aimed at one session id in the
+# hot-session test: enough for requests to overlap on the row.
+HOT_SESSION_CLIENTS = 8
+HOT_SESSION_STARTS = 40
 # What the worker logs when it schedules a redelivery, on the orphan
 # path, on a session_end that predates the session's current run, and on
 # any failed attempt.
@@ -696,72 +698,15 @@ PROCESS_ERROR_MARKER = "process error"
 # Redeliveries the worker grants a session_end whose row is missing
 # before the orphan verdict (the three-delivery budget minus the first).
 ORPHAN_REDELIVERIES = 2
+# The agent identity the lock-held test locks: its own, so the lock never
+# blocks the sessions the other tests run under the default identity.
+HELD_AGENT_NAME = "ordering-held-agent"
 # Token counts and latency the probe post_call carries; the session row
 # must show the total.
 PROBE_INPUT_TOKENS = 5
 PROBE_OUTPUT_TOKENS = 3
 PROBE_CALL_TOKENS = PROBE_INPUT_TOKENS + PROBE_OUTPUT_TOKENS
 PROBE_LATENCY_MS = 10
-
-
-@contextmanager
-def _agent_row_locked(agent_id: str) -> Iterator[None]:
-    """Hold the agents row FOR NO KEY UPDATE for the duration of the block.
-
-    HandleSessionStart's first write is the agents upsert, so every
-    session_start of that agent blocks in the worker until the block
-    ends while the other handlers (which only take KEY SHARE locks on the
-    row through the sessions foreign key) proceed. The lock belongs to a
-    psql session kept open on stdin; the block starts once Postgres
-    reports that session idle in its transaction.
-    """
-    tag = f"lock-{uuid.uuid4().hex[:8]}"
-    proc = subprocess.Popen(
-        [
-            "docker",
-            "exec",
-            "-i",
-            POSTGRES_CONTAINER,
-            "psql",
-            "-U",
-            "flightdeck",
-            "-d",
-            "flightdeck",
-            "-q",
-        ],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        text=True,
-    )
-    assert proc.stdin is not None
-    try:
-        proc.stdin.write(
-            f"BEGIN; SELECT 1 /* {tag} */ FROM agents "
-            f"WHERE agent_id = '{agent_id}'::uuid FOR NO KEY UPDATE;\n"
-        )
-        proc.stdin.flush()
-        wait_until(
-            lambda: (
-                exec_sql(
-                    "SELECT COUNT(*) FROM pg_stat_activity "
-                    "WHERE state = 'idle in transaction' AND query LIKE :'tag'",
-                    tag=f"%{tag}%",
-                )
-                == "1"
-            ),
-            timeout=STATE_TIMEOUT_SECS,
-            msg="the agent row lock was never taken",
-        )
-        yield
-    finally:
-        try:
-            proc.stdin.write("COMMIT;\n")
-            proc.stdin.flush()
-            proc.stdin.close()
-        except OSError:
-            pass
-        proc.wait(timeout=DOCKER_CLI_TIMEOUT_SECS)
 
 
 def _probe_call(sid: str, flavor: str) -> dict[str, Any]:
@@ -904,11 +849,11 @@ def test_orphan_session_end_is_dropped_once_after_the_retry_budget() -> None:
 
 
 def test_reattach_published_right_after_session_end_keeps_the_session_open() -> None:
-    """A session_start for a session whose previous run's session_end is
-    still queued is a re-attachment: the end must not close the new run
-    and the start must not leave it closed. A call made once both have
-    landed rolls its tokens into the open session, and the new run can
-    still be ended.
+    """A session_start right after the previous run's session_end is a
+    re-attachment: however the two are processed, the session must be
+    open once both have landed. A call made then rolls its tokens into
+    the open session, and the new run can still be ended. (The orderings
+    the pool can introduce are forced by the backlog test below.)
     """
     sid = str(uuid.uuid4())
     flavor = f"test-reattach-{uuid.uuid4().hex[:6]}"
@@ -932,11 +877,11 @@ def test_reattach_published_right_after_session_end_keeps_the_session_open() -> 
 
 
 def test_reattachment_with_the_previous_end_queued_keeps_its_first_calls() -> None:
-    """A call made right after the re-attaching session_start, while the
-    previous run's session_end is still queued, must roll its tokens into
-    the session: the ingestion API stamps the start's stream sequence on
-    the row as it accepts the start, so the queued end reads as
-    superseded and never closes the re-attached run.
+    """A call made right after the re-attaching session_start must roll
+    its tokens into the session whatever the previous run's session_end
+    does in the meantime: the ingestion API stamps the start's stream
+    sequence on the row as it accepts the start and revives the row if
+    that end closed it first.
     """
     sid = str(uuid.uuid4())
     flavor = f"test-reattach-call-{uuid.uuid4().hex[:6]}"
@@ -967,18 +912,18 @@ def test_reattachment_processed_after_both_runs_ended_stays_closed() -> None:
     """
     sid = str(uuid.uuid4())
     flavor = f"test-reattach-held-{uuid.uuid4().hex[:6]}"
-    agent_name = f"held-{uuid.uuid4().hex[:8]}"
-    post_event(make_event(sid, flavor, "session_start", agent_name=agent_name))
+    post_event(make_event(sid, flavor, "session_start", agent_name=HELD_AGENT_NAME))
     wait_for_state(sid, "active", timeout=STATE_TIMEOUT_SECS)
     agent_id = exec_sql(
         "SELECT agent_id FROM sessions WHERE session_id = :'sid'::uuid", sid=sid
     )
 
-    with _agent_row_locked(agent_id):
-        post_event(make_event(sid, flavor, "session_end", agent_name=agent_name))
-        post_event(make_event(sid, flavor, "session_start", agent_name=agent_name))
-        post_event(make_event(sid, flavor, "session_end", agent_name=agent_name))
+    with agent_row_locked(agent_id):
+        post_event(make_event(sid, flavor, "session_end", agent_name=HELD_AGENT_NAME))
+        post_event(make_event(sid, flavor, "session_start", agent_name=HELD_AGENT_NAME))
+        post_event(make_event(sid, flavor, "session_end", agent_name=HELD_AGENT_NAME))
         _wait_for_rows(flavor, "session_end", 2, RETRY_WINDOW_TIMEOUT_SECS)
+        assert _count_rows(flavor, "session_start") == 1, "the start was not held back"
         assert get_session_detail(sid)["session"]["state"] == "closed"
 
     _wait_for_rows(flavor, "session_start", 2, RETRY_WINDOW_TIMEOUT_SECS)
@@ -1062,6 +1007,60 @@ def test_backlog_of_reattachments_drains_to_the_right_states() -> None:
     )
 
 
+def test_a_later_session_end_on_a_closed_row_advances_its_close_sequence() -> None:
+    """When the re-attachment stamp is missed, a run's end can reach a row
+    the previous run's end already closed. The later end must leave its
+    sequence on the row, so a session_start published between the two
+    ends still reads the row as closed by a newer end. Reproduced here
+    with two ends on a closed row: the second must raise closed_seq.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-later-end-{uuid.uuid4().hex[:6]}"
+    post_event(make_event(sid, flavor, "session_start"))
+    post_event(make_event(sid, flavor, "session_end"))
+    wait_for_state(sid, "closed", timeout=STATE_TIMEOUT_SECS)
+    first = int(
+        exec_sql(
+            "SELECT closed_seq FROM sessions WHERE session_id = :'sid'::uuid", sid=sid
+        )
+    )
+
+    post_event(make_event(sid, flavor, "session_end"))
+    _wait_for_rows(flavor, "session_end", 2, RETRY_WINDOW_TIMEOUT_SECS)
+    second = int(
+        exec_sql(
+            "SELECT closed_seq FROM sessions WHERE session_id = :'sid'::uuid", sid=sid
+        )
+    )
+    assert second > first, f"closed_seq did not advance: {first} -> {second}"
+    assert get_session_detail(sid)["session"]["state"] == "closed"
+
+
+def test_many_concurrent_session_starts_on_one_session_id_stay_consistent() -> None:
+    """Several clients re-attaching the same session id at once must all be
+    accepted and leave the session open: the ingestion stamp skips a row
+    another request holds rather than queue every request on its lock.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-hot-start-{uuid.uuid4().hex[:6]}"
+    post_event(make_event(sid, flavor, "session_start"))
+    wait_for_state(sid, "active", timeout=STATE_TIMEOUT_SECS)
+
+    with ThreadPoolExecutor(max_workers=HOT_SESSION_CLIENTS) as pool:
+        replies = list(
+            pool.map(
+                lambda _: post_event(make_event(sid, flavor, "session_start")),
+                range(HOT_SESSION_STARTS),
+            )
+        )
+    assert all(r.get("status") == "ok" for r in replies), replies
+    _wait_for_rows(flavor, "session_start", 1 + HOT_SESSION_STARTS, BURST_TIMEOUT_SECS)
+    assert get_session_detail(sid)["session"]["state"] == "active"
+
+    post_event(make_event(sid, flavor, "session_end"))
+    wait_for_state(sid, "closed", timeout=STATE_TIMEOUT_SECS)
+
+
 def test_reattached_run_that_ends_at_once_closes() -> None:
     """The mirror of the previous test: a re-attachment whose own
     session_end follows at once must end closed, whichever of the two
@@ -1077,7 +1076,6 @@ def test_reattached_run_that_ends_at_once_closes() -> None:
     post_event(make_event(sid, flavor, "session_end"))
     _wait_for_rows(flavor, "session_end", 2, RETRY_WINDOW_TIMEOUT_SECS)
     assert get_session_detail(sid)["session"]["state"] == "closed"
-
 
 
 # ---------------------------------------------------------------------------

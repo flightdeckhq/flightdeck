@@ -16,6 +16,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"math"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -37,12 +40,13 @@ func NewStore(pool *pgxpool.Pool) *Store {
 //   - Session row does not exist → returns (false, "", nil). The worker
 //     will later create it via UpsertSession.
 //   - Session row exists with state in {closed, lost} → flips state to
-//     active, sets last_attached_at = NOW(), leaves started_at /
-//     ended_at untouched (see D094), returns (true, priorState, nil).
-//     The caller logs INFO.
-//   - Session row exists with state in {active, idle, stale} → touches
-//     last_attached_at only, returns (true, priorState, nil). The
-//     caller does not log (the sensor is simply resuming).
+//     active, clears ended_at and closed_seq, leaves started_at
+//     untouched, records a session_attachments row and returns
+//     (true, priorState, nil). The caller logs INFO.
+//   - Session row exists with state in {active, idle, stale} → leaves
+//     the row as it is, records a session_attachments row and returns
+//     (true, priorState, nil). The caller does not log (the sensor is
+//     simply resuming).
 //
 // On any other Postgres error, the function returns (false, "", err)
 // and the caller MUST fall back to attached=false rather than block
@@ -62,10 +66,9 @@ func (s *Store) Attach(ctx context.Context, sessionID string) (bool, string, err
 		return false, "", fmt.Errorf("lookup session %s: %w", sessionID, err)
 	}
 
-	// Revive closed/lost → active. started_at and ended_at stay as they
-	// were on the original close; the dashboard's run separator draws
-	// off session_attachments, so we don't need to clear ended_at to
-	// distinguish runs. See DECISIONS.md D094.
+	// Revive closed/lost → active. started_at stays as it was on the
+	// original close (the dashboard's run separator draws off
+	// session_attachments); ended_at and closed_seq are cleared below.
 	if priorState == "closed" || priorState == "lost" {
 		// Clear ended_at on revive so the session no longer looks
 		// "finished at time X" while state=active. Without this, the
@@ -116,25 +119,83 @@ func (s *Store) Attach(ctx context.Context, sessionID string) (bool, string, err
 // session. A row closed by a later end (the new run's own, which can
 // only be published after this start) stays closed. A zero sequence
 // (the publish was given up on) records nothing.
+//
+// The stamp is best effort and must not queue behind other writers of
+// the row: many clients re-attaching one session id at once would
+// otherwise serialise every request on that row's lock and slow the
+// whole ingestion path. A row another transaction holds is therefore
+// skipped (SKIP LOCKED) and tried once more after recordStartRetryDelay,
+// which outlasts the single-statement close the worker may be applying
+// to the row at that instant; a row still held after that is left to
+// the worker's own ordering rules, which remain the backstop.
 func (s *Store) RecordStart(ctx context.Context, sessionID string, seq uint64) error {
-	if seq == 0 {
+	// Zero means unknown; a sequence beyond the bigint range (which no
+	// stream reaches) is treated the same rather than wrapped.
+	if seq == 0 || seq > math.MaxInt64 {
 		return nil
 	}
-	if _, err := s.pool.Exec(ctx, `
-		UPDATE sessions
-		SET start_seq = GREATEST(start_seq, $2::bigint),
-		    state = CASE WHEN state = 'closed'
-		                  AND (closed_seq IS NULL OR closed_seq < $2::bigint)
-		                 THEN 'active' ELSE state END,
-		    ended_at = CASE WHEN state = 'closed'
-		                     AND (closed_seq IS NULL OR closed_seq < $2::bigint)
-		                    THEN NULL ELSE ended_at END,
-		    closed_seq = CASE WHEN state = 'closed'
-		                       AND (closed_seq IS NULL OR closed_seq < $2::bigint)
-		                      THEN NULL ELSE closed_seq END
-		WHERE session_id = $1::uuid
-	`, sessionID, int64(seq)); err != nil {
-		return fmt.Errorf("record start sequence for %s: %w", sessionID, err)
+	for attempt := 0; ; attempt++ {
+		revived, applied, err := s.recordStart(ctx, sessionID, seq)
+		if err != nil {
+			return err
+		}
+		if applied {
+			if revived {
+				slog.Info("session revived by its re-attaching session_start",
+					"session_id", sessionID,
+					"start_seq", seq,
+				)
+			}
+			return nil
+		}
+		if attempt > 0 {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(recordStartRetryDelay):
+		}
 	}
-	return nil
+}
+
+// recordStartRetryDelay is the pause before the stamp's second attempt
+// on a row another transaction held. The worker's statements on a
+// session row are single UPDATEs that hold the lock for well under a
+// millisecond, so a few milliseconds cover the common case without
+// adding noticeable latency to the ingestion response.
+const recordStartRetryDelay = 5 * time.Millisecond
+
+func (s *Store) recordStart(ctx context.Context, sessionID string, seq uint64) (revived, applied bool, err error) {
+	err = s.pool.QueryRow(ctx, `
+		WITH before AS (
+			SELECT session_id, state, closed_seq
+			FROM sessions
+			WHERE session_id = $1::uuid
+			FOR UPDATE SKIP LOCKED
+		)
+		UPDATE sessions AS s
+		SET start_seq = GREATEST(s.start_seq, $2::bigint),
+		    state = CASE WHEN before.state = 'closed'
+		                  AND (before.closed_seq IS NULL OR before.closed_seq < $2::bigint)
+		                 THEN 'active' ELSE s.state END,
+		    ended_at = CASE WHEN before.state = 'closed'
+		                     AND (before.closed_seq IS NULL OR before.closed_seq < $2::bigint)
+		                    THEN NULL ELSE s.ended_at END,
+		    closed_seq = CASE WHEN before.state = 'closed'
+		                       AND (before.closed_seq IS NULL OR before.closed_seq < $2::bigint)
+		                      THEN NULL ELSE s.closed_seq END
+		FROM before
+		WHERE s.session_id = before.session_id
+		RETURNING before.state = 'closed'
+		          AND (before.closed_seq IS NULL OR before.closed_seq < $2::bigint)
+	`, sessionID, int64(seq)).Scan(&revived)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The row is held by another transaction (skipped) or gone.
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("record start sequence for %s: %w", sessionID, err)
+	}
+	return revived, true, nil
 }

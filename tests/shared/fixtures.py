@@ -17,10 +17,13 @@ on the test runner.
 from __future__ import annotations
 
 import json
+import signal
 import subprocess
+import sys
 from collections.abc import Iterator
 from contextlib import contextmanager
 import time
+import uuid
 import urllib.error
 import urllib.request
 from typing import Any, Callable
@@ -586,6 +589,41 @@ def get_session_event_count(session_id: str) -> int:
         return 0
 
 
+def _docker(*args: str, stdin: str | None = None) -> subprocess.CompletedProcess[str]:
+    """Run a docker CLI command and raise with its stderr when it fails.
+
+    ``subprocess.CalledProcessError`` alone would only say "exit status
+    1"; the daemon's message ("No such container", ...) is what a reader
+    of a failing test needs.
+    """
+    proc = subprocess.run(
+        ["docker", *args],
+        input=stdin,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=DOCKER_CLI_TIMEOUT_SECS,
+        check=False,
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"docker {' '.join(args)} failed ({proc.returncode}): {proc.stderr.strip()}"
+        )
+    return proc
+
+
+def worker_is_paused() -> bool:
+    """Whether the worker container is paused (left so by an interrupted test)."""
+    return _docker("inspect", "-f", "{{.State.Paused}}", WORKER_CONTAINER).stdout.strip() == "true"
+
+
+def ensure_worker_running() -> None:
+    """Unpause the worker if an earlier run was killed inside ``worker_paused``."""
+    if worker_is_paused():
+        _docker("unpause", WORKER_CONTAINER)
+
+
 @contextmanager
 def worker_paused() -> Iterator[None]:
     """Pause the worker container for the duration of the block.
@@ -594,23 +632,120 @@ def worker_paused() -> Iterator[None]:
     its goroutine pool drains the backlog concurrently, which makes the
     orderings the pool can introduce between a session's events
     reproducible instead of timing-dependent. The container is resumed
-    even if the block raises.
+    when the block ends, raises, or is interrupted by SIGTERM (which is
+    turned into a normal exit for the duration so ``finally`` runs); a
+    run killed outright is repaired by ``ensure_worker_running`` at the
+    next session start.
     """
-    subprocess.run(
-        ["docker", "pause", WORKER_CONTAINER],
-        check=True,
-        capture_output=True,
-        timeout=DOCKER_CLI_TIMEOUT_SECS,
-    )
+    previous = signal.signal(signal.SIGTERM, lambda signum, _frame: sys.exit(128 + signum))
+    _docker("pause", WORKER_CONTAINER)
     try:
         yield
     finally:
-        subprocess.run(
-            ["docker", "unpause", WORKER_CONTAINER],
-            check=True,
-            capture_output=True,
-            timeout=DOCKER_CLI_TIMEOUT_SECS,
+        signal.signal(signal.SIGTERM, previous)
+        try:
+            _docker("unpause", WORKER_CONTAINER)
+        except RuntimeError:
+            # Re-raised only when the block itself succeeded, so a test's
+            # own failure is not replaced by the unpause error.
+            if sys.exc_info()[0] is None:
+                raise
+
+
+@contextmanager
+def agent_row_locked(agent_id: str) -> Iterator[None]:
+    """Hold the agents row FOR NO KEY UPDATE for the duration of the block.
+
+    HandleSessionStart's first write is the agents upsert, so every
+    session_start of that agent blocks in the worker until the block ends
+    while the other handlers, which only take KEY SHARE locks on the row
+    through the sessions foreign key, proceed. The lock belongs to a psql
+    session kept open on stdin and tagged through its application name;
+    the block starts once a second session's NOWAIT probe fails on the
+    row, which proves the lock is held (an unknown id locks nothing and
+    is reported instead).
+    """
+    agent_id = str(uuid.UUID(agent_id))  # the id comes from the database, but it is interpolated nowhere else
+    tag = f"lock-{uuid.uuid4().hex[:8]}"
+    proc = subprocess.Popen(
+        [
+            "docker",
+            "exec",
+            "-i",
+            "-e",
+            f"PGAPPNAME={tag}",
+            POSTGRES_CONTAINER,
+            "psql",
+            "-U",
+            "flightdeck",
+            "-d",
+            "flightdeck",
+            "-q",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-v",
+            f"agent_id={agent_id}",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stdin is not None and proc.stderr is not None
+    try:
+        proc.stdin.write(
+            "BEGIN; SELECT 1 FROM agents WHERE agent_id = :'agent_id'::uuid "
+            "FOR NO KEY UPDATE;\n"
         )
+        proc.stdin.flush()
+
+        def _held() -> bool:
+            if proc.poll() is not None:
+                raise RuntimeError(
+                    f"psql exited {proc.returncode}: {proc.stderr.read().strip()}"
+                )
+            # psql substitutes :'name' only in SQL read from stdin, not -c.
+            probe = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    "-i",
+                    POSTGRES_CONTAINER,
+                    "psql",
+                    "-U",
+                    "flightdeck",
+                    "-d",
+                    "flightdeck",
+                    "-v",
+                    "ON_ERROR_STOP=1",
+                    "-v",
+                    f"agent_id={agent_id}",
+                ],
+                input=(
+                    "SELECT 1 FROM agents WHERE agent_id = :'agent_id'::uuid "
+                    "FOR NO KEY UPDATE NOWAIT;\n"
+                ),
+                capture_output=True,
+                text=True,
+                timeout=DOCKER_CLI_TIMEOUT_SECS,
+                check=False,
+            )
+            if probe.returncode == 0 and "(0 rows)" in probe.stdout:
+                raise RuntimeError(f"no agents row for {agent_id}; nothing to lock")
+            return "could not obtain lock" in probe.stderr
+
+        wait_until(_held, timeout=MAX_WAIT_SECS, msg=f"the agent row lock was never taken ({tag})")
+        yield
+    finally:
+        try:
+            proc.stdin.write("COMMIT;\n")
+            proc.stdin.flush()
+            proc.stdin.close()
+        except OSError:
+            # psql already exited (reported above through _held), so
+            # there is no transaction left to end.
+            pass
+        proc.wait(timeout=DOCKER_CLI_TIMEOUT_SECS)
 
 
 def worker_log_lines(*needles: str, tail: int = WORKER_LOG_TAIL_LINES) -> list[str]:
@@ -622,20 +757,7 @@ def worker_log_lines(*needles: str, tail: int = WORKER_LOG_TAIL_LINES) -> list[s
     missing container reads as an infrastructure error, not as "the
     worker never logged it".
     """
-    proc = subprocess.run(
-        ["docker", "logs", "--tail", str(tail), WORKER_CONTAINER],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=DOCKER_CLI_TIMEOUT_SECS,
-        check=False,
-    )
-    if proc.returncode != 0:
-        raise RuntimeError(
-            f"docker logs {WORKER_CONTAINER} failed ({proc.returncode}): "
-            f"{proc.stderr.strip()}"
-        )
+    proc = _docker("logs", "--tail", str(tail), WORKER_CONTAINER)
     return [
         line
         for line in (proc.stdout + proc.stderr).splitlines()

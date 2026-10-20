@@ -9844,11 +9844,12 @@ from the network; once the helper's message is complete (`stop_reason`
 set) that snapshot is the full message and becomes the response, so
 content capture and tool calls come from the assembled message without
 reading the trailing `message_stop` frame (on an early exit the snapshot
-is stored as it stands). The guard emits `post_call` once, at the first of stream exhaustion, `close()`,
-leaving the `with` block normally, or the guard being garbage-collected; a
-failure emits `llm_error` carrying the tokens delivered before it, which
-the sensor adds to its in-process session counter (server-side totals and
-cost come from `post_call` events). The guard is a plain iterator as well as a
+is stored as it stands). The guard emits `post_call` once, at the first of stream exhaustion,
+`close()`, leaving the `with` block, the session ending with the stream
+still open, or (queued for the next intercepted LLM call) the guard being
+collected; a stream failure emits `llm_error` carrying the tokens
+delivered before it, which the sensor adds to its in-process session
+counter (server-side totals and cost come from `post_call` events). The guard is a plain iterator as well as a
 context manager, so `for chunk in create(..., stream=True)` and `async
 for` work without `with`. `messages.create(stream=True)` and
 `responses.create(stream=True)` route through the same guard as

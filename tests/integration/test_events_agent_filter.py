@@ -1,5 +1,5 @@
 """Integration test: GET /v1/events agent_id filter + the
-SessionListItem.attachment_count column (D157 Phase 4).
+SessionListItem.attachment_count column.
 
 The agent drawer's Events tab lists every event across all of one
 agent's runs. The events table has no agent_id column, so the

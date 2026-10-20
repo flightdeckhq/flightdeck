@@ -224,8 +224,7 @@ def _post_session_events(
     # semantics — see ARCHITECTURE.md). Subsequent reads via the
     # listing's ``mcp_server_names[]`` aggregation and the detail
     # endpoint's ``context`` envelope both surface this list. Other
-    # roles emit session_start without context, matching the
-    # pre-Phase-5 baseline.
+    # roles emit session_start without context, the baseline shape.
     session_start_kwargs: dict[str, Any] = {}
     role_mcp_servers = role_cfg.get("mcp_servers")
     if role_mcp_servers:
@@ -1756,9 +1755,9 @@ def seed(mode: str = "full") -> None:
                 # fixture test-stable on a freshly-seeded stack.
                 forced_state = "lost"
             elif role == "ancient-only":
-                # T5b anchor (V-DRAWER fix): session > 7 days old, the
-                # window the API's earlier default would have hidden.
-                # Forced to 'closed' so the swimlane row reads cleanly
+                # ancient-only anchor: a session more than 7 days old,
+                # outside the sessions list's default window. Forced to
+                # 'closed' so the swimlane row reads cleanly
                 # (the session_end at -8 days actually emits, but the
                 # reconciler hasn't pinned the state yet on a freshly-
                 # seeded stack).

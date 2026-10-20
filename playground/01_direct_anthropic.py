@@ -26,12 +26,14 @@ from _helpers import (
     fetch_events_for_session,
     init_sensor,
     print_result,
+    wait_for_streamed_post_calls,
 )
 
 MODEL = "claude-haiku-4-5-20251001"
-# Streamed calls made above: sync stream helper, async stream helper, async
-# helper read via text_stream, async helper settled via get_final_message,
-# raw create(stream=True); each must land one metered post_call.
+# Streamed calls this script makes: sync stream helper, async stream helper,
+# async helper read via text_stream, async helper settled via
+# get_final_message, raw create(stream=True); each must land one metered
+# post_call.
 EXPECTED_STREAMED_CALLS = 5
 HI = [{"role": "user", "content": "hi"}]
 
@@ -79,8 +81,8 @@ def main() -> None:
     asyncio.run(_async_stream())
     print_result("AsyncAnthropic().messages.stream", True, int((time.monotonic() - t0) * 1000))
 
-    # Async helper consumed through text_stream only: the guard sees no
-    # events, so the usage must come from the awaited final message.
+    # Async helper consumed through text_stream only: the guard re-implements
+    # text_stream on itself, so these reads are metered like event iteration.
     async def _async_text_stream() -> None:
         async with anthropic.AsyncAnthropic() as client, client.messages.stream(
             model=MODEL, max_tokens=8, messages=HI,
@@ -124,26 +126,10 @@ def main() -> None:
 
     assert_event_landed(session_id, "post_call", timeout=8)
 
-    # Verify the async-streaming TTFT actually landed (regression guard
-    # — earlier playground iterations didn't exercise the async path
-    # at all, so the post_call event for an async stream never carried
-    # streaming.ttft_ms). Look at all post_call events with a streaming
-    # sub-object; require at least one populated ttft_ms.
-    # Poll until every streamed call has landed; the first post_call to
-    # appear is not enough since the later streams flush asynchronously.
-    deadline = time.monotonic() + 20.0
-    while True:
-        events = fetch_events_for_session(
-            session_id, expect_event_types=["post_call"], timeout_s=8.0,
-        )
-        streamed = [
-            e for e in events
-            if e.get("event_type") == "post_call"
-            and (e.get("payload") or {}).get("streaming")
-        ]
-        if len(streamed) >= EXPECTED_STREAMED_CALLS or time.monotonic() > deadline:
-            break
-        time.sleep(0.5)
+    # Every streamed call, async ones included, must land a post_call
+    # whose streaming sub-object carries ttft_ms. The later streams flush
+    # asynchronously, so wait for all of them rather than the first.
+    events, streamed = wait_for_streamed_post_calls(session_id, EXPECTED_STREAMED_CALLS)
     ttft_ok = any(
         (e["payload"]["streaming"].get("ttft_ms") is not None)
         for e in streamed

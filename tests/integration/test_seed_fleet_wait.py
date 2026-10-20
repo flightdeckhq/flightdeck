@@ -1,13 +1,13 @@
 """The e2e fixture seeder waits for the Fleet only on agents it actually
-(re)seeded. Stack-free: every network and database touch of ``seed.py``
-is stubbed, so this pins the control flow of ``seed()`` and not the
-fixtures themselves."""
+(re)seeded. These tests pin the control flow of ``seed()``, not the
+fixtures: every network and database step of ``seed.py`` is stubbed, so
+the stack the suite's session fixture boots is never touched."""
 
 from __future__ import annotations
 
 import importlib.util
+import json
 import pathlib
-import subprocess
 import sys
 from typing import Any
 
@@ -21,17 +21,13 @@ def seeder(monkeypatch: pytest.MonkeyPatch) -> Any:
     spec = importlib.util.spec_from_file_location("e2e_seed_under_test", SEED_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    sys.modules[spec.name] = module
+    monkeypatch.setitem(sys.modules, spec.name, module)
     spec.loader.exec_module(module)
     monkeypatch.setattr(module, "wait_for_services", lambda timeout: None)
     monkeypatch.setattr(module, "_post_session_events", lambda **kw: 1)
     monkeypatch.setattr(module, "post_event", lambda *a, **kw: None)
-    # The backdate step shells out to psql and reads returncode / stdout.
-    monkeypatch.setattr(
-        module.subprocess,
-        "run",
-        lambda *a, **kw: subprocess.CompletedProcess(args=a, returncode=0, stdout="", stderr=""),
-    )
+    # Backdating shells out to psql; the seams under test do not need it.
+    monkeypatch.setattr(module, "_backdate_session", lambda *a, **kw: None)
     waits: list[list[str]] = []
     monkeypatch.setattr(
         module,
@@ -43,10 +39,16 @@ def seeder(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 def _agent_names(module: Any) -> list[str]:
-    import json
-
     with module.CANONICAL_PATH.open() as fh:
         return sorted(a["agent_name"] for a in json.load(fh)["agents"])
+
+
+def _roles_of(module: Any, agent_name: str) -> list[str]:
+    with module.CANONICAL_PATH.open() as fh:
+        for agent in json.load(fh)["agents"]:
+            if agent["agent_name"] == agent_name:
+                return list(agent["session_roles"])
+    raise AssertionError(agent_name)
 
 
 def test_first_seed_waits_once_for_every_canonical_agent(
@@ -78,13 +80,3 @@ def test_partial_reseed_waits_only_for_agents_with_new_sessions(
     )
     seeder.seed(mode="full")
     assert seeder.recorded_waits == [[target]]
-
-
-def _roles_of(module: Any, agent_name: str) -> list[str]:
-    import json
-
-    with module.CANONICAL_PATH.open() as fh:
-        for agent in json.load(fh)["agents"]:
-            if agent["agent_name"] == agent_name:
-                return list(agent["session_roles"])
-    raise AssertionError(agent_name)

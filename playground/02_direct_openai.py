@@ -29,11 +29,13 @@ from _helpers import (
     fetch_events_for_session,
     init_sensor,
     print_result,
+    wait_for_streamed_post_calls,
 )
 
 MODEL = "gpt-4o-mini"
-# Streamed calls made above: sync chat stream, async chat stream, plain
-# chat iteration, Responses stream; each must land one metered post_call.
+# Streamed calls this script makes: sync chat stream, async chat stream,
+# plain chat iteration, Responses stream; each must land one metered
+# post_call.
 EXPECTED_STREAMED_CALLS = 4
 HI = [{"role": "user", "content": "hi"}]
 
@@ -136,22 +138,9 @@ def main() -> None:
 
     assert_event_landed(session_id, "post_call", timeout=8)
 
-    # Async-streaming TTFT regression guard.
-    # Poll until every streamed call has landed; the first post_call to
-    # appear is not enough since the later streams flush asynchronously.
-    deadline = time.monotonic() + 20.0
-    while True:
-        events = fetch_events_for_session(
-            session_id, expect_event_types=["post_call"], timeout_s=8.0,
-        )
-        streamed = [
-            e for e in events
-            if e.get("event_type") == "post_call"
-            and (e.get("payload") or {}).get("streaming")
-        ]
-        if len(streamed) >= EXPECTED_STREAMED_CALLS or time.monotonic() > deadline:
-            break
-        time.sleep(0.5)
+    # Every streamed call must land a post_call with streaming.ttft_ms;
+    # the later streams flush asynchronously, so wait for all of them.
+    events, streamed = wait_for_streamed_post_calls(session_id, EXPECTED_STREAMED_CALLS)
     ttft_ok = any(
         (e["payload"]["streaming"].get("ttft_ms") is not None)
         for e in streamed

@@ -49,7 +49,7 @@ server.
   aborted), not an `llm_error`, unless the response was still incomplete
   and the exception is one the error classifier knows (such as the builtin
   `TimeoutError`) or a transport error (`httpx` and friends, a connection
-  reset) that a helper method let through;
+  reset), whoever raised it;
   a stream still open when the session ends is reported before the session
   closes; and an aborted stream's `latency_ms` runs to its last chunk.
 - **Plugin: MCP policy decisions were never applied.** `PreToolUse`

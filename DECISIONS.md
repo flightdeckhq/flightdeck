@@ -9885,8 +9885,8 @@ drops the SDK stream, so an abandoned stream's connection closes at
 collection as it would without the sensor; only the guard with its settle
 record (and the request kwargs capture needs) waits for the drain. The SIGTERM / SIGINT handler that runs
 `Session.end()` can interrupt the main thread inside the same critical
-sections; that hazard predates this decision (posting `session_end`
-already takes the session lock and the queue mutex), the session-end
+sections; that hazard predates this decision (posting `session_end` takes
+the session lock and closing the queue takes its mutex), the session-end
 settle now also takes the policy cache lock on that path, and it is not
 addressed here (README Roadmap). A session that ends with streams
 still open settles them first and flushes their events before posting
@@ -9900,9 +9900,10 @@ are the caller leaving, not a provider failure: they produce a post_call
 been read in full and no intercept had already reported it, and only when
 the error classifier knows its class or it comes from the transport or SDK
 modules (httpx, httpcore, anyio, h11, anthropic, openai) or is a
-`ConnectionError`: the SDKs wrap only the request, so a response body that
-dies raises the transport's own class through helper methods such as
-`get_final_message()`.
+`ConnectionError`, whoever raised it: the SDKs wrap only the request, so a
+response body that dies raises the transport's own class through helper
+methods such as `get_final_message()`, and the guard cannot tell that
+from the caller's own transport error inside the block.
 
 **Reasoning:** The SDK stream objects (`anthropic.Stream`,
 `MessageStream`, `openai.Stream`) have no `usage` attribute, so reading

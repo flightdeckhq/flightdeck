@@ -2,7 +2,7 @@
 -- order in which two events of one session reach the database is not
 -- the order the sensor sent them. The NATS stream sequence of each
 -- event is that order: ingestion publishes events as it accepts them.
--- Recording the sequence of the event that opened the current run and
+-- Recording the sequence of the session_start that opened the current run and
 -- of the session_end that closed it lets the worker tell "this
 -- session_end belongs to an earlier run" and "this session_start was
 -- overtaken by its own session_end" apart from a genuine re-attachment,

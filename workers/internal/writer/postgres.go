@@ -532,7 +532,7 @@ func (w *Writer) UpdateLastSeen(ctx context.Context, sessionID string) error {
 }
 
 // ReviveIfRevivable flips a stale or lost session back to active and
-// advances last_seen_at. D105 generalises D094's session_start
+// advances last_seen_at. It generalises the session_start
 // attach-on-terminal semantics to every event type: every
 // non-session_start handler runs this before its normal side effects,
 // so sessions that go stale/lost during interactive idle windows
@@ -867,14 +867,14 @@ func (w *Writer) SessionExists(ctx context.Context, sessionID string) (bool, err
 // fills in the stub's flavor / agent_type / agent_id /
 // client_type / agent_name from the EXCLUDED row. Identity fields
 // in the stub are NULL on insert; COALESCE in UpsertSession's
-// conflict branch upgrades them once. Same primitive as D106's
+// conflict branch upgrades them once. Same primitive as the lazy
 // create-on-unknown, different trigger (FK-satisfaction vs
 // unknown-session-id event); kept as a separate helper so
 // callers don't need to express the parent-stub-specific shape
 // (started_at = child.started_at, no agents row required because
 // the real parent will UpsertAgent on its own arrival) through
 // the four-axis revive/create config surface that's the reason
-// the trio is uncoalesced. “ON CONFLICT DO NOTHING“ covers the
+// the revive / create sites are uncoalesced. “ON CONFLICT DO NOTHING“ covers the
 // race where two children of the same yet-unseen parent arrive
 // concurrently and both try to create the stub.
 //

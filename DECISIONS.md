@@ -9964,30 +9964,30 @@ until its `session_start` lands) and of the `session_end` that closed it
 handler closes an open row, in one guarded UPDATE, only when the end's
 sequence is greater than `start_seq`; an earlier end is recorded as an
 event and counted as `superseded_session_end` (on a closed row, as
-`closed_session_skip`). A `session_end` that
-finds the row already closed advances `closed_seq` when it was published
-later, so a `session_start` queued between a run's end and the next
-run's end cannot revive a session whose later run has also ended. The
-ingestion API stamps a re-attaching `session_start`'s sequence on the
-row as soon as it has published it, reviving the row if the previous
-run's queued end closed it between the attach check and the stamp, so
-that end leaves nothing closed and the run's first calls keep their
-tokens. The stamp is best effort: it skips a row another writer holds
-and tries once more after five milliseconds (its lock is `FOR NO KEY
-UPDATE`, so the KEY SHARE locks of event inserts do not make it skip),
-so many clients re-attaching one session id cannot serialise the
-ingestion path on that row's lock; a stamp that gives up is logged, the
-worker's own rules still revive the row, and calls handled before that
-revive are stored without rolling their tokens up. A duplicate end at
-or below a closed row's `closed_seq` costs no write. A lazily created
-row records no `start_seq`, so a straggler
-published after a run's end cannot read as the run's start. An emitter
-that publishes its `session_end` before its `session_start` leaves the
-session open until the reaper closes it. Unknown sequences (rows from
-earlier releases, the reconciler's close, the e2e seed, a recreated
-stream) stand the rules down; the worker clears stored sequences above
-the stream's last sequence when it starts, since sequences are only
-comparable within one incarnation of the stream.
+`closed_session_skip`). A `session_end` that finds the row already closed
+advances `closed_seq` when it was published later, so a `session_start`
+queued between a run's end and the next run's end cannot revive a
+session whose later run has also ended. The ingestion API stamps a
+re-attaching `session_start`'s sequence on the row as soon as it has
+published it, reviving the row if the previous run's queued end closed
+it between the attach check and the stamp, so that end leaves nothing
+closed and the run's first calls keep their tokens. The stamp is best
+effort: it skips a row another writer holds and tries once more after
+five milliseconds (its lock is `FOR NO KEY UPDATE`, so the KEY SHARE
+locks of event inserts do not make it skip), so many clients
+re-attaching one session id cannot serialise the ingestion path on that
+row's lock; a stamp that gives up is logged, the worker's own rules
+still revive the row, and calls handled before that revive are stored
+without rolling their tokens up. A duplicate end at or below a closed
+row's `closed_seq` costs no write. A lazily created row records no
+`start_seq`, so a straggler published after a run's end cannot read as
+the run's start. An emitter that publishes its `session_end` before its
+`session_start` leaves the session open until the reaper closes it.
+Unknown sequences (rows from earlier releases, the reconciler's close,
+the e2e seed, a recreated stream) stand the rules down; the worker
+clears stored sequences above the stream's last sequence when it
+starts, since sequences are only comparable within one incarnation of
+the stream.
 
 `GET /v1/sessions/:id` serialises `events` as `[]`, never `null`.
 

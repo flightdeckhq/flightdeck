@@ -1461,11 +1461,11 @@ apart: every `session_start` records its NATS stream sequence in
   closed the row by then, revives it (clearing `ended_at` and
   `closed_seq`). From there the old end reads as older than the current
   run, and a call of the new run that reaches the worker before the
-  start keeps its tokens. Should the stamp be missed (the row was held
-  through both attempts), the queued end closes the row, calls the
-  worker handles before the start's own revive are stored without
-  rolling their tokens up, and the `session_start`, published after that
-  end, revives the row.
+  start keeps its tokens. Should the stamp be missed (for example, the
+  row was held through both attempts), the queued end closes the row,
+  calls the worker handles before the start's own revive are stored
+  without rolling their tokens up, and the `session_start`, published
+  after that end, revives the row.
 - A `session_start` can be processed after its own `session_end`, because
   the worker pool handles a session's events concurrently. It was
   published before the end that closed the row, so the row stays closed.
@@ -5140,8 +5140,9 @@ The workers keep an in-process, reason-labelled counter registry
 - `dropped_events_total{reason}` — events the worker did not apply:
   `unmarshal_error`, `process_panic`, `max_retries_exhausted`,
   `closed_session_skip`, `orphan_session_end`, and
-  `superseded_session_end` (a `session_end` published before the
-  session's current run began).
+  `superseded_session_end` (a `session_end` published before the run of
+  a still-open session began; on a closed row the same end counts as
+  `closed_session_skip`).
 - `sessions_closed_total{reason}` — non-event close paths the
   worker performs directly (today: `orphan_timeout` via the
   reaper). The dashboard's close-reason facet still reads from

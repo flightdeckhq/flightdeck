@@ -8,6 +8,7 @@ events to the control plane.
 from __future__ import annotations
 
 import atexit
+import collections
 import json
 import logging
 import os
@@ -16,6 +17,7 @@ import socket
 import threading
 import urllib.request
 import uuid
+import weakref
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
@@ -223,6 +225,14 @@ class Session:
         self._tokens_used = 0
         self._token_limit: int | None = None
         self._lock = threading.Lock()
+        # Stream guards of this session: those that have sent their request
+        # and not yet settled, and the settles their finalizers queued (a
+        # finalizer may run under a sensor lock, so it never settles
+        # inline). The interceptor base owns the protocol; the session
+        # owns the state so nothing outlives or crosses sessions.
+        self.open_stream_guards: weakref.WeakSet[Any] = weakref.WeakSet()
+        self.open_stream_guards_lock = threading.Lock()
+        self.queued_stream_settles: collections.deque[Any] = collections.deque()
 
         self._shutdown_requested: bool = False
         self._shutdown_reason: str = ""
@@ -339,7 +349,7 @@ class Session:
         from flightdeck_sensor.interceptor import base as _base
 
         try:
-            _base.drain_deferred_settles()
+            _base.drain_deferred_settles(self)
             _base.settle_open_guards(self)
             self.event_queue.flush()
         except Exception:

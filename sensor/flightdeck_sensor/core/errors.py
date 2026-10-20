@@ -236,7 +236,7 @@ def classify_exception(
     no provider-controlled string is forwarded. When True, the same
     redaction rule that applies to chat content applies here: the
     provider's exception ``str()`` is included (clipped to
-    ``_ERROR_MESSAGE_MAX_LEN`` chars). Rule 18 enforcement (H-2 fix):
+    ``_ERROR_MESSAGE_MAX_LEN`` chars). Capture posture is enforced here:
     content_filter exceptions echo the offending prompt fragment in
     their string representation, so capture-off must NOT pass that
     string through.
@@ -408,8 +408,8 @@ def _redacted_message(
 ) -> str:
     """Class name plus optionally the exception's clipped string repr.
 
-    ``capture_prompts`` gates the inclusion of ``str(exc)`` (Rule 18,
-    H-2 fix). When False, returns ``cls_name`` only — provider
+    ``capture_prompts`` gates the inclusion of ``str(exc)`` (the capture
+    posture). When False, returns ``cls_name`` only — provider
     exceptions can echo the user's prompt fragment in their string
     (notably content_filter rejections), and that fragment is
     user-prompt content that capture-off must not forward to events.

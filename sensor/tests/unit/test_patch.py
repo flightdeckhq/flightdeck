@@ -341,9 +341,8 @@ def test_wrap_still_wraps_when_not_patched(sensor_init: Any) -> None:
 
 def test_wrap_intercepts_beta_messages_via_sensor_beta(sensor_init: Any) -> None:
     """wrap() returns a SensorAnthropic whose .beta is a SensorBeta whose
-    .messages is a SensorMessages. Previously the chain was
-    SensorAnthropic.beta.messages, where .beta passed through to the raw
-    Beta resource and bypassed sensor interception entirely.
+    .messages is a SensorMessages. A ``.beta`` that passed through to the
+    raw Beta resource would bypass sensor interception entirely.
     """
     client = anthropic.Anthropic(api_key="test-key")
     wrapped = flightdeck_sensor.wrap(client)

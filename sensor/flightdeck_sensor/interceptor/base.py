@@ -19,7 +19,6 @@ import contextlib
 import copy
 import inspect
 import logging
-import threading
 import time
 import weakref
 from typing import TYPE_CHECKING, Any, cast
@@ -71,35 +70,38 @@ _KEY_PARTIAL_CHUNKS = "partial_chunks"
 _KEY_PARTIAL_TOKENS_INPUT = "partial_tokens_input"
 _KEY_PARTIAL_TOKENS_OUTPUT = "partial_tokens_output"
 
-# Settles queued by guards' finalizers (see _GuardCore._defer_settle),
-# drained at the next intercept and when the session ends. deque.append
-# is atomic under the GIL, so the finalizer itself takes no lock.
-_DEFERRED_SETTLES: collections.deque[Callable[[], None]] = collections.deque()
 
-
-def drain_deferred_settles() -> None:
-    """Run the settles that guards' finalizers queued."""
-    while _DEFERRED_SETTLES:
+def drain_deferred_settles(session: Session) -> None:
+    """Run the settles that guards' finalizers queued on ``session``
+    (see _GuardCore._defer_settle); called at every intercept on that
+    session and when it ends. deque.append and popleft are atomic under
+    the GIL, so neither the finalizer nor the drain takes a lock."""
+    queue = getattr(session, "queued_stream_settles", None)
+    if not isinstance(queue, collections.deque):
+        return
+    while True:
         try:
-            _DEFERRED_SETTLES.popleft()()
+            settle = queue.popleft()
+        except IndexError:  # empty, or another thread drained it first
+            return
+        try:
+            settle()
         except Exception:
             _log.debug("Deferred stream settle failed", exc_info=True)
-
-
-# Every guard that has sent its request and not yet settled, so a session
-# ending with streams still open reports them before its queue closes.
-# Registration and the end-of-session snapshot share a lock, because a
-# weak set cannot be iterated while another thread adds to it.
-_OPEN_GUARDS: weakref.WeakSet[_GuardCore] = weakref.WeakSet()
-_OPEN_GUARDS_LOCK = threading.Lock()
 
 
 def settle_open_guards(session: Session) -> None:
     """Settle every open stream guard of ``session``; the session calls
     this as it ends, before its event queue closes, because a guard
-    collected after that could no longer report."""
-    with _OPEN_GUARDS_LOCK:
-        guards = list(_OPEN_GUARDS)
+    collected after that could no longer report. Registration and this
+    snapshot share the session's lock, because a weak set cannot be
+    iterated while another thread adds to it."""
+    guards_set = getattr(session, "open_stream_guards", None)
+    lock = getattr(session, "open_stream_guards_lock", None)
+    if not isinstance(guards_set, weakref.WeakSet) or lock is None:
+        return
+    with lock:
+        guards = list(guards_set)
     for guard in guards:
         try:
             if guard._session is session and guard._entered and not guard._finalized:
@@ -378,17 +380,24 @@ class _GuardCore:
         self._exhausted = False
         self._finalized = False
         self._saw_terminal_chunk = False
-        self._hook_failure_logged = False
+        self._hooks_failed: set[str] = set()
         self._open_error: BaseException | None = None
-        drain_deferred_settles()
+        drain_deferred_settles(session)
 
     def _hook_failed(self, hook: str) -> None:
         """A provider stream hook raised. The guard carries on without it
         (metering falls back to what the other hooks and the estimate
-        give) and says so once per stream rather than per chunk."""
-        if not self._hook_failure_logged:
-            self._hook_failure_logged = True
+        give) and says so once per hook and stream rather than per chunk."""
+        if hook not in self._hooks_failed:
+            self._hooks_failed.add(hook)
             _log.debug("Provider %s hook raised; stream metering degraded", hook, exc_info=True)
+
+    def _register_open(self) -> None:
+        guards = getattr(self._session, "open_stream_guards", None)
+        lock = getattr(self._session, "open_stream_guards_lock", None)
+        if isinstance(guards, weakref.WeakSet) and lock is not None:
+            with lock:
+                guards.add(self)
 
     def _require_stream(self) -> Any:
         """The SDK stream once the call succeeded; a guard whose call
@@ -451,7 +460,9 @@ class _GuardCore:
         self._ctx = None
         self._stream_iter = None
         self._real_fn = None
-        _DEFERRED_SETTLES.append(lambda: self._settle(message, completed))
+        queue = getattr(self._session, "queued_stream_settles", None)
+        if isinstance(queue, collections.deque):
+            queue.append(lambda: self._settle(message, completed))
 
     def _emit_pre_stream_error(self, exc: BaseException) -> None:
         # The context-manager protocol does not call __exit__ when
@@ -654,8 +665,7 @@ class GuardedStream(_GuardCore):
                 self._stream = self._ctx.__enter__()
             else:
                 self._stream = self._ctx
-            with _OPEN_GUARDS_LOCK:
-                _OPEN_GUARDS.add(self)
+            self._register_open()
             self._opened_t = time.monotonic()
         except BaseException as exc:
             self._open_error = exc
@@ -873,8 +883,7 @@ class GuardedAsyncStream(_GuardCore):
                 self._stream = await self._ctx.__aenter__()
             else:
                 self._stream = self._ctx
-            with _OPEN_GUARDS_LOCK:
-                _OPEN_GUARDS.add(self)
+            self._register_open()
             self._opened_t = time.monotonic()
         except BaseException as exc:
             self._open_error = exc
@@ -1044,7 +1053,7 @@ def _pre_call(
       log warning, return original kwargs.
     * ALLOW: returns original kwargs unchanged.
     """
-    drain_deferred_settles()
+    drain_deferred_settles(session)
     with session._lock:
         shutdown = session._shutdown_requested
         reason = session._shutdown_reason

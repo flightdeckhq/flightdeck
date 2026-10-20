@@ -788,7 +788,7 @@ clients internally are intercepted without user-side wrapping.
 
 | Framework | Path covered |
 |---|---|
-| LangChain | `ChatAnthropic.invoke` (langchain-anthropic); `ChatOpenAI.invoke` (langchain-openai 0.3+ sends it through `chat.completions.with_raw_response.create`, which is intercepted as a non-streaming chat call); `OpenAIEmbeddings.embed_*` (transitive). `ChatOpenAI.stream` goes through the same raw-response wrapper and is metered with the pre-call estimate (see "Patch surface — out of scope"); the Responses raw-response path and `.parse()` are not observed (README Roadmap) |
+| LangChain | `ChatAnthropic.invoke` (langchain-anthropic); `ChatOpenAI.invoke` (langchain-openai 0.3+ sends it through `chat.completions.with_raw_response.create`, which is intercepted as a non-streaming chat call); `OpenAIEmbeddings.embed_*` (transitive). `ChatOpenAI.stream` calls `chat.completions.create(stream=True)` and is metered from the stream; with `include_response_headers=True` it goes through the raw-response wrapper and records the pre-call estimate (see "Patch surface — out of scope"); the Responses raw-response path and `.parse()` are not observed (README Roadmap) |
 | LangGraph | Transitive via LangChain — graphs routing through `ChatAnthropic` / `ChatOpenAI`, including `langgraph.prebuilt.create_react_agent` tool loops |
 | LlamaIndex | `llama-index-llms-anthropic.complete`, `llama-index-llms-openai.complete` |
 | CrewAI 1.14+ | `LLM(model=...).call` via the native Anthropic and OpenAI provider classes. Model strings without a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm |
@@ -3694,9 +3694,11 @@ with `break`), or the session ending while the stream is still open; in
 that last case the events are flushed before `session_end` goes out, so
 the workers roll the tokens up on an open session.
 Leaving the `with` block on an exception emits `llm_error` only when the
-error classifier knows the exception's class (an SDK or transport error
-raised by a helper method that read the stream itself; an error raised
-while reading through the guard is reported as it happens). Cancellations
+response had not been read in full and the error classifier knows the
+exception's class (an SDK or transport error raised by a helper method
+that read the stream itself; an error raised while reading through the
+guard is reported as it happens, and one that another intercepted call
+already reported is not reported again). Cancellations
 and interrupts (`CancelledError`, `GeneratorExit`, `KeyboardInterrupt`),
 the sensor's own policy exceptions (`BudgetExceededError`,
 `DirectiveError`, `MCPPolicyBlocked`) and the caller's own exceptions
@@ -3821,8 +3823,9 @@ the failure) and, when the stream had delivered usage,
 `partial_tokens_input` / `partial_tokens_output`. The provider bills those tokens, so the sensor
 adds them to the in-process session counter that drives its local budget
 checks; server-side session totals, the `tokens` metric and
-`estimated_cost` are computed from the events that carry `tokens_total`
-(`post_call` and `embeddings`) and do not include them (README Roadmap).
+`estimated_cost` do not include them: the session totals add every event
+that carries `tokens_total` (`post_call` and `embeddings`) and the
+analytics metrics read `post_call` events (README Roadmap).
 
 Operator-actionable retry-chain context:
 

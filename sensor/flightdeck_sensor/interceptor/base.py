@@ -20,6 +20,7 @@ import copy
 import inspect
 import logging
 import time
+import types
 import weakref
 from typing import TYPE_CHECKING, Any, cast
 
@@ -281,6 +282,16 @@ def _merge_usage(current: TokenUsage | None, new: TokenUsage) -> TokenUsage:
     )
 
 
+# Set on an exception once an intercept has reported it, so a stream's
+# with-exit does not report the same failure of a nested call again.
+_REPORTED_ATTR = "_flightdeck_reported"
+
+
+def _mark_reported(exc: BaseException) -> None:
+    with contextlib.suppress(Exception):
+        setattr(exc, _REPORTED_ATTR, True)
+
+
 def _is_provider_failure(exc_val: BaseException | None) -> bool:
     """Whether an exception leaving a ``with`` block is the stream failing.
 
@@ -288,16 +299,24 @@ def _is_provider_failure(exc_val: BaseException | None) -> bool:
     ``__next__`` / ``__anext__``; an exception reaching ``__exit__`` came
     from the caller's own body or from a helper method that read the
     stream itself. It is a provider failure only when the error
-    classifier knows the exception class (an SDK or transport error).
-    Cancellations and interrupts are not ``Exception`` subclasses, the
-    sensor's own policy exceptions come from another intercepted call
-    inside the block, and the caller's own bugs are the caller leaving.
+    classifier knows the exception class (an SDK or transport error) and
+    no intercept has reported it already. Cancellations and interrupts
+    are not ``Exception`` subclasses, the sensor's own policy exceptions
+    come from another intercepted call inside the block, and the caller's
+    own bugs are the caller leaving.
     """
     if exc_val is None or not isinstance(exc_val, Exception):
+        return False
+    if getattr(exc_val, _REPORTED_ATTR, False):
         return False
     if isinstance(exc_val, (BudgetExceededError, DirectiveError, MCPPolicyBlocked)):
         return False
     return classify_exception(exc_val, provider_hint=None).error_type is not ErrorType.OTHER
+
+
+# Stands in for a stream the finalizer dropped: it has no attributes, so
+# content capture stores an empty response rather than a placeholder.
+_DROPPED_STREAM = types.SimpleNamespace()
 
 
 def _abort_reason_for(exc: BaseException, saw_chunk: bool) -> str:
@@ -612,7 +631,7 @@ class _GuardCore:
             _post_call(
                 self._session,
                 self._provider,
-                self._stream if message is None else message,
+                message if message is not None else (self._stream or _DROPPED_STREAM),
                 self._estimated,
                 latency_ms,
                 self._kwargs,
@@ -690,14 +709,15 @@ class GuardedStream(_GuardCore):
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        if exc_val is not None and _is_provider_failure(exc_val):
+        if exc_val is not None and not self._is_complete() and _is_provider_failure(exc_val):
             self._close_underlying(exc_type, exc_val, exc_tb)
             self._emit_stream_error(exc_val)
             return
-        # No exception, a cancellation / interrupt (GeneratorExit,
-        # KeyboardInterrupt) or the sensor's own policy exception: the
-        # caller left the stream, which is an aborted post_call, not a
-        # provider failure.
+        # No exception, a response already read in full, a cancellation /
+        # interrupt, the sensor's own policy exception or the caller's own
+        # exception: the caller left the stream, which is a post_call
+        # (completed when the response was read in full, else aborted),
+        # not a provider failure.
         self._finalize()
         self._close_underlying(exc_type, exc_val, exc_tb)
 
@@ -905,13 +925,13 @@ class GuardedAsyncStream(_GuardCore):
         exc_val: BaseException | None,
         exc_tb: TracebackType | None,
     ) -> None:
-        if exc_val is not None and _is_provider_failure(exc_val):
+        if exc_val is not None and not self._is_complete() and _is_provider_failure(exc_val):
             await self._close_underlying(exc_type, exc_val, exc_tb)
             self._emit_stream_error(exc_val)
             return
-        # No exception, a cancellation (asyncio.CancelledError,
-        # GeneratorExit) or the sensor's own policy exception: the caller
-        # left the stream.
+        # No exception, a response already read in full, a cancellation,
+        # the sensor's own policy exception or the caller's own exception:
+        # the caller left the stream (see GuardedStream.__exit__).
         await self._finalize()
         await self._close_underlying(exc_type, exc_val, exc_tb)
 
@@ -1490,6 +1510,7 @@ def _emit_error(
     is_stream_error: bool = False,
     partial: dict[str, Any] | None = None,
 ) -> None:
+    _mark_reported(exc)
     try:
         provider_hint = getattr(provider, "name", None)
         classification = classify_exception(

@@ -552,6 +552,35 @@ def test_async_caller_exception_inside_with_is_the_caller_leaving() -> None:
     assert pc["streaming"]["final_outcome"] == "aborted"
 
 
+def test_sdk_error_leaving_a_completed_stream_keeps_the_completed_post_call() -> None:
+    session = _session()
+    guarded = _stream(session, _anthropic_events())
+    with pytest.raises(_ConnectionReset), guarded as s:
+        for event in s:
+            if event.type == "message_stop":
+                break
+        raise _ConnectionReset("something else failed after the response was in")
+    assert _llm_errors(session) == []
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "completed"
+
+
+def test_error_a_nested_intercepted_call_reported_is_the_caller_leaving() -> None:
+    session = _session()
+    guarded = _stream(session, _anthropic_events())
+    with pytest.raises(_ConnectionReset), guarded as s:
+        next(iter(s))
+        base.call(
+            MagicMock(side_effect=_ConnectionReset("the nested call's 429")),
+            dict(KW),
+            session,
+            AnthropicProvider(),
+        )
+    assert len(_llm_errors(session)) == 1  # the nested call's own report, not a second one
+    (pc,) = _post_calls(session)
+    assert pc["streaming"]["final_outcome"] == "aborted"
+
+
 def test_sdk_error_from_a_helper_method_inside_with_is_a_stream_failure() -> None:
     session = _session()
     guarded = _stream(session, _anthropic_events())
@@ -1323,7 +1352,7 @@ def test_sync_helper_collected_with_capture_on_settles_from_the_snapshot_unread(
     (pc,) = _post_calls(session)
     assert pc["streaming"]["final_outcome"] == "aborted"
     assert (pc["tokens_input"], pc["tokens_output"]) == (16, 1)
-    assert pc["has_content"] is True and "stop_reason" not in pc["content"]["response"]
+    assert pc["has_content"] is True and pc["content"]["response"] == {}
     assert raw.pulled == pulled_at_break < N_EVENTS
 
 

@@ -31,6 +31,7 @@ from .test_sensor_e2e import (
     _delete_flavor_data,
     _force_reset_sensor,
     _query_events_for_flavor,
+    _query_session_for_flavor,
 )
 
 
@@ -57,8 +58,12 @@ def unique_flavor() -> Iterator[str]:
 
 
 def _sse(events: list[tuple[str, dict[str, Any]]]) -> httpx.Response:
-    body = "".join(f"event: {name}\ndata: {json.dumps(data)}\n\n" for name, data in events)
-    return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body.encode())
+    body = "".join(
+        f"event: {name}\ndata: {json.dumps(data)}\n\n" for name, data in events
+    )
+    return httpx.Response(
+        200, headers={"content-type": "text/event-stream"}, content=body.encode()
+    )
 
 
 def _events_the_sdk_yields(events: list[tuple[str, dict[str, Any]]]) -> int:
@@ -168,7 +173,9 @@ def _openai_chat_sse() -> httpx.Response:
             "object": "chat.completion.chunk",
             "created": 1,
             "model": "gpt-4o",
-            "choices": [{"index": 0, "delta": {"content": " there"}, "finish_reason": None}],
+            "choices": [
+                {"index": 0, "delta": {"content": " there"}, "finish_reason": None}
+            ],
             "usage": None,
         },
         {
@@ -193,7 +200,9 @@ def _openai_chat_sse() -> httpx.Response:
         },
     ]
     body = "".join(f"data: {json.dumps(c)}\n\n" for c in chunks) + "data: [DONE]\n\n"
-    return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=body.encode())
+    return httpx.Response(
+        200, headers={"content-type": "text/event-stream"}, content=body.encode()
+    )
 
 
 def _openai_responses_sse() -> httpx.Response:
@@ -217,7 +226,9 @@ def _openai_responses_sse() -> httpx.Response:
                 "type": "message",
                 "role": "assistant",
                 "status": "completed",
-                "content": [{"type": "output_text", "text": "Hi there", "annotations": []}],
+                "content": [
+                    {"type": "output_text", "text": "Hi there", "annotations": []}
+                ],
             }
         ],
         usage={
@@ -254,16 +265,20 @@ def _openai_responses_sse() -> httpx.Response:
 
 
 def _teardown_and_expect_one(flavor: str, event_type: str) -> dict[str, Any]:
-    """Tear the sensor down, wait until its session_end has landed (the
-    pipeline is in order per session, so every earlier event is in by
-    then), and return the single ``event_type`` row for ``flavor``."""
+    """Tear the sensor down, wait until both the session_end row and an
+    ``event_type`` row have landed (the sensor flushes its queue before
+    session_end, but the workers process in parallel, so the rows can
+    land in either order), and return the single ``event_type`` row."""
     flightdeck_sensor.teardown()
-    wait_until(
-        lambda: any(e["event_type"] == "session_end" for e in _query_events_for_flavor(flavor)),
-        timeout=15,
-        msg=f"no session_end for {flavor}",
-    )
-    rows = [e for e in _query_events_for_flavor(flavor) if e["event_type"] == event_type]
+
+    def _landed() -> bool:
+        types = [e["event_type"] for e in _query_events_for_flavor(flavor)]
+        return "session_end" in types and event_type in types
+
+    wait_until(_landed, timeout=15, msg=f"no session_end and {event_type} for {flavor}")
+    rows = [
+        e for e in _query_events_for_flavor(flavor) if e["event_type"] == event_type
+    ]
     assert len(rows) == 1, f"expected exactly one {event_type}, got {len(rows)}"
     return rows[0]
 
@@ -382,7 +397,11 @@ def test_anthropic_error_event_mid_stream_lands_one_llm_error(
             _events_the_sdk_yields(_anthropic_events(fail_after=4))
         )
         assert err["payload"]["error"]["partial_tokens_input"] == 11
-        assert [e for e in _query_events_for_flavor(flavor) if e["event_type"] == "post_call"] == []
+        assert [
+            e
+            for e in _query_events_for_flavor(flavor)
+            if e["event_type"] == "post_call"
+        ] == []
 
 
 def test_anthropic_rate_limit_on_stream_open_raises_at_create(
@@ -402,7 +421,9 @@ def test_anthropic_rate_limit_on_stream_open_raises_at_create(
             )
         )
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
-        client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key", max_retries=0))
+        client = flightdeck_sensor.wrap(
+            anthropic.Anthropic(api_key="test-key", max_retries=0)
+        )
 
         with pytest.raises(anthropic.RateLimitError):
             client.messages.create(
@@ -437,7 +458,8 @@ def test_openai_chat_stream_lands_usage_from_final_chunk(
             stream=True,
         ) as stream:
             for chunk in stream:
-                if chunk.choices and chunk.choices[0].delta.content:
+                assert chunk.choices, "the injected usage chunk must stay hidden"
+                if chunk.choices[0].delta.content:
                     pieces.append(chunk.choices[0].delta.content)
         assert "".join(pieces) == "Hi there"
         assert '"include_usage"' in route.calls.last.request.read().decode()
@@ -445,7 +467,9 @@ def test_openai_chat_stream_lands_usage_from_final_chunk(
         post_call = _teardown_and_expect_one(flavor, "post_call")
         assert post_call["tokens_input"] == 9
         assert post_call["tokens_output"] == 4
-        assert post_call["payload"]["streaming"]["chunk_count"] == 4
+        assert (
+            post_call["payload"]["streaming"]["chunk_count"] == 3
+        )  # the usage chunk is absorbed
 
 
 def test_openai_responses_stream_lands_usage_from_completed_event(
@@ -454,13 +478,17 @@ def test_openai_responses_stream_lands_usage_from_completed_event(
 ) -> None:
     flavor = unique_flavor
     with respx.mock(assert_all_called=False, assert_all_mocked=True) as rmock:
-        rmock.post("https://api.openai.com/v1/responses").mock(return_value=_openai_responses_sse())
+        rmock.post("https://api.openai.com/v1/responses").mock(
+            return_value=_openai_responses_sse()
+        )
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
         client = flightdeck_sensor.wrap(openai.OpenAI(api_key="test-key"))
 
         seen = [
             event.type
-            for event in client.responses.create(model="gpt-4o", input="Hello", stream=True)
+            for event in client.responses.create(
+                model="gpt-4o", input="Hello", stream=True
+            )
         ]
         assert "response.completed" in seen
 
@@ -562,7 +590,9 @@ def test_openai_async_chat_plain_iteration_lands_usage(
 def _content_status(event_id: str) -> tuple[int, str]:
     """``GET /v1/events/{id}/content`` status and body, outside any respx
     mock so the request really reaches the dev stack."""
-    req = urllib.request.Request(f"{API_URL}/v1/events/{event_id}/content", headers=auth_headers())
+    req = urllib.request.Request(
+        f"{API_URL}/v1/events/{event_id}/content", headers=auth_headers()
+    )
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             return resp.status, resp.read().decode()
@@ -581,7 +611,9 @@ def test_helper_stream_content_round_trip_honours_capture(
         rmock.post("https://api.anthropic.com/v1/messages").mock(
             return_value=_sse(_anthropic_events())
         )
-        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN, capture_prompts=capture)
+        flightdeck_sensor.init(
+            server=INGESTION_URL, token=TOKEN, capture_prompts=capture
+        )
         client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
 
         with client.messages.stream(
@@ -600,3 +632,84 @@ def test_helper_stream_content_round_trip_honours_capture(
         assert "Hello there" in body  # the helper's assembled response
     else:
         assert status == 404
+
+
+def test_stream_still_open_at_teardown_lands_with_its_tokens_rolled_up(
+    sensor_reset: None,
+    unique_flavor: str,
+) -> None:
+    flavor = unique_flavor
+    with respx.mock(assert_all_called=False, assert_all_mocked=True) as rmock:
+        rmock.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=_sse(_anthropic_events())
+        )
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
+
+        stream = client.messages.create(
+            model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "Hello"}],
+            max_tokens=50,
+            stream=True,
+        )
+        for _ in stream:
+            break  # left open on purpose: the session ends with it
+
+        post_call = _teardown_and_expect_one(flavor, "post_call")
+        assert (post_call["tokens_input"], post_call["tokens_output"]) == (11, 1)
+        assert post_call["payload"]["streaming"]["final_outcome"] == "aborted"
+        # Flushed before session_end, so the workers rolled it up on an
+        # open session.
+        wait_until(
+            lambda: (
+                ((_query_session_for_flavor(flavor) or {}).get("tokens_used") or 0)
+                >= 12
+            ),
+            timeout=15,
+            msg="the session's tokens never included the stream left open",
+        )
+        stream.close()  # already settled: a no-op
+
+
+def test_langchain_anthropic_stream_is_metered(
+    sensor_reset: None,
+    unique_flavor: str,
+) -> None:
+    langchain_anthropic = pytest.importorskip("langchain_anthropic")
+    flavor = unique_flavor
+    with respx.mock(assert_all_called=False, assert_all_mocked=True) as rmock:
+        rmock.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=_sse(_anthropic_events())
+        )
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        flightdeck_sensor.patch(quiet=True)
+        llm = langchain_anthropic.ChatAnthropic(
+            model="claude-sonnet-4-6", api_key="test-key", max_tokens=50
+        )
+        for _ in llm.stream("Hello"):
+            pass
+
+        post_call = _teardown_and_expect_one(flavor, "post_call")
+        assert (post_call["tokens_input"], post_call["tokens_output"]) == (11, 5)
+        assert post_call["payload"]["streaming"]["final_outcome"] == "completed"
+
+
+def test_langchain_openai_stream_is_metered(
+    sensor_reset: None,
+    unique_flavor: str,
+) -> None:
+    langchain_openai = pytest.importorskip("langchain_openai")
+    flavor = unique_flavor
+    with respx.mock(assert_all_called=False, assert_all_mocked=True) as rmock:
+        rmock.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=_openai_chat_sse()
+        )
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        flightdeck_sensor.patch(quiet=True)
+        llm = langchain_openai.ChatOpenAI(model="gpt-4o", api_key="test-key")
+        for _ in llm.stream("Hello"):
+            pass
+
+        post_call = _teardown_and_expect_one(flavor, "post_call")
+        assert (post_call["tokens_input"], post_call["tokens_output"]) == (9, 4)
+        assert post_call["payload"]["streaming"]["final_outcome"] == "completed"

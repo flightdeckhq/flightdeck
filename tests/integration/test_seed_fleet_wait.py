@@ -1,14 +1,18 @@
 """The e2e fixture seeder waits for the Fleet only on agents it actually
 (re)seeded. These tests pin the control flow of ``seed()``, not the
-fixtures: every network and database step of ``seed.py`` is stubbed, so
-the stack the suite's session fixture boots is never touched."""
+fixtures: every network step is stubbed and the seeder's ``subprocess``
+binding (every psql shell-out goes through it) is replaced, so no process
+is spawned and the stack the suite's session fixture boots is never
+touched."""
 
 from __future__ import annotations
 
 import importlib.util
 import json
 import pathlib
+import subprocess
 import sys
+import types
 from typing import Any
 
 import pytest
@@ -26,8 +30,22 @@ def seeder(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(module, "wait_for_services", lambda timeout: None)
     monkeypatch.setattr(module, "_post_session_events", lambda **kw: 1)
     monkeypatch.setattr(module, "post_event", lambda *a, **kw: None)
-    # Backdating shells out to psql; the seams under test do not need it.
-    monkeypatch.setattr(module, "_backdate_session", lambda *a, **kw: None)
+    # Every psql shell-out goes through the module's ``subprocess`` name;
+    # bind it to a stub that records the calls and spawns nothing.
+    shell_outs: list[list[str]] = []
+
+    def _fake_run(args: Any, *a: Any, **kw: Any) -> subprocess.CompletedProcess[str]:
+        shell_outs.append(list(args))
+        return subprocess.CompletedProcess(
+            args=args, returncode=0, stdout="", stderr=""
+        )
+
+    monkeypatch.setattr(
+        module,
+        "subprocess",
+        types.SimpleNamespace(run=_fake_run, TimeoutExpired=subprocess.TimeoutExpired),
+    )
+    module.recorded_shell_outs = shell_outs
     waits: list[list[str]] = []
     monkeypatch.setattr(
         module,
@@ -54,7 +72,9 @@ def _roles_of(module: Any, agent_name: str) -> list[str]:
 def test_first_seed_waits_once_for_every_canonical_agent(
     seeder: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(seeder, "_session_is_complete", lambda session_id, role_cfg: False)
+    monkeypatch.setattr(
+        seeder, "_session_is_complete", lambda session_id, role_cfg: False
+    )
     seeder.seed(mode="full")
     assert seeder.recorded_waits == [_agent_names(seeder)]
 
@@ -62,7 +82,9 @@ def test_first_seed_waits_once_for_every_canonical_agent(
 def test_reseed_with_every_session_present_skips_the_fleet_wait(
     seeder: Any, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(seeder, "_session_is_complete", lambda session_id, role_cfg: True)
+    monkeypatch.setattr(
+        seeder, "_session_is_complete", lambda session_id, role_cfg: True
+    )
     seeder.seed(mode="full")
     assert seeder.recorded_waits == []
 
@@ -72,7 +94,9 @@ def test_partial_reseed_waits_only_for_agents_with_new_sessions(
 ) -> None:
     names = _agent_names(seeder)
     target = names[-1]
-    incomplete = {seeder._derive_session_id(target, role) for role in _roles_of(seeder, target)}
+    incomplete = {
+        seeder._derive_session_id(target, role) for role in _roles_of(seeder, target)
+    }
     monkeypatch.setattr(
         seeder,
         "_session_is_complete",

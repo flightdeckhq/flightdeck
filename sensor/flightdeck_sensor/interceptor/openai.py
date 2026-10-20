@@ -477,7 +477,7 @@ def _inject_stream_options(kwargs: dict[str, Any]) -> tuple[dict[str, Any], bool
     """
     result = copy.copy(kwargs)
     existing = result.get("stream_options")
-    caller_asked = isinstance(existing, dict) and existing.get("include_usage") is True
+    caller_asked = isinstance(existing, dict) and bool(existing.get("include_usage"))
     if isinstance(existing, dict):
         existing = {**existing, "include_usage": True}
         result["stream_options"] = existing

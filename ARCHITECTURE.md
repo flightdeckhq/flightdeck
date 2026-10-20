@@ -3695,11 +3695,12 @@ that last case the events are flushed before `session_end` goes out, so
 the workers roll the tokens up on an open session.
 Leaving the `with` block on an exception emits `llm_error` only when the
 response had not been read in full and the error classifier knows the
-exception's class (an SDK or transport error raised by a helper method
-that read the stream itself, or a look-alike such as the builtin
-`TimeoutError` or `PermissionError`; an error raised while reading
-through the guard is reported as it happens, and one that another
-intercepted call already reported is not reported again). Cancellations
+exception's class or module (an SDK error, a raw transport error such as
+`httpx.ReadTimeout` or `httpx.RemoteProtocolError` raised by a helper
+method that read the stream itself, a connection reset, or a look-alike
+such as the builtin `TimeoutError` or `PermissionError`; an error raised
+while reading through the guard is reported as it happens, and one that
+another intercepted call already reported is not reported again). Cancellations
 and interrupts (`CancelledError`, `GeneratorExit`, `KeyboardInterrupt`),
 the sensor's own policy exceptions (`BudgetExceededError`,
 `DirectiveError`, `MCPPolicyBlocked`) and the caller's own exceptions

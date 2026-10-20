@@ -311,7 +311,17 @@ def _is_provider_failure(exc_val: BaseException | None) -> bool:
         return False
     if isinstance(exc_val, (BudgetExceededError, DirectiveError, MCPPolicyBlocked)):
         return False
-    return classify_exception(exc_val, provider_hint=None).error_type is not ErrorType.OTHER
+    if classify_exception(exc_val, provider_hint=None).error_type is not ErrorType.OTHER:
+        return True
+    # The SDKs wrap only the request: a response body that dies raises the
+    # transport's own classes (httpx.ReadTimeout, RemoteProtocolError, a
+    # reset) through helper methods such as get_final_message().
+    module = type(exc_val).__module__.partition(".")[0]
+    return module in _TRANSPORT_MODULES or isinstance(exc_val, ConnectionError)
+
+
+# Modules whose exceptions mean the stream or its transport failed.
+_TRANSPORT_MODULES = frozenset({"httpx", "httpcore", "anyio", "h11", "anthropic", "openai"})
 
 
 # Stands in for a stream the finalizer dropped: it has no attributes, so
@@ -451,6 +461,7 @@ class _GuardCore:
         try:
             return bool(self._hide_chunk(chunk))
         except Exception:
+            self._hook_failed("hide_chunk")
             return False
 
     def _defer_settle(self) -> None:
@@ -631,7 +642,9 @@ class _GuardCore:
             _post_call(
                 self._session,
                 self._provider,
-                message if message is not None else (self._stream or _DROPPED_STREAM),
+                message
+                if message is not None
+                else (self._stream if self._stream is not None else _DROPPED_STREAM),
                 self._estimated,
                 latency_ms,
                 self._kwargs,

@@ -22,6 +22,7 @@ import weakref
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 from anthropic import NOT_GIVEN
 from anthropic.lib.streaming import AsyncMessageStream, MessageStream
@@ -581,6 +582,31 @@ def test_error_a_nested_intercepted_call_reported_is_the_caller_leaving() -> Non
     assert pc["streaming"]["final_outcome"] == "aborted"
 
 
+@pytest.mark.parametrize(
+    "make",
+    [
+        lambda: httpx.RemoteProtocolError("peer closed connection without sending a complete body"),
+        lambda: httpx.ReadTimeout("timed out"),
+        lambda: ConnectionResetError(104, "connection reset by peer"),
+    ],
+    ids=["remote_protocol", "read_timeout", "connection_reset"],
+)
+def test_transport_error_from_a_helper_method_inside_with_is_a_stream_failure(
+    make: Any,
+) -> None:
+    # The SDKs wrap only the request; a response body that dies raises the
+    # transport's own class through get_final_message() and friends.
+    session = _session()
+    guarded = _stream(session, _anthropic_events())
+    with pytest.raises((httpx.HTTPError, ConnectionResetError)), guarded as s:
+        next(iter(s))
+        raise make()
+    assert _post_calls(session) == []
+    (err,) = _llm_errors(session)
+    assert err["error"]["error_type"] == "stream_error"
+    assert err["error"]["abort_reason"] in ("error_mid_stream", "timeout")
+
+
 def test_sdk_error_from_a_helper_method_inside_with_is_a_stream_failure() -> None:
     session = _session()
     guarded = _stream(session, _anthropic_events())
@@ -909,8 +935,7 @@ def test_collection_releases_the_sdk_stream_before_the_deferred_settle_runs() ->
     guarded = base.call_stream(lambda **kw: pending.pop(), dict(KW), session, AnthropicProvider())
     for _ in guarded:
         break
-    guarded.self_cycle = guarded  # type: ignore[attr-defined]
-    del guarded, stream
+    del guarded, stream  # freed by reference counting, as in real code
     gc.collect()
     assert ref() is None, "the SDK stream outlived the guard's collection"
     assert _post_calls(session) == []

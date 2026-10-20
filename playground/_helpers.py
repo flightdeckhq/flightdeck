@@ -287,3 +287,41 @@ def print_result(label: str, passed: bool, duration_ms: int, details: str = "") 
     """Standard result line: '  PASS  <label>  (1240ms)  <details>'."""
     tag = "PASS" if passed else "FAIL"
     print(f"  {tag}  {label}  ({duration_ms}ms){'  ' + details if details else ''}")
+
+
+# How long a playground run waits for every streamed post_call to land:
+# the sensor drains asynchronously and the workers write in batches, so
+# the last stream's event can trail its call by several seconds; 20 s is
+# an order of magnitude above the worst drain seen on the dev stack.
+STREAMED_POST_CALL_DEADLINE_S = 20.0
+# One fetch never blocks for more than this, so the deadline above stays
+# the only bound on the wait.
+STREAMED_POST_CALL_FETCH_TIMEOUT_S = 8.0
+# Poll gap: quick enough to notice the last event promptly, slow enough
+# not to hammer the API.
+STREAMED_POST_CALL_POLL_S = 0.5
+
+
+def wait_for_streamed_post_calls(
+    session_id: str, expected: int
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Poll until ``expected`` post_call events carrying a ``streaming``
+    block have landed for the session, or the deadline passes. Returns
+    ``(events, streamed)``: every event of the session as last fetched and
+    the streamed post_calls among them, so the caller can report a
+    shortfall and keep inspecting the other events."""
+    deadline = time.monotonic() + STREAMED_POST_CALL_DEADLINE_S
+    while True:
+        events = fetch_events_for_session(
+            session_id,
+            expect_event_types=["post_call"],
+            timeout_s=STREAMED_POST_CALL_FETCH_TIMEOUT_S,
+        )
+        streamed = [
+            e
+            for e in events
+            if e.get("event_type") == "post_call" and (e.get("payload") or {}).get("streaming")
+        ]
+        if len(streamed) >= expected or time.monotonic() > deadline:
+            return events, streamed
+        time.sleep(STREAMED_POST_CALL_POLL_S)

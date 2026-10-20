@@ -51,6 +51,61 @@ class Provider(Protocol):
         """Extract actual token counts from the provider response. Never raises."""
         ...
 
+    def usage_from_stream_chunk(self, chunk: Any) -> TokenUsage | None:
+        """Token usage carried by one streamed chunk or event, or ``None``
+        when this chunk carries none.
+
+        The stream guard merges successive non-None results field by
+        field, the larger value winning (the counters are cumulative),
+        which covers both cumulative deltas (Anthropic ``message_delta``)
+        and a single final usage chunk (OpenAI). Never raises.
+        """
+        ...
+
+    def usage_from_finished_stream(self, stream: Any) -> TokenUsage | None:
+        """Usage the SDK stream object holds when the guard settles
+        (Anthropic's helper accumulates it on
+        ``current_message_snapshot.usage``), or ``None`` for raw streams.
+        Called on every settle path, early exit included, so it must
+        never read further from the stream. Never raises.
+        """
+        ...
+
+    def stream_completed(self, stream: Any) -> bool | None:
+        """Whether the SDK stream object knows its message is complete
+        (Anthropic's helper snapshot carries ``stop_reason`` once
+        ``message_delta`` arrived); ``None`` when the object cannot tell.
+        Never reads from the stream. Never raises.
+        """
+        ...
+
+    def final_message(self, stream: Any) -> Any | None:
+        """The complete message of a helper stream (Anthropic's accumulated
+        ``current_message_snapshot`` once ``stop_reason`` is set), or
+        ``None`` for raw streams and for a helper that is not complete.
+        May return an awaitable; the async guard awaits it and the sync
+        guard discards it. Only called when ``stream_completed`` is true
+        and must never read further from the stream. Never raises.
+        """
+        ...
+
+    def text_from_stream_chunk(self, chunk: Any) -> str | None:
+        """Text carried by one streamed event, for the guard's
+        ``text_stream`` (Anthropic ``content_block_delta`` /
+        ``text_delta``); ``None`` when the event carries none or the
+        provider's streams have no text stream. Never raises.
+        """
+        ...
+
+    def chunk_completes_stream(self, chunk: Any) -> bool:
+        """Whether this streamed event ends the response (Anthropic
+        ``message_stop`` or a ``message_delta`` with ``stop_reason``; an
+        OpenAI chat chunk carrying ``usage``; a Responses terminal
+        event), so a consumer that stops at it has read the whole
+        response. Never raises.
+        """
+        ...
+
     def extract_content(
         self,
         request_kwargs: dict[str, Any],
@@ -109,7 +164,7 @@ class PromptContent:
     Provider terminology is preserved exactly -- no normalization.
     Anthropic uses 'system' as a separate field; OpenAI embeds it in messages.
 
-    Phase 4 polish: ``input`` is the embeddings-shaped slot. Embedding
+    ``input`` is the embeddings-shaped slot. Embedding
     calls (OpenAI ``embeddings.create``, ``litellm.embedding``,
     LangChain ``OpenAIEmbeddings.embed_*`` transitively) put the
     request's ``input`` parameter (a string or list of strings) here

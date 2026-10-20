@@ -136,6 +136,42 @@ class LitellmProvider:
         except Exception:
             return TokenUsage(input_tokens=0, output_tokens=0)
 
+    def usage_from_stream_chunk(self, chunk: Any) -> TokenUsage | None:
+        """Usage on litellm's final streaming chunk (present when the
+        request asked for ``stream_options.include_usage``)."""
+        try:
+            if getattr(chunk, "usage", None) is None:
+                return None
+            result = self.extract_usage(chunk)
+            return result if result.total > 0 else None
+        except Exception:
+            return None
+
+    def usage_from_finished_stream(self, stream: Any) -> TokenUsage | None:
+        """litellm stream wrappers report nothing after the fact."""
+        return None
+
+    def stream_completed(self, stream: Any) -> bool | None:
+        """litellm stream wrappers do not track completion."""
+        return None
+
+    def final_message(self, stream: Any) -> Any | None:
+        """litellm stream wrappers assemble no final message."""
+        return None
+
+    def text_from_stream_chunk(self, chunk: Any) -> str | None:
+        """litellm stream wrappers have no ``text_stream``."""
+        return None
+
+    def chunk_completes_stream(self, chunk: Any) -> bool:
+        """A chunk carrying ``usage``, the last one (litellm mirrors the
+        OpenAI chat chunk shape, where the usage chunk follows the
+        ``finish_reason`` chunk)."""
+        try:
+            return getattr(chunk, "usage", None) is not None
+        except Exception:
+            return False
+
     def extract_content(
         self,
         request_kwargs: dict[str, Any],
@@ -148,7 +184,7 @@ class LitellmProvider:
         no separate system field -- system role (when present) is in
         the messages list, same as OpenAI. Never raises.
 
-        Phase 4 polish: when ``event_type == EventType.EMBEDDINGS``
+        When ``event_type == EventType.EMBEDDINGS``
         the request is ``litellm.embedding(model=..., input=<str |
         list[str]>)``; capture the input parameter into
         ``PromptContent.input`` and leave the chat-shaped slots

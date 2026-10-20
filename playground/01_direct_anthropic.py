@@ -26,9 +26,15 @@ from _helpers import (
     fetch_events_for_session,
     init_sensor,
     print_result,
+    wait_for_streamed_post_calls,
 )
 
 MODEL = "claude-haiku-4-5-20251001"
+# Streamed calls this script makes: sync stream helper, async stream helper,
+# async helper read via text_stream, async helper settled via
+# get_final_message, raw create(stream=True); each must land one metered
+# post_call.
+EXPECTED_STREAMED_CALLS = 5
 HI = [{"role": "user", "content": "hi"}]
 
 
@@ -43,8 +49,13 @@ def main() -> None:
     print_result("Anthropic().messages.create", True, int((time.monotonic() - t0) * 1000),
                  f"{r.usage.output_tokens} output tokens")
 
+    # Each async section closes its client with ``async with`` while its
+    # event loop is alive: the SDK's httpx wrapper otherwise schedules its
+    # own close from a destructor, which lands on whatever loop is running
+    # when the client is collected and prints "Event loop is closed".
     async def _async_call() -> None:
-        await anthropic.AsyncAnthropic().messages.create(model=MODEL, max_tokens=5, messages=HI)
+        async with anthropic.AsyncAnthropic() as client:
+            await client.messages.create(model=MODEL, max_tokens=5, messages=HI)
     t0 = time.monotonic()
     asyncio.run(_async_call())
     print_result("AsyncAnthropic().messages.create", True, int((time.monotonic() - t0) * 1000))
@@ -61,8 +72,7 @@ def main() -> None:
     # so GuardedAsyncStream's __anext__ fires per chunk and the
     # post_call event carries a populated streaming.ttft_ms field.
     async def _async_stream() -> None:
-        client = anthropic.AsyncAnthropic()
-        async with client.messages.stream(
+        async with anthropic.AsyncAnthropic() as client, client.messages.stream(
             model=MODEL, max_tokens=8, messages=HI,
         ) as stream:
             async for _ in stream:
@@ -71,6 +81,44 @@ def main() -> None:
     asyncio.run(_async_stream())
     print_result("AsyncAnthropic().messages.stream", True, int((time.monotonic() - t0) * 1000))
 
+    # Async helper consumed through text_stream only: the guard re-implements
+    # text_stream on itself, so these reads are metered like event iteration.
+    async def _async_text_stream() -> None:
+        async with anthropic.AsyncAnthropic() as client, client.messages.stream(
+            model=MODEL, max_tokens=8, messages=HI,
+        ) as stream:
+            async for _ in stream.text_stream:
+                pass
+    t0 = time.monotonic()
+    asyncio.run(_async_text_stream())
+    print_result("AsyncAnthropic().messages.stream via text_stream", True,
+                 int((time.monotonic() - t0) * 1000))
+
+    # Async helper settled only through get_final_message(), no iteration.
+    async def _async_final_message() -> int:
+        async with anthropic.AsyncAnthropic() as client, client.messages.stream(
+            model=MODEL, max_tokens=8, messages=HI,
+        ) as stream:
+            message = await stream.get_final_message()
+        return message.usage.output_tokens
+    t0 = time.monotonic()
+    final_out = asyncio.run(_async_final_message())
+    print_result("AsyncAnthropic().messages.stream via get_final_message", final_out > 0,
+                 int((time.monotonic() - t0) * 1000), f"{final_out} output tokens")
+
+    # Raw event stream, iterated with no ``with`` block: the SDK's own
+    # documented pattern for messages.create(stream=True).
+    t0 = time.monotonic()
+    raw_events = 0
+    for _ in anthropic.Anthropic().messages.create(
+        model=MODEL, max_tokens=5, messages=HI, stream=True,
+    ):
+        raw_events += 1
+    print_result(
+        "Anthropic().messages.create(stream=True) plain iteration", raw_events > 0,
+        int((time.monotonic() - t0) * 1000), f"{raw_events} events",
+    )
+
     t0 = time.monotonic()
     anthropic.Anthropic().beta.messages.create(
         model=MODEL, max_tokens=5, messages=HI, betas=["prompt-caching-2024-07-31"])
@@ -78,19 +126,10 @@ def main() -> None:
 
     assert_event_landed(session_id, "post_call", timeout=8)
 
-    # Verify the async-streaming TTFT actually landed (regression guard
-    # — earlier playground iterations didn't exercise the async path
-    # at all, so the post_call event for an async stream never carried
-    # streaming.ttft_ms). Look at all post_call events with a streaming
-    # sub-object; require at least one populated ttft_ms.
-    events = fetch_events_for_session(
-        session_id, expect_event_types=["post_call"], timeout_s=8.0,
-    )
-    streamed = [
-        e for e in events
-        if e.get("event_type") == "post_call"
-        and (e.get("payload") or {}).get("streaming")
-    ]
+    # Every streamed call, async ones included, must land a post_call
+    # whose streaming sub-object carries ttft_ms. The later streams flush
+    # asynchronously, so wait for all of them rather than the first.
+    events, streamed = wait_for_streamed_post_calls(session_id, EXPECTED_STREAMED_CALLS)
     ttft_ok = any(
         (e["payload"]["streaming"].get("ttft_ms") is not None)
         for e in streamed
@@ -102,6 +141,23 @@ def main() -> None:
     if not ttft_ok:
         raise AssertionError(
             f"no post_call carried streaming.ttft_ms; events={events!r}",
+        )
+
+    # Every streamed post_call must carry the token counts the provider
+    # sent inside the stream, not the pre-call estimate with zero output.
+    metered = [
+        e for e in streamed
+        if (e.get("tokens_output") or 0) > 0 and (e.get("tokens_input") or 0) > 0
+    ]
+    metered_ok = len(streamed) >= EXPECTED_STREAMED_CALLS and len(metered) == len(streamed)
+    print_result(
+        "streamed post_call events carry real token usage", metered_ok, 0,
+        f"{len(metered)}/{len(streamed)} streamed post_calls metered "
+        f"(expected at least {EXPECTED_STREAMED_CALLS})",
+    )
+    if not metered_ok:
+        raise AssertionError(
+            f"streamed post_call without real usage; events={events!r}",
         )
 
     # Invalid-model llm_error: the sensor's classifier must categorize

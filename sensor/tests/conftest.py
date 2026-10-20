@@ -6,14 +6,34 @@ import json
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING, Any
+from unittest.mock import MagicMock
 
 import pytest
 
 from flightdeck_sensor.core.types import SensorConfig
+from flightdeck_sensor.providers.anthropic import AnthropicProvider
 from flightdeck_sensor.transport.client import ControlPlaneClient
 
 if TYPE_CHECKING:
     from collections.abc import Generator
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_provider_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Unit tests never reach a provider. Strip the API keys a developer's
+    shell may carry and pin the Anthropic estimator's client to a stub
+    whose ``count_tokens`` raises, so whatever the environment carries the
+    estimate falls back to the heuristic and no request leaves the
+    process."""
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    refusing = MagicMock()
+    refusing.messages.count_tokens.side_effect = RuntimeError(
+        "unit tests never count tokens remotely"
+    )
+    monkeypatch.setattr(AnthropicProvider, "_client", refusing)
 
 
 class _MockHandler(BaseHTTPRequestHandler):

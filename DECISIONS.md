@@ -9828,3 +9828,97 @@ different flavor name meant the flavor policy never applied.
 **Rejected alternative:** Emitting the deprecated top-level
 `approve|block` (works today but is scheduled for removal), or exiting with
 code 2 on deny (blocks reliably but discards the structured reason).
+
+---
+
+## D185 -- Streamed calls are metered from the provider's in-stream usage events
+
+**Date:** 2026-10-19
+
+**Decision:** The sensor's stream guard records token usage from the
+chunks the provider sends (Anthropic `message_start` / `message_delta`,
+OpenAI chat's `include_usage` final chunk, Responses `response.completed`)
+and, for the Anthropic `messages.stream()` helper, from the helper's
+accumulated `current_message_snapshot.usage`, which never reads further
+from the network; once the helper's message is complete (`stop_reason`
+set) that snapshot is the full message and becomes the response, so
+content capture and tool calls come from the assembled message without
+reading the trailing `message_stop` frame (on an early exit the snapshot
+is stored as it stands). The guard emits `post_call` once, at the first of stream exhaustion,
+`close()`, leaving the `with` block, the session ending with the stream
+still open, or (queued for the next intercepted LLM call) the guard being
+collected; a stream failure emits `llm_error` carrying the tokens
+delivered before it, which the sensor adds to its in-process session
+counter (server-side session totals add `post_call` and `embeddings`
+events, and the analytics metrics read `post_call`). The guard is a plain
+iterator as well as a context manager, so `for chunk in create(..., stream=True)` and `async
+for` work without `with`. `messages.create(stream=True)` and
+`responses.create(stream=True)` route through the same guard as
+`messages.stream()` and `chat.completions.create(stream=True)`, and every
+`create(stream=True)` sends the request inside the call as the SDK does
+(`chat.completions.create(stream=True)` used to open on first use);
+`messages.stream()` stays lazy like the SDK's own manager, sending the
+request when the context is entered or on first use. The pre-call estimate
+is used only when the stream carried no usage at all. The `Provider` protocol
+gains `usage_from_stream_chunk()`, `usage_from_finished_stream()`,
+`stream_completed()`, `final_message()`, `text_from_stream_chunk()` (so
+the guard's `text_stream` carries no provider event shapes) and
+`chunk_completes_stream()` (so a consumer that stops at the event that
+ends the response is reported as completed, not aborted); the litellm
+provider implements them, but litellm `stream=True` still raises
+`NotImplementedError`, so that path is not exercised yet. Server-side
+session totals (`post_call` and `embeddings` events), the `tokens` metric
+and `estimated_cost` (`post_call`) do not include a failed stream's
+partial tokens; counting them server-side is a README Roadmap item, not
+part of this decision.
+
+**Finalizer safety:** Python's cyclic collector may run `__del__` on any
+thread, and neither the session lock nor the event queue's mutex is
+re-entrant, so a guard that is both abandoned and part of a reference
+cycle could be finalised while the same thread holds one of them; the
+policy cache's lock is a third, taken on every policy check. The finalizer
+therefore never settles inline: it queues the settle (a lock-free deque
+append) and the next intercepted LLM call, or the session's end, runs it.
+Checking whether a lock is held was rejected because the list of locks the
+settle path takes would rot. The finalizer reads what the settle needs and
+drops the SDK stream, so an abandoned stream's connection closes at
+collection as it would without the sensor; only the guard with its settle
+record (and the request kwargs capture needs) waits for the drain. The SIGTERM / SIGINT handler that runs
+`Session.end()` can interrupt the main thread inside the same critical
+sections; that hazard predates this decision (posting `session_end` takes
+the session lock and closing the queue takes its mutex), the session-end
+settle now also takes the policy cache lock on that path, and it is not
+addressed here (README Roadmap). A session that ends with streams
+still open settles them first and flushes their events before posting
+`session_end`, so a stream left in a variable until exit is still reported
+and rolled up on an open session. Cancellations
+(`CancelledError`, `GeneratorExit`, `KeyboardInterrupt`), the sensor's own
+policy exceptions and the caller's own exceptions leaving a `with` block
+are the caller leaving, not a provider failure: they produce a post_call
+(completed if the response had been read in full, else aborted), not
+`llm_error`. An exception is a failure only while the response had not
+been read in full and no intercept had already reported it, and only when
+the error classifier knows its class or it comes from the transport or SDK
+modules (httpx, httpcore, anyio, h11, anthropic, openai) or is a
+`ConnectionError`, whoever raised it: the SDKs wrap only the request, so a
+response body that dies raises the transport's own class through helper
+methods such as `get_final_message()`, and the guard cannot tell that
+from the caller's own transport error inside the block.
+
+**Reasoning:** The SDK stream objects (`anthropic.Stream`,
+`MessageStream`, `openai.Stream`) have no `usage` attribute, so reading
+usage from them after exit always returned zero and every streamed call
+was recorded at the estimate with zero output tokens; the unit test passed
+only because its mock stream had a `usage` attribute no real stream has.
+The usage lives in the events that pass through the guard, which is where
+metering has to happen.
+
+**Rejected alternative:** Re-fetching usage after the stream (no such
+endpoint; `count_tokens` would double the cost and still miss cache
+fields). Calling `get_final_message()` whenever the guard settles (on an
+early exit it reads the rest of the stream, defeating the caller's
+`break`). Opening `create(stream=True)` lazily on first iteration (moves
+provider errors away from the call that the SDK raises them on). Keeping
+the estimate on streams and documenting it (streaming is the default in
+most agent frameworks, so budgets and cost would stay wrong for most
+sessions).

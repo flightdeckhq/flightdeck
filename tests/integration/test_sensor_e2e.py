@@ -160,7 +160,14 @@ def _query_event_content_for_session(session_id: str) -> list[dict[str, Any]]:
 
 # Cleanup statements share a single :'flavor' binding via exec_sql.
 # Each is idempotent and ordered to satisfy FK constraints (children
-# before parents).
+# before parents). The agents table has no flavor column: the rollup
+# is keyed by agent_id and is reached through the sessions it
+# summarises. The sessions -> agents foreign key is checked at the end
+# of the statement, so one data-modifying CTE deletes the flavor's
+# sessions and then the agents those sessions belonged to, unless a
+# session of another flavor still references the agent. A rollup left
+# behind keeps total_sessions above zero with no session behind it,
+# which breaks the fleet's recent-sessions contract on the next run.
 _FLAVOR_CLEANUP_SQL = (
     "DELETE FROM event_content WHERE session_id IN "
     "(SELECT session_id FROM sessions WHERE flavor = :'flavor')",
@@ -168,8 +175,13 @@ _FLAVOR_CLEANUP_SQL = (
     "DELETE FROM directives WHERE flavor = :'flavor' OR session_id IN "
     "(SELECT session_id FROM sessions WHERE flavor = :'flavor')",
     "DELETE FROM token_policies WHERE scope = 'flavor' AND scope_value = :'flavor'",
-    "DELETE FROM sessions WHERE flavor = :'flavor'",
-    "DELETE FROM agents WHERE flavor = :'flavor'",
+    "WITH gone AS ("
+    "DELETE FROM sessions WHERE flavor = :'flavor' RETURNING agent_id"
+    ") "
+    "DELETE FROM agents a USING (SELECT DISTINCT agent_id FROM gone) g "
+    "WHERE a.agent_id = g.agent_id AND NOT EXISTS ("
+    "SELECT 1 FROM sessions o WHERE o.agent_id = a.agent_id "
+    "AND o.flavor IS DISTINCT FROM :'flavor')",
     "DELETE FROM custom_directives WHERE flavor = :'flavor'",
 )
 
@@ -2326,3 +2338,71 @@ def test_pattern_c_ki15_singleton_limitation(
             pass
         _delete_flavor_data(flavor_a)
         _delete_flavor_data(flavor_b)
+
+
+# ======================================================================
+# Flavor cleanup removes the agent rollup
+# ======================================================================
+
+
+def _query_agent_ids_for_flavor(flavor: str) -> list[str]:
+    """agent_id of every session row carrying ``flavor``."""
+    rows = _psql_json(
+        "SELECT COALESCE(json_agg(DISTINCT s.agent_id), '[]'::json) "
+        "FROM sessions s WHERE s.flavor = :'flavor'",
+        flavor=flavor,
+    )
+    return [str(r) for r in rows]
+
+
+def _count_agent_rows(agent_ids: list[str]) -> int:
+    """Number of agents rows among ``agent_ids`` that still exist."""
+    if not agent_ids:
+        return 0
+    return int(
+        exec_sql(
+            "SELECT count(*) FROM agents "
+            "WHERE agent_id = ANY(string_to_array(:'ids', ',')::uuid[])",
+            ids=",".join(agent_ids),
+        )
+    )
+
+
+def test_flavor_cleanup_removes_the_agent_rollup(
+    sensor_reset: None, unique_flavor: str,
+) -> None:
+    """``_delete_flavor_data`` takes the agents rollup row along with the
+    flavor's sessions. The agents table has no flavor column, so the
+    rollup must be resolved through the sessions it summarises; a
+    rollup left behind keeps ``total_sessions`` above zero with no
+    session behind it, which the fleet's recent-sessions contract
+    rejects on the next run.
+    """
+    flavor = unique_flavor
+    with respx.mock(assert_all_called=False) as rmock:
+        _mock_anthropic_messages(rmock)
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
+        client.messages.create(
+            model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "Hello"}],
+            max_tokens=100,
+        )
+        _wait_for_event_type(flavor, "post_call", timeout=15)
+    # Flush the sensor and let the workers land its last event before the
+    # cleanup runs, so nothing re-creates the rows afterwards.
+    flightdeck_sensor.teardown()
+    _wait_for_event_type(flavor, "session_end", timeout=15)
+
+    agent_ids = _query_agent_ids_for_flavor(flavor)
+    assert agent_ids, f"no session row for flavor {flavor}"
+    wait_until(
+        lambda: _count_agent_rows(agent_ids) == len(agent_ids),
+        timeout=15,
+        msg="agents rollup row never written",
+    )
+
+    _delete_flavor_data(flavor)
+
+    assert _query_agent_ids_for_flavor(flavor) == []
+    assert _count_agent_rows(agent_ids) == 0

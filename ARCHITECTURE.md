@@ -238,7 +238,7 @@ flightdeck/
 │   │   │   ├── client.py       # ControlPlaneClient + EventQueue (drain + directive threads)
 │   │   │   └── retry.py        # Exponential backoff, unavailability policy enforcement
 │   │   ├── interceptor/
-│   │   │   ├── base.py         # call, call_async, call_stream: provider-agnostic intercept
+│   │   │   ├── base.py         # call, call_async, call_stream, call_stream_async + the stream guards
 │   │   │   ├── anthropic.py    # SensorAnthropic + descriptor-based class-level patch
 │   │   │   ├── openai.py       # SensorOpenAI + chat / responses / embeddings descriptors
 │   │   │   ├── litellm.py      # SensorLitellm: module-level completion / embedding patch
@@ -247,7 +247,7 @@ flightdeck/
 │   │   │   ├── crewai.py       # CrewAI Agent.execute_task patch → one child session per agent turn
 │   │   │   └── langgraph.py    # LangGraph StateGraph.add_node patch → one child session per node invocation
 │   │   ├── providers/
-│   │   │   ├── protocol.py     # Provider Protocol: token estimation, usage extraction, content extraction
+│   │   │   ├── protocol.py     # Provider Protocol: token estimation, usage extraction (incl. in-stream usage), content extraction
 │   │   │   ├── anthropic.py    # AnthropicProvider: handles system, messages, tools, response
 │   │   │   ├── openai.py       # OpenAIProvider: handles messages, tools, response, embeddings input
 │   │   │   └── litellm.py      # LitellmProvider: ModelResponse usage / tool-invocation extraction
@@ -255,7 +255,7 @@ flightdeck/
 │   │       └── crewai_mcp.py   # Opt-in fixup for the mcpadapt → CrewAI args_schema JSON Schema bug
 │   └── tests/
 │       ├── conftest.py         # Mock control plane + provider fixtures
-│       └── unit/               # 31 files
+│       └── unit/               # 34 files
 │           ├── test_agent_id.py
 │           ├── test_agent_type_validation.py
 │           ├── test_compat_crewai_mcp.py
@@ -270,6 +270,7 @@ flightdeck/
 │           ├── test_interceptor_crewai.py
 │           ├── test_interceptor_langgraph.py
 │           ├── test_llm_event_enrichment.py
+│           ├── test_mcp_availability.py
 │           ├── test_mcp_identity.py
 │           ├── test_mcp_interceptor.py
 │           ├── test_mcp_policy_emission_enriched.py
@@ -279,6 +280,7 @@ flightdeck/
 │           ├── test_patch.py
 │           ├── test_policy.py
 │           ├── test_policy_decision_summary.py
+│           ├── test_policy_directive_events.py
 │           ├── test_policy_emission_enriched.py
 │           ├── test_policy_events.py
 │           ├── test_prompt_capture.py
@@ -286,6 +288,7 @@ flightdeck/
 │           ├── test_providers.py
 │           ├── test_session.py
 │           ├── test_session_lifecycle_enrichment.py
+│           ├── test_streaming_usage.py
 │           └── test_transport.py
 │
 ├── ingestion/                  # Ingestion API (Go)
@@ -598,17 +601,61 @@ def directive(
 ```python
 class Provider(Protocol):
 
-    def estimate_tokens(self, request_kwargs: dict) -> int:
-        """Estimate tokens before the call. Never raises."""
+    def estimate_tokens(self, request_kwargs: dict) -> tuple[int, str]:
+        """Estimate tokens before the call; returns (tokens, source) where
+        source is "tiktoken", "heuristic" or "none". Never raises."""
 
     def extract_usage(self, response: Any) -> TokenUsage:
         """Extract actual token counts from response. Never raises."""
+
+    def usage_from_stream_chunk(self, chunk: Any) -> TokenUsage | None:
+        """Usage carried by one streamed chunk or event, or None. The stream
+        guard merges successive results field by field, the larger value
+        winning (the counters are cumulative). Never raises."""
+
+    def usage_from_finished_stream(self, stream: Any) -> TokenUsage | None:
+        """Usage the SDK stream object holds when the guard settles
+        (Anthropic's helper snapshot), or None for raw streams. Called on
+        every settle path, early exit included, so it must never read
+        further from the stream. Never raises."""
+
+    def stream_completed(self, stream: Any) -> bool | None:
+        """Whether the stream object knows its message is complete; None
+        when it cannot tell. Never reads from the stream. Never raises."""
+
+    def final_message(self, stream: Any) -> Any | None:
+        """The complete message of a helper stream (Anthropic's accumulated
+        snapshot once stop_reason is set), or None; may be an awaitable.
+        Only called once stream_completed is true and never reads further.
+        Never raises."""
+
+    def text_from_stream_chunk(self, chunk: Any) -> str | None:
+        """Text carried by one streamed event, for the guard's text_stream
+        (Anthropic content_block_delta / text_delta), or None. Never
+        raises."""
+
+    def chunk_completes_stream(self, chunk: Any) -> bool:
+        """Whether this streamed event ends the response (Anthropic
+        message_stop or a message_delta with stop_reason; an OpenAI chat
+        chunk carrying usage; a Responses terminal event), so
+        a consumer that stops at it has read the whole response. Never
+        raises."""
+
+    def extract_response_metadata(self, response: Any) -> dict | None:
+        """Rate-limit headers, request id and processing time, normalised
+        across providers; None when nothing is reachable. Never raises."""
+
+    def extract_output_dimensions(self, response: Any) -> dict | None:
+        """{"count", "dimension"} for embeddings responses, else None."""
+
+    def extract_tool_invocations(self, response: Any) -> list[ToolInvocation]:
+        """Tool calls the model emitted in the response; empty when none."""
 
     def extract_content(
         self,
         request_kwargs: dict,
         response: Any,
-        event_type: EventType = EventType.POST_CALL,
+        event_type: EventType | None = None,
     ) -> PromptContent | None:
         """
         Extract prompt content for storage when capture_prompts=True.
@@ -638,19 +685,23 @@ class PromptContent:
     messages: list[dict]            # Full messages array verbatim
     tools: list[dict] | None        # Tool definitions if provided
     response: dict                  # Full response as dict
-    input: str | list[str] | None   # Embeddings input (None for chat)
     provider: str                   # "anthropic" or "openai"
     model: str
     session_id: str
     event_id: str
     captured_at: str                # ISO 8601 UTC
+    input: str | list[str] | None = None               # Embeddings input (None for chat)
+    embedding_output: list[list[float]] | None = None  # Embedding vectors when captured
 ```
 
 `AnthropicProvider.estimate_tokens` uses the Anthropic SDK
 `count_tokens` if available, falls back to `char // 4`.
 `OpenAIProvider.estimate_tokens` uses `tiktoken` when installed, falls back to
-`char // 4`. Token reconciliation in `_post_call` always trusts
-`extract_usage` over the pre-call estimate.
+`char // 4`. Token reconciliation in `_post_call` prefers provider-reported
+usage over the pre-call estimate: `extract_usage(response)` for a
+non-streamed call, the usage the stream guard read from the stream for a
+streamed call (see Streaming metering). The estimate, with zero output
+tokens, is used only when neither reports any tokens.
 
 ### Class-level patching
 
@@ -665,13 +716,16 @@ the actual class object in place.
 The patched resource slots are:
 
 - **Anthropic** — `Anthropic.messages`, `AsyncAnthropic.messages`,
-  `Beta.messages`, `AsyncBeta.messages` (the `Beta` class lives at
+  `Beta.messages`, `AsyncBeta.messages`. `create`, `create(stream=True)`
+  and `stream()` are intercepted on each. The `Beta` class lives at
   `anthropic.resources.beta.beta`; patching its `messages` cached_property
-  is the leaf-level fix for `client.beta.messages.create` / `.stream` used
-  by Claude 4 adaptive-thinking).
+  covers `client.beta.messages.create` / `.stream`, which Claude 4
+  adaptive thinking uses.
 - **OpenAI** — `OpenAI.chat`, `AsyncOpenAI.chat`, `OpenAI.responses`,
   `AsyncOpenAI.responses`, `OpenAI.embeddings`, `AsyncOpenAI.embeddings`.
-  `responses` is OpenAI's recommended API for new projects;
+  `chat.completions.create` and `responses.create` are intercepted,
+  including `stream=True`; the `.stream()` helpers on those resources are
+  not. `responses` is OpenAI's recommended API for new projects;
   `embeddings` is common in RAG-heavy pipelines.
 
 Five descriptor types in total across both interceptor files:
@@ -705,9 +759,11 @@ the entrypoint, before any framework or user code constructs a client.
 `litellm.acompletion`, `litellm.embedding`, and `litellm.aembedding`.
 litellm exposes its API as module-level functions, so the descriptor pattern
 above does not apply; the interceptor wraps the module functions directly
-with idempotency sentinels on the module object. Streaming via
-`litellm.completion(stream=True)` is not yet covered by the sensor's TTFT /
-chunk / abort accounting.
+with idempotency sentinels on the module object. While a session is
+active, `litellm.completion(stream=True)` and
+`litellm.acompletion(stream=True)` raise `NotImplementedError` rather than
+run unmetered; with no active session the call passes through to litellm
+untouched.
 
 ### Patch surface — out of scope
 
@@ -716,6 +772,8 @@ The class-level patch deliberately does NOT intercept:
 | Code path | Why not |
 |---|---|
 | `OpenAI.beta.chat.completions.parse` / `.stream` | Structured-output path on a separate `OpenAI.beta` `cached_property`. Not yet observed in any framework's default flow. |
+| `OpenAI.chat.completions.stream` / `.parse`, `OpenAI.responses.stream` / `.parse` | `.stream()` calls the unwrapped resource's `create` internally and `.parse()` posts through the resource's own `_post`, so neither passes the sensor wrapper; `create(stream=True)` on the same resources is intercepted. The `parse` structured-output path is on the README Roadmap. |
+| `OpenAI.chat.completions.with_raw_response.create(stream=True)`, `OpenAI.responses.with_raw_response.*` | The raw-response wrapper is intercepted, but metered correctly only for non-streaming chat calls: a streamed call through it records the pre-call estimate with no `streaming` block, and the Responses raw-response path passes through unintercepted. langchain-openai takes the chat path when `include_response_headers=True`. On the README Roadmap. |
 | `OpenAI.audio.*`, `images.*`, `moderations.*`, `files.*`, `fine_tuning.*`, `completions.*` (legacy) | Utility resources unrelated to LLM inference events. |
 | `Anthropic.completions.*` | Legacy completions API; superseded by `messages` / `beta.messages`. |
 | Frameworks that bypass the SDK entirely (raw httpx, boto3 bedrock-runtime, vertexai) | No SDK class to patch. |
@@ -730,7 +788,7 @@ clients internally are intercepted without user-side wrapping.
 
 | Framework | Path covered |
 |---|---|
-| LangChain | `ChatAnthropic.invoke` (langchain-anthropic); `ChatOpenAI.invoke` on langchain-openai 0.x, which calls `chat.completions.create`; `OpenAIEmbeddings.embed_*` (transitive). langchain-openai 1.x sends chat through `with_raw_response.create`, which the OpenAI interceptor does not wrap, so those calls are not observed (README Roadmap) |
+| LangChain | `ChatAnthropic.invoke` (langchain-anthropic); `ChatOpenAI.invoke` (langchain-openai 0.3+ sends it through `chat.completions.with_raw_response.create`, which is intercepted as a non-streaming chat call); `OpenAIEmbeddings.embed_*` (transitive). `ChatOpenAI.stream` calls `chat.completions.create(stream=True)` and is metered from the stream; with `include_response_headers=True` it goes through the raw-response wrapper and records the pre-call estimate (see "Patch surface — out of scope"); the Responses raw-response path and `.parse()` are not observed (README Roadmap) |
 | LangGraph | Transitive via LangChain — graphs routing through `ChatAnthropic` / `ChatOpenAI`, including `langgraph.prebuilt.create_react_agent` tool loops |
 | LlamaIndex | `llama-index-llms-anthropic.complete`, `llama-index-llms-openai.complete` |
 | CrewAI 1.14+ | `LLM(model=...).call` via the native Anthropic and OpenAI provider classes. Model strings without a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm |
@@ -1287,7 +1345,8 @@ The ingestion handler rejects events with 400 when:
 - `occurred_at` is more than 48h in the past (`maxClockSkewPast`) OR
   more than 5m in the future (`maxClockSkewFuture`). The 48h past
   bound accommodates retry-after-long-outage windows.
-- Any `tokens_*` field is negative.
+- `tokens_input`, `tokens_output` or `tokens_total` is negative (cache
+  counts and a failed stream's `partial_tokens_*` are not range-checked).
 
 A `session_end` for a `session_id` Flightdeck has never seen (an orphan
 `session_end`) is **not** rejected at ingestion — the event is accepted and
@@ -3585,14 +3644,128 @@ When `stream=true` on the underlying request, the payload also carries:
 }
 ```
 
-`final_outcome` is `"completed"` or `"aborted"`. `abort_reason` is set
-on aborted streams (`"client_aborted"`, `"provider_error"`, etc.). The
-streaming sub-object is omitted entirely for non-streaming calls.
+`final_outcome` is `"completed"` when the response was read in full: the
+stream reached its end, the caller stopped at the event that ends the
+response (Anthropic's `message_stop` or the `message_delta` carrying
+`stop_reason`, OpenAI's usage chunk, a Responses
+`response.completed`), or a helper stream reports its message complete. It
+is `"aborted"` when the caller left before that (`break`, `close()`,
+leaving the `with` block, a cancellation), in which case `abort_reason` is
+`"client_aborted"`. `latency_ms` runs to the last chunk the guard delivered
+unless the guard read the stream to its end, or a helper read it to
+completion itself; with no chunk delivered it runs to the moment the
+response opened. A stream
+that fails emits `llm_error` instead (`abort_reason` `error_before_stream`,
+`error_mid_stream` or `timeout`). The streaming sub-object is omitted
+entirely for non-streaming calls.
+
+#### Streaming metering
+
+SDK stream objects carry no `usage` of their own, so a streamed call is
+metered from the usage the provider sends inside the stream:
+
+- **Anthropic.** `message_start` carries the input and cache counts and
+  each `message_delta` carries the cumulative output count. On the
+  `messages.stream()` helper (sync and async) the sensor also reads the
+  helper's accumulated `current_message_snapshot.usage` when the call
+  settles, which never reads further from the network, and once
+  `stop_reason` is set it takes that snapshot as the response: content
+  blocks are complete before `message_delta` arrives, so this is the full
+  message without reading the trailing `message_stop` frame, and content
+  capture and tool-call extraction see the full response.
+- **OpenAI chat.** The final chunk carries `usage`; the sensor injects
+  `stream_options.include_usage` so the provider sends it. That chunk has
+  empty `choices`, which the usual loop body (`chunk.choices[0]`) does
+  not expect, so a caller who did not ask for usage never sees it: the
+  guard records its usage and drops it, the stream looks exactly as it
+  does without the sensor, and `chunk_count` counts the chunks the caller
+  saw. A caller who set `include_usage` themselves receives it as usual.
+  The usage chunk is the event that ends the response; stopping at the
+  `finish_reason` chunk before it leaves the usage unread, and that call
+  reports `aborted` with the pre-call estimate.
+- **OpenAI Responses.** `response.completed` carries `usage`.
+
+The sensor wraps the SDK stream in a guard (`GuardedStream`, or
+`GuardedAsyncStream` for async clients, in `interceptor/base.py`) that
+records usage as events pass through it and emits the `post_call` once, at
+the first of: the stream being read to its end, `close()`, leaving the
+`with` block, the guard being garbage-collected (a plain `for` loop left
+with `break`), or the session ending while the stream is still open; in
+that last case the events are flushed before `session_end` goes out, so
+the workers roll the tokens up on an open session.
+Leaving the `with` block on an exception emits `llm_error` only when the
+response had not been read in full and either the error classifier knows
+the exception's class or the guard recognises its module (`httpx`,
+`httpcore`, `anyio`, `h11`, `anthropic`, `openai`) or a `ConnectionError`:
+an SDK error, a raw transport error such as `httpx.ReadTimeout` or
+`httpx.RemoteProtocolError` raised by a helper method that read the stream
+itself, a connection reset, or a look-alike such as the builtin
+`TimeoutError` or `PermissionError`. Such an exception counts whoever
+raised it (the classifier matches by class name whatever the module, so a
+failing `httpx` call of the caller's own inside the block, or another
+library's `ReadTimeout`, is attributed to the stream). An error raised
+while reading through the guard is reported as it happens, and one that
+another intercepted call already reported is not reported again. Cancellations
+and interrupts (`CancelledError`, `GeneratorExit`, `KeyboardInterrupt`),
+the sensor's own policy exceptions (`BudgetExceededError`,
+`DirectiveError`, `MCPPolicyBlocked`) and the caller's own exceptions
+count as the caller leaving: the call is reported as completed when the
+response had been read in full, else as aborted. The garbage-collection
+path never settles inline: the cyclic collector can run a finalizer on
+any thread, inside a critical section of the session, its policy cache or
+its event queue, and none of those locks is re-entrant, so the finalizer
+records what the settle needs, drops the SDK stream (whose connection
+then closes at collection, as it would without the sensor) and queues the
+settle; the next LLM call the sensor intercepts, or the session's end,
+runs it. `messages.stream()`, `messages.create(stream=True)`,
+`chat.completions.create(stream=True)` and `responses.create(stream=True)`
+all take this path, with or without a `with` block
+(`for chunk in client.chat.completions.create(..., stream=True)`) and with
+`async for`. `create(stream=True)` sends the request inside the call, as the
+unguarded SDK does, so provider errors surface there; `messages.stream()`
+sends it when the context is entered, like the SDK's own manager, or on
+the first iteration or public-attribute read when no `with` block is
+used.
+
+`chunk_count`, the inter-chunk timings and `partial_chunks` count the
+events the SDK yields to the caller. Protocol frames the SDK consumes
+itself (Anthropic's `ping` keep-alive, OpenAI's `[DONE]` end-of-stream
+marker) never reach the guard and are not counted.
+
+A stream that ends before its final usage event reports the usage that had
+arrived (for Anthropic, the `message_start` input and cache counts and the
+latest output count); only when no usage arrived at all does `post_call`
+fall back to the pre-call estimate as `tokens_input` with `tokens_output =
+0`.
+
+The guard proxies every other public attribute (`get_final_message`,
+`response`, `request_id`) to the SDK stream and re-implements
+`text_stream` on top of itself (only for streams that have one, as on the
+SDK object) so text readers are metered too; the async guard exposes these
+only after `async with` or the first `async for`.
+Helper streams yield the SDK's derived events (text deltas and the like)
+alongside the raw ones, so `chunk_count` is higher for `messages.stream()`
+than for `create(stream=True)` on the same response.
+
+With `capture_prompts` on, only the `messages.stream()` helper stores a
+response: when its message is complete the assembled final message is the
+response, and when the caller leaves early the helper's accumulated
+snapshot is stored as it stands, without reading further (a stream
+reported from collection stores no partial content: the finalizer drops
+the stream before the settle runs). Raw event
+streams (`create(stream=True)` on any provider) are never assembled into a
+message, so they store the request (for `responses.create`, nothing of its
+`input`) but no response text, and emit no `tool_call`. OpenAI's
+`.stream()` / `.parse()` helpers are listed under "Patch surface — out of
+scope".
 
 ### `tool_call`
 
 Tool-use events. For Anthropic and OpenAI tool-use messages, the sensor
-emits one `tool_call` per tool invocation in the response. Carries
+emits one `tool_call` per tool invocation in the response; for streamed
+calls this holds for the Anthropic `messages.stream()` helper (its assembled
+final message is the response) while raw event streams emit none, because
+the sensor does not assemble their content blocks. Carries
 `tool_name`, optionally `tool_input` (when `captureToolInputs=true` for
 the plugin or `capture_prompts=true` for the sensor), `tool_result` (when
 the next assistant turn shows the tool's output and capture is on).
@@ -3643,9 +3816,23 @@ Structured error event with a 14-entry taxonomy:
 | `other` | — | Fallback for unknown | `other` | ❌ |
 
 Plus `provider`, `http_status`, `provider_error_code`, `request_id`,
-`retry_after`, `is_retryable`. Mid-stream aborts emit
-`error_type=stream_error` with `partial_chunks` and `partial_tokens_*`
-so token accounting reflects work done before the failure.
+`retry_after`, `is_retryable`. For a streamed call, `abort_reason` and the
+`partial_*` counts below sit with these under `payload.error`
+(`retry_attempt` and `terminal` are top-level payload fields). A failure
+while opening the stream keeps the classification of the error it raised,
+with `abort_reason=error_before_stream` and `partial_chunks=0`; a failure
+on the first read gets `error_before_stream` or `timeout`. A failure once
+data had arrived (a chunk through the guard, or usage accumulated by a
+helper the caller read through `get_final_message()`, which leaves
+`partial_chunks=0`) emits `error_type=stream_error` with `abort_reason`
+`error_mid_stream` (or `timeout`), `partial_chunks` (chunks read before
+the failure) and, when the stream had delivered usage,
+`partial_tokens_input` / `partial_tokens_output`. The provider bills those tokens, so the sensor
+adds them to the in-process session counter that drives its local budget
+checks; server-side session totals, the `tokens` metric and
+`estimated_cost` do not include them: the session totals add every event
+that carries `tokens_total` (`post_call` and `embeddings`) and the
+analytics metrics read `post_call` events (README Roadmap).
 
 Operator-actionable retry-chain context:
 
@@ -3984,7 +4171,10 @@ captures tool use via the LLM message array when `capture_prompts=true`.
 
 Governs LLM prompt / response content, embedding inputs, and tool_result
 bodies: the user's prompt text, assistant response text, thinking blocks,
-embedding inputs, and the output of each tool the LLM invoked.
+embedding inputs, and the output of each tool the LLM invoked. Streamed
+responses are stored only when the stream is assembled into a message (the
+Anthropic `messages.stream()` helper); raw event streams store the request
+only (see "Streaming metering" under `post_call`).
 
 No sanitiser applies. Outputs can carry arbitrary prompt-like content
 (model-generated text, tool-fetched web pages, search results) and a
@@ -4925,6 +5115,9 @@ Postgres) via `make test-integration`:
   framework filter, `error_types[]` listing
 - `test_sensor_e2e.py` — end-to-end sensor lifecycle including
   acknowledgement events and singleton behaviour
+- `test_sensor_streaming.py` — server-sent-event streams through the real
+  sensor: in-stream usage, chunk counts, a mid-stream failure, OpenAI chat
+  and Responses
 
 ### Production-image smoke
 

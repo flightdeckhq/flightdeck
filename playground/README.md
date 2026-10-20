@@ -8,8 +8,8 @@ The suite also doubles as Flightdeck's canonical Rule 40d manual-exercise surfac
 
 | File | Stack | What it shows |
 |---|---|---|
-| `01_direct_anthropic.py` | anthropic SDK | sync / async / sync-stream / async-stream / beta.messages, plus invalid-model `llm_error` classification |
-| `02_direct_openai.py` | openai SDK | sync / async / sync-stream / async-stream / responses, embeddings (single + list) capture round-trip, auth-error classification |
+| `01_direct_anthropic.py` | anthropic SDK | sync / async / sync-stream / async-stream / async-stream via `text_stream` / async-stream via `get_final_message` / raw `create(stream=True)` plain iteration / beta.messages; asserts every streamed `post_call` carries real token usage; invalid-model `llm_error` classification |
+| `02_direct_openai.py` | openai SDK | sync / async / sync-stream / async-stream / chat stream plain iteration / responses / `responses.create(stream=True)`, embeddings (single + list) capture round-trip; asserts every streamed `post_call` carries real token usage; auth-error classification |
 | `03_langchain.py` | `langchain-anthropic`, `langchain-openai` (+ optional `langchain-mcp-adapters`) | `ChatAnthropic.invoke` + `ChatOpenAI.invoke` + `OpenAIEmbeddings.embed_documents` capture + `session.framework='langchain'` attribution + MCP tool call via the adapter |
 | `04_langgraph.py` | `langgraph` (+ optional `langchain-mcp-adapters`) | StateGraph routing through ChatAnthropic + `ToolNode` driving an MCP-adapter tool |
 | `05_llamaindex.py` | `llama-index-llms-anthropic`, `llama-index-llms-openai` (+ optional `llama-index-tools-mcp`) | `.complete(...)` for both providers + MCP tool call via `McpToolSpec` |

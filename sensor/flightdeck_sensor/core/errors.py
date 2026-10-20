@@ -1,15 +1,13 @@
 """Error classification for LLM provider exceptions.
 
-Phase 4 (v0.5.0) upgrades LLM API errors to first-class structured events. The
-sensor no longer lets every provider exception escape the interceptor
-unrecorded -- instead :func:`classify_exception` maps the exception to a
-14-entry taxonomy and :func:`build_error_payload` constructs the structured
-``error`` sub-object attached to an :class:`EventType.LLM_ERROR` event.
+LLM API errors are first-class structured events: :func:`classify_exception`
+maps a provider exception to a 14-entry taxonomy and
+:func:`build_error_payload` constructs the structured ``error`` sub-object
+attached to an :class:`EventType.LLM_ERROR` event.
 
 The taxonomy is deliberately provider-agnostic. Each entry maps to the
-recommended OTel ``gen_ai.error.type`` value so a future OpenTelemetry
-exporter can pass the classification through unchanged; see the audit
-matrix in ``audit-phase-4.md`` for the full mapping.
+recommended OTel ``gen_ai.error.type`` value so an OpenTelemetry exporter
+can pass the classification through unchanged.
 
 Design rules baked in here:
 
@@ -33,7 +31,7 @@ from typing import Any
 
 
 class ErrorType(str, enum.Enum):
-    """14-entry Phase 4 taxonomy. Values are the wire-level strings."""
+    """The 14-entry error taxonomy. Values are the wire-level strings."""
 
     RATE_LIMIT = "rate_limit"
     QUOTA_EXCEEDED = "quota_exceeded"
@@ -127,6 +125,39 @@ class ErrorClassification:
 # SDKs here because the sensor must stay install-optional (a user with
 # ``openai`` but not ``anthropic`` installed cannot pay a hard import cost).
 #
+# Exception class names (SDK, stdlib and httpx) that mean the request or
+# the response timed out. Shared with the stream guard, which reports such
+# a failure with ``abort_reason=timeout`` whatever its classification.
+TIMEOUT_EXCEPTION_NAMES: tuple[str, ...] = (
+    "APITimeoutError",
+    "TimeoutError",
+    "TimeoutException",
+    "ConnectTimeout",
+    "ReadTimeout",
+    "WriteTimeout",
+    "PoolTimeout",
+)
+
+
+class StreamOutcome(str, enum.Enum):
+    """``payload.streaming.final_outcome`` of a streamed post_call. The
+    dashboard keys its outcome badge off these exact strings."""
+
+    COMPLETED = "completed"
+    ABORTED = "aborted"
+
+
+class AbortReason(str, enum.Enum):
+    """``abort_reason`` of a streamed call: ``CLIENT_ABORTED`` on the
+    post_call of a stream the caller left early, the others on the
+    llm_error of a stream that failed."""
+
+    CLIENT_ABORTED = "client_aborted"
+    ERROR_BEFORE_STREAM = "error_before_stream"
+    ERROR_MID_STREAM = "error_mid_stream"
+    TIMEOUT = "timeout"
+
+
 # Class names to error types. First-match wins; order matters for subclasses
 # (put more-specific entries first).
 _CLASS_TO_TYPE: list[tuple[tuple[str, ...], ErrorType]] = [
@@ -139,7 +170,7 @@ _CLASS_TO_TYPE: list[tuple[tuple[str, ...], ErrorType]] = [
     (("ConflictError",), ErrorType.INVALID_REQUEST),
     (("ServiceUnavailableError",), ErrorType.OVERLOADED),
     (("InternalServerError",), ErrorType.API_ERROR),
-    (("APITimeoutError", "TimeoutError"), ErrorType.TIMEOUT),
+    (TIMEOUT_EXCEPTION_NAMES, ErrorType.TIMEOUT),
     (("APIConnectionError",), ErrorType.API_ERROR),
     (("APIStatusError",), ErrorType.API_ERROR),
     (("APIError",), ErrorType.API_ERROR),
@@ -199,7 +230,7 @@ def classify_exception(
     is_stream_error: bool = False,
     capture_prompts: bool = False,
 ) -> ErrorClassification:
-    """Classify a live provider exception against the Phase 4 taxonomy.
+    """Classify a live provider exception against the error taxonomy.
 
     ``provider_hint`` lets the caller override module-based inference (for
     cases where the exception type is re-raised across a wrapping layer and
@@ -213,7 +244,7 @@ def classify_exception(
     no provider-controlled string is forwarded. When True, the same
     redaction rule that applies to chat content applies here: the
     provider's exception ``str()`` is included (clipped to
-    ``_ERROR_MESSAGE_MAX_LEN`` chars). Rule 18 enforcement (H-2 fix):
+    ``_ERROR_MESSAGE_MAX_LEN`` chars). Capture posture is enforced here:
     content_filter exceptions echo the offending prompt fragment in
     their string representation, so capture-off must NOT pass that
     string through.
@@ -385,8 +416,8 @@ def _redacted_message(
 ) -> str:
     """Class name plus optionally the exception's clipped string repr.
 
-    ``capture_prompts`` gates the inclusion of ``str(exc)`` (Rule 18,
-    H-2 fix). When False, returns ``cls_name`` only — provider
+    ``capture_prompts`` gates the inclusion of ``str(exc)`` (the capture
+    posture). When False, returns ``cls_name`` only — provider
     exceptions can echo the user's prompt fragment in their string
     (notably content_filter rejections), and that fragment is
     user-prompt content that capture-off must not forward to events.

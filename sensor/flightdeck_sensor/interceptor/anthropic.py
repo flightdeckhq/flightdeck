@@ -45,8 +45,9 @@ Interception hierarchy for per-instance wrapping::
 
     SensorAnthropic (wraps anthropic.Anthropic or AsyncAnthropic)
       ├── @property messages  →  SensorMessages
-      │   ├── create()        →  call() or call_async()
-      │   ├── stream()        →  call_stream() or NotImplementedError (async)
+      │   ├── create()        →  call() / call_async(); with stream=True the
+      │   │                       stream guard (call_stream / call_stream_async)
+      │   ├── stream()        →  call_stream() or call_stream_async()
       │   └── __getattr__     →  pass-through
       ├── @property beta      →  SensorBeta            (wrap() parity with patch())
       │   └── @property messages → SensorMessages
@@ -145,8 +146,28 @@ class SensorMessages:
         self._is_async = is_async
 
     def create(self, **kwargs: Any) -> Any:
-        """Intercept messages.create() -- sync or async depending on client type."""
+        """Intercept messages.create() -- sync or async depending on client type.
+
+        ``stream=True`` returns the SDK's raw event stream, so it takes
+        the same guard as ``messages.stream()``: usage is metered from the
+        ``message_start`` / ``message_delta`` events as they pass through,
+        and the guard iterates like the SDK ``Stream`` with or without a
+        ``with`` block. The async form returns a coroutine resolving to
+        the guard, matching ``await client.messages.create(..., stream=True)``.
+        """
         real_fn = self._real.create
+        if kwargs.get("stream"):
+            # Opened eagerly: the unguarded SDK sends the request inside
+            # create(), so provider errors must surface here, not at the
+            # first iteration.
+            if self._is_async:
+
+                async def _async_stream_create() -> base.GuardedAsyncStream:
+                    guard = base.call_stream_async(real_fn, kwargs, self._session, self._provider)
+                    return await guard.open()
+
+                return _async_stream_create()
+            return base.call_stream(real_fn, kwargs, self._session, self._provider).open()
         if self._is_async:
             return base.call_async(real_fn, kwargs, self._session, self._provider)
         return base.call(real_fn, kwargs, self._session, self._provider)

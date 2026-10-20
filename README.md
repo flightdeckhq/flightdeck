@@ -121,11 +121,11 @@ Each script self-skips when its API keys aren't set, so `make playground-all` ru
 
 | Provider  | Chat | Embeddings | Streaming | Errors |
 |-----------|------|------------|-----------|--------|
-| Anthropic | `messages.create`, `messages.stream`, `beta.messages.*` (sync + async) | route via litellm to Voyage | sync + async | 14-entry `llm_error` taxonomy |
-| OpenAI    | `chat.completions.create`, `responses.create` (sync + async) | `embeddings.create` (sync + async) | sync + async | same |
+| Anthropic | `messages.create`, `messages.stream`, `beta.messages.*` (sync + async) | route via litellm to Voyage | `messages.stream`, `messages.create(stream=True)` (sync + async) | 14-entry `llm_error` taxonomy |
+| OpenAI    | `chat.completions.create`, `responses.create` (sync + async) | `embeddings.create` (sync + async) | `create(stream=True)` on chat and Responses (sync + async); the `.stream()` helper is not intercepted (nor is the non-streaming `.parse()`) | same |
 | litellm   | `litellm.completion`, `litellm.acompletion` (chat path only) | `litellm.embedding`, `litellm.aembedding` | not yet (`stream=True` raises `NotImplementedError`; see Roadmap) | same |
 
-Streaming events expose `payload.streaming = {ttft_ms, chunk_count, inter_chunk_ms, final_outcome, abort_reason}`. Mid-stream aborts emit `llm_error{error_type="stream_error"}` with partial-chunk and partial-token data.
+Streamed calls report the token counts the provider sends inside the stream, whether you iterate inside a `with` block or without one (a loop left with `break` and never closed is reported at the next LLM call the sensor intercepts after the stream object is collected, or when the session ends). Streaming events expose `payload.streaming = {ttft_ms, chunk_count, inter_chunk_ms, final_outcome, abort_reason}`; `final_outcome` is `aborted` when you leave a stream before the event that ends the response, and `completed` otherwise. A mid-stream failure, inside a `with` block or while iterating without one, emits `llm_error{error_type="stream_error"}` with the chunks and tokens delivered before the failure.
 
 ### Frameworks
 
@@ -440,7 +440,12 @@ Deferred and planned work lives here so it stays visible and user demand can pri
 
 ### Next up (v0.6.0 and v0.7.0)
 
-- Sensor correctness on current SDKs: streaming token accounting, LangChain 1.x and structured-output paths, litellm streaming, Bedrock / Vertex / Foundry clients, mcp 2.x support.
+- Sensor correctness on current SDKs: LangChain 1.x and structured-output paths, litellm streaming, Bedrock / Vertex / Foundry clients, mcp 2.x support.
+- Streamed-call coverage: with `capture_prompts` on, `messages.create(stream=True)` and `chat.completions.create(stream=True)` store the request but not the streamed response text, because the raw event stream is never assembled into a message; `responses.create(stream=True)` stores neither, having no request `input` on any path; none of the raw streams emit `tool_call` events (the `messages.stream()` helper does both). The OpenAI `chat.completions.stream()` / `.parse()` and `responses.stream()` / `.parse()` helpers are not intercepted.
+- Failed-stream accounting: the provider-billed tokens a stream delivered before a mid-stream failure (`llm_error.partial_tokens_*`) count only against the sensor's local session budget; server-side session totals (which add `post_call` and `embeddings` events) and the analytics `tokens` and `estimated_cost` metrics (`post_call`) do not include them yet.
+- Raw-response streaming: `chat.completions.with_raw_response.create(stream=True)` records the pre-call estimate with no `streaming` block (langchain-openai takes this path with `include_response_headers=True`), and `responses.with_raw_response` is not intercepted.
+- Signal-handler shutdown: the SIGTERM / SIGINT handler runs `Session.end()` on the interrupted thread, which may already hold the session, policy or queue lock, so the shutdown can hang; move that shutdown work off the interrupted thread.
+- Ingestion validation of streaming fields: `streaming.final_outcome`, `streaming.abort_reason`, `error.abort_reason` and the non-negativity of `partial_chunks` / `partial_tokens_*` are stored as sent; only `tokens_input` / `tokens_output` / `tokens_total` are range-checked today.
 - Toolchain currency: Node 24, Go 1.27, Python 3.11 through 3.14, Vite 8 / Vitest 5 / React 19, current Postgres, NATS and nginx images, dependency automation and vulnerability scanning in CI.
 - Operations: serve the workers' metrics counters over HTTP (the Prometheus-text handler exists but is not mounted) and add request-latency histograms to the Go services.
 - Token and cost model: reasoning tokens, the prompt-cache TTL split, per-model cache ratios, a current model catalogue (Claude 5, GPT-6, Gemini 4), agent-reported cost, and model-id normalisation for gateway and cloud-platform ids.

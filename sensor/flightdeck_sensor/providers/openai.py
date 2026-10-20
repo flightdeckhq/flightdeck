@@ -46,6 +46,12 @@ def _try_tiktoken_count(messages: list[Any], model: str) -> int | None:
         return None
 
 
+# Responses API events after which no further output arrives.
+_RESPONSES_TERMINAL_EVENTS = frozenset(
+    {"response.completed", "response.incomplete", "response.failed"}
+)
+
+
 class OpenAIProvider:
     """Provider adapter for the OpenAI Python SDK.
 
@@ -177,7 +183,15 @@ class OpenAIProvider:
             usage = getattr(obj, "usage", None)
             if usage is None:
                 return TokenUsage(input_tokens=0, output_tokens=0)
+            return self._usage_from_object(usage)
+        except Exception:
+            return TokenUsage(input_tokens=0, output_tokens=0)
 
+    def _usage_from_object(self, usage: Any) -> TokenUsage:
+        """Read either usage shape (chat ``prompt_tokens`` /
+        ``completion_tokens`` or Responses ``input_tokens`` /
+        ``output_tokens``) off a usage object. Never raises."""
+        try:
             prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
             completion_tokens = getattr(usage, "completion_tokens", 0) or 0
 
@@ -203,6 +217,54 @@ class OpenAIProvider:
         except Exception:
             return TokenUsage(input_tokens=0, output_tokens=0)
 
+    def usage_from_stream_chunk(self, chunk: Any) -> TokenUsage | None:
+        """Usage carried by a streamed OpenAI chunk or event.
+
+        Chat streams carry ``usage`` on the final chunk when the request
+        asked for it (the sensor injects ``stream_options.include_usage``);
+        Responses streams carry it on ``response.completed`` (and the
+        ``incomplete`` / ``failed`` terminal events) under
+        ``event.response.usage``.
+        """
+        try:
+            usage = getattr(chunk, "usage", None)
+            if usage is None:
+                usage = getattr(getattr(chunk, "response", None), "usage", None)
+            if usage is None:
+                return None
+            result = self._usage_from_object(usage)
+            return result if result.total > 0 else None
+        except Exception:
+            return None
+
+    def usage_from_finished_stream(self, stream: Any) -> TokenUsage | None:
+        """OpenAI stream objects report nothing after the fact."""
+        return None
+
+    def stream_completed(self, stream: Any) -> bool | None:
+        """OpenAI stream objects do not track completion."""
+        return None
+
+    def final_message(self, stream: Any) -> Any | None:
+        """OpenAI stream objects assemble no final message."""
+        return None
+
+    def text_from_stream_chunk(self, chunk: Any) -> str | None:
+        """OpenAI stream objects have no ``text_stream``."""
+        return None
+
+    def chunk_completes_stream(self, chunk: Any) -> bool:
+        """A chat chunk carrying ``usage`` (the last one before ``[DONE]``;
+        the sensor always asks for it), or a Responses terminal event. The
+        ``finish_reason`` chunk is not the end: the usage chunk follows it."""
+        try:
+            kind = getattr(chunk, "type", None)
+            if isinstance(kind, str):
+                return kind in _RESPONSES_TERMINAL_EVENTS
+            return getattr(chunk, "usage", None) is not None
+        except Exception:
+            return False
+
     def extract_content(
         self,
         request_kwargs: dict[str, Any],
@@ -214,7 +276,7 @@ class OpenAIProvider:
         Returns ``None`` when capture_prompts is False. Never raises.
         OpenAI has no separate system field -- system role is in messages.
 
-        Phase 4 polish: when ``event_type == EventType.EMBEDDINGS``
+        When ``event_type == EventType.EMBEDDINGS``
         the request shape is ``{"input": <str | list[str]>, "model":
         ...}`` -- there are no messages, system, tools, or generated
         response content (the response is just an array of vectors,
@@ -284,13 +346,10 @@ class OpenAIProvider:
             elif hasattr(response, "__dict__"):
                 # Streaming responses surface a ``Stream`` /
                 # ``AsyncStream`` whose ``__dict__`` carries the
-                # underlying httpx response + async generator —
-                # neither JSON-serialisable. Phase 4 polish: drop
-                # any field that fails ``json.dumps`` so the wire
-                # payload stays valid for stream calls. Pre-fix
-                # the post_call drain rejected streams with
-                # ``Object of type AsyncStream is not JSON
-                # serializable`` (caught by Rule 40d smoke).
+                # underlying httpx response + async generator, neither
+                # JSON-serialisable. Drop any field that fails
+                # ``json.dumps`` so the wire payload stays valid for
+                # stream calls instead of being rejected by the drain.
                 import json as _json
 
                 resp_dict = {}

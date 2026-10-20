@@ -173,9 +173,21 @@ To add a new LLM provider to the sensor:
 
 1. Create `sensor/flightdeck_sensor/providers/<provider>.py`
    implementing the `Provider` protocol from `protocol.py`
-2. Implement `estimate_tokens()`, `extract_usage()`, `extract_content()`, and `get_model()`
+2. Implement every method of the `Provider` protocol: `estimate_tokens()`,
+   `extract_usage()`, `usage_from_stream_chunk()`,
+   `usage_from_finished_stream()`, `stream_completed()`, `final_message()`,
+   `text_from_stream_chunk()` and `chunk_completes_stream()` (stream
+   metering, the guard's `text_stream` and stream completion),
+   `extract_content()`, `get_model()`,
+   `extract_tool_invocations()`, `extract_response_metadata()` and
+   `extract_output_dimensions()`. The conformance test
+   `test_every_adapter_implements_every_provider_method` in
+   `sensor/tests/unit/test_streaming_usage.py` fails when an adapter
+   misses one.
 3. Create `sensor/flightdeck_sensor/interceptor/<provider>.py`
-   with the Sensor* proxy classes following the Anthropic or OpenAI patterns
+   with the Sensor* proxy classes following the Anthropic or OpenAI
+   patterns; stream entry points route through `base.call_stream` /
+   `base.call_stream_async`, calling `.open()` for `create(stream=True)`
 4. Update `__init__.py` to detect and wrap the new client type
    in `wrap()` and `_patch_<provider>()` in `patch()`
 5. Add the provider to the optional dependencies in `pyproject.toml`

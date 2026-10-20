@@ -76,8 +76,7 @@ _log = logging.getLogger("flightdeck_sensor.interceptor.openai")
 #
 # Captured at module import time, BEFORE patch() can run, so isinstance()
 # checks below survive any later mutation. See the matching block in
-# interceptor/anthropic.py for the rationale and the Phase 4.5 audit
-# Finding 2 backstory.
+# interceptor/anthropic.py for the rationale.
 
 try:
     import openai as _openai_module
@@ -121,30 +120,35 @@ class SensorCompletions:
         When ``stream=True``, injects ``stream_options`` so OpenAI includes
         token usage in the final streaming chunk.
 
-        Phase 4: async streaming is now supported via
+        Async streaming is supported via
         :func:`base.call_stream_async`. Sync and async streaming go through
         guarded wrappers that measure TTFT, chunk count, and abort
         reasons.
         """
         if kwargs.get("stream"):
-            call_kwargs = _inject_stream_options(kwargs)
+            call_kwargs, caller_asked_for_usage = _inject_stream_options(kwargs)
+            # A caller who did not ask for usage gets the stream exactly as
+            # it would be without the sensor; the guard keeps the usage.
+            hide_chunk = None if caller_asked_for_usage else _is_usage_only_chunk
             if self._is_async:
                 # Native ``AsyncOpenAI.chat.completions.create(stream=
                 # True)`` returns a coroutine that resolves to an
-                # ``AsyncStream``. Pre-fix the sensor returned a
-                # ``GuardedAsyncStream`` synchronously, so calls
-                # written ``await client.chat.completions.create(
-                # stream=True)`` raised ``TypeError: GuardedAsyncStream
-                # object can't be awaited``. Wrap the call in a
-                # coroutine so the awaited shape matches native
-                # behaviour. Caught by Rule 40d smoke (Phase 4 polish).
+                # ``AsyncStream``, so the guarded call is wrapped in a
+                # coroutine too; returning the guard synchronously would
+                # make ``await client.chat.completions.create(stream=
+                # True)`` raise ``TypeError: GuardedAsyncStream object
+                # can't be awaited``.
                 async def _async_stream_create() -> base.GuardedAsyncStream:
-                    return base.call_stream_async(
+                    guard = base.call_stream_async(
                         self._real.create,
                         call_kwargs,
                         self._session,
                         self._provider,
+                        hide_chunk=hide_chunk,
                     )
+                    # Opened eagerly so provider errors surface at the
+                    # awaited create(), as on the unguarded SDK.
+                    return await guard.open()
 
                 return _async_stream_create()
             return base.call_stream(
@@ -152,7 +156,8 @@ class SensorCompletions:
                 call_kwargs,
                 self._session,
                 self._provider,
-            )
+                hide_chunk=hide_chunk,
+            ).open()
 
         real_fn = self._real.create
         if self._is_async:
@@ -271,12 +276,8 @@ class SensorResponses:
     OpenAI's Responses API (March 2025 and recommended for all new
     projects) lives at ``OpenAI.responses``, a direct sibling of
     ``OpenAI.chat``. The intercept surface is a single ``create()``
-    method -- streaming is intentionally not special-cased here; a
-    ``stream=True`` call currently flows through ``base.call`` and the
-    returned stream object is passed through unchanged. Reconciled
-    token counts for streaming Responses calls are tracked as a
-    future enhancement, symmetric to the async-stream limitation in
-    ``SensorCompletions.create``.
+    method: ``stream=True`` calls take the stream guard, and the
+    ``responses.stream()`` helper passes through unintercepted.
 
     Token usage extraction is handled by :class:`OpenAIProvider` which
     falls back to ``usage.input_tokens`` / ``usage.output_tokens``
@@ -297,8 +298,24 @@ class SensorResponses:
         self._is_async = is_async
 
     def create(self, **kwargs: Any) -> Any:
-        """Intercept responses.create() -- sync or async dispatch."""
+        """Intercept responses.create() -- sync or async dispatch.
+
+        ``stream=True`` takes the stream guard: Responses streams carry
+        their usage on the ``response.completed`` event, which the guard
+        reads as the chunk passes through. No ``stream_options`` injection
+        is needed on this API.
+        """
         real_fn = self._real.create
+        if kwargs.get("stream"):
+            if self._is_async:
+
+                async def _async_stream_create() -> base.GuardedAsyncStream:
+                    guard = base.call_stream_async(real_fn, kwargs, self._session, self._provider)
+                    # Opened eagerly so provider errors surface at create().
+                    return await guard.open()
+
+                return _async_stream_create()
+            return base.call_stream(real_fn, kwargs, self._session, self._provider).open()
         if self._is_async:
             return base.call_async(real_fn, kwargs, self._session, self._provider)
         return base.call(real_fn, kwargs, self._session, self._provider)
@@ -342,7 +359,7 @@ class SensorEmbeddings:
     def create(self, **kwargs: Any) -> Any:
         """Intercept embeddings.create() -- sync or async dispatch.
 
-        Phase 4: emits ``event_type="embeddings"`` (not the generic
+        Emits ``event_type="embeddings"`` (not the generic
         ``post_call``) so the dashboard can render embedding calls
         distinctly. Token accounting stays identical -- embeddings carry
         input tokens only, ``output_tokens=0`` as returned by
@@ -450,20 +467,30 @@ class SensorOpenAI:
         return getattr(self._client, name)
 
 
-def _inject_stream_options(kwargs: dict[str, Any]) -> dict[str, Any]:
+def _inject_stream_options(kwargs: dict[str, Any]) -> tuple[dict[str, Any], bool]:
     """Inject ``stream_options={"include_usage": True}`` into a copy of kwargs.
 
     OpenAI does not return token usage in streaming responses by default.
-    This option causes the final chunk to include a ``usage`` field.
+    This option makes the final chunk carry a ``usage`` field. Returns the
+    kwargs to send and whether the caller had asked for usage themselves,
+    in which case that chunk is theirs; otherwise the guard absorbs it.
     """
     result = copy.copy(kwargs)
     existing = result.get("stream_options")
+    caller_asked = isinstance(existing, dict) and bool(existing.get("include_usage"))
     if isinstance(existing, dict):
         existing = {**existing, "include_usage": True}
         result["stream_options"] = existing
     else:
         result["stream_options"] = {"include_usage": True}
-    return result
+    return result, caller_asked
+
+
+def _is_usage_only_chunk(chunk: Any) -> bool:
+    """The chunk OpenAI appends when usage was requested: it carries
+    ``usage`` and an empty ``choices`` list, which the usual loop body
+    (``chunk.choices[0]``) does not expect."""
+    return getattr(chunk, "usage", None) is not None and not getattr(chunk, "choices", None)
 
 
 # ----------------------------------------------------------------------

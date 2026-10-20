@@ -69,3 +69,6 @@ tests/smoke/.venv-py312/
 test-results/
 playwright-report/
 docker/test-results/
+
+# Agent worktrees are full repository copies, never part of the tree.
+.claude/worktrees/

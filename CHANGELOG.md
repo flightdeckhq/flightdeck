@@ -4,14 +4,54 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
-Correctness patch for the Claude Code plugin and the sensor's MCP
-dependency, a pricing refresh, and a documentation truth-up. No schema
-migration. **Upgrade note:** marketplace installs of the plugin do not
-update themselves; run `claude plugin update flightdeck@flightdeck-plugins`
-after upgrading the server.
+Correctness patch for the Claude Code plugin, the sensor's streaming
+token accounting and its MCP dependency, a pricing refresh, and a
+documentation truth-up. No schema migration. **Upgrade note:** marketplace
+installs of the plugin do not update themselves; run
+`claude plugin update flightdeck@flightdeck-plugins` after upgrading the
+server.
 
 ### Fixed
 
+- **Sensor: streamed calls recorded the estimate and zero output tokens.**
+  A streamed `post_call` carried the pre-call estimate as `tokens_input`
+  and `tokens_output = 0` because the sensor read usage from the stream
+  object, which has none. Usage now comes from the stream's own events
+  (`message_start` / `message_delta` for Anthropic, the final usage chunk
+  for OpenAI chat, `response.completed` for Responses), so token budgets
+  and `estimated_cost` include streamed output.
+- **Sensor: streams used without a `with` block raised under `patch()`.**
+  `stream.text_stream`, iterating without a `with` block and `async for`
+  all work; a plain loop left with `break` is reported at the next LLM
+  call the sensor intercepts after the stream object is collected, or
+  when the session ends. Every `create(stream=True)` is metered as a
+  stream and sends its request at the call, as the SDK does (Anthropic
+  messages and OpenAI Responses used to take the non-stream path, and
+  OpenAI chat used to open on first use). Under `patch()` those calls
+  return the sensor's stream guard rather than the SDK `Stream`
+  (`anthropic.Stream`, `openai.Stream`), so `isinstance` checks against
+  those classes no longer match; iteration, `close()` and `with` behave as
+  before. The usage chunk the sensor asks OpenAI for (empty `choices`) is
+  dropped before it reaches a caller who did not ask for it, so the usual
+  loop body keeps working.
+- **Sensor: stream outcomes.** The streaming sub-object reports
+  `final_outcome="aborted"` when a caller leaves a stream early, and a
+  mid-stream failure's `llm_error` carries the chunks and tokens delivered
+  before it. Those tokens count against the sensor's local session budget;
+  server-side totals and the cost metric do not include them. With
+  `capture_prompts` on, an early exit from the `messages.stream()` helper
+  stores the accumulated snapshot as it stands instead of reading the rest
+  of the stream. Stopping at the event that ends the response (Anthropic's
+  `message_stop`, OpenAI's usage chunk, a Responses `response.completed`)
+  counts as completed; a cancellation, interrupt, the sensor's own policy
+  exception or the caller's own exception leaving a `with` block is the
+  caller leaving (completed if the response had been read in full, else
+  aborted), not an `llm_error`, unless the response was still incomplete
+  and the exception is one the error classifier knows (such as the builtin
+  `TimeoutError`) or a transport error (`httpx` and friends, a connection
+  reset), whoever raised it;
+  a stream still open when the session ends is reported before the session
+  closes; and an aborted stream's `latency_ms` runs to its last chunk.
 - **Plugin: MCP policy decisions were never applied.** `PreToolUse`
   answered with the legacy top-level `decision` field, which Claude Code
   2.1 rejects; the hook now writes
@@ -73,7 +113,7 @@ after upgrading the server.
   gateway attribution) and the fact that no service serves `/metrics`
   yet. README gains a Roadmap section (replacing "Coming soon"), the
   plugin README documents identity, enforcement and updating, METHODOLOGY
-  records the severity scale, and DECISIONS.md records D164 to D184.
+  records the severity scale, and DECISIONS.md records D164 to D185.
 - **Repository hygiene.** Retired known-issue identifiers and decision
   pointers in source, CI and Helm comments; `sensor/.venv` is no longer
   tracked; test files and functions no longer carry decision numbers.

@@ -19,6 +19,14 @@ _DEFAULT_COUNT_TOKENS_MODEL = "claude-sonnet-4-20250514"
 _CHARS_PER_TOKEN_ESTIMATE = 4
 
 
+# Anthropic stream event discriminators, as the SDK names them.
+_EVENT_MESSAGE_START = "message_start"
+_EVENT_MESSAGE_DELTA = "message_delta"
+_EVENT_MESSAGE_STOP = "message_stop"
+_EVENT_CONTENT_BLOCK_DELTA = "content_block_delta"
+_DELTA_TEXT = "text_delta"
+
+
 class AnthropicProvider:
     """Provider adapter for the Anthropic Python SDK.
 
@@ -118,7 +126,7 @@ class AnthropicProvider:
         total so policy/budget arithmetic sees every billed input token, AND
         also reported as separate ``cache_read_tokens`` /
         ``cache_creation_tokens`` fields on :class:`TokenUsage` so cache
-        economics are visible in analytics (D100).
+        economics are visible in analytics.
         """
         try:
             obj = response
@@ -145,6 +153,114 @@ class AnthropicProvider:
         except Exception:
             return TokenUsage()
 
+    def usage_from_stream_chunk(self, chunk: Any) -> TokenUsage | None:
+        """Usage carried by a streamed Anthropic event.
+
+        ``message_start`` carries the input and cache counts (plus the
+        first output token); every ``message_delta`` carries the
+        cumulative output count and, on newer API versions, cumulative
+        input counts. Both the raw ``Stream[RawMessageStreamEvent]`` and
+        the ``messages.stream()`` helper yield these event types.
+        """
+        try:
+            kind = getattr(chunk, "type", None)
+            if kind == _EVENT_MESSAGE_START:
+                usage = getattr(getattr(chunk, "message", None), "usage", None)
+            elif kind == _EVENT_MESSAGE_DELTA:
+                usage = getattr(chunk, "usage", None)
+            else:
+                return None
+            if usage is None:
+                return None
+            output_tokens = getattr(usage, "output_tokens", None) or 0
+            cache_read = getattr(usage, "cache_read_input_tokens", None)
+            cache_creation = getattr(usage, "cache_creation_input_tokens", None)
+            input_tokens = getattr(usage, "input_tokens", None)
+            if kind == _EVENT_MESSAGE_DELTA and (cache_read is None or cache_creation is None):
+                # A delta that reports input_tokens without the cache
+                # fields must not replace the message_start total, which
+                # includes the cache reads; report the output count only.
+                return TokenUsage(input_tokens=0, output_tokens=output_tokens)
+            return TokenUsage(
+                input_tokens=(input_tokens or 0) + (cache_read or 0) + (cache_creation or 0),
+                output_tokens=output_tokens,
+                cache_read_tokens=cache_read or 0,
+                cache_creation_tokens=cache_creation or 0,
+            )
+        except Exception:
+            return None
+
+    @staticmethod
+    def _snapshot(stream: Any) -> Any | None:
+        """The helper stream's accumulated message snapshot, or ``None``
+        for raw streams and before the first event (the SDK raises when
+        the property is read before ``message_start``)."""
+        try:
+            return getattr(stream, "current_message_snapshot", None)
+        except Exception:
+            return None
+
+    def usage_from_finished_stream(self, stream: Any) -> TokenUsage | None:
+        """Usage accumulated on the helper stream's
+        ``current_message_snapshot`` (sync and async alike). The SDK
+        updates it as events arrive, so it is correct on early exit too and
+        reading it never touches the network."""
+        try:
+            snapshot = self._snapshot(stream)
+            if snapshot is None:
+                return None
+            usage = self.extract_usage(snapshot)
+            return usage if usage.total > 0 else None
+        except Exception:
+            return None
+
+    def stream_completed(self, stream: Any) -> bool | None:
+        """True once the helper snapshot carries ``stop_reason`` (set by
+        ``message_delta``); ``None`` for raw streams."""
+        try:
+            snapshot = self._snapshot(stream)
+            if snapshot is None:
+                return None
+            return getattr(snapshot, "stop_reason", None) is not None
+        except Exception:
+            return None
+
+    def final_message(self, stream: Any) -> Any | None:
+        """The complete message of a helper stream, or ``None`` while it is
+        still open. Once ``stop_reason`` is set the accumulated snapshot is
+        the full message (content blocks are finalised before
+        ``message_delta`` arrives), so it stands in for
+        ``get_final_message()``, which would still read the trailing
+        ``message_stop`` frame. Sync and async helpers alike."""
+        try:
+            if not self.stream_completed(stream):
+                return None
+            return self._snapshot(stream)
+        except Exception:
+            return None
+
+    def text_from_stream_chunk(self, chunk: Any) -> str | None:
+        """Text of a ``content_block_delta`` / ``text_delta`` event, else
+        ``None``."""
+        if getattr(chunk, "type", None) != _EVENT_CONTENT_BLOCK_DELTA:
+            return None
+        delta = getattr(chunk, "delta", None)
+        if getattr(delta, "type", None) != _DELTA_TEXT:
+            return None
+        text = getattr(delta, "text", None)
+        return text if isinstance(text, str) else None
+
+    def chunk_completes_stream(self, chunk: Any) -> bool:
+        """``message_stop``, or a ``message_delta`` carrying ``stop_reason``:
+        after either the response is complete and only ``message_stop``
+        can follow."""
+        kind = getattr(chunk, "type", None)
+        if kind == _EVENT_MESSAGE_STOP:
+            return True
+        if kind == _EVENT_MESSAGE_DELTA:
+            return getattr(getattr(chunk, "delta", None), "stop_reason", None) is not None
+        return False
+
     def extract_content(
         self,
         request_kwargs: dict[str, Any],
@@ -157,8 +273,8 @@ class AnthropicProvider:
         Preserves Anthropic terminology: ``system`` as a separate field.
 
         ``event_type`` is accepted for protocol symmetry with the
-        OpenAI / litellm providers (Phase 4 polish: per-event-type
-        content extraction). Anthropic has no native embeddings API
+        OpenAI / litellm providers (per-event-type content
+        extraction). Anthropic has no native embeddings API
         in this SDK -- users go via litellm → Voyage. So no
         EMBEDDINGS branch here; if a caller ever passes that
         event_type the chat-shaped extraction runs and ``messages``
@@ -171,37 +287,18 @@ class AnthropicProvider:
         try:
             from datetime import datetime, timezone
 
-            # Streaming responses surface a ``MessageStream`` /
-            # ``MessageStreamManager`` whose ``__dict__`` carries
-            # non-serializable httpx state (raw event source, async
-            # generator). Calling ``model_dump`` on those objects
-            # yields the unparsed wrapper. Anthropic exposes
-            # ``.get_final_message()`` after the stream has
-            # exhausted, returning the accumulated ``Message``
-            # pydantic object — that's the safe shape to capture.
-            # Phase 4 polish: pre-fix the post_call drain
-            # serialised an AsyncStream into the JSON payload and
-            # the worker rejected the event with a JSON-encode
-            # error (caught by Rule 40d smoke).
-            stream_msg = getattr(response, "get_final_message", None)
-            if callable(stream_msg):
-                with contextlib.suppress(Exception):
-                    candidate = stream_msg()
-                    # Async streams return a coroutine here -- we
-                    # can't ``await`` in a sync ``extract_content``
-                    # path, so detect and fall through to the
-                    # ``__dict__`` scrubbing branch instead. Sync
-                    # MessageStream returns a real Message which
-                    # ``model_dump`` handles cleanly.
-                    import inspect
-
-                    if not inspect.iscoroutine(candidate):
-                        response = candidate
-                    else:
-                        # Discard the orphan coroutine so the warn-
-                        # on-never-awaited message doesn't pollute
-                        # the smoke output.
-                        candidate.close()
+            # A helper stream (``MessageStream`` / ``AsyncMessageStream``)
+            # reaching this point was still open when the call settled:
+            # the guard hands over the helper's final message once the
+            # message is complete. Capture the helper's accumulated
+            # snapshot instead, which never reads further from the
+            # network; ``get_final_message()`` would drain the rest of
+            # the stream and defeat the caller's early exit. The snapshot
+            # is also the only JSON-safe shape here, because the stream
+            # object's ``__dict__`` carries httpx state.
+            snapshot = self._snapshot(response)
+            if snapshot is not None:
+                response = snapshot
             resp_dict: dict[str, Any] = {}
             if hasattr(response, "model_dump"):
                 resp_dict = response.model_dump()

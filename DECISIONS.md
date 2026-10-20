@@ -9849,8 +9849,9 @@ is stored as it stands). The guard emits `post_call` once, at the first of strea
 still open, or (queued for the next intercepted LLM call) the guard being
 collected; a stream failure emits `llm_error` carrying the tokens
 delivered before it, which the sensor adds to its in-process session
-counter (server-side totals and cost come from `post_call` events). The guard is a plain iterator as well as a
-context manager, so `for chunk in create(..., stream=True)` and `async
+counter (server-side session totals add `post_call` and `embeddings`
+events, and the analytics metrics read `post_call`). The guard is a plain
+iterator as well as a context manager, so `for chunk in create(..., stream=True)` and `async
 for` work without `with`. `messages.create(stream=True)` and
 `responses.create(stream=True)` route through the same guard as
 `messages.stream()` and `chat.completions.create(stream=True)`, and every
@@ -9892,7 +9893,9 @@ and rolled up on an open session. Cancellations
 policy exceptions and the caller's own exceptions leaving a `with` block
 are the caller leaving, not a provider failure: they produce a post_call
 (completed if the response had been read in full, else aborted), not
-`llm_error`; only an exception the error classifier knows is a failure.
+`llm_error`. Only an exception the error classifier knows is a failure,
+and only while the response had not been read in full and no intercept
+had already reported it.
 
 **Reasoning:** The SDK stream objects (`anthropic.Stream`,
 `MessageStream`, `openai.Stream`) have no `usage` attribute, so reading

@@ -1,4 +1,4 @@
-// Package metrics exposes the worker's Phase 4 observability counters.
+// Package metrics exposes the worker's observability counters.
 //
 // Kept deliberately dependency-free: no Prometheus client library. The
 // counters are plain ``sync/atomic`` uint64s exposed via a small HTTP
@@ -7,7 +7,7 @@
 // no-dep here avoids adding a library to the worker that isn't needed
 // by any other package yet.
 //
-// The single counter shipped in Phase 4 is ``dropped_events_total``
+// The single counter is ``dropped_events_total``
 // with a ``reason`` label. Every known drop path in the worker
 // pipeline increments it:
 //
@@ -33,9 +33,11 @@
 //   - max_retries_exhausted — consumer hit NATS maxDeliver after
 //                             redelivering an event N times.
 //
-// Operators observe the counter via ``GET /metrics`` on the worker's
-// management port. Format is a trivial text line-per-counter so scrapers
-// (and humans) can parse it without a client library.
+// The counters live in process. Handler renders them as one text line
+// per counter so scrapers (and humans) can parse them without a client
+// library, but no service mounts it yet (see the README Roadmap);
+// today the counters are observed through the log lines that accompany
+// each increment.
 package metrics
 
 import (

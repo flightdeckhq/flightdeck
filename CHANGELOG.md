@@ -6,10 +6,10 @@ All notable changes to Flightdeck are documented here.
 
 Correctness patch for the Claude Code plugin, the sensor's streaming
 token accounting and its MCP dependency, a pricing refresh, and a
-documentation truth-up. No schema
-migration. **Upgrade note:** marketplace installs of the plugin do not
-update themselves; run `claude plugin update flightdeck@flightdeck-plugins`
-after upgrading the server.
+documentation truth-up. No schema migration. **Upgrade note:** marketplace
+installs of the plugin do not update themselves; run
+`claude plugin update flightdeck@flightdeck-plugins` after upgrading the
+server.
 
 ### Fixed
 
@@ -19,15 +19,31 @@ after upgrading the server.
   object, which has none. Usage now comes from the stream's own events
   (`message_start` / `message_delta` for Anthropic, the final usage chunk
   for OpenAI chat, `response.completed` for Responses), so token budgets
-  and `estimated_cost` include streamed output. Under `patch()`,
-  `stream.text_stream` and iterating without a `with` block used to
-  raise; both now work, as does `async for`, and `create(stream=True)` on
-  Anthropic messages and OpenAI Responses is metered as a stream and
-  sends its request at the call, as the SDK does. The streaming sub-object
-  reports `final_outcome="aborted"` when a caller leaves a stream early, a
-  plain loop left with `break` is reported when the stream object is
-  collected, and a mid-stream failure's `llm_error` carries the tokens
-  delivered before it, which now count against the session.
+  and `estimated_cost` include streamed output.
+- **Sensor: streams used without a `with` block raised under `patch()`.**
+  `stream.text_stream`, iterating without a `with` block and `async for`
+  all work; a plain loop left with `break` is reported at the next
+  intercept after the stream object is collected, or when the session
+  ends. `create(stream=True)` on Anthropic messages and
+  OpenAI Responses is metered as a stream and sends its request at the
+  call, as the SDK does. Under `patch()`, `messages.create(stream=True)`
+  and `responses.create(stream=True)` now return the sensor's stream guard
+  rather than the SDK `Stream`, so an `isinstance(stream, anthropic.Stream)`
+  check no longer matches; iteration, `close()` and `with` behave as
+  before.
+- **Sensor: stream outcomes.** The streaming sub-object reports
+  `final_outcome="aborted"` when a caller leaves a stream early, and a
+  mid-stream failure's `llm_error` carries the chunks and tokens delivered
+  before it. Those tokens count against the sensor's local session budget;
+  server-side totals and cost still come from `post_call` events. With
+  `capture_prompts` on, an early exit from the `messages.stream()` helper
+  stores the accumulated snapshot as it stands instead of reading the rest
+  of the stream. Stopping at the event that ends the response (Anthropic's
+  `message_stop`, OpenAI's usage chunk, a Responses `response.completed`)
+  counts as completed; a cancellation, interrupt or the sensor's own policy
+  exception leaving a `with` block is a client abort, not an `llm_error`;
+  a stream still open when the session ends is reported before the session
+  closes; and an aborted stream's `latency_ms` runs to its last chunk.
 - **Plugin: MCP policy decisions were never applied.** `PreToolUse`
   answered with the legacy top-level `decision` field, which Claude Code
   2.1 rejects; the hook now writes

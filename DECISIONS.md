@@ -9840,28 +9840,54 @@ chunks the provider sends (Anthropic `message_start` / `message_delta`,
 OpenAI chat's `include_usage` final chunk, Responses `response.completed`)
 and, for the Anthropic `messages.stream()` helper, from the helper's
 accumulated `current_message_snapshot.usage`, which never reads further
-from the network; once the helper's message is complete its
-`get_final_message()` (awaited on the async helper) becomes the response,
-so content capture and tool calls come from the assembled message. The
-guard emits `post_call` once, at the first of stream exhaustion, `close()`,
+from the network; once the helper's message is complete (`stop_reason`
+set) that snapshot is the full message and becomes the response, so
+content capture and tool calls come from the assembled message without
+reading the trailing `message_stop` frame (on an early exit the snapshot
+is stored as it stands). The guard emits `post_call` once, at the first of stream exhaustion, `close()`,
 leaving the `with` block normally, or the guard being garbage-collected; a
 failure emits `llm_error` carrying the tokens delivered before it, which
-are added to the session total. The guard is a plain iterator as well as a
+the sensor adds to its in-process session counter (server-side totals and
+cost come from `post_call` events). The guard is a plain iterator as well as a
 context manager, so `for chunk in create(..., stream=True)` and `async
 for` work without `with`. `messages.create(stream=True)` and
 `responses.create(stream=True)` route through the same guard as
-`messages.stream()` and `chat.completions.create(stream=True)`, and send
-the request inside the call as the SDK does. The pre-call estimate is used
-only when the stream carried no usage at all. The `Provider` protocol
+`messages.stream()` and `chat.completions.create(stream=True)`, and every
+`create(stream=True)` sends the request inside the call as the SDK does
+(`chat.completions.create(stream=True)` used to open on first use);
+`messages.stream()` stays lazy like the SDK's own manager, sending the
+request when the context is entered or on first use. The pre-call estimate
+is used only when the stream carried no usage at all. The `Provider` protocol
 gains `usage_from_stream_chunk()`, `usage_from_finished_stream()`,
-`stream_completed()` and `final_message()`; the litellm provider
-implements them, but litellm `stream=True` still raises
-`NotImplementedError`, so that path is not exercised yet.
+`stream_completed()`, `final_message()`, `text_from_stream_chunk()` (so
+the guard's `text_stream` carries no provider event shapes) and
+`chunk_completes_stream()` (so a consumer that stops at the event that
+ends the response is reported as completed, not aborted); the litellm
+provider implements them, but litellm `stream=True` still raises
+`NotImplementedError`, so that path is not exercised yet. Server-side
+session totals, the `tokens` metric and `estimated_cost` stay
+`post_call`-based; counting a failed stream's partial tokens server-side
+is a README Roadmap item, not part of this decision.
+
+**Finalizer safety:** Python's cyclic collector may run `__del__` on any
+thread, and neither the session lock nor the event queue's mutex is
+re-entrant, so a guard that is both abandoned and part of a reference
+cycle could be finalised while the same thread holds one of them; the
+policy cache's lock is a third, taken on every policy check. The finalizer
+therefore never settles inline: it queues the settle (a lock-free deque
+append) and the next intercept, or the session's end, runs it. Checking
+whether a lock is held was rejected because the list of locks the settle
+path takes would rot. A session that ends with streams
+still open settles them first, before its event queue closes, so a stream
+left in a variable until exit is still reported. Cancellations
+(`CancelledError`, `GeneratorExit`, `KeyboardInterrupt`) and the sensor's
+own policy exceptions leaving a `with` block are the caller leaving, not a
+provider failure: they produce the aborted post_call, not `llm_error`.
 
 **Reasoning:** The SDK stream objects (`anthropic.Stream`,
 `MessageStream`, `openai.Stream`) have no `usage` attribute, so reading
 usage from them after exit always returned zero and every streamed call
-was billed at the estimate with zero output tokens; the unit test passed
+was recorded at the estimate with zero output tokens; the unit test passed
 only because its mock stream had a `usage` attribute no real stream has.
 The usage lives in the events that pass through the guard, which is where
 metering has to happen.

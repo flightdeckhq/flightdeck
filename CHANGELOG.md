@@ -13,6 +13,30 @@ note:** marketplace installs of the plugin do not update themselves; run
 `claude plugin update flightdeck@flightdeck-plugins` after upgrading the
 server.
 
+### Added
+
+- **Sensor: OpenAI structured outputs, Responses tool calls and
+  prompt-cache usage.** `chat.completions.parse()` and
+  `responses.parse()` are metered, as are
+  `responses.with_raw_response.create()` / `.parse()` (and
+  `chat.completions.with_raw_response.parse()`); previously those calls
+  bypassed the sensor. Responses output items that are tool calls emit
+  `tool_call` events: function, MCP and custom tool calls under the
+  tool's own name, hosted tools (web search, file search, code
+  interpreter, image generation, computer use, shells, apply-patch, tool
+  search) under the item type, such as `web_search_call`. OpenAI's
+  `cached_tokens` usage detail lands as `tokens_cache_read` on direct and
+  streamed calls, so prompt-cache hits show in the token fields and in
+  `estimated_cost`. `OAuthError`, `LengthFinishReasonError` and
+  `ContentFilterFinishReasonError` are classified (`authentication`,
+  `context_overflow`, `content_filter`); the length case keeps the
+  billed tokens on the error as `partial_tokens_*` and counts them
+  against the session budget. The request id is reported on parsed
+  objects, not only on raw responses, and the pre-call estimate for a
+  Responses request counts its `input` and `instructions` instead of a
+  fixed 2 tokens. Not covered: the `.stream()` helpers and
+  `with_streaming_response`.
+
 ### Fixed
 
 - **Worker: a short-lived session could be left unclosed.** The worker

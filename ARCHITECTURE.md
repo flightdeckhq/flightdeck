@@ -697,7 +697,11 @@ class PromptContent:
 `AnthropicProvider.estimate_tokens` uses the Anthropic SDK
 `count_tokens` if available, falls back to `char // 4`.
 `OpenAIProvider.estimate_tokens` uses `tiktoken` when installed, falls back to
-`char // 4`. Token reconciliation in `_post_call` prefers provider-reported
+`char // 4`. It counts the chat `messages`; for a Responses request it
+counts `instructions` and `input` (a string, or a list of input items) as
+chat-shaped messages, and for an embeddings request the `input`, so every
+OpenAI call path gets a real pre-call estimate. Token reconciliation in
+`_post_call` prefers provider-reported
 usage over the pre-call estimate: `extract_usage(response)` for a
 non-streamed call, the usage the stream guard read from the stream for a
 streamed call (see Streaming metering). The estimate, with zero output
@@ -723,9 +727,17 @@ The patched resource slots are:
   adaptive thinking uses.
 - **OpenAI** — `OpenAI.chat`, `AsyncOpenAI.chat`, `OpenAI.responses`,
   `AsyncOpenAI.responses`, `OpenAI.embeddings`, `AsyncOpenAI.embeddings`.
-  `chat.completions.create` and `responses.create` are intercepted,
-  including `stream=True`; the `.stream()` helpers on those resources are
-  not. `responses` is OpenAI's recommended API for new projects;
+  The intercepted call paths are `chat.completions.create()` and
+  `.parse()`, `responses.create()` and `.parse()`, `embeddings.create()`,
+  and the `with_raw_response` counterparts of the chat and Responses calls
+  (`with_raw_response.create()` / `.parse()`, which return the SDK's
+  `LegacyAPIResponse` with its headers). `create(stream=True)` on chat and
+  Responses is metered from the stream. Not covered: the `.stream()`
+  helpers on those resources (they call the unwrapped resource's `create`
+  internally) and `with_streaming_response` on either resource. `parse()`
+  is the structured-output path: it never streams, and its
+  `ParsedChatCompletion` / `ParsedResponse` carries the usual `usage`.
+  `responses` is OpenAI's recommended API for new projects;
   `embeddings` is common in RAG-heavy pipelines.
 
 Five descriptor types in total across both interceptor files:
@@ -772,8 +784,8 @@ The class-level patch deliberately does NOT intercept:
 | Code path | Why not |
 |---|---|
 | `OpenAI.beta.chat.completions.parse` / `.stream` | Structured-output path on a separate `OpenAI.beta` `cached_property`. Not yet observed in any framework's default flow. |
-| `OpenAI.chat.completions.stream` / `.parse`, `OpenAI.responses.stream` / `.parse` | `.stream()` calls the unwrapped resource's `create` internally and `.parse()` posts through the resource's own `_post`, so neither passes the sensor wrapper; `create(stream=True)` on the same resources is intercepted. The `parse` structured-output path is on the README Roadmap. |
-| `OpenAI.chat.completions.with_raw_response.create(stream=True)`, `OpenAI.responses.with_raw_response.*` | The raw-response wrapper is intercepted, but metered correctly only for non-streaming chat calls: a streamed call through it records the pre-call estimate with no `streaming` block, and the Responses raw-response path passes through unintercepted. langchain-openai takes the chat path when `include_response_headers=True`. On the README Roadmap. |
+| `OpenAI.chat.completions.stream`, `OpenAI.responses.stream` | `.stream()` calls the unwrapped resource's `create` internally, so it does not pass the sensor wrapper; `create(stream=True)` on the same resources is intercepted, and so is the non-streaming `.parse()` on both. |
+| `OpenAI.chat.completions.with_raw_response.create(stream=True)`, `OpenAI.responses.with_raw_response.create(stream=True)`, `with_streaming_response` on either resource | The raw-response wrappers are intercepted for `create` and `parse`, but a streamed call through them records the pre-call estimate with no `streaming` block, and `with_streaming_response` passes through unintercepted. langchain-openai takes the chat raw-response path when `include_response_headers=True`. On the README Roadmap. |
 | `OpenAI.audio.*`, `images.*`, `moderations.*`, `files.*`, `fine_tuning.*`, `completions.*` (legacy) | Utility resources unrelated to LLM inference events. |
 | `Anthropic.completions.*` | Legacy completions API; superseded by `messages` / `beta.messages`. |
 | Frameworks that bypass the SDK entirely (raw httpx, boto3 bedrock-runtime, vertexai) | No SDK class to patch. |
@@ -788,7 +800,7 @@ clients internally are intercepted without user-side wrapping.
 
 | Framework | Path covered |
 |---|---|
-| LangChain | `ChatAnthropic.invoke` (langchain-anthropic); `ChatOpenAI.invoke` (langchain-openai 0.3+ sends it through `chat.completions.with_raw_response.create`, which is intercepted as a non-streaming chat call); `OpenAIEmbeddings.embed_*` (transitive). `ChatOpenAI.stream` calls `chat.completions.create(stream=True)` and is metered from the stream; with `include_response_headers=True` it goes through the raw-response wrapper and records the pre-call estimate (see "Patch surface — out of scope"); the Responses raw-response path and `.parse()` are not observed (README Roadmap) |
+| LangChain | `ChatAnthropic.invoke` (langchain-anthropic); `ChatOpenAI.invoke` (langchain-openai 0.3+ sends it through `chat.completions.with_raw_response.create`, which is intercepted as a non-streaming chat call); `OpenAIEmbeddings.embed_*` (transitive). `ChatOpenAI.stream` calls `chat.completions.create(stream=True)` and is metered from the stream; with `include_response_headers=True` it goes through the raw-response wrapper and records the pre-call estimate (see "Patch surface — out of scope"). `chat.completions.parse()`, `responses.parse()` and `responses.with_raw_response.create()` / `.parse()` are intercepted when a framework uses them |
 | LangGraph | Transitive via LangChain — graphs routing through `ChatAnthropic` / `ChatOpenAI`, including `langgraph.prebuilt.create_react_agent` tool loops |
 | LlamaIndex | `llama-index-llms-anthropic.complete`, `llama-index-llms-openai.complete` |
 | CrewAI 1.14+ | `LLM(model=...).call` via the native Anthropic and OpenAI provider classes. Model strings without a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm |
@@ -2453,9 +2465,10 @@ formula:
 
 Cache ratios follow Anthropic's published structure (90% discount on
 reads, 25% premium on writes) and apply uniformly to every model that
-reports cache tokens. OpenAI and other providers that don't report cache
-tokens contribute 0 to the cache terms, so the formula collapses to
-`tokens_input * input_price + tokens_output * output_price`.
+reports cache tokens, OpenAI's prompt-cache reads included (OpenAI
+reports no cache writes, so its write term is always 0). Providers that
+report no cache tokens contribute 0 to both cache terms, so the formula
+collapses to `tokens_input * input_price + tokens_output * output_price`.
 
 Pricing data lives in `pricing.yaml` at the repo root and is loaded at API
 startup via `api/internal/store/pricing.go`. Update the YAML when provider
@@ -3753,7 +3766,14 @@ plugin emits one per `UserPromptSubmit` hook fire. Carries:
 
 The primary LLM-call event. Carries `tokens_input`, `tokens_output`,
 `tokens_total`, `tokens_cache_read`, `tokens_cache_creation`,
-`latency_ms`, `model`, and `framework`. Operator-actionable
+`latency_ms`, `model`, and `framework`. `tokens_cache_read` is the
+prompt-cache hit, a subset of `tokens_input`: Anthropic's
+`cache_read_input_tokens`, or OpenAI's `cached_tokens` usage detail
+(`prompt_tokens_details` on chat, `input_tokens_details` on Responses,
+on direct and streamed calls alike). `tokens_cache_creation` is
+Anthropic's cache write; OpenAI reports no cache-write count, so it is 0
+on OpenAI events. OpenAI's `reasoning_tokens` detail is not stored
+separately: it is already inside `tokens_output`. Operator-actionable
 enrichment additionally carries:
 
 - `estimated_via`: passthrough from the pre-call estimator so a row
@@ -3892,8 +3912,9 @@ the stream before the settle runs). Raw event
 streams (`create(stream=True)` on any provider) are never assembled into a
 message, so they store the request (for `responses.create`, nothing of its
 `input`) but no response text, and emit no `tool_call`. OpenAI's
-`.stream()` / `.parse()` helpers are listed under "Patch surface — out of
-scope".
+`.stream()` helpers are listed under "Patch surface — out of scope";
+`.parse()` never streams and is metered like `create()`, with the
+`Parsed*` result stored as the response when capture is on.
 
 ### `tool_call`
 
@@ -3905,6 +3926,30 @@ the sensor does not assemble their content blocks. Carries
 `tool_name`, optionally `tool_input` (when `captureToolInputs=true` for
 the plugin or `capture_prompts=true` for the sensor), `tool_result` (when
 the next assistant turn shows the tool's output and capture is on).
+
+For a chat completion the invocations are `choices[0].message.tool_calls`
+(`tool_name` is the function name, `tool_id` its `id`). For the Responses
+API (`responses.create()` / `.parse()` and their raw-response forms) the
+sensor emits one `tool_call` per output item that is a call:
+
+- `function_call`, `mcp_call` and `custom_tool_call` carry the tool's own
+  name as `tool_name`; the input is the JSON-decoded `arguments` (for a
+  custom tool, `{"input": <text>}`, as those tools take free-form text).
+  A function call's `tool_id` is its `call_id`, the id that pairs it with
+  its output item, as a chat tool call's `id` does; an MCP call has only
+  its item id. The MCP server label is not carried on the event.
+- Hosted tools have no per-call name, so the item type is the
+  `tool_name`: `web_search_call`, `file_search_call`,
+  `code_interpreter_call`, `image_generation_call`, `computer_call`,
+  `local_shell_call`, `shell_call`, `apply_patch_call`,
+  `tool_search_call`. The input is what the model asked the tool to do
+  (the search action, the queries, the code, the operation). Tool
+  results, such as image bytes, interpreter outputs and search results,
+  are outputs and are never captured as input; an image generation call
+  carries no input at all.
+- Messages, reasoning items, tool output items and MCP bookkeeping items
+  (`mcp_list_tools`, `mcp_approval_request`, `mcp_approval_response`)
+  emit nothing.
 
 ### `embeddings`
 
@@ -3938,10 +3983,10 @@ Structured error event with a 14-entry taxonomy:
 |---|---|---|---|---|
 | `rate_limit` | 429 | Request-rate limit exceeded | `rate_limit_error` | ✅ |
 | `quota_exceeded` | 429 | Billing / monthly quota exceeded | `quota_exceeded_error` | ❌ |
-| `context_overflow` | 400 | Input exceeded model context window | `context_length_exceeded` | ❌ |
-| `content_filter` | 400 | Provider content filter blocked request | `content_filter_error` | ❌ |
+| `context_overflow` | 400 / — | Input exceeded model context window; also OpenAI's `LengthFinishReasonError`, raised by `parse()` when the completion was cut off at the token limit (no HTTP status: the call itself succeeded) | `context_length_exceeded` | ❌ |
+| `content_filter` | 400 / — | Provider content filter blocked the request, or replaced the completion (OpenAI's `ContentFilterFinishReasonError` from `parse()`) | `content_filter_error` | ❌ |
 | `invalid_request` | 400 | Other validation failure | `invalid_request_error` | ❌ |
-| `authentication` | 401 | Missing / invalid credential | `authentication_error` | ❌ |
+| `authentication` | 401 | Missing / invalid credential; OpenAI's `AuthenticationError` and its `OAuthError` subclass (a rejected OAuth bearer token) | `authentication_error` | ❌ |
 | `permission` | 403 | Credential lacks permission | `permission_error` | ❌ |
 | `not_found` | 404 | Resource (model, endpoint) not found | `not_found_error` | ❌ |
 | `request_too_large` | 413 | Request body too large | `request_too_large_error` | ❌ |
@@ -3968,7 +4013,13 @@ adds them to the in-process session counter that drives its local budget
 checks; server-side session totals, the `tokens` metric and
 `estimated_cost` do not include them: the session totals add every event
 that carries `tokens_total` (`post_call` and `embeddings`) and the
-analytics metrics read `post_call` events (README Roadmap).
+analytics metrics read `post_call` events (README Roadmap). A
+`LengthFinishReasonError` from OpenAI's `parse()` is the non-streamed case
+of the same situation: the HTTP call succeeded and was billed, but the
+completion could not be parsed. Its `llm_error` carries the completion's
+usage as `partial_tokens_input` / `partial_tokens_output` (read off the
+exception) and the sensor adds those tokens to the in-process session
+counter in the same way.
 
 Operator-actionable retry-chain context:
 

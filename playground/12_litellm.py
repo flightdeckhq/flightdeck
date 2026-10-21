@@ -27,7 +27,7 @@ import uuid
 try:
     import litellm
 except ImportError:
-    print("SKIP: pip install litellm")
+    print("SKIP: pip install 'flightdeck-sensor[litellm]' (litellm>=1.83.0)")
     sys.exit(2)
 
 import flightdeck_sensor
@@ -46,6 +46,34 @@ from _helpers import (
 # land: one more would be the OpenAI SDK descriptor reporting a
 # litellm call a second time.
 CHAT_CALLS = 4
+# A duplicate post_call could land after the expected ones (the workers
+# write in batches), so the count is read until it has not changed over
+# this many consecutive polls -- a 1.5 s quiet window at the poll gap
+# below, longer than any batch gap seen on the dev stack -- or until
+# the deadline, which bounds the wait on a stack that keeps landing rows.
+POST_CALL_SETTLE_POLLS = 3
+POST_CALL_SETTLE_POLL_S = 0.5
+POST_CALL_SETTLE_DEADLINE_S = 15.0
+
+
+def settled_post_calls(session_id: str) -> tuple[list[dict], list[dict]]:
+    """``(events, post_calls)`` once the post_call count has stopped
+    changing, so a late duplicate cannot slip past the single-count
+    assertion between two reads."""
+    deadline = time.monotonic() + POST_CALL_SETTLE_DEADLINE_S
+    events: list[dict] = []
+    post_calls: list[dict] = []
+    stable = 0
+    last = -1
+    while stable < POST_CALL_SETTLE_POLLS and time.monotonic() < deadline:
+        events = fetch_events_for_session(
+            session_id, expect_event_types=["post_call"], timeout_s=5.0,
+        )
+        post_calls = [e for e in events if e.get("event_type") == "post_call"]
+        stable = stable + 1 if len(post_calls) == last else 0
+        last = len(post_calls)
+        time.sleep(POST_CALL_SETTLE_POLL_S)
+    return events, post_calls
 
 
 def main() -> None:
@@ -163,9 +191,10 @@ def main() -> None:
     )
 
     # Single count. Two of the four chat calls went through the OpenAI
-    # SDK the sensor also patches; the re-entrancy mark keeps each
-    # litellm call to one post_call.
-    post_calls = [e for e in events if e.get("event_type") == "post_call"]
+    # SDK the sensor also patches; the outer-call mark keeps each
+    # litellm call to one post_call. The count is read until it settles
+    # so a late duplicate cannot evade the assertion.
+    events, post_calls = settled_post_calls(session_id)
     print_result(
         "litellm calls served by the OpenAI SDK are counted once",
         len(post_calls) == CHAT_CALLS,

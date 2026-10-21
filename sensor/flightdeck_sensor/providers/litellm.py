@@ -21,7 +21,6 @@ return zero/empty defaults. See :class:`AnthropicProvider` /
 from __future__ import annotations
 
 import contextlib
-import json as _json
 import logging
 from typing import Any
 
@@ -31,6 +30,83 @@ from flightdeck_sensor.providers.protocol import PromptContent, ToolInvocation
 _log = logging.getLogger("flightdeck_sensor.providers.litellm")
 
 _CHARS_PER_TOKEN_ESTIMATE = 4
+
+
+def _assembled_response(stream: Any) -> dict[str, Any] | None:
+    """``litellm.stream_chunk_builder`` over the chunks the wrapper kept,
+    dumped to a plain dict with ``usage`` included; ``None`` when there
+    are no chunks or the builder raises."""
+    chunks = getattr(stream, "chunks", None)
+    if not isinstance(chunks, list) or not chunks:
+        return None
+    try:
+        import litellm as _litellm
+
+        built = _litellm.stream_chunk_builder(chunks)
+        if built is None or not hasattr(built, "model_dump"):
+            return None
+        dumped: dict[str, Any] = built.model_dump()
+        usage = getattr(built, "usage", None)
+        if "usage" not in dumped and usage is not None and hasattr(usage, "model_dump"):
+            dumped["usage"] = usage.model_dump()
+        return dumped
+    except Exception:
+        _log.debug("stream_chunk_builder failed; storing the assembled text", exc_info=True)
+        return None
+
+
+def _stream_text(stream: Any) -> str | None:
+    """The response text of a streamed call, assembled from the chunks
+    litellm's wrapper keeps (``chunks``), or ``None`` when it kept none.
+    Text deltas only; streamed tool calls are not assembled."""
+    chunks = getattr(stream, "chunks", None)
+    if not isinstance(chunks, list):
+        return None
+    pieces: list[str] = []
+    for chunk in chunks:
+        for choice in getattr(chunk, "choices", None) or []:
+            delta = getattr(choice, "delta", None)
+            content = getattr(delta, "content", None) if delta is not None else None
+            if isinstance(content, str):
+                pieces.append(content)
+    return "".join(pieces) if pieces else None
+
+
+def _stream_response_summary(stream: Any) -> dict[str, Any]:
+    """What a streamed call stores as its captured ``response``: the
+    response litellm's own ``stream_chunk_builder`` assembles from the
+    chunks the wrapper kept (the assistant message, ``model`` and
+    ``usage``, the shape a non-streamed litellm response has), or, when
+    the builder cannot be used, the id, model, finish reason and the
+    text assembled here.
+
+    Never the wrapper's ``__dict__``: that carries the request's messages
+    a second time, ``_hidden_params`` (the caller's ``api_base``
+    verbatim, so a userinfo password or a query token), the provider's
+    response headers (``Set-Cookie``, organisation and project headers),
+    ``stream_options``, the logging object and the SDK stream. A denylist
+    would leak whatever a litellm upgrade adds, so only the assembled
+    response is read."""
+    built = _assembled_response(stream)
+    if built is not None:
+        return built
+    finish_reason = getattr(stream, "received_finish_reason", None)
+    summary: dict[str, Any] = {
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": _stream_text(stream)},
+                "finish_reason": finish_reason if isinstance(finish_reason, str) else None,
+            }
+        ]
+    }
+    response_id = getattr(stream, "response_id", None)
+    if isinstance(response_id, str):
+        summary["id"] = response_id
+    model = getattr(stream, "model", None)
+    if isinstance(model, str):
+        summary["model"] = model
+    return summary
 
 
 def _count(value: Any) -> int | None:
@@ -270,17 +346,11 @@ class LitellmProvider:
                 resp_dict = response.model_dump()
             elif hasattr(response, "__dict__"):
                 # A streamed call settles with litellm's
-                # ``CustomStreamWrapper`` as the response; its ``__dict__``
-                # carries the logging object and the underlying SDK
-                # stream, neither JSON-serialisable. Keep the fields that
-                # serialise so the wire payload stays valid.
-                resp_dict = {}
-                for key, value in dict(response.__dict__).items():
-                    try:
-                        _json.dumps(value)
-                    except (TypeError, ValueError):
-                        continue
-                    resp_dict[key] = value
+                # ``CustomStreamWrapper`` as the response. Only the
+                # allowlisted response fields are stored (see
+                # _stream_response_summary); the wrapper's own state is
+                # never dumped.
+                resp_dict = _stream_response_summary(response)
             else:
                 resp_dict = {"raw": str(response)}
 

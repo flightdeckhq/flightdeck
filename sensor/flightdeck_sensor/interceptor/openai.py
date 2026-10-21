@@ -261,7 +261,9 @@ class SensorChat:
         """Return a :class:`SensorCompletions` proxy -- or the SDK's own
         ``completions`` resource while an outer interceptor (litellm) is
         making the call, since that interceptor already meters it (see
-        ``base.outer_intercept``)."""
+        ``base.outer_intercept``). Typed ``Any`` for every caller: the
+        two results share no named type, and callers use either as the
+        SDK's ``completions`` resource."""
         if base.outer_intercept_active():
             return self._real.completions
         return SensorCompletions(
@@ -371,6 +373,10 @@ class SensorEmbeddings:
         :meth:`OpenAIProvider.extract_usage`.
         """
         real_fn = self._real.create
+        # An outer interceptor (litellm) making this call already meters
+        # it: hand the call to the SDK untouched (see base.outer_intercept).
+        if base.outer_intercept_active():
+            return real_fn(**kwargs)
         from flightdeck_sensor.core.types import EventType
 
         if self._is_async:

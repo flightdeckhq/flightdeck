@@ -4,22 +4,21 @@ streaming included, and ``litellm.embedding()`` / ``aembedding()``.
 Why this module exists. litellm routes calls to many underlying providers
 via module-level entry points. Its Anthropic route uses raw
 ``httpx.Client.post()`` instead of constructing ``anthropic.Anthropic``,
-so the sensor's SDK-class descriptors (see
-``interceptor/anthropic.py``) never get a chance to see the call.
+so the sensor's SDK interceptors never get a chance to see the call.
 This module closes the gap by patching the litellm functions
 directly.
 
 Patching shape diverges from the Anthropic/OpenAI interceptors
 intentionally: litellm's public surface is module-level functions,
-not a class with cached-property resources. Instead of installing
-descriptors, :func:`patch_litellm_functions` swaps the module
+not SDK classes. Instead of patching classes,
+:func:`patch_litellm_functions` swaps the module
 attributes in place and stashes the originals on hidden sentinel
 attributes for later :func:`unpatch_litellm_functions` restoration.
 The pre-call / post-call plumbing still flows through
 ``interceptor/base.call`` / ``call_async`` / ``call_stream`` /
 ``call_stream_async`` so every interceptor emits the same event schema.
 
-Class-level patching is the recommended integration path (call
+Patching ``litellm`` in place is the recommended integration path (call
 :func:`flightdeck_sensor.patch` and every ``litellm.completion`` call
 anywhere in the process is intercepted). :class:`SensorLitellm`
 exists for programmatic per-callsite wrapping -- a narrow use case
@@ -29,7 +28,7 @@ so they cannot drift.
 
 **A call served through the OpenAI SDK is reported once.** litellm's
 OpenAI route constructs ``openai.OpenAI`` and calls
-``chat.completions.create`` on it, which the sensor's OpenAI descriptor
+``chat.completions.create`` on it, which the sensor's OpenAI interceptor
 also intercepts. Every underlying litellm call this module makes runs
 under ``base.outer_intercept()`` (see :func:`_as_outer_call`), and the
 SDK interceptors hand a call made under that mark to the SDK untouched,
@@ -50,17 +49,28 @@ context manager and has no ``close()``, so the guard is used as a plain
 iterator; the ``post_call`` is emitted when the stream is read to its
 end, or when the guard is collected after a loop left early.
 
-**Not patched.** ``litellm.text_completion`` / ``atext_completion``
-build a chat request and call ``completion`` through the name bound in
-``litellm.main``, which the package-attribute swap does not reach;
-patching ``litellm.main.completion`` as well would make every
-``acompletion`` (which calls ``completion`` the same way) enter the
-sensor twice per call. Calls through ``text_completion`` are therefore
-unobserved. ``litellm.responses`` / ``aresponses`` go through litellm's
-own httpx handler (so no SDK interceptor sees them either) and return
-the Responses API shape (``usage.input_tokens`` / ``output_tokens``,
+**Not patched, partly reported.** ``litellm.text_completion`` /
+``atext_completion`` build a chat request and call ``completion``
+through the name bound in ``litellm.main``, which the package-attribute
+swap does not reach, so this wrapper never sees them (patching
+``litellm.main.completion`` as well would make every ``acompletion``,
+which calls ``completion`` the same way, enter the sensor twice per
+call). On an OpenAI chat model the call goes through the OpenAI SDK
+with no mark set, so the OpenAI interceptor reports it as a chat call;
+a route litellm serves with its own httpx handler (Anthropic) is
+unobserved. ``litellm.responses`` / ``aresponses`` on a provider
+without a native Responses API (Anthropic, Groq) are bridged through
+the package-level ``litellm.completion`` / ``acompletion`` -- this
+wrapper -- and reported once as a chat call; on a native route
+(OpenAI) they go through litellm's own httpx handler and return the
+Responses API shape (``usage.input_tokens`` / ``output_tokens``,
 ``input=`` instead of ``messages=``), which needs its own provider
-adapter before it can be metered; they are unobserved until then.
+adapter before it can be metered, so they are unobserved.
+
+**Scope of the mark.** It covers the whole litellm call, so an SDK
+call made from inside it -- by a litellm callback, guardrail or custom
+provider, or by a task created inside the call, which inherits the
+mark -- is neither policed nor metered.
 
 **Coverage caveat.** The patch covers direct callers of the patched
 entry points -- the vast majority of litellm integrations. Frameworks
@@ -132,8 +142,8 @@ def _current_session() -> Session | None:
 # Shared intercept paths
 # ----------------------------------------------------------------------
 #
-# The class-level patch and the per-callsite SensorLitellm wrapper both
-# route through these helpers: same re-entrancy mark, same stream
+# The in-place patch and the per-callsite SensorLitellm wrapper both
+# route through these helpers: same outer-call mark, same stream
 # handling, same event shape.
 
 
@@ -193,7 +203,11 @@ _DELTA_CONTENT_FIELDS = ("content", "tool_calls", "function_call", "reasoning_co
 def _is_usage_only_chunk(chunk: Any) -> bool:
     """litellm's trailing usage chunk. Unlike OpenAI, litellm does not
     send it with empty ``choices``: it carries one choice with an empty
-    delta and no finish reason, so the test is on the delta's fields."""
+    delta and no finish reason, so the test is on the delta's fields.
+    A route that attached usage to an early role-only chunk (no content
+    yet) would match too and lose that chunk; none of the live-verified
+    routes does (Anthropic sync, OpenAI async), and the usage chunk is
+    the trailing one on every route litellm's wrapper serves."""
     if getattr(chunk, "usage", None) is None:
         return False
     for choice in getattr(chunk, "choices", None) or []:
@@ -308,7 +322,7 @@ class SensorLitellm:
     Holds captured references to the unpatched litellm functions and
     a bound :class:`Session` / :class:`LitellmProvider`. Delegates
     through the module's shared intercept helpers so every intercept
-    path (class-level patch, per-callsite wrap) emits the same event
+    path (in-place patch, per-callsite wrap) emits the same event
     schema, streaming included.
     """
 
@@ -371,7 +385,7 @@ class SensorLitellm:
 
 
 # ----------------------------------------------------------------------
-# Class-level (module-level for litellm) patch / unpatch
+# In-place (module-level) patch / unpatch
 # ----------------------------------------------------------------------
 #
 # Sentinel attributes:
@@ -395,8 +409,8 @@ def patch_litellm_functions(quiet: bool = False) -> None:
 
     The wrappers fetch the active session lazily on each call. If no
     session is active, the original litellm function runs unwrapped --
-    matching the Anthropic/OpenAI interceptors which also early-return
-    the raw resource in that state.
+    matching the SDK interceptors, which also leave the call to the SDK
+    in that state.
     """
     if not _LITELLM_AVAILABLE:
         if not quiet:

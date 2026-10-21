@@ -485,9 +485,9 @@ flightdeck/
 ## Sensor
 
 The sensor is a Python library that runs in-process inside the agent. `init`
-resolves configuration; `patch` installs class-level descriptors on the
-Anthropic and OpenAI client classes; every LLM call passes through the sensor
-synchronously. The event POST itself is offloaded onto a background queue
+resolves configuration; `patch` installs sensor methods on the Anthropic
+SDK's `Messages` resource classes and sensor descriptors on the OpenAI
+client classes; every LLM call passes through the sensor synchronously. The event POST itself is offloaded onto a background queue
 drain thread so it does not sit in the hot path, but the LLM call
 waits for the sensor's response-envelope parsing before returning control to
 user code.
@@ -567,7 +567,9 @@ def init(
     """
 
 def wrap(client: Any, quiet: bool = False) -> Any:
-    """Wrap a single Anthropic or OpenAI client. init must be called first."""
+    """Wrap a single Anthropic SDK client (any anthropic client class:
+    first-party, Bedrock, Vertex, Foundry, AWS, Mantle; sync or async) or
+    OpenAI client. init must be called first."""
 
 def patch(
     quiet: bool = False,
@@ -703,55 +705,76 @@ non-streamed call, the usage the stream guard read from the stream for a
 streamed call (see Streaming metering). The estimate, with zero output
 tokens, is used only when neither reports any tokens.
 
-### Class-level patching
+### SDK class patching
 
-`patch` works by replacing the `cached_property` descriptors for a fixed
-set of resource slots on the SDK client classes with sensor descriptors.
-Any code path that accesses one of these resources is intercepted, including
-code paths inside agent frameworks that build their own SDK clients
-internally. The class-level patch handles captured references (`from
-anthropic import Anthropic` BEFORE `patch`) because the descriptor mutates
-the actual class object in place.
+`patch` mutates a fixed set of SDK classes in place, so any code path that
+reaches them is intercepted, including code paths inside agent frameworks
+that build their own SDK clients internally, and captured references
+(`from anthropic import Anthropic` BEFORE `patch`) keep working because
+the class objects keep their identity. The two SDKs are patched at
+different levels:
 
-The patched resource slots are:
+- **Anthropic** — the resource classes every client hands out: `create`,
+  `stream` and `parse` on `anthropic.resources.messages.messages.Messages`
+  / `AsyncMessages`, on the beta `Messages` / `AsyncMessages` under
+  `anthropic.resources.beta.messages`, and on the Bedrock and Vertex beta
+  resources (`anthropic.lib.bedrock._beta_messages`,
+  `anthropic.lib.vertex._beta_messages`), which are separate classes that
+  copy the first-party functions at import time and carry only the
+  methods their platform supports (Bedrock `create`; Vertex `create` and
+  `stream`). Because the patch lives on the resource rather than the
+  client, every client class is covered: `Anthropic` / `AsyncAnthropic`,
+  which build the resource through a class-level `cached_property`;
+  `AnthropicBedrock`, `AnthropicVertex`, `AnthropicBedrockMantle` and
+  their async forms, which assign `self.messages = Messages(self)` as an
+  instance attribute; `AnthropicFoundry`, which hands out a `Messages`
+  subclass; `AnthropicAWS`. Clients and resources that already existed
+  before `patch` are covered from their next call on. The SDK's
+  `with_raw_response` and `with_streaming_response` views bind the
+  resource's `create` / `parse` when they are built, so they are
+  intercepted too. The raw view returns a response whose body is already
+  read and whose `parse()` is synchronous on both client kinds, and is
+  metered like a plain call. The streaming view hands the caller an
+  unread response, so the sensor returns a proxy that meters at the
+  caller's `parse()` (`await parse()` on the async client) and never
+  reads the body itself: a response closed after being read some other
+  way is parsed from the bytes already read, a response never read
+  reports the pre-call estimate, and a parsed event stream
+  (`create(stream=True)` through either view) is handed to the stream
+  guard, whose latency then runs from the `parse()` call rather than
+  from the request. With no session active the patched methods pass
+  straight through to the SDK, so nothing is ever cached in an unmetered
+  state.
+- **OpenAI** — the `cached_property` descriptors `OpenAI.chat`,
+  `AsyncOpenAI.chat`, `OpenAI.responses`, `AsyncOpenAI.responses`,
+  `OpenAI.embeddings`, `AsyncOpenAI.embeddings` on the client classes,
+  replaced with sensor descriptors that wrap the resource on first
+  access. `chat.completions.create` and `responses.create` are
+  intercepted, including `stream=True`; the `.stream()` helpers on those
+  resources are not. `responses` is OpenAI's recommended API for new
+  projects; `embeddings` is common in RAG-heavy pipelines.
 
-- **Anthropic** — `Anthropic.messages`, `AsyncAnthropic.messages`,
-  `Beta.messages`, `AsyncBeta.messages`. `create`, `create(stream=True)`
-  and `stream()` are intercepted on each. The `Beta` class lives at
-  `anthropic.resources.beta.beta`; patching its `messages` cached_property
-  covers `client.beta.messages.create` / `.stream`, which Claude 4
-  adaptive thinking uses.
-- **OpenAI** — `OpenAI.chat`, `AsyncOpenAI.chat`, `OpenAI.responses`,
-  `AsyncOpenAI.responses`, `OpenAI.embeddings`, `AsyncOpenAI.embeddings`.
-  `chat.completions.create` and `responses.create` are intercepted,
-  including `stream=True`; the `.stream()` helpers on those resources are
-  not. `responses` is OpenAI's recommended API for new projects;
-  `embeddings` is common in RAG-heavy pipelines.
+Three descriptor types on the OpenAI side (`_OpenAIChatDescriptor`,
+`_OpenAIResponsesDescriptor`, `_OpenAIEmbeddingsDescriptor`), driven by an
+`_OPENAI_PATCH_RESOURCES` table and a shared `_patch_one_resource` helper
+so all three resources use the same code path, with per-resource
+idempotency sentinels `_flightdeck_patched` (chat),
+`_flightdeck_patched_responses` and `_flightdeck_patched_embeddings`. On
+the Anthropic side a `_flightdeck_patched` sentinel on each resource class
+holds the original methods, which `unpatch` restores and which the `wrap`
+proxy calls directly, so a client that is both wrapped and patched is
+metered once.
 
-Five descriptor types in total across both interceptor files:
+Idempotency: a class carrying its sentinel is skipped. Safe across
+multiple `patch` / `unpatch` cycles.
 
-- `_AnthropicMessagesDescriptor` (Anthropic, AsyncAnthropic)
-- `_AnthropicBetaMessagesDescriptor` (Beta, AsyncBeta)
-- `_OpenAIChatDescriptor` (OpenAI, AsyncOpenAI)
-- `_OpenAIResponsesDescriptor` (OpenAI, AsyncOpenAI)
-- `_OpenAIEmbeddingsDescriptor` (OpenAI, AsyncOpenAI)
-
-The OpenAI patch infrastructure uses an `_OPENAI_PATCH_RESOURCES` table
-driving a shared `_patch_one_resource` helper so all three OpenAI resources
-use the same code path. Per-resource idempotency sentinels:
-`_flightdeck_patched` (chat), `_flightdeck_patched_responses`,
-`_flightdeck_patched_embeddings`.
-
-Idempotency: a `_flightdeck_patched` sentinel on each patched class stores
-the original `cached_property`. Safe across multiple `patch` / `unpatch`
-cycles.
-
-Pre-existing instance limitation: instances that accessed `.messages` /
-`.beta.messages` / `.chat` / `.responses` / `.embeddings` BEFORE `patch`
-have the raw resource cached in `instance.__dict__` and bypass the
-descriptor permanently. New instances and new accesses are wrapped
-correctly. Practical implication: call `init` + `patch` at the top of
-the entrypoint, before any framework or user code constructs a client.
+Pre-existing instance limitation (OpenAI): instances that accessed
+`.chat` / `.responses` / `.embeddings` BEFORE `patch` have the raw
+resource cached in `instance.__dict__` and bypass the descriptor
+permanently. New instances and new accesses are wrapped correctly.
+Anthropic clients have no such limitation. The practical advice is the
+same for both: call `init` + `patch` at the top of the entrypoint, before
+any framework or user code constructs a client.
 
 ### Module-level patching: litellm
 
@@ -776,10 +799,12 @@ The class-level patch deliberately does NOT intercept:
 | `OpenAI.chat.completions.with_raw_response.create(stream=True)`, `OpenAI.responses.with_raw_response.*` | The raw-response wrapper is intercepted, but metered correctly only for non-streaming chat calls: a streamed call through it records the pre-call estimate with no `streaming` block, and the Responses raw-response path passes through unintercepted. langchain-openai takes the chat path when `include_response_headers=True`. On the README Roadmap. |
 | `OpenAI.audio.*`, `images.*`, `moderations.*`, `files.*`, `fine_tuning.*`, `completions.*` (legacy) | Utility resources unrelated to LLM inference events. |
 | `Anthropic.completions.*` | Legacy completions API; superseded by `messages` / `beta.messages`. |
+| Anthropic `with_raw_response.create(stream=True)` whose response is never parsed | The event stream is metered once `parse()` hands it to the stream guard; a raw response that is never parsed has no close hook, so that call emits no `post_call`. The streaming view (`with_streaming_response`) always settles at close. |
 | Frameworks that bypass the SDK entirely (raw httpx, boto3 bedrock-runtime, vertexai) | No SDK class to patch. |
 
 Extending the patch surface to a new resource is one descriptor + one entry
-in the OpenAI resource table (or one `_patch_one_class` call for Anthropic).
+in the OpenAI resource table, or one entry in the Anthropic resource-target
+list.
 
 ### Framework support
 
@@ -794,7 +819,7 @@ clients internally are intercepted without user-side wrapping.
 | CrewAI 1.14+ | `LLM(model=...).call` via the native Anthropic and OpenAI provider classes. Model strings without a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm |
 | litellm | `litellm.completion` / `acompletion` chat path, non-streaming only (`stream=True` raises `NotImplementedError`; README Roadmap); `embedding` / `aembedding` |
 | Claude Code plugin | Observational hook-based path; emits the same event shape as the sensor |
-| bifrost | Multi-protocol gateway. Point the openai SDK at bifrost's `base_url` and the OpenAI interceptor fires; point the anthropic SDK at bifrost and the Anthropic interceptor fires. Both protocols are supported as deployment topologies. Events are attributed to the SDK protocol in use (`provider` reads openai or anthropic); the gateway itself is not recorded today |
+| bifrost | Multi-protocol gateway. Point the openai SDK at bifrost's `base_url` and the OpenAI interceptor fires; point the anthropic SDK at bifrost and the Anthropic interceptor fires. Both protocols are supported as deployment topologies. Events are attributed to the SDK protocol in use (`provider` reads openai or anthropic); on Anthropic calls the gateway's host is recorded as `provider_metadata.platform`, on OpenAI calls the gateway is not recorded |
 
 ### Framework attribution
 
@@ -3758,11 +3783,17 @@ enrichment additionally carries:
 
 - `estimated_via`: passthrough from the pre-call estimator so a row
   scanner sees the attribution without fetching the sibling pre_call.
-- `provider_metadata`: `{ratelimit_remaining_tokens,
+- `provider_metadata`: `{platform, ratelimit_remaining_tokens,
   ratelimit_remaining_requests, ratelimit_limit_tokens,
   processing_ms, request_id, model_info}`. Best-effort per provider
   (raw-response paths surface more headers; parsed-response paths
   may surface none). Field names are normalised across providers.
+  `platform` is set on every Anthropic call and names the endpoint the
+  client talked to: `anthropic`, `bedrock`, `bedrock-mantle`, `aws`,
+  `vertex` or `foundry` for the hosts the SDK's own client classes
+  default to, else the bare host of whatever the client was pointed at
+  (a gateway or proxy). It comes from the client's `_otel_platform`
+  attribute when its class defines one, else from `base_url.host`.
 - `policy_decision_post`: shared `policy_decision` block when this
   call's cumulative usage crossed a threshold the pre-call check
   didn't catch (cache-read tokens / output tokens push the cumulative
@@ -3790,7 +3821,9 @@ leaving the `with` block, a cancellation), in which case `abort_reason` is
 `"client_aborted"`. `latency_ms` runs to the last chunk the guard delivered
 unless the guard read the stream to its end, or a helper read it to
 completion itself; with no chunk delivered it runs to the moment the
-response opened. A stream
+response opened. A stream obtained by parsing an Anthropic raw or
+streaming-response view (`with_raw_response.create(stream=True)`) is timed
+from the `parse()` call, where the guard opens, not from the request. A stream
 that fails emits `llm_error` instead (`abort_reason` `error_before_stream`,
 `error_mid_stream` or `timeout`). The streaming sub-object is omitted
 entirely for non-streaming calls.

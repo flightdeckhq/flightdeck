@@ -5,15 +5,40 @@ All notable changes to Flightdeck are documented here.
 ## Unreleased
 
 Correctness patch for the Claude Code plugin, the sensor's streaming
-token accounting and its MCP dependency, the worker's handling of
-short-lived and re-attached sessions, a pricing refresh, and a
-documentation truth-up. One schema migration (000027) adds two nullable
-columns to `sessions`; the workers apply it at start-up. **Upgrade
-note:** marketplace installs of the plugin do not update themselves; run
+token accounting, its coverage of the Anthropic cloud clients and its MCP
+dependency, the worker's handling of short-lived and re-attached
+sessions, a pricing refresh, and a documentation truth-up. One schema
+migration (000027) adds two nullable columns to `sessions`; the workers
+apply it at start-up. **Upgrade note:** marketplace installs of the
+plugin do not update themselves; run
 `claude plugin update flightdeck@flightdeck-plugins` after upgrading the
 server.
 
+### Added
+
+- **Sensor: the Anthropic raw and streaming-response views are metered,
+  and every Anthropic call records its platform.**
+  `messages.with_raw_response.create` is metered like a plain call;
+  `messages.with_streaming_response.create` is metered when you call
+  `parse()` (`await parse()` on the async client), the sensor never reads
+  the body itself, and `create(stream=True)` through either view is
+  metered as the parsed stream is iterated. `messages.parse` (structured
+  output) is intercepted on the top-level and beta resources. Every
+  Anthropic `post_call` carries `provider_metadata.platform`
+  (`anthropic`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`, `foundry`,
+  or the host of a gateway the SDK was pointed at). `wrap()` accepts any
+  `anthropic` client class.
+
 ### Fixed
+
+- **Sensor: the Anthropic cloud clients were never intercepted.**
+  `patch()` replaced the `messages` descriptor on the `Anthropic` /
+  `AsyncAnthropic` classes, which `AnthropicBedrock`, `AnthropicVertex`,
+  `AnthropicBedrockMantle` and their async forms never use (their
+  `messages` is an instance attribute) and `AnthropicFoundry` overrides,
+  so calls through those clients landed no events. The patch now lives on
+  the SDK's `Messages` resource classes, which every client hands out, so
+  all of them are metered, including clients built before `patch()`.
 
 - **Worker: a short-lived session could be left unclosed.** The worker
   pool processes one session's events concurrently, so a `session_end`

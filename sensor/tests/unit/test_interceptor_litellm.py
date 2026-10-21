@@ -556,6 +556,35 @@ def _litellm_async_http_handler(transport: _LitellmHttpTransport) -> AsyncHTTPHa
     return handler
 
 
+def _litellm_responses_unavailable() -> str | None:
+    """Why ``litellm.responses`` cannot run in this environment, or None.
+
+    Recent litellm releases import their MCP gateway handler inside
+    ``responses()``, and that handler needs a type that only mcp 2.x
+    ships. The sensor caps mcp below 2 until its MCP interceptor is
+    ported, so with such a litellm every ``responses()`` call fails
+    inside litellm before any patch is reached; the sensor has nothing
+    to report and the routing below cannot be observed."""
+    import importlib
+    import importlib.metadata
+
+    try:
+        importlib.import_module("litellm.responses.mcp.litellm_proxy_mcp_handler")
+    except ModuleNotFoundError:
+        return None
+    except ImportError as exc:
+        version = importlib.metadata.version("litellm")
+        return f"litellm {version} responses() needs mcp 2.x: {exc}"
+    return None
+
+
+_RESPONSES_SKIP_REASON = _litellm_responses_unavailable()
+requires_litellm_responses = pytest.mark.skipif(
+    _RESPONSES_SKIP_REASON is not None, reason=_RESPONSES_SKIP_REASON or ""
+)
+
+
+@requires_litellm_responses
 def test_responses_bridged_through_completion_is_reported_once_as_a_chat_call(
     session: Session,
 ) -> None:
@@ -578,6 +607,7 @@ def test_responses_bridged_through_completion_is_reported_once_as_a_chat_call(
     assert pc["tokens_output"] == SDK_COMPLETION_TOKENS
 
 
+@requires_litellm_responses
 async def test_aresponses_bridged_through_acompletion_is_reported_once(session: Session) -> None:
     transport = _LitellmHttpTransport()
     await litellm.aresponses(
@@ -591,6 +621,7 @@ async def test_aresponses_bridged_through_acompletion_is_reported_once(session: 
     assert pc["tokens_output"] == SDK_COMPLETION_TOKENS
 
 
+@requires_litellm_responses
 def test_responses_on_a_native_route_is_unobserved(session: Session) -> None:
     """On a provider with a native Responses API (OpenAI) litellm uses
     its own httpx handler: neither the litellm wrapper nor an SDK

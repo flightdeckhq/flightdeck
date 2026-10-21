@@ -15,8 +15,10 @@ canary that fails when the SDK moves the classes the patch relies on.
 from __future__ import annotations
 
 import asyncio
+import gc
 import inspect
 import json
+import types
 import warnings
 from typing import Any
 from unittest.mock import MagicMock
@@ -27,8 +29,10 @@ import pytest
 from anthropic._base_client import AsyncAPIClient, BaseClient
 from anthropic._streaming import SSEDecoder
 from anthropic.lib.bedrock._client import AnthropicBedrock, AsyncAnthropicBedrock
+from pydantic import BaseModel
 
 import flightdeck_sensor
+from flightdeck_sensor.core.exceptions import BudgetExceededError, DirectiveError
 from flightdeck_sensor.core.policy import PolicyCache
 from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import SensorConfig
@@ -111,15 +115,19 @@ SSE_BODY = "".join(
 class _LazyBody(httpx.SyncByteStream, httpx.AsyncByteStream):
     """A response body that is read only when iterated, like a body still
     on the wire: httpx marks an in-memory body as consumed at
-    construction, which would make every unread response look read."""
+    construction, which would make every unread response look read.
+    Counts how often it was read."""
 
     def __init__(self, content: bytes) -> None:
         self._content = content
+        self.reads = 0
 
     def __iter__(self) -> Any:
+        self.reads += 1
         yield self._content
 
     async def __aiter__(self) -> Any:
+        self.reads += 1
         yield self._content
 
 
@@ -129,10 +137,14 @@ class _Transport:
     or Bedrock's / Vertex's streaming routes), and records it. With
     ``lazy`` the body is delivered only when read."""
 
-    def __init__(self, status: int = 200, *, lazy: bool = False) -> None:
+    def __init__(self, status: int = 200, *, lazy: bool = False, text: str | None = None) -> None:
         self.requests: list[httpx.Request] = []
+        self.bodies: list[_LazyBody] = []
         self.status = status
         self.lazy = lazy
+        # The assistant text of the canned message; structured-output
+        # tests want JSON there.
+        self.text = text
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -148,9 +160,18 @@ class _Transport:
             payload = SSE_BODY
         else:
             headers["content-type"] = "application/json"
-            payload = json.dumps(MESSAGE).encode()
+            message = dict(MESSAGE)
+            if self.text is not None:
+                message["content"] = [{"type": "text", "text": self.text}]
+            if isinstance(body.get("model"), str):
+                # Echo the requested model, as the API does (the cloud
+                # routes carry it in the URL and keep the canned one).
+                message["model"] = body["model"]
+            payload = json.dumps(message).encode()
         if self.lazy:
-            return httpx.Response(200, headers=headers, stream=_LazyBody(payload))
+            body = _LazyBody(payload)
+            self.bodies.append(body)
+            return httpx.Response(200, headers=headers, stream=body)
         return httpx.Response(200, headers=headers, content=payload)
 
 
@@ -167,7 +188,7 @@ CLIENT_NAMES: tuple[str, ...] = tuple(
     )
 )
 
-EXPECTED_CLIENT_NAMES = frozenset(
+CORE_CLIENT_NAMES = frozenset(
     {
         "Anthropic",
         "AsyncAnthropic",
@@ -175,14 +196,30 @@ EXPECTED_CLIENT_NAMES = frozenset(
         "AsyncClient",
         "AnthropicBedrock",
         "AsyncAnthropicBedrock",
-        "AnthropicBedrockMantle",
-        "AsyncAnthropicBedrockMantle",
         "AnthropicVertex",
         "AsyncAnthropicVertex",
         "AnthropicFoundry",
         "AsyncAnthropicFoundry",
+    }
+)
+EXPECTED_CLIENT_NAMES = CORE_CLIENT_NAMES | frozenset(
+    {
+        "AnthropicBedrockMantle",
+        "AsyncAnthropicBedrockMantle",
         "AnthropicAWS",
         "AsyncAnthropicAWS",
+    }
+)
+# Matrix cells the SDK itself cannot offer: Bedrock's beta resource has
+# only create; Vertex's has create and stream.
+EXPECTED_SKIPPED_CELLS = frozenset(
+    {
+        "AnthropicBedrock-parse-beta.messages",
+        "AnthropicBedrock-stream_helper-beta.messages",
+        "AsyncAnthropicBedrock-parse-beta.messages",
+        "AsyncAnthropicBedrock-stream_helper-beta.messages",
+        "AnthropicVertex-parse-beta.messages",
+        "AsyncAnthropicVertex-parse-beta.messages",
     }
 )
 
@@ -416,7 +453,93 @@ def test_every_client_class_on_every_path(
         # Only the raw views expose the HTTP headers; a parsed Message
         # carries none.
         assert post["provider_metadata"]["request_id"] == "req_test"
+    # Capture is off on this session: nothing of the prompt leaves.
+    assert not post.get("has_content")
+    assert post.get("content") is None
     assert not _events_of(session, "llm_error")
+
+
+# ----- clients and views that exist before patch() ---------------------------------
+
+_PRE_PATCH_PATHS: dict[str, Any] = {
+    "create": lambda c: c.messages.create(model=MODEL, max_tokens=8, messages=HI),
+    "raw_view": lambda c: c.messages.with_raw_response.create(
+        model=MODEL, max_tokens=8, messages=HI
+    ),
+    "streaming_view": lambda c: c.messages.with_streaming_response.create(
+        model=MODEL, max_tokens=8, messages=HI
+    ),
+    "beta_raw_view": lambda c: c.beta.messages.with_raw_response.create(
+        model=MODEL, max_tokens=8, messages=HI
+    ),
+}
+
+
+async def _settle_pre_patch_result(result: Any) -> None:
+    """Drive whatever a pre-patch path returned to the point where the
+    call is metered: await coroutines, parse streaming-view responses."""
+    if inspect.isawaitable(result):
+        result = await result
+    if hasattr(result, "__aenter__"):
+        async with result as response:
+            await response.parse()
+    elif hasattr(result, "__enter__"):
+        with result as response:
+            response.parse()
+
+
+@pytest.mark.parametrize("name", ["Anthropic", "AsyncAnthropic"])
+@pytest.mark.parametrize("path", sorted(_PRE_PATCH_PATHS))
+def test_client_and_views_built_before_patch_are_metered(
+    monkeypatch: pytest.MonkeyPatch, name: str, path: str
+) -> None:
+    """A client built, and its resources touched, before patch() is metered
+    from its next call on: the patch lives on the resource class. The
+    views are built lazily at first access, so a view first touched
+    after patch() binds the patched method."""
+    session = _make_session()
+    monkeypatch.setattr(flightdeck_sensor, "_session", session)
+    transport = _Transport()
+    client = _build(name, transport)
+    assert client.messages is not None and client.beta.messages is not None
+    ai.patch_anthropic_classes(quiet=True)
+    try:
+        asyncio.run(_settle_pre_patch_result(_PRE_PATCH_PATHS[path](client)))
+    finally:
+        ai.unpatch_anthropic_classes()
+    assert len(transport.requests) == 1
+    posts = _post_calls(session)
+    assert len(posts) == 1
+    assert posts[0]["tokens_output"] == OUTPUT_TOKENS
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason="the SDK binds the resource method when it builds a view, so a view "
+    "first touched before patch() keeps the unpatched method (documented "
+    "limitation); if this passes, the SDK now resolves at call time and the "
+    "docs can drop the caveat",
+)
+@pytest.mark.parametrize("name", ["Anthropic", "AsyncAnthropic"])
+@pytest.mark.parametrize("path", ["raw_view", "streaming_view"])
+def test_views_touched_before_patch_are_metered(
+    monkeypatch: pytest.MonkeyPatch, name: str, path: str
+) -> None:
+    session = _make_session()
+    monkeypatch.setattr(flightdeck_sensor, "_session", session)
+    transport = _Transport()
+    client = _build(name, transport)
+    # Touch the views first: the SDK builds them now, around the
+    # unpatched method.
+    assert client.messages.with_raw_response is not None
+    assert client.messages.with_streaming_response is not None
+    ai.patch_anthropic_classes(quiet=True)
+    try:
+        asyncio.run(_settle_pre_patch_result(_PRE_PATCH_PATHS[path](client)))
+    finally:
+        ai.unpatch_anthropic_classes()
+    assert len(transport.requests) == 1
+    assert len(_post_calls(session)) == 1
 
 
 @pytest.mark.parametrize("name", CLIENT_NAMES)
@@ -479,6 +602,42 @@ def test_streaming_response_read_without_parse_is_metered_at_close(session: Sess
     assert len(posts) == 1
     assert posts[0]["tokens_output"] == OUTPUT_TOKENS
     assert len(transport.requests) == 1
+
+
+async def test_async_streaming_response_read_without_parse_is_metered_at_close(
+    session: Session,
+) -> None:
+    """Async mirror of the sync read-then-close case."""
+    transport = _Transport(lazy=True)
+    client = _build("AsyncAnthropic", transport)
+    async with client.messages.with_streaming_response.create(
+        model=MODEL, max_tokens=8, messages=HI
+    ) as response:
+        assert not response.http_response.is_stream_consumed
+        body = await response.read()
+        assert b"Hello" in body
+        assert not _post_calls(session)
+    posts = _post_calls(session)
+    assert len(posts) == 1
+    assert posts[0]["tokens_output"] == OUTPUT_TOKENS
+    assert len(transport.requests) == 1
+
+
+async def test_async_streaming_response_with_stream_true_hands_the_stream_to_the_guard(
+    session: Session,
+) -> None:
+    client = _build("AsyncAnthropic", _Transport())
+    async with client.messages.with_streaming_response.create(
+        model=MODEL, max_tokens=8, messages=HI, stream=True
+    ) as response:
+        stream = await response.parse()
+        assert isinstance(stream, base.GuardedAsyncStream)
+        events = [event async for event in stream]
+    assert events[-1].type == "message_stop"
+    posts = _post_calls(session)
+    assert len(posts) == 1
+    assert posts[0]["tokens_output"] == OUTPUT_TOKENS
+    assert posts[0]["streaming"]["final_outcome"] == "completed"
 
 
 async def test_async_streaming_response_closed_unparsed_reports_the_estimate(
@@ -630,24 +789,72 @@ def test_raw_response_stores_no_content_when_capture_is_off(session: Session) ->
         ("us-east5-aiplatform.googleapis.com", "vertex"),
         ("aiplatform.googleapis.com", "vertex"),
         ("myres.services.ai.azure.com", "foundry"),
+        ("aiplatform.us.rep.googleapis.com", "vertex"),
         ("localhost", "localhost"),
         ("bifrost.internal.example", "bifrost.internal.example"),
+        # Look-alikes stay bare: the suffixes are dot-separated and Vertex
+        # is only the Vertex AI API hosts.
+        ("evilanthropic.com", "evilanthropic.com"),
+        ("anthropic.com.evil.example", "anthropic.com.evil.example"),
+        ("storage.googleapis.com", "storage.googleapis.com"),
+        ("notaiplatform.googleapis.com", "notaiplatform.googleapis.com"),
+        (
+            "evil-bedrock-runtime.us-east-1.amazonaws.com",
+            "evil-bedrock-runtime.us-east-1.amazonaws.com",
+        ),
+        (
+            "bedrock-runtime.us-east-1.amazonaws.com.evil.example",
+            "bedrock-runtime.us-east-1.amazonaws.com.evil.example",
+        ),
     ],
 )
 def test_platform_for_host(host: str, platform: str) -> None:
     assert ai.platform_for_host(host) == platform
 
 
-def test_platform_of_prefers_the_sdk_attribute_over_the_host() -> None:
+def test_platform_of_reads_the_host_only() -> None:
+    """The platform is the endpoint host, never a label the client
+    carries: an attribute on the client changes nothing, and a
+    first-party client pointed at a gateway reports the gateway."""
     client = _build("AnthropicBedrock", _Transport())
     assert ai.platform_of(client) == "bedrock"
     client._otel_platform = "sdk-says-so"
-    assert ai.platform_of(client) == "sdk-says-so"
+    assert ai.platform_of(client) == "bedrock"
+    gateway = anthropic.Anthropic(api_key="key", base_url="https://bifrost.internal.example/v1")
+    assert ai.platform_of(gateway) == "bifrost.internal.example"
 
 
 def test_platform_of_falls_back_to_anthropic_without_a_usable_host() -> None:
     assert ai.platform_of(object()) == "anthropic"
     assert ai.platform_of(MagicMock()) == "anthropic"
+
+
+@pytest.mark.parametrize(
+    ("host", "platform"),
+    [
+        ("a" * ai._MAX_PLATFORM_HOST_LENGTH, "a" * ai._MAX_PLATFORM_HOST_LENGTH),
+        ("a" * (ai._MAX_PLATFORM_HOST_LENGTH + 1), "invalid-host"),
+        ("a" * 60_000, "invalid-host"),
+        ("evil host!", "invalid-host"),
+        ("gätewäy.example", "invalid-host"),
+        ("host\nwith-newline", "invalid-host"),
+        ("", "invalid-host"),
+        ("Gateway.Example", "gateway.example"),
+    ],
+)
+def test_platform_for_host_bounds_the_host(host: str, platform: str) -> None:
+    """An unknown host is reported bare only when it is a well-formed
+    hostname within the DNS limit; anything else is a fixed label, so a
+    hostile base_url cannot put arbitrary bytes into every post_call."""
+    assert ai.platform_for_host(host) == platform
+
+
+def test_platform_of_never_carries_credentials_or_oversized_hosts() -> None:
+    gateway = anthropic.Anthropic(api_key="key", base_url="https://user:s3cret@gateway.example/v1")
+    assert ai.platform_of(gateway) == "gateway.example"
+    oversized = types.SimpleNamespace(base_url=types.SimpleNamespace(host="x" * 60_000))
+    assert ai.platform_of(oversized) == "invalid-host"
+    assert len(ai.platform_of(oversized)) <= ai._MAX_PLATFORM_HOST_LENGTH
 
 
 def test_bare_provider_keeps_the_metadata_block_headers_only() -> None:
@@ -702,6 +909,250 @@ def test_wrap_then_patch_meters_each_call_once(monkeypatch: pytest.MonkeyPatch) 
 def test_wrap_is_a_noop_once_the_resources_are_patched(session: Session) -> None:
     client = _build("AnthropicBedrock", _Transport())
     assert flightdeck_sensor.wrap(client) is client
+
+
+def test_unpatch_restores_every_resource_class() -> None:
+    """Every target class gets its own methods back, by identity, and
+    loses its sentinel, after patch / patch / unpatch."""
+    targets = [cls for cls, _ in ai._resource_targets()]
+    assert len(targets) == 8
+    before = {cls: {n: cls.__dict__.get(n) for n in ai._PATCHED_METHODS} for cls in targets}
+    ai.patch_anthropic_classes(quiet=True)
+    ai.patch_anthropic_classes(quiet=True)
+    for cls in targets:
+        assert ai._PATCHED_SENTINEL in cls.__dict__
+    ai.unpatch_anthropic_classes()
+    for cls in targets:
+        assert ai._PATCHED_SENTINEL not in cls.__dict__
+        for n in ai._PATCHED_METHODS:
+            assert cls.__dict__.get(n) is before[cls][n], f"{cls.__name__}.{n} not restored"
+
+
+def test_unpatch_neutralises_views_built_while_patched(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A view built while patched keeps a bound reference to the
+    intercepting method; after unpatch() that method must step aside
+    even though a session is still active."""
+    session = _make_session()
+    monkeypatch.setattr(flightdeck_sensor, "_session", session)
+    ai.patch_anthropic_classes(quiet=True)
+    client = _build("Anthropic", _Transport())
+    raw_view = client.messages.with_raw_response
+    streaming_view = client.messages.with_streaming_response
+    ai.unpatch_anthropic_classes()
+
+    raw = raw_view.create(model=MODEL, max_tokens=8, messages=HI)
+    assert raw.parse().usage.output_tokens == OUTPUT_TOKENS
+    with streaming_view.create(model=MODEL, max_tokens=8, messages=HI) as response:
+        assert response.parse().usage.output_tokens == OUTPUT_TOKENS
+    assert not _events_of(session, "pre_call")
+    assert not _post_calls(session)
+
+
+# ----- abandoned deferred calls ------------------------------------------------
+
+
+def test_abandoned_streaming_view_call_settles_at_the_next_intercept(session: Session) -> None:
+    """A streaming-view response dropped without parse() or close() is
+    reported with the estimate once the proxy is collected and the next
+    call is intercepted; the sensor never reads its body and never
+    settles from the finalizer itself."""
+    transport = _Transport(lazy=True)
+    client = _build("Anthropic", transport)
+    manager = client.messages.with_streaming_response.create(model=MODEL, max_tokens=8, messages=HI)
+    response = manager.__enter__()
+    assert isinstance(response, ai._DeferredResponse)
+    assert len(_events_of(session, "pre_call")) == 1
+    assert not _post_calls(session)
+
+    del response, manager
+    gc.collect()
+    assert not _post_calls(session), "a finalizer never settles inline"
+
+    client.messages.create(model=MODEL, max_tokens=8, messages=HI)
+    posts = _post_calls(session)
+    assert len(posts) == 2
+    abandoned, metered = posts
+    assert abandoned["tokens_output"] == 0
+    assert abandoned["estimated_via"] == "heuristic"
+    assert abandoned["provider_metadata"]["request_id"] == "req_test"
+    assert metered["tokens_output"] == OUTPUT_TOKENS
+    assert transport.bodies[0].reads == 0, "the abandoned body was never read"
+
+
+async def test_abandoned_async_streaming_view_call_settles_at_the_next_intercept(
+    session: Session,
+) -> None:
+    transport = _Transport(lazy=True)
+    client = _build("AsyncAnthropic", transport)
+    manager = client.messages.with_streaming_response.create(model=MODEL, max_tokens=8, messages=HI)
+    response = await manager.__aenter__()
+    assert isinstance(response, ai._DeferredAsyncResponse)
+    del response, manager
+    gc.collect()
+    assert not _post_calls(session)
+
+    await client.messages.create(model=MODEL, max_tokens=8, messages=HI)
+    posts = _post_calls(session)
+    assert len(posts) == 2
+    assert posts[0]["tokens_output"] == 0
+    assert transport.bodies[0].reads == 0
+
+
+def test_streaming_view_call_still_open_at_session_end_is_settled(session: Session) -> None:
+    transport = _Transport(lazy=True)
+    client = _build("Anthropic", transport)
+    manager = client.messages.with_streaming_response.create(model=MODEL, max_tokens=8, messages=HI)
+    response = manager.__enter__()
+    base.settle_open_guards(session)
+    posts = _post_calls(session)
+    assert len(posts) == 1
+    assert posts[0]["tokens_output"] == 0
+    assert transport.bodies[0].reads == 0
+    # Settled once: parsing afterwards reports nothing more.
+    response.parse()
+    assert len(_post_calls(session)) == 1
+
+
+# ----- kill switch and budget block ------------------------------------------------
+
+_GUARDED_PATHS: dict[str, Any] = {
+    "create": lambda c: c.messages.create(model=MODEL, max_tokens=8, messages=HI),
+    "raw_view": lambda c: c.messages.with_raw_response.create(
+        model=MODEL, max_tokens=8, messages=HI
+    ),
+    "raw_view_stream_true": lambda c: c.messages.with_raw_response.create(
+        model=MODEL, max_tokens=8, messages=HI, stream=True
+    ),
+    "streaming_view": lambda c: c.messages.with_streaming_response.create(
+        model=MODEL, max_tokens=8, messages=HI
+    ).__enter__(),
+    "parse": lambda c: c.messages.parse(model=MODEL, max_tokens=8, messages=HI),
+    "beta": lambda c: c.beta.messages.create(model=MODEL, max_tokens=8, messages=HI),
+    "beta_raw_view": lambda c: c.beta.messages.with_raw_response.create(
+        model=MODEL, max_tokens=8, messages=HI
+    ),
+    "stream_helper": lambda c: c.messages.stream(
+        model=MODEL, max_tokens=8, messages=HI
+    ).__enter__(),
+}
+DEGRADED_MODEL = "claude-haiku-4-5-20251001"
+
+
+def _arm(session: Session, mode: str) -> type[Exception]:
+    if mode == "kill_switch":
+        session._shutdown_requested = True
+        session._shutdown_reason = "operator kill"
+        return DirectiveError
+    session.policy = PolicyCache(token_limit=100, block_at_pct=50)
+    session._tokens_used = 90
+    return BudgetExceededError
+
+
+@pytest.mark.parametrize("name", ["Anthropic", "AnthropicVertex"])
+@pytest.mark.parametrize("path", sorted(_GUARDED_PATHS))
+@pytest.mark.parametrize("mode", ["kill_switch", "block"])
+def test_kill_switch_and_block_stop_every_path_before_any_request(
+    session: Session, mode: str, path: str, name: str
+) -> None:
+    """The kill switch (DirectiveError) and a BLOCK decision
+    (BudgetExceededError) stop the raw view, the streaming view, parse,
+    the stream helper and beta on the first-party and a Vertex client
+    with zero HTTP requests."""
+    expected = _arm(session, mode)
+    transport = _Transport()
+    client = _build(name, transport)
+    with pytest.raises(expected):
+        _GUARDED_PATHS[path](client)
+    assert transport.requests == []
+    assert not _post_calls(session)
+    assert len(_events_of(session, "policy_block")) == (1 if mode == "block" else 0)
+
+
+@pytest.mark.parametrize("name", ["Anthropic", "AnthropicVertex"])
+@pytest.mark.parametrize("path", ["create", "raw_view", "streaming_view", "parse", "beta_raw_view"])
+def test_degrade_swaps_the_model_on_the_wire_on_every_path(
+    session: Session, path: str, name: str
+) -> None:
+    """A DEGRADE decision sends the swapped model to the provider on every
+    path (in the body on the first-party API, in the route on Vertex)."""
+    session.policy = PolicyCache(token_limit=1000, block_at_pct=100)
+    session.policy.degrade_at_pct = 50
+    session.policy.degrade_to = DEGRADED_MODEL
+    session._tokens_used = 600
+    transport = _Transport()
+    client = _build(name, transport)
+    result = _GUARDED_PATHS[path](client)
+    if isinstance(result, ai._DeferredResponse):
+        result.parse()
+    assert len(transport.requests) == 1
+    request = transport.requests[0]
+    posts = _post_calls(session)
+    assert len(posts) == 1
+    if name == "AnthropicVertex":
+        assert DEGRADED_MODEL in request.url.path
+    else:
+        assert json.loads(request.content)["model"] == DEGRADED_MODEL
+        assert posts[0]["model"] == DEGRADED_MODEL
+    # pre_call records the model the caller asked for; the swap shows on
+    # the wire and on post_call.
+    assert _events_of(session, "pre_call")[0]["model"] == MODEL
+
+
+def test_subclass_overriding_create_and_calling_super_is_metered_once(session: Session) -> None:
+    """A resource subclass that overrides create() and calls super() reaches
+    the patched parent through the wrapper; the proxy must call the
+    parent's original directly rather than resolve through the instance
+    again, which would re-enter the override and recurse."""
+    from anthropic.resources.messages.messages import Messages
+
+    calls: list[str] = []
+
+    class _Overriding(Messages):
+        def create(self, **kwargs: Any) -> Any:  # type: ignore[override]
+            calls.append("override")
+            return super().create(**kwargs)
+
+    transport = _Transport()
+    client = _build("Anthropic", transport)
+    message = _Overriding(client).create(model=MODEL, max_tokens=8, messages=HI)
+    assert message.usage.output_tokens == OUTPUT_TOKENS
+    assert calls == ["override"]
+    assert len(transport.requests) == 1
+    assert len(_post_calls(session)) == 1
+
+
+class _Greeting(BaseModel):
+    greeting: str
+    language: str
+
+
+def test_parse_with_capture_on_stores_the_message_without_serializer_warnings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``messages.parse(output_format=...)`` with capture on dumps a
+    ParsedMessage; pydantic's serializer warnings about the parsed content
+    blocks must not reach the caller's process."""
+    session = _make_session(capture_prompts=True)
+    monkeypatch.setattr(flightdeck_sensor, "_session", session)
+    ai.patch_anthropic_classes(quiet=True)
+    try:
+        transport = _Transport(text='{"greeting": "hi", "language": "en"}')
+        client = _build("Anthropic", transport)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            warnings.simplefilter("ignore", DeprecationWarning)
+            parsed = client.messages.parse(
+                model=MODEL, max_tokens=8, messages=HI, output_format=_Greeting
+            )
+    finally:
+        ai.unpatch_anthropic_classes()
+    assert parsed.parsed_output == _Greeting(greeting="hi", language="en")
+    post = _post_calls(session)[0]
+    assert post["has_content"] is True
+    assert (
+        post["content"]["response"]["content"][0]["text"] == '{"greeting": "hi", "language": "en"}'
+    )
+    assert post["tokens_output"] == OUTPUT_TOKENS
 
 
 def test_wrapped_client_raw_and_streaming_views_are_metered(
@@ -772,16 +1223,58 @@ def test_sdk_layout_the_patch_relies_on() -> None:
     assert _constants.RAW_RESPONSE_HEADER == ai._RAW_RESPONSE_HEADER
 
     # The views capture ``messages.create`` when they are built, which is
-    # what makes a class-level method patch reach them.
-    resource = _build("Anthropic", _Transport()).messages
-    raw_view = top_messages.MessagesWithRawResponse(resource)
-    assert raw_view.create.__wrapped__.__self__ is resource  # type: ignore[attr-defined]
-    streaming_view = top_messages.MessagesWithStreamingResponse(resource)
-    assert streaming_view.create.__wrapped__.__self__ is resource  # type: ignore[attr-defined]
+    # what makes a class-level method patch reach them -- and what keeps
+    # a view built before patch() unmetered. Sync and async, top level
+    # and beta.
+    sync_client = _build("Anthropic", _Transport())
+    async_client = _build("AsyncAnthropic", _Transport())
+    for resource, raw_cls, streaming_cls in (
+        (
+            sync_client.messages,
+            top_messages.MessagesWithRawResponse,
+            top_messages.MessagesWithStreamingResponse,
+        ),
+        (
+            async_client.messages,
+            top_messages.AsyncMessagesWithRawResponse,
+            top_messages.AsyncMessagesWithStreamingResponse,
+        ),
+        (
+            sync_client.beta.messages,
+            beta_messages.MessagesWithRawResponse,
+            beta_messages.MessagesWithStreamingResponse,
+        ),
+        (
+            async_client.beta.messages,
+            beta_messages.AsyncMessagesWithRawResponse,
+            beta_messages.AsyncMessagesWithStreamingResponse,
+        ),
+    ):
+        for view_cls in (raw_cls, streaming_cls):
+            view = view_cls(resource)
+            assert view.create.__wrapped__.__self__ is resource, (  # type: ignore[attr-defined]
+                f"{view_cls.__name__} no longer binds the resource's create"
+            )
 
-    assert frozenset(CLIENT_NAMES) == EXPECTED_CLIENT_NAMES, (
-        "the SDK's exported client classes changed; extend the matrix"
+    # The exported client classes: nothing unknown may appear, and the
+    # core set must stay. Mantle and AWS exist from 0.91 and are optional
+    # at the 0.86 floor.
+    exported = frozenset(CLIENT_NAMES)
+    assert exported <= EXPECTED_CLIENT_NAMES, (
+        f"new client classes exported: {exported - EXPECTED_CLIENT_NAMES}; extend the matrix"
     )
+    assert exported >= CORE_CLIENT_NAMES, f"client classes missing: {CORE_CLIENT_NAMES - exported}"
+
+    # The cells the matrix skips because the SDK's platform beta resources
+    # lack the method, frozen so a change in either direction shows up.
+    skipped = frozenset(
+        f"{name}-{path}-{'beta.messages' if beta else 'messages'}"
+        for name in CLIENT_NAMES
+        for path in PATHS
+        for beta in (False, True)
+        if not hasattr(_resource(_build(name, _Transport()), beta), PATH_METHOD[path])
+    )
+    assert skipped == EXPECTED_SKIPPED_CELLS
 
     # Bedrock and Vertex ship their own beta resources, copying the
     # first-party methods they support; the patch targets them directly.

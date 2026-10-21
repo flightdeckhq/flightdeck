@@ -223,11 +223,11 @@ def main() -> None:
         platform = ((post.get("payload") or {}).get("provider_metadata") or {}).get("platform")
         by_platform.setdefault(str(platform), []).append(post)
     counts = {k: len(v) for k, v in by_platform.items()}
-    landed_ok = all(len(by_platform.get(p, [])) >= n for p, n in expected_platforms.items())
+    landed_ok = counts == expected_platforms
     print_result("post_call per platform landed", landed_ok, 0,
-                 f"observed {counts}, expected at least {expected_platforms}")
+                 f"observed {counts}, expected exactly {expected_platforms}")
     if not landed_ok:
-        raise AssertionError(f"post_call platform attribution short; events={posts!r}")
+        raise AssertionError(f"post_call platform attribution mismatch; events={posts!r}")
 
     unmetered = [
         p for p in posts
@@ -237,6 +237,23 @@ def main() -> None:
                  f"{len(posts) - len(unmetered)}/{len(posts)} metered")
     if unmetered:
         raise AssertionError(f"post_call without real usage; events={unmetered!r}")
+
+    # Exactly one call streamed (stream=True through the streaming view),
+    # read to its end.
+    streamed = [p for p in posts if (p.get("payload") or {}).get("streaming")]
+    outcomes = [p["payload"]["streaming"].get("final_outcome") for p in streamed]
+    streamed_ok = len(streamed) == 1 and outcomes == ["completed"]
+    print_result("stream=True view call completed through the guard", streamed_ok, 0,
+                 f"{len(streamed)} streamed post_call(s), outcomes {outcomes}")
+    if not streamed_ok:
+        raise AssertionError(f"unexpected streamed post_calls; events={streamed!r}")
+
+    # Capture is on for every playground run: every post_call stored content.
+    uncaptured = [p for p in posts if not p.get("has_content")]
+    print_result("captured content landed on every post_call", not uncaptured, 0,
+                 f"{len(posts) - len(uncaptured)}/{len(posts)} with content")
+    if uncaptured:
+        raise AssertionError(f"post_call without captured content; events={uncaptured!r}")
 
     flightdeck_sensor.teardown()
 

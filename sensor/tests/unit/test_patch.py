@@ -280,23 +280,18 @@ def test_teardown_without_patch_is_noop() -> None:
 
 
 def test_patch_leaves_the_client_resource_untouched(sensor_init: Any) -> None:
-    """After patch() ``client.messages`` is still the SDK's own resource
-    (no proxy to cache on the instance); the interception lives on the
-    resource class's methods, so a client built before patch() is
-    intercepted as well.
+    """After patch() ``client.messages`` is still the SDK's own resource;
+    the interception lives on the resource class's methods. The
+    behavioural counterpart (a client built before patch() is metered,
+    a view touched before it is not) lives in
+    ``test_anthropic_resource_patch.py``.
     """
     assert _OrigMessages is not None
-    before = anthropic.Anthropic(api_key="test-key")
-    before_messages = before.messages  # cached on the instance, unpatched at this point
     flightdeck_sensor.patch(quiet=True)
     client = anthropic.Anthropic(api_key="test-key")
-
     msgs = client.messages
     assert isinstance(msgs, _OrigMessages)
     assert not isinstance(msgs, SensorMessages)
-    assert type(msgs).create is _OrigMessages.__dict__["create"]
-    # The earlier client resolves the same (patched) class method.
-    assert type(before_messages).create is _OrigMessages.__dict__["create"]
 
 
 def test_descriptor_caches_chat_on_instance(sensor_init: Any) -> None:

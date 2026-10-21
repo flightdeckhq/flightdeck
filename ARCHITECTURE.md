@@ -580,8 +580,10 @@ def patch(
     replaces create / stream / parse on the SDK's Messages / AsyncMessages
     resource classes (top level, beta, and the Bedrock / Vertex beta
     resources), which every anthropic client class hands out, so every
-    client is intercepted, the raw and streaming views included, even
-    clients built before patch(). For OpenAI, replaces the chat /
+    client is intercepted, the raw and streaming views included; a
+    client built before patch() is metered from its next call, while a
+    raw or streaming view first touched before patch() keeps the
+    unpatched method and is not. For OpenAI, replaces the chat /
     responses / embeddings cached_property descriptors on OpenAI and
     AsyncOpenAI. Works with frameworks that build their own clients
     internally; isinstance checks and captured class references keep
@@ -740,8 +742,15 @@ different levels:
   subclass; `AnthropicAWS`. Clients and resources that already existed
   before `patch` are covered from their next call on. The SDK's raw view
   (`with_raw_response`) and streaming view (`with_streaming_response`)
-  bind the resource's `create` / `parse` when they are built, so they are
-  intercepted too. The raw view returns a response whose body is already
+  bind the resource's `create` / `parse` when they are built, so a view
+  first touched after `patch` is intercepted too, while a view first
+  touched before `patch` keeps the unpatched method and is not metered
+  (the one way an Anthropic client can escape the patch; a strict
+  `xfail` test pins it). The patch imports the SDK's private module
+  layout; the floor is `anthropic>=0.86`, the lowest release carrying
+  it, and the matrix is run against 0.94. An installed SDK below the
+  floor is reported once, at import, with a warning rather than
+  silently left unmetered. The raw view returns a response whose body is already
   read and whose `parse()` is synchronous on both client kinds, and is
   metered like a plain call. The streaming view hands the caller an
   unread response, so the sensor returns a proxy that meters at the
@@ -751,9 +760,15 @@ different levels:
   reports the pre-call estimate, and a parsed event stream
   (`create(stream=True)` through either view) is handed to the stream
   guard, whose latency then runs from the `parse()` call rather than
-  from the request. With no session active the patched methods pass
-  straight through to the SDK, so nothing is ever cached in an unmetered
-  state.
+  from the request. A streaming-view response dropped without `parse()`
+  or `close()` is reported with the pre-call estimate the way an
+  abandoned stream is: its finalizer queues the settle (never settling
+  inline) and the next intercepted call, or the session's end, runs it;
+  a response still referenced when the session ends is settled then.
+  With no session active, or once the class has been unpatched, the
+  patched methods pass straight through to the SDK, so nothing is ever
+  cached in an unmetered state and a view built while patched stops
+  metering with `unpatch`.
 - **OpenAI** — the `cached_property` descriptors `OpenAI.chat`,
   `AsyncOpenAI.chat`, `OpenAI.responses`, `AsyncOpenAI.responses`,
   `OpenAI.embeddings`, `AsyncOpenAI.embeddings` on the client classes,
@@ -781,9 +796,10 @@ Pre-existing instance limitation (OpenAI): instances that accessed
 `.chat` / `.responses` / `.embeddings` BEFORE `patch` have the raw
 resource cached in `instance.__dict__` and bypass the descriptor
 permanently. New instances and new accesses are wrapped correctly.
-Anthropic clients have no such limitation. The practical advice is the
-same for both: call `init` + `patch` at the top of the entrypoint, before
-any framework or user code constructs a client.
+Anthropic clients have no such limitation beyond the raw and streaming
+views described above. The practical advice is the same for both: call
+`init` + `patch` at the top of the entrypoint, before any framework or
+user code constructs a client.
 
 ### Module-level patching: litellm
 
@@ -808,6 +824,7 @@ The SDK class patch deliberately does NOT intercept:
 | `OpenAI.chat.completions.with_raw_response.create(stream=True)`, `OpenAI.responses.with_raw_response.*` | The raw-response wrapper is intercepted, but metered correctly only for non-streaming chat calls: a streamed call through it records the pre-call estimate with no `streaming` block, and the Responses raw-response path passes through unintercepted. langchain-openai takes the chat path when `include_response_headers=True`. On the README Roadmap. |
 | `OpenAI.audio.*`, `images.*`, `moderations.*`, `files.*`, `fine_tuning.*`, `completions.*` (legacy) | Utility resources unrelated to LLM inference events. |
 | `Anthropic.completions.*` | Legacy completions API; superseded by `messages` / `beta.messages`. |
+| Anthropic `messages.batches.*`, `messages.count_tokens` | Batches are offline work with their own billing and run outside the kill switch and the token budget; `count_tokens` is the sensor's own estimator and makes no inference call. |
 | Anthropic `with_raw_response.create(stream=True)` whose response is never parsed | The event stream is metered once `parse()` hands it to the stream guard; a raw response that is never parsed has no close hook, so that call emits no `post_call`. The streaming view (`with_streaming_response`) always settles at close. |
 | Frameworks that bypass the SDK entirely (raw httpx, boto3 bedrock-runtime, vertexai) | No SDK class to patch. |
 
@@ -3800,10 +3817,17 @@ enrichment additionally carries:
   `platform` is set on every Anthropic `post_call` and names the endpoint
   the client talked to: `anthropic`, `bedrock`, `bedrock-mantle`, `aws`,
   `vertex` or `foundry` for the hosts the SDK's own client classes
-  default to, else the bare host of whatever the client was pointed at
-  (a gateway or proxy). It is derived from `client.base_url.host`; an
-  `_otel_platform` attribute on the client would take precedence, as a
-  forward-looking hook, but no SDK client class defines one.
+  default to (matched on dot-separated suffixes, and `vertex` only for
+  the Vertex AI API hosts, so look-alikes such as `evilanthropic.com` or
+  `storage.googleapis.com` are not labelled), else the bare host of
+  whatever the client was pointed at (a gateway or proxy). It is derived
+  from `client.base_url.host` and
+  nothing else, so a first-party client pointed at a gateway reports the
+  gateway. A bare host is reported only when it is a well-formed
+  hostname -- at most 253 characters (the DNS limit), lowercase letters,
+  digits, dots and hyphens -- and any other host is reported as the fixed
+  label `invalid-host`, so a malformed or hostile `base_url` cannot put
+  arbitrary bytes into every `post_call` of a session.
 - `policy_decision_post`: shared `policy_decision` block when this
   call's cumulative usage crossed a threshold the pre-call check
   didn't catch (cache-read tokens / output tokens push the cumulative

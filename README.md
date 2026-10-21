@@ -262,7 +262,7 @@ fd.init(
 
 ### `patch()` vs `wrap()`
 
-`patch()` is the right answer in almost every case. For Anthropic it patches `create`, `stream` and `parse` on the SDK's `Messages` resource classes, which every `anthropic` client class hands out, so every client — first-party, Bedrock, Vertex, Foundry, AWS, Mantle, the ones frameworks build internally, and clients built before `patch()` — is intercepted. For OpenAI it installs a class-level descriptor on `openai.OpenAI` and `openai.AsyncOpenAI` so every instance, including ones frameworks build internally, is intercepted.
+`patch()` is the right answer in almost every case. For Anthropic it patches `create`, `stream` and `parse` on the SDK's `Messages` resource classes, which every `anthropic` client class hands out, so every client — first-party, Bedrock, Vertex, Foundry, AWS, Mantle, and the ones frameworks build internally — is intercepted, including a client built before `patch()` (from its next call on; only a `with_raw_response` / `with_streaming_response` view first touched before `patch()` stays unmetered). For OpenAI it installs a class-level descriptor on `openai.OpenAI` and `openai.AsyncOpenAI` so every instance, including ones frameworks build internally, is intercepted.
 
 `wrap()` instruments a single client instance:
 
@@ -300,8 +300,11 @@ The sensor reports over HTTP on background daemon threads. Control plane downtim
 
 ### Known limitations
 
-- `patch()` must run before OpenAI clients are constructed. Instances that already accessed `.chat`, `.responses`, or `.embeddings` before `patch()` keep the raw resource cached and are not intercepted. Anthropic clients are intercepted from their next call on, whenever they were built.
-- An Anthropic `with_raw_response.create(stream=True)` response that is never parsed emits no `post_call`: the event stream is metered once `parse()` hands it to the sensor, and a raw response has no close hook to settle on. The streaming view (`with_streaming_response`) always settles when its `with` block exits.
+- `patch()` must run before OpenAI clients are constructed. Instances that already accessed `.chat`, `.responses`, or `.embeddings` before `patch()` keep the raw resource cached and are not intercepted. Anthropic clients are intercepted from their next call on, whenever they were built, except that a `with_raw_response` / `with_streaming_response` view first touched before `patch()` binds the unpatched method and is not metered.
+- The Anthropic patch needs `anthropic>=0.86` (the lowest release with the resource layout it imports) and is tested against 0.94; an older SDK is reported with a warning at import and its calls are not metered.
+- An Anthropic `with_raw_response.create(stream=True)` response that is never parsed emits no `post_call`: the event stream is metered once `parse()` hands it to the sensor, and a raw response has no close hook to settle on. The streaming view (`with_streaming_response`) always settles: when its `with` block exits, or, for a response dropped without `parse()` or `close()`, at the next LLM call the sensor intercepts after the response is collected or when the session ends.
+- Anthropic Message Batches (`messages.batches.*`) and `count_tokens` are not patched: batch spend runs outside the kill switch and the token budget.
+- With `capture_prompts=True`, prompts sent through the Bedrock, Vertex, Foundry, AWS and Mantle clients — platforms often chosen for data residency — reach the Flightdeck control plane like any other captured prompt. Keep capture off for those sessions, or keep the control plane inside the same residency boundary.
 - Per-thread Session isolation is not yet supported. Multi-agent frameworks (CrewAI, LangGraph, etc.) work fine under a single `init()` and shared `AGENT_FLAVOR`.
 - Custom directive handler input validation is yours. The `parameters` schema drives the dashboard form and the directive fingerprint; it is not enforced at execution time.
 - litellm streaming is not intercepted. Non-streaming chat calls and embeddings round-trip cleanly.

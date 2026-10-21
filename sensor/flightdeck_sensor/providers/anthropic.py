@@ -313,7 +313,17 @@ class AnthropicProvider:
                 response = snapshot
             resp_dict: dict[str, Any] = {}
             if hasattr(response, "model_dump"):
-                resp_dict = response.model_dump()
+                # ``warnings=False``: a structured-output ``ParsedMessage``
+                # carries ``ParsedTextBlock`` content under the SDK's
+                # content-block union, which pydantic's serializer flags
+                # with UserWarnings in the caller's process; the dump is
+                # fine for storage, so keep the caller's warning stream
+                # clean. Objects whose model_dump takes no such argument
+                # get the plain call.
+                try:
+                    resp_dict = response.model_dump(warnings=False)
+                except TypeError:
+                    resp_dict = response.model_dump()
             elif hasattr(response, "__dict__"):
                 # Last-resort fallback: prune attributes whose values
                 # are not JSON-serialisable so the wire payload stays

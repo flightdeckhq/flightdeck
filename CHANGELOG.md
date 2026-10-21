@@ -26,7 +26,9 @@ server.
   Anthropic `post_call` carries `provider_metadata.platform`
   (`anthropic`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`, `foundry`,
   or the host of a gateway the SDK was pointed at). `wrap()` accepts any
-  `anthropic` client class.
+  `anthropic` client class. With `capture_prompts=True`, prompts sent
+  through the cloud clients (Bedrock, Vertex, Foundry, AWS, Mantle) now
+  reach the control plane like any other captured prompt.
 
 ### Fixed
 
@@ -34,7 +36,11 @@ server.
   `AnthropicBedrock`, `AnthropicVertex`, `AnthropicBedrockMantle`,
   `AnthropicFoundry`, `AnthropicAWS` and their async forms were never
   intercepted by `patch()`. They are now metered like `Anthropic` /
-  `AsyncAnthropic`, including clients built before `patch()` ran.
+  `AsyncAnthropic`, including clients built before `patch()` ran (a
+  `with_raw_response` / `with_streaming_response` view first touched
+  before `patch()` stays unmetered). The sensor's `anthropic` floor rises
+  from 0.20 to 0.86, the lowest release with the resource layout the
+  patch imports; an older SDK is reported with a warning at import.
 - **Worker: a short-lived session could be left unclosed.** The worker
   pool processes one session's events concurrently, so a `session_end`
   published within tens of milliseconds of its `session_start` could be

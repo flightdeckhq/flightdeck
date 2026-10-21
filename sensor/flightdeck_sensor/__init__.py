@@ -620,9 +620,12 @@ def patch(
     was called that already accessed ``.chat`` once have the unwrapped
     resource cached in their ``__dict__`` and are not intercepted. New
     instances and new accesses on existing instances ARE intercepted.
-    Anthropic clients have no such limitation: the patch lives on the
-    resource class, so existing clients are intercepted from the next
-    call on.
+    Anthropic clients built before ``patch()`` are intercepted from
+    their next call on, because the patch lives on the resource class;
+    the one exception is a raw or streaming view
+    (``messages.with_raw_response`` / ``with_streaming_response``) first
+    touched before ``patch()``, which binds the unpatched method when
+    the SDK builds it and is not metered.
 
     ``init()`` must be called first.
 
@@ -700,12 +703,12 @@ def unpatch() -> None:
     ``litellm.completion`` / ``litellm.acompletion`` module attributes,
     and removes every ``_flightdeck_patched`` sentinel.
 
-    Instances that have already accessed ``.messages`` / ``.chat``
-    after ``patch()`` was called keep the wrapped version cached in
-    their ``__dict__`` until the instance is garbage collected. This
-    is a known limitation -- documented in
-    :func:`unpatch_anthropic_classes` and
-    :func:`unpatch_openai_classes`.
+    OpenAI instances that have already accessed ``.chat`` after
+    ``patch()`` was called keep the wrapped version cached in their
+    ``__dict__`` until the instance is garbage collected -- a known
+    limitation documented in :func:`unpatch_openai_classes`. Anthropic
+    resources revert at once, views built while patched included
+    (see :func:`unpatch_anthropic_classes`).
     """
     with _patch_lock:
         unpatch_anthropic_classes()

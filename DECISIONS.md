@@ -10146,6 +10146,11 @@ safe ones).
 
 **Date:** 2026-10-21
 
+**Supersedes:** the Anthropic half of D087 (the sensor descriptors
+installed on `anthropic.Anthropic`, `AsyncAnthropic`, `Beta` and
+`AsyncBeta` and the two Anthropic descriptor classes). The OpenAI half
+of D087 stands.
+
 **Refines:** D175, which chose the `Messages` resource classes as the
 intercept point and said the raw-response and streaming-response
 accessors are proxied. The method patch covers both views on its own,
@@ -10166,11 +10171,27 @@ methods on a `_flightdeck_patched` sentinel, which `unpatch` restores and
 the `wrap()` proxy calls directly; with no session active a patched
 method calls the original. `wrap()` accepts any
 `anthropic._base_client.BaseClient`. Every Anthropic `post_call` carries
-`provider_metadata.platform`: the client's `_otel_platform` attribute
-when its class defines one, else the platform of `client.base_url.host`
-(`anthropic`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`, `foundry` for
-the hosts the SDK's client classes default to), else the bare host.
-`PromptContent.provider` stays `"anthropic"` on every platform. The
+`provider_metadata.platform`, derived from `client.base_url.host` and
+nothing else: `anthropic`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`
+or `foundry` for the hosts the SDK's client classes default to, else the
+bare host when it is a well-formed hostname (at most 253 characters,
+the DNS limit; lowercase letters, digits, dots and hyphens), else the
+fixed label `invalid-host`. Adding this key to the documented free-form
+`provider_metadata` object is documented in ARCHITECTURE first but is
+not a payload-schema change. `PromptContent.provider` stays
+`"anthropic"` on every platform. A streaming-view response abandoned
+without `parse()` or `close()` is settled with the estimate through the
+stream guards' mechanism: the proxy's finalizer queues the settle on the
+session, the next intercept or the session's end runs it, and a
+response still referenced at session end is settled by the session's
+open-guard sweep; the sensor never reads such a body. A patched method
+passes straight through once its class no longer resolves to it, so a
+view built while patched stops metering at `unpatch()`. Message Batches
+and `count_tokens` are not patched. The outer-call check that
+`interceptor/base.py` gains with its re-entrancy guard sits, for
+Anthropic, inside the resource-level wrapper (`_intercepting_method`):
+that is the one entry point every Anthropic call passes through, so a
+nested SDK call made during an intercepted call is recognised there. The
 `with_streaming_response` view is metered by a proxy that defers the
 `post_call` to the caller's `parse()` / `await parse()`, or to close
 (parsing only a body already read; the pre-call estimate when the body
@@ -10191,7 +10212,16 @@ installed on `Anthropic` never ran for them and their calls landed no
 events. The resource classes are the one place every client passes
 through, and a method replaced on the class reaches instances that
 already exist, which removes the "patch before constructing clients"
-limitation for Anthropic. The SDK's raw and streaming views capture
+limitation for a client's `messages` resource. The SDK's raw and
+streaming views are the one exception: they bind the resource's method
+when they are built, so a view first touched before `patch()` keeps the
+unpatched method and is not metered; the SDK's view objects offer no
+call-time resolution to hook, so the limitation is documented and
+pinned by a strict `xfail` test that will flip if a later SDK resolves
+at call time. The floor rises to `anthropic>=0.86`, the lowest release
+(of those on the dev box: 0.86, 0.91, 0.94, 0.102, 0.125, 1.15)
+carrying the resource layout the patch imports; an older SDK logs one
+warning at import instead of silently metering nothing. The SDK's raw and streaming views capture
 `messages.create` when they are built
 (`self.create = to_raw_response_wrapper(messages.create)`), so patching
 the resource method covers the views without any view-specific code.
@@ -10205,8 +10235,31 @@ method on them is expected rather than a warning.
 `platform` goes into `provider_metadata` because that block is the
 per-call provider annotation the pipeline already carries end to end:
 ingestion only requires it to be an object, the workers store it
-verbatim, and the dashboard renders every entry, so no schema, migration
-or dashboard change is needed. Changing `PromptContent.provider` to the
+verbatim, and the dashboard renders every entry, so a new key is
+documented in ARCHITECTURE first and needs no schema, migration or
+dashboard change (the same reading of `provider_metadata` as D191).
+The host is the only source of the platform: no SDK client class carries
+a platform label, and a label derived from the class would mislabel a
+first-party client pointed at a gateway. The host is bounded because it
+is caller-controlled input written into every `post_call` of a session:
+unbounded, a 60,000-character host stored 60,004 bytes per event, and an
+arbitrary string could carry anything into the dashboard's metadata
+table; a well-formed hostname within the DNS limit is all an operator
+needs to recognise a gateway, and the fixed label keeps a malformed
+`base_url` visible without storing it. The known-platform rows match
+dot-separated suffixes (with the prefixes the SDK's defaults carry) and
+`vertex` only the Vertex AI API hosts, so a look-alike such as
+`evilanthropic.com` or an unrelated Google API host such as
+`storage.googleapis.com` is reported bare rather than labelled. The
+wrapper hands the originals of the class it patched to the proxy, so a
+resource subclass that overrides `create` and calls `super()` reaches
+the SDK's own method rather than resolving through the instance again
+and recursing; a structured-output `ParsedMessage` is dumped with
+pydantic's serializer warnings off so capture never writes into the
+caller's warning stream. Batches and `count_tokens` stay
+unpatched because a batch is not an in-process inference call (its
+spend lands asynchronously, outside the kill switch and the budget) and
+`count_tokens` is the sensor's own estimator. Changing `PromptContent.provider` to the
 platform would have broken the dashboard's provider-specific prompt
 rendering, which keys on `anthropic` versus `openai` to show `system` +
 `messages`; the platform is a deployment fact about the same provider
@@ -10260,5 +10313,7 @@ call type (a shape specific to one SDK's view does not belong in the
 shared core).
 Mapping unknown hosts to `anthropic` (hides gateways) or to `unknown`
 (loses the host for no privacy gain). Attributing the platform by client
-class instead of host (a first-party client pointed at a gateway would
-read `anthropic`).
+class instead of host, or honouring a client-side label such as an
+`_otel_platform` attribute (no SDK class defines one, and a label the
+class carries mislabels a first-party client pointed at a gateway as
+`anthropic`).

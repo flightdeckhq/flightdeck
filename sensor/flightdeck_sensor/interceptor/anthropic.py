@@ -46,12 +46,11 @@ client unchanged because the resource classes are already patched.
 always calls the resource's original methods, so a wrapped client is
 metered exactly once.
 
-Platform attribution: every event carries the platform the client
-talks to under ``provider_metadata.platform`` (``anthropic``,
+Platform attribution: every ``post_call`` carries the platform the
+client talks to under ``provider_metadata.platform`` (``anthropic``,
 ``bedrock``, ``vertex``, ``foundry``, ``aws``, ``bedrock-mantle``, or
-the bare host of a gateway the caller pointed the SDK at). The SDK's
-own ``_otel_platform`` attribute wins when a client class defines it;
-otherwise the platform is read from ``client.base_url.host``.
+the bare host of a gateway the caller pointed the SDK at), read from
+``client.base_url.host`` and nothing else.
 
 Interception hierarchy for resource-level patching::
 
@@ -83,12 +82,14 @@ Interception hierarchy for per-instance wrapping::
 
 from __future__ import annotations
 
+import collections
 import contextlib
 import functools
 import inspect
 import logging
 import time
 import types
+import weakref
 from typing import TYPE_CHECKING, Any
 
 from flightdeck_sensor.core.exceptions import BudgetExceededError, DirectiveError
@@ -117,8 +118,21 @@ _log = logging.getLogger("flightdeck_sensor.interceptor.anthropic")
 # ``anthropic`` is not installed (e.g. ``flightdeck-sensor[openai]``
 # only installs).
 
+# The lowest SDK release carrying the resource layout imported below
+# (the Messages resource modules, their parse method, the Bedrock and
+# Vertex beta resources and the raw-response header); the matrix is run
+# against 0.94. An installed SDK below it is reported once, at import,
+# rather than silently left unmetered.
+_MIN_SDK_VERSION = "0.86"
+
 try:
     import anthropic as _anthropic_module
+except ImportError:
+    _anthropic_module = None  # type: ignore[assignment]
+
+try:
+    if _anthropic_module is None:
+        raise ImportError("anthropic is not installed")
     from anthropic._base_client import AsyncAPIClient as _OrigAsyncAPIClientImported
     from anthropic._base_client import BaseClient as _OrigBaseClientImported
     from anthropic.resources.beta.messages.messages import (
@@ -147,8 +161,7 @@ try:
     _OrigBetaMessages: type | None = _OrigBetaMessagesImported
     _OrigAsyncBetaMessages: type | None = _OrigAsyncBetaMessagesImported
     _ANTHROPIC_AVAILABLE = True
-except ImportError:
-    _anthropic_module = None  # type: ignore[assignment]
+except ImportError as _layout_error:
     _OrigAnthropic = None
     _OrigAsyncAnthropic = None
     _OrigBaseClient = None
@@ -158,6 +171,14 @@ except ImportError:
     _OrigBetaMessages = None
     _OrigAsyncBetaMessages = None
     _ANTHROPIC_AVAILABLE = False
+    if _anthropic_module is not None:
+        _log.warning(
+            "anthropic %s lacks the Messages resource layout the sensor patches "
+            "(needs anthropic>=%s): Anthropic calls are not metered (%s)",
+            getattr(_anthropic_module, "__version__", "?"),
+            _MIN_SDK_VERSION,
+            _layout_error,
+        )
 
 # The Bedrock and Vertex clients hand out their own beta ``messages``
 # resource: a fresh class that copies the first-party beta methods it
@@ -178,8 +199,15 @@ if _ANTHROPIC_AVAILABLE:
             (_vertex_beta_messages.Messages, False),
             (_vertex_beta_messages.AsyncMessages, True),
         )
-    except (ImportError, AttributeError):
-        _log.debug("anthropic platform beta resources not found; patching first-party only")
+    except (ImportError, AttributeError) as _beta_layout_error:
+        _log.warning(
+            "anthropic %s has no Bedrock / Vertex beta resources where the sensor "
+            "expects them (needs anthropic>=%s): beta.messages calls on those "
+            "clients are not metered (%s)",
+            getattr(_anthropic_module, "__version__", "?"),
+            _MIN_SDK_VERSION,
+            _beta_layout_error,
+        )
 
 
 # The header the SDK's with_raw_response / with_streaming_response views
@@ -217,18 +245,43 @@ PLATFORM_ANTHROPIC = "anthropic"
 # deployment topology stays visible instead of being mislabelled as
 # Anthropic's own API.
 _PLATFORM_HOSTS: tuple[tuple[str, str, str], ...] = (
-    ("", "anthropic.com", PLATFORM_ANTHROPIC),
+    # Every suffix starts with a separator so a look-alike such as
+    # evilanthropic.com or anthropic.com.evil.example stays bare, and
+    # Vertex matches only the Vertex AI API hosts (aiplatform.<...>
+    # .googleapis.com and the regional <region>-aiplatform.googleapis.com),
+    # not every Google API host.
+    ("", ".anthropic.com", PLATFORM_ANTHROPIC),
     ("bedrock-runtime.", ".amazonaws.com", "bedrock"),
     ("bedrock-mantle.", ".api.aws", "bedrock-mantle"),
     ("aws-external-anthropic.", ".api.aws", "aws"),
-    ("", ".googleapis.com", "vertex"),
+    ("aiplatform.", ".googleapis.com", "vertex"),
+    ("", "-aiplatform.googleapis.com", "vertex"),
     ("", ".services.ai.azure.com", "foundry"),
 )
 
 
+# A platform value is one of the names above or a hostname. Hostnames are
+# bounded by the DNS limit on a fully qualified name, and only letters,
+# digits, dots and hyphens are accepted once lowercased; anything longer
+# or containing other characters is reported as PLATFORM_INVALID_HOST,
+# so a malformed or hostile base_url cannot put arbitrary bytes into
+# every post_call of a session.
+_MAX_PLATFORM_HOST_LENGTH = 253
+_PLATFORM_HOST_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789.-")
+PLATFORM_INVALID_HOST = "invalid-host"
+
+
 def platform_for_host(host: str) -> str:
-    """The platform name for an API host (see ``_PLATFORM_HOSTS``)."""
+    """The platform name for an API host: a known platform (see
+    ``_PLATFORM_HOSTS``), else the host itself when it is a well-formed
+    hostname, else :data:`PLATFORM_INVALID_HOST`."""
     lowered = host.lower()
+    if (
+        not lowered
+        or len(lowered) > _MAX_PLATFORM_HOST_LENGTH
+        or not set(lowered) <= _PLATFORM_HOST_CHARS
+    ):
+        return PLATFORM_INVALID_HOST
     for prefix, suffix, platform in _PLATFORM_HOSTS:
         if lowered.startswith(prefix) and lowered.endswith(suffix):
             return platform
@@ -236,13 +289,12 @@ def platform_for_host(host: str) -> str:
 
 
 def platform_of(client: Any) -> str:
-    """The platform a client talks to: the SDK's own ``_otel_platform``
-    attribute when the client class defines one, else the platform of
-    ``client.base_url.host``, else :data:`PLATFORM_ANTHROPIC`."""
+    """The platform a client talks to: the platform of
+    ``client.base_url.host`` (see :func:`platform_for_host`), else
+    :data:`PLATFORM_ANTHROPIC` when the client exposes no usable host.
+    The host is the only source, so a first-party client pointed at a
+    gateway reports the gateway rather than a label its class carries."""
     try:
-        otel = getattr(client, "_otel_platform", None)
-        if isinstance(otel, str) and otel:
-            return otel
         host = getattr(getattr(client, "base_url", None), "host", None)
         if isinstance(host, str) and host:
             return platform_for_host(host)
@@ -304,10 +356,10 @@ class _ParsedRawResponse:
     def parse(self) -> Any:
         return self._parsed
 
-    def model_dump(self) -> dict[str, Any]:
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
         dump = getattr(self._parsed, "model_dump", None)
         if callable(dump):
-            result = dump()
+            result = dump(**kwargs)
             return result if isinstance(result, dict) else {}
         return {}
 
@@ -318,9 +370,21 @@ class _ParsedRawResponse:
 
 
 class _DeferredCall:
-    """One call made through the streaming view: the pre-call
-    check has run and the request has been sent, the post_call is owed
-    until the caller parses the body or closes the response."""
+    """One call made through the streaming view: the pre-call check has
+    run and the request has been sent, the post_call is owed until the
+    caller parses the body or closes the response.
+
+    A call whose response is abandoned without either is still reported:
+    the response's finalizer queues the settle on the session (never
+    settling inline, since a finalizer can run inside any of the
+    sensor's critical sections) and the next intercepted call, or the
+    session's end, runs it; a call whose response is still referenced
+    when the session ends is settled then. Both are the stream guards'
+    mechanisms, so the call registers itself with the session the way a
+    guard does (``_session``, ``_entered``, ``_finalized``,
+    ``_settle_now``)."""
+
+    _entered = True
 
     def __init__(
         self,
@@ -338,6 +402,34 @@ class _DeferredCall:
         self._estimated_via = estimated_via
         self._t0 = t0
         self._settled = False
+        self._headers: Any = None
+
+    @property
+    def _finalized(self) -> bool:
+        return self._settled
+
+    def register(self, headers: Any) -> None:
+        """Keep the response headers for a settle without a body and join
+        the session's open guards so the session's end settles the call."""
+        self._headers = headers
+        guards = getattr(self._session, "open_stream_guards", None)
+        lock = getattr(self._session, "open_stream_guards_lock", None)
+        if isinstance(guards, weakref.WeakSet) and lock is not None:
+            with lock:
+                guards.add(self)
+
+    def _settle_now(self) -> None:
+        self.settle(None, self._headers)
+
+    def abandon(self) -> None:
+        """Queue the settle for the next intercept or the session's end;
+        called from the response proxy's finalizer, so nothing is
+        settled here."""
+        if self._settled:
+            return
+        queue = getattr(self._session, "queued_stream_settles", None)
+        if isinstance(queue, collections.deque):
+            queue.append(lambda: self.settle(None, self._headers))
 
     def settle(self, parsed: Any, headers: Any) -> None:
         """Emit the post_call once, with whatever the caller parsed."""
@@ -419,6 +511,7 @@ class _DeferredResponse:
     def __init__(self, response: Any, call: _DeferredCall) -> None:
         self._response = response
         self._call = call
+        call.register(response.headers)
 
     def parse(self, *args: Any, **kwargs: Any) -> Any:
         parsed = self._response.parse(*args, **kwargs)
@@ -434,6 +527,14 @@ class _DeferredResponse:
                 parsed = self._response.parse()
         self._call.settle(parsed, self._response.headers)
         self._response.close()
+
+    def __del__(self) -> None:
+        # Abandoned without parse() or close(): queue the settle (see
+        # _DeferredCall.abandon); the SDK response goes with this proxy.
+        # Everything is suppressed: a finalizer can run at interpreter
+        # shutdown or inside another thread's collection.
+        with contextlib.suppress(BaseException):
+            self._call.abandon()
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
@@ -459,6 +560,7 @@ class _DeferredAsyncResponse:
     def __init__(self, response: Any, call: _DeferredCall) -> None:
         self._response = response
         self._call = call
+        call.register(response.headers)
 
     async def parse(self, *args: Any, **kwargs: Any) -> Any:
         parsed = await self._response.parse(*args, **kwargs)
@@ -474,6 +576,11 @@ class _DeferredAsyncResponse:
                 parsed = await self._response.parse()
         self._call.settle(parsed, self._response.headers)
         await self._response.close()
+
+    def __del__(self) -> None:
+        # See _DeferredResponse.__del__.
+        with contextlib.suppress(BaseException):
+            self._call.abandon()
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
@@ -502,18 +609,28 @@ class SensorMessages:
         provider: AnthropicProvider,
         *,
         is_async: bool = False,
+        originals: dict[str, Callable[..., Any]] | None = None,
     ) -> None:
         self._real = real_messages
         self._session = session
         self._provider = provider
         self._is_async = is_async
+        # The original methods of the patched class whose wrapper built
+        # this proxy, so the call reaches the SDK's own method directly
+        # even when the resource's class overrides it (an override that
+        # calls super() re-enters the wrapper; resolving through the
+        # instance again would recurse).
+        self._originals = originals
 
     def _method(self, name: str) -> Any:
         """The resource's own ``name`` method, bypassing the resource-level
-        patch when it is installed. The class that defines the method is
-        found along the MRO (Foundry hands out subclasses of the patched
-        classes); when that class is patched its stored original is
-        bound, otherwise the method is read as usual."""
+        patch. The wrapper that built this proxy hands over the originals
+        of its class; a proxy built by ``wrap()`` finds the class that
+        defines the method along the MRO (Foundry hands out subclasses of
+        the patched classes) and binds its stored original when that
+        class is patched, else reads the method as usual."""
+        if self._originals is not None and name in self._originals:
+            return types.MethodType(self._originals[name], self._real)
         for klass in type(self._real).__mro__:
             if name not in klass.__dict__:
                 continue
@@ -630,13 +747,13 @@ class SensorMessages:
     def with_raw_response(self) -> Any:
         """The SDK's raw view built over this proxy, so a wrapped
         client's ``messages.with_raw_response.create`` is metered."""
-        return type(getattr(self._real, "with_raw_response"))(self)  # noqa: B009
+        return type(self._real.with_raw_response)(self)
 
     @property
     def with_streaming_response(self) -> Any:
         """The SDK's streaming view built over this proxy; its
         ``create`` is metered when the caller parses the response."""
-        return type(getattr(self._real, "with_streaming_response"))(self)  # noqa: B009
+        return type(self._real.with_streaming_response)(self)
 
     def __getattr__(self, name: str) -> Any:
         # Pass through: batches, count_tokens, etc.
@@ -799,20 +916,42 @@ def _current_session() -> Session | None:
     return flightdeck_sensor._session
 
 
-def _intercepting_method(name: str, original: Callable[..., Any], *, is_async: bool) -> Any:
+def _installed(cls: type, name: str, wrapper: Any) -> bool:
+    """Whether ``wrapper`` is still installed as ``name`` on the resource's
+    class or one of its bases. A view built while patched keeps a bound
+    reference to the wrapper, which must step aside once ``unpatch`` has
+    restored the original; a subclass that overrides the method and
+    reaches the wrapper through ``super()`` still finds it on the base."""
+    return any(klass.__dict__.get(name) is wrapper for klass in cls.__mro__)
+
+
+def _intercepting_method(
+    name: str, originals: dict[str, Callable[..., Any]], *, is_async: bool
+) -> Any:
     """The replacement for a resource method: with an active session the
-    call goes through a :class:`SensorMessages` built over the resource
-    (which calls ``original``); with no session it is ``original``,
-    untouched, so a client built before ``init()`` is metered as soon as
-    a session exists and never cached in an unmetered state."""
+    call goes through a :class:`SensorMessages` built over the resource,
+    which calls the class's original (handed over in ``originals``, so a
+    subclass override that reaches here through ``super()`` is not
+    re-entered); with no session, or once the class has been unpatched,
+    it is the original, untouched, so a client built before ``init()``
+    is metered as soon as a session exists, nothing is cached in an
+    unmetered state, and a view that captured the wrapper stops metering
+    with ``unpatch``."""
+    original = originals[name]
 
     @functools.wraps(original)
     def method(self: Any, **kwargs: Any) -> Any:
         session = _current_session()
-        if session is None:
+        if session is None or not _installed(type(self), name, method):
             return original(self, **kwargs)
         client = getattr(self, "_client", None)
-        proxy = SensorMessages(self, session, _provider_for(client, session), is_async=is_async)
+        proxy = SensorMessages(
+            self,
+            session,
+            _provider_for(client, session),
+            is_async=is_async,
+            originals=originals,
+        )
         return getattr(proxy, name)(**kwargs)
 
     return method
@@ -857,7 +996,11 @@ def patch_anthropic_classes(quiet: bool = False) -> None:
     No client class is touched: every client hands out instances of
     these four classes (or subclasses of them), however it builds them.
     Clients and resources that already exist are covered from the next
-    call on, since the methods live on the class.
+    call on, since the methods live on the class. The one exception is
+    a raw or streaming view (``messages.with_raw_response`` /
+    ``with_streaming_response``) first touched before ``patch()``: the
+    SDK binds the resource method when it builds the view, so such a
+    view keeps the unpatched method and is not metered.
 
     If ``anthropic`` is not installed this is a silent no-op.
     """
@@ -885,8 +1028,8 @@ def _patch_one_resource(cls: Any, *, is_async: bool, quiet: bool) -> None:
         originals[name] = original
 
     setattr(cls, _PATCHED_SENTINEL, originals)
-    for name, original in originals.items():
-        setattr(cls, name, _intercepting_method(name, original, is_async=is_async))
+    for name in originals:
+        setattr(cls, name, _intercepting_method(name, originals, is_async=is_async))
 
     if not quiet:
         _log.info("Patched %s.%s", cls.__name__, " / ".join(originals))
@@ -897,9 +1040,11 @@ def unpatch_anthropic_classes() -> None:
 
     Restores the original methods on each resource class and removes
     the ``_flightdeck_patched`` sentinel. Because the patch lives on
-    the class, every existing resource reverts at once; a raw-response
-    view built while patched keeps the intercepting method it captured,
-    which passes the call straight through once no session is active.
+    the class, every existing resource reverts at once, and a view
+    built while patched (``client.messages.with_raw_response``), which
+    keeps a bound reference to the intercepting method, passes its
+    calls straight through from then on: that method steps aside
+    whenever the class no longer resolves to it.
     """
     if not _ANTHROPIC_AVAILABLE:
         return

@@ -36,8 +36,10 @@ openai = ["openai>=1.0", "tiktoken>=0.5"]
 # litellm is a framework-level router that aggregates multiple
 # underlying providers. Installing the extra pulls in litellm; the
 # sensor's SensorLitellm wrapper then intercepts ``litellm.completion``
-# / ``litellm.acompletion`` via module-level patching.
-litellm = ["litellm>=1.0"]
+# / ``litellm.acompletion`` via module-level patching. The 1.83.0 floor
+# keeps installs off 1.82.7 / 1.82.8, which were published with a
+# compromised build on 2026-03-24 and later withdrawn.
+litellm = ["litellm>=1.83.0"]
 # Phase 5: Model Context Protocol (MCP) observability. The sensor's
 # MCP interceptor patches ``mcp.client.session.ClientSession`` so any
 # framework that uses the official Python ``mcp`` SDK (LangChain via
@@ -74,8 +76,9 @@ dev = [
     # SensorLitellm interceptor + LitellmProvider extractor. Unit tests
     # do not make real API calls -- they mock ``litellm.completion``'s
     # return value and assert the sensor emits the right pre/post-call
-    # events around it.
-    "litellm>=1.0",
+    # events around it. Same 1.83.0 floor as the extra (compromised
+    # 1.82.7 / 1.82.8 builds).
+    "litellm>=1.83.0",
     # Used by tests/integration/test_framework_patching.py to verify
     # that flightdeck_sensor.patch() transparently intercepts LLM calls
     # made through agent frameworks without any explicit wrap() call.

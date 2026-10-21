@@ -257,8 +257,13 @@ class SensorChat:
         self._is_async = is_async
 
     @property
-    def completions(self) -> SensorCompletions:
-        """Return a :class:`SensorCompletions` proxy."""
+    def completions(self) -> Any:
+        """Return a :class:`SensorCompletions` proxy -- or the SDK's own
+        ``completions`` resource while an outer interceptor (litellm) is
+        making the call, since that interceptor already meters it (see
+        ``base.outer_intercept``)."""
+        if base.outer_intercept_active():
+            return self._real.completions
         return SensorCompletions(
             self._real.completions,
             self._session,

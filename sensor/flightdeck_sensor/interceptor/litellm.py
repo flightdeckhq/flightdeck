@@ -1,66 +1,92 @@
-"""litellm proxy: intercepts ``litellm.completion()`` and ``litellm.acompletion()``.
+"""litellm proxy: intercepts ``litellm.completion()`` / ``acompletion()``,
+streaming included, and ``litellm.embedding()`` / ``aembedding()``.
 
-Why this module exists. litellm routes calls to many underlying providers via
-two module-level entry points. Its Anthropic route uses raw
+Why this module exists. litellm routes calls to many underlying providers
+via module-level entry points. Its Anthropic route uses raw
 ``httpx.Client.post()`` instead of constructing ``anthropic.Anthropic``,
 so the sensor's SDK-class descriptors (see
 ``interceptor/anthropic.py``) never get a chance to see the call.
-This module closes the gap by patching the two litellm functions
+This module closes the gap by patching the litellm functions
 directly.
 
 Patching shape diverges from the Anthropic/OpenAI interceptors
-intentionally: litellm's public surface is two module-level functions,
+intentionally: litellm's public surface is module-level functions,
 not a class with cached-property resources. Instead of installing
 descriptors, :func:`patch_litellm_functions` swaps the module
 attributes in place and stashes the originals on hidden sentinel
 attributes for later :func:`unpatch_litellm_functions` restoration.
 The pre-call / post-call plumbing still flows through
-``interceptor/base.call`` / ``call_async`` so every interceptor emits
-the same event schema.
+``interceptor/base.call`` / ``call_async`` / ``call_stream`` /
+``call_stream_async`` so every interceptor emits the same event schema.
 
 Class-level patching is the recommended integration path (call
 :func:`flightdeck_sensor.patch` and every ``litellm.completion`` call
 anywhere in the process is intercepted). :class:`SensorLitellm`
 exists for programmatic per-callsite wrapping -- a narrow use case
 where a user wants to observe one specific call without mutating the
-litellm module globals.
+litellm module globals. Both paths share the helpers in this module,
+so they cannot drift.
 
-**Coverage caveat.** The patch covers direct callers of
-``litellm.completion`` / ``litellm.acompletion`` -- the vast majority
-of litellm integrations. Frameworks that route through lower-level
-litellm entry points (e.g. ``litellm.llms.custom_httpx.http_handler``
-directly, or via an internal ``llm_request()`` helper) still bypass
-this interceptor. An httpx-level interceptor would be the broader
-alternative; it is out of scope here and will be filed separately if
-framework reports surface it.
+**A call served through the OpenAI SDK is reported once.** litellm's
+OpenAI route constructs ``openai.OpenAI`` and calls
+``chat.completions.create`` on it, which the sensor's OpenAI descriptor
+also intercepts. Every underlying litellm call this module makes runs
+under ``base.outer_intercept()`` (see :func:`_as_outer_call`), and the
+SDK interceptors hand a call made under that mark to the SDK untouched,
+so the litellm wrapper is the single reporter: one ``pre_call``, one
+policy check and one ``post_call`` (or ``llm_error``) per litellm call.
 
-**Streaming is not yet supported.** ``stream=True`` calls raise
-``NotImplementedError``. TODO: intercept litellm streaming (listed
-under "Known limitations" in the root README.md).
+**Streaming.** ``stream=True`` returns the sensor's stream guard
+(:class:`base.GuardedStream` from ``completion``,
+:class:`base.GuardedAsyncStream` from ``acompletion``) around litellm's
+``CustomStreamWrapper``. The guard iterates like the wrapper (``for
+chunk in ...`` / ``async for chunk in ...``) and proxies its attributes.
+The sensor asks litellm for ``stream_options={"include_usage": True}``,
+which makes litellm append one chunk carrying the provider's ``usage``
+after the ``finish_reason`` chunk; the guard meters that chunk and hides
+it from a caller who did not ask for usage, so their loop sees exactly
+the chunks it would see without the sensor. litellm's wrapper is not a
+context manager and has no ``close()``, so the guard is used as a plain
+iterator; the ``post_call`` is emitted when the stream is read to its
+end, or when the guard is collected after a loop left early.
+
+**Not patched.** ``litellm.text_completion`` / ``atext_completion``
+build a chat request and call ``completion`` through the name bound in
+``litellm.main``, which the package-attribute swap does not reach;
+patching ``litellm.main.completion`` as well would make every
+``acompletion`` (which calls ``completion`` the same way) enter the
+sensor twice per call. Calls through ``text_completion`` are therefore
+unobserved. ``litellm.responses`` / ``aresponses`` go through litellm's
+own httpx handler (so no SDK interceptor sees them either) and return
+the Responses API shape (``usage.input_tokens`` / ``output_tokens``,
+``input=`` instead of ``messages=``), which needs its own provider
+adapter before it can be metered; they are unobserved until then.
+
+**Coverage caveat.** The patch covers direct callers of the patched
+entry points -- the vast majority of litellm integrations. Frameworks
+that route through lower-level litellm entry points (e.g.
+``litellm.llms.custom_httpx.http_handler`` directly, or via an internal
+``llm_request()`` helper) still bypass this interceptor. An httpx-level
+interceptor would be the broader alternative; it is out of scope here
+and will be filed separately if framework reports surface it.
 """
 
 from __future__ import annotations
 
+import copy
 import logging
 from typing import TYPE_CHECKING, Any
 
+from flightdeck_sensor.core.types import EventType
 from flightdeck_sensor.interceptor import base
 from flightdeck_sensor.providers.litellm import LitellmProvider
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
+
     from flightdeck_sensor.core.session import Session
 
 _log = logging.getLogger("flightdeck_sensor.interceptor.litellm")
-
-
-# Error message shared between the class-level patch and the per-instance
-# SensorLitellm wrapper so the user-facing language matches regardless
-# of how the call was routed into the sensor.
-_STREAMING_NOT_SUPPORTED_MSG = (
-    "flightdeck-sensor does not yet support litellm streaming calls. "
-    "For now, use stream=False. Streaming support is tracked on the "
-    "project README Roadmap."
-)
 
 
 # ----------------------------------------------------------------------
@@ -72,7 +98,7 @@ try:
 
     _OrigCompletion: Any = _litellm_module.completion
     _OrigAcompletion: Any = _litellm_module.acompletion
-    # Phase 4: embedding / aembedding are the two entry points for
+    # embedding / aembedding are the two entry points for
     # embedding-model calls. We capture them for the same reasons we
     # capture completion -- tokens charged are real, and embeddings
     # dominate RAG workflows. ``getattr`` with a fallback keeps the
@@ -103,6 +129,166 @@ def _current_session() -> Session | None:
 
 
 # ----------------------------------------------------------------------
+# Shared intercept paths
+# ----------------------------------------------------------------------
+#
+# The class-level patch and the per-callsite SensorLitellm wrapper both
+# route through these helpers: same re-entrancy mark, same stream
+# handling, same event shape.
+
+
+def _as_outer_call(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """``fn`` run under :func:`base.outer_intercept`, so an SDK
+    interceptor litellm reaches while serving the call (its OpenAI route
+    calls ``openai.OpenAI().chat.completions.create``) passes the call
+    through instead of reporting it a second time."""
+
+    def _call(**kwargs: Any) -> Any:
+        with base.outer_intercept():
+            return fn(**kwargs)
+
+    return _call
+
+
+def _as_outer_async_call(
+    fn: Callable[..., Coroutine[Any, Any, Any]],
+) -> Callable[..., Coroutine[Any, Any, Any]]:
+    """Async form of :func:`_as_outer_call`. The mark is set inside the
+    coroutine, so it lives in the task that awaits litellm -- where
+    litellm's SDK call runs, or its executor hop for sync-only
+    providers, which copies the context."""
+
+    async def _call(**kwargs: Any) -> Any:
+        with base.outer_intercept():
+            return await fn(**kwargs)
+
+    return _call
+
+
+def _inject_stream_options(kwargs: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    """Ask litellm for ``stream_options={"include_usage": True}`` on a
+    copy of ``kwargs`` and say whether the caller had asked for usage
+    themselves (then the usage chunk is theirs; otherwise the guard
+    absorbs it). litellm forwards the option to providers that support
+    it and computes the usage itself for the rest, so the trailing chunk
+    is there on every route. Kept local rather than imported from the
+    OpenAI interceptor: the option has the same meaning on both, but the
+    two modules must stay independently importable and editable."""
+    result = copy.copy(kwargs)
+    existing = result.get("stream_options")
+    caller_asked = isinstance(existing, dict) and bool(existing.get("include_usage"))
+    if isinstance(existing, dict):
+        result["stream_options"] = {**existing, "include_usage": True}
+    else:
+        result["stream_options"] = {"include_usage": True}
+    return result, caller_asked
+
+
+# Delta fields that make a streamed chunk visible content for the caller.
+# A chunk whose choices carry none of these and no finish reason, but
+# carries ``usage``, is litellm's trailing usage chunk.
+_DELTA_CONTENT_FIELDS = ("content", "tool_calls", "function_call", "reasoning_content")
+
+
+def _is_usage_only_chunk(chunk: Any) -> bool:
+    """litellm's trailing usage chunk. Unlike OpenAI, litellm does not
+    send it with empty ``choices``: it carries one choice with an empty
+    delta and no finish reason, so the test is on the delta's fields."""
+    if getattr(chunk, "usage", None) is None:
+        return False
+    for choice in getattr(chunk, "choices", None) or []:
+        if getattr(choice, "finish_reason", None):
+            return False
+        delta = getattr(choice, "delta", None)
+        if delta is not None and any(
+            getattr(delta, field, None) for field in _DELTA_CONTENT_FIELDS
+        ):
+            return False
+    return True
+
+
+def _intercept_completion(
+    orig: Any,
+    kwargs: dict[str, Any],
+    session: Session,
+    provider: LitellmProvider,
+) -> Any:
+    """``litellm.completion`` through the sensor: a stream guard for
+    ``stream=True``, the plain call intercept otherwise."""
+    if kwargs.get("stream"):
+        call_kwargs, caller_asked = _inject_stream_options(kwargs)
+        hide_chunk = None if caller_asked else _is_usage_only_chunk
+        # Opened eagerly: litellm sends the request inside completion(),
+        # so provider errors surface at the call, as without the sensor.
+        return base.call_stream(
+            _as_outer_call(orig),
+            call_kwargs,
+            session,
+            provider,
+            hide_chunk=hide_chunk,
+        ).open()
+    return base.call(_as_outer_call(orig), kwargs, session, provider)
+
+
+async def _intercept_acompletion(
+    orig: Any,
+    kwargs: dict[str, Any],
+    session: Session,
+    provider: LitellmProvider,
+) -> Any:
+    """``litellm.acompletion`` through the sensor; ``stream=True``
+    resolves to the async stream guard, matching ``await
+    litellm.acompletion(..., stream=True)`` on the unpatched module."""
+    if kwargs.get("stream"):
+        call_kwargs, caller_asked = _inject_stream_options(kwargs)
+        hide_chunk = None if caller_asked else _is_usage_only_chunk
+        guard = base.call_stream_async(
+            _as_outer_async_call(orig),
+            call_kwargs,
+            session,
+            provider,
+            hide_chunk=hide_chunk,
+        )
+        return await guard.open()
+    return await base.call_async(_as_outer_async_call(orig), kwargs, session, provider)
+
+
+def _intercept_embedding(
+    orig: Any,
+    kwargs: dict[str, Any],
+    session: Session,
+    provider: LitellmProvider,
+) -> Any:
+    """``litellm.embedding`` through the sensor as an ``embeddings`` event.
+    Run under the outer mark too, so the SDK route stays single-counted
+    should the OpenAI interceptor ever cover the raw-response embeddings
+    path litellm uses."""
+    return base.call(
+        _as_outer_call(orig),
+        kwargs,
+        session,
+        provider,
+        event_type=EventType.EMBEDDINGS,
+    )
+
+
+async def _intercept_aembedding(
+    orig: Any,
+    kwargs: dict[str, Any],
+    session: Session,
+    provider: LitellmProvider,
+) -> Any:
+    """``litellm.aembedding`` through the sensor (see :func:`_intercept_embedding`)."""
+    return await base.call_async(
+        _as_outer_async_call(orig),
+        kwargs,
+        session,
+        provider,
+        event_type=EventType.EMBEDDINGS,
+    )
+
+
+# ----------------------------------------------------------------------
 # Per-callsite wrapper (SensorLitellm)
 # ----------------------------------------------------------------------
 
@@ -121,9 +307,9 @@ class SensorLitellm:
 
     Holds captured references to the unpatched litellm functions and
     a bound :class:`Session` / :class:`LitellmProvider`. Delegates
-    through ``base.call`` / ``call_async`` so every intercept path
-    (class-level patch, per-callsite wrap) emits the same event
-    schema.
+    through the module's shared intercept helpers so every intercept
+    path (class-level patch, per-callsite wrap) emits the same event
+    schema, streaming included.
     """
 
     def __init__(
@@ -141,32 +327,20 @@ class SensorLitellm:
         )
 
     def completion(self, **kwargs: Any) -> Any:
-        """Intercept ``litellm.completion(**kwargs)``.
-
-        Raises ``NotImplementedError`` on ``stream=True`` -- litellm
-        streaming is not yet intercepted.
-        """
-        if kwargs.get("stream"):
-            raise NotImplementedError(_STREAMING_NOT_SUPPORTED_MSG)
-        return base.call(_OrigCompletion, kwargs, self._session, self._provider)
+        """Intercept ``litellm.completion(**kwargs)``; ``stream=True``
+        returns a :class:`base.GuardedStream` over litellm's stream."""
+        return _intercept_completion(_OrigCompletion, kwargs, self._session, self._provider)
 
     async def acompletion(self, **kwargs: Any) -> Any:
-        """Intercept ``litellm.acompletion(**kwargs)``.
-
-        Raises ``NotImplementedError`` on ``stream=True`` -- litellm
-        streaming is not yet intercepted.
-        """
-        if kwargs.get("stream"):
-            raise NotImplementedError(_STREAMING_NOT_SUPPORTED_MSG)
-        return await base.call_async(
+        """Intercept ``litellm.acompletion(**kwargs)``; ``stream=True``
+        resolves to a :class:`base.GuardedAsyncStream`."""
+        return await _intercept_acompletion(
             _OrigAcompletion,
             kwargs,
             self._session,
             self._provider,
         )
 
-    # Phase 4: embeddings parallel to completion. Same delegation pattern;
-    # event_type is EMBEDDINGS so the dashboard can render them distinctly.
     def embedding(self, **kwargs: Any) -> Any:
         """Intercept ``litellm.embedding(**kwargs)``.
 
@@ -174,36 +348,25 @@ class SensorLitellm:
         promotion lets the dashboard and analytics distinguish them from
         chat completions.
         """
-        from flightdeck_sensor.core.types import EventType
-
         if _OrigEmbedding is None:
             raise RuntimeError(
                 "litellm.embedding is not available on the installed version; "
                 "upgrade litellm or use a different embedding client."
             )
-        return base.call(
-            _OrigEmbedding,
-            kwargs,
-            self._session,
-            self._provider,
-            event_type=EventType.EMBEDDINGS,
-        )
+        return _intercept_embedding(_OrigEmbedding, kwargs, self._session, self._provider)
 
     async def aembedding(self, **kwargs: Any) -> Any:
         """Intercept ``litellm.aembedding(**kwargs)``."""
-        from flightdeck_sensor.core.types import EventType
-
         if _OrigAembedding is None:
             raise RuntimeError(
                 "litellm.aembedding is not available on the installed version; "
                 "upgrade litellm or use a different embedding client."
             )
-        return await base.call_async(
+        return await _intercept_aembedding(
             _OrigAembedding,
             kwargs,
             self._session,
             self._provider,
-            event_type=EventType.EMBEDDINGS,
         )
 
 
@@ -215,12 +378,17 @@ class SensorLitellm:
 #   _flightdeck_patched            -- boolean marker, idempotency gate
 #   _flightdeck_orig_completion    -- captured sync function
 #   _flightdeck_orig_acompletion   -- captured async function
+#   _flightdeck_orig_embedding     -- captured sync embedding function
+#   _flightdeck_orig_aembedding    -- captured async embedding function
+
+
+def _provider_for(session: Session) -> LitellmProvider:
+    return LitellmProvider(capture_prompts=session.config.capture_prompts)
 
 
 def patch_litellm_functions(quiet: bool = False) -> None:
-    """Swap ``litellm.completion`` / ``litellm.acompletion`` with
-    wrappers that route through :func:`interceptor.base.call` /
-    ``call_async``.
+    """Swap ``litellm.completion`` / ``acompletion`` / ``embedding`` /
+    ``aembedding`` with wrappers that route through the sensor.
 
     Idempotent: a second call is a no-op. If litellm is not installed
     this is a silent no-op.
@@ -229,9 +397,6 @@ def patch_litellm_functions(quiet: bool = False) -> None:
     session is active, the original litellm function runs unwrapped --
     matching the Anthropic/OpenAI interceptors which also early-return
     the raw resource in that state.
-
-    ``stream=True`` raises ``NotImplementedError`` with a clear message
-    saying streaming is not yet supported.
     """
     if not _LITELLM_AVAILABLE:
         if not quiet:
@@ -245,9 +410,9 @@ def patch_litellm_functions(quiet: bool = False) -> None:
 
     orig_completion = _litellm_module.completion
     orig_acompletion = _litellm_module.acompletion
-    # Phase 4: also capture and patch the embedding surface when
-    # available. getattr + None fallback keeps this backwards-compatible
-    # with any litellm version that might lack one of the entry points.
+    # Also capture and patch the embedding surface when available.
+    # getattr + None fallback keeps this backwards-compatible with any
+    # litellm version that might lack one of the entry points.
     orig_embedding = getattr(_litellm_module, "embedding", None)
     orig_aembedding = getattr(_litellm_module, "aembedding", None)
 
@@ -262,57 +427,27 @@ def patch_litellm_functions(quiet: bool = False) -> None:
         session = _current_session()
         if session is None:
             return orig_completion(**kwargs)
-        if kwargs.get("stream"):
-            raise NotImplementedError(_STREAMING_NOT_SUPPORTED_MSG)
-        provider = LitellmProvider(
-            capture_prompts=session.config.capture_prompts,
-        )
-        return base.call(orig_completion, kwargs, session, provider)
+        return _intercept_completion(orig_completion, kwargs, session, _provider_for(session))
 
     async def _patched_acompletion(**kwargs: Any) -> Any:
         session = _current_session()
         if session is None:
             return await orig_acompletion(**kwargs)
-        if kwargs.get("stream"):
-            raise NotImplementedError(_STREAMING_NOT_SUPPORTED_MSG)
-        provider = LitellmProvider(
-            capture_prompts=session.config.capture_prompts,
+        return await _intercept_acompletion(
+            orig_acompletion, kwargs, session, _provider_for(session)
         )
-        return await base.call_async(orig_acompletion, kwargs, session, provider)
 
     def _patched_embedding(**kwargs: Any) -> Any:
         session = _current_session()
         if session is None or orig_embedding is None:
             return orig_embedding(**kwargs) if orig_embedding else None
-        from flightdeck_sensor.core.types import EventType
-
-        provider = LitellmProvider(
-            capture_prompts=session.config.capture_prompts,
-        )
-        return base.call(
-            orig_embedding,
-            kwargs,
-            session,
-            provider,
-            event_type=EventType.EMBEDDINGS,
-        )
+        return _intercept_embedding(orig_embedding, kwargs, session, _provider_for(session))
 
     async def _patched_aembedding(**kwargs: Any) -> Any:
         session = _current_session()
         if session is None or orig_aembedding is None:
             return await orig_aembedding(**kwargs) if orig_aembedding else None
-        from flightdeck_sensor.core.types import EventType
-
-        provider = LitellmProvider(
-            capture_prompts=session.config.capture_prompts,
-        )
-        return await base.call_async(
-            orig_aembedding,
-            kwargs,
-            session,
-            provider,
-            event_type=EventType.EMBEDDINGS,
-        )
+        return await _intercept_aembedding(orig_aembedding, kwargs, session, _provider_for(session))
 
     _litellm_module.completion = _patched_completion
     _litellm_module.acompletion = _patched_acompletion
@@ -338,8 +473,8 @@ def patch_litellm_functions(quiet: bool = False) -> None:
 
 
 def unpatch_litellm_functions(quiet: bool = False) -> None:
-    """Restore the original ``litellm.completion`` and
-    ``litellm.acompletion`` module attributes. Idempotent. Silent
+    """Restore the original ``litellm.completion`` / ``acompletion`` /
+    ``embedding`` / ``aembedding`` module attributes. Idempotent. Silent
     no-op when litellm is not installed or was never patched.
     """
     if not _LITELLM_AVAILABLE:

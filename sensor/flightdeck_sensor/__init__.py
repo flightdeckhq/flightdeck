@@ -625,9 +625,9 @@ def patch(
             members are ``ANTHROPIC`` (anthropic SDK class patch),
             ``OPENAI`` (openai SDK class patch), ``LITELLM``
             (module-level ``litellm.completion`` / ``litellm.acompletion``
-            / ``litellm.embedding`` / ``litellm.aembedding`` wrap;
-            ``stream=True`` raises ``NotImplementedError`` because
-            litellm streaming is not yet intercepted), ``MCP``
+            / ``litellm.embedding`` / ``litellm.aembedding`` wrap,
+            ``stream=True`` included; a litellm call served through the
+            OpenAI SDK is reported once, by the litellm wrapper), ``MCP``
             (patches ``mcp.client.session.ClientSession`` so every framework
             that uses the official Python ``mcp`` SDK emits
             ``mcp_tool_call`` / ``mcp_*_list`` / ``mcp_resource_read``

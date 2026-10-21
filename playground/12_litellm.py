@@ -1,4 +1,5 @@
-"""litellm -- multi-provider chat (Anthropic + OpenAI routes), embeddings,
+"""litellm -- multi-provider chat (Anthropic + OpenAI routes), sync and
+async streaming, single-count through the OpenAI SDK, embeddings,
 embeddings capture round-trip, and invalid-model error classification.
 
 litellm.completion routes to many underlying providers through a single
@@ -7,13 +8,16 @@ Anthropic SDK -- the gap the litellm interceptor exists to close. After
 ``flightdeck_sensor.patch()`` the module-level ``litellm.completion``
 is swapped with a wrapper that routes every call through the sensor's
 pre/post-call plumbing (see ``interceptor/litellm.py``). The OpenAI
-route would also be intercepted via the OpenAI SDK patch, but with
-the litellm interceptor installed it lands through the litellm
-wrapper instead. Both routes covered here so an SDK-class-rename in
-either provider can't escape the canary.
+route is served through the OpenAI SDK, whose ``chat.completions`` the
+sensor also patches: the litellm wrapper marks the call as in flight
+and the SDK descriptor passes it through, so each litellm call lands
+exactly once. Both routes covered here so an SDK-class-rename in either
+provider can't escape the canary, and the post_call count is asserted
+so a double count can't either.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import time
@@ -34,7 +38,14 @@ from _helpers import (
     fetch_events_for_session,
     init_sensor,
     print_result,
+    wait_for_streamed_post_calls,
 )
+
+# Chat calls this script makes through litellm.completion / acompletion
+# (two non-streaming, two streaming). Exactly this many post_calls must
+# land: one more would be the OpenAI SDK descriptor reporting a
+# litellm call a second time.
+CHAT_CALLS = 4
 
 
 def main() -> None:
@@ -81,6 +92,98 @@ def main() -> None:
         timeout=8,
         model_contains="gpt-4o-mini",
     )
+
+    # Sync streaming on the Anthropic route (litellm's raw-httpx path).
+    # The caller does not ask for usage, so the loop sees content chunks
+    # only; the sensor meters the usage chunk litellm appends.
+    t0 = time.monotonic()
+    sync_chunks = 0
+    sync_text = ""
+    for chunk in litellm.completion(
+        model="claude-haiku-4-5-20251001",
+        messages=[{"role": "user", "content": "Count from one to five."}],
+        max_tokens=30,
+        stream=True,
+    ):
+        sync_chunks += 1
+        sync_text += (chunk.choices[0].delta.content or "") if chunk.choices else ""
+    print_result(
+        "litellm.completion(stream=True) (Anthropic route)",
+        sync_chunks > 0 and bool(sync_text),
+        int((time.monotonic() - t0) * 1000),
+        f"{sync_chunks} chunks",
+    )
+    if not sync_chunks or not sync_text:
+        raise AssertionError("sync litellm stream delivered no content")
+
+    # Async streaming on the OpenAI route, served through the OpenAI SDK.
+    async def _astream() -> tuple[int, str]:
+        stream = await litellm.acompletion(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": "Count from one to five."}],
+            max_tokens=30,
+            stream=True,
+        )
+        n = 0
+        text = ""
+        async for chunk in stream:
+            n += 1
+            text += (chunk.choices[0].delta.content or "") if chunk.choices else ""
+        return n, text
+
+    t0 = time.monotonic()
+    async_chunks, async_text = asyncio.run(_astream())
+    print_result(
+        "litellm.acompletion(stream=True) (OpenAI route)",
+        async_chunks > 0 and bool(async_text),
+        int((time.monotonic() - t0) * 1000),
+        f"{async_chunks} chunks",
+    )
+    if not async_chunks or not async_text:
+        raise AssertionError("async litellm stream delivered no content")
+
+    events, streamed = wait_for_streamed_post_calls(session_id, expected=2)
+    if len(streamed) < 2:
+        raise AssertionError(
+            f"expected 2 streamed post_calls, saw {len(streamed)}; events={events!r}"
+        )
+    for e in streamed:
+        streaming = e["payload"]["streaming"]
+        if streaming.get("final_outcome") != "completed":
+            raise AssertionError(f"streamed post_call not completed: {e!r}")
+        if not ((e.get("tokens_input") or 0) > 0 and (e.get("tokens_output") or 0) > 0):
+            raise AssertionError(f"streamed post_call without in-stream usage: {e!r}")
+    print_result(
+        "streamed post_calls carry in-stream usage", True, 0,
+        ", ".join(
+            f"{e.get('model')}: {e.get('tokens_input')}in/{e.get('tokens_output')}out "
+            f"ttft={e['payload']['streaming'].get('ttft_ms')}ms"
+            for e in streamed
+        ),
+    )
+
+    # Single count. Two of the four chat calls went through the OpenAI
+    # SDK the sensor also patches; the re-entrancy mark keeps each
+    # litellm call to one post_call.
+    post_calls = [e for e in events if e.get("event_type") == "post_call"]
+    print_result(
+        "litellm calls served by the OpenAI SDK are counted once",
+        len(post_calls) == CHAT_CALLS,
+        0,
+        f"{len(post_calls)} post_calls for {CHAT_CALLS} chat calls",
+    )
+    if len(post_calls) != CHAT_CALLS:
+        raise AssertionError(
+            f"expected {CHAT_CALLS} post_calls, saw {len(post_calls)}: "
+            f"{[(e.get('model'), (e.get('payload') or {}).get('streaming')) for e in post_calls]!r}"
+        )
+    without_usage = [
+        e for e in post_calls
+        if not ((e.get("tokens_input") or 0) > 0 and (e.get("tokens_output") or 0) > 0)
+    ]
+    print_result("every post_call carries provider usage", not without_usage, 0)
+    if without_usage:
+        raise AssertionError(f"post_calls without usage: {without_usage!r}")
 
     # Embeddings via litellm. text-embedding-3-small routes to OpenAI;
     # capture_prompts=True (helper default) means has_content=True and

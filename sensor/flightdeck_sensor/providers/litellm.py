@@ -21,6 +21,7 @@ return zero/empty defaults. See :class:`AnthropicProvider` /
 from __future__ import annotations
 
 import contextlib
+import json as _json
 import logging
 from typing import Any
 
@@ -30,6 +31,27 @@ from flightdeck_sensor.providers.protocol import PromptContent, ToolInvocation
 _log = logging.getLogger("flightdeck_sensor.providers.litellm")
 
 _CHARS_PER_TOKEN_ESTIMATE = 4
+
+
+def _count(value: Any) -> int | None:
+    """A provider-supplied counter, or ``None`` when it is not a real
+    integer (absent, ``None``, a bool, or some object standing in for the
+    usage): the sensor never guesses a cache count."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _cache_breakdown(usage: Any) -> tuple[int, int]:
+    """``(cache_read, cache_creation)`` from a litellm ``Usage``: the
+    ``prompt_tokens_details`` wrapper first, then the Anthropic-named
+    attributes litellm sets on older shapes. Zeros when absent."""
+    details = getattr(usage, "prompt_tokens_details", None)
+    cache_read = _count(getattr(details, "cached_tokens", None))
+    cache_creation = _count(getattr(details, "cache_creation_tokens", None))
+    if cache_read is None:
+        cache_read = _count(getattr(usage, "cache_read_input_tokens", None))
+    if cache_creation is None:
+        cache_creation = _count(getattr(usage, "cache_creation_input_tokens", None))
+    return cache_read or 0, cache_creation or 0
 
 
 class LitellmProvider:
@@ -120,8 +142,16 @@ class LitellmProvider:
 
         ``response.usage.prompt_tokens`` / ``completion_tokens`` match
         the OpenAI chat-completion shape regardless of the underlying
-        provider litellm routed the call to. Returns ``TokenUsage(0, 0)``
-        on any failure -- never raises.
+        provider litellm routed the call to, and ``prompt_tokens``
+        already includes any cached or cache-written tokens (litellm sums
+        Anthropic's three input counters into it). The cache breakdown
+        litellm exposes under ``usage.prompt_tokens_details``
+        (``cached_tokens``, ``cache_creation_tokens``), or as the
+        Anthropic-named ``cache_read_input_tokens`` /
+        ``cache_creation_input_tokens`` attributes on older shapes, is
+        surfaced on the separate cache fields without being added to
+        the input sum again. Returns ``TokenUsage(0, 0)`` on any failure
+        -- never raises.
         """
         try:
             usage = getattr(response, "usage", None)
@@ -129,16 +159,20 @@ class LitellmProvider:
                 return TokenUsage(input_tokens=0, output_tokens=0)
             prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
             completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+            cache_read, cache_creation = _cache_breakdown(usage)
             return TokenUsage(
                 input_tokens=prompt_tokens,
                 output_tokens=completion_tokens,
+                cache_read_tokens=cache_read,
+                cache_creation_tokens=cache_creation,
             )
         except Exception:
             return TokenUsage(input_tokens=0, output_tokens=0)
 
     def usage_from_stream_chunk(self, chunk: Any) -> TokenUsage | None:
-        """Usage on litellm's final streaming chunk (present when the
-        request asked for ``stream_options.include_usage``)."""
+        """Usage on litellm's trailing streaming chunk (present when the
+        request asked for ``stream_options.include_usage``, which the
+        litellm interceptor always does); same fields as a response."""
         try:
             if getattr(chunk, "usage", None) is None:
                 return None
@@ -235,7 +269,18 @@ class LitellmProvider:
             if hasattr(response, "model_dump"):
                 resp_dict = response.model_dump()
             elif hasattr(response, "__dict__"):
-                resp_dict = dict(response.__dict__)
+                # A streamed call settles with litellm's
+                # ``CustomStreamWrapper`` as the response; its ``__dict__``
+                # carries the logging object and the underlying SDK
+                # stream, neither JSON-serialisable. Keep the fields that
+                # serialise so the wire payload stays valid.
+                resp_dict = {}
+                for key, value in dict(response.__dict__).items():
+                    try:
+                        _json.dumps(value)
+                    except (TypeError, ValueError):
+                        continue
+                    resp_dict[key] = value
             else:
                 resp_dict = {"raw": str(response)}
 

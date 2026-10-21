@@ -156,6 +156,10 @@ class SensorMessages:
         the guard, matching ``await client.messages.create(..., stream=True)``.
         """
         real_fn = self._real.create
+        # An outer interceptor (litellm) making this call already meters
+        # it: hand the call to the SDK untouched (see base.outer_intercept).
+        if base.outer_intercept_active():
+            return real_fn(**kwargs)
         if kwargs.get("stream"):
             # Opened eagerly: the unguarded SDK sends the request inside
             # create(), so provider errors must surface here, not at the

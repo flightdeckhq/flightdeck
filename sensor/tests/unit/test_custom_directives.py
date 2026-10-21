@@ -271,8 +271,8 @@ def test_build_directive_result_event_success() -> None:
     """directive_result event with success=True uses worker-schema fields.
 
     Field names must be directive_status / result / error so the worker's
-    BuildEventExtra can persist them into events.payload. See Phase 4.5
-    audit B-D fix in core/session.py:_build_directive_result_event.
+    BuildEventExtra can persist them into events.payload. See
+    core/session.py:_build_directive_result_event.
     """
     session, _ = _make_session()
     payload = session._build_directive_result_event("pause", success=True, result="done")

@@ -1,4 +1,4 @@
-"""Unit tests for the LangGraph sub-agent interceptor (D126).
+"""Unit tests for the LangGraph sub-agent interceptor.
 
 Verifies that wrapping ``StateGraph.add_node`` produces a per-node
 child session emission flow with the same shape as the other three

@@ -3,7 +3,7 @@
  * the run drawer stacked over the agent drawer, with a breadcrumb
  * back to the agent.
  *
- * Phase 4 contract: the run drawer is the existing SessionDrawer;
+ * The run drawer is the existing SessionDrawer;
  * when opened from the agent drawer it renders a "← Back to
  * {agent}" breadcrumb.
  *

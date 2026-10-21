@@ -72,7 +72,7 @@ try:
 
     _OrigCompletion: Any = _litellm_module.completion
     _OrigAcompletion: Any = _litellm_module.acompletion
-    # Phase 4: embedding / aembedding are the two entry points for
+    # Embedding / aembedding are the two entry points for
     # embedding-model calls. We capture them for the same reasons we
     # capture completion -- tokens charged are real, and embeddings
     # dominate RAG workflows. ``getattr`` with a fallback keeps the
@@ -165,7 +165,7 @@ class SensorLitellm:
             self._provider,
         )
 
-    # Phase 4: embeddings parallel to completion. Same delegation pattern;
+    # Embeddings parallel to completion. Same delegation pattern;
     # event_type is EMBEDDINGS so the dashboard can render them distinctly.
     def embedding(self, **kwargs: Any) -> Any:
         """Intercept ``litellm.embedding(**kwargs)``.
@@ -245,7 +245,7 @@ def patch_litellm_functions(quiet: bool = False) -> None:
 
     orig_completion = _litellm_module.completion
     orig_acompletion = _litellm_module.acompletion
-    # Phase 4: also capture and patch the embedding surface when
+    # Also capture and patch the embedding surface when
     # available. getattr + None fallback keeps this backwards-compatible
     # with any litellm version that might lack one of the entry points.
     orig_embedding = getattr(_litellm_module, "embedding", None)

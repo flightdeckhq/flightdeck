@@ -12,7 +12,7 @@ import {
   RelationshipPill,
 } from "@/components/facets/RelationshipPill";
 
-// D126 § 7.fix.M — SwimLane D126 surface tests. The deriveRelationship
+// SwimLane sub-agent surface tests. The deriveRelationship
 // helper is the load-bearing piece; rendering tests on the full
 // SwimLane mount need the d3-scale + fleet store + IntersectionObserver
 // shim, which is why we exercise the pure helper + the leaf
@@ -107,7 +107,7 @@ describe("deriveRelationship — parent mode", () => {
 
   it("counts the same child once even when it has multiple sessions under us", () => {
     // One child agent with two sessions under our parent — a
-    // re-attached or D106-revived child. Should count as 1
+    // re-attached or revived child. Should count as 1
     // distinct child, not 2; the pill shows fan-out, not raw
     // session count.
     const flavors: FlavorSummary[] = [

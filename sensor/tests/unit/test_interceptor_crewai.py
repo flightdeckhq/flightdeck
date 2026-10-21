@@ -1,4 +1,4 @@
-"""Unit tests for the CrewAI sub-agent interceptor (D126).
+"""Unit tests for the CrewAI sub-agent interceptor.
 
 Verifies the patch-then-execute flow against a mocked
 ``crewai.Agent.execute_task`` so the suite never calls a real LLM.
@@ -205,7 +205,7 @@ def test_execute_task_emits_session_start_then_session_end(
     assert start_p["agent_name"] == f"{session.config.agent_name}/Researcher"
     # capture_prompts=True so incoming_message lands on the wire.
     # has_content stays False — sub-agent messages route inline via
-    # events.payload (D126 § 6 v1), not event_content.
+    # events.payload, not event_content.
     assert start_p["has_content"] is False
     assert start_p["incoming_message"]["body"] == "Find something interesting"
 
@@ -221,7 +221,7 @@ def test_execute_task_emits_session_start_then_session_end(
 def test_distinct_roles_produce_distinct_agent_ids(patched_crewai: Any) -> None:
     """A CrewAI Researcher and a CrewAI Writer running on the same
     host land under distinct agent_ids. This is the user-visible
-    consequence of D126's conditional 6th-input identity
+    consequence of the conditional 6th-input identity
     derivation.
     """
     session, client, stub, _CrewAIAgent = patched_crewai

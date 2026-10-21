@@ -1,4 +1,4 @@
-// Plugin-side remembered decisions cache (D139).
+// Plugin-side remembered decisions cache.
 //
 // Per-token JSON file at
 // ~/.claude/flightdeck/remembered_mcp_decisions-<tokenPrefix>.json
@@ -8,7 +8,7 @@
 // approvals in real time without restart. PostToolUse writes the
 // file when an `mcp__<server>__<tool>` call succeeded AND the server
 // was unknown-allowlist on this session AND no remembered decision
-// exists yet — the reactive yes-and-remember path locked in D139.
+// exists yet — the reactive yes-and-remember path.
 //
 // Atomic writes via temp-file + rename so a concurrent read can't
 // observe a half-written file. Reads tolerate missing or corrupted
@@ -31,7 +31,7 @@ import { join } from "node:path";
 
 // File-name token prefix length. Matches the
 // access_tokens.prefix indexing convention on the API side
-// (16 hex chars of SHA-256). See D139.
+// (16 hex chars of SHA-256).
 const TOKEN_PREFIX_HEX_CHARS = 16;
 
 const FLIGHTDECK_HOME_DIRNAME = "flightdeck";
@@ -40,7 +40,7 @@ const FLIGHTDECK_HOME_DIRNAME = "flightdeck";
  * Compute the on-disk path for a token's remembered-decisions
  * file. The token's first 16 hex chars of SHA-256 keyed at the
  * filename so two operators on one machine don't share files
- * (D139 per-token isolation).
+ * (per-token isolation).
  *
  * @param {string} token
  * @returns {string} absolute path

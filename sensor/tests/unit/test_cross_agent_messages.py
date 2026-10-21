@@ -1,5 +1,5 @@
 """Cross-cutting message-capture parity for the sub-agent
-interceptors (D126).
+interceptors.
 
 The CrewAI and LangGraph interceptors capture two bodies per child
 execution — ``incoming_message`` on the child's ``session_start``
@@ -97,7 +97,7 @@ def test_session_emit_preserves_body_verbatim_when_capture_on(body: Any) -> None
     payloads = _last_payloads(client)
     assert len(payloads) == 2
     start_p, end_p = payloads
-    # Each parametric body fits within the D126 § 6 inline
+    # Each parametric body fits within the inline
     # threshold (8 KiB), so the wire shape is the inline form:
     # ``has_content`` False, body lives directly under
     # ``incoming_message`` / ``outgoing_message`` on payload.
@@ -113,12 +113,12 @@ def test_session_emit_preserves_body_verbatim_when_capture_on(body: Any) -> None
 
 
 # ----------------------------------------------------------------------
-# D126 § 6 size-based routing
+# Size-based routing
 # ----------------------------------------------------------------------
 #
 # Three boundaries to pin:
 #   * ≤ 8 KiB → inline on payload, has_content=false.
-#   * > 8 KiB and ≤ 2 MiB → overflow via the existing D119
+#   * > 8 KiB and ≤ 2 MiB → overflow via the existing
 #     event_content path: has_content=true, payload.content
 #     populated with the PromptContent envelope (provider=
 #     "flightdeck-subagent"), the payload field becomes a stub.

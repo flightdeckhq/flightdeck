@@ -24,7 +24,7 @@ from pathlib import Path
 # .toml requires-python = ">=3.10,<3.14"). crewai 1.x metadata bars
 # 3.14, so a run on the wrong interpreter would silently SKIP every
 # crewai-touching demo and mask real coverage gaps -- the failure mode
-# D124 was filed to eliminate. Refuse to run instead of producing a
+# the single-venv discipline exists to eliminate. Refuse to run instead of producing a
 # misleading green matrix.
 if sys.version_info < (3, 10) or sys.version_info >= (3, 14):
     print(
@@ -59,7 +59,7 @@ def main() -> int:
     for path in files:
         name = path.name
         # Per-script subprocess timeout. 60s covers single-call
-        # demos comfortably; the D126 multi-agent demos
+        # demos comfortably; the multi-agent demos
         # (16_subagents_crewai, 17_subagents_langgraph) make
         # multiple sequential real-API calls and routinely run
         # 30–90s end-to-end (network jitter, model warm-up,

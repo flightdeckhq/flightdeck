@@ -184,13 +184,13 @@ function buildComparator(
  *     carries up to ~200 most-recent sessions across all agents.
  *     Recovers the busy-parent case, but a parent whose sessions
  *     all fall outside this wall-clock window won't appear here
- *     (the Phase-2 L38 sub-agent windowing bug).
+ *     (the sub-agent windowing bug).
  *
  * Combining the two recovers the linkage in both edge cases.
  * ``recent_sessions`` wins when both sources cover a session_id
  * because the per-agent slice is immune to wall-clock churn.
  *
- * Pre-D158 deployments may have ``recent_sessions`` absent — the
+ * Older deployments may have ``recent_sessions`` absent — the
  * function treats undefined the same as an empty slice; affected
  * agents collapse to lone families (no grouping) but never crash.
  *

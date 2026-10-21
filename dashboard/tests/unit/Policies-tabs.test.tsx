@@ -1,4 +1,4 @@
-// D146: tests for the unified Policies page parent. Tab state
+// Tests for the unified Policies page parent. Tab state
 // lives in the URL query param (?policy=mcp deep-links MCP
 // Protection; default / no-param is Token Budget). Mocks the API
 // helpers used by both sub-tabs so these tests stay focused on
@@ -42,7 +42,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("Policies (unified Token Budget + MCP Protection sub-tabs, D146)", () => {
+describe("Policies (unified Token Budget + MCP Protection sub-tabs)", () => {
   it("renders Token Budget content by default when no query param is set", async () => {
     render(
       <MemoryRouter initialEntries={["/policies"]}>
@@ -98,7 +98,7 @@ describe("Policies (unified Token Budget + MCP Protection sub-tabs, D146)", () =
 });
 
 // Click-driven tab switch (URL update from setSearchParams) is
-// verified via Chrome at the end of step 6.8 commit chain;
+// verified via Chrome;
 // jsdom + Radix Tabs + MemoryRouter useSearchParams-update doesn't
 // always re-render the data-state attribute synchronously enough
 // for a deterministic assertion. The two passing cases above lock

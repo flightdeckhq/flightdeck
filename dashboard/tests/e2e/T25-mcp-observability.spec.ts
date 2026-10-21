@@ -7,7 +7,7 @@ import {
   waitForInvestigateReady,
 } from "./_fixtures";
 
-// T25 — Phase 5: MCP observability rendering.
+// T25 — MCP observability rendering.
 //
 // The canonical seed (tests/e2e-fixtures/canonical.json + seed.py)
 // includes an ``mcp-active`` role on the sensor agent that:
@@ -15,7 +15,7 @@ import {
 //     ``context.mcp_servers`` is populated and the listing surfaces
 //     ``mcp_server_names: ["fixture-stdio-server",
 //     "fixture-http-server"]``.
-//   * emitted one event of each Phase 5 type (mcp_tool_list,
+//   * emitted one event of each MCP type (mcp_tool_list,
 //     mcp_tool_call, mcp_resource_list, mcp_resource_read,
 //     mcp_prompt_list, mcp_prompt_get) with capture_prompts=true so
 //     MCPEventDetails can render arguments / result / content /
@@ -50,7 +50,7 @@ const MCP_EVENT_TYPES = [
 // Verb-based labels (CALL / READ / FETCHED / DISCOVERED) carry the
 // invoked-vs-discovered distinction — the singular/plural-s pairs we
 // considered (MCP TOOL / MCP TOOLS) collided on a single 's'.
-// D123 restored the "MCP " prefix on top of the verb labels because
+// The "MCP " prefix sits on top of the verb labels because
 // Fleet's live feed table renders badges WITHOUT the swimlane hexagon
 // shape, putting "TOOL CALL" right next to the non-MCP "TOOL" badge —
 // that's verb-tense disambiguation, not category disambiguation.
@@ -269,7 +269,7 @@ test.describe("T25 — MCP observability rendering", () => {
     ).toBeVisible({ timeout: 10_000 });
   });
 
-  // (Phase 4 wave 2: the session-grain T25-12 / T25-17 session-row
+  // (The session-grain T25-12 / T25-17 session-row
   // MCP indicator dots were retired with the session-grain
   // /investigate table. At event grain an MCP event is its own row
   // on /events — surfaced directly rather than via a per-session
@@ -283,7 +283,7 @@ test.describe("T25 — MCP observability rendering", () => {
   // window — see seed.py's mcp-active branch. T25-13 asserts the
   // data-event-shape="hexagon" + data-mcp-family="true" markers
   // are visible on the Fleet swimlane, both themes.
-  // T25-14 (B-6) — large MCP content routes to event_content; drawer
+  // T25-14 — large MCP content routes to event_content; drawer
   // shows Load Full Response affordance and the click fetches the
   // full body. The seeder lands one fresh has_content=true
   // mcp_resource_read each refresh — see seed.py's mcp-active branch.
@@ -352,7 +352,7 @@ test.describe("T25 — MCP observability rendering", () => {
     expect((await loadedBody.textContent()) ?? "").toContain("xxxxx");
   });
 
-  // T25-15 (B-7) — every Phase 5 MCP badge fits inside the pill.
+  // T25-15 — every MCP badge fits inside the pill.
   // The pill container's bounding rect must not be smaller than the
   // text span's bounding rect (i.e. no clip).
   test("T25-15: MCP badges fit on a single line (no clip)", async ({
@@ -524,7 +524,7 @@ test.describe("T25 — MCP observability rendering", () => {
     }
   });
 
-  // T25-18 (D122) — MCP discovery events hidden by default in Fleet's
+  // T25-18 — MCP discovery events hidden by default in Fleet's
   // live feed. Three sub-cases:
   //   * default state: discovery events absent from the feed even
   //     though the canonical seed emits them.

@@ -1,5 +1,5 @@
 """Integration test: GET /v1/events event-grain facet filters and
-the facets-count mode (D157 Phase 4 wave 2).
+the facets-count mode.
 
 The /events page lists events and filters them by event-grain
 facets — event type, model, framework, and event-payload fields.

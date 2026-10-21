@@ -3,8 +3,8 @@ import { test, expect } from "@playwright/test";
 /**
  * T100 — /events runtime-context facets filter the event list.
  *
- * Nine new facet groups land on the /events page (D160 frontend
- * half): os, arch, hostname (URL param ``host``), user, git_branch,
+ * Nine facet groups land on the /events page: os, arch, hostname
+ * (URL param ``host``), user, git_branch,
  * git_repo, orchestration, python_version, process_name. Each chip
  * click writes to the URL and re-fetches the event list with the
  * filter applied server-side.

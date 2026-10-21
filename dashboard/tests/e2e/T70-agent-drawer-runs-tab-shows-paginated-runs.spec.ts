@@ -2,7 +2,7 @@
  * T70 — the agent drawer's Runs tab populates with the agent's
  * runs.
  *
- * Phase 4 contract: switching to the Runs tab lists the agent's
+ * Switching to the Runs tab lists the agent's
  * runs (sessions) newest-first, backed by
  * `GET /v1/sessions?agent_id=`, with sortable column headers.
  *

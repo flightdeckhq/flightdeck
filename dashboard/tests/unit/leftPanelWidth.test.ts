@@ -54,7 +54,7 @@ describe("readPersistedLeftPanelWidth", () => {
   it("default is the new 460 baseline", () => {
     // Locked alongside max so a future bump to either constant
     // visibly fails this test, forcing the docblock + tests to
-    // update together. Pre-Fix-1+Fix-3 the default was 380.
+    // update together.
     expect(LEFT_PANEL_DEFAULT_WIDTH).toBe(460);
   });
 

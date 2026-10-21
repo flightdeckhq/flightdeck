@@ -9,6 +9,7 @@ wiring. ``llama-index-tools-mcp`` provides a ``BasicMCPClient`` and
 ``FunctionTool`` instances; under the hood both call the official mcp
 SDK's ``ClientSession``, which the sensor patches directly.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -37,14 +38,16 @@ def _run_chat() -> None:
     t0 = time.monotonic()
     LlamaAnthropic(model="claude-haiku-4-5-20251001", max_tokens=5).complete("hi")
     print_result(
-        "LlamaAnthropic.complete", True,
+        "LlamaAnthropic.complete",
+        True,
         int((time.monotonic() - t0) * 1000),
     )
 
     t0 = time.monotonic()
     LlamaOpenAI(model="gpt-4o-mini", max_tokens=5).complete("hi")
     print_result(
-        "LlamaOpenAI.complete", True,
+        "LlamaOpenAI.complete",
+        True,
         int((time.monotonic() - t0) * 1000),
     )
 
@@ -85,7 +88,9 @@ def _run_mcp(session_id: str) -> None:
         t0 = time.monotonic()
         await echo.acall(text="hello from llamaindex playground")
         print_result(
-            "echo.acall", True, int((time.monotonic() - t0) * 1000),
+            "echo.acall",
+            True,
+            int((time.monotonic() - t0) * 1000),
         )
 
     asyncio.run(run())

@@ -98,13 +98,13 @@ async def _collect_ws_last_events(
 
 
 def test_ws_broadcasts_tightly_paired_post_call_and_tool_call() -> None:
-    """Pre-fix symptom: the hub's GetSessionEvents + tail race caused
+    """Guarded regression: the hub's GetSessionEvents + tail race caused
     two NOTIFYs (post_call then tool_call, ~150 ms apart) to broadcast
-    the same LastEvent (tool_call) twice. Post-fix, the NOTIFY payload
+    the same LastEvent (tool_call) twice. Now the NOTIFY payload
     carries event_id and the hub fetches that exact row, so both
     events reach the WebSocket in distinct broadcasts.
 
-    The assertion is by event_id, not count. A pre-fix run would still
+    The assertion is by event_id, not count. A regressed run would still
     see two broadcasts -- they would both carry the tool_call id, and
     the test would fail on the id comparison.
     """
@@ -142,14 +142,13 @@ def test_ws_broadcasts_tightly_paired_post_call_and_tool_call() -> None:
     # tool_call on this session, in occurred_at order.
     expected_ids = _get_event_ids(sid, ("post_call", "tool_call"))
     assert len(expected_ids) == 2, (
-        f"expected two rows (post_call + tool_call) in DB for {sid}, "
-        f"got {expected_ids}"
+        f"expected two rows (post_call + tool_call) in DB for {sid}, got {expected_ids}"
     )
 
     received_ids = [e["id"] for e in received]
     assert sorted(received_ids) == sorted(expected_ids), (
         "WebSocket broadcasts should carry both event ids (one per "
-        "paired event). pre-fix: two broadcasts both carried the "
+        "paired event). regression shape: two broadcasts both carried the "
         "tool_call id because the hub re-queried GetSessionEvents "
         "and picked the tail. "
         f"expected_ids={expected_ids} received_ids={received_ids} "
@@ -160,7 +159,7 @@ def test_ws_broadcasts_tightly_paired_post_call_and_tool_call() -> None:
 def test_ws_broadcast_last_event_matches_notify_event() -> None:
     """Tighter variant: assert each broadcast's last_event.id matches
     the event that triggered its NOTIFY, in order. Pins down both the
-    set of ids AND the order, which is what prevents the pre-fix
+    set of ids AND the order, which is what prevents the earlier
     test from accidentally passing even when ids happen to match by
     set but not by ordering.
     """

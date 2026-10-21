@@ -6,7 +6,7 @@ import { getEventDetail, getSummaryRows, getBadge } from "@/lib/events";
 import type { AgentEvent, EventContent } from "@/lib/types";
 import * as api from "@/lib/api";
 
-// Phase 4 polish S-UI-1: rich embeddings rendering. Pins three layers
+// Rich embeddings rendering. Pins three layers
 // in one place so a future refactor can't silently regress one of
 // them (timeline circle colour + glyph, drawer detail string, drawer
 // summary-grid rows).
@@ -107,10 +107,9 @@ describe("embeddings -- badge config (getBadge)", () => {
 });
 
 // -------------------------------------------------------------------
-// Phase 4 polish S-EMBED-5: EmbeddingsContentViewer.
+// EmbeddingsContentViewer.
 // Three render branches × the captured-vs-not-captured switch. Tests
-// pin the contract that drives the dashboard side of S-EMBED-7
-// E2E coverage too.
+// pin the contract the embeddings E2E coverage drives too.
 // -------------------------------------------------------------------
 
 function makeContent(input: EventContent["input"]): EventContent {

@@ -5,7 +5,7 @@ import type { ReactNode } from "react";
  * PolicyEventDetails (and any future event-details accordion).
  * The chevron rotates 0°→90° on expansion; the label is rendered
  * in the section-header-uppercase style consistent across the
- * session drawer. Phase 4.5 M-15: extracted from duplicated
+ * session drawer. Extracted from duplicated
  * inline styling.
  */
 interface AccordionHeaderProps {

@@ -1,4 +1,4 @@
-"""Unit tests for the Phase 4 error-classification taxonomy.
+"""Unit tests for the error-classification taxonomy.
 
 The classifier walks class name → taxonomy with HTTP status + provider error
 code overrides. These tests pin every taxonomy mapping so a future SDK
@@ -375,18 +375,18 @@ def test_error_classification_is_frozen() -> None:
 
 
 # ---------------------------------------------------------------------------
-# H-2 regression — Rule 18 leak via _redacted_message
+# Regression — Rule 18 leak via _redacted_message
 # ---------------------------------------------------------------------------
 #
 # Provider exceptions (notably content_filter rejections) echo the
-# offending prompt fragment in their str() representation. Pre-fix,
-# _redacted_message included str(exc) verbatim regardless of
-# capture_prompts. classify_exception now accepts capture_prompts and
+# offending prompt fragment in their str() representation. Including
+# str(exc) verbatim regardless of capture_prompts would leak them, so
+# classify_exception accepts capture_prompts and
 # threads it through so capture-off returns class-name only.
 
 
 def test_classify_capture_off_omits_provider_message_text() -> None:
-    """H-2 fix: capture_prompts=False MUST NOT include str(exc) in
+    """capture_prompts=False MUST NOT include str(exc) in
     error_message. Provider content_filter exceptions echo the
     offending prompt fragment in their string; that fragment is
     user-prompt content that capture-off must not forward.

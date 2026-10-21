@@ -1,4 +1,4 @@
-"""Phase 7 Step 4 (D152) — session lifecycle + MCP server attach
+"""Session lifecycle + MCP server attach
 operator-actionable enrichment contract tests."""
 
 from __future__ import annotations
@@ -131,7 +131,7 @@ def test_other_event_types_skip_session_end_close_reason() -> None:
 
 
 # ------------------------------------------------------------------
-# C-01 — capture posture on session_start
+# Capture posture on session_start
 # ------------------------------------------------------------------
 
 

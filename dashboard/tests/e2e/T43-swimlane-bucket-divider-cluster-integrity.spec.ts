@@ -67,7 +67,7 @@ test.describe("T43 — Swimlane bucket dividers respect parent-child clusters", 
     await page.goto("/");
     await waitForFleetReady(page);
 
-    // Pre-fix duplicate-key behavior: two live→recent transitions in
+    // Guarded duplicate-key regression: two live→recent transitions in
     // the same render shared the key `bucket-live-to-recent` and
     // React would silently dedupe. Combined with the cluster-split
     // bug, the visual count of dividers was unstable across renders.
@@ -95,7 +95,7 @@ test.describe("T43 — Swimlane bucket dividers respect parent-child clusters", 
       expect(
         counts.dividers,
         `dividers (${counts.dividers}) should be at most flavorRows-1 ` +
-          `(${counts.flavorRows - 1}); the pre-fix bug would let dividers ` +
+          `(${counts.flavorRows - 1}); the duplicate-key bug would let dividers ` +
           `accumulate beyond this bound across activity`,
       ).toBeLessThanOrEqual(Math.max(0, counts.flavorRows - 1));
     }

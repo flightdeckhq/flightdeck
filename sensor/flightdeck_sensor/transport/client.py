@@ -235,7 +235,7 @@ class ControlPlaneClient:
 # Non-blocking event queue + dedicated directive handler queue
 # ------------------------------------------------------------------
 
-# Both queues are sized identically by design (L-3): they share the
+# Both queues are sized identically by design: they share the
 # same drop-on-full backpressure semantics, and an asymmetric size
 # would mean directive bursts could starve event throughput (or vice
 # versa). 1000 is generous for the event queue (typical agent emits
@@ -268,7 +268,7 @@ class EventQueue:
       directive at a time. Single-consumer means at-most-once
       execution for free -- no dedup state needed.
 
-    This is the two-queue pattern mandated by Phase 4.5 audit B-H.
+    This is the two-queue pattern.
     The previous design called the directive callback inline on the
     drain thread, which let a slow handler stall the entire event
     pipeline (silent event loss after 1000 backed-up events) and
@@ -327,8 +327,7 @@ class EventQueue:
         LLM provider latency (hundreds of ms per call) throttles
         event generation naturally, so the 1000-slot queue only
         fills under pathological synthetic load. Micro-batching
-        was considered and rejected for v1 -- see DECISIONS.md
-        D091 for the trade-offs.
+        was considered and rejected for v1.
         """
         try:
             self._queue.put_nowait(payload)
@@ -354,8 +353,8 @@ class EventQueue:
         Waits on the EVENT queue only -- the directive queue is
         internal control flow and waiting on it from inside a directive
         handler would self-deadlock by exactly the same mechanism the
-        old ``is_drain_thread`` guard was working around. After the
-        B-H two-queue refactor, this method is safe to call from
+        old ``is_drain_thread`` guard was working around. Under the
+        two-queue design, this method is safe to call from
         anywhere except the drain thread itself; in particular, it
         works correctly from inside ``Session._apply_directive``
         because that method now runs on the directive handler thread,
@@ -395,8 +394,8 @@ class EventQueue:
         signal that the daemon thread will be killed by process
         teardown rather than exiting cleanly. The most likely cause is
         a custom directive handler that is still running when the
-        agent calls teardown() (B-K limitation -- handlers run with no
-        timeout on the directive thread).
+        agent calls teardown() (handlers run with no timeout on the
+        directive thread).
         """
         self._queue.put(_SENTINEL)
         self._drain_thread.join(timeout=5)
@@ -500,14 +499,14 @@ class EventQueue:
         defensive ``sys.exit()`` or any other ``BaseException``
         subclass would silently kill this daemon thread under
         ``except Exception`` and the directive queue would back up
-        with no recovery (Phase 4.5 audit Hat 4 finding). The wider
+        with no recovery. The wider
         clause is safe in this daemon-thread context because Python
         signals are delivered to the main thread, not background
         threads, so the usual concern about catching
         ``KeyboardInterrupt`` does not apply here. Exceptions are
         logged and the loop continues.
         """
-        # M-6 fix: assertions are stripped under ``python -O`` so a
+        # Assertions are stripped under ``python -O`` so a
         # bug that lets the loop start without a queue or handler
         # would silently AttributeError downstream. Explicit narrow
         # + RuntimeError surfaces the contract violation.

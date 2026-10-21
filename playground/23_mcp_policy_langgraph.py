@@ -1,7 +1,7 @@
 """MCP Protection Policy -- LangGraph transitive coverage via langchain-mcp-adapters.
 
 LangGraph integrates MCP through ``langchain-mcp-adapters``. The
-sensor's ``ClientSession`` patch (D117) is the protocol-level seam,
+sensor's ``ClientSession`` patch is the protocol-level seam,
 so LangGraph's MCP usage flows through the same call_tool wrapper.
 This demo provisions a flavor warn policy and runs a real LangGraph
 ``create_react_agent`` with an MCP tool to verify the wrapper fires.

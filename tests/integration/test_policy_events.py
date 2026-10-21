@@ -84,7 +84,9 @@ def test_policy_warn_event_round_trips() -> None:
     sid, flavor = _seed_session("warn")
     post_event(
         make_event(
-            sid, flavor, "policy_warn",
+            sid,
+            flavor,
+            "policy_warn",
             source="server",
             threshold_pct=80,
             tokens_used=8000,
@@ -111,7 +113,9 @@ def test_policy_degrade_event_round_trips() -> None:
     sid, flavor = _seed_session("degrade")
     post_event(
         make_event(
-            sid, flavor, "policy_degrade",
+            sid,
+            flavor,
+            "policy_degrade",
             source="server",
             threshold_pct=90,
             tokens_used=9100,
@@ -139,7 +143,9 @@ def test_policy_block_event_round_trips() -> None:
     sid, flavor = _seed_session("block")
     post_event(
         make_event(
-            sid, flavor, "policy_block",
+            sid,
+            flavor,
+            "policy_block",
             source="server",
             threshold_pct=100,
             tokens_used=10100,
@@ -168,9 +174,13 @@ def test_policy_events_appear_in_session_detail() -> None:
     for et in ("policy_warn", "policy_degrade", "policy_block"):
         post_event(
             make_event(
-                sid, flavor, et,
-                source="server", threshold_pct=50,
-                tokens_used=500, token_limit=1000,
+                sid,
+                flavor,
+                et,
+                source="server",
+                threshold_pct=50,
+                tokens_used=500,
+                token_limit=1000,
             )
         )
     _wait_for_event_count(sid, 4)
@@ -191,18 +201,24 @@ def test_policy_events_filterable_via_event_type() -> None:
     for et in ("policy_warn", "policy_degrade", "policy_block"):
         post_event(
             make_event(
-                sid, flavor, et,
-                source="server", threshold_pct=50,
-                tokens_used=500, token_limit=1000,
+                sid,
+                flavor,
+                et,
+                source="server",
+                threshold_pct=50,
+                tokens_used=500,
+                token_limit=1000,
             )
         )
     _wait_for_event_count(sid, 4)
     # Bulk events endpoint accepts ?event_type=
-    qs = urllib.parse.urlencode({
-        "from": "1970-01-01T00:00:00Z",
-        "session_id": sid,
-        "event_type": "policy_block",
-    })
+    qs = urllib.parse.urlencode(
+        {
+            "from": "1970-01-01T00:00:00Z",
+            "session_id": sid,
+            "event_type": "policy_block",
+        }
+    )
     req = urllib.request.Request(
         f"{API_URL}/v1/events?{qs}",
         headers=auth_headers(),
@@ -225,46 +241,60 @@ def test_policy_event_types_in_session_listing_and_filter() -> None:
 
     post_event(
         make_event(
-            sid_warn, flavor_warn, "policy_warn",
-            source="server", threshold_pct=80,
-            tokens_used=8000, token_limit=10000,
+            sid_warn,
+            flavor_warn,
+            "policy_warn",
+            source="server",
+            threshold_pct=80,
+            tokens_used=8000,
+            token_limit=10000,
         )
     )
     post_event(
         make_event(
-            sid_block, flavor_block, "policy_block",
-            source="server", threshold_pct=100,
-            tokens_used=10100, token_limit=10000,
+            sid_block,
+            flavor_block,
+            "policy_block",
+            source="server",
+            threshold_pct=100,
+            tokens_used=10100,
+            token_limit=10000,
             intended_model="claude-sonnet-4-6",
         )
     )
     _wait_for_event_count(sid_warn, 2)
     _wait_for_event_count(sid_block, 2)
 
-    listing = _fetch_session_listing({
-        "from": "1970-01-01T00:00:00Z",
-        "flavor": [flavor_warn, flavor_block],
-    })
+    listing = _fetch_session_listing(
+        {
+            "from": "1970-01-01T00:00:00Z",
+            "flavor": [flavor_warn, flavor_block],
+        }
+    )
     by_id = {row["session_id"]: row for row in listing}
     assert by_id[sid_warn]["policy_event_types"] == ["policy_warn"]
     assert by_id[sid_block]["policy_event_types"] == ["policy_block"]
 
     # ?policy_event_type filter should narrow to one row.
-    only_block = _fetch_session_listing({
-        "from": "1970-01-01T00:00:00Z",
-        "flavor": [flavor_warn, flavor_block],
-        "policy_event_type": "policy_block",
-    })
+    only_block = _fetch_session_listing(
+        {
+            "from": "1970-01-01T00:00:00Z",
+            "flavor": [flavor_warn, flavor_block],
+            "policy_event_type": "policy_block",
+        }
+    )
     only_block_ids = {r["session_id"] for r in only_block}
     assert only_block_ids == {sid_block}, (
         f"expected only block-emitting session; got {only_block_ids!r}"
     )
 
     # Out-of-vocab values 400.
-    bad = urllib.parse.urlencode({
-        "from": "1970-01-01T00:00:00Z",
-        "policy_event_type": "policy_invalid",
-    })
+    bad = urllib.parse.urlencode(
+        {
+            "from": "1970-01-01T00:00:00Z",
+            "policy_event_type": "policy_invalid",
+        }
+    )
     req = urllib.request.Request(
         f"{API_URL}/v1/sessions?{bad}",
         headers=auth_headers(),
@@ -292,7 +322,9 @@ def test_forced_degrade_emits_one_policy_event_per_arm() -> None:
     # The decision event fires once (sensor: _apply_directive(DEGRADE)).
     post_event(
         make_event(
-            sid, flavor, "policy_degrade",
+            sid,
+            flavor,
+            "policy_degrade",
             source="server",
             threshold_pct=50,
             tokens_used=600,
@@ -307,9 +339,13 @@ def test_forced_degrade_emits_one_policy_event_per_arm() -> None:
     for _ in range(3):
         post_event(
             make_event(
-                sid, flavor, "post_call",
+                sid,
+                flavor,
+                "post_call",
                 model="claude-haiku-4-5",
-                tokens_input=20, tokens_output=10, tokens_total=30,
+                tokens_input=20,
+                tokens_output=10,
+                tokens_total=30,
             )
         )
     _wait_for_event_count(sid, 5)
@@ -336,7 +372,9 @@ def test_local_warn_has_no_backing_directive_server_warn_does() -> None:
     sid_local, flavor_local = _seed_session("local-warn")
     post_event(
         make_event(
-            sid_local, flavor_local, "policy_warn",
+            sid_local,
+            flavor_local,
+            "policy_warn",
             source="local",
             threshold_pct=80,
             tokens_used=80,
@@ -346,8 +384,7 @@ def test_local_warn_has_no_backing_directive_server_warn_does() -> None:
     _wait_for_event_count(sid_local, 2)
     local_directives = query_directives(sid_local)
     assert local_directives == [], (
-        f"local policy_warn must not produce a directive row; "
-        f"got {local_directives!r}"
+        f"local policy_warn must not produce a directive row; got {local_directives!r}"
     )
 
     # Server-source path: drive the worker's policy evaluator into
@@ -363,9 +400,13 @@ def test_local_warn_has_no_backing_directive_server_warn_does() -> None:
     try:
         post_event(
             make_event(
-                sid_server, flavor_server, "post_call",
+                sid_server,
+                flavor_server,
+                "post_call",
                 model="claude-sonnet-4-6",
-                tokens_input=80, tokens_output=0, tokens_total=80,
+                tokens_input=80,
+                tokens_output=0,
+                tokens_total=80,
                 tokens_used_session=80,
             )
         )

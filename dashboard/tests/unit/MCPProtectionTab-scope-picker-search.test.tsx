@@ -1,12 +1,11 @@
-// Step 6.7 (d): the scope picker on the MCP Protection sub-tab
-// replaces the pre-fix Radix Select with a button + filter panel.
+// The scope picker on the MCP Protection sub-tab is a button +
+// filter panel rather than a plain Radix Select.
 // Standard pattern for a dropdown over ~20 items — at 67+ flavors
 // the alphabetical list became impossible to scan. These tests
 // lock the search behavior so a future refactor can't drop it.
 //
-// Component renamed in step 6.8 commit 6 from MCPPolicies (a
-// /mcp-policies page) to MCPProtectionTab (a sub-tab on /policies
-// per D146).
+// Component was renamed from MCPPolicies (a /mcp-policies page)
+// to MCPProtectionTab (a sub-tab on /policies).
 
 import { describe, expect, it } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
@@ -60,7 +59,7 @@ function renderPage() {
   );
 }
 
-describe("MCP Protection scope picker — searchable combobox (step 6.7 d)", () => {
+describe("MCP Protection scope picker — searchable combobox", () => {
   it("opens the panel when the trigger is clicked", async () => {
     renderPage();
     // Wait for the flavors to load and the trigger to render.

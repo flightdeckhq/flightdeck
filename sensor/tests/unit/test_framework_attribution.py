@@ -1,6 +1,6 @@
-"""Phase 4 polish: per-event framework attribution.
+"""Per-event framework attribution.
 
-Pre-fix ``Session.record_framework`` had zero callers, so every event
+Guarded regression: ``Session.record_framework`` had zero callers, so every event
 emitted ``framework=null`` and the dashboard's FRAMEWORK facet,
 analytics group_by, and ``/v1/sessions?framework=`` filter were all
 silently broken. The fix wires

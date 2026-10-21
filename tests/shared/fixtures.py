@@ -46,7 +46,7 @@ INGEST_HEALTH = f"{INGESTION_URL}/health"
 API_HEALTH = f"{API_URL}/health"
 TOKEN = "tok_dev"
 
-# D115 identity defaults for the synthetic-emitter tier. The integration
+# Identity defaults for the synthetic-emitter tier. The integration
 # suite impersonates a sensor-like client (not the plugin), so client_type
 # is pinned to "flightdeck_sensor" and agent_type defaults to the
 # sensor's own "production" default. Individual tests can override via
@@ -146,7 +146,7 @@ def wait_for_services(timeout: float = MAX_WAIT_SECS) -> None:
 def auth_headers(json_body: bool = False) -> dict[str, str]:
     """Return the standard headers for an authenticated API request.
 
-    All ingestion and API /v1 endpoints require a bearer token (D095);
+    All ingestion and API /v1 endpoints require a bearer token;
     every helper below composes its request headers through this
     function so the token is added in exactly one place. Pass
     ``json_body=True`` when the request carries a JSON body so the
@@ -192,9 +192,8 @@ def post_heartbeat(session_id: str) -> dict[str, Any]:
 def get_fleet() -> dict[str, Any]:
     """Return a sessions-flat view reconstructed from GET /v1/sessions.
 
-    D115 retired the ``/v1/fleet`` flavor-grouped shape in favor of
-    agent-keyed rollups that no longer nest sessions. Integration tests
-    predate that change and scan for specific sessions by flavor, so
+    ``/v1/fleet`` returns agent-keyed rollups that do not nest
+    sessions. Integration tests scan for specific sessions by flavor, so
     this helper preserves the legacy iteration surface by fetching the
     most recent sessions via ``/v1/sessions`` and grouping them by
     flavor client-side. Returns ``{"flavors": [{"flavor": X,
@@ -234,10 +233,12 @@ def get_session(session_id: str) -> dict[str, Any]:
         return json.loads(resp.read())  # type: ignore[no-any-return]
 
 
-def wait_for_session_in_fleet(session_id: str, timeout: float = 5.0) -> dict[str, Any] | None:
+def wait_for_session_in_fleet(
+    session_id: str, timeout: float = 5.0
+) -> dict[str, Any] | None:
     """Poll GET /v1/sessions/:id until the worker persists the row or timeout.
 
-    Under D115 the fleet endpoint no longer nests sessions under agents,
+    The fleet endpoint does not nest sessions under agents,
     so "did the session land?" is answered by hitting the single-session
     detail endpoint directly. Returns the ``session`` sub-dict on
     success or None on timeout.
@@ -263,21 +264,21 @@ def _identity_fields(
     agent_name: str | None = None,
     agent_role: str | None = None,
 ) -> dict[str, str]:
-    """Return the D115/D126 identity tuple plus derived agent_id.
+    """Return the identity tuple plus derived agent_id.
 
     Mirrors ``sensor/flightdeck_sensor/core/session.py::_build_payload``.
-    The ingestion validator (D116) rejects any event lacking agent_id /
+    The ingestion validator rejects any event lacking agent_id /
     a vocabulary-valid agent_type / a vocabulary-valid client_type, so
     every synthetic event must carry this block.
 
-    D126 § 2 extension — when ``agent_role`` is supplied with a
+    Sub-agent extension — when ``agent_role`` is supplied with a
     non-empty value, it joins the input tuple so a Researcher child
     derives a different agent_id than the same host's root session.
-    Pre-D126 callers (no agent_role) produce the same UUID they did
+    Callers with no agent_role produce the same UUID they did
     before. The integration test fixtures previously omitted this
     forwarding, which produced the 2026-05-03 anomaly where one
     agent_id carried both root sessions (no role) and Researcher
-    children — a direct D126 § 2 violation. Forwarding here is the
+    children — a direct identity-model violation. Forwarding here is the
     fix; the worker accepts agent_id as supplied and does not
     re-derive.
     """
@@ -316,9 +317,9 @@ def make_event(
     agent_role: str | None = None,
     **extra: Any,
 ) -> dict[str, Any]:
-    """Build an event payload with D115/D126 identity fields populated.
+    """Build an event payload with identity fields populated.
 
-    ``agent_role`` is the explicit named-arg path for the D126
+    ``agent_role`` is the explicit named-arg path for the
     sub-agent identity input (see ``_identity_fields`` docstring).
     Callers that pass ``agent_role`` via ``**extra`` instead get the
     role echoed onto the wire payload but the agent_id derivation
@@ -359,10 +360,10 @@ def make_event(
         "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
     }
     payload.update(identity)
-    # D126 — surface agent_role on the wire so the worker /
+    # Surface agent_role on the wire so the worker /
     # ingestion validator see the role (in addition to the role
     # participating in the agent_id derivation above). Skipped when
-    # the role is None / blank so pre-D126 events stay byte-
+    # the role is None / blank so root events stay byte-
     # identical to the legacy shape.
     if agent_role is not None and agent_role.strip():
         payload["agent_role"] = agent_role.strip()
@@ -383,7 +384,11 @@ def make_event(
     # validation override via **extra.
     if event_type in _POLICY_EVENT_TYPES and "policy_decision" not in payload:
         decision = (
-            "warn" if "warn" in event_type else "degrade" if "degrade" in event_type else "block"
+            "warn"
+            if "warn" in event_type
+            else "degrade"
+            if "degrade" in event_type
+            else "block"
         )
         payload["policy_decision"] = {
             "policy_id": payload.get("policy_id") or INTEGRATION_TEST_POLICY_ID,
@@ -519,9 +524,17 @@ def exec_sql(sql: str, **bindings: Any) -> str:
     ``docker exec -i``) and pass the bindings as ``-v`` flags.
     """
     args = [
-        "docker", "exec", "-i", POSTGRES_CONTAINER, "psql",
-        "-U", "flightdeck", "-d", "flightdeck",
-        "-t", "-A",
+        "docker",
+        "exec",
+        "-i",
+        POSTGRES_CONTAINER,
+        "psql",
+        "-U",
+        "flightdeck",
+        "-d",
+        "flightdeck",
+        "-t",
+        "-A",
     ]
     for name, value in bindings.items():
         args.extend(["-v", f"{name}={value}"])
@@ -601,7 +614,7 @@ def wait_until(
 def session_exists_in_fleet(session_id: str) -> bool:
     """Return True once the worker has persisted the session row.
 
-    Under D115 the legacy flavor-grouped fleet response is gone, so
+    The fleet response is agent-level, not flavor-grouped, so
     persistence is observed via ``GET /v1/sessions/:id`` returning 200.
     """
     try:
@@ -1006,7 +1019,7 @@ def directive_has_delivered_at(directive_id: str) -> bool:
 # ---------------------------------------------------------------------------
 # Admin reconcile helpers. Used by integration + E2E tests that
 # exercise POST /v1/admin/reconcile-agents. Single-tier auth: the
-# endpoint accepts any valid bearer token (D156).
+# endpoint accepts any valid bearer token.
 # ---------------------------------------------------------------------------
 
 
@@ -1261,4 +1274,6 @@ def _psql_exec(sql: str) -> None:
         check=False,
     )
     if result.returncode != 0:
-        raise RuntimeError(f"psql exec failed (exit {result.returncode}): {result.stderr.strip()}")
+        raise RuntimeError(
+            f"psql exec failed (exit {result.returncode}): {result.stderr.strip()}"
+        )

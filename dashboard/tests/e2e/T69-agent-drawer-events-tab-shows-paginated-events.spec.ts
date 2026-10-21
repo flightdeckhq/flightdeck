@@ -2,7 +2,7 @@
  * T69 — the agent drawer's Events tab populates with the agent's
  * events.
  *
- * Phase 4 contract: the Events tab is the default tab; it lists
+ * The Events tab is the default tab; it lists
  * the agent's events newest-first, backed by
  * `GET /v1/events?agent_id=`. Each row carries a run badge.
  *

@@ -179,7 +179,7 @@ describe("SessionEventRow", () => {
     expect(badge.textContent).toBe("Staging K8s");
   });
 
-  it("omits the token name pill when token_name is null (tok_dev / pre-Phase-5 rows)", () => {
+  it("omits the token name pill when token_name is null (tok_dev rows)", () => {
     renderRow({ ...baseSession, token_name: null });
     expect(
       screen.queryByTestId("session-row-token-name"),

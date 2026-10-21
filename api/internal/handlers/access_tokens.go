@@ -23,7 +23,7 @@ type RenameAccessTokenRequest struct {
 // AccessTokensListHandler handles GET /v1/access-tokens.
 //
 // @Summary      List access tokens
-// @Description  Returns every access_tokens row. Hash and salt are never exposed; the raw token itself is available only on the POST response at creation time (D095).
+// @Description  Returns every access_tokens row. Hash and salt are never exposed; the raw token itself is available only on the POST response at creation time.
 // @Tags         access-tokens
 // @Produce      json
 // @Success      200  {array}   store.AccessTokenRow
@@ -46,7 +46,7 @@ func AccessTokensListHandler(s store.Querier) http.HandlerFunc {
 // AccessTokenCreateHandler handles POST /v1/access-tokens.
 //
 // @Summary      Create an access token
-// @Description  Mints an opaque ftd_ bearer token. The plaintext token is returned exactly once in the response; the platform cannot recover it afterwards. See DECISIONS.md D095.
+// @Description  Mints an opaque ftd_ bearer token. The plaintext token is returned exactly once in the response; the platform cannot recover it afterwards.
 // @Tags         access-tokens
 // @Accept       json
 // @Produce      json
@@ -87,7 +87,7 @@ func AccessTokenCreateHandler(s store.Querier) http.HandlerFunc {
 // AccessTokenDeleteHandler handles DELETE /v1/access-tokens/{id}.
 //
 // @Summary      Revoke an access token
-// @Description  Deletes the access_tokens row. The seeded Development Token row is protected and returns 403. Sessions previously authenticated with the token keep their token_name for auditability (sessions.token_id is set to NULL via ON DELETE SET NULL). See DECISIONS.md D095.
+// @Description  Deletes the access_tokens row. The seeded Development Token row is protected and returns 403. Sessions previously authenticated with the token keep their token_name for auditability (sessions.token_id is set to NULL via ON DELETE SET NULL).
 // @Tags         access-tokens
 // @Param        id  path  string  true  "Token ID"
 // @Success      204

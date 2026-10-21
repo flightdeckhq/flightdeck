@@ -1,7 +1,7 @@
-// Shared "info" tooltip primitive (D146 step 6.9 / 6.10).
+// Shared "info" tooltip primitive.
 //
-// Step 6.10 fixes two interaction defects the 6.9 implementation
-// shipped:
+// Two interaction defects an earlier implementation shipped are
+// handled here:
 //
 //   - "Tooltip auto-opens on dialog mount." Radix Tooltip's default
 //     trigger fires on focus, and Radix Dialog's focus-trap moves
@@ -27,11 +27,10 @@
 // supply test IDs — the primitive derives a stable one from
 // ``ariaLabel`` so a sweep across info sites can grep them.
 //
-// Consumers must wrap their tree in a ``<TooltipProvider>``. Step
-// 6.9 nested a provider here too; step 6.10 strips it because every
-// current consumer (MCPPolicyHeader, MCPPolicyEntryDialog) already
-// wraps, and the redundant nesting was harmless but obscured
-// ownership.
+// Consumers must wrap their tree in a ``<TooltipProvider>``. No
+// provider is nested here because every current consumer
+// (MCPPolicyHeader, MCPPolicyEntryDialog) already wraps, and the
+// redundant nesting was harmless but obscured ownership.
 
 import { Info } from "lucide-react";
 import { useState, type ReactNode } from "react";

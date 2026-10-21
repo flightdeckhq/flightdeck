@@ -38,9 +38,7 @@ from .conftest import API_URL, auth_headers, make_event, post_event, wait_until
 
 def _list_v1_fleet(params: dict[str, str]) -> dict[str, Any]:
     qs = urllib.parse.urlencode(params)
-    req = urllib.request.Request(
-        f"{API_URL}/v1/fleet?{qs}", headers=auth_headers()
-    )
+    req = urllib.request.Request(f"{API_URL}/v1/fleet?{qs}", headers=auth_headers())
     with urllib.request.urlopen(req, timeout=10) as resp:
         return json.loads(resp.read())  # type: ignore[no-any-return]
 

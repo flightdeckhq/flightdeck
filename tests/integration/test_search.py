@@ -41,26 +41,34 @@ def _setup_searchable(agent_name: str, host: str, tool_name: str) -> str:
     label. The flavor field carries the same string so flavor-scoped
     session queries (e.g. ``test_directives::test_directive_filter_by_flavor``)
     still see a recognizable value -- only agent-level search keys on
-    ``agent_name`` under D115.
+    ``agent_name``.
     """
     sid = str(uuid.uuid4())
-    post_event(make_event(
-        sid, agent_name, "session_start",
-        host=host,
-        agent_name=agent_name,
-    ))
+    post_event(
+        make_event(
+            sid,
+            agent_name,
+            "session_start",
+            host=host,
+            agent_name=agent_name,
+        )
+    )
     wait_until(
         lambda: session_exists_in_fleet(sid),
         timeout=10,
         msg=f"session {sid} did not appear in fleet",
     )
-    post_event(make_event(
-        sid, agent_name, "post_call",
-        tokens_total=100,
-        tool_name=tool_name,
-        model="claude-sonnet-4-6",
-        agent_name=agent_name,
-    ))
+    post_event(
+        make_event(
+            sid,
+            agent_name,
+            "post_call",
+            tokens_total=100,
+            tool_name=tool_name,
+            model="claude-sonnet-4-6",
+            agent_name=agent_name,
+        )
+    )
     wait_until(
         lambda: get_session_event_count(sid) >= 2,
         timeout=10,
@@ -75,7 +83,7 @@ def searchable_fixture() -> dict[str, str]:
     agent_name / host / tool name are all unique strings, then let
     every search-by-X test run against the same session.
 
-    D115: the agent-level search dimension is ``agent_name`` (the
+    The agent-level search dimension is ``agent_name`` (the
     flavor column was dropped from the agents table in migration
     000015). Integration tests drive a unique ``agent_name`` via the
     conftest ``agent_name=`` kwarg so the search query has a
@@ -118,9 +126,15 @@ def test_search_finds_entity(
 def test_search_empty_returns_empty_arrays() -> None:
     """Search for a non-existent term returns 200 with empty arrays."""
     results = _search("zzz-no-match-xyz-999")
-    assert results.get("agents") == [], f"expected empty agents, got {results.get('agents')}"
-    assert results.get("sessions") == [], f"expected empty sessions, got {results.get('sessions')}"
-    assert results.get("events") == [], f"expected empty events, got {results.get('events')}"
+    assert results.get("agents") == [], (
+        f"expected empty agents, got {results.get('agents')}"
+    )
+    assert results.get("sessions") == [], (
+        f"expected empty sessions, got {results.get('sessions')}"
+    )
+    assert results.get("events") == [], (
+        f"expected empty events, got {results.get('events')}"
+    )
 
 
 def test_search_partial_match() -> None:

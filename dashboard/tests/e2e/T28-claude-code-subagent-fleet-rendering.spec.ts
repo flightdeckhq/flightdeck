@@ -21,7 +21,7 @@ test.describe("T28 — Claude Code subagent fleet rendering", () => {
     await waitForFleetReady(page);
 
     // The child agent appears as its own swimlane row keyed on the
-    // 6-tuple identity (D126 § 2). Its relationship pill renders
+    // 6-tuple identity. Its relationship pill renders
     // "↳ <parent_name>" — the parent here is e2e-test-coding-agent
     // (the coding-agent's fresh-active session is the parent_session_id
     // anchor for the child's session_start).

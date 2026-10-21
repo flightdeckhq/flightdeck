@@ -96,7 +96,7 @@ type Querier interface {
 	// agent rather than a sentinel.
 	AgentSummary(ctx context.Context, params AgentSummaryParams) (*AgentSummaryResponse, error)
 
-	// MCP Protection Policy methods (D128). Implemented in
+	// MCP Protection Policy methods. Implemented in
 	// mcp_policy_store.go; the SQL all lives in that file per
 	// Rule 35.
 	EnsureGlobalMCPPolicy(ctx context.Context) error
@@ -128,7 +128,7 @@ type Session struct {
 	SessionID string `json:"session_id"`
 	Flavor    string `json:"flavor"`
 	AgentType string `json:"agent_type"`
-	// D115 identity columns (nullable for sessions that predate the
+	// Agent identity columns (nullable for sessions that predate the
 	// migration OR for lazy-created rows whose authoritative
 	// session_start never arrived; UpsertSession's COALESCE
 	// enrichment promotes these from NULL to real values on the
@@ -153,8 +153,9 @@ type Session struct {
 	Context map[string]any `json:"context,omitempty"`
 
 	// TokenName is the human-readable name of the access_tokens row
-	// that authenticated the session_start event (D095). Nullable:
-	// tok_dev-authenticated sessions and pre-Phase-5 rows carry NULL.
+	// that authenticated the session_start event. Nullable:
+	// tok_dev-authenticated sessions and rows that predate token
+	// attribution carry NULL.
 	// Preserved across token revocation (sessions.token_id clears via
 	// ON DELETE SET NULL but sessions.token_name is a static snapshot
 	// so the dashboard can attribute historical sessions even after
@@ -180,7 +181,7 @@ type Session struct {
 	// change is required.
 	CaptureEnabled bool `json:"capture_enabled"`
 
-	// D126 sub-agent observability columns. Both nullable, both
+	// Sub-agent observability columns. Both nullable, both
 	// populated only on sub-agent sessions (Claude Code Task
 	// subagent, CrewAI agent execution, LangGraph agent-bearing
 	// node). Root sessions and direct-SDK sessions carry NULL on
@@ -226,8 +227,8 @@ type Event struct {
 	TokensInput         *int           `json:"tokens_input,omitempty"`
 	TokensOutput        *int           `json:"tokens_output,omitempty"`
 	TokensTotal         *int           `json:"tokens_total,omitempty"`
-	TokensCacheRead     int64          `json:"tokens_cache_read"`     // D100
-	TokensCacheCreation int64          `json:"tokens_cache_creation"` // D100
+	TokensCacheRead     int64          `json:"tokens_cache_read"`     // prompt-cache tokens read; 0 when the provider reports none
+	TokensCacheCreation int64          `json:"tokens_cache_creation"` // prompt-cache tokens written; 0 when the provider reports none
 	LatencyMs           *int           `json:"latency_ms,omitempty"`
 	ToolName            *string        `json:"tool_name,omitempty"`
 	HasContent          bool           `json:"has_content"`
@@ -238,7 +239,7 @@ type Event struct {
 	AgentType           *string        `json:"agent_type,omitempty"`
 }
 
-// AgentSummary is one row in the v0.4.0 Phase 1 agent-level fleet
+// AgentSummary is one row in the agent-level fleet
 // response. Each row represents a persistent fleet entity (an
 // “agents“ row) with aggregated state computed across its sessions.
 type AgentSummary struct {
@@ -261,11 +262,10 @@ type AgentSummary struct {
 	// (CrewAI Agent.role, LangGraph node name, Claude Code Task
 	// agent_type) when this agent represents a sub-agent identity;
 	// nil for root agents. Read from any one of the agent's sessions
-	// — by D126 derivation every session under an agent_id shares
+	// — by the identity derivation every session under an agent_id shares
 	// the same 6-tuple input, so agent_role is uniform across them.
 	AgentRole *string `json:"agent_role,omitempty"`
-	// Topology classifies this agent's place in the sub-agent graph
-	// (D126):
+	// Topology classifies this agent's place in the sub-agent graph:
 	//   "lone"   — none of this agent's sessions carry a
 	//              parent_session_id and no other agent's sessions
 	//              reference one of ours as a parent
@@ -358,7 +358,7 @@ type RecentSession struct {
 const RecentSessionsPerAgent = 5
 
 // GetAgentFleet returns agents with rollup state, paginated. Accepts
-// optional agent_type filter (D114 vocabulary). Returns
+// optional agent_type filter (locked vocabulary). Returns
 // (agents, total_count, error).
 func (s *Store) GetAgentFleet(
 	ctx context.Context,
@@ -397,10 +397,10 @@ func (s *Store) GetAgentFleet(
 			a.user_name, a.hostname, a.first_seen_at, a.last_seen_at,
 			a.total_sessions, a.total_tokens,
 			COALESCE(rollup.state, '') AS state,
-			d126.agent_role,
-			d126.topology,
-			d161.os, d161.arch, d161.git_branch, d161.git_repo,
-			d161.orchestration, d161.python_version, d161.process_name
+			subagent.agent_role,
+			subagent.topology,
+			latest.os, latest.arch, latest.git_branch, latest.git_repo,
+			latest.orchestration, latest.python_version, latest.process_name
 		FROM agents a
 		LEFT JOIN LATERAL (
 			SELECT CASE
@@ -417,8 +417,8 @@ func (s *Store) GetAgentFleet(
 				)
 			END AS state
 		) rollup ON TRUE
-		LEFT JOIN LATERAL (` + d126AgentRollupSQL + `) d126 ON TRUE
-		LEFT JOIN LATERAL (` + agentLatestContextSQL + `) d161 ON TRUE` + filter + `
+		LEFT JOIN LATERAL (` + agentRollupSQL + `) subagent ON TRUE
+		LEFT JOIN LATERAL (` + agentLatestContextSQL + `) latest ON TRUE` + filter + `
 		-- ORDER BY: primary last_seen_at DESC matches user expectation
 		-- ("most recently active first"). Secondary client_type ASC
 		-- breaks last_seen_at ties deterministically -- critical for
@@ -599,13 +599,13 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 	return out, nil
 }
 
-// d126AgentRollupSQL is the LATERAL subquery that computes the D126
-// (sub-agent observability) per-agent rollup fields: agent_role and
+// agentRollupSQL is the LATERAL subquery that computes the
+// sub-agent observability per-agent rollup fields: agent_role and
 // topology. Shared by GetAgentFleet, ListAgents, and GetAgentByID so
 // the three projections stay byte-identical on the new columns.
 //
 //	agent_role — read from any one session under this agent_id whose
-//	             agent_role is non-null. By D126 identity derivation
+//	             agent_role is non-null. By the identity derivation
 //	             every session under one agent_id shares the same
 //	             6-tuple including agent_role, so any-row LIMIT 1 is
 //	             authoritative.
@@ -615,7 +615,7 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 //	             by a parent; secondary nesting is incidental. The
 //	             EXISTS subqueries hit the partial index
 //	             ``sessions_parent_session_id_idx`` directly.
-const d126AgentRollupSQL = `
+const agentRollupSQL = `
 	SELECT
 		(
 			SELECT s.agent_role
@@ -659,7 +659,7 @@ const d126AgentRollupSQL = `
 // (`FROM agents a` / `... agents a ...`). Adding a fourth call
 // site with a different alias produces a runtime planner error,
 // not a compile-time failure. Matches the existing convention
-// used by `d126AgentRollupSQL` above.
+// used by `agentRollupSQL` above.
 //
 // Returns nulls when the agent has no sessions OR the latest
 // session's context is null OR the JSONB key is missing — three
@@ -688,7 +688,7 @@ const agentLatestContextSQL = `
 //
 // IMPORTANT: references “a.agent_id“ from the outer query —
 // every caller MUST alias the outer “agents“ table as “a“
-// (same convention as “d126AgentRollupSQL“ and
+// (same convention as “agentRollupSQL“ and
 // “agentLatestContextSQL“ above).
 //
 // Used inside a “LEFT JOIN LATERAL ( ... ) rollup ON TRUE“
@@ -1150,7 +1150,7 @@ func (s *Store) CreateDirective(ctx context.Context, d Directive) (*Directive, e
 
 // EventContent represents a row in the event_content table.
 //
-// Phase 4 polish: “Input“ carries the embedding request's “input“
+// “Input“ carries the embedding request's “input“
 // parameter (string or list of strings) for “event_type=embeddings“
 // events. Chat events leave Input null and populate Messages instead.
 // The dashboard's drawer branches on event_type to render via the
@@ -1167,7 +1167,7 @@ type EventContent struct {
 	Tools        any     `json:"tools"`
 	Response     any     `json:"response"`
 	Input        any     `json:"input,omitempty"`
-	// D150 (Phase 7 Step 3.b): tool_input + tool_output carry the
+	// tool_input + tool_output carry the
 	// captured arguments and result for mcp_tool_call / mcp_prompt_get
 	// / LLM-side tool_call events. The dashboard branches on event_type
 	// to render the appropriate viewer; without these fields landing
@@ -1247,7 +1247,7 @@ func (s *Store) GetEventContent(ctx context.Context, eventID string) (*EventCont
 // given flavor in custom_directives. It updates last_seen_at for found
 // ones and returns the unknown fingerprints.
 //
-// Uniqueness is scoped to (fingerprint, flavor) per D090, so a
+// Uniqueness is scoped to (fingerprint, flavor), so a
 // fingerprint registered under a different flavor is still reported as
 // unknown for this flavor and the caller (sensor) will re-register it.
 //
@@ -1456,8 +1456,8 @@ func (s *Store) GetCustomDirectives(ctx context.Context, flavor string) ([]Custo
 // context (no runtime data to contribute). Closed and lost sessions
 // are INCLUDED -- the CONTEXT panel describes the composition of
 // the fleet (what frameworks/OSes/git branches this deployment has
-// ever run) rather than a snapshot of live agents. See
-// DECISIONS.md D097. Previously the query restricted to
+// ever run) rather than a snapshot of live agents. An earlier
+// version of the query restricted to
 // “state IN ('active', 'idle', 'stale')“ which caused the whole
 // panel to vanish the moment every session closed -- a surprising
 // UX that hid useful composition data from operators running

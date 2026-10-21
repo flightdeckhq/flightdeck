@@ -8,6 +8,7 @@ section drives ``ToolNode`` against tools loaded via
 ``langchain-mcp-adapters``; the sensor sees the call through the
 patched ``ClientSession`` regardless of the surrounding graph runtime.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -52,7 +53,8 @@ def _run_chat() -> None:
     t0 = time.monotonic()
     graph.compile().invoke({"text": "hi"})
     print_result(
-        "StateGraph.compile().invoke", True,
+        "StateGraph.compile().invoke",
+        True,
         int((time.monotonic() - t0) * 1000),
     )
 
@@ -98,7 +100,8 @@ def _run_mcp(session_id: str) -> None:
         t0 = time.monotonic()
         await node.ainvoke({"messages": [ai_msg]})
         print_result(
-            "ToolNode.ainvoke(echo)", True,
+            "ToolNode.ainvoke(echo)",
+            True,
             int((time.monotonic() - t0) * 1000),
         )
 

@@ -2,14 +2,14 @@
  * T56 — Every sub-agent swimlane row renders at least one event
  * circle on the live stack.
  *
- * Regression guard for the Phase 2 Fold-A windowing fix. The
+ * Regression guard for the recent-sessions windowing. The
  * ``AgentSummary.recent_sessions`` rollup on ``/v1/fleet`` carries
  * each agent's most-recent sessions independent of the paginated
  * ``/v1/sessions`` page; the swimlane row reads its event circles
  * from those sessions via the merge in
  * ``dashboard/src/store/fleet.ts::buildFlavors``.
  *
- * Pre-fix shape of the bug: 16 of 17 sub-agent rows had
+ * Shape of the guarded bug: 16 of 17 sub-agent rows had
  * ``data-topology="child"`` but rendered with zero event circles
  * regardless of which time window the operator selected, because
  * ``buildFlavors`` couldn't find sessions for them in the

@@ -1,4 +1,4 @@
-"""Integration tests for MCP Protection Policy event pipeline (D131).
+"""Integration tests for MCP Protection Policy event pipeline.
 
 Exercises the full pipeline downstream of the sensor: POST event
 to ingestion → NATS publish → worker consume → events table
@@ -132,7 +132,7 @@ def _policy_decision_event(
     """Build a synthesized policy_mcp_warn / policy_mcp_block payload
     matching the sensor's wire shape.
 
-    ``originating_event_id`` / ``originating_call_context`` are D149
+    ``originating_event_id`` / ``originating_call_context`` are the
     chain fields the sensor stamps when the event fires inside an
     LLM call window. Tests that exercise the chain pass them; the
     rest leave the defaults None so existing payload shapes stay
@@ -190,7 +190,7 @@ def _name_changed_event(session_id: str, flavor: str) -> dict:
     return payload
 
 
-# ----- D131 — three new event types land end-to-end -----------------
+# ----- Three MCP policy event types land end-to-end -----------------
 
 
 def test_policy_mcp_warn_lands_with_payload(pipeline_flavors: set[str]) -> None:
@@ -257,7 +257,7 @@ def test_mcp_server_name_changed_lands_with_payload(pipeline_flavors: set[str]) 
 def test_originating_event_id_chain_persists_end_to_end(
     pipeline_flavors: set[str],
 ) -> None:
-    """D149 — sensor-minted UUIDs + ``originating_event_id`` chain.
+    """Sensor-minted UUIDs + ``originating_event_id`` chain.
 
     The sensor mints the UUID for an LLM-call event at emission time
     and stamps `originating_event_id` on follow-on events emitted
@@ -268,9 +268,9 @@ def test_originating_event_id_chain_persists_end_to_end(
 
     Sensor unit tests cover the minting / chain-management logic;
     this test guards the storage roundtrip the worker is responsible
-    for. Pre-D149 the sensor never minted UUIDs and the field didn't
-    exist; pre-Phase-7-Step-2 the worker dropped passthrough fields
-    not in EventPayload's typed shape.
+    for. The worker only persists fields declared in EventPayload's
+    typed shape, so the chain fields must be declared there
+    explicitly.
     """
     sid = str(uuid.uuid4())
     flavor = f"test-d149-chain-{uuid.uuid4().hex[:6]}"
@@ -305,7 +305,7 @@ def test_originating_event_id_chain_persists_end_to_end(
     )
 
 
-# ----- D131 — ingestion validation rejects malformed payloads ------
+# ----- Ingestion validation rejects malformed payloads --------------
 
 
 def test_policy_mcp_warn_missing_fingerprint_rejected(
@@ -338,7 +338,7 @@ def test_mcp_server_name_changed_missing_name_old_rejected(
     assert _post_event(pipeline_flavors, payload) == 400
 
 
-# ----- D139 mcp_policy_user_remembered ---------------------------
+# ----- mcp_policy_user_remembered --------------------------------
 
 
 def _user_remembered_event(session_id: str, flavor: str) -> dict:
@@ -382,7 +382,7 @@ def test_mcp_policy_user_remembered_missing_decided_at_rejected(
     assert _post_event(pipeline_flavors, payload) == 400
 
 
-# ----- D140 step 6.6 A2 — mcp_server_attached live-context UPSERT --
+# ----- mcp_server_attached live-context UPSERT ---------------------
 
 
 def _attached_event(
@@ -394,7 +394,7 @@ def _attached_event(
     fingerprint: str = "abcdef0123456789",
 ) -> dict:
     """Build a synthesised mcp_server_attached payload matching the
-    sensor's wire shape (D140)."""
+    sensor's wire shape."""
     payload = _baseline_session_start(session_id, flavor)
     payload["event_type"] = "mcp_server_attached"
     payload.update(
@@ -421,7 +421,7 @@ def _wait_for_context_mcp_server(
 ) -> dict | None:
     """Poll GET /v1/sessions/{id} until
     ``session.context.mcp_servers`` contains an element with the
-    given ``name``, or return None on timeout. Used by D140 tests
+    given ``name``, or return None on timeout. Used by the attach tests
     to assert the worker UPSERT landed on the live row within the
     expected window."""
     deadline = time.monotonic() + timeout
@@ -444,7 +444,7 @@ def _wait_for_context_mcp_server(
 def test_mcp_server_attached_populates_session_context(
     pipeline_flavors: set[str],
 ) -> None:
-    """D140 — emitting mcp_server_attached after session_start
+    """Emitting mcp_server_attached after session_start
     populates sessions.context.mcp_servers within the SLA window so
     the dashboard SessionDrawer panel renders live."""
     sid = str(uuid.uuid4())
@@ -484,7 +484,7 @@ def test_mcp_server_attached_populates_session_context(
 
 
 def test_mcp_server_attached_idempotent_replay(pipeline_flavors: set[str]) -> None:
-    """D140 — re-emitting the same mcp_server_attached payload must
+    """Re-emitting the same mcp_server_attached payload must
     not create a duplicate entry in context.mcp_servers. Tuple dedup
     by (name, server_url) per the locked design."""
     sid = str(uuid.uuid4())
@@ -517,7 +517,7 @@ def test_mcp_server_attached_idempotent_replay(pipeline_flavors: set[str]) -> No
 def test_mcp_server_attached_distinct_tuples_both_land(
     pipeline_flavors: set[str],
 ) -> None:
-    """D140 — tuple dedup is by (name, server_url). Distinct tuples
+    """Tuple dedup is by (name, server_url). Distinct tuples
     are independent attaches and must both land in
     context.mcp_servers."""
     sid = str(uuid.uuid4())
@@ -567,9 +567,9 @@ def test_mcp_server_attached_distinct_tuples_both_land(
     assert names == ["maps", "search"]
 
 
-# ----- Step 6.7 A1 — SQL aggregation includes MCP-policy event types -----
+# ----- SQL aggregation includes MCP-policy event types -----
 #
-# Pre-fix the API listing query's policy_event_types[] subquery only
+# Guarded regression: the API listing query's policy_event_types[] subquery only
 # matched the three token-budget event types (policy_warn /
 # policy_degrade / policy_block). Sessions that emitted MCP-policy
 # events reported policy_event_types=[] on /v1/sessions, which made
@@ -627,11 +627,13 @@ def test_listing_aggregates_all_four_mcp_policy_event_types(
         "mcp_server_name_changed",
         "mcp_policy_user_remembered",
     ):
-        assert _wait_for_event(sid, et, timeout=10.0) is not None, f"{et} did not land within 10s"
+        assert _wait_for_event(sid, et, timeout=10.0) is not None, (
+            f"{et} did not land within 10s"
+        )
 
     # The list endpoint's policy_event_types[] aggregation must
     # include all four MCP-policy types alongside any token-budget
-    # types. Pre-fix this array was empty for sessions that only
+    # types. In the guarded regression this array was empty for sessions that only
     # emitted MCP-policy events.
     deadline = time.monotonic() + 10.0
     row = None

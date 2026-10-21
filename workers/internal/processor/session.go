@@ -16,8 +16,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-const reconcilerInterval = 60 * time.Second
-
 // identityFromEvent extracts the agent identity fields from an
 // event payload. The ingestion API has already validated them (UUID
 // shape, vocabulary), so the worker trusts the values verbatim.
@@ -633,8 +631,11 @@ func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.Eve
 	}
 }
 
-// StartReconciler runs a background loop every 60s to mark stale/lost
-// sessions and to reap orphaned `lost` rows after `orphanTimeout`.
+// StartReconciler runs a background loop that ticks every `interval`
+// to mark stale/lost sessions and to reap orphaned `lost` rows after
+// `orphanTimeout`. The interval comes from
+// FLIGHTDECK_RECONCILER_INTERVAL_SECS (60 s by default; the dev stack
+// lowers it so the integration tests that wait for a tick stay short).
 // The reaper closes sessions whose owning sensor / plugin never sent
 // session_end (process crash, kill -9, missed lifecycle hook) and
 // stamps close_reason="orphan_timeout" via a synthetic session_end so
@@ -642,9 +643,10 @@ func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.Eve
 // alongside happy-path shutdowns.
 func (sp *SessionProcessor) StartReconciler(
 	ctx context.Context,
+	interval time.Duration,
 	orphanTimeout time.Duration,
 ) {
-	ticker := time.NewTicker(reconcilerInterval)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {

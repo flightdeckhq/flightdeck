@@ -28,9 +28,12 @@ import { execSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
+  constants as fsConstants,
   mkdirSync,
   openSync,
   readFileSync,
+  realpathSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -41,7 +44,8 @@ import {
   tmpdir,
   userInfo,
 } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import nodePath from "node:path";
+import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { deriveAgentId, NAMESPACE_FLIGHTDECK } from "./agent_id.mjs";
@@ -81,6 +85,87 @@ export const SESSION_END_HOOK_BUDGET_MS = 1500;
 // same script, re-invoked by the SessionEnd hook with the hook event on
 // stdin and the resolved Flightdeck session id in CLAUDE_SESSION_ID.
 export const SESSION_END_WORKER_FLAG = "--session-end-worker";
+
+// How long the SessionEnd hook waits for its detached worker before
+// letting go of it. With a local or fast control plane the worker's
+// flush plus session_end finish within this window, so the events are
+// delivered before Claude Code exits (and before an ephemeral runner
+// tears the machine down). It leaves the rest of the 1.5 s budget for
+// Node start-up and the marker clearing, with margin for a loaded
+// machine; a slower server simply leaves the worker running detached
+// past it.
+export const SESSION_END_WORKER_GRACE_MS = 800;
+
+// Overall deadline for the detached SessionEnd worker's transcript
+// flush. A backlog is normally one or two turns, but against a dead
+// server every POST aborts only after TIMEOUT_MS, so an orphaned worker
+// would otherwise run for 2 s per unflushed turn. 20 s bounds that at
+// about ten aborted POSTs while still clearing a long backlog on a
+// healthy stack, where a POST takes milliseconds; the session_end POST
+// itself is sent regardless.
+export const SESSION_END_WORKER_DEADLINE_MS = 20000;
+
+// Bounds on the free-text values the plugin copies from the hook payload
+// and the environment. Claude Code's own values are short identifiers
+// (startup, sdk-cli, prompt_input_exit); 64 characters admits every
+// known one and bounds a hostile environment without truncating a real
+// value. Identity strings (MCP server key and source, tool name, tool
+// use id) get the same 256-character cap ingestion applies to
+// agent_role, the comparable identity field.
+export const MAX_SIGNAL_CHARS = 64;
+export const MAX_MCP_IDENTITY_CHARS = 256;
+// A Claude Code version is a semver string ("2.1.306", possibly with a
+// pre-release or build suffix); 64 characters is far above any real one.
+export const MAX_VERSION_CHARS = 64;
+const SEMVER_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// Control characters are the point of this pattern.
+const CONTROL_CHARS_RE = /[\x00-\x1f\x7f]/;
+
+/**
+ * A free-text value from the hook payload or the environment, or null
+ * when it is not a non-empty string, exceeds ``max`` characters or
+ * contains control characters. The values stay open pass-throughs;
+ * they are only bounded.
+ */
+export function boundedToken(value, max) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed === "" || trimmed.length > max || CONTROL_CHARS_RE.test(trimmed)) return null;
+  return trimmed;
+}
+
+/** A Claude Code version string, or null unless it is a bounded semver. */
+export function boundedVersion(value) {
+  const token = boundedToken(value, MAX_VERSION_CHARS);
+  return token && SEMVER_RE.test(token) ? token : null;
+}
+
+/** An identity string cut at MAX_MCP_IDENTITY_CHARS; non-strings pass through. */
+function boundedIdentity(value) {
+  return typeof value === "string" ? value.slice(0, MAX_MCP_IDENTITY_CHARS) : value;
+}
+
+/**
+ * The control-plane URL without its userinfo, for log lines: a server
+ * configured as ``https://user:token@host`` must not leak the token into
+ * stderr or the worker log.
+ */
+export function redactServerUrl(server) {
+  return String(server).replace(/^([a-z][a-z0-9+.-]*:\/\/)[^@/]*@/i, "$1");
+}
+
+// The detached worker's stderr log holds one line per failed POST. It
+// is truncated once it passes this size rather than growing without
+// bound on a machine whose control plane is down for weeks; 256 KiB is
+// thousands of lines, far more than a diagnosis needs.
+export const SESSION_END_WORKER_LOG_MAX_BYTES = 256 * 1024;
+
+// Placeholder for a failed tool's error text when capture is off. The
+// text is content (a command's stderr, an Edit failure quoting the
+// old_string it could not find, a token a failed command printed), so
+// it follows the capture knobs; the block's class and abort flag stay.
+export const REDACTED_ERROR_MESSAGE = "<redacted>";
 
 // Tool error messages stay inline on the event payload, next to the
 // metadata, so a failed tool is readable in the dashboard without a
@@ -159,7 +244,18 @@ export function parseBool(value, fallback) {
  *     opt out on the plugin with ``FLIGHTDECK_CAPTURE_PROMPTS=false``.
  */
 export function resolveConfig(env = process.env) {
-  const server = (env.FLIGHTDECK_SERVER ?? "").trim() || "http://localhost:4000";
+  const rawServer = (env.FLIGHTDECK_SERVER ?? "").trim() || "http://localhost:4000";
+  // fetch() refuses a URL that carries credentials, so a
+  // "https://user:token@host" server could never work and would only
+  // leak the token into every failed-POST log line. Strip the userinfo
+  // and say so; the bearer token is the one credential the plugin uses.
+  const server = redactServerUrl(rawServer);
+  if (server !== rawServer && env.FLIGHTDECK_QUIET !== "1") {
+    process.stderr.write(
+      "[flightdeck] WARN: FLIGHTDECK_SERVER carries credentials in the URL; " +
+        "they are ignored. Authenticate with FLIGHTDECK_TOKEN.\n",
+    );
+  }
   const explicitToken = (env.FLIGHTDECK_TOKEN ?? "").trim();
   const token = explicitToken || "tok_dev";
   // Warn loudly on stderr when the seed dev token is in use. Loud is
@@ -258,7 +354,11 @@ export function getSessionId(hookEvent = {}) {
       .slice(0, 32);
 
   try {
-    mkdirSync(dir, { recursive: true });
+    // Owner-only: the directory holds session markers, the cached
+    // model name, the MCP policy cache and the SessionEnd worker log,
+    // none of which another user of a shared temp root should read.
+    // The mode applies when the directory is created.
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
     try {
       const existing = readFileSync(file, "utf8").trim();
       if (existing) return existing;
@@ -349,25 +449,10 @@ function markerKeyFor(nativeSessionId) {
   return createHash("sha256").update(nativeSessionId).digest("hex").slice(0, 16);
 }
 
-/**
- * Claude Code version from ``CLAUDE_CODE_EXECPATH`` (the native
- * installer keeps each build under ``.../versions/<semver>``). The
- * transcript's ``version`` field is preferred when a transcript exists;
- * this covers the first SessionStart, which fires before the transcript
- * is written. Null when the variable is unset or its leaf is not a
- * version.
- */
-export function claudeCodeVersionFromEnv(env = process.env) {
-  const execPath = (env.CLAUDE_CODE_EXECPATH || "").trim();
-  if (!execPath) return null;
-  const leaf = execPath.split(/[\\/]/).filter(Boolean).pop() || "";
-  return /^\d+\.\d+\.\d+/.test(leaf) ? leaf : null;
-}
-
 // Well-known CI environment markers, checked in order. The generic
 // ``CI=true`` convention is the fallback when no provider-specific
 // variable identifies the system.
-const CI_PROVIDER_ENV = [
+export const CI_PROVIDER_ENV = [
   ["GITHUB_ACTIONS", "github"],
   ["GITLAB_CI", "gitlab"],
   ["CIRCLECI", "circleci"],
@@ -416,22 +501,25 @@ export function detectCiProvider(env = process.env) {
  */
 export function collectClaudeCodeSignals(env = process.env, extras = {}) {
   const signals = {};
+  // The native id is reported only in its canonical UUID form; anything
+  // else still keys the marker file (it is only hashed there) but does
+  // not go on the wire.
   const nativeSessionId =
-    (typeof extras.claudeCodeSessionId === "string" && extras.claudeCodeSessionId) ||
-    (env.CLAUDE_CODE_SESSION_ID || "").trim() ||
-    null;
-  if (nativeSessionId) signals.claude_code_session_id = nativeSessionId;
-  if (typeof extras.sessionSource === "string" && extras.sessionSource) {
-    signals.session_source = extras.sessionSource;
+    boundedToken(extras.claudeCodeSessionId, MAX_SIGNAL_CHARS) ||
+    boundedToken(env.CLAUDE_CODE_SESSION_ID, MAX_SIGNAL_CHARS);
+  if (nativeSessionId && UUID_RE.test(nativeSessionId)) {
+    signals.claude_code_session_id = nativeSessionId;
   }
-  const entrypoint = (env.CLAUDE_CODE_ENTRYPOINT || "").trim();
+  const sessionSource = boundedToken(extras.sessionSource, MAX_SIGNAL_CHARS);
+  if (sessionSource) signals.session_source = sessionSource;
+  const entrypoint = boundedToken(env.CLAUDE_CODE_ENTRYPOINT, MAX_SIGNAL_CHARS);
   if (entrypoint) signals.entrypoint = entrypoint;
   const attended = parseBool(env.CLAUDE_CODE_SESSION_ATTENDED, null);
   if (attended !== null) signals.attended = attended;
   if (parseBool(env.CLAUDE_CODE_CHILD_SESSION, false)) signals.child_session = true;
   if (parseBool(env.CLAUDE_CODE_REMOTE, false)) {
     signals.remote = true;
-    const remoteSessionId = (env.CLAUDE_CODE_REMOTE_SESSION_ID || "").trim();
+    const remoteSessionId = boundedToken(env.CLAUDE_CODE_REMOTE_SESSION_ID, MAX_SIGNAL_CHARS);
     if (remoteSessionId) signals.remote_session_id = remoteSessionId;
   }
   const ciProvider = detectCiProvider(env);
@@ -531,7 +619,11 @@ export function collectContext(extras = {}) {
   // Identify Claude Code itself in context.frameworks so the FRAMEWORK
   // facet in Investigate picks it up alongside sensor-reported frameworks.
   // Version comes from the transcript when available.
-  const version = extras.claudeCodeVersion || claudeCodeVersionFromEnv();
+  // Only the transcript's version is trusted. CLAUDE_CODE_EXECPATH is
+  // not used: when one Claude Code session is started from another's
+  // shell it names the outermost binary, not the one hosting this
+  // session, and a wrong version is worse than none.
+  const version = boundedVersion(extras.claudeCodeVersion);
   frameworks.push(version ? `claude-code/${version}` : "claude-code");
   ctx.frameworks = frameworks;
   if (version) ctx.claude_code_version = version;
@@ -711,10 +803,13 @@ export function parseMcpToolName(name) {
 export function resolveMcpToolIdentity(hookEvent, toolName) {
   const parsed = parseMcpToolName(toolName);
   if (!parsed) return null;
+  // A hint is honoured only when it is an object whose name is a
+  // bounded, control-character-free string; anything else falls back
+  // to the parsed name so a hostile hint cannot rename the server.
   const hint = hookEvent && hookEvent.mcp_server;
   const hintName =
-    hint && typeof hint === "object" && typeof hint.name === "string" && hint.name
-      ? hint.name
+    hint && typeof hint === "object" && !Array.isArray(hint)
+      ? boundedToken(hint.name, MAX_MCP_IDENTITY_CHARS)
       : null;
   if (!hintName) return parsed;
   const hintSource =
@@ -749,6 +844,17 @@ export function hookDurationMs(hookEvent) {
 }
 
 /**
+ * Whether a failed tool's error text may leave the machine. Claude
+ * Code's ``error`` string is whatever the tool produced -- a command's
+ * stderr, an Edit failure quoting the ``old_string`` it could not find,
+ * a token a failed command printed -- so it is content and can carry
+ * either tool input or tool output. Both knobs must be on.
+ */
+export function captureErrorText(cfg) {
+  return Boolean(cfg && cfg.capturePrompts && cfg.captureToolInputs);
+}
+
+/**
  * Structured error block for a failed tool call, in the shape the
  * sensor's error taxonomy uses (``error_type`` / ``error_class`` /
  * ``message``). Claude Code reports the failure as a free-form
@@ -756,14 +862,19 @@ export function hookDurationMs(hookEvent) {
  * Claude Code as an abort rather than as an error the tool reported),
  * so the taxonomy stays coarse: ``error_type=other``,
  * ``error_class=PluginToolError``, with ``interrupted`` carrying the
- * abort flag when the hook provides it. A failure hook that carries no
+ * abort flag when the hook provides it. The message is content and is
+ * sent only when ``captureText`` is true (see captureErrorText);
+ * otherwise it is the fixed REDACTED_ERROR_MESSAGE, so the block still
+ * says that the tool failed and how. A failure hook that carries no
  * error text still gets a block, otherwise the event would be
  * indistinguishable from a success.
  */
-export function buildToolErrorBlock(hookEvent) {
+export function buildToolErrorBlock(hookEvent, captureText) {
   const raw = hookEvent ? hookEvent.error : null;
   let message;
-  if (raw == null) {
+  if (!captureText) {
+    message = REDACTED_ERROR_MESSAGE;
+  } else if (raw == null) {
     message = "tool failed (Claude Code reported no error detail)";
   } else if (typeof raw === "string") {
     message = raw;
@@ -1197,7 +1308,9 @@ async function emitMCPToolCallEvent({
   // the dashboard's MCPEventDetails error block renders consistently
   // with sensor-produced errors.
   const errorPayload =
-    hookName === "PostToolUseFailure" ? buildToolErrorBlock(hookEvent) : null;
+    hookName === "PostToolUseFailure"
+      ? buildToolErrorBlock(hookEvent, captureErrorText(cfg))
+      : null;
 
   // Real tool duration as measured by Claude Code; null on versions
   // that do not send it (never the hook's own process runtime).
@@ -1206,24 +1319,32 @@ async function emitMCPToolCallEvent({
   const payload = {
     ...basePayload,
     event_type: "mcp_tool_call",
-    server_name: mcpIdentity.server_name,
+    server_name: boundedIdentity(mcpIdentity.server_name),
     transport,
-    tool_name: mcpIdentity.tool_name,
+    tool_name: boundedIdentity(mcpIdentity.tool_name),
     duration_ms,
     timestamp: new Date().toISOString(),
   };
-  // Server identity as Claude Code holds it: the key plus where the
-  // server was declared (plugin / project / user). Omitted only when
-  // the tool name was unparseable and the hook carried no mcp_server.
-  if (mcpIdentity.server_name) {
-    payload.mcp_server = {
-      name: mcpIdentity.server_name,
-      source: mcpIdentity.source ?? null,
-    };
+  // mcp_server is a pass-through of what Claude Code sent ({name,
+  // source}, Claude Code 2.1.274+) and is absent when the hook carried
+  // none; server_name above is the resolved identity on every version.
+  // Only a well-formed object goes through: a string name within the
+  // identity cap and a source that is a string within the cap, null,
+  // or absent -- exactly what ingestion accepts.
+  const hint = hookEvent.mcp_server;
+  if (hint && typeof hint === "object" && !Array.isArray(hint)) {
+    const name = boundedToken(hint.name, MAX_MCP_IDENTITY_CHARS);
+    const sourceOk =
+      hint.source === undefined ||
+      hint.source === null ||
+      boundedToken(hint.source, MAX_MCP_IDENTITY_CHARS) !== null;
+    if (name && sourceOk) {
+      payload.mcp_server =
+        hint.source === undefined ? { name: hint.name } : { name: hint.name, source: hint.source };
+    }
   }
-  if (typeof hookEvent.tool_use_id === "string" && hookEvent.tool_use_id) {
-    payload.tool_use_id = hookEvent.tool_use_id;
-  }
+  const toolUseId = boundedToken(hookEvent.tool_use_id, MAX_MCP_IDENTITY_CHARS);
+  if (toolUseId) payload.tool_use_id = toolUseId;
 
   // Tool args + result live in event_content's dedicated tool_input /
   // tool_output columns, not inline on the payload. Plugin parity
@@ -1756,8 +1877,13 @@ async function emitSubagentEvent({
  */
 function logUnreachable(server, shortError) {
   process.stderr.write(
-    `[flightdeck] cannot reach ${server}: ${shortError}. events dropped for this session.\n`,
+    `[flightdeck] cannot reach ${redactServerUrl(server)}: ${redactUserinfo(shortError)}. events dropped for this session.\n`,
   );
+}
+
+/** Strip the userinfo of every URL inside free text (error messages quote URLs). */
+export function redactUserinfo(text) {
+  return String(text).replace(/\b([a-z][a-z0-9+.-]*:\/\/)[^@\s/]*@/gi, "$1");
 }
 
 // ``fetch failed`` is the generic umbrella Node uses to wrap underlying
@@ -1821,7 +1947,7 @@ function modelCachePath(sessionId) {
 function cacheSessionModel(sessionId, model) {
   if (!model) return;
   try {
-    mkdirSync(join(tmpdir(), "flightdeck-plugin"), { recursive: true });
+    mkdirSync(join(tmpdir(), "flightdeck-plugin"), { recursive: true, mode: 0o700 });
     writeFileSync(modelCachePath(sessionId), String(model));
   } catch {
     /* silent */
@@ -1909,7 +2035,7 @@ async function ensureSessionStarted(server, token, sessionId, basePayload, extra
   await postEvent(server, token, sessionId, startPayload);
 
   try {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
     writeFileSync(startFile, new Date().toISOString());
   } catch {
     /* silent */
@@ -1926,7 +2052,7 @@ function markEmittedTurn(messageId) {
   const dir = join(tmpdir(), "flightdeck-plugin");
   const file = join(dir, `emitted-${messageId}.txt`);
   try {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
     const fd = openSync(file, "wx");
     try {
       writeFileSync(fd, new Date().toISOString());
@@ -1988,8 +2114,20 @@ async function flushPostCallTurns({
   basePayload,
   turns,
   capturePrompts,
+  deadline = null,
 }) {
+  let seen = 0;
   for (const turn of turns) {
+    seen += 1;
+    // The detached SessionEnd worker passes an overall deadline so an
+    // orphaned backlog against a dead server stops instead of paying
+    // one aborted POST per turn; the other callers run unbounded.
+    if (deadline !== null && Date.now() > deadline) {
+      process.stderr.write(
+        `flightdeck: SessionEnd worker deadline reached; ${turns.length - seen + 1} transcript turn(s) left unflushed.\n`,
+      );
+      break;
+    }
     if (!markEmittedTurn(turn.messageId)) continue;
     const tokens = tokensFromUsage(turn.usage);
     const latencyMs = computeLatencyMs(turn.userTurn, turn.lastTimestamp);
@@ -2141,6 +2279,17 @@ export function writeHookDecision(permissionDecision, permissionDecisionReason) 
   process.stdout.write(JSON.stringify(out) + "\n");
 }
 
+// A project server may itself be named with a plugin_ prefix
+// (plugin_my_server in .mcp.json): its tool name then parses to the
+// plugin:my:server key while the fingerprint keeps the literal name,
+// so both forms are matched -- as emitMCPToolCallEvent does -- and the
+// block / ask gate does not fail open for it.
+function findFingerprint(fingerprints, identity) {
+  return fingerprints.find(
+    (f) => f.name === identity.server_name || f.name === identity.server_key,
+  );
+}
+
 export function dispatchMcpPolicyPreToolUse(cfg, hookEvent) {
   const toolName =
     hookEvent.tool_name
@@ -2169,7 +2318,7 @@ export function dispatchMcpPolicyPreToolUse(cfg, hookEvent) {
   const fingerprints = loadMcpServerFingerprints(
     hookEvent.cwd || process.cwd(),
   );
-  const fp = fingerprints.find((f) => f.name === parsed.server_name);
+  const fp = findFingerprint(fingerprints, parsed);
   if (!fp || !fp.endpoint) {
     // Unknown server name — can't fingerprint, can't enforce.
     // Fail-open per Rule 28.
@@ -2228,7 +2377,7 @@ export async function dispatchMcpPolicyPostToolUse({
   const fingerprints = loadMcpServerFingerprints(
     hookEvent.cwd || process.cwd(),
   );
-  const fp = fingerprints.find((f) => f.name === parsed.server_name);
+  const fp = findFingerprint(fingerprints, parsed);
   if (!fp || !fp.endpoint) return;
 
   const decision = classifyServer(policies, fp.endpoint, fp.name);
@@ -2375,7 +2524,7 @@ async function main() {
   if (hookName === "SessionEnd" && !sessionEndWorker) {
     clearSessionCacheFiles(hookEvent, outerSessionId);
     clearSessionPolicyCache(outerSessionId);
-    spawnDetachedSessionEnd(input, outerSessionId);
+    await spawnDetachedSessionEnd(input, outerSessionId);
     return;
   }
 
@@ -2583,6 +2732,7 @@ async function main() {
       basePayload,
       turns: getTurns(),
       capturePrompts: cfg.capturePrompts,
+      deadline: Date.now() + SESSION_END_WORKER_DEADLINE_MS,
     });
     const payload = {
       ...basePayload,
@@ -2607,9 +2757,8 @@ async function main() {
     // trigger is not lost to the coarse close_reason bucket. Every one
     // of them is a clean exit from the operator's perspective, so
     // close_reason stays normal_exit.
-    if (typeof hookEvent.reason === "string" && hookEvent.reason) {
-      payload.end_reason = hookEvent.reason;
-    }
+    const endReason = boundedToken(hookEvent.reason, MAX_SIGNAL_CHARS);
+    if (endReason) payload.end_reason = endReason;
     await postEvent(cfg.server, cfg.token, sessionId, payload);
     return;
   }
@@ -2704,17 +2853,17 @@ async function main() {
     return;
   }
 
-  // PostToolUse: flush any un-emitted LLM turns from the transcript
-  // before emitting the tool_call. The assistant record that triggered
-  // this tool invocation is already in the transcript by the time
-  // PostToolUse fires, so its post_call becomes visible in the
+  // PostToolUse and PostToolUseFailure: flush any un-emitted LLM turns
+  // from the transcript before emitting the tool_call. The assistant
+  // record that triggered this tool invocation is already in the
+  // transcript by the time either hook fires, so its post_call becomes visible in the
   // dashboard in real time rather than batching at Stop. Ordering:
   // post_call (LLM decision) precedes tool_call (tool execution),
   // matching transcript order. markEmittedTurn dedup keeps Stop and
   // SessionEnd idempotent. Wrapped in try/catch so a transcript read
   // failure cannot block the tool_call emission -- readTurns already
   // returns [] on read errors, but belt-and-suspenders.
-  if (hookName === "PostToolUse") {
+  if (hookName === "PostToolUse" || hookName === "PostToolUseFailure") {
     try {
       await flushPostCallTurns({
         cfg,
@@ -2725,9 +2874,11 @@ async function main() {
       });
     } catch (err) {
       process.stderr.write(
-        `flightdeck: post_call flush on PostToolUse failed: ${err?.message || err}\n`,
+        `flightdeck: post_call flush on ${hookName} failed: ${err?.message || err}\n`,
       );
     }
+  }
+  if (hookName === "PostToolUse") {
     // Reactive de-facto-approval write. When an
     // mcp__<server>__<tool> call succeeded AND the server was
     // unknown-allowlist on this session AND no remembered
@@ -2862,11 +3013,10 @@ async function main() {
     has_content: hasContent,
     content,
   };
-  if (typeof hookEvent.tool_use_id === "string" && hookEvent.tool_use_id) {
-    payload.tool_use_id = hookEvent.tool_use_id;
-  }
+  const toolUseId = boundedToken(hookEvent.tool_use_id, MAX_MCP_IDENTITY_CHARS);
+  if (toolUseId) payload.tool_use_id = toolUseId;
   if (hookName === "PostToolUseFailure") {
-    payload.error = buildToolErrorBlock(hookEvent);
+    payload.error = buildToolErrorBlock(hookEvent, captureErrorText(cfg));
   }
   await postEvent(cfg.server, cfg.token, sessionId, payload);
 }
@@ -2877,18 +3027,18 @@ async function main() {
  * budget. The child gets the raw hook event on stdin and the already
  * resolved Flightdeck session id through CLAUDE_SESSION_ID (the hook
  * process has cleared the marker file by now, so the child cannot
- * re-derive it). detached + unref lets the hook exit while the child
- * runs; stdout is dropped and stderr appends to a log under the
+ * re-derive it). The hook waits up to SESSION_END_WORKER_GRACE_MS for
+ * the child to exit, so a fast server gets the events before Claude
+ * Code exits; after that detached + unref lets the hook exit while the
+ * child runs. stdout is dropped and stderr appends to a log under the
  * plugin tmpdir so a failed POST stays diagnosable. FLIGHTDECK_QUIET
  * stops the child from repeating the default-token warning the hook
  * already printed.
  */
-function spawnDetachedSessionEnd(rawInput, sessionId) {
+async function spawnDetachedSessionEnd(rawInput, sessionId) {
   let stderrTarget = "ignore";
   try {
-    const dir = join(tmpdir(), "flightdeck-plugin");
-    mkdirSync(dir, { recursive: true });
-    stderrTarget = openSync(join(dir, "session-end-worker.log"), "a");
+    stderrTarget = openSessionEndWorkerLog(join(tmpdir(), "flightdeck-plugin"));
   } catch {
     stderrTarget = "ignore";
   }
@@ -2912,7 +3062,16 @@ function spawnDetachedSessionEnd(rawInput, sessionId) {
       /* the worker exited before reading; nothing left to hand over */
     });
     child.stdin.end(rawInput);
-    child.unref();
+    await new Promise((settle) => {
+      const timer = setTimeout(() => {
+        child.unref();
+        settle();
+      }, SESSION_END_WORKER_GRACE_MS);
+      child.once("exit", () => {
+        clearTimeout(timer);
+        settle();
+      });
+    });
   } catch (err) {
     process.stderr.write(
       `[flightdeck] WARN: SessionEnd worker spawn failed: ${err?.message || err}\n`,
@@ -2929,24 +3088,75 @@ function spawnDetachedSessionEnd(rawInput, sessionId) {
 }
 
 /**
- * True when this file is the process entry point. The plain string
- * comparison the guard used before failed on Windows whenever
- * ``process.argv[1]`` arrived with forward slashes or a differently
- * cased drive letter (both happen when Claude Code expands
- * ``${CLAUDE_PLUGIN_ROOT}`` into the hook command), so main() never
- * ran and the plugin was silently inert. Resolving both sides and
- * comparing case-insensitively on win32 makes the guard hold there.
+ * Open the detached worker's stderr log for appending, owner-only
+ * (failed-POST lines quote the server URL), truncating it first once
+ * it has grown past SESSION_END_WORKER_LOG_MAX_BYTES. The mode applies
+ * when the file is created. Returns the file descriptor; throws when
+ * the directory or file cannot be opened, and the caller then discards
+ * the worker's stderr.
  */
-export function isMainModule(argv1 = process.argv[1]) {
+export function openSessionEndWorkerLog(dir) {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = join(dir, "session-end-worker.log");
+  let truncate = false;
+  try {
+    truncate = statSync(file).size > SESSION_END_WORKER_LOG_MAX_BYTES;
+  } catch {
+    /* no log yet */
+  }
+  const { O_WRONLY, O_CREAT, O_APPEND, O_TRUNC, O_NOFOLLOW } = fsConstants;
+  // O_NOFOLLOW refuses to open a symlink planted at the log path by
+  // another user of a shared temp directory. Windows has no such flag
+  // (it is undefined there), so it is simply left out.
+  const flags = O_WRONLY | O_CREAT | (truncate ? O_TRUNC : O_APPEND) | (O_NOFOLLOW || 0);
+  return openSync(file, flags, 0o600);
+}
+
+/**
+ * True when this file is the process entry point. A plain string
+ * comparison fails on Windows whenever ``process.argv[1]`` arrives with
+ * forward slashes or a differently cased drive letter (both happen when
+ * Claude Code expands ``${CLAUDE_PLUGIN_ROOT}`` into the hook command)
+ * and anywhere the plugin directory is reached through a symlink, so
+ * main() never ran and the plugin was silently inert. Both sides are
+ * resolved and taken through realpath, and compared case-insensitively
+ * on win32. The platform, path module and own path are injectable so
+ * the win32 rule is testable from any host.
+ */
+export function isMainModule(
+  argv1 = process.argv[1],
+  {
+    platform: plat = platform(),
+    pathModule = nodePath,
+    selfPath = fileURLToPath(import.meta.url),
+  } = {},
+) {
   if (!argv1) return false;
-  const self = fileURLToPath(import.meta.url);
-  const invoked = resolve(argv1);
-  if (platform() === "win32") {
+  const self = canonicalPath(selfPath, pathModule);
+  const invoked = canonicalPath(argv1, pathModule);
+  if (plat === "win32") {
     return self.toLowerCase() === invoked.toLowerCase();
   }
   return self === invoked;
 }
 
+// resolve() normalises separators and relative segments; realpath then
+// follows symlinks, falling back to the resolved path when the file
+// cannot be looked up (a path from another platform in tests).
+function canonicalPath(p, pathModule) {
+  const resolved = pathModule.resolve(p);
+  try {
+    return realpathSync(resolved);
+  } catch {
+    return resolved;
+  }
+}
+
 if (isMainModule()) {
-  main();
+  // A hook must exit 0 and stay quiet: an unexpected throw is logged as
+  // one line instead of an unhandled rejection's stack trace and
+  // non-zero exit.
+  main().catch((err) => {
+    process.stderr.write(`[flightdeck] WARN: hook failed: ${err?.message || err}\n`);
+  });
 }

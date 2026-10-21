@@ -42,7 +42,7 @@ const FETCH_TIMEOUT_MS = 1500;
 function pluginTmpDir() {
   const dir = join(tmpdir(), PLUGIN_TMP_DIRNAME);
   try {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch {
     /* dir exists or unwritable — caller handles via fail-open */
   }

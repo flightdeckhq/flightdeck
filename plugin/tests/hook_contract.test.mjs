@@ -14,38 +14,57 @@
 // The fixture lives in tests/fixtures/claude-code-2.1.306-hooks.jsonl:
 // one record per hook, in firing order, with paths scrubbed. Two
 // sessions are recorded -- a Bash failure + success run and a plugin
-// provided MCP tool call.
+// provided MCP tool call. They were recorded from `claude -p` runs
+// started inside another Claude Code session, which is why the env's
+// CLAUDE_CODE_EXECPATH names the OUTER binary (2.1.304) while the
+// session itself ran 2.1.306 (`claude --version`): the variable
+// cannot be trusted for the version and the plugin does not use it.
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  closeSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
+import nodePath from "node:path";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  CI_PROVIDER_ENV,
+  MAX_MCP_IDENTITY_CHARS,
+  MAX_SIGNAL_CHARS,
+  REDACTED_ERROR_MESSAGE,
   SESSION_END_HOOK_BUDGET_MS,
   SESSION_END_WORKER_FLAG,
+  SESSION_END_WORKER_LOG_MAX_BYTES,
+  boundedToken,
+  boundedVersion,
   buildToolErrorBlock,
   canonicalMcpServerName,
+  captureErrorText,
   claudeCodeSessionId,
-  claudeCodeVersionFromEnv,
   collectClaudeCodeSignals,
+  collectContext,
   detectCiProvider,
   flattenMcpServerName,
   hookDurationMs,
   isMainModule,
+  openSessionEndWorkerLog,
   parseMcpToolName,
+  redactServerUrl,
+  redactUserinfo,
   resolveMcpToolIdentity,
 } from "../hooks/scripts/observe_cli.mjs";
 
@@ -55,6 +74,13 @@ const FIXTURE = join(__dirname, "fixtures", "claude-code-2.1.306-hooks.jsonl");
 
 const UUID_RE =
   /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+// Go's time.RFC3339 layout: date, T, time, optional fraction, then Z or
+// a numeric offset. Date.parse alone is looser (it takes a date without
+// a zone and other ISO forms the validator rejects).
+const RFC3339_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$/;
+// POST /v1/events reads at most this many body bytes; a larger payload
+// is truncated and rejected as invalid JSON.
+const MAX_REQUEST_BODY_BYTES = 1 << 20;
 
 // Every hook subprocess in this file gets its own temp root. The plugin
 // keeps its session / started / emitted markers under
@@ -69,8 +95,12 @@ after(() => rmSync(privateTmp, { recursive: true, force: true }));
 // Mirror of the ingestion validator (ingestion/internal/handlers/
 // events.go). Kept in the same order as the Go code so a reviewer can
 // diff the two. Throws on the first rule the payload breaks.
-export function assertIngestionContract(p) {
+function assertIngestionContract(p) {
   assert.ok(p && typeof p === "object", "payload must be an object");
+  assert.ok(
+    Buffer.byteLength(JSON.stringify(p), "utf8") <= MAX_REQUEST_BODY_BYTES,
+    "payload exceeds the 1 MiB request body cap",
+  );
   assert.ok(
     typeof p.session_id === "string" && p.session_id !== "",
     "session_id is required",
@@ -81,8 +111,8 @@ export function assertIngestionContract(p) {
   );
   assert.match(p.session_id, UUID_RE, "session_id must be a canonical UUID");
   if (typeof p.timestamp === "string" && p.timestamp !== "") {
+    assert.match(p.timestamp, RFC3339_RE, `timestamp must be RFC 3339 (got ${p.timestamp})`);
     const ts = Date.parse(p.timestamp);
-    assert.ok(!Number.isNaN(ts), `timestamp must be RFC 3339 (got ${p.timestamp})`);
     const now = Date.now();
     const maxPast = 48 * 60 * 60 * 1000;
     const maxFuture = 5 * 60 * 1000;
@@ -249,11 +279,16 @@ function runScript(stdinData, env, extraArgs = []) {
 // A hook process environment: the recorded CLAUDE_CODE_* variables from
 // the fixture on top of a scrubbed copy of ours, so the signals the
 // plugin reads come from the recording and not from the shell running
-// the tests (which may itself be a Claude Code session).
+// the tests (which may itself be a Claude Code session, or a CI runner
+// whose GITHUB_ACTIONS / CI variables would otherwise mark every
+// replayed session as a CI run).
+const SCRUBBED_ENV_KEYS = new Set(["CI", ...CI_PROVIDER_ENV.map(([key]) => key)]);
 function hookEnv(recordEnv, overrides) {
   const base = {};
   for (const [k, v] of Object.entries(process.env)) {
-    if (k.startsWith("CLAUDE") || k.startsWith("FLIGHTDECK") || k === "CI") continue;
+    if (k.startsWith("CLAUDE") || k.startsWith("FLIGHTDECK") || SCRUBBED_ENV_KEYS.has(k)) {
+      continue;
+    }
     base[k] = v;
   }
   return {
@@ -263,8 +298,19 @@ function hookEnv(recordEnv, overrides) {
     TMPDIR: privateTmp,
     TEMP: privateTmp,
     TMP: privateTmp,
+    // The plugin reads ~/.claude.json for MCP fingerprints; the
+    // replay must not see the test machine's real one.
+    HOME: privateTmp,
+    USERPROFILE: privateTmp,
     ...overrides,
   };
+}
+
+// Only the ingestion endpoint is recorded; any other request (a policy
+// fetch under /api, a typo in the path) is answered 404 and ignored, so
+// a body landing on the wrong route cannot satisfy an assertion.
+function isIngestPost(req) {
+  return req.method === "POST" && req.url === "/ingest/v1/events";
 }
 
 function startCaptureServer() {
@@ -274,6 +320,11 @@ function startCaptureServer() {
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
+        if (!isIngestPost(req)) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end("{}");
+          return;
+        }
         try {
           captured.push(JSON.parse(body));
         } catch {
@@ -310,6 +361,11 @@ function startGatedServer() {
       let body = "";
       req.on("data", (c) => (body += c));
       req.on("end", () => {
+        if (!isIngestPost(req)) {
+          res.writeHead(404, { "Content-Type": "application/json" });
+          res.end("{}");
+          return;
+        }
         if (released) answer(body, res);
         else parked.push(() => answer(body, res));
       });
@@ -458,8 +514,11 @@ describe("recorded Claude Code 2.1.306 hooks replayed through the plugin", () =>
     assert.equal(start.context.entrypoint, "sdk-cli");
     assert.equal(start.context.attended, false);
     assert.equal(start.context.child_session, true);
-    assert.equal(start.context.claude_code_version, "2.1.304");
-    assert.ok(start.context.frameworks.includes("claude-code/2.1.304"));
+    // No transcript exists at SessionStart, and CLAUDE_CODE_EXECPATH is
+    // not trusted (see the fixture note above), so no version is
+    // reported here.
+    assert.equal(start.context.claude_code_version, undefined);
+    assert.deepEqual(start.context.frameworks, ["claude-code"]);
     assert.equal(start.context.remote, undefined);
     assert.equal(start.context.ci, undefined);
 
@@ -488,6 +547,52 @@ describe("recorded Claude Code 2.1.306 hooks replayed through the plugin", () =>
     // SessionEnd: enum close_reason plus Claude Code's own reason.
     assert.equal(end.close_reason, "normal_exit");
     assert.equal(end.end_reason, "other");
+  });
+
+  it("with capture off a failed tool keeps its class and abort flag but not its error text", async () => {
+    const rec = bashSession.find((r) => r.input.hook_event_name === "PostToolUseFailure");
+    const knobs = [
+      { FLIGHTDECK_CAPTURE_PROMPTS: "false", FLIGHTDECK_CAPTURE_TOOL_INPUTS: "false" },
+      { FLIGHTDECK_CAPTURE_PROMPTS: "false" },
+      { FLIGHTDECK_CAPTURE_TOOL_INPUTS: "false" },
+    ];
+    for (const knob of knobs) {
+      const flightdeckSessionId = randomUUID();
+      const before = capture.bodies().length;
+      const result = await runScript(
+        JSON.stringify(rec.input),
+        hookEnv(rec.env, {
+          FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+          FLIGHTDECK_TOKEN: "tok_test",
+          CLAUDE_SESSION_ID: flightdeckSessionId,
+          ...knob,
+        }),
+      );
+      assert.equal(result.code, 0, result.stderr);
+      const failed = capture
+        .bodies()
+        .slice(before)
+        .find((b) => b.event_type === "tool_call" && b.session_id === flightdeckSessionId);
+      assert.ok(failed, `tool_call emitted with ${JSON.stringify(knob)}`);
+      assertIngestionContract(failed);
+      assert.deepEqual(failed.error, {
+        error_type: "other",
+        error_class: "PluginToolError",
+        message: REDACTED_ERROR_MESSAGE,
+        interrupted: false,
+      });
+      // The tool's error text ("cannot access ...") must not leave the
+      // machine; the sanitised tool_input is governed by its own knob.
+      assert.equal(
+        JSON.stringify(failed).includes("cannot access"),
+        false,
+        "the tool's error text must not leave the machine with capture off",
+      );
+      if (knob.FLIGHTDECK_CAPTURE_TOOL_INPUTS === "false") {
+        assert.equal(failed.tool_input, null);
+        assert.equal(failed.has_content, false);
+      }
+    }
   });
 
   it("a plugin-provided MCP tool resolves to Claude Code's server key and source", async () => {
@@ -531,6 +636,177 @@ describe("recorded Claude Code 2.1.306 hooks replayed through the plugin", () =>
     assert.ok(search, "ToolSearch tool_call emitted");
     assert.equal(typeof search.tool_use_id, "string");
   });
+
+  it("without the hook's mcp_server field the server is still resolved and mcp_server is absent", async () => {
+    const recorded = mcpSession.find(
+      (r) => r.input.hook_event_name === "PostToolUse" && r.input.mcp_server,
+    );
+    // The recorded plugin-MCP record with the hint removed, as an older
+    // Claude Code would send it, plus a hand-made project-server call.
+    const { mcp_server: _omitted, ...hintless } = recorded.input;
+    const cases = [
+      {
+        input: {
+          hook_event_name: "PostToolUse",
+          session_id: randomUUID(),
+          tool_name: "mcp__filesystem__read_file",
+          tool_input: {},
+          tool_response: [{ type: "text", text: "[]" }],
+          tool_use_id: "toolu_01nohint",
+          duration_ms: 4,
+        },
+        server: "filesystem",
+        toolName: "read_file",
+        toolUseId: "toolu_01nohint",
+        durationMs: 4,
+      },
+      {
+        input: { ...hintless, session_id: randomUUID() },
+        server: "plugin:claude-mem:mcp-search",
+        toolName: "list_corpora",
+        toolUseId: recorded.input.tool_use_id,
+        durationMs: recorded.input.duration_ms,
+      },
+    ];
+    for (const tc of cases) {
+      const flightdeckSessionId = randomUUID();
+      const before = capture.bodies().length;
+      const result = await runScript(
+        JSON.stringify(tc.input),
+        hookEnv({}, {
+          FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+          FLIGHTDECK_TOKEN: "tok_test",
+          CLAUDE_SESSION_ID: flightdeckSessionId,
+        }),
+      );
+      assert.equal(result.code, 0, result.stderr);
+      const mcp = capture
+        .bodies()
+        .slice(before)
+        .find((b) => b.event_type === "mcp_tool_call" && b.session_id === flightdeckSessionId);
+      assert.ok(mcp, `mcp_tool_call emitted for ${tc.input.tool_name}`);
+      assertIngestionContract(mcp);
+      assert.equal(mcp.server_name, tc.server);
+      assert.equal(mcp.tool_name, tc.toolName);
+      assert.equal("mcp_server" in mcp, false, "mcp_server is only passed through when Claude Code sent it");
+      assert.equal(mcp.tool_use_id, tc.toolUseId);
+      assert.equal(mcp.duration_ms, tc.durationMs);
+    }
+  });
+
+  it("is_interrupt=true reaches the wire as error.interrupted=true", async () => {
+    const rec = bashSession.find((r) => r.input.hook_event_name === "PostToolUseFailure");
+    const flightdeckSessionId = randomUUID();
+    const before = capture.bodies().length;
+    const result = await runScript(
+      JSON.stringify({ ...rec.input, is_interrupt: true }),
+      hookEnv(rec.env, {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: flightdeckSessionId,
+      }),
+    );
+    assert.equal(result.code, 0, result.stderr);
+    const failed = capture
+      .bodies()
+      .slice(before)
+      .find((b) => b.event_type === "tool_call" && b.session_id === flightdeckSessionId);
+    assert.ok(failed, "tool_call emitted");
+    assert.equal(failed.error.interrupted, true);
+    assert.equal(failed.error.error_class, "PluginToolError");
+  });
+
+  it("an MCP tool name without the server separator lands with server_name null and one stderr line", async () => {
+    const flightdeckSessionId = randomUUID();
+    const before = capture.bodies().length;
+    const result = await runScript(
+      JSON.stringify({
+        hook_event_name: "PostToolUse",
+        session_id: randomUUID(),
+        tool_name: "mcp__noseparator",
+        tool_input: {},
+        tool_response: "ok",
+        tool_use_id: "toolu_01nosep",
+        duration_ms: 2,
+      }),
+      hookEnv({}, {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: flightdeckSessionId,
+      }),
+    );
+    assert.equal(result.code, 0);
+    assert.match(result.stderr, /ambiguous MCP tool name "mcp__noseparator"/);
+    const mcp = capture
+      .bodies()
+      .slice(before)
+      .find((b) => b.event_type === "mcp_tool_call" && b.session_id === flightdeckSessionId);
+    assert.ok(mcp, "mcp_tool_call still emitted");
+    assertIngestionContract(mcp);
+    assert.equal(mcp.server_name, null);
+    assert.equal(mcp.tool_name, "noseparator");
+    assert.equal("mcp_server" in mcp, false);
+  });
+
+  it("hostile hook input is bounded: oversize or non-UUID session ids, oversize mcp_server, control characters", async () => {
+    const flightdeckSessionId = randomUUID();
+    const before = capture.bodies().length;
+    for (const nativeId of ["x".repeat(5000), "not-a-uuid"]) {
+      const result = await runScript(
+        JSON.stringify({
+          hook_event_name: "PostToolUse",
+          session_id: nativeId,
+          tool_name: "mcp__filesystem__read_file",
+          tool_input: {},
+          tool_use_id: "t".repeat(MAX_MCP_IDENTITY_CHARS + 1),
+          duration_ms: 1,
+          mcp_server: { name: "n".repeat(MAX_MCP_IDENTITY_CHARS + 1), source: "project" },
+        }),
+        hookEnv({ CLAUDE_CODE_EXECPATH: "/home/user/.local/share/claude/versions/2.1.304; rm -rf /" }, {
+          FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+          FLIGHTDECK_TOKEN: "tok_test",
+          CLAUDE_SESSION_ID: flightdeckSessionId,
+        }),
+      );
+      assert.equal(result.code, 0, result.stderr);
+    }
+    const posted = capture.bodies().slice(before).filter((b) => b.session_id === flightdeckSessionId);
+    assert.ok(posted.length >= 2, "events still land");
+    for (const body of posted) {
+      assertIngestionContract(body);
+      assert.equal(body.context.claude_code_session_id, undefined, "non-UUID native id is not reported");
+      assert.equal(body.context.claude_code_version, undefined, "no version is derived from the environment");
+      if (body.event_type === "mcp_tool_call") {
+        assert.equal("mcp_server" in body, false, "oversize mcp_server is dropped");
+        assert.equal("tool_use_id" in body, false, "oversize tool_use_id is dropped");
+        assert.equal(body.server_name, "filesystem");
+      }
+    }
+    // Control characters in SessionEnd's reason: the field is withheld.
+    const endCapture = await startCaptureServer();
+    try {
+      const result = await runScript(
+        JSON.stringify({
+          hook_event_name: "SessionEnd",
+          session_id: randomUUID(),
+          reason: "clear\n\u0000x",
+        }),
+        hookEnv({}, {
+          FLIGHTDECK_SERVER: `http://127.0.0.1:${endCapture.port}`,
+          FLIGHTDECK_TOKEN: "tok_test",
+          CLAUDE_SESSION_ID: randomUUID(),
+        }),
+        [SESSION_END_WORKER_FLAG],
+      );
+      assert.equal(result.code, 0, result.stderr);
+      const end = endCapture.bodies().find((b) => b.event_type === "session_end");
+      assert.ok(end, "session_end emitted");
+      assert.equal("end_reason" in end, false);
+      assert.equal(end.close_reason, "normal_exit");
+    } finally {
+      endCapture.server.close();
+    }
+  });
 });
 
 describe("SessionEnd stays inside Claude Code's 1.5 s budget", () => {
@@ -552,7 +828,7 @@ describe("SessionEnd stays inside Claude Code's 1.5 s budget", () => {
       { id: `msg_${nativeSessionId}_a`, text: "first" },
       { id: `msg_${nativeSessionId}_b`, text: "second" },
     ]);
-    mkdirSync(markerDir, { recursive: true });
+    mkdirSync(markerDir, { recursive: true, mode: 0o700 });
     const markerKey = createHash("sha256").update(nativeSessionId).digest("hex").slice(0, 16);
     const sessionMarker = join(markerDir, `session-${markerKey}.txt`);
     const flightdeckSessionId = randomUUID();
@@ -577,13 +853,16 @@ describe("SessionEnd stays inside Claude Code's 1.5 s budget", () => {
       ),
     );
     assert.equal(result.code, 0, result.stderr);
-    // The hook exited while every request it caused is still parked:
-    // it never waited on the network.
-    assert.equal(gated.bodies().length, 0, "no request answered while the hook ran");
+    // The server answers nothing until release(), so a hook that waited
+    // on any POST could not have exited: exit code 0 before release() is
+    // the proof it did not wait on the network.
     assert.ok(
       result.wallMs < SESSION_END_HOOK_BUDGET_MS,
       `SessionEnd hook took ${result.wallMs} ms, budget is ${SESSION_END_HOOK_BUDGET_MS} ms`,
     );
+    // Deterministic backstop for the timing bound: a hook that had
+    // waited on a POST would have logged the abort as "cannot reach".
+    assert.doesNotMatch(result.stderr, /cannot reach/);
     // Markers were invalidated inline, so an immediately following
     // SessionStart mints a fresh session.
     assert.equal(existsSync(sessionMarker), false, "session marker cleared inline");
@@ -615,7 +894,7 @@ describe("SessionEnd stays inside Claude Code's 1.5 s budget", () => {
     try {
       const nativeSessionId = randomUUID();
       const flightdeckSessionId = randomUUID();
-      mkdirSync(markerDir, { recursive: true });
+      mkdirSync(markerDir, { recursive: true, mode: 0o700 });
       const markerKey = createHash("sha256").update(nativeSessionId).digest("hex").slice(0, 16);
       const foreignMarker = join(markerDir, `session-${markerKey}.txt`);
       // Simulate a new Claude Code session that already re-owns the
@@ -652,6 +931,152 @@ describe("SessionEnd stays inside Claude Code's 1.5 s budget", () => {
       assert.equal(bodies.at(-1).end_reason, "clear");
       assert.equal(existsSync(foreignMarker), true, "worker must not clear markers");
       rmSync(foreignMarker, { force: true });
+    } finally {
+      capture.server.close();
+    }
+  });
+
+  it("a fast server receives the flush and session_end before the hook returns", async () => {
+    const capture = await startCaptureServer();
+    try {
+      const nativeSessionId = randomUUID();
+      const transcript = writeTranscript(scratch, [
+        { id: `msg_${nativeSessionId}_fast`, text: "fast" },
+      ]);
+      const result = await runScript(
+        JSON.stringify({
+          hook_event_name: "SessionEnd",
+          session_id: nativeSessionId,
+          transcript_path: transcript,
+          cwd: scratch,
+          reason: "other",
+        }),
+        hookEnv({}, { FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`, FLIGHTDECK_TOKEN: "tok_test" }),
+      );
+      assert.equal(result.code, 0, result.stderr);
+      // No polling: the hook's bounded wait on the worker delivered them
+      // before it returned, so Claude Code exits with the events posted.
+      assert.deepEqual(
+        capture.bodies().map((b) => b.event_type),
+        ["post_call", "session_end"],
+      );
+      assert.ok(
+        result.wallMs < SESSION_END_HOOK_BUDGET_MS,
+        `SessionEnd hook took ${result.wallMs} ms, budget is ${SESSION_END_HOOK_BUDGET_MS} ms`,
+      );
+    } finally {
+      capture.server.close();
+    }
+  });
+
+  it("the worker survives a SIGKILL of the hook's process group (pins detached: true)", { skip: process.platform === "win32" }, async () => {
+    const nativeSessionId = randomUUID();
+    const transcript = writeTranscript(scratch, [
+      { id: `msg_${nativeSessionId}_kill`, text: "survive" },
+    ]);
+    const flightdeckSessionId = randomUUID();
+    const gatedKill = await startGatedServer();
+    try {
+      // The hook gets its own process group so the kill below cannot
+      // reach this test process; the worker must be outside that group.
+      const hook = spawn(process.execPath, [SCRIPT], {
+        detached: true,
+        stdio: ["pipe", "ignore", "pipe"],
+        env: hookEnv({}, {
+          FLIGHTDECK_SERVER: `http://127.0.0.1:${gatedKill.port}`,
+          FLIGHTDECK_TOKEN: "tok_test",
+          CLAUDE_SESSION_ID: flightdeckSessionId,
+        }),
+      });
+      hook.stdin.end(JSON.stringify({
+        hook_event_name: "SessionEnd",
+        session_id: nativeSessionId,
+        transcript_path: transcript,
+        cwd: scratch,
+        reason: "other",
+      }));
+      // The worker is up once its first POST is parked; kill the hook's
+      // whole group then (the hook itself is still inside its wait).
+      await pollUntil(() => gatedKill.parkedCount() > 0, "worker's first POST parked");
+      try {
+        process.kill(-hook.pid, "SIGKILL");
+      } catch {
+        /* the hook had already exited on its own; the group is gone */
+      }
+      gatedKill.release();
+      await pollUntil(
+        () => gatedKill.bodies().some((b) => b.event_type === "session_end"),
+        "session_end from the surviving worker",
+      );
+      assert.deepEqual(
+        gatedKill.bodies().map((b) => b.event_type),
+        ["post_call", "session_end"],
+      );
+      assert.ok(gatedKill.bodies().every((b) => b.session_id === flightdeckSessionId));
+    } finally {
+      gatedKill.release();
+      gatedKill.server.close();
+    }
+  });
+
+  it("the worker log receives the failed-POST line with userinfo redacted, owner-only", async () => {
+    const nativeSessionId = randomUUID();
+    const flightdeckSessionId = randomUUID();
+    const logDir = join(privateTmp, "flightdeck-plugin");
+    const logFile = join(logDir, "session-end-worker.log");
+    rmSync(logFile, { force: true });
+    // Port 1 is closed on any host; the worker's POST is refused.
+    const result = await runScript(
+      JSON.stringify({ hook_event_name: "SessionEnd", session_id: nativeSessionId, reason: "other" }),
+      hookEnv({}, {
+        FLIGHTDECK_SERVER: "http://user:hunter2@127.0.0.1:1",
+        FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: flightdeckSessionId,
+      }),
+    );
+    assert.equal(result.code, 0);
+    // The hook itself warns once that the credentials are ignored
+    // (FLIGHTDECK_QUIET is set for the worker only, by the hook).
+    assert.doesNotMatch(result.stderr, /hunter2/);
+    const line = await pollUntil(() => {
+      try {
+        const text = readFileSync(logFile, "utf8");
+        return text.includes("cannot reach") ? text : null;
+      } catch {
+        return null;
+      }
+    }, "worker log line");
+    // The refusal reads "ECONNREFUSED" or Node's generic "fetch failed"
+    // depending on how libuv surfaces it; the redaction is the point.
+    assert.match(line, /cannot reach http:\/\/127\.0\.0\.1:1: \S+/);
+    assert.doesNotMatch(line, /hunter2/, "userinfo must not reach the log");
+    assert.doesNotMatch(line, /user@/);
+    if (process.platform !== "win32") {
+      assert.equal(statSync(logFile).mode & 0o777, 0o600);
+      assert.equal(statSync(logDir).mode & 0o777, 0o700);
+    }
+  });
+
+  it("PostToolUseFailure flushes pending transcript turns before the failed tool_call", async () => {
+    const capture = await startCaptureServer();
+    try {
+      const nativeSessionId = randomUUID();
+      const transcript = writeTranscript(scratch, [
+        { id: `msg_${nativeSessionId}_fail`, text: "about to fail" },
+      ]);
+      const rec = bashSession.find((r) => r.input.hook_event_name === "PostToolUseFailure");
+      const result = await runScript(
+        JSON.stringify({ ...rec.input, session_id: nativeSessionId, transcript_path: transcript }),
+        hookEnv(rec.env, {
+          FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+          FLIGHTDECK_TOKEN: "tok_test",
+          CLAUDE_SESSION_ID: randomUUID(),
+        }),
+      );
+      assert.equal(result.code, 0, result.stderr);
+      const types = capture.bodies().map((b) => b.event_type);
+      assert.deepEqual(types, ["session_start", "post_call", "tool_call"]);
+      assert.ok(capture.bodies()[2].error, "the failed tool_call carries its error block");
     } finally {
       capture.server.close();
     }
@@ -726,7 +1151,7 @@ describe("hook-contract helpers", () => {
   describe("buildToolErrorBlock", () => {
     it("lifts the error string and the abort flag into the taxonomy shape", () => {
       assert.deepEqual(
-        buildToolErrorBlock({ error: "Exit code 2\nno such file", is_interrupt: false }),
+        buildToolErrorBlock({ error: "Exit code 2\nno such file", is_interrupt: false }, true),
         {
           error_type: "other",
           error_class: "PluginToolError",
@@ -734,19 +1159,32 @@ describe("hook-contract helpers", () => {
           interrupted: false,
         },
       );
-      const block = buildToolErrorBlock({ error: { code: 7 } });
+      const block = buildToolErrorBlock({ error: { code: 7 } }, true);
       assert.equal(block.message, '{"code":7}');
       assert.equal("interrupted" in block, false);
     });
 
     it("still produces a block when the hook carries no error text", () => {
-      const block = buildToolErrorBlock({});
+      const block = buildToolErrorBlock({}, true);
       assert.equal(block.error_class, "PluginToolError");
       assert.match(block.message, /no error detail/);
     });
 
+    it("redacts the message when capture is off and keeps the class and abort flag", () => {
+      assert.deepEqual(buildToolErrorBlock({ error: "token=abc123", is_interrupt: true }, false), {
+        error_type: "other",
+        error_class: "PluginToolError",
+        message: REDACTED_ERROR_MESSAGE,
+        interrupted: true,
+      });
+      assert.equal(captureErrorText({ capturePrompts: true, captureToolInputs: true }), true);
+      assert.equal(captureErrorText({ capturePrompts: false, captureToolInputs: true }), false);
+      assert.equal(captureErrorText({ capturePrompts: true, captureToolInputs: false }), false);
+      assert.equal(captureErrorText(undefined), false);
+    });
+
     it("truncates long messages at 1000 characters", () => {
-      const block = buildToolErrorBlock({ error: "x".repeat(5000) });
+      const block = buildToolErrorBlock({ error: "x".repeat(5000) }, true);
       assert.equal(block.message.length, 1001);
       assert.ok(block.message.endsWith("…"));
     });
@@ -780,10 +1218,10 @@ describe("hook-contract helpers", () => {
           GITHUB_ACTIONS: "true",
           CI: "true",
         },
-        { claudeCodeSessionId: "hook-sid", sessionSource: "resume" },
+        { claudeCodeSessionId: "9d357e42-dcec-411f-b0a7-787ce564ecfb", sessionSource: "resume" },
       );
       assert.deepEqual(signals, {
-        claude_code_session_id: "hook-sid",
+        claude_code_session_id: "9d357e42-dcec-411f-b0a7-787ce564ecfb",
         session_source: "resume",
         entrypoint: "sdk-cli",
         attended: false,
@@ -806,19 +1244,6 @@ describe("hook-contract helpers", () => {
       assert.equal(detectCiProvider({}), null);
     });
 
-    it("claudeCodeVersionFromEnv reads the versions directory leaf on both path styles", () => {
-      assert.equal(
-        claudeCodeVersionFromEnv({ CLAUDE_CODE_EXECPATH: "/home/u/.local/share/claude/versions/2.1.304" }),
-        "2.1.304",
-      );
-      assert.equal(
-        claudeCodeVersionFromEnv({ CLAUDE_CODE_EXECPATH: "C:\\Users\\u\\AppData\\Local\\claude\\versions\\2.1.304\\" }),
-        "2.1.304",
-      );
-      assert.equal(claudeCodeVersionFromEnv({ CLAUDE_CODE_EXECPATH: "/usr/bin/claude" }), null);
-      assert.equal(claudeCodeVersionFromEnv({}), null);
-    });
-
     it("claudeCodeSessionId prefers the hook payload over the environment", () => {
       assert.equal(claudeCodeSessionId({ session_id: "from-hook" }, { CLAUDE_CODE_SESSION_ID: "from-env" }), "from-hook");
       assert.equal(claudeCodeSessionId({}, { CLAUDE_CODE_SESSION_ID: " from-env " }), "from-env");
@@ -832,6 +1257,104 @@ describe("hook-contract helpers", () => {
       assert.equal(isMainModule(join(dirname(SCRIPT), "..", "scripts", "observe_cli.mjs")), true);
       assert.equal(isMainModule(join(dirname(SCRIPT), "other.mjs")), false);
       assert.equal(isMainModule(undefined), false);
+    });
+
+    it("case-folds and normalises separators on win32 only", () => {
+      const win32 = { platform: "win32", pathModule: nodePath.win32, selfPath: "c:\\plugin\\hooks\\observe_cli.mjs" };
+      assert.equal(isMainModule("C:/Plugin/Hooks/observe_cli.mjs", win32), true);
+      assert.equal(isMainModule("C:/Plugin/Hooks/OTHER.mjs", win32), false);
+      assert.equal(isMainModule("C:/Plugin/Hooks/observe_cli.mjs", { ...win32, platform: "linux" }), false);
+    });
+
+    it("follows a symlinked plugin directory to the real script", () => {
+      const linkDir = join(privateTmp, "linked-plugin");
+      try {
+        symlinkSync(dirname(dirname(dirname(SCRIPT))), linkDir, "dir");
+      } catch {
+        return; // symlinks unavailable on this host (Windows without the privilege)
+      }
+      assert.equal(isMainModule(join(linkDir, "hooks", "scripts", "observe_cli.mjs")), true);
+    });
+  });
+
+  describe("bounds and redaction", () => {
+    it("boundedToken keeps short clean strings and rejects the rest", () => {
+      assert.equal(boundedToken(" sdk-cli ", MAX_SIGNAL_CHARS), "sdk-cli");
+      assert.equal(boundedToken("x".repeat(MAX_SIGNAL_CHARS), MAX_SIGNAL_CHARS), "x".repeat(MAX_SIGNAL_CHARS));
+      assert.equal(boundedToken("x".repeat(MAX_SIGNAL_CHARS + 1), MAX_SIGNAL_CHARS), null);
+      // Surrounding whitespace is trimmed; interior control characters reject.
+      assert.equal(boundedToken("clear\n", MAX_SIGNAL_CHARS), "clear");
+      assert.equal(boundedToken("clear\nx", MAX_SIGNAL_CHARS), null);
+      assert.equal(boundedToken("a\u0000b", MAX_SIGNAL_CHARS), null);
+      assert.equal(boundedToken("", MAX_SIGNAL_CHARS), null);
+      assert.equal(boundedToken(42, MAX_SIGNAL_CHARS), null);
+      assert.equal(boundedToken(undefined, MAX_SIGNAL_CHARS), null);
+    });
+
+    it("boundedVersion accepts anchored semver only", () => {
+      assert.equal(boundedVersion("2.1.306"), "2.1.306");
+      assert.equal(boundedVersion("2.1.306-beta.1+build.5"), "2.1.306-beta.1+build.5");
+      assert.equal(boundedVersion("2.1.304; rm -rf /"), null);
+      assert.equal(boundedVersion("v2.1.306"), null);
+      assert.equal(boundedVersion("2.1"), null);
+      assert.equal(boundedVersion("1.0.0-" + "a".repeat(80)), null);
+      const ctx = collectContext({ claudeCodeVersion: "2.1.304; rm -rf /" });
+      assert.equal(ctx.claude_code_version, undefined);
+      assert.deepEqual(ctx.frameworks, ["claude-code"]);
+      assert.equal(collectContext({ claudeCodeVersion: "2.1.306" }).claude_code_version, "2.1.306");
+    });
+
+    it("signals are bounded and the native id must be a UUID", () => {
+      const signals = collectClaudeCodeSignals(
+        {
+          CLAUDE_CODE_ENTRYPOINT: "e".repeat(MAX_SIGNAL_CHARS + 1),
+          CLAUDE_CODE_SESSION_ID: "not-a-uuid",
+          CLAUDE_CODE_REMOTE: "true",
+          CLAUDE_CODE_REMOTE_SESSION_ID: "r\u0007",
+        },
+        { sessionSource: "startup" },
+      );
+      assert.deepEqual(signals, { session_source: "startup", remote: true });
+      assert.equal(
+        collectClaudeCodeSignals({}, { claudeCodeSessionId: "2164AE84-DEAE-4978-8A1A-611543DF06D2" }).claude_code_session_id,
+        "2164AE84-DEAE-4978-8A1A-611543DF06D2",
+      );
+    });
+
+    it("redactServerUrl strips userinfo and leaves everything else", () => {
+      assert.equal(redactServerUrl("https://user:tok_secret@fd.example.com:8443/base"), "https://fd.example.com:8443/base");
+      assert.equal(redactServerUrl("http://localhost:4000"), "http://localhost:4000");
+      assert.equal(redactServerUrl("not a url"), "not a url");
+      assert.equal(
+        redactUserinfo("fetch failed: http://u:p@h:1/x and https://a:b@c/"),
+        "fetch failed: http://h:1/x and https://c/",
+      );
+    });
+  });
+
+  describe("openSessionEndWorkerLog", () => {
+    it("creates the log owner-only and truncates it once it passes the cap", () => {
+      const dir = join(privateTmp, "worker-log");
+      const file = join(dir, "session-end-worker.log");
+      closeSync(openSessionEndWorkerLog(dir));
+      if (process.platform !== "win32") {
+        assert.equal(statSync(file).mode & 0o777, 0o600);
+        assert.equal(statSync(dir).mode & 0o777, 0o700);
+        // A symlink planted at the log path is refused, not followed.
+        const trapDir = join(privateTmp, "worker-log-trap");
+        mkdirSync(trapDir, { recursive: true, mode: 0o700 });
+        const target = join(privateTmp, "victim.txt");
+        writeFileSync(target, "victim\n");
+        symlinkSync(target, join(trapDir, "session-end-worker.log"));
+        assert.throws(() => closeSync(openSessionEndWorkerLog(trapDir)), /ELOOP|EMLINK/);
+        assert.equal(readFileSync(target, "utf8"), "victim\n");
+      }
+      writeFileSync(file, "x".repeat(SESSION_END_WORKER_LOG_MAX_BYTES + 1));
+      closeSync(openSessionEndWorkerLog(dir));
+      assert.equal(statSync(file).size, 0, "log past the cap is truncated");
+      writeFileSync(file, "keep\n");
+      closeSync(openSessionEndWorkerLog(dir));
+      assert.equal(statSync(file).size, 5, "log under the cap is appended to");
     });
   });
 });

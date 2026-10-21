@@ -5,10 +5,11 @@ All notable changes to Flightdeck are documented here.
 ## Unreleased
 
 Correctness patch for the Claude Code plugin, the sensor's streaming
-token accounting, its OpenAI coverage (structured outputs, the Responses
-raw-response path, Responses tool calls and prompt-cache reads) and its
-MCP dependency, the worker's handling of short-lived and re-attached
-sessions, a pricing refresh, and a documentation truth-up. One schema migration (000027) adds two nullable
+token accounting, error classification, its OpenAI coverage (structured
+outputs, the Responses raw-response path, Responses tool calls and
+prompt-cache reads and writes) and its MCP dependency, the worker's
+handling of short-lived and re-attached sessions, a pricing refresh, and
+a documentation truth-up. One schema migration (000027) adds two nullable
 columns to `sessions`; the workers apply it at start-up. **Upgrade
 note:** marketplace installs of the plugin do not update themselves; run
 `claude plugin update flightdeck@flightdeck-plugins` after upgrading the
@@ -116,6 +117,37 @@ server.
   reset), whoever raised it;
   a stream still open when the session ends is reported before the session
   closes; and an aborted stream's `latency_ms` runs to its last chunk.
+- **Sensor: Anthropic billing and gateway failures were misclassified.**
+  A 504 was filed as `api_error` (the SDK wraps it in
+  `InternalServerError`) and is now `timeout`; a 402 `billing_error` was
+  `api_error` and is now `quota_exceeded`; the organisation spend cap (a
+  429 whose message names the spend limit) and a per-user spend limit or
+  exhausted credit balance (a 400) were `rate_limit` and
+  `invalid_request` and are now `quota_exceeded`, so they read as
+  terminal rather than retryable; the message match is limited to
+  Anthropic and to those phrases, so a per-minute quota 429 elsewhere
+  stays a retryable `rate_limit`. Every `llm_error` now names the adapter
+  that produced it in `error.provider` (`anthropic`, `openai`,
+  `litellm`); a transport or builtin error raised inside an intercepted
+  call used to report `unknown`.
+- **Sensor: a refused or cut-off response counted as a success.** A
+  response the provider answered with 200 but did not complete (an
+  Anthropic `stop_reason` `refusal` or `model_context_window_exceeded`,
+  an OpenAI chat or litellm `finish_reason` `content_filter`, an OpenAI
+  structured-output refusal, a Responses call left `incomplete` by the
+  content filter) landed as a plain `post_call`; it now also lands an
+  `llm_error` (`content_filter` / `context_overflow`, `http_status` 200,
+  the stop reason as `provider_error_code`, the response's request id,
+  terminal, `originating_event_id` pointing at the `post_call`) beside
+  the `post_call`, which keeps the billed usage. A truncated response
+  (`max_tokens`, `length`, `max_output_tokens`) is still a success. Such
+  calls now count in the per-agent error count and mark the session as
+  having a terminal error.
+- **Sensor: the pre-call estimate silently degraded for requests without
+  a model.** The estimator counted those against the retired
+  `claude-sonnet-4-20250514`, which the `count_tokens` endpoint answers
+  with 404, so every such estimate fell back to the character heuristic.
+  The default model is now `claude-sonnet-4-6`.
 - **Plugin: MCP policy decisions were never applied.** `PreToolUse`
   answered with the legacy top-level `decision` field, which Claude Code
   2.1 rejects; the hook now writes
@@ -202,7 +234,7 @@ server.
   gateway attribution) and the fact that no service serves `/metrics`
   yet. README gains a Roadmap section (replacing "Coming soon"), the
   plugin README documents identity, enforcement and updating, METHODOLOGY
-  records the severity scale, and DECISIONS.md records D164 to D186.
+  records the severity scale, and DECISIONS.md records D164 to D189.
 - **Repository hygiene.** Retired known-issue identifiers and decision
   pointers in source, CI and Helm comments; `sensor/.venv` is no longer
   tracked; test files and functions no longer carry decision numbers.

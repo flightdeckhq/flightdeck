@@ -15,7 +15,16 @@ from flightdeck_sensor.providers.protocol import PromptContent, ToolInvocation
 
 _log = logging.getLogger("flightdeck_sensor.providers.anthropic")
 
-_DEFAULT_COUNT_TOKENS_MODEL = "claude-sonnet-4-20250514"
+# Model the SDK ``count_tokens`` call names when the request carries no
+# ``model``. The endpoint rejects a retired id with 404, and the estimator
+# swallows that and silently falls back to the char/4 heuristic, so this
+# must be a model Anthropic still serves. Sonnet 4.6 is the served
+# successor of the previous default (Sonnet 4, retired 2026-06-15) in the
+# same tokenizer family, so estimates stay comparable; it is listed in the
+# SDK's model literal and priced in pricing.yaml, both of which the unit
+# tests check so a future retirement fails loudly instead of degrading
+# every estimate.
+DEFAULT_COUNT_TOKENS_MODEL = "claude-sonnet-4-6"
 _CHARS_PER_TOKEN_ESTIMATE = 4
 
 
@@ -34,6 +43,7 @@ class AnthropicProvider:
     exceptions -- failures return zero/empty defaults.
     """
 
+    name = "anthropic"
     _client: Any = None
 
     def __init__(self, capture_prompts: bool = False) -> None:
@@ -52,7 +62,7 @@ class AnthropicProvider:
             if AnthropicProvider._client is None:
                 AnthropicProvider._client = _anthropic.Anthropic()
             count: int = AnthropicProvider._client.messages.count_tokens(
-                model=request_kwargs.get("model", _DEFAULT_COUNT_TOKENS_MODEL),
+                model=request_kwargs.get("model", DEFAULT_COUNT_TOKENS_MODEL),
                 messages=request_kwargs.get("messages", []),
                 system=request_kwargs.get("system", ""),
                 tools=request_kwargs.get("tools", []),
@@ -260,6 +270,36 @@ class AnthropicProvider:
         if kind == _EVENT_MESSAGE_DELTA:
             return getattr(getattr(chunk, "delta", None), "stop_reason", None) is not None
         return False
+
+    def response_stop_reason(self, response: Any) -> str | None:
+        """``stop_reason`` of a complete response: a ``Message``, a
+        raw-response wrapper (parsed first), or a helper stream whose
+        accumulated snapshot carries it. ``None`` for a raw stream object
+        and whenever the field is missing or not a string."""
+        try:
+            obj = response
+            with contextlib.suppress(Exception):
+                if hasattr(obj, "parse") and callable(obj.parse):
+                    obj = obj.parse()
+            snapshot = self._snapshot(obj)
+            if snapshot is not None:
+                obj = snapshot
+            reason = getattr(obj, "stop_reason", None)
+            return reason if isinstance(reason, str) else None
+        except Exception:
+            return None
+
+    def stop_reason_from_stream_chunk(self, chunk: Any) -> str | None:
+        """``stop_reason`` carried by a ``message_delta`` event, which is
+        where a raw stream announces how the response ended; ``None`` for
+        every other event."""
+        try:
+            if getattr(chunk, "type", None) != _EVENT_MESSAGE_DELTA:
+                return None
+            reason = getattr(getattr(chunk, "delta", None), "stop_reason", None)
+            return reason if isinstance(reason, str) else None
+        except Exception:
+            return None
 
     def extract_content(
         self,

@@ -16,6 +16,11 @@ class Provider(Protocol):
     may raise exceptions -- failures return zero/empty defaults.
     """
 
+    # The provider's wire name (``anthropic``, ``openai``, ``litellm``):
+    # the ``provider`` field of the error events the adapter's calls
+    # produce, and part of the key of the per-provider retry counter.
+    name: str
+
     def estimate_tokens(self, request_kwargs: dict[str, Any]) -> tuple[int, str]:
         """Estimate input token count before the call. Never raises.
 
@@ -106,6 +111,28 @@ class Provider(Protocol):
         """
         ...
 
+    def response_stop_reason(self, response: Any) -> str | None:
+        """The provider's stop reason on a complete response (Anthropic
+        ``stop_reason``; OpenAI chat and litellm ``finish_reason``, an
+        OpenAI structured-output refusal as ``refusal``, the reason an
+        OpenAI Responses call was left ``incomplete``), or ``None`` when
+        the response carries none. The interceptor files an llm_error
+        beside the post_call when the reason means the call did not
+        succeed (a refusal, a content filter, a context-window overrun).
+        Never raises.
+        """
+        ...
+
+    def stop_reason_from_stream_chunk(self, chunk: Any) -> str | None:
+        """The stop reason carried by one streamed event (Anthropic
+        ``message_delta``; an OpenAI chat or litellm chunk carrying
+        ``finish_reason``; an OpenAI ``response.incomplete`` event), or
+        ``None`` for every other event. Lets a raw stream, which has no
+        final message object, report the same outcome as a complete
+        response. Never raises.
+        """
+        ...
+
     def extract_content(
         self,
         request_kwargs: dict[str, Any],
@@ -186,3 +213,24 @@ class PromptContent:
     captured_at: str
     input: str | list[str] | None = None
     embedding_output: list[list[float]] | None = None
+
+
+def finish_reason_of(obj: Any) -> str | None:
+    """``choices[0].finish_reason`` of an OpenAI-shaped completion or
+    stream chunk, or ``refusal`` when the message carries a
+    structured-output refusal (``message.refusal``, which the model
+    reports with ``finish_reason="stop"``); ``None`` when the object has
+    no choices. Shared by the OpenAI adapter and the litellm adapter,
+    whose ``ModelResponse`` mirrors the chat shape. Never raises."""
+    try:
+        choices = getattr(obj, "choices", None)
+        if not isinstance(choices, list) or not choices:
+            return None
+        first = choices[0]
+        refusal = getattr(getattr(first, "message", None), "refusal", None)
+        if isinstance(refusal, str) and refusal:
+            return "refusal"
+        reason = getattr(first, "finish_reason", None)
+        return reason if isinstance(reason, str) else None
+    except Exception:
+        return None

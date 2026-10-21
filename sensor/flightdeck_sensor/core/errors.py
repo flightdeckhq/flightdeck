@@ -1,9 +1,11 @@
 """Error classification for LLM provider exceptions.
 
 LLM API errors are first-class structured events: :func:`classify_exception`
-maps a provider exception to a 14-entry taxonomy and
-:func:`build_error_payload` constructs the structured ``error`` sub-object
-attached to an :class:`EventType.LLM_ERROR` event.
+maps a provider exception to a 14-entry taxonomy,
+:func:`classify_stop_reason` maps the non-success stop reason of a
+response the provider answered with HTTP 200 onto the same taxonomy, and
+:class:`ErrorPayload` wraps a classification into the structured ``error``
+sub-object attached to an :class:`EventType.LLM_ERROR` event.
 
 The taxonomy is deliberately provider-agnostic. Each entry maps to the
 recommended OTel ``gen_ai.error.type`` value so an OpenTelemetry exporter
@@ -121,11 +123,13 @@ class ErrorClassification:
 # Classifier
 # ---------------------------------------------------------------------------
 
-# The classifier walks two signals: (a) the exception class name, which each
-# SDK namespaces consistently; (b) the HTTP status if the exception exposes
-# one. Class-name matching is deliberate -- we do NOT import the provider
-# SDKs here because the sensor must stay install-optional (a user with
-# ``openai`` but not ``anthropic`` installed cannot pay a hard import cost).
+# The classifier reads four signals: (a) the exception class name, which
+# each SDK namespaces consistently; (b) the HTTP status if the exception
+# exposes one; (c) the provider's error code; (d) the provider's message,
+# used for a keyword match only and never stored. Class-name matching is
+# deliberate -- we do NOT import the provider SDKs here because the sensor
+# must stay install-optional (a user with ``openai`` but not ``anthropic``
+# installed cannot pay a hard import cost).
 #
 # Exception class names (SDK, stdlib and httpx) that mean the request or
 # the response timed out. Shared with the stream guard, which reports such
@@ -200,6 +204,20 @@ class AbortReason(str, enum.Enum):
     TIMEOUT = "timeout"
 
 
+# Anthropic-specific exception classes, walked before the shared table so
+# each keeps its own meaning instead of collapsing into the generic entry
+# for its base class (all three derive from APIStatusError). The SDK's
+# status mapping raises OverloadedError (529) and RequestTooLargeError
+# (413) directly; DeadlineExceededError is declared for 504 but the
+# mapping folds 504 into InternalServerError, so the 504 status override
+# below is what classifies a real gateway timeout. A 402 billing_error
+# arrives as a bare APIStatusError and is likewise caught by status.
+_ANTHROPIC_CLASS_TO_TYPE: list[tuple[tuple[str, ...], ErrorType]] = [
+    (("DeadlineExceededError",), ErrorType.TIMEOUT),
+    (("OverloadedError",), ErrorType.OVERLOADED),
+    (("RequestTooLargeError",), ErrorType.REQUEST_TOO_LARGE),
+]
+
 # Class names to error types. First-match wins; order matters for subclasses
 # (put more-specific entries first).
 _CLASS_TO_TYPE: list[tuple[tuple[str, ...], ErrorType]] = [
@@ -231,19 +249,72 @@ _CLASS_TO_TYPE: list[tuple[tuple[str, ...], ErrorType]] = [
 ]
 
 
+# Phrases Anthropic uses when the account, not the request, is what
+# failed: an organisation or per-user spend limit, an exhausted prepaid
+# balance. Anthropic reports these under the generic error type of their
+# status (429 rate_limit_error for the organisation spend cap, 400
+# invalid_request_error for a user spend limit or a too-low credit
+# balance), so the message is the only signal that separates them from a
+# real rate limit or a malformed request. Multi-word phrases only: a
+# single word such as "billing", "quota" or "monthly" also occurs in
+# caller-supplied identifiers a 400 echoes back (a schema named
+# monthly_report, a tool get_billing_info) and in per-minute quota
+# messages that are genuine rate limits. Matched against the lower-cased
+# message of Anthropic exceptions only; the text itself is never stored.
+_BILLING_MESSAGE_HINTS: tuple[str, ...] = (
+    "spend limit",
+    "spending limit",
+    "spend cap",
+    "credit balance",
+)
+
+# Statuses under which Anthropic reports a billing condition with a
+# generic error type, so the message is consulted; under every other
+# status the class and status decide and the message is never read.
+_MESSAGE_HINT_STATUSES: frozenset[int] = frozenset({400, 429})
+
+# Only the first 2,048 characters of a provider message are inspected for
+# a billing phrase. The phrases open every known message, a provider
+# message is normally a few hundred characters, and the cap bounds the
+# work the hot path does on a pathological multi-megabyte message: the
+# slice is taken before lower-casing, so neither copy is larger than the
+# cap.
+_MESSAGE_HINT_MAX_CHARS = 2048
+
+# The provider whose messages the billing-phrase match applies to.
+_MESSAGE_HINT_PROVIDER = "anthropic"
+
+
+def _mentions_billing(message_hint: str) -> bool:
+    return any(hint in message_hint for hint in _BILLING_MESSAGE_HINTS)
+
+
 # HTTP status overrides when the class alone is ambiguous. 429 could be
 # rate_limit OR quota_exceeded -- Anthropic / OpenAI both surface billing
-# caps as 429, distinguished by provider_error_code. 503 is split between
-# api_error and overloaded.
+# caps as 429, distinguished by provider_error_code or, for Anthropic, the
+# message. 503 is split between api_error and overloaded.
 def _override_from_status_and_code(
     base: ErrorType,
     http_status: int | None,
     provider_error_code: str | None,
+    message_hint: str = "",
 ) -> ErrorType:
+    # 402 is Anthropic's billing_error: the account cannot be charged, so
+    # a retry cannot help -- the quota entry carries that (non-retryable).
+    if http_status == 402:
+        return ErrorType.QUOTA_EXCEEDED
+    # 504 is a gateway timeout whatever class the SDK wrapped it in
+    # (Anthropic folds it into InternalServerError).
+    if http_status == 504:
+        return ErrorType.TIMEOUT
     if http_status == 429 and provider_error_code:
         code = provider_error_code.lower()
         if "quota" in code or "billing" in code or "monthly" in code:
             return ErrorType.QUOTA_EXCEEDED
+    # Anthropic's organisation spend cap is a 429 rate_limit_error whose
+    # message, not its type, says the cap was hit.
+    if http_status == 429 and _mentions_billing(message_hint):
+        return ErrorType.QUOTA_EXCEEDED
     if http_status == 413:
         return ErrorType.REQUEST_TOO_LARGE
     if http_status == 529:  # Anthropic-specific "overloaded"
@@ -259,6 +330,10 @@ def _override_from_status_and_code(
             return ErrorType.CONTEXT_OVERFLOW
         if "content_filter" in code or "content_policy" in code:
             return ErrorType.CONTENT_FILTER
+    # A per-user spend limit or an exhausted credit balance is a 400
+    # invalid_request_error on Anthropic; the request itself was fine.
+    if http_status == 400 and _mentions_billing(message_hint):
+        return ErrorType.QUOTA_EXCEEDED
     return base
 
 
@@ -328,11 +403,22 @@ def classify_exception(
             base = ErrorType.STREAM_ERROR
         else:
             base = ErrorType.OTHER
-            for names, etype in _CLASS_TO_TYPE:
+            for names, etype in (*_ANTHROPIC_CLASS_TO_TYPE, *_CLASS_TO_TYPE):
                 if cls_name in names:
                     base = etype
                     break
-            base = _override_from_status_and_code(base, http_status, provider_error_code)
+            # The message is read only where it can change the verdict:
+            # an Anthropic 400 or 429, which pays for at most the capped
+            # slice; a status-less or foreign exception pays nothing.
+            message_hint = ""
+            if provider == _MESSAGE_HINT_PROVIDER and http_status in _MESSAGE_HINT_STATUSES:
+                message_hint = _extract_message_hint(exc)
+            base = _override_from_status_and_code(
+                base,
+                http_status,
+                provider_error_code,
+                message_hint,
+            )
 
         if parse_failure is not None:
             message = f"{cls_name}: {parse_failure[1]}"
@@ -361,6 +447,71 @@ def classify_exception(
             retry_after=None,
             is_retryable=False,
         )
+
+
+# ---------------------------------------------------------------------------
+# Non-success stop reasons. A provider can answer HTTP 200 with a stop
+# reason that still means the call did not succeed: Anthropic's
+# ``refusal`` (its safety classifiers declined) and
+# ``model_context_window_exceeded`` (the context window ran out
+# mid-response), OpenAI's and litellm's ``content_filter`` finish reason.
+# None is a completed call from the operator's point of view, so the
+# interceptor files an llm_error beside the post_call (the call was billed,
+# so the post_call keeps its usage). A truncated response (``max_tokens``,
+# ``length``, ``max_output_tokens``) is a success: the text is valid, just
+# cut short, and the caller sees that on the response itself.
+# ---------------------------------------------------------------------------
+
+NON_SUCCESS_STOP_REASONS: dict[str, ErrorType] = {
+    # Anthropic stop_reason; also an OpenAI structured-output refusal
+    # (message.refusal), which the OpenAI adapter reports under this key.
+    "refusal": ErrorType.CONTENT_FILTER,
+    # Anthropic stop_reason.
+    "model_context_window_exceeded": ErrorType.CONTEXT_OVERFLOW,
+    # OpenAI chat and litellm finish_reason, and the reason of an OpenAI
+    # Responses call left incomplete by the content filter.
+    "content_filter": ErrorType.CONTENT_FILTER,
+}
+
+# The HTTP status recorded on a stop-reason classification. The provider
+# answered the request, so the failure is in the response body, not the
+# transport; an operator reading 200 on the error row knows to look at
+# ``provider_error_code`` (the stop reason) rather than at a status error.
+STOP_REASON_HTTP_STATUS = 200
+
+
+def classify_stop_reason(
+    stop_reason: Any,
+    *,
+    provider: str,
+    request_id: str | None = None,
+) -> ErrorClassification | None:
+    """Classify a provider's stop reason.
+
+    Returns ``None`` for every reason that is not in
+    :data:`NON_SUCCESS_STOP_REASONS` (``end_turn``, ``max_tokens``,
+    ``tool_use``, a missing reason, a non-string) so the caller emits
+    nothing. ``error_message`` names the reason only -- no response
+    content -- so the result is safe under capture-off. Never raises.
+    """
+    try:
+        if not isinstance(stop_reason, str):
+            return None
+        error_type = NON_SUCCESS_STOP_REASONS.get(stop_reason)
+        if error_type is None:
+            return None
+        return ErrorClassification(
+            error_type=error_type,
+            provider=provider,
+            http_status=STOP_REASON_HTTP_STATUS,
+            provider_error_code=stop_reason,
+            error_message=f"stop_reason={stop_reason}",
+            request_id=request_id,
+            retry_after=None,
+            is_retryable=_RETRYABLE.get(error_type, False),
+        )
+    except Exception:  # pragma: no cover — defence in depth
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -424,12 +575,40 @@ def _extract_provider_error_code(exc: BaseException) -> str | None:
     return None
 
 
+def _extract_message_hint(exc: BaseException) -> str:
+    """The first ``_MESSAGE_HINT_MAX_CHARS`` of the provider message,
+    lower-cased, for phrase matching only. It is never stored:
+    ``error_message`` goes through :func:`_redacted_message`, which keeps
+    the capture-off posture. Empty string on any failure."""
+    try:
+        body = getattr(exc, "body", None)
+        if isinstance(body, dict):
+            err = body.get("error")
+            if isinstance(err, dict):
+                msg = err.get("message")
+                if isinstance(msg, str) and msg:
+                    return msg[:_MESSAGE_HINT_MAX_CHARS].lower()
+        msg = getattr(exc, "message", None)
+        if isinstance(msg, str) and msg:
+            return msg[:_MESSAGE_HINT_MAX_CHARS].lower()
+        return str(exc)[:_MESSAGE_HINT_MAX_CHARS].lower()
+    except Exception:
+        return ""
+
+
+# Longest request id the sensor keeps, from an exception or a response.
+# Provider request ids are short opaque tokens (a few dozen characters);
+# the value is stored on the error event and used as the retry-counter
+# key, so the cap bounds both against a hostile or malformed header.
+REQUEST_ID_MAX_LEN = 128
+
+
 def _extract_request_id(exc: BaseException) -> str | None:
     for attr in ("request_id", "x_request_id"):
         try:
             v = getattr(exc, attr, None)
             if isinstance(v, str) and v:
-                return v
+                return v[:REQUEST_ID_MAX_LEN]
         except Exception:
             continue
     try:
@@ -443,7 +622,7 @@ def _extract_request_id(exc: BaseException) -> str | None:
                     except Exception:
                         v = None
                     if isinstance(v, str) and v:
-                        return v
+                        return v[:REQUEST_ID_MAX_LEN]
     except Exception:
         pass
     return None

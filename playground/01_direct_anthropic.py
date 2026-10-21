@@ -1,5 +1,6 @@
 """Direct Anthropic SDK -- sync, async, streaming (sync + async), beta.messages,
-plus an invalid-model error-classification demo.
+plus invalid-model and request-timeout error-classification demos and a
+check that the estimator's default count_tokens model is still served.
 
 A developer using the raw `anthropic` package copies this file, drops
 in their own prompts, and has Flightdeck telemetry on every call. The
@@ -16,12 +17,14 @@ import uuid
 
 try:
     import anthropic
+    import httpx  # the SDK's HTTP client; installed with it
 except ImportError:
     print("SKIP: pip install anthropic to run this example")
     sys.exit(2)
 
 import flightdeck_sensor
 from flightdeck_sensor import Provider
+from flightdeck_sensor.providers.anthropic import DEFAULT_COUNT_TOKENS_MODEL, AnthropicProvider
 from _helpers import (
     assert_event_landed,
     fetch_events_for_session,
@@ -37,6 +40,19 @@ MODEL = "claude-haiku-4-5-20251001"
 # post_call.
 EXPECTED_STREAMED_CALLS = 5
 HI = [{"role": "user", "content": "hi"}]
+# Timeout shape for the timeout-classification probe. The connect budget
+# is generous because a tiny one surfaces as a connection error on some
+# stacks (WSL reports "network is unreachable" instead of a timeout); the
+# one-millisecond read budget is far below any model round trip, so the
+# SDK raises APITimeoutError while waiting for the response. The request
+# does reach the API, so the five-token reply is billed. Retries are
+# disabled on that client so the probe fails once instead of three times.
+TIMEOUT_PROBE_CONNECT_S = 10.0
+TIMEOUT_PROBE_READ_S = 0.001
+# How long to wait for the probe's llm_error to land after the earlier
+# invalid-model error; the sensor drains in the background.
+LLM_ERROR_DEADLINE_S = 8.0
+LLM_ERROR_POLL_S = 0.3
 
 
 def main() -> None:
@@ -249,6 +265,60 @@ def main() -> None:
     if not classified:
         raise AssertionError(
             f"invalid-model llm_error fell through to 'other': {err!r}",
+        )
+
+    # Request-timeout llm_error: a client that gives up before the API can
+    # answer raises APITimeoutError; the classifier must file it as
+    # "timeout" (retryable), not as a generic api_error.
+    timeout_seen = False
+    probe_timeout = httpx.Timeout(TIMEOUT_PROBE_CONNECT_S, read=TIMEOUT_PROBE_READ_S)
+    try:
+        anthropic.Anthropic(timeout=probe_timeout, max_retries=0).messages.create(
+            model=MODEL, max_tokens=5, messages=HI,
+        )
+    except anthropic.APITimeoutError:
+        timeout_seen = True
+    print_result("1ms read timeout raises APITimeoutError", timeout_seen, 0)
+    if not timeout_seen:
+        raise AssertionError("timeout probe did not raise APITimeoutError")
+
+    deadline = time.monotonic() + LLM_ERROR_DEADLINE_S
+    timeout_errors: list[dict] = []
+    while not timeout_errors and time.monotonic() < deadline:
+        events = fetch_events_for_session(
+            session_id, expect_event_types=["llm_error"], timeout_s=2.0,
+        )
+        timeout_errors = [
+            e for e in events
+            if e.get("event_type") == "llm_error"
+            and ((e.get("payload") or {}).get("error") or {}).get("error_type") == "timeout"
+        ]
+        if not timeout_errors:
+            time.sleep(LLM_ERROR_POLL_S)
+    print_result(
+        "timeout llm_error classified", bool(timeout_errors), 0,
+        f"{len(timeout_errors)} timeout error(s) observed",
+    )
+    if not timeout_errors:
+        raise AssertionError(f"no llm_error with error_type='timeout'; events={events!r}")
+    timeout_err = timeout_errors[-1]["payload"]["error"]
+    if not timeout_err.get("is_retryable") or timeout_errors[-1]["payload"].get("terminal"):
+        raise AssertionError(f"timeout error must be retryable and non-terminal: {timeout_err!r}")
+
+    # The estimator's default count_tokens model must still be served: a
+    # request without ``model`` has to reach the SDK's count_tokens
+    # (source "tiktoken"); a retired default makes it 404 and every such
+    # estimate silently degrades to the char heuristic.
+    estimate, source = AnthropicProvider().estimate_tokens({"messages": HI})
+    served = source == "tiktoken" and estimate > 0
+    print_result(
+        f"count_tokens default model {DEFAULT_COUNT_TOKENS_MODEL} is served", served, 0,
+        f"estimate={estimate} source={source}",
+    )
+    if not served:
+        raise AssertionError(
+            f"count_tokens fell back to {source!r} for default model "
+            f"{DEFAULT_COUNT_TOKENS_MODEL}; is the model retired?",
         )
 
     flightdeck_sensor.teardown()

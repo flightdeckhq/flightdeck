@@ -1486,8 +1486,11 @@ processor switch update — the NATS subject lands automatically.
 stale`; 30 min total silence triggers `stale → lost`. The 30 min lost
 threshold accommodates interactive Claude Code user-think-time
 windows. The reconciler in `workers/internal/processor/session.go`
-sweeps
-every 60 s and applies both transitions in a single pass.
+sweeps once per `FLIGHTDECK_RECONCILER_INTERVAL_SECS` (60 s by default;
+the dev stack sets 5 s so the integration tests that wait for a tick
+stay short) and applies both transitions in a single pass. A finer
+tick buys nothing in production because the thresholds it enforces
+are minutes to hours long; it only adds load.
 
 **Orphan-timeout reaper.** The same reconciler tick also closes `lost`
 sessions that have been silent past `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`
@@ -4946,6 +4949,8 @@ Constraint #4).
 | `FLIGHTDECK_NATS_URL` | NATS URL, same token convention as the ingestion API |
 | `FLIGHTDECK_WORKER_POOL_SIZE` | NATS consumer goroutine count (default 10) |
 | `FLIGHTDECK_MIGRATE_ONLY` | `true` applies pending migrations and exits without consuming |
+| `FLIGHTDECK_RECONCILER_INTERVAL_SECS` | Seconds between reconciler ticks (default 60); the dev compose override sets 5 so the integration tests that wait for a tick stay short |
+| `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS` | Silence window after which a `lost` session is closed with `close_reason=orphan_timeout` (default 24) |
 | `SHUTDOWN_TIMEOUT_SECS` | Graceful shutdown deadline (default 30) |
 
 **Query API:**

@@ -117,6 +117,11 @@ server.
 - **Repository hygiene.** Retired known-issue identifiers and decision
   pointers in source, CI and Helm comments; `sensor/.venv` is no longer
   tracked; test files and functions no longer carry decision numbers.
+- **Reconciler tick interval is configurable.** Workers read
+  `FLIGHTDECK_RECONCILER_INTERVAL_SECS` (default 60, unchanged for
+  production); the dev compose override sets 5 so the four integration
+  tests that wait for a reconciler tick finish in seconds instead of
+  idling for about five minutes per run.
 
 ## v0.5.3 — 2026-08-30
 

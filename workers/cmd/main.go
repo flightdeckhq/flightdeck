@@ -57,10 +57,14 @@ func main() {
 	defer cancel()
 
 	// Start background reconciler for stale/lost/orphaned sessions.
+	// reconcilerInterval is sourced from FLIGHTDECK_RECONCILER_INTERVAL_SECS
+	// (default 60 s; the dev stack lowers it so the integration tests
+	// that wait for a tick stay short) — see config.ReconcilerIntervalSecs.
 	// orphanTimeout is sourced from FLIGHTDECK_ORPHAN_TIMEOUT_HOURS
 	// (default 24h) — see config.OrphanTimeoutHours for the rationale.
+	reconcilerInterval := time.Duration(cfg.ReconcilerIntervalSecs) * time.Second
 	orphanTimeout := time.Duration(cfg.OrphanTimeoutHours) * time.Hour
-	go proc.StartReconciler(ctx, orphanTimeout)
+	go proc.StartReconciler(ctx, reconcilerInterval, orphanTimeout)
 
 	// Start NATS consumer pool
 	cons := consumer.New(nc, cfg.WorkerPoolSize, proc)

@@ -84,21 +84,26 @@ server.
   `quota_exceeded`; the organisation spend cap (a 429 whose message names
   the spend limit) and a per-user spend limit or exhausted credit balance
   (a 400) were `rate_limit` and `invalid_request` and are now
-  `quota_exceeded`, so they read as terminal rather than retryable. A
-  response that stopped with `stop_reason` `refusal` or
-  `model_context_window_exceeded` landed as a plain `post_call`; it now
-  also lands an `llm_error` (`content_filter` / `context_overflow`,
-  `http_status` 200, the stop reason as `provider_error_code`, terminal)
-  beside the `post_call`, which keeps the billed usage. Such calls now
-  count in the per-agent error count and mark the session as having a
-  terminal error.
+  `quota_exceeded`, so they read as terminal rather than retryable; the
+  message match is limited to Anthropic and to those phrases, so a
+  per-minute quota 429 elsewhere stays a retryable `rate_limit`. A
+  response the provider answered with 200 but did not complete (an
+  Anthropic `stop_reason` `refusal` or `model_context_window_exceeded`,
+  an OpenAI chat or litellm `finish_reason` `content_filter`, an OpenAI
+  structured-output refusal, a Responses call left `incomplete` by the
+  content filter) landed as a plain `post_call`; it now also lands an
+  `llm_error` (`content_filter` / `context_overflow`, `http_status` 200,
+  the stop reason as `provider_error_code`, the response's request id,
+  terminal, `originating_event_id` pointing at the `post_call`) beside
+  the `post_call`, which keeps the billed usage. A truncated response
+  (`max_tokens`, `length`, `max_output_tokens`) is still a success. Such
+  calls now count in the per-agent error count and mark the session as
+  having a terminal error.
 - **Sensor: the pre-call estimate silently degraded for requests without
   a model.** The estimator counted those against the retired
   `claude-sonnet-4-20250514`, which the `count_tokens` endpoint answers
   with 404, so every such estimate fell back to the character heuristic.
-  The fallback model is now `claude-sonnet-4-6`, and a unit test fails
-  if that id leaves `pricing.yaml`, is marked retired or deprecated
-  there, or disappears from the installed SDK's model list.
+  The default model is now `claude-sonnet-4-6`.
 - **Plugin: MCP policy decisions were never applied.** `PreToolUse`
   answered with the legacy top-level `decision` field, which Claude Code
   2.1 rejects; the hook now writes

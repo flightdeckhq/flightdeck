@@ -10140,39 +10140,64 @@ Marking the parallel-unsafe tests by module (the reconcile module is
 all exclusive, but most other modules mix one unsafe test with many
 safe ones).
 
-## D188 -- A non-success stop reason on a 200 response is recorded as an llm_error beside the post_call
+---
+
+## D188 -- Errors derived from a provider-answered 200 response are llm_errors with http_status 200 (the stop-reason rule); the Anthropic classifier refresh; the count_tokens default
 
 **Date:** 2026-10-21
 
-**Decision:** When Anthropic answers a call with HTTP 200 and a
-`stop_reason` of `refusal` (its safety classifiers declined the request)
-or `model_context_window_exceeded` (the context window ran out
-mid-response), the sensor emits an `llm_error` beside the `post_call`.
-The error carries the existing `llm_error` shape and nothing else:
-`error.error_type` is `content_filter` for a refusal and
-`context_overflow` for a context-window overrun, `error.http_status` is
-200, `error.provider_error_code` is the stop reason,
-`error.error_message` is `stop_reason=<reason>`, `is_retryable` is false
-and the top-level `terminal` is true. The `post_call` is unchanged and
-keeps the billed usage. The reason reaches the interceptor through two
-new provider-protocol hooks, `response_stop_reason(response)` for a
+**Decision:** When a provider answers a call with HTTP 200 and a stop
+reason that means the call did not succeed, the sensor emits an
+`llm_error` beside the `post_call`. The reasons: Anthropic's
+`stop_reason` `refusal` (its safety classifiers declined the request)
+and `model_context_window_exceeded` (the context window ran out
+mid-response); an OpenAI chat or litellm `finish_reason` of
+`content_filter` (litellm folds every provider's stop reason into
+`finish_reason` and raises nothing, so an Anthropic refusal routed
+through litellm arrives this way); an OpenAI structured-output refusal
+(`message.refusal`, reported as `refusal`); and an OpenAI Responses call
+left `incomplete` with `incomplete_details.reason` `content_filter`. A
+truncated response (`max_tokens`, `length`, `max_output_tokens`) is a
+success. The error carries the existing `llm_error` shape and nothing
+else: `error.error_type` is `content_filter`, or `context_overflow` for
+the context-window overrun, `error.http_status` is 200,
+`error.provider_error_code` is the stop reason, `error.error_message` is
+`stop_reason=<reason>`, `error.request_id` is the response's request id
+(the SDK stamps it on the parsed object; a raw-response wrapper exposes
+it in its headers) so the per-provider retry counter keys each refusal
+on its own request rather than on an empty id, `error.is_retryable` is
+false, the top-level `terminal` is true and `originating_event_id` is
+the `post_call`'s id. The `post_call` is unchanged and keeps the billed
+usage. Any error the sensor derives from a response the provider
+answered with HTTP 200 -- this stop-reason rule, and an SDK exception
+raised after such a response, such as the finish-reason errors of the
+OpenAI parsing helpers -- records `error.http_status` 200; this entry is
+the home of that convention. The reason reaches the interceptor through
+two new provider-protocol hooks, `response_stop_reason(response)` for a
 complete message, a raw-response wrapper or a helper stream's snapshot,
-and `stop_reason_from_stream_chunk(chunk)` for a raw stream, whose
-`message_delta` event is the only place the reason appears; the stream
-guard records it as events pass and hands it to the settle. OpenAI and
-litellm return `None` from both hooks. Only `post_call` events are
-examined; `embeddings` carry no stop reason.
+and `stop_reason_from_stream_chunk(chunk)` for a raw stream, where the
+reason appears on one streamed event (Anthropic `message_delta`, a chat
+or litellm chunk carrying `finish_reason`, a Responses
+`response.incomplete` event); the stream guard records it as events pass
+and hands it to the settle. Each adapter carries an explicit `name`
+(`anthropic`, `openai`, `litellm`) that fills the error's `provider`
+field. Only `post_call` events are examined; `embeddings` carry no stop
+reason. An integration seed
+(`tests/integration/test_phase4_event_shapes.py::test_stop_reason_llm_error_roundtrips_with_http_200`)
+posts the 200-status `llm_error` through the real ingestion API and
+reads it back.
 
 The same change refreshes the exception classifier for the Anthropic
 SDK: `DeadlineExceededError`, `OverloadedError` and
 `RequestTooLargeError` are mapped by class name in a block of their own,
 and two status rules apply whatever class the SDK raised, 402 to
-`quota_exceeded` and 504 to `timeout`. A 429 or 400 whose provider
-message contains `spend limit`, `spending limit`, `spend cap`,
-`credit balance`, `billing`, `quota` or `monthly` is `quota_exceeded`
-instead of `rate_limit` or `invalid_request`; the message is read for
-that substring test only and is still redacted from `error_message`
-under capture-off. The pre-call estimator's fallback `count_tokens`
+`quota_exceeded` and 504 to `timeout`. An Anthropic 429 or 400 whose
+provider message contains the phrase `spend limit`, `spending limit`,
+`spend cap` or `credit balance` is `quota_exceeded` instead of
+`rate_limit` or `invalid_request`; the match is gated to Anthropic
+exceptions and to those statuses, reads only the first 2 KiB of the
+message, is a substring test only, and the message is still redacted
+from `error_message` under capture-off. The pre-call estimator's default `count_tokens`
 model is `claude-sonnet-4-6`, and a unit test fails when that id is
 absent from `pricing.yaml`, marked retired or deprecated there, or
 missing from the installed SDK's model list.
@@ -10211,10 +10236,11 @@ neutral and every other response reading goes through the protocol; a
 raw stream needs the per-chunk hook because `create(stream=True)`
 returns an SDK stream with no final message, and the reason is seen
 once, on the `message_delta` event the guard already inspects to know
-the response has ended. The provider label on the error row is derived
-from the adapter class name (`AnthropicProvider` to `anthropic`): the
-adapters carry no name attribute and, unlike an exception, a stop
-reason has no module to infer the provider from.
+the response has ended. The error row's `provider` comes from the
+adapter's `name` attribute: unlike an exception, a stop reason has no
+module to infer the provider from, and a name declared on the adapter
+is checked by the type checker where a label derived from the class
+name would not be.
 
 The classifier's status rules are status-driven because neither SDK
 generation has a dedicated class for the two cases: the installed 0.94.0
@@ -10222,20 +10248,29 @@ and the 1.17.0 wheel both declare `DeadlineExceededError` for 504 but
 their status mapping folds every 5xx other than 529 into
 `InternalServerError`, and a 402 falls through to a bare
 `APIStatusError`. Mapping the class names alone would therefore have
-classified a real 504 as a retryable `api_error`, and the live probe
-confirmed the SDK raises `InternalServerError(status_code=504)`. The
+classified a real 504 as a retryable `api_error`, and a local probe of
+the SDK's status mapping confirmed it delivers a 504 as
+`InternalServerError`. The
 spend-limit cases are message-driven because Anthropic reports them
 under the generic error type of their status (`rate_limit_error` for the
 organisation spend cap, `invalid_request_error` for a per-user spend
 limit or an exhausted credit balance), so the error code carries no
-signal; the match is a substring test over a short list of billing
-words. The exact provider strings were not confirmed against the live
-API (none can be provoked without exhausting an account), so the list
-is intentionally broad and its false-positive risk is bounded by the
-statuses it applies to and the fact that a 400 or 429 message never
-echoes prompt content.
+signal. The match is gated to Anthropic exceptions with status 400 or
+429 and to multi-word phrases: a 400 echoes caller-supplied identifiers
+back (a schema named `monthly_report`, a tool `get_billing_info`), and a
+litellm or Vertex per-minute "quota exceeded" 429 is a genuine,
+retryable rate limit, so the single words `billing`, `quota` and
+`monthly` match nothing on their own (the `provider_error_code` check
+still recognises codes that contain them, and 402 is decided by status).
+Only the first 2 KiB of the message is inspected, so a huge or hostile
+message costs a bounded slice, and nothing is read at all for another
+provider or another status. The exact Anthropic strings were not
+confirmed against the live API (none can be provoked without exhausting
+an account), so the phrases are the documented wording; the message is
+matched only and never stored, because a provider message can quote
+user-supplied identifiers.
 
-`claude-sonnet-4-6` is the fallback `count_tokens` model because the
+`claude-sonnet-4-6` is the default `count_tokens` model because the
 previous default, `claude-sonnet-4-20250514`, was retired and the
 endpoint answers 404 for it; the estimator swallows that and falls back
 to the character heuristic, so every estimate for a request without a
@@ -10264,4 +10299,10 @@ no model is named (both leave the SDK path unused for those requests).
 `claude-haiku-4-5` or `claude-sonnet-5-5` as the default (Haiku changes
 the tokenizer family the previous default used; Sonnet 5.5 is not in
 the installed SDK's model list, which the canary requires so the id is
-one the pinned SDK knows).
+one the pinned SDK knows). Matching single billing words on every
+provider's 400 and 429 (false positives on echoed identifiers and
+per-minute quotas, as above). Treating a truncated response (`length`,
+`max_output_tokens`, `max_tokens`) as a failure (the text is valid and
+the caller already sees the cut on the response). Deriving the error's
+`provider` from the adapter class name (a naming convention the type
+checker cannot see).

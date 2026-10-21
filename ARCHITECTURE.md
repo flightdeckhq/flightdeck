@@ -232,7 +232,7 @@ flightdeck/
 │   │   │   ├── context.py      # Pluggable runtime context collectors + framework classifiers
 │   │   │   ├── schemas.py      # Pydantic v2 control-plane envelope validation
 │   │   │   ├── agent_id.py     # 5-tuple → deterministic agent_id derivation
-│   │   │   ├── errors.py       # Provider exception → structured llm_error taxonomy + payload builder
+│   │   │   ├── errors.py       # Provider exception or non-success stop reason → structured llm_error taxonomy + payload wrapper
 │   │   │   └── exceptions.py   # BudgetExceededError, DirectiveError, ConfigurationError
 │   │   ├── transport/
 │   │   │   ├── client.py       # ControlPlaneClient + EventQueue (drain + directive threads)
@@ -255,7 +255,7 @@ flightdeck/
 │   │       └── crewai_mcp.py   # Opt-in fixup for the mcpadapt → CrewAI args_schema JSON Schema bug
 │   └── tests/
 │       ├── conftest.py         # Mock control plane + provider fixtures
-│       └── unit/               # 34 files
+│       └── unit/               # 35 files
 │           ├── test_agent_id.py
 │           ├── test_agent_type_validation.py
 │           ├── test_compat_crewai_mcp.py
@@ -288,6 +288,7 @@ flightdeck/
 │           ├── test_providers.py
 │           ├── test_session.py
 │           ├── test_session_lifecycle_enrichment.py
+│           ├── test_stop_reason_errors.py
 │           ├── test_streaming_usage.py
 │           └── test_transport.py
 │
@@ -601,6 +602,8 @@ def directive(
 ```python
 class Provider(Protocol):
 
+    name: str   # wire name: "anthropic", "openai" or "litellm"
+
     def estimate_tokens(self, request_kwargs: dict) -> tuple[int, str]:
         """Estimate tokens before the call; returns (tokens, source) where
         source is "tiktoken", "heuristic" or "none". Never raises."""
@@ -642,17 +645,20 @@ class Provider(Protocol):
         raises."""
 
     def response_stop_reason(self, response: Any) -> str | None:
-        """The provider's end-of-response reason on a complete response
-        (Anthropic stop_reason, read from a Message, a raw-response wrapper
-        or a helper stream's accumulated snapshot), or None when the
-        response carries none or the provider reports such outcomes as SDK
-        exceptions instead. Never raises."""
+        """The provider's stop reason on a complete response: Anthropic
+        stop_reason (a Message, a raw-response wrapper or a helper
+        stream's accumulated snapshot); OpenAI chat and litellm
+        finish_reason, "refusal" for a structured-output message.refusal,
+        the incomplete_details.reason of a Responses call whose status is
+        incomplete. None when the response carries none. Never raises."""
 
     def stop_reason_from_stream_chunk(self, chunk: Any) -> str | None:
-        """The end-of-response reason carried by one streamed event
-        (Anthropic message_delta), or None for every other event, so a raw
-        stream, which has no final message object, reports the same
-        outcome as a complete response. Never raises."""
+        """The stop reason carried by one streamed event (Anthropic
+        message_delta; an OpenAI chat or litellm chunk carrying
+        finish_reason; an OpenAI response.incomplete event), or None for
+        every other event, so a raw stream, which has no final message
+        object, reports the same outcome as a complete response. Never
+        raises."""
 
     def extract_response_metadata(self, response: Any) -> dict | None:
         """Rate-limit headers, request id and processing time, normalised
@@ -3958,7 +3964,7 @@ Structured error event with a 14-entry taxonomy:
 | `rate_limit` | 429 | Request-rate limit exceeded | `rate_limit_error` | ✅ |
 | `quota_exceeded` | 402 / 429 / 400 | Billing problem (402); a spend limit, spend cap or exhausted credit balance reported under 429 or 400 | `quota_exceeded_error` | ❌ |
 | `context_overflow` | 400 / 200 | Input exceeded the model context window, or the response stopped with `model_context_window_exceeded` | `context_length_exceeded` | ❌ |
-| `content_filter` | 400 / 200 | Provider content filter blocked the request, or the response stopped with `refusal` | `content_filter_error` | ❌ |
+| `content_filter` | 400 / 200 | Provider content filter blocked the request, or the response ended with `refusal` or `content_filter` | `content_filter_error` | ❌ |
 | `invalid_request` | 400 | Other validation failure | `invalid_request_error` | ❌ |
 | `authentication` | 401 | Missing / invalid credential | `authentication_error` | ❌ |
 | `permission` | 403 | Credential lacks permission | `permission_error` | ❌ |
@@ -3994,40 +4000,61 @@ its classes consistently; the Anthropic-specific `DeadlineExceededError`,
 `OverloadedError` and `RequestTooLargeError` are mapped by name), then
 lets the HTTP status, the provider's error code and the provider's
 message override it. By status: 402 is `quota_exceeded` and 504 is
-`timeout` whatever class the SDK raised, because the Anthropic SDK has
-no dedicated class for either (a 504 arrives as `InternalServerError`, a
-402 as a bare `APIStatusError`); 413 is `request_too_large`; 529 is
-`overloaded`. By message: a 429 or 400 whose provider message mentions a
-spend limit, spending limit, spend cap, credit balance, billing, quota
-or monthly cap is `quota_exceeded` rather than `rate_limit` or
-`invalid_request`, since Anthropic reports its organisation spend cap as
-a 429 `rate_limit_error` and a per-user spend limit or an exhausted
-credit balance as a 400 `invalid_request_error`, and only the message
-tells them apart; the match is a substring test over the lower-cased
-message. The message is read for that test only: `error_message` is the
+`timeout` whatever class the SDK raised, because the Anthropic SDK never
+raises a dedicated class for either: `DeadlineExceededError` is declared
+and mapped by name, but the SDK's status mapping delivers a 504 as
+`InternalServerError` and a 402 as a bare `APIStatusError`; 413 is
+`request_too_large`; 529 is `overloaded`. By message, for Anthropic
+exceptions only: a 429 or 400 whose provider message contains the
+phrase `spend limit`, `spending limit`, `spend cap` or `credit balance`
+is `quota_exceeded` rather than `rate_limit` or `invalid_request`, since
+Anthropic reports its organisation spend cap as a 429
+`rate_limit_error` and a per-user spend limit or an exhausted credit
+balance as a 400 `invalid_request_error`, and only the message tells
+them apart. The match is a substring test over the first 2 KiB of the
+lower-cased message; single words are not matched, because a 400 echoes
+caller-supplied identifiers (a schema named `monthly_report`, a tool
+`get_billing_info`) and a per-minute "quota exceeded" 429 is a genuine
+rate limit, and no other provider's message is read at all, so a
+status-less, foreign or huge exception pays nothing for it. The message
+is read for that test only and never stored: `error_message` is the
 exception class name, with the provider's text appended (clipped to 200
 characters) only when `capture_prompts` is on.
 
 A response the provider answered with HTTP 200 can still be a failed
-call. When Anthropic's `stop_reason` is `refusal` (its safety
+call. When the stop reason is one of Anthropic's `refusal` (its safety
 classifiers declined the request) or `model_context_window_exceeded`
-(the context window ran out mid-response), the sensor emits an
-`llm_error` beside the `post_call`: `error.error_type` is
-`content_filter` or `context_overflow`, `error.http_status` is 200,
-`error.provider_error_code` is the stop reason, `error.error_message` is
-`stop_reason=<reason>` (never response content), `is_retryable` is
-false and `terminal` is true. The `post_call` keeps the billed usage, so
-token totals and `estimated_cost` are unchanged, while the error counts
-toward the per-agent error count and sets the session's terminal-error
-flag like any other terminal `llm_error`. The reason comes from the
-provider protocol's `response_stop_reason` (a complete message, a
-raw-response wrapper, or a helper stream's accumulated snapshot) or, for
-a raw stream that has no final message object, from the `message_delta`
-event through `stop_reason_from_stream_chunk`, which the stream guard
-records as events pass. Only `post_call` events get this treatment;
-`embeddings` responses carry no stop reason. OpenAI and litellm report
-none: their SDKs raise exceptions for a declined or cut-off parsed
-response, which take the exception path above.
+(the context window ran out mid-response), an OpenAI chat or litellm
+`finish_reason` of `content_filter` (which is also how litellm reports
+an Anthropic refusal routed through it), an OpenAI structured-output
+refusal (`message.refusal`, reported as `refusal`), or an OpenAI
+Responses call left `incomplete` with `incomplete_details.reason`
+`content_filter`, the sensor emits an `llm_error` beside the
+`post_call`: `error.error_type` is `content_filter`, or
+`context_overflow` for the context-window overrun; `error.http_status`
+is 200; `error.provider_error_code` is the stop reason;
+`error.error_message` is `stop_reason=<reason>` (never response
+content); `error.request_id` is the response's request id (stamped on
+the parsed SDK object, or read from a raw-response wrapper's headers);
+`error.is_retryable` is false and the top-level `terminal` is true; and
+`originating_event_id` is the id of the `post_call` it accompanies,
+which is how an operator pairs the error with the billed call. Any
+`llm_error` the sensor derives from a response the provider answered
+with HTTP 200 records `error.http_status` 200. A truncated response
+(Anthropic `max_tokens`, OpenAI `length` or `max_output_tokens`) is a
+success: the text is valid, just cut short. The `post_call` keeps the
+billed usage, so token totals and `estimated_cost` are unchanged, while
+the error counts toward the per-agent error count and sets the
+session's `has_terminal_error` flag like any other terminal
+`llm_error`. The reason comes from the provider protocol's
+`response_stop_reason` (a complete message, a raw-response wrapper, or
+a helper stream's accumulated snapshot) or, for a raw stream that has no
+final message object, from the streamed event that carries it
+(Anthropic `message_delta`, an OpenAI chat or litellm chunk with
+`finish_reason`, an OpenAI `response.incomplete` event) through
+`stop_reason_from_stream_chunk`, which the stream guard records as
+events pass. Only `post_call` events get this treatment; `embeddings`
+responses carry no stop reason.
 
 Operator-actionable retry-chain context:
 

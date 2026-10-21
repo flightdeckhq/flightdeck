@@ -43,8 +43,8 @@ import { fileURLToPath } from "node:url";
 
 import {
   CI_PROVIDER_ENV,
-  MAX_MCP_IDENTITY_CHARS,
-  MAX_SIGNAL_CHARS,
+  MAX_MCP_IDENTITY_BYTES,
+  MAX_SIGNAL_BYTES,
   REDACTED_ERROR_MESSAGE,
   SESSION_END_HOOK_BUDGET_MS,
   SESSION_END_WORKER_FLAG,
@@ -148,6 +148,34 @@ function assertIngestionContract(p) {
   if (p.agent_role != null) {
     assert.equal(typeof p.agent_role, "string", "agent_role must be a string");
     assert.ok(p.agent_role.length <= 256, "agent_role exceeds 256 characters");
+  }
+  // The Claude Code plugin's optional fields: ingestion type-checks them
+  // on tool_call / mcp_tool_call (tool_use_id, mcp_server) and
+  // session_end (end_reason), in UTF-8 bytes; null counts as absent.
+  if (p.event_type === "tool_call" || p.event_type === "mcp_tool_call") {
+    if (p.tool_use_id != null) {
+      assert.equal(typeof p.tool_use_id, "string", "tool_use_id must be a string");
+      assert.ok(Buffer.byteLength(p.tool_use_id, "utf8") <= 256, "tool_use_id exceeds 256 bytes");
+    }
+    if (p.mcp_server != null) {
+      assert.ok(
+        typeof p.mcp_server === "object" && !Array.isArray(p.mcp_server),
+        "mcp_server must be an object",
+      );
+      assert.ok(
+        typeof p.mcp_server.name === "string" && p.mcp_server.name !== "",
+        "mcp_server.name must be a non-empty string",
+      );
+      assert.ok(Buffer.byteLength(p.mcp_server.name, "utf8") <= 256, "mcp_server.name exceeds 256 bytes");
+      if (p.mcp_server.source != null) {
+        assert.equal(typeof p.mcp_server.source, "string", "mcp_server.source must be a string or null");
+        assert.ok(Buffer.byteLength(p.mcp_server.source, "utf8") <= 256, "mcp_server.source exceeds 256 bytes");
+      }
+    }
+  }
+  if (p.event_type === "session_end" && p.end_reason != null) {
+    assert.equal(typeof p.end_reason, "string", "end_reason must be a string");
+    assert.ok(Buffer.byteLength(p.end_reason, "utf8") <= 64, "end_reason exceeds 64 bytes");
   }
   const assertDecisionBlock = (block, label) => {
     assert.ok(block && typeof block === "object", `${label} must be an object`);
@@ -758,9 +786,9 @@ describe("recorded Claude Code 2.1.306 hooks replayed through the plugin", () =>
           session_id: nativeId,
           tool_name: "mcp__filesystem__read_file",
           tool_input: {},
-          tool_use_id: "t".repeat(MAX_MCP_IDENTITY_CHARS + 1),
+          tool_use_id: "t".repeat(MAX_MCP_IDENTITY_BYTES + 1),
           duration_ms: 1,
-          mcp_server: { name: "n".repeat(MAX_MCP_IDENTITY_CHARS + 1), source: "project" },
+          mcp_server: { name: "n".repeat(MAX_MCP_IDENTITY_BYTES + 1), source: "project" },
         }),
         hookEnv({ CLAUDE_CODE_EXECPATH: "/home/user/.local/share/claude/versions/2.1.304; rm -rf /" }, {
           FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
@@ -780,6 +808,29 @@ describe("recorded Claude Code 2.1.306 hooks replayed through the plugin", () =>
         assert.equal("mcp_server" in body, false, "oversize mcp_server is dropped");
         assert.equal("tool_use_id" in body, false, "oversize tool_use_id is dropped");
         assert.equal(body.server_name, "filesystem");
+      }
+    }
+    // A multibyte reason that fits in code units but not in bytes is
+    // withheld too; one that fits in bytes is sent and passes the
+    // contract check (server_name on an MCP call is cut on a code point).
+    for (const [reason, kept] of [["é".repeat(40), false], ["é".repeat(32), true]]) {
+      const mbCapture = await startCaptureServer();
+      try {
+        const result = await runScript(
+          JSON.stringify({ hook_event_name: "SessionEnd", session_id: randomUUID(), reason }),
+          hookEnv({}, {
+            FLIGHTDECK_SERVER: `http://127.0.0.1:${mbCapture.port}`,
+            FLIGHTDECK_TOKEN: "tok_test",
+            CLAUDE_SESSION_ID: randomUUID(),
+          }),
+          [SESSION_END_WORKER_FLAG],
+        );
+        assert.equal(result.code, 0, result.stderr);
+        const end = mbCapture.bodies().find((b) => b.event_type === "session_end");
+        assertIngestionContract(end);
+        assert.equal("end_reason" in end, kept, `end_reason kept=${kept} for ${reason.length} chars`);
+      } finally {
+        mbCapture.server.close();
       }
     }
     // Control characters in SessionEnd's reason: the field is withheld.
@@ -938,32 +989,43 @@ describe("SessionEnd stays inside Claude Code's 1.5 s budget", () => {
 
   it("a fast server receives the flush and session_end before the hook returns", async () => {
     const capture = await startCaptureServer();
+    const own = mkdtempSync(join(scratch, "fast-"));
     try {
       const nativeSessionId = randomUUID();
-      const transcript = writeTranscript(scratch, [
+      const transcript = writeTranscript(own, [
         { id: `msg_${nativeSessionId}_fast`, text: "fast" },
       ]);
+      // The grace is raised far above the worker's run so the hook
+      // deterministically waits for it; the default-grace path (a parked
+      // worker is let go inside the budget) is the gated test above.
       const result = await runScript(
         JSON.stringify({
           hook_event_name: "SessionEnd",
           session_id: nativeSessionId,
           transcript_path: transcript,
-          cwd: scratch,
+          cwd: own,
           reason: "other",
         }),
-        hookEnv({}, { FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`, FLIGHTDECK_TOKEN: "tok_test" }),
+        hookEnv({}, {
+          FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+          FLIGHTDECK_TOKEN: "tok_test",
+          FLIGHTDECK_SESSION_END_GRACE_MS: "10000",
+          TMPDIR: own,
+          TEMP: own,
+          TMP: own,
+        }),
       );
       assert.equal(result.code, 0, result.stderr);
-      // No polling: the hook's bounded wait on the worker delivered them
-      // before it returned, so Claude Code exits with the events posted.
+      const seenAtExit = capture.bodies().map((b) => b.event_type);
+      await pollUntil(
+        () => capture.bodies().some((b) => b.event_type === "session_end"),
+        "session_end delivered",
+      );
       assert.deepEqual(
         capture.bodies().map((b) => b.event_type),
         ["post_call", "session_end"],
       );
-      assert.ok(
-        result.wallMs < SESSION_END_HOOK_BUDGET_MS,
-        `SessionEnd hook took ${result.wallMs} ms, budget is ${SESSION_END_HOOK_BUDGET_MS} ms`,
-      );
+      assert.deepEqual(seenAtExit, ["post_call", "session_end"], "delivered before the hook returned");
     } finally {
       capture.server.close();
     }
@@ -971,7 +1033,8 @@ describe("SessionEnd stays inside Claude Code's 1.5 s budget", () => {
 
   it("the worker survives a SIGKILL of the hook's process group (pins detached: true)", { skip: process.platform === "win32" }, async () => {
     const nativeSessionId = randomUUID();
-    const transcript = writeTranscript(scratch, [
+    const own = mkdtempSync(join(scratch, "kill-"));
+    const transcript = writeTranscript(own, [
       { id: `msg_${nativeSessionId}_kill`, text: "survive" },
     ]);
     const flightdeckSessionId = randomUUID();
@@ -986,6 +1049,9 @@ describe("SessionEnd stays inside Claude Code's 1.5 s budget", () => {
           FLIGHTDECK_SERVER: `http://127.0.0.1:${gatedKill.port}`,
           FLIGHTDECK_TOKEN: "tok_test",
           CLAUDE_SESSION_ID: flightdeckSessionId,
+          TMPDIR: own,
+          TEMP: own,
+          TMP: own,
         }),
       });
       hook.stdin.end(JSON.stringify({
@@ -1022,9 +1088,9 @@ describe("SessionEnd stays inside Claude Code's 1.5 s budget", () => {
   it("the worker log receives the failed-POST line with userinfo redacted, owner-only", async () => {
     const nativeSessionId = randomUUID();
     const flightdeckSessionId = randomUUID();
-    const logDir = join(privateTmp, "flightdeck-plugin");
+    const own = mkdtempSync(join(scratch, "log-"));
+    const logDir = join(own, "flightdeck-plugin");
     const logFile = join(logDir, "session-end-worker.log");
-    rmSync(logFile, { force: true });
     // Port 1 is closed on any host; the worker's POST is refused.
     const result = await runScript(
       JSON.stringify({ hook_event_name: "SessionEnd", session_id: nativeSessionId, reason: "other" }),
@@ -1032,11 +1098,12 @@ describe("SessionEnd stays inside Claude Code's 1.5 s budget", () => {
         FLIGHTDECK_SERVER: "http://user:hunter2@127.0.0.1:1",
         FLIGHTDECK_TOKEN: "tok_test",
         CLAUDE_SESSION_ID: flightdeckSessionId,
+        TMPDIR: own,
+        TEMP: own,
+        TMP: own,
       }),
     );
     assert.equal(result.code, 0);
-    // The hook itself warns once that the credentials are ignored
-    // (FLIGHTDECK_QUIET is set for the worker only, by the hook).
     assert.doesNotMatch(result.stderr, /hunter2/);
     const line = await pollUntil(() => {
       try {
@@ -1061,7 +1128,8 @@ describe("SessionEnd stays inside Claude Code's 1.5 s budget", () => {
     const capture = await startCaptureServer();
     try {
       const nativeSessionId = randomUUID();
-      const transcript = writeTranscript(scratch, [
+      const own = mkdtempSync(join(scratch, "fail-"));
+      const transcript = writeTranscript(own, [
         { id: `msg_${nativeSessionId}_fail`, text: "about to fail" },
       ]);
       const rec = bashSession.find((r) => r.input.hook_event_name === "PostToolUseFailure");
@@ -1071,6 +1139,9 @@ describe("SessionEnd stays inside Claude Code's 1.5 s budget", () => {
           FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
           FLIGHTDECK_TOKEN: "tok_test",
           CLAUDE_SESSION_ID: randomUUID(),
+          TMPDIR: own,
+          TEMP: own,
+          TMP: own,
         }),
       );
       assert.equal(result.code, 0, result.stderr);
@@ -1279,16 +1350,20 @@ describe("hook-contract helpers", () => {
 
   describe("bounds and redaction", () => {
     it("boundedToken keeps short clean strings and rejects the rest", () => {
-      assert.equal(boundedToken(" sdk-cli ", MAX_SIGNAL_CHARS), "sdk-cli");
-      assert.equal(boundedToken("x".repeat(MAX_SIGNAL_CHARS), MAX_SIGNAL_CHARS), "x".repeat(MAX_SIGNAL_CHARS));
-      assert.equal(boundedToken("x".repeat(MAX_SIGNAL_CHARS + 1), MAX_SIGNAL_CHARS), null);
+      assert.equal(boundedToken(" sdk-cli ", MAX_SIGNAL_BYTES), "sdk-cli");
+      assert.equal(boundedToken("x".repeat(MAX_SIGNAL_BYTES), MAX_SIGNAL_BYTES), "x".repeat(MAX_SIGNAL_BYTES));
+      assert.equal(boundedToken("x".repeat(MAX_SIGNAL_BYTES + 1), MAX_SIGNAL_BYTES), null);
       // Surrounding whitespace is trimmed; interior control characters reject.
-      assert.equal(boundedToken("clear\n", MAX_SIGNAL_CHARS), "clear");
-      assert.equal(boundedToken("clear\nx", MAX_SIGNAL_CHARS), null);
-      assert.equal(boundedToken("a\u0000b", MAX_SIGNAL_CHARS), null);
-      assert.equal(boundedToken("", MAX_SIGNAL_CHARS), null);
-      assert.equal(boundedToken(42, MAX_SIGNAL_CHARS), null);
-      assert.equal(boundedToken(undefined, MAX_SIGNAL_CHARS), null);
+      assert.equal(boundedToken("clear\n", MAX_SIGNAL_BYTES), "clear");
+      assert.equal(boundedToken("clear\nx", MAX_SIGNAL_BYTES), null);
+      assert.equal(boundedToken("a\u0000b", MAX_SIGNAL_BYTES), null);
+      // Bounds are UTF-8 bytes, as ingestion counts them: 40 "é" are 80
+      // bytes and would be rejected with 400, dropping the whole event.
+      assert.equal(boundedToken("é".repeat(40), MAX_SIGNAL_BYTES), null);
+      assert.equal(boundedToken("é".repeat(32), MAX_SIGNAL_BYTES), "é".repeat(32));
+      assert.equal(boundedToken("", MAX_SIGNAL_BYTES), null);
+      assert.equal(boundedToken(42, MAX_SIGNAL_BYTES), null);
+      assert.equal(boundedToken(undefined, MAX_SIGNAL_BYTES), null);
     });
 
     it("boundedVersion accepts anchored semver only", () => {
@@ -1307,7 +1382,7 @@ describe("hook-contract helpers", () => {
     it("signals are bounded and the native id must be a UUID", () => {
       const signals = collectClaudeCodeSignals(
         {
-          CLAUDE_CODE_ENTRYPOINT: "e".repeat(MAX_SIGNAL_CHARS + 1),
+          CLAUDE_CODE_ENTRYPOINT: "e".repeat(MAX_SIGNAL_BYTES + 1),
           CLAUDE_CODE_SESSION_ID: "not-a-uuid",
           CLAUDE_CODE_REMOTE: "true",
           CLAUDE_CODE_REMOTE_SESSION_ID: "r\u0007",

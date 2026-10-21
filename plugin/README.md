@@ -63,6 +63,7 @@ Guarantees that hold regardless of the knob settings:
 | `FLIGHTDECK_QUIET` | unset | Set to `1` to suppress the `[flightdeck] WARN:` stderr line emitted on every hook invocation when `FLIGHTDECK_TOKEN` is unset (the seed `tok_dev` default is in use). Intended for test suites that intentionally exercise the zero-config default-token path; production deployments should set `FLIGHTDECK_TOKEN` instead so the warning never fires. |
 | `CLAUDE_SESSION_ID` | unset | Explicit Flightdeck session id override. Wins over every other resolution step -- use this when you want to force a specific id across processes or tests. |
 | `ANTHROPIC_CLAUDE_SESSION_ID` | unset | Alternative name for `CLAUDE_SESSION_ID`, honored second. |
+| `FLIGHTDECK_SESSION_END_GRACE_MS` | `800` | How long the `SessionEnd` hook waits for its detached worker before letting it run on. A test knob; the default keeps the hook inside Claude Code's 1.5 s SessionEnd budget. |
 | `CLAUDE_CODE_SESSION_ID` | set by Claude Code | Claude Code's own session id, exported to every hook process. The plugin reads it when a hook payload carries no `session_id` (so callers other than Claude Code still get one marker per session) and reports it on every event as `context.claude_code_session_id`. It is not the Flightdeck session id; see *How it works*. |
 | `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_REMOTE`, `CLAUDE_CODE_REMOTE_SESSION_ID`, `CLAUDE_CODE_EXECPATH`, `CI` | set by Claude Code / the CI system | Read only. Surface in the session context as `entrypoint`, `attended`, `child_session`, `remote` / `remote_session_id`, `claude_code_version` and `ci` / `ci_provider`. |
 
@@ -141,7 +142,7 @@ The `SessionEnd` hook hands its POSTs to a detached worker process (Claude Code 
 - Linux / macOS: `$TMPDIR/flightdeck-plugin/session-end-worker.log` (`/tmp/flightdeck-plugin/session-end-worker.log` when `TMPDIR` is unset)
 - Windows: `%TEMP%\flightdeck-plugin\session-end-worker.log`
 
-A `cannot reach <server>: <reason>` line there means the final flush or the `session_end` was refused; the session then closes through the server's stale / lost / reaper path. The directory is created owner-only (0700), the file owner-only (0600) and opened without following symlinks; the file is truncated once it passes 256 KiB. Only failed POSTs write to it. The worker gives up an unflushed backlog after 20 seconds against a dead server, and a machine torn down right after `claude -p` returns (an ephemeral CI runner) can lose that session's final flush.
+A `cannot reach <server>: <reason>` line there means the final flush or the `session_end` was refused; the session then closes through the server's stale / lost / reaper path. The log also receives the worker's flush-deadline notice, a hook-event parse failure and a `hook failed` line for an unexpected error. The directory is created owner-only (0700; an existing directory is tightened with a best-effort `chmod`), the file owner-only (0600) and opened without following symlinks; the file is truncated once it passes 256 KiB. The worker gives up an unflushed backlog after 20 seconds against a dead server, and a machine torn down right after `claude -p` returns (an ephemeral CI runner) can lose that session's final flush.
 
 ### Server was down when Claude Code started; events resume on recovery
 
@@ -205,9 +206,9 @@ No background threads inside a hook. No polling. The only state the plugin persi
 - `started-<sid>.txt`: marks that session_start was attempted (so subsequent hooks don't duplicate).
 - `model-<sid>.txt`: caches the model name so `pre_call` events on older Claude Code versions can carry a non-null model.
 - `emitted-<messageId>.txt`: per-message dedup so Stop / SessionEnd don't re-emit turns that PostToolUse already flushed.
-- `session-end-worker.log`: stderr of the detached SessionEnd workers (only failed POSTs write to it); owner-only, opened without following symlinks, truncated once it passes 256 KiB.
+- `session-end-worker.log`: stderr of the detached SessionEnd workers (failed POSTs, the flush-deadline notice, parse failures, `hook failed` lines); owner-only, opened without following symlinks, truncated once it passes 256 KiB.
 
-The directory is created owner-only (0700). Values copied from the hook payload and the environment are bounded before they leave the machine: the run-mode signals and `end_reason` at 64 characters, `server_name`, `tool_name`, `tool_use_id` and the `mcp_server` fields at 256, the error message at 1000; anything longer, or containing control characters, is dropped or cut rather than sent.
+The directory is created owner-only (0700; an existing one is tightened with a best-effort `chmod`). Values copied from the hook payload and the environment are bounded before they leave the machine, in UTF-8 bytes as ingestion counts them: the run-mode signals and `end_reason` at 64 bytes, `server_name`, `tool_name`, `tool_use_id` and the `mcp_server` fields at 256, the error message at 1000 characters; anything longer, or containing control characters, is dropped or cut rather than sent.
 
 All of these are safe to delete; the plugin recreates what it needs on the next hook.
 

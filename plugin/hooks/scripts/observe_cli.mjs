@@ -27,8 +27,10 @@
 import { execSync, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  chmodSync,
   closeSync,
   constants as fsConstants,
+  existsSync,
   mkdirSync,
   openSync,
   readFileSync,
@@ -96,6 +98,18 @@ export const SESSION_END_WORKER_FLAG = "--session-end-worker";
 // past it.
 export const SESSION_END_WORKER_GRACE_MS = 800;
 
+/**
+ * The grace actually used. FLIGHTDECK_SESSION_END_GRACE_MS overrides it
+ * so the test suite can force either path deterministically -- a wait
+ * long enough that a fast server's worker always finishes inside it, or
+ * the default where a parked worker is let go; anything unset or
+ * invalid falls back to the constant.
+ */
+export function sessionEndWorkerGraceMs(env = process.env) {
+  const raw = Number(env.FLIGHTDECK_SESSION_END_GRACE_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : SESSION_END_WORKER_GRACE_MS;
+}
+
 // Overall deadline for the detached SessionEnd worker's transcript
 // flush. A backlog is normally one or two turns, but against a dead
 // server every POST aborts only after TIMEOUT_MS, so an orphaned worker
@@ -106,14 +120,17 @@ export const SESSION_END_WORKER_GRACE_MS = 800;
 export const SESSION_END_WORKER_DEADLINE_MS = 20000;
 
 // Bounds on the free-text values the plugin copies from the hook payload
-// and the environment. Claude Code's own values are short identifiers
-// (startup, sdk-cli, prompt_input_exit); 64 characters admits every
-// known one and bounds a hostile environment without truncating a real
-// value. Identity strings (MCP server key and source, tool name, tool
-// use id) get the same 256-character cap ingestion applies to
-// agent_role, the comparable identity field.
-export const MAX_SIGNAL_CHARS = 64;
-export const MAX_MCP_IDENTITY_CHARS = 256;
+// and the environment, measured in UTF-8 bytes because that is how
+// ingestion measures them (a value that fits in code units but not in
+// bytes would be rejected with 400 and the whole event lost). Claude
+// Code's own values are short identifiers (startup, sdk-cli,
+// prompt_input_exit); 64 bytes admits every known one and bounds a
+// hostile environment without truncating a real value. Identity strings
+// (MCP server key and source, tool name, tool use id) get the same
+// 256-byte cap ingestion applies to agent_role, the comparable identity
+// field.
+export const MAX_SIGNAL_BYTES = 64;
+export const MAX_MCP_IDENTITY_BYTES = 256;
 // A Claude Code version is a semver string ("2.1.306", possibly with a
 // pre-release or build suffix); 64 characters is far above any real one.
 export const MAX_VERSION_CHARS = 64;
@@ -131,7 +148,9 @@ const CONTROL_CHARS_RE = /[\x00-\x1f\x7f]/;
 export function boundedToken(value, max) {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
-  if (trimmed === "" || trimmed.length > max || CONTROL_CHARS_RE.test(trimmed)) return null;
+  if (trimmed === "" || Buffer.byteLength(trimmed, "utf8") > max || CONTROL_CHARS_RE.test(trimmed)) {
+    return null;
+  }
   return trimmed;
 }
 
@@ -141,9 +160,18 @@ export function boundedVersion(value) {
   return token && SEMVER_RE.test(token) ? token : null;
 }
 
-/** An identity string cut at MAX_MCP_IDENTITY_CHARS; non-strings pass through. */
+/**
+ * An identity string cut to MAX_MCP_IDENTITY_BYTES of UTF-8 on a code
+ * point boundary; non-strings pass through.
+ */
 function boundedIdentity(value) {
-  return typeof value === "string" ? value.slice(0, MAX_MCP_IDENTITY_CHARS) : value;
+  if (typeof value !== "string") return value;
+  if (Buffer.byteLength(value, "utf8") <= MAX_MCP_IDENTITY_BYTES) return value;
+  const chars = Array.from(value);
+  while (chars.length > 0 && Buffer.byteLength(chars.join(""), "utf8") > MAX_MCP_IDENTITY_BYTES) {
+    chars.pop();
+  }
+  return chars.join("");
 }
 
 /**
@@ -358,7 +386,7 @@ export function getSessionId(hookEvent = {}) {
     // model name, the MCP policy cache and the SessionEnd worker log,
     // none of which another user of a shared temp root should read.
     // The mode applies when the directory is created.
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    mkdirOwnerOnly(dir);
     try {
       const existing = readFileSync(file, "utf8").trim();
       if (existing) return existing;
@@ -437,6 +465,21 @@ export function clearSessionCacheFiles(hookEvent = {}, sessionId = "") {
  * ``context.claude_code_session_id`` so a dashboard session can be
  * traced back to the Claude Code transcript it came from.
  */
+/**
+ * Create the plugin's temp directory owner-only. mkdir's mode applies
+ * only when the directory is created, so a directory left by an earlier
+ * version (0755 under the usual umask) is tightened with a best-effort
+ * chmod; when that fails the mode stays as it was.
+ */
+function mkdirOwnerOnly(dir) {
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(dir, 0o700);
+  } catch {
+    /* not ours to change, or a platform without POSIX modes */
+  }
+}
+
 export function claudeCodeSessionId(hookEvent = {}, env = process.env) {
   if (hookEvent && typeof hookEvent.session_id === "string" && hookEvent.session_id) {
     return hookEvent.session_id;
@@ -505,21 +548,21 @@ export function collectClaudeCodeSignals(env = process.env, extras = {}) {
   // else still keys the marker file (it is only hashed there) but does
   // not go on the wire.
   const nativeSessionId =
-    boundedToken(extras.claudeCodeSessionId, MAX_SIGNAL_CHARS) ||
-    boundedToken(env.CLAUDE_CODE_SESSION_ID, MAX_SIGNAL_CHARS);
+    boundedToken(extras.claudeCodeSessionId, MAX_SIGNAL_BYTES) ||
+    boundedToken(env.CLAUDE_CODE_SESSION_ID, MAX_SIGNAL_BYTES);
   if (nativeSessionId && UUID_RE.test(nativeSessionId)) {
     signals.claude_code_session_id = nativeSessionId;
   }
-  const sessionSource = boundedToken(extras.sessionSource, MAX_SIGNAL_CHARS);
+  const sessionSource = boundedToken(extras.sessionSource, MAX_SIGNAL_BYTES);
   if (sessionSource) signals.session_source = sessionSource;
-  const entrypoint = boundedToken(env.CLAUDE_CODE_ENTRYPOINT, MAX_SIGNAL_CHARS);
+  const entrypoint = boundedToken(env.CLAUDE_CODE_ENTRYPOINT, MAX_SIGNAL_BYTES);
   if (entrypoint) signals.entrypoint = entrypoint;
   const attended = parseBool(env.CLAUDE_CODE_SESSION_ATTENDED, null);
   if (attended !== null) signals.attended = attended;
   if (parseBool(env.CLAUDE_CODE_CHILD_SESSION, false)) signals.child_session = true;
   if (parseBool(env.CLAUDE_CODE_REMOTE, false)) {
     signals.remote = true;
-    const remoteSessionId = boundedToken(env.CLAUDE_CODE_REMOTE_SESSION_ID, MAX_SIGNAL_CHARS);
+    const remoteSessionId = boundedToken(env.CLAUDE_CODE_REMOTE_SESSION_ID, MAX_SIGNAL_BYTES);
     if (remoteSessionId) signals.remote_session_id = remoteSessionId;
   }
   const ciProvider = detectCiProvider(env);
@@ -809,7 +852,7 @@ export function resolveMcpToolIdentity(hookEvent, toolName) {
   const hint = hookEvent && hookEvent.mcp_server;
   const hintName =
     hint && typeof hint === "object" && !Array.isArray(hint)
-      ? boundedToken(hint.name, MAX_MCP_IDENTITY_CHARS)
+      ? boundedToken(hint.name, MAX_MCP_IDENTITY_BYTES)
       : null;
   if (!hintName) return parsed;
   const hintSource =
@@ -1333,17 +1376,17 @@ async function emitMCPToolCallEvent({
   // or absent -- exactly what ingestion accepts.
   const hint = hookEvent.mcp_server;
   if (hint && typeof hint === "object" && !Array.isArray(hint)) {
-    const name = boundedToken(hint.name, MAX_MCP_IDENTITY_CHARS);
+    const name = boundedToken(hint.name, MAX_MCP_IDENTITY_BYTES);
     const sourceOk =
       hint.source === undefined ||
       hint.source === null ||
-      boundedToken(hint.source, MAX_MCP_IDENTITY_CHARS) !== null;
+      boundedToken(hint.source, MAX_MCP_IDENTITY_BYTES) !== null;
     if (name && sourceOk) {
       payload.mcp_server =
         hint.source === undefined ? { name: hint.name } : { name: hint.name, source: hint.source };
     }
   }
-  const toolUseId = boundedToken(hookEvent.tool_use_id, MAX_MCP_IDENTITY_CHARS);
+  const toolUseId = boundedToken(hookEvent.tool_use_id, MAX_MCP_IDENTITY_BYTES);
   if (toolUseId) payload.tool_use_id = toolUseId;
 
   // Tool args + result live in event_content's dedicated tool_input /
@@ -1947,7 +1990,7 @@ function modelCachePath(sessionId) {
 function cacheSessionModel(sessionId, model) {
   if (!model) return;
   try {
-    mkdirSync(join(tmpdir(), "flightdeck-plugin"), { recursive: true, mode: 0o700 });
+    mkdirOwnerOnly(join(tmpdir(), "flightdeck-plugin"));
     writeFileSync(modelCachePath(sessionId), String(model));
   } catch {
     /* silent */
@@ -2035,7 +2078,7 @@ async function ensureSessionStarted(server, token, sessionId, basePayload, extra
   await postEvent(server, token, sessionId, startPayload);
 
   try {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    mkdirOwnerOnly(dir);
     writeFileSync(startFile, new Date().toISOString());
   } catch {
     /* silent */
@@ -2048,11 +2091,15 @@ async function ensureSessionStarted(server, token, sessionId, basePayload, extra
 // double-hook would duplicate the turn in the dashboard.
 // ---------------------------------------------------------------------
 
+function isTurnEmitted(messageId) {
+  return existsSync(join(tmpdir(), "flightdeck-plugin", `emitted-${messageId}.txt`));
+}
+
 function markEmittedTurn(messageId) {
   const dir = join(tmpdir(), "flightdeck-plugin");
   const file = join(dir, `emitted-${messageId}.txt`);
   try {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    mkdirOwnerOnly(dir);
     const fd = openSync(file, "wx");
     try {
       writeFileSync(fd, new Date().toISOString());
@@ -2123,8 +2170,11 @@ async function flushPostCallTurns({
     // orphaned backlog against a dead server stops instead of paying
     // one aborted POST per turn; the other callers run unbounded.
     if (deadline !== null && Date.now() > deadline) {
+      // Count only the turns no hook has emitted yet; turns Stop or
+      // PostToolUse already flushed are not lost.
+      const unflushed = turns.slice(seen - 1).filter((t) => !isTurnEmitted(t.messageId)).length;
       process.stderr.write(
-        `flightdeck: SessionEnd worker deadline reached; ${turns.length - seen + 1} transcript turn(s) left unflushed.\n`,
+        `flightdeck: SessionEnd worker deadline reached; ${unflushed} transcript turn(s) left unflushed.\n`,
       );
       break;
     }
@@ -2757,7 +2807,7 @@ async function main() {
     // trigger is not lost to the coarse close_reason bucket. Every one
     // of them is a clean exit from the operator's perspective, so
     // close_reason stays normal_exit.
-    const endReason = boundedToken(hookEvent.reason, MAX_SIGNAL_CHARS);
+    const endReason = boundedToken(hookEvent.reason, MAX_SIGNAL_BYTES);
     if (endReason) payload.end_reason = endReason;
     await postEvent(cfg.server, cfg.token, sessionId, payload);
     return;
@@ -3013,7 +3063,7 @@ async function main() {
     has_content: hasContent,
     content,
   };
-  const toolUseId = boundedToken(hookEvent.tool_use_id, MAX_MCP_IDENTITY_CHARS);
+  const toolUseId = boundedToken(hookEvent.tool_use_id, MAX_MCP_IDENTITY_BYTES);
   if (toolUseId) payload.tool_use_id = toolUseId;
   if (hookName === "PostToolUseFailure") {
     payload.error = buildToolErrorBlock(hookEvent, captureErrorText(cfg));
@@ -3066,7 +3116,7 @@ async function spawnDetachedSessionEnd(rawInput, sessionId) {
       const timer = setTimeout(() => {
         child.unref();
         settle();
-      }, SESSION_END_WORKER_GRACE_MS);
+      }, sessionEndWorkerGraceMs());
       child.once("exit", () => {
         clearTimeout(timer);
         settle();
@@ -3096,7 +3146,7 @@ async function spawnDetachedSessionEnd(rawInput, sessionId) {
  * the worker's stderr.
  */
 export function openSessionEndWorkerLog(dir) {
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  mkdirOwnerOnly(dir);
   const file = join(dir, "session-end-worker.log");
   let truncate = false;
   try {
@@ -3108,8 +3158,14 @@ export function openSessionEndWorkerLog(dir) {
   // O_NOFOLLOW refuses to open a symlink planted at the log path by
   // another user of a shared temp directory. Windows has no such flag
   // (it is undefined there), so it is simply left out.
-  const flags = O_WRONLY | O_CREAT | (truncate ? O_TRUNC : O_APPEND) | (O_NOFOLLOW || 0);
-  return openSync(file, flags, 0o600);
+  const noFollow = O_NOFOLLOW || 0;
+  if (truncate) {
+    // Truncate in a separate open, then reopen for appending: an
+    // O_TRUNC descriptor without O_APPEND would write from offset 0 and
+    // overwrite lines a concurrent worker is still appending.
+    closeSync(openSync(file, O_WRONLY | O_TRUNC | noFollow, 0o600));
+  }
+  return openSync(file, O_WRONLY | O_CREAT | O_APPEND | noFollow, 0o600);
 }
 
 /**

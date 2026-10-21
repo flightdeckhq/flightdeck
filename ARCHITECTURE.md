@@ -5082,8 +5082,8 @@ Constraint #4).
 | `FLIGHTDECK_NATS_URL` | NATS URL, same token convention as the ingestion API |
 | `FLIGHTDECK_WORKER_POOL_SIZE` | NATS consumer goroutine count (default 10) |
 | `FLIGHTDECK_MIGRATE_ONLY` | `true` applies pending migrations and exits without consuming |
-| `FLIGHTDECK_RECONCILER_INTERVAL_SECS` | Seconds between reconciler ticks (default 60); the dev compose override sets 5 so the integration tests that wait for a tick stay short |
-| `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS` | Silence window after which a `lost` session is closed with `close_reason=orphan_timeout` (default 24) |
+| `FLIGHTDECK_RECONCILER_INTERVAL_SECS` | Seconds between reconciler ticks, 1 to 3600 (default 60); the worker refuses to start outside that range. The dev compose override sets 5 so the integration tests that wait for a tick stay short |
+| `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS` | Silence window after which a `lost` session is closed with `close_reason=orphan_timeout` (default 24, must be above 0; the worker refuses to start otherwise) |
 | `SHUTDOWN_TIMEOUT_SECS` | Graceful shutdown deadline (default 30) |
 
 **Query API:**

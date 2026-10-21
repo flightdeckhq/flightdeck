@@ -184,12 +184,15 @@ type EventPayload struct {
 	PromptName   string          `json:"prompt_name,omitempty"`
 	Rendered     json.RawMessage `json:"rendered,omitempty"`
 	// MCPServer is the server identity Claude Code attaches to MCP tool
-	// hooks and the plugin passes through: {name, source}, where name is
-	// the server key as Claude Code holds it ("filesystem",
-	// "plugin:<plugin>:<server>") and source is where the server was
-	// declared (project, user, plugin, sdk, or null when the plugin could
-	// not tell). Kept as a RawMessage and re-attached to events.payload
-	// as one document; sensor MCP events do not carry it.
+	// hooks, passed through by the plugin exactly as sent and only when
+	// the hook carried it: {name, source}, where name is the server key
+	// as Claude Code holds it ("filesystem", "plugin:<plugin>:<server>")
+	// and source is where the server was declared (a string such as
+	// project, user, plugin or sdk, or null). ServerName above is the
+	// resolved identity on every Claude Code version; this field says
+	// what Claude Code itself reported. Kept as a RawMessage and
+	// re-attached to events.payload as one document when it is an
+	// object; sensor MCP events do not carry it.
 	MCPServer    json.RawMessage `json:"mcp_server,omitempty"`
 
 	// D126 — sub-agent observability. Populated only on sub-agent

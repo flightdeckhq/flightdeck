@@ -245,8 +245,8 @@ func TestBuildEventExtra_PluginWire_RoundTrip(t *testing.T) {
 	const identity = `"session_id":"e1391fde-a91d-49b8-89b8-d404c85f341a",` +
 		`"flavor":"claude-code","agent_type":"coding",` +
 		`"agent_id":"ee76931b-06fa-5da6-a019-5a8237efd496",` +
-		`"agent_name":"omria@host","client_type":"claude_code",` +
-		`"user":"omria","hostname":"host","host":"host",` +
+		`"agent_name":"user@host","client_type":"claude_code",` +
+		`"user":"user","hostname":"host","host":"host",` +
 		`"framework":"claude-code","model":null,"tokens_input":0,` +
 		`"tokens_output":0,"tokens_total":0,"tokens_cache_read":0,` +
 		`"tokens_cache_creation":0,"tokens_used_session":0,` +
@@ -381,4 +381,102 @@ func keysOf(m map[string]interface{}) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// Hostile mcp_server shapes a direct publisher on the bus could send:
+// ingestion rejects them, and the projection drops every non-object
+// too, so events.payload never holds a number, an array or a null
+// where the dashboard expects {name, source}. A nested object is still
+// an object and passes through (its size is bounded by ingestion's
+// request-body cap).
+func TestBuildEventExtra_MCPServer_NonObjectShapesDropped(t *testing.T) {
+	cases := []struct {
+		name    string
+		raw     string
+		present bool
+	}{
+		{"number", `7`, false},
+		{"array", `["filesystem"]`, false},
+		{"null", `null`, false},
+		{"string", `"filesystem"`, false},
+		{"deep nesting", `{"name":"x","source":"plugin","extra":{"a":{"b":{"c":1}}}}`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			parsed := buildExtra(t, consumer.EventPayload{
+				SessionID:  "x",
+				EventType:  "mcp_tool_call",
+				ServerName: "filesystem",
+				MCPServer:  json.RawMessage(tc.raw),
+			})
+			_, present := parsed["mcp_server"]
+			if present != tc.present {
+				t.Errorf("mcp_server present=%v, want %v (got %v)", present, tc.present, parsed["mcp_server"])
+			}
+			if parsed["server_name"] != "filesystem" {
+				t.Errorf("server_name must survive, got %v", parsed["server_name"])
+			}
+		})
+	}
+}
+
+// The stored capture posture governs a plugin tool failure's error text
+// the way it governs content: ToolErrorNeedsCaptureCheck selects exactly
+// the plugin's tool events with an error block, and StripToolErrorMessage
+// replaces the message while keeping the rest of the block.
+func TestToolErrorCaptureGate(t *testing.T) {
+	errBlock := json.RawMessage(`{"error_type":"other","error_class":"PluginToolError","message":"Exit code 2: secret","interrupted":false}`)
+	cases := []struct {
+		name string
+		e    consumer.EventPayload
+		want bool
+	}{
+		{"plugin tool_call with error", consumer.EventPayload{ClientType: "claude_code", EventType: "tool_call", Error: errBlock}, true},
+		{"plugin mcp_tool_call with error", consumer.EventPayload{ClientType: "claude_code", EventType: "mcp_tool_call", Error: errBlock}, true},
+		{"plugin tool_call without error", consumer.EventPayload{ClientType: "claude_code", EventType: "tool_call"}, false},
+		{"plugin llm_error", consumer.EventPayload{ClientType: "claude_code", EventType: "llm_error", Error: errBlock}, false},
+		{"sensor mcp_tool_call with error", consumer.EventPayload{ClientType: "flightdeck_sensor", EventType: "mcp_tool_call", Error: errBlock}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := processor.ToolErrorNeedsCaptureCheck(tc.e); got != tc.want {
+				t.Errorf("ToolErrorNeedsCaptureCheck = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	extra, err := processor.BuildEventExtra(consumer.EventPayload{
+		SessionID:  "x",
+		ClientType: "claude_code",
+		EventType:  "tool_call",
+		ToolUseID:  "toolu_01",
+		Error:      errBlock,
+	})
+	if err != nil {
+		t.Fatalf("BuildEventExtra: %v", err)
+	}
+	stripped := processor.StripToolErrorMessage(extra)
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(stripped, &parsed); err != nil {
+		t.Fatalf("parse stripped extra: %v", err)
+	}
+	inner, ok := parsed["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("error block missing after strip: %v", parsed)
+	}
+	if inner["message"] != processor.RedactedToolErrorMessage {
+		t.Errorf("message: want %q, got %v", processor.RedactedToolErrorMessage, inner["message"])
+	}
+	if inner["error_type"] != "other" || inner["error_class"] != "PluginToolError" || inner["interrupted"] != false {
+		t.Errorf("the rest of the block must survive the strip: %v", inner)
+	}
+	if parsed["tool_use_id"] != "toolu_01" {
+		t.Errorf("sibling payload keys must survive the strip: %v", parsed)
+	}
+	// No error block, no message, unparseable blob: returned unchanged.
+	for _, in := range [][]byte{nil, []byte(`{"duration_ms":5}`), []byte(`{"error":{"error_type":"other"}}`), []byte(`{not json`)} {
+		if out := processor.StripToolErrorMessage(in); string(out) != string(in) {
+			t.Errorf("StripToolErrorMessage(%q) = %q, want unchanged", in, out)
+		}
+	}
 }

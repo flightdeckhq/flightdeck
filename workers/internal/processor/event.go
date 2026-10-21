@@ -13,6 +13,54 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// RedactedToolErrorMessage replaces a plugin tool failure's error text
+// when the session's stored capture posture is off. The same
+// placeholder the plugin uses when its own capture knobs are off, so a
+// dashboard reader sees one marker either way.
+const RedactedToolErrorMessage = "<redacted>"
+
+// ToolErrorNeedsCaptureCheck reports whether the event carries a Claude
+// Code plugin tool failure, whose error.message is content: a tool_call
+// or mcp_tool_call from client_type claude_code with an error block.
+// Sensor llm_error / MCP error blocks are provider metadata and are not
+// gated.
+func ToolErrorNeedsCaptureCheck(e consumer.EventPayload) bool {
+	if e.ClientType != "claude_code" || len(e.Error) == 0 {
+		return false
+	}
+	return e.EventType == "tool_call" || e.EventType == "mcp_tool_call"
+}
+
+// StripToolErrorMessage replaces error.message in an already-marshaled
+// extra blob with RedactedToolErrorMessage, keeping error_type,
+// error_class, interrupted and every other key. Returns the input
+// unchanged when there is no error object or no message, or when the
+// blob cannot be parsed (the caller's event_content gate is the
+// fail-closed side for content proper).
+func StripToolErrorMessage(extra []byte) []byte {
+	if len(extra) == 0 {
+		return extra
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(extra, &m); err != nil {
+		return extra
+	}
+	errObj, ok := m["error"].(map[string]interface{})
+	if !ok {
+		return extra
+	}
+	if _, has := errObj["message"]; !has {
+		return extra
+	}
+	errObj["message"] = RedactedToolErrorMessage
+	m["error"] = errObj
+	out, err := json.Marshal(m)
+	if err != nil {
+		return extra
+	}
+	return out
+}
+
 // stripExtraContent removes the inline "content" key (the MCP
 // argument/result/resource projection that BuildEventExtra places in
 // events.payload) from an already-marshaled extra blob. It is the
@@ -105,9 +153,11 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	}
 	// MCP server identity as Claude Code reports it ({name, source}),
 	// decoded and re-attached so the stored payload is one document.
+	// Only an object is projected: ingestion rejects any other shape,
+	// and a direct publisher on the bus gets the same treatment here.
 	if len(e.MCPServer) > 0 {
-		var v interface{}
-		if err := json.Unmarshal(e.MCPServer, &v); err == nil {
+		var v map[string]interface{}
+		if err := json.Unmarshal(e.MCPServer, &v); err == nil && v != nil {
 			extra["mcp_server"] = v
 		}
 	}
@@ -606,10 +656,18 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	// only for content-bearing events; drop content fail-safe when
 	// capture is off or the session's posture is not yet known.
 	captureOn := true
-	if e.HasContent || len(e.Content) > 0 {
+	if e.HasContent || len(e.Content) > 0 || ToolErrorNeedsCaptureCheck(e) {
 		captureOn = p.w.SessionCaptureEnabled(ctx, e.SessionID)
 		if !captureOn {
 			extra = stripExtraContent(extra)
+			// The Claude Code plugin's tool error text is content too
+			// (a command's stderr, an Edit failure quoting its
+			// old_string); the plugin withholds it when its own capture
+			// knobs are off, and the stored posture is enforced here
+			// so a forged per-event flag cannot smuggle it in.
+			if ToolErrorNeedsCaptureCheck(e) {
+				extra = StripToolErrorMessage(extra)
+			}
 		}
 	}
 	// Phase 7 Step 4 (D152): worker-side enrichment for session_end

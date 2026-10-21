@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/auth"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/handlers"
@@ -1253,5 +1254,194 @@ func TestEventsHandler_SessionStartWithoutASequenceIsNotStamped(t *testing.T) {
 	}
 	if len(attacher.recorded) != 0 {
 		t.Fatalf("a publish without a sequence must not stamp, got %v", attacher.recorded)
+	}
+}
+
+// --- Claude Code plugin fields: tool_use_id, mcp_server, end_reason ---
+
+func pluginEventPayload(eventType string) map[string]any {
+	return map[string]any{
+		"session_id":  "22222222-2222-4222-8222-222222222222",
+		"agent_id":    "11111111-1111-4111-8111-111111111111",
+		"agent_type":  "coding",
+		"client_type": "claude_code",
+		"event_type":  eventType,
+		"flavor":      "claude-code",
+	}
+}
+
+func TestEventsHandler_ToolUseID_StringWhenPresent(t *testing.T) {
+	for _, eventType := range []string{"tool_call", "mcp_tool_call"} {
+		cases := []struct {
+			name  string
+			value any
+			want  int
+		}{
+			{"string", "toolu_01Xg9Qe5dbennMRZ7YuUVr4m", http.StatusOK},
+			{"null counts as absent", nil, http.StatusOK},
+			{"number", 42, http.StatusBadRequest},
+			{"object", map[string]any{"id": "x"}, http.StatusBadRequest},
+			{"oversize", strings.Repeat("t", 257), http.StatusBadRequest},
+		}
+		for _, tc := range cases {
+			t.Run(eventType+"/"+tc.name, func(t *testing.T) {
+				payload := pluginEventPayload(eventType)
+				payload["tool_use_id"] = tc.value
+				code, body := runEventValidationTest(t, payload)
+				if code != tc.want {
+					t.Fatalf("want %d, got %d body=%s", tc.want, code, body)
+				}
+				if tc.want == http.StatusBadRequest && !strings.Contains(body, "tool_use_id") {
+					t.Errorf("expected tool_use_id in error body, got %s", body)
+				}
+			})
+		}
+	}
+}
+
+func TestEventsHandler_MCPServer_ObjectWhenPresent(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+		want  int
+	}{
+		{"name and source", map[string]any{"name": "plugin:claude-mem:mcp-search", "source": "plugin"}, http.StatusOK},
+		{"source null", map[string]any{"name": "filesystem", "source": nil}, http.StatusOK},
+		{"source absent", map[string]any{"name": "filesystem"}, http.StatusOK},
+		{"null counts as absent", nil, http.StatusOK},
+		{"number", 7, http.StatusBadRequest},
+		{"array", []any{"filesystem"}, http.StatusBadRequest},
+		{"string", "filesystem", http.StatusBadRequest},
+		{"missing name", map[string]any{"source": "plugin"}, http.StatusBadRequest},
+		{"empty name", map[string]any{"name": ""}, http.StatusBadRequest},
+		{"name not a string", map[string]any{"name": 3}, http.StatusBadRequest},
+		{"oversize name", map[string]any{"name": strings.Repeat("n", 257)}, http.StatusBadRequest},
+		{"source not a string", map[string]any{"name": "x", "source": 3}, http.StatusBadRequest},
+		{"oversize source", map[string]any{"name": "x", "source": strings.Repeat("s", 257)}, http.StatusBadRequest},
+		{"deep nesting is just an object", map[string]any{"name": "x", "extra": map[string]any{"a": map[string]any{"b": 1}}}, http.StatusOK},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := pluginEventPayload("mcp_tool_call")
+			payload["server_name"] = "filesystem"
+			payload["mcp_server"] = tc.value
+			code, body := runEventValidationTest(t, payload)
+			if code != tc.want {
+				t.Fatalf("want %d, got %d body=%s", tc.want, code, body)
+			}
+			if tc.want == http.StatusBadRequest && !strings.Contains(body, "mcp_server") {
+				t.Errorf("expected mcp_server in error body, got %s", body)
+			}
+		})
+	}
+	// A tool_call (non-MCP) carrying a malformed mcp_server is rejected too.
+	payload := pluginEventPayload("tool_call")
+	payload["mcp_server"] = 1
+	if code, _ := runEventValidationTest(t, payload); code != http.StatusBadRequest {
+		t.Errorf("tool_call with numeric mcp_server: want 400, got %d", code)
+	}
+}
+
+func TestEventsHandler_SessionEnd_EndReason_StringWhenPresent(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+		want  int
+	}{
+		{"string", "prompt_input_exit", http.StatusOK},
+		{"any short string passes through", "something_new", http.StatusOK},
+		{"null counts as absent", nil, http.StatusOK},
+		{"number", 1, http.StatusBadRequest},
+		{"object", map[string]any{"reason": "clear"}, http.StatusBadRequest},
+		{"oversize", strings.Repeat("r", 65), http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := pluginEventPayload("session_end")
+			payload["close_reason"] = "normal_exit"
+			payload["end_reason"] = tc.value
+			code, body := runEventValidationTest(t, payload)
+			if code != tc.want {
+				t.Fatalf("want %d, got %d body=%s", tc.want, code, body)
+			}
+			if tc.want == http.StatusBadRequest && !strings.Contains(body, "end_reason") {
+				t.Errorf("expected end_reason in error body, got %s", body)
+			}
+		})
+	}
+}
+
+// Golden bodies as plugin/hooks/scripts/observe_cli.mjs emits them
+// (identity placeholders, timestamps minted at run time so the clock-skew
+// window never ages the test out), fed through the real EventsHandler
+// with the fake validator and publisher: every body is accepted and is
+// published with the plugin's fields intact.
+func TestEventsHandler_PluginReplayBodies_AcceptedAndPublishedIntact(t *testing.T) {
+	ts := time.Now().UTC().Format(time.RFC3339)
+	identity := `"session_id":"e1391fde-a91d-49b8-89b8-d404c85f341a",` +
+		`"flavor":"claude-code","agent_type":"coding",` +
+		`"agent_id":"ee76931b-06fa-5da6-a019-5a8237efd496",` +
+		`"agent_name":"user@host","client_type":"claude_code",` +
+		`"user":"user","hostname":"host","host":"host",` +
+		`"framework":"claude-code","model":null,"tokens_input":0,` +
+		`"tokens_output":0,"tokens_total":0,"tokens_cache_read":0,` +
+		`"tokens_cache_creation":0,"tokens_used_session":0,` +
+		`"token_limit_session":null,"timestamp":"` + ts + `",`
+	bodies := map[string]string{
+		"tool_call failure": `{` + identity +
+			`"has_content":false,"content":null,"event_type":"tool_call",` +
+			`"tool_name":"Bash","tool_input":null,"tool_result":null,` +
+			`"is_subagent_call":false,"parent_session_id":null,` +
+			`"latency_ms":449,"duration_ms":449,` +
+			`"tool_use_id":"toolu_01Xg9Qe5dbennMRZ7YuUVr4m",` +
+			`"error":{"error_type":"other","error_class":"PluginToolError",` +
+			`"message":"<redacted>","interrupted":false}}`,
+		"mcp_tool_call": `{` + identity +
+			`"has_content":false,"content":null,"event_type":"mcp_tool_call",` +
+			`"server_name":"plugin:claude-mem:mcp-search","transport":null,` +
+			`"tool_name":"list_corpora","duration_ms":9,` +
+			`"mcp_server":{"name":"plugin:claude-mem:mcp-search","source":"plugin"},` +
+			`"tool_use_id":"toolu_01EcQvDizFdJhFyotPFoe13E"}`,
+		"session_end": `{` + identity +
+			`"has_content":false,"content":null,"event_type":"session_end",` +
+			`"tool_name":null,"tool_input":null,"is_subagent_call":false,` +
+			`"latency_ms":null,"close_reason":"normal_exit",` +
+			`"end_reason":"prompt_input_exit"}`,
+	}
+	wantKeys := map[string][]string{
+		"tool_call failure": {"tool_use_id", "error"},
+		"mcp_tool_call":     {"tool_use_id", "mcp_server", "server_name"},
+		"session_end":       {"close_reason", "end_reason"},
+	}
+	for name, body := range bodies {
+		t.Run(name, func(t *testing.T) {
+			pub := &mockPublisher{}
+			handler := handlers.EventsHandler(
+				&mockValidator{valid: true, id: "tok-1", name: "test"},
+				pub,
+				&mockDirStore{},
+				&mockSessAttacher{},
+				nil,
+			)
+			req := httptest.NewRequest("POST", "/v1/events", bytes.NewReader([]byte(body)))
+			req.Header.Set("Authorization", "Bearer tok")
+			w := httptest.NewRecorder()
+			handler(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("want 200, got %d body=%s", w.Code, w.Body.String())
+			}
+			if len(pub.published) != 1 {
+				t.Fatalf("want 1 published payload, got %d", len(pub.published))
+			}
+			var published map[string]any
+			if err := json.Unmarshal(pub.published[0], &published); err != nil {
+				t.Fatalf("published payload is not JSON: %v", err)
+			}
+			for _, key := range wantKeys[name] {
+				if _, ok := published[key]; !ok {
+					t.Errorf("published payload lost %q", key)
+				}
+			}
+		})
 	}
 }

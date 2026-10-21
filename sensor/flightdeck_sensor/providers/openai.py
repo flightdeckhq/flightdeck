@@ -385,6 +385,16 @@ class OpenAIProvider:
         except (KeyError, TypeError):
             return ""
 
+    def response_stop_reason(self, response: Any) -> str | None:
+        """OpenAI reports a declined or cut-off response through SDK
+        exceptions on the parsing helpers, which the error classifier
+        handles; the plain response carries nothing the sensor maps."""
+        return None
+
+    def stop_reason_from_stream_chunk(self, chunk: Any) -> str | None:
+        """OpenAI stream chunks carry no reason the sensor maps."""
+        return None
+
     def extract_tool_invocations(self, response: Any) -> list[ToolInvocation]:
         """Parse OpenAI ``tool_calls`` from the response.
 

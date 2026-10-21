@@ -106,6 +106,25 @@ class Provider(Protocol):
         """
         ...
 
+    def response_stop_reason(self, response: Any) -> str | None:
+        """The provider's end-of-response reason on a complete response
+        (Anthropic ``stop_reason``), or ``None`` when the response does
+        not carry one or the provider reports such outcomes as SDK
+        exceptions instead. The interceptor files an llm_error beside the
+        post_call when the reason means the call did not succeed (a
+        refusal, a context-window overrun). Never raises.
+        """
+        ...
+
+    def stop_reason_from_stream_chunk(self, chunk: Any) -> str | None:
+        """The end-of-response reason carried by one streamed event
+        (Anthropic ``message_delta``), or ``None`` for every other event
+        and for providers whose streams carry none. Lets a raw stream,
+        which has no final message object, report the same outcome as a
+        complete response. Never raises.
+        """
+        ...
+
     def extract_content(
         self,
         request_kwargs: dict[str, Any],

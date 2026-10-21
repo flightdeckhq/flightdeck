@@ -262,6 +262,16 @@ class LitellmProvider:
         except (KeyError, TypeError):
             return ""
 
+    def response_stop_reason(self, response: Any) -> str | None:
+        """litellm normalises every provider's end-of-response reason into
+        OpenAI's ``finish_reason`` vocabulary, which the sensor does not
+        map; nothing is reported here."""
+        return None
+
+    def stop_reason_from_stream_chunk(self, chunk: Any) -> str | None:
+        """litellm stream chunks carry no reason the sensor maps."""
+        return None
+
     def extract_tool_invocations(self, response: Any) -> list[ToolInvocation]:
         """Parse tool_calls from a litellm ``ModelResponse``.
 

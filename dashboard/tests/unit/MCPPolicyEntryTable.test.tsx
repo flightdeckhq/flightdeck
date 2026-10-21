@@ -202,7 +202,7 @@ describe("MCPPolicyEntryTable", () => {
     );
   });
 
-  it("embeds the quick-start templates link in the empty state on a flavor scope (D146)", () => {
+  it("embeds the quick-start templates link in the empty state on a flavor scope", () => {
     render(
       <MCPPolicyEntryTable
         entries={[]}
@@ -222,7 +222,7 @@ describe("MCPPolicyEntryTable", () => {
     ).toBeTruthy();
   });
 
-  it("hides the quick-start templates link on the global scope — apply_template returns 400 by design (D138 + D134)", () => {
+  it("hides the quick-start templates link on the global scope — apply_template returns 400 by design", () => {
     render(
       <MCPPolicyEntryTable
         entries={[]}

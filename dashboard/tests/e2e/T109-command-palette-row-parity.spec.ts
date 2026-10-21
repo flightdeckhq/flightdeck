@@ -1,10 +1,10 @@
 /**
  * T109 — command palette row parity.
  *
- * Locks the row-parity follow-up to D162: agent rows surface
+ * Locks the command-palette row-parity contract: agent rows surface
  * the identity badge cluster (ClaudeCodeLogo for Claude Code
  * clients, the agent-type badge, the state chip) and run rows
- * surface ProviderLogo + model. Pre-fix the agent row was bare
+ * surface ProviderLogo + model. Guarded regression: the agent row was bare
  * name + grey agent_type and the run row hid the model entirely.
  *
  * Runs under both Playwright theme projects so per-theme parity

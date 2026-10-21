@@ -1,6 +1,6 @@
 """Unit tests for :mod:`flightdeck_sensor.core.agent_id`.
 
-D115 locks the namespace UUID and the fixture vector -- the assertions
+The namespace UUID and the fixture vector are locked -- the assertions
 here guarantee the Python and Node implementations stay in lock-step
 and that the namespace is never accidentally rotated.
 """
@@ -35,7 +35,7 @@ class TestNamespace:
 
 class TestDeriveAgentId:
     def test_fixture_vector(self) -> None:
-        # Locked by the v0.4.0 Phase 1 brief. Node twin asserts the
+        # A locked fixture vector. Node twin asserts the
         # same value in ``plugin/tests/agent_id.test.mjs``.
         aid = derive_agent_id(
             agent_type="coding",
@@ -98,17 +98,17 @@ class TestDeriveAgentId:
 
 
 class TestSubAgentRoleDerivation:
-    """D126 conditional 6th input.
+    """Conditional 6th input (agent_role).
 
     Verifies that adding ``agent_role`` to the call shape leaves the
-    D115 5-tuple derivation byte-for-byte unchanged, that supplied
+    5-tuple derivation byte-for-byte unchanged, that supplied
     roles produce distinct uuids, that semantically-empty role
     values collapse to the 5-tuple form, and that whitespace is
     trimmed before the role joins the derivation.
     """
 
     def _root_kwargs(self) -> dict[str, str]:
-        # The locked v0.4.0 Phase 1 fixture vector — root call shape
+        # The locked fixture vector — root call shape
         # with no role. Repeated here so each test is self-contained.
         return dict(
             agent_type="coding",
@@ -118,18 +118,18 @@ class TestSubAgentRoleDerivation:
             agent_name="omria@Omri-PC",
         )
 
-    def test_omitting_role_kwarg_matches_d115_fixture(self) -> None:
-        # Hardest regression we have to protect: the D115 fixture
+    def test_omitting_role_kwarg_matches_five_tuple_fixture(self) -> None:
+        # Hardest regression we have to protect: the 5-tuple fixture
         # vector. Callers that don't pass agent_role at all must
         # produce the legacy uuid byte-for-byte, otherwise every
         # historical agent_id in every deployment is orphaned.
         aid = derive_agent_id(**self._root_kwargs())
         assert str(aid) == "ee76931b-06fa-5da6-a019-5a8237efd496"
 
-    def test_role_none_matches_d115_fixture(self) -> None:
+    def test_role_none_matches_five_tuple_fixture(self) -> None:
         # Callers that pass agent_role=None explicitly must collapse
         # to the same path the kwarg-omitted form takes. This is the
-        # common shape for direct-SDK callers under D126: pass the
+        # common shape for direct-SDK callers: pass the
         # kwarg uniformly, set it to None for non-sub-agent
         # sessions.
         aid = derive_agent_id(**self._root_kwargs(), agent_role=None)

@@ -1,8 +1,8 @@
 // Package auth provides Bearer token validation for the ingestion API.
 //
 // Tokens are opaque strings stored as SHA256(salt || raw_token) in the
-// access_tokens table. See DECISIONS.md D095 and the Authentication
-// section of ARCHITECTURE.md for the full model.
+// access_tokens table. See the Authentication section of
+// ARCHITECTURE.md for the full model.
 package auth
 
 import (
@@ -33,7 +33,7 @@ const (
 // access_tokens. When Valid is true the caller receives the row's id and
 // human-readable name, which the events handler injects into the NATS
 // payload for session_start events so the worker can persist them onto
-// the new session row (D095). When Valid is false, Reason is an
+// the new session row. When Valid is false, Reason is an
 // http-safe message the handler can put in the 401 body; an empty
 // Reason means "use a generic invalid-token message".
 type ValidationResult struct {
@@ -135,7 +135,7 @@ func newValidatorWithDB(db dbQuerier, env envLookup) *Validator {
 	}
 }
 
-// Validate resolves rawToken against access_tokens per the D095 algorithm.
+// Validate resolves rawToken against access_tokens by its salted SHA-256 hash.
 //
 //  1. raw == "tok_dev"  → accepted only when ENVIRONMENT=dev. When the
 //     guard rejects, ValidationResult.Reason carries the operator-

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { fetchOlderEvents, fetchSession } from "@/lib/api";
 
-// D113 pagination helpers. These exercise URL shape only; every other
+// Pagination helpers. These exercise URL shape only; every other
 // /v1/events and /v1/sessions/{id} code path is already covered by the
 // handler integration tests on the Go side and the SessionDrawer
 // component tests.
@@ -20,7 +20,7 @@ function installFetchSpy() {
   return spy;
 }
 
-describe("fetchSession events_limit (D113)", () => {
+describe("fetchSession events_limit", () => {
   let spy: ReturnType<typeof installFetchSpy>;
   beforeEach(() => {
     spy = installFetchSpy();
@@ -43,7 +43,7 @@ describe("fetchSession events_limit (D113)", () => {
   });
 });
 
-describe("fetchOlderEvents (D113)", () => {
+describe("fetchOlderEvents", () => {
   let spy: ReturnType<typeof installFetchSpy>;
   beforeEach(() => {
     spy = installFetchSpy();

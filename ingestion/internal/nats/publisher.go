@@ -15,7 +15,7 @@ const streamName = "FLIGHTDECK"
 // natsRetryDelays governs the per-publish retry schedule on NATS
 // JetStream errors: three attempts with exponential backoff.
 // Total worst-case latency added on a 3-fail-then-succeed path:
-// 100 + 200 + 400 = 700 ms. Phase 4.5 N-4: extracted to package
+// 100 + 200 + 400 = 700 ms. Extracted to package
 // level so the schedule is visible in one place rather than
 // inlined inside Publish.
 var natsRetryDelays = []time.Duration{

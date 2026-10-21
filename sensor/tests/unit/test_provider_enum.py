@@ -1,4 +1,4 @@
-"""Tests for the :class:`flightdeck_sensor.Provider` enum (D125).
+"""Tests for the :class:`flightdeck_sensor.Provider` enum.
 
 Covers the enum-as-canonical-API decision:
 
@@ -13,7 +13,7 @@ Covers the enum-as-canonical-API decision:
   matters for callers mid-migration.
 * Unknown raw strings are silently ignored (no
   ``ConfigurationError``) -- preserved verbatim from the
-  pre-D125 string-only contract.
+  string-only contract.
 
 The file does NOT migrate the existing ``test_patch.py`` away from
 strings -- those tests are the backward-compat proof that strings
@@ -65,7 +65,7 @@ def test_provider_has_exactly_six_members() -> None:
     ``test_provider_values_match_patch_branches`` catches the
     value-side drift; this one catches the count-side).
 
-    D126 added two sub-agent targets (CREWAI, LANGGRAPH). AutoGen
+    Sub-agent observability added two targets (CREWAI, LANGGRAPH). AutoGen
     support is on the Roadmap and ships in a future PR alongside
     LLM-call interception for it.
     """
@@ -89,7 +89,7 @@ def test_provider_values_match_patch_branches() -> None:
     assert Provider.OPENAI.value == "openai"
     assert Provider.LITELLM.value == "litellm"
     assert Provider.MCP.value == "mcp"
-    # D126 sub-agent targets.
+    # Sub-agent targets.
     assert Provider.CREWAI.value == "crewai"
     assert Provider.LANGGRAPH.value == "langgraph"
 
@@ -219,14 +219,14 @@ def test_patch_default_none_patches_every_provider() -> None:
 
 
 def test_patch_unknown_string_is_silently_ignored() -> None:
-    """Backward-compat: pre-D125 ``patch()`` silently no-op'd on
+    """Backward-compat: the string-only ``patch()`` silently no-op'd on
     unknown provider strings. The enum doesn't tighten this -- a
     typo or a stale provider name still produces no patch and no
     raise. Validating would be a behavior change; users with stale
     string lists shouldn't see a sudden error on a sensor upgrade.
 
     A future tightening to raise ConfigurationError on unknown
-    strings is out of scope for D125 and would warrant its own
+    strings is out of scope for the enum and would warrant its own
     decision entry.
     """
     branches = _patched_branches()

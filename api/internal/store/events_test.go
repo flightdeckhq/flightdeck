@@ -784,7 +784,7 @@ func TestGetEvents_SessionIdentityColumns_NullClientType(t *testing.T) {
 }
 
 // TestGetEvents_ContextFacetFilters exercises the 9 runtime-context
-// dimensions sourced from sessions.context (D157 Phase 5 / C1). Two
+// dimensions sourced from sessions.context. Two
 // sessions with distinct context JSONB; each new filter param
 // narrows the result set to the matching session, and the
 // facet-count response carries each dimension's distinct values.

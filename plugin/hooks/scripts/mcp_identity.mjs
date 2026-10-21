@@ -8,7 +8,7 @@
 // sensor/tests/unit/test_mcp_identity.py assert the same vectors.
 //
 // Identity is the pair (URL, name). The URL is the security key;
-// the name is display + tamper-evidence (D127). The full SHA-256
+// the name is display + tamper-evidence. The full SHA-256
 // of canonical_url + 0x00 + name is the storage key; the first
 // 16 hex chars are the display fingerprint.
 //
@@ -16,9 +16,8 @@
 // so the plugin preserves its zero-npm-dependency posture
 // (mirrors plugin/hooks/scripts/agent_id.mjs / uuid5.mjs).
 //
-// See DECISIONS.md D127 for the full rationale and ARCHITECTURE.md
-// "MCP Protection Policy" → "Identity model" for the contract this
-// module implements.
+// See ARCHITECTURE.md "MCP Protection Policy" → "Identity model"
+// for the contract this module implements.
 
 import { createHash } from "node:crypto";
 
@@ -29,7 +28,7 @@ import { createHash } from "node:crypto";
 const DEFAULT_PORTS = { "http:": "80", "https:": "443" };
 
 // Env-var regex matches `$VAR` and `${VAR}` shapes. POSIX-style
-// only — no tilde expansion (D127 limits resolution to env vars).
+// only — no tilde expansion (resolution is limited to env vars).
 // Unresolved variables (not present in process.env) remain LITERAL
 // in the canonical form: `${MISSING_VAR}` stays `${MISSING_VAR}`.
 // Keeping unresolved vars literal means a missing env var produces
@@ -38,7 +37,7 @@ const DEFAULT_PORTS = { "http:": "80", "https:": "443" };
 const ENV_VAR_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
 
 // Whitespace collapse applies globally inside the stdio canonical
-// form (Assumption Y locked in step 2). Every run of whitespace
+// form by design. Every run of whitespace
 // becomes a single space; leading and trailing whitespace are
 // stripped. An arg containing multi-space whitespace collapses by
 // design — callers should normalize args before declaring them.
@@ -100,7 +99,7 @@ function canonicalizeStdio(raw) {
 }
 
 /**
- * Reduce `raw` to its canonical form per D127.
+ * Reduce `raw` to its canonical form.
  *
  * HTTP / HTTPS URLs route to the HTTP canonicalisation. Anything
  * else routes to the stdio canonicalisation, which prepends

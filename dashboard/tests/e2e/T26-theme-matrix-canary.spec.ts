@@ -2,8 +2,8 @@
  * T26 — Theme matrix canary.
  *
  * Asserts that the per-project ``storageState`` configured in
- * playwright.config.ts actually flips the <html> class. The Phase 5
- * push surfaced a long-running drift where the seeded localStorage
+ * playwright.config.ts actually flips the <html> class. A
+ * long-running drift was found where the seeded localStorage
  * VALUE ("neon-dark" / "clean-light") didn't match what
  * dashboard/src/hooks/useTheme.ts accepts ("dark" / "light"), AND
  * the seeded localStorage KEY ("flightdeck:theme" with a colon)

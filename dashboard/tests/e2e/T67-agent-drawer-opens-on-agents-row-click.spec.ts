@@ -2,7 +2,7 @@
  * T67 — clicking a row on the /agents table opens that agent's
  * drawer.
  *
- * Phase 4 contract: the row click is the primary affordance — it
+ * The row click is the primary affordance — it
  * sets the `?agent_drawer=<agent_id>` URL param and the app-level
  * AgentDrawerHost renders the drawer.
  *

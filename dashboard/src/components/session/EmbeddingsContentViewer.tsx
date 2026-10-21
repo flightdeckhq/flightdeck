@@ -4,7 +4,7 @@ import { fetchEventContent } from "@/lib/api";
 import type { EventContent } from "@/lib/types";
 
 /**
- * Embedding-shaped content viewer (Phase 4 polish, S-EMBED-5).
+ * Embedding-shaped content viewer.
  *
  * Modelled distinctly from ``PromptViewer`` because chat shape and
  * embedding shape are genuinely different surfaces -- chat is system
@@ -12,8 +12,7 @@ import type { EventContent } from "@/lib/types";
  * (string or list of strings, no model output content). Reusing
  * PromptViewer would have meant overloading its system/messages/
  * response slots with embedding fields, creating "convenient now,
- * confusing later" debt. Per supervisor V-pass answer #1, the two
- * shapes stay separate.
+ * confusing later" debt, so the two shapes stay separate.
  *
  * Three render branches mapped to the data shape:
  *

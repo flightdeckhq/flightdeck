@@ -13,7 +13,7 @@ export type Mode = "allowlist" | "blocklist";
 export interface MCPPolicyHeaderProps {
   policy: MCPPolicy;
   scopeKey: string;
-  /** Global tab → editable mode toggle. Flavor tabs hide it (D134). */
+  /** Global tab → editable mode toggle. Flavor tabs hide it (mode is global-only). */
   modeEditable: boolean;
   /** Global mode value to render context on flavor tabs. */
   globalMode: Mode | null;
@@ -23,7 +23,7 @@ export interface MCPPolicyHeaderProps {
 
 /**
  * Renders the per-tab toolbar — segmented mode control (Global tab
- * only, D134) plus the ``block_on_uncertainty`` switch (every tab,
+ * only) plus the ``block_on_uncertainty`` switch (every tab,
  * with low-key visual treatment when the resolved global mode is
  * ``blocklist`` because the toggle is a semantic no-op there per
  * ARCHITECTURE.md → "Per-server resolution").
@@ -174,8 +174,8 @@ export function MCPPolicyHeader({
           )}
         </section>
 
-        {/* Block-on-uncertainty — hidden under blocklist mode (D134
-            says BOU is only meaningful under allowlist; B2 spec
+        {/* Block-on-uncertainty — hidden under blocklist mode (BOU
+            is only meaningful under allowlist; the spec
             chose hide-rather-than-grey to match Salesforce /
             Atlassian / Linear precedent — server-side value persists
             across mode flips so toggling allowlist back restores it). */}

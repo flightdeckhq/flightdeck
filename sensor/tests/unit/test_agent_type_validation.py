@@ -1,4 +1,4 @@
-"""Unit tests for the D114 / D115 agent_type vocabulary lock at
+"""Unit tests for the agent_type vocabulary lock at
 ``flightdeck_sensor.init``.
 
 The sensor raises ConfigurationError for any value outside

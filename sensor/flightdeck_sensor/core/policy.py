@@ -1,7 +1,7 @@
 """Local token budget enforcement cache.
 
 Holds both local (init() limit) and server-side policy thresholds.
-Local limits fire WARN only -- never BLOCK or DEGRADE (see D035).
+Local limits fire WARN only -- never BLOCK or DEGRADE.
 Server thresholds can fire any action.
 """
 
@@ -22,7 +22,7 @@ _DEFAULT_BLOCK_AT_PCT = 100
 class PolicyResult:
     """Result of a policy check, including which source triggered it.
 
-    Phase 7 Step 2 (D148): carries ``policy_id`` and
+    Carries ``policy_id`` and
     ``matched_policy_scope`` so the sensor's _pre_call emission can
     populate the shared ``policy_decision`` block. Local-source
     results use ``policy_id="local"`` + ``matched_policy_scope=
@@ -62,11 +62,11 @@ class PolicyCache:
         self.block_at_pct = block_at_pct
         self.degrade_to = degrade_to
 
-        # Local thresholds (WARN-only, see D035)
+        # Local thresholds (WARN-only)
         self.local_limit = local_limit
         self.local_warn_at = local_warn_at
 
-        # Phase 7 Step 2 (D148): API-side policy identity captured at
+        # API-side policy identity captured at
         # preflight + on every policy_update directive. Sensor-side
         # _pre_call emissions stamp these onto the shared
         # policy_decision block. None when no server-side policy is
@@ -80,7 +80,7 @@ class PolicyCache:
         # response envelope. Bypasses the threshold check below: once
         # the server has explicitly told the sensor to degrade, every
         # subsequent call uses degrade_to regardless of token usage.
-        # See Phase 4.5 audit B-E. Cleared by ``update`` (which is
+        # Cleared by ``update`` (which is
         # called for POLICY_UPDATE directives) so a fresh policy can
         # un-stick the forced state if the server retracts the degrade.
         self._forced_degrade = False
@@ -90,7 +90,7 @@ class PolicyCache:
         """Evaluate all thresholds against *tokens_used* + *estimated*.
 
         Server-side thresholds can return BLOCK, DEGRADE, or WARN.
-        Local thresholds only return WARN (never BLOCK/DEGRADE per D035).
+        Local thresholds only return WARN (never BLOCK/DEGRADE).
         Most-restrictive fires first within each source.
 
         A forced degrade (set by ``set_degrade_model`` after a DEGRADE
@@ -142,7 +142,7 @@ class PolicyCache:
                         matched_policy_scope=self.matched_policy_scope,
                     )
 
-            # Local evaluation (WARN-only per D035). policy_id =
+            # Local evaluation (WARN-only). policy_id =
             # "local" + scope = "local_failsafe" so the shared
             # policy_decision block stays self-describing on the
             # wire (operators see source=local + scope=local_failsafe
@@ -175,7 +175,7 @@ class PolicyCache:
     def update(self, policy_dict: dict[str, Any]) -> None:
         """Atomically replace server-side fields from a directive payload.
 
-        Phase 7 Step 2 (D148): captures ``policy_id`` and the resolved
+        Captures ``policy_id`` and the resolved
         ``matched_policy_scope`` (built from ``scope`` + optional
         ``scope_value``) when present in the dict. Both are passed
         through verbatim by the preflight policy fetch and by

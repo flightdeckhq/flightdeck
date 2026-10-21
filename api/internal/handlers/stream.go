@@ -24,7 +24,7 @@ var upgrader = websocket.Upgrader{
 // header first, then query string -- and the connection is rejected
 // with 401 before upgrade if neither resolves to a valid token.
 // Passing validator=nil skips auth entirely and is only used by
-// NewForTesting. See DECISIONS.md D095.
+// NewForTesting.
 //
 // @Summary      Real-time fleet stream
 // @Description  WebSocket connection for real-time fleet state updates. Upgrades HTTP to WebSocket. Accepts bearer token via the Authorization header OR ``?token=`` query parameter (browsers cannot set headers on the WS upgrade).
@@ -81,7 +81,7 @@ func StreamHandler(hub *ws.Hub, validator *auth.Validator) http.HandlerFunc {
 // Authorization header or the ?token= query parameter. Returns the
 // empty string when neither source provides a non-empty token.
 //
-// Phase 4.5 M-3 — known residual risk: a token in the URL may be
+// Known residual risk: a token in the URL may be
 // captured by reverse-proxy access logs, browser history, and CDN
 // caches. The standard browser WebSocket API cannot set custom
 // headers on the upgrade request, so we accept ?token= as a
@@ -89,10 +89,9 @@ func StreamHandler(hub *ws.Hub, validator *auth.Validator) http.HandlerFunc {
 // exchange (POST /v1/stream/ticket returns a single-use 60s-TTL
 // nonce; WS upgrade accepts ?ticket=<uuid>) which moves the long-
 // lived bearer off the URL surface entirely. Tracked on the
-// roadmap and not blocking this audit pass: (1) dashboard side
-// must switch in lockstep, and (2) any caller that scripts the
-// stream from outside the browser would need to pre-fetch a
-// ticket. See audit-phase-4.5.md M-3.
+// roadmap because (1) the dashboard side must switch in lockstep,
+// and (2) any caller that scripts the stream from outside the
+// browser would need to pre-fetch a ticket.
 func extractStreamToken(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimPrefix(h, "Bearer ")
@@ -101,7 +100,7 @@ func extractStreamToken(r *http.Request) string {
 		// Don't log the token itself; do log that this code path
 		// took the URL fallback so operators can audit how often
 		// it's used vs. header-based auth.
-		slog.Debug("stream: token sourced from query parameter (M-3 residual risk)",
+		slog.Debug("stream: token sourced from query parameter (residual risk: token on the URL surface)",
 			"client_ip", r.RemoteAddr,
 		)
 		return t

@@ -98,7 +98,7 @@ describe("MCPPolicyHeader", () => {
   });
 
   it("hides the BOU toggle entirely under blocklist mode (B2)", () => {
-    // Step 6.6 B2: BOU is only meaningful under allowlist (D134).
+    // BOU is only meaningful under allowlist.
     // Hide-rather-than-grey matches Salesforce / Atlassian / Linear
     // precedent of removing irrelevant controls. Server-side value
     // persists across mode flips so flipping back to allowlist
@@ -155,7 +155,7 @@ describe("MCPPolicyHeader", () => {
     );
   });
 
-  it("marks the active mode option with data-active='true' (D146 visual-fix lock)", () => {
+  it("marks the active mode option with data-active='true' (visual-fix lock)", () => {
     render(
       <MCPPolicyHeader
         policy={policy({ mode: "allowlist" })}
@@ -176,7 +176,7 @@ describe("MCPPolicyHeader", () => {
     expect(block.getAttribute("data-active")).toBe("false");
   });
 
-  it("ArrowRight on the active mode button moves focus to the next option (D146 keyboard nav)", () => {
+  it("ArrowRight on the active mode button moves focus to the next option (keyboard nav)", () => {
     render(
       <MCPPolicyHeader
         policy={policy({ mode: "allowlist" })}
@@ -204,7 +204,7 @@ describe("MCPPolicyHeader", () => {
     expect(block.getAttribute("data-active")).toBe("false");
   });
 
-  it("renders the shared InfoIcon next to the Policy mode heading on the editable Global tab (step 6.9)", () => {
+  it("renders the shared InfoIcon next to the Policy mode heading on the editable Global tab", () => {
     render(
       <MCPPolicyHeader
         policy={policy({ mode: "allowlist" })}
@@ -225,7 +225,7 @@ describe("MCPPolicyHeader", () => {
     expect(trigger.getAttribute("aria-label")).toBe("Policy mode help");
   });
 
-  it("renders the shared InfoIcon next to the BOU heading under allowlist mode with the corrected polarity copy (step 6.9)", () => {
+  it("renders the shared InfoIcon next to the BOU heading under allowlist mode with the corrected polarity copy", () => {
     render(
       <MCPPolicyHeader
         policy={policy({ mode: "allowlist", block_on_uncertainty: false })}
@@ -245,7 +245,7 @@ describe("MCPPolicyHeader", () => {
     );
   });
 
-  it("BOU section (with its InfoIcon) stays hidden under blocklist mode — D135 invariant the spec text contradicted (step 6.9)", () => {
+  it("BOU section (with its InfoIcon) stays hidden under blocklist mode — the resolution invariant the spec text contradicted", () => {
     render(
       <MCPPolicyHeader
         policy={policy({ mode: "blocklist" })}

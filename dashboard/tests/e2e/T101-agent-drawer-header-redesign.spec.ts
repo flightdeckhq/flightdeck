@@ -118,7 +118,7 @@ test.describe("T101 — Agent drawer header redesign", () => {
     ]) {
       const el = drawer.locator(`[data-testid="${tid}"]`);
       await expect(el).toBeVisible();
-      // The pre-fix style had ``border: none``; the new style
+      // The old style had ``border: none``; the new style
       // applies ``1px solid var(--border)``. Computed
       // ``border-top-width`` is ``1px`` for the new style and
       // ``0px`` for the old.

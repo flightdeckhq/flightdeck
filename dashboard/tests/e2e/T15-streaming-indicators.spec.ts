@@ -1,7 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import { CODING_AGENT, waitForInvestigateReady } from "./_fixtures";
 
-// T15 — Phase 4 polish S-UI-2: streaming indicators on post_call
+// T15 — streaming indicators on post_call
 // rows. Two seeded variants:
 //   - fresh-active role: a happy-path streaming post_call (final
 //     outcome=completed). Expectation: ``stream-badge-<id>`` is

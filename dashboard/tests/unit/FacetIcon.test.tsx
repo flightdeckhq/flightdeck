@@ -22,7 +22,7 @@ describe("FacetIcon — icon resolution per dimension", () => {
   // first six are pre-existing — lucide category glyphs (Fix 1)
   // plus the model provider logo and the policy_event_type
   // chroma dot. The remaining entries cover the 8 runtime-
-  // context dims D160 added on the /events sidebar (OSIcon
+  // context dims on the /events sidebar (OSIcon
   // resolves ``os`` separately so it has its own entry); a
   // regression that drops one of them from ``pickFacetIcon``
   // surfaces here as an icon-less assertion failure. ``terminal``,

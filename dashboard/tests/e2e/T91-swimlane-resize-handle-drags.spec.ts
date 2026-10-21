@@ -1,11 +1,10 @@
 import { test, expect, type Locator } from "@playwright/test";
 import { waitForFleetReady } from "./_fixtures";
 
-// T91 — left-panel resize handle drag + persistence. The pre-Fix-1
-// handle clamped at LEFT_PANEL_MAX_WIDTH=500 so an operator
-// starting from a stored 500px could not drag any wider — the
-// drag silently no-op'd. Fix 1 raises the cap to 640 and widens
-// the hit area from 6→10px; this spec locks both in:
+// T91 — left-panel resize handle drag + persistence. A cap of
+// 500px meant an operator starting from a stored 500px could not
+// drag any wider — the drag silently no-op'd. The cap is 640px
+// and the hit area 10px; this spec locks both in:
 //
 //   1. Drag the handle ~200px to the right from the default
 //      460px starting width. New width MUST land above 500

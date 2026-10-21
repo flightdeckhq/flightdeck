@@ -3,7 +3,7 @@ import { render, fireEvent, cleanup } from "@testing-library/react";
 import { DIMENSIONS } from "@/components/analytics/DimensionPicker";
 import { ParentChildBreakdownChart } from "@/components/analytics/ParentChildBreakdownChart";
 
-// D126 § 7.fix.O — Analytics D126 surface tests.
+// Analytics sub-agent surface tests.
 //
 // Mounting the full Analytics page would mount ~10 charts each
 // subscribing to useAnalytics, which times out under jsdom. The
@@ -43,7 +43,7 @@ afterEach(() => {
   cleanup();
 });
 
-describe("DimensionPicker — D126 agent_role dimension", () => {
+describe("DimensionPicker — agent_role dimension", () => {
   it("includes Sub-agent Role in the locked dimension list", () => {
     const dim = DIMENSIONS.find((d) => d.value === "agent_role");
     expect(dim).toBeDefined();
@@ -103,7 +103,7 @@ describe("ParentChildBreakdownChart — page-level TOPOLOGY thread-through", () 
     expect(params.filter_is_sub_agent).toBeUndefined();
   });
 
-  it("metric picker switches the analytics request between D126 metrics", () => {
+  it("metric picker switches the analytics request between sub-agent metrics", () => {
     const { container } = render(<ParentChildBreakdownChart range="30d" />);
     expect(useAnalyticsMock.mock.calls[0][0].metric).toBe("child_token_sum");
     // Click the metric trigger then choose another option. The

@@ -2,7 +2,7 @@
  * T76 — a legacy `/events?session=<id>` URL is migrated to
  * `?run=<id>`.
  *
- * Phase 4 wave 2 contract: the Events-page drawer deep-link
+ * The Events-page drawer deep-link
  * parameter renamed from `?session=` to `?run=`; an old bookmark
  * is transparently rewritten so it keeps resolving.
  *

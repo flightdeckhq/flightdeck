@@ -7,7 +7,7 @@ import {
 import type { AgentEvent, EventContent } from "@/lib/types";
 import * as api from "@/lib/api";
 
-// Phase 5 — MCPEventDetails component contract. Mirrors the frozen
+// MCPEventDetails component contract. Mirrors the frozen
 // dashboard fixture in dashboard/tests/e2e/fixtures/mcp-events.json
 // shape-by-shape. The accordion is closed at first render; the
 // per-event-type body lives inside the expanded panel.
@@ -31,7 +31,7 @@ function makeMCPEvent(overrides: Partial<AgentEvent>): AgentEvent {
 }
 
 describe("isMCPEvent", () => {
-  it("returns true for every Phase 5 MCP event type", () => {
+  it("returns true for every MCP event type", () => {
     for (const t of [
       "mcp_tool_call",
       "mcp_tool_list",
@@ -192,10 +192,10 @@ describe("MCPEventDetails — list events", () => {
 });
 
 // ---------------------------------------------------------------------
-// B-6 — content-overflow handling (truncation markers + Load full)
+// Content-overflow handling (truncation markers + Load full)
 // ---------------------------------------------------------------------
 
-describe("MCPEventDetails — B-6 truncation markers", () => {
+describe("MCPEventDetails — truncation markers", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });

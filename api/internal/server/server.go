@@ -31,15 +31,15 @@ const (
 //
 // validator MUST be non-nil. The sensor-facing endpoints
 // (POST /v1/directives/sync and POST /v1/directives/register) are
-// mounted behind bearer-token auth via this validator (D073 stopgap).
+// mounted behind bearer-token auth via this validator.
 // Passing nil panics on construction so a future refactor cannot
 // silently disable authentication on those endpoints. Use
 // NewForTesting if you need an unauthenticated server in tests.
 //
 // corsOrigin must be either "*" or a parseable absolute URL with a
 // non-empty scheme and host. Anything else fails fast at startup
-// (Phase 4.5 M-14) rather than rendering a non-functional CORS
-// surface in production.
+// rather than rendering a non-functional CORS surface in
+// production.
 func New(addr string, s store.Querier, hub *ws.Hub, validator *auth.Validator, corsOrigin string) *http.Server {
 	if validator == nil {
 		panic("server: validator must not be nil. Pass auth.NewValidator() in production or use NewForTesting() in tests.")
@@ -87,8 +87,8 @@ func NewForTesting(addr string, s store.Querier, hub *ws.Hub, corsOrigin string)
 func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Validator, corsOrigin string) *http.Server {
 	mux := http.NewServeMux()
 
-	// gate wraps REST handlers with the 30s timeout AND the Phase 5
-	// bearer-token auth middleware. Phase 5 D095: every /v1 endpoint
+	// gate wraps REST handlers with the 30s timeout AND the
+	// bearer-token auth middleware: every /v1 endpoint
 	// must present a valid token. /health and /docs/ remain open so
 	// container healthchecks and the Swagger UI still work without
 	// credentials. The WebSocket /v1/stream is gated separately --
@@ -101,10 +101,10 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 		return withRESTTimeout(h)
 	}
 
-	// REST routes -- all require a valid bearer token (D095).
+	// REST routes -- all require a valid bearer token.
 	mux.Handle("GET /v1/fleet", gate(handlers.FleetHandler(s)))
 	mux.Handle("GET /v1/agents", gate(handlers.AgentsListHandler(s)))
-	// Per-agent activity summary (D157 Phase 1).
+	// Per-agent activity summary.
 	mux.Handle("GET /v1/agents/{agent_id}/summary",
 		gate(handlers.AgentSummaryHandler(s)))
 	mux.Handle("GET /v1/sessions", gate(handlers.SessionsListHandler(s)))
@@ -133,7 +133,7 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 	mux.Handle("GET /v1/analytics", gate(handlers.AnalyticsHandler(s)))
 	mux.Handle("GET /v1/search", gate(handlers.SearchHandler(s)))
 
-	// Token management (D095). All four require a valid bearer token;
+	// Token management. All four require a valid bearer token;
 	// the delete/rename handlers additionally refuse the seed tok_dev
 	// row with a 403. The POST response is the only place the
 	// plaintext token is ever exposed.
@@ -194,7 +194,7 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 	// /v1/stream is intentionally NOT wrapped in withRESTTimeout --
 	// WebSocket connections are long-lived and the timeout would kill
 	// them after restTimeout. The WebSocket write pump owns its own
-	// per-message deadline. Auth is handled inside the handler (D095)
+	// per-message deadline. Auth is handled inside the handler
 	// because the upgrade handshake needs to accept the token via
 	// either the Authorization header or a ?token= query parameter,
 	// and the generic auth.Middleware only checks the header path.

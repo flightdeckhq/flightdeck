@@ -209,7 +209,7 @@ export function Timeline({
       }
     }
     return false;
-    // Phase 4.5 M-29 justification: ``sessionVersions`` is the
+    // Lint suppression rationale: ``sessionVersions`` is the
     // membership-change signal; flavors[].sessions[].events identity
     // changes via the same per-session version bump, so deps are
     // funnelled through ``sessionVersions`` rather than the deep

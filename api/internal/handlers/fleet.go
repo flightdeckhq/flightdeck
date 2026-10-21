@@ -9,9 +9,9 @@ import (
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
 )
 
-// FleetResponse is the v0.4.0 Phase 1 agent-level response body for
-// GET /v1/fleet. The shape moved from flavor-grouped to agent-level
-// per D115; context_facets carries the aggregated runtime-context
+// FleetResponse is the agent-level response body for GET /v1/fleet.
+// Rows are agents rather than flavor groups, so each one maps to a
+// single agent identity; context_facets carries the aggregated runtime-context
 // facets used by the dashboard CONTEXT sidebar.
 type FleetResponse struct {
 	Agents        []store.AgentSummary                 `json:"agents"`
@@ -23,13 +23,13 @@ type FleetResponse struct {
 
 // FleetHandler handles GET /v1/fleet.
 //
-// @Summary      Get fleet state (agent-level, D115)
-// @Description  Returns agents with aggregated state rollup and pagination. Each row also carries D126 sub-agent rollup fields (``agent_role`` — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; ``topology`` — one of ``lone`` / ``parent`` / ``child``). Includes runtime context facets aggregated across all non-terminal sessions for the dashboard CONTEXT sidebar.
+// @Summary      Get fleet state (agent-level)
+// @Description  Returns agents with aggregated state rollup and pagination. Each row also carries sub-agent rollup fields (``agent_role`` — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; ``topology`` — one of ``lone`` / ``parent`` / ``child``). Includes runtime context facets aggregated across all non-terminal sessions for the dashboard CONTEXT sidebar.
 // @Tags         fleet
 // @Produce      json
 // @Param        page        query  int     false  "Page number (1-based, default 1)"
 // @Param        per_page    query  int     false  "Rows per page (default 50, max 200)"
-// @Param        agent_type  query  string  false  "Filter by D114 agent type: 'coding', 'production', or empty for all"
+// @Param        agent_type  query  string  false  "Filter by agent type: 'coding', 'production', or empty for all"
 // @Success      200  {object}  FleetResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/fleet [get]

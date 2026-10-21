@@ -45,9 +45,7 @@ from .conftest import (
 
 
 def _get_policies() -> list[dict]:
-    req = urllib.request.Request(
-        f"{API_URL}/v1/policies", headers=auth_headers()
-    )
+    req = urllib.request.Request(f"{API_URL}/v1/policies", headers=auth_headers())
     with urllib.request.urlopen(req, timeout=5) as resp:
         return json.loads(resp.read())
 
@@ -118,10 +116,15 @@ def _wait_for_directive_action(
 def _post_call(
     session_id: str, flavor: str, tokens_total: int, tokens_used_session: int
 ) -> None:
-    post_event(make_event(
-        session_id, flavor, "post_call",
-        tokens_total=tokens_total, tokens_used_session=tokens_used_session,
-    ))
+    post_event(
+        make_event(
+            session_id,
+            flavor,
+            "post_call",
+            tokens_total=tokens_total,
+            tokens_used_session=tokens_used_session,
+        )
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -138,8 +141,10 @@ def test_policy_blocks_when_limit_exceeded() -> None:
     policy = None
     try:
         policy = create_policy(
-            scope="flavor", scope_value=flavor,
-            token_limit=10, block_at_pct=1,
+            scope="flavor",
+            scope_value=flavor,
+            token_limit=10,
+            block_at_pct=1,
         )
 
         post_event(make_event(sid, flavor, "session_start"))
@@ -168,8 +173,10 @@ def test_policy_warns_at_threshold() -> None:
     policy = None
     try:
         policy = create_policy(
-            scope="flavor", scope_value=flavor,
-            token_limit=100, warn_at_pct=50,
+            scope="flavor",
+            scope_value=flavor,
+            token_limit=100,
+            warn_at_pct=50,
         )
 
         post_event(make_event(sid, flavor, "session_start"))
@@ -213,7 +220,8 @@ def test_policy_degrades_model() -> None:
     policy = None
     try:
         policy = create_policy(
-            scope="flavor", scope_value=flavor,
+            scope="flavor",
+            scope_value=flavor,
             token_limit=100,
             degrade_at_pct=80,
             degrade_to="gpt-4o-mini",
@@ -245,8 +253,11 @@ def test_policy_blocks_overrides_warn() -> None:
     policy = None
     try:
         policy = create_policy(
-            scope="flavor", scope_value=flavor,
-            token_limit=50, warn_at_pct=50, block_at_pct=100,
+            scope="flavor",
+            scope_value=flavor,
+            token_limit=50,
+            warn_at_pct=50,
+            block_at_pct=100,
         )
 
         post_event(make_event(sid, flavor, "session_start"))
@@ -281,8 +292,10 @@ def test_policy_applies_by_flavor() -> None:
     policy = None
     try:
         policy = create_policy(
-            scope="flavor", scope_value=flavor_a,
-            token_limit=10, block_at_pct=1,
+            scope="flavor",
+            scope_value=flavor_a,
+            token_limit=10,
+            block_at_pct=1,
         )
 
         post_event(make_event(sid_a, flavor_a, "session_start"))
@@ -337,8 +350,10 @@ def test_policy_crud() -> None:
     """Full CRUD lifecycle on /v1/policies."""
     flavor = f"policy-crud-{uuid.uuid4().hex[:6]}"
     created = create_policy(
-        scope="flavor", scope_value=flavor,
-        token_limit=100, warn_at_pct=50,
+        scope="flavor",
+        scope_value=flavor,
+        token_limit=100,
+        warn_at_pct=50,
     )
     policy_id = created["id"]
     try:
@@ -358,12 +373,15 @@ def test_policy_crud() -> None:
         assert got["warn_at_pct"] == 50
 
         # PUT (full body -- the handler requires scope + scope_value)
-        status, updated = _put_policy(policy_id, {
-            "scope": "flavor",
-            "scope_value": flavor,
-            "token_limit": 200,
-            "warn_at_pct": 75,
-        })
+        status, updated = _put_policy(
+            policy_id,
+            {
+                "scope": "flavor",
+                "scope_value": flavor,
+                "token_limit": 200,
+                "warn_at_pct": 75,
+            },
+        )
         assert status == 200
         assert updated is not None
         assert updated["token_limit"] == 200

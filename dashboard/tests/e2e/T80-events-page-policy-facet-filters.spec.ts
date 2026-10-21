@@ -2,7 +2,7 @@
  * T80 — the POLICY facet on `/events` filters the event table by
  * policy-enforcement event type and round-trips through the URL.
  *
- * Phase 4 wave 2 contract: the event-grain facet sidebar derives a
+ * The event-grain facet sidebar derives a
  * POLICY group by classifying the `event_type` facet's
  * policy-enforcement values; clicking a POLICY pill writes the
  * shared `event_type` filter. Replaces the deleted session-grain

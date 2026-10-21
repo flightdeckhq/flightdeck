@@ -37,7 +37,7 @@ func New(pool *pgxpool.Pool) *Writer {
 
 // AgentIdentity bundles the columns that identify an agent in the
 // v0.4.0+ schema. agent_id is derived deterministically by the sensor
-// and plugin from the other five fields (see D115); the derivation is
+// and plugin from the other five fields; the derivation is
 // verified at the ingestion boundary, so the worker trusts the tuple
 // it receives here.
 type AgentIdentity struct {
@@ -147,7 +147,7 @@ func (w *Writer) UpsertSession(
 	// ReviveOrCreateSession writes NULL context -- the sentinel
 	// "nobody has tried yet, please enrich me" state that the
 	// COALESCE branch below converts back into real data on the
-	// session_start arrival. See D106 for the {} vs NULL split.
+	// session_start arrival.
 	if contextJSON == nil {
 		contextJSON = []byte("{}")
 	}
@@ -269,7 +269,7 @@ func (w *Writer) SessionCaptureEnabled(ctx context.Context, sessionID string) bo
 }
 
 // UpgradeSessionContext fills in the sessions.context column on a row
-// whose context is either NULL (D106 lazy-create) or the empty JSON
+// whose context is either NULL (lazy-create) or the empty JSON
 // object “{}“. Once the column holds real data, the COALESCE branch
 // short-circuits to the stored value and the incoming payload is
 // ignored -- write-once semantics for real context are preserved across
@@ -279,7 +279,7 @@ func (w *Writer) SessionCaptureEnabled(ctx context.Context, sessionID string) bo
 // fails (stack was down at claude start, transient DNS outage, ...)
 // leaves the per-session dedup marker on disk, so session_start is
 // never retried. Every subsequent event then flows through
-// handleSessionGuard's D106 lazy-create which writes flavor="unknown"
+// handleSessionGuard's lazy-create which writes flavor="unknown"
 // and context=NULL. Without this helper the RUNTIME panel stays empty
 // forever. Attaching context to every event and running this upgrade
 // lets the first event that actually reaches the server populate the
@@ -313,7 +313,7 @@ func (w *Writer) UpgradeSessionContext(ctx context.Context, sessionID string, co
 }
 
 // AppendMCPServerToContext UPSERTs a single MCP server fingerprint
-// dict into “sessions.context.mcp_servers“ (D140 step 6.6 A2).
+// dict into “sessions.context.mcp_servers“.
 // Idempotent dedup by (name, server_url) tuple — re-emitted
 // “mcp_server_attached“ events from a framework reconnecting to
 // the same server become no-ops at the row level. Drives live
@@ -324,7 +324,7 @@ func (w *Writer) UpgradeSessionContext(ctx context.Context, sessionID string, co
 // The dedup key intentionally uses the (name, server_url) tuple
 // rather than the wire fingerprint hex so the stored dict shape
 // stays exactly as “sessions.context.mcp_servers“ was on
-// session_start (no schema bump). Per D127 the (canonical_url,
+// session_start (no schema bump). The (canonical_url,
 // name) pair uniquely determines the fingerprint hex, so tuple
 // dedup is information-equivalent to fingerprint dedup.
 //
@@ -408,7 +408,7 @@ func (w *Writer) InsertEvent(
 	if tokensCacheCreation != nil {
 		cacheCreation = *tokensCacheCreation
 	}
-	// Phase 7 Step 2 (D149): sensor mints the event UUID and ships
+	// The sensor mints the event UUID and ships
 	// it in payload.id (string form). NULLIF + COALESCE: empty
 	// string → NULL → DB-side gen_random_uuid() default kicks in
 	// (legacy callers without sensor-supplied id keep working). ON
@@ -439,19 +439,19 @@ func (w *Writer) InsertEvent(
 // InsertEventContent inserts prompt capture content into event_content.
 // Called only when event.HasContent is true.
 //
-// Phase 4 polish: “Input“ carries the embedding request's “input“
+// “Input“ carries the embedding request's “input“
 // parameter (string or list of strings) for “event_type=embeddings“
 // events. Chat events leave Input null and populate Messages instead.
 // The dashboard branches on event_type to render the appropriate
 // viewer (PromptViewer for chat, EmbeddingsContentViewer for
 // embeddings). See migration 000016_event_content_input.up.sql.
 //
-// D150 (Phase 7 Step 3.b): adds “ToolInput“ + “ToolOutput“
+// Adds “ToolInput“ + “ToolOutput“
 // keys for the tool-capture migration. mcp_tool_call /
 // mcp_prompt_get / LLM-side tool_call route arguments + results
-// through these dedicated columns instead of the LLM-prompt-style
-// repurposing of Messages/Response that the pre-Step-3.b overflow
-// path used. See migration 000021_event_content_tool_capture.
+// through these dedicated columns instead of repurposing the
+// LLM-prompt-style Messages/Response slots. See migration
+// 000021_event_content_tool_capture.
 func (w *Writer) InsertEventContent(ctx context.Context, eventID, sessionID string, content json.RawMessage) error {
 	// Parse the content JSON to extract fields
 	var c struct {
@@ -672,7 +672,7 @@ func (w *Writer) BumpParentLastSeen(
 	}
 }
 
-// ReviveOrCreateSession is the D106 lazy-create path. Called by every
+// ReviveOrCreateSession is the lazy-create path. Called by every
 // non-session_start handler before its normal side effects.
 //
 // Semantics:
@@ -830,7 +830,7 @@ func (w *Writer) BackfillSubAgentLinkage(
 
 // SessionExists reports whether a session row with the given session_id
 // is present in the sessions table. Used by HandleSessionStart's
-// parent-stub branch (D126 § 3) to decide whether the parent of an
+// parent-stub branch to decide whether the parent of an
 // incoming sub-agent session_start is already in the DB or needs a
 // stub INSERT before the child's UpsertSession runs.
 //
@@ -851,8 +851,8 @@ func (w *Writer) SessionExists(ctx context.Context, sessionID string) (bool, err
 	return true, nil
 }
 
-// UpsertParentStub is the D126 § 3 forward-reference soft-link
-// extension to D106's lazy-create primitive. Triggered when a
+// UpsertParentStub is the forward-reference soft-link extension
+// to the lazy-create primitive. Triggered when a
 // sub-agent “session_start“ arrives with a “parent_session_id“
 // that doesn't yet exist in “sessions“ — without a row at the
 // parent end, the child's INSERT fails the new

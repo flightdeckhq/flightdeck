@@ -3,7 +3,7 @@
 The helper exists to strip JSON-Schema-2020-12-invalid keys from each
 CrewAI tool's ``args_schema`` Pydantic class so OpenAI / Anthropic
 APIs accept the resulting tool-call payload. Tests cover the cleaning
-matrix per Step 6.5 spec plus the agent-level integration shape.
+matrix plus the agent-level integration shape.
 
 No real crewai or mcpadapt imports needed — the module's public API
 operates on duck-typed ``agent.tools[].args_schema`` instances; tests
@@ -219,7 +219,7 @@ def test_fixup_cleans_schema_in_place_on_a_single_tool_agent() -> None:
     schema_cls = _make_pydantic_class_with_bug("echo")
     agent = _make_agent(schema_cls)
 
-    # Pre-fixup the schema is the broken shape.
+    # Before the fixup runs, the schema is the broken shape.
     raw = agent.tools[0].args_schema.model_json_schema()
     assert raw["properties"]["text"].get("anyOf") == []
     assert raw["properties"]["text"].get("enum") is None

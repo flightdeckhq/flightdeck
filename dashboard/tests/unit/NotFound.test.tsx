@@ -1,4 +1,4 @@
-// D146: tests for the catch-all 404. Asserts the standalone
+// Tests for the catch-all 404. Asserts the standalone
 // component renders title + back link, and that App's router
 // matches /mcp-policies (and other unmatched paths) to the
 // NotFound element.
@@ -9,7 +9,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 
 import { NotFound } from "@/pages/NotFound";
 
-describe("NotFound (D146 catch-all)", () => {
+describe("NotFound (catch-all)", () => {
   it("renders the title + back link", () => {
     render(
       <MemoryRouter>

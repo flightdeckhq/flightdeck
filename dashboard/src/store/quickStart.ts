@@ -1,4 +1,4 @@
-// D146: ephemeral session tracking for the MCP Protection Policy
+// Ephemeral session tracking for the MCP Protection Policy
 // quick-start template link. Per-scope so applying a template on
 // Global doesn't suppress the link on a flavor that still has zero
 // entries.

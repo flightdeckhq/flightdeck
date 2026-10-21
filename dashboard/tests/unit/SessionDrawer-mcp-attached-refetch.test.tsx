@@ -58,7 +58,7 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-describe("D140 SessionDrawer mcp_server_attached re-fetch trigger", () => {
+describe("SessionDrawer mcp_server_attached re-fetch trigger", () => {
   it("bumping revalidationKey forces useSession to re-fetch", async () => {
     const { rerender } = renderHook(
       ({ key }: { key: number }) => useSession("sess-1", undefined, key),

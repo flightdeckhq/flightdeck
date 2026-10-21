@@ -2,7 +2,7 @@
  * T77 — the run drawer (SessionDrawer) opens from all five entry
  * points.
  *
- * Phase 4 contract — the run drawer is reachable from:
+ * The run drawer is reachable from:
  *   1. a swimlane event circle (Fleet);
  *   2. a swimlane run-bracket glyph (Fleet);
  *   3. a row in the agent drawer's Runs tab;
@@ -34,7 +34,7 @@ test.describe("T77 — run drawer opens from 5 entry points", () => {
     // A regular click (no ``force``) — ``EventNode.tsx`` carries
     // ``pointerEvents: "none"`` on the icon glyph, so even when
     // dense swimlane circles overlap the click routes through to
-    // the circle div that owns the handler. Pre-fix the wrench
+    // the circle div that owns the handler. Guarded regression: the wrench
     // icon overlay stole the hit-test, which the older T77 worked
     // around with ``force: true``. The production fix makes the
     // workaround unnecessary; dropping it asserts the real shipped

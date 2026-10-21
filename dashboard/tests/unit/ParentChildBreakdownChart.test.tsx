@@ -6,7 +6,7 @@ import {
   pivotByParent,
 } from "@/components/analytics/ParentChildBreakdownChart";
 
-// D126 § 7.fix.L — ParentChildBreakdownChart suite. Covers the
+// ParentChildBreakdownChart suite. Covers the
 // per-parent stacked rendering, metric variants, empty data, the
 // (root) bucket label, the request parameter shape, and the
 // page-level TOPOLOGY override.

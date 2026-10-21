@@ -31,7 +31,7 @@ func main() {
 
 	// Load the model pricing table from pricing.yaml. Falls back to a
 	// small safety map on any load failure -- the service must not
-	// crash on a bad pricing file. See DECISIONS.md D102.
+	// crash on a bad pricing file.
 	store.LoadPricing()
 
 	// Postgres
@@ -43,7 +43,7 @@ func main() {
 	defer pool.Close()
 
 	s := store.New(pool)
-	// D133: ensure the empty blocklist global MCP policy exists
+	// Ensure the empty blocklist global MCP policy exists
 	// before serving traffic. Idempotent INSERT with retry on
 	// unique-violation handles parallel API instances on shared
 	// Postgres. Best-effort — a transient failure here doesn't

@@ -11,7 +11,7 @@ import {
 // endpoint brightens the matching line; rest opacity is 10%,
 // hover opacity 50%. Both themes per Rule 40c.3.
 
-// Tall viewport so all D126 fixture rows mount without
+// Tall viewport so all sub-agent fixture rows mount without
 // IntersectionObserver virtualization eviction (same pattern as
 // T28 / T29 / T30 / T36).
 test.use({ viewport: { width: 1280, height: 1800 } });
@@ -25,7 +25,7 @@ test.describe("T34 — Sub-agent time flow connectors", () => {
     // Widen the time range so the seeded crewai-* event timestamps
     // (started_offset_sec: -180s for the researcher) land inside
     // the swimlane's visible domain. The default 1m window omits
-    // them; 15m comfortably covers every D126 fixture.
+    // them; 15m comfortably covers every sub-agent fixture.
     await page.getByRole("button", { name: "1h", exact: true }).click();
     // bringSwimlaneRowIntoView below internally polls
     // (maxSteps=80, retrying scrollIntoViewIfNeeded between
@@ -151,8 +151,8 @@ test.describe("T34 — Sub-agent time flow connectors", () => {
     // with no <path> children. The design's "no overdraw" lock
     // applies to path count, not to the empty SVG container.
     //
-    // Pre-D115 this test used ``?flavor=e2e-ancient-agent`` as a
-    // URL pre-condition; post-D115 the ``flavor`` query param maps
+    // This test once used ``?flavor=e2e-ancient-agent`` as a
+    // URL pre-condition; now the ``flavor`` query param maps
     // to agent_id (UUID), so the URL-param path no longer narrows
     // the swimlane. Clicking the sidebar entry exercises the same
     // setFlavorFilter store action a real operator would trigger.

@@ -16,7 +16,7 @@ const (
 	agentsMaxLimit     = 100
 )
 
-// validAgentTypes is the D114 vocabulary whitelist for the
+// validAgentTypes is the locked agent_type vocabulary for the
 // “agent_type“ filter. Matches the CHECK constraint on the agents
 // table (“000015_agent_identity_model.up.sql“). Unknown values
 // return 400 rather than quietly matching nothing, because the
@@ -63,7 +63,7 @@ var validAgentSorts = map[string]bool{
 // AgentsListHandler handles GET /v1/agents.
 //
 // @Summary      List agents with filters, search, sort, and pagination
-// @Description  Returns agents matching the supplied filters. Multi-value filters (state, agent_type, client_type, hostname, user, os, orchestration) accept comma-separated values and repeated query params; values within a dimension are OR, values across dimensions are AND. “search“ is a case-insensitive substring match against “agent_name“ and “hostname“. “updated_since“ filters on “last_seen_at >= ts“. State is computed via LATERAL subquery against the most-recent session. Each row also carries D126 sub-agent rollup fields (“agent_role“ — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; “topology“ — one of “lone“ / “parent“ / “child“, computed from whether this agent's sessions carry a parent_session_id and whether they are referenced as a parent by other agents). Pagination defaults to 25/page, max 100.
+// @Description  Returns agents matching the supplied filters. Multi-value filters (state, agent_type, client_type, hostname, user, os, orchestration) accept comma-separated values and repeated query params; values within a dimension are OR, values across dimensions are AND. “search“ is a case-insensitive substring match against “agent_name“ and “hostname“. “updated_since“ filters on “last_seen_at >= ts“. State is computed via LATERAL subquery against the most-recent session. Each row also carries sub-agent rollup fields (“agent_role“ — null for root agents, the framework-supplied role string when this agent represents a sub-agent identity; “topology“ — one of “lone“ / “parent“ / “child“, computed from whether this agent's sessions carry a parent_session_id and whether they are referenced as a parent by other agents). Pagination defaults to 25/page, max 100.
 // @Tags         agents
 // @Produce      json
 // @Param        agent_type      query     string  false  "Filter by agent_type (repeatable/comma: coding, production)"

@@ -1,7 +1,7 @@
 """MCP Protection Policy -- CrewAI transitive coverage via mcpadapt.
 
 CrewAI integrates MCP through the ``mcpadapt`` adapter. The sensor's
-``ClientSession`` patch (D117) is on the canonical seam, so CrewAI's
+``ClientSession`` patch is on the canonical seam, so CrewAI's
 MCP usage flows through the same call_tool wrapper that emits
 POLICY_MCP_WARN / POLICY_MCP_BLOCK events for the direct mcp SDK
 case. This demo provisions a flavor warn policy and runs a real
@@ -42,7 +42,7 @@ for _modname in ("crewai", "mcpadapt.core", "mcpadapt.crewai_adapter"):
         print("SKIP: pip install crewai mcpadapt to run this example")
         sys.exit(2)
 
-from _helpers import (
+from _helpers import (  # noqa: E402  (after the optional-dependency guard above)
     API_URL,
     fetch_events_for_session,
     init_sensor,
@@ -51,7 +51,7 @@ from _helpers import (
     wait_for_dev_stack,
 )
 
-import flightdeck_sensor
+import flightdeck_sensor  # noqa: E402  (after the optional-dependency guard above)
 
 
 def _admin_headers(content_type: str | None = None) -> dict[str, str]:
@@ -132,6 +132,7 @@ def run_demo() -> int:
         from flightdeck_sensor.compat.crewai_mcp import (
             crewai_mcp_schema_fixup,
         )
+
         crewai_mcp_schema_fixup(agent)
         task = Task(
             description=(

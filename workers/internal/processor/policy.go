@@ -73,7 +73,7 @@ func (pe *PolicyEvaluator) ForgetSession(sessionID string) {
 // getPolicy returns the effective policy for a session, using cache when possible.
 // Lookup order: session scope -> flavor scope -> org scope -> nil (no policy).
 func (pe *PolicyEvaluator) getPolicy(ctx context.Context, flavor, sessionID string) *CachedPolicy {
-	// Check cache first. Phase 4.5 M-25: an expired entry on a
+	// Check cache first. An expired entry on a
 	// higher-priority scope (session > flavor > org) used to leave
 	// the entry in the map, fall through to the next scope, and
 	// rebuild only the matched scope's key — leaving the expired
@@ -163,7 +163,7 @@ func (pe *PolicyEvaluator) cachePolicy(key string, p *CachedPolicy) {
 // can both observe ``false`` and both fire. Use [CheckAndMarkFired]
 // for atomic check-and-set. Retained as exported only for tests
 // that legitimately need to inspect or seed firing state without
-// triggering the atomic semantics. Phase 4.5 M-12.
+// triggering the atomic semantics.
 func (pe *PolicyEvaluator) HasFired(sessionID, directiveType string) bool {
 	pe.firedMu.RLock()
 	defer pe.firedMu.RUnlock()
@@ -177,7 +177,7 @@ func (pe *PolicyEvaluator) HasFired(sessionID, directiveType string) bool {
 //
 // Deprecated for production use. Production code MUST use
 // [CheckAndMarkFired] for atomic check-and-set. Retained only for
-// tests that need to seed firing state. Phase 4.5 M-12.
+// tests that need to seed firing state.
 func (pe *PolicyEvaluator) MarkFired(sessionID, directiveType string) {
 	pe.firedMu.Lock()
 	defer pe.firedMu.Unlock()
@@ -224,7 +224,7 @@ func (pe *PolicyEvaluator) Evaluate(ctx context.Context, sessionID string) error
 	}
 
 	limit := *policy.TokenLimit
-	// Phase 4.5 L-12: Multiply before divide preserves precision but
+	// Multiply before divide preserves precision but
 	// is safe from overflow at any realistic input. tokensUsed is
 	// the per-session running total (int from sessions table), and
 	// int64.Max is ~9.2e18, so tokensUsed would need to exceed

@@ -8,7 +8,7 @@ import { test, expect } from "@playwright/test";
  *
  *   1. AgentStatusBadge sits inside its label strip (no
  *      overflow past the strip's right edge / into the timeline
- *      panel area). The pre-fix ``ml-auto`` flex layout let a
+ *      panel area). A plain ``ml-auto`` flex layout lets a
  *      wide topology pill push the badge past the boundary; the
  *      fix anchors the badge ``position: absolute; right: 0``
  *      with a solid ``background: inherit`` so it always reads
@@ -194,7 +194,7 @@ test.describe("T103 — swimlane right-edge clearance", () => {
     // agnostic — every run-bracket tooltip uses fixed
     // positioning anchored to the bracket's viewport rect, so
     // hovering ANY bracket on ANY row verifies the same
-    // contract. Pre-fix this test locked the assertion to a
+    // contract. An earlier version of this test locked the assertion to a
     // specific row with two overlapping runs (concurrent-runs
     // fixture) to reach the bottom-anchored case; that case is
     // the original bug shape, but the position-fixed fix
@@ -249,7 +249,7 @@ test.describe("T103 — swimlane right-edge clearance", () => {
       // Tooltip must render with ``position: fixed`` so it
       // escapes the timeline panel's ``overflow: hidden`` clip.
       // The fixed positioning is what lets it extend visually
-      // past the 48 px row height. Pre-fix the tooltip was
+      // past the 48 px row height. Guarded regression: the tooltip was
       // ``position: absolute`` inside the panel and the overhang
       // got clipped.
       .toBe("fixed");

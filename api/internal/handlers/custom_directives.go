@@ -42,7 +42,7 @@ type CustomDirectivesListResponse struct {
 //
 // Mounted behind ``auth.Middleware`` in ``server.New`` -- requests
 // without a valid bearer token are rejected with 401 before this
-// handler is called. See DECISIONS.md D073 for the auth stopgap.
+// handler is called.
 //
 // @Summary      Sync custom directive fingerprints
 // @Description  Checks which directive fingerprints are registered. Returns fingerprints not found. Requires bearer token.
@@ -99,7 +99,7 @@ func SyncDirectivesHandler(s store.Querier) http.HandlerFunc {
 //
 // Mounted behind ``auth.Middleware`` in ``server.New`` -- requests
 // without a valid bearer token are rejected with 401 before this
-// handler is called. See DECISIONS.md D073 for the auth stopgap.
+// handler is called.
 //
 // @Summary      Register custom directives
 // @Description  Registers custom directive definitions. Updates last_seen_at on conflict. Requires bearer token.

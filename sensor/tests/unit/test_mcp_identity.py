@@ -7,7 +7,7 @@ Node twin (``plugin/tests/mcp_identity.test.mjs``) loads the same
 fixture; drift between the two surfaces fails one job loudly in CI.
 
 Plus standalone tests for edge cases not in fixtures: empty inputs,
-Unicode in name, type errors. See DECISIONS.md D127.
+Unicode in name, type errors.
 """
 
 from __future__ import annotations

@@ -1,5 +1,5 @@
 /**
- * T111 — D163 table-consistency canary.
+ * T111 — table-consistency canary.
  *
  * The Agents table and the Events table run through the shared
  * primitive at ``dashboard/src/components/ui/table.tsx``. This
@@ -7,7 +7,7 @@
  * row class signature so a future drift (per-page inline styles
  * sneaking back in, or a refactor that bypasses the primitive)
  * surfaces immediately. Also locks the TopologyCell rounded-pill
- * class signature on /agents so the D163 pill restyle stays
+ * class signature on /agents so the pill restyle stays
  * structurally identifiable.
  *
  * Under both Playwright theme projects per Rule 40c.3 — the
@@ -113,10 +113,10 @@ test.describe("T111 — Agents + Events tables share the primitive signature", (
     await expectClasses(row, INTERACTIVE_ROW_CLASSES);
   });
 
-  test("the topology column pill on /agents carries the D163 rounded-pill class signature", async ({
+  test("the topology column pill on /agents carries the rounded-pill class signature", async ({
     page,
   }) => {
-    // The TopologyCell restyle (D163 step) replaced inline-style
+    // The TopologyCell restyle replaced inline-style
     // text with a tinted rounded pill across all three modes
     // (lone / child / parent). Any of the three pills is
     // sufficient — they share the same PILL_CLASSES base.

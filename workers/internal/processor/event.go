@@ -104,13 +104,12 @@ func stripExtraContent(extra []byte) []byte {
 // This is an exported helper so it can be unit-tested directly without
 // needing to wire a mock writer through the Processor.
 func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
-	// Pre-Phase-4 this function only produced payload for
-	// directive_result events. Phase 4 opens it up to any event that
+	// This function produces payload for any event that
 	// carries structured extras -- llm_error events populate
-	// ``error`` with the Phase 4 taxonomy object, streaming post_call
+	// ``error`` with the error taxonomy object, streaming post_call
 	// events populate ``streaming`` with TTFT + chunk stats. The
 	// per-field guards below skip any field the event doesn't carry,
-	// so non-directive events that also have no Phase 4 extras
+	// so non-directive events that also have no structured extras
 	// short-circuit out via ``if len(extra) == 0`` at the bottom and
 	// the payload column stays NULL -- matching the prior behaviour
 	// for those events exactly.
@@ -133,7 +132,7 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 		}
 	}
 	if len(e.Error) > 0 {
-		// ``Error`` is json.RawMessage (Phase 4) to carry either the
+		// ``Error`` is json.RawMessage to carry either the
 		// legacy directive_result string OR the structured llm_error
 		// object. Unmarshal back to an interface so the encoded
 		// payload is one document.
@@ -162,7 +161,7 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 		}
 	}
 	if len(e.Streaming) > 0 {
-		// Phase 4 streaming sub-object. Same shape handling as Error
+		// Streaming sub-object. Same shape handling as Error
 		// above: decode + re-attach so the final payload is a single
 		// JSON document.
 		var v interface{}
@@ -194,12 +193,12 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if e.IntendedModel != "" {
 		extra["intended_model"] = e.IntendedModel
 	}
-	// Phase 7 Step 2 (D148/D149): operator-actionable enrichment.
+	// Operator-actionable enrichment.
 	// Project policy_decision (shared block on the 5 policy event
 	// types) + originating_event_id (chain) + originating_call_context
 	// (MCP-policy events) through to events.payload unchanged. Always
 	// included when present; capture_prompts does not gate state
-	// metadata per Phase 7 Q2.
+	// metadata.
 	if len(e.PolicyDecision) > 0 {
 		var v interface{}
 		if err := json.Unmarshal(e.PolicyDecision, &v); err == nil {
@@ -212,7 +211,7 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if e.OriginatingCallContext != "" {
 		extra["originating_call_context"] = e.OriginatingCallContext
 	}
-	// Phase 7 Step 3 (D151): MCP discovery item_names. Always
+	// MCP discovery item_names. Always
 	// project (possibly empty []) on the three list event types
 	// so the dashboard's drift-detection workflow can compare
 	// inventories week-over-week without a separate query.
@@ -222,7 +221,7 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if e.Truncated {
 		extra["truncated"] = true
 	}
-	// Phase 7 Step 4 (D152): session lifecycle + MCP server attach
+	// Session lifecycle + MCP server attach
 	// enrichment passthrough. Always project when present.
 	if e.SensorVersion != "" {
 		extra["sensor_version"] = e.SensorVersion
@@ -285,7 +284,7 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if e.Terminal != nil {
 		extra["terminal"] = *e.Terminal
 	}
-	// Phase 5 MCP fields. Project unconditionally when the sensor sent
+	// MCP fields. Project unconditionally when the sensor sent
 	// them — only MCP_* events carry these on the wire. The dashboard's
 	// MCPEventDetails component reads them directly from events.payload.
 	if e.ServerName != "" {
@@ -321,7 +320,7 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 			extra["rendered"] = v
 		}
 	}
-	// D131 — MCP Protection Policy event fields. Projects onto
+	// MCP Protection Policy event fields. Projects onto
 	// events.payload for policy_mcp_warn / policy_mcp_block /
 	// mcp_server_name_changed events; non-policy events skip via
 	// the omitempty guards because the sensor doesn't populate
@@ -359,13 +358,13 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if e.NameNew != "" {
 		extra["name_new"] = e.NameNew
 	}
-	// D139 — mcp_policy_user_remembered field (the others overlap
+	// mcp_policy_user_remembered field (the others overlap
 	// with the policy_mcp_warn / policy_mcp_block / name_changed
 	// events handled above).
 	if e.DecidedAt != "" {
 		extra["decided_at"] = e.DecidedAt
 	}
-	// Phase 5 MCP_RESOURCE_READ content. The sensor's lean MCP payload
+	// MCP_RESOURCE_READ content. The sensor's lean MCP payload
 	// drops the ``has_content`` flag entirely, so the existing
 	// HasContent gate (which routes LLM PromptContent into the
 	// event_content table) never fires for MCP. Instead the MCP wrapper
@@ -382,14 +381,14 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 		}
 	}
 
-	// D126 — sub-agent observability fields. Project per-event when
+	// Sub-agent observability fields. Project per-event when
 	// present so the dashboard reads them from events.payload (same
 	// inline-render path the MCP family uses). The wider sub-agent
 	// linkage (parent_session_id, agent_role) lands in the sessions
 	// table via UpsertSession; persisting them into events.payload
 	// too lets the live-feed envelope and the per-event drilldown
 	// surface the relationship without a sessions-table join. Small
-	// bodies route inline here per D126 § 6's v1 contract; the 8 KiB
+	// bodies route inline here; the 8 KiB
 	// → event_content overflow path is deferred.
 	if e.ParentSessionID != "" {
 		extra["parent_session_id"] = e.ParentSessionID
@@ -413,8 +412,8 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 }
 
 // subagentMessageToMap projects a typed SubagentMessage into the
-// shape BuildEventExtra writes into events.payload per D126 § 6 +
-// Rule 20. Two shapes land here:
+// shape BuildEventExtra writes into events.payload (Rule 20 keeps
+// the body verbatim). Two shapes land here:
 //
 //   * Inline (body ≤ 8 KiB): ``{body, captured_at}`` — body is
 //     decoded back into the framework's source shape (string /
@@ -451,7 +450,7 @@ func subagentMessageToMap(m *consumer.SubagentMessage) map[string]interface{} {
 	return out
 }
 
-// isMCPEventType reports whether ``eventType`` is one of the six Phase 5
+// isMCPEventType reports whether ``eventType`` is one of the six
 // MCP event types. Used by BuildEventExtra to gate the MCP-content
 // projection: ``content`` on MCP_RESOURCE_READ goes inline into
 // events.payload (small, render-inline), whereas ``content`` on LLM
@@ -557,16 +556,16 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 			return err
 		}
 	case "embeddings":
-		// Phase 4 addition. Embeddings are a post_call-shaped event
+		// Embeddings are a post_call-shaped event
 		// with no completion tokens; the ingestion layer validated
 		// the schema so we route through the same last-seen + tokens
 		// update path. Policy does not evaluate (separate budget
-		// surface if ever added; out of scope for Phase 4).
+		// surface if ever added).
 		if err := p.session.HandlePostCall(ctx, e); err != nil {
 			return err
 		}
 	case "llm_error":
-		// Phase 4 addition. Structured LLM API error. Route through
+		// Structured LLM API error. Route through
 		// the same last-seen update path so the session's freshness
 		// advances on failed calls too -- otherwise a session that
 		// only ever produces errors would age to stale.
@@ -588,7 +587,7 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 		// evaluation outcome; the worker would otherwise emit a
 		// duplicate directive.
 		//
-		// Step 4 (D131): policy_mcp_warn / policy_mcp_block ride the
+		// policy_mcp_warn / policy_mcp_block ride the
 		// same routing — they're the MCP Protection Policy's
 		// equivalent of the LLM-budget enforcement events. The lean
 		// payload (server_url / server_name / fingerprint / tool_name
@@ -599,7 +598,7 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 			return err
 		}
 	case "mcp_server_attached":
-		// D140 step 6.6 A2 — UPSERT sessions.context.mcp_servers
+		// UPSERT sessions.context.mcp_servers
 		// from the event payload so the dashboard's SessionDrawer
 		// panel populates live (within ~2-3 s of attach) for
 		// in-flight sessions. HandlePostCall advances last_seen_at;
@@ -615,8 +614,8 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 		"mcp_resource_list", "mcp_resource_read",
 		"mcp_prompt_list", "mcp_prompt_get",
 		"mcp_server_name_changed":
-		// Phase 5 MCP events. Route through HandlePostCall: the lean
-		// MCP payload (override 2) carries no token deltas (TokensTotal
+		// MCP events. Route through HandlePostCall: the lean
+		// MCP payload carries no token deltas (TokensTotal
 		// is nil) and no model field, so HandlePostCall's branch logic
 		// short-circuits the token / model UPDATEs and just advances
 		// last_seen_at via the no-delta else branch. Policy evaluation
@@ -670,7 +669,7 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 			}
 		}
 	}
-	// Phase 7 Step 4 (D152): worker-side enrichment for session_end
+	// Worker-side enrichment for session_end
 	// (policy_actions_summary + last_event_id) and
 	// mcp_server_name_changed (policy_entries_orphaned). Computed
 	// here because the data lives in tables the sensor can't query
@@ -682,7 +681,7 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	case "mcp_server_name_changed":
 		extra = p.enrichServerNameChanged(ctx, e, extra)
 	}
-	// Phase 7 Step 2 (D149): pass the sensor-minted event id (from
+	// Pass the sensor-minted event id (from
 	// payload.id) into InsertEvent. Empty string → DB-side
 	// gen_random_uuid() fallback via COALESCE.
 	// Keep the persisted has_content flag consistent with the capture
@@ -736,7 +735,7 @@ func (p *Processor) StartReconciler(ctx context.Context, interval, orphanTimeout
 	p.session.StartReconciler(ctx, interval, orphanTimeout)
 }
 
-// Phase 7 Step 4 (D152): worker-side enrichment for session_end +
+// Worker-side enrichment for session_end +
 // mcp_server_name_changed. Both helpers run after BuildEventExtra
 // produces the base extra blob and before InsertEvent persists.
 // Failures log + return the unmodified extra rather than block

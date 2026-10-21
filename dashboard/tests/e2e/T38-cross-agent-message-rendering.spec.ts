@@ -4,7 +4,7 @@ import { waitForInvestigateReady } from "./_fixtures";
 // T38 — Cross-agent message rendering. Drawer Sub-agents tab's
 // per-child MESSAGES preview: INPUT preview (200 chars), OUTPUT
 // preview, click-to-expand fetches via /v1/events/{id}/content for
-// the >8 KiB overflow case (D126 § 6 contract). capture_prompts=
+// the >8 KiB overflow case. capture_prompts=
 // false renders the Rule 21 disabled state.
 test.describe("T38 — Cross-agent message rendering", () => {
   test("inline incoming + outgoing messages render under SPAWNED FROM (child view)", async ({
@@ -24,7 +24,7 @@ test.describe("T38 — Cross-agent message rendering", () => {
     await page.locator('[data-testid="drawer-tab-sub-agents"]').click();
 
     const drawer = page.locator('[data-testid="session-drawer"]');
-    // Per the D126 UX revision (DECISIONS.md "UX revision 2026-05-04"),
+    // Per the Sub-agents tab UX contract,
     // own-side INPUT/OUTPUT messages live INSIDE the chevron-
     // expanded body of the SPAWNED FROM card alongside the metrics
     // summary + mini-timeline. Expand the card first.

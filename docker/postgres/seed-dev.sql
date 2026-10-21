@@ -1,6 +1,6 @@
 -- Dev seed data: agents, sessions, and events spread across the
--- last 14 days. Rewritten for the v0.4.0 Phase 1 agent identity
--- model (D115); run AFTER migrations have applied the full schema:
+-- last 14 days. Targets the agent identity model; run AFTER
+-- migrations have applied the full schema:
 --   docker exec -i docker-postgres-1 psql -U flightdeck flightdeck < docker/postgres/seed-dev.sql
 --
 -- Every agents.agent_id is a deterministic name-based UUID that

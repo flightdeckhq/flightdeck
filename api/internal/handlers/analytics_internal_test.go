@@ -15,7 +15,7 @@ import (
 // TestSplitGroupBy_SinglePassThrough is the regression guard for
 // the single-dim wire-shape promise: any group_by value with no
 // comma must return a single-element slice byte-identical to the
-// input. If this drifts, every pre-D126 client breaks at once
+// input. If this drifts, every single-dimension client breaks at once
 // because the handler's primary-axis lookup walks parts[0].
 func TestSplitGroupBy_SinglePassThrough(t *testing.T) {
 	for _, in := range []string{"flavor", "model", "agent_role", "parent_session_id"} {

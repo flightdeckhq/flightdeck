@@ -1,4 +1,4 @@
-"""Phase 7 Step 2 (D148) — token-budget policy event enrichment tests.
+"""Token-budget policy event enrichment tests.
 
 Confirms that policy_warn / policy_block emissions from the
 interceptor's _pre_call carry the shared policy_decision block,
@@ -97,8 +97,8 @@ def test_policy_block_carries_shared_decision_block() -> None:
     assert pd["scope"] == "flavor:e2e-test"
     assert pd["decision"] == "block"
     assert "block threshold" in pd["reason"]
-    # Legacy fields still present for backwards compat with the
-    # current dashboard renderers (Step 6 will consolidate).
+    # Legacy fields stay until the dashboard reads only the shared
+    # policy_decision block.
     assert payload["intended_model"] == "claude-opus-4-7"
     assert payload["source"] == "server"
 

@@ -1,7 +1,7 @@
 import { test, expect, type Page } from "@playwright/test";
 import { CODING_AGENT, waitForInvestigateReady } from "./_fixtures";
 
-// T14 — Phase 4 polish S-UI-1: embeddings event renders with rich
+// T14 — embeddings event renders with rich
 // drawer fields. The fresh-active role on the coding agent is
 // seeded with an embeddings event (canonical.json + seed.py
 // phase4_extras: ["embeddings", "streaming_post_call"]). T14
@@ -56,7 +56,7 @@ test.describe("T14 — Embeddings event renders in drawer", () => {
         expect(rowText).toContain("text-embedding-3-small");
         expect(rowText).toContain("tok in");
 
-        // Phase 4 polish S-EMBED-7: with the seed fixture seeding
+        // With the seed fixture seeding
         // three embeddings events per fresh-active session (no
         // content + single-string captured + list captured), the
         // drawer mounts at least one of each EmbeddingsContentViewer

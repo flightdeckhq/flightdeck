@@ -303,7 +303,7 @@ def classify_exception(
 # raising. Provider SDKs expose request IDs / status codes under varying
 # attribute names; these helpers try the common ones in a safe order.
 #
-# M-9 note: every helper below uses bare ``except Exception:`` blocks
+# Every helper below uses bare ``except Exception:`` blocks
 # intentionally. The classifier is defence-in-depth — provider SDKs
 # evolve their attribute shapes between releases (e.g. a future
 # anthropic SDK may rename ``response.headers`` to a different
@@ -455,7 +455,7 @@ class ErrorPayload:
     partial_tokens_input: int | None = None
     partial_tokens_output: int | None = None
     abort_reason: str | None = None
-    # N-2: mutable default by design. ErrorPayload is intentionally
+    # Mutable default by design. ErrorPayload is intentionally
     # NOT frozen — callers (interceptor / GuardedStream / async
     # variants) construct it once and append type-specific extras
     # (e.g. abort_reason for stream aborts) before serialisation.

@@ -227,7 +227,7 @@ describe("LiveFeed", () => {
 });
 
 // --------------------------------------------------------------------
-// D122 — MCP discovery events hide-by-default in the live feed.
+// MCP discovery events hide-by-default in the live feed.
 //
 // The feed receives the full upstream event stream and applies the
 // discovery filter BEFORE the FEED_MAX_EVENTS cap so that the cap
@@ -236,7 +236,7 @@ describe("LiveFeed", () => {
 // counts shown to the operator are visible-only.
 // --------------------------------------------------------------------
 
-describe("LiveFeed — D122 discovery hide", () => {
+describe("LiveFeed — discovery hide", () => {
   const mixedEvents: FeedEvent[] = [
     makeFeedEvent({ id: "e1", event_type: "session_start", model: null, tokens_total: null, latency_ms: null }, 1000),
     makeFeedEvent({ id: "e2", event_type: "mcp_tool_list", model: null, tokens_total: null, latency_ms: null }, 2000),

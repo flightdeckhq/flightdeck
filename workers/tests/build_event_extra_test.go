@@ -8,8 +8,8 @@ import (
 	"github.com/flightdeckhq/flightdeck/workers/internal/processor"
 )
 
-// Phase 4: BuildEventExtra used to short-circuit for every event type
-// except directive_result. That behaviour masked the Phase 4 LLM_ERROR
+// BuildEventExtra used to short-circuit for every event type
+// except directive_result. That behaviour masked the LLM_ERROR
 // and streaming sub-objects because neither is a directive event. The
 // gate is now lifted; the tests below pin the intended behaviour so a
 // future refactor cannot regress it silently.
@@ -95,9 +95,9 @@ func TestBuildEventExtra_DirectiveResultStillWorks(t *testing.T) {
 
 func TestBuildEventExtra_NoExtras_ReturnsNil(t *testing.T) {
 	// Most event types (session_start, post_call without streaming,
-	// tool_call, pre_call, heartbeat) carry no Phase 4 extras. For
+	// tool_call, pre_call, heartbeat) carry no structured extras. For
 	// those the function must still short-circuit to nil so the
-	// payload column stays NULL -- matching pre-Phase-4 behaviour.
+	// payload column stays NULL -- the established behaviour.
 	e := consumer.EventPayload{
 		SessionID: "x",
 		EventType: "post_call",

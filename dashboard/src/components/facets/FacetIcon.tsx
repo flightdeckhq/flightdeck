@@ -31,7 +31,7 @@ import { cn } from "@/lib/utils";
 /**
  * Tailwind classes for the small state-dot indicator. Duplicated by
  * the row-state dot in ``Investigate.tsx`` and ``AgentTable.tsx``;
- * consolidation is a future polish step, not a phase-2 blocker.
+ * consolidation is a future polish step.
  */
 const STATE_COLORS: Record<string, string> = {
   active: "bg-status-active",

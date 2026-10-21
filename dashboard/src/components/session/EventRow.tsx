@@ -37,7 +37,7 @@ import { MCPEventDetails, isMCPEvent } from "./MCPEventDetails";
  * dropped the colour pills, streaming badges, and provider logos,
  * which read as a degraded second-class rendering. Sharing the
  * exact same row component closes that gap and means future row-
- * shape changes (Phase 4 polish, new event types, etc.) land in
+ * shape changes (new event types, etc.) land in
  * both places without manual sync.
  */
 export interface EventRowProps {
@@ -67,7 +67,7 @@ export function EventRow({
         style={{ borderBottom: "1px solid var(--border-subtle)" }}
         onClick={() => onToggleExpand(event.id)}
         // Generic ``event-row`` testid stays for the existing E2E
-        // suite. New per-type testids (Phase 4 polish) pin a
+        // suite. New per-type testids pin a
         // specific shape so T14/T15/T16 can locate exactly the
         // row they assert against — e.g. ``embeddings-event-row-
         // <id>``. Type-specific id sits alongside the generic via
@@ -157,7 +157,7 @@ export function EventRow({
 }
 
 /**
- * Phase 5 — small inline error indicator rendered between the badge
+ * Small inline error indicator rendered between the badge
  * and the detail text on MCP event rows whose ``payload.error`` is
  * populated. Without this, an operator scanning the event feed cannot
  * distinguish a successful ``mcp_tool_call`` from a failed one
@@ -199,7 +199,7 @@ export function MCPErrorIndicator({ event }: { event: AgentEvent }) {
 }
 
 /**
- * Phase 4 — inline ``STREAM`` / ``ABORTED`` pill rendered alongside
+ * Inline ``STREAM`` / ``ABORTED`` pill rendered alongside
  * the row's detail text for any post_call event whose payload
  * carries the streaming sub-object. ``STREAM`` for completed
  * streams; ``ABORTED`` (red) when ``final_outcome === "aborted"``.
@@ -252,7 +252,7 @@ export function StreamingPill({ event }: { event: AgentEvent }) {
  * the row. Renders the standard summary rows + type-specific
  * details (errors, policy events, embeddings content, MCP details)
  * + the raw payload JSON. Same component the SessionDrawer's
- * Timeline tab has used since Phase 4.
+ * Timeline tab uses.
  */
 export function ExpandedEvent({
   event,

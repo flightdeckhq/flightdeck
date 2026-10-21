@@ -1,6 +1,6 @@
-// Unified Policies page (D146). Token Budget and MCP Protection
+// Unified Policies page. Token Budget and MCP Protection
 // live as sub-tabs under one route. Token Budget is the default
-// (preserves pre-D146 behavior where /policies has always meant
+// (preserves the long-standing behavior where /policies has always meant
 // the token-budget surface). ``?policy=mcp`` deep-links the MCP
 // Protection sub-tab; the param is dropped on Token Budget so the
 // default URL stays clean.
@@ -48,7 +48,7 @@ export function Policies() {
       setSearchParams({ [POLICY_TAB_PARAM]: MCP_PROTECTION_VALUE });
     } else {
       // Drop the param entirely on Token Budget — the default URL
-      // shape stays clean (D146 / Q3 of step 6.8 plan readback).
+      // shape stays clean.
       setSearchParams({});
     }
   }

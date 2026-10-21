@@ -26,10 +26,10 @@ import { useAnalytics } from "@/hooks/useAnalytics";
 import type { AnalyticsParams, AnalyticsSeries } from "@/lib/types";
 
 /**
- * D126 § 7.fix.I — per-parent stacked bar chart. Each bar
+ * Per-parent stacked bar chart. Each bar
  * represents one parent session; each stacked segment one child
- * role. Driven by the 6.4 ``group_by=parent_session_id,agent_role``
- * two-dim contract: the API returns one series per parent, with
+ * role. Driven by the ``group_by=parent_session_id,agent_role``
+ * two-dimension contract: the API returns one series per parent, with
  * each series carrying per-DataPoint breakdowns by role.
  *
  * Metric variants supported via the inline picker:
@@ -41,7 +41,7 @@ import type { AnalyticsParams, AnalyticsSeries } from "@/lib/types";
  *     between parent start and first child start.
  *
  * The "error-rate" metric mentioned in the original design doc is
- * not yet a server-side analytics metric (D126's locked metric
+ * not yet a server-side analytics metric (the locked metric
  * list does not include it); when it lands the picker gains a
  * fourth option without a chart-shape change.
  *
@@ -97,7 +97,7 @@ export function ParentChildBreakdownChart({
   from?: string;
   to?: string;
   filterProvider?: string | null;
-  /** D126 § 7.fix.J — page-level "Sub-agent activity" facet. When
+  /** Page-level "Sub-agent activity" facet. When
    *  either is set, overrides the chart's default
    *  ``filter_is_sub_agent=true`` so the operator's facet choice
    *  drives the filter rather than a hardcoded default. */

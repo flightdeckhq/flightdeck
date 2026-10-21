@@ -306,9 +306,9 @@ export function resolveConfig(env = process.env) {
  *   2. process.env.ANTHROPIC_CLAUDE_SESSION_ID
  *   3. Marker file cache keyed on Claude Code's native session id --
  *      ``hookEvent.session_id``, else ``$CLAUDE_CODE_SESSION_ID``
- *      from the hook environment (populated by step 4 on the first
- *      hook of this invocation; read verbatim by every subsequent hook
- *      in the same run)
+ *      from the hook environment (populated by the fresh-uuid fallback
+ *      on the first hook of this invocation; read verbatim by every
+ *      subsequent hook in the same run)
  *   4. Fresh uuid4 -- written to the hook-id-keyed marker file so
  *      steps 3 and 4 converge the moment the file lands
  *   5. Cwd-sha fallback (keys the marker on ``sha256(cwd)[:16]``

@@ -11,7 +11,7 @@ import {
 // T1 — Fleet renders the seeded fleet end-to-end. Canonical-pair
 // invariant is the regression guard: no row may show the
 // anomaly-producing client_type=flightdeck_sensor +
-// agent_type=coding pair (the pre-Phase-2 default that produced
+// agent_type=coding pair (a default that produced
 // phantom CODING sensors throughout the Fleet UI). The canonical
 // ALLOWED_PAIRS are: claude_code→coding, flightdeck_sensor→
 // production|coding-as-user-override. No seeded fixture uses the

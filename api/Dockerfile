@@ -14,8 +14,8 @@ COPY --from=builder /api /usr/local/bin/api
 # with a working cost-estimation table out of the box. Operators who
 # want to override list prices without rebuilding can either mount a
 # replacement file at /etc/flightdeck/pricing.yaml or set
-# FLIGHTDECK_PRICING_PATH to a different location. See DECISIONS.md
-# D102 and CONTRIBUTING.md ("Updating pricing data").
+# FLIGHTDECK_PRICING_PATH to a different location. See
+# CONTRIBUTING.md ("Updating pricing data").
 COPY pricing.yaml /etc/flightdeck/pricing.yaml
 RUN addgroup -S flightdeck && adduser -S flightdeck -G flightdeck
 USER flightdeck

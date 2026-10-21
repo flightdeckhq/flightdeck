@@ -96,7 +96,9 @@ def test_close_reason_filter_narrows_to_matching_session() -> None:
         close_reason="directive_shutdown",
     )
     sids = {s["session_id"] for s in resp["sessions"]}
-    assert match_sid in sids, f"directive_shutdown session missing from filtered result: {sids}"
+    assert match_sid in sids, (
+        f"directive_shutdown session missing from filtered result: {sids}"
+    )
     assert skip_sid not in sids, (
         f"normal_exit session leaked into directive_shutdown result: {sids}"
     )
@@ -351,7 +353,9 @@ def test_three_filter_and_composition() -> None:
         estimated_via="tiktoken",
     )
     sids = {s["session_id"] for s in resp["sessions"]}
-    assert match_sid in sids, f"all-match session missing under three-filter AND: {sids}"
+    assert match_sid in sids, (
+        f"all-match session missing under three-filter AND: {sids}"
+    )
     assert miss_a not in sids, "session missing terminal=true leaked"
     assert miss_b not in sids, "session with estimated_via=heuristic leaked"
     assert miss_c not in sids, "session with close_reason=directive_shutdown leaked"

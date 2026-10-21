@@ -1,6 +1,6 @@
-// Unit tests for the shared InfoIcon primitive (D146 step 6.10).
+// Unit tests for the shared InfoIcon primitive.
 //
-// Step 6.9 shipped surface-presence-only assertions (button role,
+// An earlier version shipped surface-presence-only assertions (button role,
 // aria-label, derived test ID). Two-hat Chrome verification then
 // surfaced two interaction defects those tests didn't cover:
 //   - Dialog focus-trap auto-opened the tooltip on mount (focus
@@ -8,7 +8,7 @@
 //   - Subsequent clicks didn't reopen after dismissal (Radix
 //     pointerDown-close on an already-focused button).
 //
-// Step 6.10 fixes both at the implementation layer (controlled
+// Both are fixed at the implementation layer (controlled
 // ``open`` state + click-toggle here; ``onOpenAutoFocus`` override
 // in MCPPolicyEntryDialog). These tests lock the interaction
 // contract so the primitive can't regress to the broken shape:
@@ -111,7 +111,7 @@ describe("InfoIcon — surface", () => {
   });
 });
 
-describe("InfoIcon — interaction cycle (step 6.10 lock)", () => {
+describe("InfoIcon — interaction cycle", () => {
   it("does NOT render the tooltip on initial mount", () => {
     renderInfoIcon({
       content: "hello",
@@ -163,7 +163,7 @@ describe("InfoIcon — interaction cycle (step 6.10 lock)", () => {
     );
   });
 
-  it("reopens the tooltip on a second click after dismissal — the bug step 6.9 shipped", async () => {
+  it("reopens the tooltip on a second click after dismissal — the bug an earlier version shipped", async () => {
     renderInfoIcon({
       content: "hello",
       ariaLabel: "Mode help",
@@ -181,7 +181,7 @@ describe("InfoIcon — interaction cycle (step 6.10 lock)", () => {
     await waitFor(() =>
       expect(trigger.getAttribute("aria-expanded")).toBe("false"),
     );
-    // Second click MUST reopen — pre-fix Radix's pointerDown
+    // Second click MUST reopen — with uncontrolled state Radix's pointerDown
     // handler closed on click and the focus-already-on-button
     // state meant no focus event re-triggered the tooltip.
     fireEvent.click(trigger);

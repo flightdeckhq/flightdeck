@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { render } from "@testing-library/react";
 import { SubAgentRolePill, SubAgentLostDot } from "@/components/facets/SubAgentRolePill";
 
-describe("SubAgentRolePill (D126)", () => {
+describe("SubAgentRolePill", () => {
   it("renders the child glyph and role string for child topology", () => {
     const { getByTestId } = render(
       <SubAgentRolePill role="Researcher" topology="child" />,
@@ -45,7 +45,7 @@ describe("SubAgentRolePill (D126)", () => {
   });
 });
 
-describe("SubAgentLostDot (D126 § L8)", () => {
+describe("SubAgentLostDot (L8)", () => {
   it("renders with the lost-state colour", () => {
     const { getByTestId } = render(<SubAgentLostDot />);
     const dot = getByTestId("sub-agent-lost-dot");

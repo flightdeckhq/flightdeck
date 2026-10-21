@@ -8,12 +8,12 @@ import {
 } from "@/lib/events";
 import type { AgentEvent, LLMErrorPayload, StreamingMetrics } from "@/lib/types";
 
-// Phase 4 contract tests. These pin the wire-shape extensions
+// Event-shape contract tests. These pin the wire-shape extensions
 // (embeddings + llm_error event types, structured error sub-object,
 // streaming sub-object) at the typecheck level so a future
 // refactor cannot silently drop a field the dashboard relies on.
 
-describe("events.ts Phase 4 badge config", () => {
+describe("events.ts badge config for embeddings and llm_error", () => {
   it("registers embeddings and llm_error in eventBadgeConfig", () => {
     expect(eventBadgeConfig.embeddings).toBeDefined();
     expect(eventBadgeConfig.embeddings.label).toBe("EMBED");
@@ -50,7 +50,7 @@ describe("events.ts Phase 4 badge config", () => {
   });
 });
 
-describe("AgentEvent Phase 4 payload extensions", () => {
+describe("AgentEvent payload extensions", () => {
   it("accepts a structured LLMErrorPayload in payload.error", () => {
     // Compile-time check via type annotation; runtime check that the
     // narrowing pattern downstream components use works.

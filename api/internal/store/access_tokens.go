@@ -15,8 +15,7 @@ import (
 // devAccessTokenName is the reserved name of the seed row written by
 // migration 000010. The CRUD API refuses to mutate this row so the
 // ENVIRONMENT=dev gate stays the only way to enable or disable
-// tok_dev -- operators cannot silently rename or delete it. See
-// DECISIONS.md D095.
+// tok_dev -- operators cannot silently rename or delete it.
 const devAccessTokenName = "Development Token"
 
 // ErrDevAccessTokenProtected is returned when a caller tries to delete or
@@ -86,7 +85,7 @@ func (s *Store) ListAccessTokens(ctx context.Context) ([]AccessTokenRow, error) 
 // CreateAccessToken mints a new opaque bearer token and returns the
 // plaintext together with the stored-row projection.
 //
-// Generation follows DECISIONS.md D095:
+// Generation:
 //
 //   - plaintext = "ftd_" + 32 random hex chars (16 crypto/rand bytes)
 //   - salt      = 16 random bytes, hex-encoded (32 chars)

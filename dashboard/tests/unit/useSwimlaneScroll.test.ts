@@ -1,5 +1,5 @@
 /**
- * Phase 4.5 S-SWIM — Fleet swimlane horizontal-scroll affordances.
+ * Fleet swimlane horizontal-scroll affordances.
  *
  * Covers the pure flag math and step-size math behind
  * useSwimlaneScroll. The hook itself is exercised end-to-end by the

@@ -394,7 +394,7 @@ describe("FleetPanel", () => {
   });
 
   it("sensor-emitted coding agent shows Coding agent badge + Sensor client pill", () => {
-    // D115 pill pair: agent_type=coding always flips the
+    // Pill pair: agent_type=coding always flips the
     // CodingAgentBadge (no longer gated on flavor==="claude-code")
     // and the client_type pill surfaces the emitter (Sensor or
     // Claude Code). This fixture is a Python-sensor coding agent.
@@ -536,12 +536,12 @@ describe("FleetPanel", () => {
   });
 
   it("renders curated CONTEXT keys even when they have a single value", () => {
-    // D115 curated whitelist pattern: the sidebar CONTEXT section
+    // Curated whitelist pattern: the sidebar CONTEXT section
     // lists the agreed-upon facet axes (os, hostname, user, git_repo,
     // orchestration) regardless of cardinality. Single-value facets
     // are informational today and become clickable filters the
     // moment a second value lands in the fleet. This replaces the
-    // pre-D115 "hide entirely when length < 2" behaviour whose
+    // earlier "hide entirely when length < 2" behaviour whose
     // side-effect was that one-host / one-user deployments lost the
     // CONTEXT section entirely.
     render(

@@ -1,4 +1,4 @@
-"""Phase 5 fixture-freeze script (addition D).
+"""MCP fixture-freeze script.
 
 Captures one canonical event payload per MCP event type from a real
 flightdeck-sensor run against the reference MCP server. Output frozen
@@ -247,7 +247,7 @@ def main() -> int:
     #
     # Both shapes are part of the dashboard contract — frozen below so the
     # dashboard team builds against a known wire format BEFORE the worker
-    # / Query API land. When Step 7 implements the API, the live response
+    # / Query API land. The live API response
     # MUST match these shapes byte-for-byte (modulo the volatile-field
     # placeholders).
     server_fingerprint_example = canonical[EventType.SESSION_START.value]["context"][
@@ -276,12 +276,10 @@ def main() -> int:
         "last_attached_at": None,
         "error_types": [],
         "policy_event_types": [],
-        # Phase 5 listing-shape commitment: names only, derived at query
+        # Listing-shape commitment: names only, derived at query
         # time from session.context.mcp_servers, parallel to the existing
         # error_types[] / policy_event_types[] aggregation patterns.
-        "mcp_server_names": [
-            srv["name"] for srv in server_fingerprint_example
-        ],
+        "mcp_server_names": [srv["name"] for srv in server_fingerprint_example],
     }
     session_detail = {
         **session_listing_item,

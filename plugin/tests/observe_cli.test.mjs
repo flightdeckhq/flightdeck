@@ -958,7 +958,7 @@ describe("observe_cli helpers", () => {
     //   2. ANTHROPIC_CLAUDE_SESSION_ID env var
     //   3. Marker file keyed on sha256(Claude Code's native session
     //      id: hookEvent.session_id, else $CLAUDE_CODE_SESSION_ID)
-    //      (populated by step 4 on the first hook; read verbatim by
+    //      (populated by the fresh-uuid fallback on the first hook; read verbatim by
     //      every subsequent hook in the same invocation)
     //   4. Fresh uuid4 written to the hook-id-keyed marker
     //   5. Cwd-sha marker fallback + stderr WARN when the hook event

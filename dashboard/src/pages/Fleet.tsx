@@ -380,7 +380,7 @@ export function Fleet() {
         fe.event.event_type === "policy_warn"
         || fe.event.event_type === "policy_block"
         || fe.event.event_type === "policy_degrade"
-        // D131 MCP Protection Policy enforcement + FYI events. The
+        // MCP Protection Policy enforcement + FYI events. The
         // chroma map ARCHITECTURE.md → "Adjacent surfaces" routes
         // amber/red into the same enforcement axis as the existing
         // policy_warn/policy_block, and the two purple FYI types
@@ -869,7 +869,7 @@ export function Fleet() {
         onClearDirectEvent={() => setDirectEventDetail(null)}
         version={selectedSessionId ? (sessionVersions[selectedSessionId] ?? 0) : 0}
         onSwitchSession={(id) => {
-          // D126: in-place rebind for SubAgentsTab parent / child
+          // In-place rebind for SubAgentsTab parent / child
           // navigation. selectSession owns the URL state so the
           // drawer's sessionId prop updates and the
           // useSession()-driven render swaps the body without a

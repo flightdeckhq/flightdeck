@@ -1,4 +1,4 @@
-// D146: tests for MCPServerDecisionText. Replaces the previous
+// Tests for MCPServerDecisionText. Replaces the previous
 // MCPSessionDrawerPolicyPill tests; locks the inline-text rendering
 // and the explicit-vs-mode-default visual distinction by testid +
 // inline style + suffix copy.

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // Regression test for the live sub-agent indent gap on /agents.
 //
-// Pre-fix, applyUpdate's agents[] mirror at the WS-event hot path only
+// Guarded regression: applyUpdate's agents[] mirror at the WS-event hot path only
 // patched the existing agent's `total_sessions / last_seen_at / state`
 // fields — `recent_sessions` was left untouched. Brand-new agents were
 // not inserted at all; the store relied on the async `load()`

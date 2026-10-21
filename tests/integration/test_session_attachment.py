@@ -1,4 +1,4 @@
-"""Integration tests for D094 session attachment.
+"""Integration tests for session attachment.
 
 Covers the full end-to-end loop: sensor-facing POST /v1/events
 envelope, Postgres state under session_attachments, worker
@@ -133,7 +133,7 @@ def test_session_attachment_invalid_uuid_warns(
     the live stack because it exercises a pure sensor-side guard. The
     test sits under tests/integration/ to colocate it with the other
     attachment tests so the `-k attachment` selector picks up every
-    piece of D094 coverage at once.
+    piece of attachment coverage at once.
     """
     import flightdeck_sensor
 
@@ -151,7 +151,7 @@ def test_session_attachment_invalid_uuid_warns(
         finally:
             flightdeck_sensor.teardown()
 
-    # Warning text must match D094 exactly.
+    # Warning text must match the sensor's init() warning exactly.
     assert any(
         "Custom session_id 'not-a-uuid' is not a valid UUID" in r.message
         for r in caplog.records
@@ -165,8 +165,7 @@ def test_session_attachment_invalid_uuid_warns(
     # Re-scan log to ensure the "Custom session_id provided" line
     # did NOT fire for the bad string.
     assert not any(
-        "Custom session_id provided: 'not-a-uuid'" in r.message
-        for r in caplog.records
+        "Custom session_id provided: 'not-a-uuid'" in r.message for r in caplog.records
     )
 
 

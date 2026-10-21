@@ -65,7 +65,7 @@
   --chart-4: #eab308;
   --chart-5: #f97316;
 
-  /* Provider palette (D098). Keep in sync with PROVIDER_COLOR in
+  /* Provider palette. Keep in sync with PROVIDER_COLOR in
      dashboard/src/lib/models.ts and the SQL CASE expression in
      api/internal/store/analytics.go. */
   --chart-openai: #06b6d4;
@@ -81,14 +81,14 @@
      on the dark surface stays legible. */
   --claude-code: #E8915A;
 
-  /* Phase 4 event-type palette extensions. ``--event-embeddings`` is
+  /* Event-type palette extensions. ``--event-embeddings`` is
      the cyan family (RAG/semantic search iconography); ``--event-error``
      is the danger red so llm_error events read as alarming without
      being a policy-block red (those are ``--event-block``). */
   --event-embeddings: #06b6d4;
   --event-error: #ef4444;
 
-  /* Phase 5 MCP event palette. Three families distinguish the three
+  /* MCP event palette. Three families distinguish the three
      MCP operation classes:
        --event-mcp-tool      cyan-2  — tool calls + tool list
        --event-mcp-resource  green   — resource reads + list
@@ -105,7 +105,7 @@
   --color-warn-soft: rgba(234, 179, 8, 0.12);
   --color-warn-border: rgba(234, 179, 8, 0.35);
 
-  /* D126 UX revision 2026-05-03 — sub-agent / child-row background
+  /* Sub-agent / child-row background
      tint. Applied via [data-topology="child"] in globals.css to
      swimlane rows AND Investigate inline-expansion sub-rows so a
      single CSS variable drives both surfaces. Slightly lighter
@@ -114,7 +114,7 @@
      values read as background noise; higher values shout. */
   --swimlane-row-child-bg: rgba(255, 255, 255, 0.06);
 
-  /* D163 — TopologyCell child / parent pill text colour. The
+  /* TopologyCell child / parent pill text colour. The
      raw --accent reads dim against the accent-tinted background
      on the dark surface, so dark theme lightens the foreground
      toward white. Driven from the html.dark / html.light class
@@ -196,7 +196,7 @@
   --chart-4: #ca8a04;
   --chart-5: #ea580c;
 
-  /* Provider palette (D098). Keep in sync with PROVIDER_COLOR in
+  /* Provider palette. Keep in sync with PROVIDER_COLOR in
      dashboard/src/lib/models.ts and the SQL CASE expression in
      api/internal/store/analytics.go. */
   --chart-openai: #0891b2;
@@ -210,12 +210,12 @@
      darker hex so amber on white surface stays legible. */
   --claude-code: #D4763B;
 
-  /* Phase 4 event-type palette extensions -- light-theme variants
+  /* Event-type palette extensions -- light-theme variants
      with slightly darker chromas to stay legible against ``--bg``. */
   --event-embeddings: #0891b2;
   --event-error: #dc2626;
 
-  /* Phase 5 MCP palette -- light-theme variants. Same three families
+  /* MCP palette -- light-theme variants. Same three families
      (tool / resource / prompt) at darker chromas. */
   --event-mcp-tool: #0891b2;
   --event-mcp-resource: #059669;
@@ -225,14 +225,14 @@
   --color-warn-soft: rgba(202, 138, 4, 0.08);
   --color-warn-border: rgba(202, 138, 4, 0.3);
 
-  /* D126 UX revision 2026-05-03 — sub-agent / child-row background
+  /* Sub-agent / child-row background
      tint. Slightly darker than --surface (#ffffff) on light —
      translucent black at 6% sits inside the supervisor-locked
      5–8% delta range. Same brightness logic as the dark-theme
      value: low enough to feel structural, high enough to read. */
   --swimlane-row-child-bg: rgba(0, 0, 0, 0.06);
 
-  /* D163 — TopologyCell pill foreground. Light theme uses the
+  /* TopologyCell pill foreground. Light theme uses the
      raw --accent; the accent-tinted background already gives
      sufficient contrast on the white surface so no lightening
      is needed. */

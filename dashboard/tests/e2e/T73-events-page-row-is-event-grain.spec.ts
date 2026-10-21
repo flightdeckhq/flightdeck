@@ -2,7 +2,7 @@
  * T73 — the /events page is event-grain: one row per event, and
  * the facet sidebar narrows the set.
  *
- * Phase 4 wave 2 contract: /events lists individual events (not
+ * /events lists individual events (not
  * sessions); each row carries a run badge; clicking a facet chip
  * filters the set server-side.
  *

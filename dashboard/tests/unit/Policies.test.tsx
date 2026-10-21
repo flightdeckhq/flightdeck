@@ -27,7 +27,7 @@ const mockFlavors = [
   },
 ];
 
-// Phase 4.5 M-18: PolicyEditor migrated to selector form
+// PolicyEditor migrated to selector form
 // ``useFleetStore((s) => s.flavors)``. The mock now respects the
 // selector arg so callers receive the field they ask for, not the
 // full state object.

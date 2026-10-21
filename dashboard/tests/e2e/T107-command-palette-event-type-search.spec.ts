@@ -1,10 +1,10 @@
 /**
  * T107 — command palette event-type search.
  *
- * Locks Phase A's curated map + raw event_type substring match.
- * Pre-Phase-A search.go ILIKE'd only tool_name + model, so
- * typing "LLM" / "policy" / a tool literal returned 0 events
- * even though the DB held thousands. This spec types each term
+ * Locks the curated map + raw event_type substring match.
+ * A search that ILIKE'd only tool_name + model returned 0 events
+ * for "LLM" / "policy" / a tool literal even though the DB held
+ * thousands. This spec types each term
  * and asserts the events group populates with the right types.
  *
  * Runs under both Playwright theme projects so per-theme parity
@@ -30,8 +30,8 @@ test.describe("T107 — palette event-type search returns curated + literal hits
     const dialog = await openPaletteAndSearch(page, "LLM");
 
     // Events group renders with at least one row. Poll the
-    // event-type-pill testid (canonical across surfaces — Phase C
-    // reuses the same component the run drawer + /events use).
+    // event-type-pill testid (canonical across surfaces — the
+    // palette reuses the component the run drawer + /events use).
     const pills = page.getByTestId("event-type-pill");
     await expect.poll(async () => pills.count()).toBeGreaterThan(0);
 

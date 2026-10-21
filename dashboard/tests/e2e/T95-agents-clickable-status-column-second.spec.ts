@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 /**
  * T95 — /agents STATUS column relocation + clickable chip.
  *
- * Pre-fix STATUS was the last column on the right with the badge
+ * Guarded regression: STATUS was the last column on the right with the badge
  * doubling as both indicator and modal opener; the actions cell
  * also carried a duplicate badge. The polish move puts STATUS
  * second (right after AGENT), keeps the single labeled badge

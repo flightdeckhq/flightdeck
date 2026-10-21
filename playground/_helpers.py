@@ -5,6 +5,7 @@ factory.
 Anything beyond these helpers stops being a playground and starts
 becoming a framework. Keep the surface tight.
 """
+
 from __future__ import annotations
 
 import json
@@ -55,6 +56,7 @@ def require_env(*names: str) -> None:
     in one run.
     """
     import sys
+
     missing = [n for n in names if not os.environ.get(n)]
     if missing:
         print(
@@ -166,8 +168,12 @@ def init_sensor(
 # ---------------------------------------------------------------------
 
 
-def assert_event_landed(session_id: str, event_type: str, timeout: float = 5.0,
-                        model_contains: str | None = None) -> None:
+def assert_event_landed(
+    session_id: str,
+    event_type: str,
+    timeout: float = 5.0,
+    model_contains: str | None = None,
+) -> None:
     """Poll GET /api/v1/sessions/{id} until *event_type* appears.
 
     When *model_contains* is given, also require that at least one
@@ -197,11 +203,15 @@ def assert_event_landed(session_id: str, event_type: str, timeout: float = 5.0,
         except Exception:
             pass
         time.sleep(0.3)
-    detail = (f"with model containing {model_contains!r} (saw models {sorted(seen_models)})"
-              if model_contains else f"(saw {sorted(seen_types) or 'nothing'})")
+    detail = (
+        f"with model containing {model_contains!r} (saw models {sorted(seen_models)})"
+        if model_contains
+        else f"(saw {sorted(seen_types) or 'nothing'})"
+    )
     raise AssertionError(
         f"event_type {event_type!r} never arrived for session {session_id} "
-        f"within {timeout}s {detail}. Is the stack running at {API_URL}?")
+        f"within {timeout}s {detail}. Is the stack running at {API_URL}?"
+    )
 
 
 def fetch_events_for_session(
@@ -227,11 +237,7 @@ def fetch_events_for_session(
     expect = set(expect_event_types or ["session_start"])
     deadline = time.monotonic() + timeout_s
     last: list[dict[str, Any]] = []
-    params = (
-        f"session_id={session_id}"
-        f"&from=2020-01-01T00:00:00Z"
-        f"&limit=100"
-    )
+    params = f"session_id={session_id}&from=2020-01-01T00:00:00Z&limit=100"
     req = urllib.request.Request(
         f"{API_URL}/v1/events?{params}",
         headers={"Authorization": f"Bearer {API_TOKEN}"},
@@ -266,6 +272,7 @@ def mcp_server_params(module: str) -> Any:
     """
     from mcp import StdioServerParameters
     import sys
+
     server_env = dict(os.environ)
     server_env["PYTHONPATH"] = (
         _PROJECT_ROOT + os.pathsep + server_env.get("PYTHONPATH", "")
@@ -320,7 +327,8 @@ def wait_for_streamed_post_calls(
         streamed = [
             e
             for e in events
-            if e.get("event_type") == "post_call" and (e.get("payload") or {}).get("streaming")
+            if e.get("event_type") == "post_call"
+            and (e.get("payload") or {}).get("streaming")
         ]
         if len(streamed) >= expected or time.monotonic() > deadline:
             return events, streamed

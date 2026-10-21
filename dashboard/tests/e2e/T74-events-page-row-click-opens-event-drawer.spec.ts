@@ -1,7 +1,7 @@
 /**
  * T74 — clicking an /events row opens the event detail drawer.
  *
- * Phase 4 wave 2 contract: a row click opens the existing
+ * A row click opens the existing
  * EventDetailDrawer for that event.
  *
  * Theme-agnostic — structural locators only.

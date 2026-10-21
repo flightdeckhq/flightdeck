@@ -19,7 +19,9 @@ Design rules baked in here:
 * ``error_message`` is redacted to the exception class name plus an
   optional short summary. The sensor never logs prompt content through
   an error event -- this module does not receive the prompt and does not
-  need to.
+  need to. The parse failures OpenAI's ``parse()`` raises after a billed
+  response (``_PARSE_FAILURE_DETAILS``) carry a sensor-authored summary
+  instead, under either capture posture.
 * ``is_retryable`` is set from the taxonomy, not from the provider's
   ``retry_after`` header. Retry strategy lives with the caller; this
   flag is a hint to operators viewing the error on the dashboard.
@@ -143,6 +145,46 @@ TIMEOUT_EXCEPTION_NAMES: tuple[str, ...] = (
 )
 
 
+# Exceptions OpenAI's chat.completions.parse() raises after the provider
+# answered with HTTP 200: the completion arrived but could not be parsed
+# into the requested type (a pydantic ValidationError is the completion
+# failing the caller's schema). They carry no response object, so the
+# status is recorded from here as 200, which states that the HTTP
+# exchange itself succeeded (a null status would read as a connection
+# failure), and the provider error code names what the SDK acted on.
+# The message is sensor-authored, so it carries no prompt content and is
+# reported whatever the capture posture.
+_HTTP_STATUS_OK = 200
+_PARSE_FAILURE_DETAILS: dict[str, tuple[str, str]] = {
+    "LengthFinishReasonError": (
+        "length",
+        "the completion hit max_tokens before the structured output was "
+        "complete; max_tokens is too small for the schema",
+    ),
+    "ContentFilterFinishReasonError": (
+        "content_filter",
+        "the content filter replaced the completion",
+    ),
+    "ValidationError": (
+        "schema",
+        "the completion did not match the requested schema",
+    ),
+}
+# Modules whose ``ValidationError`` is the SDK's structured-output parse
+# failing the caller's schema. A ``ValidationError`` from any other
+# module is some other library's failure and keeps its own
+# classification.
+_PYDANTIC_MODULE_PREFIXES: tuple[str, ...] = ("pydantic", "pydantic_core")
+
+
+def _parse_failure_details(cls_name: str, module: str) -> tuple[str, str] | None:
+    """The parse-failure code and message for an exception class, keyed
+    on pydantic's module for ``ValidationError``; ``None`` otherwise."""
+    if cls_name == "ValidationError" and not module.startswith(_PYDANTIC_MODULE_PREFIXES):
+        return None
+    return _PARSE_FAILURE_DETAILS.get(cls_name)
+
+
 class StreamOutcome(str, enum.Enum):
     """``payload.streaming.final_outcome`` of a streamed post_call. The
     dashboard keys its outcome badge off these exact strings."""
@@ -181,7 +223,19 @@ _ANTHROPIC_CLASS_TO_TYPE: list[tuple[tuple[str, ...], ErrorType]] = [
 _CLASS_TO_TYPE: list[tuple[tuple[str, ...], ErrorType]] = [
     (("RateLimitError",), ErrorType.RATE_LIMIT),
     (("PermissionDeniedError", "PermissionError"), ErrorType.PERMISSION),
-    (("AuthenticationError",), ErrorType.AUTHENTICATION),
+    # OpenAI raises OAuthError, an AuthenticationError subclass, when an
+    # OAuth bearer token is rejected: the same 401 failure.
+    (("AuthenticationError", "OAuthError"), ErrorType.AUTHENTICATION),
+    # OpenAI's chat.completions.parse() raises these after a successful
+    # HTTP call when the completion cannot be parsed into the requested
+    # type. A length finish means the output hit the caller's max_tokens
+    # before the structured output was complete: a mis-specified request,
+    # not a context overflow, so it files under invalid_request with the
+    # finish reason as the provider error code (see
+    # _PARSE_FAILURE_DETAILS). A content-filter finish is the content
+    # filter replacing the completion.
+    (("LengthFinishReasonError",), ErrorType.INVALID_REQUEST),
+    (("ContentFilterFinishReasonError",), ErrorType.CONTENT_FILTER),
     (("NotFoundError",), ErrorType.NOT_FOUND),
     (("UnprocessableEntityError",), ErrorType.INVALID_REQUEST),
     (("BadRequestError",), ErrorType.INVALID_REQUEST),
@@ -322,7 +376,9 @@ def classify_exception(
     ``_ERROR_MESSAGE_MAX_LEN`` chars). Capture posture is enforced here:
     content_filter exceptions echo the offending prompt fragment in
     their string representation, so capture-off must NOT pass that
-    string through.
+    string through. The exception: the parse failures in
+    ``_PARSE_FAILURE_DETAILS`` carry a sensor-authored message under
+    either posture, which echoes nothing from the provider.
 
     Never raises. An internal failure falls through to
     ``error_type="other"``.
@@ -334,6 +390,12 @@ def classify_exception(
 
         http_status = _extract_http_status(exc)
         provider_error_code = _extract_provider_error_code(exc)
+        parse_failure = _parse_failure_details(cls_name, module)
+        if parse_failure is not None:
+            if http_status is None:
+                http_status = _HTTP_STATUS_OK
+            if provider_error_code is None:
+                provider_error_code = parse_failure[0]
         request_id = _extract_request_id(exc)
         retry_after = _extract_retry_after(exc)
 
@@ -358,7 +420,10 @@ def classify_exception(
                 message_hint,
             )
 
-        message = _redacted_message(exc, cls_name, capture_prompts=capture_prompts)
+        if parse_failure is not None:
+            message = f"{cls_name}: {parse_failure[1]}"
+        else:
+            message = _redacted_message(exc, cls_name, capture_prompts=capture_prompts)
         retryable = _RETRYABLE.get(base, False)
 
         return ErrorClassification(
@@ -601,7 +666,9 @@ def _redacted_message(
     (notably content_filter rejections), and that fragment is
     user-prompt content that capture-off must not forward to events.
     When True, returns ``f"{cls_name}: {str(exc)[:200]}"`` with newlines
-    replaced so the dashboard renders inline.
+    replaced so the dashboard renders inline. The parse failures in
+    ``_PARSE_FAILURE_DETAILS`` do not pass through here: their message
+    is sensor-authored under either posture.
     """
     if not capture_prompts:
         return cls_name

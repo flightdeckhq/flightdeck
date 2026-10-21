@@ -252,10 +252,13 @@ class TokenUsage:
     ``input_tokens`` is the full input sum (uncached + cache_read + cache_creation)
     so policy/budget arithmetic is unaffected by the cache
     breakdown. ``cache_read_tokens`` and ``cache_creation_tokens`` are the
-    Anthropic cache-specific breakdown surfaced as separate fields so cache
-    economics survive into analytics; they are already included in the
-    ``input_tokens`` sum and must not be added to ``total`` a second time.
-    OpenAI responses populate the cache fields with 0.
+    cache breakdown surfaced as separate fields so cache economics survive
+    into analytics; they are already included in the ``input_tokens`` sum
+    and must not be added to ``total`` a second time. Anthropic reports
+    both (cache reads and cache writes); OpenAI reports its prompt-cache
+    read as ``cached_tokens``, which lands in ``cache_read_tokens``, and
+    its cache write as ``cache_write_tokens``, which lands in
+    ``cache_creation_tokens`` (0 when the response carries none).
     """
 
     input_tokens: int = 0

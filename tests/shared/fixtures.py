@@ -200,9 +200,10 @@ def get_fleet() -> dict[str, Any]:
     flavor client-side. Returns ``{"flavors": [{"flavor": X,
     "sessions": [...]}...], "total_session_count": N}``.
 
-    Single-page fetch (server caps at 100). Integration tests run
-    serially and each creates 1--3 sessions; 100 recent sessions is
-    comfortably above the working set per run.
+    Single-page fetch (server caps at 100). Only the manual dashboard
+    demo uses it; tests that run in the parallel phase look sessions up
+    by their own flavor or id instead, since the 100 most recent rows
+    belong to whichever tests posted last.
     """
     url = f"{API_URL}/v1/sessions?limit=100"
     req = urllib.request.Request(url, headers=auth_headers())
@@ -874,8 +875,19 @@ def _docker_timestamp(since: str | float) -> str:
     if isinstance(since, str):
         return since
     whole = int(since)
-    micros = int((since - whole) * 1_000_000)
+    micros = int((since - whole) * MICROS_PER_SECOND)
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(whole)) + f".{micros:06d}Z"
+
+
+# The fractional part of a docker logs timestamp is rendered in
+# microseconds, the finest unit the daemon accepts.
+MICROS_PER_SECOND = 1_000_000
+# A stamp from this process is moved back by this much before it is
+# handed to the daemon, which compares it with its own clock: a daemon
+# in a VM that has lagged a second or two after a sleep would otherwise
+# drop the lines the test is looking for. The needles are unique ids,
+# so the extra two seconds of lines can never match.
+DOCKER_CLOCK_MARGIN_SECS = 2.0
 
 
 def worker_log_lines(
@@ -901,6 +913,8 @@ def worker_log_lines(
     """
     args = ["logs", "--tail", str(tail)]
     if since is not None:
+        if not isinstance(since, str):
+            since -= DOCKER_CLOCK_MARGIN_SECS
         args += ["--since", _docker_timestamp(since)]
     proc = _docker(*args, WORKER_CONTAINER)
     return [

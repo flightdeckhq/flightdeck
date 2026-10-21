@@ -545,10 +545,13 @@ jobs:
         run: make dev
 
       - name: Run integration tests (fabricated + sensor e2e)
-        # Excludes manual tests via the -m "not manual" filter that
-        # the test-integration target carries. test_ui_demo.py is
-        # the only manual-marked test today; it is a 3-minute
-        # dashboard data-population tool, not a regression test.
+        # The test-integration target runs two phases: the parallel
+        # phase under pytest-xdist for every test that keeps to its
+        # own flavors and session ids, then the tests marked
+        # `exclusive` one at a time. Both deselect manual tests;
+        # test_ui_demo.py is the only manual-marked test today, a
+        # 3-minute dashboard data-population tool, not a regression
+        # test.
         #
         # The test_sensor_e2e.py file is part of the integration
         # directory, so its 20 e2e tests run inside this step. The

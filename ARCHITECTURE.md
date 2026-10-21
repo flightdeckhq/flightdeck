@@ -1574,7 +1574,11 @@ sweeps once per `FLIGHTDECK_RECONCILER_INTERVAL_SECS` (60 s by default;
 the dev stack sets 5 s so the integration tests that wait for a tick
 stay short) and applies both transitions in a single pass. A finer
 tick buys nothing in production because the thresholds it enforces
-are minutes to hours long; it only adds load.
+are minutes to hours long; it only adds load. Each worker process runs
+one reconciler: a pass that outlasts the interval delays the next tick
+rather than overlapping it, and the reaper locks rows with `SKIP
+LOCKED`, so the passes of several worker replicas never double-close
+a session.
 
 **Orphan-timeout reaper.** The same reconciler tick also closes `lost`
 sessions that have been silent past `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`

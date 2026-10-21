@@ -84,6 +84,22 @@ func TestLoad_ReconcilerIntervalSecs_ZeroPanics(t *testing.T) {
 	Load()
 }
 
+func TestLoad_ReconcilerIntervalSecs_AboveAnHourPanics(t *testing.T) {
+	t.Setenv("FLIGHTDECK_POSTGRES_URL", "postgres://test")
+	t.Setenv("FLIGHTDECK_RECONCILER_INTERVAL_SECS", "3601")
+	defer func() {
+		r := recover()
+		if r == nil {
+			t.Fatal("expected panic for ReconcilerIntervalSecs=3601; Load returned cleanly")
+		}
+		msg, ok := r.(string)
+		if !ok || !strings.Contains(msg, "at most 3600") {
+			t.Errorf("panic message should explain the constraint; got %v", r)
+		}
+	}()
+	Load()
+}
+
 func TestLoad_ReconcilerIntervalSecs_NegativePanics(t *testing.T) {
 	t.Setenv("FLIGHTDECK_POSTGRES_URL", "postgres://test")
 	t.Setenv("FLIGHTDECK_RECONCILER_INTERVAL_SECS", "-1")

@@ -46,6 +46,25 @@ def _unique(prefix: str) -> str:
 # ---------------------------------------------------------------------------
 
 
+def test_reconcile_endpoint_shape() -> None:
+    """200 with the canonical ReconcileResult JSON shape."""
+    status, body = post_admin_reconcile()
+    assert status == 200, f"expected 200, got {status} body={body}"
+    for key in (
+        "agents_scanned",
+        "agents_updated",
+        "counters_updated",
+        "duration_ms",
+        "errors",
+    ):
+        assert key in body, f"missing key {key!r} in response body: {body}"
+    assert isinstance(body["agents_scanned"], int)
+    assert isinstance(body["agents_updated"], int)
+    assert isinstance(body["counters_updated"], dict)
+    assert isinstance(body["duration_ms"], int)
+    assert isinstance(body["errors"], list)
+
+
 def test_reconcile_endpoint_requires_bearer_token() -> None:
     """No Authorization header → 401."""
     status, body = post_admin_reconcile(token="")

@@ -42,7 +42,15 @@ it created. The exclusive phase then runs the tests marked `@pytest.mark.exclusi
 one at a time: each needs the whole stack to itself because it pauses the worker,
 rewrites every agents row, or asserts fleet-wide state. Mark a new test `exclusive`
 when it does any of those; otherwise keep its reads and writes to its own flavors
-and session ids so it stays safe to run beside the rest. To run the phases by hand:
+and session ids so it stays safe to run beside the rest. The parallel phase needs
+`pytest-xdist`, which the sensor's `dev` extra installs into `sensor/.venv`; the
+worker count is `INTEGRATION_WORKERS` (`make test-integration INTEGRATION_WORKERS=2`),
+and the Makefile comment above the target explains why four is the default. The dev
+stack runs the worker reconciler every 5 s (`FLIGHTDECK_RECONCILER_INTERVAL_SECS`)
+where production ticks every 60 s: size any wait for a reconciler transition from
+`RECONCILER_INTERVAL_SECS` in the test module, and never let user-facing behaviour
+assume a transition lands sooner than the production tick. To run the phases by
+hand, seed first (`make seed-e2e`), then:
 
 ```bash
 ./sensor/.venv/bin/python -m pytest tests/integration -n 4 --dist load -m "not manual and not exclusive"

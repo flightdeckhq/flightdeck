@@ -8,6 +8,13 @@ import (
 	"strconv"
 )
 
+// maxReconcilerIntervalSecs caps the reconciler period at an hour: the
+// reconciler enforces thresholds of minutes (stale) to a day (orphan
+// timeout), so a longer period cannot be intended and would leave
+// silent sessions unreconciled for hours; a value above it is read as
+// a typo and refused at startup rather than honoured silently.
+const maxReconcilerIntervalSecs = 3600
+
 // Config holds all configuration for the worker service.
 type Config struct {
 	PostgresURL         string
@@ -40,11 +47,12 @@ type Config struct {
 	// integration tests that wait for a tick finish in seconds
 	// instead of idling for most of a minute each.
 	//
-	// Env: FLIGHTDECK_RECONCILER_INTERVAL_SECS. Must be > 0 — the
-	// ticker cannot run on a zero or negative period, and a
-	// reconciler that never ticks would leave every silent session
-	// pinned as `active` forever. Load() panics if the configured
-	// value is non-positive.
+	// Env: FLIGHTDECK_RECONCILER_INTERVAL_SECS. Must be between 1 and
+	// maxReconcilerIntervalSecs — the ticker cannot run on a zero or
+	// negative period, a reconciler that never ticks would leave every
+	// silent session pinned as `active` forever, and a period above an
+	// hour is a typo (see the constant). Load() panics on a value
+	// outside that range.
 	ReconcilerIntervalSecs int
 }
 
@@ -66,6 +74,14 @@ func Load() Config {
 				"a non-positive value would close every `lost` session on "+
 				"the next reconciler tick regardless of age",
 			cfg.OrphanTimeoutHours,
+		))
+	}
+	if cfg.ReconcilerIntervalSecs > maxReconcilerIntervalSecs {
+		panic(fmt.Sprintf(
+			"FLIGHTDECK_RECONCILER_INTERVAL_SECS must be at most %d, got %d -- "+
+				"a longer interval would leave stale and lost sessions "+
+				"unreconciled for hours, which reads as a typo, not a choice",
+			maxReconcilerIntervalSecs, cfg.ReconcilerIntervalSecs,
 		))
 	}
 	if cfg.ReconcilerIntervalSecs <= 0 {

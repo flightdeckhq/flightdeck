@@ -117,7 +117,7 @@ def test_session_with_heartbeats_only_stays_active() -> None:
     flavor = f"test-hb-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
 
     # Send a heartbeat
     post_heartbeat(sid)
@@ -143,7 +143,7 @@ def test_session_transitions_to_closed() -> None:
     flavor = f"test-closed-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
 
     post_event(make_event(sid, flavor, "session_end"))
 
@@ -180,7 +180,7 @@ def test_lost_session_revives_on_post_call() -> None:
     flavor = f"test-revive-lost-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
 
     _force_state(sid, "lost")
     before = _read_session_row(sid)
@@ -222,7 +222,7 @@ def test_stale_session_revives_on_tool_call() -> None:
     flavor = f"test-revive-stale-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
 
     _force_state(sid, "stale")
     before = _read_session_row(sid)
@@ -250,7 +250,7 @@ def test_closed_session_stays_closed_on_post_call() -> None:
     flavor = f"test-closed-stays-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
     post_event(make_event(sid, flavor, "session_end"))
     wait_for_state(sid, "closed", timeout=10)
 
@@ -287,7 +287,7 @@ def test_lost_session_closes_on_session_end() -> None:
     flavor = f"test-lost-then-close-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
 
     _force_state(sid, "lost")
 
@@ -313,7 +313,7 @@ def test_reconciler_lost_threshold_is_30_min() -> None:
     flavor = f"test-30min-lost-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
 
     exec_sql(
         "UPDATE sessions SET last_seen_at = NOW() - INTERVAL '31 minutes' "
@@ -345,7 +345,7 @@ def test_orphan_timeout_reaper_closes_lost_session() -> None:
     flavor = f"test-orphan-reap-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
 
     # Skip the organic stale → lost progression: backdate and force.
     # The reaper only cares that state='lost' and last_seen_at is past
@@ -381,6 +381,21 @@ def test_orphan_timeout_reaper_closes_lost_session() -> None:
     )
 
 
+def _lost_session_past_the_orphan_timeout(flavor: str) -> str:
+    """A session the reaper must close on its next tick: lost, and silent
+    for longer than the orphan timeout."""
+    sid = str(uuid.uuid4())
+    post_event(make_event(sid, flavor, "session_start"))
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
+    exec_sql(
+        "UPDATE sessions SET state = 'lost', "
+        "last_seen_at = NOW() - INTERVAL '25 hours' "
+        "WHERE session_id = :'sid'::uuid",
+        sid=sid,
+    )
+    return sid
+
+
 def test_orphan_timeout_reaper_does_not_close_recent_lost_session() -> None:
     """A session in state='lost' but with last_seen_at *inside* the
     ``FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`` window (default 24h) must NOT
@@ -392,7 +407,7 @@ def test_orphan_timeout_reaper_does_not_close_recent_lost_session() -> None:
     flavor = f"test-orphan-noreap-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
 
     # last_seen_at is 1 hour ago — past the 30-min lost threshold so
     # state='lost' is plausible, but well inside the default 24h orphan
@@ -403,6 +418,11 @@ def test_orphan_timeout_reaper_does_not_close_recent_lost_session() -> None:
         "WHERE session_id = :'sid'::uuid",
         sid=sid,
     )
+    # A second lost row past the window is the canary: the reaper must
+    # close it during the wait below, which proves ticks are running
+    # at the expected rate rather than letting the negative wait pass
+    # on a worker whose interval is still the production default.
+    canary = _lost_session_past_the_orphan_timeout(flavor)
 
     # Negative wait: poll for the wrong-firing condition (state flipped
     # to 'closed') for RECONCILER_NEGATIVE_WAIT_SECS — long enough for
@@ -434,6 +454,7 @@ def test_orphan_timeout_reaper_does_not_close_recent_lost_session() -> None:
     assert row["state"] == "lost", (
         f"reaper wrongly closed recent lost session {sid}: state={row['state']!r}"
     )
+    wait_for_state(canary, "closed", timeout=RECONCILER_POSITIVE_WAIT_SECS)
 
     raw = exec_sql(
         "SELECT COUNT(*) FROM events "
@@ -733,9 +754,11 @@ HOT_SESSION_CLIENTS = 8
 HOT_SESSION_STARTS = 40
 # How long a re-attaching session_start may take while its row is held
 # by another writer: the stamp skips the row and retries after pauses
-# that add up to 75 ms, so well under a second; a stamp that waited for
-# the lock would hang for the length of the block instead.
-HELD_ROW_RESPONSE_BOUND_SECS = 2.0
+# that add up to 75 ms, so well under a second even with four pytest
+# processes loading ingestion; a stamp that waited for the lock would
+# hang until the request's own timeout instead, so the bound still
+# discriminates at five seconds.
+HELD_ROW_RESPONSE_BOUND_SECS = 5.0
 # What the worker logs when it schedules a redelivery, on the orphan
 # path, on a session_end that predates the session's current run, and on
 # any failed attempt.

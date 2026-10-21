@@ -10093,3 +10093,49 @@ rule, which keeps late events from reviving a session the user ended;
 430 back-to-back sessions against the dev stack never hit it, and a
 re-attached run's calls are covered by the ingestion stamp above unless
 the stamp gave up on a held row.
+
+## D187 -- The integration suite runs in a parallel phase and an exclusive phase; the reconciler tick is configurable; stack jobs do not wait for unit jobs
+
+**Decision:** `make test-integration` runs the integration suite in two
+phases. The parallel phase runs under pytest-xdist with four workers and
+covers every test that keeps its reads and writes to the flavors and
+session ids it created. The exclusive phase then runs, one at a time,
+the tests marked `exclusive`: those that pause the worker container,
+run the global reconcile, write org-scope or global policies, assert
+fleet-wide state, broadcast over the websocket, or generate burst load.
+A new integration test either keeps to its own flavors and session ids
+or carries the marker. The worker reconciler's tick interval is
+`FLIGHTDECK_RECONCILER_INTERVAL_SECS` (default 60, at most 3600, refused
+outside that range at startup); the dev compose override sets 5 s and
+the tests that wait for a tick size their waits from
+`RECONCILER_INTERVAL_SECS`, which must match it. The CI integration and
+E2E jobs no longer depend on the unit jobs.
+
+**Reasoning:** A fix-and-verify iteration cost about eleven minutes
+locally and twenty-one on CI with almost no work in it. The serial suite
+took 8.5 minutes, of which about five were four tests idling for the
+hard-coded 60 s reconciler tick (two of them negative waits that always
+burned 75 s and 90 s). Run in parallel with the tick at 5 s the suite
+takes about four minutes end to end, stack check and seed included
+(parallel phase 227 tests in 138 s, exclusive 17 tests in 17 s). Four
+workers: the worker service drains events through a pool of ten
+goroutines, and four pytest processes keep the event rate below the
+point where the suite's 5-10 s state waits start to miss on a
+laptop-class box; more make the parallel phase flake before they make
+it faster. The default tick stays 60 s because the thresholds the
+reconciler enforces are minutes to a day long; a finer production tick
+only adds load. The CI stack jobs each boot their own stack and consume
+nothing from the unit jobs, so waiting on them only added the slowest
+unit job's runtime (about four minutes) to every push; a unit failure
+still fails the run on its own job, at the cost of the runner minutes
+the stack jobs spend.
+
+**Rejected:** Keeping the suite serial and only shortening the tick
+(the four tests were half the problem; the other 240 still ran one at a
+time). One stack per pytest worker (five times the containers for a
+suite whose tests already isolate by flavor). Triggering the reconciler
+through an admin endpoint instead of a knob (adds API surface for a
+test concern; the interval is also a legitimate operator setting).
+Marking the parallel-unsafe tests by module (the reconcile module is
+all exclusive, but most other modules mix one unsafe test with many
+safe ones).

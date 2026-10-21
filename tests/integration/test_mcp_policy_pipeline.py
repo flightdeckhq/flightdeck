@@ -32,7 +32,11 @@ def _now_iso() -> str:
     return datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def _post_event(payload: dict) -> int:
+def _post_event(tracked: set[str], payload: dict) -> int:
+    """POST one event and return the status code; the payload's flavor
+    joins ``tracked`` so the test's rows are deleted when it ends."""
+    if "flavor" in payload:
+        tracked.add(payload["flavor"])
     headers = {
         "Authorization": f"Bearer {TOKEN}",
         "Content-Type": "application/json",
@@ -46,7 +50,9 @@ def _post_event(payload: dict) -> int:
     return r.status_code
 
 
-def _wait_for_event(session_id: str, event_type: str, timeout: float = 5.0) -> dict | None:
+def _wait_for_event(
+    session_id: str, event_type: str, timeout: float = 10.0
+) -> dict | None:
     """Poll GET /v1/sessions/{id} until an event of the requested
     type appears, or return None on timeout."""
     deadline = time.monotonic() + timeout
@@ -68,11 +74,6 @@ def _wait_for_event(session_id: str, event_type: str, timeout: float = 5.0) -> d
     return None
 
 
-# Flavors the current test has posted events for; the fixture below
-# deletes their rows when the test ends.
-_flavors_in_test: set[str] = set()
-
-
 def _agent_id_for(flavor: str) -> str:
     """One agent per test: every event of a flavor carries the same agent id.
 
@@ -84,22 +85,22 @@ def _agent_id_for(flavor: str) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, f"flightdeck-test-mcp-pipeline/{flavor}"))
 
 
-@pytest.fixture(autouse=True)
-def _delete_rows_at_end() -> Iterator[None]:
-    """Delete every row the test's flavors produced once it ends, the
+@pytest.fixture
+def pipeline_flavors() -> Iterator[set[str]]:
+    """The flavors a test has posted events for; ``_post_event`` records
+    them. Once the test ends every row they produced is deleted, the
     agents row included, so nothing accumulates on the stack. The tests
     post their events outside the ``make_event`` tracker, so this is
     also what closes their sessions."""
-    _flavors_in_test.clear()
+    flavors: set[str] = set()
     try:
-        yield
+        yield flavors
     finally:
-        for flavor in list(_flavors_in_test):
+        for flavor in flavors:
             delete_flavor_data(flavor)
 
 
 def _baseline_session_start(session_id: str, flavor: str) -> dict:
-    _flavors_in_test.add(flavor)
     return {
         "session_id": session_id,
         "agent_id": _agent_id_for(flavor),
@@ -192,12 +193,17 @@ def _name_changed_event(session_id: str, flavor: str) -> dict:
 # ----- D131 — three new event types land end-to-end -----------------
 
 
-def test_policy_mcp_warn_lands_with_payload() -> None:
+def test_policy_mcp_warn_lands_with_payload(pipeline_flavors: set[str]) -> None:
     sid = str(uuid.uuid4())
     flavor = f"test-mcp-pipeline-{uuid.uuid4().hex[:6]}"
 
-    assert _post_event(_baseline_session_start(sid, flavor)) == 200
-    assert _post_event(_policy_decision_event(sid, flavor, "policy_mcp_warn")) == 200
+    assert _post_event(pipeline_flavors, _baseline_session_start(sid, flavor)) == 200
+    assert (
+        _post_event(
+            pipeline_flavors, _policy_decision_event(sid, flavor, "policy_mcp_warn")
+        )
+        == 200
+    )
 
     event = _wait_for_event(sid, "policy_mcp_warn", timeout=10.0)
     assert event is not None, "policy_mcp_warn did not land within 10s"
@@ -208,19 +214,20 @@ def test_policy_mcp_warn_lands_with_payload() -> None:
     assert payload.get("fingerprint") == "abc123def4567890"
 
 
-def test_policy_mcp_block_lands_with_payload() -> None:
+def test_policy_mcp_block_lands_with_payload(pipeline_flavors: set[str]) -> None:
     sid = str(uuid.uuid4())
     flavor = f"test-mcp-pipeline-{uuid.uuid4().hex[:6]}"
 
-    assert _post_event(_baseline_session_start(sid, flavor)) == 200
+    assert _post_event(pipeline_flavors, _baseline_session_start(sid, flavor)) == 200
     assert (
         _post_event(
+            pipeline_flavors,
             _policy_decision_event(
                 sid,
                 flavor,
                 "policy_mcp_block",
                 block_on_uncertainty=True,
-            )
+            ),
         )
         == 200
     )
@@ -232,12 +239,12 @@ def test_policy_mcp_block_lands_with_payload() -> None:
     assert payload.get("decision_path") == "flavor_entry"
 
 
-def test_mcp_server_name_changed_lands_with_payload() -> None:
+def test_mcp_server_name_changed_lands_with_payload(pipeline_flavors: set[str]) -> None:
     sid = str(uuid.uuid4())
     flavor = f"test-mcp-pipeline-{uuid.uuid4().hex[:6]}"
 
-    assert _post_event(_baseline_session_start(sid, flavor)) == 200
-    assert _post_event(_name_changed_event(sid, flavor)) == 200
+    assert _post_event(pipeline_flavors, _baseline_session_start(sid, flavor)) == 200
+    assert _post_event(pipeline_flavors, _name_changed_event(sid, flavor)) == 200
 
     event = _wait_for_event(sid, "mcp_server_name_changed", timeout=10.0)
     assert event is not None, "mcp_server_name_changed did not land within 10s"
@@ -247,7 +254,9 @@ def test_mcp_server_name_changed_lands_with_payload() -> None:
     assert payload.get("name_new") == "maps-v2"
 
 
-def test_originating_event_id_chain_persists_end_to_end() -> None:
+def test_originating_event_id_chain_persists_end_to_end(
+    pipeline_flavors: set[str],
+) -> None:
     """D149 — sensor-minted UUIDs + ``originating_event_id`` chain.
 
     The sensor mints the UUID for an LLM-call event at emission time
@@ -268,16 +277,17 @@ def test_originating_event_id_chain_persists_end_to_end() -> None:
     origin_event_id = str(uuid.uuid4())
     call_context = "tool_call"
 
-    assert _post_event(_baseline_session_start(sid, flavor)) == 200
+    assert _post_event(pipeline_flavors, _baseline_session_start(sid, flavor)) == 200
     assert (
         _post_event(
+            pipeline_flavors,
             _policy_decision_event(
                 sid,
                 flavor,
                 "policy_mcp_warn",
                 originating_event_id=origin_event_id,
                 originating_call_context=call_context,
-            )
+            ),
         )
         == 200
     )
@@ -298,28 +308,34 @@ def test_originating_event_id_chain_persists_end_to_end() -> None:
 # ----- D131 — ingestion validation rejects malformed payloads ------
 
 
-def test_policy_mcp_warn_missing_fingerprint_rejected() -> None:
+def test_policy_mcp_warn_missing_fingerprint_rejected(
+    pipeline_flavors: set[str],
+) -> None:
     sid = str(uuid.uuid4())
     flavor = f"test-mcp-pipeline-{uuid.uuid4().hex[:6]}"
     payload = _policy_decision_event(sid, flavor, "policy_mcp_warn")
     del payload["fingerprint"]
-    assert _post_event(payload) == 400
+    assert _post_event(pipeline_flavors, payload) == 400
 
 
-def test_policy_mcp_block_bad_decision_path_rejected() -> None:
+def test_policy_mcp_block_bad_decision_path_rejected(
+    pipeline_flavors: set[str],
+) -> None:
     sid = str(uuid.uuid4())
     flavor = f"test-mcp-pipeline-{uuid.uuid4().hex[:6]}"
     payload = _policy_decision_event(sid, flavor, "policy_mcp_block")
     payload["decision_path"] = "garbage"
-    assert _post_event(payload) == 400
+    assert _post_event(pipeline_flavors, payload) == 400
 
 
-def test_mcp_server_name_changed_missing_name_old_rejected() -> None:
+def test_mcp_server_name_changed_missing_name_old_rejected(
+    pipeline_flavors: set[str],
+) -> None:
     sid = str(uuid.uuid4())
     flavor = f"test-mcp-pipeline-{uuid.uuid4().hex[:6]}"
     payload = _name_changed_event(sid, flavor)
     del payload["name_old"]
-    assert _post_event(payload) == 400
+    assert _post_event(pipeline_flavors, payload) == 400
 
 
 # ----- D139 mcp_policy_user_remembered ---------------------------
@@ -339,12 +355,14 @@ def _user_remembered_event(session_id: str, flavor: str) -> dict:
     return payload
 
 
-def test_mcp_policy_user_remembered_lands_with_payload() -> None:
+def test_mcp_policy_user_remembered_lands_with_payload(
+    pipeline_flavors: set[str],
+) -> None:
     sid = str(uuid.uuid4())
     flavor = f"test-mcp-pipeline-{uuid.uuid4().hex[:6]}"
 
-    assert _post_event(_baseline_session_start(sid, flavor)) == 200
-    assert _post_event(_user_remembered_event(sid, flavor)) == 200
+    assert _post_event(pipeline_flavors, _baseline_session_start(sid, flavor)) == 200
+    assert _post_event(pipeline_flavors, _user_remembered_event(sid, flavor)) == 200
 
     event = _wait_for_event(sid, "mcp_policy_user_remembered", timeout=10.0)
     assert event is not None, "mcp_policy_user_remembered did not land within 10s"
@@ -354,12 +372,14 @@ def test_mcp_policy_user_remembered_lands_with_payload() -> None:
     assert payload.get("decided_at") == "2026-05-06T12:00:00Z"
 
 
-def test_mcp_policy_user_remembered_missing_decided_at_rejected() -> None:
+def test_mcp_policy_user_remembered_missing_decided_at_rejected(
+    pipeline_flavors: set[str],
+) -> None:
     sid = str(uuid.uuid4())
     flavor = f"test-mcp-pipeline-{uuid.uuid4().hex[:6]}"
     payload = _user_remembered_event(sid, flavor)
     del payload["decided_at"]
-    assert _post_event(payload) == 400
+    assert _post_event(pipeline_flavors, payload) == 400
 
 
 # ----- D140 step 6.6 A2 — mcp_server_attached live-context UPSERT --
@@ -421,14 +441,16 @@ def _wait_for_context_mcp_server(
     return None
 
 
-def test_mcp_server_attached_populates_session_context() -> None:
+def test_mcp_server_attached_populates_session_context(
+    pipeline_flavors: set[str],
+) -> None:
     """D140 — emitting mcp_server_attached after session_start
     populates sessions.context.mcp_servers within the SLA window so
     the dashboard SessionDrawer panel renders live."""
     sid = str(uuid.uuid4())
     flavor = f"test-mcp-attach-{uuid.uuid4().hex[:6]}"
 
-    assert _post_event(_baseline_session_start(sid, flavor)) == 200
+    assert _post_event(pipeline_flavors, _baseline_session_start(sid, flavor)) == 200
     # Wait for the session row to land so the post-attach poll
     # has something to read against. session_start emits no event-
     # type-keyed signal, so poll until GET /v1/sessions/<id>
@@ -445,10 +467,12 @@ def test_mcp_server_attached_populates_session_context() -> None:
         time.sleep(0.2)
     assert r.status_code == 200, f"session row never landed: {r.status_code}"
 
-    assert _post_event(_attached_event(sid, flavor)) == 200
+    assert _post_event(pipeline_flavors, _attached_event(sid, flavor)) == 200
 
     server = _wait_for_context_mcp_server(sid, "maps", timeout=10.0)
-    assert server is not None, "mcp_server_attached did not populate context.mcp_servers within 10s"
+    assert server is not None, (
+        "mcp_server_attached did not populate context.mcp_servers within 10s"
+    )
     assert server["name"] == "maps"
     assert server["server_url"] == "https://maps.example.com/sse"
     assert server["transport"] == "sse"
@@ -459,21 +483,21 @@ def test_mcp_server_attached_populates_session_context() -> None:
     assert server["protocol_version"] == "2025-11-25"
 
 
-def test_mcp_server_attached_idempotent_replay() -> None:
+def test_mcp_server_attached_idempotent_replay(pipeline_flavors: set[str]) -> None:
     """D140 — re-emitting the same mcp_server_attached payload must
     not create a duplicate entry in context.mcp_servers. Tuple dedup
     by (name, server_url) per the locked design."""
     sid = str(uuid.uuid4())
     flavor = f"test-mcp-attach-{uuid.uuid4().hex[:6]}"
 
-    assert _post_event(_baseline_session_start(sid, flavor)) == 200
-    assert _post_event(_attached_event(sid, flavor)) == 200
+    assert _post_event(pipeline_flavors, _baseline_session_start(sid, flavor)) == 200
+    assert _post_event(pipeline_flavors, _attached_event(sid, flavor)) == 200
     server = _wait_for_context_mcp_server(sid, "maps", timeout=10.0)
     assert server is not None
 
     # Replay the exact same payload — should be a no-op at the SQL
     # layer.
-    assert _post_event(_attached_event(sid, flavor)) == 200
+    assert _post_event(pipeline_flavors, _attached_event(sid, flavor)) == 200
     time.sleep(1.0)  # Let the worker drain.
 
     r = requests.get(
@@ -490,35 +514,39 @@ def test_mcp_server_attached_idempotent_replay() -> None:
     )
 
 
-def test_mcp_server_attached_distinct_tuples_both_land() -> None:
+def test_mcp_server_attached_distinct_tuples_both_land(
+    pipeline_flavors: set[str],
+) -> None:
     """D140 — tuple dedup is by (name, server_url). Distinct tuples
     are independent attaches and must both land in
     context.mcp_servers."""
     sid = str(uuid.uuid4())
     flavor = f"test-mcp-attach-{uuid.uuid4().hex[:6]}"
 
-    assert _post_event(_baseline_session_start(sid, flavor)) == 200
+    assert _post_event(pipeline_flavors, _baseline_session_start(sid, flavor)) == 200
     assert (
         _post_event(
+            pipeline_flavors,
             _attached_event(
                 sid,
                 flavor,
                 name="maps",
                 server_url_canonical="https://maps.example.com/sse",
                 fingerprint="aaaaaaaaaaaaaaaa",
-            )
+            ),
         )
         == 200
     )
     assert (
         _post_event(
+            pipeline_flavors,
             _attached_event(
                 sid,
                 flavor,
                 name="search",
                 server_url_canonical="https://search.example.com/sse",
                 fingerprint="bbbbbbbbbbbbbbbb",
-            )
+            ),
         )
         == 200
     )
@@ -570,15 +598,27 @@ def _list_session(session_id: str, flavor: str) -> dict | None:
     return None
 
 
-def test_listing_aggregates_all_four_mcp_policy_event_types() -> None:
+def test_listing_aggregates_all_four_mcp_policy_event_types(
+    pipeline_flavors: set[str],
+) -> None:
     sid = str(uuid.uuid4())
     flavor = f"test-mcp-pipeline-{uuid.uuid4().hex[:6]}"
 
-    assert _post_event(_baseline_session_start(sid, flavor)) == 200
-    assert _post_event(_policy_decision_event(sid, flavor, "policy_mcp_warn")) == 200
-    assert _post_event(_policy_decision_event(sid, flavor, "policy_mcp_block")) == 200
-    assert _post_event(_name_changed_event(sid, flavor)) == 200
-    assert _post_event(_user_remembered_event(sid, flavor)) == 200
+    assert _post_event(pipeline_flavors, _baseline_session_start(sid, flavor)) == 200
+    assert (
+        _post_event(
+            pipeline_flavors, _policy_decision_event(sid, flavor, "policy_mcp_warn")
+        )
+        == 200
+    )
+    assert (
+        _post_event(
+            pipeline_flavors, _policy_decision_event(sid, flavor, "policy_mcp_block")
+        )
+        == 200
+    )
+    assert _post_event(pipeline_flavors, _name_changed_event(sid, flavor)) == 200
+    assert _post_event(pipeline_flavors, _user_remembered_event(sid, flavor)) == 200
 
     # Wait for the worker to drain all four events into Postgres.
     for et in (

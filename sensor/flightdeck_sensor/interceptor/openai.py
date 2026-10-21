@@ -66,7 +66,10 @@ from __future__ import annotations
 
 import contextlib
 import copy
+import json
 import logging
+import time
+import types
 from typing import TYPE_CHECKING, Any
 
 from flightdeck_sensor.interceptor import base
@@ -106,26 +109,45 @@ def _is_async_client(client: Any) -> bool:
     return isinstance(client, _OrigAsyncOpenAI)
 
 
-def _record_usage_carried_by(
-    exc: BaseException, session: Session, provider: OpenAIProvider
-) -> None:
-    """Count the tokens of a completion an exception carries against the
-    session budget.
+def _billed_completion_of(exc: BaseException) -> Any | None:
+    """The completion a parse failure carries, when the provider answered.
 
     ``chat.completions.parse()`` raises ``LengthFinishReasonError`` after
-    a successful HTTP call whose output hit the token limit; the provider
-    bills that call, and the exception carries the completion with its
-    usage. The llm_error event reports the same counts as
-    ``partial_tokens_*`` (the classifier reads them off the exception);
-    this keeps the session's running total in step with it. Never raises.
+    the provider answered with HTTP 200 and billed the call: the output
+    hit the caller's ``max_tokens`` before the structured output was
+    complete. The exception carries that completion, usage included.
+    ``ContentFilterFinishReasonError`` and a schema failure carry none.
+    Never raises.
     """
-    completion = getattr(exc, "completion", None)
-    if completion is None:
-        return
     with contextlib.suppress(Exception):
-        usage = provider.extract_usage(completion)
-        if usage.total > 0:
-            session.record_usage(usage)
+        return getattr(exc, "completion", None)
+    return None
+
+
+def _answered_body(raw: Any) -> Any | None:
+    """The provider's answer behind a raw response whose parse failed, as
+    a plain object the intercept can meter: the JSON body's fields
+    (``usage``, ``model``, ``choices`` / ``output``) plus the response
+    ``headers``. ``None`` when the body is not a JSON object. Never
+    raises."""
+    try:
+        body = json.loads(raw.text)
+    except Exception:
+        return None
+    if not isinstance(body, dict):
+        return None
+    return types.SimpleNamespace(**body, headers=getattr(raw, "headers", None))
+
+
+class _ParseOutcome:
+    """What a wrapped ``parse()`` call kept aside for the intercept's
+    caller: the exception a billed-but-failed parse raised (reported as
+    the ``llm_error`` once the ``post_call`` is out) and, on the
+    raw-response path, the raw response the caller still receives."""
+
+    def __init__(self) -> None:
+        self.exc: BaseException | None = None
+        self.raw: Any | None = None
 
 
 def _call_parse(
@@ -135,31 +157,94 @@ def _call_parse(
     provider: OpenAIProvider,
     *,
     is_async: bool,
+    raw: bool = False,
 ) -> Any:
     """Run a ``parse()`` method through the non-streaming intercept.
 
     ``parse()`` never streams: the SDK posts with ``stream=False`` and
     parses the completion into the caller's ``response_format`` /
-    ``text_format`` type. A parse failure after a successful HTTP call
-    (``LengthFinishReasonError``, ``ContentFilterFinishReasonError``)
-    surfaces as an llm_error from the intercept, and the tokens the
-    exception carries still count against the session.
+    ``text_format`` type.
+
+    A call the provider answered (HTTP 200) and billed, but that still
+    failed for the caller, is reported as both: the ``post_call`` built
+    from the provider's answer (usage, model, its tool calls) and then
+    the ``llm_error`` (``http_status`` 200, terminal). To get the
+    ``post_call`` first, the wrapped ``real_fn`` hands that answer to the
+    intercept as the response and keeps the exception aside; the error
+    is emitted once the intercept has returned. The answer is the
+    completion the exception carries (``LengthFinishReasonError``); a
+    failure that carries none (``ContentFilterFinishReasonError``, a
+    schema failure) raises through the intercept and is reported as the
+    ``llm_error`` alone, since the direct path has no body to read.
+
+    On the raw-response path (``raw=True``) the SDK returns the
+    ``LegacyAPIResponse`` unparsed and would only fail at the caller's
+    ``.parse()``, where the sensor cannot see it; the intercept parses
+    it eagerly (the SDK caches a successful parse), reports a failure
+    as above from the exception's completion or else from the HTTP
+    body, and still returns the raw response to the caller, whose own
+    ``.parse()`` raises as it would without the sensor. The direct path
+    re-raises the kept exception, as the SDK did.
     """
+    outcome = _ParseOutcome()
+
+    def _answered(response: Any) -> Any:
+        """The response the intercept meters: the raw response's parsed
+        form when that fails, the provider's answer stands in."""
+        if not raw:
+            return response
+        try:
+            response.parse()
+            return response
+        except Exception as exc:
+            outcome.exc = exc
+            outcome.raw = response
+            answer = _billed_completion_of(exc)
+            if answer is None:
+                answer = _answered_body(response)
+            return answer if answer is not None else response
+
+    def _failed(exc: Exception) -> Any:
+        """The answer a failed call still carries, or re-raise."""
+        completion = _billed_completion_of(exc)
+        if completion is None:
+            raise exc
+        outcome.exc = exc
+        return completion
+
+    def _finish(response: Any, t0: float) -> Any:
+        if outcome.exc is None:
+            return response
+        latency_ms = int((time.monotonic() - t0) * 1000)
+        base._emit_error(session, provider, outcome.exc, latency_ms, kwargs)
+        if outcome.raw is not None:
+            return outcome.raw
+        raise outcome.exc
+
     if is_async:
 
-        async def _async_parse() -> Any:
+        async def _wrapped_async(**call_kwargs: Any) -> Any:
             try:
-                return await base.call_async(real_fn, kwargs, session, provider)
+                return _answered(await real_fn(**call_kwargs))
             except Exception as exc:
-                _record_usage_carried_by(exc, session, provider)
-                raise
+                return _failed(exc)
+
+        async def _async_parse() -> Any:
+            t0 = time.monotonic()
+            response = await base.call_async(_wrapped_async, kwargs, session, provider)
+            return _finish(response, t0)
 
         return _async_parse()
-    try:
-        return base.call(real_fn, kwargs, session, provider)
-    except Exception as exc:
-        _record_usage_carried_by(exc, session, provider)
-        raise
+
+    def _wrapped(**call_kwargs: Any) -> Any:
+        try:
+            return _answered(real_fn(**call_kwargs))
+        except Exception as exc:
+            return _failed(exc)
+
+    t0 = time.monotonic()
+    response = base.call(_wrapped, kwargs, session, provider)
+    return _finish(response, t0)
 
 
 class SensorCompletions:
@@ -233,7 +318,10 @@ class SensorCompletions:
 
         Same pre/post intercept as a non-streaming ``create()``; the
         returned ``ParsedChatCompletion`` carries the usual ``usage`` and
-        the request id the SDK stamps on it.
+        the request id the SDK stamps on it. A completion the provider
+        billed but the SDK could not parse (``LengthFinishReasonError``)
+        lands as a ``post_call`` followed by the ``llm_error``; see
+        :func:`_call_parse`.
         """
         return _call_parse(
             self._real.parse,
@@ -318,13 +406,19 @@ class _SensorRawResponseWrapper:
         return base.call(real_fn, kwargs, self._session, self._provider)
 
     def parse(self, **kwargs: Any) -> Any:
-        """Intercept the raw-response parse closure with the sensor pipeline."""
+        """Intercept the raw-response parse closure with the sensor pipeline.
+
+        The raw response is parsed eagerly so a billed-but-failed parse is
+        reported here rather than silently at the caller's ``.parse()``;
+        see :func:`_call_parse`.
+        """
         return _call_parse(
             self._real.parse,
             kwargs,
             self._session,
             self._provider,
             is_async=self._is_async,
+            raw=True,
         )
 
     def __getattr__(self, name: str) -> Any:
@@ -372,8 +466,11 @@ class SensorResponses:
 
     Token usage extraction is handled by :class:`OpenAIProvider` which
     falls back to ``usage.input_tokens`` / ``usage.output_tokens``
-    (the Responses API shape) when the chat shape is absent, and which
-    emits one ``tool_call`` per tool call item in ``response.output``.
+    (the Responses API shape) when the chat shape is absent, and whose
+    tool-invocation extraction covers the tool call items in
+    ``response.output``; the shared post-call path in
+    :mod:`flightdeck_sensor.interceptor.base` emits one ``tool_call``
+    event per invocation.
     """
 
     def __init__(

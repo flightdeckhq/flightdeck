@@ -255,7 +255,7 @@ flightdeck/
 │   │       └── crewai_mcp.py   # Opt-in fixup for the mcpadapt → CrewAI args_schema JSON Schema bug
 │   └── tests/
 │       ├── conftest.py         # Mock control plane + provider fixtures
-│       └── unit/               # 34 files
+│       └── unit/               # 35 files
 │           ├── test_agent_id.py
 │           ├── test_agent_type_validation.py
 │           ├── test_compat_crewai_mcp.py
@@ -276,6 +276,7 @@ flightdeck/
 │           ├── test_mcp_policy_emission_enriched.py
 │           ├── test_mcp_policy_enforcement.py
 │           ├── test_mcp_policy_enforcement_all_paths.py
+│           ├── test_openai_parse_responses.py
 │           ├── test_originating_event_id.py
 │           ├── test_patch.py
 │           ├── test_policy.py
@@ -700,7 +701,12 @@ class PromptContent:
 `char // 4`. It counts the chat `messages`; for a Responses request it
 counts `instructions` and `input` (a string, or a list of input items) as
 chat-shaped messages, and for an embeddings request the `input`, so every
-OpenAI call path gets a real pre-call estimate. Token reconciliation in
+OpenAI call path gets a real pre-call estimate. An inline binary payload
+(a `data:` URL, a `file_data` body) is dropped from the text count and
+priced at a fixed allowance of 1,000 tokens each, the order of what the
+provider charges for an image input, so a multi-megabyte image cannot
+estimate as hundreds of thousands of tokens and trip a policy limit
+before the call. Token reconciliation in
 `_post_call` prefers provider-reported
 usage over the pre-call estimate: `extract_usage(response)` for a
 non-streamed call, the usage the stream guard read from the stream for a
@@ -2465,10 +2471,15 @@ formula:
 
 Cache ratios follow Anthropic's published structure (90% discount on
 reads, 25% premium on writes) and apply uniformly to every model that
-reports cache tokens, OpenAI's prompt-cache reads included (OpenAI
-reports no cache writes, so its write term is always 0). Providers that
-report no cache tokens contribute 0 to both cache terms, so the formula
-collapses to `tokens_input * input_price + tokens_output * output_price`.
+reports cache tokens, OpenAI's prompt-cache reads included. The uniform
+read ratio understates OpenAI's cached-input cost: OpenAI discounts
+cached input by about 50%, not 90%, so `estimated_cost` runs low for an
+OpenAI session with cache reads. The OpenAI SDK exposes no cache-write
+count, so the write term is always 0 for OpenAI and cache-write charges
+on models that bill them are left out. Per-model cache ratios are a
+README Roadmap item (token and cost model). Providers that report no
+cache tokens contribute 0 to both cache terms, so the formula collapses
+to `tokens_input * input_price + tokens_output * output_price`.
 
 Pricing data lives in `pricing.yaml` at the repo root and is loaded at API
 startup via `api/internal/store/pricing.go`. Update the YAML when provider
@@ -3767,14 +3778,14 @@ plugin emits one per `UserPromptSubmit` hook fire. Carries:
 The primary LLM-call event. Carries `tokens_input`, `tokens_output`,
 `tokens_total`, `tokens_cache_read`, `tokens_cache_creation`,
 `latency_ms`, `model`, and `framework`. `tokens_cache_read` is the
-prompt-cache hit, a subset of `tokens_input`: Anthropic's
+prompt-cache read, a subset of `tokens_input`: Anthropic's
 `cache_read_input_tokens`, or OpenAI's `cached_tokens` usage detail
 (`prompt_tokens_details` on chat, `input_tokens_details` on Responses,
 on direct and streamed calls alike). `tokens_cache_creation` is
-Anthropic's cache write; OpenAI reports no cache-write count, so it is 0
-on OpenAI events. OpenAI's `reasoning_tokens` detail is not stored
-separately: it is already inside `tokens_output`. Operator-actionable
-enrichment additionally carries:
+Anthropic's cache write; the OpenAI SDK exposes no cache-write count, so
+it is 0 on OpenAI events. OpenAI's `reasoning_tokens` detail is not
+stored separately: it is already inside `tokens_output`.
+Operator-actionable enrichment additionally carries:
 
 - `estimated_via`: passthrough from the pre-call estimator so a row
   scanner sees the attribution without fetching the sibling pre_call.
@@ -3927,25 +3938,39 @@ the sensor does not assemble their content blocks. Carries
 the plugin or `capture_prompts=true` for the sensor), `tool_result` (when
 the next assistant turn shows the tool's output and capture is on).
 
+On the wire a sensor `tool_call` carries `tool_name` and `model`; under
+capture its input travels in the `event_content` envelope as
+`tool_input`, served by `GET /v1/events/:id/content`. The id a provider
+gives a call (a chat tool call's `id`, a Responses function call's
+`call_id`, a hosted or MCP item's id) stays in-process on
+`ToolInvocation.tool_id` and is not part of the event.
+
 For a chat completion the invocations are `choices[0].message.tool_calls`
-(`tool_name` is the function name, `tool_id` its `id`). For the Responses
-API (`responses.create()` / `.parse()` and their raw-response forms) the
+(`tool_name` is the function name). For the Responses API
+(`responses.create()` / `.parse()` and their raw-response forms) the
 sensor emits one `tool_call` per output item that is a call:
 
 - `function_call`, `mcp_call` and `custom_tool_call` carry the tool's own
   name as `tool_name`; the input is the JSON-decoded `arguments` (for a
   custom tool, `{"input": <text>}`, as those tools take free-form text).
-  A function call's `tool_id` is its `call_id`, the id that pairs it with
-  its output item, as a chat tool call's `id` does; an MCP call has only
-  its item id. The MCP server label is not carried on the event.
+  The MCP server label is not carried on the event (README Roadmap).
 - Hosted tools have no per-call name, so the item type is the
   `tool_name`: `web_search_call`, `file_search_call`,
   `code_interpreter_call`, `image_generation_call`, `computer_call`,
   `local_shell_call`, `shell_call`, `apply_patch_call`,
-  `tool_search_call`. The input is what the model asked the tool to do
-  (the search action, the queries, the code, the operation). Tool
-  results, such as image bytes, interpreter outputs and search results,
-  are outputs and are never captured as input; an image generation call
+  `tool_search_call`. The input is what the model asked the tool to do,
+  taken from an allowlist of fields per item: a web search action's
+  `query`, `queries`, `url` and `pattern`; the file-search `queries`; the
+  interpreter `code`; a computer action's coordinates, button, keys,
+  path and text; a local shell action's `command`, working directory,
+  timeout and user; a shell action's `commands`, timeout and output
+  limit; an apply-patch operation's `path` and `diff`; the tool-search
+  `arguments`. Nothing else on the item is input: a search action's
+  `sources` are the results, a local shell action's `env` is the
+  environment the command runs with, a computer call's pending safety
+  checks are the provider's verdicts, and tool results (image bytes,
+  interpreter outputs, file-search results, an MCP call's `output` and
+  `error`) are outputs; none is ever captured. An image generation call
   carries no input at all.
 - Messages, reasoning items, tool output items and MCP bookkeeping items
   (`mcp_list_tools`, `mcp_approval_request`, `mcp_approval_response`)
@@ -3983,9 +4008,9 @@ Structured error event with a 14-entry taxonomy:
 |---|---|---|---|---|
 | `rate_limit` | 429 | Request-rate limit exceeded | `rate_limit_error` | ✅ |
 | `quota_exceeded` | 429 | Billing / monthly quota exceeded | `quota_exceeded_error` | ❌ |
-| `context_overflow` | 400 / — | Input exceeded model context window; also OpenAI's `LengthFinishReasonError`, raised by `parse()` when the completion was cut off at the token limit (no HTTP status: the call itself succeeded) | `context_length_exceeded` | ❌ |
-| `content_filter` | 400 / — | Provider content filter blocked the request, or replaced the completion (OpenAI's `ContentFilterFinishReasonError` from `parse()`) | `content_filter_error` | ❌ |
-| `invalid_request` | 400 | Other validation failure | `invalid_request_error` | ❌ |
+| `context_overflow` | 400 | Input exceeded model context window | `context_length_exceeded` | ❌ |
+| `content_filter` | 400 / 200 | Provider content filter blocked the request, or replaced the completion (OpenAI's `ContentFilterFinishReasonError` from `chat.completions.parse()`: `http_status` 200, `provider_error_code` `content_filter`) | `content_filter_error` | ❌ |
+| `invalid_request` | 400 / 200 | Other validation failure; also OpenAI's `LengthFinishReasonError` from `chat.completions.parse()`, when the output hit the caller's `max_tokens` before the structured output was complete (`http_status` 200, `provider_error_code` `length`, message that `max_tokens` is too small for the schema) | `invalid_request_error` | ❌ |
 | `authentication` | 401 | Missing / invalid credential; OpenAI's `AuthenticationError` and its `OAuthError` subclass (a rejected OAuth bearer token) | `authentication_error` | ❌ |
 | `permission` | 403 | Credential lacks permission | `permission_error` | ❌ |
 | `not_found` | 404 | Resource (model, endpoint) not found | `not_found_error` | ❌ |
@@ -4013,13 +4038,33 @@ adds them to the in-process session counter that drives its local budget
 checks; server-side session totals, the `tokens` metric and
 `estimated_cost` do not include them: the session totals add every event
 that carries `tokens_total` (`post_call` and `embeddings`) and the
-analytics metrics read `post_call` events (README Roadmap). A
-`LengthFinishReasonError` from OpenAI's `parse()` is the non-streamed case
-of the same situation: the HTTP call succeeded and was billed, but the
-completion could not be parsed. Its `llm_error` carries the completion's
-usage as `partial_tokens_input` / `partial_tokens_output` (read off the
-exception) and the sensor adds those tokens to the in-process session
-counter in the same way.
+analytics metrics read `post_call` events (README Roadmap).
+
+A call the provider answered with HTTP 200 and billed, but that still
+failed for the caller, is reported as both a `post_call` and an
+`llm_error`. OpenAI's `chat.completions.parse()` raises
+`LengthFinishReasonError` when the completion arrived but the output hit
+the caller's `max_tokens` before the structured output was complete; the
+sensor emits the `post_call` from the completion the exception carries
+(its usage, model and tool calls; the request id is not stamped on a
+completion the SDK failed to parse) and then the `llm_error`
+(`http_status` 200, terminal, chained to that `post_call` through
+`originating_event_id`), and re-raises. The billed tokens therefore reach
+the session totals and the analytics metrics like any completed call.
+`ContentFilterFinishReasonError` (`content_filter`) and a completion that
+fails the caller's schema (a pydantic `ValidationError`: `other`,
+`provider_error_code` `schema`) carry no completion, so on the direct
+path they are reported as the `llm_error` alone, `http_status` 200. On
+the raw-response path (`with_raw_response.parse()`) the SDK hands back
+the unparsed response and would only fail at the caller's own
+`.parse()`, out of the sensor's sight; the sensor parses it eagerly (a
+successful parse is cached by the SDK), reports a failure as above, with
+the `post_call` built from the exception's completion or else from the
+HTTP body (usage, model, request id from the headers), and still returns
+the raw response, so the caller's `.parse()` raises as it would without
+the sensor. A failed parse never lands as a success-looking `post_call`
+of estimated tokens. `responses.parse()` returns an incomplete result
+without raising, so none of this applies to it.
 
 Operator-actionable retry-chain context:
 
@@ -5330,6 +5375,10 @@ Postgres) via `make test-integration`:
 - `test_sensor_streaming.py` — server-sent-event streams through the real
   sensor: in-stream usage, chunk counts, a mid-stream failure, OpenAI chat
   and Responses
+- `test_openai_responses_events.py` — a Responses hosted-tool `tool_call`
+  with its captured input served by the content endpoint, a `post_call`
+  carrying `provider_metadata.request_id`, and a `post_call` carrying a
+  prompt-cache read as `tokens_cache_read`
 
 ### Production-image smoke
 

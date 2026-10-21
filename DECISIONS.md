@@ -10140,87 +10140,161 @@ Marking the parallel-unsafe tests by module (the reconcile module is
 all exclusive, but most other modules mix one unsafe test with many
 safe ones).
 
-## D189 -- Responses tool-call items become tool_call events, and OpenAI usage details map onto the existing token fields
+---
+
+## D189 -- OpenAI parse and raw-response calls are metered, Responses tool-call items become tool_call events, and OpenAI usage details map onto the existing token fields
 
 **Date:** 2026-10-21
 
-**Decision:** The OpenAI interceptor meters `chat.completions.parse()`,
-`responses.parse()` and the `with_raw_response` forms of the chat and
-Responses `create` / `parse` calls through the same non-streaming
-intercept as `create()`. Every Responses output item that is a tool call
-emits one `tool_call` event in the shape chat tool calls use.
-`function_call`, `mcp_call` and `custom_tool_call` carry the tool's own
-name; hosted tools (`web_search_call`, `file_search_call`,
-`code_interpreter_call`, `image_generation_call`, `computer_call`,
-`local_shell_call`, `shell_call`, `apply_patch_call`,
-`tool_search_call`) carry the item type as `tool_name`. A function
-call's `tool_id` is its `call_id`; an MCP call's is its item id, and
-`mcp_call.server_label` is not carried. The captured input is what the
-model asked the tool to do; tool results (image bytes, interpreter
-outputs, file-search results) are never captured as input. OpenAI's
-`cached_tokens` usage detail (`prompt_tokens_details` on chat,
-`input_tokens_details` on Responses) maps onto `cache_read_tokens` and
-so onto `tokens_cache_read`; `tokens_cache_creation` stays 0 for OpenAI;
-`reasoning_tokens` is not stored. `OAuthError` classifies as
-`authentication`, `LengthFinishReasonError` as `context_overflow` and
-`ContentFilterFinishReasonError` as `content_filter`; the length error's
-`llm_error` carries the completion's usage as `partial_tokens_input` /
-`partial_tokens_output`, read off the exception by the classifier, and
-the interceptor adds those tokens to the in-process session counter. The
-request id is read from the `_request_id` the SDK stamps on every parsed
-object when no raw-response headers are reachable. The capture path dumps
-`Parsed*` results with pydantic's serializer warnings off.
+**Decision:**
+
+**Parse and raw-response metering.** The OpenAI interceptor meters
+`chat.completions.parse()`, `responses.parse()` and the
+`with_raw_response` forms of the chat and Responses `create` / `parse`
+calls through the same non-streaming intercept as `create()`. The
+`.stream()` helpers and `with_streaming_response` on both resources
+stay unintercepted.
+
+**Billed calls that fail for the caller.** D188's rule applies: when
+the provider answered with HTTP 200 and billed the call but it still
+failed for the caller, the sensor emits the `post_call` with the billed
+usage and then the `llm_error` (`http_status` 200, terminal, chained to
+the `post_call`). For `chat.completions.parse()` the failures are
+`LengthFinishReasonError` (the completion the exception carries is the
+`post_call`), `ContentFilterFinishReasonError` and a completion that
+fails the caller's schema (no completion on the exception: on the
+direct path the `llm_error` alone, since the SDK has consumed the
+body). On the raw-response path the sensor parses the raw response
+eagerly, builds the `post_call` from the exception's completion or from
+the HTTP body, emits the `llm_error`, and returns the raw response to
+the caller unchanged; a failed parse never lands as a success-looking
+`post_call` of estimated tokens.
+
+**Classification.** `OAuthError` classifies as `authentication`.
+`LengthFinishReasonError` classifies as `invalid_request` with
+`provider_error_code` `length` and a sensor-authored message that
+`max_tokens` is too small for the schema; `ContentFilterFinishReasonError`
+as `content_filter` (`content_filter`); a schema failure as `other`
+(`schema`). All three record `http_status` 200.
+
+**Responses tool calls.** Every Responses output item that is a tool
+call emits one `tool_call` event in the shape chat tool calls use:
+`tool_name` and `model` on the event, the input in the `event_content`
+envelope (`tool_input`) when capture is on. `function_call`, `mcp_call`
+and `custom_tool_call` carry the tool's own name; hosted tools
+(`web_search_call`, `file_search_call`, `code_interpreter_call`,
+`image_generation_call`, `computer_call`, `local_shell_call`,
+`shell_call`, `apply_patch_call`, `tool_search_call`) carry the item
+type as `tool_name`. The provider's id for a call (a function call's
+`call_id`, an MCP or hosted item's id) is kept in-process on
+`ToolInvocation.tool_id` and is not shipped on the event; neither is
+`mcp_call.server_label`. The captured input of a hosted tool is an
+allowlist of the fields that are the model's request to the tool; a
+search action's `sources`, a shell action's `env`, a computer call's
+pending safety checks and every tool result are never captured.
+
+**Usage details.** OpenAI's `cached_tokens` usage detail
+(`prompt_tokens_details` on chat, `input_tokens_details` on Responses)
+maps onto `cache_read_tokens` and so onto `tokens_cache_read`, on direct
+and streamed calls; `tokens_cache_creation` stays 0 for OpenAI;
+`reasoning_tokens` is not stored.
+
+**Request id and estimate.** When no raw-response headers are
+reachable, the request id is read from the `_request_id` the SDK stamps
+on every parsed object; a request id is bounded to 128 characters. The
+pre-call estimate counts a Responses request's `instructions` and
+`input`, and prices an inline binary payload (`data:` URL, `file_data`)
+at a fixed 1,000-token allowance instead of its bytes.
+
+**Serializer warnings.** The capture path dumps `Parsed*` results with
+pydantic's serializer warnings off.
 
 **Reasoning:** Chat tool calls already emit one `tool_call` per
-invocation with `tool_name`, `tool_id` and, under capture, `tool_input`;
-Responses items are the same thing in another shape, and one event shape
-keeps the dashboard's tool filters and the `event_content.tool_input`
-column working unchanged. Hosted tools have no per-call name, and the
-item type is the provider's own vocabulary for them, so it is preserved
-verbatim rather than mapped onto invented names. `call_id` is the id the
-API pairs a function call with its output item, which is what a chat tool
-call's `id` is; the item id (`fc_...`) pairs with nothing. Tool results
-are outputs: an image generation result is base64 image data, and
-interpreter outputs and search results can be large; capturing them as
-"input" would mislabel them and bloat `event_content` for no operator
-value. `reasoning_tokens` is already counted inside `output_tokens` (the
+invocation with `tool_name` and, under capture, `tool_input`; Responses
+items are the same thing in another shape, and one event shape keeps
+the dashboard's tool filters and the `event_content.tool_input` column
+working unchanged. A new wire field (the call id, the MCP server label)
+is a payload change that belongs with the token and identity work, not
+with a coverage change, so the id stays in-process and the server label
+is a Roadmap item. Hosted tools have no per-call name, and the item
+type is the provider's own vocabulary for them, so it is preserved
+verbatim rather than mapped onto invented names. The function call's
+`call_id` is the id the API pairs a call with its output item, which is
+what a chat tool call's `id` is, so it is the right in-process id to
+keep; the item id (`fc_...`) pairs with nothing. The input allowlist
+exists because dumping an action whole captures what the provider put
+on it: a completed search action carries its `sources` (the results),
+a local shell action carries the `env` the command runs with, and a
+computer call its safety verdicts; capturing those under "input" would
+mislabel them, bloat `event_content`, and on the shell path copy
+secrets the model set into the environment.
+
+`reasoning_tokens` is already counted inside `output_tokens` (the
 provider bills it there), so storing it again would double-count on any
 sum, and there is no wire field for it; a separate field is a schema
-change that belongs with the token-model work. OpenAI's SDK exposes no
-cache-write count at all (`PromptTokensDetails` carries `audio_tokens`
-and `cached_tokens`; `InputTokensDetails` only `cached_tokens`), so
-there is nothing to map onto `tokens_cache_creation`. `cached_tokens` is
-a subset of `prompt_tokens` / `input_tokens`, which is exactly the
-`TokenUsage` contract for `cache_read_tokens`, so the existing
-`estimated_cost` formula applies to it unchanged; the uniform 90% read
-discount is Anthropic's ratio, and OpenAI's actual cached-input discount
-varies by model (50% to 90%), so OpenAI cost estimates with cache hits
-run slightly low until the pricing table carries per-provider ratios. A
-`LengthFinishReasonError` is raised by `parse()` after a 200 response the
-provider billed; dropping the tokens would under-count the session the
-way streamed aborts once did, and the stream-abort path already defines
-the `partial_tokens_*` fields and the in-process counter rule, so the
-non-streamed case follows it. The classifier reads the usage because
-`_emit_error` in the shared guard core builds the error payload from the
-classification and that module is owned by the concurrent re-entrancy
-work; the interceptor records the usage after the intercept re-raises
-for the same reason. The `server_label` of an MCP call needs a field on
-`ToolInvocation` and a line in the shared `_post_call`, both in that
-module, so it is deferred to the litellm / base work. The SDK's generic
-`Parsed*` models trip pydantic serializer warnings on every
-`model_dump()`, which surfaced as UserWarnings in the agent's process;
-the sensor must not add noise to the hot path.
+change that belongs with the token-model work. The OpenAI SDK exposes
+no cache-write count at all (`PromptTokensDetails` carries
+`audio_tokens` and `cached_tokens`; `InputTokensDetails` only
+`cached_tokens`), so there is nothing to map onto
+`tokens_cache_creation`, and cache-write charges on models that bill
+them are left out. `cached_tokens` is a subset of `prompt_tokens` /
+`input_tokens`, which is exactly the `TokenUsage` contract for
+`cache_read_tokens`, so the existing `estimated_cost` formula applies to
+it unchanged. That formula applies the uniform cache-read ratio to
+OpenAI reads, which understates OpenAI's cached-input cost: OpenAI
+discounts cached input by about 50%, not 90%. `estimated_cost` for an
+OpenAI session with cache reads therefore shifts on upgrade and runs
+low until per-model cache ratios land (README Roadmap, token and cost
+model), which this change does not touch.
 
-**Rejected alternatives:** Naming hosted tool calls by the tool
-configured in the request (`web_search_preview` versus `web_search`
-differ by SDK version and several hosted items carry no reference to
-their tool). Using the item id as every call's `tool_id` (breaks the
-pairing with `function_call_output` that chat tool calls already have).
-Folding `server_label` into `tool_name` (`github/list_issues`) or into
+A `LengthFinishReasonError` means the output hit the caller's
+`max_tokens` before the structured output was complete: the request was
+mis-specified for the schema, which is what `invalid_request` describes;
+`context_overflow` means the input exceeded the context window, which
+did not happen. The 14-entry taxonomy has no closer value, and adding
+one is a vocabulary change. A null `http_status` on these errors would
+read as "no response", the connection-failure case; 200 states what
+happened. The post_call-plus-llm_error pair follows D188 because the
+provider billed the call: the tokens belong in the session totals and
+the analytics metrics, which read `post_call` events, and the
+`partial_tokens_*` fields describe an aborted stream, which these calls
+are not. The raw-response path is parsed eagerly because the SDK
+defers parsing to the caller's `.parse()`, where the sensor cannot see
+it; without that, `extract_usage` swallowed the failure and filed a
+success-looking `post_call` of estimated tokens with no `llm_error`.
+The caller still receives the raw response, so the SDK's contract
+holds. Classification stays a pure function of the exception and the
+interceptor owns session accounting, which is why the classifier
+supplies the status, code and message while the interceptor arranges
+the `post_call` before the error. The SDK's generic `Parsed*` models
+trip pydantic serializer warnings on every `model_dump()`, which
+surfaced as UserWarnings in the agent's process; the sensor must not
+add noise to the hot path. A 2 MB inline image counted as text would
+estimate as hundreds of thousands of tokens and could trip a policy
+limit before the call; the provider prices an image by its detail
+level, so a fixed allowance is the honest estimate.
+
+**Rejected alternatives:** Shipping `tool_id` on the `tool_call` event
+now (a payload change; it belongs with the token and identity work).
+Naming hosted tool calls by the tool configured in the request
+(`web_search_preview` versus `web_search` differ by SDK version and
+several hosted items carry no reference to their tool). Keeping the item
+id as every call's in-process id (loses the pairing with
+`function_call_output` that a chat tool call's `id` has). Folding
+`server_label` into `tool_name` (`github/list_issues`) or into
 `tool_input` (changes the vocabulary or pollutes the model's arguments).
-Storing `reasoning_tokens` under `provider_metadata` (a free-form slot
-for rate-limit headers, not a token field; a sum over it would still
-double-count). Emitting a metered `post_call` alongside the length
-error's `llm_error` (one billed call would appear as both a success and
-an error). Suppressing the pydantic warnings with a `warnings` filter in
-the agent's process (global state the sensor has no business changing).
+Dumping a hosted action whole and stripping known result fields
+(a denylist misses the next field the provider adds; the allowlist
+fails closed). Storing `reasoning_tokens` under `provider_metadata` (a
+free-form slot for rate-limit headers, not a token field; a sum over it
+would still double-count). Carrying the billed usage of a length
+failure as `partial_tokens_*` on the `llm_error` (the call is complete
+and billed, not aborted, and the session totals and analytics would
+never see the tokens). Classifying the length failure as
+`context_overflow` (the input fitted; the output limit was the caller's)
+or adding a vocabulary value for it. Recording a null `http_status` on
+the parse-failure errors (indistinguishable from a connection failure).
+Raising the parse failure at `with_raw_response.parse()` instead of
+returning the raw response (changes the SDK's contract for the caller).
+Suppressing the pydantic warnings with a `warnings` filter in the
+agent's process (global state the sensor has no business changing).

@@ -19,6 +19,22 @@ _TOKENS_PER_MESSAGE = 4
 _TOKENS_REPLY_PRIMING = 2
 _CHARS_PER_TOKEN_ESTIMATE = 4
 
+# Token allowance per binary input payload (an inline ``data:`` URL or a
+# ``file_data`` body) in a request. OpenAI prices an image input by its
+# detail level rather than by its bytes (up to about 1,100 tokens at high
+# detail on the 4o-class models), so the payload is dropped from the text
+# count and this allowance is added per payload instead; counted as text,
+# a 2 MB image would estimate as hundreds of thousands of tokens and could
+# trip a policy limit before the call.
+_BINARY_INPUT_TOKEN_ALLOWANCE = 1_000
+_DATA_URL_PREFIX = "data:"
+_BINARY_INPUT_KEYS = frozenset({"file_data"})
+
+# Longest request id the sensor reports. OpenAI's ids are 36 characters
+# (``req_`` plus 32 hex digits); 128 leaves room for other formats while
+# bounding a malformed or hostile header before it reaches the event.
+_REQUEST_ID_MAX_LEN = 128
+
 
 def _try_tiktoken_count(messages: list[Any], model: str) -> int | None:
     """Attempt to count tokens using tiktoken if installed.
@@ -64,22 +80,35 @@ _RESPONSES_TERMINAL_EVENTS = frozenset(
 # provider's own vocabulary, preserved verbatim.
 _RESPONSES_NAMED_CALL_TYPES = frozenset({"function_call", "mcp_call", "custom_tool_call"})
 
-# Hosted tool call ``type`` -> the attribute that carries what the model
-# asked the tool to do, captured as the ``tool_call`` input. Tool results
-# (``image_generation_call.result`` is base64 image data,
-# ``code_interpreter_call.outputs``, ``file_search_call.results``) are
-# outputs, never captured as input. ``image_generation_call`` carries no
-# input at all: the prompt lives in the conversation, not on the item.
-_RESPONSES_HOSTED_INPUT_ATTR: dict[str, str | None] = {
-    "web_search_call": "action",
-    "file_search_call": "queries",
-    "code_interpreter_call": "code",
+# Hosted tool call ``type`` -> (the attribute that carries what the model
+# asked the tool to do, the fields of it that are that request). Only the
+# listed fields are captured as the ``tool_call`` input; an empty field
+# set means the attribute is the input itself (a list of queries, the
+# code, the tool-search arguments). Everything else on an item or its
+# action is not input: a web search action's ``sources`` are the search
+# results, a local shell action's ``env`` is the environment the command
+# runs with, a computer call's ``pending_safety_checks`` are the
+# provider's verdicts, and tool results (``image_generation_call.result``
+# is base64 image data, ``code_interpreter_call.outputs``,
+# ``file_search_call.results``, ``mcp_call.output`` / ``error``) are
+# outputs. ``image_generation_call`` carries no input at all: the prompt
+# lives in the conversation, not on the item.
+_RESPONSES_HOSTED_INPUT_FIELDS: dict[str, tuple[str, frozenset[str]] | None] = {
+    "web_search_call": ("action", frozenset({"type", "query", "queries", "url", "pattern"})),
+    "file_search_call": ("queries", frozenset()),
+    "code_interpreter_call": ("code", frozenset()),
     "image_generation_call": None,
-    "computer_call": "action",
-    "local_shell_call": "action",
-    "shell_call": "action",
-    "apply_patch_call": "operation",
-    "tool_search_call": "arguments",
+    "computer_call": (
+        "action",
+        frozenset({"type", "button", "x", "y", "keys", "path", "scroll_x", "scroll_y", "text"}),
+    ),
+    "local_shell_call": (
+        "action",
+        frozenset({"type", "command", "working_directory", "timeout_ms", "user"}),
+    ),
+    "shell_call": ("action", frozenset({"commands", "timeout_ms", "max_output_length"})),
+    "apply_patch_call": ("operation", frozenset({"type", "path", "diff"})),
+    "tool_search_call": ("arguments", frozenset()),
 }
 
 
@@ -127,24 +156,30 @@ def _decode_arguments(args_raw: Any) -> dict[str, Any]:
 
 def _hosted_tool_input(item: Any, item_type: str) -> dict[str, Any]:
     """The input of a hosted tool call item as a dict (``{}`` when the
-    item carries none)."""
-    attr = _RESPONSES_HOSTED_INPUT_ATTR.get(item_type)
-    if attr is None:
+    item carries none): the allowlisted fields of the item's request
+    attribute, see :data:`_RESPONSES_HOSTED_INPUT_FIELDS`."""
+    spec = _RESPONSES_HOSTED_INPUT_FIELDS.get(item_type)
+    if spec is None:
         return {}
+    attr, fields = spec
     value = _field(item, attr)
     if value is None:
         return {}
-    if isinstance(value, dict):
-        return value
-    dump = getattr(value, "model_dump", None)
-    if callable(dump):
-        with contextlib.suppress(Exception):
-            # Only what the model set: the SDK's action models carry
-            # every variant's optional field as None otherwise.
-            dumped = dump(exclude_none=True)
-            if isinstance(dumped, dict):
-                return dumped
-    return {attr: value}
+    if not fields:
+        if attr == "arguments":
+            return _decode_arguments(value)
+        return {attr: value}
+    dumped: Any = value if isinstance(value, dict) else None
+    if dumped is None:
+        dump = getattr(value, "model_dump", None)
+        if callable(dump):
+            with contextlib.suppress(Exception):
+                # Only what the model set: the SDK's action models carry
+                # every variant's optional field as None otherwise.
+                dumped = dump(exclude_none=True)
+    if not isinstance(dumped, dict):
+        return {}
+    return {key: item_value for key, item_value in dumped.items() if key in fields}
 
 
 def _responses_input_as_messages(request_kwargs: dict[str, Any]) -> list[Any]:
@@ -163,6 +198,43 @@ def _responses_input_as_messages(request_kwargs: dict[str, Any]) -> list[Any]:
         for item in inp:
             out.append(item if isinstance(item, dict) else {"role": "user", "content": str(item)})
     return out
+
+
+def _without_binary_payloads(value: Any) -> tuple[Any, int]:
+    """``value`` with every inline binary payload (a ``data:`` URL string,
+    a ``file_data`` body) replaced by an empty string, and the number of
+    payloads removed. Containers are copied; everything else is returned
+    as is."""
+    if isinstance(value, str):
+        return ("", 1) if value.startswith(_DATA_URL_PREFIX) else (value, 0)
+    if isinstance(value, dict):
+        out: dict[Any, Any] = {}
+        removed = 0
+        for key, item in value.items():
+            if key in _BINARY_INPUT_KEYS and isinstance(item, str):
+                out[key] = ""
+                removed += 1
+                continue
+            out[key], n = _without_binary_payloads(item)
+            removed += n
+        return out, removed
+    if isinstance(value, (list, tuple)):
+        items: list[Any] = []
+        removed = 0
+        for item in value:
+            cleaned, n = _without_binary_payloads(item)
+            items.append(cleaned)
+            removed += n
+        return items, removed
+    return value, 0
+
+
+def _clamped_request_id(value: Any) -> str | None:
+    """A request id bounded to ``_REQUEST_ID_MAX_LEN``; ``None`` when the
+    value is not a non-empty string."""
+    if isinstance(value, str) and value:
+        return value[:_REQUEST_ID_MAX_LEN]
+    return None
 
 
 class OpenAIProvider:
@@ -185,15 +257,19 @@ class OpenAIProvider:
             messages = request_kwargs.get("messages") or _responses_input_as_messages(
                 request_kwargs
             )
+            # Inline images and file bodies are priced by the provider at
+            # a fixed allowance each, not by their bytes.
+            messages, binary_payloads = _without_binary_payloads(messages)
+            allowance = binary_payloads * _BINARY_INPUT_TOKEN_ALLOWANCE
             model = request_kwargs.get("model", "")
 
             count = _try_tiktoken_count(messages, model)
             if count is not None:
-                return count, "tiktoken"
+                return count + allowance, "tiktoken"
 
             tools = request_kwargs.get("tools", [])
             text = str(messages) + str(tools)
-            return len(text) // _CHARS_PER_TOKEN_ESTIMATE, "heuristic"
+            return len(text) // _CHARS_PER_TOKEN_ESTIMATE + allowance, "heuristic"
         except Exception:
             return 0, "none"
 
@@ -218,8 +294,8 @@ class OpenAIProvider:
                 if headers:
                     break
             if not headers:
-                request_id = getattr(obj, "_request_id", None)
-                if isinstance(request_id, str) and request_id:
+                request_id = _clamped_request_id(getattr(obj, "_request_id", None))
+                if request_id is not None:
                     return {"request_id": request_id}
                 return None
             getter = getattr(headers, "get", None)
@@ -242,6 +318,10 @@ class OpenAIProvider:
                         out[dst] = int(val)
                     except (ValueError, TypeError):
                         out[dst] = val
+                elif dst == "request_id":
+                    clamped = _clamped_request_id(val)
+                    if clamped is not None:
+                        out[dst] = clamped
                 else:
                     out[dst] = val
             return out or None
@@ -312,16 +392,19 @@ class OpenAIProvider:
         ``completion_tokens`` or Responses ``input_tokens`` /
         ``output_tokens``) off a usage object. Never raises.
 
-        The prompt-cache hit the provider reports under
+        The prompt-cache read the provider reports under
         ``prompt_tokens_details.cached_tokens`` (chat) or
         ``input_tokens_details.cached_tokens`` (Responses) lands in
-        ``cache_read_tokens``. OpenAI has no cache-write count, so
-        ``cache_creation_tokens`` stays ``0``; ``reasoning_tokens`` has no
-        ``TokenUsage`` field and is part of ``output_tokens`` already.
+        ``cache_read_tokens``. The OpenAI SDK exposes no cache-write
+        count, so ``cache_creation_tokens`` stays ``0``;
+        ``reasoning_tokens`` has no ``TokenUsage`` field and is part of
+        ``output_tokens`` already.
         """
         try:
-            prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
-            completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+            # ``_field`` so a usage object and a usage dict (the JSON body
+            # of a raw response whose parse failed) read the same.
+            prompt_tokens = _field(usage, "prompt_tokens") or 0
+            completion_tokens = _field(usage, "completion_tokens") or 0
 
             # Responses API fallback: its usage object uses
             # input_tokens / output_tokens rather than
@@ -330,8 +413,8 @@ class OpenAIProvider:
             # response with a zero prompt_tokens (unlikely but
             # possible) is never silently overwritten.
             if prompt_tokens == 0 and completion_tokens == 0:
-                input_tokens = getattr(usage, "input_tokens", 0) or 0
-                output_tokens = getattr(usage, "output_tokens", 0) or 0
+                input_tokens = _field(usage, "input_tokens") or 0
+                output_tokens = _field(usage, "output_tokens") or 0
                 if input_tokens or output_tokens:
                     return TokenUsage(
                         input_tokens=input_tokens,
@@ -530,7 +613,7 @@ class OpenAIProvider:
         ``function.name`` / ``function.arguments`` (JSON string).
         Responses API: the ``response.output`` items that are calls --
         ``function_call``, ``mcp_call``, ``custom_tool_call`` and the
-        hosted tools (see :data:`_RESPONSES_HOSTED_INPUT_ATTR`).
+        hosted tools (see :data:`_RESPONSES_HOSTED_INPUT_FIELDS`).
         Returns an empty list on any failure. Never raises.
         """
         try:
@@ -610,7 +693,7 @@ class OpenAIProvider:
                     # a chat tool call's ``id`` does; MCP calls have only
                     # the item id.
                     tool_id = _field(item, "call_id") or _field(item, "id")
-                elif item_type in _RESPONSES_HOSTED_INPUT_ATTR:
+                elif item_type in _RESPONSES_HOSTED_INPUT_FIELDS:
                     name = item_type
                     tool_input = _hosted_tool_input(item, item_type)
                     tool_id = _field(item, "id")

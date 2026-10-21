@@ -43,7 +43,7 @@ MODEL = "gpt-4o-mini"
 EXPECTED_STREAMED_CALLS = 4
 HI = [{"role": "user", "content": "hi"}]
 # OpenAI caches prompt prefixes from 1024 tokens; this prompt is well
-# past that so its second send can report a cache hit under
+# past that so its second send can report a prompt-cache read under
 # prompt_tokens_details.cached_tokens, which the sensor maps to
 # tokens_cache_read.
 LONG_PROMPT = ("The quick brown fox jumps over the lazy dog near the river bank. " * 220) + (
@@ -65,6 +65,9 @@ WEATHER_TOOL = {
 # of the new paths to land; same order of magnitude as the streamed wait,
 # the drain and the worker batch are the only latency.
 NEW_PATH_EVENTS_DEADLINE_S = 20.0
+# Poll gap for that wait: quick enough to notice the last event promptly,
+# slow enough not to hammer the API.
+NEW_PATH_EVENTS_POLL_S = 0.5
 
 
 class CityAnswer(BaseModel):
@@ -188,6 +191,25 @@ def main() -> None:
         int((time.monotonic() - t0) * 1000),
         f"{parsed.usage.total_tokens} tokens, request_id={parse_rid}",
     )
+
+    # A billed call that fails for the caller: five output tokens cannot
+    # hold the JSON object, so the completion arrives (HTTP 200, billed)
+    # with finish_reason=length and the SDK raises. The sensor emits the
+    # post_call from that completion and then the llm_error.
+    t0 = time.monotonic()
+    length_raised = False
+    try:
+        openai.OpenAI().chat.completions.parse(
+            model=MODEL, max_tokens=5, messages=question, response_format=CityAnswer,
+        )
+    except openai.LengthFinishReasonError:
+        length_raised = True
+    print_result(
+        "OpenAI().chat.completions.parse (max_tokens too small)", length_raised,
+        int((time.monotonic() - t0) * 1000), "LengthFinishReasonError raised",
+    )
+    if not length_raised:
+        raise AssertionError("parse() with max_tokens=5 did not raise LengthFinishReasonError")
 
     # Structured outputs on the Responses API.
     t0 = time.monotonic()
@@ -343,7 +365,7 @@ def main() -> None:
             break
         if time.monotonic() > deadline:
             break
-        time.sleep(0.5)
+        time.sleep(NEW_PATH_EVENTS_POLL_S)
     for label, rid in wanted.items():
         event = by_rid.get(rid)
         metered = bool(event) and (event.get("tokens_input") or 0) > 0 \
@@ -370,6 +392,36 @@ def main() -> None:
     )
     if not tools_ok:
         raise AssertionError(f"missing Responses tool_call events; saw {tool_names!r}")
+
+    # The billed-but-failed parse: an llm_error with http_status 200 and
+    # provider_error_code "length", chained to a metered post_call.
+    length_errors = [
+        e for e in events
+        if e.get("event_type") == "llm_error"
+        and ((e.get("payload") or {}).get("error") or {}).get("provider_error_code") == "length"
+    ]
+    length_err = (length_errors[-1].get("payload") or {}) if length_errors else {}
+    origin = length_err.get("originating_event_id")
+    billed = next((e for e in events if e.get("id") == origin), None)
+    length_ok = (
+        bool(length_errors)
+        and (length_err.get("error") or {}).get("error_type") == "invalid_request"
+        and (length_err.get("error") or {}).get("http_status") == 200
+        and billed is not None
+        and billed.get("event_type") == "post_call"
+        and (billed.get("tokens_input") or 0) > 0
+        and (billed.get("tokens_output") or 0) > 0
+    )
+    print_result(
+        "billed-but-failed parse landed as post_call + llm_error", length_ok, 0,
+        f"error={length_err.get('error')!r} "
+        f"post_call tokens={(billed or {}).get('tokens_input')}/{(billed or {}).get('tokens_output')}",
+    )
+    if not length_ok:
+        raise AssertionError(
+            f"length failure not reported as post_call + llm_error; "
+            f"errors={length_errors!r} billed={billed!r}",
+        )
 
     # Embeddings event-shape + capture round-trip. Two embedding events
     # land (single + list); fetch_events_for_session returns as soon as
@@ -425,20 +477,28 @@ def main() -> None:
     if not auth_raised:
         raise AssertionError("auth-error call did not raise")
 
-    events = fetch_events_for_session(
-        session_id, expect_event_types=["llm_error"], timeout_s=8.0,
-    )
-    errors = [e for e in events if e.get("event_type") == "llm_error"]
-    if not errors:
-        raise AssertionError(f"no llm_error observed; events={events!r}")
-    err = (errors[-1].get("payload") or {}).get("error") or {}
-    is_auth = err.get("error_type") == "authentication"
+    # Several llm_errors exist by now (the billed-but-failed parse above),
+    # so poll for the authentication one rather than for any llm_error.
+    deadline = time.monotonic() + NEW_PATH_EVENTS_DEADLINE_S
+    error_types: list[str | None] = []
+    while True:
+        events = fetch_events_for_session(
+            session_id, expect_event_types=["llm_error"], timeout_s=5.0,
+        )
+        error_types = [
+            ((e.get("payload") or {}).get("error") or {}).get("error_type")
+            for e in events
+            if e.get("event_type") == "llm_error"
+        ]
+        if "authentication" in error_types or time.monotonic() > deadline:
+            break
+        time.sleep(NEW_PATH_EVENTS_POLL_S)
+    is_auth = "authentication" in error_types
     print_result(
-        "auth-error classified", is_auth, 0,
-        f"error_type={err.get('error_type')!r}",
+        "auth-error classified", is_auth, 0, f"llm_error types={error_types!r}",
     )
     if not is_auth:
-        raise AssertionError(f"auth-error fell through: {err!r}")
+        raise AssertionError(f"auth-error fell through; llm_error types={error_types!r}")
 
     flightdeck_sensor.teardown()
 

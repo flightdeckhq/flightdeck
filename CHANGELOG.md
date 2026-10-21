@@ -5,9 +5,10 @@ All notable changes to Flightdeck are documented here.
 ## Unreleased
 
 Correctness patch for the Claude Code plugin, the sensor's streaming
-token accounting and its MCP dependency, the worker's handling of
-short-lived and re-attached sessions, a pricing refresh, and a
-documentation truth-up. One schema migration (000027) adds two nullable
+token accounting, its OpenAI coverage (structured outputs, the Responses
+raw-response path, Responses tool calls and prompt-cache reads) and its
+MCP dependency, the worker's handling of short-lived and re-attached
+sessions, a pricing refresh, and a documentation truth-up. One schema migration (000027) adds two nullable
 columns to `sessions`; the workers apply it at start-up. **Upgrade
 note:** marketplace installs of the plugin do not update themselves; run
 `claude plugin update flightdeck@flightdeck-plugins` after upgrading the
@@ -15,30 +16,40 @@ server.
 
 ### Added
 
-- **Sensor: OpenAI structured outputs, Responses tool calls and
-  prompt-cache usage.** `chat.completions.parse()` and
-  `responses.parse()` are metered, as are
-  `responses.with_raw_response.create()` / `.parse()` (and
-  `chat.completions.with_raw_response.parse()`); previously those calls
-  bypassed the sensor. Responses output items that are tool calls emit
-  `tool_call` events: function, MCP and custom tool calls under the
-  tool's own name, hosted tools (web search, file search, code
-  interpreter, image generation, computer use, shells, apply-patch, tool
-  search) under the item type, such as `web_search_call`. OpenAI's
-  `cached_tokens` usage detail lands as `tokens_cache_read` on direct and
-  streamed calls, so prompt-cache hits show in the token fields and in
-  `estimated_cost`. `OAuthError`, `LengthFinishReasonError` and
-  `ContentFilterFinishReasonError` are classified (`authentication`,
-  `context_overflow`, `content_filter`); the length case keeps the
-  billed tokens on the error as `partial_tokens_*` and counts them
-  against the session budget. The request id is reported on parsed
-  objects, not only on raw responses, and the pre-call estimate for a
-  Responses request counts its `input` and `instructions` instead of a
-  fixed 2 tokens. Not covered: the `.stream()` helpers and
-  `with_streaming_response`.
+- **Sensor: OpenAI structured outputs and the Responses raw-response
+  path are metered.** `chat.completions.parse()` and `responses.parse()`
+  go through the same intercept as `create()`, as do
+  `responses.with_raw_response.create()` / `.parse()` and
+  `chat.completions.with_raw_response.parse()`; previously those calls
+  bypassed the sensor. A `chat.completions.parse()` call the provider
+  answered and billed but the SDK could not parse
+  (`LengthFinishReasonError`: `max_tokens` too small for the schema)
+  lands as a `post_call` with the billed usage followed by an
+  `llm_error`. Not covered: the `.stream()` helpers and
+  `with_streaming_response` on either resource.
+- **Sensor: Responses tool calls emit `tool_call` events.** Each output
+  item that is a tool call lands as one `tool_call`: function, MCP and
+  custom tool calls under the tool's own name, hosted tools (web search,
+  file search, code interpreter, image generation, computer use, shells,
+  apply-patch, tool search) under the item type, such as
+  `web_search_call`. The input is captured only with `capture_prompts`
+  on; tool results are never captured as input.
+- **Sensor: OpenAI prompt-cache reads land in the token fields.** The
+  `cached_tokens` usage detail is recorded as `tokens_cache_read` on
+  direct and streamed chat and Responses calls, so prompt-cache reads
+  show in the token fields and in `estimated_cost`. The OpenAI SDK
+  exposes no cache-write count, so `tokens_cache_creation` stays 0 for
+  OpenAI.
 
 ### Fixed
 
+- **Sensor: the pre-call estimate for a Responses request was a fixed 2
+  tokens.** The estimator now counts the request's `input` and
+  `instructions` (and an embeddings request's `input`), so `pre_call`
+  carries a real estimate on every OpenAI call path.
+- **Sensor: the request id was missing from `post_call` on the parsed
+  path.** `provider_metadata.request_id` is now read from the id the SDK
+  stamps on every parsed object, not only from raw-response headers.
 - **Worker: a short-lived session could be left unclosed.** The worker
   pool processes one session's events concurrently, so a `session_end`
   published within tens of milliseconds of its `session_start` could be
@@ -153,6 +164,26 @@ server.
 
 ### Changed
 
+- **Sensor: three more OpenAI exceptions are classified, and a billed
+  call that fails for the caller is reported as both events.**
+  `OAuthError` lands as `authentication`. `LengthFinishReasonError` and
+  `ContentFilterFinishReasonError`, raised by `chat.completions.parse()`
+  after the provider answered with HTTP 200, land as `invalid_request`
+  (`provider_error_code` `length`: `max_tokens` too small for the
+  schema) and `content_filter`, with `http_status` 200 and `terminal`;
+  previously all three fell through to `other`. The length case also
+  emits the `post_call` with the billed usage before the `llm_error`,
+  on the direct and the raw-response path, so the tokens reach session
+  totals and analytics; a raw-response parse that fails for any reason
+  is reported the same way instead of as a success-looking `post_call`
+  of estimated tokens.
+- **Analytics: `estimated_cost` for OpenAI sessions with prompt-cache
+  reads shifts on upgrade.** Those reads now reach the cache term of the
+  cost formula, which applies the uniform 90% read discount; OpenAI
+  discounts cached input by about 50%, not 90%, so such estimates
+  understate the cached-input cost until per-model cache ratios land
+  (Roadmap: token and cost model). The OpenAI SDK exposes no cache-write
+  count, so cache-write charges on models that bill them are left out.
 - **Worker: failed processing attempts are redelivered after a growing
   delay** (one second times the deliveries so far, within the
   three-delivery budget) instead of immediately, so a transient database

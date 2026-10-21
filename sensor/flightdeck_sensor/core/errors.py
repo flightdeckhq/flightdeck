@@ -100,17 +100,10 @@ class ErrorClassification:
     request_id: str | None
     retry_after: float | None
     is_retryable: bool
-    # Tokens the provider billed for a call that failed after the model
-    # had produced its output: OpenAI's ``LengthFinishReasonError`` is
-    # raised by ``parse()`` on a successful HTTP call whose completion
-    # hit the token limit, and carries that completion with its usage.
-    # ``None`` when the exception carries no usage.
-    partial_tokens_input: int | None = None
-    partial_tokens_output: int | None = None
 
     def to_payload(self) -> dict[str, Any]:
         """Shape emitted on the wire under the event's ``error`` key."""
-        payload: dict[str, Any] = {
+        return {
             "error_type": self.error_type.value,
             "provider": self.provider,
             "http_status": self.http_status,
@@ -120,11 +113,6 @@ class ErrorClassification:
             "retry_after": self.retry_after,
             "is_retryable": self.is_retryable,
         }
-        if self.partial_tokens_input is not None:
-            payload["partial_tokens_input"] = self.partial_tokens_input
-        if self.partial_tokens_output is not None:
-            payload["partial_tokens_output"] = self.partial_tokens_output
-        return payload
 
 
 # ---------------------------------------------------------------------------
@@ -149,6 +137,33 @@ TIMEOUT_EXCEPTION_NAMES: tuple[str, ...] = (
     "WriteTimeout",
     "PoolTimeout",
 )
+
+
+# Exceptions OpenAI's chat.completions.parse() raises after the provider
+# answered with HTTP 200: the completion arrived but could not be parsed
+# into the requested type (a pydantic ValidationError is the completion
+# failing the caller's schema). They carry no response object, so the
+# status is recorded from here as 200, which states that the HTTP
+# exchange itself succeeded (a null status would read as a connection
+# failure), and the provider error code names what the SDK acted on.
+# The message is sensor-authored, so it carries no prompt content and is
+# reported whatever the capture posture.
+_HTTP_STATUS_OK = 200
+_PARSE_FAILURE_DETAILS: dict[str, tuple[str, str]] = {
+    "LengthFinishReasonError": (
+        "length",
+        "the completion hit max_tokens before the structured output was "
+        "complete; max_tokens is too small for the schema",
+    ),
+    "ContentFilterFinishReasonError": (
+        "content_filter",
+        "the content filter replaced the completion",
+    ),
+    "ValidationError": (
+        "schema",
+        "the completion did not match the requested schema",
+    ),
+}
 
 
 class StreamOutcome(str, enum.Enum):
@@ -178,12 +193,15 @@ _CLASS_TO_TYPE: list[tuple[tuple[str, ...], ErrorType]] = [
     # OpenAI raises OAuthError, an AuthenticationError subclass, when an
     # OAuth bearer token is rejected: the same 401 failure.
     (("AuthenticationError", "OAuthError"), ErrorType.AUTHENTICATION),
-    # OpenAI's parse() helpers raise these after a successful HTTP call
-    # when the completion cannot be parsed into the requested type: the
-    # output was cut off at the token limit, or the content filter
-    # replaced it. No HTTP status is attached, so the class name is the
-    # only signal.
-    (("LengthFinishReasonError",), ErrorType.CONTEXT_OVERFLOW),
+    # OpenAI's chat.completions.parse() raises these after a successful
+    # HTTP call when the completion cannot be parsed into the requested
+    # type. A length finish means the output hit the caller's max_tokens
+    # before the structured output was complete: a mis-specified request,
+    # not a context overflow, so it files under invalid_request with the
+    # finish reason as the provider error code (see
+    # _PARSE_FAILURE_DETAILS). A content-filter finish is the content
+    # filter replacing the completion.
+    (("LengthFinishReasonError",), ErrorType.INVALID_REQUEST),
     (("ContentFilterFinishReasonError",), ErrorType.CONTENT_FILTER),
     (("NotFoundError",), ErrorType.NOT_FOUND),
     (("UnprocessableEntityError",), ErrorType.INVALID_REQUEST),
@@ -280,6 +298,12 @@ def classify_exception(
 
         http_status = _extract_http_status(exc)
         provider_error_code = _extract_provider_error_code(exc)
+        parse_failure = _PARSE_FAILURE_DETAILS.get(cls_name)
+        if parse_failure is not None:
+            if http_status is None:
+                http_status = _HTTP_STATUS_OK
+            if provider_error_code is None:
+                provider_error_code = parse_failure[0]
         request_id = _extract_request_id(exc)
         retry_after = _extract_retry_after(exc)
 
@@ -293,9 +317,11 @@ def classify_exception(
                     break
             base = _override_from_status_and_code(base, http_status, provider_error_code)
 
-        message = _redacted_message(exc, cls_name, capture_prompts=capture_prompts)
+        if parse_failure is not None:
+            message = f"{cls_name}: {parse_failure[1]}"
+        else:
+            message = _redacted_message(exc, cls_name, capture_prompts=capture_prompts)
         retryable = _RETRYABLE.get(base, False)
-        partial_tokens = _extract_exception_usage(exc)
 
         return ErrorClassification(
             error_type=base,
@@ -306,8 +332,6 @@ def classify_exception(
             request_id=request_id,
             retry_after=retry_after,
             is_retryable=retryable,
-            partial_tokens_input=partial_tokens[0] if partial_tokens else None,
-            partial_tokens_output=partial_tokens[1] if partial_tokens else None,
         )
     except Exception:  # pragma: no cover — defence in depth
         return ErrorClassification(
@@ -406,28 +430,6 @@ def _extract_request_id(exc: BaseException) -> str | None:
     except Exception:
         pass
     return None
-
-
-def _extract_exception_usage(exc: BaseException) -> tuple[int, int] | None:
-    """``(input_tokens, output_tokens)`` of the completion an exception
-    carries (OpenAI's ``LengthFinishReasonError.completion``), reading
-    either usage shape; ``None`` when the exception carries no usage."""
-    try:
-        usage = getattr(getattr(exc, "completion", None), "usage", None)
-        if usage is None:
-            return None
-        tokens_in = getattr(usage, "prompt_tokens", None)
-        tokens_out = getattr(usage, "completion_tokens", None)
-        if not isinstance(tokens_in, int) or not isinstance(tokens_out, int):
-            tokens_in = getattr(usage, "input_tokens", None)
-            tokens_out = getattr(usage, "output_tokens", None)
-        if not isinstance(tokens_in, int) or not isinstance(tokens_out, int):
-            return None
-        if tokens_in < 0 or tokens_out < 0 or tokens_in + tokens_out == 0:
-            return None
-        return tokens_in, tokens_out
-    except Exception:
-        return None
 
 
 def _extract_retry_after(exc: BaseException) -> float | None:

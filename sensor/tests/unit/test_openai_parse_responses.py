@@ -21,7 +21,7 @@ import pytest
 import respx
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from openai.types.responses import Response
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 import flightdeck_sensor
 from flightdeck_sensor.core.errors import ErrorType, classify_exception
@@ -145,6 +145,31 @@ WEB_SEARCH_ITEM = {
     "type": "web_search_call",
     "status": "completed",
     "action": {"type": "search", "query": "eiffel tower height"},
+}
+# A completed search carries its results on the action; they are output.
+WEB_SEARCH_WITH_SOURCES_ITEM = {
+    "id": "ws_2",
+    "type": "web_search_call",
+    "status": "completed",
+    "action": {
+        "type": "search",
+        "query": "flightdeck sensor",
+        "queries": ["flightdeck sensor", "flightdeck openai"],
+        "sources": [{"type": "url", "url": "https://example.test/result"}],
+    },
+}
+LOCAL_SHELL_ITEM = {
+    "id": "lsh_1",
+    "type": "local_shell_call",
+    "call_id": "call_lsh",
+    "status": "completed",
+    "action": {
+        "type": "exec",
+        "command": ["ls", "-la"],
+        "env": {"API_TOKEN": "secret-value"},
+        "working_directory": "/srv/app",
+        "timeout_ms": 1000,
+    },
 }
 
 
@@ -314,12 +339,111 @@ def test_no_request_id_when_parsed_object_was_not_stamped() -> None:
                 "type": "computer_call",
                 "call_id": "call_cu",
                 "status": "completed",
-                "pending_safety_checks": [],
+                "pending_safety_checks": [
+                    {"id": "sc_1", "code": "malicious_instructions", "message": "review"}
+                ],
                 "action": {"type": "click", "button": "left", "x": 1, "y": 2},
             },
             "computer_call",
             {"type": "click", "button": "left", "x": 1, "y": 2},
             "cu_1",
+        ),
+        (
+            WEB_SEARCH_WITH_SOURCES_ITEM,
+            "web_search_call",
+            {
+                "type": "search",
+                "query": "flightdeck sensor",
+                "queries": ["flightdeck sensor", "flightdeck openai"],
+            },
+            "ws_2",
+        ),
+        (
+            {
+                "id": "ws_3",
+                "type": "web_search_call",
+                "status": "completed",
+                "action": {"type": "open_page", "url": "https://example.test/page"},
+            },
+            "web_search_call",
+            {"type": "open_page", "url": "https://example.test/page"},
+            "ws_3",
+        ),
+        (
+            {
+                "id": "ws_4",
+                "type": "web_search_call",
+                "status": "completed",
+                "action": {
+                    "type": "find_in_page",
+                    "url": "https://example.test/page",
+                    "pattern": "opening hours",
+                },
+            },
+            "web_search_call",
+            {
+                "type": "find_in_page",
+                "url": "https://example.test/page",
+                "pattern": "opening hours",
+            },
+            "ws_4",
+        ),
+        (
+            LOCAL_SHELL_ITEM,
+            "local_shell_call",
+            {
+                "type": "exec",
+                "command": ["ls", "-la"],
+                "working_directory": "/srv/app",
+                "timeout_ms": 1000,
+            },
+            "lsh_1",
+        ),
+        (
+            {
+                "id": "sh_1",
+                "type": "shell_call",
+                "call_id": "call_sh",
+                "status": "completed",
+                "action": {
+                    "commands": ["pytest -q"],
+                    "timeout_ms": 60000,
+                    "max_output_length": 4096,
+                },
+            },
+            "shell_call",
+            {"commands": ["pytest -q"], "timeout_ms": 60000, "max_output_length": 4096},
+            "sh_1",
+        ),
+        (
+            {
+                "id": "ap_1",
+                "type": "apply_patch_call",
+                "call_id": "call_ap",
+                "status": "completed",
+                "operation": {"type": "update_file", "path": "a.py", "diff": "@@ -1 +1 @@\n-x\n+y"},
+            },
+            "apply_patch_call",
+            {"type": "update_file", "path": "a.py", "diff": "@@ -1 +1 @@\n-x\n+y"},
+            "ap_1",
+        ),
+        (
+            {
+                "id": "ts_1",
+                "type": "tool_search_call",
+                "execution": "server",
+                "status": "completed",
+                "arguments": {"query": "weather tools"},
+            },
+            "tool_search_call",
+            {"query": "weather tools"},
+            "ts_1",
+        ),
+        (
+            {**MCP_CALL_ITEM, "id": "mcp_2", "error": "tool failed", "output": None},
+            "list_issues",
+            {"repo": "flightdeck"},
+            "mcp_2",
         ),
     ],
     ids=[
@@ -331,6 +455,14 @@ def test_no_request_id_when_parsed_object_was_not_stamped() -> None:
         "code_interpreter_call",
         "image_generation_call",
         "computer_call",
+        "web_search_call_with_sources",
+        "web_search_open_page",
+        "web_search_find_in_page",
+        "local_shell_call",
+        "shell_call",
+        "apply_patch_call",
+        "tool_search_call",
+        "mcp_call_with_error",
     ],
 )
 def test_responses_output_item_becomes_tool_invocation(
@@ -339,6 +471,33 @@ def test_responses_output_item_becomes_tool_invocation(
     response = Response.model_validate(_response_body([_message_item(), item]))
     (inv,) = OpenAIProvider().extract_tool_invocations(response)
     assert (inv.name, inv.tool_input, inv.tool_id) == (name, tool_input, tool_id)
+
+
+def test_hosted_tool_input_never_carries_results_safety_checks_or_environment() -> None:
+    response = Response.model_validate(
+        _response_body(
+            [
+                WEB_SEARCH_WITH_SOURCES_ITEM,
+                LOCAL_SHELL_ITEM,
+                {
+                    "id": "cu_2",
+                    "type": "computer_call",
+                    "call_id": "call_cu2",
+                    "status": "completed",
+                    "pending_safety_checks": [
+                        {"id": "sc_2", "code": "irrelevant_domain", "message": "check"}
+                    ],
+                    "action": {"type": "type", "text": "hello"},
+                },
+            ]
+        )
+    )
+    web_search, shell, computer = OpenAIProvider().extract_tool_invocations(response)
+    assert "sources" not in web_search.tool_input
+    assert "env" not in shell.tool_input
+    assert "secret-value" not in repr(shell.tool_input)
+    assert computer.tool_input == {"type": "type", "text": "hello"}
+    assert "pending_safety_checks" not in computer.tool_input
 
 
 def test_responses_items_that_are_not_calls_emit_no_invocation() -> None:
@@ -374,7 +533,62 @@ def test_responses_output_with_undecodable_arguments_keeps_the_call() -> None:
     assert (inv.name, inv.tool_input) == ("get_weather", {})
 
 
+# ----- provider: request id is bounded ----------------------------------------
+
+
+def test_request_id_is_clamped_to_a_bounded_length() -> None:
+    completion = ChatCompletion.model_validate(_chat_body())
+    openai._models.add_request_id(completion, "r" * 5000)
+    metadata = OpenAIProvider().extract_response_metadata(completion)
+    assert metadata is not None
+    assert len(metadata["request_id"]) == 128
+
+
 # ----- provider: pre-call estimate reads the Responses request -----------------
+
+
+def test_estimate_prices_inline_binary_payloads_at_a_fixed_allowance() -> None:
+    provider = OpenAIProvider()
+    two_megabytes = "data:image/png;base64," + "A" * 2_000_000
+    with_image, _ = provider.estimate_tokens(
+        {
+            "model": "gpt-4o-mini",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "input_text", "text": "What is in this image?"},
+                        {"type": "input_image", "image_url": two_megabytes},
+                    ],
+                }
+            ],
+        }
+    )
+    with_file, _ = provider.estimate_tokens(
+        {
+            "model": "gpt-4o-mini",
+            "input": [
+                {
+                    "role": "user",
+                    "content": [{"type": "input_file", "file_data": "B" * 2_000_000}],
+                }
+            ],
+        }
+    )
+    chat_with_image, _ = provider.estimate_tokens(
+        {
+            "model": "gpt-4o-mini",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [{"type": "image_url", "image_url": {"url": two_megabytes}}],
+                }
+            ],
+        }
+    )
+    # A fixed allowance per payload, not a count of its bytes.
+    for estimate in (with_image, with_file, chat_with_image):
+        assert 1_000 <= estimate < 1_200, estimate
 
 
 def test_estimate_counts_responses_input_and_instructions() -> None:
@@ -423,23 +637,32 @@ def test_oauth_error_classifies_as_authentication() -> None:
     assert "partial_tokens_input" not in classification.to_payload()
 
 
-def test_length_finish_reason_classifies_as_context_overflow_with_partial_tokens() -> None:
+def test_length_finish_reason_classifies_as_invalid_request_with_length_code() -> None:
     completion = ChatCompletion.model_validate(_chat_body(finish_reason="length"))
     exc = openai.LengthFinishReasonError(completion=completion)
     classification = classify_exception(exc)
-    assert classification.error_type is ErrorType.CONTEXT_OVERFLOW
+    # The output hit the caller's max_tokens before the structured output
+    # was complete: a mis-specified request, not a context overflow.
+    assert classification.error_type is ErrorType.INVALID_REQUEST
     assert classification.provider == "openai"
+    # The HTTP exchange succeeded; parsing failed afterwards.
+    assert classification.http_status == 200
+    assert classification.provider_error_code == "length"
     assert classification.is_retryable is False
     payload = classification.to_payload()
-    assert (payload["partial_tokens_input"], payload["partial_tokens_output"]) == (40, 7)
-    # Capture off: the exception string (which quotes the usage) stays out.
-    assert payload["error_message"] == "LengthFinishReasonError"
+    assert "partial_tokens_input" not in payload
+    # Sensor-authored message, reported whatever the capture posture.
+    assert "max_tokens is too small for the schema" in payload["error_message"]
+    assert payload["error_message"].startswith("LengthFinishReasonError: ")
+    assert "prompt_tokens" not in payload["error_message"]
 
 
 def test_content_filter_finish_reason_classifies_as_content_filter() -> None:
     classification = classify_exception(openai.ContentFilterFinishReasonError())
     assert classification.error_type is ErrorType.CONTENT_FILTER
     assert classification.provider == "openai"
+    assert classification.http_status == 200
+    assert classification.provider_error_code == "content_filter"
     assert classification.is_retryable is False
     assert "partial_tokens_input" not in classification.to_payload()
 
@@ -483,29 +706,51 @@ def test_chat_parse_async_is_metered(respx_mock: respx.MockRouter) -> None:
     assert pc["provider_metadata"] == {"request_id": REQUEST_ID}
 
 
+def _billed_then_failed(session: Session) -> tuple[dict[str, Any], dict[str, Any]]:
+    """The (post_call, llm_error) pair of a billed call that failed for the
+    caller, asserting the post_call was emitted first."""
+    queue = session.event_queue
+    assert isinstance(queue, MagicMock)
+    ordered = [c.args[0]["event_type"] for c in queue.enqueue.call_args_list]
+    assert ordered.index("post_call") < ordered.index("llm_error")
+    (pc,) = _events_of(session, "post_call")
+    (err,) = _events_of(session, "llm_error")
+    return pc, err
+
+
 @respx.mock(base_url=BASE_URL)
-def test_chat_parse_length_failure_emits_llm_error_and_counts_the_tokens(
+def test_chat_parse_length_failure_emits_post_call_then_llm_error(
     respx_mock: respx.MockRouter,
 ) -> None:
-    _mock_route(respx_mock, "/chat/completions", _chat_body(finish_reason="length"))
+    _mock_route(
+        respx_mock, "/chat/completions", _chat_body(finish_reason="length", cached_tokens=8)
+    )
     session = _session()
     completions = SensorCompletions(_sync_client().chat.completions, session, OpenAIProvider())
 
     with pytest.raises(openai.LengthFinishReasonError):
         completions.parse(model="gpt-4o-mini", messages=MESSAGES, response_format=City)
 
-    assert _events_of(session, "post_call") == []
-    (err,) = _events_of(session, "llm_error")
-    assert err["error"]["error_type"] == "context_overflow"
-    assert err["error"]["provider"] == "openai"
-    assert (err["error"]["partial_tokens_input"], err["error"]["partial_tokens_output"]) == (40, 7)
-    assert err["terminal"] is True
-    # The provider billed the call: it counts against the session budget.
+    pc, err = _billed_then_failed(session)
+    # The provider answered and billed: the post_call carries that usage.
+    assert (pc["tokens_input"], pc["tokens_output"], pc["tokens_cache_read"]) == (40, 7, 8)
+    assert pc["model"] == "gpt-4o-mini"
     assert session.tokens_used == 47
+    # ... and the call still failed for the caller.
+    assert err["error"]["error_type"] == "invalid_request"
+    assert err["error"]["provider"] == "openai"
+    assert err["error"]["http_status"] == 200
+    assert err["error"]["provider_error_code"] == "length"
+    assert "partial_tokens_input" not in err["error"]
+    assert err["terminal"] is True
+    assert err["originating_event_id"] == pc["id"]
+    assert err["model"] == "gpt-4o-mini"
 
 
 @respx.mock(base_url=BASE_URL)
-def test_async_chat_parse_length_failure_counts_the_tokens(respx_mock: respx.MockRouter) -> None:
+def test_async_chat_parse_length_failure_emits_post_call_then_llm_error(
+    respx_mock: respx.MockRouter,
+) -> None:
     _mock_route(respx_mock, "/chat/completions", _chat_body(finish_reason="length"))
     session = _session()
     completions = SensorCompletions(
@@ -517,9 +762,31 @@ def test_async_chat_parse_length_failure_counts_the_tokens(respx_mock: respx.Moc
 
     with pytest.raises(openai.LengthFinishReasonError):
         asyncio.run(_run())
-    (err,) = _events_of(session, "llm_error")
-    assert err["error"]["error_type"] == "context_overflow"
+    pc, err = _billed_then_failed(session)
+    assert (pc["tokens_input"], pc["tokens_output"]) == (40, 7)
+    assert err["error"]["error_type"] == "invalid_request"
+    assert err["error"]["http_status"] == 200
     assert session.tokens_used == 47
+
+
+@respx.mock(base_url=BASE_URL)
+def test_chat_parse_length_failure_with_capture_stores_the_billed_completion(
+    respx_mock: respx.MockRouter,
+) -> None:
+    _mock_route(respx_mock, "/chat/completions", _chat_body(finish_reason="length"))
+    session = _session(capture_prompts=True)
+    # The class-level patch builds the provider from the session's flag.
+    completions = SensorCompletions(
+        _sync_client().chat.completions, session, OpenAIProvider(capture_prompts=True)
+    )
+
+    with pytest.raises(openai.LengthFinishReasonError):
+        completions.parse(model="gpt-4o-mini", messages=MESSAGES, response_format=City)
+
+    pc, _err = _billed_then_failed(session)
+    assert pc["has_content"] is True
+    assert pc["content"]["messages"] == MESSAGES
+    assert pc["content"]["response"]["choices"][0]["finish_reason"] == "length"
 
 
 @respx.mock(base_url=BASE_URL)
@@ -531,10 +798,130 @@ def test_chat_parse_content_filter_failure_emits_llm_error(respx_mock: respx.Moc
     with pytest.raises(openai.ContentFilterFinishReasonError):
         completions.parse(model="gpt-4o-mini", messages=MESSAGES, response_format=City)
 
+    # The exception carries no completion, so there is nothing billed to
+    # report: the llm_error alone.
+    assert _events_of(session, "post_call") == []
     (err,) = _events_of(session, "llm_error")
     assert err["error"]["error_type"] == "content_filter"
+    assert err["error"]["http_status"] == 200
+    assert err["error"]["provider_error_code"] == "content_filter"
+    assert err["terminal"] is True
     assert "partial_tokens_input" not in err["error"]
     assert session.tokens_used == 0
+
+
+@respx.mock(base_url=BASE_URL)
+def test_chat_parse_schema_failure_direct_path_is_llm_error_only(
+    respx_mock: respx.MockRouter,
+) -> None:
+    _mock_route(respx_mock, "/chat/completions", _chat_body(content='{"town": "Paris"}'))
+    session = _session()
+    completions = SensorCompletions(_sync_client().chat.completions, session, OpenAIProvider())
+
+    with pytest.raises(ValidationError):
+        completions.parse(model="gpt-4o-mini", messages=MESSAGES, response_format=City)
+
+    # The direct path has no body to meter once the SDK has raised.
+    assert _events_of(session, "post_call") == []
+    (err,) = _events_of(session, "llm_error")
+    assert err["error"]["error_type"] == "other"
+    assert err["error"]["http_status"] == 200
+    assert err["error"]["provider_error_code"] == "schema"
+    assert err["terminal"] is True
+    assert session.tokens_used == 0
+
+
+@respx.mock(base_url=BASE_URL)
+def test_raw_parse_length_failure_meters_the_completion_and_returns_the_raw_response(
+    respx_mock: respx.MockRouter,
+) -> None:
+    _mock_route(respx_mock, "/chat/completions", _chat_body(finish_reason="length"))
+    session = _session()
+    completions = SensorCompletions(_sync_client().chat.completions, session, OpenAIProvider())
+
+    raw = completions.with_raw_response.parse(
+        model="gpt-4o-mini", messages=MESSAGES, response_format=City
+    )
+
+    # The caller still gets the SDK's raw response, whose own parse()
+    # raises as it would without the sensor.
+    assert raw.headers["x-request-id"] == REQUEST_ID
+    with pytest.raises(openai.LengthFinishReasonError):
+        raw.parse()
+    pc, err = _billed_then_failed(session)
+    assert (pc["tokens_input"], pc["tokens_output"]) == (40, 7)
+    assert err["error"]["error_type"] == "invalid_request"
+    assert err["error"]["http_status"] == 200
+    assert err["error"]["provider_error_code"] == "length"
+    assert session.tokens_used == 47
+
+
+@respx.mock(base_url=BASE_URL)
+def test_raw_parse_content_filter_failure_meters_the_http_body(
+    respx_mock: respx.MockRouter,
+) -> None:
+    _mock_route(respx_mock, "/chat/completions", _chat_body(finish_reason="content_filter"))
+    session = _session()
+    completions = SensorCompletions(_sync_client().chat.completions, session, OpenAIProvider())
+
+    raw = completions.with_raw_response.parse(
+        model="gpt-4o-mini", messages=MESSAGES, response_format=City
+    )
+
+    with pytest.raises(openai.ContentFilterFinishReasonError):
+        raw.parse()
+    pc, err = _billed_then_failed(session)
+    # No completion on the exception: the usage comes from the HTTP body,
+    # the request id from the response headers.
+    assert (pc["tokens_input"], pc["tokens_output"]) == (40, 7)
+    assert pc["model"] == "gpt-4o-mini"
+    assert pc["provider_metadata"]["request_id"] == REQUEST_ID
+    assert err["error"]["error_type"] == "content_filter"
+    assert err["error"]["http_status"] == 200
+    assert session.tokens_used == 47
+
+
+@respx.mock(base_url=BASE_URL)
+def test_raw_parse_schema_failure_meters_the_http_body(respx_mock: respx.MockRouter) -> None:
+    _mock_route(respx_mock, "/chat/completions", _chat_body(content='{"town": "Paris"}'))
+    session = _session()
+    completions = SensorCompletions(_sync_client().chat.completions, session, OpenAIProvider())
+
+    raw = completions.with_raw_response.parse(
+        model="gpt-4o-mini", messages=MESSAGES, response_format=City
+    )
+
+    with pytest.raises(ValidationError):
+        raw.parse()
+    pc, err = _billed_then_failed(session)
+    assert (pc["tokens_input"], pc["tokens_output"]) == (40, 7)
+    assert err["error"]["error_type"] == "other"
+    assert err["error"]["http_status"] == 200
+    assert err["error"]["provider_error_code"] == "schema"
+    assert session.tokens_used == 47
+
+
+@respx.mock(base_url=BASE_URL)
+def test_async_raw_parse_length_failure_meters_the_completion(
+    respx_mock: respx.MockRouter,
+) -> None:
+    _mock_route(respx_mock, "/chat/completions", _chat_body(finish_reason="length"))
+    session = _session()
+    completions = SensorCompletions(
+        _async_client().chat.completions, session, OpenAIProvider(), is_async=True
+    )
+
+    async def _run() -> Any:
+        return await completions.with_raw_response.parse(
+            model="gpt-4o-mini", messages=MESSAGES, response_format=City
+        )
+
+    raw = asyncio.run(_run())
+    with pytest.raises(openai.LengthFinishReasonError):
+        raw.parse()
+    pc, err = _billed_then_failed(session)
+    assert (pc["tokens_input"], pc["tokens_output"]) == (40, 7)
+    assert err["error"]["error_type"] == "invalid_request"
 
 
 @respx.mock(base_url=BASE_URL)

@@ -56,11 +56,13 @@ func KnownPricedModels() []string {
 // cacheReadRatio is the multiplier applied to cache-read input tokens
 // relative to the uncached input rate. Anthropic bills cache reads at
 // 10% of the input list price (90% discount). Applied uniformly to
-// every model that reports cache tokens; providers that do not report
-// cache tokens contribute 0 to the cache_read term and the formula
-// collapses naturally to the pre-D101 behaviour. If a provider ever
-// publishes a different cache-read ratio, this becomes a per-model
-// override on ModelPricing -- not a pricing.yaml edit. See D101.
+// every model that reports cache tokens, OpenAI's prompt-cache reads
+// included, which understates OpenAI's cached-input cost (OpenAI
+// discounts cached input by about 50%, not 90%). The per-model override
+// on ModelPricing that a differing published ratio calls for is a
+// README Roadmap item (token and cost model), not a pricing.yaml edit.
+// Providers that report no cache tokens contribute 0 to the cache_read
+// term and the formula collapses to the two-term expression.
 const cacheReadRatio = 0.10
 
 // cacheCreationRatio is the multiplier applied to cache-creation input
@@ -88,12 +90,18 @@ const cacheCreationRatio = 1.25
 // unknown models (the handler separately flags the response with
 // ``partial_estimate``).
 //
-// For providers that do not report cache tokens (OpenAI and everything
-// non-Anthropic today), ``tokens_cache_read`` and
-// ``tokens_cache_creation`` are 0 so the cache_read and cache_creation
-// terms vanish and uncached = tokens_input, collapsing the formula
-// back to the pre-D101 two-term expression. No regression for non-
-// cache-reporting providers.
+// Anthropic reports cache reads and cache writes; OpenAI reports cache
+// reads (its ``cached_tokens`` usage detail lands in
+// ``tokens_cache_read``) and the OpenAI SDK exposes no cache-write
+// count, so ``tokens_cache_creation`` is 0 on OpenAI rows and the
+// cache_creation term vanishes for them. For providers that report no
+// cache tokens at all, both cache columns are 0, both cache terms
+// vanish and uncached = tokens_input, collapsing the formula back to
+// the two-term expression. The read ratio applies uniformly, so OpenAI
+// rows with cache reads are discounted at the Anthropic read rate,
+// which understates OpenAI's cached-input cost (OpenAI discounts cached
+// input by about 50%, not 90%); per-model ratios are a README Roadmap
+// item.
 //
 // The expression is a bare aggregate -- the caller supplies FROM /
 // WHERE / GROUP BY. All values are constants generated at startup so

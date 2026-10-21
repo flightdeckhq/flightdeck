@@ -21,8 +21,10 @@ server.
   sync and async, and return the sensor's guard rather than litellm's
   `CustomStreamWrapper`; iteration (`for` / `async for`) is unchanged,
   and the usage chunk the sensor asks litellm for is kept from a caller
-  who did not ask for it; with `capture_prompts` on, the stored response
-  of a streamed call is the assembled text, id, model and finish reason.
+  who did not ask for it; with `capture_prompts` on, a streamed call
+  stores the response litellm's `stream_chunk_builder` assembles (the
+  assistant message, `model`, `usage`), falling back to an id / model /
+  finish-reason / text summary only when the builder cannot be used.
   The `litellm` extra requires `litellm>=1.83.0` (1.82.7 and 1.82.8 were
   compromised builds). `litellm.text_completion` and `litellm.responses`
   are not patched: `text_completion` on an OpenAI chat model is reported

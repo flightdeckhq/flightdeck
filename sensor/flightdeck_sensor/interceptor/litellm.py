@@ -59,7 +59,7 @@ call). On an OpenAI chat model the call goes through the OpenAI SDK
 with no mark set, so the OpenAI interceptor reports it as a chat call;
 a route litellm serves with its own httpx handler (Anthropic) is
 unobserved. ``litellm.responses`` / ``aresponses`` on a provider
-without a native Responses API (Anthropic, Groq) are bridged through
+without a native Responses API (for example Anthropic) are bridged through
 the package-level ``litellm.completion`` / ``acompletion`` -- this
 wrapper -- and reported once as a chat call; on a native route
 (OpenAI) they go through litellm's own httpx handler and return the

@@ -118,7 +118,8 @@ _KEY_PARTIAL_TOKENS_OUTPUT = "partial_tokens_output"
 # * Inner side: at the point where the SDK wrapper would otherwise enter
 #   the sensor, ``if outer_intercept_active(): return <the raw path>``.
 #   openai.py does this where ``client.chat.completions`` is resolved
-#   (SensorChat.completions); anthropic.py in SensorMessages.create.
+#   (SensorChat.completions) and in SensorEmbeddings.create; anthropic.py
+#   in SensorMessages.create.
 
 
 class _OuterCall:

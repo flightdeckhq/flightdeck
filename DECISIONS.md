@@ -10156,14 +10156,16 @@ and D185's statement that litellm `stream=True` still raises
 exercised.
 
 **Decision:** `interceptor/base.py` carries an outer-call mark: a
-`contextvars.ContextVar[bool]` with `outer_intercept()` (a context manager
-that sets the mark for the duration of a block) and
+`contextvars.ContextVar` holding a per-call `_OuterCall` flag, with
+`outer_intercept()` (a context manager that sets the mark for the duration
+of a block) and
 `outer_intercept_active()` (its predicate). The litellm interceptor runs
 every underlying litellm call -- completion, acompletion, embedding,
 aembedding, streaming or not -- under the mark. The OpenAI interceptor
 checks the mark where `client.chat.completions` is resolved
 (`SensorChat.completions` returns the SDK's own resource under the mark)
-and the Anthropic interceptor at the top of `SensorMessages.create`; a
+and at the top of `SensorEmbeddings.create`, and the Anthropic interceptor
+at the top of `SensorMessages.create`; a
 marked call skips the whole sensor path (no `pre_call`, policy check,
 stream guard or `post_call`), because the outer interceptor already does
 all of that for the same call. The mark covers the call only, not the
@@ -10201,7 +10203,7 @@ builder cannot be used) -- never the wrapper's `__dict__`.
 routes are still reported: `text_completion` on an OpenAI chat model goes
 through the OpenAI SDK with no mark set and is reported by the OpenAI
 interceptor, `responses` on a provider without a native Responses API
-(Anthropic, Groq) is bridged through the package-level `litellm.completion`
+(for example Anthropic) is bridged through the package-level `litellm.completion`
 / `acompletion` and reported once as a chat call, and litellm's own httpx
 routes of either (Anthropic `text_completion`, native OpenAI `responses`)
 are unobserved. litellm's `_hidden_params["response_cost"]` (present on
@@ -10238,6 +10240,7 @@ the organisation and project headers), `stream_options`, the logging
 object and the SDK stream, all of which would be served by
 `GET /v1/events/:id/content`; a denylist would leak whatever a litellm
 upgrade adds, silently.
+
 `_inject_stream_options` is copied rather than imported so the two
 interceptor modules stay independently importable and editable; the
 option means the same thing on both. `text_completion` calls
@@ -10248,9 +10251,10 @@ calls `completion` the same way) enter the sensor twice per call;
 `responses` goes through litellm's own httpx handler and returns the
 Responses API shape (`usage.input_tokens` / `output_tokens`, `input=`
 instead of `messages=`), which needs its own provider adapter before it
-can be metered. `response_cost` goes nowhere because no event field
-carries cost, and adding a key to `provider_metadata` is an event-payload
-schema change, which is made in ARCHITECTURE.md first. Cache counts are
+can be metered. `response_cost` is not stored because nothing consumes
+it (cost is computed server-side from the pricing table), and adding a key
+to the documented `provider_metadata` object is made in ARCHITECTURE.md
+first. Cache counts are
 accepted only as real integers because a provider-shaped stand-in (the
 shared streaming tests use a `MagicMock` usage) would otherwise be
 coerced to a nonsense count. The 1.83.0 floor keeps installs off 1.82.7
@@ -10274,9 +10278,10 @@ instead of asking for the usage chunk (litellm sets it only when
 `stream_options` is absent, and computes it with its own tokenizer rather
 than from the provider's counts). Patching `litellm.main.completion` to
 cover `text_completion` (double-enters `acompletion`). Storing
-`response_cost` in `provider_metadata` (a schema change outside this
-change's scope; `estimated_cost` is computed server-side from the pricing
-table). A denylist of stream-wrapper attributes for the captured response
+`response_cost` in `provider_metadata` (nothing consumes it, cost is
+computed server-side, and a new key on the documented object is made in
+ARCHITECTURE.md first). A denylist of stream-wrapper attributes for the
+captured response
 (silently leaks whatever a litellm upgrade adds). Narrowing the mark to a
 per-call client identity so that SDK calls from litellm callbacks are
 still metered (not worth the complexity now).

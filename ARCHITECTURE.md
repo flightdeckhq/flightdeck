@@ -758,7 +758,7 @@ the entrypoint, before any framework or user code constructs a client.
 `SensorLitellm` (in `interceptor/litellm.py`) covers `litellm.completion`,
 `litellm.acompletion`, `litellm.embedding`, and `litellm.aembedding`,
 streaming included. litellm exposes its API as module-level functions, so
-the descriptor pattern above does not apply; the interceptor wraps the
+the SDK class patching above does not apply; the interceptor wraps the
 module functions directly with idempotency sentinels on the module object.
 With no active session the call passes through to litellm untouched.
 
@@ -780,10 +780,10 @@ copies the context, so the mark follows it. The mark covers the whole
 litellm call, which is a stated limitation: an SDK call made from inside it
 while it is in flight -- by a litellm callback, guardrail or custom
 provider, or by a task created inside the call -- is neither policed nor
-metered. The OpenAI interceptor checks
-the mark where `client.chat.completions` is resolved (which covers `create`
-and `with_raw_response.create`, streaming or not) and the Anthropic
-interceptor at `messages.create`.
+metered. The OpenAI interceptor checks the mark where
+`client.chat.completions` is resolved (which covers `create` and
+`with_raw_response.create`, streaming or not) and at `embeddings.create`,
+and the Anthropic interceptor at `messages.create`.
 
 `litellm.completion(stream=True)` and `litellm.acompletion(stream=True)`
 return the shared stream guard (`GuardedStream` / `GuardedAsyncStream`)
@@ -795,8 +795,7 @@ that chunk and hides it from a caller who did not ask for usage, so their
 loop sees the chunks it would see without the sensor. litellm's wrapper is
 not a context manager and has no `close()`, so the guard is used as a plain
 iterator; a loop left early is reported once the guard is collected.
-`LitellmProvider`
-surfaces the cache breakdown litellm exposes
+`LitellmProvider` surfaces the cache breakdown litellm exposes
 (`usage.prompt_tokens_details.cached_tokens` / `cache_creation_tokens`, or
 the Anthropic-named `cache_read_input_tokens` /
 `cache_creation_input_tokens`) as `tokens_cache_read` /
@@ -818,7 +817,7 @@ reach, so the litellm wrapper never sees it: on an OpenAI chat model the
 call goes through the OpenAI SDK with no mark set and the OpenAI interceptor
 reports it as a chat call, while a route litellm serves with its own httpx
 handler (Anthropic) is unobserved. `responses` on a provider without a
-native Responses API (Anthropic, Groq) is bridged through the package-level
+native Responses API (for example Anthropic) is bridged through the package-level
 `litellm.completion` / `acompletion` -- the patched wrapper -- and reported
 once as a chat call; on a native route (OpenAI) it goes through litellm's
 own httpx handler and returns the Responses API shape, which needs its own

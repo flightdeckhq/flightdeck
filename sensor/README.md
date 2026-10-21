@@ -156,8 +156,8 @@ the single-count assertion and the capture round-trip).
   `litellm.main`, which the module-attribute swap does not reach; on
   an OpenAI chat model the OpenAI interceptor reports the SDK call it
   makes, and litellm's own httpx routes are unobserved. The Responses
-  API on a provider without a native Responses API (Anthropic, Groq)
-  is bridged through the patched `litellm.completion` and reported
+  API on a provider without a native Responses API (for example
+  Anthropic) is bridged through the patched `litellm.completion` and reported
   once as a chat call; native routes (OpenAI) go through litellm's own
   httpx handler and are unobserved.
 - **SDK calls made from inside a litellm call.** The litellm wrapper

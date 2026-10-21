@@ -11,9 +11,10 @@ The MCP section uses ``mcpadapt`` directly. ``mcpadapt`` is the
 production path for CrewAI tools and is what ``crewai-tools[mcp]``
 installs under the hood; importing ``mcpadapt`` directly here gives
 us a version canary that fires when a future ``crewai-tools`` upgrade
-silently bumps to an incompatible mcpadapt release. D5 / D120 pin
-mcpadapt in the sensor's optional ``[dev]`` extras for the same reason.
+silently bumps to an incompatible mcpadapt release. The sensor pins
+mcpadapt in its optional extras for the same reason.
 """
+
 from __future__ import annotations
 
 import sys
@@ -47,11 +48,15 @@ def _run_chat(label: str, provider: Provider, model: str, contains: str) -> None
     t0 = time.monotonic()
     LLM(model=model).call("hi")
     print_result(
-        f"crewai.LLM.call ({label})", True,
+        f"crewai.LLM.call ({label})",
+        True,
         int((time.monotonic() - t0) * 1000),
     )
     assert_event_landed(
-        session_id, "post_call", timeout=8, model_contains=contains,
+        session_id,
+        "post_call",
+        timeout=8,
+        model_contains=contains,
     )
     flightdeck_sensor.teardown()
 
@@ -91,7 +96,9 @@ def _run_mcp() -> None:
         t0 = time.monotonic()
         echo.run(text="hello from crewai playground")
         print_result(
-            "echo.run", True, int((time.monotonic() - t0) * 1000),
+            "echo.run",
+            True,
+            int((time.monotonic() - t0) * 1000),
         )
 
     events = fetch_events_for_session(
@@ -118,7 +125,12 @@ def _run_mcp() -> None:
 
 
 def main() -> None:
-    _run_chat("anthropic", Provider.ANTHROPIC, "anthropic/claude-haiku-4-5-20251001", "claude-haiku-4-5")
+    _run_chat(
+        "anthropic",
+        Provider.ANTHROPIC,
+        "anthropic/claude-haiku-4-5-20251001",
+        "claude-haiku-4-5",
+    )
     _run_chat("openai", Provider.OPENAI, "openai/gpt-4o-mini", "gpt-4o-mini")
     _run_mcp()
 

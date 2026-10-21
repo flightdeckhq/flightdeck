@@ -10,7 +10,7 @@ import {
 } from "@/lib/events";
 import type { AgentEvent } from "@/lib/types";
 
-// Phase 5 — MCP event taxonomy + rendering contract pinned at the
+// MCP event taxonomy + rendering contract pinned at the
 // pure-function layer. The dashboard's E2E spec (T25) replays the
 // frozen fixture against the live UI; this file pins the lib/events.ts
 // transformations so a refactor that quietly drops a badge or renames
@@ -34,7 +34,7 @@ function makeMCPEvent(overrides: Partial<AgentEvent>): AgentEvent {
   } as AgentEvent;
 }
 
-describe("eventBadgeConfig — Phase 5 MCP entries (verb labels + MCP prefix)", () => {
+describe("eventBadgeConfig — MCP entries (verb labels + MCP prefix)", () => {
   const expected: Record<string, { cssVar: string; label: string; filled?: boolean }> = {
     mcp_tool_call: { cssVar: "var(--event-mcp-tool)", label: "MCP TOOL CALL", filled: true },
     mcp_tool_list: {
@@ -82,16 +82,16 @@ describe("eventBadgeConfig — Phase 5 MCP entries (verb labels + MCP prefix)", 
     }
   });
 
-  it("B-7: every Phase 5 badge label has no wrap hints and fits the layout cap", () => {
+  it("every MCP badge label has no wrap hints and fits the layout cap", () => {
     // The badge container is ``min-w-[88px] px-2`` and accepts
     // two-line wrap on the longest labels (the longest is "MCP
-    // RESOURCES DISCOVERED" at 24 chars after the D123 prefix
-    // restore). We can't measure pixel width in jsdom, but we CAN
+    // RESOURCES DISCOVERED" at 24 chars including the "MCP "
+    // prefix). We can't measure pixel width in jsdom, but we CAN
     // pin the structural floor: no newlines, no leading/trailing
     // whitespace, and a 30-char ceiling so a future label that
     // grows past two reasonable wrap lines triggers this test as
     // a deliberate tap on the shoulder.
-    const phase5LabelKeys = [
+    const mcpLabelKeys = [
       "mcp_tool_call",
       "mcp_tool_list",
       "mcp_resource_read",
@@ -99,7 +99,7 @@ describe("eventBadgeConfig — Phase 5 MCP entries (verb labels + MCP prefix)", 
       "mcp_prompt_get",
       "mcp_prompt_list",
     ];
-    for (const key of phase5LabelKeys) {
+    for (const key of mcpLabelKeys) {
       const label = eventBadgeConfig[key].label;
       expect(label).not.toContain("\n");
       expect(label.trim()).toBe(label);
@@ -107,10 +107,10 @@ describe("eventBadgeConfig — Phase 5 MCP entries (verb labels + MCP prefix)", 
     }
   });
 
-  it("regression guard: every MCP badge label carries the 'MCP ' prefix (D123)", () => {
-    // D123 restored the "MCP " prefix on every MCP badge label after
-    // B-4 had dropped it. Rationale lives in the lib/events.ts
-    // comment block + DECISIONS.md: the Fleet live feed table
+  it("regression guard: every MCP badge label carries the 'MCP ' prefix", () => {
+    // The "MCP " prefix is kept on every MCP badge label.
+    // Rationale lives in the lib/events.ts
+    // comment block: the Fleet live feed table
     // renders badges without the swimlane hexagon, so without the
     // prefix "TOOL CALL" sits next to "TOOL" with only verb-tense
     // disambiguation, not category disambiguation. This guard
@@ -129,8 +129,8 @@ describe("eventBadgeConfig — Phase 5 MCP entries (verb labels + MCP prefix)", 
     }
   });
 
-  it("regression guard: bare-prefix MCP labels MUST NOT reappear (B-4 ambiguity)", () => {
-    // Pre-B-4 the labels were "MCP TOOL"/"MCP TOOLS"/"MCP RESOURCE"/
+  it("regression guard: bare-prefix MCP labels MUST NOT reappear (plural-only ambiguity)", () => {
+    // The rejected labels were "MCP TOOL"/"MCP TOOLS"/"MCP RESOURCE"/
     // "MCP RESOURCES"/"MCP PROMPT"/"MCP PROMPTS" — distinguished by
     // a single plural 's' between "agent invoked" and "agent
     // discovered". That ambiguity is what verbs (CALL / READ /

@@ -2,13 +2,13 @@ import { describe, it, expect, vi } from "vitest";
 import { render } from "@testing-library/react";
 import { EventNode } from "@/components/timeline/EventNode";
 
-// Phase 5 — EventNode MCP icon rendering. One test per MCP event type
+// EventNode MCP icon rendering. One test per MCP event type
 // asserts that the lucide icon class lands on the rendered <svg> AND
 // that the colour CSS variable matches the event's badge family. The
 // test pins both the visual signal (colour) and the iconography
 // (glyph) so a refactor that swaps either silently fails here.
 
-describe("EventNode — Phase 5 MCP icons + colours", () => {
+describe("EventNode — MCP icons + colours", () => {
   const baseProps = {
     x: 100,
     eventType: "mcp_tool_call" as const,
@@ -66,10 +66,10 @@ describe("EventNode — Phase 5 MCP icons + colours", () => {
   }
 
   it("mcp_tool_list icon does NOT collide with the LLM tool_call wrench", () => {
-    // Phase 5 deliberately keeps the same Wrench icon for mcp_tool_call
+    // The same Wrench icon is kept for mcp_tool_call
     // (calls) and a different ListChecks for mcp_tool_list (discovery).
     // The colour variable distinguishes mcp_tool_call (cyan-2) from the
-    // pre-Phase-5 tool_call (cyan-1). This test makes the distinction
+    // LLM tool_call (cyan-1). This test makes the distinction
     // explicit so a future refactor cannot collapse the two.
     const { container: callContainer } = renderNode({
       eventType: "mcp_tool_call",

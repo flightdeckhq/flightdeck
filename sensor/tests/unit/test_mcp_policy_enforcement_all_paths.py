@@ -1,4 +1,4 @@
-"""Phase 7 Step 3 (D151) — MCP Protection Policy enforcement
+"""MCP Protection Policy enforcement
 extends from call_tool to all six server-access paths.
 
 Operator's "this server is blocked" intent now means ALL access
@@ -56,8 +56,8 @@ def _fake_session() -> Any:
     ],
 )
 def test_block_decision_raises_for_every_call_context(context: str) -> None:
-    """All 6 server-access paths must enforce — pre-Step-3 only
-    call_tool did. Block decision returns MCPPolicyBlocked across
+    """All 6 server-access paths must enforce, not only call_tool.
+    Block decision returns MCPPolicyBlocked across
     every context value."""
     fake = _fake_session()
     blocked = _enforce_mcp_policy(
@@ -120,7 +120,7 @@ def test_item_names_helper_caps_at_100() -> None:
 
 def test_item_names_helper_handles_empty() -> None:
     """Empty input produces an empty array, not None — the wire
-    contract per Phase 7 Step 3 Q2 is "always-present array,
+    contract is "always-present array,
     possibly empty"."""
     from flightdeck_sensor.interceptor.mcp import _collect_item_names
 

@@ -26,8 +26,8 @@ interface OSIconProps {
 // brand-neutral grey reads on BOTH themes -- moving this to a
 // CSS var would require splitting it per theme and gain nothing
 // since the goal is theme-independence. Linux/Windows use brand
-// colors that read correctly against either background. Phase 4.5
-// N-6: documented theme-neutral choice rather than CSS-var
+// colors that read correctly against either background: a
+// documented theme-neutral choice rather than CSS-var
 // migration (Rule 15 themes.css gate not exercised here).
 const OS_COLORS: Record<string, string> = {
   Darwin: "#909090",

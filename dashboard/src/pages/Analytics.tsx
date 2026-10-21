@@ -29,7 +29,7 @@ export function Analytics() {
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
   const [filterProvider, setFilterProvider] = useState<Provider | null>(null);
-  // D126 § 7.fix.J — sub-agent activity facet. Mirrors the
+  // Sub-agent activity facet. Mirrors the
   // Investigate TOPOLOGY facet checkboxes (Has sub-agents / Is
   // sub-agent) for muscle memory across the two pages. Both
   // selectable simultaneously (server-side OR composition per
@@ -107,7 +107,7 @@ export function Analytics() {
           )}
         </div>
 
-        {/* D126 § 7.fix.J — sub-agent activity facet. Two
+        {/* Sub-agent activity facet. Two
             checkboxes mirror Investigate's TOPOLOGY facet so the
             two pages read as one set of controls. */}
         <div
@@ -250,7 +250,7 @@ export function Analytics() {
           />
         </div>
 
-        {/* Row 7 — D126 sub-agent breakdown. Renders only when the
+        {/* Row 7 — sub-agent breakdown. Renders only when the
             time window contains sub-agent sessions; the chart's own
             empty-state copy handles the no-activity case so the row
             never collapses awkwardly. The TOPOLOGY checkboxes above

@@ -51,7 +51,7 @@ def validate_egress_url(
     field_name: str,
     allow_insecure_transport: bool = False,
 ) -> None:
-    """Validate a resolved control-plane egress URL (H-01).
+    """Validate a resolved control-plane egress URL.
 
     Raises :class:`ValueError` when:
 
@@ -102,7 +102,7 @@ class EventType(enum.Enum):
     POLICY_WARN / POLICY_DEGRADE / POLICY_BLOCK events carry a ``source``
     field. POLICY_WARN can be ``"local"`` (from ``init(limit=...)``) or
     ``"server"`` (from server-side policy). POLICY_DEGRADE / POLICY_BLOCK
-    are always ``"server"`` because local thresholds fire WARN only (D035).
+    are always ``"server"`` because local thresholds fire WARN only.
     """
 
     SESSION_START = "session_start"
@@ -122,7 +122,7 @@ class EventType(enum.Enum):
     MCP_RESOURCE_READ = "mcp_resource_read"
     MCP_PROMPT_LIST = "mcp_prompt_list"
     MCP_PROMPT_GET = "mcp_prompt_get"
-    # MCP Protection Policy (D131). policy_mcp_warn / _block emit at
+    # MCP Protection Policy. policy_mcp_warn / _block emit at
     # call_tool time when the cached policy decides warn or block
     # respectively; mcp_server_name_changed emits at initialize time
     # when an agent declares a server whose canonical URL is already
@@ -130,7 +130,7 @@ class EventType(enum.Enum):
     POLICY_MCP_WARN = "policy_mcp_warn"
     POLICY_MCP_BLOCK = "policy_mcp_block"
     MCP_SERVER_NAME_CHANGED = "mcp_server_name_changed"
-    # D140 step 6.6 A2 — emitted by record_mcp_server inside
+    # Emitted by record_mcp_server inside
     # ClientSession.initialize once per (name, server_url) tuple.
     # Drives live SessionDrawer MCP SERVERS panel population: the
     # worker UPSERTs the per-server fingerprint into
@@ -161,7 +161,7 @@ class PolicyDecision(enum.Enum):
     BLOCK = "block"
 
 
-# D149 — originating_call_context enum. Identifies the agent operation
+# originating_call_context enum. Identifies the agent operation
 # that triggered an MCP-policy emission. Plugin populates ``tool_call``
 # (the only stage Claude Code's hook surface exposes); sensor populates
 # any of the seven values depending on which ClientSession method
@@ -180,12 +180,12 @@ OriginatingCallContext = Literal[
 
 @dataclass(frozen=True)
 class PolicyDecisionSummary:
-    """Shared payload-block schema for every policy enforcement event
-    (D148). Used by ``policy_warn``, ``policy_degrade``, ``policy_block``,
+    """Shared payload-block schema for every policy enforcement event.
+    Used by ``policy_warn``, ``policy_degrade``, ``policy_block``,
     ``policy_mcp_warn``, and ``policy_mcp_block``.
 
     Lands on the wire as ``payload["policy_decision"] = {...}``. Always
-    included regardless of ``capture_prompts`` per Phase 7 Q2 — this is
+    included regardless of ``capture_prompts``: this is
     state metadata, not content.
 
     The shape is canonical with optional MCP-specific fields. Token-
@@ -206,8 +206,8 @@ class PolicyDecisionSummary:
       because operators reading the policy_decision block in
       isolation need it self-describing.
     - ``reason`` — operator-readable single-line summary built by
-      the sensor at emission time. Pattern locked in Step 2 plan
-      readback: "<what happened> + <by what mechanism> + <relevant
+      the sensor at emission time. The locked pattern is
+      "<what happened> + <by what mechanism> + <relevant
       context>". No newlines.
     - ``decision_path`` — MCP-only. Mirrors ``MCPPolicyDecision``.
     - ``matched_entry_id`` / ``matched_entry_label`` — MCP-only.
@@ -250,8 +250,8 @@ class TokenUsage:
     """Token counts from a single LLM call.
 
     ``input_tokens`` is the full input sum (uncached + cache_read + cache_creation)
-    so policy/budget arithmetic stays numerically identical to the pre-D100
-    behaviour. ``cache_read_tokens`` and ``cache_creation_tokens`` are the
+    so policy/budget arithmetic is unaffected by the cache
+    breakdown. ``cache_read_tokens`` and ``cache_creation_tokens`` are the
     Anthropic cache-specific breakdown surfaced as separate fields so cache
     economics survive into analytics; they are already included in the
     ``input_tokens`` sum and must not be added to ``total`` a second time.
@@ -272,7 +272,7 @@ class TokenUsage:
 class SensorConfig:
     """Configuration for a sensor session.
 
-    D115 v0.4.0 Phase 1: agent identity fields (``agent_id``,
+    Agent identity fields (``agent_id``,
     ``agent_name``, ``user_name``, ``hostname``, ``client_type``) are
     resolved by :func:`flightdeck_sensor.init` and passed in -- they
     do not have defaults here because deriving them requires calls to
@@ -282,7 +282,7 @@ class SensorConfig:
 
     server: str
     token: str
-    # Identity (D115). Required on construction by init(); the
+    # Identity. Required on construction by init(); the
     # default empty strings exist only so tests / fixtures that
     # instantiate SensorConfig directly do not have to populate
     # every field.
@@ -293,7 +293,7 @@ class SensorConfig:
     client_type: str = "flightdeck_sensor"
     api_url: str = ""
     capture_prompts: bool = False
-    # H-01: opt-in to plaintext http:// egress for a non-local control
+    # Opt-in to plaintext http:// egress for a non-local control
     # plane. Default False forces https:// for any public host; local /
     # loopback / private targets are always allowed over http regardless.
     # Env-readable via FLIGHTDECK_ALLOW_INSECURE_TRANSPORT (resolved in
@@ -307,7 +307,7 @@ class SensorConfig:
     quiet: bool = False
     limit: int | None = None
     warn_at: float = 0.8
-    # MCP Protection Policy (D128 / D129). When True AND the
+    # MCP Protection Policy. When True AND the
     # control plane is unreachable at session preflight (so the MCP
     # policy cache is empty), unmatched MCP server URLs in
     # mode-default fall-through resolve to block instead of allow.
@@ -318,7 +318,7 @@ class SensorConfig:
     def __post_init__(self) -> None:
         if not self.api_url:
             self.api_url = self.server
-        # H-01: validate the resolved control-plane egress URLs. Both
+        # Validate the resolved control-plane egress URLs. Both
         # ``server`` (ingestion) and ``api_url`` (control-plane API) are
         # checked so every egress target is covered by the single helper.
         validate_egress_url(
@@ -398,7 +398,7 @@ class DirectiveContext:
 
 @dataclass(frozen=True)
 class SubagentMessage:
-    """A single cross-agent message body for a sub-agent session (D126).
+    """A single cross-agent message body for a sub-agent session.
 
     Captured by the framework interceptors (CrewAI, LangGraph, AutoGen
     0.4 / 0.2) and the Claude Code plugin on the child session's
@@ -419,7 +419,7 @@ class SubagentMessage:
     what the framework produced.
 
     Large bodies route through the existing event_content overflow
-    path (D119, 8 KiB inline / 2 MiB hard cap). When the body
+    path (8 KiB inline / 2 MiB hard cap). When the body
     exceeds the inline threshold the worker projects it into
     ``event_content`` and the dashboard fetches via
     ``GET /v1/events/{id}/content``; small bodies stay inline on
@@ -459,7 +459,7 @@ class MCPServerFingerprint:
     capabilities: dict[str, Any] = field(default_factory=dict)
     instructions: str | None = None
     # Server URL captured at ``ClientSession.initialize()`` time. The
-    # MCP Protection Policy identity model (D127) treats URL as the
+    # MCP Protection Policy identity model treats URL as the
     # primary security key — the fingerprint without URL can't be
     # resolved against a policy. Empty string when the transport
     # didn't expose a URL marker (rare; preserved verbatim, not

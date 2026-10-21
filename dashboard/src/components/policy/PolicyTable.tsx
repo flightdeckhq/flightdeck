@@ -18,7 +18,7 @@ export interface PolicyTableProps {
   loading: boolean;
 }
 
-// Theme-aware scope chrome. Pre-Phase-7, `flavor` used a hardcoded
+// Theme-aware scope chrome. Without this, `flavor` would use a hardcoded
 // `bg-[rgba(168,85,247,0.2)] text-[#a855f7]` purple that broke
 // Rule 14 — the same RGBA renders the same in both neon-dark and
 // clean-light, defeating the theme palette. Using --accent (the

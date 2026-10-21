@@ -3,7 +3,7 @@ import { test, expect, type Page } from "@playwright/test";
 /**
  * T113 — /agents family grouping sticks under any sort column.
  *
- * Pre-fix the /agents table sorted every agent independently by
+ * Guarded regression: the /agents table sorted every agent independently by
  * the active column, so a parent and its children scattered
  * whenever the column's per-row values diverged. The fix lives
  * at two layers:

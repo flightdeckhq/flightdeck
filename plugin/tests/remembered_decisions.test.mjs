@@ -1,4 +1,4 @@
-// D139: tests for plugin/hooks/scripts/remembered_decisions.mjs.
+// Tests for plugin/hooks/scripts/remembered_decisions.mjs.
 //
 // Covers per-token file-path derivation, atomic write/read, idempotent
 // dedup on repeat writes, lookup by fingerprint, and tolerance of
@@ -237,7 +237,7 @@ describe("lookupRemembered", () => {
 
 // ----- Per-token isolation ---------------------------------------
 
-describe("per-token isolation (D139)", () => {
+describe("per-token isolation", () => {
   it("two tokens have independent decision lists", () => {
     writeRememberedDecision("tok_alice", {
       fingerprint: "fp_alice",

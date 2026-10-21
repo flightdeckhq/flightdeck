@@ -135,7 +135,7 @@ describe("MCPPolicyEntryDialog", () => {
     });
   });
 
-  it("renders the spec placeholders and help text on the URL + Name fields (step 6.9)", () => {
+  it("renders the spec placeholders and help text on the URL + Name fields", () => {
     render(
       <MCPPolicyEntryDialog
         open
@@ -170,7 +170,7 @@ describe("MCPPolicyEntryDialog", () => {
     ).toBeInTheDocument();
   });
 
-  it("renders an InfoIcon on every field (URL / Name / Decision / Enforcement) per step 6.9 standardization", () => {
+  it("renders an InfoIcon on every field (URL / Name / Decision / Enforcement)", () => {
     render(
       <MCPPolicyEntryDialog
         open

@@ -14,7 +14,7 @@ inputs (agent_type / client_type / user / hostname / agent_name /
 agent_role) fails loudly here instead of silently breaking the
 live page.
 
-D126's identity model adds ``agent_role`` as the 6th input for
+The identity model adds ``agent_role`` as the 6th input for
 sub-agents (sessions with non-null parent_session_id). Root
 sessions skip the agent_role slot. The seed must produce the same
 UUID5 on both the rollup path (worker's UpsertAgent in
@@ -64,7 +64,7 @@ def test_agent_id_symmetric_for_sub_agent_fixture() -> None:
     )
     assert fleet_agent is not None, (
         "e2e-test-fresh-subagent must appear in the fleet roster — "
-        "seed.py declares it as a Phase 2 sub-agent anchor"
+        "seed.py declares it as the sub-agent anchor"
     )
     fleet_agent_id = fleet_agent["agent_id"]
 

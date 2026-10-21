@@ -1,7 +1,7 @@
 """CrewAI sub-agent observability — real Crew with Researcher + Writer.
 
 Drives a real two-agent CrewAI Crew through ``flightdeck_sensor``'s
-CrewAI sub-agent interceptor (D126). The interceptor patches
+CrewAI sub-agent interceptor. The interceptor patches
 ``crewai.Agent.execute_task`` so each Crew member's turn lands as
 its own child session in Flightdeck, with role attribution from
 ``Agent.role`` and cross-agent message capture (incoming = task
@@ -14,13 +14,13 @@ default; the actual chat traffic flows through Anthropic. When
 either ``ANTHROPIC_API_KEY`` or ``OPENAI_API_KEY`` is missing the
 script self-skips (exit 2).
 
-Assertions cover the D126 contract:
+Assertions cover the sub-agent contract:
 * Every ``Agent.role`` produces a child ``session_start`` +
   ``session_end`` pair tied to the parent via ``parent_session_id``.
 * ``agent_role`` on each child equals the corresponding
   ``Agent.role`` string verbatim.
 * ``agent_id`` differs across roles (deterministic per-role
-  derivation per D126 § 1).
+  derivation).
 * ``incoming_message.body`` round-trips the CrewAI Task description.
 * ``outgoing_message.body`` carries the Agent's return value as the
   framework produced it.
@@ -60,7 +60,7 @@ def main() -> None:
 
     parent_session_id = str(uuid.uuid4())
     init_sensor(parent_session_id, flavor="playground-subagents-crewai")
-    # CrewAI provider routes Agent.execute_task through the D126
+    # CrewAI provider routes Agent.execute_task through the sub-agent
     # interceptor; ANTHROPIC provider hooks the underlying LLM SDK so
     # the per-call post_call events also land for the parent session.
     flightdeck_sensor.patch(
@@ -191,7 +191,7 @@ def main() -> None:
 
     # Now fetch the events for each child to inspect agent_role +
     # message capture. The session_start / session_end pair is the
-    # entire D126 lifecycle for a sub-agent; both events live on the
+    # entire lifecycle for a sub-agent; both events live on the
     # CHILD's session_id, not the parent's.
     child_starts: list[dict] = []
     child_ends: list[dict] = []
@@ -232,7 +232,7 @@ def main() -> None:
         )
 
     # Role attribution per agent. CrewAI's ``Agent.role`` lands on
-    # ``payload.agent_role`` verbatim — D126 § 1's role-string lock.
+    # ``payload.agent_role`` verbatim — the role string is never normalised.
     roles = sorted({(e.get("payload") or {}).get("agent_role") for e in child_starts})
     role_ok = "Researcher" in roles and "Writer" in roles
     print_result(
@@ -260,7 +260,7 @@ def main() -> None:
         and agent_ids_by_role["Researcher"] != agent_ids_by_role["Writer"]
     )
     print_result(
-        "distinct agent_id per role (D126 § 1 derivation)",
+        "distinct agent_id per role (identity derivation)",
         bool(distinct_ok),
         0,
         f"researcher={agent_ids_by_role.get('Researcher')!r} "

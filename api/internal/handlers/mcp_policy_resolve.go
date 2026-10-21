@@ -1,12 +1,13 @@
 // MCP Protection Policy resolve endpoint — sensor / plugin preflight.
-// Read-only scope per the auth amendment locked in step 3: any valid
+// Read-only scope: any valid
 // bearer token can hit this endpoint (it's the hot path the sensor
 // calls at init() and the plugin calls at SessionStart). GET-only;
 // idempotent, safe, cacheable.
 //
 // The resolver canonicalizes the raw URL server-side using the Go
-// identity helper so callers don't have to. Returns the per-D135
-// decision plus the decision_path so callers can render an
+// identity helper so callers don't have to. Returns the decision
+// (flavor entry, else global entry, else the global-mode default)
+// plus the decision_path so callers can render an
 // actionable failure message ("policy X blocked tool Y on flavor Z").
 
 package handlers
@@ -23,7 +24,7 @@ import (
 // ResolveMCPPolicyHandler handles GET /v1/mcp-policies/resolve.
 //
 // @Summary      Resolve MCP policy decision
-// @Description  Sensor / plugin preflight. Returns the per-D135 decision (allow / warn / block) for a (flavor, server_url, server_name) tuple, plus the decision_path that produced it (flavor_entry / global_entry / mode_default). The server canonicalizes the URL using the same algorithm as the Python and JS identity primitives.
+// @Description  Sensor / plugin preflight. Returns the decision (allow / warn / block) for a (flavor, server_url, server_name) tuple -- a flavor entry wins, then a global entry, then the global-mode default -- plus the decision_path that produced it (flavor_entry / global_entry / mode_default). The server canonicalizes the URL using the same algorithm as the Python and JS identity primitives.
 // @Tags         mcp-policy
 // @Produce      json
 // @Param        flavor       query  string  false  "Agent flavor; omit to resolve against global only"

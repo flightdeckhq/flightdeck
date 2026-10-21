@@ -18,7 +18,7 @@ interface CostChartProps {
 /** Row 4 -- Estimated cost over time, stacked bars by provider (default)
  *  or model. Disclaimer banner sits above the chart whenever the period
  *  contains models outside the static pricing map (partial_estimate on
- *  the API response, D099). When the window has zero cost at all --
+ *  the API response). When the window has zero cost at all --
  *  typically because events were recorded before tokens_input and
  *  tokens_output started being split -- the card swaps its empty state
  *  for a dedicated message so the user knows the chart is blank by

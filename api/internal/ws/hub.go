@@ -64,7 +64,7 @@ func NewHub(s store.Querier) *Hub {
 }
 
 // closeAndRemove closes the client's send channel and removes it
-// from the hub map. Phase 4.5 L-19: extracted helper so every close
+// from the hub map. A shared helper so every close
 // path follows the same map-presence-then-close pattern. Caller
 // MUST hold ``h.mu`` (write lock) -- the helper does not acquire
 // the lock so it composes cleanly with multi-client iteration in
@@ -84,7 +84,7 @@ func (h *Hub) closeAndRemove(c *Client) {
 // write lock additionally protects ClientCount readers from
 // observing torn state. This invariant is what makes the
 // "double-close channel" class of bug structurally impossible
-// here -- see audit-phase-4.5.md L-19 for the trace.
+// here.
 func (h *Hub) Run(ctx context.Context) {
 	for {
 		select {
@@ -163,14 +163,14 @@ func WritePump(client *Client) {
 	}
 }
 
-// notifyPayload is the raw payload from Postgres NOTIFY. EventID was
-// added to give the hub a deterministic pointer to the triggering
-// event: before D108, listenOnce called GetSessionEvents and picked
-// the tail, which raced with concurrent inserts whenever paired
-// events (post_call + tool_call within ~200 ms, common after D107's
-// PostToolUse flush) committed close together. See D108 in
-// DECISIONS.md and workers/internal/writer/notify.go for the writer
-// side of the contract.
+// notifyPayload is the raw payload from Postgres NOTIFY. EventID
+// gives the hub a deterministic pointer to the triggering event:
+// without it, listenOnce would call GetSessionEvents and pick the
+// tail, which races with concurrent inserts whenever paired events
+// (post_call + tool_call within ~200 ms, common after the plugin's
+// PostToolUse flush) commit close together. See
+// workers/internal/writer/notify.go for the writer side of the
+// contract.
 type notifyPayload struct {
 	SessionID string `json:"session_id"`
 	EventType string `json:"event_type"`
@@ -185,8 +185,8 @@ type fleetUpdate struct {
 }
 
 // listenOnce acquires a connection, issues LISTEN, and blocks reading
-// notifications until an error occurs or ctx is cancelled. Phase 4.5
-// M-24: issues UNLISTEN before release so a recycled pool conn does
+// notifications until an error occurs or ctx is cancelled. It
+// issues UNLISTEN before release so a recycled pool conn does
 // not surface stale subscriptions to an unrelated caller.
 func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 	conn, err := pool.Acquire(ctx)
@@ -259,7 +259,7 @@ func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 		// rather than O(N) over the session's event history, and
 		// eliminates the NOTIFY->SELECT race where
 		// GetSessionEvents + tail would return a later event when
-		// paired writes committed in quick succession. See D108.
+		// paired writes committed in quick succession.
 		var lastEvent *store.Event
 		if np.EventID != "" {
 			event, evtErr := h.store.GetEvent(ctx, np.EventID)
@@ -301,7 +301,7 @@ func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 		// Build and broadcast the enriched payload. fleetUpdate is
 		// composed of typed *store.Session and *store.Event fields
 		// whose JSON tags use only Go-marshalable primitives, so
-		// json.Marshal cannot fail in practice. Phase 4.5 L-8: log
+		// json.Marshal cannot fail in practice. Log
 		// at debug rather than error and continue -- a real failure
 		// here would indicate corrupted db state surfacing through
 		// the typed structs and would already have been logged

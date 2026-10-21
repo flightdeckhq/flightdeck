@@ -124,7 +124,7 @@ func TestReconciler_SetsStaleAfter2Min(t *testing.T) {
 }
 
 func TestReconciler_SetsLostAfter30Min(t *testing.T) {
-	// Lost threshold raised from 10 min -> 30 min in D105 to cover
+	// The lost threshold is 30 min (raised from 10 min) to cover
 	// interactive user-think-time windows without hiding live
 	// sessions. The wall-clock threshold is exercised end-to-end in
 	// tests/integration/test_session_states.py::
@@ -168,9 +168,9 @@ func TestProcess_RoutesHeartbeat(t *testing.T) {
 	}
 }
 
-// --- D131: MCP Protection Policy event-type routing ---
+// --- MCP Protection Policy event-type routing ---
 //
-// Step 4 extends the worker's event.go switch with three new event
+// The MCP Protection Policy extends the worker's event.go switch with three new event
 // types: policy_mcp_warn / policy_mcp_block ride the existing
 // HandlePostCall path alongside policy_warn / policy_block;
 // mcp_server_name_changed rides the existing mcp_* family path.
@@ -202,7 +202,7 @@ func TestProcess_RoutesMCPServerNameChanged(t *testing.T) {
 	}
 }
 
-// --- D105: Terminal guard revival tests ---
+// --- Terminal guard revival tests ---
 //
 // Per-handler routing against a live Postgres is covered by
 // tests/integration/test_session_states.py::test_*_revives_on_* /
@@ -224,7 +224,7 @@ func TestReviveIfRevivable_ReturnsTrueOnlyWhenRowUpdated(t *testing.T) {
 	}
 }
 
-// --- KI06: Policy evaluator cache and fire-once tests ---
+// --- Policy evaluator cache and fire-once tests ---
 
 func TestPolicyEvaluator_CacheHitAvoidsPostgres(t *testing.T) {
 	// Verify CachedPolicy struct and cache behavior
@@ -275,7 +275,7 @@ func TestPolicyEvaluator_DegradeFiresOnce(t *testing.T) {
 	}
 }
 
-// --- KI06: Additional fire-once and directive type tests ---
+// --- Additional fire-once and directive type tests ---
 
 func TestWarnFiresOnlyOnce(t *testing.T) {
 	// Test fire-once: MarkFired prevents second fire

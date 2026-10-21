@@ -3,7 +3,7 @@ import { test, expect } from "@playwright/test";
 /**
  * T102 — /agents groups sub-agents directly under their parent.
  *
- * Pre-fix the table sorted every agent by the active column +
+ * Guarded regression: the table sorted every agent by the active column +
  * agent_id tie-breaker, so a parent and its children scattered:
  * children rendered ABOVE the parent whenever they shared a
  * status, the operator had to mentally re-thread the family

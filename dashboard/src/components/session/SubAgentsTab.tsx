@@ -7,7 +7,7 @@ import { SubAgentLostDot } from "@/components/facets/SubAgentRolePill";
 import { EventRow } from "./EventRow";
 import type { DrawerTab } from "./SessionDrawer";
 
-// D126 UX revision (post-merge polish, pre-merge land) — cap on the
+// Cap on the
 // inline mini-timeline rendered when a related-session row is
 // chevron-expanded inside the Sub-agents tab. Above this many events
 // we render the first N and a "View N more in Timeline tab"
@@ -37,8 +37,7 @@ const SESSION_ID_LINK_STYLE: React.CSSProperties = {
 };
 
 /**
- * D126 § 7.fix.E — SessionDrawer Sub-agents tab. Three layouts per
- * design doc § 4.2:
+ * SessionDrawer Sub-agents tab. Three layouts:
  *
  *   * Parent only (has children, no parent): SUB-AGENTS section only.
  *   * Child only (has parent, no children): SPAWNED FROM section
@@ -48,7 +47,7 @@ const SESSION_ID_LINK_STYLE: React.CSSProperties = {
  *
  * MESSAGES per child (parent-side): each child entry carries an
  * INPUT preview (200 chars) + OUTPUT preview (200 chars). Bodies
- * above the 8 KiB inline threshold (D119 overflow contract) lazy-
+ * above the 8 KiB inline threshold (event_content overflow) lazy-
  * fetch via ``GET /v1/events/{id}/content`` on expand. When
  * ``capture_prompts=false`` for the deployment, the previews
  * collapse to the standard "Prompt capture is not enabled" copy
@@ -76,7 +75,7 @@ export function SubAgentsTab({
 }) {
   const isChild = !!session.parent_session_id;
   // ``session.capture_enabled`` is computed by the API as EXISTS
-  // event with has_content=true, which doesn't reflect D126 § 6
+  // event with has_content=true, which doesn't reflect
   // cross-agent message capture (messages ride on session_start /
   // session_end payloads inline; only the >8 KiB overflow path
   // sets has_content=true). Treat the SubAgentsTab as
@@ -376,10 +375,9 @@ function SubAgentsSection({
  *
  * The two affordances do NOT overlap. Clicking the chevron never
  * navigates; clicking the session id never expands. This is the
- * supervisor's UX revision contract — pre-fix the SpawnedFrom
- * section was a single monolithic button that navigated on any
- * click, which read as expand-affordance to users (the chevron
- * looked like a tree-toggle) but behaved as navigation.
+ * supervisor's UX revision contract — a single monolithic button
+ * that navigates on any click reads as an expand affordance (the
+ * chevron looks like a tree-toggle) but behaves as navigation.
  */
 function ExpandableSessionCard({
   headerTestId,
@@ -568,8 +566,7 @@ function EventMiniTimeline({
   onViewMore: () => void;
   testIdPrefix: string;
 }) {
-  // Per the D126 UX revision (DECISIONS.md "UX revision
-  // 2026-05-04"), the mini-timeline must render with EXACT
+  // The mini-timeline must render with EXACT
   // Timeline-tab fidelity — colour-pill badges, streaming
   // indicators, MCP error indicators, provider logos, expand-
   // into-ExpandedEvent on click — same as the full Timeline tab.
@@ -591,7 +588,7 @@ function EventMiniTimeline({
   // Always wrap in the testid'd container so callers (tests and
   // the parent layout) can target the mini-timeline regardless of
   // whether events have loaded yet — empty / loading states are
-  // legitimate post-D126 shapes (pre-219a5c0a sub-agents have
+  // legitimate shapes (older sub-agents have
   // only session_start + session_end events; those still render
   // as 2 EventRows, accurate historical data per the supervisor's
   // explicit note).

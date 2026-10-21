@@ -98,8 +98,7 @@ def _sync_directives(
 ) -> tuple[int, dict[str, Any]]:
     """POST /v1/directives/sync with the given flavor and fingerprints.
 
-    The query API requires a bearer token on this endpoint as a stopgap
-    until Phase 5 JWT auth lands (see DECISIONS.md D073).
+    The query API requires a bearer token on this endpoint.
     """
     body = {
         "flavor": flavor,
@@ -219,9 +218,7 @@ def test_custom_directive_register_and_sync() -> None:
             flavor, fp, name=name, description="register test"
         )
         assert code == 200, f"register returned {code}: {body}"
-        assert body.get("registered") == 1, (
-            f"expected registered=1, got {body}"
-        )
+        assert body.get("registered") == 1, f"expected registered=1, got {body}"
 
         # Step 3: sync again -- the fingerprint is now known
         code, body = _sync_directives(flavor, [fp])
@@ -257,12 +254,14 @@ def test_custom_directive_trigger_session() -> None:
     assert code == 200
 
     try:
-        code, body = _post_directive_action({
-            "action": "custom",
-            "directive_name": "test_action",
-            "fingerprint": fp,
-            "session_id": sid,
-        })
+        code, body = _post_directive_action(
+            {
+                "action": "custom",
+                "directive_name": "test_action",
+                "fingerprint": fp,
+                "session_id": sid,
+            }
+        )
         assert code == 201, f"create directive returned {code}: {body}"
 
         rows = _query_directives_for_session(sid)
@@ -285,12 +284,14 @@ def test_custom_directive_flavor_fanout() -> None:
     assert code == 200
 
     try:
-        code, body = _post_directive_action({
-            "action": "custom",
-            "directive_name": "test_action",
-            "fingerprint": fp,
-            "flavor": flavor,
-        })
+        code, body = _post_directive_action(
+            {
+                "action": "custom",
+                "directive_name": "test_action",
+                "fingerprint": fp,
+                "flavor": flavor,
+            }
+        )
         assert code == 201, f"create flavor directive returned {code}: {body}"
 
         # One directive row per active session
@@ -300,8 +301,7 @@ def test_custom_directive_flavor_fanout() -> None:
             custom_rows = [r for r in rows if r.get("action") == "custom"]
             per_session_counts.append(len(custom_rows))
         assert sum(per_session_counts) == 3, (
-            f"expected 3 directives total across 3 sessions, "
-            f"got {per_session_counts}"
+            f"expected 3 directives total across 3 sessions, got {per_session_counts}"
         )
     finally:
         _delete_custom_directive_by_fingerprint(fp)
@@ -314,12 +314,14 @@ def test_custom_directive_unknown_fingerprint() -> None:
 
     bogus_fp = _unique_fingerprint("bogus")
 
-    code, body = _post_directive_action({
-        "action": "custom",
-        "directive_name": "ghost",
-        "fingerprint": bogus_fp,
-        "session_id": sid,
-    })
+    code, body = _post_directive_action(
+        {
+            "action": "custom",
+            "directive_name": "ghost",
+            "fingerprint": bogus_fp,
+            "session_id": sid,
+        }
+    )
     assert code == 422, f"expected 422, got {code}: {body}"
     assert "unknown directive fingerprint" in body.get("error", "")
 
@@ -338,15 +340,17 @@ def test_directive_result_appears_in_timeline() -> None:
     flavor = f"test-dir-result-{uuid.uuid4().hex[:6]}"
     sid = _start_session(flavor)
 
-    post_event(make_event(
-        sid,
-        flavor,
-        "directive_result",
-        directive_name="clear_cache",
-        directive_action="custom",
-        directive_status="success",
-        result={"cleared": True},
-    ))
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "directive_result",
+            directive_name="clear_cache",
+            directive_action="custom",
+            directive_status="success",
+            result={"cleared": True},
+        )
+    )
 
     def _has_directive_result_with_payload() -> bool:
         try:
@@ -372,7 +376,8 @@ def test_directive_result_appears_in_timeline() -> None:
 
     detail = get_session(sid)
     result_events = [
-        ev for ev in session_events(detail)
+        ev
+        for ev in session_events(detail)
         if ev.get("event_type") == "directive_result"
     ]
     assert len(result_events) >= 1, (
@@ -397,7 +402,7 @@ def test_directive_result_appears_in_timeline() -> None:
     )
 
 
-# test_shutdown_directive_delivered -- removed in Phase 4.5 audit Task 1.
+# test_shutdown_directive_delivered -- removed.
 # Duplicate of test_killswitch.py::test_single_agent_kill, which already
 # verifies the same flow: POST shutdown → POST event → directive in
 # envelope → directive marked delivered.
@@ -426,8 +431,7 @@ def test_directive_last_seen_updated() -> None:
         # NOW() value inside the SyncDirectives transaction to be
         # strictly greater than first_last_seen, and no longer. This
         # is much faster than the worst case of the old fixed sleep,
-        # and removes a flake source from the suite (Phase 4.5 audit
-        # Section C).
+        # and removes a flake source from the suite.
         latest: dict[str, Any] = {}
 
         def _resync_and_check() -> bool:
@@ -510,12 +514,14 @@ def test_directive_filter_by_flavor() -> None:
             "/v1/directives/register",
             lambda: {
                 "flavor": "test-noauth",
-                "directives": [{
-                    "fingerprint": _unique_fingerprint(),
-                    "name": "x",
-                    "flavor": "test-noauth",
-                    "parameters": {},
-                }],
+                "directives": [
+                    {
+                        "fingerprint": _unique_fingerprint(),
+                        "name": "x",
+                        "flavor": "test-noauth",
+                        "parameters": {},
+                    }
+                ],
             },
         ),
     ],
@@ -527,10 +533,8 @@ def test_sensor_endpoint_requires_auth(
 ) -> None:
     """Both sensor-facing endpoints (/v1/directives/sync and
     /v1/directives/register) reject requests without a bearer token.
-    Phase 4.5 audit Task 1 -- merged from
+    Merged from
     test_sync_endpoint_requires_auth + test_register_endpoint_requires_auth.
     """
     code, resp = _post_json(path, body_factory(), bearer=None)
-    assert code == 401, (
-        f"expected 401 without bearer token, got {code}: {resp}"
-    )
+    assert code == 401, f"expected 401 without bearer token, got {code}: {resp}"

@@ -1,4 +1,4 @@
-"""Phase 7 Step 2 (D148/D149) — MCP-policy event enrichment tests.
+"""MCP-policy event enrichment tests.
 
 Confirms policy_mcp_warn / policy_mcp_block carry the shared
 policy_decision block (with matched_entry_id + matched_entry_label
@@ -111,9 +111,9 @@ def test_originating_call_context_override() -> None:
 
 
 def test_legacy_top_level_fields_preserved() -> None:
-    """Step 6 will consolidate; until then the dashboard renderers
-    expect the legacy top-level policy_id / scope / decision_path /
-    fingerprint to remain."""
+    """The legacy top-level policy_id / scope / decision_path /
+    fingerprint stay until the dashboard reads only the shared
+    policy_decision block."""
     extras = _build_policy_event_extras(
         decision=_decision(),
         server_url="stdio://x",
@@ -129,7 +129,7 @@ def test_legacy_top_level_fields_preserved() -> None:
 
 def test_block_on_uncertainty_only_on_block_path() -> None:
     """The legacy block_on_uncertainty top-level field appears only
-    on block decisions, not warn (matches pre-Step-2 behaviour)."""
+    on block decisions, not warn."""
     warn_extras = _build_policy_event_extras(
         decision=_decision(decision="warn"),
         server_url="stdio://x",
@@ -150,7 +150,7 @@ def test_block_on_uncertainty_only_on_block_path() -> None:
 
 
 def test_reason_string_is_single_line() -> None:
-    """Locked Step 2 pattern: no newlines."""
+    """Locked reason pattern: no newlines."""
     for path in ("flavor_entry", "global_entry", "mode_default"):
         for decision in ("warn", "block"):
             r = _build_mcp_policy_reason(

@@ -2,7 +2,7 @@
  * T79 — navigating directly to `/events?run=<id>` opens the run
  * drawer on page load, with no click.
  *
- * Phase 4 wave 2 contract: `?run=` is the run-drawer deep-link
+ * `?run=` is the run-drawer deep-link
  * parameter. A bookmark or command-palette result that carries it
  * must resolve the run drawer immediately on load.
  *

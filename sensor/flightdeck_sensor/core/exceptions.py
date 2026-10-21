@@ -35,13 +35,13 @@ class MCPPolicyBlocked(Exception):  # noqa: N818
     Sibling of :class:`BudgetExceededError` in the
     "control-plane-driven halt" exception family — both are typed
     exceptions the sensor raises into agent code so frameworks can
-    surface the failure as a tool-call error in the reasoning loop
-    (D130). Inherits directly from ``Exception`` rather than from
+    surface the failure as a tool-call error in the reasoning loop.
+    Inherits directly from ``Exception`` rather than from
     ``DirectiveError`` because the field set
     (server_url, server_name, fingerprint, policy_id, decision_path)
-    doesn't fit DirectiveError's (action, reason) constructor — the
-    "lineage" phrasing in D130's body was descriptive of conceptual
-    family, not a literal class hierarchy. Frameworks that want to
+    doesn't fit DirectiveError's (action, reason) constructor.
+    Sibling here means a conceptual family, not a class hierarchy.
+    Frameworks that want to
     handle "any sensor halt" generically should catch the three
     families explicitly: ``BudgetExceededError``, ``DirectiveError``,
     ``MCPPolicyBlocked``.
@@ -49,8 +49,8 @@ class MCPPolicyBlocked(Exception):  # noqa: N818
     Carries the resolved policy decision attribution so the agent (or
     its surrounding harness) can render an actionable failure
     message. ``decision_path`` is one of ``"flavor_entry"`` /
-    ``"global_entry"`` / ``"mode_default"`` mirroring the D135
-    resolution algorithm.
+    ``"global_entry"`` / ``"mode_default"`` mirroring the policy
+    resolution precedence.
     """
 
     def __init__(

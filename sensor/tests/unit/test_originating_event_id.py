@@ -1,4 +1,4 @@
-"""Phase 7 Step 2 (D149) — originating_event_id chain contract tests.
+"""originating_event_id chain contract tests.
 
 Locks the sensor-side UUID minting + the chain-stamping behaviour
 across the call window. The audit's "operator-actionable triage"

@@ -569,7 +569,7 @@ def test_budget_and_directive_errors_are_not_classified_as_llm_errors() -> None:
 
 
 def test_guarded_stream_caps_inter_chunk_gap_buffer_at_max() -> None:
-    """L-6 regression: ``_MAX_GAPS_TRACKED = 1000`` bounds the
+    """Regression: ``_MAX_GAPS_TRACKED = 1000`` bounds the
     inter-chunk gap ring buffer so a pathological 10k-chunk stream
     cannot bloat sensor memory. Verify graceful drop: the streaming
     summary still computes inter_chunk_ms stats over the first 1000

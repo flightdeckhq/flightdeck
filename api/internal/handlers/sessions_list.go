@@ -39,8 +39,8 @@ var validSessionStates = map[string]bool{
 }
 
 // validSessionSorts is the whitelist for the sort parameter.
-// Extended in v0.4.0 phase 2: last_seen_at, model, hostname join the
-// original {started_at, duration, tokens_used, flavor} set so the
+// last_seen_at, model and hostname join the {started_at, duration,
+// tokens_used, flavor} set so the
 // Investigate table can sort on the columns users actually scan
 // first (recency, model, host). The mapping to SQL expressions lives
 // in “store.allowedSorts“; this set mirrors the keys so the
@@ -73,7 +73,7 @@ var validSessionClientTypes = map[string]bool{
 // 400 with the allowed set so callers can self-correct rather than
 // silently receiving an empty result.
 //
-// D131 MCP Protection Policy adds four event types into the
+// MCP Protection Policy adds four event types into the
 // "policy_event_type" filter family per ARCHITECTURE.md →
 // "Adjacent surfaces" so the existing Investigate facet can show
 // MCP-policy filtering chips alongside the token-budget policy
@@ -123,7 +123,7 @@ var validEstimatedVias = map[string]bool{
 // @Param        to         query  string  false  "End time (ISO 8601, default: now)"
 // @Param        state      query  string  false  "Filter by state (repeatable: active, idle, stale, closed, lost)"
 // @Param        flavor     query  string  false  "Filter by flavor (repeatable)"
-// @Param        agent_id   query  string  false  "Filter to a single agent (D115 UUID; deep-linked from the Fleet agent table and Investigate AGENT facet)"
+// @Param        agent_id   query  string  false  "Filter to a single agent (agent UUID; deep-linked from the Fleet agent table and Investigate AGENT facet)"
 // @Param        agent_type query  string  false  "Filter by agent_type (repeatable: coding, production)"
 // @Param        client_type query string  false  "Filter by client_type (repeatable: claude_code, flightdeck_sensor)"
 // @Param        framework  query  string  false  "Filter by framework name/version matching sessions.context.frameworks[] (repeatable: langgraph/1.1.6, crewai/1.14.1, ...)"
@@ -137,13 +137,13 @@ var validEstimatedVias = map[string]bool{
 // @Param        orchestration query string false "Filter by context.orchestration (repeatable)"
 // @Param        error_type query  string  false  "Filter to sessions that emitted an llm_error event of one of the listed taxonomy values (repeatable/comma). 14-entry vocabulary: rate_limit, quota_exceeded, context_overflow, content_filter, invalid_request, authentication, permission, not_found, request_too_large, api_error, overloaded, timeout, stream_error, other."
 // @Param        policy_event_type query  string  false  "Filter to sessions that emitted at least one policy enforcement event of the listed types (repeatable/comma). Vocabulary: policy_warn, policy_degrade, policy_block, policy_mcp_warn, policy_mcp_block, mcp_server_name_changed, mcp_policy_user_remembered."
-// @Param        mcp_server query  string  false  "Filter to sessions that connected to an MCP server with the given name (repeatable/comma). Phase 5: backed by the JSONB array sessions.context.mcp_servers. Each row in the response carries mcp_server_names[] for facet rendering."
-// @Param        parent_session_id query string false "D126: filter to children of one specific parent session (UUID). Used by the SessionDrawer Sub-agents tab to fetch the per-parent child list."
-// @Param        agent_role query  string  false  "D126: filter by sub-agent role string (repeatable/comma). CrewAI Agent.role, LangGraph node name, Claude Code Task agent_type. Backs the Investigate ROLE facet."
-// @Param        has_sub_agents query bool false "D126: when true, restrict to parent sessions only (those referenced as a parent_session_id by at least one other session). Backs the Investigate TOPOLOGY facet 'Has sub-agents' checkbox."
-// @Param        is_sub_agent query bool false "D126: when true, restrict to child sessions only (parent_session_id IS NOT NULL). Backs the Investigate TOPOLOGY facet 'Is sub-agent' checkbox."
+// @Param        mcp_server query  string  false  "Filter to sessions that connected to an MCP server with the given name (repeatable/comma); backed by the JSONB array sessions.context.mcp_servers. Each row in the response carries mcp_server_names[] for facet rendering."
+// @Param        parent_session_id query string false "Filter to children of one specific parent session (UUID). Used by the SessionDrawer Sub-agents tab to fetch the per-parent child list."
+// @Param        agent_role query  string  false  "Filter by sub-agent role string (repeatable/comma). CrewAI Agent.role, LangGraph node name, Claude Code Task agent_type. Backs the Investigate ROLE facet."
+// @Param        has_sub_agents query bool false "When true, restrict to parent sessions only (those referenced as a parent_session_id by at least one other session). Backs the Investigate TOPOLOGY facet 'Has sub-agents' checkbox."
+// @Param        is_sub_agent query bool false "When true, restrict to child sessions only (parent_session_id IS NOT NULL). Backs the Investigate TOPOLOGY facet 'Is sub-agent' checkbox."
 // @Param        include_parents query bool false "When true, augment the page with the parent session of every child session in the result -- even when the parent falls outside the time-range filter or the LIMIT window. Default false preserves exact pagination semantics; the Fleet swimlane opts in so a child whose parent fell off the 100-row page still resolves its topology. Returned sessions[] may exceed Total when extra parents land in the response."
-// @Param        include_pure_children query bool false "D126 UX revision 2026-05-03: when false, exclude pure children (rows whose parent_session_id is set AND that themselves have no descendants), leaving parents-with-children + lone sessions. Default scope of the Investigate page. Omit or set true to preserve the legacy 'all sessions' behaviour."
+// @Param        include_pure_children query bool false "When false, exclude pure children (rows whose parent_session_id is set AND that themselves have no descendants), leaving parents-with-children + lone sessions. Default scope of the Investigate page. Omit or set true to preserve the legacy 'all sessions' behaviour."
 // @Param        close_reason             query  string  false  "Filter to sessions whose session_end carries one of the listed close_reason values (repeatable/comma; OR within, AND across dimensions). Allowed: normal_exit, directive_shutdown, policy_block, orphan_timeout, sigkill_detected, unknown."
 // @Param        estimated_via            query  string  false  "Filter to sessions that emitted at least one pre_call/post_call/embeddings event with the given estimated_via (repeatable/comma; OR within, AND across dimensions). Allowed: tiktoken, heuristic, none."
 // @Param        terminal                 query  bool    false  "When true, restrict to sessions that have at least one llm_error event with terminal=true (operator-actionable retry-chain-gave-up signal). Composes with every other filter via AND."
@@ -243,7 +243,7 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			}
 		}
 
-		// Phase 4: filter sessions to those that emitted an
+		// Filter sessions to those that emitted an
 		// llm_error event of one of the listed taxonomy values. The
 		// 14-entry taxonomy lives in the sensor's core/errors.py;
 		// the API accepts every taxonomy value plus any future
@@ -286,7 +286,7 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			}
 		}
 
-		// MCP-server filter (repeatable/comma). Phase 5. No fixed
+		// MCP-server filter (repeatable/comma). No fixed
 		// vocabulary — server names are user-defined at the agent's
 		// .mcp.json / claude.json layer; an unknown name yields an
 		// empty result, same posture as the framework / model
@@ -391,7 +391,7 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 		// Search query
 		search := q.Get("q")
 
-		// D126 — sub-agent observability filters. Each is independent
+		// Sub-agent observability filters. Each is independent
 		// and composes via AND in the WHERE clause. parent_session_id
 		// is single-value (the natural one-parent-many-children
 		// shape); agent_role accepts repeatable / comma-split values
@@ -415,7 +415,7 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 		// Default false preserves existing pagination math; Fleet's
 		// swimlane store opts in.
 		includeParents := parseBoolQuery(q.Get("include_parents"))
-		// D126 UX revision 2026-05-03 — include_pure_children
+		// include_pure_children
 		// gates the new Investigate default scope. Tri-state on
 		// the wire: omit (nil) preserves existing API behaviour;
 		// "true" (explicit) returns all rows matching the other
@@ -429,8 +429,8 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			includePureChildren = &b
 		}
 
-		// Operator-actionable enrichment facet filters (Step 6 follow-
-		// up). close_reason / estimated_via are closed enums and 400 on
+		// Operator-actionable enrichment facet filters.
+		// close_reason / estimated_via are closed enums and 400 on
 		// out-of-band values; matched_entry_id /
 		// originating_call_context are free-form (typos silently match
 		// nothing). terminal is a bool toggle.
@@ -494,7 +494,7 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			Query:   search,
 			States:  states,
 			Flavors: flavors,
-			// D115: single-agent filter. Empty string = no filter.
+			// Single-agent filter. Empty string = no filter.
 			// Validated at the SQL layer via ``::uuid`` cast so a
 			// malformed value produces a query error rather than a
 			// silently-bypassed filter.

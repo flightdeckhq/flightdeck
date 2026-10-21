@@ -2,7 +2,7 @@
  * T71 — the agent drawer header surfaces sub-agent linkage pills
  * for an agent that is part of a sub-agent graph.
  *
- * Phase 4 contract: a parent agent's header lists a clickable
+ * A parent agent's header lists a clickable
  * chip per child agent; a child agent's header carries a
  * "← parent:" pill. The seeded canonical fixtures include
  * parent / child agents (`data-agent-topology` ≠ "lone").

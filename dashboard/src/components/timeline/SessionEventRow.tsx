@@ -88,7 +88,7 @@ function SessionEventRowComponent({
   const isActive = session.state === "active";
   const { events, loading } = useSessionEvents(session.session_id, isActive, version);
   const badge = stateBadgeColors[session.state] ?? CLOSED_STATE_BADGE_COLOR;
-  // D122 — Fleet swimlane dims MCP discovery events when the toggle
+  // Fleet swimlane dims MCP discovery events when the toggle
   // is off, mirroring how it dims event-type-filter mismatches.
   // Composed with isEventVisible(activeFilter) at the per-circle
   // call site below.

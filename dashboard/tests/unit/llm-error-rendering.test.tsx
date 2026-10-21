@@ -5,7 +5,7 @@ import { ErrorEventDetails } from "@/components/session/ErrorEventDetails";
 import { getEventDetail, getSummaryRows, getBadge } from "@/lib/events";
 import type { AgentEvent, LLMErrorPayload } from "@/lib/types";
 
-// Phase 4 polish S-UI-3 part 1: llm_error rendering. Pins the timeline
+// llm_error rendering. Pins the timeline
 // circle, the drawer row detail string, the summary grid, and the
 // expandable accordion in one suite.
 

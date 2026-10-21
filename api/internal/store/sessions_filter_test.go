@@ -110,11 +110,11 @@ func TestIsAllowedContextFilterKey_Rejection(t *testing.T) {
 }
 
 // TestBuildContextFilterClause_ErrorOnUnknownKey documents the
-// error-return contract for programming errors (M-11). A direct
+// error-return contract for programming errors. A direct
 // store caller that skipped the handler's whitelist check must
 // fail fast with a non-nil error rather than silently inject an
-// arbitrary JSONB path. Pre-M-11 the function panicked; the
-// callers now surface a 500 instead of crashing the goroutine.
+// arbitrary JSONB path. Returning an error instead of panicking
+// lets callers surface a 500 instead of crashing the goroutine.
 func TestBuildContextFilterClause_ErrorOnUnknownKey(t *testing.T) {
 	clause, _, _, err := BuildContextFilterClause(
 		"evil_key", []string{"x"}, nil, 1,
@@ -128,7 +128,7 @@ func TestBuildContextFilterClause_ErrorOnUnknownKey(t *testing.T) {
 }
 
 // TestBuildContextFilterClause_SQLInjectionInValuesParameterized is
-// the Phase 4.5 M-23 regression guard: every dynamic value MUST go
+// the SQL-injection regression guard: every dynamic value MUST go
 // through a $N placeholder, never get inlined into the WHERE
 // fragment. The clause shape is a literal "key IN ($1, $2, ...)"
 // with placeholder indices only -- the values themselves stay in

@@ -1,6 +1,6 @@
-"""MCP Protection Policy -- warn enforcement (D130 / D131).
+"""MCP Protection Policy -- warn enforcement.
 
-Provisions a flavor policy via the step-3 control-plane API:
+Provisions a flavor policy via the control-plane API:
 allowlist mode + a deny entry whose enforcement is ``warn``. Then
 opens an MCP ClientSession, calls a tool against the matched
 server, and asserts a ``policy_mcp_warn`` event landed in the
@@ -99,7 +99,7 @@ async def run_demo() -> int:
     server_name_for_policy = "flightdeck-mcp-reference"
 
     # 2. Provision a flavor policy: deny+warn against the matched
-    # server. Flavor entry takes precedence (D135 step 1) so the
+    # server. Flavor entry takes precedence so the
     # global mode is irrelevant for this demo.
     provision_flavor_policy(
         flavor,

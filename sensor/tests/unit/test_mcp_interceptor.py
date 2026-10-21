@@ -732,7 +732,7 @@ def test_mcp_event_payload_omits_llm_baseline_fields() -> None:
     MCP events must NOT carry the LLM-baseline columns that are perpetually
     null for MCP traffic. This test is the structural floor: any future
     edit to ``Session._build_payload`` that re-adds an LLM column to MCP
-    events fails this test as a deliberate reminder of override 2.
+    events fails this test as a deliberate reminder of the lean-payload rule.
     """
     session = _make_sensor_session()
     payload = session._build_payload(
@@ -934,7 +934,7 @@ def test_patch_unpatch_cycle_restores_every_method() -> None:
 
 
 # ---------------------------------------------------------------------
-# B-6 — content overflow gating
+# Content overflow gating
 #
 # The 8 KiB inline threshold + 2 MiB hard cap routing live in
 # interceptor/mcp.py::_gate_mcp_field. Tests exercise the wrapper
@@ -1031,7 +1031,7 @@ async def test_call_tool_large_payload_lands_via_same_path(
 
 
 @pytest.mark.asyncio
-async def test_b6_resource_read_large_content_overflows(
+async def test_resource_read_large_content_overflows(
     install_capturing_session: Session,
 ) -> None:
     """Large file content via read_resource: has_content=true,
@@ -1071,7 +1071,7 @@ async def test_b6_resource_read_large_content_overflows(
 
 
 @pytest.mark.asyncio
-async def test_b6_resource_read_small_content_stays_inline(
+async def test_resource_read_small_content_stays_inline(
     install_capturing_session: Session,
 ) -> None:
     """Below threshold: inline ReadResourceResult, has_content=false."""
@@ -1141,8 +1141,8 @@ async def test_prompt_get_capture_routes_to_event_content(
     ]
 
 
-def test_b6_constants_are_named() -> None:
-    """B-6 thresholds live as named constants so the
+def test_overflow_constants_are_named() -> None:
+    """Overflow thresholds live as named constants so the
     ``feedback_named_constants_justification`` memory rule is honoured.
     """
     assert mcp_interceptor._MCP_INLINE_THRESHOLD_BYTES == 8 * 1024

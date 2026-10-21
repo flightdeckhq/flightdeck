@@ -86,7 +86,7 @@ export function parseEventsUrlState(sp: URLSearchParams) {
     // resolves to the ``sessions.context->>'hostname'`` JSONB key
     // server-side; the API surface is the shorter ``host`` while
     // the EventFacets response key is ``hostname`` (sensor's
-    // field name). See DECISIONS.md D160 for the rationale.
+    // field name).
     osValues: sp.getAll("os"),
     archs: sp.getAll("arch"),
     hosts: sp.getAll("host"),
@@ -212,7 +212,7 @@ const FACET_GROUPS: FacetGroupSpec[] = [
   },
   { key: "mcp_server", label: "MCP SERVER", urlField: "mcpServers" },
   { key: "terminal", label: "TERMINAL", urlField: "terminalOnly" },
-  // Runtime-context facets — D160. Each one resolves server-side
+  // Runtime-context facets. Each one resolves server-side
   // via the existing sessions JOIN against partial expression
   // indexes on ``sessions((context->>'<key>'))``.
   { key: "os", label: "OS", urlField: "osValues" },
@@ -401,7 +401,7 @@ export function Investigate() {
       matched_entry_ids: state.matchedEntryIds,
       originating_call_contexts: state.originatingCallContexts,
       mcp_servers: state.mcpServers,
-      // Runtime-context dimensions — D160. Each maps to the
+      // Runtime-context dimensions. Each maps to the
       // corresponding ``EventsParams`` field server-side.
       os_values: state.osValues,
       archs: state.archs,

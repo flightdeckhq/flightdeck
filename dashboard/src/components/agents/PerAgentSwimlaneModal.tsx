@@ -116,8 +116,8 @@ export function PerAgentSwimlaneModal({
   //      and append a ``FeedEvent`` to the feed state.
   //
   // The match key is ``session_id``, not ``flavor`` — the fleet
-  // store's ``flavors[].flavor`` carries the agent_id UUID per
-  // D115 while ``AgentEvent.flavor`` still carries the
+  // store's ``flavors[].flavor`` carries the agent_id UUID
+  // while ``AgentEvent.flavor`` still carries the
   // seed-time flavor string. ``session_id`` is stable on both
   // sides. The historical-bulk-events endpoint
   // (``GET /v1/events?from=…``) is intentionally NOT used here

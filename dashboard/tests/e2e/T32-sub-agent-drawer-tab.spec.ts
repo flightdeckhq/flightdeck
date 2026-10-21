@@ -70,7 +70,7 @@ test.describe("T32 — Sub-agents drawer tab", () => {
     expect(spawnedFromBox!.y).toBeLessThan(childrenBox!.y);
   });
 
-  // D126 UX revision (post-merge polish, pre-merge land):
+  // Sub-agents tab UX contract:
   // chevron-expand-inline + session-id-link-navigate split. The
   // chevron and the session-id link are independent affordances —
   // chevron toggles inline expansion (metrics + mini-timeline +
@@ -86,7 +86,7 @@ test.describe("T32 — Sub-agents drawer tab", () => {
     const drawer = page.locator('[data-testid="session-drawer"]');
 
     // ── Chevron click on SPAWNED FROM card expands inline ──────
-    // Pre-fix the whole card was a single navigate-button. Post-fix
+    // Guarded regression: the whole card was a single navigate-button. Now
     // the chevron is a dedicated toggle and the session-id text is
     // a separate link. Clicking the chevron must NOT rebind the
     // drawer — the URL ?session= param stays on the current
@@ -134,7 +134,7 @@ test.describe("T32 — Sub-agents drawer tab", () => {
     // row is chevron-expanded inside the parent's drawer Sub-
     // agents tab) must use the same EventRow component the
     // Timeline tab uses, which carries the ``event-type-pill`` testid
-    // on every event's coloured type pill. Pre-fix the mini-
+    // on every event's coloured type pill. Guarded regression: the mini-
     // timeline used a stripped EventDetail that emitted no badge
     // testids — the bare-event-list state Supervisor flagged.
     await openSessionDrawer(page, "e69d1efb-bef3-509a-9bf5-576b23422206");

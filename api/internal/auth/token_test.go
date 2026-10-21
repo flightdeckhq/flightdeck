@@ -90,7 +90,7 @@ func envFn(value string) envLookup {
 	}
 }
 
-// --- The four scenarios required by Phase 5 ---
+// --- The four scenarios the token contract requires ---
 
 func TestValidate_TokDev_AcceptedInDevMode(t *testing.T) {
 	db := &fakeDB{devRow: &fakeRow{id: "dev-uuid", name: "Development Token"}}

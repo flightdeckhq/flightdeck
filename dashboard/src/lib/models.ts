@@ -58,7 +58,7 @@ export function getProvider(model: string | null | undefined): Provider {
 /** Provider metadata used across every UI surface that displays a
  *  provider name: charts, tooltips, legends, summary cards. Keep the
  *  color column in sync with the SQL CASE expression in
- *  api/internal/store/analytics.go (D098); label is always the
+ *  api/internal/store/analytics.go; label is always the
  *  brand-capitalised form rather than the lowercase key.
  *
  *  The single map replaces a previous PROVIDER_COLOR lookup + ad-hoc

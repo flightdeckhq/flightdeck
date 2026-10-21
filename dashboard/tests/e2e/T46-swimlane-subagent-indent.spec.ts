@@ -31,7 +31,7 @@ test.describe("T46 — Sub-agent indent + connector", () => {
 		// Stronger contract than the data-topology presence check
 		// above: asserts the COMPUTED ``padding-left`` on the
 		// ``.swimlane-row-label`` strip inside a child row resolves
-		// to 28 px. Pre-fix (D157 → fix/fleet-subagent-indent) the
+		// to 28 px. Without the fix the
 		// strip carried a flat inline ``paddingLeft: 12`` that
 		// beat the globals.css ``[data-topology="child"]
 		// .swimlane-row-label { padding-left: 28px }`` rule via

@@ -38,9 +38,7 @@ server.
   intercepted by `patch()`. They are now metered like `Anthropic` /
   `AsyncAnthropic`, including clients built before `patch()` ran (a
   `with_raw_response` / `with_streaming_response` view first touched
-  before `patch()` stays unmetered). The sensor's `anthropic` floor rises
-  from 0.20 to 0.86, the lowest release with the resource layout the
-  patch imports; an older SDK is reported with a warning at import.
+  before `patch()` stays unmetered).
 - **Worker: a short-lived session could be left unclosed.** The worker
   pool processes one session's events concurrently, so a `session_end`
   published within tens of milliseconds of its `session_start` could be
@@ -155,6 +153,7 @@ server.
 
 ### Changed
 
+- **Sensor: the `anthropic` floor rises from 0.20 to 0.86**, the lowest release with the resource layout the patch imports; an older SDK is reported with a warning at import and its calls are not metered.
 - **Worker: failed processing attempts are redelivered after a growing
   delay** (one second times the deliveries so far, within the
   three-delivery budget) instead of immediately, so a transient database

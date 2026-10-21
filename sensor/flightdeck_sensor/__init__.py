@@ -588,7 +588,7 @@ def patch(
     quiet: bool = False,
     providers: list[str | Provider] | None = None,
 ) -> None:
-    """Class-level patch the Anthropic and OpenAI SDKs.
+    """Patch the Anthropic and OpenAI SDKs in place.
 
     After ``patch()``, every Anthropic SDK client (``Anthropic``,
     ``AsyncAnthropic``, ``AnthropicBedrock``, ``AnthropicVertex``,

@@ -748,7 +748,7 @@ different levels:
   (the one way an Anthropic client can escape the patch; a strict
   `xfail` test pins it). The patch imports the SDK's private module
   layout; the floor is `anthropic>=0.86`, the lowest release carrying
-  it, and the matrix is run against 0.94. An installed SDK below the
+  it. An installed SDK below the
   floor is reported once, at import, with a warning rather than
   silently left unmetered. The raw view returns a response whose body is already
   read and whose `parse()` is synchronous on both client kinds, and is
@@ -787,7 +787,10 @@ idempotency sentinels `_flightdeck_patched` (chat),
 the Anthropic side a `_flightdeck_patched` sentinel on each resource class
 holds the original methods, which `unpatch` restores and which the `wrap`
 proxy calls directly, so a client that is both wrapped and patched is
-metered once.
+metered once -- unless its resource class overrides a patched method and
+calls `super()`: the proxy then resolves the override, which re-enters
+the patched base method, and one request is reported twice (two
+`pre_call`, two `post_call`); a test pins that count.
 
 Idempotency: a class carrying its sentinel is skipped. Safe across
 multiple `patch` / `unpatch` cycles.

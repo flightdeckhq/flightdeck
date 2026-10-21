@@ -1098,6 +1098,39 @@ def test_degrade_swaps_the_model_on_the_wire_on_every_path(
     assert _events_of(session, "pre_call")[0]["model"] == MODEL
 
 
+@pytest.mark.parametrize("override", [False, True], ids=["plain", "overriding-subclass"])
+def test_wrap_then_patch_counts_an_override_calling_super_twice(
+    monkeypatch: pytest.MonkeyPatch, override: bool
+) -> None:
+    """wrap() then patch(): a plain resource is metered once, but a
+    resource class that overrides create() and calls super() is reported
+    twice for one request (the proxy resolves the override, which
+    re-enters the patched base method). Pins the current count; the
+    outer-call mark collapses it to one."""
+    from anthropic.resources.messages.messages import Messages
+
+    class _Overriding(Messages):
+        def create(self, **kwargs: Any) -> Any:  # type: ignore[override]
+            return super().create(**kwargs)
+
+    session = _make_session()
+    monkeypatch.setattr(flightdeck_sensor, "_session", session)
+    transport = _Transport()
+    client = _build("Anthropic", transport)
+    if override:
+        client.messages = _Overriding(client)
+    wrapped = ai.SensorAnthropic(client, session)
+    ai.patch_anthropic_classes(quiet=True)
+    try:
+        wrapped.messages.create(model=MODEL, max_tokens=8, messages=HI)
+    finally:
+        ai.unpatch_anthropic_classes()
+    expected = 2 if override else 1
+    assert len(transport.requests) == 1
+    assert len(_events_of(session, "pre_call")) == expected
+    assert len(_post_calls(session)) == expected
+
+
 def test_subclass_overriding_create_and_calling_super_is_metered_once(session: Session) -> None:
     """A resource subclass that overrides create() and calls super() reaches
     the patched parent through the wrapper; the proxy must call the

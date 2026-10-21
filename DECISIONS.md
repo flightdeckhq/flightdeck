@@ -10187,11 +10187,15 @@ response still referenced at session end is settled by the session's
 open-guard sweep; the sensor never reads such a body. A patched method
 passes straight through once its class no longer resolves to it, so a
 view built while patched stops metering at `unpatch()`. Message Batches
-and `count_tokens` are not patched. The outer-call check that
-`interceptor/base.py` gains with its re-entrancy guard sits, for
-Anthropic, inside the resource-level wrapper (`_intercepting_method`):
-that is the one entry point every Anthropic call passes through, so a
-nested SDK call made during an intercepted call is recognised there. The
+and `count_tokens` are not patched. A client that is both wrapped and
+patched is metered once, except when its resource class overrides a
+patched method and calls `super()`: the `wrap()`-built proxy resolves
+the override, the override re-enters the patched base method, and one
+request is reported twice (two `pre_call`, two `post_call`); a test
+pins that count. What collapses it is the outer-call mark that D191
+adds to `interceptor/base.py`: the `wrap()`-built proxy will run its SDK
+call under that mark, so the patched base method it re-enters recognises
+an outer call in progress and passes through. The
 `with_streaming_response` view is metered by a proxy that defers the
 `post_call` to the caller's `parse()` / `await parse()`, or to close
 (parsing only a body already read; the pre-call estimate when the body
@@ -10219,7 +10223,7 @@ unpatched method and is not metered; the SDK's view objects offer no
 call-time resolution to hook, so the limitation is documented and
 pinned by a strict `xfail` test that will flip if a later SDK resolves
 at call time. The floor rises to `anthropic>=0.86`, the lowest release
-(of those on the dev box: 0.86, 0.91, 0.94, 0.102, 0.125, 1.15)
+(of 0.86, 0.91, 0.94, 0.102, 0.125 and 1.15, the ones inspected)
 carrying the resource layout the patch imports; an older SDK logs one
 warning at import instead of silently metering nothing. The SDK's raw and streaming views capture
 `messages.create` when they are built
@@ -10235,9 +10239,10 @@ method on them is expected rather than a warning.
 `platform` goes into `provider_metadata` because that block is the
 per-call provider annotation the pipeline already carries end to end:
 ingestion only requires it to be an object, the workers store it
-verbatim, and the dashboard renders every entry, so a new key is
-documented in ARCHITECTURE first and needs no schema, migration or
-dashboard change (the same reading of `provider_metadata` as D191).
+verbatim, and the dashboard renders every entry. Adding a key to the
+documented `provider_metadata` object is made in ARCHITECTURE first,
+which this change does, and needs no schema, migration or dashboard
+change.
 The host is the only source of the platform: no SDK client class carries
 a platform label, and a label derived from the class would mislabel a
 first-party client pointed at a gateway. The host is bounded because it

@@ -24,7 +24,9 @@ Two intercept paths exist for Anthropic clients:
    wrap the resource's own ``create`` / ``parse`` at construction time
    (``MessagesWithRawResponse.__init__`` does
    ``self.create = to_raw_response_wrapper(messages.create)``), so once
-   the resource method is patched those views are intercepted too. The
+   the resource method is patched a view first touched afterwards is
+   intercepted too; a view first touched before ``patch()`` keeps the
+   unpatched method it bound and is not metered. The
    raw view returns a response whose body is already read and whose
    ``parse()`` is synchronous on both client kinds, so it is metered
    like a plain call. The streaming view hands the caller an unread
@@ -43,8 +45,11 @@ When both are active (``patch()`` followed by ``wrap()``), ``wrap()``
 in ``flightdeck_sensor/__init__.py`` short-circuits and returns the
 client unchanged because the resource classes are already patched.
 ``wrap()`` followed by ``patch()`` is safe too: :class:`SensorMessages`
-always calls the resource's original methods, so a wrapped client is
-metered exactly once.
+calls the resource's original methods, so a wrapped client is metered
+exactly once -- except when the resource class overrides a patched
+method and calls ``super()``, where the proxy resolves the override,
+the override re-enters the patched base method, and one request is
+reported twice.
 
 Platform attribution: every ``post_call`` carries the platform the
 client talks to under ``provider_metadata.platform`` (``anthropic``,

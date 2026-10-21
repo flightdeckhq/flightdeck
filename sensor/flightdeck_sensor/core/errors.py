@@ -531,12 +531,19 @@ def _extract_message_hint(exc: BaseException) -> str:
         return ""
 
 
+# Longest request id the sensor keeps, from an exception or a response.
+# Provider request ids are short opaque tokens (a few dozen characters);
+# the value is stored on the error event and used as the retry-counter
+# key, so the cap bounds both against a hostile or malformed header.
+REQUEST_ID_MAX_LEN = 128
+
+
 def _extract_request_id(exc: BaseException) -> str | None:
     for attr in ("request_id", "x_request_id"):
         try:
             v = getattr(exc, attr, None)
             if isinstance(v, str) and v:
-                return v
+                return v[:REQUEST_ID_MAX_LEN]
         except Exception:
             continue
     try:
@@ -550,7 +557,7 @@ def _extract_request_id(exc: BaseException) -> str | None:
                     except Exception:
                         v = None
                     if isinstance(v, str) and v:
-                        return v
+                        return v[:REQUEST_ID_MAX_LEN]
     except Exception:
         pass
     return None

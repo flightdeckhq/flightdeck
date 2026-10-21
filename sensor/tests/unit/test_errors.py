@@ -19,6 +19,7 @@ from flightdeck_sensor.core.errors import (
     _MESSAGE_HINT_MAX_CHARS,
     NON_SUCCESS_STOP_REASONS,
     OTEL_ERROR_TYPE,
+    REQUEST_ID_MAX_LEN,
     STOP_REASON_HTTP_STATUS,
     ErrorPayload,
     ErrorType,
@@ -760,3 +761,18 @@ def test_billing_message_text_lands_nowhere_when_capture_is_off(
     assert sentinel not in wire
     assert "credit balance" not in wire
     assert sentinel not in caplog.text
+
+
+def test_exception_request_id_is_capped_on_attribute_and_header_paths() -> None:
+    """A hostile gateway can answer with a megabyte-long request id; the
+    classifier keeps at most ``REQUEST_ID_MAX_LEN`` characters from either
+    source so the error event stays under ingestion's body limit."""
+    huge = "r" * 1_000_000
+    from_attr = classify_exception(_mk("RateLimitError", status=429, request_id=huge))
+    assert from_attr.request_id == "r" * REQUEST_ID_MAX_LEN
+    from_header = classify_exception(
+        _mk("RateLimitError", status=429, headers={"x-request-id": huge})
+    )
+    assert from_header.request_id == "r" * REQUEST_ID_MAX_LEN
+    short = classify_exception(_mk("RateLimitError", status=429, request_id="req_abc"))
+    assert short.request_id == "req_abc"

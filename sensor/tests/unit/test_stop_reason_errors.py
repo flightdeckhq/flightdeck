@@ -118,7 +118,7 @@ def _responses_response(status: str, reason: str | None) -> Response:
                 "input_tokens": 3,
                 "output_tokens": 2,
                 "total_tokens": 5,
-                "input_tokens_details": {"cached_tokens": 0},
+                "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
                 "output_tokens_details": {"reasoning_tokens": 0},
             },
         }
@@ -522,7 +522,7 @@ def test_stop_reason_error_caps_an_oversized_request_id() -> None:
     )
     _post(session, from_headers)
     errors = _events_of(session, "llm_error")
-    assert base._REQUEST_ID_MAX_LEN == 128
+    assert base.REQUEST_ID_MAX_LEN == 128
     assert [len(e["error"]["request_id"]) for e in errors] == [128, 128]
     # Both carry the same capped key, so the second is the chain's retry.
     assert [e["retry_attempt"] for e in errors] == [1, 2]

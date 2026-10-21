@@ -25,7 +25,7 @@ import logging
 from typing import Any
 
 from flightdeck_sensor.core.types import TokenUsage
-from flightdeck_sensor.providers.protocol import PromptContent, ToolInvocation
+from flightdeck_sensor.providers.protocol import PromptContent, ToolInvocation, finish_reason_of
 
 _log = logging.getLogger("flightdeck_sensor.providers.litellm")
 
@@ -42,6 +42,8 @@ class LitellmProvider:
     across every provider litellm supports, with a char heuristic
     fallback when the call fails.
     """
+
+    name = "litellm"
 
     def __init__(self, capture_prompts: bool = False) -> None:
         self._capture_prompts = capture_prompts
@@ -261,6 +263,19 @@ class LitellmProvider:
             return model
         except (KeyError, TypeError):
             return ""
+
+    def response_stop_reason(self, response: Any) -> str | None:
+        """``choices[0].finish_reason`` of a ``ModelResponse``: litellm
+        folds every provider's stop reason into OpenAI's vocabulary and
+        raises nothing, so an Anthropic refusal routed through litellm
+        arrives here as ``content_filter``. ``None`` when the response has
+        no choices (embeddings)."""
+        return finish_reason_of(response)
+
+    def stop_reason_from_stream_chunk(self, chunk: Any) -> str | None:
+        """``choices[0].finish_reason`` of a ``ModelResponseStream`` chunk
+        that carries one; ``None`` for the content chunks before it."""
+        return finish_reason_of(chunk)
 
     def extract_tool_invocations(self, response: Any) -> list[ToolInvocation]:
         """Parse tool_calls from a litellm ``ModelResponse``.

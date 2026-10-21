@@ -11,7 +11,7 @@ import logging
 from typing import Any
 
 from flightdeck_sensor.core.types import TokenUsage
-from flightdeck_sensor.providers.protocol import PromptContent, ToolInvocation
+from flightdeck_sensor.providers.protocol import PromptContent, ToolInvocation, finish_reason_of
 
 _log = logging.getLogger("flightdeck_sensor.providers.openai")
 
@@ -52,12 +52,21 @@ _RESPONSES_TERMINAL_EVENTS = frozenset(
 )
 
 
+# A Responses call the API left unfinished; ``incomplete_details.reason``
+# says whether the content filter or ``max_output_tokens`` stopped it.
+_RESPONSES_STATUS_INCOMPLETE = "incomplete"
+# The Responses stream event that announces the same outcome.
+_RESPONSES_INCOMPLETE_EVENT = "response.incomplete"
+
+
 class OpenAIProvider:
     """Provider adapter for the OpenAI Python SDK.
 
     All methods are safe to call on the hot path.  None of them raise
     exceptions -- failures return zero/empty defaults.
     """
+
+    name = "openai"
 
     def __init__(self, capture_prompts: bool = False) -> None:
         self._capture_prompts = capture_prompts
@@ -384,6 +393,40 @@ class OpenAIProvider:
             return model
         except (KeyError, TypeError):
             return ""
+
+    def response_stop_reason(self, response: Any) -> str | None:
+        """The reason an OpenAI response ended: a chat completion's
+        ``choices[0].finish_reason`` (``refusal`` when the structured-output
+        ``message.refusal`` is set), or the ``incomplete_details.reason``
+        of a Responses call whose ``status`` is ``incomplete``. ``None``
+        for a completed Responses call, an embeddings response and any
+        shape that carries neither. Raw-response wrappers are parsed
+        first."""
+        try:
+            obj = response
+            with contextlib.suppress(Exception):
+                if hasattr(obj, "parse") and callable(obj.parse):
+                    obj = obj.parse()
+            if getattr(obj, "status", None) == _RESPONSES_STATUS_INCOMPLETE:
+                details = getattr(obj, "incomplete_details", None)
+                reason = getattr(details, "reason", None)
+                return reason if isinstance(reason, str) else None
+            return finish_reason_of(obj)
+        except Exception:
+            return None
+
+    def stop_reason_from_stream_chunk(self, chunk: Any) -> str | None:
+        """The ``finish_reason`` of a chat chunk that carries one, or the
+        ``incomplete_details.reason`` of a Responses ``response.incomplete``
+        event; ``None`` for every other chunk or event."""
+        try:
+            if getattr(chunk, "type", None) == _RESPONSES_INCOMPLETE_EVENT:
+                details = getattr(getattr(chunk, "response", None), "incomplete_details", None)
+                reason = getattr(details, "reason", None)
+                return reason if isinstance(reason, str) else None
+            return finish_reason_of(chunk)
+        except Exception:
+            return None
 
     def extract_tool_invocations(self, response: Any) -> list[ToolInvocation]:
         """Parse OpenAI ``tool_calls`` from the response.

@@ -756,14 +756,53 @@ the entrypoint, before any framework or user code constructs a client.
 ### Module-level patching: litellm
 
 `SensorLitellm` (in `interceptor/litellm.py`) covers `litellm.completion`,
-`litellm.acompletion`, `litellm.embedding`, and `litellm.aembedding`.
-litellm exposes its API as module-level functions, so the descriptor pattern
-above does not apply; the interceptor wraps the module functions directly
-with idempotency sentinels on the module object. While a session is
-active, `litellm.completion(stream=True)` and
-`litellm.acompletion(stream=True)` raise `NotImplementedError` rather than
-run unmetered; with no active session the call passes through to litellm
-untouched.
+`litellm.acompletion`, `litellm.embedding`, and `litellm.aembedding`,
+streaming included. litellm exposes its API as module-level functions, so
+the descriptor pattern above does not apply; the interceptor wraps the
+module functions directly with idempotency sentinels on the module object.
+With no active session the call passes through to litellm untouched.
+
+litellm serves its OpenAI route through the OpenAI SDK, whose
+`chat.completions` the class-level patch also intercepts. The two
+interceptors coordinate through an outer-call mark in `interceptor/base.py`:
+the litellm wrapper runs every underlying litellm call inside
+`outer_intercept()`, and an SDK interceptor that finds
+`outer_intercept_active()` true hands the call to the SDK untouched (no
+`pre_call`, policy check, stream guard or `post_call`), so a litellm call
+served through the OpenAI SDK lands as one `pre_call`, one policy check and
+one `post_call`. The mark is a context variable scoped to the current thread
+and asyncio task, so an SDK call another thread or task makes at the same
+time is still reported; litellm's executor hop for sync-only providers
+copies the context, so the mark follows it. The OpenAI interceptor checks
+the mark where `client.chat.completions` is resolved (which covers `create`
+and `with_raw_response.create`, streaming or not) and the Anthropic
+interceptor at `messages.create`.
+
+`litellm.completion(stream=True)` and `litellm.acompletion(stream=True)`
+return the shared stream guard (`GuardedStream` / `GuardedAsyncStream`)
+around litellm's `CustomStreamWrapper`. The sensor asks litellm for
+`stream_options={"include_usage": True}`; litellm appends one chunk carrying
+the provider's usage after the `finish_reason` chunk (one choice with an
+empty delta, where OpenAI sends empty `choices`), the guard meters it and
+hides it from a caller who did not ask for usage, so their loop sees the
+chunks it would see without the sensor. litellm's wrapper is not a context
+manager and has no `close()`, so the guard is used as a plain iterator; a
+loop left early is reported once the guard is collected. `LitellmProvider`
+surfaces the cache breakdown litellm exposes
+(`usage.prompt_tokens_details.cached_tokens` / `cache_creation_tokens`, or
+the Anthropic-named `cache_read_input_tokens` /
+`cache_creation_input_tokens`) as `tokens_cache_read` /
+`tokens_cache_creation`; litellm's `prompt_tokens` already includes those
+tokens, so `tokens_input` is the same sum. Only real integers are accepted
+as cache counts.
+
+`litellm.text_completion` / `atext_completion` and `litellm.responses` /
+`aresponses` are not intercepted. `text_completion` builds a chat request
+and calls `completion` through the name bound in `litellm.main`, which the
+package-attribute swap does not reach; `responses` goes through litellm's
+own httpx handler (so no SDK interceptor sees it either) and returns the
+Responses API shape, which needs its own provider adapter. Calls through
+either are unobserved.
 
 ### Patch surface — out of scope
 
@@ -792,7 +831,7 @@ clients internally are intercepted without user-side wrapping.
 | LangGraph | Transitive via LangChain — graphs routing through `ChatAnthropic` / `ChatOpenAI`, including `langgraph.prebuilt.create_react_agent` tool loops |
 | LlamaIndex | `llama-index-llms-anthropic.complete`, `llama-index-llms-openai.complete` |
 | CrewAI 1.14+ | `LLM(model=...).call` via the native Anthropic and OpenAI provider classes. Model strings without a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm |
-| litellm | `litellm.completion` / `acompletion` chat path, non-streaming only (`stream=True` raises `NotImplementedError`; README Roadmap); `embedding` / `aembedding` |
+| litellm | `litellm.completion` / `acompletion` chat path, `stream=True` included (sync and async, metered from litellm's trailing usage chunk); a call litellm serves through the OpenAI SDK is reported once, by the litellm wrapper; `embedding` / `aembedding`. `text_completion` and `responses` are not intercepted |
 | Claude Code plugin | Observational hook-based path; emits the same event shape as the sensor |
 | bifrost | Multi-protocol gateway. Point the openai SDK at bifrost's `base_url` and the OpenAI interceptor fires; point the anthropic SDK at bifrost and the Anthropic interceptor fires. Both protocols are supported as deployment topologies. Events are attributed to the SDK protocol in use (`provider` reads openai or anthropic); the gateway itself is not recorded today |
 

@@ -126,6 +126,19 @@ server.
 - **Pricing table refreshed** for the Claude 5 family, GPT-6 / GPT-5.x
   and Gemini 4 / 3.x list prices, with retired ids kept and annotated;
   Claude Opus 4 corrected to $15 / $75.
+- **Sensor: litellm streaming raised, and a litellm call through the
+  OpenAI SDK was counted twice.** `litellm.completion(stream=True)` and
+  `litellm.acompletion(stream=True)` raised `NotImplementedError` under
+  `patch()`; they are now metered through the same stream guard as the
+  SDKs (in-stream usage, `payload.streaming`, cache breakdown), sync and
+  async, and return the sensor's stream guard rather than litellm's
+  `CustomStreamWrapper`. A litellm call served through the OpenAI SDK was
+  reported by both the litellm wrapper and the OpenAI interceptor; the
+  litellm wrapper now marks its call as in flight and the SDK
+  interceptors pass a marked call through, so it lands once. The
+  `litellm` extra requires `litellm>=1.83.0` (1.82.7 and 1.82.8 were
+  compromised builds). `litellm.text_completion` and `litellm.responses`
+  remain unobserved.
 
 ### Changed
 

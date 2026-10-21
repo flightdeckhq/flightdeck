@@ -123,7 +123,7 @@ Each script self-skips when its API keys aren't set, so `make playground-all` ru
 |-----------|------|------------|-----------|--------|
 | Anthropic | `messages.create`, `messages.stream`, `beta.messages.*` (sync + async) | route via litellm to Voyage | `messages.stream`, `messages.create(stream=True)` (sync + async) | 14-entry `llm_error` taxonomy |
 | OpenAI    | `chat.completions.create`, `responses.create` (sync + async) | `embeddings.create` (sync + async) | `create(stream=True)` on chat and Responses (sync + async); the `.stream()` helper is not intercepted (nor is the non-streaming `.parse()`) | same |
-| litellm   | `litellm.completion`, `litellm.acompletion` (chat path only) | `litellm.embedding`, `litellm.aembedding` | not yet (`stream=True` raises `NotImplementedError`; see Roadmap) | same |
+| litellm   | `litellm.completion`, `litellm.acompletion` (chat path; `text_completion` and `responses` are not intercepted) | `litellm.embedding`, `litellm.aembedding` | `completion(stream=True)`, `acompletion(stream=True)` (sync + async); a call litellm serves through the OpenAI SDK is counted once | same |
 
 Streamed calls report the token counts the provider sends inside the stream, whether you iterate inside a `with` block or without one (a loop left with `break` and never closed is reported at the next LLM call the sensor intercepts after the stream object is collected, or when the session ends). Streaming events expose `payload.streaming = {ttft_ms, chunk_count, inter_chunk_ms, final_outcome, abort_reason}`; `final_outcome` is `aborted` when you leave a stream before the event that ends the response, and `completed` otherwise. A mid-stream failure, inside a `with` block or while iterating without one, emits `llm_error{error_type="stream_error"}` with the chunks and tokens delivered before the failure.
 
@@ -301,7 +301,7 @@ The sensor reports over HTTP on background daemon threads. Control plane downtim
 - `patch()` must run before clients are constructed. Instances that already accessed `.messages`, `.chat`, `.responses`, or `.embeddings` before `patch()` keep the raw resource cached and are not intercepted.
 - Per-thread Session isolation is not yet supported. Multi-agent frameworks (CrewAI, LangGraph, etc.) work fine under a single `init()` and shared `AGENT_FLAVOR`.
 - Custom directive handler input validation is yours. The `parameters` schema drives the dashboard form and the directive fingerprint; it is not enforced at execution time.
-- litellm streaming is not intercepted. Non-streaming chat calls and embeddings round-trip cleanly.
+- litellm's `text_completion` and `responses` entry points are not intercepted. Chat calls, streaming or not, and embeddings round-trip cleanly.
 
 ---
 
@@ -440,7 +440,7 @@ Deferred and planned work lives here so it stays visible and user demand can pri
 
 ### Next up (v0.6.0 and v0.7.0)
 
-- Sensor correctness on current SDKs: LangChain 1.x and structured-output paths, litellm streaming, Bedrock / Vertex / Foundry clients, mcp 2.x support.
+- Sensor correctness on current SDKs: LangChain 1.x and structured-output paths, litellm `text_completion` / `responses`, Bedrock / Vertex / Foundry clients, mcp 2.x support.
 - Streamed-call coverage: with `capture_prompts` on, `messages.create(stream=True)` and `chat.completions.create(stream=True)` store the request but not the streamed response text, because the raw event stream is never assembled into a message; `responses.create(stream=True)` stores neither, having no request `input` on any path; none of the raw streams emit `tool_call` events (the `messages.stream()` helper does both). The OpenAI `chat.completions.stream()` / `.parse()` and `responses.stream()` / `.parse()` helpers are not intercepted.
 - Failed-stream accounting: the provider-billed tokens a stream delivered before a mid-stream failure (`llm_error.partial_tokens_*`) count only against the sensor's local session budget; server-side session totals (which add `post_call` and `embeddings` events) and the analytics `tokens` and `estimated_cost` metrics (`post_call`) do not include them yet.
 - Raw-response streaming: `chat.completions.with_raw_response.create(stream=True)` records the pre-call estimate with no `streaming` block (langchain-openai takes this path with `include_response_headers=True`), and `responses.with_raw_response` is not intercepted.

@@ -10139,3 +10139,103 @@ test concern; the interval is also a legitimate operator setting).
 Marking the parallel-unsafe tests by module (the reconcile module is
 all exclusive, but most other modules mix one unsafe test with many
 safe ones).
+
+---
+
+## D191 -- An outer interceptor marks its provider call so inner SDK interceptors report it once
+
+**Date:** 2026-10-21
+
+**Decision:** `interceptor/base.py` carries an outer-call mark: a
+`contextvars.ContextVar[bool]` with `outer_intercept()` (a context manager
+that sets the mark for the duration of a block) and
+`outer_intercept_active()` (its predicate). The litellm interceptor runs
+every underlying litellm call -- completion, acompletion, embedding,
+aembedding, streaming or not -- under the mark. The OpenAI interceptor
+checks the mark where `client.chat.completions` is resolved
+(`SensorChat.completions` returns the SDK's own resource under the mark)
+and the Anthropic interceptor at the top of `SensorMessages.create`; a
+marked call skips the whole sensor path (no `pre_call`, policy check,
+stream guard or `post_call`), because the outer interceptor already does
+all of that for the same call. The mark covers the call only, not the
+later reading of a stream, since the SDK request is sent inside the call.
+
+litellm streams go through the shared stream guard. The litellm
+interceptor injects `stream_options={"include_usage": True}` with a local
+copy of the OpenAI interceptor's `_inject_stream_options`, and hides
+litellm's trailing usage chunk from a caller who did not ask for usage
+with its own predicate: litellm's usage chunk carries one choice with an
+empty delta and no finish reason, where OpenAI's carries empty `choices`,
+so the OpenAI predicate (`usage` set and no `choices`) does not match it.
+`LitellmProvider.extract_usage` reads the cache breakdown from
+`prompt_tokens_details` (then the Anthropic-named attributes) onto the
+`TokenUsage` cache fields and accepts only real integers (not booleans,
+not stand-in objects) as cache counts.
+
+`litellm.text_completion` / `atext_completion` and `litellm.responses` /
+`aresponses` are left unpatched and documented as unobserved. litellm's
+`_hidden_params["response_cost"]` (present on non-streaming responses,
+absent on stream chunks) is observed but not stored. The `litellm` extra
+and the dev install require `litellm>=1.83.0`.
+
+**Reasoning:** litellm serves its OpenAI route by constructing
+`openai.OpenAI` and calling `chat.completions.create` on it, which the
+class-level OpenAI patch intercepts, so one litellm call was reported
+twice: once by the litellm wrapper and once by the SDK descriptor. The
+outer interceptor is the right single reporter because it sees the call
+the user made (the litellm model string, litellm's normalised usage) and
+runs the policy check once before the request leaves. A context variable
+is the cheapest scoping that is correct under threads and asyncio tasks:
+one lookup per intercepted call, no lock, no per-session state, and
+litellm's executor hop for sync-only providers copies the context, so the
+mark follows that path too. Skipping the whole sensor path on the inner
+side, rather than only the emission, keeps the call single-counted on
+every axis (events, policy decisions, the session token total) and keeps
+the inner SDK call exactly what litellm expects (the raw `Stream`, no
+injected `stream_options`). The checks sit in one place per SDK
+interceptor: `client.chat.completions` is re-resolved on every litellm
+call, so the property covers `create` and `with_raw_response.create`,
+streaming or not; a router uses `messages.create(stream=True)` rather
+than the `messages.stream()` helper, so `create` is the one place on the
+Anthropic side (litellm's Anthropic route uses httpx today; the check is
+for a route that adopts the SDK).
+
+`_inject_stream_options` is copied rather than imported so the two
+interceptor modules stay independently importable and editable; the
+option means the same thing on both. `text_completion` calls
+`completion` through the name bound in `litellm.main`, which the
+package-attribute swap does not reach, and patching
+`litellm.main.completion` as well would make every `acompletion` (which
+calls `completion` the same way) enter the sensor twice per call;
+`responses` goes through litellm's own httpx handler and returns the
+Responses API shape (`usage.input_tokens` / `output_tokens`, `input=`
+instead of `messages=`), which needs its own provider adapter before it
+can be metered. `response_cost` goes nowhere because no event field
+carries cost, and adding a key to `provider_metadata` is an event-payload
+schema change, which is made in ARCHITECTURE.md first. Cache counts are
+accepted only as real integers because a provider-shaped stand-in (the
+shared streaming tests use a `MagicMock` usage) would otherwise be
+coerced to a nonsense count. The 1.83.0 floor keeps installs off 1.82.7
+and 1.82.8, published with a compromised build on 2026-03-24 and later
+withdrawn, and names the version the interceptor is developed and
+verified against.
+
+**Rejected alternatives:** Checking the mark inside `base.call` /
+`call_async` / `call_stream` / `call_stream_async` with no edits to the
+SDK interceptors (the stream entry points return a guard the SDK
+wrappers open eagerly, so a bypass there would need a stand-in guard
+whose `open()` returns the raw stream, and the OpenAI wrapper would
+already have injected `stream_options` into the inner call). Checking the
+mark in the descriptor `__get__` (the wrapped resource is cached on the
+instance, so a client whose `.chat` was first resolved outside a litellm
+call would still double-count inside one). Suppressing only the inner
+emission while running the inner policy check and stream guard (two
+policy checks per call, and the inner guard would still own the SDK
+stream). Reading usage from `_hidden_params["usage"]` on the finish chunk
+instead of asking for the usage chunk (litellm sets it only when
+`stream_options` is absent, and computes it with its own tokenizer rather
+than from the provider's counts). Patching `litellm.main.completion` to
+cover `text_completion` (double-enters `acompletion`). Storing
+`response_cost` in `provider_metadata` (a schema change outside this
+change's scope; `estimated_cost` is computed server-side from the pricing
+table).

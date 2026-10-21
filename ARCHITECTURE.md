@@ -232,7 +232,7 @@ flightdeck/
 │   │   │   ├── context.py      # Pluggable runtime context collectors + framework classifiers
 │   │   │   ├── schemas.py      # Pydantic v2 control-plane envelope validation
 │   │   │   ├── agent_id.py     # 5-tuple → deterministic agent_id derivation
-│   │   │   ├── errors.py       # Provider exception → structured llm_error taxonomy + payload builder
+│   │   │   ├── errors.py       # Provider exception or non-success stop reason → structured llm_error taxonomy + payload wrapper
 │   │   │   └── exceptions.py   # BudgetExceededError, DirectiveError, ConfigurationError
 │   │   ├── transport/
 │   │   │   ├── client.py       # ControlPlaneClient + EventQueue (drain + directive threads)
@@ -255,9 +255,10 @@ flightdeck/
 │   │       └── crewai_mcp.py   # Opt-in fixup for the mcpadapt → CrewAI args_schema JSON Schema bug
 │   └── tests/
 │       ├── conftest.py         # Mock control plane + provider fixtures
-│       └── unit/               # 34 files
+│       └── unit/               # 37 files
 │           ├── test_agent_id.py
 │           ├── test_agent_type_validation.py
+│           ├── test_anthropic_resource_patch.py
 │           ├── test_compat_crewai_mcp.py
 │           ├── test_context.py
 │           ├── test_cross_agent_messages.py
@@ -276,6 +277,7 @@ flightdeck/
 │           ├── test_mcp_policy_emission_enriched.py
 │           ├── test_mcp_policy_enforcement.py
 │           ├── test_mcp_policy_enforcement_all_paths.py
+│           ├── test_openai_parse_responses.py
 │           ├── test_originating_event_id.py
 │           ├── test_patch.py
 │           ├── test_policy.py
@@ -288,6 +290,7 @@ flightdeck/
 │           ├── test_providers.py
 │           ├── test_session.py
 │           ├── test_session_lifecycle_enrichment.py
+│           ├── test_stop_reason_errors.py
 │           ├── test_streaming_usage.py
 │           └── test_transport.py
 │
@@ -614,6 +617,8 @@ def directive(
 ```python
 class Provider(Protocol):
 
+    name: str   # wire name: "anthropic", "openai" or "litellm"
+
     def estimate_tokens(self, request_kwargs: dict) -> tuple[int, str]:
         """Estimate tokens before the call; returns (tokens, source) where
         source is "tiktoken", "heuristic" or "none". Never raises."""
@@ -652,6 +657,22 @@ class Provider(Protocol):
         message_stop or a message_delta with stop_reason; an OpenAI chat
         chunk carrying usage; a Responses terminal event), so
         a consumer that stops at it has read the whole response. Never
+        raises."""
+
+    def response_stop_reason(self, response: Any) -> str | None:
+        """The provider's stop reason on a complete response: Anthropic
+        stop_reason (a Message, a raw-response wrapper or a helper
+        stream's accumulated snapshot); OpenAI chat and litellm
+        finish_reason, "refusal" for a structured-output message.refusal,
+        the incomplete_details.reason of a Responses call whose status is
+        incomplete. None when the response carries none. Never raises."""
+
+    def stop_reason_from_stream_chunk(self, chunk: Any) -> str | None:
+        """The stop reason carried by one streamed event (Anthropic
+        message_delta; an OpenAI chat chunk carrying finish_reason; an
+        OpenAI response.incomplete event), or None for
+        every other event, so a raw stream, which has no final message
+        object, reports the same outcome as a complete response. Never
         raises."""
 
     def extract_response_metadata(self, response: Any) -> dict | None:
@@ -708,9 +729,24 @@ class PromptContent:
 ```
 
 `AnthropicProvider.estimate_tokens` uses the Anthropic SDK
-`count_tokens` if available, falls back to `char // 4`.
+`count_tokens` if available, falls back to `char // 4`. A request that
+names no `model` is counted against `claude-sonnet-4-6`
+(`DEFAULT_COUNT_TOKENS_MODEL` in `providers/anthropic.py`): the endpoint
+answers 404 for a retired id and the estimator then falls back to the
+heuristic without a word, so a unit test pins the default to an id that
+`pricing.yaml` prices without a retired or deprecated note and that the
+installed SDK lists as a model.
 `OpenAIProvider.estimate_tokens` uses `tiktoken` when installed, falls back to
-`char // 4`. Token reconciliation in `_post_call` prefers provider-reported
+`char // 4`. It counts the chat `messages`; for a Responses request it
+counts `instructions` and `input` (a string, or a list of input items) as
+chat-shaped messages, and for an embeddings request the `input`, so every
+OpenAI call path gets a real pre-call estimate. An inline binary payload
+(a `data:` URL, a `file_data` body) is dropped from the text count and
+priced at a fixed allowance of 1,000 tokens each, the order of what the
+provider charges for an image input, so a multi-megabyte image cannot
+estimate as hundreds of thousands of tokens and trip a policy limit
+before the call. Token reconciliation in
+`_post_call` prefers provider-reported
 usage over the pre-call estimate: `extract_usage(response)` for a
 non-streamed call, the usage the stream guard read from the stream for a
 streamed call (see Streaming metering). The estimate, with zero output
@@ -773,10 +809,18 @@ different levels:
   `AsyncOpenAI.chat`, `OpenAI.responses`, `AsyncOpenAI.responses`,
   `OpenAI.embeddings`, `AsyncOpenAI.embeddings` on the client classes,
   replaced with sensor descriptors that wrap the resource on first
-  access. `chat.completions.create` and `responses.create` are
-  intercepted, including `stream=True`; the `.stream()` helpers on those
-  resources are not. `responses` is OpenAI's recommended API for new
-  projects; `embeddings` is common in RAG-heavy pipelines.
+  access. The intercepted call paths are `chat.completions.create()` and
+  `.parse()`, `responses.create()` and `.parse()`, `embeddings.create()`,
+  and the `with_raw_response` counterparts of the chat and Responses calls
+  (`with_raw_response.create()` / `.parse()`, which return the SDK's
+  `LegacyAPIResponse` with its headers). `create(stream=True)` on chat and
+  Responses is metered from the stream. Not covered: the `.stream()`
+  helpers on those resources (they call the unwrapped resource's `create`
+  internally) and `with_streaming_response` on either resource. `parse()`
+  is the structured-output path: it never streams, and its
+  `ParsedChatCompletion` / `ParsedResponse` carries the usual `usage`.
+  `responses` is OpenAI's recommended API for new projects;
+  `embeddings` is common in RAG-heavy pipelines.
 
 Three descriptor types on the OpenAI side (`_OpenAIChatDescriptor`,
 `_OpenAIResponsesDescriptor`, `_OpenAIEmbeddingsDescriptor`), driven by an
@@ -823,8 +867,8 @@ The SDK class patch deliberately does NOT intercept:
 | Code path | Why not |
 |---|---|
 | `OpenAI.beta.chat.completions.parse` / `.stream` | Structured-output path on a separate `OpenAI.beta` `cached_property`. Not yet observed in any framework's default flow. |
-| `OpenAI.chat.completions.stream` / `.parse`, `OpenAI.responses.stream` / `.parse` | `.stream()` calls the unwrapped resource's `create` internally and `.parse()` posts through the resource's own `_post`, so neither passes the sensor wrapper; `create(stream=True)` on the same resources is intercepted. The `parse` structured-output path is on the README Roadmap. |
-| `OpenAI.chat.completions.with_raw_response.create(stream=True)`, `OpenAI.responses.with_raw_response.*` | The raw-response wrapper is intercepted, but metered correctly only for non-streaming chat calls: a streamed call through it records the pre-call estimate with no `streaming` block, and the Responses raw-response path passes through unintercepted. langchain-openai takes the chat path when `include_response_headers=True`. On the README Roadmap. |
+| `OpenAI.chat.completions.stream`, `OpenAI.responses.stream` | `.stream()` calls the unwrapped resource's `create` internally, so it does not pass the sensor wrapper; `create(stream=True)` on the same resources is intercepted, and so is the non-streaming `.parse()` on both. |
+| `OpenAI.chat.completions.with_raw_response.create(stream=True)`, `OpenAI.responses.with_raw_response.create(stream=True)`, `with_streaming_response` on either resource | The raw-response wrappers are intercepted for `create` and `parse`, but a streamed call through them records the pre-call estimate with no `streaming` block, and `with_streaming_response` passes through unintercepted. langchain-openai takes the chat raw-response path when `include_response_headers=True`. On the README Roadmap. |
 | `OpenAI.audio.*`, `images.*`, `moderations.*`, `files.*`, `fine_tuning.*`, `completions.*` (legacy) | Utility resources unrelated to LLM inference events. |
 | `Anthropic.completions.*` | Legacy completions API; superseded by `messages` / `beta.messages`. |
 | Anthropic `messages.batches.*`, `messages.count_tokens` | Batches are offline work with their own billing and run outside the kill switch and the token budget; `count_tokens` is the sensor's own estimator and makes no inference call. |
@@ -842,7 +886,7 @@ clients internally are intercepted without user-side wrapping.
 
 | Framework | Path covered |
 |---|---|
-| LangChain | `ChatAnthropic.invoke` (langchain-anthropic); `ChatOpenAI.invoke` (langchain-openai 0.3+ sends it through `chat.completions.with_raw_response.create`, which is intercepted as a non-streaming chat call); `OpenAIEmbeddings.embed_*` (transitive). `ChatOpenAI.stream` calls `chat.completions.create(stream=True)` and is metered from the stream; with `include_response_headers=True` it goes through the raw-response wrapper and records the pre-call estimate (see "Patch surface — out of scope"); the Responses raw-response path and `.parse()` are not observed (README Roadmap) |
+| LangChain | `ChatAnthropic.invoke` (langchain-anthropic); `ChatOpenAI.invoke` (langchain-openai 0.3+ sends it through `chat.completions.with_raw_response.create`, which is intercepted as a non-streaming chat call); `OpenAIEmbeddings.embed_*` (transitive). `ChatOpenAI.stream` calls `chat.completions.create(stream=True)` and is metered from the stream; with `include_response_headers=True` it goes through the raw-response wrapper and records the pre-call estimate (see "Patch surface — out of scope"). `chat.completions.parse()`, `responses.parse()` and `responses.with_raw_response.create()` / `.parse()` are intercepted when a framework uses them |
 | LangGraph | Transitive via LangChain — graphs routing through `ChatAnthropic` / `ChatOpenAI`, including `langgraph.prebuilt.create_react_agent` tool loops |
 | LlamaIndex | `llama-index-llms-anthropic.complete`, `llama-index-llms-openai.complete` |
 | CrewAI 1.14+ | `LLM(model=...).call` via the native Anthropic and OpenAI provider classes. Model strings without a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm |
@@ -2507,9 +2551,17 @@ formula:
 
 Cache ratios follow Anthropic's published structure (90% discount on
 reads, 25% premium on writes) and apply uniformly to every model that
-reports cache tokens. OpenAI and other providers that don't report cache
-tokens contribute 0 to the cache terms, so the formula collapses to
-`tokens_input * input_price + tokens_output * output_price`.
+reports cache tokens, OpenAI's prompt-cache reads included. OpenAI's
+cached-input rate is model-dependent (0.50x to 0.05x of the input rate
+in `pricing.yaml`), so the uniform 0.10x read ratio can be off in either
+direction for an OpenAI session with cache reads. OpenAI's cache writes
+(`cache_write_tokens`) are priced at the same uniform 1.25x write ratio,
+which is Anthropic's rate, not OpenAI's; responses that carry no
+`cache_write_tokens` (older SDKs and models) contribute 0 to the write
+term. Per-model cache ratios are a
+README Roadmap item (token and cost model). Providers that report no
+cache tokens contribute 0 to both cache terms, so the formula collapses
+to `tokens_input * input_price + tokens_output * output_price`.
 
 Pricing data lives in `pricing.yaml` at the repo root and is loaded at API
 startup via `api/internal/store/pricing.go`. Update the YAML when provider
@@ -3807,8 +3859,16 @@ plugin emits one per `UserPromptSubmit` hook fire. Carries:
 
 The primary LLM-call event. Carries `tokens_input`, `tokens_output`,
 `tokens_total`, `tokens_cache_read`, `tokens_cache_creation`,
-`latency_ms`, `model`, and `framework`. Operator-actionable
-enrichment additionally carries:
+`latency_ms`, `model`, and `framework`. `tokens_cache_read` is the
+prompt-cache read, a subset of `tokens_input`: Anthropic's
+`cache_read_input_tokens`, or OpenAI's `cached_tokens` usage detail
+(`prompt_tokens_details` on chat, `input_tokens_details` on Responses,
+on direct and streamed calls alike). `tokens_cache_creation` is the
+cache write, also a subset of `tokens_input`: Anthropic's
+`cache_creation_input_tokens`, or OpenAI's `cache_write_tokens` usage
+detail in the same two objects (0 when the response carries none). OpenAI's `reasoning_tokens` detail is not
+stored separately: it is already inside `tokens_output`.
+Operator-actionable enrichment additionally carries:
 
 - `estimated_via`: passthrough from the pre-call estimator so a row
   scanner sees the attribution without fetching the sibling pre_call.
@@ -3963,8 +4023,9 @@ the stream before the settle runs). Raw event
 streams (`create(stream=True)` on any provider) are never assembled into a
 message, so they store the request (for `responses.create`, nothing of its
 `input`) but no response text, and emit no `tool_call`. OpenAI's
-`.stream()` / `.parse()` helpers are listed under "Patch surface — out of
-scope".
+`.stream()` helpers are listed under "Patch surface — out of scope";
+`.parse()` never streams and is metered like `create()`, with the
+`Parsed*` result stored as the response when capture is on.
 
 ### `tool_call`
 
@@ -3976,6 +4037,44 @@ the sensor does not assemble their content blocks. Carries
 `tool_name`, optionally `tool_input` (when `captureToolInputs=true` for
 the plugin or `capture_prompts=true` for the sensor), `tool_result` (when
 the next assistant turn shows the tool's output and capture is on).
+
+On the wire a sensor `tool_call` carries `tool_name` and `model`; under
+capture its input travels in the `event_content` envelope as
+`tool_input`, served by `GET /v1/events/:id/content`. The id a provider
+gives a call (a chat tool call's `id`, a Responses function call's
+`call_id`, a hosted or MCP item's id) stays in-process on
+`ToolInvocation.tool_id` and is not part of the event.
+
+For a chat completion the invocations are `choices[0].message.tool_calls`
+(`tool_name` is the function name). For the Responses API
+(`responses.create()` / `.parse()` and their raw-response forms) the
+sensor emits one `tool_call` per output item that is a call:
+
+- `function_call`, `mcp_call` and `custom_tool_call` carry the tool's own
+  name as `tool_name`; the input is the JSON-decoded `arguments` (for a
+  custom tool, `{"input": <text>}`, as those tools take free-form text).
+  The MCP server label is not carried on the event (README Roadmap).
+- Hosted tools have no per-call name, so the item type is the
+  `tool_name`: `web_search_call`, `file_search_call`,
+  `code_interpreter_call`, `image_generation_call`, `computer_call`,
+  `local_shell_call`, `shell_call`, `apply_patch_call`,
+  `tool_search_call`. The input is what the model asked the tool to do,
+  taken from an allowlist of fields per item: a web search action's
+  `query`, `queries`, `url` and `pattern`; the file-search `queries`; the
+  interpreter `code`; a computer action's coordinates, button, keys,
+  path and text; a local shell action's `command`, working directory,
+  timeout and user; a shell action's `commands`, timeout and output
+  limit; an apply-patch operation's `path` and `diff`; the tool-search
+  `arguments`. Nothing else on the item is input: a search action's
+  `sources` are the results, a local shell action's `env` is the
+  environment the command runs with, a computer call's pending safety
+  checks are the provider's verdicts, and tool results (image bytes,
+  interpreter outputs, file-search results, an MCP call's `output` and
+  `error`) are outputs; none is ever captured. An image generation call
+  carries no input at all.
+- Messages, reasoning items, tool output items and MCP bookkeeping items
+  (`mcp_list_tools`, `mcp_approval_request`, `mcp_approval_response`)
+  emit nothing.
 
 ### `embeddings`
 
@@ -4008,19 +4107,19 @@ Structured error event with a 14-entry taxonomy:
 | `error_type` | HTTP | Description | OTel mapping | `is_retryable` |
 |---|---|---|---|---|
 | `rate_limit` | 429 | Request-rate limit exceeded | `rate_limit_error` | ✅ |
-| `quota_exceeded` | 429 | Billing / monthly quota exceeded | `quota_exceeded_error` | ❌ |
-| `context_overflow` | 400 | Input exceeded model context window | `context_length_exceeded` | ❌ |
-| `content_filter` | 400 | Provider content filter blocked request | `content_filter_error` | ❌ |
-| `invalid_request` | 400 | Other validation failure | `invalid_request_error` | ❌ |
-| `authentication` | 401 | Missing / invalid credential | `authentication_error` | ❌ |
+| `quota_exceeded` | 402 / 429 / 400 | Billing problem (402); a spend limit, spend cap or exhausted credit balance reported under 429 or 400 | `quota_exceeded_error` | ❌ |
+| `context_overflow` | 400 / 200 | Input exceeded the model context window, or the response stopped with `model_context_window_exceeded` | `context_length_exceeded` | ❌ |
+| `content_filter` | 400 / 200 | Provider content filter blocked the request, the response ended with `refusal` or `content_filter`, or the filter replaced the completion (OpenAI's `ContentFilterFinishReasonError` from `chat.completions.parse()`: `http_status` 200, `provider_error_code` `content_filter`) | `content_filter_error` | ❌ |
+| `invalid_request` | 400 / 200 | Other validation failure; also OpenAI's `LengthFinishReasonError` from `chat.completions.parse()`, when the output hit the caller's `max_tokens` before the structured output was complete (`http_status` 200, `provider_error_code` `length`, message that `max_tokens` is too small for the schema) | `invalid_request_error` | ❌ |
+| `authentication` | 401 | Missing / invalid credential; OpenAI's `AuthenticationError` and its `OAuthError` subclass (a rejected OAuth bearer token) | `authentication_error` | ❌ |
 | `permission` | 403 | Credential lacks permission | `permission_error` | ❌ |
 | `not_found` | 404 | Resource (model, endpoint) not found | `not_found_error` | ❌ |
 | `request_too_large` | 413 | Request body too large | `request_too_large_error` | ❌ |
 | `api_error` | 500 | Provider internal error | `api_error` | ✅ |
 | `overloaded` | 529 / 503 | Anthropic 529, OpenAI engine overloaded | `overloaded_error` | ✅ |
-| `timeout` | — | Client-side timeout before response | `timeout_error` | ✅ |
+| `timeout` | 504 / — | Gateway timeout (504), or a client-side timeout before a response | `timeout_error` | ✅ |
 | `stream_error` | — | Mid-stream error after a 200 response | `stream_error` | ⚠ case-by-case |
-| `other` | — | Fallback for unknown | `other` | ❌ |
+| `other` | — / 200 | Fallback for unknown; also a `chat.completions.parse()` completion that fails the caller's schema (`http_status` 200, `provider_error_code` `schema`) | `other` | ❌ |
 
 Plus `provider`, `http_status`, `provider_error_code`, `request_id`,
 `retry_after`, `is_retryable`. For a streamed call, `abort_reason` and the
@@ -4040,6 +4139,108 @@ checks; server-side session totals, the `tokens` metric and
 `estimated_cost` do not include them: the session totals add every event
 that carries `tokens_total` (`post_call` and `embeddings`) and the
 analytics metrics read `post_call` events (README Roadmap).
+
+Classification walks the exception's class name first (each SDK names
+its classes consistently; the Anthropic-specific `DeadlineExceededError`,
+`OverloadedError` and `RequestTooLargeError` are mapped by name), then
+lets the HTTP status, the provider's error code and the provider's
+message override it. By status: 402 is `quota_exceeded` and 504 is
+`timeout` whatever class the SDK raised, because the Anthropic SDK never
+raises a dedicated class for either: `DeadlineExceededError` is declared
+and mapped by name, but the SDK's status mapping delivers a 504 as
+`InternalServerError` and a 402 as a bare `APIStatusError`; 413 is
+`request_too_large`; 529 is `overloaded`. By message, for Anthropic
+exceptions only: a 429 or 400 whose provider message contains the
+phrase `spend limit`, `spending limit`, `spend cap` or `credit balance`
+is `quota_exceeded` rather than `rate_limit` or `invalid_request`, since
+Anthropic reports its organisation spend cap as a 429
+`rate_limit_error` and a per-user spend limit or an exhausted credit
+balance as a 400 `invalid_request_error`, and only the message tells
+them apart. The match is a substring test over the first 2,048
+characters of the lower-cased message; single words are not matched,
+because a 400 echoes caller-supplied identifiers (a schema named
+`monthly_report`, a tool `get_billing_info`) and a per-minute "quota
+exceeded" 429 is a genuine rate limit. No other provider's message is
+read at all, so a status-less or foreign exception pays nothing for it,
+and an Anthropic 400 or 429 pays for at most that 2,048-character
+slice. The error's `provider` is the adapter's `name` on this path as
+on every other `llm_error` the adapter's calls produce, so a transport
+or builtin error raised inside an intercepted call reports `anthropic`,
+`openai` or `litellm` rather than `unknown`. The message
+is read for that test only and never stored: `error_message` is the
+exception class name, with the provider's text appended (clipped to 200
+characters) only when `capture_prompts` is on; the three
+`chat.completions.parse()` failures below carry a sensor-authored
+message instead, under either setting, and never the provider's text.
+
+A response the provider answered with HTTP 200 can still be a failed
+call. When the stop reason is one of Anthropic's `refusal` (its safety
+classifiers declined the request) or `model_context_window_exceeded`
+(the context window ran out mid-response), an OpenAI chat or litellm
+`finish_reason` of `content_filter` (which is also how litellm reports
+an Anthropic refusal routed through it), an OpenAI structured-output
+refusal (`message.refusal`, reported as `refusal`), or an OpenAI
+Responses call left `incomplete` with `incomplete_details.reason`
+`content_filter`, the sensor emits an `llm_error` beside the
+`post_call`: `error.error_type` is `content_filter`, or
+`context_overflow` for the context-window overrun; `error.http_status`
+is 200; `error.provider_error_code` is the stop reason;
+`error.error_message` is `stop_reason=<reason>` (never response
+content); `error.request_id` is the response's request id (stamped on
+the parsed SDK object, or read from a raw-response wrapper's headers);
+`error.is_retryable` is false and the top-level `terminal` is true; and
+`originating_event_id` is the id of the `post_call` it accompanies,
+which is how an operator pairs the error with the billed call. Any
+`llm_error` the sensor derives from a response the provider answered
+with HTTP 200 records `error.http_status` 200. A truncated response
+(Anthropic `max_tokens`, OpenAI `length` or `max_output_tokens`) is a
+success when the SDK returns it: the text is valid, just cut short;
+`chat.completions.parse()` raises `LengthFinishReasonError` instead
+(below). The `post_call` keeps the
+billed usage, so token totals and `estimated_cost` are unchanged, while
+the error counts toward the per-agent error count and sets the
+session's `has_terminal_error` flag like any other terminal
+`llm_error`. The reason comes from the provider protocol's
+`response_stop_reason` (a complete message, a raw-response wrapper, or
+a helper stream's accumulated snapshot) or, for a raw stream that has no
+final message object, from the streamed event that carries it
+(Anthropic `message_delta`, an OpenAI chat chunk with `finish_reason`,
+an OpenAI `response.incomplete` event) through
+`stop_reason_from_stream_chunk`, which the stream guard records as
+events pass. Only `post_call` events get this treatment; `embeddings`
+responses carry no stop reason.
+
+The same rule covers a call the provider answered with HTTP 200 and
+billed but that still failed for the caller: it is reported as both a
+`post_call` and an `llm_error`. OpenAI's `chat.completions.parse()` raises
+`LengthFinishReasonError` when the completion arrived but the output hit
+the caller's `max_tokens` before the structured output was complete; the
+sensor emits the `post_call` from the completion the exception carries
+(its usage, model and tool calls; the request id is not stamped on a
+completion the SDK failed to parse) and then the `llm_error`
+(`http_status` 200, terminal, chained to that `post_call` through
+`originating_event_id`), and re-raises. The billed tokens therefore reach
+the session totals and the analytics metrics like any completed call.
+`ContentFilterFinishReasonError` (`content_filter`) and a completion that
+fails the caller's schema (a pydantic `ValidationError`: `other`,
+`provider_error_code` `schema`) carry no completion, so the `post_call`
+is built from the HTTP body (usage, model, request id from the headers).
+To have that body, `chat.completions.parse()` and `responses.parse()`
+fetch the response through the SDK's own raw-response closure and parse
+it eagerly (the SDK caches a successful parse); the caller still gets
+the parsed object, or the SDK's exception with its message, exactly as
+from the plain `parse()`. On the raw-response path
+(`with_raw_response.parse()`), where the SDK would only fail at the
+caller's own `.parse()`, out of the sensor's sight, the same eager parse
+reports the failure and still returns the raw response, so the caller's
+`.parse()` raises as it would without the sensor. When neither a
+completion nor a JSON body can be read (a 200 whose body is not a JSON
+object), only the `llm_error` is emitted: the direct `parse()` raises
+the SDK's exception and the raw-response path still returns the raw
+response. A failed parse never lands as a success-looking `post_call`
+of estimated tokens. `responses.parse()` returns an
+incomplete result without raising, so the length case does not apply to
+it; a schema failure does.
 
 Operator-actionable retry-chain context:
 
@@ -5350,6 +5551,10 @@ Postgres) via `make test-integration`:
 - `test_sensor_streaming.py` — server-sent-event streams through the real
   sensor: in-stream usage, chunk counts, a mid-stream failure, OpenAI chat
   and Responses
+- `test_openai_responses_events.py` — a Responses hosted-tool `tool_call`
+  with its captured input served by the content endpoint, a `post_call`
+  carrying `provider_metadata.request_id`, and a `post_call` carrying a
+  prompt-cache read as `tokens_cache_read`
 
 ### Production-image smoke
 

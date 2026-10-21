@@ -58,7 +58,9 @@ def _pick_agent_with_sessions() -> str:
     fleet = _get("/v1/fleet", {"per_page": "200"})
     for a in fleet.get("agents", []):
         if a.get("agent_name") == SEEDED_AGENT_NAME and a.get("agent_id"):
-            assert a.get("total_sessions", 0) > 0, f"{SEEDED_AGENT_NAME} has no sessions"
+            assert a.get("total_sessions", 0) > 0, (
+                f"{SEEDED_AGENT_NAME} has no sessions"
+            )
             return str(a["agent_id"])
     raise AssertionError(
         f"{SEEDED_AGENT_NAME} is not on the fleet page -- run `make seed-e2e` "

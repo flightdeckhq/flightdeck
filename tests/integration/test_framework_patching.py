@@ -173,9 +173,7 @@ def _assert_session_in_fleet_with_context(flavor: str) -> dict[str, Any]:
     ctx = sess.get("context") or {}
     assert "hostname" in ctx, f"hostname missing from context: {ctx}"
     assert "os" in ctx, f"os missing from context: {ctx}"
-    assert "python_version" in ctx, (
-        f"python_version missing from context: {ctx}"
-    )
+    assert "python_version" in ctx, f"python_version missing from context: {ctx}"
 
     # Reach for the public sessions API: the session must be served by
     # GET /v1/sessions/:id (a 404 raises here), not just sit in the DB.

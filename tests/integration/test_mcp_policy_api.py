@@ -47,7 +47,9 @@ def _delete_flavor(flavor: str) -> None:
 @pytest.mark.exclusive
 def test_global_policy_auto_created_at_boot() -> None:
     """D133: API boot ensures the empty blocklist global policy exists."""
-    r = requests.get(f"{API_URL}/v1/mcp-policies/global", headers=_read_headers(), timeout=5)
+    r = requests.get(
+        f"{API_URL}/v1/mcp-policies/global", headers=_read_headers(), timeout=5
+    )
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["scope"] == "global"

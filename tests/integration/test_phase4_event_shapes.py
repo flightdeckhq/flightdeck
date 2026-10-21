@@ -174,38 +174,58 @@ def test_sessions_error_type_filter_narrows_result() -> None:
         msg="sessions did not appear",
     )
 
-    post_event(make_event(
-        sid_rl, flavor, "llm_error",
-        error={
-            "error_type": "rate_limit", "provider": "anthropic",
-            "http_status": 429, "provider_error_code": None,
-            "error_message": "x", "request_id": None,
-            "retry_after": None, "is_retryable": True,
-        },
-    ))
-    post_event(make_event(
-        sid_to, flavor, "llm_error",
-        error={
-            "error_type": "timeout", "provider": "openai",
-            "http_status": None, "provider_error_code": None,
-            "error_message": "x", "request_id": None,
-            "retry_after": None, "is_retryable": True,
-        },
-    ))
+    post_event(
+        make_event(
+            sid_rl,
+            flavor,
+            "llm_error",
+            error={
+                "error_type": "rate_limit",
+                "provider": "anthropic",
+                "http_status": 429,
+                "provider_error_code": None,
+                "error_message": "x",
+                "request_id": None,
+                "retry_after": None,
+                "is_retryable": True,
+            },
+        )
+    )
+    post_event(
+        make_event(
+            sid_to,
+            flavor,
+            "llm_error",
+            error={
+                "error_type": "timeout",
+                "provider": "openai",
+                "http_status": None,
+                "provider_error_code": None,
+                "error_message": "x",
+                "request_id": None,
+                "retry_after": None,
+                "is_retryable": True,
+            },
+        )
+    )
     _wait_for_event_count(sid_rl, 2)
     _wait_for_event_count(sid_to, 2)
 
     def _fetch(error_type: str) -> list[str]:
-        qs = urllib.parse.urlencode({
-            "error_type": error_type,
-            "flavor": flavor,
-            "from": "2020-01-01T00:00:00Z",
-            "limit": 100,
-        })
+        qs = urllib.parse.urlencode(
+            {
+                "error_type": error_type,
+                "flavor": flavor,
+                "from": "2020-01-01T00:00:00Z",
+                "limit": 100,
+            }
+        )
         req = urllib.request.Request(
-            f"{API_URL}/v1/sessions?{qs}", headers=auth_headers(),
+            f"{API_URL}/v1/sessions?{qs}",
+            headers=auth_headers(),
         )
         import json as _json
+
         with urllib.request.urlopen(req, timeout=5) as resp:
             body = _json.loads(resp.read())
         return [s["session_id"] for s in body.get("sessions", [])]
@@ -402,9 +422,14 @@ def test_session_framework_filter_matches_attributed_sessions() -> None:
     flavor = f"test-fw-{uuid.uuid4().hex[:6]}"
 
     for sid, framework in ((sid_lc, "langchain"), (sid_oa, "openai")):
-        post_event(make_event(
-            sid, flavor, "session_start", framework=framework,
-        ))
+        post_event(
+            make_event(
+                sid,
+                flavor,
+                "session_start",
+                framework=framework,
+            )
+        )
     wait_until(
         lambda: session_exists_in_fleet(sid_lc) and session_exists_in_fleet(sid_oa),
         timeout=10,
@@ -413,24 +438,26 @@ def test_session_framework_filter_matches_attributed_sessions() -> None:
 
     # Filter the listing on framework=langchain. The langchain session
     # must surface; the openai session must not.
-    qs = urllib.parse.urlencode({
-        "framework": "langchain",
-        "flavor": flavor,
-        "from": "2020-01-01T00:00:00Z",
-        "limit": 100,
-    })
+    qs = urllib.parse.urlencode(
+        {
+            "framework": "langchain",
+            "flavor": flavor,
+            "from": "2020-01-01T00:00:00Z",
+            "limit": 100,
+        }
+    )
     req = urllib.request.Request(
-        f"{API_URL}/v1/sessions?{qs}", headers=auth_headers(),
+        f"{API_URL}/v1/sessions?{qs}",
+        headers=auth_headers(),
     )
     import json as _json
+
     with urllib.request.urlopen(req, timeout=5) as resp:
         body = _json.loads(resp.read())
     matched = [s["session_id"] for s in body.get("sessions", [])]
     assert sid_lc in matched, (
-        f"framework=langchain filter must include the langchain session: "
-        f"got {matched}"
+        f"framework=langchain filter must include the langchain session: got {matched}"
     )
     assert sid_oa not in matched, (
-        f"framework=langchain filter must NOT include the openai session: "
-        f"got {matched}"
+        f"framework=langchain filter must NOT include the openai session: got {matched}"
     )

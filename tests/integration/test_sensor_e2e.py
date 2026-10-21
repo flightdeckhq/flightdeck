@@ -159,7 +159,9 @@ def _query_event_content_for_session(session_id: str) -> list[dict[str, Any]]:
 
 
 def _wait_for_event_type(
-    flavor: str, event_type: str, timeout: float = 15.0,
+    flavor: str,
+    event_type: str,
+    timeout: float = 15.0,
 ) -> dict[str, Any]:
     """Block until at least one event of event_type exists for flavor."""
     found: dict[str, Any] = {}
@@ -2329,7 +2331,8 @@ def _count_agent_rows(agent_ids: list[str]) -> int:
 
 
 def test_flavor_cleanup_removes_the_agent_rollup(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """``delete_flavor_data`` takes the agents rollup row along with the
     flavor's sessions. The agents table has no flavor column, so the

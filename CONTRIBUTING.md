@@ -35,6 +35,20 @@ make -C api test
 make -C dashboard test
 ```
 
+`make test-integration` seeds the canonical fixtures, then runs the suite in two
+phases. The parallel phase runs under [pytest-xdist](https://pypi.org/project/pytest-xdist/)
+with four workers and covers every test that keeps to the flavors and session ids
+it created. The exclusive phase then runs the tests marked `@pytest.mark.exclusive`
+one at a time: each needs the whole stack to itself because it pauses the worker,
+rewrites every agents row, or asserts fleet-wide state. Mark a new test `exclusive`
+when it does any of those; otherwise keep its reads and writes to its own flavors
+and session ids so it stays safe to run beside the rest. To run the phases by hand:
+
+```bash
+./sensor/.venv/bin/python -m pytest tests/integration -n 4 --dist load -m "not manual and not exclusive"
+./sensor/.venv/bin/python -m pytest tests/integration -m "exclusive"
+```
+
 ## Test Coverage
 
 Coverage is enforced in CI per component. API and ingestion thresholds measure handler

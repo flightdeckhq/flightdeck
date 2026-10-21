@@ -42,6 +42,7 @@ from ..shared.fixtures import (
     create_drifted_agent,
     create_policy,
     delete_drifted_agent,
+    delete_flavor_data,
     delete_policy,
     directive_has_delivered_at,
     ensure_worker_running,
@@ -93,6 +94,7 @@ __all__ = [
     "create_drifted_agent",
     "create_policy",
     "delete_drifted_agent",
+    "delete_flavor_data",
     "delete_policy",
     "directive_has_delivered_at",
     "ensure_worker_running",
@@ -209,4 +211,11 @@ def pytest_configure(config: pytest.Config) -> None:
         "(e.g. test_ui_demo.py is a dashboard data-population tool, not a "
         "regression test). Excluded by `make test-integration` and CI via "
         "`-m 'not manual'`. Phase 4.5 audit Task 1.",
+    )
+    config.addinivalue_line(
+        "markers",
+        "exclusive: needs the whole stack to itself -- pauses the worker, "
+        "rewrites every agent, or asserts fleet-wide state. `make "
+        "test-integration` runs the rest of the suite in parallel under "
+        "pytest-xdist and these one at a time afterwards.",
     )

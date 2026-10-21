@@ -19,11 +19,13 @@ from __future__ import annotations
 import datetime
 import time
 import uuid
+from collections.abc import Iterator
 
+import pytest
 import requests
 
 from ..shared.fixtures import INTEGRATION_TEST_SENSOR_VERSION
-from .conftest import API_URL, INGESTION_URL, TOKEN, auth_headers
+from .conftest import API_URL, INGESTION_URL, TOKEN, auth_headers, delete_flavor_data
 
 
 def _now_iso() -> str:
@@ -66,10 +68,41 @@ def _wait_for_event(session_id: str, event_type: str, timeout: float = 5.0) -> d
     return None
 
 
+# Flavors the current test has posted events for; the fixture below
+# deletes their rows when the test ends.
+_flavors_in_test: set[str] = set()
+
+
+def _agent_id_for(flavor: str) -> str:
+    """One agent per test: every event of a flavor carries the same agent id.
+
+    The sensor derives an agent id from its identity tuple, so a run's
+    events all share one. A fresh uuid4 per event would create an agent
+    row per event instead, and on a shared stack the leftover rows push
+    the seeded agents off the fleet page over repeated runs.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"flightdeck-test-mcp-pipeline/{flavor}"))
+
+
+@pytest.fixture(autouse=True)
+def _delete_rows_at_end() -> Iterator[None]:
+    """Delete every row the test's flavors produced once it ends, the
+    agents row included, so nothing accumulates on the stack. The tests
+    post their events outside the ``make_event`` tracker, so this is
+    also what closes their sessions."""
+    _flavors_in_test.clear()
+    try:
+        yield
+    finally:
+        for flavor in list(_flavors_in_test):
+            delete_flavor_data(flavor)
+
+
 def _baseline_session_start(session_id: str, flavor: str) -> dict:
+    _flavors_in_test.add(flavor)
     return {
         "session_id": session_id,
-        "agent_id": str(uuid.uuid4()),
+        "agent_id": _agent_id_for(flavor),
         "agent_type": "coding",
         "client_type": "flightdeck_sensor",
         "agent_name": "test-mcp-policy-pipeline",

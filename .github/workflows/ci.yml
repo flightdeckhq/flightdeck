@@ -507,7 +507,12 @@ jobs:
   integration:
     name: Integration + sensor e2e
     runs-on: ubuntu-latest
-    needs: [sensor, go, dashboard, plugin]
+    # No `needs:` on the unit jobs: this job boots its own stack and
+    # shares nothing with them, so it starts as soon as the push lands
+    # instead of queueing behind the slowest unit job, which cost about
+    # four minutes of wall-clock per push. A unit failure still fails
+    # the run on its own job.
+    #
     # Opt this job's JavaScript actions into Node 24.
     #
     # PYTHON: the Makefile defaults $(PYTHON) to
@@ -571,9 +576,11 @@ jobs:
   e2e:
     name: E2E (Playwright)
     runs-on: ubuntu-latest
-    needs: [sensor, go, dashboard, plugin]
     # Rule 40c: browser end-to-end tests run parallel to
-    # the integration job so neither blocks the other. The E2E job
+    # the integration job so neither blocks the other, and, like it,
+    # with no `needs:` on the unit jobs: this job boots its own stack
+    # and shares nothing with them, so waiting on them only added the
+    # slowest unit job's runtime to every push. The E2E job
     # boots its own stack — required because seeding the canonical
     # fixture dataset must happen against the same Postgres the
     # dashboard later queries, and multiple jobs sharing one stack

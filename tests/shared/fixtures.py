@@ -535,6 +535,50 @@ def exec_sql(sql: str, **bindings: Any) -> str:
     return result.stdout.strip()
 
 
+# Cleanup statements share a single :'flavor' binding via exec_sql.
+# Each is idempotent and ordered to satisfy FK constraints (children
+# before parents). The agents table has no flavor column: the rollup
+# is keyed by agent_id and is reached through the sessions it
+# summarises. The sessions -> agents foreign key is checked at the end
+# of the statement, so one data-modifying CTE deletes the flavor's
+# sessions and then the agents those sessions belonged to, unless a
+# session of another flavor still references the agent. A rollup left
+# behind keeps total_sessions above zero with no session behind it,
+# which breaks the fleet's recent-sessions contract on the next run.
+FLAVOR_CLEANUP_SQL = (
+    "DELETE FROM event_content WHERE session_id IN "
+    "(SELECT session_id FROM sessions WHERE flavor = :'flavor')",
+    "DELETE FROM events WHERE flavor = :'flavor'",
+    "DELETE FROM directives WHERE flavor = :'flavor' OR session_id IN "
+    "(SELECT session_id FROM sessions WHERE flavor = :'flavor')",
+    "DELETE FROM token_policies WHERE scope = 'flavor' AND scope_value = :'flavor'",
+    "WITH gone AS ("
+    "DELETE FROM sessions WHERE flavor = :'flavor' RETURNING agent_id"
+    ") "
+    "DELETE FROM agents a USING (SELECT DISTINCT agent_id FROM gone) g "
+    "WHERE a.agent_id = g.agent_id AND NOT EXISTS ("
+    "SELECT 1 FROM sessions o WHERE o.agent_id = a.agent_id "
+    "AND o.flavor IS DISTINCT FROM :'flavor')",
+    "DELETE FROM custom_directives WHERE flavor = :'flavor'",
+)
+
+
+def delete_flavor_data(flavor: str) -> None:
+    """Best-effort cleanup of all DB rows for a flavor (idempotent).
+
+    Tests that create sessions outside the ``make_event`` tracker, or
+    whose agents would otherwise outlive the run, call this at the end
+    so nothing they wrote accumulates on a shared stack.
+    """
+    for sql in FLAVOR_CLEANUP_SQL:
+        try:
+            exec_sql(sql, flavor=flavor)
+        except subprocess.CalledProcessError:
+            # Best-effort: tolerate failures (e.g. row doesn't exist,
+            # FK reference still in flight).
+            pass
+
+
 def wait_until(
     condition_fn: Callable[[], bool],
     timeout: float = 10.0,
@@ -819,7 +863,26 @@ def session_row_locked(
         yield
 
 
-def worker_log_lines(*needles: str, tail: int = WORKER_LOG_TAIL_LINES) -> list[str]:
+def _docker_timestamp(since: str | float) -> str:
+    """Render a ``docker logs --since`` value.
+
+    A string passes through as given (RFC 3339, or a relative span such
+    as ``"5m"``); a ``time.time()`` stamp becomes RFC 3339 in UTC with
+    microseconds, truncated rather than rounded so the bound never
+    lands after the stamp.
+    """
+    if isinstance(since, str):
+        return since
+    whole = int(since)
+    micros = int((since - whole) * 1_000_000)
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(whole)) + f".{micros:06d}Z"
+
+
+def worker_log_lines(
+    *needles: str,
+    tail: int = WORKER_LOG_TAIL_LINES,
+    since: str | float | None = None,
+) -> list[str]:
     """Recent worker-container log lines that contain every needle.
 
     The worker logs through slog's default handler on stderr
@@ -827,8 +890,19 @@ def worker_log_lines(*needles: str, tail: int = WORKER_LOG_TAIL_LINES) -> list[s
     ``docker logs`` returns both streams. Raises when the CLI fails so a
     missing container reads as an infrastructure error, not as "the
     worker never logged it".
+
+    ``since`` keeps only lines logged at or after a point in time, given
+    as a ``time.time()`` stamp or as a string ``docker logs --since``
+    accepts. A test that passes its own start time reads only the lines
+    its events produced, so a line an earlier run or a parallel worker
+    logged for the same marker never counts. The ``tail`` bound still
+    applies on top. The daemon compares the stamp with its own clock, so
+    a caller that must not miss a line takes the stamp before it posts.
     """
-    proc = _docker("logs", "--tail", str(tail), WORKER_CONTAINER)
+    args = ["logs", "--tail", str(tail)]
+    if since is not None:
+        args += ["--since", _docker_timestamp(since)]
+    proc = _docker(*args, WORKER_CONTAINER)
     return [
         line
         for line in (proc.stdout + proc.stderr).splitlines()
@@ -977,6 +1051,7 @@ def create_drifted_agent(
     actual_sessions: int = 1,
     actual_tokens_per_session: int = 100,
     counter_overrides: dict[str, Any] | None = None,
+    last_seen_in_future: bool = False,
 ) -> str:
     """Insert an agents row with intentionally wrong counter values,
     plus N matching sessions under that agent_id. Returns the
@@ -993,8 +1068,15 @@ def create_drifted_agent(
           actual_tokens_per_session + 999999)
         - ``first_seen_at``: ISO-8601 string (default: actual
           MIN(started_at) minus 1 hour — wrong direction)
-        - ``last_seen_at``: ISO-8601 string (default: NOW + 1 hour
-          — future-dated, obviously wrong)
+        - ``last_seen_at``: ISO-8601 string (default: NOW - 1 hour,
+          an hour behind the ground truth of a minute ago)
+
+    ``last_seen_in_future`` flips the default ``last_seen_at`` drift to
+    NOW + 1 hour. The past-dated default keeps the fixture off the top
+    of the fleet page, which lists the most recently seen agents first
+    and is what other tests read while this fixture exists; a test that
+    watches the reconciler pull the stamp back in time asks for the
+    future-dated drift instead.
 
     Cleanup: callers MUST ``DELETE FROM sessions / agents`` manually
     (or use a per-test fixture that does). Keeping cleanup caller-
@@ -1017,8 +1099,9 @@ def create_drifted_agent(
         "total_tokens",
         actual_sessions * actual_tokens_per_session + 999_999,
     )
-    # Default drift: first_seen_at forward by an hour vs ground
-    # truth, last_seen_at forward by an hour vs ground truth.
+    # Default drift: first_seen_at an hour before ground truth, and
+    # last_seen_at an hour before it too unless the caller asked for
+    # the future-dated stamp.
     first_seen_override = overrides.get("first_seen_at")
     last_seen_override = overrides.get("last_seen_at")
 
@@ -1032,11 +1115,12 @@ def create_drifted_agent(
         if first_seen_override is None
         else f"'{first_seen_override}'::timestamptz"
     )
-    last_seen_default = (
-        "NOW() + INTERVAL '1 hour'"
-        if last_seen_override is None
-        else f"'{last_seen_override}'::timestamptz"
-    )
+    if last_seen_override is not None:
+        last_seen_default = f"'{last_seen_override}'::timestamptz"
+    elif last_seen_in_future:
+        last_seen_default = "NOW() + INTERVAL '1 hour'"
+    else:
+        last_seen_default = "NOW() - INTERVAL '1 hour'"
 
     # Sessions: fixed per-session offsets so MIN/MAX are easy to
     # reason about. Session N starts at NOW() - (actual_sessions-N+1)

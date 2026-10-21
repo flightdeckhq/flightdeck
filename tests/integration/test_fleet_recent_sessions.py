@@ -37,6 +37,11 @@ from .conftest import API_URL, auth_headers
 # paired with bumping this constant. Lifted to module scope so the
 # value is unmistakable when the test fails on length.
 PER_AGENT_CAP = 5
+# Every agent the canonical seed creates carries this name prefix. The
+# per-agent assertions below cover only those agents: other tests run
+# beside this one and create agents of their own on the shared stack,
+# whose sessions may still be landing when the page is read.
+SEEDED_AGENT_PREFIX = "e2e-test-"
 
 
 def _instant(stamp: str) -> datetime:
@@ -56,15 +61,22 @@ def _list_fleet(params: dict[str, str]) -> dict[str, Any]:
 
 
 def test_fleet_response_attaches_recent_sessions() -> None:
-    """Every agent with ``total_sessions > 0`` carries a non-empty
+    """Every seeded agent with ``total_sessions > 0`` carries a non-empty
     ``recent_sessions`` slice; agents with zero sessions may omit
     the key (``omitempty`` server-side). Slice length never exceeds
     ``PER_AGENT_CAP``; entries are descending by ``started_at`` with
     ``session_id`` ASC as a deterministic tie-breaker.
     """
     fleet = _list_fleet({"per_page": "200"})
-    agents = fleet.get("agents", [])
-    assert agents, "fleet roster must not be empty after seed"
+    agents = [
+        a
+        for a in fleet.get("agents", [])
+        if str(a.get("agent_name", "")).startswith(SEEDED_AGENT_PREFIX)
+    ]
+    assert agents, (
+        f"no {SEEDED_AGENT_PREFIX}* agent on the fleet page -- run "
+        "`make seed-e2e` against this stack"
+    )
 
     for a in agents:
         rs = a.get("recent_sessions")

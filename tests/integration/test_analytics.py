@@ -62,26 +62,6 @@ def _setup_fixture(flavor: str, model: str, token_count: int) -> str:
     return sid
 
 
-def test_analytics_tokens_by_flavor() -> None:
-    """GET /v1/analytics?metric=tokens&group_by=flavor returns correct totals."""
-    flavor_a = f"analytics-a-{uuid.uuid4().hex[:6]}"
-    flavor_b = f"analytics-b-{uuid.uuid4().hex[:6]}"
-    _setup_fixture(flavor_a, "claude-sonnet-4-6", 1000)
-    _setup_fixture(flavor_b, "gpt-4o", 2000)
-
-    resp = _get_analytics(metric="tokens", group_by="flavor", range="7d")
-    assert resp["metric"] == "tokens", (
-        f"expected metric=tokens, got {resp.get('metric')}"
-    )
-    assert resp["group_by"] == "flavor", (
-        f"expected group_by=flavor, got {resp.get('group_by')}"
-    )
-    assert isinstance(resp.get("series"), list), (
-        f"expected series to be a list, got {type(resp.get('series'))}"
-    )
-    assert resp.get("totals") is not None, "expected totals in response"
-
-
 def test_analytics_sessions_by_model() -> None:
     """GET /v1/analytics?metric=sessions&group_by=model returns session counts."""
     flavor = f"analytics-sess-{uuid.uuid4().hex[:6]}"

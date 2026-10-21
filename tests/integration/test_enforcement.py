@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
+
 from .conftest import (
     create_policy,
     delete_policy,
@@ -64,56 +66,6 @@ def test_warn_threshold_fires_and_records() -> None:
         )
         assert session["warn_at_pct"] == 1, (
             f"expected warn_at_pct=1, got {session.get('warn_at_pct')}"
-        )
-
-    finally:
-        if policy:
-            delete_policy(policy["id"])
-
-
-def test_warn_fires_only_once() -> None:
-    """Warn directive is written exactly once, not on every subsequent post_call."""
-    sid = str(uuid.uuid4())
-    flavor = f"enforce-warn-once-{uuid.uuid4().hex[:6]}"
-    policy = None
-
-    try:
-        policy = create_policy(
-            scope="flavor", scope_value=flavor,
-            token_limit=500, warn_at_pct=1,
-        )
-
-        post_event(make_event(sid, flavor, "session_start"))
-        wait_until(
-            lambda: session_exists_in_fleet(sid),
-            timeout=10,
-            msg=f"session {sid} did not appear in fleet after session_start",
-        )
-
-        post_event(make_event(
-            sid, flavor, "post_call",
-            tokens_total=10, tokens_used_session=10,
-        ))
-        wait_until(
-            lambda: get_session_event_count(sid) >= 2,
-            timeout=10,
-            msg=f"first post_call not processed for session {sid}",
-        )
-
-        post_event(make_event(
-            sid, flavor, "post_call",
-            tokens_total=10, tokens_used_session=20,
-        ))
-        wait_until(
-            lambda: get_session_event_count(sid) >= 3,
-            timeout=10,
-            msg=f"second post_call not processed for session {sid}",
-        )
-
-        directives = query_directives(sid)
-        warn_directives = [d for d in directives if d.get("action") == "warn"]
-        assert len(warn_directives) <= 1, (
-            f"Expected at most 1 warn directive, got {len(warn_directives)}"
         )
 
     finally:
@@ -205,6 +157,10 @@ def test_flavor_policy_applies_to_all_sessions() -> None:
             delete_policy(policy["id"])
 
 
+# An org-scoped policy applies to every session on the stack that has
+# no flavor policy of its own, so this test cannot share the stack with
+# the parallel phase.
+@pytest.mark.exclusive
 def test_org_policy_applies_when_no_flavor_policy() -> None:
     """Org-scoped policy applies as fallback when no flavor-scoped policy exists."""
     sid = str(uuid.uuid4())

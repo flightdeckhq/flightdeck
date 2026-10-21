@@ -635,6 +635,7 @@ def test_captured_anthropic_reference_intercepted_after_patch(
 
 
 def test_pre_existing_instance_intercepted_after_patch(
+    sensor_reset: None,
     unique_flavor: str,
 ) -> None:
     """A client constructed AND first-accessed before ``patch()`` is metered.

@@ -1116,8 +1116,9 @@ def test_wrap_then_patch_counts_an_override_calling_super_twice(
     """wrap() then patch(): a plain resource is metered once, but a
     resource class that overrides create() and calls super() is reported
     twice for one request (the proxy resolves the override, which
-    re-enters the patched base method). Pins the current count; the
-    outer-call mark collapses it to one."""
+    re-enters the patched base method). Pins the current count, which
+    stays two until the wrap() proxy runs its SDK call under an
+    outer-call mark."""
     from anthropic.resources.messages.messages import Messages
 
     class _Overriding(Messages):

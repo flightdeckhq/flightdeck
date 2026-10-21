@@ -13,15 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// BuildEventExtra projects per-event-type metadata fields from a NATS
-// payload into the events.payload JSONB column. Returns nil for events
-// that have no extra metadata to persist (e.g. session_start, post_call,
-// tool_call). Returns a JSON-encoded map for directive_result events
-// containing directive_name, directive_action, directive_status,
-// result, error, duration_ms -- omitting any field that is empty/nil.
-//
-// This is an exported helper so it can be unit-tested directly without
-// needing to wire a mock writer through the Processor.
 // stripExtraContent removes the inline "content" key (the MCP
 // argument/result/resource projection that BuildEventExtra places in
 // events.payload) from an already-marshaled extra blob. It is the
@@ -52,6 +43,18 @@ func stripExtraContent(extra []byte) []byte {
 	return out
 }
 
+// BuildEventExtra projects per-event-type metadata fields from a NATS
+// payload into the events.payload JSONB column. Returns nil for events
+// that carry no extra metadata to persist (a plain session_start or
+// post_call) and otherwise a JSON-encoded map of the fields present:
+// directive_name / directive_action / directive_status / result /
+// error / duration_ms on directive_result, the policy, MCP, sub-agent
+// and enrichment fields on their event types, and the Claude Code
+// plugin's tool_use_id / mcp_server / end_reason -- omitting any field
+// that is empty/nil.
+//
+// This is an exported helper so it can be unit-tested directly without
+// needing to wire a mock writer through the Processor.
 func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	// Pre-Phase-4 this function only produced payload for
 	// directive_result events. Phase 4 opens it up to any event that
@@ -363,12 +366,12 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 // shape BuildEventExtra writes into events.payload per D126 § 6 +
 // Rule 20. Two shapes land here:
 //
-//   - Inline (body ≤ 8 KiB): “{body, captured_at}“ — body is
+//   * Inline (body ≤ 8 KiB): ``{body, captured_at}`` — body is
 //     decoded back into the framework's source shape (string /
 //     dict / list / scalar / null).
-//   - Overflow (body > 8 KiB): “{has_content, content_bytes,
-//     captured_at}“ — body lives in event_content; the dashboard
-//     fetches via “GET /v1/events/{id}/content“. The stub here
+//   * Overflow (body > 8 KiB): ``{has_content, content_bytes,
+//     captured_at}`` — body lives in event_content; the dashboard
+//     fetches via ``GET /v1/events/{id}/content``. The stub here
 //     lets the dashboard render a size-aware "load full message"
 //     affordance without an extra round-trip.
 //
@@ -398,10 +401,10 @@ func subagentMessageToMap(m *consumer.SubagentMessage) map[string]interface{} {
 	return out
 }
 
-// isMCPEventType reports whether “eventType“ is one of the six Phase 5
+// isMCPEventType reports whether ``eventType`` is one of the six Phase 5
 // MCP event types. Used by BuildEventExtra to gate the MCP-content
-// projection: “content“ on MCP_RESOURCE_READ goes inline into
-// events.payload (small, render-inline), whereas “content“ on LLM
+// projection: ``content`` on MCP_RESOURCE_READ goes inline into
+// events.payload (small, render-inline), whereas ``content`` on LLM
 // events routes via HasContent into the event_content table (large,
 // fetch-on-demand). Centralising the membership test keeps every
 // MCP-specific branch in BuildEventExtra and Process self-consistent.

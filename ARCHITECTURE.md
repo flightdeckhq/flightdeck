@@ -4068,9 +4068,10 @@ caller's own `.parse()`, out of the sensor's sight, the same eager parse
 reports the failure and still returns the raw response, so the caller's
 `.parse()` raises as it would without the sensor. When neither a
 completion nor a JSON body can be read (a 200 whose body is not a JSON
-object), the exception raises through the intercept and only the
-`llm_error` is emitted; a failed parse never lands as a success-looking
-`post_call` of estimated tokens. `responses.parse()` returns an
+object), only the `llm_error` is emitted: the direct `parse()` raises
+the SDK's exception and the raw-response path still returns the raw
+response. A failed parse never lands as a success-looking `post_call`
+of estimated tokens. `responses.parse()` returns an
 incomplete result without raising, so the length case does not apply to
 it; a schema failure does.
 

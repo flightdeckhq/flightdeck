@@ -972,26 +972,78 @@ def test_hostile_body_with_a_headers_key_is_still_metered(respx_mock: respx.Mock
     assert (pc2["tokens_input"], pc2["tokens_output"]) == (40, 7)
 
 
-@respx.mock(base_url=BASE_URL)
-def test_non_json_200_body_reports_the_llm_error_alone(respx_mock: respx.MockRouter) -> None:
+def _mock_non_json_200(respx_mock: respx.MockRouter) -> None:
     respx_mock.post("/chat/completions").mock(
         return_value=httpx.Response(
             200, text="<html>not json</html>", headers={"content-type": "text/html"}
         )
     )
-    session = _session()
-    completions = SensorCompletions(_sync_client().chat.completions, session, OpenAIProvider())
 
-    with pytest.raises(Exception):  # noqa: B017 - whatever the SDK raises on a non-JSON body
-        completions.with_raw_response.parse(
-            model="gpt-4o-mini", messages=MESSAGES, response_format=City
-        )
 
+def _assert_llm_error_alone(session: Session) -> None:
     # Nothing billed can be read, so no post_call of estimated tokens.
     assert _events_of(session, "post_call") == []
     (err,) = _events_of(session, "llm_error")
     assert err["error"]["http_status"] is None
     assert session.tokens_used == 0
+
+
+@respx.mock(base_url=BASE_URL)
+def test_non_json_200_body_on_direct_parse_raises_as_the_sdk_does(
+    respx_mock: respx.MockRouter,
+) -> None:
+    _mock_non_json_200(respx_mock)
+    with pytest.raises(Exception) as unwrapped:  # noqa: B017 - whatever the SDK raises
+        _sync_client().chat.completions.parse(
+            model="gpt-4o-mini", messages=MESSAGES, response_format=City
+        )
+    session = _session()
+    completions = SensorCompletions(_sync_client().chat.completions, session, OpenAIProvider())
+
+    with pytest.raises(type(unwrapped.value)):
+        completions.parse(model="gpt-4o-mini", messages=MESSAGES, response_format=City)
+    _assert_llm_error_alone(session)
+
+
+@respx.mock(base_url=BASE_URL)
+def test_non_json_200_body_on_raw_parse_returns_the_raw_response(
+    respx_mock: respx.MockRouter,
+) -> None:
+    _mock_non_json_200(respx_mock)
+    unwrapped = _sync_client().chat.completions.with_raw_response.parse(
+        model="gpt-4o-mini", messages=MESSAGES, response_format=City
+    )
+    session = _session()
+    completions = SensorCompletions(_sync_client().chat.completions, session, OpenAIProvider())
+
+    raw = completions.with_raw_response.parse(
+        model="gpt-4o-mini", messages=MESSAGES, response_format=City
+    )
+    # The caller gets the raw response, as from the SDK; its own parse()
+    # then raises as it would without the sensor.
+    assert type(raw) is type(unwrapped)
+    assert raw.text == "<html>not json</html>"
+    _assert_llm_error_alone(session)
+
+
+@respx.mock(base_url=BASE_URL)
+def test_non_json_200_body_on_async_raw_parse_returns_the_raw_response(
+    respx_mock: respx.MockRouter,
+) -> None:
+    _mock_non_json_200(respx_mock)
+    session = _session()
+    completions = SensorCompletions(
+        _async_client().chat.completions, session, OpenAIProvider(), is_async=True
+    )
+
+    async def _run() -> Any:
+        return await completions.with_raw_response.parse(
+            model="gpt-4o-mini", messages=MESSAGES, response_format=City
+        )
+
+    raw = asyncio.run(_run())
+    assert raw.text == "<html>not json</html>"
+    _assert_llm_error_alone(session)
 
 
 def test_foreign_validation_error_keeps_its_own_classification() -> None:

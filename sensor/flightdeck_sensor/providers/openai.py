@@ -139,7 +139,8 @@ def _cache_detail(usage: Any, details_attr: str, field: str) -> int:
     """
     try:
         count = _field(_field(usage, details_attr), field)
-        if isinstance(count, int) and count > 0:
+        # bool is an int subclass; a True count is malformed, not 1.
+        if isinstance(count, int) and not isinstance(count, bool) and count > 0:
             return count
     except Exception:
         pass

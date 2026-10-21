@@ -145,11 +145,16 @@ class _ParseOutcome:
     """What a wrapped ``parse()`` call kept aside for the intercept's
     caller: the exception a billed-but-failed parse raised (reported as
     the ``llm_error`` once the ``post_call`` is out) and the raw
-    response, which the raw-response path's caller still receives."""
+    response, which the raw-response path's caller still receives.
+    ``unreadable`` is the parse exception of a raw response whose answer
+    could not be read at all; it raises through the intercept (which
+    reports the ``llm_error`` alone) and the raw-response caller still
+    gets ``raw``."""
 
     def __init__(self) -> None:
         self.exc: BaseException | None = None
         self.raw: Any | None = None
+        self.unreadable: BaseException | None = None
 
 
 def _call_parse(
@@ -182,7 +187,8 @@ def _call_parse(
     failure). When neither can be read (a 200 whose body is not a JSON
     object) the exception raises through the intercept, which reports
     the ``llm_error`` alone: a failed parse never lands as a
-    success-looking ``post_call``.
+    success-looking ``post_call``. The raw-response caller still gets
+    the raw response in that case, as from the SDK.
 
     With ``return_raw`` the caller gets the raw response, as from the
     SDK's ``with_raw_response.parse()``, and its own ``.parse()`` raises
@@ -201,6 +207,9 @@ def _call_parse(
             if answer is None:
                 answer = _answered_body(response)
             if answer is None:
+                if return_raw:
+                    outcome.raw = response
+                    outcome.unreadable = exc
                 raise
             outcome.exc = exc
             outcome.raw = response
@@ -234,7 +243,12 @@ def _call_parse(
 
         async def _async_parse() -> Any:
             t0 = time.monotonic()
-            response = await base.call_async(_wrapped_async, kwargs, session, provider)
+            try:
+                response = await base.call_async(_wrapped_async, kwargs, session, provider)
+            except Exception as exc:
+                if outcome.unreadable is not None and exc is outcome.unreadable:
+                    return outcome.raw
+                raise
             return _finish(response, t0)
 
         return _async_parse()
@@ -246,7 +260,12 @@ def _call_parse(
             return _failed(exc)
 
     t0 = time.monotonic()
-    response = base.call(_wrapped, kwargs, session, provider)
+    try:
+        response = base.call(_wrapped, kwargs, session, provider)
+    except Exception as exc:
+        if outcome.unreadable is not None and exc is outcome.unreadable:
+            return outcome.raw
+        raise
     return _finish(response, t0)
 
 

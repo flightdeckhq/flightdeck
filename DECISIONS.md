@@ -10169,9 +10169,10 @@ raw-response closure and parses it eagerly; the caller still gets the
 parsed object or the SDK's exception, type and message unchanged. On
 the raw-response path the same eager parse reports the failure and
 returns the raw response to the caller unchanged. When neither a
-completion nor a JSON body can be read, the exception raises through
-the intercept and only the `llm_error` is emitted: a failed parse never
-lands as a success-looking `post_call` of estimated tokens.
+completion nor a JSON body can be read, only the `llm_error` is
+emitted (the direct path raises, the raw-response path still returns
+the raw response): a failed parse never lands as a success-looking
+`post_call` of estimated tokens.
 
 **Classification.** `OAuthError` classifies as `authentication`.
 `LengthFinishReasonError` classifies as `invalid_request` with

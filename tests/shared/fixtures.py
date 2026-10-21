@@ -17,16 +17,31 @@ on the test runner.
 from __future__ import annotations
 
 import json
+import signal
 import subprocess
+from collections.abc import Iterator
+from contextlib import contextmanager
 import time
+import uuid
 import urllib.error
 import urllib.request
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 from flightdeck_sensor.core.agent_id import derive_agent_id
 
 INGESTION_URL = "http://localhost:4000/ingest"
 API_URL = "http://localhost:4000/api"
+# The dev stack's container names are the contract for the helpers that
+# shell into it (psql below, the worker log reader).
+POSTGRES_CONTAINER = "docker-postgres-1"
+WORKER_CONTAINER = "docker-workers-1"
+# A docker CLI call against a healthy daemon returns well within this;
+# the bound only keeps a hung daemon from stalling a poll forever.
+DOCKER_CLI_TIMEOUT_SECS = 20
+# Lines of worker log a reader looks back over. The worker logs about
+# one line per dropped or retried event, so this covers a whole
+# integration run; readers scope matches by session id anyway.
+WORKER_LOG_TAIL_LINES = 5000
 INGEST_HEALTH = f"{INGESTION_URL}/health"
 API_HEALTH = f"{API_URL}/health"
 TOKEN = "tok_dev"
@@ -184,9 +199,10 @@ def get_fleet() -> dict[str, Any]:
     flavor client-side. Returns ``{"flavors": [{"flavor": X,
     "sessions": [...]}...], "total_session_count": N}``.
 
-    Single-page fetch (server caps at 100). Integration tests run
-    serially and each creates 1--3 sessions; 100 recent sessions is
-    comfortably above the working set per run.
+    Single-page fetch (server caps at 100). Only the manual dashboard
+    demo uses it; tests that run in the parallel phase look sessions up
+    by their own flavor or id instead, since the 100 most recent rows
+    belong to whichever tests posted last.
     """
     url = f"{API_URL}/v1/sessions?limit=100"
     req = urllib.request.Request(url, headers=auth_headers())
@@ -451,7 +467,7 @@ def query_directives(session_id: str) -> list[dict[str, Any]]:
         [
             "docker",
             "exec",
-            "docker-postgres-1",
+            POSTGRES_CONTAINER,
             "psql",
             "-U",
             "flightdeck",
@@ -511,7 +527,7 @@ def exec_sql(sql: str, **bindings: Any) -> str:
         "docker",
         "exec",
         "-i",
-        "docker-postgres-1",
+        POSTGRES_CONTAINER,
         "psql",
         "-U",
         "flightdeck",
@@ -531,6 +547,50 @@ def exec_sql(sql: str, **bindings: Any) -> str:
         check=True,
     )
     return result.stdout.strip()
+
+
+# Cleanup statements share a single :'flavor' binding via exec_sql.
+# Each is idempotent and ordered to satisfy FK constraints (children
+# before parents). The agents table has no flavor column: the rollup
+# is keyed by agent_id and is reached through the sessions it
+# summarises. The sessions -> agents foreign key is checked at the end
+# of the statement, so one data-modifying CTE deletes the flavor's
+# sessions and then the agents those sessions belonged to, unless a
+# session of another flavor still references the agent. A rollup left
+# behind keeps total_sessions above zero with no session behind it,
+# which breaks the fleet's recent-sessions contract on the next run.
+FLAVOR_CLEANUP_SQL = (
+    "DELETE FROM event_content WHERE session_id IN "
+    "(SELECT session_id FROM sessions WHERE flavor = :'flavor')",
+    "DELETE FROM events WHERE flavor = :'flavor'",
+    "DELETE FROM directives WHERE flavor = :'flavor' OR session_id IN "
+    "(SELECT session_id FROM sessions WHERE flavor = :'flavor')",
+    "DELETE FROM token_policies WHERE scope = 'flavor' AND scope_value = :'flavor'",
+    "WITH gone AS ("
+    "DELETE FROM sessions WHERE flavor = :'flavor' RETURNING agent_id"
+    ") "
+    "DELETE FROM agents a USING (SELECT DISTINCT agent_id FROM gone) g "
+    "WHERE a.agent_id = g.agent_id AND NOT EXISTS ("
+    "SELECT 1 FROM sessions o WHERE o.agent_id = a.agent_id "
+    "AND o.flavor IS DISTINCT FROM :'flavor')",
+    "DELETE FROM custom_directives WHERE flavor = :'flavor'",
+)
+
+
+def delete_flavor_data(flavor: str) -> None:
+    """Best-effort cleanup of all DB rows for a flavor (idempotent).
+
+    Tests that create sessions outside the ``make_event`` tracker, or
+    whose agents would otherwise outlive the run, call this at the end
+    so nothing they wrote accumulates on a shared stack.
+    """
+    for sql in FLAVOR_CLEANUP_SQL:
+        try:
+            exec_sql(sql, flavor=flavor)
+        except subprocess.CalledProcessError:
+            # Best-effort: tolerate failures (e.g. row doesn't exist,
+            # FK reference still in flight).
+            pass
 
 
 def wait_until(
@@ -566,13 +626,315 @@ def session_exists_in_fleet(session_id: str) -> bool:
         raise
 
 
+def session_events(detail: dict[str, Any]) -> list[dict[str, Any]]:
+    """The ``events`` list of a session detail, never ``None``.
+
+    The API serialises an empty list as ``[]``; older binaries sent
+    ``null`` for a session whose event rows had not landed, so readers
+    that poll go through this helper rather than ``detail["events"]``.
+    """
+    return detail.get("events") or []
+
+
 def get_session_event_count(session_id: str) -> int:
-    """Return the number of events for a session."""
+    """Return the number of events for a session, 0 while it is unreachable."""
     try:
-        detail = get_session_detail(session_id)
-        return len(detail.get("events", []))
-    except Exception:
+        return len(session_events(get_session_detail(session_id)))
+    except (OSError, ValueError):
+        # URLError and HTTPError are OSErrors, as are the socket
+        # timeouts and resets a poll must simply retry through.
         return 0
+
+
+def _docker(*args: str) -> subprocess.CompletedProcess[str]:
+    """Run a docker CLI command and raise with its stderr when it fails.
+
+    ``subprocess.CalledProcessError`` alone would only say "exit status
+    1"; the daemon's message ("No such container", ...) is what a reader
+    of a failing test needs.
+    """
+    try:
+        proc = subprocess.run(
+            ["docker", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=DOCKER_CLI_TIMEOUT_SECS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # The same error type as a failed command, so callers that
+        # tolerate one daemon message handle a hung CLI the same way.
+        raise RuntimeError(
+            f"docker {' '.join(args)} gave no answer in {DOCKER_CLI_TIMEOUT_SECS}s"
+        ) from exc
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"docker {' '.join(args)} failed ({proc.returncode}): {proc.stderr.strip()}"
+        )
+    return proc
+
+
+def worker_is_paused() -> bool:
+    """Whether the worker container is paused (left so by an interrupted test)."""
+    paused = _docker("inspect", "-f", "{{.State.Paused}}", WORKER_CONTAINER)
+    return paused.stdout.strip() == "true"
+
+
+def ensure_worker_running() -> None:
+    """Unpause the worker if an earlier run was killed inside ``worker_paused``."""
+    if worker_is_paused():
+        _docker("unpause", WORKER_CONTAINER)
+
+
+def _abort_on_signal(signum: int, _frame: object) -> None:
+    """Turn a termination signal into the interrupt pytest aborts the run on."""
+    raise KeyboardInterrupt(f"signal {signum}")
+
+
+@contextmanager
+def worker_paused() -> Iterator[None]:
+    """Pause the worker container for the duration of the block.
+
+    Events published meanwhile queue in NATS, and when the worker resumes
+    its goroutine pool drains the backlog concurrently, which makes the
+    orderings the pool can introduce between a session's events
+    reproducible instead of timing-dependent. The container is resumed
+    when the block ends, raises, or is interrupted by SIGTERM (turned into
+    a ``KeyboardInterrupt`` for the duration, so the run aborts the way
+    Ctrl-C does and ``finally`` runs); a run killed outright is repaired
+    by ``ensure_worker_running`` at the next session start. A failing
+    unpause surfaces unless the block itself already failed.
+    """
+    previous = signal.signal(signal.SIGTERM, _abort_on_signal)
+    try:
+        _docker("pause", WORKER_CONTAINER)
+    except BaseException:
+        signal.signal(signal.SIGTERM, previous)
+        raise
+    failed = False
+    try:
+        yield
+    except BaseException:
+        failed = True
+        raise
+    finally:
+        # Resume first, with SIGTERM held off while the unpause runs,
+        # and give the handler back last, so no moment exists in which
+        # a SIGTERM could end the run with the container still paused;
+        # one that arrives meanwhile is delivered once the mask drops.
+        held = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+        try:
+            _docker("unpause", WORKER_CONTAINER)
+        except RuntimeError as exc:
+            if "is not paused" in str(exc):
+                pass  # another run's guard already resumed it
+            elif not failed:
+                raise  # the block passed, so a stuck pause must not be silent
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+            signal.pthread_sigmask(signal.SIG_SETMASK, held)
+
+
+# Rows the ordering tests hold locks on, and the lock modes they use:
+# table, column and mode are code constants checked against these
+# allow-lists, so they are safe to place in SQL text; the value is bound
+# through psql.
+_LOCKABLE_ROWS = {"agents": "agent_id", "sessions": "session_id"}
+LockMode = Literal["KEY SHARE", "NO KEY UPDATE", "UPDATE"]
+# The mode a NOWAIT probe takes to prove each held lock: one the held
+# mode conflicts with. KEY SHARE is compatible with itself (two event
+# inserts share a session row), so only an UPDATE probe detects it; the
+# other modes conflict with themselves.
+_PROBE_MODES: dict[LockMode, LockMode] = {
+    "KEY SHARE": "UPDATE",
+    "NO KEY UPDATE": "NO KEY UPDATE",
+    "UPDATE": "UPDATE",
+}
+# A lock probe gives up on a row that nobody holds after this long.
+LOCK_PROOF_TIMEOUT_SECS = 10.0
+
+
+@contextmanager
+def _row_locked(table: str, row_id: str, mode: LockMode) -> Iterator[None]:
+    """Hold a row lock for the duration of the block.
+
+    The lock belongs to a psql session kept open on stdin and tagged
+    through its application name; the block starts once a second
+    session's NOWAIT probe, in a mode the held lock conflicts with, fails
+    on the row, which proves the lock is held (an unknown id locks
+    nothing and is reported instead).
+    """
+    column = _LOCKABLE_ROWS[table]
+    probe_mode = _PROBE_MODES.get(mode)
+    if probe_mode is None:
+        raise ValueError(f"unsupported lock mode {mode!r}")
+    row_id = str(uuid.UUID(row_id))
+    tag = f"lock-{uuid.uuid4().hex[:8]}"
+    docker_exec = ["docker", "exec", "-i"]
+    psql = [
+        POSTGRES_CONTAINER,
+        "psql",
+        "-U",
+        "flightdeck",
+        "-d",
+        "flightdeck",
+        "-q",
+        "-v",
+        "ON_ERROR_STOP=1",
+        "-v",
+        f"row_id={row_id}",
+    ]
+    # The holder carries the tag in its environment; the probe is the
+    # same client without it.
+    holder = [*docker_exec, "-e", f"PGAPPNAME={tag}", *psql]
+    prober = [*docker_exec, *psql]
+    proc = subprocess.Popen(
+        holder,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    assert proc.stdin is not None and proc.stderr is not None
+    stdin, stderr = proc.stdin, proc.stderr
+    try:
+        stdin.write(
+            f"BEGIN; SELECT 1 FROM {table} WHERE {column} = :'row_id'::uuid "
+            f"FOR {mode};\n"
+        )
+        stdin.flush()
+
+        def _held() -> bool:
+            if proc.poll() is not None:
+                raise RuntimeError(
+                    f"psql exited {proc.returncode}: {stderr.read().strip()}"
+                )
+            # psql substitutes :'name' only in SQL read from stdin, not -c.
+            probe = subprocess.run(
+                prober,
+                input=(
+                    f"SELECT 1 FROM {table} WHERE {column} = :'row_id'::uuid "
+                    f"FOR {probe_mode} NOWAIT;\n"
+                ),
+                capture_output=True,
+                text=True,
+                timeout=DOCKER_CLI_TIMEOUT_SECS,
+                check=False,
+            )
+            if probe.returncode == 0 and "(0 rows)" in probe.stdout:
+                raise RuntimeError(f"no {table} row for {row_id}; nothing to lock")
+            if probe.returncode != 0 and "could not obtain lock" not in probe.stderr:
+                raise RuntimeError(f"lock probe failed: {probe.stderr.strip()}")
+            return probe.returncode != 0
+
+        wait_until(
+            _held,
+            timeout=LOCK_PROOF_TIMEOUT_SECS,
+            msg=f"the {table} row lock was never taken ({tag})",
+        )
+        yield
+    finally:
+        try:
+            stdin.write("COMMIT;\n")
+            stdin.flush()
+            stdin.close()
+        except OSError:
+            # psql already exited (reported above through _held), so
+            # there is no transaction left to end.
+            pass
+        proc.wait(timeout=DOCKER_CLI_TIMEOUT_SECS)
+
+
+@contextmanager
+def agent_row_locked(agent_id: str) -> Iterator[None]:
+    """Hold the agents row FOR NO KEY UPDATE for the duration of the block.
+
+    HandleSessionStart's first write is the agents upsert, so every
+    session_start of that agent blocks in the worker until the block ends
+    while the other handlers, which only take KEY SHARE locks on the row
+    through the sessions foreign key, proceed.
+    """
+    with _row_locked("agents", agent_id, "NO KEY UPDATE"):
+        yield
+
+
+@contextmanager
+def session_row_locked(
+    session_id: str, mode: LockMode = "NO KEY UPDATE"
+) -> Iterator[None]:
+    """Hold the sessions row for the duration of the block.
+
+    Under the default NO KEY UPDATE every update of the row by the worker
+    or by the ingestion API's re-attachment stamp waits on or skips the
+    lock, while event inserts, which take KEY SHARE through the foreign
+    key, proceed. KEY SHARE holds the row the way an in-flight event
+    insert does: updates of the row's other columns, the stamp among
+    them, must pass it.
+    """
+    with _row_locked("sessions", session_id, mode):
+        yield
+
+
+def _docker_timestamp(since: str | float) -> str:
+    """Render a ``docker logs --since`` value.
+
+    A string passes through as given (RFC 3339, or a relative span such
+    as ``"5m"``); a ``time.time()`` stamp becomes RFC 3339 in UTC with
+    microseconds, truncated rather than rounded so the bound never
+    lands after the stamp.
+    """
+    if isinstance(since, str):
+        return since
+    whole = int(since)
+    micros = int((since - whole) * MICROS_PER_SECOND)
+    return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime(whole)) + f".{micros:06d}Z"
+
+
+# The fractional part of a docker logs timestamp is rendered in
+# microseconds, the finest unit the daemon accepts.
+MICROS_PER_SECOND = 1_000_000
+# A stamp from this process is moved back by this much before it is
+# handed to the daemon, which compares it with its own clock: a daemon
+# in a VM that has lagged a second or two after a sleep would otherwise
+# drop the lines the test is looking for. The needles are unique ids,
+# so the extra two seconds of lines can never match.
+DOCKER_CLOCK_MARGIN_SECS = 2.0
+
+
+def worker_log_lines(
+    *needles: str,
+    tail: int = WORKER_LOG_TAIL_LINES,
+    since: str | float | None = None,
+) -> list[str]:
+    """Recent worker-container log lines that contain every needle.
+
+    The worker logs through slog's default handler on stderr
+    (``2026/10/20 12:18:37 WARN dropped orphan session_end session_id=…``);
+    ``docker logs`` returns both streams. Raises when the CLI fails so a
+    missing container reads as an infrastructure error, not as "the
+    worker never logged it".
+
+    ``since`` keeps only lines logged at or after a point in time, given
+    as a ``time.time()`` stamp or as a string ``docker logs --since``
+    accepts. A test that passes its own start time reads only the lines
+    its events produced, so a line an earlier run or a parallel worker
+    logged for the same marker never counts. The ``tail`` bound still
+    applies on top. The daemon compares the stamp with its own clock, so
+    a caller that must not miss a line takes the stamp before it posts.
+    """
+    args = ["logs", "--tail", str(tail)]
+    if since is not None:
+        if not isinstance(since, str):
+            since -= DOCKER_CLOCK_MARGIN_SECS
+        args += ["--since", _docker_timestamp(since)]
+    proc = _docker(*args, WORKER_CONTAINER)
+    return [
+        line
+        for line in (proc.stdout + proc.stderr).splitlines()
+        if all(needle in line for needle in needles)
+    ]
 
 
 def wait_for_state(
@@ -637,7 +999,7 @@ def directive_has_delivered_at(directive_id: str) -> bool:
         [
             "docker",
             "exec",
-            "docker-postgres-1",
+            POSTGRES_CONTAINER,
             "psql",
             "-U",
             "flightdeck",
@@ -716,6 +1078,7 @@ def create_drifted_agent(
     actual_sessions: int = 1,
     actual_tokens_per_session: int = 100,
     counter_overrides: dict[str, Any] | None = None,
+    last_seen_in_future: bool = False,
 ) -> str:
     """Insert an agents row with intentionally wrong counter values,
     plus N matching sessions under that agent_id. Returns the
@@ -732,8 +1095,15 @@ def create_drifted_agent(
           actual_tokens_per_session + 999999)
         - ``first_seen_at``: ISO-8601 string (default: actual
           MIN(started_at) minus 1 hour — wrong direction)
-        - ``last_seen_at``: ISO-8601 string (default: NOW + 1 hour
-          — future-dated, obviously wrong)
+        - ``last_seen_at``: ISO-8601 string (default: NOW - 1 hour,
+          an hour behind the ground truth of a minute ago)
+
+    ``last_seen_in_future`` flips the default ``last_seen_at`` drift to
+    NOW + 1 hour. The past-dated default keeps the fixture off the top
+    of the fleet page, which lists the most recently seen agents first
+    and is what other tests read while this fixture exists; a test that
+    watches the reconciler pull the stamp back in time asks for the
+    future-dated drift instead.
 
     Cleanup: callers MUST ``DELETE FROM sessions / agents`` manually
     (or use a per-test fixture that does). Keeping cleanup caller-
@@ -756,8 +1126,9 @@ def create_drifted_agent(
         "total_tokens",
         actual_sessions * actual_tokens_per_session + 999_999,
     )
-    # Default drift: first_seen_at forward by an hour vs ground
-    # truth, last_seen_at forward by an hour vs ground truth.
+    # Default drift: first_seen_at an hour before ground truth, and
+    # last_seen_at an hour before it too unless the caller asked for
+    # the future-dated stamp.
     first_seen_override = overrides.get("first_seen_at")
     last_seen_override = overrides.get("last_seen_at")
 
@@ -771,11 +1142,12 @@ def create_drifted_agent(
         if first_seen_override is None
         else f"'{first_seen_override}'::timestamptz"
     )
-    last_seen_default = (
-        "NOW() + INTERVAL '1 hour'"
-        if last_seen_override is None
-        else f"'{last_seen_override}'::timestamptz"
-    )
+    if last_seen_override is not None:
+        last_seen_default = f"'{last_seen_override}'::timestamptz"
+    elif last_seen_in_future:
+        last_seen_default = "NOW() + INTERVAL '1 hour'"
+    else:
+        last_seen_default = "NOW() - INTERVAL '1 hour'"
 
     # Sessions: fixed per-session offsets so MIN/MAX are easy to
     # reason about. Session N starts at NOW() - (actual_sessions-N+1)
@@ -852,7 +1224,7 @@ def get_agent_rollup(agent_id: str) -> dict[str, Any] | None:
         [
             "docker",
             "exec",
-            "docker-postgres-1",
+            POSTGRES_CONTAINER,
             "psql",
             "-U",
             "flightdeck",
@@ -885,7 +1257,7 @@ def _psql_exec(sql: str) -> None:
         [
             "docker",
             "exec",
-            "docker-postgres-1",
+            POSTGRES_CONTAINER,
             "psql",
             "-U",
             "flightdeck",

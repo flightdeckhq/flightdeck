@@ -26,9 +26,15 @@ import respx
 
 import flightdeck_sensor
 
-from .conftest import API_URL, INGESTION_URL, TOKEN, auth_headers, wait_until
+from .conftest import (
+    API_URL,
+    INGESTION_URL,
+    TOKEN,
+    auth_headers,
+    delete_flavor_data,
+    wait_until,
+)
 from .test_sensor_e2e import (
-    _delete_flavor_data,
     _force_reset_sensor,
     _query_events_for_flavor,
     _query_session_for_flavor,
@@ -54,7 +60,7 @@ def unique_flavor() -> Iterator[str]:
         yield flavor
     finally:
         os.environ.pop("AGENT_FLAVOR", None)
-        _delete_flavor_data(flavor)
+        delete_flavor_data(flavor)
 
 
 def _sse(events: list[tuple[str, dict[str, Any]]]) -> httpx.Response:

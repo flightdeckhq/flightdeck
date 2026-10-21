@@ -2,23 +2,33 @@
 //
 // Kept deliberately dependency-free: no Prometheus client library. The
 // counters are plain ``sync/atomic`` uint64s exposed via a small HTTP
-// handler (Snapshot + ServeHTTP). A future phase can swap in
-// prometheus/client_golang without changing the call sites. Choosing
+// handler (Snapshot + ServeHTTP). Swapping in prometheus/client_golang
+// later would not change the call sites. Choosing
 // no-dep here avoids adding a library to the worker that isn't needed
 // by any other package yet.
 //
-// The single counter is ``dropped_events_total``
-// with a ``reason`` label. Every known drop path in the worker
-// pipeline increments it:
+// The package keeps three counter families: ``dropped_events_total``
+// with a ``reason`` label, ``sessions_closed_total`` and
+// ``sessions_revived_total``. Every known drop path in the worker
+// pipeline increments the first:
 //
 //   - unmarshal_error       — NATS payload failed json.Unmarshal; the
 //                             consumer Terms the message.
-//   - orphan_session_end    — session_end arrived for an unknown
-//                             session_id. Previously Nak'd with an
-//                             opaque FK-violation; now ACK'd with a
-//                             structured WARN + counter bump.
-//   - closed_session_skip   — non-session_end event arrived for a
-//                             session already in state=closed. The
+//   - orphan_session_end    — session_end for a session_id the server
+//                             never saw, once the retry budget has
+//                             given its session_start time to land.
+//                             ACK'd with a WARN + counter bump and no
+//                             event row.
+//   - superseded_session_end — session_end published before the
+//                             session's current run began (a
+//                             re-attachment, or an emitter that sent
+//                             its end first) that found the row open.
+//                             Recorded as an event; the row's state is
+//                             left as it is. On a closed row the same
+//                             end counts as closed_session_skip.
+//   - closed_session_skip   — event arrived for a session already in
+//                             state=closed (a duplicate session_end
+//                             included). The
 //                             handler skips work; the counter records
 //                             how often this happens.
 //   - fk_violation          — residual bucket for Postgres FK errors
@@ -28,9 +38,11 @@
 //   - max_retries_exhausted — consumer hit NATS maxDeliver after
 //                             redelivering an event N times.
 //
-// Operators observe the counter via ``GET /metrics`` on the worker's
-// management port. Format is a trivial text line-per-counter so scrapers
-// (and humans) can parse it without a client library.
+// The counters live in process. Handler renders them as one text line
+// per counter so scrapers (and humans) can parse them without a client
+// library, but no service mounts it yet (see the README Roadmap);
+// today the counters are observed through the log lines that accompany
+// each increment.
 package metrics
 
 import (
@@ -46,12 +58,13 @@ import (
 type DropReason string
 
 const (
-	ReasonUnmarshalError      DropReason = "unmarshal_error"
-	ReasonOrphanSessionEnd    DropReason = "orphan_session_end"
-	ReasonClosedSessionSkip   DropReason = "closed_session_skip"
-	ReasonFKViolation         DropReason = "fk_violation"
-	ReasonMaxRetriesExhausted DropReason = "max_retries_exhausted"
-	ReasonProcessPanic        DropReason = "process_panic"
+	ReasonUnmarshalError       DropReason = "unmarshal_error"
+	ReasonOrphanSessionEnd     DropReason = "orphan_session_end"
+	ReasonSupersededSessionEnd DropReason = "superseded_session_end"
+	ReasonClosedSessionSkip    DropReason = "closed_session_skip"
+	ReasonFKViolation          DropReason = "fk_violation"
+	ReasonMaxRetriesExhausted  DropReason = "max_retries_exhausted"
+	ReasonProcessPanic         DropReason = "process_panic"
 )
 
 // CloseReason mirrors the close_reason values stamped on session_end
@@ -72,7 +85,7 @@ const (
 // post_call / tool_call / etc. propagates freshness to its parent's
 // row, and when the parent was stale/lost it's revived to active.
 // Operators chart the rate via sessions_revived_total{trigger=...}
-// on the worker's /metrics endpoint.
+// through Handler, which no service mounts yet (README Roadmap).
 type RevivalTrigger string
 
 const (
@@ -239,9 +252,10 @@ func Reset() {
 	revivedSessions = map[RevivalTrigger]*atomic.Uint64{}
 }
 
-// Handler serves the /metrics endpoint. Trivial text format, one line
+// Handler renders the counters as a metrics page (not mounted by any
+// service yet; see the README Roadmap). Trivial text format, one line
 // per (counter, reason) pair, to keep the worker free of the
-// prometheus client dependency until a future phase needs it.
+// prometheus client dependency until it is needed.
 func Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")

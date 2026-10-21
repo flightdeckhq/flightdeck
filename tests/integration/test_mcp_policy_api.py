@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import uuid
 
+import pytest
 import requests
 
 from .conftest import (
@@ -43,6 +44,9 @@ def _delete_flavor(flavor: str) -> None:
 # ----- read + resolve -----------------------------------------------
 
 
+# Reads the one global MCP policy, which the two fall-through tests
+# below rewrite while they run.
+@pytest.mark.exclusive
 def test_global_policy_auto_created_at_boot() -> None:
     """API boot ensures the empty blocklist global policy exists."""
     r = requests.get(
@@ -262,6 +266,9 @@ def test_resolve_returns_decision_path() -> None:
 # can't silently regress the precedence.
 
 
+# Rewrites the global MCP policy for its duration, and every resolve
+# on the stack reads it.
+@pytest.mark.exclusive
 def test_resolve_falls_through_flavor_to_global_entry() -> None:
     """When the flavor's policy has NO matching entry but the global
     policy does, resolve must return decision_path=global_entry with
@@ -348,6 +355,9 @@ def test_resolve_falls_through_flavor_to_global_entry() -> None:
         )
 
 
+# Needs the global MCP policy to hold no entry for its server while
+# it runs.
+@pytest.mark.exclusive
 def test_resolve_falls_through_to_mode_default() -> None:
     """When neither the flavor nor the global has a matching entry,
     resolve falls through to the global's mode default. Result
@@ -425,7 +435,7 @@ def test_metrics_returns_empty_pre_step_4() -> None:
         assert r.status_code == 200, r.text
         result = r.json()
         assert result["period"] == "24h"
-        # Step 6.5 reshape: response now carries granularity +
+        # The response carries granularity + a
         # zero-filled bucket array alongside the legacy
         # *_per_server aggregates. Empty events ⇒ empty
         # aggregates; the bucket array is zero-filled to the

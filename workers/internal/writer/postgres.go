@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -100,25 +101,36 @@ func (w *Writer) IncrementAgentTokens(ctx context.Context, agentID string, delta
 // Pass nil for events that don't carry context (only session_start
 // does). When non-nil, it is stored in sessions.context (JSONB).
 //
-// ON CONFLICT enrichment semantics (write-once identity + sentinel
-// upgrade):
+// ON CONFLICT enrichment semantics: identity and context columns are
+// write-once, the lazy-create sentinels are upgradable, and the state
+// follows the publication order of the session's events.
 //
 //   - identity columns (host, framework, model) -- COALESCE, keep the
 //     existing value when the incoming side is NULL.
-//   - context, token_id, token_name -- COALESCE. Originally these were
-//     write-once-on-insert with overwrites explicitly forbidden.
-//     Lazy session creation loosened this to COALESCE so that a lazily-created row
-//     (ReviveOrCreateSession) with NULL context/token columns gets
+//   - context, token_id, token_name -- COALESCE, so a lazily-created
+//     row (ReviveOrCreateSession) with NULL context/token columns gets
 //     enriched by a later session_start arrival. Real values remain
 //     write-once: once sessions.context is non-null, COALESCE returns
 //     the stored value and the incoming EXCLUDED is ignored.
+//   - state -- EXCLUDED.state (active), which also revives a closed row
+//     for a re-attachment (clearing ended_at and closed_seq), unless the
+//     session_end that closed the row was published after this
+//     session_start: the worker pool handles a session's events
+//     concurrently, so an end can be processed before its own start,
+//     and the row then stays closed. Re-attachment is normally settled
+//     by the ingestion API before the event is published; the sequence
+//     comparison covers the start that arrives while the previous
+//     run's end is still queued. A closed row without closed_seq (the
+//     reconciler's close, or an earlier release) is always revived.
+//   - start_seq -- the greater of the stored value and this event's
+//     stream sequence, so the row records the start of its latest run.
 //   - flavor, agent_type -- CASE upgrade from the sentinel "unknown".
-//     "unknown" is the value the lazy-create path writes when a non-session_start
-//     event lacks flavor/agent_type data. A legitimate session_start
-//     never writes "unknown", so the CASE is a no-op for every row
-//     that was created via an authoritative path. "Unknown is a
-//     sentinel, not a value" -- upgrading it on enrichment is not
-//     overwriting data.
+//     "unknown" is the value the lazy-create path writes when a
+//     non-session_start event lacks flavor/agent_type data. A
+//     legitimate session_start never writes "unknown", so the CASE is
+//     a no-op for every row that was created via an authoritative
+//     path. "Unknown is a sentinel, not a value" -- upgrading it on
+//     enrichment is not overwriting data.
 func (w *Writer) UpsertSession(
 	ctx context.Context,
 	sessionID, flavor, agentType, host, framework, model, state string,
@@ -127,6 +139,7 @@ func (w *Writer) UpsertSession(
 	tokenID, tokenName string,
 	parentSessionID, agentRole string,
 	capturePrompts bool,
+	startSeq uint64,
 ) (created bool, err error) {
 	// session_start is the authoritative context source; an empty
 	// context dict from the sensor ("I tried, there was nothing to
@@ -148,17 +161,37 @@ func (w *Writer) UpsertSession(
 			session_id, flavor, agent_type, host, framework, model, state,
 			started_at, last_seen_at, context, token_id, token_name,
 			agent_id, client_type, agent_name,
-			parent_session_id, agent_role, capture_prompts
+			parent_session_id, agent_role, capture_prompts,
+			start_seq
 		)
 		VALUES (
 			$1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7,
 			NOW(), NOW(), $8,
 			NULLIF($9, '')::uuid, NULLIF($10, ''),
 			$11::uuid, $12, $13,
-			NULLIF($14, '')::uuid, NULLIF($15, ''), $16
+			NULLIF($14, '')::uuid, NULLIF($15, ''), $16,
+			NULLIF($17::bigint, 0)
 		)
 		ON CONFLICT (session_id) DO UPDATE
-		SET state = EXCLUDED.state,
+		SET -- A closed row is revived for a re-attachment, but stays closed
+		    -- when the session_end that closed it was published after
+		    -- this session_start: the worker pool handles a session's
+		    -- events concurrently, so an end can be processed before
+		    -- its own start. An unknown sequence (NULL on either side)
+		    -- revives, which is the plain state rule.
+		    state = CASE WHEN sessions.state = 'closed'
+		                  AND sessions.closed_seq > NULLIF($17::bigint, 0)
+		                 THEN sessions.state
+		                 ELSE EXCLUDED.state END,
+		    ended_at = CASE WHEN sessions.state = 'closed'
+		                     AND sessions.closed_seq > NULLIF($17::bigint, 0)
+		                    THEN sessions.ended_at
+		                    ELSE NULL END,
+		    closed_seq = CASE WHEN sessions.state = 'closed'
+		                       AND sessions.closed_seq > NULLIF($17::bigint, 0)
+		                      THEN sessions.closed_seq
+		                      ELSE NULL END,
+		    start_seq = GREATEST(sessions.start_seq, NULLIF($17::bigint, 0)),
 		    last_seen_at = NOW(),
 		    host = COALESCE(EXCLUDED.host, sessions.host),
 		    framework = COALESCE(EXCLUDED.framework, sessions.framework),
@@ -207,6 +240,7 @@ func (w *Writer) UpsertSession(
 		contextJSON, tokenID, tokenName,
 		agentID, clientType, agentName,
 		parentSessionID, agentRole, capturePrompts,
+		seqParam(startSeq),
 	).Scan(&wasInsert)
 	if err != nil {
 		return false, fmt.Errorf("upsert session %s: %w", sessionID, err)
@@ -498,33 +532,46 @@ func (w *Writer) UpdateLastSeen(ctx context.Context, sessionID string) error {
 }
 
 // ReviveIfRevivable flips a stale or lost session back to active and
-// advances last_seen_at. This generalises session_start's
+// advances last_seen_at. It generalises the session_start
 // attach-on-terminal semantics to every event type: every
 // non-session_start handler runs this before its normal side effects,
 // so sessions that go stale/lost during interactive idle windows
 // resume on the next event instead of freezing forever.
 //
-// Four places know how to revive or create a session. They mirror
+// Five places know how to revive or create a session. They mirror
 // each other rather than share a helper; any change to the revival
 // contract (columns touched, state predicate) must be applied to
-// all four:
+// all five:
 //
 //  1. Ingestion: “session.Store.Attach“ runs synchronously on
 //     “session_start“ so the HTTP response can report “attached=true“.
-//     Scope: closed, lost -> active; records a session_attachments row.
-//  2. Worker, “UpsertSession“ ON CONFLICT branch. Scope: any prior
-//     state -> whatever the
-//     session_start event asks for (always “active“), with identity-
-//     column refresh and enrichment of the “unknown“ sentinel
-//     and NULL context/token columns that a lazy-create left behind.
-//  3. Worker, “ReviveIfRevivable“ (this function). Scope:
+//     Scope: closed, lost -> active, clearing ended_at and closed_seq;
+//     records a session_attachments row (the only writer of those).
+//  2. Ingestion: “session.Store.RecordStart“ runs once the event is
+//     published, when the row pre-existed. Stamps the start's stream
+//     sequence and revives a closed row whose closed_seq is unknown or
+//     below that sequence (the previous run's queued session_end closed
+//     it between the check and the stamp), clearing ended_at and
+//     closed_seq. Best effort: skips a row another writer holds and
+//     retries on a short schedule (5, 10, 20 and 40 ms) before giving
+//     up. No attachment row.
+//  3. Worker, “UpsertSession“ ON CONFLICT branch. Scope: any prior
+//     state -> whatever the session_start event asks for (always
+//     “active“, clearing ended_at), except a closed row whose
+//     session_end was published after this session_start, which stays
+//     closed; with identity-column refresh and enrichment of the
+//     “unknown“ sentinel and NULL context/token columns that a
+//     lazy-create left behind. Records the start's stream sequence.
+//  4. Worker, “ReviveIfRevivable“ (this function). Scope:
 //     stale, lost -> active. No identity refresh, no attachment row.
-//  4. Worker, “ReviveOrCreateSession“. Scope: delegates to
+//  5. Worker, “ReviveOrCreateSession“. Scope: delegates to
 //     ReviveIfRevivable when the row exists, INSERTs a new row with
-//     best-effort identity + “unknown“ sentinels when it does not.
-//     Called by every non-session_start handler so an event for an
-//     unknown session_id lazily manifests the row instead of
-//     FK-violating at InsertEvent.
+//     best-effort identity + “unknown“ sentinels when it does not, and
+//     no start sequence: a straggler published after the run's end
+//     must not read as the run's start. Called by every handler except
+//     session_start and session_end so an event for an unknown
+//     session_id lazily manifests the row instead of FK-violating at
+//     InsertEvent.
 //
 // Scope of this helper:
 //   - state IN ('stale', 'lost') -> UPDATE, returns (true, nil).
@@ -821,14 +868,14 @@ func (w *Writer) SessionExists(ctx context.Context, sessionID string) (bool, err
 // fills in the stub's flavor / agent_type / agent_id /
 // client_type / agent_name from the EXCLUDED row. Identity fields
 // in the stub are NULL on insert; COALESCE in UpsertSession's
-// conflict branch upgrades them once. Same primitive as the
+// conflict branch upgrades them once. Same primitive as the lazy
 // create-on-unknown, different trigger (FK-satisfaction vs
 // unknown-session-id event); kept as a separate helper so
 // callers don't need to express the parent-stub-specific shape
 // (started_at = child.started_at, no agents row required because
 // the real parent will UpsertAgent on its own arrival) through
 // the four-axis revive/create config surface that's the reason
-// the trio is uncoalesced. “ON CONFLICT DO NOTHING“ covers the
+// the revive / create sites are uncoalesced. “ON CONFLICT DO NOTHING“ covers the
 // race where two children of the same yet-unseen parent arrive
 // concurrently and both try to create the stub.
 //
@@ -875,17 +922,71 @@ func (w *Writer) BumpAgentSessionCount(ctx context.Context, agentID string) erro
 	return nil
 }
 
-// CloseSession sets state=closed and ended_at on a session.
-func (w *Writer) CloseSession(ctx context.Context, sessionID string) error {
-	_, err := w.pool.Exec(ctx, `
+// SettleSessionEnd applies a session_end to its row in one statement:
+// an open row whose current run began before the end was published
+// (start_seq below the end's sequence, or either unknown) is closed and
+// records the end's sequence; a row that is already closed keeps its
+// close but takes a greater closed_seq, so a session_start queued
+// between a run's end and the next run's end cannot revive a session
+// whose later run has also ended. The predicate is part of the UPDATE
+// so that a re-attaching session_start committed between a read and
+// this write cannot be closed by the previous run's end. A closed row
+// whose closed_seq is already at or past this end is left untouched,
+// so a duplicate end at or below the stored closed_seq costs no write.
+// Returns whether a row matched and whether it was closed by this call;
+// no match means the row is missing, already closed by this or a later
+// end, or opened by a later start, which the caller tells apart with a
+// read.
+func (w *Writer) SettleSessionEnd(ctx context.Context, sessionID string, closedSeq uint64) (applied, closedNow bool, err error) {
+	err = w.pool.QueryRow(ctx, `
 		UPDATE sessions
-		SET state = 'closed', ended_at = NOW(), last_seen_at = NOW()
+		SET state = 'closed',
+		    ended_at = CASE WHEN state = 'closed' THEN ended_at ELSE NOW() END,
+		    last_seen_at = CASE WHEN state = 'closed' THEN last_seen_at ELSE NOW() END,
+		    closed_seq = CASE WHEN state = 'closed'
+		                      THEN GREATEST(closed_seq, NULLIF($2::bigint, 0))
+		                      ELSE NULLIF($2::bigint, 0) END
 		WHERE session_id = $1::uuid
-	`, sessionID)
-	if err != nil {
-		return fmt.Errorf("close session %s: %w", sessionID, err)
+		  AND (start_seq IS NULL OR $2::bigint = 0 OR start_seq < $2::bigint)
+		  AND (state <> 'closed' OR closed_seq IS NULL OR closed_seq < $2::bigint)
+		RETURNING COALESCE(ended_at = NOW(), false)
+	`, sessionID, seqParam(closedSeq)).Scan(&closedNow)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, nil
 	}
-	return nil
+	if err != nil {
+		return false, false, fmt.Errorf("settle session end %s: %w", sessionID, err)
+	}
+	return true, closedNow, nil
+}
+
+// seqParam converts a stream sequence for a bigint parameter. Zero means
+// unknown throughout, and a value beyond the bigint range (which no
+// stream will reach) is treated as unknown rather than wrapped.
+func seqParam(seq uint64) int64 {
+	if seq > math.MaxInt64 {
+		return 0
+	}
+	return int64(seq)
+}
+
+// ClearSequencesAbove forgets every stored stream sequence greater than
+// lastSeq, the FLIGHTDECK stream's current last sequence. Sequences are
+// only comparable within one incarnation of the stream: after an
+// operator recreates it, numbering restarts at one and every stored
+// value would outrank every new event, so the rows fall back to the
+// plain state rules. Returns the number of rows touched.
+func (w *Writer) ClearSequencesAbove(ctx context.Context, lastSeq uint64) (int64, error) {
+	tag, err := w.pool.Exec(ctx, `
+		UPDATE sessions
+		SET start_seq = CASE WHEN start_seq > $1::bigint THEN NULL ELSE start_seq END,
+		    closed_seq = CASE WHEN closed_seq > $1::bigint THEN NULL ELSE closed_seq END
+		WHERE start_seq > $1::bigint OR closed_seq > $1::bigint
+	`, seqParam(lastSeq))
+	if err != nil {
+		return 0, fmt.Errorf("clear sequences above %d: %w", lastSeq, err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 // ReconcileStaleSessions sets stale after `staleThreshold` silence,

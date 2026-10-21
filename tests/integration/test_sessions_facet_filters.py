@@ -44,7 +44,7 @@ def _fetch_sessions(**filters: Any) -> dict[str, Any]:
 
 def _poll_for_session(
     expect_sid: str,
-    deadline_secs: float = 5.0,
+    deadline_secs: float = 10.0,
     **filters: Any,
 ) -> dict[str, Any]:
     """Poll _fetch_sessions until expect_sid appears or the deadline

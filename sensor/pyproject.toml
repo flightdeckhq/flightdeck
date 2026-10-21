@@ -56,6 +56,10 @@ dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
     "pytest-cov>=4.0",
+    # Runs the parallel phase of the integration suite: `make
+    # test-integration` splits it into an xdist phase and a serial
+    # phase of the tests marked `exclusive`.
+    "pytest-xdist>=3.5,<4",
     "mypy>=1.8",
     "ruff>=0.3",
     "httpx>=0.25",

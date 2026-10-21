@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strings"
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/workers/internal/consumer"
@@ -16,8 +15,6 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
-
-const reconcilerInterval = 60 * time.Second
 
 // identityFromEvent extracts the agent identity fields from an
 // event payload. The ingestion API has already validated them (UUID
@@ -37,11 +34,35 @@ func identityFromEvent(e consumer.EventPayload) writer.AgentIdentity {
 type SessionProcessor struct {
 	w    *writer.Writer
 	pool *pgxpool.Pool
+
+	// lookupSession and settleEnd are the database touch points of
+	// HandleSessionEnd. Nil means the real store; unit tests set stubs.
+	lookupSession func(ctx context.Context, sessionID string) (sessionLookup, error)
+	settleEnd     func(ctx context.Context, sessionID string, closedSeq uint64) (applied, closedNow bool, err error)
 }
+
+// ErrEventDropped is returned by HandleSessionEnd when it discards an
+// orphan session_end. Process turns it into a nil return, so the
+// consumer ACKs the message and no event row is inserted.
+var ErrEventDropped = errors.New("processor: event dropped")
 
 // NewSessionProcessor creates a SessionProcessor.
 func NewSessionProcessor(w *writer.Writer, pool *pgxpool.Pool) *SessionProcessor {
 	return &SessionProcessor{w: w, pool: pool}
+}
+
+func (sp *SessionProcessor) lookupState(ctx context.Context, sessionID string) (sessionLookup, error) {
+	if sp.lookupSession != nil {
+		return sp.lookupSession(ctx, sessionID)
+	}
+	return sp.sessionLookupState(ctx, sessionID)
+}
+
+func (sp *SessionProcessor) settleRow(ctx context.Context, sessionID string, closedSeq uint64) (applied, closedNow bool, err error) {
+	if sp.settleEnd != nil {
+		return sp.settleEnd(ctx, sessionID, closedSeq)
+	}
+	return sp.w.SettleSessionEnd(ctx, sessionID, closedSeq)
 }
 
 // handleSessionGuard enforces the revive-or-create-or-skip policy
@@ -62,8 +83,8 @@ func NewSessionProcessor(w *writer.Writer, pool *pgxpool.Pool) *SessionProcessor
 // sessions only). All other states / failure modes fall open so the
 // event's downstream UPDATE + InsertEvent have a chance to succeed.
 //
-// HandleSessionEnd uses isClosed instead -- closing a stale/lost
-// session should transition directly via CloseSession, and we do
+// HandleSessionEnd does its own lookup instead -- closing a stale/lost
+// session should transition directly via SettleSessionEnd, and we do
 // not lazy-create on session_end (a teardown signal for a session we
 // never saw should not retroactively manifest a closed row).
 func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.EventPayload) (skip bool) {
@@ -105,8 +126,8 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 		return false
 	}
 	if err != nil {
-		// Non-ErrNoRows DB error -- fail open. Matches the prior
-		// handleTerminalGuard posture. Skip the context upgrade: we
+		// Non-ErrNoRows DB error -- fail open, like the rest of this
+		// guard. Skip the context upgrade: we
 		// have no confirmation the row exists, so the UPDATE would
 		// no-op silently, and a transient DB blip should not trigger
 		// extra write pressure.
@@ -216,31 +237,25 @@ const (
 	sessionLookupOpen
 )
 
-// sessionLookupState reports whether the session row is missing, present
-// and closed, or present and non-closed. Fails open on a DB error (returns
-// Missing) so the close path still runs -- matching the established
-// isClosed-returns-false fallback.
-func (sp *SessionProcessor) sessionLookupState(ctx context.Context, sessionID string) sessionLookup {
+// sessionLookupState reads the session row's state. Only "no such row"
+// is reported as missing; any other database error is returned so the
+// caller NAKs and the event is redelivered within the retry budget,
+// rather than mistaking an outage for an orphan.
+func (sp *SessionProcessor) sessionLookupState(ctx context.Context, sessionID string) (sessionLookup, error) {
 	var state string
 	err := sp.pool.QueryRow(ctx,
 		"SELECT state FROM sessions WHERE session_id = $1::uuid", sessionID,
 	).Scan(&state)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return sessionLookupMissing, nil
+	}
 	if err != nil {
-		// pgx surfaces "no rows" as pgx.ErrNoRows; any other error
-		// (network, malformed UUID cast, etc.) also funnels here.
-		// Matching substring on error text keeps the import surface
-		// small -- pgx.ErrNoRows is the only sentinel we care about
-		// distinguishing, and the rest collapse to "assume missing,
-		// let the caller decide".
-		if strings.Contains(err.Error(), "no rows in result set") {
-			return sessionLookupMissing
-		}
-		return sessionLookupMissing
+		return sessionLookupMissing, err
 	}
 	if state == "closed" {
-		return sessionLookupClosed
+		return sessionLookupClosed, nil
 	}
-	return sessionLookupOpen
+	return sessionLookupOpen, nil
 }
 
 // HandleSessionStart upserts the agent and creates (or revives) a session.
@@ -258,9 +273,9 @@ func (sp *SessionProcessor) sessionLookupState(ctx context.Context, sessionID st
 // directive_result run through handleSessionGuard, which revives
 // stale/lost sessions on the fly, skips only closed ones, and lazily
 // creates the row when it doesn't exist.
-// session_end uses isClosed (a closed session's session_end is a
+// session_end does its own lookup (a closed session's session_end is a
 // no-op; a stale or lost session_end goes straight to closed via
-// CloseSession rather than flickering through active). The
+// SettleSessionEnd rather than flickering through active). The
 // lazy-create path deliberately excludes session_end -- a teardown
 // signal for a session we never saw should not retroactively manifest
 // a closed row.
@@ -334,6 +349,7 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 		e.TokenID, e.TokenName,
 		e.ParentSessionID, e.AgentRole,
 		e.CapturePrompts,
+		e.StreamSeq,
 	)
 	if err != nil {
 		return fmt.Errorf("session start: %w", err)
@@ -445,20 +461,6 @@ func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.Event
 	return nil
 }
 
-// HandleSessionEnd closes the session. Unlike the other handlers,
-// session_end deliberately bypasses handleTerminalGuard -- closing a
-// stale or lost session should transition it directly to closed via
-// CloseSession, not flicker through active. Already-closed sessions are
-// an idempotent no-op.
-//
-// Orphan session_end (session_end for an unknown session_id) is
-// handled explicitly. Letting it through would mean a silent
-// FK-violation at InsertEvent → NATS Nak → redelivery loop → DLQ,
-// with an opaque "process error" log that doesn't distinguish "orphan"
-// from "real problem". Instead we look up the session state before
-// CloseSession runs; a missing row yields a WARN log + dropped-events
-// counter increment + nil return so the consumer ACKs cleanly (there is
-// nothing to recover from redelivery).
 // HandleMCPServerAttached UPSERTs an MCP server fingerprint into
 // “sessions.context.mcp_servers“. Routed
 // from Process() alongside HandlePostCall (which advances
@@ -536,32 +538,104 @@ func nilIfEmpty(s string) any {
 	return s
 }
 
-func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.EventPayload) error {
-	switch sp.sessionLookupState(ctx, e.SessionID) {
-	case sessionLookupMissing:
-		// We deliberately do NOT lazy-create on session_end -- a
-		// teardown signal for a session we never saw should not
-		// retroactively manifest a closed row. Log + counter + ACK.
-		metrics.IncrDropped(metrics.ReasonOrphanSessionEnd)
-		slog.Warn("dropped orphan session_end",
+// HandleSessionEnd closes the session and reports whether it did.
+// Unlike the other handlers, session_end deliberately bypasses
+// handleSessionGuard: closing a stale or lost session should transition
+// it directly to closed, not flicker through active, and a teardown
+// signal for a session the server never saw must not lazy-create a
+// closed row.
+//
+// The end is applied in one guarded statement (SettleSessionEnd): an
+// open row whose current run began before the end was published is
+// closed with the end's sequence; a row that is already closed keeps
+// its close and takes a greater closed_seq, so a session_start queued
+// between a run's end and the next run's end cannot revive a session
+// whose later run has also ended, while an end at or below the stored
+// closed_seq is a duplicate that costs no write; an end published
+// before the row's current run began matches nothing and is recorded as
+// an event without closing anything (superseded_session_end). Unknown
+// sequences (zero) stand the ordering rule down.
+//
+// The worker pool handles a session's events concurrently, so the row
+// can be missing because its session_start is still being written on
+// another goroutine. A missing row therefore asks the consumer for a
+// delayed redelivery (consumer.ErrRetryLater) instead of holding this
+// goroutine; only on the final delivery is it an orphan session_end:
+// WARN, counter, and ErrEventDropped, which Process turns into a clean
+// ACK with no event row. Letting the insert run would fail the sessions
+// foreign key and spend the retry budget on an opaque "process error".
+func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.EventPayload) (closed bool, err error) {
+	// At most two attempts: a statement that matched nothing because
+	// the row did not exist yet is repeated once the read finds the row
+	// (another goroutine lazily created, upserted or even closed it in
+	// between), so a second miss means the row really predates this end
+	// or is closed by an end at or past it.
+	for attempt := 0; ; attempt++ {
+		applied, closedNow, err := sp.settleRow(ctx, e.SessionID, e.StreamSeq)
+		if err != nil {
+			return false, err
+		}
+		if applied {
+			if closedNow {
+				return true, nil
+			}
+			// Duplicate session_end on a closed row. Idempotent by
+			// design; log and skip (a later end has left its
+			// sequence behind).
+			metrics.IncrDropped(metrics.ReasonClosedSessionSkip)
+			slog.Warn("skipping event for closed session",
+				"session_id", e.SessionID,
+				"event_type", "session_end",
+			)
+			return false, nil
+		}
+		state, err := sp.lookupState(ctx, e.SessionID)
+		if err != nil {
+			return false, fmt.Errorf("session end: look up %s: %w", e.SessionID, err)
+		}
+		if state == sessionLookupMissing {
+			if !e.FinalDelivery {
+				return false, consumer.ErrRetryLater
+			}
+			// We deliberately do NOT lazy-create on session_end -- a
+			// teardown signal for a session we never saw should not
+			// retroactively manifest a closed row. Log + counter + ACK
+			// without an event row (ErrEventDropped).
+			metrics.IncrDropped(metrics.ReasonOrphanSessionEnd)
+			slog.Warn("dropped orphan session_end",
+				"session_id", e.SessionID,
+				"reason", string(metrics.ReasonOrphanSessionEnd),
+			)
+			return false, ErrEventDropped
+		}
+		if attempt == 0 {
+			continue
+		}
+		if state == sessionLookupClosed {
+			// Already closed by this end or a later one: a duplicate,
+			// idempotent by design, that cost no write. Log and skip.
+			metrics.IncrDropped(metrics.ReasonClosedSessionSkip)
+			slog.Warn("skipping event for closed session",
+				"session_id", e.SessionID,
+				"event_type", "session_end",
+			)
+			return false, nil
+		}
+		metrics.IncrDropped(metrics.ReasonSupersededSessionEnd)
+		slog.Warn("session_end predates the session's current run; recorded without closing",
 			"session_id", e.SessionID,
-			"reason", string(metrics.ReasonOrphanSessionEnd),
+			"reason", string(metrics.ReasonSupersededSessionEnd),
+			"end_seq", e.StreamSeq,
 		)
-		return nil
-	case sessionLookupClosed:
-		// Duplicate session_end. Idempotent by design; log and skip.
-		metrics.IncrDropped(metrics.ReasonClosedSessionSkip)
-		slog.Warn("skipping event for closed session",
-			"session_id", e.SessionID,
-			"event_type", "session_end",
-		)
-		return nil
+		return false, nil
 	}
-	return sp.w.CloseSession(ctx, e.SessionID)
 }
 
-// StartReconciler runs a background loop every 60s to mark stale/lost
-// sessions and to reap orphaned `lost` rows after `orphanTimeout`.
+// StartReconciler runs a background loop that ticks every `interval`
+// to mark stale/lost sessions and to reap orphaned `lost` rows after
+// `orphanTimeout`. The interval comes from
+// FLIGHTDECK_RECONCILER_INTERVAL_SECS (60 s by default; the dev stack
+// lowers it so the integration tests that wait for a tick stay short).
 // The reaper closes sessions whose owning sensor / plugin never sent
 // session_end (process crash, kill -9, missed lifecycle hook) and
 // stamps close_reason="orphan_timeout" via a synthetic session_end so
@@ -569,9 +643,10 @@ func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.Eve
 // alongside happy-path shutdowns.
 func (sp *SessionProcessor) StartReconciler(
 	ctx context.Context,
+	interval time.Duration,
 	orphanTimeout time.Duration,
 ) {
-	ticker := time.NewTicker(reconcilerInterval)
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {

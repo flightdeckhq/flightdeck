@@ -3,6 +3,7 @@ package processor
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -401,6 +402,9 @@ type Processor struct {
 	policy  *PolicyEvaluator
 	w       *writer.Writer
 	pool    *pgxpool.Pool
+	// clearSequences is the database touch point of StreamReady; nil
+	// means the writer's own, and tests substitute a scripted one.
+	clearSequences func(ctx context.Context, lastSeq uint64) (int64, error)
 }
 
 // NewProcessor creates a fully wired Processor.
@@ -414,6 +418,41 @@ func NewProcessor(pool *pgxpool.Pool) *Processor {
 	}
 }
 
+// StreamReady runs once the consumer has the FLIGHTDECK stream: stored
+// session sequences above the stream's last sequence cannot have come
+// from this incarnation of the stream and are forgotten, so the
+// ordering rules stand down for those rows instead of misreading every
+// new event as older.
+func (p *Processor) StreamReady(ctx context.Context, lastSeq uint64) error {
+	cleared, err := p.forgetSequencesAbove(ctx, lastSeq)
+	if err != nil {
+		return err
+	}
+	if cleared > 0 {
+		slog.Warn("forgot session sequences from a previous stream incarnation",
+			"rows", cleared, "stream_last_seq", lastSeq)
+	}
+	return nil
+}
+
+func (p *Processor) forgetSequencesAbove(ctx context.Context, lastSeq uint64) (int64, error) {
+	if p.clearSequences != nil {
+		return p.clearSequences(ctx, lastSeq)
+	}
+	return p.w.ClearSequencesAbove(ctx, lastSeq)
+}
+
+// afterSessionEnd releases the per-session policy-evaluator state once
+// a session_end has closed the session, so the cache and fired-directive
+// maps stay bounded. A session_end that closed nothing (a duplicate, or
+// one superseded by a re-attachment) leaves the live session's state
+// alone: forgetting it would let its once-only directives fire again.
+func (p *Processor) afterSessionEnd(sessionID string, closed bool) {
+	if closed {
+		p.policy.ForgetSession(sessionID)
+	}
+}
+
 // Process handles a single event from NATS.
 func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error {
 	// Route to the correct session handler
@@ -423,12 +462,19 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 			return err
 		}
 	case "session_end":
-		if err := p.session.HandleSessionEnd(ctx, e); err != nil {
+		closed, err := p.session.HandleSessionEnd(ctx, e)
+		if err != nil {
+			if errors.Is(err, ErrEventDropped) {
+				// The handler discarded the event (orphan
+				// session_end): nothing to insert, and the
+				// consumer ACKs on a nil return.
+				return nil
+			}
+			// Includes consumer.ErrRetryLater, which the consumer
+			// turns into a delayed redelivery.
 			return err
 		}
-		// Release per-session policy-evaluator state so the cache and
-		// fired-directive maps stay bounded (see ForgetSession).
-		p.policy.ForgetSession(e.SessionID)
+		p.afterSessionEnd(e.SessionID, closed)
 	case "heartbeat":
 		if err := p.session.HandleHeartbeat(ctx, e); err != nil {
 			return err
@@ -603,10 +649,10 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 }
 
 // StartReconciler delegates to the session processor's background
-// reconciler. orphanTimeout controls the lost → closed transition (see
-// SessionProcessor.StartReconciler).
-func (p *Processor) StartReconciler(ctx context.Context, orphanTimeout time.Duration) {
-	p.session.StartReconciler(ctx, orphanTimeout)
+// reconciler. interval is the tick period and orphanTimeout controls
+// the lost → closed transition (see SessionProcessor.StartReconciler).
+func (p *Processor) StartReconciler(ctx context.Context, interval, orphanTimeout time.Duration) {
+	p.session.StartReconciler(ctx, interval, orphanTimeout)
 }
 
 // Worker-side enrichment for session_end +

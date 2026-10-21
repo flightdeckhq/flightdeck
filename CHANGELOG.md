@@ -5,14 +5,39 @@ All notable changes to Flightdeck are documented here.
 ## Unreleased
 
 Correctness patch for the Claude Code plugin, the sensor's streaming
-token accounting and its MCP dependency, a pricing refresh, and a
-documentation truth-up. No schema migration. **Upgrade note:** marketplace
-installs of the plugin do not update themselves; run
+token accounting and its MCP dependency, the worker's handling of
+short-lived and re-attached sessions, a pricing refresh, and a
+documentation truth-up. One schema migration (000027) adds two nullable
+columns to `sessions`; the workers apply it at start-up. **Upgrade
+note:** marketplace installs of the plugin do not update themselves; run
 `claude plugin update flightdeck@flightdeck-plugins` after upgrading the
 server.
 
 ### Fixed
 
+- **Worker: a short-lived session could be left unclosed.** The worker
+  pool processes one session's events concurrently, so a `session_end`
+  published within tens of milliseconds of its `session_start` could be
+  handled first, be mistaken for an orphan, and then fail the event
+  insert on the `sessions` foreign key three times before NATS gave up
+  on it. The session was never closed: it aged to stale and lost, and
+  only the orphan-timeout reaper closed it, a day later by default. The
+  worker now asks NATS to redeliver such a `session_end` after one second
+  and again after two, holding no goroutine, and acknowledges a true
+  orphan once, without an insert attempt.
+- **Worker: a re-attached session could be closed by its previous run's
+  `session_end`.** When a run ended and the same `session_id` started
+  again before that end had been processed, the end closed the new run
+  and the new run's first calls lost their tokens; a `session_start`
+  processed after its own `session_end` could likewise revive a finished
+  session. A session's start and end are now ordered by their NATS stream
+  sequence (two nullable columns on `sessions`, migration 000027), and
+  the ingestion API stamps a re-attaching start's sequence on the row as
+  soon as it has published it. The worker forgets stored sequences from a
+  previous incarnation of the NATS stream when it starts.
+- **API: `GET /v1/sessions/:id` returned `events: null` for a session
+  whose event rows had not landed yet.** The field is now always an
+  array.
 - **Sensor: streamed calls recorded the estimate and zero output tokens.**
   A streamed `post_call` carried the pre-call estimate as `tokens_input`
   and `tokens_output = 0` because the sensor read usage from the stream
@@ -104,19 +129,36 @@ server.
 
 ### Changed
 
+- **Worker: failed processing attempts are redelivered after a growing
+  delay** (one second times the deliveries so far, within the
+  three-delivery budget) instead of immediately, so a transient database
+  error no longer spends the whole budget within milliseconds.
 - **Docs match the code.** ARCHITECTURE.md now describes the repository
   tree, the `sessions` / `agents` / `directives` / `custom_directives` /
-  `token_policies` DDL, migrations through 000026, plugin session identity
+  `token_policies` DDL, migrations through 000027, plugin session identity
   (one random id per Claude Code invocation), the MCP enforcement contract,
   NATS subjects and authentication, service environment variable names,
   the framework coverage caveats (langchain-openai 1.x, litellm streaming,
   gateway attribution) and the fact that no service serves `/metrics`
   yet. README gains a Roadmap section (replacing "Coming soon"), the
   plugin README documents identity, enforcement and updating, METHODOLOGY
-  records the severity scale, and DECISIONS.md records D164 to D185.
+  records the severity scale, and DECISIONS.md records D164 to D186.
 - **Repository hygiene.** Retired known-issue identifiers and decision
   pointers in source, CI and Helm comments; `sensor/.venv` is no longer
   tracked; test files and functions no longer carry decision numbers.
+- **New worker setting `FLIGHTDECK_RECONCILER_INTERVAL_SECS`.** The
+  seconds between reconciler passes (stale and lost transitions, the
+  orphan reaper); default 60, as before, and at most 3600. The dev
+  compose override sets 5 so the four integration tests that wait for
+  a reconciler tick finish in seconds instead of idling for about five
+  minutes per run.
+- **`make test-integration` runs in two phases.** A parallel phase under
+  pytest-xdist (four workers by default, `INTEGRATION_WORKERS`) for
+  every test that keeps to its own flavors and session ids, then the
+  tests marked `exclusive` one at a time; the suite takes about four
+  minutes end to end instead of nine and a half. Tests were made
+  isolation-safe for it and four duplicate tests were removed. The CI
+  integration and E2E jobs no longer wait for the unit jobs.
 
 ## v0.5.3 — 2026-08-30
 

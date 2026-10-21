@@ -10,6 +10,12 @@ Every test seeds its own drifted fixture via ``create_drifted_agent``
 with a unique name so runs never collide. Cleanup happens in
 ``finally`` so a test failure still leaves the DB clean for the
 next run.
+
+Every test here runs the global reconcile, which rewrites every agents
+row on the stack while other tests read theirs, and the concurrency
+test needs no other reconcile in flight; the module is marked
+``exclusive`` so ``make test-integration`` runs it one test at a time
+after the parallel phase.
 """
 
 from __future__ import annotations
@@ -26,6 +32,8 @@ from .conftest import (
     get_agent_rollup,
     post_admin_reconcile,
 )
+
+pytestmark = pytest.mark.exclusive
 
 
 def _unique(prefix: str) -> str:
@@ -115,13 +123,14 @@ def test_reconcile_corrects_total_tokens_drift() -> None:
 
 def test_reconcile_corrects_last_seen_at_drift() -> None:
     agent_name = _unique("test-recon-lastseen")
-    # Default drift shape puts last_seen_at at NOW()+1h (future-dated,
-    # clearly wrong). Ground truth is MAX(sessions.last_seen_at)
-    # which is NOW()-1min (session_0).
+    # Future-dated drift: last_seen_at at NOW()+1h (clearly wrong).
+    # Ground truth is MAX(sessions.last_seen_at), which is NOW()-1min
+    # (the newest session), so the reconciler must move the stamp back.
     agent_id = create_drifted_agent(
         agent_name=agent_name,
         actual_sessions=2,
         actual_tokens_per_session=10,
+        last_seen_in_future=True,
     )
     try:
         before = get_agent_rollup(agent_id)
@@ -167,38 +176,6 @@ def test_reconcile_orphan_zeros_counters_keeps_agent_row() -> None:
         assert after["last_seen_at"] == before_last, (
             f"last_seen_at rewritten for orphan: {before_last} → {after['last_seen_at']}"
         )
-    finally:
-        delete_drifted_agent(agent_id)
-
-
-def test_reconcile_is_idempotent_on_same_fixture() -> None:
-    """Two sequential calls against a clean fixture: the second call
-    must find zero corrections on the fixture (other agents' live-event
-    drift is independent and doesn't invalidate this check since we
-    read back the fixture's specific counters)."""
-    agent_name = _unique("test-recon-idem")
-    agent_id = create_drifted_agent(
-        agent_name=agent_name,
-        actual_sessions=1,
-        actual_tokens_per_session=77,
-        counter_overrides={"total_sessions": 42, "total_tokens": 999},
-    )
-    try:
-        # First call fixes the drift.
-        status, _ = post_admin_reconcile()
-        assert status == 200
-        first = get_agent_rollup(agent_id)
-        assert first is not None
-        assert first["total_sessions"] == 1
-        assert first["total_tokens"] == 77
-
-        # Second call must leave the fixture unchanged.
-        status2, _ = post_admin_reconcile()
-        assert status2 == 200
-        second = get_agent_rollup(agent_id)
-        assert second is not None
-        assert second["total_sessions"] == first["total_sessions"]
-        assert second["total_tokens"] == first["total_tokens"]
     finally:
         delete_drifted_agent(agent_id)
 

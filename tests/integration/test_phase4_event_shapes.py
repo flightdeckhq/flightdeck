@@ -178,10 +178,13 @@ def test_sessions_error_type_filter_narrows_result() -> None:
     # second. Lightweight end-to-end validation of the API filter.
     sid_rl = str(uuid.uuid4())
     sid_to = str(uuid.uuid4())
-    flavor_rl = f"test-phase4-filter-rl-{uuid.uuid4().hex[:6]}"
-    flavor_to = f"test-phase4-filter-to-{uuid.uuid4().hex[:6]}"
+    # Both sessions share one flavor so the listing can be narrowed to
+    # this test's rows: the filter has to tell the two apart by
+    # error_type alone, and nothing another test creates meanwhile can
+    # push either session past the page limit.
+    flavor = f"test-phase4-filter-{uuid.uuid4().hex[:6]}"
 
-    for sid, flavor in ((sid_rl, flavor_rl), (sid_to, flavor_to)):
+    for sid in (sid_rl, sid_to):
         post_event(make_event(sid, flavor, "session_start"))
     wait_until(
         lambda: session_exists_in_fleet(sid_rl) and session_exists_in_fleet(sid_to),
@@ -192,7 +195,7 @@ def test_sessions_error_type_filter_narrows_result() -> None:
     post_event(
         make_event(
             sid_rl,
-            flavor_rl,
+            flavor,
             "llm_error",
             error={
                 "error_type": "rate_limit",
@@ -209,7 +212,7 @@ def test_sessions_error_type_filter_narrows_result() -> None:
     post_event(
         make_event(
             sid_to,
-            flavor_to,
+            flavor,
             "llm_error",
             error={
                 "error_type": "timeout",
@@ -230,6 +233,7 @@ def test_sessions_error_type_filter_narrows_result() -> None:
         qs = urllib.parse.urlencode(
             {
                 "error_type": error_type,
+                "flavor": flavor,
                 "from": "2020-01-01T00:00:00Z",
                 "limit": 100,
             }
@@ -458,13 +462,12 @@ def test_session_framework_filter_matches_attributed_sessions() -> None:
     """
     sid_lc = str(uuid.uuid4())
     sid_oa = str(uuid.uuid4())
-    flavor_lc = f"test-fw-lc-{uuid.uuid4().hex[:6]}"
-    flavor_oa = f"test-fw-oa-{uuid.uuid4().hex[:6]}"
+    # One flavor for both sessions, so the listing below is narrowed to
+    # this test's rows and the framework filter alone has to separate
+    # them, whatever other tests create on the stack meanwhile.
+    flavor = f"test-fw-{uuid.uuid4().hex[:6]}"
 
-    for sid, flavor, framework in (
-        (sid_lc, flavor_lc, "langchain"),
-        (sid_oa, flavor_oa, "openai"),
-    ):
+    for sid, framework in ((sid_lc, "langchain"), (sid_oa, "openai")):
         post_event(
             make_event(
                 sid,
@@ -484,6 +487,7 @@ def test_session_framework_filter_matches_attributed_sessions() -> None:
     qs = urllib.parse.urlencode(
         {
             "framework": "langchain",
+            "flavor": flavor,
             "from": "2020-01-01T00:00:00Z",
             "limit": 100,
         }

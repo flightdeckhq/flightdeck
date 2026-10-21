@@ -44,10 +44,24 @@ test-plugin: ## Run the Claude Code plugin unit tests (zero-dep, node --test)
 # is idempotent -- a re-run against an already-seeded stack is a
 # no-op per session -- so seeding is cheap and safe whether or not
 # the stack was already seeded.
+#
+# The suite then runs in two phases. The first runs every test that
+# keeps to its own flavors and session ids in parallel under
+# pytest-xdist; the second runs the tests marked ``exclusive`` (see
+# tests/integration/conftest.py) one at a time, because each needs
+# the whole stack to itself: it pauses the worker, rewrites every
+# agents row, or asserts fleet-wide state. Four workers: the worker
+# service drains events through a pool of ten goroutines, and four
+# pytest processes keep the event rate below the point where the
+# suite's 5-10 s state waits start to miss on a laptop-class box;
+# more workers make the parallel phase flake before they make it
+# faster.
+INTEGRATION_WORKERS ?= 4
 test-integration: ## Run integration tests (requires running stack)
 	$(MAKE) -C docker dev
 	$(MAKE) seed-e2e
-	$(PYTHON) -m pytest tests/integration -v -m "not manual"
+	$(PYTHON) -m pytest tests/integration -v -n $(INTEGRATION_WORKERS) --dist load -m "not manual and not exclusive"
+	$(PYTHON) -m pytest tests/integration -v -m "exclusive"
 
 test-sensor-e2e: ## Run sensor respx-driven end-to-end tests (requires running stack)
 	$(MAKE) -C docker dev

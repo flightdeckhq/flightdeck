@@ -14,11 +14,18 @@ import json
 import time
 import uuid
 
+import pytest
 from websockets.asyncio.client import connect
 
 from .conftest import TOKEN, exec_sql, make_event, post_event
 
 WS_URL = f"ws://localhost:4000/api/v1/stream?token={TOKEN}"
+
+# Both tests listen on the stack-wide ``/v1/stream`` hub, which
+# broadcasts every event the stack ingests; the parallel phase's event
+# rate would flood the feed these assertions read, so they run one at
+# a time after it.
+pytestmark = pytest.mark.exclusive
 
 
 def _get_event_ids(session_id: str, event_types: tuple[str, ...]) -> list[str]:

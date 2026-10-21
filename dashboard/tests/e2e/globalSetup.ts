@@ -60,9 +60,11 @@ export default async function globalSetup(): Promise<void> {
   console.log(`[playwright globalSetup] seed complete in ${elapsed}s`);
 
   // ── Keep-alive watchdog ────────────────────────────────────────────
-  // The workers reconciler (workers/internal/writer/postgres.go:651,
-  // 60-second tick, 2-min stale threshold) marks state='active' →
-  // 'stale' on any session whose ``last_seen_at`` is older than 2 min.
+  // The workers reconciler (ReconcileStaleSessions in
+  // workers/internal/writer/postgres.go, ticking every
+  // FLIGHTDECK_RECONCILER_INTERVAL_SECS, 5 s on the dev stack) marks
+  // state='active' → 'stale' on any session whose ``last_seen_at`` is
+  // older than the 2-min stale threshold.
   // The seeded active-class fixtures (fresh-active / error-active /
   // mcp-active / policy-active) are pinned at seed time; without
   // refresh they age past stale within ~2-3 min of CI runtime, after
@@ -78,7 +80,8 @@ export default async function globalSetup(): Promise<void> {
   //
   // The watchdog spawns a detached background bash loop that calls
   // ``seed.py --reseed-active-only`` every 30 sec — well under the
-  // 60-sec reconciler tick AND the 2-min stale threshold — so active
+  // 2-min stale threshold, which is what matters; the tick only sets
+  // how soon after that threshold a row is marked — so active
   // fixtures stay state='active' for the entire test run regardless
   // of suite duration. globalTeardown.ts reads the PID off
   // ``globalThis.__flightdeck_e2e_keepalive_pid`` and SIGTERMs it

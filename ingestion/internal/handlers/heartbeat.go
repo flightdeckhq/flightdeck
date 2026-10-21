@@ -73,7 +73,7 @@ func HeartbeatHandler(
 		body, _ = json.Marshal(payload)
 
 		subject := inats.SubjectForEventType("heartbeat")
-		if err := publisher.Publish(subject, body); err != nil {
+		if _, err := publisher.Publish(subject, body); err != nil {
 			slog.Error("NATS publish error", "subject", subject, "err", err)
 			writeError(w, http.StatusInternalServerError, "internal server error")
 			return

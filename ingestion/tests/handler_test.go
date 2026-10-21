@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -33,11 +34,21 @@ func (m *mockValidator) Validate(_ context.Context, _ string) (auth.ValidationRe
 	}, nil
 }
 
-type mockPublisher struct{ published [][]byte }
+type mockPublisher struct {
+	published [][]byte
+	// unsequenced makes Publish report no stream sequence, as a
+	// publisher that could not learn it would.
+	unsequenced bool
+}
 
-func (m *mockPublisher) Publish(_ string, data []byte) error {
+// Publish stores the payload and reports its position as the stream
+// sequence, so a test can check the sequence the handler passes on.
+func (m *mockPublisher) Publish(_ string, data []byte) (uint64, error) {
 	m.published = append(m.published, data)
-	return nil
+	if m.unsequenced {
+		return 0, nil
+	}
+	return uint64(len(m.published)), nil
 }
 
 type mockDirStore struct{ directive *handlers.DirectiveResponse }
@@ -54,11 +65,25 @@ type mockSessAttacher struct {
 	priorState string
 	err        error
 	called     []string
+	// recorded collects the (session_id, seq) pairs RecordStart saw;
+	// recordErr is what RecordStart answers after recording.
+	recorded  []recordedStart
+	recordErr error
+}
+
+type recordedStart struct {
+	sessionID string
+	seq       uint64
 }
 
 func (m *mockSessAttacher) Attach(_ context.Context, sessionID string) (bool, string, error) {
 	m.called = append(m.called, sessionID)
 	return m.attached, m.priorState, m.err
+}
+
+func (m *mockSessAttacher) RecordStart(_ context.Context, sessionID string, seq uint64) error {
+	m.recorded = append(m.recorded, recordedStart{sessionID: sessionID, seq: seq})
+	return m.recordErr
 }
 
 // --- Tests ---
@@ -1136,5 +1161,97 @@ func TestEventsHandler_SessionEnd_OmitsCloseReason_OK(t *testing.T) {
 	code, _ := runEventValidationTest(t, payload)
 	if code != http.StatusOK {
 		t.Errorf("expected 200, got %d", code)
+	}
+}
+
+// A re-attaching session_start stamps its own stream sequence on the row
+// it attaches to; a fresh session_start (no row yet) records nothing.
+func TestEventsHandler_SessionStartRecordsItsSequenceWhenAttached(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		attached bool
+		want     int
+	}{
+		{name: "attached", attached: true, want: 1},
+		{name: "fresh", attached: false, want: 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			attacher := &mockSessAttacher{attached: tc.attached, priorState: "closed"}
+			handler := handlers.EventsHandler(
+				&mockValidator{valid: true},
+				&mockPublisher{},
+				&mockDirStore{directive: nil},
+				attacher,
+				nil,
+			)
+			body := `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code","sensor_version":"0.6.0"}`
+			req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
+			req.Header.Set("Authorization", "Bearer valid-token")
+			w := httptest.NewRecorder()
+			handler(w, req)
+
+			if w.Code != http.StatusOK {
+				t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+			}
+			if len(attacher.recorded) != tc.want {
+				t.Fatalf("expected %d RecordStart call(s), got %v", tc.want, attacher.recorded)
+			}
+			if tc.want == 1 {
+				got := attacher.recorded[0]
+				if got.sessionID != "22222222-2222-4222-8222-222222222222" || got.seq != 1 {
+					t.Fatalf("expected the publish sequence 1 recorded for the session, got %+v", got)
+				}
+			}
+		})
+	}
+}
+
+func TestEventsHandler_SessionStartIsAcceptedWhenTheStampFails(t *testing.T) {
+	attacher := &mockSessAttacher{attached: true, priorState: "active", recordErr: errors.New("row gone")}
+	publisher := &mockPublisher{}
+	handler := handlers.EventsHandler(
+		&mockValidator{valid: true},
+		publisher,
+		&mockDirStore{directive: nil},
+		attacher,
+		nil,
+	)
+	body := `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code","sensor_version":"0.6.0"}`
+	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer valid-token")
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("a failed stamp must not fail the request: got %d: %s", w.Code, w.Body.String())
+	}
+	if len(publisher.published) != 1 {
+		t.Fatalf("expected the event published once, got %d", len(publisher.published))
+	}
+	if len(attacher.recorded) != 1 {
+		t.Fatalf("expected one RecordStart attempt, got %v", attacher.recorded)
+	}
+}
+
+func TestEventsHandler_SessionStartWithoutASequenceIsNotStamped(t *testing.T) {
+	attacher := &mockSessAttacher{attached: true, priorState: "active"}
+	handler := handlers.EventsHandler(
+		&mockValidator{valid: true},
+		&mockPublisher{unsequenced: true},
+		&mockDirStore{directive: nil},
+		attacher,
+		nil,
+	)
+	body := `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"session_start","flavor":"test","agent_id":"11111111-1111-4111-8111-111111111111","agent_type":"coding","client_type":"claude_code","sensor_version":"0.6.0"}`
+	req := httptest.NewRequest("POST", "/v1/events", bytes.NewBufferString(body))
+	req.Header.Set("Authorization", "Bearer valid-token")
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(attacher.recorded) != 0 {
+		t.Fatalf("a publish without a sequence must not stamp, got %v", attacher.recorded)
 	}
 }

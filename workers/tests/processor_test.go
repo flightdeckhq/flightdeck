@@ -62,9 +62,9 @@ func (m *mockWriter) UpdateLastSeen(_ context.Context, sessionID string) error {
 	return nil
 }
 
-func (m *mockWriter) CloseSession(_ context.Context, sessionID string) error {
+func (m *mockWriter) SettleSessionEnd(_ context.Context, sessionID string, _ uint64) (bool, bool, error) {
 	m.sessionsClosed = append(m.sessionsClosed, sessionID)
-	return nil
+	return true, true, nil
 }
 
 func (m *mockWriter) ReconcileStaleSessions(_ context.Context) error {
@@ -112,14 +112,6 @@ func TestPostCall_IncrementsTokensUsed(t *testing.T) {
 	_ = w.UpdateTokensUsed(context.Background(), "sess-001", 100)
 	if w.tokensUpdated["sess-001"] != 100 {
 		t.Errorf("expected 100 tokens, got %d", w.tokensUpdated["sess-001"])
-	}
-}
-
-func TestSessionEnd_SetsStateClosed(t *testing.T) {
-	w := newMockWriter()
-	_ = w.CloseSession(context.Background(), "sess-001")
-	if len(w.sessionsClosed) != 1 || w.sessionsClosed[0] != "sess-001" {
-		t.Error("expected session closed")
 	}
 }
 
@@ -218,7 +210,7 @@ func TestProcess_RoutesMCPServerNameChanged(t *testing.T) {
 // surface contract of the writer-level helpers that the guard leans on.
 
 func TestReviveIfRevivable_ReturnsTrueOnlyWhenRowUpdated(t *testing.T) {
-	// ReviveIfRevivable's bool return is used by handleTerminalGuard
+	// ReviveIfRevivable's bool return is used by handleSessionGuard
 	// only for logging; the function itself is a thin wrapper around
 	// UPDATE ... WHERE state IN ('stale', 'lost'). We verify the
 	// contract via the mockWriter surface area: a revive call counts
@@ -229,23 +221,6 @@ func TestReviveIfRevivable_ReturnsTrueOnlyWhenRowUpdated(t *testing.T) {
 	_ = w.UpdateLastSeen(context.Background(), "sess-stale")
 	if len(w.lastSeenUpdated) != 1 {
 		t.Error("expected revive path to advance last_seen_at")
-	}
-}
-
-func TestSessionEnd_DoesNotFlickerThroughActive(t *testing.T) {
-	// session_end on a stale/lost session should transition directly
-	// to closed. The mockWriter can only observe that CloseSession
-	// was invoked (not UpsertSession with state=active followed by
-	// CloseSession). Real state-machine ordering is covered by
-	// tests/integration/test_session_states.py::
-	// test_lost_session_closes_on_session_end.
-	w := newMockWriter()
-	_ = w.CloseSession(context.Background(), "sess-lost")
-	if len(w.sessionsClosed) != 1 {
-		t.Error("expected session_end on stale/lost to close directly")
-	}
-	if len(w.sessionsCreated) != 0 {
-		t.Error("expected session_end to skip any upsert/revive flicker")
 	}
 }
 

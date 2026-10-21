@@ -50,16 +50,17 @@ func NewPublisher(nc *nats.Conn) (*Publisher, error) {
 	return &Publisher{js: js}, nil
 }
 
-// Publish sends data to the given NATS subject with retry on failure.
-// On persistent failure after 3 attempts: logs the loss and returns nil
-// to avoid blocking the ingestion response.
-func (p *Publisher) Publish(subject string, data []byte) error {
+// Publish sends data to the given NATS subject with retry on failure and
+// returns the stream sequence the message was stored at. On persistent
+// failure after 3 attempts: logs the loss and returns 0, nil to avoid
+// blocking the ingestion response.
+func (p *Publisher) Publish(subject string, data []byte) (uint64, error) {
 	var lastErr error
 
 	for attempt := range len(natsRetryDelays) + 1 {
-		_, err := p.js.Publish(subject, data)
+		ack, err := p.js.Publish(subject, data)
 		if err == nil {
-			return nil
+			return ack.Sequence, nil
 		}
 		lastErr = err
 		if attempt < len(natsRetryDelays) {
@@ -75,7 +76,7 @@ func (p *Publisher) Publish(subject string, data []byte) error {
 		"err", lastErr,
 		"total_lost", p.lostEvents.Load(),
 	)
-	return nil
+	return 0, nil
 }
 
 // LostEvents returns the total number of events lost due to publish failures.

@@ -17,6 +17,7 @@ below, so no test file needs editing.
 from __future__ import annotations
 
 import time
+import warnings
 from typing import Any
 
 import pytest
@@ -36,12 +37,14 @@ from ..shared.fixtures import (
     POLL_INTERVAL,
     TOKEN,
     # Public helpers
+    agent_row_locked,
     auth_headers,
     create_drifted_agent,
     create_policy,
     delete_drifted_agent,
     delete_policy,
     directive_has_delivered_at,
+    ensure_worker_running,
     exec_sql,
     get_agent_rollup,
     get_fleet,
@@ -54,11 +57,15 @@ from ..shared.fixtures import (
     post_event,
     post_heartbeat,
     query_directives,
+    session_events,
     session_exists_in_fleet,
+    session_row_locked,
     wait_for_services,
     wait_for_session_in_fleet,
     wait_for_state,
     wait_until,
+    worker_log_lines,
+    worker_paused,
     # Private helpers + trackers used by the lifecycle fixture
     _ended_sessions,
     _identity_fields,
@@ -81,12 +88,14 @@ __all__ = [
     "MAX_WAIT_SECS",
     "POLL_INTERVAL",
     "TOKEN",
+    "agent_row_locked",
     "auth_headers",
     "create_drifted_agent",
     "create_policy",
     "delete_drifted_agent",
     "delete_policy",
     "directive_has_delivered_at",
+    "ensure_worker_running",
     "exec_sql",
     "get_agent_rollup",
     "get_fleet",
@@ -99,10 +108,14 @@ __all__ = [
     "post_event",
     "post_heartbeat",
     "query_directives",
+    "session_events",
     "session_exists_in_fleet",
+    "session_row_locked",
     "wait_for_session_in_fleet",
     "wait_for_state",
     "wait_until",
+    "worker_log_lines",
+    "worker_paused",
 ]
 
 
@@ -112,12 +125,21 @@ def stack() -> None:
 
     Wraps the shared ``wait_for_services`` helper (which raises
     ``TimeoutError``) into a ``pytest.fail`` so the message surfaces
-    cleanly in the pytest output.
+    cleanly in the pytest output, then resumes the worker container if a
+    killed run left it paused (see ``worker_paused``; one run at a time
+    uses a stack, so a pause another run still holds is not expected).
+    Without a docker CLI or with a differently named container the
+    repair is skipped with a warning: the HTTP-only tests can still run,
+    and the ones that pause the worker fail on their own with the cause.
     """
     try:
         wait_for_services(MAX_WAIT_SECS)
     except TimeoutError as exc:
         pytest.fail(str(exc))
+    try:
+        ensure_worker_running()
+    except (OSError, RuntimeError) as exc:
+        warnings.warn(f"worker repair skipped: {exc}", RuntimeWarning, stacklevel=2)
 
 
 @pytest.fixture(autouse=True)

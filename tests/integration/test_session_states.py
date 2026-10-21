@@ -545,6 +545,13 @@ def test_unknown_session_id_lazy_creates_on_post_call() -> None:
     post_event(_first_event_payload(sid, flavor, "post_call", tokens_total=250))
     wait_for_session_in_fleet(sid, timeout=10.0)
 
+    # The worker creates the row, then adds the event's tokens in a
+    # separate statement, so the row can be visible before the count is.
+    wait_until(
+        lambda: _read_session_row(sid)["tokens_used"] == "250",
+        timeout=10,
+        msg=f"tokens_used never reached 250 on lazy-created session {sid}",
+    )
     row = _read_session_row(sid)
     assert row["state"] == "active", (
         f"lazy-created session {sid} should be state=active, got {row['state']}"

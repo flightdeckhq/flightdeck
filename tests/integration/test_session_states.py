@@ -110,8 +110,8 @@ def test_session_with_heartbeats_only_stays_active() -> None:
     """Session with heartbeats but no LLM calls remains active (not idle).
 
     Note: the idle transition requires the background reconciler, which
-    ticks every RECONCILER_INTERVAL_SECS on the dev stack. In Phase 1,
-    sessions receiving heartbeats stay active.
+    ticks every RECONCILER_INTERVAL_SECS on the dev stack; a session
+    that keeps sending heartbeats stays active across those ticks.
     """
     sid = str(uuid.uuid4())
     flavor = f"test-hb-{uuid.uuid4().hex[:6]}"

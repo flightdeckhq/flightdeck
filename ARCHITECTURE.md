@@ -330,7 +330,7 @@ flightdeck/
 │   │   └── models/             # Go structs mirroring all Postgres tables
 │   └── tests/
 │       ├── processor_test.go
-│       ├── build_event_extra_test.go           # events.payload projection: llm_error + streaming sub-objects
+│       ├── build_event_extra_test.go           # events.payload projection: llm_error + streaming sub-objects, plugin tool_use_id / mcp_server / end_reason
 │       ├── build_event_extra_mcp_test.go       # events.payload projection: MCP event fields
 │       └── build_event_extra_subagent_test.go  # events.payload projection: sub-agent fields
 │
@@ -1017,9 +1017,11 @@ The plugin is a set of hook scripts registered in
 detached child process; the plugin reads the hook event from stdin,
 resolves session identity, builds an event payload, POSTs to
 `/ingest/v1/events`, and exits. No in-process interception, no background
-threads, no shared state across hook invocations beyond a small set of
-marker files in `$TMPDIR/flightdeck-plugin/` (session id, per-turn dedup,
-cached model).
+threads inside a hook, no shared state across hook invocations beyond a
+small set of marker files in `$TMPDIR/flightdeck-plugin/` (session id,
+per-turn dedup, cached model). The one process that outlives a hook is
+the detached worker the `SessionEnd` hook starts (see `SessionEnd`
+below).
 
 Because the plugin is observation-only, a directive returned in the POST
 response envelope has nowhere to go: the plugin already exited and Claude
@@ -1034,16 +1036,21 @@ sessions. This is the observer-session class.
 
 1. `CLAUDE_SESSION_ID` / `ANTHROPIC_CLAUDE_SESSION_ID` env vars.
 2. A marker file at
-   `$TMPDIR/flightdeck-plugin/session-${sha256(hookEvent.session_id)[:16]}.txt`,
-   keyed on the per-invocation `session_id` Claude Code stamps on every
-   hook event. The first hook of an invocation writes it; every later
-   hook in the same run reads it verbatim.
+   `$TMPDIR/flightdeck-plugin/session-${sha256(native session id)[:16]}.txt`,
+   keyed on Claude Code's own per-invocation session id: the
+   `session_id` Claude Code stamps on every hook event, or the
+   `CLAUDE_CODE_SESSION_ID` variable it exports to hook processes when
+   the payload carries none. The first hook of an invocation writes it;
+   every later hook in the same run reads it verbatim. The native id is
+   never the Flightdeck session id; it rides on every event as
+   `context.claude_code_session_id` so a dashboard session maps back to
+   its Claude Code transcript.
 3. A fresh RFC 4122 v4 UUID, written to that marker, so each Claude Code
    invocation is one session row. Cross-invocation continuity lives in
    `agent_id`, not in the session id.
-4. When the hook event carries no `session_id` (a caller other than
-   Claude Code), the marker is keyed on `sha256(cwd)[:16]` and one stderr
-   warning is printed.
+4. When neither the hook event nor the environment names a session (a
+   caller other than Claude Code), the marker is keyed on
+   `sha256(cwd)[:16]` and one stderr warning is printed.
 5. An ephemeral `sha256(time, pid, cwd)[:32]` when `$TMPDIR` is unusable.
 
 The marker file exists because every hook invocation runs as a separate
@@ -1065,6 +1072,20 @@ git_repo (each in its own try/catch with a 500ms execSync timeout,
 credential-stripped remote URL), and orchestration detection (kubernetes >
 docker-compose). Each probe is independently best-effort.
 
+The context also carries what Claude Code tells the hook about the run:
+`claude_code_session_id` (the native session id), `claude_code_version`
+(from the transcript, or from `CLAUDE_CODE_EXECPATH` on the first
+`SessionStart`, before a transcript exists), `session_source` (the
+hook's `source`: `startup`, `resume`, `clear`, `compact` or `fork`),
+`entrypoint` (`cli` for an interactive terminal session, `sdk-cli` for
+`claude -p` and the SDK), `attended` (whether a human is at the
+terminal), `child_session` (launched from inside another Claude Code
+session), `remote` / `remote_session_id` (cloud sessions) and `ci` /
+`ci_provider`. `agent_type` stays `coding` for every plugin session
+because the ingestion vocabulary is `coding` / `production`; these
+fields are the signals that tell an interactive session from a
+headless, SDK, CI or cloud run.
+
 ### Tool input sanitisation
 
 `sanitizeToolInput(input)` is a strict whitelist that keeps ONLY:
@@ -1079,6 +1100,36 @@ dashboard can distinguish sub-agent spawns from regular tool calls.
 Consumed alongside `parent_session_id` by the dashboard's
 swimlane connectors and the SessionDrawer Sub-agents tab to render
 the parent's spawn event as the anchor for child rows.
+
+### Tool calls and failures
+
+Every `PostToolUse` and every `PostToolUseFailure` hook becomes one
+`tool_call` event (an `mcp_tool_call` when the tool name carries the
+`mcp__` namespace). Both carry Claude Code's `tool_use_id` (the
+`tool_use` block id in the transcript) and its measured tool time as
+`duration_ms` and, on `tool_call`, as `latency_ms` too; Claude Code
+measures the tool's execution excluding permission prompts and
+`PreToolUse` hooks, and on versions that do not report it the fields are
+null rather than the hook's own run time. A failure adds an inline
+`error` block in the sensor's taxonomy shape — `error_type=other`,
+`error_class=PluginToolError`, the tool's error text (cut at 1000
+characters) and `interrupted` when Claude Code reports whether the
+failure reached it as an abort — so a failed `Bash` command, a `Read` on
+a missing file and an MCP call that errored all land as the same row
+shape as a success with one extra field.
+
+For MCP tools the server identity comes from the hook's `mcp_server`
+object (`{name, source}`): `name` is the server key as Claude Code holds
+it and becomes `server_name`, `source` is where the server was declared
+(`project`, `user`, `plugin`, `sdk`), and the object is passed through
+as `mcp_server`. A server bundled with another Claude Code plugin is
+keyed `plugin:<plugin>:<server>` and its tools are named
+`mcp__plugin_<plugin>_<server>__<tool>` (every character outside
+`A-Za-z0-9_-` in the key becomes `_`); on Claude Code versions without
+`mcp_server` the plugin rebuilds the colon form from the flattened name,
+so the server reads the same either way. Plugin-bundled servers are not
+in the project's `.mcp.json`, so their `transport` is null and the MCP
+policy gate cannot fingerprint them.
 
 ### Subagent hooks
 
@@ -1111,10 +1162,32 @@ state-revival path: the child session ages from
 hook with `markEmittedTurn` per-messageId disk-marker dedup so mid-turn LLM
 activity surfaces in real time instead of batching at Stop.
 
-`latency_ms` for `PostToolUse` events is `Date.now - startTime`, where
-`startTime` is stamped at hook script invocation. This is hook PROCESSING
-time, not actual tool execution time — Claude Code does not expose tool
-start/end timestamps to hooks.
+`latency_ms` on a plugin `tool_call` is the tool's execution time as
+Claude Code measured it (the hook's `duration_ms`), not the hook's own
+processing time; see Tool calls and failures above.
+
+### `SessionEnd`
+
+Claude Code allows `SessionEnd` hooks 1.5 seconds in total before it
+exits, and a plugin-provided hook cannot raise that budget. The hook
+therefore does only local work: it resolves the session id, deletes the
+session and `session_start` markers (so a `SessionStart` that follows
+immediately, after `/clear` or a new `claude -p`, mints a fresh
+session), drops the per-session MCP policy cache, and re-launches the
+hook script as a detached worker process (`observe_cli.mjs
+--session-end-worker`, hook event on stdin, the resolved session id in
+`CLAUDE_SESSION_ID`). The worker flushes any transcript turns that
+`Stop` or `PostToolUse` had not yet emitted as `post_call` events and
+POSTs the `session_end` after Claude Code has moved on; it never touches
+the markers, which a new session may own by then. Its stderr is
+appended to `$TMPDIR/flightdeck-plugin/session-end-worker.log`. The
+hook returns in about 110 ms against a stub server that answers each
+request after 700 ms. The `session_end` carries
+`close_reason=normal_exit` and `end_reason`, Claude Code's own reason
+(`clear`, `resume`, `logout`, `prompt_input_exit`, `other`). A worker
+that dies before its POSTs loses that session's final flush and
+`session_end`; the session then closes through the stale, lost and
+reaper path like any other whose end never arrived.
 
 `main` returns naturally instead of calling `process.exit(0)`. Two
 consecutive fetches in a single script invocation crash Node on Windows
@@ -1123,7 +1196,9 @@ while undici is mid-cleanup; letting `main` return lets the connection
 pool drain.
 
 Sessions carry `flavor=claude-code`, `agent_type=coding`, and
-`client_type=claude_code` (identity).
+`client_type=claude_code` (identity); the entrypoint, attended, CI and
+cloud signals that tell plugin sessions apart live in `context` (see
+`session_start` with context above).
 
 ---
 
@@ -1136,7 +1211,7 @@ sessions extend the derivation with a conditional 6th input,
 | Field | Vocabulary | Source |
 |---|---|---|
 | `agent_id` | UUID | Deterministically derived from the other identity fields via `core/agent_id.py` |
-| `agent_type` | `coding` \| `production` | Sensor `init` kwarg or `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` env. Plugin always emits `coding` |
+| `agent_type` | `coding` \| `production` | Sensor `init` kwarg or `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` env. Plugin always emits `coding`; a plugin session's entrypoint / attended / CI / cloud signals are context fields, not identity |
 | `client_type` | `claude_code` \| `flightdeck_sensor` | Sensor literal or plugin literal |
 | `agent_name` | string | Sensor `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` env. Default `{user}@{hostname}`. Plugin uses the user's chosen flavor |
 | `user` | string | Resolved from `getpass.getuser` (sensor) or `process.env.USER` (plugin) |
@@ -1931,7 +2006,9 @@ CREATE INDEX events_type_idx    ON events (event_type, occurred_at);
 
 `payload` JSONB carries event-type-specific extras: streaming sub-object on
 `post_call`, error taxonomy fields on `llm_error`, `directive_name` /
-`fingerprint` / `parameters` on `directive`, etc.
+`fingerprint` / `parameters` on `directive`, `tool_use_id` /
+`duration_ms` / `error` (and `mcp_server` on MCP calls) on the Claude
+Code plugin's tool events, `end_reason` on a plugin `session_end`, etc.
 
 ### `event_content` (prompt storage — separate table, fetched on demand)
 
@@ -3733,6 +3810,10 @@ Operator-actionable enrichment:
 - `last_event_id` (worker-computed): the immediately-prior event's
   UUID for the dashboard's incident-triage time-skip affordance
   ("what fired right before close").
+- `end_reason` (string, Claude Code plugin only): Claude Code's own exit
+  reason — `clear`, `resume`, `logout`, `prompt_input_exit` or `other` —
+  carried next to `close_reason`, which stays `normal_exit` for all of
+  them. Stored in `payload.end_reason`.
 
 ### `pre_call`
 
@@ -3905,6 +3986,20 @@ the sensor does not assemble their content blocks. Carries
 `tool_name`, optionally `tool_input` (when `captureToolInputs=true` for
 the plugin or `capture_prompts=true` for the sensor), `tool_result` (when
 the next assistant turn shows the tool's output and capture is on).
+
+The Claude Code plugin emits one `tool_call` per `PostToolUse` and per
+`PostToolUseFailure` hook and adds:
+
+- `tool_use_id` (string): Claude Code's id for the tool invocation, the
+  `tool_use` block id in the transcript. Stored in `payload.tool_use_id`.
+- `duration_ms` (integer, milliseconds) and `latency_ms` (the same
+  value): the tool's execution time as Claude Code measured it; null
+  when Claude Code did not report it.
+- `error` (object, failures only): `error_type` (`other`),
+  `error_class` (`PluginToolError`), `message` (the tool's error text,
+  at most 1000 characters) and `interrupted` (boolean, when Claude Code
+  reports whether the failure reached it as an abort). Stored in
+  `payload.error`, where `llm_error` and MCP failures keep theirs.
 
 ### `embeddings`
 
@@ -4163,6 +4258,11 @@ The Claude Code plugin emits **only** `MCP_TOOL_CALL` —
 hook surface; resource reads, prompt fetches, and list operations
 are below the hook layer. Both surfaces share the same wire schema
 for tool calls so the dashboard renders identically across origin.
+The plugin's `server_name` is the server key Claude Code reports in the
+hook's `mcp_server` object (`plugin:<plugin>:<server>` for a server
+bundled with another plugin), and it adds two fields the sensor never
+sends: `mcp_server` (`{name, source}`, stored in `payload.mcp_server`)
+and `tool_use_id`.
 
 **Lean payload**. MCP events drop the LLM-baseline fields
 (`tokens_input`, `tokens_output`, `tokens_total`, `tokens_cache_*`,
@@ -4176,6 +4276,8 @@ and carry only MCP-specific fields:
 | `duration_ms` | ✓ | ✓ | ✓ | ✓ |
 | `count` | ✓ | — | — | — |
 | `tool_name` (top-level) | — | ✓ | — | — |
+| `tool_use_id` (plugin only) | — | ✓ | — | — |
+| `mcp_server` (plugin only) | — | ✓ | — | — |
 | `arguments` | — | gated | — | gated |
 | `result` | — | gated | — | — |
 | `resource_uri` | — | — | ✓ | — |

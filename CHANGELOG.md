@@ -13,6 +13,24 @@ note:** marketplace installs of the plugin do not update themselves; run
 `claude plugin update flightdeck@flightdeck-plugins` after upgrading the
 server.
 
+### Added
+
+- **Plugin: failed tool calls are reported.** `PostToolUseFailure` now
+  produces a `tool_call` (or `mcp_tool_call`) for every tool, not only
+  MCP tools, with a structured `error` block: a failed `Bash` command or
+  a `Read` on a missing file shows up in the session instead of
+  vanishing.
+- **Plugin: tool events carry Claude Code's `tool_use_id` and measured
+  `duration_ms`**, and MCP tool events carry the server identity Claude
+  Code reports (`mcp_server {name, source}`). The worker stores all
+  three in `events.payload`.
+- **Plugin: the session context says what kind of run it is.** The
+  native Claude Code session id and version, how the session started
+  (`startup`, `resume`, `clear`, `compact`, `fork`), the entrypoint
+  (`cli` or `sdk-cli`), whether a human is attending, and nested-session,
+  cloud and CI markers. `session_end` carries Claude Code's own exit
+  reason as `end_reason` next to `close_reason`.
+
 ### Fixed
 
 - **Worker: a short-lived session could be left unclosed.** The worker
@@ -126,6 +144,32 @@ server.
 - **Pricing table refreshed** for the Claude 5 family, GPT-6 / GPT-5.x
   and Gemini 4 / 3.x list prices, with retired ids kept and annotated;
   Claude Opus 4 corrected to $15 / $75.
+- **Plugin: `latency_ms` on tool calls was the hook's own run time.**
+  Tool events now report the tool's execution time as Claude Code
+  measures it (`duration_ms`), and null on Claude Code versions that do
+  not report it, instead of the plugin process's lifetime.
+- **Plugin: `session_end` was lost when the server was slow.** Claude
+  Code gives `SessionEnd` hooks 1.5 seconds in total; the hook's
+  transcript flush plus the `session_end` POST took 2.5 seconds against
+  a server answering in 700 ms and was cut off. The hook now returns in
+  about 110 ms and hands the network work to a detached worker process
+  that finishes after Claude Code has exited.
+- **Plugin: MCP servers bundled with other plugins were misattributed.**
+  A tool named `mcp__plugin_<plugin>_<server>__<tool>` is now reported
+  under Claude Code's `plugin:<plugin>:<server>` key, taken from the
+  hook's `mcp_server` field (or rebuilt from the name on older Claude
+  Code versions), instead of the flattened `plugin_<plugin>_<server>`
+  string.
+- **Plugin: hooks could be inert on Windows.** The script's entry check
+  compared its own path to the invoked path as plain strings, which
+  fails when Claude Code expands `${CLAUDE_PLUGIN_ROOT}` with forward
+  slashes or a differently cased drive letter; both forms are now
+  normalised. Git remotes given as Windows file paths parse to a
+  repository name.
+- **Plugin: `CLAUDE_CODE_SESSION_ID` is honoured.** The variable Claude
+  Code exports to hook processes keys the per-session marker when a
+  hook payload carries no `session_id`; `CLAUDE_SESSION_ID` remains the
+  explicit override of the Flightdeck session id.
 
 ### Changed
 

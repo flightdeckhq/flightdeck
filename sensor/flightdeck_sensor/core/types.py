@@ -256,9 +256,9 @@ class TokenUsage:
     into analytics; they are already included in the ``input_tokens`` sum
     and must not be added to ``total`` a second time. Anthropic reports
     both (cache reads and cache writes); OpenAI reports its prompt-cache
-    read as ``cached_tokens``, which lands in ``cache_read_tokens``, and the
-    OpenAI SDK exposes no cache-write count, so ``cache_creation_tokens``
-    is 0 on OpenAI responses.
+    read as ``cached_tokens``, which lands in ``cache_read_tokens``, and
+    its cache write as ``cache_write_tokens``, which lands in
+    ``cache_creation_tokens`` (0 when the response carries none).
     """
 
     input_tokens: int = 0

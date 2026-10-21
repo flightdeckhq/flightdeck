@@ -2474,9 +2474,11 @@ reads, 25% premium on writes) and apply uniformly to every model that
 reports cache tokens, OpenAI's prompt-cache reads included. OpenAI's
 cached-input rate is model-dependent (0.50x to 0.05x of the input rate
 in `pricing.yaml`), so the uniform 0.10x read ratio can be off in either
-direction for an OpenAI session with cache reads. The OpenAI SDK exposes no cache-write
-count, so the write term is always 0 for OpenAI and cache-write charges
-on models that bill them are left out. Per-model cache ratios are a
+direction for an OpenAI session with cache reads. OpenAI's cache writes
+(`cache_write_tokens`) are priced at the same uniform 1.25x write ratio,
+which is Anthropic's rate, not OpenAI's; responses that carry no
+`cache_write_tokens` (older SDKs and models) contribute 0 to the write
+term. Per-model cache ratios are a
 README Roadmap item (token and cost model). Providers that report no
 cache tokens contribute 0 to both cache terms, so the formula collapses
 to `tokens_input * input_price + tokens_output * output_price`.
@@ -3781,9 +3783,10 @@ The primary LLM-call event. Carries `tokens_input`, `tokens_output`,
 prompt-cache read, a subset of `tokens_input`: Anthropic's
 `cache_read_input_tokens`, or OpenAI's `cached_tokens` usage detail
 (`prompt_tokens_details` on chat, `input_tokens_details` on Responses,
-on direct and streamed calls alike). `tokens_cache_creation` is
-Anthropic's cache write; the OpenAI SDK exposes no cache-write count, so
-it is 0 on OpenAI events. OpenAI's `reasoning_tokens` detail is not
+on direct and streamed calls alike). `tokens_cache_creation` is the
+cache write, also a subset of `tokens_input`: Anthropic's
+`cache_creation_input_tokens`, or OpenAI's `cache_write_tokens` usage
+detail in the same two objects (0 when the response carries none). OpenAI's `reasoning_tokens` detail is not
 stored separately: it is already inside `tokens_output`.
 Operator-actionable enrichment additionally carries:
 

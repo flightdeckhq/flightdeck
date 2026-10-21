@@ -3,7 +3,7 @@
 Hand-crafts the payloads the sensor emits for the Responses API --
 a ``tool_call`` for a hosted tool item (``web_search_call``) with its
 captured input, a ``post_call`` carrying the request id read off a parsed
-object, and a ``post_call`` carrying a prompt-cache read -- POSTs them
+object, and a ``post_call`` carrying a prompt-cache read and write -- POSTs them
 through the real ingestion API, and asserts they round-trip through
 NATS + worker + Postgres onto ``/v1/sessions/:id`` and
 ``/v1/events/:id/content``.
@@ -138,7 +138,7 @@ def test_responses_hosted_tool_call_lands_with_name_and_captured_input() -> None
     assert captured.get("tool_output") in (None, {}, "")
 
 
-def test_post_call_prompt_cache_hit_lands_as_cache_read_tokens() -> None:
+def test_post_call_prompt_cache_read_and_write_land_in_cache_tokens() -> None:
     sid = str(uuid.uuid4())
     flavor = f"test-openai-cache-read-{uuid.uuid4().hex[:6]}"
     _start_session(sid, flavor)
@@ -147,7 +147,7 @@ def test_post_call_prompt_cache_hit_lands_as_cache_read_tokens() -> None:
         sid, flavor, "post_call",
         model="gpt-4o-mini",
         tokens_input=3094, tokens_output=1, tokens_total=3095,
-        tokens_cache_read=3072, tokens_cache_creation=0,
+        tokens_cache_read=2560, tokens_cache_creation=512,
         latency_ms=660,
         provider_metadata={"request_id": "req_cache_hit_1"},
     ))
@@ -161,5 +161,5 @@ def test_post_call_prompt_cache_hit_lands_as_cache_read_tokens() -> None:
     assert post_call is not None
     assert post_call["tokens_input"] == 3094
     assert post_call["tokens_output"] == 1
-    assert post_call["tokens_cache_read"] == 3072
-    assert post_call["tokens_cache_creation"] == 0
+    assert post_call["tokens_cache_read"] == 2560
+    assert post_call["tokens_cache_creation"] == 512

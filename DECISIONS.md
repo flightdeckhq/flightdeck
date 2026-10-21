@@ -10235,15 +10235,14 @@ secrets the model set into the environment.
 `reasoning_tokens` is already counted inside `output_tokens` (the
 provider bills it there), so storing it again would double-count on any
 sum, and there is no wire field for it; a separate field is a schema
-change that belongs with the token-model work. The OpenAI SDK exposes
-no cache-write count at all (`PromptTokensDetails` carries
-`audio_tokens` and `cached_tokens`; `InputTokensDetails` only
-`cached_tokens`), so there is nothing to map onto
-`tokens_cache_creation`, and cache-write charges on models that bill
-them are left out. `cached_tokens` is a subset of `prompt_tokens` /
-`input_tokens`, which is exactly the `TokenUsage` contract for
-`cache_read_tokens`, so the existing `estimated_cost` formula applies to
-it unchanged. That formula applies the uniform 0.10x cache-read ratio to
+change that belongs with the token-model work. Current OpenAI SDKs
+report the cache write as `cache_write_tokens` on `PromptTokensDetails`
+(optional) and `InputTokensDetails` (required), and newer models bill
+it, so it maps onto `tokens_cache_creation`; a response without it
+records 0. `cached_tokens` and `cache_write_tokens` are subsets of
+`prompt_tokens` / `input_tokens`, which is exactly the `TokenUsage`
+contract for the cache breakdown, so the existing `estimated_cost`
+formula applies to both unchanged, writes at the uniform 1.25x ratio. That formula applies the uniform 0.10x cache-read ratio to
 OpenAI reads, while OpenAI's cached-input rate is model-dependent (0.50x
 to 0.05x of the input rate in `pricing.yaml`), so the uniform ratio can
 be off in either direction. `estimated_cost` for an OpenAI session with

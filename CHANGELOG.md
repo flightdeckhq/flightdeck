@@ -34,12 +34,11 @@ server.
   apply-patch, tool search) under the item type, such as
   `web_search_call`. The input is captured only with `capture_prompts`
   on; tool results are never captured as input.
-- **Sensor: OpenAI prompt-cache reads land in the token fields.** The
-  `cached_tokens` usage detail is recorded as `tokens_cache_read` on
-  direct and streamed chat and Responses calls, so prompt-cache reads
-  show in the token fields and in `estimated_cost`. The OpenAI SDK
-  exposes no cache-write count, so `tokens_cache_creation` stays 0 for
-  OpenAI.
+- **Sensor: OpenAI prompt-cache reads and writes land in the token
+  fields.** The `cached_tokens` usage detail is recorded as
+  `tokens_cache_read` and the `cache_write_tokens` detail as
+  `tokens_cache_creation` on direct and streamed chat and Responses
+  calls, so both show in the token fields and in `estimated_cost`.
 
 ### Fixed
 
@@ -188,9 +187,8 @@ server.
   cost formula, which applies the uniform 0.10x read ratio; OpenAI's
   cached-input rate is model-dependent (0.50x to 0.05x of the input rate
   in `pricing.yaml`), so such estimates can be off in either direction
-  until per-model cache ratios land (Roadmap: token and cost model). The
-  OpenAI SDK exposes no cache-write count, so cache-write charges on
-  models that bill them are left out.
+  until per-model cache ratios land (Roadmap: token and cost model).
+  OpenAI cache writes are priced at the same uniform 1.25x write ratio.
 - **Worker: failed processing attempts are redelivered after a growing
   delay** (one second times the deliveries so far, within the
   three-delivery budget) instead of immediately, so a transient database

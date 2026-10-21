@@ -91,11 +91,12 @@ const cacheCreationRatio = 1.25
 // unknown models (the handler separately flags the response with
 // ``partial_estimate``).
 //
-// Anthropic reports cache reads and cache writes; OpenAI reports cache
-// reads (its ``cached_tokens`` usage detail lands in
-// ``tokens_cache_read``) and the OpenAI SDK exposes no cache-write
-// count, so ``tokens_cache_creation`` is 0 on OpenAI rows and the
-// cache_creation term vanishes for them. For providers that report no
+// Anthropic and OpenAI both report cache reads and cache writes
+// (OpenAI's ``cached_tokens`` and ``cache_write_tokens`` usage details
+// land in ``tokens_cache_read`` and ``tokens_cache_creation``; an OpenAI
+// response without ``cache_write_tokens`` records 0 there, so the
+// cache_creation term vanishes for it). OpenAI writes are priced at the
+// uniform Anthropic write ratio. For providers that report no
 // cache tokens at all, both cache columns are 0, both cache terms
 // vanish and uncached = tokens_input, collapsing the formula back to
 // the plain two-term expression. The read ratio applies uniformly, so

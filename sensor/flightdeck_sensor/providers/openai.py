@@ -125,20 +125,22 @@ def _field(obj: Any, name: str) -> Any:
     return getattr(obj, name, None)
 
 
-def _cached_tokens(usage: Any, details_attr: str) -> int:
-    """``cached_tokens`` under the usage's details object (chat:
+def _cache_detail(usage: Any, details_attr: str, field: str) -> int:
+    """A cache count under the usage's details object (chat:
     ``prompt_tokens_details``, Responses: ``input_tokens_details``), or
     ``0`` when the provider sent no breakdown.
 
-    OpenAI counts cached tokens inside ``prompt_tokens`` /
-    ``input_tokens`` already, which matches the ``TokenUsage`` contract
-    that ``cache_read_tokens`` is a subset of ``input_tokens``. Never
-    raises.
+    ``field`` is ``cached_tokens`` (the prompt-cache read) or
+    ``cache_write_tokens`` (the tokens written to the cache, which
+    current SDKs report and newer models bill). OpenAI counts both inside
+    ``prompt_tokens`` / ``input_tokens`` already, which matches the
+    ``TokenUsage`` contract that the cache breakdown is a subset of
+    ``input_tokens``. Never raises.
     """
     try:
-        cached = _field(_field(usage, details_attr), "cached_tokens")
-        if isinstance(cached, int) and cached > 0:
-            return cached
+        count = _field(_field(usage, details_attr), field)
+        if isinstance(count, int) and count > 0:
+            return count
     except Exception:
         pass
     return 0
@@ -410,10 +412,11 @@ class OpenAIProvider:
         The prompt-cache read the provider reports under
         ``prompt_tokens_details.cached_tokens`` (chat) or
         ``input_tokens_details.cached_tokens`` (Responses) lands in
-        ``cache_read_tokens``. The OpenAI SDK exposes no cache-write
-        count, so ``cache_creation_tokens`` stays ``0``;
-        ``reasoning_tokens`` has no ``TokenUsage`` field and is part of
-        ``output_tokens`` already.
+        ``cache_read_tokens``, and the cache write under
+        ``cache_write_tokens`` in the same objects lands in
+        ``cache_creation_tokens`` (``0`` when an older SDK or model sends
+        none). ``reasoning_tokens`` has no ``TokenUsage`` field and is
+        part of ``output_tokens`` already.
         """
         try:
             # ``_field`` so a usage object and a usage dict (the JSON body
@@ -434,13 +437,21 @@ class OpenAIProvider:
                     return TokenUsage(
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
-                        cache_read_tokens=_cached_tokens(usage, "input_tokens_details"),
+                        cache_read_tokens=_cache_detail(
+                            usage, "input_tokens_details", "cached_tokens"
+                        ),
+                        cache_creation_tokens=_cache_detail(
+                            usage, "input_tokens_details", "cache_write_tokens"
+                        ),
                     )
 
             return TokenUsage(
                 input_tokens=prompt_tokens,
                 output_tokens=completion_tokens,
-                cache_read_tokens=_cached_tokens(usage, "prompt_tokens_details"),
+                cache_read_tokens=_cache_detail(usage, "prompt_tokens_details", "cached_tokens"),
+                cache_creation_tokens=_cache_detail(
+                    usage, "prompt_tokens_details", "cache_write_tokens"
+                ),
             )
         except Exception:
             return TokenUsage(input_tokens=0, output_tokens=0)

@@ -93,10 +93,13 @@ def _chat_body(
     finish_reason: str = "stop",
     content: str | None = '{"city": "Paris"}',
     cached_tokens: int | None = None,
+    cache_write_tokens: int | None = None,
 ) -> dict[str, Any]:
     usage: dict[str, Any] = {"prompt_tokens": 40, "completion_tokens": 7, "total_tokens": 47}
     if cached_tokens is not None:
         usage["prompt_tokens_details"] = {"cached_tokens": cached_tokens, "audio_tokens": 0}
+        if cache_write_tokens is not None:
+            usage["prompt_tokens_details"]["cache_write_tokens"] = cache_write_tokens
         usage["completion_tokens_details"] = {"reasoning_tokens": 3}
     return {
         "id": "chatcmpl_1",
@@ -178,7 +181,10 @@ def _response_body(
     output: list[dict[str, Any]],
     *,
     cached_tokens: int = 0,
+    cache_write_tokens: int = 0,
 ) -> dict[str, Any]:
+    # Current SDKs require ``cache_write_tokens`` on ``input_tokens_details``;
+    # older ones accept it as an extra field.
     return {
         "id": "resp_1",
         "object": "response",
@@ -193,7 +199,10 @@ def _response_body(
             "input_tokens": 31,
             "output_tokens": 9,
             "total_tokens": 40,
-            "input_tokens_details": {"cached_tokens": cached_tokens},
+            "input_tokens_details": {
+                "cached_tokens": cached_tokens,
+                "cache_write_tokens": cache_write_tokens,
+            },
             "output_tokens_details": {"reasoning_tokens": 2},
         },
     }
@@ -219,8 +228,8 @@ def test_chat_usage_reads_cached_tokens_into_cache_read() -> None:
     completion = ChatCompletion.model_validate(_chat_body(cached_tokens=32))
     usage = OpenAIProvider().extract_usage(completion)
     assert usage == TokenUsage(input_tokens=40, output_tokens=7, cache_read_tokens=32)
-    # OpenAI reports no cache-write count; reasoning tokens are part of
-    # the output count already.
+    # No cache_write_tokens in the details (an older SDK or model) means
+    # no cache write; reasoning tokens are part of the output count already.
     assert usage.cache_creation_tokens == 0
     assert usage.total == 47
 
@@ -229,6 +238,35 @@ def test_responses_usage_reads_cached_tokens_into_cache_read() -> None:
     response = Response.model_validate(_response_body([_message_item()], cached_tokens=24))
     usage = OpenAIProvider().extract_usage(response)
     assert usage == TokenUsage(input_tokens=31, output_tokens=9, cache_read_tokens=24)
+
+
+def test_chat_usage_reads_cache_write_tokens_into_cache_creation() -> None:
+    completion = ChatCompletion.model_validate(_chat_body(cached_tokens=8, cache_write_tokens=20))
+    usage = OpenAIProvider().extract_usage(completion)
+    assert usage == TokenUsage(
+        input_tokens=40, output_tokens=7, cache_read_tokens=8, cache_creation_tokens=20
+    )
+    # The cache breakdown is a subset of the input count, never added twice.
+    assert usage.total == 47
+
+
+def test_responses_usage_reads_cache_write_tokens_into_cache_creation() -> None:
+    response = Response.model_validate(
+        _response_body([_message_item()], cached_tokens=4, cache_write_tokens=16)
+    )
+    usage = OpenAIProvider().extract_usage(response)
+    assert usage == TokenUsage(
+        input_tokens=31, output_tokens=9, cache_read_tokens=4, cache_creation_tokens=16
+    )
+
+
+def test_cache_write_count_that_is_not_an_integer_is_ignored() -> None:
+    # A usage dict (the JSON body of a raw response whose parse failed) is
+    # read without SDK coercion, so a malformed count must not leak through.
+    usage_dict = _chat_body(cached_tokens=8, cache_write_tokens=20)["usage"]
+    usage_dict["prompt_tokens_details"]["cache_write_tokens"] = "20"
+    usage = OpenAIProvider()._usage_from_object(usage_dict)
+    assert usage == TokenUsage(input_tokens=40, output_tokens=7, cache_read_tokens=8)
 
 
 def test_usage_without_details_leaves_cache_read_zero() -> None:
@@ -250,12 +288,14 @@ def test_stream_usage_chunk_carries_cached_tokens() -> None:
                 "prompt_tokens": 1100,
                 "completion_tokens": 5,
                 "total_tokens": 1105,
-                "prompt_tokens_details": {"cached_tokens": 1024},
+                "prompt_tokens_details": {"cached_tokens": 1024, "cache_write_tokens": 50},
             },
         }
     )
     usage = OpenAIProvider().usage_from_stream_chunk(chunk)
-    assert usage == TokenUsage(input_tokens=1100, output_tokens=5, cache_read_tokens=1024)
+    assert usage == TokenUsage(
+        input_tokens=1100, output_tokens=5, cache_read_tokens=1024, cache_creation_tokens=50
+    )
 
 
 # ----- provider: request id on parsed objects ---------------------------------

@@ -1,5 +1,6 @@
-"""OpenAI client proxy: intercepts chat.completions.create(),
-responses.create() and embeddings.create().
+"""OpenAI client proxy: intercepts chat.completions.create() / parse(),
+responses.create() / parse(), embeddings.create(), and the
+``with_raw_response`` counterparts of the chat and Responses calls.
 
 Two intercept paths exist for OpenAI clients (mirroring the Anthropic
 interceptor):
@@ -44,8 +45,14 @@ Interception hierarchy for per-instance wrapping::
       ├── @property chat      →  SensorChat
       │   ├── @property completions  →  SensorCompletions
       │   │   ├── create()           →  call(), call_async(), or call_stream()
+      │   │   ├── parse()            →  call() or call_async()
+      │   │   ├── with_raw_response  →  _SensorRawResponseWrapper
+      │   │   │   ├── create() / parse()  →  call() or call_async()
+      │   │   │   └── __getattr__    →  pass-through
       │   │   └── __getattr__        →  pass-through
       │   └── __getattr__    →  pass-through
+      ├── @property responses →  SensorResponses (same shape: create(),
+      │                          parse(), with_raw_response)
       ├── with_options()     →  new SensorOpenAI
       ├── with_raw_response  →  new SensorOpenAI
       ├── with_streaming_response → new SensorOpenAI
@@ -57,6 +64,7 @@ into kwargs so OpenAI returns token usage in the final streaming chunk.
 
 from __future__ import annotations
 
+import contextlib
 import copy
 import logging
 from typing import TYPE_CHECKING, Any
@@ -96,6 +104,62 @@ def _is_async_client(client: Any) -> bool:
     if _OrigAsyncOpenAI is None:
         return False
     return isinstance(client, _OrigAsyncOpenAI)
+
+
+def _record_usage_carried_by(
+    exc: BaseException, session: Session, provider: OpenAIProvider
+) -> None:
+    """Count the tokens of a completion an exception carries against the
+    session budget.
+
+    ``chat.completions.parse()`` raises ``LengthFinishReasonError`` after
+    a successful HTTP call whose output hit the token limit; the provider
+    bills that call, and the exception carries the completion with its
+    usage. The llm_error event reports the same counts as
+    ``partial_tokens_*`` (the classifier reads them off the exception);
+    this keeps the session's running total in step with it. Never raises.
+    """
+    completion = getattr(exc, "completion", None)
+    if completion is None:
+        return
+    with contextlib.suppress(Exception):
+        usage = provider.extract_usage(completion)
+        if usage.total > 0:
+            session.record_usage(usage)
+
+
+def _call_parse(
+    real_fn: Any,
+    kwargs: dict[str, Any],
+    session: Session,
+    provider: OpenAIProvider,
+    *,
+    is_async: bool,
+) -> Any:
+    """Run a ``parse()`` method through the non-streaming intercept.
+
+    ``parse()`` never streams: the SDK posts with ``stream=False`` and
+    parses the completion into the caller's ``response_format`` /
+    ``text_format`` type. A parse failure after a successful HTTP call
+    (``LengthFinishReasonError``, ``ContentFilterFinishReasonError``)
+    surfaces as an llm_error from the intercept, and the tokens the
+    exception carries still count against the session.
+    """
+    if is_async:
+
+        async def _async_parse() -> Any:
+            try:
+                return await base.call_async(real_fn, kwargs, session, provider)
+            except Exception as exc:
+                _record_usage_carried_by(exc, session, provider)
+                raise
+
+        return _async_parse()
+    try:
+        return base.call(real_fn, kwargs, session, provider)
+    except Exception as exc:
+        _record_usage_carried_by(exc, session, provider)
+        raise
 
 
 class SensorCompletions:
@@ -164,8 +228,23 @@ class SensorCompletions:
             return base.call_async(real_fn, kwargs, self._session, self._provider)
         return base.call(real_fn, kwargs, self._session, self._provider)
 
+    def parse(self, **kwargs: Any) -> Any:
+        """Intercept chat.completions.parse() (structured outputs).
+
+        Same pre/post intercept as a non-streaming ``create()``; the
+        returned ``ParsedChatCompletion`` carries the usual ``usage`` and
+        the request id the SDK stamps on it.
+        """
+        return _call_parse(
+            self._real.parse,
+            kwargs,
+            self._session,
+            self._provider,
+            is_async=self._is_async,
+        )
+
     @property
-    def with_raw_response(self) -> _SensorCompletionsRawResponseWrapper:
+    def with_raw_response(self) -> _SensorRawResponseWrapper:
         """Return an intercept wrapper for ``chat.completions.with_raw_response``.
 
         ``langchain-openai`` (1.x) uses
@@ -182,12 +261,12 @@ class SensorCompletions:
         ``.create()`` calls bypass the sensor pipeline entirely.
 
         The override here returns a small wrapper class whose
-        ``.create()`` runs the sensor pre/post intercept around the
-        captured raw-response create closure. The closure still injects
-        the ``X-Stainless-Raw-Response`` header so the framework gets
-        the same return shape it expects (``LegacyAPIResponse``).
+        ``.create()`` and ``.parse()`` run the sensor pre/post intercept
+        around the captured raw-response closures. The closures still
+        inject the ``X-Stainless-Raw-Response`` header so the framework
+        gets the same return shape it expects (``LegacyAPIResponse``).
         """
-        return _SensorCompletionsRawResponseWrapper(
+        return _SensorRawResponseWrapper(
             self._real.with_raw_response,
             self._session,
             self._provider,
@@ -198,22 +277,24 @@ class SensorCompletions:
         return getattr(self._real, name)
 
 
-class _SensorCompletionsRawResponseWrapper:
-    """Sensor proxy for ``CompletionsWithRawResponse`` (langchain-openai path).
+class _SensorRawResponseWrapper:
+    """Sensor proxy for the SDK's ``*WithRawResponse`` resource wrappers
+    (``CompletionsWithRawResponse`` on the langchain-openai path,
+    ``ResponsesWithRawResponse``, and their async counterparts).
 
-    Wraps the SDK's ``CompletionsWithRawResponse`` instance and runs the
-    sensor's pre/post intercept around its ``create`` closure. The
-    closure is the result of
-    ``_legacy_response.to_raw_response_wrapper(real_completions.create)``
-    -- treating it as the ``real_fn`` passed into ``base.call`` /
-    ``base.call_async`` produces the same intercept behavior the
-    direct ``SensorCompletions.create`` path provides, while preserving
-    the SDK's raw-response return shape that langchain expects.
+    Wraps the SDK's raw-response wrapper instance and runs the sensor's
+    pre/post intercept around its ``create`` and ``parse`` closures. Each
+    closure is the result of ``_legacy_response.to_raw_response_wrapper``
+    over the real bound method -- treating it as the ``real_fn`` passed
+    into ``base.call`` / ``base.call_async`` produces the same intercept
+    behavior the direct ``create()`` path provides, while preserving the
+    SDK's raw-response return shape (``LegacyAPIResponse``), whose
+    headers carry the rate-limit and request-id metadata.
 
-    Pass-through ``__getattr__`` delegates ``.parse``, ``.retrieve``,
-    ``.update``, ``.list``, ``.delete`` etc to the underlying SDK
-    wrapper unchanged. Only ``.create`` is intercepted because that
-    is the only method that triggers an LLM call worth metering.
+    Pass-through ``__getattr__`` delegates ``.retrieve``, ``.update``,
+    ``.list``, ``.delete``, ``.cancel`` etc to the underlying SDK wrapper
+    unchanged: ``create`` and ``parse`` are the methods that make an LLM
+    call worth metering.
     """
 
     def __init__(
@@ -235,6 +316,16 @@ class _SensorCompletionsRawResponseWrapper:
         if self._is_async:
             return base.call_async(real_fn, kwargs, self._session, self._provider)
         return base.call(real_fn, kwargs, self._session, self._provider)
+
+    def parse(self, **kwargs: Any) -> Any:
+        """Intercept the raw-response parse closure with the sensor pipeline."""
+        return _call_parse(
+            self._real.parse,
+            kwargs,
+            self._session,
+            self._provider,
+            is_async=self._is_async,
+        )
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._real, name)
@@ -271,17 +362,18 @@ class SensorChat:
 
 
 class SensorResponses:
-    """Proxy for ``client.responses`` -- intercepts ``create()``.
+    """Proxy for ``client.responses`` -- intercepts ``create()``, ``parse()``
+    and ``with_raw_response``.
 
     OpenAI's Responses API (March 2025 and recommended for all new
     projects) lives at ``OpenAI.responses``, a direct sibling of
-    ``OpenAI.chat``. The intercept surface is a single ``create()``
-    method: ``stream=True`` calls take the stream guard, and the
-    ``responses.stream()`` helper passes through unintercepted.
+    ``OpenAI.chat``. ``create(stream=True)`` calls take the stream guard;
+    the ``responses.stream()`` helper passes through unintercepted.
 
     Token usage extraction is handled by :class:`OpenAIProvider` which
     falls back to ``usage.input_tokens`` / ``usage.output_tokens``
-    (the Responses API shape) when the chat shape is absent.
+    (the Responses API shape) when the chat shape is absent, and which
+    emits one ``tool_call`` per tool call item in ``response.output``.
     """
 
     def __init__(
@@ -320,10 +412,40 @@ class SensorResponses:
             return base.call_async(real_fn, kwargs, self._session, self._provider)
         return base.call(real_fn, kwargs, self._session, self._provider)
 
+    def parse(self, **kwargs: Any) -> Any:
+        """Intercept responses.parse() (structured outputs).
+
+        Same pre/post intercept as a non-streaming ``create()``; the
+        returned ``ParsedResponse`` carries the usual ``usage`` and the
+        request id the SDK stamps on it.
+        """
+        return _call_parse(
+            self._real.parse,
+            kwargs,
+            self._session,
+            self._provider,
+            is_async=self._is_async,
+        )
+
+    @property
+    def with_raw_response(self) -> _SensorRawResponseWrapper:
+        """Return an intercept wrapper for ``responses.with_raw_response``.
+
+        As on chat completions, the SDK's ``ResponsesWithRawResponse``
+        captures the unwrapped ``create`` / ``parse`` bound methods at
+        construction time, so letting ``__getattr__`` fall through to it
+        would bypass the sensor for every raw-response call.
+        """
+        return _SensorRawResponseWrapper(
+            self._real.with_raw_response,
+            self._session,
+            self._provider,
+            is_async=self._is_async,
+        )
+
     def __getattr__(self, name: str) -> Any:
-        # Pass through: parse, stream, retrieve, delete, cancel,
-        # connect, compact, input_items, input_tokens, with_raw_response,
-        # with_streaming_response.
+        # Pass through: stream, retrieve, delete, cancel, connect,
+        # compact, input_items, input_tokens, with_streaming_response.
         return getattr(self._real, name)
 
 

@@ -1,5 +1,8 @@
 """Direct OpenAI SDK -- sync, async, streaming (sync + async), responses,
-embeddings (single + list inputs), auth-error classification.
+structured outputs (chat + Responses ``parse()``), the Responses
+raw-response path, Responses tool calls (function + hosted web search),
+prompt-cache usage, embeddings (single + list inputs), auth-error
+classification.
 
 Copy-paste starter for the raw `openai` package. The sensor's patch()
 covers OpenAI() and AsyncOpenAI() instances; streaming picks up token
@@ -16,6 +19,7 @@ import uuid
 
 try:
     import openai
+    from pydantic import BaseModel
 except ImportError:
     print("SKIP: pip install openai to run this example")
     sys.exit(2)
@@ -38,17 +42,65 @@ MODEL = "gpt-4o-mini"
 # post_call.
 EXPECTED_STREAMED_CALLS = 4
 HI = [{"role": "user", "content": "hi"}]
+# OpenAI caches prompt prefixes from 1024 tokens; this prompt is well
+# past that so its second send can report a cache hit under
+# prompt_tokens_details.cached_tokens, which the sensor maps to
+# tokens_cache_read.
+LONG_PROMPT = ("The quick brown fox jumps over the lazy dog near the river bank. " * 220) + (
+    "Reply with the single word OK."
+)
+WEATHER_TOOL = {
+    "type": "function",
+    "name": "get_weather",
+    "description": "Current weather for a city",
+    "parameters": {
+        "type": "object",
+        "properties": {"city": {"type": "string"}},
+        "required": ["city"],
+        "additionalProperties": False,
+    },
+    "strict": True,
+}
+# How long the script waits for every non-streamed post_call and tool_call
+# of the new paths to land; same order of magnitude as the streamed wait,
+# the drain and the worker batch are the only latency.
+NEW_PATH_EVENTS_DEADLINE_S = 20.0
+
+
+class CityAnswer(BaseModel):
+    city: str
+    country: str
+
+
+# The worker writes an event's row before its event_content row, so a
+# capture-on event can be listed with has_content=true a moment before
+# its content is fetchable. Content trails the row by well under a
+# second; 10 s bounds the wait at an order of magnitude above that.
+CONTENT_LANDED_DEADLINE_S = 10.0
+CONTENT_POLL_S = 0.3
 
 
 def _fetch_event_content(event_id: str) -> dict:
-    """GET /v1/events/{id}/content; returns the parsed JSON body."""
+    """GET /v1/events/{id}/content; returns the parsed JSON body.
+
+    Polls through 404 until ``CONTENT_LANDED_DEADLINE_S``: this script
+    runs with capture on, so a 404 here means the content row has not
+    landed yet, not that capture is off. The last 404 is raised.
+    """
     import json
     req = urllib.request.Request(
         f"{API_URL}/v1/events/{event_id}/content",
         headers={"Authorization": f"Bearer {API_TOKEN}"},
     )
-    with urllib.request.urlopen(req, timeout=5) as r:
-        return json.loads(r.read())
+    deadline = time.monotonic() + CONTENT_LANDED_DEADLINE_S
+    while True:
+        try:
+            with urllib.request.urlopen(req, timeout=5) as r:
+                return json.loads(r.read())
+        except urllib.error.HTTPError as exc:
+            if exc.code != 404 or time.monotonic() > deadline:
+                raise
+        time.sleep(CONTENT_POLL_S)
 
 
 def main() -> None:
@@ -122,6 +174,97 @@ def main() -> None:
     openai.OpenAI().responses.create(model=MODEL, input="hi", max_output_tokens=16)
     print_result("OpenAI().responses.create", True, int((time.monotonic() - t0) * 1000))
 
+    # Structured outputs: chat.completions.parse(). The parsed object
+    # carries the request id the SDK stamps on it; the post_call reports
+    # it under provider_metadata.request_id.
+    question = [{"role": "user", "content": "Capital of France? Answer as JSON."}]
+    t0 = time.monotonic()
+    parsed = openai.OpenAI().chat.completions.parse(
+        model=MODEL, max_tokens=40, messages=question, response_format=CityAnswer,
+    )
+    parse_rid = parsed._request_id
+    print_result(
+        "OpenAI().chat.completions.parse", parsed.choices[0].message.parsed is not None,
+        int((time.monotonic() - t0) * 1000),
+        f"{parsed.usage.total_tokens} tokens, request_id={parse_rid}",
+    )
+
+    # Structured outputs on the Responses API.
+    t0 = time.monotonic()
+    rparsed = openai.OpenAI().responses.parse(
+        model=MODEL, input="Capital of France? Answer as JSON.",
+        text_format=CityAnswer, max_output_tokens=40,
+    )
+    rparse_rid = rparsed._request_id
+    print_result(
+        "OpenAI().responses.parse", rparsed.output_parsed is not None,
+        int((time.monotonic() - t0) * 1000),
+        f"{rparsed.usage.total_tokens} tokens, request_id={rparse_rid}",
+    )
+
+    # Raw-response path on the Responses API: headers stay reachable and
+    # .parse() still yields the Response.
+    t0 = time.monotonic()
+    raw = openai.OpenAI().responses.with_raw_response.create(
+        model=MODEL, input="hi", max_output_tokens=16,
+    )
+    raw_rid = raw.headers.get("x-request-id")
+    raw_body = raw.parse()
+    print_result(
+        "OpenAI().responses.with_raw_response.create",
+        bool(raw_rid) and raw_body.usage.total_tokens > 0,
+        int((time.monotonic() - t0) * 1000),
+        f"{raw_body.usage.total_tokens} tokens, request_id={raw_rid}",
+    )
+
+    # Responses function tool call: the sensor emits one tool_call event
+    # per function_call output item.
+    t0 = time.monotonic()
+    tool_resp = openai.OpenAI().responses.create(
+        model=MODEL, input="What is the weather in Paris? Use the tool.",
+        tools=[WEATHER_TOOL], tool_choice="required", max_output_tokens=64,
+    )
+    function_calls = [o for o in tool_resp.output if o.type == "function_call"]
+    print_result(
+        "OpenAI().responses.create(tools=[function])", len(function_calls) > 0,
+        int((time.monotonic() - t0) * 1000), f"{len(function_calls)} function_call items",
+    )
+    if not function_calls:
+        raise AssertionError(f"no function_call in output: {tool_resp.output!r}")
+
+    # Hosted tool: web search runs server-side and lands as a
+    # web_search_call output item -> tool_call event named after the item.
+    t0 = time.monotonic()
+    search_resp = openai.OpenAI().responses.create(
+        model=MODEL,
+        input="Search the web: in what year was the Eiffel Tower completed? One sentence.",
+        tools=[{"type": "web_search_preview"}], tool_choice={"type": "web_search_preview"},
+        max_output_tokens=80,
+    )
+    web_searches = [o for o in search_resp.output if o.type == "web_search_call"]
+    print_result(
+        "OpenAI().responses.create(tools=[web_search_preview])", len(web_searches) > 0,
+        int((time.monotonic() - t0) * 1000), f"{len(web_searches)} web_search_call items",
+    )
+    if not web_searches:
+        raise AssertionError(f"no web_search_call in output: {search_resp.output!r}")
+
+    # Prompt cache: the same long prompt twice. The provider reports the
+    # hit on the second call; the sensor maps it to tokens_cache_read.
+    long_messages = [{"role": "user", "content": LONG_PROMPT}]
+    openai.OpenAI().chat.completions.create(model=MODEL, max_tokens=5, messages=long_messages)
+    t0 = time.monotonic()
+    cached_call = openai.OpenAI().chat.completions.create(
+        model=MODEL, max_tokens=5, messages=long_messages,
+    )
+    cached_rid = cached_call._request_id
+    details = cached_call.usage.prompt_tokens_details
+    provider_cached = (details.cached_tokens if details else 0) or 0
+    print_result(
+        "prompt cache usage reported by provider", True, int((time.monotonic() - t0) * 1000),
+        f"cached_tokens={provider_cached} of {cached_call.usage.prompt_tokens} prompt tokens",
+    )
+
     # Embeddings: single string. capture_prompts=True (helper default)
     # means has_content=True and the input round-trips via /v1/events/:id/content.
     single_payload = "playground single-string capture"
@@ -168,6 +311,65 @@ def main() -> None:
         raise AssertionError(
             f"streamed post_call without real usage; events={events!r}",
         )
+
+    # The new paths: every post_call is matched to its call by the request
+    # id the provider returned, and must carry the provider's token counts.
+    wanted = {
+        "chat.completions.parse": parse_rid,
+        "responses.parse": rparse_rid,
+        "responses.with_raw_response.create": raw_rid,
+        "prompt cache second send": cached_rid,
+    }
+    deadline = time.monotonic() + NEW_PATH_EVENTS_DEADLINE_S
+    by_rid: dict[str, dict] = {}
+    tool_names: list[str] = []
+    while True:
+        events = fetch_events_for_session(
+            session_id, expect_event_types=["tool_call"], timeout_s=5.0,
+        )
+        by_rid = {
+            ((e.get("payload") or {}).get("provider_metadata") or {}).get("request_id"): e
+            for e in events
+            if e.get("event_type") == "post_call"
+        }
+        tool_names = [
+            e.get("tool_name") or (e.get("payload") or {}).get("tool_name") or ""
+            for e in events
+            if e.get("event_type") == "tool_call"
+        ]
+        if all(rid in by_rid for rid in wanted.values()) and (
+            "get_weather" in tool_names and "web_search_call" in tool_names
+        ):
+            break
+        if time.monotonic() > deadline:
+            break
+        time.sleep(0.5)
+    for label, rid in wanted.items():
+        event = by_rid.get(rid)
+        metered = bool(event) and (event.get("tokens_input") or 0) > 0 \
+            and (event.get("tokens_output") or 0) > 0
+        print_result(
+            f"post_call landed with tokens: {label}", metered, 0,
+            f"request_id={rid} tokens_input={event.get('tokens_input') if event else None} "
+            f"tokens_output={event.get('tokens_output') if event else None}",
+        )
+        if not metered:
+            raise AssertionError(f"{label}: no metered post_call for request_id={rid}")
+    cache_event = by_rid[cached_rid]
+    cache_read = cache_event.get("tokens_cache_read")
+    print_result(
+        "tokens_cache_read matches the provider's cached_tokens",
+        cache_read == provider_cached, 0,
+        f"tokens_cache_read={cache_read} provider cached_tokens={provider_cached}",
+    )
+    if cache_read != provider_cached:
+        raise AssertionError(f"tokens_cache_read={cache_read!r} != cached_tokens={provider_cached}")
+    tools_ok = "get_weather" in tool_names and "web_search_call" in tool_names
+    print_result(
+        "Responses tool_call events landed", tools_ok, 0, f"tool_name={sorted(tool_names)}",
+    )
+    if not tools_ok:
+        raise AssertionError(f"missing Responses tool_call events; saw {tool_names!r}")
 
     # Embeddings event-shape + capture round-trip. Two embedding events
     # land (single + list); fetch_events_for_session returns as soon as

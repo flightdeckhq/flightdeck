@@ -100,10 +100,17 @@ class ErrorClassification:
     request_id: str | None
     retry_after: float | None
     is_retryable: bool
+    # Tokens the provider billed for a call that failed after the model
+    # had produced its output: OpenAI's ``LengthFinishReasonError`` is
+    # raised by ``parse()`` on a successful HTTP call whose completion
+    # hit the token limit, and carries that completion with its usage.
+    # ``None`` when the exception carries no usage.
+    partial_tokens_input: int | None = None
+    partial_tokens_output: int | None = None
 
     def to_payload(self) -> dict[str, Any]:
         """Shape emitted on the wire under the event's ``error`` key."""
-        return {
+        payload: dict[str, Any] = {
             "error_type": self.error_type.value,
             "provider": self.provider,
             "http_status": self.http_status,
@@ -113,6 +120,11 @@ class ErrorClassification:
             "retry_after": self.retry_after,
             "is_retryable": self.is_retryable,
         }
+        if self.partial_tokens_input is not None:
+            payload["partial_tokens_input"] = self.partial_tokens_input
+        if self.partial_tokens_output is not None:
+            payload["partial_tokens_output"] = self.partial_tokens_output
+        return payload
 
 
 # ---------------------------------------------------------------------------
@@ -163,7 +175,16 @@ class AbortReason(str, enum.Enum):
 _CLASS_TO_TYPE: list[tuple[tuple[str, ...], ErrorType]] = [
     (("RateLimitError",), ErrorType.RATE_LIMIT),
     (("PermissionDeniedError", "PermissionError"), ErrorType.PERMISSION),
-    (("AuthenticationError",), ErrorType.AUTHENTICATION),
+    # OpenAI raises OAuthError, an AuthenticationError subclass, when an
+    # OAuth bearer token is rejected: the same 401 failure.
+    (("AuthenticationError", "OAuthError"), ErrorType.AUTHENTICATION),
+    # OpenAI's parse() helpers raise these after a successful HTTP call
+    # when the completion cannot be parsed into the requested type: the
+    # output was cut off at the token limit, or the content filter
+    # replaced it. No HTTP status is attached, so the class name is the
+    # only signal.
+    (("LengthFinishReasonError",), ErrorType.CONTEXT_OVERFLOW),
+    (("ContentFilterFinishReasonError",), ErrorType.CONTENT_FILTER),
     (("NotFoundError",), ErrorType.NOT_FOUND),
     (("UnprocessableEntityError",), ErrorType.INVALID_REQUEST),
     (("BadRequestError",), ErrorType.INVALID_REQUEST),
@@ -274,6 +295,7 @@ def classify_exception(
 
         message = _redacted_message(exc, cls_name, capture_prompts=capture_prompts)
         retryable = _RETRYABLE.get(base, False)
+        partial_tokens = _extract_exception_usage(exc)
 
         return ErrorClassification(
             error_type=base,
@@ -284,6 +306,8 @@ def classify_exception(
             request_id=request_id,
             retry_after=retry_after,
             is_retryable=retryable,
+            partial_tokens_input=partial_tokens[0] if partial_tokens else None,
+            partial_tokens_output=partial_tokens[1] if partial_tokens else None,
         )
     except Exception:  # pragma: no cover — defence in depth
         return ErrorClassification(
@@ -382,6 +406,28 @@ def _extract_request_id(exc: BaseException) -> str | None:
     except Exception:
         pass
     return None
+
+
+def _extract_exception_usage(exc: BaseException) -> tuple[int, int] | None:
+    """``(input_tokens, output_tokens)`` of the completion an exception
+    carries (OpenAI's ``LengthFinishReasonError.completion``), reading
+    either usage shape; ``None`` when the exception carries no usage."""
+    try:
+        usage = getattr(getattr(exc, "completion", None), "usage", None)
+        if usage is None:
+            return None
+        tokens_in = getattr(usage, "prompt_tokens", None)
+        tokens_out = getattr(usage, "completion_tokens", None)
+        if not isinstance(tokens_in, int) or not isinstance(tokens_out, int):
+            tokens_in = getattr(usage, "input_tokens", None)
+            tokens_out = getattr(usage, "output_tokens", None)
+        if not isinstance(tokens_in, int) or not isinstance(tokens_out, int):
+            return None
+        if tokens_in < 0 or tokens_out < 0 or tokens_in + tokens_out == 0:
+            return None
+        return tokens_in, tokens_out
+    except Exception:
+        return None
 
 
 def _extract_retry_after(exc: BaseException) -> float | None:

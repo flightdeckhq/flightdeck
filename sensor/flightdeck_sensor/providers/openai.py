@@ -51,6 +51,119 @@ _RESPONSES_TERMINAL_EVENTS = frozenset(
     {"response.completed", "response.incomplete", "response.failed"}
 )
 
+# Responses API output items that are tool calls the model issued, keyed
+# by their ``type``. Every one emits a ``tool_call`` event. Messages,
+# reasoning items, tool *outputs* (``*_output``) and MCP bookkeeping items
+# (``mcp_list_tools``, ``mcp_approval_request`` / ``_response``) are not
+# calls and emit nothing.
+#
+# Named calls carry the tool's own name (a function, an MCP server tool or
+# a custom tool). Hosted tools (web search, file search, code interpreter,
+# image generation, computer use, shells, apply-patch, tool search) have no
+# per-call name, so the item ``type`` is the ``tool_name`` -- the
+# provider's own vocabulary, preserved verbatim.
+_RESPONSES_NAMED_CALL_TYPES = frozenset({"function_call", "mcp_call", "custom_tool_call"})
+
+# Hosted tool call ``type`` -> the attribute that carries what the model
+# asked the tool to do, captured as the ``tool_call`` input. Tool results
+# (``image_generation_call.result`` is base64 image data,
+# ``code_interpreter_call.outputs``, ``file_search_call.results``) are
+# outputs, never captured as input. ``image_generation_call`` carries no
+# input at all: the prompt lives in the conversation, not on the item.
+_RESPONSES_HOSTED_INPUT_ATTR: dict[str, str | None] = {
+    "web_search_call": "action",
+    "file_search_call": "queries",
+    "code_interpreter_call": "code",
+    "image_generation_call": None,
+    "computer_call": "action",
+    "local_shell_call": "action",
+    "shell_call": "action",
+    "apply_patch_call": "operation",
+    "tool_search_call": "arguments",
+}
+
+
+def _field(obj: Any, name: str) -> Any:
+    """Attribute or dict key ``name`` of ``obj``; ``None`` when absent."""
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def _cached_tokens(usage: Any, details_attr: str) -> int:
+    """``cached_tokens`` under the usage's details object (chat:
+    ``prompt_tokens_details``, Responses: ``input_tokens_details``), or
+    ``0`` when the provider sent no breakdown.
+
+    OpenAI counts cached tokens inside ``prompt_tokens`` /
+    ``input_tokens`` already, which matches the ``TokenUsage`` contract
+    that ``cache_read_tokens`` is a subset of ``input_tokens``. Never
+    raises.
+    """
+    try:
+        cached = _field(_field(usage, details_attr), "cached_tokens")
+        if isinstance(cached, int) and cached > 0:
+            return cached
+    except Exception:
+        pass
+    return 0
+
+
+def _decode_arguments(args_raw: Any) -> dict[str, Any]:
+    """A tool call's arguments as a dict: JSON-decoded when the provider
+    sent the JSON string it always does, passed through when already a
+    dict, empty when neither decodes to an object."""
+    import json as _json
+
+    if isinstance(args_raw, dict):
+        return args_raw
+    if isinstance(args_raw, str) and args_raw:
+        with contextlib.suppress(Exception):
+            decoded = _json.loads(args_raw)
+            if isinstance(decoded, dict):
+                return decoded
+    return {}
+
+
+def _hosted_tool_input(item: Any, item_type: str) -> dict[str, Any]:
+    """The input of a hosted tool call item as a dict (``{}`` when the
+    item carries none)."""
+    attr = _RESPONSES_HOSTED_INPUT_ATTR.get(item_type)
+    if attr is None:
+        return {}
+    value = _field(item, attr)
+    if value is None:
+        return {}
+    if isinstance(value, dict):
+        return value
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        with contextlib.suppress(Exception):
+            # Only what the model set: the SDK's action models carry
+            # every variant's optional field as None otherwise.
+            dumped = dump(exclude_none=True)
+            if isinstance(dumped, dict):
+                return dumped
+    return {attr: value}
+
+
+def _responses_input_as_messages(request_kwargs: dict[str, Any]) -> list[Any]:
+    """Chat-shaped messages for a Responses API request so the estimator
+    counts ``instructions`` and ``input`` (a string or a list of input
+    items) the way it counts chat messages. Empty for a request that
+    carries neither."""
+    out: list[Any] = []
+    instructions = request_kwargs.get("instructions")
+    if isinstance(instructions, str) and instructions:
+        out.append({"role": "system", "content": instructions})
+    inp = request_kwargs.get("input")
+    if isinstance(inp, str):
+        out.append({"role": "user", "content": inp})
+    elif isinstance(inp, (list, tuple)):
+        for item in inp:
+            out.append(item if isinstance(item, dict) else {"role": "user", "content": str(item)})
+    return out
+
 
 class OpenAIProvider:
     """Provider adapter for the OpenAI Python SDK.
@@ -69,7 +182,9 @@ class OpenAIProvider:
         for the char/4 fallback, or ``"none"`` when extraction fails.
         """
         try:
-            messages = request_kwargs.get("messages", [])
+            messages = request_kwargs.get("messages") or _responses_input_as_messages(
+                request_kwargs
+            )
             model = request_kwargs.get("model", "")
 
             count = _try_tiktoken_count(messages, model)
@@ -86,9 +201,11 @@ class OpenAIProvider:
         """Pull rate-limit headers + processing-ms from raw-response paths.
 
         OpenAI surfaces these on ``response.headers`` for raw-response
-        wrappers (``with_raw_response``); the parsed-response path may
-        not. Best-effort: returns ``None`` when nothing useful is
-        reachable.
+        wrappers (``with_raw_response``). A parsed object (``ChatCompletion``,
+        ``Response``, their ``Parsed*`` subclasses, embeddings) exposes no
+        headers, but the SDK stamps the ``x-request-id`` header on it as
+        ``_request_id``, so the request id is reported on that path too.
+        Best-effort: returns ``None`` when nothing useful is reachable.
         """
         try:
             obj = response
@@ -101,6 +218,9 @@ class OpenAIProvider:
                 if headers:
                     break
             if not headers:
+                request_id = getattr(obj, "_request_id", None)
+                if isinstance(request_id, str) and request_id:
+                    return {"request_id": request_id}
                 return None
             getter = getattr(headers, "get", None)
             if not callable(getter):
@@ -190,7 +310,15 @@ class OpenAIProvider:
     def _usage_from_object(self, usage: Any) -> TokenUsage:
         """Read either usage shape (chat ``prompt_tokens`` /
         ``completion_tokens`` or Responses ``input_tokens`` /
-        ``output_tokens``) off a usage object. Never raises."""
+        ``output_tokens``) off a usage object. Never raises.
+
+        The prompt-cache hit the provider reports under
+        ``prompt_tokens_details.cached_tokens`` (chat) or
+        ``input_tokens_details.cached_tokens`` (Responses) lands in
+        ``cache_read_tokens``. OpenAI has no cache-write count, so
+        ``cache_creation_tokens`` stays ``0``; ``reasoning_tokens`` has no
+        ``TokenUsage`` field and is part of ``output_tokens`` already.
+        """
         try:
             prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
             completion_tokens = getattr(usage, "completion_tokens", 0) or 0
@@ -208,11 +336,13 @@ class OpenAIProvider:
                     return TokenUsage(
                         input_tokens=input_tokens,
                         output_tokens=output_tokens,
+                        cache_read_tokens=_cached_tokens(usage, "input_tokens_details"),
                     )
 
             return TokenUsage(
                 input_tokens=prompt_tokens,
                 output_tokens=completion_tokens,
+                cache_read_tokens=_cached_tokens(usage, "prompt_tokens_details"),
             )
         except Exception:
             return TokenUsage(input_tokens=0, output_tokens=0)
@@ -342,7 +472,14 @@ class OpenAIProvider:
 
             resp_dict: dict[str, Any] = {}
             if hasattr(response, "model_dump"):
-                resp_dict = response.model_dump()
+                # ``warnings=False``: the SDK's generic ``Parsed*`` models
+                # (``parse()`` results) trip pydantic's serializer
+                # warnings on every dump, which would surface as
+                # UserWarnings in the agent's process.
+                try:
+                    resp_dict = response.model_dump(warnings=False)
+                except TypeError:
+                    resp_dict = response.model_dump()
             elif hasattr(response, "__dict__"):
                 # Streaming responses surface a ``Stream`` /
                 # ``AsyncStream`` whose ``__dict__`` carries the
@@ -386,16 +523,17 @@ class OpenAIProvider:
             return ""
 
     def extract_tool_invocations(self, response: Any) -> list[ToolInvocation]:
-        """Parse OpenAI ``tool_calls`` from the response.
+        """Parse the tool calls the model issued in the response.
 
         Chat completions: ``response.choices[0].message.tool_calls``
         where each entry has ``type='function'`` and
         ``function.name`` / ``function.arguments`` (JSON string).
+        Responses API: the ``response.output`` items that are calls --
+        ``function_call``, ``mcp_call``, ``custom_tool_call`` and the
+        hosted tools (see :data:`_RESPONSES_HOSTED_INPUT_ATTR`).
         Returns an empty list on any failure. Never raises.
         """
         try:
-            import json as _json
-
             obj = response
             if hasattr(obj, "parse") and callable(obj.parse):
                 with contextlib.suppress(Exception):
@@ -403,6 +541,9 @@ class OpenAIProvider:
 
             choices = getattr(obj, "choices", None)
             if not choices:
+                output = getattr(obj, "output", None)
+                if isinstance(output, (list, tuple)):
+                    return self._responses_tool_invocations(output)
                 return []
             first = choices[0]
             message = getattr(first, "message", None) or (
@@ -434,18 +575,10 @@ class OpenAIProvider:
                 )
                 if not name:
                     continue
-                parsed_input: dict[str, Any] = {}
-                if isinstance(args_raw, dict):
-                    parsed_input = args_raw
-                elif isinstance(args_raw, str) and args_raw:
-                    with contextlib.suppress(Exception):
-                        decoded = _json.loads(args_raw)
-                        if isinstance(decoded, dict):
-                            parsed_input = decoded
                 invocations.append(
                     ToolInvocation(
                         name=str(name),
-                        tool_input=parsed_input,
+                        tool_input=_decode_arguments(args_raw),
                         tool_id=str(tool_id) if tool_id else None,
                     )
                 )
@@ -453,3 +586,43 @@ class OpenAIProvider:
         except Exception:
             _log.debug("extract_tool_invocations failed", exc_info=True)
             return []
+
+    def _responses_tool_invocations(self, output: Any) -> list[ToolInvocation]:
+        """One :class:`ToolInvocation` per tool call item in a Responses
+        API ``output`` list. Never raises; an item that cannot be read is
+        skipped."""
+        invocations: list[ToolInvocation] = []
+        for item in output:
+            try:
+                item_type = _field(item, "type")
+                if not isinstance(item_type, str):
+                    continue
+                if item_type in _RESPONSES_NAMED_CALL_TYPES:
+                    name = _field(item, "name")
+                    if not name:
+                        continue
+                    if item_type == "custom_tool_call":
+                        # A custom tool takes free-form text, not JSON.
+                        tool_input: dict[str, Any] = {"input": _field(item, "input")}
+                    else:
+                        tool_input = _decode_arguments(_field(item, "arguments"))
+                    # ``call_id`` pairs the call with its output item, as
+                    # a chat tool call's ``id`` does; MCP calls have only
+                    # the item id.
+                    tool_id = _field(item, "call_id") or _field(item, "id")
+                elif item_type in _RESPONSES_HOSTED_INPUT_ATTR:
+                    name = item_type
+                    tool_input = _hosted_tool_input(item, item_type)
+                    tool_id = _field(item, "id")
+                else:
+                    continue
+                invocations.append(
+                    ToolInvocation(
+                        name=str(name),
+                        tool_input=tool_input,
+                        tool_id=str(tool_id) if tool_id else None,
+                    )
+                )
+            except Exception:
+                _log.debug("responses output item skipped", exc_info=True)
+        return invocations

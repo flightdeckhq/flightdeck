@@ -239,7 +239,7 @@ flightdeck/
 │   │   │   └── retry.py        # Exponential backoff, unavailability policy enforcement
 │   │   ├── interceptor/
 │   │   │   ├── base.py         # call, call_async, call_stream, call_stream_async + the stream guards
-│   │   │   ├── anthropic.py    # SensorAnthropic + descriptor-based class-level patch
+│   │   │   ├── anthropic.py    # SensorAnthropic + resource-level patch of the SDK's Messages classes
 │   │   │   ├── openai.py       # SensorOpenAI + chat / responses / embeddings descriptors
 │   │   │   ├── litellm.py      # SensorLitellm: module-level completion / embedding patch
 │   │   │   ├── mcp.py          # mcp.client.session.ClientSession patch: every MCP operation, every transport
@@ -487,9 +487,10 @@ flightdeck/
 The sensor is a Python library that runs in-process inside the agent. `init`
 resolves configuration; `patch` installs sensor methods on the Anthropic
 SDK's `Messages` resource classes and sensor descriptors on the OpenAI
-client classes; every LLM call passes through the sensor synchronously. The event POST itself is offloaded onto a background queue
-drain thread so it does not sit in the hot path, but the LLM call
-waits for the sensor's response-envelope parsing before returning control to
+client classes; every LLM call passes through the sensor synchronously.
+The event POST itself is offloaded onto a background queue drain thread
+so it does not sit in the hot path, but the LLM call waits for the
+sensor's response-envelope parsing before returning control to
 user code.
 
 Because the sensor sits in the call path, it can act on directives returned
@@ -575,8 +576,16 @@ def patch(
     quiet: bool = False,
     providers: list[str] | None = None,
 ) -> None:
-    """Class-level monkey-patch of SDK constructors. Works with frameworks
-    that build their own clients internally."""
+    """Patch the Anthropic and OpenAI SDKs in place. For Anthropic,
+    replaces create / stream / parse on the SDK's Messages / AsyncMessages
+    resource classes (top level, beta, and the Bedrock / Vertex beta
+    resources), which every anthropic client class hands out, so every
+    client is intercepted, the raw and streaming views included, even
+    clients built before patch(). For OpenAI, replaces the chat /
+    responses / embeddings cached_property descriptors on OpenAI and
+    AsyncOpenAI. Works with frameworks that build their own clients
+    internally; isinstance checks and captured class references keep
+    working. Idempotent."""
 
 def unpatch -> None:...
 def get_status -> StatusResponse:...
@@ -729,9 +738,9 @@ different levels:
   their async forms, which assign `self.messages = Messages(self)` as an
   instance attribute; `AnthropicFoundry`, which hands out a `Messages`
   subclass; `AnthropicAWS`. Clients and resources that already existed
-  before `patch` are covered from their next call on. The SDK's
-  `with_raw_response` and `with_streaming_response` views bind the
-  resource's `create` / `parse` when they are built, so they are
+  before `patch` are covered from their next call on. The SDK's raw view
+  (`with_raw_response`) and streaming view (`with_streaming_response`)
+  bind the resource's `create` / `parse` when they are built, so they are
   intercepted too. The raw view returns a response whose body is already
   read and whose `parse()` is synchronous on both client kinds, and is
   metered like a plain call. The streaming view hands the caller an
@@ -790,7 +799,7 @@ untouched.
 
 ### Patch surface — out of scope
 
-The class-level patch deliberately does NOT intercept:
+The SDK class patch deliberately does NOT intercept:
 
 | Code path | Why not |
 |---|---|
@@ -803,8 +812,8 @@ The class-level patch deliberately does NOT intercept:
 | Frameworks that bypass the SDK entirely (raw httpx, boto3 bedrock-runtime, vertexai) | No SDK class to patch. |
 
 Extending the patch surface to a new resource is one descriptor + one entry
-in the OpenAI resource table, or one entry in the Anthropic resource-target
-list.
+in the OpenAI resource table, or one entry in `_resource_targets()` in the
+Anthropic interceptor.
 
 ### Framework support
 
@@ -3788,12 +3797,13 @@ enrichment additionally carries:
   processing_ms, request_id, model_info}`. Best-effort per provider
   (raw-response paths surface more headers; parsed-response paths
   may surface none). Field names are normalised across providers.
-  `platform` is set on every Anthropic call and names the endpoint the
-  client talked to: `anthropic`, `bedrock`, `bedrock-mantle`, `aws`,
+  `platform` is set on every Anthropic `post_call` and names the endpoint
+  the client talked to: `anthropic`, `bedrock`, `bedrock-mantle`, `aws`,
   `vertex` or `foundry` for the hosts the SDK's own client classes
   default to, else the bare host of whatever the client was pointed at
-  (a gateway or proxy). It comes from the client's `_otel_platform`
-  attribute when its class defines one, else from `base_url.host`.
+  (a gateway or proxy). It is derived from `client.base_url.host`; an
+  `_otel_platform` attribute on the client would take precedence, as a
+  forward-looking hook, but no SDK client class defines one.
 - `policy_decision_post`: shared `policy_decision` block when this
   call's cumulative usage crossed a threshold the pre-call check
   didn't catch (cache-read tokens / output tokens push the cumulative
@@ -3822,8 +3832,8 @@ leaving the `with` block, a cancellation), in which case `abort_reason` is
 unless the guard read the stream to its end, or a helper read it to
 completion itself; with no chunk delivered it runs to the moment the
 response opened. A stream obtained by parsing an Anthropic raw or
-streaming-response view (`with_raw_response.create(stream=True)`) is timed
-from the `parse()` call, where the guard opens, not from the request. A stream
+streaming view (`with_raw_response.create(stream=True)`) is timed from
+the `parse()` call, where the guard opens, not from the request. A stream
 that fails emits `llm_error` instead (`abort_reason` `error_before_stream`,
 `error_mid_stream` or `timeout`). The streaming sub-object is omitted
 entirely for non-streaming calls.

@@ -83,7 +83,7 @@ test-sensor-e2e: ## Run sensor respx-driven end-to-end tests (requires running s
 playground-anthropic: ## Rule 40d playground: Anthropic SDK. Requires ANTHROPIC_API_KEY.
 	$(PYTHON) playground/01_direct_anthropic.py
 
-playground-anthropic-platforms: ## Rule 40d playground: Anthropic raw/streaming-response views, parse, and Bedrock/Vertex/Foundry sections that self-skip without credentials. Requires ANTHROPIC_API_KEY.
+playground-anthropic-platforms: ## Rule 40d playground: Anthropic raw and streaming views, parse, and Bedrock/Vertex/Foundry sections that self-skip without credentials. Requires ANTHROPIC_API_KEY.
 	$(PYTHON) playground/27_anthropic_platforms.py
 
 playground-openai: ## Rule 40d playground: OpenAI SDK. Requires OPENAI_API_KEY.

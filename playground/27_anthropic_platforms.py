@@ -1,4 +1,4 @@
-"""Anthropic platform matrix -- the raw-response and streaming-response views,
+"""Anthropic platform matrix -- the raw and streaming views,
 structured-output ``parse``, and the cloud clients (Bedrock, Vertex, Foundry)
 with per-platform self-skipping.
 

@@ -603,7 +603,7 @@ def patch(
     For Anthropic the patch replaces ``create`` / ``stream`` / ``parse``
     on the SDK's ``Messages`` / ``AsyncMessages`` resource classes (top
     level and beta), which every client hands out, so the raw-response
-    and streaming-response views are covered too. For OpenAI it
+    and streaming views are covered too. For OpenAI it
     replaces the ``chat`` / ``responses`` / ``embeddings``
     ``cached_property`` descriptors on the client classes with custom
     descriptors. Each patched class is tagged with a

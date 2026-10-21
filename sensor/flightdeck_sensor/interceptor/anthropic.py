@@ -67,7 +67,7 @@ Interception hierarchy for per-instance wrapping::
       ├── @property messages  →  SensorMessages
       │   ├── create()        →  call() / call_async(); with stream=True the
       │   │                       stream guard (call_stream / call_stream_async);
-      │   │                       on the streaming-response view a deferred proxy
+      │   │                       on the streaming view a deferred proxy
       │   ├── stream()        →  call_stream() or call_stream_async()
       │   ├── parse()         →  call() / call_async()
       │   ├── with_raw_response / with_streaming_response
@@ -267,7 +267,7 @@ def _is_async_client(client: Any) -> bool:
 
 def _raw_response_mode(kwargs: dict[str, Any]) -> str | None:
     """``"true"`` / ``"stream"`` when the call comes through the SDK's
-    raw-response or streaming-response view, else ``None``."""
+    raw or streaming view, else ``None``."""
     headers = kwargs.get("extra_headers")
     if not isinstance(headers, dict):
         return None
@@ -285,7 +285,7 @@ def _provider_for(client: Any, session: Session) -> AnthropicProvider:
 
 
 # ----------------------------------------------------------------------
-# Deferred metering for the streaming-response view
+# Deferred metering for the streaming view
 # ----------------------------------------------------------------------
 
 
@@ -318,7 +318,7 @@ class _ParsedRawResponse:
 
 
 class _DeferredCall:
-    """One call made through the streaming-response view: the pre-call
+    """One call made through the streaming view: the pre-call
     check has run and the request has been sent, the post_call is owed
     until the caller parses the body or closes the response."""
 
@@ -443,8 +443,8 @@ class _DeferredResponse:
 
 def _deferred_proxy(response: Any, call: _DeferredCall) -> Any:
     """The proxy matching the response's own ``parse()``: a coroutine on
-    the async client's streaming-response view (``AsyncAPIResponse``), a
-    plain method on every raw-response view (``LegacyAPIResponse``), the
+    the async client's streaming view (``AsyncAPIResponse``), a
+    plain method on every raw view (``LegacyAPIResponse``), the
     async client's included."""
     if inspect.iscoroutinefunction(getattr(response, "parse", None)):
         return _DeferredAsyncResponse(response, call)
@@ -618,7 +618,7 @@ class SensorMessages:
         """Intercept messages.parse() (structured output): a plain call
         whose response is a parsed ``Message`` subclass, so usage, content
         and tool calls come out as for ``create()``. Through the
-        streaming-response view it is deferred like ``create()``."""
+        streaming view it is deferred like ``create()``."""
         real_fn = self._method("parse")
         if _raw_response_mode(kwargs) == _RAW_MODE_STREAM:
             return self._deferred(real_fn, kwargs)
@@ -628,13 +628,13 @@ class SensorMessages:
 
     @property
     def with_raw_response(self) -> Any:
-        """The SDK's raw-response view built over this proxy, so a wrapped
+        """The SDK's raw view built over this proxy, so a wrapped
         client's ``messages.with_raw_response.create`` is metered."""
         return type(getattr(self._real, "with_raw_response"))(self)  # noqa: B009
 
     @property
     def with_streaming_response(self) -> Any:
-        """The SDK's streaming-response view built over this proxy; its
+        """The SDK's streaming view built over this proxy; its
         ``create`` is metered when the caller parses the response."""
         return type(getattr(self._real, "with_streaming_response"))(self)  # noqa: B009
 
@@ -766,13 +766,13 @@ class SensorAnthropic:
 
     @property
     def with_raw_response(self) -> _SensorClientView:
-        """The raw-response view: ``.messages.create`` returns the SDK's
+        """The raw view: ``.messages.create`` returns the SDK's
         raw response and is metered like a plain call."""
         return _SensorClientView(self, "with_raw_response")
 
     @property
     def with_streaming_response(self) -> _SensorClientView:
-        """The streaming-response view: ``.messages.create`` is metered
+        """The streaming view: ``.messages.create`` is metered
         when the caller parses the response."""
         return _SensorClientView(self, "with_streaming_response")
 

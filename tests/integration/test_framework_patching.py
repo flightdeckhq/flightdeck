@@ -872,12 +872,10 @@ def test_anthropic_beta_messages_intercepted(
 ) -> None:
     """``client.beta.messages.create()`` is intercepted via patch().
 
-    The class-level patch installs
-    :class:`_AnthropicMessagesDescriptor` on the ``Beta`` class's
-    ``messages`` cached_property. On first access, the raw beta
-    ``Messages`` resource is wrapped in :class:`SensorMessages` and
-    the call goes through the sensor pre/post pipeline exactly like
-    a top-level ``client.messages.create`` call.
+    The resource-level patch replaces ``create`` / ``stream`` /
+    ``parse`` on the beta ``Messages`` resource class, so the call goes
+    through the sensor pre/post pipeline exactly like a top-level
+    ``client.messages.create`` call.
 
     This path matters because Anthropic's Claude 4 family (Opus 4.6,
     Sonnet 4.6) uses the beta API for extended / adaptive thinking,

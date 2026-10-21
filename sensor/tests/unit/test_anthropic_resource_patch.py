@@ -1,11 +1,11 @@
 """Resource-level Anthropic patch: every SDK client class crossed with
 every call path, driven through the real SDK classes over a mocked HTTP
 transport (``httpx.MockTransport``), so the matrix exercises the SDK's
-own resource construction, raw-response and streaming-response views,
+own resource construction, raw and streaming views,
 URL rewriting and auth plumbing of the cloud clients, and the event
 stream decoding -- everything short of the network.
 
-Also here: the deferred metering of the streaming-response view (parse
+Also here: the deferred metering of the streaming view (parse
 settles, close settles, never-parsed reports the estimate, a parsed
 stream is handed to the guard), the async ``await parse()`` path,
 platform attribution, ``wrap()`` on cloud clients, and the module-layout
@@ -441,7 +441,7 @@ def test_without_a_session_the_patched_resource_is_a_pass_through(
         ai.unpatch_anthropic_classes()
 
 
-# ----- deferred metering on the streaming-response view -----------------------
+# ----- deferred metering on the streaming view -----------------------
 
 
 def test_streaming_response_closed_unparsed_reports_the_estimate(session: Session) -> None:
@@ -566,7 +566,7 @@ async def test_async_raw_response_with_stream_true_is_metered_at_parse(session: 
 
 @pytest.mark.parametrize("name", ["Anthropic", "AsyncAnthropic"])
 def test_streaming_response_request_failure_emits_llm_error(session: Session, name: str) -> None:
-    """A request that fails on the streaming-response view is reported
+    """A request that fails on the streaming view is reported
     like any other failed call, and nothing is owed afterwards."""
     client = _build(name, _Transport(status=500))
 

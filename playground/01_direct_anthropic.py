@@ -3,8 +3,9 @@ plus an invalid-model error-classification demo.
 
 A developer using the raw `anthropic` package copies this file, drops
 in their own prompts, and has Flightdeck telemetry on every call. The
-sensor's patch() replaces the class-level `messages` descriptor so
-every Anthropic() instance emits pre/post events.
+sensor's patch() replaces `create` / `stream` / `parse` on the SDK's
+Messages resource classes so every Anthropic() instance emits pre/post
+events.
 """
 from __future__ import annotations
 

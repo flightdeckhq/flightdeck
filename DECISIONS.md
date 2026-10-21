@@ -10140,9 +10140,18 @@ Marking the parallel-unsafe tests by module (the reconcile module is
 all exclusive, but most other modules mix one unsafe test with many
 safe ones).
 
+---
+
 ## D192 -- The Anthropic patch binds to the Messages resource classes, and the platform lives in provider_metadata
 
 **Date:** 2026-10-21
+
+**Refines:** D175, which chose the `Messages` resource classes as the
+intercept point and said the raw-response and streaming-response
+accessors are proxied. The method patch covers both views on its own,
+because the views bind the resource method when they are built; only the
+streaming view gets a deferred proxy; and the Bedrock / Vertex beta
+resource classes are patched in their own right.
 
 **Decision:** `patch()` intercepts the Anthropic SDK by replacing
 `create`, `stream` and `parse` on the resource classes every client
@@ -10216,12 +10225,18 @@ close covers callers that read the body some other way without ever
 reading further; a never-read body reports the estimate because the
 sensor has nothing else to meter. The split between the pre-call check
 and the deferred post_call is exactly what `base.py` already factors into
-`_pre_call` / `_post_call` / `_emit_error`; using those package-private
-helpers from the sibling interceptor keeps `base.py` unchanged while the
-re-entrancy guard work in that file is under way. A stream obtained from
-a raw view's `parse()` opens the guard at the parse, so its latency runs
-from there: the request was sent earlier, but the guard cannot time what
-it did not see, and the pre-call check already ran at the request.
+`_pre_call` / `_post_call` / `_emit_error`; the deferred call is specific
+to one SDK's view, so it lives with that interceptor and composes those
+package-private helpers rather than adding a view-specific call type to
+the shared core. A stream obtained from a raw view's `parse()` opens the
+guard at the parse, so its latency runs from there: the request was sent
+earlier, but the guard cannot time what it did not see, and the pre-call
+check already ran at the request. A raw-view response with `stream=True`
+that is never parsed emits no `post_call`: the SDK returns it outside any
+context manager, so there is no close hook to settle on, and reading the
+body to settle would consume the stream the caller still holds; the
+streaming view always settles, because its context manager closes the
+response.
 
 The layout canary exists because the patch depends on private SDK
 structure (`anthropic.lib.*._beta_messages`, the `X-Stainless-Raw-Response`
@@ -10241,7 +10256,8 @@ the metadata block already carries). Setting `PromptContent.provider` to
 the platform (breaks the prompt viewer's provider-keyed rendering).
 Parsing the streaming-view body eagerly at the call (reads the body
 before the caller; breaks byte iteration). Teaching `base.py` a deferred
-call type (edits a file another change owns, for one SDK's view).
+call type (a shape specific to one SDK's view does not belong in the
+shared core).
 Mapping unknown hosts to `anthropic` (hides gateways) or to `unknown`
 (loses the host for no privacy gain). Attributing the platform by client
 class instead of host (a first-party client pointed at a gateway would

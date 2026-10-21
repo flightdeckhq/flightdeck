@@ -121,11 +121,11 @@ Each script self-skips when its API keys aren't set, so `make playground-all` ru
 
 | Provider  | Chat | Embeddings | Streaming | Errors |
 |-----------|------|------------|-----------|--------|
-| Anthropic | `messages.create`, `messages.stream`, `messages.parse`, `beta.messages.*` (sync + async) on every `anthropic` client class — first-party, Bedrock, Vertex, Foundry, AWS, Mantle — including the `with_raw_response` and `with_streaming_response` views (the streaming view is metered when you call `parse()`) | route via litellm to Voyage | `messages.stream`, `messages.create(stream=True)` (sync + async), also through the raw views via `parse()` | 14-entry `llm_error` taxonomy |
+| Anthropic | `messages.create`, `messages.stream`, `messages.parse`, `beta.messages.*` (sync + async) | route via litellm to Voyage | `messages.stream`, `messages.create(stream=True)` (sync + async) | 14-entry `llm_error` taxonomy |
 | OpenAI    | `chat.completions.create`, `responses.create` (sync + async) | `embeddings.create` (sync + async) | `create(stream=True)` on chat and Responses (sync + async); the `.stream()` helper is not intercepted (nor is the non-streaming `.parse()`) | same |
 | litellm   | `litellm.completion`, `litellm.acompletion` (chat path only) | `litellm.embedding`, `litellm.aembedding` | not yet (`stream=True` raises `NotImplementedError`; see Roadmap) | same |
 
-Every Anthropic `post_call` records the platform the client talked to in `provider_metadata.platform` (`anthropic`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`, `foundry`, or the host of a gateway the SDK was pointed at).
+The Anthropic row applies to every `anthropic` client class — first-party, Bedrock, Vertex, Foundry, AWS, Mantle — and to the raw view (`with_raw_response`) and the streaming view (`with_streaming_response`): the streaming view is metered when you call `parse()`, and `create(stream=True)` through either view is metered as the parsed stream is iterated. Every Anthropic `post_call` records the platform the client talked to in `provider_metadata.platform` (`anthropic`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`, `foundry`, or the host of a gateway the SDK was pointed at).
 
 Streamed calls report the token counts the provider sends inside the stream, whether you iterate inside a `with` block or without one (a loop left with `break` and never closed is reported at the next LLM call the sensor intercepts after the stream object is collected, or when the session ends). Streaming events expose `payload.streaming = {ttft_ms, chunk_count, inter_chunk_ms, final_outcome, abort_reason}`; `final_outcome` is `aborted` when you leave a stream before the event that ends the response, and `completed` otherwise. A mid-stream failure, inside a `with` block or while iterating without one, emits `llm_error{error_type="stream_error"}` with the chunks and tokens delivered before the failure.
 
@@ -262,7 +262,7 @@ fd.init(
 
 ### `patch()` vs `wrap()`
 
-`patch()` is the right answer in almost every case. It installs a class-level descriptor on `anthropic.Anthropic`, `anthropic.AsyncAnthropic`, `openai.OpenAI`, and `openai.AsyncOpenAI` so every instance, including ones frameworks build internally, is intercepted.
+`patch()` is the right answer in almost every case. For Anthropic it patches `create`, `stream` and `parse` on the SDK's `Messages` resource classes, which every `anthropic` client class hands out, so every client — first-party, Bedrock, Vertex, Foundry, AWS, Mantle, the ones frameworks build internally, and clients built before `patch()` — is intercepted. For OpenAI it installs a class-level descriptor on `openai.OpenAI` and `openai.AsyncOpenAI` so every instance, including ones frameworks build internally, is intercepted.
 
 `wrap()` instruments a single client instance:
 
@@ -301,6 +301,7 @@ The sensor reports over HTTP on background daemon threads. Control plane downtim
 ### Known limitations
 
 - `patch()` must run before OpenAI clients are constructed. Instances that already accessed `.chat`, `.responses`, or `.embeddings` before `patch()` keep the raw resource cached and are not intercepted. Anthropic clients are intercepted from their next call on, whenever they were built.
+- An Anthropic `with_raw_response.create(stream=True)` response that is never parsed emits no `post_call`: the event stream is metered once `parse()` hands it to the sensor, and a raw response has no close hook to settle on. The streaming view (`with_streaming_response`) always settles when its `with` block exits.
 - Per-thread Session isolation is not yet supported. Multi-agent frameworks (CrewAI, LangGraph, etc.) work fine under a single `init()` and shared `AGENT_FLAVOR`.
 - Custom directive handler input validation is yours. The `parameters` schema drives the dashboard form and the directive fingerprint; it is not enforced at execution time.
 - litellm streaming is not intercepted. Non-streaming chat calls and embeddings round-trip cleanly.
@@ -445,7 +446,7 @@ Deferred and planned work lives here so it stays visible and user demand can pri
 - Sensor correctness on current SDKs: LangChain 1.x and the OpenAI structured-output paths, litellm streaming, mcp 2.x support.
 - Streamed-call coverage: with `capture_prompts` on, `messages.create(stream=True)` and `chat.completions.create(stream=True)` store the request but not the streamed response text, because the raw event stream is never assembled into a message; `responses.create(stream=True)` stores neither, having no request `input` on any path; none of the raw streams emit `tool_call` events (the `messages.stream()` helper does both). The OpenAI `chat.completions.stream()` / `.parse()` and `responses.stream()` / `.parse()` helpers are not intercepted.
 - Failed-stream accounting: the provider-billed tokens a stream delivered before a mid-stream failure (`llm_error.partial_tokens_*`) count only against the sensor's local session budget; server-side session totals (which add `post_call` and `embeddings` events) and the analytics `tokens` and `estimated_cost` metrics (`post_call`) do not include them yet.
-- OpenAI raw-response streaming: `chat.completions.with_raw_response.create(stream=True)` records the pre-call estimate with no `streaming` block (langchain-openai takes this path with `include_response_headers=True`), and `responses.with_raw_response` is not intercepted. The Anthropic raw and streaming-response views are metered.
+- OpenAI raw-response streaming: `chat.completions.with_raw_response.create(stream=True)` records the pre-call estimate with no `streaming` block (langchain-openai takes this path with `include_response_headers=True`), and `responses.with_raw_response` is not intercepted. The Anthropic raw and streaming views are metered.
 - Signal-handler shutdown: the SIGTERM / SIGINT handler runs `Session.end()` on the interrupted thread, which may already hold the session, policy or queue lock, so the shutdown can hang; move that shutdown work off the interrupted thread.
 - Ingestion validation of streaming fields: `streaming.final_outcome`, `streaming.abort_reason`, `error.abort_reason` and the non-negativity of `partial_chunks` / `partial_tokens_*` are stored as sent; only `tokens_input` / `tokens_output` / `tokens_total` are range-checked today.
 - Toolchain currency: Node 24, Go 1.27, Python 3.11 through 3.14, Vite 8 / Vitest 5 / React 19, current Postgres, NATS and nginx images, dependency automation and vulnerability scanning in CI.

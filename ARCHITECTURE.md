@@ -641,6 +641,19 @@ class Provider(Protocol):
         a consumer that stops at it has read the whole response. Never
         raises."""
 
+    def response_stop_reason(self, response: Any) -> str | None:
+        """The provider's end-of-response reason on a complete response
+        (Anthropic stop_reason, read from a Message, a raw-response wrapper
+        or a helper stream's accumulated snapshot), or None when the
+        response carries none or the provider reports such outcomes as SDK
+        exceptions instead. Never raises."""
+
+    def stop_reason_from_stream_chunk(self, chunk: Any) -> str | None:
+        """The end-of-response reason carried by one streamed event
+        (Anthropic message_delta), or None for every other event, so a raw
+        stream, which has no final message object, reports the same
+        outcome as a complete response. Never raises."""
+
     def extract_response_metadata(self, response: Any) -> dict | None:
         """Rate-limit headers, request id and processing time, normalised
         across providers; None when nothing is reachable. Never raises."""
@@ -695,7 +708,13 @@ class PromptContent:
 ```
 
 `AnthropicProvider.estimate_tokens` uses the Anthropic SDK
-`count_tokens` if available, falls back to `char // 4`.
+`count_tokens` if available, falls back to `char // 4`. A request that
+names no `model` is counted against `claude-sonnet-4-6`
+(`DEFAULT_COUNT_TOKENS_MODEL` in `providers/anthropic.py`): the endpoint
+answers 404 for a retired id and the estimator then falls back to the
+heuristic without a word, so a unit test pins the default to an id that
+`pricing.yaml` prices without a retired or deprecated note and that the
+installed SDK lists as a model.
 `OpenAIProvider.estimate_tokens` uses `tiktoken` when installed, falls back to
 `char // 4`. Token reconciliation in `_post_call` prefers provider-reported
 usage over the pre-call estimate: `extract_usage(response)` for a
@@ -3937,9 +3956,9 @@ Structured error event with a 14-entry taxonomy:
 | `error_type` | HTTP | Description | OTel mapping | `is_retryable` |
 |---|---|---|---|---|
 | `rate_limit` | 429 | Request-rate limit exceeded | `rate_limit_error` | ✅ |
-| `quota_exceeded` | 429 | Billing / monthly quota exceeded | `quota_exceeded_error` | ❌ |
-| `context_overflow` | 400 | Input exceeded model context window | `context_length_exceeded` | ❌ |
-| `content_filter` | 400 | Provider content filter blocked request | `content_filter_error` | ❌ |
+| `quota_exceeded` | 402 / 429 / 400 | Billing problem (402); a spend limit, spend cap or exhausted credit balance reported under 429 or 400 | `quota_exceeded_error` | ❌ |
+| `context_overflow` | 400 / 200 | Input exceeded the model context window, or the response stopped with `model_context_window_exceeded` | `context_length_exceeded` | ❌ |
+| `content_filter` | 400 / 200 | Provider content filter blocked the request, or the response stopped with `refusal` | `content_filter_error` | ❌ |
 | `invalid_request` | 400 | Other validation failure | `invalid_request_error` | ❌ |
 | `authentication` | 401 | Missing / invalid credential | `authentication_error` | ❌ |
 | `permission` | 403 | Credential lacks permission | `permission_error` | ❌ |
@@ -3947,7 +3966,7 @@ Structured error event with a 14-entry taxonomy:
 | `request_too_large` | 413 | Request body too large | `request_too_large_error` | ❌ |
 | `api_error` | 500 | Provider internal error | `api_error` | ✅ |
 | `overloaded` | 529 / 503 | Anthropic 529, OpenAI engine overloaded | `overloaded_error` | ✅ |
-| `timeout` | — | Client-side timeout before response | `timeout_error` | ✅ |
+| `timeout` | 504 / — | Gateway timeout (504), or a client-side timeout before a response | `timeout_error` | ✅ |
 | `stream_error` | — | Mid-stream error after a 200 response | `stream_error` | ⚠ case-by-case |
 | `other` | — | Fallback for unknown | `other` | ❌ |
 
@@ -3969,6 +3988,46 @@ checks; server-side session totals, the `tokens` metric and
 `estimated_cost` do not include them: the session totals add every event
 that carries `tokens_total` (`post_call` and `embeddings`) and the
 analytics metrics read `post_call` events (README Roadmap).
+
+Classification walks the exception's class name first (each SDK names
+its classes consistently; the Anthropic-specific `DeadlineExceededError`,
+`OverloadedError` and `RequestTooLargeError` are mapped by name), then
+lets the HTTP status, the provider's error code and the provider's
+message override it. By status: 402 is `quota_exceeded` and 504 is
+`timeout` whatever class the SDK raised, because the Anthropic SDK has
+no dedicated class for either (a 504 arrives as `InternalServerError`, a
+402 as a bare `APIStatusError`); 413 is `request_too_large`; 529 is
+`overloaded`. By message: a 429 or 400 whose provider message mentions a
+spend limit, spending limit, spend cap, credit balance, billing, quota
+or monthly cap is `quota_exceeded` rather than `rate_limit` or
+`invalid_request`, since Anthropic reports its organisation spend cap as
+a 429 `rate_limit_error` and a per-user spend limit or an exhausted
+credit balance as a 400 `invalid_request_error`, and only the message
+tells them apart; the match is a substring test over the lower-cased
+message. The message is read for that test only: `error_message` is the
+exception class name, with the provider's text appended (clipped to 200
+characters) only when `capture_prompts` is on.
+
+A response the provider answered with HTTP 200 can still be a failed
+call. When Anthropic's `stop_reason` is `refusal` (its safety
+classifiers declined the request) or `model_context_window_exceeded`
+(the context window ran out mid-response), the sensor emits an
+`llm_error` beside the `post_call`: `error.error_type` is
+`content_filter` or `context_overflow`, `error.http_status` is 200,
+`error.provider_error_code` is the stop reason, `error.error_message` is
+`stop_reason=<reason>` (never response content), `is_retryable` is
+false and `terminal` is true. The `post_call` keeps the billed usage, so
+token totals and `estimated_cost` are unchanged, while the error counts
+toward the per-agent error count and sets the session's terminal-error
+flag like any other terminal `llm_error`. The reason comes from the
+provider protocol's `response_stop_reason` (a complete message, a
+raw-response wrapper, or a helper stream's accumulated snapshot) or, for
+a raw stream that has no final message object, from the `message_delta`
+event through `stop_reason_from_stream_chunk`, which the stream guard
+records as events pass. Only `post_call` events get this treatment;
+`embeddings` responses carry no stop reason. OpenAI and litellm report
+none: their SDKs raise exceptions for a declined or cut-off parsed
+response, which take the exception path above.
 
 Operator-actionable retry-chain context:
 

@@ -10139,3 +10139,129 @@ test concern; the interval is also a legitimate operator setting).
 Marking the parallel-unsafe tests by module (the reconcile module is
 all exclusive, but most other modules mix one unsafe test with many
 safe ones).
+
+## D188 -- A non-success stop reason on a 200 response is recorded as an llm_error beside the post_call
+
+**Date:** 2026-10-21
+
+**Decision:** When Anthropic answers a call with HTTP 200 and a
+`stop_reason` of `refusal` (its safety classifiers declined the request)
+or `model_context_window_exceeded` (the context window ran out
+mid-response), the sensor emits an `llm_error` beside the `post_call`.
+The error carries the existing `llm_error` shape and nothing else:
+`error.error_type` is `content_filter` for a refusal and
+`context_overflow` for a context-window overrun, `error.http_status` is
+200, `error.provider_error_code` is the stop reason,
+`error.error_message` is `stop_reason=<reason>`, `is_retryable` is false
+and the top-level `terminal` is true. The `post_call` is unchanged and
+keeps the billed usage. The reason reaches the interceptor through two
+new provider-protocol hooks, `response_stop_reason(response)` for a
+complete message, a raw-response wrapper or a helper stream's snapshot,
+and `stop_reason_from_stream_chunk(chunk)` for a raw stream, whose
+`message_delta` event is the only place the reason appears; the stream
+guard records it as events pass and hands it to the settle. OpenAI and
+litellm return `None` from both hooks. Only `post_call` events are
+examined; `embeddings` carry no stop reason.
+
+The same change refreshes the exception classifier for the Anthropic
+SDK: `DeadlineExceededError`, `OverloadedError` and
+`RequestTooLargeError` are mapped by class name in a block of their own,
+and two status rules apply whatever class the SDK raised, 402 to
+`quota_exceeded` and 504 to `timeout`. A 429 or 400 whose provider
+message contains `spend limit`, `spending limit`, `spend cap`,
+`credit balance`, `billing`, `quota` or `monthly` is `quota_exceeded`
+instead of `rate_limit` or `invalid_request`; the message is read for
+that substring test only and is still redacted from `error_message`
+under capture-off. The pre-call estimator's fallback `count_tokens`
+model is `claude-sonnet-4-6`, and a unit test fails when that id is
+absent from `pricing.yaml`, marked retired or deprecated there, or
+missing from the installed SDK's model list.
+
+**Reasoning:** A refusal or a context-window overrun is not a completed
+call from the operator's point of view, yet it arrived as an ordinary
+`post_call` with tokens and latency and nothing to search or alert on.
+The event payload schema is a contract between the sensor and the
+ingestion API (rule 33): adding an outcome field to `post_call` would
+have changed that contract, needed a validator entry, a worker
+projection, a dashboard renderer and an analytics facet, and would have
+left the existing error views blind to the new outcome. The `llm_error`
+shape already has everything the outcome needs: a taxonomy entry whose
+meaning fits (`content_filter`, `context_overflow`), an `http_status`
+slot that can say 200, a `provider_error_code` slot for the stop reason,
+and the `terminal` flag, and the dashboard, the per-agent summary, the
+session listing's `error_types[]` and `has_terminal_error`, and the
+`error_type` facet render it today. Reusing it means the new outcome
+appears everywhere errors already appear with no server or dashboard
+change. The consequence is deliberate: the per-agent error count
+(`llm_error` rows) and the session's terminal-error flag now count
+refusals and context overruns, because an operator triaging an agent
+wants to see them exactly where a 429 shows up. The `post_call` stays
+because the provider billed the call; dropping it or zeroing its usage
+would understate spend, which is the one number the sensor exists to
+get right. `terminal` is true because neither outcome is cured by a
+retry of the same request: a refusal needs a different prompt and an
+overrun needs a shorter conversation, which is the meaning the flag
+already has for the non-retryable classes. `http_status` is 200 rather
+than null so the error row says honestly that the provider answered and
+points the reader at `provider_error_code`.
+
+The hooks live on the provider protocol rather than as an Anthropic
+special case in the interceptor because the interceptor is provider
+neutral and every other response reading goes through the protocol; a
+raw stream needs the per-chunk hook because `create(stream=True)`
+returns an SDK stream with no final message, and the reason is seen
+once, on the `message_delta` event the guard already inspects to know
+the response has ended. The provider label on the error row is derived
+from the adapter class name (`AnthropicProvider` to `anthropic`): the
+adapters carry no name attribute and, unlike an exception, a stop
+reason has no module to infer the provider from.
+
+The classifier's status rules are status-driven because neither SDK
+generation has a dedicated class for the two cases: the installed 0.94.0
+and the 1.17.0 wheel both declare `DeadlineExceededError` for 504 but
+their status mapping folds every 5xx other than 529 into
+`InternalServerError`, and a 402 falls through to a bare
+`APIStatusError`. Mapping the class names alone would therefore have
+classified a real 504 as a retryable `api_error`, and the live probe
+confirmed the SDK raises `InternalServerError(status_code=504)`. The
+spend-limit cases are message-driven because Anthropic reports them
+under the generic error type of their status (`rate_limit_error` for the
+organisation spend cap, `invalid_request_error` for a per-user spend
+limit or an exhausted credit balance), so the error code carries no
+signal; the match is a substring test over a short list of billing
+words. The exact provider strings were not confirmed against the live
+API (none can be provoked without exhausting an account), so the list
+is intentionally broad and its false-positive risk is bounded by the
+statuses it applies to and the fact that a 400 or 429 message never
+echoes prompt content.
+
+`claude-sonnet-4-6` is the fallback `count_tokens` model because the
+previous default, `claude-sonnet-4-20250514`, was retired and the
+endpoint answers 404 for it; the estimator swallows that and falls back
+to the character heuristic, so every estimate for a request without a
+`model` had been degrading silently (confirmed live: the retired id
+returns `not_found_error`, the new id returns a count). Sonnet 4.6 is
+the served successor in the same tokenizer family, so estimates for
+such requests stay comparable with what callers saw before, and it is
+both priced in `pricing.yaml` and listed in the installed SDK's model
+literal, which the canary test checks so the next retirement fails a
+unit test instead of degrading estimates again.
+
+**Rejected alternatives:** An outcome field on `post_call` (a schema
+contract change with four consumers to update and no error-view
+coverage, as above). A new `final_outcome` value on the streaming
+sub-object (covers streams only, and the dashboard keys its badge off
+the two existing values). Raising an exception for a refusal so the
+existing exception path files the error (the SDK returned a message the
+caller is entitled to read; the sensor must never change what the
+caller receives). Dropping or zeroing the `post_call` (understates
+spend). `http_status` null on the stop-reason error (hides that the
+provider answered). A spend-limit match on the provider error code only
+(the code is `rate_limit_error` or `invalid_request_error` in every
+case, so nothing would match). Keeping the retired `count_tokens`
+default or removing the default and estimating with the heuristic when
+no model is named (both leave the SDK path unused for those requests).
+`claude-haiku-4-5` or `claude-sonnet-5-5` as the default (Haiku changes
+the tokenizer family the previous default used; Sonnet 5.5 is not in
+the installed SDK's model list, which the canary requires so the id is
+one the pinned SDK knows).

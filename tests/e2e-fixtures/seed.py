@@ -1073,8 +1073,10 @@ def seed(mode: str = "full") -> None:
     wait, AND the closed/aged/stale backdating. Run ONLY the active-role
     refresh path (fresh-active / error-active / mcp-active / policy-active).
     Used by the Playwright globalSetup keep-alive watchdog so the workers'
-    reconciler (postgres.go:651, 60-second tick, 2-min stale threshold)
-    cannot age the seeded "fresh"-class fixtures past ``state='active'``
+    reconciler (``ReconcileStaleSessions`` in workers/internal/writer/
+    postgres.go, ticking every FLIGHTDECK_RECONCILER_INTERVAL_SECS with a
+    2-min stale threshold) cannot age the seeded "fresh"-class fixtures
+    past ``state='active'``
     while the test suite runs. The sub-agent E2E specs (T28–T40)
     push the suite past 5 minutes — well beyond the original 2-min
     seed-to-test-completion window the no-keep-alive design assumed.

@@ -30,7 +30,6 @@ from __future__ import annotations
 
 import json
 import os
-import subprocess
 import threading
 import time
 import uuid
@@ -52,6 +51,7 @@ from .conftest import (
     API_URL,
     INGESTION_URL,
     TOKEN,
+    delete_flavor_data,
     exec_sql,
     wait_until,
 )
@@ -158,48 +158,10 @@ def _query_event_content_for_session(session_id: str) -> list[dict[str, Any]]:
     )
 
 
-# Cleanup statements share a single :'flavor' binding via exec_sql.
-# Each is idempotent and ordered to satisfy FK constraints (children
-# before parents). The agents table has no flavor column: the rollup
-# is keyed by agent_id and is reached through the sessions it
-# summarises. The sessions -> agents foreign key is checked at the end
-# of the statement, so one data-modifying CTE deletes the flavor's
-# sessions and then the agents those sessions belonged to, unless a
-# session of another flavor still references the agent. A rollup left
-# behind keeps total_sessions above zero with no session behind it,
-# which breaks the fleet's recent-sessions contract on the next run.
-_FLAVOR_CLEANUP_SQL = (
-    "DELETE FROM event_content WHERE session_id IN "
-    "(SELECT session_id FROM sessions WHERE flavor = :'flavor')",
-    "DELETE FROM events WHERE flavor = :'flavor'",
-    "DELETE FROM directives WHERE flavor = :'flavor' OR session_id IN "
-    "(SELECT session_id FROM sessions WHERE flavor = :'flavor')",
-    "DELETE FROM token_policies WHERE scope = 'flavor' AND scope_value = :'flavor'",
-    "WITH gone AS ("
-    "DELETE FROM sessions WHERE flavor = :'flavor' RETURNING agent_id"
-    ") "
-    "DELETE FROM agents a USING (SELECT DISTINCT agent_id FROM gone) g "
-    "WHERE a.agent_id = g.agent_id AND NOT EXISTS ("
-    "SELECT 1 FROM sessions o WHERE o.agent_id = a.agent_id "
-    "AND o.flavor IS DISTINCT FROM :'flavor')",
-    "DELETE FROM custom_directives WHERE flavor = :'flavor'",
-)
-
-
-def _delete_flavor_data(flavor: str) -> None:
-    """Best-effort cleanup of all DB rows for a flavor (idempotent)."""
-    for sql in _FLAVOR_CLEANUP_SQL:
-        try:
-            exec_sql(sql, flavor=flavor)
-        except subprocess.CalledProcessError:
-            # Best-effort: tolerate failures (e.g. row doesn't exist,
-            # FK reference still in flight). Matches the prior
-            # capture_output=True pattern that swallowed stderr.
-            pass
-
-
 def _wait_for_event_type(
-    flavor: str, event_type: str, timeout: float = 15.0,
+    flavor: str,
+    event_type: str,
+    timeout: float = 15.0,
 ) -> dict[str, Any]:
     """Block until at least one event of event_type exists for flavor."""
     found: dict[str, Any] = {}
@@ -282,7 +244,7 @@ def unique_flavor() -> Iterator[str]:
         yield flavor
     finally:
         os.environ.pop("AGENT_FLAVOR", None)
-        _delete_flavor_data(flavor)
+        delete_flavor_data(flavor)
 
 
 # ----------------------------------------------------------------------
@@ -2336,8 +2298,8 @@ def test_pattern_c_ki15_singleton_limitation(
             flightdeck_sensor.teardown()
         except Exception:
             pass
-        _delete_flavor_data(flavor_a)
-        _delete_flavor_data(flavor_b)
+        delete_flavor_data(flavor_a)
+        delete_flavor_data(flavor_b)
 
 
 # ======================================================================
@@ -2369,9 +2331,10 @@ def _count_agent_rows(agent_ids: list[str]) -> int:
 
 
 def test_flavor_cleanup_removes_the_agent_rollup(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
-    """``_delete_flavor_data`` takes the agents rollup row along with the
+    """``delete_flavor_data`` takes the agents rollup row along with the
     flavor's sessions. The agents table has no flavor column, so the
     rollup must be resolved through the sessions it summarises; a
     rollup left behind keeps ``total_sessions`` above zero with no
@@ -2402,7 +2365,7 @@ def test_flavor_cleanup_removes_the_agent_rollup(
         msg="agents rollup row never written",
     )
 
-    _delete_flavor_data(flavor)
+    delete_flavor_data(flavor)
 
     assert _query_agent_ids_for_flavor(flavor) == []
     assert _count_agent_rows(agent_ids) == 0

@@ -76,7 +76,10 @@ def _seed_parent_outside_window(*, flavor: str, parent_sid: str) -> None:
     )
     # Backdate the parent so a ``from=<now - 30min>`` filter
     # excludes it from the page. The child session is seeded later
-    # with a fresh timestamp so it lands in the window.
+    # with a fresh timestamp so it lands in the window. The backdated
+    # parent also goes stale on the reconciler's next tick (seconds on
+    # the dev stack); the assertions below read only its presence and
+    # parent link, never its state.
     backdated = (
         datetime.now(timezone.utc) - timedelta(hours=_BACKDATE_HOURS)
     ).isoformat()

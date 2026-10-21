@@ -48,12 +48,24 @@ def _wide_from() -> str:
     ).isoformat()
 
 
+# The canonical seed's root coding agent: it owns several sessions, and
+# resolving it by name keeps the tests on a seeded agent rather than on
+# whichever agent another test happens to have touched most recently.
+SEEDED_AGENT_NAME = "e2e-test-coding-agent"
+
+
 def _pick_agent_with_sessions() -> str:
     fleet = _get("/v1/fleet", {"per_page": "200"})
     for a in fleet.get("agents", []):
-        if a.get("total_sessions", 0) > 0 and a.get("agent_id"):
+        if a.get("agent_name") == SEEDED_AGENT_NAME and a.get("agent_id"):
+            assert a.get("total_sessions", 0) > 0, (
+                f"{SEEDED_AGENT_NAME} has no sessions"
+            )
             return str(a["agent_id"])
-    raise AssertionError("no agent with sessions in the seeded fleet")
+    raise AssertionError(
+        f"{SEEDED_AGENT_NAME} is not on the fleet page -- run `make seed-e2e` "
+        "against this stack"
+    )
 
 
 def test_events_agent_id_filter_scopes_to_one_agent() -> None:

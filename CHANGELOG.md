@@ -146,6 +146,19 @@ server.
 - **Repository hygiene.** Retired known-issue identifiers and decision
   pointers in source, CI and Helm comments; `sensor/.venv` is no longer
   tracked; test files and functions no longer carry decision numbers.
+- **New worker setting `FLIGHTDECK_RECONCILER_INTERVAL_SECS`.** The
+  seconds between reconciler passes (stale and lost transitions, the
+  orphan reaper); default 60, as before, and at most 3600. The dev
+  compose override sets 5 so the four integration tests that wait for
+  a reconciler tick finish in seconds instead of idling for about five
+  minutes per run.
+- **`make test-integration` runs in two phases.** A parallel phase under
+  pytest-xdist (four workers by default, `INTEGRATION_WORKERS`) for
+  every test that keeps to its own flavors and session ids, then the
+  tests marked `exclusive` one at a time; the suite takes about four
+  minutes end to end instead of nine and a half. Tests were made
+  isolation-safe for it and four duplicate tests were removed. The CI
+  integration and E2E jobs no longer wait for the unit jobs.
 
 ## v0.5.3 — 2026-08-30
 

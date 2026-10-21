@@ -33,9 +33,14 @@ from .conftest import (
 )
 
 
-def _get_session_from_list(session_id: str) -> dict | None:
-    """Fetch a single session from the paginated /v1/sessions list."""
-    url = f"{API_URL}/v1/sessions?session_id={session_id}&limit=10"
+def _get_session_from_list(session_id: str, flavor: str) -> dict | None:
+    """Fetch one session from the paginated /v1/sessions list.
+
+    The listing has no session_id filter, so the request narrows to the
+    test's own flavor and the row is picked by id; the newest ten rows
+    on a shared stack belong to whichever tests posted last.
+    """
+    url = f"{API_URL}/v1/sessions?flavor={flavor}&limit=10"
     req = urllib.request.Request(url, headers=auth_headers())
     with urllib.request.urlopen(req, timeout=5) as resp:
         data = json.loads(resp.read())
@@ -74,7 +79,7 @@ def test_context_round_trips_via_sessions_list() -> None:
 
     def _found() -> bool:
         nonlocal item
-        item = _get_session_from_list(sid)
+        item = _get_session_from_list(sid, flavor)
         return item is not None and bool(item.get("context"))
 
     wait_until(

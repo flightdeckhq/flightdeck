@@ -68,11 +68,12 @@ from flightdeck_sensor import _directive_registry
 from .conftest import (
     INGESTION_URL,
     TOKEN,
+    delete_flavor_data,
+    get_session,
 )
 from .test_sensor_e2e import (
     ANTHROPIC_RESPONSE,
     OPENAI_RESPONSE,
-    _delete_flavor_data,
     _query_events_for_flavor,
     _query_session_for_flavor,
     _wait_for_event_type,
@@ -118,7 +119,7 @@ def unique_flavor() -> Iterator[str]:
         yield flavor
     finally:
         os.environ.pop("AGENT_FLAVOR", None)
-        _delete_flavor_data(flavor)
+        delete_flavor_data(flavor)
 
 
 # ----------------------------------------------------------------------
@@ -154,7 +155,7 @@ def _mock_openai_with_latency(rmock: respx.MockRouter) -> None:
 
 
 def _assert_session_in_fleet_with_context(flavor: str) -> dict[str, Any]:
-    """Verify the session for ``flavor`` exists in GET /v1/fleet.
+    """Verify the session for ``flavor`` is served by GET /v1/sessions/:id.
 
     Asserts that ``hostname``, ``os``, and ``python_version`` are
     present in the session's runtime context. Returns the session
@@ -164,33 +165,25 @@ def _assert_session_in_fleet_with_context(flavor: str) -> dict[str, Any]:
     assert sess is not None, f"no session row for flavor {flavor}"
 
     # The DB session row's ``context`` JSONB column carries the
-    # runtime context dict. The fleet API surfaces this same column
+    # runtime context dict. The sessions API surfaces this same column
     # via the session payload, so verifying it on the DB row is
     # equivalent to verifying it via the API for the keys we care
-    # about. We also call get_fleet() below to confirm the session
-    # is reachable through the public API surface.
+    # about. The lookup below confirms the session is reachable
+    # through the public API surface.
     ctx = sess.get("context") or {}
     assert "hostname" in ctx, f"hostname missing from context: {ctx}"
     assert "os" in ctx, f"os missing from context: {ctx}"
-    assert "python_version" in ctx, (
-        f"python_version missing from context: {ctx}"
-    )
+    assert "python_version" in ctx, f"python_version missing from context: {ctx}"
 
-    # Reach for the public sessions API: verify the session is visible
-    # through GET /v1/sessions (not just sitting in the DB). D115
-    # retired the flavor-grouped fleet response, so the equivalent
-    # check is "does a /v1/sessions row for this session_id exist?".
-    from .conftest import get_fleet
-    fleet = get_fleet()
-    found = any(
-        s.get("session_id") == sess["session_id"]
-        for flv in fleet.get("flavors", [])
-        if flv.get("flavor") == flavor
-        for s in flv.get("sessions", [])
-    )
-    assert found, (
-        f"session {sess['session_id']} for flavor {flavor} "
-        f"not visible via GET /v1/sessions"
+    # Reach for the public sessions API: the session must be served by
+    # GET /v1/sessions/:id (a 404 raises here), not just sit in the DB.
+    # Looking it up by its own id, rather than scanning the most recent
+    # sessions, keeps the check independent of whatever other tests
+    # create on the stack meanwhile.
+    served = get_session(sess["session_id"]).get("session") or {}
+    assert served.get("flavor") == flavor, (
+        f"session {sess['session_id']} served with flavor "
+        f"{served.get('flavor')!r}, expected {flavor!r}"
     )
     return sess
 

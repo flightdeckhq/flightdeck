@@ -34,6 +34,18 @@ services:
     volumes:
       - ../workers:/app
       - ./postgres/migrations:/migrations:ro
+    # The integration suite's reconciler tests
+    # (tests/integration/test_session_states.py) backdate a session
+    # row and then wait for the next reconciler tick to move it. At
+    # the 60 s production default the four tests that wait for a tick
+    # idle for about five minutes per run. 5 s keeps them to seconds
+    # while remaining far above the time one reconcile pass takes on
+    # the dev database. The test module sizes its waits from
+    # RECONCILER_INTERVAL_SECS, which must match this value.
+    # Production deployments that do not set
+    # FLIGHTDECK_RECONCILER_INTERVAL_SECS inherit the 60 s default.
+    environment:
+      FLIGHTDECK_RECONCILER_INTERVAL_SECS: "5"
 
   api:
     image: golang:1.26.2-alpine

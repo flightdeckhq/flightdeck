@@ -31,6 +31,41 @@ from .conftest import (
     worker_paused,
 )
 
+# The dev compose override (docker/docker-compose.dev.yml) sets the
+# workers' FLIGHTDECK_RECONCILER_INTERVAL_SECS to this value so the tests
+# below that wait for a reconciler tick finish in seconds rather than
+# idling through the 60 s production default. The two must match: a
+# longer server-side interval makes the positive waits time out and
+# lets the negative waits pass vacuously because no tick fires inside
+# their window.
+RECONCILER_INTERVAL_SECS = 5
+
+# Room for the worker to process a handful of events on a loaded runner,
+# and for a reconciler tick's result to reach the API: one reconcile
+# pass over the dev database plus the session-detail read, well under a
+# second on the dev stack. Ten seconds absorbs a slow CI runner; every
+# state wait in this module builds on it.
+PROCESSING_SLACK_SECS = 10.0
+
+# Positive waits (a transition must happen). The test's UPDATE can land
+# just after a tick, so the next one is up to a full interval away; the
+# pass in flight when the UPDATE lands may already have read the row, so
+# the transition can slip to the tick after that; the third interval is
+# margin.
+RECONCILER_POSITIVE_WAIT_SECS = 3 * RECONCILER_INTERVAL_SECS + PROCESSING_SLACK_SECS
+
+# Negative waits (a transition must NOT happen). Two intervals guarantee
+# at least one complete tick runs after the setup UPDATE whatever the
+# ticker's phase, so a reconciler that is going to misfire does so
+# inside the window. Negative waits always burn their full budget, so
+# this is kept as small as that guarantee allows.
+RECONCILER_NEGATIVE_WAIT_SECS = 2 * RECONCILER_INTERVAL_SECS + PROCESSING_SLACK_SECS
+
+# Poll cadence for the negative waits. They can only end early by
+# observing the misfire, so once a second bounds how late a misfire is
+# noticed without hammering Postgres through psql for the whole window.
+RECONCILER_NEGATIVE_POLL_SECS = 1
+
 
 def _force_state(session_id: str, state: str) -> None:
     """Force a session into a given state via direct UPDATE.
@@ -74,14 +109,15 @@ def _read_session_row(session_id: str) -> dict[str, str]:
 def test_session_with_heartbeats_only_stays_active() -> None:
     """Session with heartbeats but no LLM calls remains active (not idle).
 
-    Note: the idle transition requires the background reconciler which runs
-    every 60s. In Phase 1, sessions receiving heartbeats stay active.
+    Note: the idle transition requires the background reconciler, which
+    ticks every RECONCILER_INTERVAL_SECS on the dev stack; a session
+    that keeps sending heartbeats stays active across those ticks.
     """
     sid = str(uuid.uuid4())
     flavor = f"test-hb-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
 
     # Send a heartbeat
     post_heartbeat(sid)
@@ -107,7 +143,7 @@ def test_session_transitions_to_closed() -> None:
     flavor = f"test-closed-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
 
     post_event(make_event(sid, flavor, "session_end"))
 
@@ -144,7 +180,7 @@ def test_lost_session_revives_on_post_call() -> None:
     flavor = f"test-revive-lost-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
 
     _force_state(sid, "lost")
     before = _read_session_row(sid)
@@ -186,7 +222,7 @@ def test_stale_session_revives_on_tool_call() -> None:
     flavor = f"test-revive-stale-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
 
     _force_state(sid, "stale")
     before = _read_session_row(sid)
@@ -214,7 +250,7 @@ def test_closed_session_stays_closed_on_post_call() -> None:
     flavor = f"test-closed-stays-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
     post_event(make_event(sid, flavor, "session_end"))
     wait_for_state(sid, "closed", timeout=10)
 
@@ -251,7 +287,7 @@ def test_lost_session_closes_on_session_end() -> None:
     flavor = f"test-lost-then-close-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
 
     _force_state(sid, "lost")
 
@@ -269,14 +305,15 @@ def test_reconciler_lost_threshold_is_30_min() -> None:
     silence (D105 secondary change: raised from 10 min).
 
     Backdates last_seen_at by 31 minutes on a fresh active session, then
-    waits for the background reconciler tick (every 60s) to flip it
-    through stale and into lost in a single pass.
+    waits for the background reconciler tick (every
+    RECONCILER_INTERVAL_SECS on the dev stack) to flip it through stale
+    and into lost in a single pass.
     """
     sid = str(uuid.uuid4())
     flavor = f"test-30min-lost-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
 
     exec_sql(
         "UPDATE sessions SET last_seen_at = NOW() - INTERVAL '31 minutes' "
@@ -284,10 +321,11 @@ def test_reconciler_lost_threshold_is_30_min() -> None:
         sid=sid,
     )
 
-    # Reconciler runs every 60s. Wait up to ~90s for the next tick to
-    # sweep the backdated row through active -> stale -> lost (both
-    # transitions fire in the same ReconcileStaleSessions call).
-    detail = wait_for_state(sid, "lost", timeout=90)
+    # Wait for the next reconciler tick to sweep the backdated row
+    # through active -> stale -> lost (both transitions fire in the same
+    # ReconcileStaleSessions call). RECONCILER_POSITIVE_WAIT_SECS covers
+    # the worst-case tick phase plus processing slack.
+    detail = wait_for_state(sid, "lost", timeout=RECONCILER_POSITIVE_WAIT_SECS)
     assert detail["session"]["state"] == "lost"
 
 
@@ -307,7 +345,7 @@ def test_orphan_timeout_reaper_closes_lost_session() -> None:
     flavor = f"test-orphan-reap-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
 
     # Skip the organic stale → lost progression: backdate and force.
     # The reaper only cares that state='lost' and last_seen_at is past
@@ -320,7 +358,9 @@ def test_orphan_timeout_reaper_closes_lost_session() -> None:
         sid=sid,
     )
 
-    detail = wait_for_state(sid, "closed", timeout=90)
+    # One tick reaps the row; RECONCILER_POSITIVE_WAIT_SECS covers the
+    # worst-case tick phase plus processing slack.
+    detail = wait_for_state(sid, "closed", timeout=RECONCILER_POSITIVE_WAIT_SECS)
     assert detail["session"]["state"] == "closed"
     assert detail["session"]["ended_at"] is not None, (
         f"reaper should stamp ended_at on {sid}; got null"
@@ -341,6 +381,21 @@ def test_orphan_timeout_reaper_closes_lost_session() -> None:
     )
 
 
+def _lost_session_past_the_orphan_timeout(flavor: str) -> str:
+    """A session the reaper must close on its next tick: lost, and silent
+    for longer than the orphan timeout."""
+    sid = str(uuid.uuid4())
+    post_event(make_event(sid, flavor, "session_start"))
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
+    exec_sql(
+        "UPDATE sessions SET state = 'lost', "
+        "last_seen_at = NOW() - INTERVAL '25 hours' "
+        "WHERE session_id = :'sid'::uuid",
+        sid=sid,
+    )
+    return sid
+
+
 def test_orphan_timeout_reaper_does_not_close_recent_lost_session() -> None:
     """A session in state='lost' but with last_seen_at *inside* the
     ``FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`` window (default 24h) must NOT
@@ -352,7 +407,7 @@ def test_orphan_timeout_reaper_does_not_close_recent_lost_session() -> None:
     flavor = f"test-orphan-noreap-{uuid.uuid4().hex[:6]}"
 
     post_event(make_event(sid, flavor, "session_start"))
-    wait_for_session_in_fleet(sid, timeout=5.0)
+    wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS)
 
     # last_seen_at is 1 hour ago — past the 30-min lost threshold so
     # state='lost' is plausible, but well inside the default 24h orphan
@@ -363,21 +418,27 @@ def test_orphan_timeout_reaper_does_not_close_recent_lost_session() -> None:
         "WHERE session_id = :'sid'::uuid",
         sid=sid,
     )
+    # A second lost row past the window is the canary: the reaper must
+    # close it during the wait below, which proves ticks are running
+    # at the expected rate rather than letting the negative wait pass
+    # on a worker whose interval is still the production default.
+    canary = _lost_session_past_the_orphan_timeout(flavor)
 
     # Negative wait: poll for the wrong-firing condition (state flipped
-    # to 'closed') with a 75s budget — long enough for at least one
-    # reconciler tick (every 60s). If the reaper is going to wrongly
-    # fire, it fires inside this window. Using wait_until rather than
-    # bare time.sleep keeps the polling cadence visible and aligns
-    # with the conftest convention (see tests/shared/fixtures.py).
+    # to 'closed') for RECONCILER_NEGATIVE_WAIT_SECS — long enough for
+    # at least one complete reconciler tick after the UPDATE above. If
+    # the reaper is going to wrongly fire, it fires inside this window.
+    # Using wait_until rather than bare time.sleep keeps the polling
+    # cadence visible and aligns with the conftest convention (see
+    # tests/shared/fixtures.py).
     def _reaper_wrongly_fired() -> bool:
         return _read_session_row(sid)["state"] == "closed"
 
     try:
         wait_until(
             _reaper_wrongly_fired,
-            timeout=75,
-            interval=5,
+            timeout=RECONCILER_NEGATIVE_WAIT_SECS,
+            interval=RECONCILER_NEGATIVE_POLL_SECS,
             msg="reaper should NOT fire inside the timeout window",
         )
     except TimeoutError:
@@ -393,6 +454,7 @@ def test_orphan_timeout_reaper_does_not_close_recent_lost_session() -> None:
     assert row["state"] == "lost", (
         f"reaper wrongly closed recent lost session {sid}: state={row['state']!r}"
     )
+    wait_for_state(canary, "closed", timeout=RECONCILER_POSITIVE_WAIT_SECS)
 
     raw = exec_sql(
         "SELECT COUNT(*) FROM events "
@@ -676,8 +738,6 @@ def test_order_independence_pc_then_ss_matches_ss_then_pc() -> None:
 # second and again after two before the orphan verdict; polls that may
 # span that budget allow it plus the slack any other poll gets.
 WORKER_RETRY_WINDOW_SECS = 3.0
-# Room for the worker to process a handful of events on a loaded runner.
-PROCESSING_SLACK_SECS = 10.0
 STATE_TIMEOUT_SECS = PROCESSING_SLACK_SECS
 RETRY_WINDOW_TIMEOUT_SECS = WORKER_RETRY_WINDOW_SECS + PROCESSING_SLACK_SECS
 # Several times FLIGHTDECK_WORKER_POOL_SIZE (10), so many sessions are in
@@ -694,9 +754,11 @@ HOT_SESSION_CLIENTS = 8
 HOT_SESSION_STARTS = 40
 # How long a re-attaching session_start may take while its row is held
 # by another writer: the stamp skips the row and retries after pauses
-# that add up to 75 ms, so well under a second; a stamp that waited for
-# the lock would hang for the length of the block instead.
-HELD_ROW_RESPONSE_BOUND_SECS = 2.0
+# that add up to 75 ms, so well under a second even with four pytest
+# processes loading ingestion; a stamp that waited for the lock would
+# hang until the request's own timeout instead, so the bound still
+# discriminates at five seconds.
+HELD_ROW_RESPONSE_BOUND_SECS = 5.0
 # What the worker logs when it schedules a redelivery, on the orphan
 # path, on a session_end that predates the session's current run, and on
 # any failed attempt.
@@ -799,13 +861,16 @@ def test_session_end_published_before_its_session_start_does_not_close_it() -> N
     sid = str(uuid.uuid4())
     flavor = f"test-end-first-{uuid.uuid4().hex[:6]}"
 
+    started_at = time.time()
     post_event(make_event(sid, flavor, "session_end"))
     post_event(make_event(sid, flavor, "session_start"))
 
     _wait_for_rows(flavor, "session_end", 1, RETRY_WINDOW_TIMEOUT_SECS)
     assert get_session_detail(sid)["session"]["state"] == "active"
     wait_until(
-        lambda: bool(worker_log_lines(SUPERSEDED_WARNING, f"session_id={sid}")),
+        lambda: bool(
+            worker_log_lines(SUPERSEDED_WARNING, f"session_id={sid}", since=started_at)
+        ),
         timeout=STATE_TIMEOUT_SECS,
         msg="worker did not report the superseded session_end",
     )
@@ -815,6 +880,7 @@ def test_session_end_published_before_its_session_start_does_not_close_it() -> N
     wait_for_state(sid, "closed", timeout=STATE_TIMEOUT_SECS)
 
 
+@pytest.mark.exclusive
 def test_short_lived_sessions_published_back_to_back_all_close() -> None:
     """Sessions that each start, make one call and end within a few
     milliseconds are the real-world shape of the race (one-shot scripts,
@@ -844,13 +910,15 @@ def test_orphan_session_end_is_dropped_once_after_the_retry_budget() -> None:
     sid = str(uuid.uuid4())
     flavor = f"test-orphan-end-{uuid.uuid4().hex[:6]}"
     sid_needle = f"session_id={sid}"
-    errors_before = set(worker_log_lines(PROCESS_ERROR_MARKER, sid_needle))
 
+    # Both stamps precede the post: the wall-clock one scopes the log
+    # reads to this test's lines, the monotonic one bounds the verdict.
+    started_at = time.time()
     started = time.monotonic()
     post_event(make_event(sid, flavor, "session_end"))
 
     wait_until(
-        lambda: bool(worker_log_lines(ORPHAN_WARNING, sid_needle)),
+        lambda: bool(worker_log_lines(ORPHAN_WARNING, sid_needle, since=started_at)),
         timeout=RETRY_WINDOW_TIMEOUT_SECS,
         msg=f"worker never logged the orphan drop for {sid}",
     )
@@ -859,12 +927,12 @@ def test_orphan_session_end_is_dropped_once_after_the_retry_budget() -> None:
         f"orphan verdict after {elapsed:.2f}s: the redeliveries were not delayed"
     )
 
-    redeliveries = worker_log_lines(REDELIVERY_NOTICE, sid_needle)
+    redeliveries = worker_log_lines(REDELIVERY_NOTICE, sid_needle, since=started_at)
     assert len(redeliveries) == ORPHAN_REDELIVERIES, redeliveries
-    warnings = worker_log_lines(ORPHAN_WARNING, sid_needle)
+    warnings = worker_log_lines(ORPHAN_WARNING, sid_needle, since=started_at)
     assert len(warnings) == 1, warnings
-    new_errors = set(worker_log_lines(PROCESS_ERROR_MARKER, sid_needle)) - errors_before
-    assert not new_errors, new_errors
+    errors = worker_log_lines(PROCESS_ERROR_MARKER, sid_needle, since=started_at)
+    assert not errors, errors
     rows = exec_sql(
         "SELECT COUNT(*) FROM sessions WHERE session_id = :'sid'::uuid",
         sid=sid,
@@ -975,6 +1043,7 @@ def test_reattachment_that_ends_at_once_with_the_previous_end_queued_closes() ->
     assert get_session_detail(sid)["session"]["state"] == "closed"
 
 
+@pytest.mark.exclusive
 def test_backlog_of_reattachments_drains_to_the_right_states() -> None:
     """Queue every re-attachment shape behind a paused worker, then let
     the pool drain the backlog concurrently. Whatever order the
@@ -1061,6 +1130,7 @@ def test_a_later_session_end_on_a_closed_row_advances_its_close_sequence() -> No
     assert get_session_detail(sid)["session"]["state"] == "closed"
 
 
+@pytest.mark.exclusive
 def test_many_concurrent_session_starts_on_one_session_id_stay_consistent() -> None:
     """Several clients re-attaching the same session id at once must all be
     accepted and leave the session open. Whether the stamp queues on the
@@ -1183,6 +1253,7 @@ def test_open_row_without_recorded_sequences_is_closed_by_its_end() -> None:
     assert closed_seq.isdigit(), f"closed_seq not recorded: {closed_seq!r}"
 
 
+@pytest.mark.exclusive
 def test_a_call_published_after_the_end_cannot_keep_the_session_open() -> None:
     """A call the worker handles before its session_start creates the
     row lazily, without a start sequence. With start, end and call queued
@@ -1448,23 +1519,30 @@ def test_orphan_reaper_does_not_fire_on_active_parent_with_child_traffic() -> No
     against the parent-bump propagation accidentally landing in a
     state where children stream but the reaper still wins the race.
 
-    Backdate parent past 24h orphan timeout AND force lost. Without
-    the bump the next reconciler tick reaps. With the bump, the child
-    event flips it back to active well before the tick fires.
+    Backdate parent to PROCESSING_SLACK_SECS short of the 24h orphan
+    timeout AND force lost: the row only becomes reapable a few seconds
+    after the UPDATE, by which time the child event's bump has landed,
+    so a reconciler tick firing in between (likely at the dev stack's
+    RECONCILER_INTERVAL_SECS cadence) cannot reap the parent before the
+    scenario is set up. Without the bump the first tick after that
+    margin reaps. With the bump, the child event flips it back to
+    active well before the row is reapable.
     """
     parent_sid, child_sid = _seed_parent_with_child(
         "test-reaper-noop-parent", "test-reaper-noop-child"
     )
     exec_sql(
         "UPDATE sessions SET state = 'lost', "
-        "last_seen_at = NOW() - INTERVAL '25 hours' "
+        "last_seen_at = NOW() - INTERVAL '24 hours' "
+        f"+ INTERVAL '{PROCESSING_SLACK_SECS} seconds' "
         "WHERE session_id = :'sid'::uuid",
         sid=parent_sid,
     )
 
     # Child event fires immediately — the bump should flip parent to
-    # active and update last_seen_at to NOW(), well before any
-    # reconciler tick can pick the row up as a reaper candidate.
+    # active and update last_seen_at to NOW() well inside the
+    # PROCESSING_SLACK_SECS margin, before any reconciler tick can pick
+    # the row up as a reaper candidate.
     post_event(
         make_event(
             child_sid,
@@ -1482,8 +1560,9 @@ def test_orphan_reaper_does_not_fire_on_active_parent_with_child_traffic() -> No
         msg=f"parent {parent_sid} should be revived to active before reaper fires",
     )
 
-    # Wait through one full reconciler tick window (60s + 30s padding)
-    # to confirm the reaper does NOT subsequently close the parent.
+    # Wait through RECONCILER_NEGATIVE_WAIT_SECS (at least one complete
+    # reconciler tick after the bump, plus processing slack) to confirm
+    # the reaper does NOT subsequently close the parent.
     # State must stay active and ended_at must remain null. If the
     # bump's last_seen_at update raced and the reaper picked up a
     # stale value, this assertion catches it.
@@ -1493,8 +1572,8 @@ def test_orphan_reaper_does_not_fire_on_active_parent_with_child_traffic() -> No
     try:
         wait_until(
             _parent_wrongly_closed,
-            timeout=90,
-            interval=10,
+            timeout=RECONCILER_NEGATIVE_WAIT_SECS,
+            interval=RECONCILER_NEGATIVE_POLL_SECS,
             msg=f"reaper must not close parent {parent_sid} that has live child traffic",
         )
     except TimeoutError:

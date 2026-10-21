@@ -507,7 +507,12 @@ jobs:
   integration:
     name: Integration + sensor e2e
     runs-on: ubuntu-latest
-    needs: [sensor, go, dashboard, plugin]
+    # No `needs:` on the unit jobs: this job boots its own stack and
+    # shares nothing with them, so it starts as soon as the push lands
+    # instead of queueing behind the slowest unit job, which cost about
+    # four minutes of wall-clock per push. A unit failure still fails
+    # the run on its own job.
+    #
     # Opt this job's JavaScript actions into Node 24.
     #
     # PYTHON: the Makefile defaults $(PYTHON) to
@@ -540,10 +545,13 @@ jobs:
         run: make dev
 
       - name: Run integration tests (fabricated + sensor e2e)
-        # Excludes manual tests via the -m "not manual" filter that
-        # the test-integration target carries. test_ui_demo.py is
-        # the only manual-marked test today; it is a 3-minute
-        # dashboard data-population tool, not a regression test.
+        # The test-integration target runs two phases: the parallel
+        # phase under pytest-xdist for every test that keeps to its
+        # own flavors and session ids, then the tests marked
+        # `exclusive` one at a time. Both deselect manual tests;
+        # test_ui_demo.py is the only manual-marked test today, a
+        # 3-minute dashboard data-population tool, not a regression
+        # test.
         #
         # The test_sensor_e2e.py file is part of the integration
         # directory, so its 20 e2e tests run inside this step. The
@@ -571,9 +579,11 @@ jobs:
   e2e:
     name: E2E (Playwright)
     runs-on: ubuntu-latest
-    needs: [sensor, go, dashboard, plugin]
     # Rule 40c: browser end-to-end tests run parallel to
-    # the integration job so neither blocks the other. The E2E job
+    # the integration job so neither blocks the other, and, like it,
+    # with no `needs:` on the unit jobs: this job boots its own stack
+    # and shares nothing with them, so waiting on them only added the
+    # slowest unit job's runtime to every push. The E2E job
     # boots its own stack — required because seeding the canonical
     # fixture dataset must happen against the same Postgres the
     # dashboard later queries, and multiple jobs sharing one stack

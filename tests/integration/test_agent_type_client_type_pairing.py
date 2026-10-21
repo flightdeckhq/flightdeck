@@ -18,6 +18,7 @@ shape changes in a way that breaks the grep.
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
 
@@ -92,36 +93,59 @@ def test_conftest_default_pair_is_canonical() -> None:
     )
 
 
+def _agents_list_entries(source: str) -> list[dict[str, str]]:
+    """The dict literals assigned to the module-level ``AGENTS`` list.
+
+    Only string keys and string values are read; any other shape in an
+    entry is reported as a failure of this guard rather than skipped.
+    """
+    module = ast.parse(source)
+    for node in module.body:
+        if not isinstance(node, ast.Assign):
+            continue
+        if not any(isinstance(t, ast.Name) and t.id == "AGENTS" for t in node.targets):
+            continue
+        assert isinstance(node.value, ast.List), "AGENTS is not a list literal"
+        entries: list[dict[str, str]] = []
+        for element in node.value.elts:
+            assert isinstance(element, ast.Dict), (
+                f"AGENTS entry is not a dict: {ast.dump(element)}"
+            )
+            entry: dict[str, str] = {}
+            for key, value in zip(element.keys, element.values, strict=True):
+                assert isinstance(key, ast.Constant) and isinstance(key.value, str)
+                assert isinstance(value, ast.Constant) and isinstance(value.value, str)
+                entry[key.value] = value.value
+            entries.append(entry)
+        return entries
+    raise AssertionError("test_ui_demo.py::AGENTS list not found")
+
+
 def test_ui_demo_agents_list_uses_canonical_pairs() -> None:
     """``test_ui_demo.py::AGENTS`` is the specific fixture whose
     manual-run produced the Chrome-smoke anomaly. Assert each
     entry declares a legitimate agent_type / client_type pair."""
-    ui_demo = _load("test_ui_demo.py")
     # The AGENTS list entries carry explicit ``client_type`` +
-    # ``agent_type`` fields. A simple linewise regex across the list
-    # block is enough because each entry is on its own line.
-    m = re.search(r"^AGENTS\s*=\s*\[\n(.*?)^\]", ui_demo, re.DOTALL | re.MULTILINE)
-    assert m is not None, "test_ui_demo.py::AGENTS list not found"
-    body = m.group(1)
-    entries = [line for line in body.splitlines() if '"flavor"' in line]
+    # ``agent_type`` fields. The list is read from the module's syntax
+    # tree, so the check does not depend on how the formatter lays the
+    # entries out.
+    entries = _agents_list_entries(_load("test_ui_demo.py"))
     assert len(entries) > 0, "no agent entries parsed from AGENTS list"
-    for line in entries:
-        at_match = re.search(r'"agent_type":\s*"([^"]+)"', line)
-        ct_match = re.search(r'"client_type":\s*"([^"]+)"', line)
-        assert at_match is not None, f"entry lacks agent_type: {line!r}"
-        assert ct_match is not None, (
+    for entry in entries:
+        agent_type = entry.get("agent_type")
+        client_type = entry.get("client_type")
+        assert agent_type is not None, f"entry lacks agent_type: {entry!r}"
+        assert client_type is not None, (
             f"entry lacks client_type -- conftest default of "
             f"flightdeck_sensor would apply, which is the "
-            f"anti-pattern this test guards against: {line!r}"
+            f"anti-pattern this test guards against: {entry!r}"
         )
-        agent_type = at_match.group(1)
-        client_type = ct_match.group(1)
         assert client_type in ALLOWED_PAIRS, (
-            f"unknown client_type={client_type!r} in AGENTS entry: {line!r}"
+            f"unknown client_type={client_type!r} in AGENTS entry: {entry!r}"
         )
         assert agent_type in ALLOWED_PAIRS[client_type], (
             f"illegal pairing agent_type={agent_type!r} + "
-            f"client_type={client_type!r} in AGENTS entry: {line!r}. "
+            f"client_type={client_type!r} in AGENTS entry: {entry!r}. "
             f"Canonical pairs: {ALLOWED_PAIRS!r}."
         )
 

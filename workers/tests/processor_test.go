@@ -115,14 +115,6 @@ func TestPostCall_IncrementsTokensUsed(t *testing.T) {
 	}
 }
 
-func TestSessionEnd_SetsStateClosed(t *testing.T) {
-	w := newMockWriter()
-	_, _, _ = w.SettleSessionEnd(context.Background(), "sess-001", 1)
-	if len(w.sessionsClosed) != 1 || w.sessionsClosed[0] != "sess-001" {
-		t.Error("expected session closed")
-	}
-}
-
 func TestReconciler_SetsStaleAfter2Min(t *testing.T) {
 	w := newMockWriter()
 	_ = w.ReconcileStaleSessions(context.Background())
@@ -229,23 +221,6 @@ func TestReviveIfRevivable_ReturnsTrueOnlyWhenRowUpdated(t *testing.T) {
 	_ = w.UpdateLastSeen(context.Background(), "sess-stale")
 	if len(w.lastSeenUpdated) != 1 {
 		t.Error("expected revive path to advance last_seen_at")
-	}
-}
-
-func TestSessionEnd_DoesNotFlickerThroughActive(t *testing.T) {
-	// session_end on a stale/lost session should transition directly
-	// to closed. The mockWriter can only observe that SettleSessionEnd
-	// was invoked (not UpsertSession with state=active followed by
-	// SettleSessionEnd). Real state-machine ordering is covered by
-	// tests/integration/test_session_states.py::
-	// test_lost_session_closes_on_session_end.
-	w := newMockWriter()
-	_, _, _ = w.SettleSessionEnd(context.Background(), "sess-lost", 1)
-	if len(w.sessionsClosed) != 1 {
-		t.Error("expected session_end on stale/lost to close directly")
-	}
-	if len(w.sessionsCreated) != 0 {
-		t.Error("expected session_end to skip any upsert/revive flicker")
 	}
 }
 

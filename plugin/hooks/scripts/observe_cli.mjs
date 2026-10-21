@@ -98,16 +98,26 @@ export const SESSION_END_WORKER_FLAG = "--session-end-worker";
 // past it.
 export const SESSION_END_WORKER_GRACE_MS = 800;
 
+// Ceiling on the FLIGHTDECK_SESSION_END_GRACE_MS override. The test
+// suite's long-wait path uses 10 s so a fast server's worker finishes
+// inside it even on a loaded machine; a larger value can only be a
+// misconfiguration, and an exiting Claude Code must not hang on it.
+export const SESSION_END_WORKER_GRACE_MAX_MS = 10000;
+
 /**
  * The grace actually used. FLIGHTDECK_SESSION_END_GRACE_MS overrides it
  * so the test suite can force either path deterministically -- a wait
  * long enough that a fast server's worker always finishes inside it, or
- * the default where a parked worker is let go; anything unset or
- * invalid falls back to the constant.
+ * the default where a parked worker is let go. An unset, empty or
+ * invalid value falls back to the constant; a larger one is clamped to
+ * SESSION_END_WORKER_GRACE_MAX_MS.
  */
 export function sessionEndWorkerGraceMs(env = process.env) {
-  const raw = Number(env.FLIGHTDECK_SESSION_END_GRACE_MS);
-  return Number.isFinite(raw) && raw >= 0 ? raw : SESSION_END_WORKER_GRACE_MS;
+  const text = env.FLIGHTDECK_SESSION_END_GRACE_MS;
+  if (typeof text !== "string" || text.trim() === "") return SESSION_END_WORKER_GRACE_MS;
+  const raw = Number(text);
+  if (!Number.isFinite(raw) || raw < 0) return SESSION_END_WORKER_GRACE_MS;
+  return Math.min(raw, SESSION_END_WORKER_GRACE_MAX_MS);
 }
 
 // Overall deadline for the detached SessionEnd worker's transcript
@@ -164,14 +174,15 @@ export function boundedVersion(value) {
  * An identity string cut to MAX_MCP_IDENTITY_BYTES of UTF-8 on a code
  * point boundary; non-strings pass through.
  */
-function boundedIdentity(value) {
+export function boundedIdentity(value) {
   if (typeof value !== "string") return value;
-  if (Buffer.byteLength(value, "utf8") <= MAX_MCP_IDENTITY_BYTES) return value;
-  const chars = Array.from(value);
-  while (chars.length > 0 && Buffer.byteLength(chars.join(""), "utf8") > MAX_MCP_IDENTITY_BYTES) {
-    chars.pop();
-  }
-  return chars.join("");
+  const bytes = Buffer.from(value, "utf8");
+  if (bytes.length <= MAX_MCP_IDENTITY_BYTES) return value;
+  // Back the cut off any UTF-8 continuation byte (10xxxxxx) so it lands
+  // on the first byte of a code point and never splits one.
+  let end = MAX_MCP_IDENTITY_BYTES;
+  while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
+  return bytes.subarray(0, end).toString("utf8");
 }
 
 /**

@@ -28,6 +28,11 @@ import {
   resolveConfig,
   sanitizeToolInput,
   tokensFromUsage,
+  boundedIdentity,
+  MAX_MCP_IDENTITY_BYTES,
+  SESSION_END_WORKER_GRACE_MAX_MS,
+  SESSION_END_WORKER_GRACE_MS,
+  sessionEndWorkerGraceMs,
 } from "../hooks/scripts/observe_cli.mjs";
 import { deriveAgentId } from "../hooks/scripts/agent_id.mjs";
 import {
@@ -2956,5 +2961,45 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
       result.stderr.includes("hard cap"),
       `expected stderr WARN about hard cap; got: ${result.stderr}`,
     );
+  });
+});
+
+
+describe("sessionEndWorkerGraceMs", () => {
+  it("uses the default when the override is unset, empty or invalid", () => {
+    for (const value of [undefined, "", "   ", "abc", "-5", "Infinity"]) {
+      const env = value === undefined ? {} : { FLIGHTDECK_SESSION_END_GRACE_MS: value };
+      assert.equal(sessionEndWorkerGraceMs(env), SESSION_END_WORKER_GRACE_MS, `value ${value}`);
+    }
+  });
+
+  it("honours a valid override", () => {
+    assert.equal(sessionEndWorkerGraceMs({ FLIGHTDECK_SESSION_END_GRACE_MS: "0" }), 0);
+    assert.equal(sessionEndWorkerGraceMs({ FLIGHTDECK_SESSION_END_GRACE_MS: "2500" }), 2500);
+  });
+
+  it("clamps an override above the ceiling", () => {
+    assert.equal(
+      sessionEndWorkerGraceMs({ FLIGHTDECK_SESSION_END_GRACE_MS: "600000" }),
+      SESSION_END_WORKER_GRACE_MAX_MS,
+    );
+  });
+});
+
+describe("boundedIdentity", () => {
+  it("passes short strings and non-strings through", () => {
+    assert.equal(boundedIdentity("github"), "github");
+    assert.equal(boundedIdentity(null), null);
+  });
+
+  it("cuts to the byte cap on a code point boundary", () => {
+    for (const unit of ["a", "\u00e9", "\u20ac", "\u{1F600}"]) {
+      const cut = boundedIdentity(unit.repeat(400));
+      const bytes = Buffer.byteLength(cut, "utf8");
+      assert.ok(bytes <= MAX_MCP_IDENTITY_BYTES, `${unit}: ${bytes} bytes`);
+      assert.ok(bytes > MAX_MCP_IDENTITY_BYTES - Buffer.byteLength(unit, "utf8"), `${unit}: cut too short`);
+      assert.ok(!cut.includes("\uFFFD"), `${unit}: split a code point`);
+      assert.equal(cut, unit.repeat(Array.from(cut).length));
+    }
   });
 });

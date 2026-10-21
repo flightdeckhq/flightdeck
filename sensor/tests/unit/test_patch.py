@@ -1,8 +1,10 @@
 """Tests for the class-level SDK patching path.
 
-patch() mutates the SDK classes in place (class-level descriptor
-patching) rather than replacing module attributes with closures, so
-constructing a client after patch() must keep working and
+patch() mutates the SDK classes in place -- the ``create`` / ``stream``
+/ ``parse`` methods of the Anthropic ``Messages`` resource classes, the
+``chat`` / ``responses`` / ``embeddings`` descriptors of the OpenAI
+client classes -- rather than replacing module attributes with closures,
+so constructing a client after patch() must keep working and
 ``isinstance`` checks against the SDK classes must still hold.
 
 Tests in this file:
@@ -44,8 +46,9 @@ from flightdeck_sensor.interceptor.anthropic import (
     SensorAnthropic,
     SensorBeta,
     SensorMessages,
-    _AnthropicMessagesDescriptor,
     _OrigAnthropic,
+    _OrigMessages,
+    is_patched,
     patch_anthropic_classes,
     unpatch_anthropic_classes,
 )
@@ -162,15 +165,18 @@ def test_captured_reference_still_works_after_patch(sensor_init: Any) -> None:
 
 
 def test_patch_is_idempotent_anthropic(sensor_init: Any) -> None:
-    """A second patch() call must not double-install the descriptor."""
+    """A second patch() call must not re-wrap the resource methods."""
+    assert _OrigMessages is not None
+    original_create = _OrigMessages.__dict__["create"]
     flightdeck_sensor.patch(quiet=True)
-    descriptor_after_first = anthropic.Anthropic.__dict__["messages"]
-    assert isinstance(descriptor_after_first, _AnthropicMessagesDescriptor)
+    create_after_first = _OrigMessages.__dict__["create"]
+    assert create_after_first is not original_create
+    assert _OrigMessages.__dict__["_flightdeck_patched"]["create"] is original_create
 
     flightdeck_sensor.patch(quiet=True)
-    descriptor_after_second = anthropic.Anthropic.__dict__["messages"]
-    # SAME descriptor object -- not a new one wrapping the first.
-    assert descriptor_after_second is descriptor_after_first
+    # SAME method object -- not a new one wrapping the first.
+    assert _OrigMessages.__dict__["create"] is create_after_first
+    assert _OrigMessages.__dict__["_flightdeck_patched"]["create"] is original_create
 
 
 def test_patch_is_idempotent_openai(sensor_init: Any) -> None:
@@ -186,20 +192,22 @@ def test_patch_is_idempotent_openai(sensor_init: Any) -> None:
 def test_double_patch_does_not_corrupt_unpatch(sensor_init: Any) -> None:
     """After patch+patch, unpatch must still restore the real original.
 
-    The original is stored on ``cls._flightdeck_patched`` and the second
-    patch call short-circuits before overwriting it; storing the first
-    wrapper as the "original" would leave that wrapper in place after
-    unpatch.
+    The originals are stored on ``cls._flightdeck_patched`` and the
+    second patch call short-circuits before overwriting them; storing
+    the first wrapper as the "original" would leave that wrapper in
+    place after unpatch.
     """
-    original_descriptor_type = type(anthropic.Anthropic.__dict__["messages"]).__name__
-    assert original_descriptor_type == "cached_property"
+    assert _OrigMessages is not None
+    originals = {name: _OrigMessages.__dict__[name] for name in ("create", "stream", "parse")}
+    assert not is_patched()
 
     flightdeck_sensor.patch(quiet=True)
     flightdeck_sensor.patch(quiet=True)  # second call -- must not corrupt sentinel
     flightdeck_sensor.unpatch()
 
-    descriptor_after_unpatch = anthropic.Anthropic.__dict__["messages"]
-    assert type(descriptor_after_unpatch).__name__ == "cached_property"
+    assert not is_patched()
+    for name, original in originals.items():
+        assert _OrigMessages.__dict__[name] is original
 
 
 # ----------------------------------------------------------------------
@@ -209,18 +217,21 @@ def test_double_patch_does_not_corrupt_unpatch(sensor_init: Any) -> None:
 
 def test_patch_unpatch_patch_cycle_anthropic(sensor_init: Any) -> None:
     """patch -> unpatch -> patch again works correctly."""
+    assert _OrigMessages is not None
+    original_create = _OrigMessages.__dict__["create"]
     flightdeck_sensor.patch(quiet=True)
-    assert hasattr(anthropic.Anthropic, "_flightdeck_patched")
+    assert is_patched()
 
     flightdeck_sensor.unpatch()
-    assert not hasattr(anthropic.Anthropic, "_flightdeck_patched")
+    assert not is_patched()
+    assert _OrigMessages.__dict__["create"] is original_create
 
     flightdeck_sensor.patch(quiet=True)
-    assert hasattr(anthropic.Anthropic, "_flightdeck_patched")
+    assert is_patched()
 
-    # And the descriptor is the new one, not a stale reference.
-    desc = anthropic.Anthropic.__dict__["messages"]
-    assert isinstance(desc, _AnthropicMessagesDescriptor)
+    # And the method is a fresh intercepting one over the real original.
+    assert _OrigMessages.__dict__["create"] is not original_create
+    assert _OrigMessages.__dict__["_flightdeck_patched"]["create"] is original_create
 
 
 def test_patch_unpatch_patch_cycle_openai(sensor_init: Any) -> None:
@@ -244,7 +255,7 @@ def test_unpatch_without_patch_is_noop(sensor_init: Any) -> None:
     # Calling it twice is also fine:
     flightdeck_sensor.unpatch()
     # Classes remain unpatched:
-    assert not hasattr(anthropic.Anthropic, "_flightdeck_patched")
+    assert not is_patched()
     assert not hasattr(openai.OpenAI, "_flightdeck_patched")
 
 
@@ -268,24 +279,24 @@ def test_teardown_without_patch_is_noop() -> None:
 # ----------------------------------------------------------------------
 
 
-def test_descriptor_caches_messages_on_instance(sensor_init: Any) -> None:
-    """First .messages access populates instance.__dict__ with the wrapped value.
-
-    Matches the cached_property protocol: subsequent accesses go
-    through ``instance.__dict__`` and bypass the descriptor entirely.
+def test_patch_leaves_the_client_resource_untouched(sensor_init: Any) -> None:
+    """After patch() ``client.messages`` is still the SDK's own resource
+    (no proxy to cache on the instance); the interception lives on the
+    resource class's methods, so a client built before patch() is
+    intercepted as well.
     """
+    assert _OrigMessages is not None
+    before = anthropic.Anthropic(api_key="test-key")
+    before_messages = before.messages  # cached on the instance, unpatched at this point
     flightdeck_sensor.patch(quiet=True)
     client = anthropic.Anthropic(api_key="test-key")
-    assert "messages" not in vars(client)
 
     msgs = client.messages
-    assert isinstance(msgs, SensorMessages)
-    assert "messages" in vars(client)
-    assert vars(client)["messages"] is msgs
-
-    # Second access returns the cached object, not a new one.
-    msgs_again = client.messages
-    assert msgs_again is msgs
+    assert isinstance(msgs, _OrigMessages)
+    assert not isinstance(msgs, SensorMessages)
+    assert type(msgs).create is _OrigMessages.__dict__["create"]
+    # The earlier client resolves the same (patched) class method.
+    assert type(before_messages).create is _OrigMessages.__dict__["create"]
 
 
 def test_descriptor_caches_chat_on_instance(sensor_init: Any) -> None:
@@ -503,65 +514,59 @@ def test_async_openai_streaming_returns_guarded_async_stream(sensor_init: Any) -
 
 
 # ----------------------------------------------------------------------
-# No-session-then-init: descriptor must NOT cache the raw resource
-# when the session is unset, so a later init() does pick up wrapping
+# No-session-then-init: a patched resource passes the call straight to
+# the SDK while no session is active, and intercepts it once init() ran
 # ----------------------------------------------------------------------
 
 
-def test_descriptor_no_session_then_init_anthropic() -> None:
-    """Descriptor returns raw on no-session, then wraps after init().
+def test_patched_resource_no_session_then_init_anthropic(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A patched resource method is a pass-through until init().
 
     Scenario: a user imports their framework (which constructs an
-    Anthropic client and accesses .messages once during validation /
-    eager init) BEFORE calling flightdeck_sensor.init(). The
-    descriptor's first __get__ runs with _session is None. It MUST
-    return the raw resource without populating the instance cache,
-    otherwise the cached unwrapped resource would shadow the
-    descriptor on every subsequent access -- including all the calls
-    that happen AFTER init() runs and the user actually wants
-    observability.
-
-    Verification: patch() with no init() yet -> first .messages
-    access returns a raw Messages and instance.__dict__ stays
-    EMPTY. Then init() -> next .messages access goes through the
-    descriptor again and returns a SensorMessages.
+    Anthropic client and calls it during validation / eager init)
+    BEFORE calling flightdeck_sensor.init(). With no session the
+    patched method must call the SDK's original directly -- no events,
+    no guard -- and nothing may be cached in an unmetered state, so
+    the same client is intercepted on the first call after init().
     """
-    # Patch the classes WITHOUT calling init() first.
-    # This is allowed: patch_anthropic_classes is callable directly
-    # and doesn't require a session. (The public flightdeck_sensor.
-    # patch() requires init() because it asserts session presence,
-    # so we use the lower-level helper to set up the no-session
-    # scenario explicitly.)
+    from flightdeck_sensor.interceptor import anthropic as _anthropic_mod
+
+    calls: list[str] = []
+    sentinel = object()
+
+    def fake_call(real_fn: Any, kwargs: dict[str, Any], _s: Any, _p: Any) -> Any:
+        calls.append("intercepted")
+        return sentinel
+
+    def fake_original(self: Any, **kwargs: Any) -> Any:
+        calls.append("original")
+        return sentinel
+
     assert flightdeck_sensor._session is None
+    assert _OrigMessages is not None
+    # Stand in for the SDK's create so no request is built; the patch
+    # captures whatever the class carries at patch time.
+    monkeypatch.setattr(_OrigMessages, "create", fake_original)
     patch_anthropic_classes(quiet=True)
+    monkeypatch.setattr(_anthropic_mod.base, "call", fake_call)
     try:
         client = anthropic.Anthropic(api_key="test-key")
-        # First access -- session is None, should return raw and NOT
-        # populate the instance cache.
-        msgs1 = client.messages
-        assert not isinstance(msgs1, SensorMessages), (
-            "descriptor should return raw when session is None"
-        )
-        assert "messages" not in vars(client), (
-            "descriptor must NOT populate instance.__dict__ when session "
-            "is None, otherwise the cached raw resource would shadow the "
-            "descriptor and a subsequent init() would never wrap"
-        )
+        msgs = client.messages
+        assert not isinstance(msgs, SensorMessages)
+        assert msgs.create(model="m", max_tokens=1, messages=[]) is sentinel
+        assert calls == ["original"], "no session: the SDK's own create must run untouched"
 
-        # Now init() and access again -- the descriptor must run again
-        # and produce a wrapped SensorMessages.
         flightdeck_sensor.init(
             server="http://localhost:4000/ingest",
             token="tok-test",
             quiet=True,
         )
-        msgs2 = client.messages
-        assert isinstance(msgs2, SensorMessages), (
-            "after init(), the descriptor must wrap on next access"
+        assert msgs.create(model="m", max_tokens=1, messages=[]) is sentinel
+        assert calls == ["original", "intercepted"], (
+            "after init(), the same resource must route through the guard"
         )
-        # And NOW it should be cached.
-        assert "messages" in vars(client)
-        assert vars(client)["messages"] is msgs2
     finally:
         with contextlib.suppress(Exception):
             flightdeck_sensor.teardown()

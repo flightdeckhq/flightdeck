@@ -36,8 +36,17 @@ class AnthropicProvider:
 
     _client: Any = None
 
-    def __init__(self, capture_prompts: bool = False) -> None:
+    def __init__(self, capture_prompts: bool = False, platform: str | None = None) -> None:
         self._capture_prompts = capture_prompts
+        # The platform the client talks to (anthropic, bedrock, vertex,
+        # ...), reported under ``provider_metadata.platform`` on every
+        # call. None when the caller attributed none, in which case the
+        # metadata block stays headers-only.
+        self._platform = platform
+
+    @property
+    def platform(self) -> str | None:
+        return self._platform
 
     def estimate_tokens(self, request_kwargs: dict[str, Any]) -> tuple[int, str]:
         """Estimate input tokens; returns ``(count, source)``.
@@ -72,7 +81,13 @@ class AnthropicProvider:
             return 0, "none"
 
     def extract_response_metadata(self, response: Any) -> dict[str, Any] | None:
-        """Pull rate-limit headers + request id from anthropic responses."""
+        """Pull rate-limit headers + request id from anthropic responses,
+        plus the platform this provider was attributed to (see
+        ``__init__``), which is reported whether or not the response
+        exposes any header."""
+        out: dict[str, Any] = {}
+        if self._platform:
+            out["platform"] = self._platform
         try:
             obj = response
             with contextlib.suppress(Exception):
@@ -83,11 +98,9 @@ class AnthropicProvider:
                 headers = getattr(response, attr, None) or getattr(obj, attr, None)
                 if headers:
                     break
-            if not headers:
-                return None
-            getter = getattr(headers, "get", None)
+            getter = getattr(headers, "get", None) if headers else None
             if not callable(getter):
-                return None
+                return out or None
             mapping = {
                 "anthropic-ratelimit-tokens-remaining": "ratelimit_remaining_tokens",
                 "anthropic-ratelimit-requests-remaining": "ratelimit_remaining_requests",
@@ -95,7 +108,6 @@ class AnthropicProvider:
                 "request-id": "request_id",
                 "x-request-id": "request_id",
             }
-            out: dict[str, Any] = {}
             for src, dst in mapping.items():
                 val = getter(src)
                 if val is None:
@@ -107,9 +119,9 @@ class AnthropicProvider:
                         out[dst] = val
                 else:
                     out[dst] = val
-            return out or None
         except Exception:
-            return None
+            _log.debug("extract_response_metadata failed", exc_info=True)
+        return out or None
 
     def extract_output_dimensions(self, response: Any) -> dict[str, int] | None:
         """Anthropic has no native embeddings API; return None."""

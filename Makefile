@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-all
+.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-all
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -82,6 +82,9 @@ test-sensor-e2e: ## Run sensor respx-driven end-to-end tests (requires running s
 
 playground-anthropic: ## Rule 40d playground: Anthropic SDK. Requires ANTHROPIC_API_KEY.
 	$(PYTHON) playground/01_direct_anthropic.py
+
+playground-anthropic-platforms: ## Rule 40d playground: Anthropic raw/streaming-response views, parse, and Bedrock/Vertex/Foundry sections that self-skip without credentials. Requires ANTHROPIC_API_KEY.
+	$(PYTHON) playground/27_anthropic_platforms.py
 
 playground-openai: ## Rule 40d playground: OpenAI SDK. Requires OPENAI_API_KEY.
 	$(PYTHON) playground/02_direct_openai.py

@@ -10094,6 +10094,8 @@ rule, which keeps late events from reviving a session the user ended;
 re-attached run's calls are covered by the ingestion stamp above unless
 the stamp gave up on a held row.
 
+---
+
 ## D187 -- The integration suite runs in a parallel phase and an exclusive phase; the reconciler tick is configurable; stack jobs do not wait for unit jobs
 
 **Decision:** `make test-integration` runs the integration suite in two
@@ -10140,9 +10142,13 @@ Marking the parallel-unsafe tests by module (the reconcile module is
 all exclusive, but most other modules mix one unsafe test with many
 safe ones).
 
-## D190 -- Plugin tool failures reuse `tool_call` with an error block; Claude Code's session id is context, not the Flightdeck session id
+---
+
+## D190 -- Plugin tool failures reuse `tool_call` with a capture-gated error block; Claude Code's session id is context; MCP servers use Claude Code's key; `SessionEnd` posts from a detached worker
 
 **Date:** 2026-10-21
+
+**Related decisions:** D118, D184
 
 **Supersedes:** the plugin's earlier rules that a non-MCP
 `PostToolUseFailure` is dropped, that `latency_ms` on a plugin tool event
@@ -10151,39 +10157,65 @@ inline.
 
 **Decision:** The Claude Code plugin reports every `PostToolUseFailure`
 as the same `tool_call` (or `mcp_tool_call`) event a success produces,
-with an inline `error` block in the sensor's taxonomy shape
-(`error_type=other`, `error_class=PluginToolError`, the tool's error
-text, `interrupted`); there is no new event type. Tool events carry
-Claude Code's `tool_use_id` and its measured `duration_ms` (null when
-Claude Code does not report it). Claude Code's native session id
-(`hookEvent.session_id`, or `CLAUDE_CODE_SESSION_ID` from the hook
+after the same transcript flush, with an inline `error` block in the
+sensor's taxonomy shape (`error_type=other`, `error_class=PluginToolError`,
+the tool's error text, `interrupted`); there is no new event type. The
+error text is content and ships only when both capture knobs are on;
+otherwise the message is `<redacted>`, and the workers service redacts
+the same field when the session's stored capture posture is off. Tool
+events carry Claude Code's `tool_use_id` and its measured `duration_ms`
+(null when Claude Code does not report it). Claude Code's native session
+id (`hookEvent.session_id`, or `CLAUDE_CODE_SESSION_ID` from the hook
 environment) keys the plugin's per-invocation marker and is carried on
-every event as `context.claude_code_session_id`; the Flightdeck session
-id stays a random id minted once per Claude Code invocation, and
-`CLAUDE_SESSION_ID` stays the explicit override. MCP servers that another
-Claude Code plugin bundles are reported under Claude Code's own key,
-`plugin:<plugin>:<server>`, read from the hook's `mcp_server` field or
-rebuilt from the flattened `plugin_<plugin>_<server>` tool-name prefix
-on older versions; `mcp_server` is passed through. The `SessionEnd` hook
-does no network work: it clears the session markers and the policy
-cache inline and hands the transcript flush and the `session_end` POST
-to a detached worker process (the same script with
-`--session-end-worker`, the hook event on stdin, the session id in
-`CLAUDE_SESSION_ID`). `session_end` carries Claude Code's reason as
-`end_reason` beside `close_reason`. The worker stores the three fields the
-plugin now sends (`tool_use_id`, `mcp_server`, `end_reason`) in
-`events.payload`. The plugin's test files each run under a private
-`TMPDIR`.
+every event as `context.claude_code_session_id` when it is a canonical
+UUID; the Flightdeck session id stays a random id minted once per Claude
+Code invocation, and `CLAUDE_SESSION_ID` stays the explicit override.
+MCP servers are identified by the hook's `mcp_server.name` when Claude
+Code sent it and otherwise by the tool-name segment, rebuilt to Claude
+Code's own `plugin:<plugin>:<server>` key for a server bundled with
+another plugin; `mcp_server` is passed through only when the hook
+carried it, exactly as sent. The MCP policy gate resolves the server the
+same way and looks the fingerprint up by the resolved key or by the
+literal tool-name segment. The `SessionEnd` hook does no network work:
+it clears the session markers and the policy cache inline and hands the
+transcript flush and the `session_end` POST to a detached worker process
+(the same script with `--session-end-worker`, the hook event on stdin,
+the session id in `CLAUDE_SESSION_ID`), waiting up to 0.8 s for the
+worker to exit before letting it run on under a 20 s flush deadline.
+`session_end` carries Claude Code's reason as `end_reason` beside
+`close_reason`. The free-text values are bounded (64 characters for the
+run-mode signals and `end_reason`, 256 for the identity strings) and
+ingestion type-checks `tool_use_id`, `mcp_server` and `end_reason` when
+present. The workers service stores the three fields in
+`events.payload`.
 
 **Reasoning:** A tool failure is a tool call that ended badly. The
-dashboard, the `/events` facets and the session drawer already read
-`payload.error` on `llm_error` and on MCP failures, so a `tool_call` with
-the same block lands in every existing path — the `error_type` facet, the
-error indicator, the drawer — without a new event type, a new NATS
-subject (`events.<type>` routes by type), a new worker branch or a new
-dashboard mapping. The `events.event_type` column is unconstrained text,
-so a new type would have been accepted silently and then needed all of
-that work before anyone saw it.
+unscoped `/v1/events` `error_type` facet and the Investigate status chip
+read `payload.error` on any event type, so a `tool_call` with the same
+block appears there today without a new event type, a new NATS subject
+(`events.<type>` routes by type), a new worker branch or a new dashboard
+mapping; the `events.event_type` column is unconstrained text, so a new
+type would have been accepted silently and then needed all of that work
+before anyone saw it. The surfaces that do not show plugin tool failures
+yet are the session drawer's error indicator (MCP rows only), the
+`tool_call` rows themselves, the per-session `error_types[]` aggregate
+and the agent `errors` count; that rendering and those counts are
+dashboard work and sit on the README Roadmap. Two facet side effects are
+accepted: tool failures land under `error_type=other`, the same bucket
+as the sensor's unclassified LLM errors, and the per-session MCP-server
+facet keys plugin-bundled servers as `plugin:<plugin>:<server>` for rows
+stored from this release on while rows stored earlier keep the flattened
+`plugin_<plugin>_<server>` key, so one such server reads as two facet
+values across the upgrade.
+
+The error text follows the capture knobs because Claude Code's `error`
+string is whatever the tool produced -- a command's stderr, an `Edit`
+failure quoting the `old_string` it could not find, a token a failed
+command printed -- and both knobs must be on because the text can carry
+either tool input or tool output. The workers service enforces the
+stored posture on the same field for the same reason it enforces it on
+content: the per-event flags travel over a bus a direct publisher can
+write to.
 
 Claude Code's session id and the Flightdeck session id mean different
 things. A Flightdeck session is one invocation: `SessionEnd` deletes the
@@ -10196,10 +10228,20 @@ and change the id of every plugin session already stored. Carrying it in
 context gives the dashboard the link back to the transcript
 (`~/.claude/projects/<dir>/<id>.jsonl`) without touching the identity
 model. The marker is keyed on it because that is the scope the hook
-payload's `session_id` already keyed; the environment variable only
-covers callers that pass no payload. The hook payloads this rests on
-were recorded from Claude Code 2.1.306 and are kept in the plugin's test
-fixtures.
+payload's `session_id` already keyed; reading the environment variable
+covers callers that pass no payload, with one consequence: a caller that
+is not Claude Code, run from inside a Claude Code session's shell without
+a payload id, inherits that session's `CLAUDE_CODE_SESSION_ID` and joins
+that session instead of getting a cwd-keyed one of its own. The hook
+payloads this rests on were recorded from Claude Code 2.1.306 (the
+version `claude --version` reports) and are kept in the plugin's test
+fixtures; the recorded environment's `CLAUDE_CODE_EXECPATH` names
+2.1.304 because the recording runs were started from inside another
+Claude Code session, whose binary that variable names -- which is why no
+version is derived from it. Those recordings are headless `claude -p`
+runs with the plugin loaded, so D167's statement that headless runs are
+unobserved is scoped to runs that load no plugins (`setting_sources=[]`,
+`--bare`): a plain `claude -p` fires every hook.
 
 `plugin:<plugin>:<server>` is what Claude Code itself calls the server:
 the `mcp_server.name` it sends on tool hooks since 2.1.274 and the form
@@ -10207,43 +10249,54 @@ the sensor would see for the same server. The flattened tool-name prefix
 is a lossy encoding of it (the separator between plugin and server is
 the same `_` that may appear in either), so the hook field wins when
 present and the rebuilt form is used only on older versions, where the
-split at the first `_` is exact for every kebab-case plugin name.
+split at the first `_` is exact for every kebab-case plugin name. The
+policy gate matches the literal tool-name segment as well because a
+project server may itself be declared under a name such as
+`plugin_foo_bar`, which would otherwise parse to `plugin:foo:bar`, miss
+its fingerprint and fail open.
 
 The detached worker exists because Claude Code gives `SessionEnd` hooks
 1.5 seconds in total and does not let a plugin-provided hook raise it (a
 per-hook `timeout` in the user's own settings can, up to 60 s; a
-plugin's `hooks.json` cannot). The hook's network work — up to one POST
+plugin's `hooks.json` cannot). The hook's network work -- up to one POST
 per unflushed transcript turn plus the `session_end`, each with a 2 s
-abort — cannot fit that budget on a slow server: measured at 2481 ms
+abort -- cannot fit that budget on a slow server: measured at 2481 ms
 against a stub answering after 700 ms, with the `session_end` lost at the
-cut-off. With the hand-off the hook returns in about 110 ms and the
-events arrive after Claude Code has exited. The failure mode is accepted:
-a worker that crashes or is killed loses that session's flush and
+cut-off. With the hand-off alone the hook returned in about 110 ms and
+the events arrived after Claude Code had exited -- a regression on a
+fast server, where the synchronous hook delivered inside the budget and
+before exit: an ephemeral runner that tears the machine down right after
+`claude -p` returns can kill a detached worker mid-POST. The hook
+therefore waits a bounded 0.8 s for the worker to exit before letting it
+go: on a local or fast server the worker's flush and `session_end` take
+a few hundred milliseconds, so they are delivered before the hook
+returns, as before, and only a server slower than that leaves the worker
+detached. The remaining failure mode is accepted: a worker that crashes
+or is killed past the grace loses that session's final flush and
 `session_end`, which the synchronous hook lost anyway at the cut-off, and
 the session then closes through the existing stale, lost and reaper path
 like any other whose end never arrived. The markers are cleared in the
 hook, not the worker, so a `SessionStart` that follows immediately never
 sees the ended session's marker, and the worker must not touch them
 because a new session may own them by the time it runs. The worker's
-stderr goes to a log file under the plugin's temp directory, since
-Claude Code shows no output from a process it is no longer waiting on.
+stderr goes to an owner-only, size-capped log file under the plugin's
+temp directory, since Claude Code shows no output from a process it is
+no longer waiting on; the 20 s flush deadline keeps an orphaned worker
+from paying one aborted POST per unflushed turn against a dead server.
 
-The plugin's test files run under private `TMPDIR`s because the plugin
-keeps its markers in `$TMPDIR/flightdeck-plugin` and node runs test files
-concurrently; one file's cleanup of the shared directory wiped another
-file's per-message dedup markers mid-test and made a deterministic
-replay emit every turn twice.
-
-**Rejected alternatives:** A `tool_error` event type (accepted silently
-by the schema, invisible everywhere until the worker, the facets and the
-dashboard learned it). Making `CLAUDE_CODE_SESSION_ID` the Flightdeck
-session id (merges resumed runs, re-opens closed rows on every resume,
-changes stored ids). Reporting a plugin-bundled server under its declared
-name alone (`mcp-search`: two plugins' servers with the same name would
-merge in the MCP facet, and the key would still differ from what Claude
-Code reports). Moving the `SessionEnd` flush to `Stop` (in `claude -p`
-mode `Stop` fires before the final turn is in the transcript, which is
-the case the `SessionEnd` flush exists for). Keeping the `SessionEnd` hook
-synchronous and documenting the budget (loses every `session_end` on a
-slow server). Running the plugin's test files serially (slower, and it
-hides the shared-directory coupling instead of removing it).
+**Rejected alternative:** A `tool_error` event type (accepted silently
+by the schema, invisible everywhere until the workers service, the
+facets and the dashboard learned it). Making `CLAUDE_CODE_SESSION_ID` the
+Flightdeck session id (merges resumed runs, re-opens closed rows on
+every resume, changes stored ids). Reporting a plugin-bundled server
+under its declared name alone (`mcp-search`: two plugins' servers with
+the same name would merge in the MCP facet, and the key would still
+differ from what Claude Code reports). Synthesising `mcp_server` from
+the parsed name on versions that did not send it (it would no longer
+say what Claude Code reported, which is the field's whole value). Moving
+the `SessionEnd` flush to `Stop` (in `claude -p` mode `Stop` fires before
+the final turn is in the transcript, which is the case the `SessionEnd`
+flush exists for). Keeping the `SessionEnd` hook synchronous and
+documenting the budget (loses every `session_end` on a slow server).
+Waiting for the worker without a bound (a slow server holds the hook
+past the 1.5 s cut-off and loses the `session_end` the same way).

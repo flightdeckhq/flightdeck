@@ -18,12 +18,13 @@ reported from start to end:
 - Session start and end, including sub-agent sessions spawned through the
   Agent tool (reported under their own session id, linked to the parent).
 - Every tool call by name, successful or failed, with Claude Code's
-  measured duration and `tool_use_id`, a structured error on failure, and
-  a sanitised whitelist of arguments (`file_path`, `command`, `query`,
-  `pattern`, `prompt`) while `FLIGHTDECK_CAPTURE_TOOL_INPUTS` is on. MCP
-  tool calls carry their full arguments because the whitelist would
-  empty them, plus the server identity Claude Code reports
-  (`mcp_server`).
+  measured duration and `tool_use_id`, a structured error on failure
+  (its text only while both capture flags are on; `<redacted>`
+  otherwise), and a sanitised whitelist of arguments (`file_path`,
+  `command`, `query`, `pattern`, `prompt`) while
+  `FLIGHTDECK_CAPTURE_TOOL_INPUTS` is on. MCP tool calls carry their full
+  arguments because the whitelist would empty them, plus the server
+  identity Claude Code reports (`mcp_server`) when it sends one.
 - Every LLM turn read from the session transcript: model, input and output
   tokens, cache tokens, latency, and the prompt and response bodies while
   `FLIGHTDECK_CAPTURE_PROMPTS` is on.
@@ -45,8 +46,9 @@ Open the dashboard served by `FLIGHTDECK_SERVER` (default
 - agent type `coding`
 - client type `claude_code`
 - a context block with the native Claude Code session id, the Claude
-  Code version, how the session started (`startup`, `resume`, `clear`,
-  `compact`, `fork`), the entrypoint (`cli` or `sdk-cli`), whether a human
+  Code version from the transcript, how the session started (known
+  values include `startup`, `resume`, `clear` and `compact`), the
+  entrypoint (known values include `cli` and `sdk-cli`), whether a human
   is attending it, and cloud / CI markers when present
 
 Filter the Fleet view by flavor `claude-code` to see only Claude Code
@@ -83,8 +85,14 @@ plugin re-reads it at the next session start.
 
 The plugin never blocks Claude Code. If the server is unreachable it
 prints one line to stderr per failed request and exits successfully, and
-the next hook tries again. Policy evaluation fails open: with no cached
-policy, tool calls proceed as Claude Code would normally decide.
+the next hook tries again. The `session_end` is posted by a detached
+worker after the hook returns (Claude Code allows SessionEnd hooks 1.5
+seconds); its failed-request lines go to
+`$TMPDIR/flightdeck-plugin/session-end-worker.log` (Windows:
+`%TEMP%\flightdeck-plugin\session-end-worker.log`), an owner-only file
+truncated past 256 KiB. Policy evaluation fails open: with no cached
+policy, tool calls proceed as Claude Code would normally decide, and MCP
+servers bundled with other plugins are reported but not gated.
 
 ## Privacy
 

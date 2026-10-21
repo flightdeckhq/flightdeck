@@ -138,9 +138,9 @@ def _setup_unique_agent_fixture(token_count: int) -> tuple[str, str]:
     /v1/agents to look it up.
     """
     suffix = uuid.uuid4().hex[:8]
-    user = f"d157-user-{suffix}"
-    hostname = f"d157-host-{suffix}"
-    flavor = f"d157-flavor-{suffix}"
+    user = f"facet-user-{suffix}"
+    hostname = f"facet-host-{suffix}"
+    flavor = f"facet-flavor-{suffix}"
     # Use the canonical sensor agent_type / client_type pair —
     # tests/integration/test_agent_type_client_type_pairing.py guards
     # against the (coding, flightdeck_sensor) anomaly, so production

@@ -142,11 +142,11 @@ def _build_policy_snapshot(
 
 
 _PREFLIGHT_TIMEOUT_SECS = 1
-# Custom directive handler timeout (M-4). SIGALRM-based wall-clock
+# Custom directive handler timeout. SIGALRM-based wall-clock
 # bound on user-supplied handlers so a hung handler cannot block the
 # directive queue indefinitely. Note: this fires only on the main
 # thread on Unix; the directive handler thread bypasses SIGALRM by
-# design (B-H two-queue refactor) and a hung handler stalls the
+# design (directives run on their own queue and thread) and a hung handler stalls the
 # directive queue but NOT event throughput.
 _CUSTOM_DIRECTIVE_HANDLER_TIMEOUT_SECS = 5
 
@@ -1047,7 +1047,8 @@ class Session:
         Looks up the handler in the global registry, verifies the
         fingerprint matches, executes with a 5-second timeout
         (SIGALRM on non-Windows when running on the main thread --
-        bypassed on the directive handler daemon thread, see B-K),
+        bypassed on the directive handler daemon thread, where handlers
+        run with no timeout),
         and posts a directive_result event. Never raises -- always
         fails open.
 
@@ -1299,7 +1300,7 @@ class Session:
             # "what budget/MCP rules were in effect at session start"
             # without joining time-windowed policy state.
             payload["sensor_version"] = _sensor_version()
-            # C-01: emit the session's capture posture authoritatively at
+            # Emit the session's capture posture authoritatively at
             # session_start so the server can persist whether this session
             # is capturing prompt content. Sourced directly from the
             # resolved config — the single source of truth for the flag.
@@ -1399,7 +1400,7 @@ class Session:
 
         elif directive.action == DirectiveAction.DEGRADE:
             degrade_to = directive.payload.get("degrade_to", "")
-            # M-8 lock discipline: capture session state into locals
+            # Lock discipline: capture session state into locals
             # under the lock, then use the captured values verbatim for
             # both the policy_degrade payload and the directive_result
             # ack. A concurrent record_model() / record_usage() would
@@ -1486,8 +1487,8 @@ class Session:
                 directive.reason,
             )
             # Acknowledge shutdown before flipping the flag. flush()
-            # is now safe to call unconditionally because the B-H
-            # two-queue refactor moved _apply_directive off the drain
+            # is safe to call unconditionally because the two-queue
+            # design keeps _apply_directive off the drain
             # thread onto a dedicated directive handler thread. The
             # event queue's drain thread is independent and continues
             # to make progress on Queue.join().
@@ -1520,7 +1521,7 @@ class Session:
                 directive.reason,
             )
             # Same architecture as the SHUTDOWN branch above -- safe
-            # synchronous flush via the B-H two-queue refactor.
+            # synchronous flush via the two-queue design.
             ack = self._build_payload(
                 EventType.DIRECTIVE_RESULT,
                 directive_name="shutdown_flavor",

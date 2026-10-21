@@ -110,11 +110,11 @@ func TestIsAllowedContextFilterKey_Rejection(t *testing.T) {
 }
 
 // TestBuildContextFilterClause_ErrorOnUnknownKey documents the
-// error-return contract for programming errors (M-11). A direct
+// error-return contract for programming errors. A direct
 // store caller that skipped the handler's whitelist check must
 // fail fast with a non-nil error rather than silently inject an
-// arbitrary JSONB path. Pre-M-11 the function panicked; the
-// callers now surface a 500 instead of crashing the goroutine.
+// arbitrary JSONB path. Returning an error instead of panicking
+// lets callers surface a 500 instead of crashing the goroutine.
 func TestBuildContextFilterClause_ErrorOnUnknownKey(t *testing.T) {
 	clause, _, _, err := BuildContextFilterClause(
 		"evil_key", []string{"x"}, nil, 1,

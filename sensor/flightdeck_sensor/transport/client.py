@@ -235,7 +235,7 @@ class ControlPlaneClient:
 # Non-blocking event queue + dedicated directive handler queue
 # ------------------------------------------------------------------
 
-# Both queues are sized identically by design (L-3): they share the
+# Both queues are sized identically by design: they share the
 # same drop-on-full backpressure semantics, and an asymmetric size
 # would mean directive bursts could starve event throughput (or vice
 # versa). 1000 is generous for the event queue (typical agent emits
@@ -353,8 +353,8 @@ class EventQueue:
         Waits on the EVENT queue only -- the directive queue is
         internal control flow and waiting on it from inside a directive
         handler would self-deadlock by exactly the same mechanism the
-        old ``is_drain_thread`` guard was working around. After the
-        B-H two-queue refactor, this method is safe to call from
+        old ``is_drain_thread`` guard was working around. Under the
+        two-queue design, this method is safe to call from
         anywhere except the drain thread itself; in particular, it
         works correctly from inside ``Session._apply_directive``
         because that method now runs on the directive handler thread,
@@ -394,8 +394,8 @@ class EventQueue:
         signal that the daemon thread will be killed by process
         teardown rather than exiting cleanly. The most likely cause is
         a custom directive handler that is still running when the
-        agent calls teardown() (B-K limitation -- handlers run with no
-        timeout on the directive thread).
+        agent calls teardown() (handlers run with no timeout on the
+        directive thread).
         """
         self._queue.put(_SENTINEL)
         self._drain_thread.join(timeout=5)
@@ -506,7 +506,7 @@ class EventQueue:
         ``KeyboardInterrupt`` does not apply here. Exceptions are
         logged and the loop continues.
         """
-        # M-6 fix: assertions are stripped under ``python -O`` so a
+        # Assertions are stripped under ``python -O`` so a
         # bug that lets the loop start without a queue or handler
         # would silently AttributeError downstream. Explicit narrow
         # + RuntimeError surfaces the contract violation.

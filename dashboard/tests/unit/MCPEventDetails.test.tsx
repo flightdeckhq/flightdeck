@@ -192,10 +192,10 @@ describe("MCPEventDetails — list events", () => {
 });
 
 // ---------------------------------------------------------------------
-// B-6 — content-overflow handling (truncation markers + Load full)
+// Content-overflow handling (truncation markers + Load full)
 // ---------------------------------------------------------------------
 
-describe("MCPEventDetails — B-6 truncation markers", () => {
+describe("MCPEventDetails — truncation markers", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
   });

@@ -16,7 +16,6 @@ export type EventType =
   | "policy_degrade"
   | "directive"
   | "directive_result"
-  // 
   | "embeddings"
   | "llm_error"
   // MCP observability. The Python sensor emits all
@@ -400,7 +399,7 @@ export interface EventPayloadFields {
   // MCP fields. Populated on the six MCP_* event types by the
   // sensor's MCP interceptor (and on MCP_TOOL_CALL by the Claude Code
   // plugin). Absent on every other event type — the lean payload
-  // Shape means non-MCP events do not carry
+  // shape means non-MCP events do not carry
   // these fields at all. Field semantics by event type:
   //
   //   mcp_tool_list / mcp_resource_list / mcp_prompt_list:
@@ -1204,7 +1203,7 @@ export interface MCPPolicyServerCountBucket {
   count: number;
 }
 
-/** Step 6.5 — one slot in the metrics time-series. Timestamp is
+/** One slot in the metrics time-series. Timestamp is
  *  the bucket-start instant (zero-filled via SQL generate_series
  *  so empty buckets ship through with empty Blocks / Warns
  *  arrays). The dashboard sparkline pivots per-server and sums

@@ -8,7 +8,7 @@
 //   - Subsequent clicks didn't reopen after dismissal (Radix
 //     pointerDown-close on an already-focused button).
 //
-// Step 6.10 fixes both at the implementation layer (controlled
+// Both are fixed at the implementation layer (controlled
 // ``open`` state + click-toggle here; ``onOpenAutoFocus`` override
 // in MCPPolicyEntryDialog). These tests lock the interaction
 // contract so the primitive can't regress to the broken shape:

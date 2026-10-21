@@ -131,7 +131,7 @@ def test_other_event_types_skip_session_end_close_reason() -> None:
 
 
 # ------------------------------------------------------------------
-# C-01 — capture posture on session_start
+# Capture posture on session_start
 # ------------------------------------------------------------------
 
 

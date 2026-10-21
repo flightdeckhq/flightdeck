@@ -1,6 +1,6 @@
 """Unit tests for MCP Protection Policy enforcement.
 
-Covers the matrix from step 4 plan B6:
+Covers the enforcement matrix:
 
   - Policy decision evaluation (cache miss, flavor entry, global
     entry, mode default, block-on-uncertainty failsafe).
@@ -471,8 +471,8 @@ def test_enforce_warn_emits_event_returns_none() -> None:
     # policy_decision shared block +
     # originating_call_context (defaults to "tool_call") added to the
     # extras. Legacy top-level fields (policy_id, scope, decision_path)
-    # remain on the wire for backwards compatibility with the
-    # dashboard renderers; Step 6 will consolidate.
+    # stay on the wire until the dashboard reads only the shared
+    # policy_decision block.
     fake._build_payload.assert_called_with(
         EventType.POLICY_MCP_WARN,
         server_url="https://x.example.com",

@@ -38,7 +38,7 @@ openai = ["openai>=1.0", "tiktoken>=0.5"]
 # sensor's SensorLitellm wrapper then intercepts ``litellm.completion``
 # / ``litellm.acompletion`` via module-level patching.
 litellm = ["litellm>=1.0"]
-# Phase 5: Model Context Protocol (MCP) observability. The sensor's
+# Model Context Protocol (MCP) observability. The sensor's
 # MCP interceptor patches ``mcp.client.session.ClientSession`` so any
 # framework that uses the official Python ``mcp`` SDK (LangChain via
 # langchain-mcp-adapters, LlamaIndex via llama-index-tools-mcp, CrewAI
@@ -81,7 +81,7 @@ dev = [
     # made through agent frameworks without any explicit wrap() call.
     # The framework instantiates its own internal Anthropic / OpenAI
     # client; the sensor's class-level patching descriptor wraps it
-    # on first .messages / .chat access. See Phase 4.5+ Phase 3.
+    # on first .messages / .chat access.
     #
     # The langchain ecosystem upper bound is pinned <1.0 because
     # langchain-mcp-adapters>=0.2 / langgraph>=1 introduced a stricter
@@ -122,7 +122,7 @@ dev = [
     # per-dep marker is needed here -- pip resolves crewai cleanly on
     # every supported Python.
     "crewai>=1.14",
-    # Phase 5: MCP unit tests construct a ClientSession against in-memory
+    # MCP unit tests construct a ClientSession against in-memory
     # anyio streams, apply the patch, and assert event-emission shape.
     # The smoke matrix uses the same package against a real reference
     # MCP server subprocess. Both share this dev install.

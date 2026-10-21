@@ -99,7 +99,7 @@ export function MCPProtectionTab() {
         >
           Gate which MCP servers your agents may talk to. Decisions
           fall through flavor entry &rarr; global entry &rarr; mode
-          default.
+          default (D135).
         </p>
       </header>
 
@@ -379,7 +379,7 @@ function FlavorPanel({
         modeEditable={false}
         globalMode={globalMode}
         onModeChange={async () => {
-          throw new Error("Mode is global-only.");
+          throw new Error("Mode is global-only (D134).");
         }}
         onBlockOnUncertaintyChange={async (next) => {
           await updateFlavorMCPPolicy(

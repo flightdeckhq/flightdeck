@@ -28,8 +28,8 @@ import type { AnalyticsParams, AnalyticsSeries } from "@/lib/types";
 /**
  * Per-parent stacked bar chart. Each bar
  * represents one parent session; each stacked segment one child
- * role. Driven by the two-dimension ``group_by=parent_session_id,agent_role``
- * two-dim contract: the API returns one series per parent, with
+ * role. Driven by the ``group_by=parent_session_id,agent_role``
+ * two-dimension contract: the API returns one series per parent, with
  * each series carrying per-DataPoint breakdowns by role.
  *
  * Metric variants supported via the inline picker:

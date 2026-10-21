@@ -91,7 +91,7 @@ describe("eventBadgeConfig — MCP entries (verb labels + MCP prefix)", () => {
     // whitespace, and a 30-char ceiling so a future label that
     // grows past two reasonable wrap lines triggers this test as
     // a deliberate tap on the shoulder.
-    const phase5LabelKeys = [
+    const mcpLabelKeys = [
       "mcp_tool_call",
       "mcp_tool_list",
       "mcp_resource_read",
@@ -99,7 +99,7 @@ describe("eventBadgeConfig — MCP entries (verb labels + MCP prefix)", () => {
       "mcp_prompt_get",
       "mcp_prompt_list",
     ];
-    for (const key of phase5LabelKeys) {
+    for (const key of mcpLabelKeys) {
       const label = eventBadgeConfig[key].label;
       expect(label).not.toContain("\n");
       expect(label.trim()).toBe(label);
@@ -129,8 +129,8 @@ describe("eventBadgeConfig — MCP entries (verb labels + MCP prefix)", () => {
     }
   });
 
-  it("regression guard: bare-prefix MCP labels MUST NOT reappear (B-4 ambiguity)", () => {
-    // Pre-B-4 the labels were "MCP TOOL"/"MCP TOOLS"/"MCP RESOURCE"/
+  it("regression guard: bare-prefix MCP labels MUST NOT reappear (plural-only ambiguity)", () => {
+    // The rejected labels were "MCP TOOL"/"MCP TOOLS"/"MCP RESOURCE"/
     // "MCP RESOURCES"/"MCP PROMPT"/"MCP PROMPTS" — distinguished by
     // a single plural 's' between "agent invoked" and "agent
     // discovered". That ambiguity is what verbs (CALL / READ /

@@ -4,7 +4,7 @@ Wire-seeded (not sensor-driven): hand-crafts the six MCP event
 payloads, POSTs them through the real ingestion API, and asserts they
 round-trip through NATS + worker + Postgres + the Query API with the
 correct structured fields. Mirrors the methodology of
-``test_phase4_event_shapes.py`` -- everything from the wire boundary
+``test_event_shapes.py`` -- everything from the wire boundary
 inwards is real; only the SDK-side patching is out of scope (the smoke
 matrix exercises that).
 

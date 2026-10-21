@@ -109,8 +109,7 @@ describe("embeddings -- badge config (getBadge)", () => {
 // -------------------------------------------------------------------
 // EmbeddingsContentViewer.
 // Three render branches × the captured-vs-not-captured switch. Tests
-// pin the contract that drives the dashboard side of S-EMBED-7
-// E2E coverage too.
+// pin the contract the embeddings E2E coverage drives too.
 // -------------------------------------------------------------------
 
 function makeContent(input: EventContent["input"]): EventContent {

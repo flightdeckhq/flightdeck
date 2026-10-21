@@ -13,7 +13,7 @@ import { CODING_AGENT } from "./_fixtures";
 //   - InfoIcon migration: every label-side help affordance
 //     uses the shared ``<InfoIcon>`` primitive (button trigger with
 //     aria-label, not text-styled "info" links).
-//   - Step 6.9 dialog rewrite: placeholders + InfoIcons on URL /
+//   - Entry dialog: placeholders + InfoIcons on URL /
 //     Name / Decision / Enforcement.
 //
 // All cases are read-only. The dev DB stays clean across runs.

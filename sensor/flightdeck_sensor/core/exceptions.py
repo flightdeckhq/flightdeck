@@ -39,9 +39,9 @@ class MCPPolicyBlocked(Exception):  # noqa: N818
     Inherits directly from ``Exception`` rather than from
     ``DirectiveError`` because the field set
     (server_url, server_name, fingerprint, policy_id, decision_path)
-    doesn't fit DirectiveError's (action, reason) constructor — the
-    "lineage" phrasing in the design was descriptive of conceptual
-    family, not a literal class hierarchy. Frameworks that want to
+    doesn't fit DirectiveError's (action, reason) constructor.
+    Sibling here means a conceptual family, not a class hierarchy.
+    Frameworks that want to
     handle "any sensor halt" generically should catch the three
     families explicitly: ``BudgetExceededError``, ``DirectiveError``,
     ``MCPPolicyBlocked``.

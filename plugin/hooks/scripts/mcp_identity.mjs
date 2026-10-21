@@ -37,7 +37,7 @@ const DEFAULT_PORTS = { "http:": "80", "https:": "443" };
 const ENV_VAR_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g;
 
 // Whitespace collapse applies globally inside the stdio canonical
-// form (Assumption Y locked in step 2). Every run of whitespace
+// form by design. Every run of whitespace
 // becomes a single space; leading and trailing whitespace are
 // stripped. An arg containing multi-space whitespace collapses by
 // design — callers should normalize args before declaring them.

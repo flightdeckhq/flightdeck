@@ -67,7 +67,7 @@ export function EventRow({
         style={{ borderBottom: "1px solid var(--border-subtle)" }}
         onClick={() => onToggleExpand(event.id)}
         // Generic ``event-row`` testid stays for the existing E2E
-        // Suite. New per-type testids pin a
+        // suite. New per-type testids pin a
         // specific shape so T14/T15/T16 can locate exactly the
         // row they assert against — e.g. ``embeddings-event-row-
         // <id>``. Type-specific id sits alongside the generic via

@@ -197,7 +197,7 @@ func IsAllowedContextFilterKey(key string) bool {
 // “values“ is empty so callers can unconditionally invoke this
 // without filter-counting.
 //
-// “key“ MUST come from AllowedContextFilterKeys. M-11 fix: returns
+// “key“ MUST come from AllowedContextFilterKeys. Returns
 // an error rather than panicking — handlers validate the key before
 // calling, but a future bug that lets an unvalidated key reach this
 // function would otherwise crash the request goroutine. Returning an
@@ -286,10 +286,9 @@ type SessionListItem struct {
 	// token-budget axis (``policy_warn`` / ``policy_degrade`` /
 	// ``policy_block``) and the MCP Protection Policy axis
 	// (``policy_mcp_warn`` / ``policy_mcp_block`` /
-	// ``mcp_server_name_changed`` / ``mcp_policy_user_remembered``,
-	// the MCP Protection Policy family). Always present on the wire
-	// (empty array when the
-	// session carries no policy events). Same surfacing pattern as
+	// ``mcp_server_name_changed`` / ``mcp_policy_user_remembered``).
+	// Always present on the wire (empty array when the session
+	// carries no policy events). Same surfacing pattern as
 	// ErrorTypes — correlated subquery on the listing query so the
 	// dashboard renders the POLICY + MCP POLICY facets and
 	// severity-ranked session-row indicator without a per-session
@@ -508,7 +507,7 @@ const sessionListProjection = `
 `
 
 // allowedSorts prevents SQL injection in the ORDER BY clause.
-// v0.4.0 phase 2: added last_seen_at, model, hostname. hostname falls
+// The hostname sort falls
 // back to “context->>'hostname'“ because the sessions.host column
 // is nullable for sessions that predate the sensor filling it in;
 // COALESCE keeps the sort stable either way.
@@ -600,9 +599,9 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		conditions = append(conditions, fmt.Sprintf("s.agent_type IN (%s)", strings.Join(placeholders, ", ")))
 	}
 
-	// Client-type filter (repeatable: OR within group). Added in
-	// v0.4.0 phase 2 so the dashboard can partition the session
-	// table by Claude Code vs. the generic Python sensor.
+	// Client-type filter (repeatable: OR within group). Lets the
+	// dashboard partition the session table by Claude Code vs. the
+	// generic Python sensor.
 	if len(params.ClientTypes) > 0 {
 		placeholders := make([]string, len(params.ClientTypes))
 		for i, ct := range params.ClientTypes {
@@ -850,8 +849,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 	// queryable too. Consulting only the JSONB array would mean a
 	// session with ``framework=langchain`` (bare) and an empty
 	// context array silently returns empty for any filter
-	// value -- the cross-cut bug the supervisor's V-pass addition
-	// flagged.
+	// value -- the cross-cut bug this clause exists to prevent.
 	if len(params.Frameworks) > 0 {
 		conditions = append(conditions, fmt.Sprintf(
 			"(s.framework = ANY($%d::text[]) "+
@@ -876,7 +874,7 @@ func (s *Store) GetSessions(ctx context.Context, params SessionsParams) (*Sessio
 		if fcErr != nil {
 			// Should be unreachable: handlers validate ``key`` against
 			// AllowedContextFilterKeys before reaching this code path.
-			// M-11 surfaces an internal error rather than panicking so a
+			// Surfacing an internal error rather than panicking means a
 			// future bug becomes a 500 with logs, not a goroutine crash.
 			return nil, fmt.Errorf(
 				"context filter for %q: %w", key, fcErr,

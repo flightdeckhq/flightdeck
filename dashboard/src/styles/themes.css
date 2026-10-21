@@ -81,14 +81,14 @@
      on the dark surface stays legible. */
   --claude-code: #E8915A;
 
-  /* Phase 4 event-type palette extensions. ``--event-embeddings`` is
+  /* Event-type palette extensions. ``--event-embeddings`` is
      the cyan family (RAG/semantic search iconography); ``--event-error``
      is the danger red so llm_error events read as alarming without
      being a policy-block red (those are ``--event-block``). */
   --event-embeddings: #06b6d4;
   --event-error: #ef4444;
 
-  /* Phase 5 MCP event palette. Three families distinguish the three
+  /* MCP event palette. Three families distinguish the three
      MCP operation classes:
        --event-mcp-tool      cyan-2  — tool calls + tool list
        --event-mcp-resource  green   — resource reads + list
@@ -210,12 +210,12 @@
      darker hex so amber on white surface stays legible. */
   --claude-code: #D4763B;
 
-  /* Phase 4 event-type palette extensions -- light-theme variants
+  /* Event-type palette extensions -- light-theme variants
      with slightly darker chromas to stay legible against ``--bg``. */
   --event-embeddings: #0891b2;
   --event-error: #dc2626;
 
-  /* Phase 5 MCP palette -- light-theme variants. Same three families
+  /* MCP palette -- light-theme variants. Same three families
      (tool / resource / prompt) at darker chromas. */
   --event-mcp-tool: #0891b2;
   --event-mcp-resource: #059669;

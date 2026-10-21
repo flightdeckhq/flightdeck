@@ -51,7 +51,7 @@ def validate_egress_url(
     field_name: str,
     allow_insecure_transport: bool = False,
 ) -> None:
-    """Validate a resolved control-plane egress URL (H-01).
+    """Validate a resolved control-plane egress URL.
 
     Raises :class:`ValueError` when:
 
@@ -206,8 +206,8 @@ class PolicyDecisionSummary:
       because operators reading the policy_decision block in
       isolation need it self-describing.
     - ``reason`` — operator-readable single-line summary built by
-      the sensor at emission time. Pattern locked in Step 2 plan
-      readback: "<what happened> + <by what mechanism> + <relevant
+      the sensor at emission time. The locked pattern is
+      "<what happened> + <by what mechanism> + <relevant
       context>". No newlines.
     - ``decision_path`` — MCP-only. Mirrors ``MCPPolicyDecision``.
     - ``matched_entry_id`` / ``matched_entry_label`` — MCP-only.
@@ -293,7 +293,7 @@ class SensorConfig:
     client_type: str = "flightdeck_sensor"
     api_url: str = ""
     capture_prompts: bool = False
-    # H-01: opt-in to plaintext http:// egress for a non-local control
+    # Opt-in to plaintext http:// egress for a non-local control
     # plane. Default False forces https:// for any public host; local /
     # loopback / private targets are always allowed over http regardless.
     # Env-readable via FLIGHTDECK_ALLOW_INSECURE_TRANSPORT (resolved in
@@ -318,7 +318,7 @@ class SensorConfig:
     def __post_init__(self) -> None:
         if not self.api_url:
             self.api_url = self.server
-        # H-01: validate the resolved control-plane egress URLs. Both
+        # Validate the resolved control-plane egress URLs. Both
         # ``server`` (ingestion) and ``api_url`` (control-plane API) are
         # checked so every egress target is covered by the single helper.
         validate_egress_url(

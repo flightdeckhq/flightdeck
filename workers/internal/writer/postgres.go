@@ -449,9 +449,9 @@ func (w *Writer) InsertEvent(
 // Adds “ToolInput“ + “ToolOutput“
 // keys for the tool-capture migration. mcp_tool_call /
 // mcp_prompt_get / LLM-side tool_call route arguments + results
-// through these dedicated columns instead of the LLM-prompt-style
-// repurposing of Messages/Response that the pre-Step-3.b overflow
-// path used. See migration 000021_event_content_tool_capture.
+// through these dedicated columns instead of repurposing the
+// LLM-prompt-style Messages/Response slots. See migration
+// 000021_event_content_tool_capture.
 func (w *Writer) InsertEventContent(ctx context.Context, eventID, sessionID string, content json.RawMessage) error {
 	// Parse the content JSON to extract fields
 	var c struct {

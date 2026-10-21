@@ -60,7 +60,7 @@ def with_retry(
                 )
                 time.sleep(delay)
     # Unreachable: the loop either returns or sets ``last_exc`` and
-    # falls through. M-6 rationale: explicit RuntimeError rather than
+    # falls through. Explicit RuntimeError rather than
     # ``assert`` so behaviour is stable under ``python -O``.
     if last_exc is None:
         raise RuntimeError("with_retry exhausted attempts without recording an exception")

@@ -36,7 +36,7 @@ import sys
 from pathlib import Path
 from typing import Any, Protocol
 
-# Subprocess timeout for ``git`` invocations in GitCollector (M-5).
+# Subprocess timeout for ``git`` invocations in GitCollector.
 # Bounded so a slow / unresponsive git binary cannot delay sensor
 # init() — context collection is best-effort and falls back silently.
 _GIT_SUBPROCESS_TIMEOUT_SECS = 0.5

@@ -227,8 +227,8 @@ type Event struct {
 	TokensInput         *int           `json:"tokens_input,omitempty"`
 	TokensOutput        *int           `json:"tokens_output,omitempty"`
 	TokensTotal         *int           `json:"tokens_total,omitempty"`
-	TokensCacheRead     int64          `json:"tokens_cache_read"`     // prompt-cache token split
-	TokensCacheCreation int64          `json:"tokens_cache_creation"` // 0 when the provider reports none
+	TokensCacheRead     int64          `json:"tokens_cache_read"`     // prompt-cache tokens read; 0 when the provider reports none
+	TokensCacheCreation int64          `json:"tokens_cache_creation"` // prompt-cache tokens written; 0 when the provider reports none
 	LatencyMs           *int           `json:"latency_ms,omitempty"`
 	ToolName            *string        `json:"tool_name,omitempty"`
 	HasContent          bool           `json:"has_content"`
@@ -397,10 +397,10 @@ func (s *Store) GetAgentFleet(
 			a.user_name, a.hostname, a.first_seen_at, a.last_seen_at,
 			a.total_sessions, a.total_tokens,
 			COALESCE(rollup.state, '') AS state,
-			d126.agent_role,
-			d126.topology,
-			d161.os, d161.arch, d161.git_branch, d161.git_repo,
-			d161.orchestration, d161.python_version, d161.process_name
+			subagent.agent_role,
+			subagent.topology,
+			latest.os, latest.arch, latest.git_branch, latest.git_repo,
+			latest.orchestration, latest.python_version, latest.process_name
 		FROM agents a
 		LEFT JOIN LATERAL (
 			SELECT CASE
@@ -417,8 +417,8 @@ func (s *Store) GetAgentFleet(
 				)
 			END AS state
 		) rollup ON TRUE
-		LEFT JOIN LATERAL (` + d126AgentRollupSQL + `) d126 ON TRUE
-		LEFT JOIN LATERAL (` + agentLatestContextSQL + `) d161 ON TRUE` + filter + `
+		LEFT JOIN LATERAL (` + agentRollupSQL + `) subagent ON TRUE
+		LEFT JOIN LATERAL (` + agentLatestContextSQL + `) latest ON TRUE` + filter + `
 		-- ORDER BY: primary last_seen_at DESC matches user expectation
 		-- ("most recently active first"). Secondary client_type ASC
 		-- breaks last_seen_at ties deterministically -- critical for
@@ -599,7 +599,7 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 	return out, nil
 }
 
-// d126AgentRollupSQL is the LATERAL subquery that computes the
+// agentRollupSQL is the LATERAL subquery that computes the
 // sub-agent observability per-agent rollup fields: agent_role and
 // topology. Shared by GetAgentFleet, ListAgents, and GetAgentByID so
 // the three projections stay byte-identical on the new columns.
@@ -615,7 +615,7 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 //	             by a parent; secondary nesting is incidental. The
 //	             EXISTS subqueries hit the partial index
 //	             ``sessions_parent_session_id_idx`` directly.
-const d126AgentRollupSQL = `
+const agentRollupSQL = `
 	SELECT
 		(
 			SELECT s.agent_role
@@ -659,7 +659,7 @@ const d126AgentRollupSQL = `
 // (`FROM agents a` / `... agents a ...`). Adding a fourth call
 // site with a different alias produces a runtime planner error,
 // not a compile-time failure. Matches the existing convention
-// used by `d126AgentRollupSQL` above.
+// used by `agentRollupSQL` above.
 //
 // Returns nulls when the agent has no sessions OR the latest
 // session's context is null OR the JSONB key is missing — three
@@ -688,7 +688,7 @@ const agentLatestContextSQL = `
 //
 // IMPORTANT: references “a.agent_id“ from the outer query —
 // every caller MUST alias the outer “agents“ table as “a“
-// (same convention as “d126AgentRollupSQL“ and
+// (same convention as “agentRollupSQL“ and
 // “agentLatestContextSQL“ above).
 //
 // Used inside a “LEFT JOIN LATERAL ( ... ) rollup ON TRUE“

@@ -67,7 +67,7 @@ func TestNonFrameworkDimensionsHaveNoFromExtras(t *testing.T) {
 	}
 }
 
-// TestD126DimensionsBucketNullsAsRoot guards the agent_role and
+// TestSubAgentDimensionsBucketNullsAsRoot guards the agent_role and
 // parent_session_id projections against the unknown-fallback drift
 // the rest of the dimension family uses. The design spec
 // (CLAUDE.md Rule 25, ARCHITECTURE.md analytics section) requires
@@ -75,7 +75,7 @@ func TestNonFrameworkDimensionsHaveNoFromExtras(t *testing.T) {
 // dims so the dashboard can label the no-parent / no-role bucket
 // with a meaningful term rather than the generic "unknown" the
 // other dims use.
-func TestD126DimensionsBucketNullsAsRoot(t *testing.T) {
+func TestSubAgentDimensionsBucketNullsAsRoot(t *testing.T) {
 	for _, name := range []string{"agent_role", "parent_session_id"} {
 		dim, ok := dimensions[name]
 		if !ok {
@@ -180,7 +180,7 @@ func TestQueryAnalytics_SingleDimRegression(t *testing.T) {
 
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	flavor := "test-d126-6.4-single-" + randomUUID(t)[:8]
+	flavor := "test-subagent-single-" + randomUUID(t)[:8]
 
 	// Seed an agent first to satisfy the sessions.agent_id FK,
 	// then a session + a post_call event so the query has data
@@ -255,7 +255,7 @@ func TestQueryAnalytics_TwoDimParentRoleBreakdown(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	parentSessionID := randomUUID(t)
-	parentFlavor := "test-d126-6.4-parent-" + randomUUID(t)[:8]
+	parentFlavor := "test-subagent-parent-" + randomUUID(t)[:8]
 	childResearcher := randomUUID(t)
 	childWriter := randomUUID(t)
 

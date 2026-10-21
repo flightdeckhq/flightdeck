@@ -55,7 +55,7 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
 # Whitespace collapse applies globally inside the stdio canonical
-# form (Assumption Y locked in step 2). Every run of whitespace
+# form by design. Every run of whitespace
 # becomes a single space; leading and trailing whitespace are
 # stripped. An arg containing multi-space whitespace collapses by
 # design — callers should normalize args before declaring them. This

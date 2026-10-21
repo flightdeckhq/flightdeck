@@ -1863,7 +1863,7 @@ const docTemplate = `{
         },
         "/v1/mcp-policies/{flavor}/metrics": {
             "get": {
-                "description": "Aggregates policy_mcp_warn and policy_mcp_block events emitted by the sensor / plugin enforcement path. Returns empty buckets until step 4 ships those event types. period accepts 24h / 7d / 30d.",
+                "description": "Aggregates policy_mcp_warn and policy_mcp_block events emitted by the sensor / plugin enforcement path. Buckets are zero-filled across the period, so a policy with no enforcement activity returns empty buckets. period accepts 24h / 7d / 30d.",
                 "produces": [
                     "application/json"
                 ],
@@ -3146,11 +3146,11 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "tokens_cache_creation": {
-                    "description": "0 when the provider reports none",
+                    "description": "prompt-cache tokens written; 0 when the provider reports none",
                     "type": "integer"
                 },
                 "tokens_cache_read": {
-                    "description": "prompt-cache token split",
+                    "description": "prompt-cache tokens read; 0 when the provider reports none",
                     "type": "integer"
                 },
                 "tokens_input": {
@@ -3867,7 +3867,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "policy_event_types": {
-                    "description": "PolicyEventTypes lists every distinct policy enforcement\n` + "`" + `` + "`" + `event_type` + "`" + `` + "`" + ` observed in the session. Includes both the\ntoken-budget axis (` + "`" + `` + "`" + `policy_warn` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `policy_degrade` + "`" + `` + "`" + ` /\n` + "`" + `` + "`" + `policy_block` + "`" + `` + "`" + `) and the MCP Protection Policy axis\n(` + "`" + `` + "`" + `policy_mcp_warn` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `policy_mcp_block` + "`" + `` + "`" + ` /\n` + "`" + `` + "`" + `mcp_server_name_changed` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `mcp_policy_user_remembered` + "`" + `` + "`" + `,\nthe MCP Protection Policy family). Always present on the wire\n(empty array when the\nsession carries no policy events). Same surfacing pattern as\nErrorTypes — correlated subquery on the listing query so the\ndashboard renders the POLICY + MCP POLICY facets and\nseverity-ranked session-row indicator without a per-session\nfollow-up fetch. The dashboard splits the unified array into\ntwo sidebar facets via the EVENT_TYPE_GROUPS classification.",
+                    "description": "PolicyEventTypes lists every distinct policy enforcement\n` + "`" + `` + "`" + `event_type` + "`" + `` + "`" + ` observed in the session. Includes both the\ntoken-budget axis (` + "`" + `` + "`" + `policy_warn` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `policy_degrade` + "`" + `` + "`" + ` /\n` + "`" + `` + "`" + `policy_block` + "`" + `` + "`" + `) and the MCP Protection Policy axis\n(` + "`" + `` + "`" + `policy_mcp_warn` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `policy_mcp_block` + "`" + `` + "`" + ` /\n` + "`" + `` + "`" + `mcp_server_name_changed` + "`" + `` + "`" + ` / ` + "`" + `` + "`" + `mcp_policy_user_remembered` + "`" + `` + "`" + `).\nAlways present on the wire (empty array when the session\ncarries no policy events). Same surfacing pattern as\nErrorTypes — correlated subquery on the listing query so the\ndashboard renders the POLICY + MCP POLICY facets and\nseverity-ranked session-row indicator without a per-session\nfollow-up fetch. The dashboard splits the unified array into\ntwo sidebar facets via the EVENT_TYPE_GROUPS classification.",
                     "type": "array",
                     "items": {
                         "type": "string"

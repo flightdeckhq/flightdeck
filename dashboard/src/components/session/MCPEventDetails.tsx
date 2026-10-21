@@ -21,7 +21,7 @@ import { AccordionHeader } from "./AccordionHeader";
  * fields are absent from the payload and we render an explicit
  * "capture disabled" notice rather than an empty accordion.
  *
- * B-6 — content-overflow handling. Fields above the sensor's 8 KiB
+ * Content-overflow handling. Fields above the sensor's 8 KiB
  * inline threshold are stripped from the inline payload and replaced
  * with a ``{"_truncated": true, "size": N}`` marker; the full content
  * lives in the event_content row, fetched on click via
@@ -261,7 +261,7 @@ function CapturedPayloadBlock({
   if (!p) return null;
 
   // Per-event field map: which payload field maps to which
-  // event_content slot when the field overflowed (B-6).
+  // event_content slot when the field overflowed.
   //   mcp_tool_call:    arguments → input,    result   → response
   //   mcp_resource_read: content   → response  (no arguments)
   //   mcp_prompt_get:    arguments → input,    rendered → response

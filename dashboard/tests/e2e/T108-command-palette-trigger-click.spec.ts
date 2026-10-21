@@ -35,7 +35,7 @@ test.describe("T108 — palette opens on nav search click + keyboard shortcut", 
       .toBe(true);
 
     // Input is focused so typing lands in the search field
-    // immediately. Phase B's solid-token highlight contract means
+    // immediately. The solid-token highlight contract means
     // the auto-focus needs no extra wiring; this assertion locks
     // that pre-condition for downstream typing tests.
     await expect(dialog.getByRole("textbox", { name: "Search" })).toBeFocused();

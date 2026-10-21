@@ -48,7 +48,7 @@ export const NAMESPACE_FLIGHTDECK =
  *
  * Null / undefined / "" / whitespace-only role collapses to the
  * 5-tuple form, so root and direct-SDK agent_ids stay byte-for-
- * byte unchanged from the root fixture vector. Trim semantics
+ * byte unchanged from the 5-tuple fixture vector. Trim semantics
  * mirror the Python sensor's :func:`derive_agent_id` so a
  * framework-supplied role with leading / trailing whitespace
  * lands under the same uuid on both sides of the wire.

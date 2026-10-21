@@ -84,7 +84,7 @@ func (h *Hub) closeAndRemove(c *Client) {
 // write lock additionally protects ClientCount readers from
 // observing torn state. This invariant is what makes the
 // "double-close channel" class of bug structurally impossible
-// here -- see audit-phase-4.5.md L-19 for the trace.
+// here.
 func (h *Hub) Run(ctx context.Context) {
 	for {
 		select {

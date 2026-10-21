@@ -1,7 +1,7 @@
 {
   "version": 1,
   "namespace": "flightdeck-mcp-identity",
-  "description": "Cross-language fixture vectors for the D127 MCP server identity primitive. Both Python (sensor/flightdeck_sensor/interceptor/mcp_identity.py) and Node (plugin/hooks/scripts/mcp_identity.mjs) implementations MUST produce byte-identical output for every vector below.",
+  "description": "Cross-language fixture vectors for the MCP server identity primitive. Both Python (sensor/flightdeck_sensor/interceptor/mcp_identity.py) and Node (plugin/hooks/scripts/mcp_identity.mjs) implementations MUST produce byte-identical output for every vector below.",
   "env_overrides": {
     "FLIGHTDECK_TEST_HOME": "/home/alice",
     "FLIGHTDECK_TEST_DATA": "/data"

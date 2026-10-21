@@ -290,7 +290,7 @@ type EventPayload struct {
 	//     "sigkill_detected" / "policy_block" via session-table
 	//     update on the post-mortem path.
 	//   * PolicyActionsSummary — worker computes at session_end
-	//     insert time via the events table GROUP BY query (Q2 lock).
+	//     insert time via the events table GROUP BY query.
 	//   * LastEventID — worker resolves at session_end insert time
 	//     via the events table.
 	// mcp_server_attached:
@@ -544,7 +544,7 @@ func (c *Consumer) worker(ctx context.Context, sub *nats.Subscription, id int) {
 
 		msgs, err := sub.Fetch(1, nats.MaxWait(nats.DefaultTimeout))
 		if err != nil {
-			// Errors.Is unwraps wrapped sentinels;
+			// errors.Is unwraps wrapped sentinels;
 			// direct `==` would miss a future caller that wraps the
 			// error to add context.
 			if errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.Canceled) {

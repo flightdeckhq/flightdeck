@@ -22,7 +22,7 @@ Tests below avoid asserting on sensor-side directive application from
 queued events. Instead they verify what is observable in the database:
 ingestion delivered the directive (delivered_at != NULL), the worker
 wrote any policy-evaluator directives, and so on. The drain-thread bug
-is reported in the Part 5 findings table.
+has its regression test below.
 """
 
 from __future__ import annotations
@@ -705,7 +705,7 @@ def test_sensor_custom_directive_registered_and_triggered(
         # Make an intercepted call. This enqueues a post_call event,
         # the drain thread posts it, ingestion returns the pending
         # custom directive in the response envelope, the drain thread
-        # invokes _apply_directive (B-A fix), which calls
+        # invokes _apply_directive, which calls
         # _execute_custom_directive, which calls the handler.
         client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
         client.messages.create(
@@ -727,7 +727,7 @@ def test_sensor_custom_directive_registered_and_triggered(
 
         # 2. directive_result event landed in the DB with
         #    directive_status="success" and the right directive_name
-        #    (B-D fix means these fields now survive ingestion).
+        #    (these fields survive ingestion).
         def _result_in_db() -> bool:
             for e in _query_events_for_flavor(flavor):
                 if e.get("event_type") != "directive_result":
@@ -774,7 +774,7 @@ def test_sensor_shutdown_directive_delivered(
     """POST shutdown → make call → drain delivers shutdown to session →
     directive_result(acknowledged) lands in DB → teardown closes session.
 
-    Strengthened in the Part 5 follow-up commit that fixed B-A. Before
+    Guards the drain thread's handling of envelope directives. Before
     the fix the drain thread silently dropped the shutdown directive
     and the test could only verify "directive row inserted".
     """
@@ -852,7 +852,7 @@ def test_sensor_degrade_directive_via_policy_threshold(
     """Server policy crosses degrade threshold → second intercepted call
     uses the degraded model.
 
-    Strengthened in the Part 5 follow-up commit. The previous version
+    A weaker version of this test
     only verified that the workers wrote the degrade row. Now the test
     actually drives a second LLM call and asserts the post_call event
     in the DB has the degraded model name.
@@ -918,8 +918,8 @@ def test_sensor_degrade_directive_via_policy_threshold(
         # Call 2 -- the sensor's drain thread will pick up this
         # post_call event, and ingestion will return the pending
         # degrade directive in the response envelope. The drain
-        # thread (B-A fix) calls _apply_directive(DEGRADE) which
-        # arms PolicyCache._forced_degrade (B-E fix). Call 2 itself
+        # thread calls _apply_directive(DEGRADE) which
+        # arms PolicyCache._forced_degrade. Call 2 itself
         # still goes out with sonnet because the swap only happens
         # AFTER the directive is delivered.
         client.messages.create(
@@ -1072,8 +1072,8 @@ def test_sensor_custom_directive_unknown_fingerprint(
     """POST /v1/directives action=custom with a fake fingerprint → 422.
 
     The query API's CreateDirectiveHandler refuses the request before
-    inserting any rows, via the new CustomDirectiveExists check (Part 2
-    audit). Verifies the rejection is enforced and no directive row is
+    inserting any rows, via the CustomDirectiveExists check.
+    Verifies the rejection is enforced and no directive row is
     created.
     """
     flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
@@ -1260,7 +1260,7 @@ def test_sensor_unavailable_continue(sensor_reset: None) -> None:
 
 
 # ======================================================================
-# Test 12 -- Context facets aggregation (Part 5 SECTION D coverage gap)
+# Test 12 -- Context facets aggregation
 # ======================================================================
 
 
@@ -1270,7 +1270,7 @@ def test_context_facets_aggregation(
 ) -> None:
     """GetContextFacets aggregates real sessions.context across the fleet.
 
-    Part 5 SECTION D: this is the first integration test that exercises
+    This is the first integration test that exercises
     the GetContextFacets path with REAL context data. Existing
     tests only ever insert empty contexts via fabricated session_start
     events.
@@ -1326,8 +1326,8 @@ def test_context_facets_aggregation(
 #   D -- long-running agent receiving directives mid-flight
 #
 # These are the FIRST tests that exercise the sensor's threading
-# story end-to-end. Several B-A / B-G / B-H bugs were caught by
-# adding them.
+# story end-to-end. Several drain-thread, usage-accounting and
+# directive-queue bugs were caught by adding them.
 
 # Common configuration for the multithreading tests below.
 _MT_NUM_THREADS = 4
@@ -1350,7 +1350,7 @@ def test_pattern_b_concurrent_calls_no_data_loss(
     accept concurrent enqueues from N producers, the workers must
     persist exactly one events row per call, and ``tokens_used_session``
     must be a strictly monotonic sequence with no duplicates and no
-    gaps (B-G fix proves out under load).
+    gaps (atomic usage accounting proves out under load).
     """
     flavor = unique_flavor
     expected_calls = _MT_NUM_THREADS * _MT_CALLS_PER_THREAD
@@ -1432,7 +1432,7 @@ def test_pattern_b_concurrent_calls_no_data_loss(
             # NOT persisted by the workers (BuildEventExtra only
             # writes directive_result metadata into events.payload),
             # so the post-fix sequence is not directly observable
-            # from the DB. The B-G fix is verified instead by the
+            # from the DB. Atomic usage accounting is verified instead by the
             # CUMULATIVE total in two places:
             #
             #   1. Workers' sessions.tokens_used must equal
@@ -1440,8 +1440,8 @@ def test_pattern_b_concurrent_calls_no_data_loss(
             #      no event duplicated by the worker pipeline).
             #   2. Sensor's get_status().tokens_used must equal
             #      expected_calls * 18 (proves record_usage is
-            #      atomic under N concurrent producers; the B-G
-            #      fix made record_usage return the post-increment
+            #      atomic under N concurrent producers; record_usage
+            #      returns the post-increment
             #      total inside the same critical section).
             expected_total = expected_calls * 18
 
@@ -1564,7 +1564,7 @@ def test_pattern_b_custom_directive_during_traffic(
             assert errors == [], f"thread errors: {errors}"
 
             # Handler executed EXACTLY once -- single-consumer
-            # directive thread gives at-most-once for free (B-H).
+            # directive thread gives at-most-once for free.
             assert len(handler_calls) == 1, (
                 f"expected handler called exactly once under concurrent "
                 f"traffic, got {len(handler_calls)}"
@@ -1588,7 +1588,7 @@ def test_pattern_b_shutdown_during_traffic(
     unique_flavor: str,
 ) -> None:
     """Shutdown directive arrives during concurrent traffic. All workers
-    stop within bounded time, ack is in DB (B-H flush() guarantee),
+    stop within bounded time, ack is in DB (synchronous flush() guarantee),
     session transitions to closed."""
     flavor = unique_flavor
 
@@ -1653,7 +1653,7 @@ def test_pattern_b_shutdown_during_traffic(
                 )
                 assert code == 201
 
-                # B-H proof: the synchronous flush() inside
+                # Proof: the synchronous flush() inside
                 # _apply_directive(SHUTDOWN) ran successfully on the
                 # directive handler thread (no deadlock), so the ack
                 # event is in the DB before any worker can be observed
@@ -1761,7 +1761,7 @@ def test_pattern_a_shutdown_single_threaded(
 
 
 # ======================================================================
-# Test M5 -- B-H proof: slow handler does not block event throughput
+# Test M5 -- slow handler does not block event throughput
 # ======================================================================
 
 
@@ -1769,9 +1769,9 @@ def test_slow_handler_does_not_block_event_throughput(
     sensor_reset: None,
     unique_flavor: str,
 ) -> None:
-    """Critical B-H regression test: a custom directive handler that
+    """Critical two-queue regression test: a custom directive handler that
     blocks for several seconds MUST NOT prevent other LLM call events
-    from being posted to ingestion. Under the pre-B-H architecture
+    from being posted to ingestion. With a single shared queue
     this test would fail with up to 5 lost post_call events.
     """
     flavor = unique_flavor
@@ -1844,7 +1844,7 @@ def test_slow_handler_does_not_block_event_throughput(
             )
 
             # ============================================
-            # B-H ASSERTION:
+            # TWO-QUEUE ASSERTION:
             # While the directive handler thread is BLOCKED inside
             # e2e_slow_handler, the drain thread must continue to drain
             # post_call events. We make calls from another thread and
@@ -1871,13 +1871,15 @@ def test_slow_handler_does_not_block_event_throughput(
             t = threading.Thread(target=_worker)
             t.start()
             t.join(timeout=15)
-            assert not t.is_alive(), "worker thread hung -- B-H regressed"
+            assert not t.is_alive(), (
+                "worker thread hung -- directive handling blocked event throughput"
+            )
             assert errors == [], f"worker errors during slow handler: {errors}"
 
             # Wait for the new post_call events to land. CRUCIAL: this
             # MUST succeed before handler_done is set, otherwise the
-            # drain thread is blocked by the directive thread and B-H
-            # is broken.
+            # drain thread is blocked by the directive thread and the
+            # two-queue guarantee is broken.
             def _new_events_in_db() -> bool:
                 count = sum(
                     1
@@ -1890,7 +1892,7 @@ def test_slow_handler_does_not_block_event_throughput(
                 _new_events_in_db,
                 timeout=15,
                 msg=(
-                    "B-H REGRESSION: post_call events did not flow "
+                    "REGRESSION: post_call events did not flow "
                     "while custom handler was blocked"
                 ),
             )
@@ -1898,7 +1900,7 @@ def test_slow_handler_does_not_block_event_throughput(
             # And the handler is STILL running -- proves the events
             # above flowed independently of directive handler progress.
             assert not handler_done.is_set(), (
-                "handler completed too early -- could not prove B-H"
+                "handler completed too early -- could not prove the two-queue guarantee"
             )
             assert handler_started.is_set()
 
@@ -1938,7 +1940,7 @@ def test_pattern_d_custom_then_shutdown_ordering(
     """Custom directive posted before shutdown -- both must be applied
     in issuance order. Custom handler runs to completion, its
     directive_result lands first, THEN shutdown ack lands and the
-    session closes. Single-consumer directive queue (B-H) gives the
+    session closes. Single-consumer directive queue gives the
     ordering guarantee.
     """
     flavor = unique_flavor
@@ -2097,8 +2099,8 @@ def test_pattern_b_degrade_seen_by_all_threads(
                 session_id = flightdeck_sensor.get_status().session_id
                 client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
 
-                # Stage tracking. Stage 1 = pre-degrade-ack,
-                # Stage 2 = post-degrade-ack. Calls in stage 2 from
+                # Phase tracking. Phase 1 = pre-degrade-ack,
+                # Phase 2 = post-degrade-ack. Calls in phase 2 from
                 # any thread must report the degraded model.
                 phase = [1]
                 phase_lock = threading.Lock()
@@ -2197,7 +2199,7 @@ def test_pattern_b_degrade_seen_by_all_threads(
 # ======================================================================
 
 
-def test_pattern_c_ki15_singleton_limitation(
+def test_pattern_c_init_singleton_limitation(
     sensor_reset: None,
 ) -> None:
     """``init()`` is process-wide. The second call is a no-op.
@@ -2213,8 +2215,8 @@ def test_pattern_c_ki15_singleton_limitation(
     The framework-coverage bullet of the Roadmap in README.md is the
     home for any follow-up.
     """
-    flavor_a = f"e2e-ki15-a-{uuid.uuid4().hex[:8]}"
-    flavor_b = f"e2e-ki15-b-{uuid.uuid4().hex[:8]}"
+    flavor_a = f"e2e-singleton-a-{uuid.uuid4().hex[:8]}"
+    flavor_b = f"e2e-singleton-b-{uuid.uuid4().hex[:8]}"
 
     init_results: list[str | Exception] = []
     init_lock = threading.Lock()
@@ -2235,12 +2237,16 @@ def test_pattern_c_ki15_singleton_limitation(
                 init_results.append(exc)
 
     try:
-        ta = threading.Thread(target=_init_thread, args=("a", flavor_a), name="ki15-a")
+        ta = threading.Thread(
+            target=_init_thread, args=("a", flavor_a), name="singleton-a"
+        )
         ta.start()
         ta.join(timeout=10)
         assert not ta.is_alive()
 
-        tb = threading.Thread(target=_init_thread, args=("b", flavor_b), name="ki15-b")
+        tb = threading.Thread(
+            target=_init_thread, args=("b", flavor_b), name="singleton-b"
+        )
         tb.start()
         tb.join(timeout=10)
         assert not tb.is_alive()

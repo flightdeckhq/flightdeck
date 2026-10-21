@@ -1,5 +1,5 @@
 // MCP Protection Policy resolve endpoint — sensor / plugin preflight.
-// Read-only scope per the auth amendment locked in step 3: any valid
+// Read-only scope: any valid
 // bearer token can hit this endpoint (it's the hot path the sensor
 // calls at init() and the plugin calls at SessionStart). GET-only;
 // idempotent, safe, cacheable.

@@ -39,8 +39,8 @@ var validSessionStates = map[string]bool{
 }
 
 // validSessionSorts is the whitelist for the sort parameter.
-// Extended in v0.4.0 phase 2: last_seen_at, model, hostname join the
-// original {started_at, duration, tokens_used, flavor} set so the
+// last_seen_at, model and hostname join the {started_at, duration,
+// tokens_used, flavor} set so the
 // Investigate table can sort on the columns users actually scan
 // first (recency, model, host). The mapping to SQL expressions lives
 // in “store.allowedSorts“; this set mirrors the keys so the
@@ -429,8 +429,8 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 			includePureChildren = &b
 		}
 
-		// Operator-actionable enrichment facet filters (Step 6 follow-
-		// up). close_reason / estimated_via are closed enums and 400 on
+		// Operator-actionable enrichment facet filters.
+		// close_reason / estimated_via are closed enums and 400 on
 		// out-of-band values; matched_entry_id /
 		// originating_call_context are free-form (typos silently match
 		// nothing). terminal is a bool toggle.

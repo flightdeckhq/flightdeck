@@ -249,14 +249,14 @@ function buildFlavors(
     byAgent.set(li.agent_id, bucket);
   }
   return agents
-    // V-DRAWER companion fix: filter out agent rows whose
+    // Filter out agent rows whose
     // ``total_sessions`` is zero. These are orphan rows that
     // accumulate from prior test runs (sessions truncated /
     // pruned / never landed) and from production crashes that
     // upserted an agent record before any session_start landed.
     // The swimlane drawer can't drill into them -- expanding the
     // row reads ``"No sessions to display for this agent."`` and
-    // becomes a dead-end. Per the supervisor's V-DRAWER design
+    // becomes a dead-end. Per the design
     // principle ("if an agent is visible in the swimlane, its
     // sessions must always be accessible from there"), agents
     // without any session history don't belong in the swimlane

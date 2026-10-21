@@ -89,10 +89,9 @@ func StreamHandler(hub *ws.Hub, validator *auth.Validator) http.HandlerFunc {
 // exchange (POST /v1/stream/ticket returns a single-use 60s-TTL
 // nonce; WS upgrade accepts ?ticket=<uuid>) which moves the long-
 // lived bearer off the URL surface entirely. Tracked on the
-// roadmap and not blocking this audit pass: (1) dashboard side
-// must switch in lockstep, and (2) any caller that scripts the
-// stream from outside the browser would need to pre-fetch a
-// ticket. See audit-phase-4.5.md M-3.
+// roadmap because (1) the dashboard side must switch in lockstep,
+// and (2) any caller that scripts the stream from outside the
+// browser would need to pre-fetch a ticket.
 func extractStreamToken(r *http.Request) string {
 	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
 		return strings.TrimPrefix(h, "Bearer ")
@@ -101,7 +100,7 @@ func extractStreamToken(r *http.Request) string {
 		// Don't log the token itself; do log that this code path
 		// took the URL fallback so operators can audit how often
 		// it's used vs. header-based auth.
-		slog.Debug("stream: token sourced from query parameter (M-3 residual risk)",
+		slog.Debug("stream: token sourced from query parameter (residual risk: token on the URL surface)",
 			"client_ip", r.RemoteAddr,
 		)
 		return t

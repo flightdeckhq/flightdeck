@@ -50,7 +50,7 @@ export const SENSOR_AGENT = {
   framework: "langchain",
   // ``mcp-active`` carries one event of each of the six
   // MCP types plus ``context.mcp_servers[]`` populated with two
-  // Server fingerprints. T25 deep-links to
+  // server fingerprints. T25 deep-links to
   // a session of this role and asserts on badge / icon / drawer
   // panel / facet rendering. Only the sensor agent gets it because
   // the Python sensor emits all six event types;
@@ -104,9 +104,9 @@ export const TRUNCATION_AGENT = {
 } as const;
 
 /**
- * V-DRAWER fixture: an agent whose only seeded session is > 7 days
- * old. Used by T5b to confirm the expanded swimlane drawer surfaces
- * sessions outside the API's pre-V-DRAWER 7-day default window.
+ * Ancient-agent fixture: an agent whose only seeded session is > 7
+ * days old. Used by T5b to confirm the expanded swimlane drawer
+ * surfaces sessions older than a 7-day window.
  * Distinct agent (not just a new role on an existing one) so the
  * Chrome-verifiable expectation is: ancient-only agent's drawer
  * shows ≥1 session, never the dead-end "No sessions to display"

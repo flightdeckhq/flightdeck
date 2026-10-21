@@ -463,10 +463,10 @@ definitions:
       session_id:
         type: string
       tokens_cache_creation:
-        description: 0 when the provider reports none
+        description: prompt-cache tokens written; 0 when the provider reports none
         type: integer
       tokens_cache_read:
-        description: prompt-cache token split
+        description: prompt-cache tokens read; 0 when the provider reports none
         type: integer
       tokens_input:
         type: integer
@@ -1092,10 +1092,9 @@ definitions:
           token-budget axis (``policy_warn`` / ``policy_degrade`` /
           ``policy_block``) and the MCP Protection Policy axis
           (``policy_mcp_warn`` / ``policy_mcp_block`` /
-          ``mcp_server_name_changed`` / ``mcp_policy_user_remembered``,
-          the MCP Protection Policy family). Always present on the wire
-          (empty array when the
-          session carries no policy events). Same surfacing pattern as
+          ``mcp_server_name_changed`` / ``mcp_policy_user_remembered``).
+          Always present on the wire (empty array when the session
+          carries no policy events). Same surfacing pattern as
           ErrorTypes — correlated subquery on the listing query so the
           dashboard renders the POLICY + MCP POLICY facets and
           severity-ranked session-row indicator without a per-session
@@ -2292,8 +2291,9 @@ paths:
   /v1/mcp-policies/{flavor}/metrics:
     get:
       description: Aggregates policy_mcp_warn and policy_mcp_block events emitted
-        by the sensor / plugin enforcement path. Returns empty buckets until step
-        4 ships those event types. period accepts 24h / 7d / 30d.
+        by the sensor / plugin enforcement path. Buckets are zero-filled across the
+        period, so a policy with no enforcement activity returns empty buckets. period
+        accepts 24h / 7d / 30d.
       parameters:
       - description: Agent flavor or 'global'
         in: path

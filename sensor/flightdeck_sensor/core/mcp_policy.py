@@ -137,7 +137,7 @@ class MCPPolicyCache:
        handler in ``Session._apply_directive`` calls into this).
 
     The ``mcp_block_on_uncertainty`` constructor kwarg is the
-    operator failsafe (Assumption 8 / Step 4 plan). When the
+    operator failsafe. When the
     control plane is unreachable AND this flag is true, mode-default
     fall-through resolves to block. Default ``False`` preserves the
     fail-open posture.

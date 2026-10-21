@@ -417,7 +417,7 @@ def test_resolve_falls_through_to_mode_default() -> None:
 # ----- power features ---------------------------------------------
 
 
-def test_metrics_returns_empty_pre_step_4() -> None:
+def test_metrics_returns_empty_for_policy_without_events() -> None:
     flavor = _unique_flavor()
     try:
         body = {"block_on_uncertainty": False, "entries": []}

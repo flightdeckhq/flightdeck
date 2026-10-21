@@ -2490,7 +2490,7 @@ func TestSessionsListHandler_InvalidClientType(t *testing.T) {
 	}
 }
 
-// ----- Operator-actionable enrichment facet filters (Step 6 follow-up) -----
+// ----- Operator-actionable enrichment facet filters -----
 
 func TestSessionsListHandler_CloseReasonFilter_MultiValue(t *testing.T) {
 	s := &mockStore{}

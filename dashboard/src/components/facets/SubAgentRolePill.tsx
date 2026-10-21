@@ -78,8 +78,7 @@ export function SubAgentRolePill({
  * an operator can identify which sub-agent failed without having
  * to expand the row. Both arrive from the SwimLane / Investigate
  * call-site and are best-effort — the dot still renders without
- * them when the full context isn't available (the original step-7
- * call-site supplied neither).
+ * them when the full context isn't available.
  */
 export function SubAgentLostDot({
   role,

@@ -29,8 +29,8 @@ test.describe("T10 — whole-dashboard smoke", () => {
       // Settle the auth-gated XHRs so any failed gated call surfaces
       // as a pageerror before we read the buffer. networkidle is
       // noisier than needed here but matches the prior stub's
-      // behaviour — swap to a dashboard-ready signal if the
-      // Flake has been seen under this.
+      // behaviour — swap to a dashboard-ready signal if flake
+      // appears under this.
       await page.waitForLoadState("networkidle");
       expect(
         errors,

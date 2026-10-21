@@ -118,15 +118,15 @@ class TestSubAgentRoleDerivation:
             agent_name="omria@Omri-PC",
         )
 
-    def test_omitting_role_kwarg_matches_d115_fixture(self) -> None:
-        # Hardest regression we have to protect: the root fixture
+    def test_omitting_role_kwarg_matches_five_tuple_fixture(self) -> None:
+        # Hardest regression we have to protect: the 5-tuple fixture
         # vector. Callers that don't pass agent_role at all must
         # produce the legacy uuid byte-for-byte, otherwise every
         # historical agent_id in every deployment is orphaned.
         aid = derive_agent_id(**self._root_kwargs())
         assert str(aid) == "ee76931b-06fa-5da6-a019-5a8237efd496"
 
-    def test_role_none_matches_d115_fixture(self) -> None:
+    def test_role_none_matches_five_tuple_fixture(self) -> None:
         # Callers that pass agent_role=None explicitly must collapse
         # to the same path the kwarg-omitted form takes. This is the
         # common shape for direct-SDK callers: pass the

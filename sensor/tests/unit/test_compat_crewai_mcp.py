@@ -3,7 +3,7 @@
 The helper exists to strip JSON-Schema-2020-12-invalid keys from each
 CrewAI tool's ``args_schema`` Pydantic class so OpenAI / Anthropic
 APIs accept the resulting tool-call payload. Tests cover the cleaning
-matrix per Step 6.5 spec plus the agent-level integration shape.
+matrix plus the agent-level integration shape.
 
 No real crewai or mcpadapt imports needed — the module's public API
 operates on duck-typed ``agent.tools[].args_schema`` instances; tests

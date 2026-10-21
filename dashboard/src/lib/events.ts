@@ -84,8 +84,8 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
   // MCP observability. Verb-based labels distinguish
   // "agent invoked" vs "agent discovered" at a glance — the
   // singular/plural-only pairs we considered (MCP TOOL / MCP TOOLS)
-  // put a single 's' between two fundamentally different operations
-  // (B-4). Verbs (CALL / READ / FETCHED / DISCOVERED) carry the
+  // put a single 's' between two fundamentally different operations.
+  // Verbs (CALL / READ / FETCHED / DISCOVERED) carry the
   // operation distinction.
   //
   // The "MCP " prefix is kept on every label. Rationale: the Fleet live
@@ -155,7 +155,7 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
     cssVar: "var(--event-result)",
     label: "MCP USER REMEMBERED",
   },
-  // Step 6.7 (c): MCP server attached events ride the same FYI
+  // MCP server attached events ride the same FYI
   // chroma family as name-changed and user-remembered (info-purple
   // via --event-result) — they're informational, not enforcement,
   // and operators reading the timeline want them to read as the
@@ -654,8 +654,8 @@ export const EVENT_TYPE_GROUPS: Record<string, string[]> = {
   // MCP Protection Policy event types live in their own facet
   // group so token-budget policy filtering and MCP-server access
   // policy filtering stay distinct in the operator's mental model.
-  // Step 6.6 A1 split — they previously co-habited the "Policy"
-  // group, but mixing token-budget chips with MCP-server-access
+  // Kept apart from the "Policy" group because mixing
+  // token-budget chips with MCP-server-access
   // chips made "show me all sessions where MCP enforcement fired"
   // require checking-and-unchecking sibling chips. Filterable but
   // not group-by-able on analytics (Rule 25 lock).

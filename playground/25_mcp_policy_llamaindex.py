@@ -10,7 +10,7 @@ silently bypass the sensor's ``ClientSession.call_tool`` patch.
 This demo exercises the explicit FunctionAgent path so a
 future SDK shift is caught by the playground gate.
 
-Three sub-scenarios run back-to-back per Step 6.5 PR Part A spec:
+Three sub-scenarios run back-to-back:
 
   1. WARN  — flavor deny entry with enforcement=warn. Tool call
      completes; ``policy_mcp_warn`` event lands.

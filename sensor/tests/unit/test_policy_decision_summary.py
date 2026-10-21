@@ -92,7 +92,7 @@ def test_dataclass_is_frozen() -> None:
 
 
 def test_reason_pattern_no_newlines() -> None:
-    """Operator-readable single-line per the locked Step 2 pattern.
+    """Operator-readable single-line per the locked reason pattern.
     The dataclass doesn't enforce this directly (caller-supplied
     string), but the assertion documents the contract for emission
     sites and surfaces drift if a future commit accidentally

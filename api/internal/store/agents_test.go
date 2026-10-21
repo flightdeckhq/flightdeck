@@ -565,15 +565,15 @@ func seedSubagentLink(
 	parentAgentID = seedAgentForList(t, s, parentName, agentListOpts{
 		agentType:  "production",
 		clientType: "claude_code",
-		userName:   "test-d126",
-		hostname:   "test-d126-host",
+		userName:   "test-subagent",
+		hostname:   "test-subagent-host",
 		lastSeen:   now.Add(-2 * time.Minute),
 	})
 	childAgentID = seedAgentForList(t, s, childName, agentListOpts{
 		agentType:  "production",
 		clientType: "claude_code",
-		userName:   "test-d126",
-		hostname:   "test-d126-host",
+		userName:   "test-subagent",
+		hostname:   "test-subagent-host",
 		lastSeen:   now.Add(-1 * time.Minute),
 	})
 
@@ -588,7 +588,7 @@ func seedSubagentLink(
 			$4, $4, 0,
 			'production', 'claude_code'
 		)
-	`, parentSessionID, parentAgentID, "test-d126-parent",
+	`, parentSessionID, parentAgentID, "test-subagent-parent",
 		now.Add(-3*time.Minute)); err != nil {
 		t.Fatalf("seed parent session: %v", err)
 	}
@@ -606,7 +606,7 @@ func seedSubagentLink(
 			'production', 'claude_code',
 			$5::uuid, $6
 		)
-	`, childSessionID, childAgentID, "test-d126-child",
+	`, childSessionID, childAgentID, "test-subagent-child",
 		now.Add(-2*time.Minute), parentSessionID, childRole); err != nil {
 		t.Fatalf("seed child session: %v", err)
 	}
@@ -626,7 +626,7 @@ func findAgent(resp *AgentListResponse, agentID string) *AgentSummary {
 	return nil
 }
 
-// TestListAgents_D126RollupFields covers the three topology states
+// TestListAgents_SubAgentRollupFields covers the three topology states
 // (lone / parent / child) and the agent_role projection in one
 // fixture pass. A lone agent (no sessions, or sessions without
 // parent_session_id and not referenced as a parent) reports
@@ -637,18 +637,18 @@ func findAgent(resp *AgentListResponse, agentID string) *AgentSummary {
 // only have two-level fixtures — but the SQL CASE order is the
 // authority and is read-locked by the seed-paths in this test plus
 // the GetAgentFleet equivalent below.
-func TestListAgents_D126RollupFields(t *testing.T) {
+func TestListAgents_SubAgentRollupFields(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()
 
-	loneID := seedAgentForList(t, s, "test-d126-lone-"+randomUUID(t)[:8], agentListOpts{
+	loneID := seedAgentForList(t, s, "test-subagent-lone-"+randomUUID(t)[:8], agentListOpts{
 		agentType: "production", clientType: "claude_code",
 		sessionState: "closed",
 	})
 	parentID, childID, _, _ := seedSubagentLink(
 		t, s,
-		"test-d126-parent-"+randomUUID(t)[:8],
-		"test-d126-child-"+randomUUID(t)[:8],
+		"test-subagent-parent-"+randomUUID(t)[:8],
+		"test-subagent-child-"+randomUUID(t)[:8],
 		"Researcher",
 	)
 
@@ -695,19 +695,19 @@ func TestListAgents_D126RollupFields(t *testing.T) {
 	}
 }
 
-// TestGetAgentByID_D126RollupFields verifies the second projection
+// TestGetAgentByID_SubAgentRollupFields verifies the second projection
 // site (single-row fetch) returns the same shape as ListAgents. The
-// d126AgentRollupSQL constant is shared so a regression in the
+// agentRollupSQL constant is shared so a regression in the
 // projection would fire here too — this test exists to guard the
 // scan-side wiring, which is independent.
-func TestGetAgentByID_D126RollupFields(t *testing.T) {
+func TestGetAgentByID_SubAgentRollupFields(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()
 
 	parentID, childID, _, _ := seedSubagentLink(
 		t, s,
-		"test-d126-byid-parent-"+randomUUID(t)[:8],
-		"test-d126-byid-child-"+randomUUID(t)[:8],
+		"test-subagent-byid-parent-"+randomUUID(t)[:8],
+		"test-subagent-byid-child-"+randomUUID(t)[:8],
 		"Writer",
 	)
 
@@ -744,19 +744,19 @@ func TestGetAgentByID_D126RollupFields(t *testing.T) {
 	}
 }
 
-// TestGetAgentFleet_D126RollupFields covers the fleet endpoint's
+// TestGetAgentFleet_SubAgentRollupFields covers the fleet endpoint's
 // AgentSummary projection. Same shape as ListAgents but goes through
 // GetAgentFleet which has its own query string — the constant
-// d126AgentRollupSQL is shared but the surrounding scan loop is
+// agentRollupSQL is shared but the surrounding scan loop is
 // duplicated, so this test guards the second scan.
-func TestGetAgentFleet_D126RollupFields(t *testing.T) {
+func TestGetAgentFleet_SubAgentRollupFields(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()
 
 	parentID, childID, _, _ := seedSubagentLink(
 		t, s,
-		"test-d126-fleet-parent-"+randomUUID(t)[:8],
-		"test-d126-fleet-child-"+randomUUID(t)[:8],
+		"test-subagent-fleet-parent-"+randomUUID(t)[:8],
+		"test-subagent-fleet-child-"+randomUUID(t)[:8],
 		"Reviewer",
 	)
 
@@ -1207,7 +1207,7 @@ func seedSessionWithContext(
 			$4, $4, 0,
 			$5, $6, $7::jsonb
 		)
-	`, agentID, "d161-test-flavor", "active",
+	`, agentID, "latest-context-test-flavor", "active",
 		startedAt, agentType, clientType, contextJSON)
 	if err != nil {
 		t.Fatalf("seedSessionWithContext: %v", err)
@@ -1222,7 +1222,7 @@ func TestListAgents_LatestSessionContextProjected(t *testing.T) {
 	// carries a different os / branch / repo / orchestration /
 	// arch / python_version / process_name. The projection must
 	// return the LATER session's values.
-	agentName := "test-d161-latest-" + randomUUID(t)[:8]
+	agentName := "test-latest-context-latest-" + randomUUID(t)[:8]
 	agentID := seedAgentForList(t, s, agentName, agentListOpts{
 		agentType: "coding", clientType: "claude_code",
 	})
@@ -1281,14 +1281,14 @@ func TestListAgents_LatestSessionContextNullsWhenAbsent(t *testing.T) {
 
 	// An agent with no sessions at all: every runtime-context
 	// field must come back nil (no LATERAL row → null projection).
-	noSessName := "test-d161-no-sess-" + randomUUID(t)[:8]
+	noSessName := "test-latest-context-no-sess-" + randomUUID(t)[:8]
 	noSessID := seedAgentForList(t, s, noSessName, agentListOpts{
 		agentType: "coding", clientType: "claude_code",
 	})
 
 	// An agent whose latest session has an empty context object:
 	// every key is missing → every JSONB extract returns nil.
-	emptyName := "test-d161-empty-ctx-" + randomUUID(t)[:8]
+	emptyName := "test-latest-context-empty-ctx-" + randomUUID(t)[:8]
 	emptyID := seedAgentForList(t, s, emptyName, agentListOpts{
 		agentType: "coding", clientType: "claude_code",
 	})
@@ -1335,7 +1335,7 @@ func TestGetAgentFleet_LatestSessionContextProjected(t *testing.T) {
 	// query path (the /v1/fleet endpoint that the /agents page
 	// actually consumes). Same fixture shape; only the call
 	// changes.
-	agentName := "test-d161-fleet-" + randomUUID(t)[:8]
+	agentName := "test-latest-context-fleet-" + randomUUID(t)[:8]
 	agentID := seedAgentForList(t, s, agentName, agentListOpts{
 		agentType: "coding", clientType: "claude_code",
 	})
@@ -1380,7 +1380,7 @@ func TestGetAgentByID_LatestSessionContextProjected(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()
 
-	agentName := "test-d161-byid-" + randomUUID(t)[:8]
+	agentName := "test-latest-context-byid-" + randomUUID(t)[:8]
 	agentID := seedAgentForList(t, s, agentName, agentListOpts{
 		agentType: "coding", clientType: "claude_code",
 	})

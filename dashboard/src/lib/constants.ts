@@ -270,10 +270,8 @@ export const DEFAULT_TIME_RANGE: TimeRange = "1m";
 
 /**
  * Default lookback window for the Investigate page on first
- * mount. One constant instead of ``7 * 24 * 3600 * 1000`` inlined
- * in two places (Investigate.tsx and AgentTable.tsx)
- * which let the two surfaces drift if either was tweaked. This
- * constant is the single source of truth.
+ * mount. A named constant instead of ``7 * 24 * 3600 * 1000``
+ * inlined in Investigate.tsx.
  */
 export const INVESTIGATE_DEFAULT_LOOKBACK_MS = 7 * 24 * 60 * 60 * 1000;
 

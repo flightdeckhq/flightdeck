@@ -1,14 +1,14 @@
 /**
  * T106 — Cmd/Ctrl+K command palette keyboard navigation.
  *
- * Locks the Phase B + Phase C contract: arrow keys VISIBLY move
+ * Locks the keyboard-navigation contract: arrow keys VISIBLY move
  * the focused row, the row scrolls into view when it would
  * otherwise be clipped, and Enter routes to the right surface
  * for the result type (agent → agent drawer overlay,
  * session → /events?run=, event → EventDetailDrawer overlay).
  *
- * Pre-Phase-B the focused-row background was bg-primary/10 on a
- * hex-valued CSS var → invalid CSS → no background. The
+ * A focused-row background of bg-primary/10 on a hex-valued CSS
+ * var is invalid CSS and renders no background. The
  * highlight tokens in this spec assert structural classes that
  * compile in both themes; the spec runs under both Playwright
  * theme projects to lock per-theme parity (Rule 40c.3).
@@ -39,8 +39,8 @@ test.describe("T106 — command palette keyboard nav", () => {
     const options = dialog.getByRole("option");
     await expect.poll(async () => options.count()).toBeGreaterThanOrEqual(2);
 
-    // First option carries the focused marker — Phase B locked the
-    // visible-highlight tokens via this testid.
+    // First option carries the focused marker — the
+    // visible-highlight tokens are locked via this testid.
     const focused = dialog.getByTestId("search-result-focused");
     await expect(focused).toBeVisible();
     const firstText = (await focused.textContent()) ?? "";

@@ -181,7 +181,7 @@ def _post_session_events(
     started = int(role_cfg["started_offset_sec"])
     ended = role_cfg["ended_offset_sec"]
 
-    # Ingestion enforces a clock-skew bound (D7 in audit-phase-4.md):
+    # Ingestion enforces a clock-skew bound:
     # rejects events with ``occurred_at < NOW() - 48h`` with HTTP 400.
     # Roles that backdate the session row beyond that window
     # (currently ``ancient-only`` at -9 days) emit their EVENTS at a
@@ -189,8 +189,8 @@ def _post_session_events(
     # post-seed SQL backdate moves the session row's started_at /
     # ended_at columns to the declared deep-past values. The events
     # table still carries recent occurred_at values; the dashboard
-    # reads ``session.started_at`` for the V-DRAWER drawer query so
-    # the ancient session shows up correctly post-fix.
+    # reads ``session.started_at`` for the drawer query so
+    # the ancient session shows up correctly.
     MAX_SAFE_EVENT_OFFSET = -3600  # 1h ago, well inside the 48h bound
     event_started = max(started, MAX_SAFE_EVENT_OFFSET)
     event_ended = (
@@ -829,9 +829,9 @@ def _session_is_complete(
     expected event_type signature.
 
     Without the phase4_extras check, an old seeded session that
-    pre-dated the canonical fixture's phase4 expansion would skip the
+    predates the canonical fixture's extras list would skip the
     re-emit forever — leaving fresh-active sessions without the
-    embeddings + streaming events T14/T15 depend on. The phase4 check
+    embeddings + streaming events T14/T15 depend on. The extras check
     keeps the per-session idempotency tight: if any expected
     event_type is missing, treat the session as incomplete and
     re-seed (additive — duplicates are accepted because the seed
@@ -1558,7 +1558,7 @@ def seed(mode: str = "full") -> None:
                             )
                         )
 
-                    # B-6 — one fresh ``mcp_resource_read`` with an
+                    # One fresh ``mcp_resource_read`` with an
                     # overflowed body so live verification of the
                     # "Load full response" affordance has data to
                     # exercise. The wire shape mirrors what the

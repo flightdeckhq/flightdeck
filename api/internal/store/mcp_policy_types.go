@@ -66,9 +66,8 @@ type MCPPolicyResolveResult struct {
 // Carries both the time-bucketed series (Buckets, used by the
 // dashboard sparklines) and the aggregate per-server counts
 // (BlocksPerServer / WarnsPerServer, used by the panel header
-// summary table). Step 6.5 added the bucketed shape; the
-// aggregates are computed server-side from the same data so the
-// header stays single-fetch.
+// summary table). The aggregates are computed server-side from
+// the same data as the buckets so the header stays single-fetch.
 //
 // Granularity is 'hour' for period=24h and 'day' for period=7d /
 // 30d. The bucket array zero-fills empty time slots via SQL

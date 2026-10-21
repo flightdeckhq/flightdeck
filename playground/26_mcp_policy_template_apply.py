@@ -9,7 +9,7 @@ Scenarios:
   S1 ``strict-baseline`` + global ``allowlist``:
      Template ships ``block_on_uncertainty=true``, zero entries.
      Combined with global ``allowlist`` mode, every unlisted server
-     blocks at resolution step 3 and the BOU branch emits
+     blocks at the mode-default step and the BOU branch emits
      ``policy_mcp_block``. We temporarily flip global to allowlist,
      apply the template, drive the reference MCP server through the
      sensor, expect the block + audit event, then restore global.
@@ -17,7 +17,7 @@ Scenarios:
   S2 ``permissive-dev`` over default global ``blocklist``:
      Template ships ``block_on_uncertainty=false``, zero entries.
      Functionally equivalent to "no flavor policy" under blocklist
-     mode — every unlisted server resolves to allow at step 3.
+     mode — every unlisted server resolves to allow at the mode-default step.
      Drive the reference server, expect NO ``policy_mcp_block`` to
      land within the poll window.
 

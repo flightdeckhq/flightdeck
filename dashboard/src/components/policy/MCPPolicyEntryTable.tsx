@@ -304,7 +304,7 @@ function SortableTh({
 }
 
 function DecisionPill({ entry }: { entry: MCPPolicyEntry }) {
-  // Chroma map (locked in step 6 plan):
+  // Chroma map:
   //   allow → green
   //   deny + warn → amber
   //   deny + block → red

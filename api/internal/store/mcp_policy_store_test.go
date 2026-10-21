@@ -404,7 +404,7 @@ func TestGetMCPPolicyMetricsEmptyByDefault(t *testing.T) {
 		t.Fatalf("metrics: %v", err)
 	}
 	if len(metrics.WarnsPerServer) != 0 || len(metrics.BlocksPerServer) != 0 {
-		t.Errorf("expected empty metrics buckets pre-step-4, got %+v", metrics)
+		t.Errorf("expected empty per-server metrics for a policy with no events, got %+v", metrics)
 	}
 	if metrics.Period != "24h" {
 		t.Errorf("period = %q, want 24h", metrics.Period)

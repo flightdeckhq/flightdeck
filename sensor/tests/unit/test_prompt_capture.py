@@ -142,7 +142,7 @@ def test_capture_on_event_payload_has_content() -> None:
 
 
 # ---------------------------------------------------------------------
-# Embeddings content capture (S-EMBED-1, S-EMBED-2).
+# Embeddings content capture.
 # OpenAI and litellm both surface embedding inputs; the provider's
 # ``extract_content`` branches on event_type=EMBEDDINGS and captures
 # the request's ``input`` parameter into the new ``PromptContent.input``

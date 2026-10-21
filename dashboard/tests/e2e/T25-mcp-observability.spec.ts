@@ -283,7 +283,7 @@ test.describe("T25 — MCP observability rendering", () => {
   // window — see seed.py's mcp-active branch. T25-13 asserts the
   // data-event-shape="hexagon" + data-mcp-family="true" markers
   // are visible on the Fleet swimlane, both themes.
-  // T25-14 (B-6) — large MCP content routes to event_content; drawer
+  // T25-14 — large MCP content routes to event_content; drawer
   // shows Load Full Response affordance and the click fetches the
   // full body. The seeder lands one fresh has_content=true
   // mcp_resource_read each refresh — see seed.py's mcp-active branch.

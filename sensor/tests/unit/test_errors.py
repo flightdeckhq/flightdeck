@@ -366,7 +366,7 @@ def test_error_classification_is_frozen() -> None:
 
 
 # ---------------------------------------------------------------------------
-# H-2 regression — Rule 18 leak via _redacted_message
+# Regression — Rule 18 leak via _redacted_message
 # ---------------------------------------------------------------------------
 #
 # Provider exceptions (notably content_filter rejections) echo the
@@ -377,7 +377,7 @@ def test_error_classification_is_frozen() -> None:
 
 
 def test_classify_capture_off_omits_provider_message_text() -> None:
-    """H-2 fix: capture_prompts=False MUST NOT include str(exc) in
+    """capture_prompts=False MUST NOT include str(exc) in
     error_message. Provider content_filter exceptions echo the
     offending prompt fragment in their string; that fragment is
     user-prompt content that capture-off must not forward.

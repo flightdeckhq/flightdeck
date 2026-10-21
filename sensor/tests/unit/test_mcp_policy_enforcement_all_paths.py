@@ -56,8 +56,8 @@ def _fake_session() -> Any:
     ],
 )
 def test_block_decision_raises_for_every_call_context(context: str) -> None:
-    """All 6 server-access paths must enforce — pre-Step-3 only
-    call_tool did. Block decision returns MCPPolicyBlocked across
+    """All 6 server-access paths must enforce, not only call_tool.
+    Block decision returns MCPPolicyBlocked across
     every context value."""
     fake = _fake_session()
     blocked = _enforce_mcp_policy(

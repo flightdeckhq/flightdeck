@@ -38,8 +38,8 @@ const (
 //
 // corsOrigin must be either "*" or a parseable absolute URL with a
 // non-empty scheme and host. Anything else fails fast at startup
-// Rather than rendering a non-functional CORS
-// surface in production.
+// rather than rendering a non-functional CORS surface in
+// production.
 func New(addr string, s store.Querier, hub *ws.Hub, validator *auth.Validator, corsOrigin string) *http.Server {
 	if validator == nil {
 		panic("server: validator must not be nil. Pass auth.NewValidator() in production or use NewForTesting() in tests.")

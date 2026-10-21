@@ -543,7 +543,7 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 		"mcp_prompt_list", "mcp_prompt_get",
 		"mcp_server_name_changed":
 		// MCP events. Route through HandlePostCall: the lean
-		// MCP payload (override 2) carries no token deltas (TokensTotal
+		// MCP payload carries no token deltas (TokensTotal
 		// is nil) and no model field, so HandlePostCall's branch logic
 		// short-circuits the token / model UPDATEs and just advances
 		// last_seen_at via the no-delta else branch. Policy evaluation

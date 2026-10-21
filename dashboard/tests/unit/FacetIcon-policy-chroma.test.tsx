@@ -1,4 +1,4 @@
-// Step 6.7 A1: FacetIcon renders a chroma dot for POLICY and
+// FacetIcon renders a chroma dot for POLICY and
 // MCP POLICY facet chips so operators can identify "this chip
 // filters for warns" by colour alone, matching the timeline
 // badge chroma. The dot's background is the cssVar from
@@ -58,8 +58,7 @@ describe("FacetIcon — POLICY / MCP POLICY chroma dots", () => {
   it("policy_mcp_warn dot uses var(--event-warn) chroma", () => {
     // Lock the chroma map: warn = amber (--event-warn), block = red
     // (--event-block), name_changed / user_remembered = info-purple
-    // (--event-result). Per ARCHITECTURE.md "Adjacent surfaces" and
-    // step 6 of the MCP Protection Policy plan.
+    // (--event-result). Per ARCHITECTURE.md "Adjacent surfaces".
     const { container } = render(
       <FacetIcon groupKey="mcp_policy_event_type" value="policy_mcp_warn" />,
     );

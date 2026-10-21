@@ -141,7 +141,7 @@ func (s *Store) RecordStart(ctx context.Context, sessionID string, seq uint64) e
 	if seq == 0 || seq > math.MaxInt64 {
 		return nil
 	}
-	return stampWithRetry(ctx, sessionID, seq, recordStartRetryDelays, s.recordStart)
+	return stampWithRetry(ctx, sessionID, int64(seq), recordStartRetryDelays, s.recordStart, stampGiveUps)
 }
 
 // stampFunc is one attempt of the re-attachment stamp. applied is false
@@ -151,11 +151,10 @@ type stampFunc func(ctx context.Context, sessionID string, startSeq int64) (revi
 
 // stampWithRetry runs stamp until it applies, pausing between attempts
 // for each duration in delays in turn. A stamp still not applied after
-// the last pause is noted through stampGiveUps and abandoned; a context
-// that ends during a pause abandons it silently, since the request it
+// the last pause is noted through giveUps and abandoned; a context that
+// ends during a pause abandons it silently, since the request it
 // belonged to is over.
-func stampWithRetry(ctx context.Context, sessionID string, seq uint64, delays []time.Duration, stamp stampFunc) error {
-	startSeq := int64(seq)
+func stampWithRetry(ctx context.Context, sessionID string, startSeq int64, delays []time.Duration, stamp stampFunc, giveUps *giveUpSampler) error {
 	for attempt := 0; ; attempt++ {
 		revived, applied, err := stamp(ctx, sessionID, startSeq)
 		if err != nil {
@@ -165,13 +164,13 @@ func stampWithRetry(ctx context.Context, sessionID string, seq uint64, delays []
 			if revived {
 				slog.Info("session revived by its re-attaching session_start",
 					"session_id", sessionID,
-					"start_seq", seq,
+					"start_seq", startSeq,
 				)
 			}
 			return nil
 		}
 		if attempt >= len(delays) {
-			stampGiveUps.note(sessionID, seq)
+			giveUps.note(sessionID, startSeq)
 			return nil
 		}
 		select {
@@ -201,9 +200,10 @@ var recordStartRetryDelays = []time.Duration{
 // held through every attempt: routine under a hammer on one session id
 // (nearly every request), where one line per request would let a token
 // holder drive log volume. One line per stampLogInterval carries the
-// count suppressed since the previous one; the line stays, since it is
-// the operator's only signal that a run's first calls may have missed
-// their roll-up.
+// count suppressed since the previous one, so give-ups in the last
+// interval of a burst are reported by the next line, not on their own;
+// the line stays, since it is the operator's only signal that a run's
+// first calls may have missed their roll-up.
 var stampGiveUps = newGiveUpSampler(time.Now)
 
 // stampLogInterval bounds the give-up log to one line per interval per
@@ -222,7 +222,7 @@ func newGiveUpSampler(now func() time.Time) *giveUpSampler {
 	return &giveUpSampler{now: now}
 }
 
-func (g *giveUpSampler) note(sessionID string, seq uint64) {
+func (g *giveUpSampler) note(sessionID string, startSeq int64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	now := g.now()
@@ -235,7 +235,7 @@ func (g *giveUpSampler) note(sessionID string, seq uint64) {
 	g.lastLogged = now
 	slog.Info("re-attachment stamp not applied; row held by another writer or gone",
 		"session_id", sessionID,
-		"start_seq", seq,
+		"start_seq", startSeq,
 		"suppressed_since_last", suppressed,
 	)
 }

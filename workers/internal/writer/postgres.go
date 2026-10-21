@@ -552,8 +552,9 @@ func (w *Writer) UpdateLastSeen(ctx context.Context, sessionID string) error {
 //     sequence and revives a closed row whose closed_seq is unknown or
 //     below that sequence (the previous run's queued session_end closed
 //     it between the check and the stamp), clearing ended_at and
-//     closed_seq. Best effort: skips a row another writer holds, with
-//     one retry. No attachment row.
+//     closed_seq. Best effort: skips a row another writer holds and
+//     retries on a short schedule (5, 10, 20 and 40 ms) before giving
+//     up. No attachment row.
 //  3. Worker, “UpsertSession“ ON CONFLICT branch. Scope: any prior
 //     state -> whatever the session_start event asks for (always
 //     “active“, clearing ended_at), except a closed row whose

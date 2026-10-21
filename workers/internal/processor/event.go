@@ -403,6 +403,9 @@ type Processor struct {
 	policy  *PolicyEvaluator
 	w       *writer.Writer
 	pool    *pgxpool.Pool
+	// clearSequences is the database touch point of StreamReady; nil
+	// means the writer's own, and tests substitute a scripted one.
+	clearSequences func(ctx context.Context, lastSeq uint64) (int64, error)
 }
 
 // NewProcessor creates a fully wired Processor.
@@ -422,7 +425,7 @@ func NewProcessor(pool *pgxpool.Pool) *Processor {
 // ordering rules stand down for those rows instead of misreading every
 // new event as older.
 func (p *Processor) StreamReady(ctx context.Context, lastSeq uint64) error {
-	cleared, err := p.w.ClearSequencesAbove(ctx, lastSeq)
+	cleared, err := p.forgetSequencesAbove(ctx, lastSeq)
 	if err != nil {
 		return err
 	}
@@ -431,6 +434,24 @@ func (p *Processor) StreamReady(ctx context.Context, lastSeq uint64) error {
 			"rows", cleared, "stream_last_seq", lastSeq)
 	}
 	return nil
+}
+
+func (p *Processor) forgetSequencesAbove(ctx context.Context, lastSeq uint64) (int64, error) {
+	if p.clearSequences != nil {
+		return p.clearSequences(ctx, lastSeq)
+	}
+	return p.w.ClearSequencesAbove(ctx, lastSeq)
+}
+
+// afterSessionEnd releases the per-session policy-evaluator state once
+// a session_end has closed the session, so the cache and fired-directive
+// maps stay bounded. A session_end that closed nothing (a duplicate, or
+// one superseded by a re-attachment) leaves the live session's state
+// alone: forgetting it would let its once-only directives fire again.
+func (p *Processor) afterSessionEnd(sessionID string, closed bool) {
+	if closed {
+		p.policy.ForgetSession(sessionID)
+	}
 }
 
 // Process handles a single event from NATS.
@@ -454,14 +475,7 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 			// turns into a delayed redelivery.
 			return err
 		}
-		if closed {
-			// Release per-session policy-evaluator state so the cache
-			// and fired-directive maps stay bounded (see
-			// ForgetSession). A session_end that closed nothing (a
-			// duplicate, or one superseded by a re-attachment) leaves
-			// the live session's state alone.
-			p.policy.ForgetSession(e.SessionID)
-		}
+		p.afterSessionEnd(e.SessionID, closed)
 	case "heartbeat":
 		if err := p.session.HandleHeartbeat(ctx, e); err != nil {
 			return err

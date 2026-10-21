@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -44,9 +45,31 @@ func captureLogs(t *testing.T) *bytes.Buffer {
 	return &buf
 }
 
+func TestRecordStartIgnoresUnknownOrOverflowingSequences(t *testing.T) {
+	// A Store without a pool would panic on any attempt, so a nil
+	// return proves the guard ran first.
+	s := &Store{}
+	for _, seq := range []uint64{0, math.MaxInt64 + 1, math.MaxUint64} {
+		if err := s.RecordStart(context.Background(), "s1", seq); err != nil {
+			t.Fatalf("RecordStart(%d) = %v, want nil", seq, err)
+		}
+	}
+}
+
+func TestRecordStartRetryDelaysCoverTheWorkersChain(t *testing.T) {
+	var total time.Duration
+	for _, d := range recordStartRetryDelays {
+		total += d
+	}
+	if len(recordStartRetryDelays) != 4 || total != 75*time.Millisecond {
+		t.Fatalf("schedule = %v (%v in all), want four pauses adding up to 75ms", recordStartRetryDelays, total)
+	}
+}
+
 func TestStampWithRetryStopsOnceApplied(t *testing.T) {
 	f := &fakeStamp{script: [][2]bool{{false, false}, {false, true}}}
-	if err := stampWithRetry(context.Background(), "s1", 7, quickDelays, f.stamp); err != nil {
+	err := stampWithRetry(context.Background(), "s1", 7, quickDelays, f.stamp, newGiveUpSampler(time.Now))
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if f.calls != 2 {
@@ -56,12 +79,9 @@ func TestStampWithRetryStopsOnceApplied(t *testing.T) {
 
 func TestStampWithRetryGivesUpAfterTheSchedule(t *testing.T) {
 	logs := captureLogs(t)
-	sampler := stampGiveUps
-	stampGiveUps = newGiveUpSampler(time.Now)
-	t.Cleanup(func() { stampGiveUps = sampler })
-
 	f := &fakeStamp{}
-	if err := stampWithRetry(context.Background(), "s1", 7, quickDelays, f.stamp); err != nil {
+	err := stampWithRetry(context.Background(), "s1", 7, quickDelays, f.stamp, newGiveUpSampler(time.Now))
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if want := len(quickDelays) + 1; f.calls != want {
@@ -75,7 +95,8 @@ func TestStampWithRetryGivesUpAfterTheSchedule(t *testing.T) {
 func TestStampWithRetryLogsARevival(t *testing.T) {
 	logs := captureLogs(t)
 	f := &fakeStamp{script: [][2]bool{{true, true}}}
-	if err := stampWithRetry(context.Background(), "s1", 7, quickDelays, f.stamp); err != nil {
+	err := stampWithRetry(context.Background(), "s1", 7, quickDelays, f.stamp, newGiveUpSampler(time.Now))
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !strings.Contains(logs.String(), "session revived") {
@@ -86,7 +107,8 @@ func TestStampWithRetryLogsARevival(t *testing.T) {
 func TestStampWithRetryReturnsTheStampsError(t *testing.T) {
 	boom := errors.New("boom")
 	f := &fakeStamp{err: boom}
-	if err := stampWithRetry(context.Background(), "s1", 7, quickDelays, f.stamp); !errors.Is(err, boom) {
+	err := stampWithRetry(context.Background(), "s1", 7, quickDelays, f.stamp, newGiveUpSampler(time.Now))
+	if !errors.Is(err, boom) {
 		t.Fatalf("error = %v, want %v", err, boom)
 	}
 	if f.calls != 1 {
@@ -99,7 +121,8 @@ func TestStampWithRetryStopsWhenTheRequestIsOver(t *testing.T) {
 	cancel()
 	f := &fakeStamp{}
 	// A pause long enough that only the ended context can finish the wait.
-	if err := stampWithRetry(ctx, "s1", 7, []time.Duration{time.Hour}, f.stamp); err != nil {
+	err := stampWithRetry(ctx, "s1", 7, []time.Duration{time.Hour}, f.stamp, newGiveUpSampler(time.Now))
+	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if f.calls != 1 {

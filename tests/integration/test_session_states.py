@@ -12,6 +12,8 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
+import pytest
+
 from .conftest import (
     agent_row_locked,
     exec_sql,
@@ -705,9 +707,16 @@ PROCESS_ERROR_MARKER = "process error"
 # Redeliveries the worker grants a session_end whose row is missing
 # before the orphan verdict (the three-delivery budget minus the first).
 ORPHAN_REDELIVERIES = 2
-# The agent identity the lock-held test locks: its own, so the lock never
-# blocks the sessions the other tests run under the default identity.
-HELD_AGENT_NAME = "ordering-held-agent"
+# The earliest the orphan verdict can follow the post: the two delayed
+# redeliveries (one second, then two) less half a second of slack for
+# the server's timers. A worker that redelivered at once would fail this
+# bound; a slow runner can only be later and passes.
+ORPHAN_VERDICT_EARLIEST_SECS = 2.5
+# The agent identity the lock-holding tests lock: its own, so the lock
+# never blocks the sessions the other tests run under the default
+# identity, and unique to this run, so a holder a killed run left behind
+# cannot park this run's worker.
+HELD_AGENT_NAME = f"ordering-held-{uuid.uuid4().hex[:8]}"
 # Token counts and latency the probe post_call carries; the session row
 # must show the total.
 PROBE_INPUT_TOKENS = 5
@@ -835,10 +844,9 @@ def test_orphan_session_end_is_dropped_once_after_the_retry_budget() -> None:
     sid = str(uuid.uuid4())
     flavor = f"test-orphan-end-{uuid.uuid4().hex[:6]}"
     sid_needle = f"session_id={sid}"
-    errors_before = set(
-        worker_log_lines(PROCESS_ERROR_MARKER, "event_type=session_end")
-    )
+    errors_before = set(worker_log_lines(PROCESS_ERROR_MARKER, sid_needle))
 
+    started = time.monotonic()
     post_event(make_event(sid, flavor, "session_end"))
 
     wait_until(
@@ -846,15 +854,16 @@ def test_orphan_session_end_is_dropped_once_after_the_retry_budget() -> None:
         timeout=RETRY_WINDOW_TIMEOUT_SECS,
         msg=f"worker never logged the orphan drop for {sid}",
     )
+    elapsed = time.monotonic() - started
+    assert elapsed >= ORPHAN_VERDICT_EARLIEST_SECS, (
+        f"orphan verdict after {elapsed:.2f}s: the redeliveries were not delayed"
+    )
 
     redeliveries = worker_log_lines(REDELIVERY_NOTICE, sid_needle)
     assert len(redeliveries) == ORPHAN_REDELIVERIES, redeliveries
     warnings = worker_log_lines(ORPHAN_WARNING, sid_needle)
     assert len(warnings) == 1, warnings
-    new_errors = (
-        set(worker_log_lines(PROCESS_ERROR_MARKER, "event_type=session_end"))
-        - errors_before
-    )
+    new_errors = set(worker_log_lines(PROCESS_ERROR_MARKER, sid_needle)) - errors_before
     assert not new_errors, new_errors
     rows = exec_sql(
         "SELECT COUNT(*) FROM sessions WHERE session_id = :'sid'::uuid",
@@ -1054,8 +1063,9 @@ def test_a_later_session_end_on_a_closed_row_advances_its_close_sequence() -> No
 
 def test_many_concurrent_session_starts_on_one_session_id_stay_consistent() -> None:
     """Several clients re-attaching the same session id at once must all be
-    accepted and leave the session open: the ingestion stamp skips a row
-    another request holds rather than queue every request on its lock.
+    accepted and leave the session open. Whether the stamp queues on the
+    row or skips it is not visible here; the held-row test below pins
+    that through its response bound.
     """
     sid = str(uuid.uuid4())
     flavor = f"test-hot-start-{uuid.uuid4().hex[:6]}"
@@ -1132,9 +1142,10 @@ def test_reattaching_start_is_stamped_while_an_event_insert_shares_its_row() -> 
 
 
 def test_reattached_run_that_ends_at_once_closes() -> None:
-    """The mirror of the previous test: a re-attachment whose own
-    session_end follows at once must end closed, whichever of the two
-    the worker processes first.
+    """A re-attachment whose own session_end follows at once must end
+    closed, whichever of the two the worker processes first: the
+    counterpart of the test that keeps a re-attachment published right
+    after the previous end open.
     """
     sid = str(uuid.uuid4())
     flavor = f"test-reattach-end-{uuid.uuid4().hex[:6]}"
@@ -1146,6 +1157,96 @@ def test_reattached_run_that_ends_at_once_closes() -> None:
     post_event(make_event(sid, flavor, "session_end"))
     _wait_for_rows(flavor, "session_end", 2, RETRY_WINDOW_TIMEOUT_SECS)
     assert get_session_detail(sid)["session"]["state"] == "closed"
+
+
+def test_open_row_without_recorded_sequences_is_closed_by_its_end() -> None:
+    """Rows that predate the sequence columns, lazily created rows and
+    rows the reaper closed carry no sequences. A session_end must still
+    close such a row and record its own sequence on it, or every session
+    open at upgrade would stay open.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-unsequenced-{uuid.uuid4().hex[:6]}"
+    post_event(make_event(sid, flavor, "session_start"))
+    wait_for_state(sid, "active", timeout=STATE_TIMEOUT_SECS)
+    exec_sql(
+        "UPDATE sessions SET start_seq = NULL, closed_seq = NULL "
+        "WHERE session_id = :'sid'::uuid",
+        sid=sid,
+    )
+
+    post_event(make_event(sid, flavor, "session_end"))
+    wait_for_state(sid, "closed", timeout=STATE_TIMEOUT_SECS)
+    closed_seq = exec_sql(
+        "SELECT closed_seq FROM sessions WHERE session_id = :'sid'::uuid", sid=sid
+    )
+    assert closed_seq.isdigit(), f"closed_seq not recorded: {closed_seq!r}"
+
+
+def test_a_call_published_after_the_end_cannot_keep_the_session_open() -> None:
+    """A call the worker handles before its session_start creates the
+    row lazily, without a start sequence. With start, end and call queued
+    behind a paused worker in that order, the end must close every
+    session whichever event the pool picks first; a lazy row stamped
+    with the call's sequence would read the end as older than the run
+    and leave the session open.
+    """
+    flavor = f"test-late-call-{uuid.uuid4().hex[:6]}"
+    sids = [str(uuid.uuid4()) for _ in range(BACKLOG_SESSIONS)]
+    with worker_paused():
+        for sid in sids:
+            post_event(make_event(sid, flavor, "session_start"))
+            post_event(make_event(sid, flavor, "session_end"))
+            post_event(_probe_call(sid, flavor))
+
+    _wait_for_rows(flavor, "post_call", len(sids), BURST_TIMEOUT_SECS)
+    _wait_for_rows(flavor, "session_end", len(sids), BURST_TIMEOUT_SECS)
+    closed = _count_sessions(flavor, "closed")
+    assert closed == len(sids), f"{closed} of {len(sids)} {flavor} sessions closed"
+
+
+@pytest.mark.parametrize(
+    "closed_seq_sql", ["NULL", "start_seq - 1"], ids=["unsequenced", "older"]
+)
+def test_worker_revives_a_row_closed_by_an_older_end_when_its_start_runs_late(
+    closed_seq_sql: str,
+) -> None:
+    """The worker's own revival of a closed row is the backstop for a
+    stamp that gave up: a re-attaching session_start processed after an
+    unsequenced end, or after one older than the start, must reopen the
+    row. The agents row is held so the worker's handling of the start
+    waits while the row is closed underneath it; on the way, the attach
+    check that runs before the start is published must itself clear the
+    previous close.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-late-start-{uuid.uuid4().hex[:6]}"
+    post_event(make_event(sid, flavor, "session_start", agent_name=HELD_AGENT_NAME))
+    wait_for_state(sid, "active", timeout=STATE_TIMEOUT_SECS)
+    agent_id = exec_sql(
+        "SELECT agent_id FROM sessions WHERE session_id = :'sid'::uuid", sid=sid
+    )
+    close_row = (
+        "UPDATE sessions SET state = 'closed', ended_at = NOW(), "
+        f"closed_seq = {closed_seq_sql} WHERE session_id = :'sid'::uuid"
+    )
+    row_state = (
+        "SELECT state || ',' || COALESCE(ended_at::text, 'none') || ',' "
+        "|| COALESCE(closed_seq::text, 'none') "
+        "FROM sessions WHERE session_id = :'sid'::uuid"
+    )
+
+    with agent_row_locked(agent_id):
+        exec_sql(close_row, sid=sid)
+        post_event(make_event(sid, flavor, "session_start", agent_name=HELD_AGENT_NAME))
+        # The attach check reopened the row before the start was published.
+        assert exec_sql(row_state, sid=sid) == "active,none,none"
+        exec_sql(close_row, sid=sid)
+    wait_for_state(sid, "active", timeout=STATE_TIMEOUT_SECS)
+    assert exec_sql(row_state, sid=sid) == "active,none,none"
+
+    post_event(make_event(sid, flavor, "session_end", agent_name=HELD_AGENT_NAME))
+    wait_for_state(sid, "closed", timeout=STATE_TIMEOUT_SECS)
 
 
 # ---------------------------------------------------------------------------

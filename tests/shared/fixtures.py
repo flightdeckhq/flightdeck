@@ -595,15 +595,22 @@ def _docker(*args: str) -> subprocess.CompletedProcess[str]:
     1"; the daemon's message ("No such container", ...) is what a reader
     of a failing test needs.
     """
-    proc = subprocess.run(
-        ["docker", *args],
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=DOCKER_CLI_TIMEOUT_SECS,
-        check=False,
-    )
+    try:
+        proc = subprocess.run(
+            ["docker", *args],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=DOCKER_CLI_TIMEOUT_SECS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        # The same error type as a failed command, so callers that
+        # tolerate one daemon message handle a hung CLI the same way.
+        raise RuntimeError(
+            f"docker {' '.join(args)} gave no answer in {DOCKER_CLI_TIMEOUT_SECS}s"
+        ) from exc
     if proc.returncode != 0:
         raise RuntimeError(
             f"docker {' '.join(args)} failed ({proc.returncode}): {proc.stderr.strip()}"
@@ -655,9 +662,11 @@ def worker_paused() -> Iterator[None]:
         failed = True
         raise
     finally:
-        # Resume first and give the signal handler back last, so no
-        # moment exists in which a SIGTERM could end the run with the
-        # container still paused.
+        # Resume first, with SIGTERM held off while the unpause runs,
+        # and give the handler back last, so no moment exists in which
+        # a SIGTERM could end the run with the container still paused;
+        # one that arrives meanwhile is delivered once the mask drops.
+        held = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
         try:
             _docker("unpause", WORKER_CONTAINER)
         except RuntimeError as exc:
@@ -667,6 +676,7 @@ def worker_paused() -> Iterator[None]:
                 raise  # the block passed, so a stuck pause must not be silent
         finally:
             signal.signal(signal.SIGTERM, previous)
+            signal.pthread_sigmask(signal.SIG_SETMASK, held)
 
 
 # Rows the ordering tests hold locks on, and the lock modes they use:
@@ -675,10 +685,10 @@ def worker_paused() -> Iterator[None]:
 # through psql.
 _LOCKABLE_ROWS = {"agents": "agent_id", "sessions": "session_id"}
 LockMode = Literal["KEY SHARE", "NO KEY UPDATE", "UPDATE"]
-# The mode a NOWAIT probe takes to prove each held lock: the weakest
-# mode the held one conflicts with. KEY SHARE is compatible with itself
-# (two event inserts share a session row), so only an UPDATE probe
-# detects it; the other modes conflict with themselves.
+# The mode a NOWAIT probe takes to prove each held lock: one the held
+# mode conflicts with. KEY SHARE is compatible with itself (two event
+# inserts share a session row), so only an UPDATE probe detects it; the
+# other modes conflict with themselves.
 _PROBE_MODES: dict[LockMode, LockMode] = {
     "KEY SHARE": "UPDATE",
     "NO KEY UPDATE": "NO KEY UPDATE",

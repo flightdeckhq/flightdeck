@@ -9978,8 +9978,11 @@ ingestion path on that row, and retries after pauses of 5, 10, 20 and
 40 ms. Its lock is `FOR NO KEY UPDATE`, so the KEY SHARE locks of event
 inserts do not make it skip. With each commit on the row slowed by 3 ms
 in a probe, a single 5 ms retry kept the first call's tokens in as few
-as 2 of 100 sessions; the schedule kept 100 of 100. A stamp that gives
-up is logged at most once a second per process, the line carrying the
+as 2 of 100 sessions; the schedule kept 100 of 100. Under sustained
+contention on one session id the schedule costs a re-attaching request
+about 80 ms at the median, bounded, paid only by that session's
+requests and holding no connection. A stamp that gives up is logged at
+most once a second per process, the line carrying the
 number suppressed since the last; the worker's own rules still revive
 the row, and calls handled before that revive are stored without
 rolling their tokens up. A duplicate end at or below a closed

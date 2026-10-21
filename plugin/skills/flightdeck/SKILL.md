@@ -17,10 +17,13 @@ reported from start to end:
 
 - Session start and end, including sub-agent sessions spawned through the
   Agent tool (reported under their own session id, linked to the parent).
-- Every tool call by name, with a sanitised whitelist of arguments
-  (`file_path`, `command`, `query`, `pattern`, `prompt`) while
-  `FLIGHTDECK_CAPTURE_TOOL_INPUTS` is on. MCP tool calls carry their full
-  arguments because the whitelist would empty them.
+- Every tool call by name, successful or failed, with Claude Code's
+  measured duration and `tool_use_id`, a structured error on failure, and
+  a sanitised whitelist of arguments (`file_path`, `command`, `query`,
+  `pattern`, `prompt`) while `FLIGHTDECK_CAPTURE_TOOL_INPUTS` is on. MCP
+  tool calls carry their full arguments because the whitelist would
+  empty them, plus the server identity Claude Code reports
+  (`mcp_server`).
 - Every LLM turn read from the session transcript: model, input and output
   tokens, cache tokens, latency, and the prompt and response bodies while
   `FLIGHTDECK_CAPTURE_PROMPTS` is on.
@@ -41,6 +44,10 @@ Open the dashboard served by `FLIGHTDECK_SERVER` (default
 - flavor `claude-code`
 - agent type `coding`
 - client type `claude_code`
+- a context block with the native Claude Code session id, the Claude
+  Code version, how the session started (`startup`, `resume`, `clear`,
+  `compact`, `fork`), the entrypoint (`cli` or `sdk-cli`), whether a human
+  is attending it, and cloud / CI markers when present
 
 Filter the Fleet view by flavor `claude-code` to see only Claude Code
 sessions. The session drawer shows tool calls, LLM turns, token totals and
@@ -70,6 +77,7 @@ plugin re-reads it at the next session start.
 | `FLIGHTDECK_CAPTURE_TOOL_INPUTS` | `true` | `false` strips the sanitised tool arguments. |
 | `FLIGHTDECK_QUIET` | unset | `1` silences the default-token warning. |
 | `CLAUDE_SESSION_ID` | unset | Forces the session id reported to Flightdeck. |
+| `CLAUDE_CODE_SESSION_ID` | set by Claude Code | Claude Code's own session id; reported as `context.claude_code_session_id` and used to key the per-session marker when a hook payload has no `session_id`. |
 
 ## Failure behaviour
 

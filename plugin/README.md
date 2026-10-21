@@ -25,8 +25,9 @@ By default, every Claude Code session produces:
 
 - **Session metadata** on session start: flavor (`claude-code`), hostname, OS, Node version, git commit/branch/repo, orchestration (docker-compose / kubernetes if detected), and the frameworks list.
 - **Every LLM call** (both `pre_call` on user prompt submit and `post_call` on assistant turn completion) with token counts from the Claude Code JSONL transcript: `tokens_input`, `tokens_output`, `tokens_cache_read`, `tokens_cache_creation`, plus model name and latency.
-- **Every tool call** with a sanitised whitelist of the tool arguments (file paths, short command and query strings, up to 200 chars each) and the tool result.
-- **Session lifecycle**: `session_start` at first hook, `session_end` when Claude Code exits.
+- **Every tool call**, successful or failed, with a sanitised whitelist of the tool arguments (file paths, short command and query strings, up to 200 chars each), the tool result, Claude Code's own `tool_use_id` and measured `duration_ms`, and on failure a structured `error` block.
+- **Session lifecycle**: `session_start` at first hook (with how the session began: `startup`, `resume`, `clear`, `compact` or `fork`), `session_end` when Claude Code exits (with Claude Code's exit reason).
+- **Run-mode signals** in the session context: the Claude Code native session id, version, entrypoint (`cli` for a terminal session, `sdk-cli` for `claude -p` and the SDK), whether a human is attending the session, whether it was launched from inside another Claude Code session, cloud (`CLAUDE_CODE_REMOTE`) and CI markers.
 
 Two independent privacy knobs control what content leaves your machine: `captureToolInputs` (default ON) governs the tool-arg whitelist, and `capturePrompts` (default ON) governs the LLM prompt/response content and tool results. Either can be turned off without affecting the other. See the env var table below and the Privacy section.
 
@@ -57,8 +58,10 @@ Guarantees that hold regardless of the knob settings:
 | `FLIGHTDECK_CAPTURE_TOOL_INPUTS` | `true` | Captures a sanitised whitelist of tool input fields on each `tool_call` event. Set to `false` to strip tool inputs. |
 | `FLIGHTDECK_CAPTURE_PROMPTS` | `true` | Captures LLM prompts, assistant responses, and tool results. Set to `false` to strip all content bodies from plugin events while keeping metadata and token counts. |
 | `FLIGHTDECK_QUIET` | unset | Set to `1` to suppress the `[flightdeck] WARN:` stderr line emitted on every hook invocation when `FLIGHTDECK_TOKEN` is unset (the seed `tok_dev` default is in use). Intended for test suites that intentionally exercise the zero-config default-token path; production deployments should set `FLIGHTDECK_TOKEN` instead so the warning never fires. |
-| `CLAUDE_SESSION_ID` | unset | Explicit session id override. Wins over every other resolution step -- use this when you want to force a specific id across processes or tests. |
+| `CLAUDE_SESSION_ID` | unset | Explicit Flightdeck session id override. Wins over every other resolution step -- use this when you want to force a specific id across processes or tests. |
 | `ANTHROPIC_CLAUDE_SESSION_ID` | unset | Alternative name for `CLAUDE_SESSION_ID`, honored second. |
+| `CLAUDE_CODE_SESSION_ID` | set by Claude Code | Claude Code's own session id, exported to every hook process. The plugin reads it when a hook payload carries no `session_id` (so callers other than Claude Code still get one marker per session) and reports it on every event as `context.claude_code_session_id`. It is not the Flightdeck session id; see *How it works*. |
+| `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_REMOTE`, `CLAUDE_CODE_REMOTE_SESSION_ID`, `CLAUDE_CODE_EXECPATH`, `CI` | set by Claude Code / the CI system | Read only. Surface in the session context as `entrypoint`, `attended`, `child_session`, `remote` / `remote_session_id`, `claude_code_version` and `ci` / `ci_provider`. |
 
 ## What gets reported, when
 
@@ -66,14 +69,14 @@ Each row is what the dashboard shows for a given Claude Code hook.
 
 | Claude Code hook | Dashboard events |
 |---|---|
-| SessionStart | `session_start` with runtime context (hostname, git, frameworks, `supports_directives=false`). Sent once per session id. When an MCP Protection Policy applies, also one `policy_mcp_warn` / `policy_mcp_block` per declared MCP server whose decision is not `allow`. |
+| SessionStart | `session_start` with runtime context (hostname, git, frameworks, `supports_directives=false`, the run-mode signals listed above, and `session_source` = the hook's `source`: `startup`, `resume`, `clear`, `compact` or `fork`). Sent once per session id. When an MCP Protection Policy applies, also one `policy_mcp_warn` / `policy_mcp_block` per declared MCP server whose decision is not `allow`. |
 | UserPromptSubmit | `pre_call` with cached model name and the user prompt (if `capturePrompts=true`). |
 | PreToolUse (MCP) | No dashboard event. For tools named `mcp__<server>__<tool>` the plugin applies the MCP Protection Policy cached at SessionStart and writes a Claude Code hook decision to stdout: `deny` when the server is blocked, `allow` when an earlier approval was remembered, `ask` when the server is unknown to an allowlist-mode policy (a `yes` is remembered on PostToolUse and reported as `mcp_policy_user_remembered`). Non-MCP tools, allowed or warned servers, and servers missing from `.mcp.json` fall through to Claude Code's default approval flow. |
-| PostToolUse | Any un-emitted assistant turns from the transcript flush as `post_call` events first (token counts, model, response body when capture is on), then the tool execution itself emits a `tool_call`. Mid-turn LLM activity is flushed on every tool invocation instead of only at turn end. |
-| PostToolUse (MCP) | When the tool name matches `mcp__<server>__<tool>` the plugin emits `mcp_tool_call` instead of the generic `tool_call`. See *MCP coverage* below. |
-| PostToolUseFailure (MCP) | Same routing — emits `mcp_tool_call` with a populated `error` block (`error_class=PluginToolError`). Non-MCP tool failures are dropped (no generic tool-failure event type today). |
+| PostToolUse | Any un-emitted assistant turns from the transcript flush as `post_call` events first (token counts, model, response body when capture is on), then the tool execution itself emits a `tool_call` carrying `tool_use_id` and Claude Code's measured tool time as `latency_ms` / `duration_ms` (null on Claude Code versions that don't report it; the plugin never substitutes its own run time). Mid-turn LLM activity is flushed on every tool invocation instead of only at turn end. |
+| PostToolUse (MCP) | When the tool name matches `mcp__<server>__<tool>` the plugin emits `mcp_tool_call` instead of the generic `tool_call`, with `mcp_server = {name, source}` as Claude Code reports it. See *MCP coverage* below. |
+| PostToolUseFailure | Every tool, not only MCP: the same `tool_call` / `mcp_tool_call` routing as PostToolUse plus a structured `error` block (`error_type=other`, `error_class=PluginToolError`, the tool's error text, and `interrupted` when Claude Code reports the failure reached it as an abort). A failed `Bash` command, a `Read` on a missing file and an MCP call that errored all land. |
 | Stop | `post_call` backstop for the final assistant turn that had no tool follow-up. Turns already flushed by PostToolUse are skipped via per-message dedup. |
-| SessionEnd | Final transcript sweep (any last-turn `post_call` missed by Stop) followed by `session_end`. |
+| SessionEnd | Final transcript sweep (any last-turn `post_call` missed by Stop) followed by `session_end` with `close_reason=normal_exit` and `end_reason` = the hook's `reason` (`clear`, `resume`, `logout`, `prompt_input_exit`, `other`). The hook itself only invalidates the on-disk session markers and hands the POSTs to a detached worker process, so it returns well inside Claude Code's 1.5 s SessionEnd budget even when the server is slow. |
 | PreCompact | Synthetic `tool_call` with `tool_name=compact_context` so the timeline shows when Claude Code compacted its context window. |
 | SubagentStart | Child `session_start` under the sub-agent's own `session_id`, with `parent_session_id` pointing at the outer session and `agent_role` naming the sub-agent type. Hooks that fire while the sub-agent runs are emitted under the child session id. |
 | SubagentStop | Child `session_end` for that same sub-agent session, after flushing any un-emitted turns from the sub-agent's transcript. |
@@ -84,12 +87,15 @@ Sub-agent tracking: `SubagentStart` / `SubagentStop` emit the sub-agent's own `s
 
 ## MCP coverage
 
-The plugin sees MCP traffic as `mcp__<server>__<tool>` tool invocations on `PostToolUse` and `PostToolUseFailure`. These are routed to the dedicated `mcp_tool_call` event_type with `server_name`, `tool_name`, `transport`, `arguments`, `result`, `duration_ms`, and (on failure) `error`. Server fingerprints (transport, command/args, env) are loaded from the project-local `.mcp.json` plus `~/.claude.json` and stamped on `session_start.context.mcp_servers`.
+The plugin sees MCP traffic as `mcp__<server>__<tool>` tool invocations on `PostToolUse` and `PostToolUseFailure`. These are routed to the dedicated `mcp_tool_call` event_type with `server_name`, `tool_name`, `transport`, `mcp_server`, `tool_use_id`, `arguments`, `result`, `duration_ms`, and (on failure) `error`. Server fingerprints (transport, command/args, env) are loaded from the project-local `.mcp.json` plus `~/.claude.json` and stamped on `session_start.context.mcp_servers`.
+
+Server identity. Claude Code 2.1.274+ puts `mcp_server: {name, source}` on every MCP tool hook: `name` is the server key exactly as Claude Code holds it and `source` says where it was declared (`project`, `user`, `plugin`, `sdk`). The plugin uses that as the authority for `server_name` and passes it through as `mcp_server`. A server bundled with another Claude Code plugin is keyed `plugin:<plugin>:<server>` (for example `plugin:claude-mem:mcp-search`) and its tools are named `mcp__plugin_<plugin>_<server>__<tool>`; on older Claude Code versions without the `mcp_server` field the plugin rebuilds the colon form from that flattened name, so the server reads the same either way.
 
 Known limits — by design, not a TODO:
 
 - **`mcp_tool_call` only.** Resource reads, prompt gets, and list operations (`mcp_resource_list/read`, `mcp_prompt_list/get`, `mcp_tool_list`) are invisible from the hook surface. The Python sensor patches the MCP SDK directly and emits all six event types; the plugin emits one — a deliberate trade-off recorded in DECISIONS.md.
-- **Tool-name parse is best-effort.** Claude Code uses `__` (double underscore) as the server/tool delimiter. A server whose name contains `__` is unparseable from the tool-name string alone; the plugin emits `server_name=null`, `tool_name=<rest>`, and writes one stderr line per occurrence. Avoid `__` in MCP server names.
+- **Tool-name parse is best-effort without `mcp_server`.** Claude Code uses `__` (double underscore) as the server/tool delimiter. When the hook carries `mcp_server`, a server key containing `__` is still split exactly; on older Claude Code versions the plugin splits at the first `__`, emits `server_name=null`, `tool_name=<rest>` for an unparseable name, and writes one stderr line per occurrence. A plugin name containing `_` is likewise only split exactly when `mcp_server` is present.
+- **Plugin-bundled servers have no transport.** Their declaration lives in the other plugin's own `.mcp.json`, not in the project's, so `transport` is `null` and the MCP Protection Policy cannot fingerprint them (the gate fails open for them).
 - **Mid-session reconnects are not observable.** A server added via `claude mcp add` after the session started is seen at tool-call time but won't appear in `session_start.context.mcp_servers` (which is captured once and never refreshed). Transport falls back to `null` for that server until the next Claude Code invocation rebuilds the fingerprint cache.
 - **Sanitiser bypassed for MCP arguments.** The whitelist that drops fields like file bodies on generic tools doesn't apply to MCP — its keep-list (`file_path`, `command`, `query`, `pattern`, `prompt`) would empty most MCP payloads. `captureToolInputs=false` still strips the `arguments` field entirely.
 
@@ -171,22 +177,27 @@ Session identity resolution. Precedence, top wins:
 
 1. `CLAUDE_SESSION_ID` env var.
 2. `ANTHROPIC_CLAUDE_SESSION_ID` env var.
-3. Marker file cache at `$TMPDIR/flightdeck-plugin/session-<sha256(hook session_id)[:16]>.txt`, keyed on the per-invocation `session_id` Claude Code puts on every hook event. The first hook of an invocation writes it; every later hook in the same run reads it verbatim.
-4. A fresh random UUID (RFC 4122 v4), written to that marker file. Each Claude Code invocation is therefore one session row; continuity across invocations lives in `agent_id`, a stable UUID derived from agent type, `user@hostname`, client type and agent name.
-5. When the hook event carries no `session_id` (a caller other than Claude Code), the marker is keyed on `sha256(cwd)[:16]` and the plugin prints one stderr warning.
+3. Marker file cache at `$TMPDIR/flightdeck-plugin/session-<sha256(native session id)[:16]>.txt`, keyed on Claude Code's own per-invocation session id: the `session_id` on every hook event, or `$CLAUDE_CODE_SESSION_ID` from the hook environment when the payload has none. The first hook of an invocation writes it; every later hook in the same run reads it verbatim.
+4. A fresh random UUID (RFC 4122 v4), written to that marker file. Each Claude Code invocation is therefore one session row; continuity across invocations lives in `agent_id`, a stable UUID derived from agent type, `user@hostname`, client type and agent name. The native Claude Code session id travels alongside as `context.claude_code_session_id`, so a dashboard session maps back to its transcript.
+5. When neither the hook event nor the environment names a session (a caller other than Claude Code), the marker is keyed on `sha256(cwd)[:16]` and the plugin prints one stderr warning.
 6. An ephemeral `sha256(time, pid, cwd)[:32]` when `$TMPDIR` itself is unusable.
 
 `SessionEnd` deletes the marker, so `/clear` or a new `claude` run mints a fresh session id (delete `$TMPDIR/flightdeck-plugin/` by hand to force one earlier).
 
-No background threads. No polling. The only state the plugin persists across hook invocations is a small set of markers in `$TMPDIR/flightdeck-plugin/`:
+SessionEnd and the 1.5 s budget. Claude Code gives SessionEnd hooks 1.5 seconds in total before it exits, and a plugin cannot raise that. The SessionEnd hook therefore does no network work itself: it resolves the session id, deletes the markers above, and re-launches this same script as a detached worker (`observe_cli.mjs --session-end-worker`, hook event on stdin, session id in `CLAUDE_SESSION_ID`) which flushes any remaining transcript turns and POSTs the `session_end` after Claude Code has moved on. The worker's stderr is appended to `$TMPDIR/flightdeck-plugin/session-end-worker.log`, which is where a "cannot reach" line for a session_end shows up.
 
-- `session-<hash>.txt`: the session id for the current Claude Code invocation (a random UUID), keyed on the hook event's `session_id`.
+No background threads inside a hook. No polling. The only state the plugin persists across hook invocations is a small set of markers in `$TMPDIR/flightdeck-plugin/`:
+
+- `session-<hash>.txt`: the session id for the current Claude Code invocation (a random UUID), keyed on the native Claude Code session id.
 - `mcp-policy-<sid>.json`: the MCP policy fetched at `SessionStart` and read by every `PreToolUse`; deleted at `SessionEnd`.
 - `started-<sid>.txt`: marks that session_start was attempted (so subsequent hooks don't duplicate).
 - `model-<sid>.txt`: caches the model name so `pre_call` events on older Claude Code versions can carry a non-null model.
 - `emitted-<messageId>.txt`: per-message dedup so Stop / SessionEnd don't re-emit turns that PostToolUse already flushed.
+- `session-end-worker.log`: stderr of the detached SessionEnd workers (only failed POSTs write to it).
 
 All of these are safe to delete; the plugin recreates what it needs on the next hook.
+
+Windows. Claude Code may hand the hook its own path with forward slashes or a differently cased drive letter when it expands `${CLAUDE_PLUGIN_ROOT}`; the script's entry check normalises both forms (and compares case-insensitively on Windows) so the hook runs instead of silently doing nothing. Git remotes given as Windows file paths are parsed for the repository name the same way as URLs.
 
 For the deeper architecture (ingestion pipeline, session state machine, NOTIFY/WebSocket push, revive/create semantics), see ARCHITECTURE.md.
 
@@ -199,7 +210,7 @@ cd plugin
 node --test tests/*.test.mjs
 ```
 
-Or via the top-level Makefile: `make test-plugin`. The suite covers the uuid5 helper (Python-canonical vectors), the session-identity resolution chain, and the end-to-end hook flow against an in-process capture server.
+Or via the top-level Makefile: `make test-plugin`. The suite covers the uuid5 helper (Python-canonical vectors), the session-identity resolution chain, the end-to-end hook flow against an in-process capture server, and a replay of hook payloads recorded from a real Claude Code session (`tests/fixtures/claude-code-2.1.306-hooks.jsonl`) in which every emitted event is checked against the ingestion validator's rules -- a stub server accepts anything, so without that check a payload the real API rejects with 400 would pass the suite while the plugin fails open and drops it.
 
 ## Updating
 

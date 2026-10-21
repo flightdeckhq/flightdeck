@@ -26,8 +26,9 @@ class Provider(str, Enum):
 
     Members:
 
-    * ``Provider.ANTHROPIC`` — class-level patch on ``anthropic.Anthropic``
-      and ``anthropic.AsyncAnthropic``.
+    * ``Provider.ANTHROPIC`` — resource-level patch on the SDK's
+      ``Messages`` / ``AsyncMessages`` classes, which every ``anthropic``
+      client class hands out.
     * ``Provider.OPENAI`` — class-level patch on ``openai.OpenAI`` and
       ``openai.AsyncOpenAI``.
     * ``Provider.LITELLM`` — module-level patch on ``litellm.completion``,

@@ -17,6 +17,21 @@ server.
 
 ### Added
 
+- **Sensor: the Anthropic raw view and streaming view are metered, and
+  every Anthropic `post_call` records its platform.**
+  `messages.with_raw_response.create` is metered like a plain call;
+  `messages.with_streaming_response.create` is metered when you call
+  `parse()` (`await parse()` on the async client), the sensor never reads
+  the body itself, and `create(stream=True)` through either view is
+  metered as the parsed stream is iterated. `messages.parse` (structured
+  output) is intercepted on the top-level and beta resources. Every
+  Anthropic `post_call` carries `provider_metadata.platform`
+  (`anthropic`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`,
+  `google-cloud`, `foundry`, or the host of a gateway the SDK was pointed
+  at). `wrap()` accepts any `anthropic` client class. With
+  `capture_prompts=True`, prompts sent through the cloud clients
+  (Bedrock, Vertex, Google Cloud, Foundry, AWS, Mantle) now
+  reach the control plane like any other captured prompt.
 - **Sensor: OpenAI structured outputs and the Responses raw-response
   path are metered.** `chat.completions.parse()` and `responses.parse()`
   go through the same intercept as `create()`, as do
@@ -43,6 +58,13 @@ server.
 
 ### Fixed
 
+- **Sensor: calls through the Anthropic cloud clients landed no events.**
+  `AnthropicBedrock`, `AnthropicVertex`, `AnthropicBedrockMantle`,
+  `AnthropicFoundry`, `AnthropicAWS` and their async forms were never
+  intercepted by `patch()`. They are now metered like `Anthropic` /
+  `AsyncAnthropic`, including clients built before `patch()` ran (a
+  `with_raw_response` / `with_streaming_response` view first touched
+  before `patch()` stays unmetered).
 - **Sensor: the pre-call estimate for a Responses request was a fixed 2
   tokens.** The estimator now counts the request's `input` and
   `instructions` (and an embeddings request's `input`), so `pre_call`
@@ -200,6 +222,7 @@ server.
 
 ### Changed
 
+- **Sensor: the `anthropic` floor rises from 0.20 to 0.86**, the lowest release with the resource layout the patch imports; an older SDK is reported with a warning at import and its calls are not metered.
 - **Sensor: three more OpenAI exceptions are classified, and a billed
   call that fails for the caller is reported as both events.**
   `OAuthError` lands as `authentication`. `LengthFinishReasonError` and
@@ -234,7 +257,7 @@ server.
   gateway attribution) and the fact that no service serves `/metrics`
   yet. README gains a Roadmap section (replacing "Coming soon"), the
   plugin README documents identity, enforcement and updating, METHODOLOGY
-  records the severity scale, and DECISIONS.md records D164 to D189.
+  records the severity scale, and DECISIONS.md records D164 to D189 and D192.
 - **Repository hygiene.** Retired known-issue identifiers and decision
   pointers in source, CI and Helm comments; `sensor/.venv` is no longer
   tracked; test files and functions no longer carry decision numbers.

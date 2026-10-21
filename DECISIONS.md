@@ -10484,3 +10484,186 @@ Raising the parse failure at `with_raw_response.parse()` instead of
 returning the raw response (changes the SDK's contract for the caller).
 Suppressing the pydantic warnings with a `warnings` filter in the
 agent's process (global state the sensor has no business changing).
+
+---
+
+## D192 -- The Anthropic patch binds to the Messages resource classes, and the platform lives in provider_metadata
+
+**Date:** 2026-10-21
+
+**Supersedes:** the Anthropic half of D087 (the sensor descriptors
+installed on `anthropic.Anthropic`, `AsyncAnthropic`, `Beta` and
+`AsyncBeta` and the two Anthropic descriptor classes). The OpenAI half
+of D087 stands.
+
+**Refines:** D175, which chose the `Messages` resource classes as the
+intercept point and said the raw-response and streaming-response
+accessors are proxied. The method patch covers both views on its own,
+because the views bind the resource method when they are built; only the
+streaming view gets a deferred proxy; and the Bedrock / Vertex beta
+resource classes are patched in their own right.
+
+**Decision:** `patch()` intercepts the Anthropic SDK by replacing
+`create`, `stream` and `parse` on the resource classes every client
+hands out -- `anthropic.resources.messages.messages.Messages` /
+`AsyncMessages`, the beta `Messages` / `AsyncMessages` under
+`anthropic.resources.beta.messages`, and the Bedrock and Vertex beta
+resources in `anthropic.lib.bedrock._beta_messages` and
+`anthropic.lib.vertex._beta_messages` -- instead of replacing the
+`messages` `cached_property` on the `Anthropic`, `AsyncAnthropic`,
+`Beta` and `AsyncBeta` classes. Each patched class keeps its original
+methods on a `_flightdeck_patched` sentinel, which `unpatch` restores and
+the `wrap()` proxy calls directly; with no session active a patched
+method calls the original. `wrap()` accepts any
+`anthropic._base_client.BaseClient`. Every Anthropic `post_call` carries
+`provider_metadata.platform`, derived from `client.base_url.host` and
+nothing else: `anthropic`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`,
+`google-cloud` or `foundry` for the hosts the SDK's client classes default to, else the
+bare host when it is a well-formed hostname (at most 253 characters,
+the DNS limit; lowercase letters, digits, dots and hyphens), else the
+fixed label `invalid-host`. Adding this key to the documented free-form
+`provider_metadata` object is documented in ARCHITECTURE first but is
+not a payload-schema change. `PromptContent.provider` stays
+`"anthropic"` on every platform. A streaming-view response abandoned
+without `parse()` or `close()` is settled with the estimate through the
+stream guards' mechanism: the proxy's finalizer queues the settle on the
+session, the next intercept or the session's end runs it, and a
+response still referenced at session end is settled by the session's
+open-guard sweep; the sensor never reads such a body. A patched method
+passes straight through once its class no longer resolves to it, so a
+view built while patched stops metering at `unpatch()`. Message Batches
+and `count_tokens` are not patched. A client that is both wrapped and
+patched is metered once, except when its resource class overrides a
+patched method and calls `super()`: the `wrap()`-built proxy resolves
+the override, the override re-enters the patched base method, and one
+request is reported twice (two `pre_call`, two `post_call`); a test
+pins that count. What collapses it is the outer-call mark that D191
+adds to `interceptor/base.py`: the `wrap()`-built proxy will run its SDK
+call under that mark, so the patched base method it re-enters recognises
+an outer call in progress and passes through. The
+`with_streaming_response` view is metered by a proxy that defers the
+`post_call` to the caller's `parse()` / `await parse()`, or to close
+(parsing only a body already read; the pre-call estimate when the body
+was never read), built on the package-private `_pre_call`, `_post_call`
+and `_emit_error` of `interceptor/base.py`; a stream obtained from a raw
+view's `parse()` is handed to the stream guard, whose latency runs from
+that `parse()`. A module-layout test pins the resource classes and
+methods, the client roots, the raw-response header, the way the raw
+views bind the resource method, and the set of exported client classes
+the patch relies on.
+
+**Reasoning:** Only `Anthropic` and `AsyncAnthropic` build `messages`
+through a class-level descriptor. `AnthropicBedrock`, `AnthropicVertex`,
+`AnthropicBedrockMantle` and their async forms assign
+`self.messages = Messages(self)` in `__init__`, and `AnthropicFoundry`
+overrides the descriptor with a `Messages` subclass, so a descriptor
+installed on `Anthropic` never ran for them and their calls landed no
+events. The resource classes are the one place every client passes
+through, and a method replaced on the class reaches instances that
+already exist, which removes the "patch before constructing clients"
+limitation for a client's `messages` resource. The SDK's raw and
+streaming views are the one exception: they bind the resource's method
+when they are built, so a view first touched before `patch()` keeps the
+unpatched method and is not metered; the SDK's view objects offer no
+call-time resolution to hook, so the limitation is documented and
+pinned by a strict `xfail` test that will flip if a later SDK resolves
+at call time. The floor rises to `anthropic>=0.86`, the lowest release
+(of 0.86, 0.91, 0.94, 0.102, 0.125 and 1.15, the ones inspected)
+carrying the resource layout the patch imports; an older SDK logs one
+warning at import instead of silently metering nothing. The SDK's raw and streaming views capture
+`messages.create` when they are built
+(`self.create = to_raw_response_wrapper(messages.create)`), so patching
+the resource method covers the views without any view-specific code.
+The Bedrock and Vertex beta resources are not subclasses of the
+first-party beta class: they copy its function objects into their own
+class bodies at import (`create = FirstPartyMessagesAPI.create`), so the
+first-party patch cannot reach them and they are listed as targets of
+their own; they carry only what their platform supports, so a missing
+method on them is expected rather than a warning.
+
+`platform` goes into `provider_metadata` because that block is the
+per-call provider annotation the pipeline already carries end to end:
+ingestion only requires it to be an object, the workers store it
+verbatim, and the dashboard renders every entry. Adding a key to the
+documented `provider_metadata` object is made in ARCHITECTURE first,
+which this change does, and needs no schema, migration or dashboard
+change.
+The host is the only source of the platform: no SDK client class carries
+a platform label, and a label derived from the class would mislabel a
+first-party client pointed at a gateway. The host is bounded because it
+is caller-controlled input written into every `post_call` of a session:
+unbounded, a 60,000-character host stored 60,004 bytes per event, and an
+arbitrary string could carry anything into the dashboard's metadata
+table; a well-formed hostname within the DNS limit is all an operator
+needs to recognise a gateway, and the fixed label keeps a malformed
+`base_url` visible without storing it. The known-platform rows match
+dot-separated suffixes (with the prefixes the SDK's defaults carry) and
+`vertex` only the Vertex AI API hosts, so a look-alike such as
+`evilanthropic.com` or an unrelated Google API host such as
+`storage.googleapis.com` is reported bare rather than labelled. The
+wrapper hands the originals of the class it patched to the proxy, so a
+resource subclass that overrides `create` and calls `super()` reaches
+the SDK's own method rather than resolving through the instance again
+and recursing; a structured-output `ParsedMessage` is dumped with
+pydantic's serializer warnings off so capture never writes into the
+caller's warning stream. Batches and `count_tokens` stay
+unpatched because a batch is not an in-process inference call (its
+spend lands asynchronously, outside the kill switch and the budget) and
+`count_tokens` is the sensor's own estimator. Changing `PromptContent.provider` to the
+platform would have broken the dashboard's provider-specific prompt
+rendering, which keys on `anthropic` versus `openai` to show `system` +
+`messages`; the platform is a deployment fact about the same provider
+format, not a different provider. An unknown host is reported bare so a
+gateway or proxy stays visible rather than being mislabelled as
+Anthropic's own API; the host is the API endpoint, not prompt content.
+
+The streaming view hands the caller a response whose body is unread. A
+`post_call` emitted at the call would have to parse the body first,
+which reads it from the network before the caller does and breaks
+callers that iterate bytes, and the async view's `parse()` is a
+coroutine, which the previous code called and dropped (the call then
+reported the estimate with zero output). Deferring to the caller's
+`parse()` keeps the body untouched and the usage exact; settling at
+close covers callers that read the body some other way without ever
+reading further; a never-read body reports the estimate because the
+sensor has nothing else to meter. The split between the pre-call check
+and the deferred post_call is exactly what `base.py` already factors into
+`_pre_call` / `_post_call` / `_emit_error`; the deferred call is specific
+to one SDK's view, so it lives with that interceptor and composes those
+package-private helpers rather than adding a view-specific call type to
+the shared core. A stream obtained from a raw view's `parse()` opens the
+guard at the parse, so its latency runs from there: the request was sent
+earlier, but the guard cannot time what it did not see, and the pre-call
+check already ran at the request. A raw-view response with `stream=True`
+that is never parsed emits no `post_call`: the SDK returns it outside any
+context manager, so there is no close hook to settle on, and reading the
+body to settle would consume the stream the caller still holds; the
+streaming view always settles, because its context manager closes the
+response.
+
+The layout canary exists because the patch depends on private SDK
+structure (`anthropic.lib.*._beta_messages`, the `X-Stainless-Raw-Response`
+header, the view classes binding the resource method); an SDK release
+that moves any of it should fail one test that names the move, not fail
+silently in the field.
+
+**Rejected:** Keeping the client-class descriptors and adding one per
+cloud client (Bedrock, Vertex and Mantle set `messages` in `__init__`,
+so no descriptor on the class can intercept them; it also leaves the
+pre-existing-instance limitation). Wrapping the client's `__init__` to
+replace the resource after construction (per-client code for every
+client class, and still misses resources built lazily). A new top-level
+`platform` field on the event (a payload-schema change needing
+ingestion validation, a worker column and dashboard work for a value
+the metadata block already carries). Setting `PromptContent.provider` to
+the platform (breaks the prompt viewer's provider-keyed rendering).
+Parsing the streaming-view body eagerly at the call (reads the body
+before the caller; breaks byte iteration). Teaching `base.py` a deferred
+call type (a shape specific to one SDK's view does not belong in the
+shared core).
+Mapping unknown hosts to `anthropic` (hides gateways) or to `unknown`
+(loses the host for no privacy gain). Attributing the platform by client
+class instead of host, or honouring a client-side label such as an
+`_otel_platform` attribute (no SDK class defines one, and a label the
+class carries mislabels a first-party client pointed at a gateway as
+`anthropic`).

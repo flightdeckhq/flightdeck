@@ -782,8 +782,8 @@ def _current_session() -> Session | None:
 class _OpenAIChatDescriptor:
     """Replacement for the ``chat`` cached_property on OpenAI clients.
 
-    Symmetric to :class:`_AnthropicMessagesDescriptor` in
-    ``interceptor/anthropic.py``. On first access on a given instance,
+    The Anthropic interceptor patches the resource classes instead (see
+    ``interceptor/anthropic.py``). On first access on a given instance,
     obtains the raw ``Chat`` (or ``AsyncChat``) resource by invoking
     the original ``cached_property``'s underlying function, wraps it
     in a :class:`SensorChat` proxy bound to the active session, and

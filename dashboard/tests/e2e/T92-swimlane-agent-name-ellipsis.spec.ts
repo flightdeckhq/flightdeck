@@ -6,11 +6,11 @@ import {
 } from "./_fixtures";
 
 // T92 — swimlane agent-name link uses ellipsis truncation with an
-// always-on ``title`` tooltip carrying the full name. Pre-Fix-2 the
-// link inherited ``white-space: normal`` from its flex ancestor
-// and either wrapped or hard-clipped the name at narrow column
-// widths. Fix 2 puts the ellipsis styles + title directly on the
-// link so the user contract is single-shape:
+// always-on ``title`` tooltip carrying the full name. Without
+// its own styles the link inherits ``white-space: normal`` from
+// its flex ancestor and either wraps or hard-clips the name at
+// narrow column widths, so the ellipsis styles + title sit
+// directly on the link and the user contract is single-shape:
 //
 //   * Computed style ``white-space: nowrap`` (never wrap).
 //   * Computed style ``text-overflow: ellipsis`` (clean

@@ -1,4 +1,4 @@
-"""MCP Protection Policy -- template apply (D138).
+"""MCP Protection Policy -- template apply.
 
 Exercises ``POST /v1/mcp-policies/{flavor}/apply_template`` across
 the three shipped templates. Each scenario uses its own fresh
@@ -9,7 +9,7 @@ Scenarios:
   S1 ``strict-baseline`` + global ``allowlist``:
      Template ships ``block_on_uncertainty=true``, zero entries.
      Combined with global ``allowlist`` mode, every unlisted server
-     blocks at resolution step 3 and the BOU branch emits
+     blocks at the mode-default step and the BOU branch emits
      ``policy_mcp_block``. We temporarily flip global to allowlist,
      apply the template, drive the reference MCP server through the
      sensor, expect the block + audit event, then restore global.
@@ -17,7 +17,7 @@ Scenarios:
   S2 ``permissive-dev`` over default global ``blocklist``:
      Template ships ``block_on_uncertainty=false``, zero entries.
      Functionally equivalent to "no flavor policy" under blocklist
-     mode — every unlisted server resolves to allow at step 3.
+     mode — every unlisted server resolves to allow at the mode-default step.
      Drive the reference server, expect NO ``policy_mcp_block`` to
      land within the poll window.
 
@@ -30,7 +30,7 @@ Scenarios:
      the flavor policy now has BOU=true + 3 entries with the right
      names + URLs, and ``GET /v1/mcp-policies/resolve`` against one
      of those URLs returns ``decision=allow``,
-     ``decision_path=flavor_entry`` (D135 step 1).
+     ``decision_path=flavor_entry`` (flavor entry wins).
 
 Why no ``ANTHROPIC_API_KEY`` gate: the sensor's MCP policy
 decision fires at ``call_tool`` time, not at LLM-call time. The
@@ -116,7 +116,7 @@ def put_global_policy(
 
 def create_flavor_policy(flavor: str, block_on_uncertainty: bool = False) -> None:
     """Create an empty flavor policy. apply_template requires the flavor
-    policy row to exist (returns 404 otherwise per D138)."""
+    policy row to exist (returns 404 otherwise)."""
     body = json.dumps(
         {"block_on_uncertainty": block_on_uncertainty, "entries": []}
     ).encode()
@@ -214,7 +214,7 @@ async def scenario_strict_baseline() -> tuple[bool, str]:
     session_id = str(uuid.uuid4())
     snap_mode, snap_bou, snap_entries = _snapshot_global()
     try:
-        # S1 needs allowlist global so the BOU branch in D135 step 3
+        # S1 needs allowlist global so the BOU branch of the mode-default fall-through
         # fires; otherwise BOU is ignored and no audit event lands.
         put_global_policy("allowlist", snap_bou, snap_entries)
         create_flavor_policy(flavor)
@@ -272,7 +272,7 @@ async def scenario_permissive_dev() -> tuple[bool, str]:
         # S2 explicitly sets blocklist so the demo is robust against
         # whatever state a prior run left global in. Under blocklist +
         # no flavor entries + BOU=false the resolution returns allow
-        # at D135 step 3 with no audit event.
+        # at the mode-default fall-through with no audit event.
         put_global_policy("blocklist", snap_bou, snap_entries)
         create_flavor_policy(flavor)
         result = apply_template(flavor, "permissive-dev")
@@ -353,7 +353,7 @@ async def scenario_strict_with_common_allows() -> tuple[bool, str]:
         if decision.get("decision_path") != "flavor_entry":
             return False, (
                 f"resolve decision_path={decision.get('decision_path')!r}; "
-                f"expected 'flavor_entry' (D135 step 1 — flavor entry wins)"
+                f"expected 'flavor_entry' (flavor entry wins)"
             )
         return True, (
             f"flavor={flavor}, 3 entries materialized, github URL resolves "

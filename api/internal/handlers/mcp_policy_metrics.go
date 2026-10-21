@@ -1,8 +1,8 @@
-// MCP Protection Policy metrics handler. Aggregates
-// policy_mcp_warn / policy_mcp_block events scoped to the policy.
-// Returns empty buckets until step 4 ships the events; the query is
-// correct today and will populate naturally as soon as the sensor /
-// plugin enforcement code emits the new event types.
+// MCP Protection Policy metrics handler. Aggregates the
+// policy_mcp_warn / policy_mcp_block events the sensor and plugin
+// enforcement paths emit, scoped to the policy. Buckets are
+// zero-filled across the period, so a policy with no enforcement
+// activity returns empty buckets rather than an empty array.
 
 package handlers
 
@@ -17,7 +17,7 @@ import (
 // GetMCPPolicyMetricsHandler handles GET /v1/mcp-policies/{flavor}/metrics.
 //
 // @Summary      Get MCP policy enforcement metrics
-// @Description  Aggregates policy_mcp_warn and policy_mcp_block events emitted by the sensor / plugin enforcement path. Returns empty buckets until step 4 ships those event types. period accepts 24h / 7d / 30d.
+// @Description  Aggregates policy_mcp_warn and policy_mcp_block events emitted by the sensor / plugin enforcement path. Buckets are zero-filled across the period, so a policy with no enforcement activity returns empty buckets. period accepts 24h / 7d / 30d.
 // @Tags         mcp-policy
 // @Produce      json
 // @Param        flavor  path   string  true   "Agent flavor or 'global'"

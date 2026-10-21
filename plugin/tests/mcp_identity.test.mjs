@@ -1,9 +1,9 @@
-// D127: Node twin of sensor/tests/unit/test_mcp_identity.py. Both
+// Node twin of sensor/tests/unit/test_mcp_identity.py. Both
 // files load the same cross-language fixture vectors so a drift
 // between the Python and Node implementations fails loudly in CI.
 //
 // Plus standalone tests for edge cases not in fixtures: empty
-// inputs, Unicode in name, type errors. See DECISIONS.md D127.
+// inputs, Unicode in name, type errors.
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";

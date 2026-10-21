@@ -15,6 +15,7 @@ exactly once. Both routes covered here so an SDK-class-rename in either
 provider can't escape the canary, and the post_call count is asserted
 so a double count can't either.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -224,12 +225,15 @@ def main() -> None:
         input=payload,
     )
     print_result(
-        "litellm.embedding", True,
+        "litellm.embedding",
+        True,
         int((time.monotonic() - t0) * 1000),
     )
 
     events = fetch_events_for_session(
-        session_id, expect_event_types=["embeddings"], timeout_s=8.0,
+        session_id,
+        expect_event_types=["embeddings"],
+        timeout_s=8.0,
     )
     embeds = [e for e in events if e.get("event_type") == "embeddings"]
     if not embeds:
@@ -247,7 +251,9 @@ def main() -> None:
         body = json.loads(r.read())
     captured_input = body.get("input")
     print_result(
-        "litellm embeddings capture round-trip", captured_input is not None, 0,
+        "litellm embeddings capture round-trip",
+        captured_input is not None,
+        0,
         f"captured input shape: {type(captured_input).__name__}",
     )
 
@@ -268,13 +274,19 @@ def main() -> None:
         raise AssertionError("invalid-model call did not raise")
 
     events = fetch_events_for_session(
-        session_id, expect_event_types=["llm_error"], timeout_s=8.0,
+        session_id,
+        expect_event_types=["llm_error"],
+        timeout_s=8.0,
     )
     errors = [e for e in events if e.get("event_type") == "llm_error"]
     if not errors:
         raise AssertionError(f"no llm_error observed; events={events!r}")
-    print_result("litellm llm_error emitted", True, 0,
-                 f"error_type={(errors[-1].get('payload') or {}).get('error', {}).get('error_type')!r}")
+    print_result(
+        "litellm llm_error emitted",
+        True,
+        0,
+        f"error_type={(errors[-1].get('payload') or {}).get('error', {}).get('error_type')!r}",
+    )
 
     flightdeck_sensor.teardown()
 

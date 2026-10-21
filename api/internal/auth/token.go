@@ -8,8 +8,8 @@
 // events; the query API only needs a 401-or-pass gate, so this
 // package also exports a chi-free http.Handler middleware.
 //
-// See DECISIONS.md D095 and the Authentication section of
-// ARCHITECTURE.md for the full model.
+// See the Authentication section of ARCHITECTURE.md for the full
+// model.
 package auth
 
 import (
@@ -133,7 +133,7 @@ func newValidatorWithDB(db dbQuerier, env envLookup) *Validator {
 	}
 }
 
-// Validate resolves rawToken against access_tokens per the D095 algorithm.
+// Validate resolves rawToken against access_tokens by its salted SHA-256 hash.
 func (v *Validator) Validate(ctx context.Context, rawToken string) (ValidationResult, error) {
 	if rawToken == "" {
 		return ValidationResult{}, nil

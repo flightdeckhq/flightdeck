@@ -174,7 +174,7 @@ function mkRecentSession(
 }
 
 // Fleet-store flavor builder for the windowed-parent regression
-// test. The flavor key is the agent_id under the D115 swimlane
+// test. The flavor key is the agent_id under the agent-keyed swimlane
 // scheme, so a parent that has spawned 5+ recent sessions still
 // surfaces ALL of them under its flavor's ``sessions`` list (the
 // /v1/sessions window cap is ~200 across all agents, not 5 per

@@ -5339,7 +5339,7 @@ Postgres) via `make test-integration`:
 - `test_killswitch.py` — single-agent + flavor-wide directive delivery
 - `test_prompt_capture.py` — `event_content` round-trip
 - `test_analytics.py` — analytics GROUP BY queries
-- `test_phase4_event_shapes.py` — embeddings, llm_error, streaming,
+- `test_event_shapes.py` — embeddings, llm_error, streaming,
   framework filter, `error_types[]` listing
 - `test_sensor_e2e.py` — end-to-end sensor lifecycle including
   acknowledgement events and singleton behaviour

@@ -154,7 +154,7 @@ export function seedBucketEntries(
 }
 
 /**
- * D126 UX revision 2026-05-03 — group children under their parent
+ * Group children under their parent
  * in a sorted row list.
  *
  * Takes a list of rows already sorted by some primary criterion
@@ -243,7 +243,7 @@ export function groupChildrenUnderParents<T>(
 
 /**
  * Topology classification used by SwimLane / Investigate row
- * styling (D126 UX revision). ``root`` covers both lone agents
+ * styling. ``root`` covers both lone agents
  * and parents-with-children; ``child`` covers any row whose
  * ``parentId`` references another visible row. Callers stamp
  * ``data-topology={topology}`` on the row container so a single

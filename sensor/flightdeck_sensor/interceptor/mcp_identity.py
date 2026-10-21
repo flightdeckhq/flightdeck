@@ -1,4 +1,4 @@
-"""MCP server identity primitive — D127 canonical form + fingerprint.
+"""MCP server identity primitive — canonical form + fingerprint.
 
 The MCP Protection Policy gates which Model Context Protocol servers
 an agent is allowed to talk to. Every gating decision needs a stable
@@ -25,9 +25,8 @@ against drift; ``sensor/tests/unit/test_mcp_identity.py`` and
 Pure stdlib. No new dependencies. Ships in the core wheel
 unconditionally — does NOT depend on the optional ``[mcp]`` extra.
 
-See DECISIONS.md D127 for the full identity-form rationale and
-ARCHITECTURE.md "MCP Protection Policy" → "Identity model" for the
-contract this module implements.
+See ARCHITECTURE.md "MCP Protection Policy" → "Identity model" for
+the contract this module implements.
 """
 
 from __future__ import annotations
@@ -47,7 +46,7 @@ __all__ = ["canonicalize_url", "fingerprint", "fingerprint_short"]
 _DEFAULT_PORTS = {"http": 80, "https": 443}
 
 # Env-var regex matches ``$VAR`` and ``${VAR}`` shapes. POSIX-style
-# only — no tilde expansion (D127 limits resolution to env vars).
+# only — no tilde expansion (resolution is limited to env vars).
 # Unresolved variables (not present in os.environ) remain LITERAL in
 # the canonical form: ``${MISSING_VAR}`` stays ``${MISSING_VAR}``.
 # Keeping unresolved vars literal means a missing env var produces a
@@ -56,7 +55,7 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 _ENV_VAR_RE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)")
 
 # Whitespace collapse applies globally inside the stdio canonical
-# form (Assumption Y locked in step 2). Every run of whitespace
+# form by design. Every run of whitespace
 # becomes a single space; leading and trailing whitespace are
 # stripped. An arg containing multi-space whitespace collapses by
 # design — callers should normalize args before declaring them. This
@@ -80,7 +79,7 @@ def _resolve_env_vars(raw: str) -> str:
 
 
 def _canonicalize_http(raw: str) -> str:
-    """HTTP / HTTPS canonical form (D127):
+    """HTTP / HTTPS canonical form:
     - lowercase scheme + host
     - strip default ports (:80 for http, :443 for https)
     - strip trailing slash only at the root
@@ -109,7 +108,7 @@ def _canonicalize_http(raw: str) -> str:
 
 
 def _canonicalize_stdio(raw: str) -> str:
-    """Stdio canonical form (D127):
+    """Stdio canonical form:
     - ``stdio://`` scheme prefix
     - literal command + args with single-space separators after
       collapsing internal whitespace runs
@@ -130,7 +129,7 @@ def _canonicalize_stdio(raw: str) -> str:
 
 
 def canonicalize_url(raw: str) -> str:
-    """Reduce ``raw`` to its canonical form per D127.
+    """Reduce ``raw`` to its canonical form.
 
     HTTP / HTTPS URLs route to the HTTP canonicalisation. Anything
     else routes to the stdio canonicalisation, which prepends

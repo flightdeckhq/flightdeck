@@ -10,7 +10,7 @@ import type { FlavorSummary } from "@/lib/types";
 // has access to react-router's basename context. Without the
 // wrapper Link's useContext returns null and throws "Cannot
 // destructure property 'basename' of React.useContext(...) as it is
-// null." -- a Phase 4 V-DRAWER footer side-effect on the existing
+// null." -- a drawer footer side-effect on the existing
 // suite.
 function renderWithRouter(ui: React.ReactElement) {
   return render(<MemoryRouter>{ui}</MemoryRouter>);

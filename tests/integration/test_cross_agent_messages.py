@@ -1,4 +1,4 @@
-"""D126 § 6 cross-agent message-capture integration tests.
+"""Cross-agent message-capture integration tests.
 
 Wire-seeded: hand-crafts sub-agent ``session_start`` / ``session_end``
 event payloads, POSTs them through the real ingestion API, and
@@ -14,7 +14,7 @@ Covers:
   on the events row; no event_content row written;
   ``GET /v1/events/{id}/content`` returns 404.
 * **IT-XAGENT-2** — Overflow path. Body > 8 KiB rides through the
-  existing D119 event_content path with
+  existing event_content path with
   ``provider="flightdeck-subagent"`` discriminator. The wire stub on
   the payload field carries
   ``{has_content, content_bytes, captured_at}`` so the dashboard can
@@ -29,8 +29,8 @@ Covers:
 Methodology mirrors ``test_mcp_events.py`` IT-MCP-3 (``has_content``
 + overflow content round-trip) — the plumbing that makes the MCP
 overflow path work is the same plumbing that makes the sub-agent
-overflow path work, by design (D126 § 6 explicitly reuses the D119
-contract).
+overflow path work, by design (sub-agent capture deliberately reuses
+the MCP overflow contract).
 """
 
 from __future__ import annotations
@@ -71,7 +71,8 @@ def _fetch_event_content(event_id: str) -> dict[str, Any] | None:
     None when the API returns 404.
     """
     req = urllib.request.Request(
-        f"{API_URL}/v1/events/{event_id}/content", headers=auth_headers(),
+        f"{API_URL}/v1/events/{event_id}/content",
+        headers=auth_headers(),
     )
     try:
         with urllib.request.urlopen(req, timeout=5) as resp:
@@ -97,7 +98,9 @@ def _post_subagent_session_start(
     so the worker sees the same envelope it would see in production.
     """
     payload = make_event(
-        child_session_id, flavor, "session_start",
+        child_session_id,
+        flavor,
+        "session_start",
         parent_session_id=parent_session_id,
         agent_role=agent_role,
     )
@@ -120,7 +123,9 @@ def _post_subagent_session_end(
     content: dict[str, Any] | None = None,
 ) -> None:
     payload = make_event(
-        child_session_id, flavor, "session_end",
+        child_session_id,
+        flavor,
+        "session_end",
         parent_session_id=parent_session_id,
         agent_role=agent_role,
     )
@@ -188,9 +193,7 @@ def test_inline_subagent_message_roundtrips_via_events_payload() -> None:
     assert incoming.get("body") == inline_body, (
         f"inline body did not round-trip: got {incoming!r}"
     )
-    assert "has_content" not in incoming, (
-        "inline stub form must not carry has_content"
-    )
+    assert "has_content" not in incoming, "inline stub form must not carry has_content"
 
     # Rule 37: capture is enabled but the body lives inline, so
     # /v1/events/{id}/content has no row to return — 404 is the
@@ -205,7 +208,7 @@ def test_inline_subagent_message_roundtrips_via_events_payload() -> None:
 
 def test_overflow_subagent_message_roundtrips_via_event_content() -> None:
     """Body > 8 KiB rides through event_content via the existing
-    D119 path. The listing row carries ``has_content=true``; the
+    event_content path. The listing row carries ``has_content=true``; the
     payload field becomes a stub
     ``{has_content, content_bytes, captured_at}``;
     GET /v1/events/{id}/content returns the full body

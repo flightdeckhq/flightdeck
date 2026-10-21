@@ -55,7 +55,7 @@ func TestBuildCostAggregateSQL_CacheAwareFormula(t *testing.T) {
 // a cost equal to the old two-term formula. Verified symbolically --
 // with both cache terms zeroed, cost(row) = uncached * input_rate +
 // output * output_rate = tokens_input * input_rate + tokens_output *
-// output_rate, the pre-D101 expression.
+// output_rate, the plain two-term expression.
 //
 // This is enforced structurally rather than by running SQL so the
 // test is hermetic. The runtime behaviour is exercised by the
@@ -78,7 +78,7 @@ func TestBuildCostAggregateSQL_CollapsesWhenNoCacheTokens(t *testing.T) {
 	// And that cache terms use the same input CASE (just scaled). OpenAI
 	// rows with cache_read = cache_creation = 0 zero those terms so the
 	// formula reduces to uncached * input + output * output, identical
-	// to pre-D101. That invariant is proved by algebra, not by running
+	// to the two-term expression. That invariant is proved by algebra, not by running
 	// SQL -- the structural check above is sufficient.
 }
 

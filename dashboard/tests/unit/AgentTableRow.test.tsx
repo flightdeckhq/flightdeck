@@ -213,7 +213,7 @@ describe("AgentTableRow", () => {
   });
 
   it("actions cell holds only the Events shortcut — no duplicate status badge", () => {
-    // Pre-fix the actions cell carried both the Events button AND
+    // Guarded regression: the actions cell carried both the Events button AND
     // the status-badge button; with the relocated STATUS column the
     // actions cell should hold only the Events shortcut so the
     // operator sees the badge exactly once per row.

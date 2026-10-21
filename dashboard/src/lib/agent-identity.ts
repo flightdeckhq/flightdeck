@@ -1,5 +1,5 @@
 /**
- * D114 / D115 agent identity enums.
+ * Agent identity enums.
  *
  * Const-object "enum" pattern (not TS ``enum``) so the runtime emits
  * no helper objects and the literal values are preserved byte-for-

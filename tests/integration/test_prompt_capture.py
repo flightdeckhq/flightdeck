@@ -61,7 +61,7 @@ def _get_event_ids(session_id: str) -> list[str]:
 
 def test_capture_off_no_row_and_404() -> None:
     """capture=off ⇒ zero event_content rows AND GET /events/:id/content
-    returns 404. Phase 4.5 audit Task 1: merged from
+    returns 404. Merged from
     test_capture_off_no_event_content_row + test_get_content_returns_404_when_off
     -- both tested the capture-off path with the same setup.
     """
@@ -87,21 +87,17 @@ def test_capture_off_no_row_and_404() -> None:
     assert len(event_ids) > 0, f"no events found for session {sid}"
 
     rows = _query_event_content_rows(event_ids[0])
-    assert rows == 0, (
-        f"expected 0 event_content rows when capture is off, got {rows}"
-    )
+    assert rows == 0, f"expected 0 event_content rows when capture is off, got {rows}"
 
     # GET /v1/events/:id/content must 404 when there is no content row
     result = _get_event_content(event_ids[0])
-    assert result is None, (
-        f"expected 404 when capture is off, got content: {result}"
-    )
+    assert result is None, f"expected 404 when capture is off, got content: {result}"
 
 
 def test_capture_on_writes_row_and_serves_content() -> None:
     """capture=on ⇒ exactly one event_content row AND GET
     /events/:id/content returns 200 with the original content fields.
-    Phase 4.5 audit Task 1: merged from test_capture_on_stores_content
+    Merged from test_capture_on_stores_content
     + test_get_content_endpoint_returns_200 -- both tested the
     capture-on path with the same setup, the second one only added
     the GET round-trip on top.
@@ -123,17 +119,19 @@ def test_capture_on_writes_row_and_serves_content() -> None:
         "messages": [{"role": "user", "content": "Hello"}],
         "tools": None,
         "response": {
-            "choices": [
-                {"message": {"role": "assistant", "content": "Hi"}}
-            ],
+            "choices": [{"message": {"role": "assistant", "content": "Hi"}}],
         },
     }
-    post_event(make_event(
-        sid, flavor, "post_call",
-        tokens_total=50,
-        has_content=True,
-        content=content,
-    ))
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "post_call",
+            tokens_total=50,
+            has_content=True,
+            content=content,
+        )
+    )
     wait_until(
         lambda: get_session_event_count(sid) >= 2,
         timeout=10,
@@ -144,9 +142,7 @@ def test_capture_on_writes_row_and_serves_content() -> None:
     assert len(event_ids) > 0, f"no post_call events for session {sid}"
 
     rows = _query_event_content_rows(event_ids[0])
-    assert rows == 1, (
-        f"expected 1 event_content row when capture is on, got {rows}"
-    )
+    assert rows == 1, f"expected 1 event_content row when capture is on, got {rows}"
 
     result = _get_event_content(event_ids[0])
     assert result is not None, (

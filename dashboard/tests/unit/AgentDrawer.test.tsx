@@ -703,7 +703,7 @@ describe("AgentDrawer", () => {
   });
 
   it("action row renders both buttons with icon + label structure", async () => {
-    // Pre-fix the actions were bare accent-coloured text that
+    // Guarded regression: the actions were bare accent-coloured text that
     // didn't read as buttons. The redesign uses bordered
     // icon + label buttons; assert each button hosts both an
     // SVG icon node (lucide-react renders <svg>) and a text

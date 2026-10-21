@@ -122,8 +122,8 @@ def test_directive_delivered_exactly_once() -> None:
     )
 
 
-# test_directive_not_redelivered_after_acknowledged -- removed in Phase
-# 4.5 audit Task 1. Subset of test_directive_delivered_exactly_once
+# test_directive_not_redelivered_after_acknowledged -- removed as a
+# duplicate. Subset of test_directive_delivered_exactly_once
 # (which already verifies the second envelope is null) plus
 # test_single_agent_kill (which already verifies delivered_at via
 # directive_has_delivered_at). No unique coverage was being added.

@@ -142,7 +142,7 @@ def test_capture_on_event_payload_has_content() -> None:
 
 
 # ---------------------------------------------------------------------
-# Phase 4 polish: embeddings content capture (S-EMBED-1, S-EMBED-2).
+# Embeddings content capture.
 # OpenAI and litellm both surface embedding inputs; the provider's
 # ``extract_content`` branches on event_type=EMBEDDINGS and captures
 # the request's ``input`` parameter into the new ``PromptContent.input``
@@ -236,7 +236,7 @@ def test_litellm_embeddings_capture_list_input() -> None:
 
 def test_chat_default_event_type_unchanged() -> None:
     """``extract_content`` without an explicit ``event_type`` falls
-    back to chat-shaped extraction. Pre-Phase-4-polish callers
+    back to chat-shaped extraction. Callers
     (none in this repo, but external code paths and pinned
     integration mocks) keep working."""
     provider = OpenAIProvider(capture_prompts=True)

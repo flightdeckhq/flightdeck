@@ -80,8 +80,8 @@ var AllowedAgentSortColumns = map[string]string{
 	"hostname":       "a.hostname",
 	// state ordinal: active=5 (highest), idle=4, stale=3, closed=2,
 	// lost=1 (lowest). Encoded so that DESC puts active first —
-	// matches the plan's Q4 lock ("active > idle > stale > closed >
-	// lost" ordered high-to-low) and operator intuition ("sort by
+	// matches the engagement order ("active > idle > stale > closed >
+	// lost", high-to-low) and operator intuition ("sort by
 	// state desc = most-engaged agents at the top"). Unknown/empty
 	// states sort to 0 so they trail even ``lost`` under DESC.
 	"state": `(CASE rollup.state ` +
@@ -168,13 +168,13 @@ func (s *Store) ListAgents(
 			a.user_name, a.hostname, a.first_seen_at, a.last_seen_at,
 			a.total_sessions, a.total_tokens,
 			COALESCE(rollup.state, '') AS state,
-			d126.agent_role,
-			d126.topology,
-			d161.os, d161.arch, d161.git_branch, d161.git_repo,
-			d161.orchestration, d161.python_version, d161.process_name
+			subagent.agent_role,
+			subagent.topology,
+			latest.os, latest.arch, latest.git_branch, latest.git_repo,
+			latest.orchestration, latest.python_version, latest.process_name
 		FROM agents a` + rollupSQL + `
-		LEFT JOIN LATERAL (` + d126AgentRollupSQL + `) d126 ON TRUE
-		LEFT JOIN LATERAL (` + agentLatestContextSQL + `) d161 ON TRUE` + whereSQL + `
+		LEFT JOIN LATERAL (` + agentRollupSQL + `) subagent ON TRUE
+		LEFT JOIN LATERAL (` + agentLatestContextSQL + `) latest ON TRUE` + whereSQL + `
 		ORDER BY ` + sortCol + ` ` + direction + `, a.agent_id ASC
 		LIMIT ` + limitPlaceholder + ` OFFSET ` + offsetPlaceholder
 
@@ -240,14 +240,14 @@ func (s *Store) GetAgentByID(
 			a.user_name, a.hostname, a.first_seen_at, a.last_seen_at,
 			a.total_sessions, a.total_tokens,
 			COALESCE(rollup.state, '') AS state,
-			d126.agent_role,
-			d126.topology,
-			d161.os, d161.arch, d161.git_branch, d161.git_repo,
-			d161.orchestration, d161.python_version, d161.process_name
+			subagent.agent_role,
+			subagent.topology,
+			latest.os, latest.arch, latest.git_branch, latest.git_repo,
+			latest.orchestration, latest.python_version, latest.process_name
 		FROM agents a
 		LEFT JOIN LATERAL (` + agentStateRollupSQL + `) rollup ON TRUE
-		LEFT JOIN LATERAL (` + d126AgentRollupSQL + `) d126 ON TRUE
-		LEFT JOIN LATERAL (` + agentLatestContextSQL + `) d161 ON TRUE
+		LEFT JOIN LATERAL (` + agentRollupSQL + `) subagent ON TRUE
+		LEFT JOIN LATERAL (` + agentLatestContextSQL + `) latest ON TRUE
 		WHERE a.agent_id = $1::uuid
 		LIMIT 1`
 

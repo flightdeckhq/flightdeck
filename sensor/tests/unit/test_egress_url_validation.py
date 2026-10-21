@@ -1,4 +1,4 @@
-"""H-01 — control-plane egress URL validation.
+"""Control-plane egress URL validation.
 
 The sensor rejects non-HTTP(S) schemes outright and refuses plaintext
 ``http://`` to a non-local control plane unless the operator explicitly

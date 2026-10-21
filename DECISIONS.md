@@ -1843,7 +1843,7 @@ LangGraph, etc.) currently works fine on one Session with a
 shared `AGENT_FLAVOR` -- every agent's calls flow through the
 same fleet identity. Per-agent Session isolation is an
 optional enhancement, not a v1 blocker. Documented as KI15.
-`tests/integration/test_sensor_e2e.py::test_pattern_c_ki15_singleton_limitation`
+`tests/integration/test_sensor_e2e.py::test_pattern_c_init_singleton_limitation`
 asserts the current behaviour and is designed to fail loudly
 when KI15 is resolved, signalling that the test should be
 updated to verify the new isolated-Sessions semantics.
@@ -2157,7 +2157,7 @@ runtime silently switches sessions.
 Multi-Session-in-one-process is therefore deferred to v2 alongside
 the multi-tenant SaaS work tracked in CLAUDE.md "Out of scope."
 The existing test
-`tests/integration/test_sensor_e2e.py::test_pattern_c_ki15_singleton_limitation`
+`tests/integration/test_sensor_e2e.py::test_pattern_c_init_singleton_limitation`
 remains as the assertion-of-current-behaviour and the canary that
 will fail loudly if the singleton constraint is ever relaxed.
 

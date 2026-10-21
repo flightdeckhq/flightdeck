@@ -1,8 +1,9 @@
 {{- /*
 ServiceAccount + empty Role + RoleBinding per component. Roles are emitted
-with empty rules so the chart complies with the ARCHITECTURE.md Phase 5
-deliverable list while granting no privileges by default. Operators who
-need to grant permissions can extend via a post-install kustomize overlay.
+with empty rules so every component runs under its own identity, as the
+deployment section of ARCHITECTURE.md requires, while granting no
+privileges by default. Operators who need to grant permissions can extend
+via a post-install kustomize overlay.
 */ -}}
 {{- if .Values.serviceAccount.create -}}
 {{- $components := list "ingestion" "workers" "api" "dashboard" -}}

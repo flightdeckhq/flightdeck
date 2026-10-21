@@ -14,7 +14,7 @@ const CHANGE_EVENT = "flightdeck:feed-show-discovery-events";
 
 /**
  * Read the persisted "Show MCP discovery events" preference from
- * localStorage. Default off (D122). Falls back to false on missing
+ * localStorage. Default off. Falls back to false on missing
  * key, invalid value, or storage being unavailable. Only the literal
  * strings ``"true"`` / ``"false"`` are valid; anything else is treated
  * as missing so a future reader stays robust against legacy or
@@ -56,7 +56,7 @@ export function persistShowDiscoveryEvents(value: boolean): void {
  * so LiveFeed and SwimLane stay in sync regardless of which one
  * triggered the change.
  *
- * Off by default per D122 — the discovery event types are useful for
+ * Off by default — the discovery event types are useful for
  * audit but visually crowd the live feed on MCP-heavy sessions.
  */
 export function useShowDiscoveryEvents(): [

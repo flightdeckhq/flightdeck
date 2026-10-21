@@ -1,7 +1,7 @@
-// Catch-all 404 (D146). Wired in App.tsx as ``<Route path="*">``.
+// Catch-all 404. Wired in App.tsx as ``<Route path="*">``.
 // Renders inside the existing nav chrome so the operator can
 // navigate elsewhere without a full reload. Reached via paths
-// like ``/mcp-policies`` (retired in step 6.8 cleanup) or any
+// like ``/mcp-policies`` (a retired route) or any
 // other unmatched URL.
 
 import { Link } from "react-router-dom";

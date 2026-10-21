@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { getEventDetail, getSummaryRows } from "@/lib/events";
 import type { AgentEvent, StreamingMetrics } from "@/lib/types";
 
-// Phase 4 polish S-UI-2: streaming indicators on post_call rows.
+// Streaming indicators on post_call rows.
 // Pins the detail-text TTFT prefix, the summary-grid additions, and
 // the aborted variant so a regression in any one surface fails here.
 

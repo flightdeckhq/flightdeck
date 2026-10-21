@@ -9,7 +9,7 @@ const sessionCache = new Map<string, SessionDetail>();
 /**
  * Drop any cached state for a session so the next useSession() mount
  * performs a fresh fetch. Used by the drawer when the page-size pill
- * changes (D113 pagination): a user asking for 50 newest events after
+ * changes: a user asking for 50 newest events after
  * having loaded 100 must not reuse the old cache entry.
  */
 export function invalidateSessionCache(sessionId: string): void {
@@ -23,11 +23,11 @@ export function invalidateSessionCache(sessionId: string): void {
  * Caches results — reopening the same session does not re-fetch.
  * Populates eventsCache from the fetch response.
  *
- * ``eventsLimit`` is the D113 pagination cap the drawer passes through
+ * ``eventsLimit`` is the pagination cap the drawer passes through
  * as ``?events_limit=N``. Callers without pagination (Fleet-side
  * swimlane) omit the arg and get the full history.
  *
- * ``revalidationKey`` (D140 step 6.6) is an optional opaque value
+ * ``revalidationKey`` is an optional opaque value
  * the caller bumps to force a fresh fetch — useful when an external
  * signal (e.g., the fleet WebSocket's ``mcp_server_attached``
  * event) tells the drawer that ``sessions.context`` has changed
@@ -51,7 +51,7 @@ export function useSession(
       return;
     }
 
-    // D140 step 6.6 — when revalidationKey changes, drop cache so
+    // When revalidationKey changes, drop cache so
     // the fetch below runs with fresh data. revalidationKey === 0
     // is the initial-mount sentinel; only > 0 forces invalidation.
     if (revalidationKey && revalidationKey > 0) {

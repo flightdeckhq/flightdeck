@@ -21,7 +21,7 @@ import { bringSwimlaneRowIntoView, waitForFleetReady } from "./_fixtures";
 
 const CONCURRENT_AGENT = "e2e-test-concurrent-runs";
 
-// Tall viewport so the seeded D126 fixtures all fit without
+// Tall viewport so the seeded sub-agent fixtures all fit without
 // IntersectionObserver evicting rows that are just-off-screen --
 // the concurrent-runs agent's last_seen_at can land mid-list on a
 // populated fleet, so the default 720px viewport occasionally

@@ -1,6 +1,6 @@
 """Integration test fixtures.
 
-Phase 3 extracted the pure helpers + constants into
+The pure helpers + constants live in
 ``tests/shared/fixtures.py`` so the E2E fixture seeder
 (``tests/e2e-fixtures/seed.py``) can reuse the same event-builder
 contract without depending on pytest. This file now holds only the
@@ -190,9 +190,7 @@ def _session_lifecycle() -> Any:
                     "tool_result": None,
                     "has_content": False,
                     "content": None,
-                    "timestamp": time.strftime(
-                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
-                    ),
+                    "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
                 }
                 payload.update(_identity_fields())
                 post_event(payload)

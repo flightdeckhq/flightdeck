@@ -4,7 +4,7 @@ Covers the three policy event types — POLICY_WARN, POLICY_DEGRADE,
 POLICY_BLOCK — across local and server-sourced enforcement paths.
 
 See ARCHITECTURE.md "Event Types → policy_warn / policy_degrade /
-policy_block" and DECISIONS.md D035.
+policy_block".
 """
 
 from __future__ import annotations
@@ -195,7 +195,7 @@ def test_pre_call_emits_policy_block_then_flushes_before_raising() -> None:
     block_events = _events_of_type(eq, "policy_block")
     assert len(block_events) == 1
     e = block_events[0]
-    assert e["source"] == "server"  # hardcoded per D035
+    assert e["source"] == "server"  # local never escalates past WARN
     assert e["threshold_pct"] == 50
     assert e["tokens_used"] == 60
     assert e["token_limit"] == 100
@@ -221,12 +221,12 @@ def test_no_policy_event_when_decision_is_allow() -> None:
 
 
 # ---------------------------------------------------------------------------
-# UT-7: BLOCK source is always "server" — local never escalates per D035
+# UT-7: BLOCK source is always "server" — local never escalates
 # ---------------------------------------------------------------------------
 
 
 def test_policy_block_source_always_server() -> None:
-    """Per D035, local PolicyCache fires WARN only — never BLOCK or
+    """Local PolicyCache fires WARN only — never BLOCK or
     DEGRADE. The hardcoded ``source="server"`` on policy_block reflects
     that architectural invariant. If the local-WARN-only contract is
     ever relaxed, this test fails loudly so a code reviewer must
@@ -241,7 +241,7 @@ def test_policy_block_source_always_server() -> None:
         base._pre_call(session, provider, {"model": "claude-sonnet-4-6"}, estimated=5)
 
     e = _events_of_type(eq, "policy_block")[0]
-    assert e["source"] == "server", "BLOCK source must be 'server' (D035)"
+    assert e["source"] == "server", "BLOCK source must be 'server'"
 
 
 # ---------------------------------------------------------------------------

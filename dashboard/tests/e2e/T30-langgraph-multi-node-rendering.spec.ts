@@ -39,7 +39,7 @@ test.describe("T30 — LangGraph multi-node rendering", () => {
     await expect(writerPill).toHaveAttribute("data-mode", "child");
 
     // The runner parent's relationship pill counts both nodes.
-    // Distinct agent_ids per D126 § 2 because agent_role joins
+    // Distinct agent_ids because agent_role joins
     // the 6-tuple input — the count therefore reflects distinct
     // logical agents, not raw session count.
     const parent = await bringSwimlaneRowIntoView(

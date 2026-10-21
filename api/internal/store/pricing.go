@@ -4,8 +4,8 @@
 // `metric=estimated_cost` analytics series. Values are USD per
 // **million tokens** taken from public list prices and mirror what an
 // operator would see on each provider's pricing page at the commit
-// date. Numbers are approximate by design -- see DECISIONS.md D099
-// for the rationale and refresh cadence.
+// date. Numbers are approximate by design -- the metric is a
+// trend-spotting estimate, not a billing reconciliation.
 //
 // The map is closed-world: models missing from it contribute $0 to
 // the cost aggregate, and the analytics handler flags the response
@@ -37,7 +37,7 @@ type ModelPricing struct {
 //
 // Full table lives in pricing.yaml -- a PR editing that file is the
 // supported way to add or update a model. See CONTRIBUTING.md
-// ("Updating pricing data") and DECISIONS.md D102.
+// ("Updating pricing data").
 var modelPricing = cloneMap(safetyPricing)
 
 // KnownPricedModels returns the set of models with a pricing entry.
@@ -58,15 +58,15 @@ func KnownPricedModels() []string {
 // 10% of the input list price (90% discount). Applied uniformly to
 // every model that reports cache tokens; providers that do not report
 // cache tokens contribute 0 to the cache_read term and the formula
-// collapses naturally to the pre-D101 behaviour. If a provider ever
+// collapses naturally to the two-term input/output formula. If a provider ever
 // publishes a different cache-read ratio, this becomes a per-model
-// override on ModelPricing -- not a pricing.yaml edit. See D101.
+// override on ModelPricing -- not a pricing.yaml edit.
 const cacheReadRatio = 0.10
 
 // cacheCreationRatio is the multiplier applied to cache-creation input
 // tokens. Anthropic bills cache writes at 125% of the input list
 // price (25% premium). Same uniform-across-models design as
-// cacheReadRatio; see D101.
+// cacheReadRatio.
 const cacheCreationRatio = 1.25
 
 // BuildCostAggregateSQL generates the SQL aggregate expression for
@@ -92,14 +92,14 @@ const cacheCreationRatio = 1.25
 // non-Anthropic today), ``tokens_cache_read`` and
 // ``tokens_cache_creation`` are 0 so the cache_read and cache_creation
 // terms vanish and uncached = tokens_input, collapsing the formula
-// back to the pre-D101 two-term expression. No regression for non-
+// back to the plain two-term expression. No regression for non-
 // cache-reporting providers.
 //
 // The expression is a bare aggregate -- the caller supplies FROM /
 // WHERE / GROUP BY. All values are constants generated at startup so
 // there is no SQL-injection surface; the function takes no user input.
 // Prices are USD per million tokens, so the multiplier is
-// price / 1_000_000. See DECISIONS.md D101.
+// price / 1_000_000.
 func BuildCostAggregateSQL(modelColumn string) string {
 	// Sort keys for stable SQL output (eases debugging and snapshot
 	// tests).
@@ -146,7 +146,7 @@ func BuildCostAggregateSQL(modelColumn string) string {
 // `events.model` to a provider name. Kept as a package-level string
 // so both the group_by=provider path and any future derived queries
 // share one source of truth. The matching UI-side mapping lives in
-// dashboard/src/lib/models.ts::getProvider (D098).
+// dashboard/src/lib/models.ts::getProvider.
 const ProviderCaseSQL = `CASE
 	WHEN model LIKE 'claude-%' THEN 'anthropic'
 	WHEN model LIKE 'gpt-%' OR model LIKE 'o1-%' OR model LIKE 'o3-%' OR model LIKE 'o4-%' OR model LIKE 'text-embedding-%' OR model LIKE 'dall-e-%' THEN 'openai'

@@ -9,7 +9,7 @@ LangGraph's ``create_react_agent`` graph). Strict per-invocation-
 pattern coverage protects against a future SDK upgrade silently
 breaking the LangChain wire-up while LangGraph stays green.
 
-Three sub-scenarios run back-to-back per Step 6.5 PR Part A spec:
+Three sub-scenarios run back-to-back:
 
   1. WARN  — flavor deny entry with enforcement=warn. Tool call
      completes; ``policy_mcp_warn`` event lands.

@@ -67,15 +67,15 @@ func TestNonFrameworkDimensionsHaveNoFromExtras(t *testing.T) {
 	}
 }
 
-// TestD126DimensionsBucketNullsAsRoot guards the agent_role and
+// TestSubAgentDimensionsBucketNullsAsRoot guards the agent_role and
 // parent_session_id projections against the unknown-fallback drift
 // the rest of the dimension family uses. The design spec
-// (CLAUDE.md Rule 25, ARCHITECTURE.md analytics section, DECISIONS.md
-// D126 § 6.4) requires "(root)" as the null bucket for these two
+// (CLAUDE.md Rule 25, ARCHITECTURE.md analytics section) requires
+// "(root)" as the null bucket for these two
 // dims so the dashboard can label the no-parent / no-role bucket
 // with a meaningful term rather than the generic "unknown" the
 // other dims use.
-func TestD126DimensionsBucketNullsAsRoot(t *testing.T) {
+func TestSubAgentDimensionsBucketNullsAsRoot(t *testing.T) {
 	for _, name := range []string{"agent_role", "parent_session_id"} {
 		dim, ok := dimensions[name]
 		if !ok {
@@ -169,8 +169,8 @@ func TestQueryAnalytics_TwoDimRejectsInvalidSecondary(t *testing.T) {
 
 // TestQueryAnalytics_SingleDimRegression confirms that a single-dim
 // query with the new code path returns DataPoints with NO
-// “Breakdown“ field set. The wire shape promise in D126 § 6.4 is
-// "Single-dim queries (no comma) preserve the pre-D126 wire shape
+// “Breakdown“ field set. The wire shape promise is
+// "Single-dim queries (no comma) preserve the single-axis wire shape
 // exactly"; the omitempty tag handles the JSON layer, but the Go
 // struct must also reflect the contract so a future caller reading
 // .Breakdown.Length can rely on it being 0.
@@ -180,7 +180,7 @@ func TestQueryAnalytics_SingleDimRegression(t *testing.T) {
 
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
-	flavor := "test-d126-6.4-single-" + randomUUID(t)[:8]
+	flavor := "test-subagent-single-" + randomUUID(t)[:8]
 
 	// Seed an agent first to satisfy the sessions.agent_id FK,
 	// then a session + a post_call event so the query has data
@@ -243,7 +243,7 @@ func TestQueryAnalytics_SingleDimRegression(t *testing.T) {
 }
 
 // TestQueryAnalytics_TwoDimParentRoleBreakdown is the canonical
-// integration test for the D126 § 6.4 contract. Seed one parent
+// integration test for the two-dimension group_by contract. Seed one parent
 // session with two child sessions of different roles (Researcher /
 // Writer); each child contributes tokens; assert the response
 // returns one series per parent (one in this case) whose DataPoints
@@ -255,12 +255,12 @@ func TestQueryAnalytics_TwoDimParentRoleBreakdown(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	parentSessionID := randomUUID(t)
-	parentFlavor := "test-d126-6.4-parent-" + randomUUID(t)[:8]
+	parentFlavor := "test-subagent-parent-" + randomUUID(t)[:8]
 	childResearcher := randomUUID(t)
 	childWriter := randomUUID(t)
 
 	// Three agents (parent + two children) so the sessions.agent_id
-	// FKs all resolve. Each agent uses its own ID; D126 derivation
+	// FKs all resolve. Each agent uses its own ID; the identity derivation
 	// creates a distinct agent_id per (5-tuple + role) pair so the
 	// child sessions land under fresh agents anyway.
 	parentAgentID := randomUUID(t)

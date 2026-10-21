@@ -8,7 +8,7 @@ import {
 // T6 — the truncation contract end-to-end. The swimlane agent-name
 // link now carries an always-on ``title`` attribute equal to the
 // full agent name (the directive that introduced this trades the
-// pre-Fix-2 conditional ResizeObserver-driven title for an
+// earlier conditional ResizeObserver-driven title for an
 // unconditional one: hover reveals the complete name even when the
 // text fits, so the user contract is single-shape and a wide-
 // viewport regression can't strip the tooltip silently). The

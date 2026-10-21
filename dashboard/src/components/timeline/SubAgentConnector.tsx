@@ -1,7 +1,7 @@
 import { memo, useState } from "react";
 
 /**
- * D126 § 4.3 — sub-agent time-flow connectors. SVG overlay layer
+ * Sub-agent time-flow connectors. SVG overlay layer
  * that renders one Bezier curve per (parent-spawn-event, child-
  * first-event) pair when BOTH endpoints are simultaneously visible
  * in the Fleet swimlane window.

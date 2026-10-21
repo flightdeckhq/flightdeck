@@ -3,7 +3,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import type { AgentTopology } from "@/lib/types";
 
 /**
- * D126 sub-agent role pill. Renders ``↳ <role>`` with the
+ * Sub-agent role pill. Renders ``↳ <role>`` with the
  * leftward-arrow glyph signaling "this row is a child agent" and
  * the framework-supplied role string (CrewAI Agent.role, LangGraph
  * node name, Claude Code Task agent_type) as the label. Sized to
@@ -63,7 +63,7 @@ export function SubAgentRolePill({
 }
 
 /**
- * D126 § L8 red-dot indicator. Mirrors the pattern established by
+ * L8 red-dot indicator. Mirrors the pattern established by
  * the llm_error and mcp_error session-row dots: surface a row-level
  * failure cue so an operator scanning a list immediately spots
  * trouble without expanding the row.
@@ -71,15 +71,14 @@ export function SubAgentRolePill({
  * For sub-agents the failure mode is a child whose state landed in
  * ``lost`` — the SubagentStop / clean child end signal never fired
  * and the worker's state-revival path swept the row to lost. Per
- * METHODOLOGY.md L8 (Phase 5 lesson) the dot belongs on the row,
+ * METHODOLOGY.md L8 the dot belongs on the row,
  * not buried inside the event detail.
  *
  * Optional ``role`` and ``sessionIdSuffix`` enrich the tooltip so
  * an operator can identify which sub-agent failed without having
  * to expand the row. Both arrive from the SwimLane / Investigate
  * call-site and are best-effort — the dot still renders without
- * them when the full context isn't available (the original step-7
- * call-site supplied neither).
+ * them when the full context isn't available.
  */
 export function SubAgentLostDot({
   role,

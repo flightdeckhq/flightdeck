@@ -1,7 +1,7 @@
 import { test, expect } from "@playwright/test";
 
 // T10 — every top-level page mounts, renders its title, and logs
-// zero uncaught JS errors. Replaces the four Phase-5 Part-1b stub
+// zero uncaught JS errors. Replaces four stub
 // specs (analytics / fleet / killswitch / search) which were
 // page-mount smoke tests each in their own file. Consolidating
 // them into one dual-theme spec is cheaper at CI time (5 visits
@@ -29,8 +29,8 @@ test.describe("T10 — whole-dashboard smoke", () => {
       // Settle the auth-gated XHRs so any failed gated call surfaces
       // as a pageerror before we read the buffer. networkidle is
       // noisier than needed here but matches the prior stub's
-      // behaviour — swap to a dashboard-ready signal if the
-      // Phase-3 team sees flake under this.
+      // behaviour — swap to a dashboard-ready signal if flake
+      // appears under this.
       await page.waitForLoadState("networkidle");
       expect(
         errors,

@@ -15,6 +15,7 @@ Run as a stdio MCP server::
 
     python -m playground._secondary_mcp_server
 """
+
 from __future__ import annotations
 
 from mcp.server.fastmcp import FastMCP

@@ -1,5 +1,5 @@
-// Handler integration tests for POST /v1/mcp-policies/{flavor}/apply_template
-// (D138). Complements the pre-existing happy-path + unknown-template
+// Handler integration tests for POST /v1/mcp-policies/{flavor}/apply_template.
+// Complements the pre-existing happy-path + unknown-template
 // cases in mcp_policy_metrics_templates_test.go with the corner
 // paths — global rejection (durable contract), missing-template body
 // field, flavor-not-found, and malformed JSON.
@@ -60,8 +60,8 @@ func TestApplyTemplate_GlobalScope_RejectedWithDurableContractMessage(t *testing
 		t.Fatalf("status = %d, want 400; body=%s", rec.Code, rec.Body.String())
 	}
 	// The error string is the durable contract surfaced to any
-	// caller (dashboard, CLI, future clients). D138 + D134:
-	// templates carry mode + per-entry enforcement; mode is
+	// caller (dashboard, CLI, future clients). Templates carry
+	// mode + per-entry enforcement; mode is
 	// global-only and yamlToMutation rejects it on flavor scope,
 	// so templates apply to flavor policies only.
 	if !strings.Contains(rec.Body.String(), "templates apply to flavor policies only") {

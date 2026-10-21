@@ -1,7 +1,7 @@
 """Integration tests for session state transitions.
 
 Tests the five-state lifecycle: active → idle → stale → closed/lost,
-and the D105 revival path that flips stale/lost back to active on any
+and the revival path that flips stale/lost back to active on any
 non-session_start event. Requires `make dev` to be running.
 """
 
@@ -94,7 +94,7 @@ def _read_session_row(session_id: str) -> dict[str, str]:
     return {"state": parts[0], "last_seen_at": parts[1], "tokens_used": parts[2]}
 
 
-# Removed in Phase 4.5 audit Task 1:
+# Removed as duplicates:
 #   - test_new_session_starts_active: same assertion as
 #     test_pipeline.py::test_post_event_session_appears_in_fleet
 #     (both verify state=active after session_start).
@@ -158,7 +158,7 @@ def test_session_transitions_to_closed() -> None:
 
 
 # ---------------------------------------------------------------------------
-# D105 -- revive stale/lost sessions on any event; closed stays closed.
+# Revive stale/lost sessions on any event; closed stays closed.
 # ---------------------------------------------------------------------------
 
 
@@ -217,7 +217,7 @@ def test_lost_session_revives_on_post_call() -> None:
 
 def test_stale_session_revives_on_tool_call() -> None:
     """Session in state=stale receiving a tool_call flips back to active
-    and advances last_seen_at (D105)."""
+    and advances last_seen_at."""
     sid = str(uuid.uuid4())
     flavor = f"test-revive-stale-{uuid.uuid4().hex[:6]}"
 
@@ -244,7 +244,7 @@ def test_closed_session_stays_closed_on_post_call() -> None:
     event arrives; last_seen_at and tokens_used are NOT advanced.
 
     Closed is an explicit user exit (session_end), not a timeout-driven
-    terminal. Revival would contradict the explicit exit. (D105)
+    terminal. Revival would contradict the explicit exit.
     """
     sid = str(uuid.uuid4())
     flavor = f"test-closed-stays-{uuid.uuid4().hex[:6]}"
@@ -302,7 +302,7 @@ def test_lost_session_closes_on_session_end() -> None:
 
 def test_reconciler_lost_threshold_is_30_min() -> None:
     """Reconciler transitions a session to lost only after 30 min of
-    silence (D105 secondary change: raised from 10 min).
+    silence (raised from 10 min to cover interactive think time).
 
     Backdates last_seen_at by 31 minutes on a fresh active session, then
     waits for the background reconciler tick (every
@@ -473,13 +473,13 @@ def test_orphan_timeout_reaper_does_not_close_recent_lost_session() -> None:
 
 
 # ---------------------------------------------------------------------------
-# D106: lazy session creation on events with unknown session_id.
+# Lazy session creation on events with unknown session_id.
 #
 # The plugin's fire-and-forget hook model means a non-session_start event
 # can reach Flightdeck before session_start ever does -- server down at
 # plugin startup, plugin enabled mid-session, future out-of-order
-# delivery paths. Pre-D106 these events FK-violated at worker.InsertEvent
-# and bounced in the NATS queue. D106 has non-session_start handlers
+# delivery paths. Without lazy creation these events FK-violate at
+# worker.InsertEvent and bounce in the NATS queue. Non-session_start handlers
 # lazy-create the session row so the event lands, with "unknown"
 # sentinels on flavor/agent_type and NULL context/token columns that a
 # later authoritative session_start enriches via UpsertSession's
@@ -516,13 +516,16 @@ def _read_session_identity(session_id: str) -> dict[str, str]:
 
 
 def _first_event_payload(
-    session_id: str, flavor: str, event_type: str, **extra: object,
+    session_id: str,
+    flavor: str,
+    event_type: str,
+    **extra: object,
 ) -> dict[str, object]:
     """Build an event payload for a session_id that Flightdeck has
     never seen. Differs from make_event() only in that no session_start
     has preceded it -- the payload itself is identical so the server
     cannot distinguish "legitimate first event" from "session_start
-    got lost"; D106 handles both identically.
+    got lost"; lazy creation handles both identically.
     """
     return make_event(session_id, flavor, event_type, **extra)
 
@@ -532,8 +535,8 @@ def test_unknown_session_id_lazy_creates_on_post_call() -> None:
     the session row with state=active, started_at=event.occurred_at,
     best-effort flavor/host, and the tokens are counted correctly.
 
-    Pre-D106 this event FK-violated at worker.InsertEvent and was
-    dropped. After D106, the row manifests and the event lands.
+    Without lazy creation this event would FK-violate at worker.InsertEvent
+    and be dropped; with it, the row manifests and the event lands.
     """
     sid = str(uuid.uuid4())
     flavor = f"test-d106-postcall-{uuid.uuid4().hex[:6]}"
@@ -552,9 +555,9 @@ def test_unknown_session_id_lazy_creates_on_post_call() -> None:
 
     identity = _read_session_identity(sid)
     # Plugin-style best-effort identity: the event's flavor is carried
-    # through even though no session_start ever arrived. Under D115 the
+    # through even though no session_start ever arrived. The
     # agent_type "unknown" sentinel path is unreachable from the wire
-    # (D116 rejects any agent_type outside {coding, production} at
+    # (ingestion rejects any agent_type outside {coding, production} at
     # ingestion); the flavor sentinel is still meaningful because flavor
     # is an informational field the validator does not constrain.
     assert identity["flavor"] == flavor, (
@@ -562,7 +565,7 @@ def test_unknown_session_id_lazy_creates_on_post_call() -> None:
     )
     # context is NULL -- the enrichable sentinel. An empty JSONB dict
     # would look identical to a session_start that collected nothing,
-    # so D106 distinguishes them with true NULL.
+    # so lazy creation distinguishes them with true NULL.
     assert identity["context"] == "NULL", (
         f"expected context=NULL on lazy-created session, got {identity['context']!r}"
     )
@@ -576,9 +579,7 @@ def test_unknown_session_id_lazy_creates_on_tool_call() -> None:
     sid = str(uuid.uuid4())
     flavor = f"test-d106-toolcall-{uuid.uuid4().hex[:6]}"
 
-    post_event(
-        _first_event_payload(sid, flavor, "tool_call", tool_name="Bash")
-    )
+    post_event(_first_event_payload(sid, flavor, "tool_call", tool_name="Bash"))
     wait_for_session_in_fleet(sid, timeout=10.0)
 
     row = _read_session_row(sid)
@@ -589,11 +590,11 @@ def test_unknown_session_id_lazy_creates_on_tool_call() -> None:
 
 
 def test_unknown_flavor_uses_sentinel_on_lazy_create() -> None:
-    """When the event literally omits flavor, D106 writes the 'unknown'
+    """When the event literally omits flavor, lazy creation writes the 'unknown'
     sentinel so a later session_start can upgrade it.
 
-    D115 note: the parallel sentinel path for ``agent_type`` is no longer
-    reachable from the wire. The D116 ingestion validator rejects any
+    Note: the parallel sentinel path for ``agent_type`` is not
+    reachable from the wire. The ingestion validator rejects any
     event whose ``agent_type`` is outside ``{coding, production}`` with
     400, so this test now exercises only the flavor-sentinel upgrade.
     agent_type stays at its ``make_event`` default ("production") across
@@ -637,7 +638,7 @@ def test_unknown_flavor_uses_sentinel_on_lazy_create() -> None:
 
 
 def test_real_flavor_not_overwritten_on_session_start_reattach() -> None:
-    """D094 write-once: a row whose flavor is a real value (not the
+    """Write-once: a row whose flavor is a real value (not the
     'unknown' sentinel) is preserved when session_start re-arrives
     with a different flavor. The CASE guard is specifically scoped to
     'unknown' so lazy-created sentinels can upgrade without opening

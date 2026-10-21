@@ -2,7 +2,7 @@
  * T75 — clicking the run-badge column on an /events row opens the
  * run drawer, not the event detail drawer.
  *
- * Phase 4 wave 2 contract: the run badge is the run-drawer entry
+ * The run badge is the run-drawer entry
  * point on the event table; its click is isolated from the row's
  * event-detail click.
  *

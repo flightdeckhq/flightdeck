@@ -123,7 +123,7 @@ Each script self-skips when its API keys aren't set, so `make playground-all` ru
 |-----------|------|------------|-----------|--------|
 | Anthropic | `messages.create`, `messages.stream`, `beta.messages.*` (sync + async) | route via litellm to Voyage | `messages.stream`, `messages.create(stream=True)` (sync + async) | 14-entry `llm_error` taxonomy |
 | OpenAI    | `chat.completions.create`, `responses.create` (sync + async) | `embeddings.create` (sync + async) | `create(stream=True)` on chat and Responses (sync + async); the `.stream()` helper is not intercepted (nor is the non-streaming `.parse()`) | same |
-| litellm   | `litellm.completion`, `litellm.acompletion` (chat path; `text_completion` and `responses` are not intercepted) | `litellm.embedding`, `litellm.aembedding` | `completion(stream=True)`, `acompletion(stream=True)` (sync + async); a call litellm serves through the OpenAI SDK is counted once | same |
+| litellm   | `litellm.completion`, `litellm.acompletion` (chat path; a call litellm serves through the OpenAI SDK is counted once; `text_completion` and `responses` are not patched, see Known limitations) | `litellm.embedding`, `litellm.aembedding` | `completion(stream=True)`, `acompletion(stream=True)` (sync + async) | same |
 
 Streamed calls report the token counts the provider sends inside the stream, whether you iterate inside a `with` block or without one (a loop left with `break` and never closed is reported at the next LLM call the sensor intercepts after the stream object is collected, or when the session ends). Streaming events expose `payload.streaming = {ttft_ms, chunk_count, inter_chunk_ms, final_outcome, abort_reason}`; `final_outcome` is `aborted` when you leave a stream before the event that ends the response, and `completed` otherwise. A mid-stream failure, inside a `with` block or while iterating without one, emits `llm_error{error_type="stream_error"}` with the chunks and tokens delivered before the failure.
 
@@ -301,7 +301,8 @@ The sensor reports over HTTP on background daemon threads. Control plane downtim
 - `patch()` must run before clients are constructed. Instances that already accessed `.messages`, `.chat`, `.responses`, or `.embeddings` before `patch()` keep the raw resource cached and are not intercepted.
 - Per-thread Session isolation is not yet supported. Multi-agent frameworks (CrewAI, LangGraph, etc.) work fine under a single `init()` and shared `AGENT_FLAVOR`.
 - Custom directive handler input validation is yours. The `parameters` schema drives the dashboard form and the directive fingerprint; it is not enforced at execution time.
-- litellm's `text_completion` and `responses` entry points are not intercepted. Chat calls, streaming or not, and embeddings round-trip cleanly.
+- litellm's `text_completion` and `responses` entry points are not patched: `text_completion` on an OpenAI chat model is reported by the OpenAI interceptor, `responses` on a provider without a native Responses API is reported once as a chat call, and litellm's own httpx routes of either are unobserved. Chat calls, streaming or not, and embeddings round-trip cleanly.
+- While a litellm call is in flight, an SDK call made from inside it (by a litellm callback, guardrail or custom provider, or by a task created inside the call and run before it ends) is neither policed nor metered: the litellm wrapper has already metered the call it serves, and the mark that tells the SDK interceptors so covers the whole call.
 
 ---
 

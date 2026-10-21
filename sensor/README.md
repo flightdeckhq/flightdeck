@@ -118,7 +118,9 @@ response = litellm.completion(
 )
 ```
 
-Install the optional dependency: `pip install flightdeck-sensor[litellm]`.
+Install the optional dependency: `pip install flightdeck-sensor[litellm]`
+(the extra requires `litellm>=1.83.0`; 1.82.7 and 1.82.8 were compromised
+builds).
 
 ### What the litellm interceptor catches, and what it doesn't
 
@@ -127,16 +129,19 @@ Install the optional dependency: `pip install flightdeck-sensor[litellm]`.
 integrations, including the default chat-completion surface exposed
 by user code, Router, and frameworks that route through the public
 API (CrewAI non-native flavors, langchain-community's litellm
-adapter, etc.). Embedding calls through `litellm.embedding(**kwargs)`
-and `litellm.aembedding(**kwargs)` are wrapped the same way, so
-embedding-model token usage lands too (`12_litellm.py` in the
-playground exercises the capture round-trip).
+adapter, etc.) — streaming included: `stream=True` on either returns
+the sensor's stream guard around litellm's `CustomStreamWrapper`,
+iterated the same way (`for` / `async for`), metered from the token
+counts litellm reports in its trailing usage chunk; that chunk is
+kept from a caller who did not ask for `stream_options.include_usage`.
+A call litellm serves through the OpenAI SDK (which the sensor also
+patches) is counted once, by the litellm wrapper. Embedding calls
+through `litellm.embedding(**kwargs)` and `litellm.aembedding(**kwargs)`
+are wrapped the same way, so embedding-model token usage lands too
+(`12_litellm.py` in the playground exercises sync and async streaming,
+the single-count assertion and the capture round-trip).
 
 **Does NOT catch.**
-- **Streaming.** `stream=True` raises `NotImplementedError`; litellm
-  streaming is not yet intercepted (listed under "Known limitations"
-  in the root `README.md`). Use `stream=False` or reconstruct the
-  stream downstream of the call.
 - **Lower-level litellm entry points.** Some integrations reach
   past `completion` into `litellm.llms.custom_httpx.http_handler`
   or other internal helpers directly. Those calls bypass the
@@ -144,5 +149,19 @@ playground exercises the capture round-trip).
   considered when the litellm interceptor was scoped and deferred —
   if framework reports surface calls that slip past the current
   coverage, file a new issue.
-- **`litellm.text_completion`.** Legacy completion API, not
-  wrapped.
+- **`litellm.text_completion` / `atext_completion` and
+  `litellm.responses` / `aresponses`.** Neither is wrapped (root
+  `README.md` Roadmap), but some routes are still reported. The legacy
+  completion API calls `completion` through the name bound in
+  `litellm.main`, which the module-attribute swap does not reach; on
+  an OpenAI chat model the OpenAI interceptor reports the SDK call it
+  makes, and litellm's own httpx routes are unobserved. The Responses
+  API on a provider without a native Responses API (Anthropic, Groq)
+  is bridged through the patched `litellm.completion` and reported
+  once as a chat call; native routes (OpenAI) go through litellm's own
+  httpx handler and are unobserved.
+- **SDK calls made from inside a litellm call.** The litellm wrapper
+  marks the call it serves so the SDK interceptors pass it through;
+  the mark covers the whole call, so an SDK call made while it is in
+  flight by a litellm callback, guardrail or custom provider, or by a
+  task created inside the call, is neither policed nor metered.

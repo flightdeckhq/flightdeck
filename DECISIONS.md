@@ -10146,6 +10146,15 @@ safe ones).
 
 **Date:** 2026-10-21
 
+**Supersedes:** D112's statement that litellm's OpenAI route is
+"intercepted by `flightdeck_sensor.patch(providers=["openai"])`" -- that
+route is now reported by the litellm wrapper, and the OpenAI SDK patch
+passes the marked call through (the litellm-side interceptor D112
+scheduled beside the SDK patch is where the double count came from) --
+and D185's statement that litellm `stream=True` still raises
+`NotImplementedError`, so the litellm provider's stream hooks are not
+exercised.
+
 **Decision:** `interceptor/base.py` carries an outer-call mark: a
 `contextvars.ContextVar[bool]` with `outer_intercept()` (a context manager
 that sets the mark for the duration of a block) and
@@ -10159,6 +10168,16 @@ marked call skips the whole sensor path (no `pre_call`, policy check,
 stream guard or `post_call`), because the outer interceptor already does
 all of that for the same call. The mark covers the call only, not the
 later reading of a stream, since the SDK request is sent inside the call.
+The context variable holds a per-call flag object that the `finally`
+clears, so a task created inside the call (asyncio copies the context into
+new tasks) reads the mark active only while the call is in flight; a task
+that outlives the call reads it inactive. The mark still covers the whole
+call, which is a stated limitation: an SDK call made from inside it while
+it is in flight -- by a litellm callback, guardrail or custom provider, or
+by a task created inside the call -- is neither policed nor metered. The
+design is kept (Supervisor decision): narrowing the mark to the one SDK
+call the outer interceptor serves, a per-call client identity, is not
+worth the complexity now.
 
 litellm streams go through the shared stream guard. The litellm
 interceptor injects `stream_options={"include_usage": True}` with a local
@@ -10170,13 +10189,24 @@ so the OpenAI predicate (`usage` set and no `choices`) does not match it.
 `LitellmProvider.extract_usage` reads the cache breakdown from
 `prompt_tokens_details` (then the Anthropic-named attributes) onto the
 `TokenUsage` cache fields and accepts only real integers (not booleans,
-not stand-in objects) as cache counts.
+not stand-in objects) as cache counts. With `capture_prompts` on, a
+streamed call's stored response is the one `litellm.stream_chunk_builder`
+assembles from the chunks the wrapper kept -- the assistant message,
+`model` and `usage`, the shape a non-streamed response has (falling back
+to id, model, finish reason and the text assembled by the sensor when the
+builder cannot be used) -- never the wrapper's `__dict__`.
 
 `litellm.text_completion` / `atext_completion` and `litellm.responses` /
-`aresponses` are left unpatched and documented as unobserved. litellm's
-`_hidden_params["response_cost"]` (present on non-streaming responses,
-absent on stream chunks) is observed but not stored. The `litellm` extra
-and the dev install require `litellm>=1.83.0`.
+`aresponses` are left unpatched; the documentation states which of their
+routes are still reported: `text_completion` on an OpenAI chat model goes
+through the OpenAI SDK with no mark set and is reported by the OpenAI
+interceptor, `responses` on a provider without a native Responses API
+(Anthropic, Groq) is bridged through the package-level `litellm.completion`
+/ `acompletion` and reported once as a chat call, and litellm's own httpx
+routes of either (Anthropic `text_completion`, native OpenAI `responses`)
+are unobserved. litellm's `_hidden_params["response_cost"]` (present on
+non-streaming responses, absent on stream chunks) is observed but not
+stored. The `litellm` extra and the dev install require `litellm>=1.83.0`.
 
 **Reasoning:** litellm serves its OpenAI route by constructing
 `openai.OpenAI` and calling `chat.completions.create` on it, which the
@@ -10200,6 +10230,14 @@ than the `messages.stream()` helper, so `create` is the one place on the
 Anthropic side (litellm's Anthropic route uses httpx today; the check is
 for a route that adopts the SDK).
 
+The stored response of a streamed call is an allowlist because the
+wrapper's `__dict__` carries the request's messages a second time,
+`_hidden_params` with the caller's `api_base` verbatim (a userinfo
+password or a query token), the provider's response headers (`Set-Cookie`,
+the organisation and project headers), `stream_options`, the logging
+object and the SDK stream, all of which would be served by
+`GET /v1/events/:id/content`; a denylist would leak whatever a litellm
+upgrade adds, silently.
 `_inject_stream_options` is copied rather than imported so the two
 interceptor modules stay independently importable and editable; the
 option means the same thing on both. `text_completion` calls
@@ -10220,7 +10258,7 @@ and 1.82.8, published with a compromised build on 2026-03-24 and later
 withdrawn, and names the version the interceptor is developed and
 verified against.
 
-**Rejected alternatives:** Checking the mark inside `base.call` /
+**Rejected alternative:** Checking the mark inside `base.call` /
 `call_async` / `call_stream` / `call_stream_async` with no edits to the
 SDK interceptors (the stream entry points return a guard the SDK
 wrappers open eagerly, so a bypass there would need a stand-in guard
@@ -10238,4 +10276,7 @@ than from the provider's counts). Patching `litellm.main.completion` to
 cover `text_completion` (double-enters `acompletion`). Storing
 `response_cost` in `provider_metadata` (a schema change outside this
 change's scope; `estimated_cost` is computed server-side from the pricing
-table).
+table). A denylist of stream-wrapper attributes for the captured response
+(silently leaks whatever a litellm upgrade adds). Narrowing the mark to a
+per-call client identity so that SDK calls from litellm callbacks are
+still metered (not worth the complexity now).

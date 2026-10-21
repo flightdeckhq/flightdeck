@@ -13,6 +13,24 @@ note:** marketplace installs of the plugin do not update themselves; run
 `claude plugin update flightdeck@flightdeck-plugins` after upgrading the
 server.
 
+### Added
+
+- **Sensor: litellm streams are metered.** `litellm.completion(stream=True)`
+  and `litellm.acompletion(stream=True)` go through the same stream guard
+  as the SDKs (in-stream usage, `payload.streaming`, cache breakdown),
+  sync and async, and return the sensor's guard rather than litellm's
+  `CustomStreamWrapper`; iteration (`for` / `async for`) is unchanged,
+  and the usage chunk the sensor asks litellm for is kept from a caller
+  who did not ask for it; with `capture_prompts` on, the stored response
+  of a streamed call is the assembled text, id, model and finish reason.
+  The `litellm` extra requires `litellm>=1.83.0` (1.82.7 and 1.82.8 were
+  compromised builds). `litellm.text_completion` and `litellm.responses`
+  are not patched: `text_completion` on an OpenAI chat model is reported
+  by the OpenAI interceptor, `responses` on a provider without a native
+  Responses API is reported once as a chat call (litellm bridges it
+  through `completion`), and litellm's own httpx routes of either are
+  unobserved.
+
 ### Fixed
 
 - **Worker: a short-lived session could be left unclosed.** The worker
@@ -126,19 +144,13 @@ server.
 - **Pricing table refreshed** for the Claude 5 family, GPT-6 / GPT-5.x
   and Gemini 4 / 3.x list prices, with retired ids kept and annotated;
   Claude Opus 4 corrected to $15 / $75.
-- **Sensor: litellm streaming raised, and a litellm call through the
-  OpenAI SDK was counted twice.** `litellm.completion(stream=True)` and
-  `litellm.acompletion(stream=True)` raised `NotImplementedError` under
-  `patch()`; they are now metered through the same stream guard as the
-  SDKs (in-stream usage, `payload.streaming`, cache breakdown), sync and
-  async, and return the sensor's stream guard rather than litellm's
-  `CustomStreamWrapper`. A litellm call served through the OpenAI SDK was
-  reported by both the litellm wrapper and the OpenAI interceptor; the
-  litellm wrapper now marks its call as in flight and the SDK
-  interceptors pass a marked call through, so it lands once. The
-  `litellm` extra requires `litellm>=1.83.0` (1.82.7 and 1.82.8 were
-  compromised builds). `litellm.text_completion` and `litellm.responses`
-  remain unobserved.
+- **Sensor: a litellm call through the OpenAI SDK was counted twice.**
+  litellm serves its OpenAI route through the OpenAI SDK, whose
+  `chat.completions` the sensor also patches, so one call was reported by
+  both the litellm wrapper and the OpenAI interceptor. The litellm wrapper
+  now marks its call as in flight and the SDK interceptors pass a marked
+  call through, so it lands once: one `pre_call`, one policy check, one
+  `post_call`.
 
 ### Changed
 
@@ -151,8 +163,8 @@ server.
   `token_policies` DDL, migrations through 000027, plugin session identity
   (one random id per Claude Code invocation), the MCP enforcement contract,
   NATS subjects and authentication, service environment variable names,
-  the framework coverage caveats (langchain-openai 1.x, litellm streaming,
-  gateway attribution) and the fact that no service serves `/metrics`
+  the framework coverage caveats (langchain-openai 1.x, gateway
+  attribution) and the fact that no service serves `/metrics`
   yet. README gains a Roadmap section (replacing "Coming soon"), the
   plugin README documents identity, enforcement and updating, METHODOLOGY
   records the severity scale, and DECISIONS.md records D164 to D186.

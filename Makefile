@@ -98,7 +98,7 @@ playground-llamaindex: ## Rule 40d playground: LlamaIndex (.complete + McpToolSp
 playground-crewai: ## Rule 40d playground: CrewAI (native chat + mcpadapt MCP canary). Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
 	$(PYTHON) playground/06_crewai.py
 
-playground-litellm: ## Rule 40d playground: litellm multi-provider chat (sync + async streaming, single count via the OpenAI SDK) + embeddings + invalid-model error.
+playground-litellm: ## Rule 40d playground: litellm multi-provider chat (sync + async streaming, single count via the OpenAI SDK) + embeddings + invalid-model error. Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
 	$(PYTHON) playground/12_litellm.py
 
 playground-mcp: ## Rule 40d playground: bare mcp SDK, all six event types + multi-server attribution.

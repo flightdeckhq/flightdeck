@@ -418,9 +418,6 @@ type SubagentMessage struct {
 // and the message comes back on its next delivery.
 var ErrRetryLater = errors.New("consumer: retry later")
 
-// retryDelay is how long a message waits before its next delivery:
-// retryDelayBase times the number of deliveries so far, so the gaps
-// grow with the budget already spent.
 // deliveryOutcome is the worker's answer to NATS for a processed message.
 type deliveryOutcome int
 
@@ -457,6 +454,9 @@ func deliveryNumber(meta *nats.MsgMetadata, err error) uint64 {
 	return meta.NumDelivered
 }
 
+// retryDelay is how long a message waits before its next delivery:
+// retryDelayBase times the number of deliveries so far, so the gaps
+// grow with the budget already spent.
 func retryDelay(deliveries uint64) time.Duration {
 	if deliveries < 1 {
 		deliveries = 1

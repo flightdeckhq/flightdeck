@@ -219,11 +219,12 @@ _BILLING_MESSAGE_HINTS: tuple[str, ...] = (
 # status the class and status decide and the message is never read.
 _MESSAGE_HINT_STATUSES: frozenset[int] = frozenset({400, 429})
 
-# Only the first 2 KiB of a provider message is inspected for a billing
-# phrase. The phrases open every known message, a provider message is
-# normally well under 1 KiB, and the cap bounds the work the hot path
-# does on a pathological multi-megabyte message: the slice is taken
-# before lower-casing, so neither copy is larger than the cap.
+# Only the first 2,048 characters of a provider message are inspected for
+# a billing phrase. The phrases open every known message, a provider
+# message is normally a few hundred characters, and the cap bounds the
+# work the hot path does on a pathological multi-megabyte message: the
+# slice is taken before lower-casing, so neither copy is larger than the
+# cap.
 _MESSAGE_HINT_MAX_CHARS = 2048
 
 # The provider whose messages the billing-phrase match applies to.
@@ -345,8 +346,8 @@ def classify_exception(
                     base = etype
                     break
             # The message is read only where it can change the verdict:
-            # an Anthropic 400 or 429. A status-less, foreign or huge
-            # exception pays nothing for it.
+            # an Anthropic 400 or 429, which pays for at most the capped
+            # slice; a status-less or foreign exception pays nothing.
             message_hint = ""
             if provider == _MESSAGE_HINT_PROVIDER and http_status in _MESSAGE_HINT_STATUSES:
                 message_hint = _extract_message_hint(exc)

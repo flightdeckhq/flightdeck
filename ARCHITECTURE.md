@@ -654,8 +654,8 @@ class Provider(Protocol):
 
     def stop_reason_from_stream_chunk(self, chunk: Any) -> str | None:
         """The stop reason carried by one streamed event (Anthropic
-        message_delta; an OpenAI chat or litellm chunk carrying
-        finish_reason; an OpenAI response.incomplete event), or None for
+        message_delta; an OpenAI chat chunk carrying finish_reason; an
+        OpenAI response.incomplete event), or None for
         every other event, so a raw stream, which has no final message
         object, reports the same outcome as a complete response. Never
         raises."""
@@ -4011,12 +4011,17 @@ is `quota_exceeded` rather than `rate_limit` or `invalid_request`, since
 Anthropic reports its organisation spend cap as a 429
 `rate_limit_error` and a per-user spend limit or an exhausted credit
 balance as a 400 `invalid_request_error`, and only the message tells
-them apart. The match is a substring test over the first 2 KiB of the
-lower-cased message; single words are not matched, because a 400 echoes
-caller-supplied identifiers (a schema named `monthly_report`, a tool
-`get_billing_info`) and a per-minute "quota exceeded" 429 is a genuine
-rate limit, and no other provider's message is read at all, so a
-status-less, foreign or huge exception pays nothing for it. The message
+them apart. The match is a substring test over the first 2,048
+characters of the lower-cased message; single words are not matched,
+because a 400 echoes caller-supplied identifiers (a schema named
+`monthly_report`, a tool `get_billing_info`) and a per-minute "quota
+exceeded" 429 is a genuine rate limit. No other provider's message is
+read at all, so a status-less or foreign exception pays nothing for it,
+and an Anthropic 400 or 429 pays for at most that 2,048-character
+slice. The error's `provider` is the adapter's `name` on this path as
+on every other `llm_error` the adapter's calls produce, so a transport
+or builtin error raised inside an intercepted call reports `anthropic`,
+`openai` or `litellm` rather than `unknown`. The message
 is read for that test only and never stored: `error_message` is the
 exception class name, with the provider's text appended (clipped to 200
 characters) only when `capture_prompts` is on.
@@ -4050,8 +4055,8 @@ session's `has_terminal_error` flag like any other terminal
 `response_stop_reason` (a complete message, a raw-response wrapper, or
 a helper stream's accumulated snapshot) or, for a raw stream that has no
 final message object, from the streamed event that carries it
-(Anthropic `message_delta`, an OpenAI chat or litellm chunk with
-`finish_reason`, an OpenAI `response.incomplete` event) through
+(Anthropic `message_delta`, an OpenAI chat chunk with `finish_reason`,
+an OpenAI `response.incomplete` event) through
 `stop_reason_from_stream_chunk`, which the stream guard records as
 events pass. Only `post_call` events get this treatment; `embeddings`
 responses carry no stop reason.

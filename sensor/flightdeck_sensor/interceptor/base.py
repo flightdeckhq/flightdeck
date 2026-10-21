@@ -1638,18 +1638,27 @@ def _provider_name(provider: Provider) -> str:
     return name if isinstance(name, str) and name else "unknown"
 
 
+# Longest request id the sensor keeps from a provider response. Provider
+# request ids are short opaque tokens (a few dozen characters); the value
+# is stored on the error event and used as the retry-counter key, so the
+# cap bounds both against a hostile or malformed header. Providers import
+# it for the ids they read themselves.
+_REQUEST_ID_MAX_LEN = 128
+
+
 def _response_request_id(response: Any, prov_meta: dict[str, Any] | None) -> str | None:
-    """The provider's request id of a 200 response: the SDK stamps it on
-    the parsed object as ``_request_id``; a raw-response wrapper exposes
-    it through the headers the provider metadata already read."""
+    """The provider's request id of a 200 response, capped at
+    ``_REQUEST_ID_MAX_LEN`` characters: the SDK stamps it on the parsed
+    object as ``_request_id``; a raw-response wrapper exposes it through
+    the headers the provider metadata already read."""
     with contextlib.suppress(Exception):
         stamped = getattr(response, "_request_id", None)
         if isinstance(stamped, str) and stamped:
-            return stamped
+            return stamped[:_REQUEST_ID_MAX_LEN]
     if prov_meta:
         from_headers = prov_meta.get("request_id")
         if isinstance(from_headers, str) and from_headers:
-            return from_headers
+            return from_headers[:_REQUEST_ID_MAX_LEN]
     return None
 
 

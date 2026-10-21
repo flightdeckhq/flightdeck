@@ -509,3 +509,20 @@ def test_stream_guard_survives_a_failing_stop_reason_hook() -> None:
     # The post_call still lands; the reason is lost with the hook.
     assert len(_events_of(session, "post_call")) == 1
     assert _events_of(session, "llm_error") == []
+
+
+def test_stop_reason_error_caps_an_oversized_request_id() -> None:
+    session = _session()
+    usage = _Plain(input_tokens=1, output_tokens=1)
+    oversized = "r" * 200_000
+    stamped = _Plain(stop_reason="refusal", usage=usage, content=[], _request_id=oversized)
+    _post(session, stamped)
+    from_headers = _Plain(
+        stop_reason="refusal", usage=usage, content=[], headers={"request-id": oversized}
+    )
+    _post(session, from_headers)
+    errors = _events_of(session, "llm_error")
+    assert base._REQUEST_ID_MAX_LEN == 128
+    assert [len(e["error"]["request_id"]) for e in errors] == [128, 128]
+    # Both carry the same capped key, so the second is the chain's retry.
+    assert [e["retry_attempt"] for e in errors] == [1, 2]

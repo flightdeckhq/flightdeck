@@ -77,16 +77,20 @@ server.
   reset), whoever raised it;
   a stream still open when the session ends is reported before the session
   closes; and an aborted stream's `latency_ms` runs to its last chunk.
-- **Sensor: Anthropic billing and gateway failures were misclassified,
-  and a refused or cut-off response counted as a success.** A 504 was
-  filed as `api_error` (the SDK wraps it in `InternalServerError`) and is
-  now `timeout`; a 402 `billing_error` was `api_error` and is now
-  `quota_exceeded`; the organisation spend cap (a 429 whose message names
-  the spend limit) and a per-user spend limit or exhausted credit balance
-  (a 400) were `rate_limit` and `invalid_request` and are now
-  `quota_exceeded`, so they read as terminal rather than retryable; the
-  message match is limited to Anthropic and to those phrases, so a
-  per-minute quota 429 elsewhere stays a retryable `rate_limit`. A
+- **Sensor: Anthropic billing and gateway failures were misclassified.**
+  A 504 was filed as `api_error` (the SDK wraps it in
+  `InternalServerError`) and is now `timeout`; a 402 `billing_error` was
+  `api_error` and is now `quota_exceeded`; the organisation spend cap (a
+  429 whose message names the spend limit) and a per-user spend limit or
+  exhausted credit balance (a 400) were `rate_limit` and
+  `invalid_request` and are now `quota_exceeded`, so they read as
+  terminal rather than retryable; the message match is limited to
+  Anthropic and to those phrases, so a per-minute quota 429 elsewhere
+  stays a retryable `rate_limit`. Every `llm_error` now names the adapter
+  that produced it in `error.provider` (`anthropic`, `openai`,
+  `litellm`); a transport or builtin error raised inside an intercepted
+  call used to report `unknown`.
+- **Sensor: a refused or cut-off response counted as a success.** A
   response the provider answered with 200 but did not complete (an
   Anthropic `stop_reason` `refusal` or `model_context_window_exceeded`,
   an OpenAI chat or litellm `finish_reason` `content_filter`, an OpenAI

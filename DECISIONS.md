@@ -10164,8 +10164,11 @@ the context-window overrun, `error.http_status` is 200,
 `error.provider_error_code` is the stop reason, `error.error_message` is
 `stop_reason=<reason>`, `error.request_id` is the response's request id
 (the SDK stamps it on the parsed object; a raw-response wrapper exposes
-it in its headers) so the per-provider retry counter keys each refusal
-on its own request rather than on an empty id, `error.is_retryable` is
+it in its headers), capped at 128 characters (`_REQUEST_ID_MAX_LEN` in
+`interceptor/base.py`: provider request ids are short opaque tokens, and
+the cap bounds both the stored field and the retry-counter key against a
+hostile header), so the per-provider retry counter keys each refusal on
+its own request rather than on an empty id, `error.is_retryable` is
 false, the top-level `terminal` is true and `originating_event_id` is
 the `post_call`'s id. The `post_call` is unchanged and keeps the billed
 usage. Any error the sensor derives from a response the provider
@@ -10176,12 +10179,24 @@ the home of that convention. The reason reaches the interceptor through
 two new provider-protocol hooks, `response_stop_reason(response)` for a
 complete message, a raw-response wrapper or a helper stream's snapshot,
 and `stop_reason_from_stream_chunk(chunk)` for a raw stream, where the
-reason appears on one streamed event (Anthropic `message_delta`, a chat
-or litellm chunk carrying `finish_reason`, a Responses
-`response.incomplete` event); the stream guard records it as events pass
-and hands it to the settle. Each adapter carries an explicit `name`
-(`anthropic`, `openai`, `litellm`) that fills the error's `provider`
-field. Only `post_call` events are examined; `embeddings` carry no stop
+reason appears on one streamed event (Anthropic `message_delta`, an
+OpenAI chat chunk carrying `finish_reason`, a Responses
+`response.incomplete` event; litellm streams are not metered on this
+branch, so the litellm adapter's chunk hook is exercised only by its
+unit test); the stream guard records it as events pass and hands it to
+the settle. Each adapter carries an explicit `name` (`anthropic`,
+`openai`, `litellm`) that fills the error's `provider` field on every
+`llm_error` the adapter's calls produce: it is the classifier's
+`provider_hint` on the exception path too, so a transport or builtin
+error raised inside an intercepted call (an `httpx` timeout, a
+`ConnectionError`, the builtin `TimeoutError`) reports the adapter's
+wire name instead of `unknown`, and the per-provider retry counter keys
+on it.
+
+The general rule this entry fixes: a call the provider billed and then
+failed emits the `post_call` with the billed usage and the `llm_error`
+chained to it through `originating_event_id`; neither replaces the
+other. The stop-reason case is one instance of it. Only `post_call` events are examined; `embeddings` carry no stop
 reason. An integration seed
 (`tests/integration/test_event_shapes.py::test_stop_reason_llm_error_roundtrips_with_http_200`)
 posts the 200-status `llm_error` through the real ingestion API and
@@ -10195,8 +10210,8 @@ and two status rules apply whatever class the SDK raised, 402 to
 provider message contains the phrase `spend limit`, `spending limit`,
 `spend cap` or `credit balance` is `quota_exceeded` instead of
 `rate_limit` or `invalid_request`; the match is gated to Anthropic
-exceptions and to those statuses, reads only the first 2 KiB of the
-message, is a substring test only, and the message is still redacted
+exceptions and to those statuses, reads only the first 2,048 characters
+of the message, is a substring test only, and the message is still redacted
 from `error_message` under capture-off. The pre-call estimator's default `count_tokens`
 model is `claude-sonnet-4-6`, and a unit test fails when that id is
 absent from `pricing.yaml`, marked retired or deprecated there, or
@@ -10262,9 +10277,9 @@ litellm or Vertex per-minute "quota exceeded" 429 is a genuine,
 retryable rate limit, so the single words `billing`, `quota` and
 `monthly` match nothing on their own (the `provider_error_code` check
 still recognises codes that contain them, and 402 is decided by status).
-Only the first 2 KiB of the message is inspected, so a huge or hostile
-message costs a bounded slice, and nothing is read at all for another
-provider or another status. The exact Anthropic strings were not
+Only the first 2,048 characters of the message are inspected, so a huge
+or hostile message costs at most that slice, and nothing is read at all
+for another provider or another status. The exact Anthropic strings were not
 confirmed against the live API (none can be provoked without exhausting
 an account), so the phrases are the documented wording; the message is
 matched only and never stored, because a provider message can quote

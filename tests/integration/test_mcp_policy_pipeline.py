@@ -550,20 +550,24 @@ def test_mcp_server_attached_distinct_tuples_both_land() -> None:
 # to the full seven-event vocabulary; this test locks the contract.
 
 
-def _list_session(session_id: str) -> dict | None:
-    """Fetch a single session row from the listing endpoint by
-    filtering on its session_id. Mirrors the path the dashboard's
-    Investigate page hits."""
+def _list_session(session_id: str, flavor: str) -> dict | None:
+    """Fetch one session's row from the listing endpoint, the path the
+    dashboard's Investigate page hits. The listing has no session_id
+    filter, so the request narrows to the test's own flavor and the
+    row is picked by id; taking the newest row instead would return
+    whatever session another test created last."""
     r = requests.get(
         f"{API_URL}/v1/sessions",
         headers=auth_headers(),
-        params={"session_id": session_id, "from": "1970-01-01T00:00:00Z"},
+        params={"flavor": flavor, "from": "1970-01-01T00:00:00Z"},
         timeout=5,
     )
     if r.status_code != 200:
         return None
-    rows = r.json().get("sessions") or []
-    return rows[0] if rows else None
+    for row in r.json().get("sessions") or []:
+        if row.get("session_id") == session_id:
+            return row
+    return None
 
 
 def test_listing_aggregates_all_four_mcp_policy_event_types() -> None:
@@ -593,7 +597,7 @@ def test_listing_aggregates_all_four_mcp_policy_event_types() -> None:
     row = None
     seen: list[str] = []
     while time.monotonic() < deadline:
-        row = _list_session(sid)
+        row = _list_session(sid, flavor)
         if row is not None:
             seen = sorted(row.get("policy_event_types") or [])
             if len(seen) == 4:

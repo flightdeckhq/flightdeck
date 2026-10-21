@@ -838,13 +838,16 @@ def test_session_end_published_before_its_session_start_does_not_close_it() -> N
     sid = str(uuid.uuid4())
     flavor = f"test-end-first-{uuid.uuid4().hex[:6]}"
 
+    started_at = time.time()
     post_event(make_event(sid, flavor, "session_end"))
     post_event(make_event(sid, flavor, "session_start"))
 
     _wait_for_rows(flavor, "session_end", 1, RETRY_WINDOW_TIMEOUT_SECS)
     assert get_session_detail(sid)["session"]["state"] == "active"
     wait_until(
-        lambda: bool(worker_log_lines(SUPERSEDED_WARNING, f"session_id={sid}")),
+        lambda: bool(
+            worker_log_lines(SUPERSEDED_WARNING, f"session_id={sid}", since=started_at)
+        ),
         timeout=STATE_TIMEOUT_SECS,
         msg="worker did not report the superseded session_end",
     )
@@ -854,6 +857,7 @@ def test_session_end_published_before_its_session_start_does_not_close_it() -> N
     wait_for_state(sid, "closed", timeout=STATE_TIMEOUT_SECS)
 
 
+@pytest.mark.exclusive
 def test_short_lived_sessions_published_back_to_back_all_close() -> None:
     """Sessions that each start, make one call and end within a few
     milliseconds are the real-world shape of the race (one-shot scripts,
@@ -883,13 +887,15 @@ def test_orphan_session_end_is_dropped_once_after_the_retry_budget() -> None:
     sid = str(uuid.uuid4())
     flavor = f"test-orphan-end-{uuid.uuid4().hex[:6]}"
     sid_needle = f"session_id={sid}"
-    errors_before = set(worker_log_lines(PROCESS_ERROR_MARKER, sid_needle))
 
+    # Both stamps precede the post: the wall-clock one scopes the log
+    # reads to this test's lines, the monotonic one bounds the verdict.
+    started_at = time.time()
     started = time.monotonic()
     post_event(make_event(sid, flavor, "session_end"))
 
     wait_until(
-        lambda: bool(worker_log_lines(ORPHAN_WARNING, sid_needle)),
+        lambda: bool(worker_log_lines(ORPHAN_WARNING, sid_needle, since=started_at)),
         timeout=RETRY_WINDOW_TIMEOUT_SECS,
         msg=f"worker never logged the orphan drop for {sid}",
     )
@@ -898,12 +904,12 @@ def test_orphan_session_end_is_dropped_once_after_the_retry_budget() -> None:
         f"orphan verdict after {elapsed:.2f}s: the redeliveries were not delayed"
     )
 
-    redeliveries = worker_log_lines(REDELIVERY_NOTICE, sid_needle)
+    redeliveries = worker_log_lines(REDELIVERY_NOTICE, sid_needle, since=started_at)
     assert len(redeliveries) == ORPHAN_REDELIVERIES, redeliveries
-    warnings = worker_log_lines(ORPHAN_WARNING, sid_needle)
+    warnings = worker_log_lines(ORPHAN_WARNING, sid_needle, since=started_at)
     assert len(warnings) == 1, warnings
-    new_errors = set(worker_log_lines(PROCESS_ERROR_MARKER, sid_needle)) - errors_before
-    assert not new_errors, new_errors
+    errors = worker_log_lines(PROCESS_ERROR_MARKER, sid_needle, since=started_at)
+    assert not errors, errors
     rows = exec_sql(
         "SELECT COUNT(*) FROM sessions WHERE session_id = :'sid'::uuid",
         sid=sid,
@@ -1014,6 +1020,7 @@ def test_reattachment_that_ends_at_once_with_the_previous_end_queued_closes() ->
     assert get_session_detail(sid)["session"]["state"] == "closed"
 
 
+@pytest.mark.exclusive
 def test_backlog_of_reattachments_drains_to_the_right_states() -> None:
     """Queue every re-attachment shape behind a paused worker, then let
     the pool drain the backlog concurrently. Whatever order the
@@ -1100,6 +1107,7 @@ def test_a_later_session_end_on_a_closed_row_advances_its_close_sequence() -> No
     assert get_session_detail(sid)["session"]["state"] == "closed"
 
 
+@pytest.mark.exclusive
 def test_many_concurrent_session_starts_on_one_session_id_stay_consistent() -> None:
     """Several clients re-attaching the same session id at once must all be
     accepted and leave the session open. Whether the stamp queues on the
@@ -1222,6 +1230,7 @@ def test_open_row_without_recorded_sequences_is_closed_by_its_end() -> None:
     assert closed_seq.isdigit(), f"closed_seq not recorded: {closed_seq!r}"
 
 
+@pytest.mark.exclusive
 def test_a_call_published_after_the_end_cannot_keep_the_session_open() -> None:
     """A call the worker handles before its session_start creates the
     row lazily, without a start sequence. With start, end and call queued

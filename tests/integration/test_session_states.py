@@ -40,11 +40,12 @@ from .conftest import (
 # their window.
 RECONCILER_INTERVAL_SECS = 5
 
-# Headroom between a tick firing and the API reflecting its result: one
-# reconcile pass over the dev database plus the session-detail read.
-# Both take well under a second on the dev stack; 5 s absorbs a slow CI
-# runner without stretching the waits that build on it.
-PROCESSING_SLACK_SECS = 5
+# Room for the worker to process a handful of events on a loaded runner,
+# and for a reconciler tick's result to reach the API: one reconcile
+# pass over the dev database plus the session-detail read, well under a
+# second on the dev stack. Ten seconds absorbs a slow CI runner; every
+# state wait in this module builds on it.
+PROCESSING_SLACK_SECS = 10.0
 
 # Positive waits (a transition must happen). The test's UPDATE can land
 # just after a tick, so the next one is up to a full interval away; the
@@ -716,8 +717,6 @@ def test_order_independence_pc_then_ss_matches_ss_then_pc() -> None:
 # second and again after two before the orphan verdict; polls that may
 # span that budget allow it plus the slack any other poll gets.
 WORKER_RETRY_WINDOW_SECS = 3.0
-# Room for the worker to process a handful of events on a loaded runner.
-PROCESSING_SLACK_SECS = 10.0
 STATE_TIMEOUT_SECS = PROCESSING_SLACK_SECS
 RETRY_WINDOW_TIMEOUT_SECS = WORKER_RETRY_WINDOW_SECS + PROCESSING_SLACK_SECS
 # Several times FLIGHTDECK_WORKER_POOL_SIZE (10), so many sessions are in

@@ -208,10 +208,13 @@ EXPECTED_CLIENT_NAMES = CORE_CLIENT_NAMES | frozenset(
         "AsyncAnthropicBedrockMantle",
         "AnthropicAWS",
         "AsyncAnthropicAWS",
+        "AnthropicGoogleCloud",
+        "AsyncAnthropicGoogleCloud",
     }
 )
-# Matrix cells the SDK itself cannot offer: Bedrock's beta resource has
-# only create; Vertex's has create and stream.
+# Matrix cells the SDK itself cannot offer at the floor: Bedrock's beta
+# resource has only create; Vertex's has create and stream. Newer releases
+# fill some of them in.
 EXPECTED_SKIPPED_CELLS = frozenset(
     {
         "AnthropicBedrock-parse-beta.messages",
@@ -231,6 +234,8 @@ def _expected_platform(name: str) -> str:
         return "bedrock"
     if name.endswith("Vertex"):
         return "vertex"
+    if name.endswith("GoogleCloud"):
+        return "google-cloud"
     if name.endswith("Foundry"):
         return "foundry"
     if name.endswith("AWS"):
@@ -251,6 +256,10 @@ def _build(name: str, transport: _Transport) -> Any:
         kwargs.update(api_key="bearer", aws_region="us-east-1")
     elif name.endswith("Vertex"):
         kwargs.update(access_token="token", project_id="proj", region="us-east5")
+    elif name.endswith("GoogleCloud"):
+        # Claude Platform on Google Cloud authenticates through Google
+        # credentials; skip_auth builds requests offline without them.
+        kwargs.update(project="proj", location="us-east5", workspace_id="ws", skip_auth=True)
     elif name.endswith("Foundry"):
         kwargs.update(api_key="key", base_url="https://res.services.ai.azure.com/anthropic/")
     elif name.endswith("AWS"):
@@ -790,6 +799,7 @@ def test_raw_response_stores_no_content_when_capture_is_off(session: Session) ->
         ("aiplatform.googleapis.com", "vertex"),
         ("myres.services.ai.azure.com", "foundry"),
         ("aiplatform.us.rep.googleapis.com", "vertex"),
+        ("claude.googleapis.com", "google-cloud"),
         ("localhost", "localhost"),
         ("bifrost.internal.example", "bifrost.internal.example"),
         # Look-alikes stay bare: the suffixes are dot-separated and Vertex
@@ -798,6 +808,7 @@ def test_raw_response_stores_no_content_when_capture_is_off(session: Session) ->
         ("anthropic.com.evil.example", "anthropic.com.evil.example"),
         ("storage.googleapis.com", "storage.googleapis.com"),
         ("notaiplatform.googleapis.com", "notaiplatform.googleapis.com"),
+        ("notclaude.googleapis.com", "notclaude.googleapis.com"),
         (
             "evil-bedrock-runtime.us-east-1.amazonaws.com",
             "evil-bedrock-runtime.us-east-1.amazonaws.com",
@@ -1290,8 +1301,8 @@ def test_sdk_layout_the_patch_relies_on() -> None:
             )
 
     # The exported client classes: nothing unknown may appear, and the
-    # core set must stay. Mantle and AWS exist from 0.91 and are optional
-    # at the 0.86 floor.
+    # core set must stay. Mantle and AWS exist from 0.91 and Google Cloud
+    # from later releases; all three are optional at the 0.86 floor.
     exported = frozenset(CLIENT_NAMES)
     assert exported <= EXPECTED_CLIENT_NAMES, (
         f"new client classes exported: {exported - EXPECTED_CLIENT_NAMES}; extend the matrix"
@@ -1299,7 +1310,9 @@ def test_sdk_layout_the_patch_relies_on() -> None:
     assert exported >= CORE_CLIENT_NAMES, f"client classes missing: {CORE_CLIENT_NAMES - exported}"
 
     # The cells the matrix skips because the SDK's platform beta resources
-    # lack the method, frozen so a change in either direction shows up.
+    # lack the method. A new gap fails here; a release that adds a method
+    # shrinks the set, and the matrix above then runs (and meters) that
+    # cell, so a smaller set passes.
     skipped = frozenset(
         f"{name}-{path}-{'beta.messages' if beta else 'messages'}"
         for name in CLIENT_NAMES
@@ -1307,7 +1320,7 @@ def test_sdk_layout_the_patch_relies_on() -> None:
         for beta in (False, True)
         if not hasattr(_resource(_build(name, _Transport()), beta), PATH_METHOD[path])
     )
-    assert skipped == EXPECTED_SKIPPED_CELLS
+    assert skipped <= EXPECTED_SKIPPED_CELLS, f"new SDK gaps: {skipped - EXPECTED_SKIPPED_CELLS}"
 
     # Bedrock and Vertex ship their own beta resources, copying the
     # first-party methods they support; the patch targets them directly.
@@ -1321,10 +1334,13 @@ def test_sdk_layout_the_patch_relies_on() -> None:
         vertex_beta.Messages,
         vertex_beta.AsyncMessages,
     } <= patched_classes
+    # At the floor Bedrock's beta resource defines only create and Vertex's
+    # create and stream; newer releases add the rest, which the patch then
+    # covers like the first-party methods.
     for cls in (bedrock_beta.Messages, bedrock_beta.AsyncMessages):
-        assert set(cls.__dict__) & set(ai._PATCHED_METHODS) == {"create"}
+        assert set(cls.__dict__) & set(ai._PATCHED_METHODS) >= {"create"}
     for cls in (vertex_beta.Messages, vertex_beta.AsyncMessages):
-        assert set(cls.__dict__) & set(ai._PATCHED_METHODS) == {"create", "stream"}
+        assert set(cls.__dict__) & set(ai._PATCHED_METHODS) >= {"create", "stream"}
 
     # Every client hands out a patched class (or a subclass of one), for
     # messages and for beta.messages.

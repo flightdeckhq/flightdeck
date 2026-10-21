@@ -53,7 +53,8 @@ reported twice.
 
 Platform attribution: every ``post_call`` carries the platform the
 client talks to under ``provider_metadata.platform`` (``anthropic``,
-``bedrock``, ``vertex``, ``foundry``, ``aws``, ``bedrock-mantle``, or
+``bedrock``, ``vertex``, ``google-cloud``, ``foundry``, ``aws``,
+``bedrock-mantle``, or
 the bare host of a gateway the caller pointed the SDK at), read from
 ``client.base_url.host`` and nothing else.
 
@@ -253,12 +254,14 @@ _PLATFORM_HOSTS: tuple[tuple[str, str, str], ...] = (
     # Every suffix starts with a separator so a look-alike such as
     # evilanthropic.com or anthropic.com.evil.example stays bare, and
     # Vertex matches only the Vertex AI API hosts (aiplatform.<...>
-    # .googleapis.com and the regional <region>-aiplatform.googleapis.com),
-    # not every Google API host.
+    # .googleapis.com and the regional <region>-aiplatform.googleapis.com)
+    # and google-cloud only Claude Platform on Google Cloud's gateway
+    # (claude.googleapis.com), not every Google API host.
     ("", ".anthropic.com", PLATFORM_ANTHROPIC),
     ("bedrock-runtime.", ".amazonaws.com", "bedrock"),
     ("bedrock-mantle.", ".api.aws", "bedrock-mantle"),
     ("aws-external-anthropic.", ".api.aws", "aws"),
+    ("claude.", ".googleapis.com", "google-cloud"),
     ("aiplatform.", ".googleapis.com", "vertex"),
     ("", "-aiplatform.googleapis.com", "vertex"),
     ("", ".services.ai.azure.com", "foundry"),

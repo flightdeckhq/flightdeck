@@ -24,10 +24,11 @@ server.
   metered as the parsed stream is iterated. `messages.parse` (structured
   output) is intercepted on the top-level and beta resources. Every
   Anthropic `post_call` carries `provider_metadata.platform`
-  (`anthropic`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`, `foundry`,
-  or the host of a gateway the SDK was pointed at). `wrap()` accepts any
-  `anthropic` client class. With `capture_prompts=True`, prompts sent
-  through the cloud clients (Bedrock, Vertex, Foundry, AWS, Mantle) now
+  (`anthropic`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`,
+  `google-cloud`, `foundry`, or the host of a gateway the SDK was pointed
+  at). `wrap()` accepts any `anthropic` client class. With
+  `capture_prompts=True`, prompts sent through the cloud clients
+  (Bedrock, Vertex, Google Cloud, Foundry, AWS, Mantle) now
   reach the control plane like any other captured prompt.
 
 ### Fixed

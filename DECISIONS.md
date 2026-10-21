@@ -10172,8 +10172,8 @@ the `wrap()` proxy calls directly; with no session active a patched
 method calls the original. `wrap()` accepts any
 `anthropic._base_client.BaseClient`. Every Anthropic `post_call` carries
 `provider_metadata.platform`, derived from `client.base_url.host` and
-nothing else: `anthropic`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`
-or `foundry` for the hosts the SDK's client classes default to, else the
+nothing else: `anthropic`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`,
+`google-cloud` or `foundry` for the hosts the SDK's client classes default to, else the
 bare host when it is a well-formed hostname (at most 253 characters,
 the DNS limit; lowercase letters, digits, dots and hyphens), else the
 fixed label `invalid-host`. Adding this key to the documented free-form

@@ -3819,9 +3819,10 @@ enrichment additionally carries:
   may surface none). Field names are normalised across providers.
   `platform` is set on every Anthropic `post_call` and names the endpoint
   the client talked to: `anthropic`, `bedrock`, `bedrock-mantle`, `aws`,
-  `vertex` or `foundry` for the hosts the SDK's own client classes
-  default to (matched on dot-separated suffixes, and `vertex` only for
-  the Vertex AI API hosts, so look-alikes such as `evilanthropic.com` or
+  `vertex`, `google-cloud` or `foundry` for the hosts the SDK's own
+  client classes default to (matched on dot-separated suffixes, `vertex`
+  only for the Vertex AI API hosts and `google-cloud` only for Claude
+  Platform on Google Cloud's `claude.googleapis.com`, so look-alikes such as `evilanthropic.com` or
   `storage.googleapis.com` are not labelled), else the bare host of
   whatever the client was pointed at (a gateway or proxy). It is derived
   from `client.base_url.host` and

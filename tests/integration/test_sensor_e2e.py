@@ -6,10 +6,9 @@ These are the FIRST integration tests that drive `flightdeck_sensor.init()`,
 not need real Anthropic / OpenAI tokens. Everything else (sensor →
 ingestion → NATS → workers → Postgres → query API) runs for real.
 
-Per Phase 4.5 audit Part 5 (Hat 1 finding: 0 REAL_PIPELINE coverage in
-the existing tests/integration/ suite -- every other file in this
-directory POSTs hand-crafted payloads directly to /v1/events and bypasses
-the sensor entirely).
+This file exists because every other file in this directory POSTs
+hand-crafted payloads directly to /v1/events and bypasses the sensor
+entirely; without it the real sensor pipeline has no coverage.
 
 NOTE on directive delivery via the post_call queue path: the EventQueue
 drain thread calls ``ControlPlaneClient.post_event(item)`` and discards
@@ -23,7 +22,7 @@ Tests below avoid asserting on sensor-side directive application from
 queued events. Instead they verify what is observable in the database:
 ingestion delivered the directive (delivered_at != NULL), the worker
 wrote any policy-evaluator directives, and so on. The drain-thread bug
-is reported in the Part 5 findings table.
+has its regression test below.
 """
 
 from __future__ import annotations
@@ -183,7 +182,9 @@ def _wait_for_event_type(
 
 
 def _wait_for_directive_action(
-    session_id: str, action: str, timeout: float = 15.0,
+    session_id: str,
+    action: str,
+    timeout: float = 15.0,
 ) -> dict[str, Any]:
     """Block until a directive with the given action exists for the session."""
     found: dict[str, Any] = {}
@@ -268,9 +269,9 @@ def _mock_anthropic_messages(
     the respx mock and overflow the sensor's 1000-slot event queue
     on a slow CI runner. Real LLM providers take hundreds of
     milliseconds per call, so the unbounded producer rate is a test
-    artifact, not a production scenario. KI16 covers the optional
-    Phase 4.9 batch ingestion improvement that would raise the
-    drain ceiling further; the 50 ms tick here is the minimum
+    artifact, not a production scenario. Batch ingestion would raise
+    the drain ceiling further but was declined for v1; the 50 ms tick
+    here is the minimum
     necessary to make the test scenario match production.
     """
     body = response or ANTHROPIC_RESPONSE
@@ -358,19 +359,21 @@ def _register_directive_via_api(
 ) -> None:
     """Pre-register a custom directive via /api/v1/directives/register.
 
-    Workaround for KI14 -- the sensor's auto-sync URL is broken in dev,
-    so the multithreading tests register the directive directly via the
-    API to make it triggerable from POST /v1/directives.
+    The multithreading tests register the directive directly via the
+    API (rather than relying on the sensor's auto-sync) to make it
+    triggerable from POST /v1/directives.
     """
     body = {
         "flavor": flavor,
-        "directives": [{
-            "fingerprint": fingerprint,
-            "name": name,
-            "description": description,
-            "flavor": flavor,
-            "parameters": parameters or [],
-        }],
+        "directives": [
+            {
+                "fingerprint": fingerprint,
+                "name": name,
+                "description": description,
+                "flavor": flavor,
+                "parameters": parameters or [],
+            }
+        ],
     }
     data = json.dumps(body).encode()
     req = urllib.request.Request(
@@ -441,7 +444,8 @@ def _wait_for_directive_result(
 
 
 def test_sensor_anthropic_full_pipeline(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """Real sensor + wrap(Anthropic) + intercepted call → DB has events."""
     flavor = unique_flavor
@@ -449,9 +453,7 @@ def test_sensor_anthropic_full_pipeline(
         _mock_anthropic_messages(rmock)
 
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
-        client = flightdeck_sensor.wrap(
-            anthropic.Anthropic(api_key="test-key")
-        )
+        client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
 
         response = client.messages.create(
             model="claude-sonnet-4-6",
@@ -494,7 +496,8 @@ def test_sensor_anthropic_full_pipeline(
 
 
 def test_sensor_openai_full_pipeline(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """Real sensor + wrap(OpenAI) + intercepted chat.completions call."""
     flavor = unique_flavor
@@ -526,7 +529,8 @@ def test_sensor_openai_full_pipeline(
 
 
 def test_sensor_capture_prompts_true(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """capture_prompts=True writes to event_content but NOT events.payload."""
     flavor = unique_flavor
@@ -538,9 +542,7 @@ def test_sensor_capture_prompts_true(
             token=TOKEN,
             capture_prompts=True,
         )
-        client = flightdeck_sensor.wrap(
-            anthropic.Anthropic(api_key="test-key")
-        )
+        client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
 
         client.messages.create(
             model="claude-sonnet-4-6",
@@ -580,15 +582,13 @@ def test_sensor_capture_prompts_true(
 # Test 4 -- Custom directive registered AND triggered end-to-end
 # ======================================================================
 #
-# Strengthened in the Part 5 follow-up commit that fixed B-A (drain
-# thread now applies directives via the directive_callback wired
-# through Session.__init__) and B-D (directive_result events use the
-# worker-schema field names so directive_status / result / error
-# survive ingestion).
+# The drain thread applies directives via the directive_callback
+# wired through Session.__init__, and directive_result events use
+# the worker-schema field names so directive_status / result / error
+# survive ingestion.
 #
-# B-B is still open (KI14): the sensor's auto-sync URL routing
-# targets /ingest/v1/directives/sync which 404s in dev. The test
-# works around this by pre-registering the directive via the
+# The test does not depend on the sensor's auto-sync reaching the
+# control plane: it pre-registers the directive via the
 # auth-bearing /api/v1/directives/register endpoint directly. The
 # sensor's local registry is still populated via the @directive
 # decorator, init() still calls sync (which fails open), and the
@@ -597,7 +597,8 @@ def test_sensor_capture_prompts_true(
 
 
 def test_sensor_custom_directive_registered_and_triggered(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """Decorator registers handler, POST custom directive, drain thread
     applies it, handler runs, directive_result lands in DB."""
@@ -626,20 +627,27 @@ def test_sensor_custom_directive_registered_and_triggered(
     assert "e2e_test_action" in _directive_registry
     fingerprint = _directive_registry["e2e_test_action"].fingerprint
 
-    # KI14 workaround: pre-register the directive via the API directly
-    # so the fingerprint exists in custom_directives by the time the
-    # POST below runs (the sensor's sync_directives 404s in dev).
+    # Pre-register the directive via the API directly so the
+    # fingerprint exists in custom_directives by the time the POST
+    # below runs, independent of the sensor's own sync.
     register_body = {
         "flavor": flavor,
-        "directives": [{
-            "fingerprint": fingerprint,
-            "name": "e2e_test_action",
-            "description": "E2E custom directive registration test",
-            "flavor": flavor,
-            "parameters": [
-                {"name": "value", "type": "string", "required": False, "default": "default_val"},
-            ],
-        }],
+        "directives": [
+            {
+                "fingerprint": fingerprint,
+                "name": "e2e_test_action",
+                "description": "E2E custom directive registration test",
+                "flavor": flavor,
+                "parameters": [
+                    {
+                        "name": "value",
+                        "type": "string",
+                        "required": False,
+                        "default": "default_val",
+                    },
+                ],
+            }
+        ],
     }
     data = json.dumps(register_body).encode()
     req = urllib.request.Request(
@@ -676,13 +684,15 @@ def test_sensor_custom_directive_registered_and_triggered(
         # POST the custom directive against the sensor's session BEFORE
         # making the intercepted call so it is in the response envelope
         # of the very next post_event call from the drain thread.
-        code, _ = _post_directive({
-            "action": "custom",
-            "directive_name": "e2e_test_action",
-            "fingerprint": fingerprint,
-            "session_id": session_id,
-            "parameters": {"value": "hello_from_e2e"},
-        })
+        code, _ = _post_directive(
+            {
+                "action": "custom",
+                "directive_name": "e2e_test_action",
+                "fingerprint": fingerprint,
+                "session_id": session_id,
+                "parameters": {"value": "hello_from_e2e"},
+            }
+        )
         assert code == 201, f"expected 201, got {code}"
 
         # The directive row exists in the directives table.
@@ -695,11 +705,9 @@ def test_sensor_custom_directive_registered_and_triggered(
         # Make an intercepted call. This enqueues a post_call event,
         # the drain thread posts it, ingestion returns the pending
         # custom directive in the response envelope, the drain thread
-        # invokes _apply_directive (B-A fix), which calls
+        # invokes _apply_directive, which calls
         # _execute_custom_directive, which calls the handler.
-        client = flightdeck_sensor.wrap(
-            anthropic.Anthropic(api_key="test-key")
-        )
+        client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
         client.messages.create(
             model="claude-sonnet-4-6",
             messages=[{"role": "user", "content": "trigger"}],
@@ -719,7 +727,7 @@ def test_sensor_custom_directive_registered_and_triggered(
 
         # 2. directive_result event landed in the DB with
         #    directive_status="success" and the right directive_name
-        #    (B-D fix means these fields now survive ingestion).
+        #    (these fields survive ingestion).
         def _result_in_db() -> bool:
             for e in _query_events_for_flavor(flavor):
                 if e.get("event_type") != "directive_result":
@@ -760,12 +768,13 @@ def test_sensor_custom_directive_registered_and_triggered(
 
 
 def test_sensor_shutdown_directive_delivered(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """POST shutdown → make call → drain delivers shutdown to session →
     directive_result(acknowledged) lands in DB → teardown closes session.
 
-    Strengthened in the Part 5 follow-up commit that fixed B-A. Before
+    Guards the drain thread's handling of envelope directives. Before
     the fix the drain thread silently dropped the shutdown directive
     and the test could only verify "directive row inserted".
     """
@@ -776,16 +785,16 @@ def test_sensor_shutdown_directive_delivered(
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
         session_id = flightdeck_sensor.get_status().session_id
 
-        code, _ = _post_directive({
-            "action": "shutdown",
-            "session_id": session_id,
-            "reason": "e2e shutdown test",
-        })
+        code, _ = _post_directive(
+            {
+                "action": "shutdown",
+                "session_id": session_id,
+                "reason": "e2e shutdown test",
+            }
+        )
         assert code == 201, f"expected 201, got {code}"
 
-        client = flightdeck_sensor.wrap(
-            anthropic.Anthropic(api_key="test-key")
-        )
+        client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
         client.messages.create(
             model="claude-sonnet-4-6",
             messages=[{"role": "user", "content": "trigger drain"}],
@@ -837,12 +846,13 @@ def test_sensor_shutdown_directive_delivered(
 
 
 def test_sensor_degrade_directive_via_policy_threshold(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """Server policy crosses degrade threshold → second intercepted call
     uses the degraded model.
 
-    Strengthened in the Part 5 follow-up commit. The previous version
+    A weaker version of this test
     only verified that the workers wrote the degrade row. Now the test
     actually drives a second LLM call and asserts the post_call event
     in the DB has the degraded model name.
@@ -859,15 +869,17 @@ def test_sensor_degrade_directive_via_policy_threshold(
     # the first call tokens_used=18, projected for the second call is
     # 18+10=28, pct=28% which crosses degrade (15%) but not block
     # (100%). _pre_call swaps the model on the second call.
-    code, policy_body = _post_policy({
-        "scope": "flavor",
-        "scope_value": flavor,
-        "token_limit": 100,
-        "warn_at_pct": 5,
-        "degrade_at_pct": 15,
-        "block_at_pct": 100,
-        "degrade_to": degraded_model,
-    })
+    code, policy_body = _post_policy(
+        {
+            "scope": "flavor",
+            "scope_value": flavor,
+            "token_limit": 100,
+            "warn_at_pct": 5,
+            "degrade_at_pct": 15,
+            "block_at_pct": 100,
+            "degrade_to": degraded_model,
+        }
+    )
     assert code == 201, f"expected 201 from policy create, got {code}"
 
     def _echo_model_handler(request: httpx.Request) -> httpx.Response:
@@ -883,9 +895,7 @@ def test_sensor_degrade_directive_via_policy_threshold(
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
         session_id = flightdeck_sensor.get_status().session_id
 
-        client = flightdeck_sensor.wrap(
-            anthropic.Anthropic(api_key="test-key")
-        )
+        client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
 
         # Call 1 -- triggers a post_call event that the workers'
         # policy evaluator processes. After processing, the workers
@@ -908,8 +918,8 @@ def test_sensor_degrade_directive_via_policy_threshold(
         # Call 2 -- the sensor's drain thread will pick up this
         # post_call event, and ingestion will return the pending
         # degrade directive in the response envelope. The drain
-        # thread (B-A fix) calls _apply_directive(DEGRADE) which
-        # arms PolicyCache._forced_degrade (B-E fix). Call 2 itself
+        # thread calls _apply_directive(DEGRADE) which
+        # arms PolicyCache._forced_degrade. Call 2 itself
         # still goes out with sonnet because the swap only happens
         # AFTER the directive is delivered.
         client.messages.create(
@@ -951,7 +961,10 @@ def test_sensor_degrade_directive_via_policy_threshold(
         # the degraded model in the DB.
         def _post_call_with_degraded_model() -> bool:
             for e in _query_events_for_flavor(flavor):
-                if e.get("event_type") == "post_call" and e.get("model") == degraded_model:
+                if (
+                    e.get("event_type") == "post_call"
+                    and e.get("model") == degraded_model
+                ):
                     return True
             return False
 
@@ -964,6 +977,7 @@ def test_sensor_degrade_directive_via_policy_threshold(
     # Cleanup the policy row
     if policy_body.get("id"):
         import urllib.request
+
         req = urllib.request.Request(
             f"{API_URL}/v1/policies/{policy_body['id']}",
             headers={"Authorization": f"Bearer {TOKEN}"},
@@ -981,7 +995,8 @@ def test_sensor_degrade_directive_via_policy_threshold(
 
 
 def test_sensor_server_policy_warn_fires_directive(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """Server policy → workers evaluate post_call → warn directive row.
 
@@ -1000,12 +1015,14 @@ def test_sensor_server_policy_warn_fires_directive(
     # PolicyEvaluator returns immediately after writing a block /
     # shutdown directive, so a high enough limit is required for the
     # warn branch to ever fire.
-    code, policy_body = _post_policy({
-        "scope": "flavor",
-        "scope_value": flavor,
-        "token_limit": 100,
-        "warn_at_pct": 10,
-    })
+    code, policy_body = _post_policy(
+        {
+            "scope": "flavor",
+            "scope_value": flavor,
+            "token_limit": 100,
+            "warn_at_pct": 10,
+        }
+    )
     assert code == 201, f"expected 201 from policy create, got {code}"
 
     with respx.mock(assert_all_called=False) as rmock:
@@ -1013,9 +1030,7 @@ def test_sensor_server_policy_warn_fires_directive(
 
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
         session_id = flightdeck_sensor.get_status().session_id
-        client = flightdeck_sensor.wrap(
-            anthropic.Anthropic(api_key="test-key")
-        )
+        client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
 
         # Mock returns 18 total tokens; 18/12 > 100% so the workers
         # write a warn directive (dedup-once) after the post_call event
@@ -1033,6 +1048,7 @@ def test_sensor_server_policy_warn_fires_directive(
     # Cleanup the policy row
     if policy_body.get("id"):
         import urllib.request
+
         req = urllib.request.Request(
             f"{API_URL}/v1/policies/{policy_body['id']}",
             headers={"Authorization": f"Bearer {TOKEN}"},
@@ -1050,25 +1066,28 @@ def test_sensor_server_policy_warn_fires_directive(
 
 
 def test_sensor_custom_directive_unknown_fingerprint(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """POST /v1/directives action=custom with a fake fingerprint → 422.
 
     The query API's CreateDirectiveHandler refuses the request before
-    inserting any rows, via the new CustomDirectiveExists check (Part 2
-    audit). Verifies the rejection is enforced and no directive row is
+    inserting any rows, via the CustomDirectiveExists check.
+    Verifies the rejection is enforced and no directive row is
     created.
     """
     flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
     session_id = flightdeck_sensor.get_status().session_id
 
     fake_fp = f"fake-fp-{uuid.uuid4().hex[:12]}"
-    code, body = _post_directive({
-        "action": "custom",
-        "directive_name": "nonexistent",
-        "fingerprint": fake_fp,
-        "session_id": session_id,
-    })
+    code, body = _post_directive(
+        {
+            "action": "custom",
+            "directive_name": "nonexistent",
+            "fingerprint": fake_fp,
+            "session_id": session_id,
+        }
+    )
     assert code == 422, f"expected 422, got {code} (body={body})"
 
     # Zero directive rows for this fingerprint.
@@ -1087,7 +1106,8 @@ def test_sensor_custom_directive_unknown_fingerprint(
 
 
 def test_sensor_flavor_fanout_directive(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """POST custom directive with flavor (no session_id) → fan out per session.
 
@@ -1106,13 +1126,15 @@ def test_sensor_flavor_fanout_directive(
     fp = f"e2e-fanout-{uuid.uuid4().hex[:12]}"
     register_body = {
         "flavor": flavor,
-        "directives": [{
-            "fingerprint": fp,
-            "name": "e2e_fanout",
-            "description": "fanout test",
-            "flavor": flavor,
-            "parameters": [],
-        }],
+        "directives": [
+            {
+                "fingerprint": fp,
+                "name": "e2e_fanout",
+                "description": "fanout test",
+                "flavor": flavor,
+                "parameters": [],
+            }
+        ],
     }
     data = json.dumps(register_body).encode()
     req = urllib.request.Request(
@@ -1137,12 +1159,14 @@ def test_sensor_flavor_fanout_directive(
         post_event(make_event(sid, flavor, "session_start"))
         assert wait_for_session_in_fleet(sid, timeout=10) is not None
 
-    code, body = _post_directive({
-        "action": "custom",
-        "directive_name": "e2e_fanout",
-        "fingerprint": fp,
-        "flavor": flavor,
-    })
+    code, body = _post_directive(
+        {
+            "action": "custom",
+            "directive_name": "e2e_fanout",
+            "fingerprint": fp,
+            "flavor": flavor,
+        }
+    )
     assert code == 201, f"expected 201, got {code} (body={body})"
 
     # One directive row per active session.
@@ -1161,7 +1185,8 @@ def test_sensor_flavor_fanout_directive(
 
 
 def test_sensor_context_collected_at_init(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """Init the sensor and verify sessions.context has the expected fields."""
     flavor = unique_flavor
@@ -1187,6 +1212,7 @@ def test_sensor_context_collected_at_init(
     )
     assert isinstance(ctx.get("pid"), int) and ctx["pid"] > 0
     import platform
+
     assert ctx.get("python_version") == platform.python_version(), (
         f"python_version mismatch: ctx={ctx.get('python_version')} "
         f"actual={platform.python_version()}"
@@ -1219,9 +1245,7 @@ def test_sensor_unavailable_continue(sensor_reset: None) -> None:
                 server="http://localhost:19999",
                 token="fake-token",
             )
-            client = flightdeck_sensor.wrap(
-                anthropic.Anthropic(api_key="test-key")
-            )
+            client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
 
             # No exception expected -- the agent must proceed.
             response = client.messages.create(
@@ -1236,17 +1260,18 @@ def test_sensor_unavailable_continue(sensor_reset: None) -> None:
 
 
 # ======================================================================
-# Test 12 -- Context facets aggregation (Part 5 SECTION D coverage gap)
+# Test 12 -- Context facets aggregation
 # ======================================================================
 
 
 def test_context_facets_aggregation(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """GetContextFacets aggregates real sessions.context across the fleet.
 
-    Part 5 SECTION D: this is the first integration test that exercises
-    the Phase 4.5 GetContextFacets path with REAL context data. Existing
+    This is the first integration test that exercises
+    the GetContextFacets path with REAL context data. Existing
     tests only ever insert empty contexts via fabricated session_start
     events.
     """
@@ -1283,7 +1308,7 @@ def test_context_facets_aggregation(
 
 
 # ======================================================================
-# MULTITHREADING TESTS (Phase 4.5 audit Part 3)
+# MULTITHREADING TESTS
 # ======================================================================
 #
 # All tests below exercise the sensor under realistic concurrent
@@ -1297,12 +1322,12 @@ def test_context_facets_aggregation(
 # Patterns covered:
 #   A -- single-threaded agent (test_pattern_a_*)
 #   B -- multithreaded agent sharing one Session (test_pattern_b_*)
-#   C -- one init() per thread (DOCUMENTS KI15 -- not supported)
+#   C -- one init() per thread (DOCUMENTS the singleton limitation -- not supported)
 #   D -- long-running agent receiving directives mid-flight
 #
 # These are the FIRST tests that exercise the sensor's threading
-# story end-to-end. Several B-A / B-G / B-H bugs were caught by
-# adding them.
+# story end-to-end. Several drain-thread, usage-accounting and
+# directive-queue bugs were caught by adding them.
 
 # Common configuration for the multithreading tests below.
 _MT_NUM_THREADS = 4
@@ -1315,7 +1340,8 @@ _MT_CALLS_PER_THREAD = 5
 
 
 def test_pattern_b_concurrent_calls_no_data_loss(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """N threads share one patched client → every call is in DB once.
 
@@ -1324,7 +1350,7 @@ def test_pattern_b_concurrent_calls_no_data_loss(
     accept concurrent enqueues from N producers, the workers must
     persist exactly one events row per call, and ``tokens_used_session``
     must be a strictly monotonic sequence with no duplicates and no
-    gaps (B-G fix proves out under load).
+    gaps (atomic usage accounting proves out under load).
     """
     flavor = unique_flavor
     expected_calls = _MT_NUM_THREADS * _MT_CALLS_PER_THREAD
@@ -1336,24 +1362,24 @@ def test_pattern_b_concurrent_calls_no_data_loss(
         # 50 ms mock latency simulates real LLM provider RTT so the
         # 4 concurrent workers cannot fire faster than the drain
         # thread can flush. See _mock_anthropic_messages docstring
-        # and KI16 for the rationale.
+        # for the rationale.
         _mock_anthropic_messages(rmock, latency_ms=50)
 
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
         try:
-            client = flightdeck_sensor.wrap(
-                anthropic.Anthropic(api_key="test-key")
-            )
+            client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
 
             def _worker(thread_id: int) -> None:
                 try:
                     for i in range(_MT_CALLS_PER_THREAD):
                         client.messages.create(
                             model="claude-sonnet-4-6",
-                            messages=[{
-                                "role": "user",
-                                "content": f"t{thread_id}-c{i}",
-                            }],
+                            messages=[
+                                {
+                                    "role": "user",
+                                    "content": f"t{thread_id}-c{i}",
+                                }
+                            ],
                             max_tokens=10,
                         )
                 except BaseException as exc:  # noqa: BLE001
@@ -1375,9 +1401,10 @@ def test_pattern_b_concurrent_calls_no_data_loss(
             # Wait for every post_call event to land in DB.
             def _all_post_calls() -> bool:
                 events = _query_events_for_flavor(flavor)
-                return sum(
-                    1 for e in events if e.get("event_type") == "post_call"
-                ) >= expected_calls
+                return (
+                    sum(1 for e in events if e.get("event_type") == "post_call")
+                    >= expected_calls
+                )
 
             wait_until(
                 _all_post_calls,
@@ -1386,9 +1413,7 @@ def test_pattern_b_concurrent_calls_no_data_loss(
             )
 
             events = _query_events_for_flavor(flavor)
-            post_calls = [
-                e for e in events if e.get("event_type") == "post_call"
-            ]
+            post_calls = [e for e in events if e.get("event_type") == "post_call"]
             assert len(post_calls) == expected_calls, (
                 f"expected {expected_calls} post_call events, "
                 f"got {len(post_calls)} (excess events would mean "
@@ -1407,7 +1432,7 @@ def test_pattern_b_concurrent_calls_no_data_loss(
             # NOT persisted by the workers (BuildEventExtra only
             # writes directive_result metadata into events.payload),
             # so the post-fix sequence is not directly observable
-            # from the DB. The B-G fix is verified instead by the
+            # from the DB. Atomic usage accounting is verified instead by the
             # CUMULATIVE total in two places:
             #
             #   1. Workers' sessions.tokens_used must equal
@@ -1415,8 +1440,8 @@ def test_pattern_b_concurrent_calls_no_data_loss(
             #      no event duplicated by the worker pipeline).
             #   2. Sensor's get_status().tokens_used must equal
             #      expected_calls * 18 (proves record_usage is
-            #      atomic under N concurrent producers; the B-G
-            #      fix made record_usage return the post-increment
+            #      atomic under N concurrent producers; record_usage
+            #      returns the post-increment
             #      total inside the same critical section).
             expected_total = expected_calls * 18
 
@@ -1447,7 +1472,8 @@ def test_pattern_b_concurrent_calls_no_data_loss(
 
 
 def test_pattern_b_custom_directive_during_traffic(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """Custom directive executes exactly once even with N concurrent
     workers. Event throughput must continue uninterrupted."""
@@ -1466,9 +1492,7 @@ def test_pattern_b_custom_directive_during_traffic(
         return {"executed": True}
 
     fingerprint = _directive_registry["e2e_concurrent_action"].fingerprint
-    _register_directive_via_api(
-        flavor, fingerprint, "e2e_concurrent_action"
-    )
+    _register_directive_via_api(flavor, fingerprint, "e2e_concurrent_action")
 
     with respx.mock(assert_all_called=False) as rmock:
         # 50 ms mock latency -- see test_pattern_b_concurrent_calls_no_data_loss
@@ -1478,9 +1502,7 @@ def test_pattern_b_custom_directive_during_traffic(
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
         try:
             session_id = flightdeck_sensor.get_status().session_id
-            client = flightdeck_sensor.wrap(
-                anthropic.Anthropic(api_key="test-key")
-            )
+            client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
 
             stop = threading.Event()
             errors: list[BaseException] = []
@@ -1498,32 +1520,34 @@ def test_pattern_b_custom_directive_during_traffic(
                     with errors_lock:
                         errors.append(exc)
 
-            workers = [
-                threading.Thread(target=_worker)
-                for _ in range(_MT_NUM_THREADS)
-            ]
+            workers = [threading.Thread(target=_worker) for _ in range(_MT_NUM_THREADS)]
             for t in workers:
                 t.start()
 
             try:
                 # Let some traffic flow before posting the directive
                 wait_until(
-                    lambda: sum(
-                        1
-                        for e in _query_events_for_flavor(flavor)
-                        if e.get("event_type") == "post_call"
-                    ) >= _MT_NUM_THREADS,
+                    lambda: (
+                        sum(
+                            1
+                            for e in _query_events_for_flavor(flavor)
+                            if e.get("event_type") == "post_call"
+                        )
+                        >= _MT_NUM_THREADS
+                    ),
                     timeout=15,
                     msg="initial post_call traffic did not flow",
                 )
 
                 # Post the custom directive
-                code, _ = _post_directive({
-                    "action": "custom",
-                    "directive_name": "e2e_concurrent_action",
-                    "fingerprint": fingerprint,
-                    "session_id": session_id,
-                })
+                code, _ = _post_directive(
+                    {
+                        "action": "custom",
+                        "directive_name": "e2e_concurrent_action",
+                        "fingerprint": fingerprint,
+                        "session_id": session_id,
+                    }
+                )
                 assert code == 201
 
                 # Wait for the handler to be called
@@ -1540,7 +1564,7 @@ def test_pattern_b_custom_directive_during_traffic(
             assert errors == [], f"thread errors: {errors}"
 
             # Handler executed EXACTLY once -- single-consumer
-            # directive thread gives at-most-once for free (B-H).
+            # directive thread gives at-most-once for free.
             assert len(handler_calls) == 1, (
                 f"expected handler called exactly once under concurrent "
                 f"traffic, got {len(handler_calls)}"
@@ -1560,10 +1584,11 @@ def test_pattern_b_custom_directive_during_traffic(
 
 
 def test_pattern_b_shutdown_during_traffic(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """Shutdown directive arrives during concurrent traffic. All workers
-    stop within bounded time, ack is in DB (B-H flush() guarantee),
+    stop within bounded time, ack is in DB (synchronous flush() guarantee),
     session transitions to closed."""
     flavor = unique_flavor
 
@@ -1575,9 +1600,7 @@ def test_pattern_b_shutdown_during_traffic(
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
         try:
             session_id = flightdeck_sensor.get_status().session_id
-            client = flightdeck_sensor.wrap(
-                anthropic.Anthropic(api_key="test-key")
-            )
+            client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
 
             stop = threading.Event()
             shutdown_seen = threading.Event()
@@ -1602,33 +1625,35 @@ def test_pattern_b_shutdown_during_traffic(
                 except BaseException as exc:  # noqa: BLE001
                     errors.append(exc)
 
-            workers = [
-                threading.Thread(target=_worker)
-                for _ in range(_MT_NUM_THREADS)
-            ]
+            workers = [threading.Thread(target=_worker) for _ in range(_MT_NUM_THREADS)]
             for t in workers:
                 t.start()
 
             try:
                 # Let traffic flow
                 wait_until(
-                    lambda: sum(
-                        1
-                        for e in _query_events_for_flavor(flavor)
-                        if e.get("event_type") == "post_call"
-                    ) >= _MT_NUM_THREADS,
+                    lambda: (
+                        sum(
+                            1
+                            for e in _query_events_for_flavor(flavor)
+                            if e.get("event_type") == "post_call"
+                        )
+                        >= _MT_NUM_THREADS
+                    ),
                     timeout=15,
                 )
 
                 # Post shutdown
-                code, _ = _post_directive({
-                    "action": "shutdown",
-                    "session_id": session_id,
-                    "reason": "concurrent shutdown e2e",
-                })
+                code, _ = _post_directive(
+                    {
+                        "action": "shutdown",
+                        "session_id": session_id,
+                        "reason": "concurrent shutdown e2e",
+                    }
+                )
                 assert code == 201
 
-                # B-H proof: the synchronous flush() inside
+                # Proof: the synchronous flush() inside
                 # _apply_directive(SHUTDOWN) ran successfully on the
                 # directive handler thread (no deadlock), so the ack
                 # event is in the DB before any worker can be observed
@@ -1673,7 +1698,8 @@ def test_pattern_b_shutdown_during_traffic(
 
 
 def test_pattern_a_shutdown_single_threaded(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """Pattern A: one thread, sequential calls, shutdown directive,
     next call raises, session closes cleanly."""
@@ -1685,9 +1711,7 @@ def test_pattern_a_shutdown_single_threaded(
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
         try:
             session_id = flightdeck_sensor.get_status().session_id
-            client = flightdeck_sensor.wrap(
-                anthropic.Anthropic(api_key="test-key")
-            )
+            client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
 
             # Warm the pipeline
             client.messages.create(
@@ -1698,11 +1722,13 @@ def test_pattern_a_shutdown_single_threaded(
             _wait_for_event_type(flavor, "post_call", timeout=15)
 
             # Post shutdown
-            code, _ = _post_directive({
-                "action": "shutdown",
-                "session_id": session_id,
-                "reason": "pattern-a shutdown",
-            })
+            code, _ = _post_directive(
+                {
+                    "action": "shutdown",
+                    "session_id": session_id,
+                    "reason": "pattern-a shutdown",
+                }
+            )
             assert code == 201
 
             # Trigger directive delivery via another call
@@ -1712,9 +1738,7 @@ def test_pattern_a_shutdown_single_threaded(
                 max_tokens=10,
             )
 
-            _wait_for_directive_result(
-                flavor, "shutdown", "acknowledged", timeout=15
-            )
+            _wait_for_directive_result(flavor, "shutdown", "acknowledged", timeout=15)
 
             # Next call must raise DirectiveError
             with pytest.raises(flightdeck_sensor.DirectiveError):
@@ -1737,16 +1761,17 @@ def test_pattern_a_shutdown_single_threaded(
 
 
 # ======================================================================
-# Test M5 -- B-H proof: slow handler does not block event throughput
+# Test M5 -- slow handler does not block event throughput
 # ======================================================================
 
 
 def test_slow_handler_does_not_block_event_throughput(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
-    """Critical B-H regression test: a custom directive handler that
+    """Critical two-queue regression test: a custom directive handler that
     blocks for several seconds MUST NOT prevent other LLM call events
-    from being posted to ingestion. Under the pre-B-H architecture
+    from being posted to ingestion. With a single shared queue
     this test would fail with up to 5 lost post_call events.
     """
     flavor = unique_flavor
@@ -1778,23 +1803,23 @@ def test_slow_handler_does_not_block_event_throughput(
         # fires 5 calls in a tight loop while the directive handler
         # thread is blocked. Real LLM RTT is the only natural
         # producer brake, so the mock simulates it. See
-        # _mock_anthropic_messages docstring and KI16.
+        # _mock_anthropic_messages docstring.
         _mock_anthropic_messages(rmock, latency_ms=50)
 
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
         try:
             session_id = flightdeck_sensor.get_status().session_id
-            client = flightdeck_sensor.wrap(
-                anthropic.Anthropic(api_key="test-key")
-            )
+            client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
 
             # Post the directive then deliver it via one call
-            code, _ = _post_directive({
-                "action": "custom",
-                "directive_name": "e2e_slow_handler",
-                "fingerprint": fingerprint,
-                "session_id": session_id,
-            })
+            code, _ = _post_directive(
+                {
+                    "action": "custom",
+                    "directive_name": "e2e_slow_handler",
+                    "fingerprint": fingerprint,
+                    "session_id": session_id,
+                }
+            )
             assert code == 201
 
             client.messages.create(
@@ -1819,7 +1844,7 @@ def test_slow_handler_does_not_block_event_throughput(
             )
 
             # ============================================
-            # B-H ASSERTION:
+            # TWO-QUEUE ASSERTION:
             # While the directive handler thread is BLOCKED inside
             # e2e_slow_handler, the drain thread must continue to drain
             # post_call events. We make calls from another thread and
@@ -1832,10 +1857,12 @@ def test_slow_handler_does_not_block_event_throughput(
                     for i in range(5):
                         client.messages.create(
                             model="claude-sonnet-4-6",
-                            messages=[{
-                                "role": "user",
-                                "content": f"during-block-{i}",
-                            }],
+                            messages=[
+                                {
+                                    "role": "user",
+                                    "content": f"during-block-{i}",
+                                }
+                            ],
                             max_tokens=10,
                         )
                 except BaseException as exc:  # noqa: BLE001
@@ -1844,15 +1871,15 @@ def test_slow_handler_does_not_block_event_throughput(
             t = threading.Thread(target=_worker)
             t.start()
             t.join(timeout=15)
-            assert not t.is_alive(), "worker thread hung -- B-H regressed"
-            assert errors == [], (
-                f"worker errors during slow handler: {errors}"
+            assert not t.is_alive(), (
+                "worker thread hung -- directive handling blocked event throughput"
             )
+            assert errors == [], f"worker errors during slow handler: {errors}"
 
             # Wait for the new post_call events to land. CRUCIAL: this
             # MUST succeed before handler_done is set, otherwise the
-            # drain thread is blocked by the directive thread and B-H
-            # is broken.
+            # drain thread is blocked by the directive thread and the
+            # two-queue guarantee is broken.
             def _new_events_in_db() -> bool:
                 count = sum(
                     1
@@ -1865,7 +1892,7 @@ def test_slow_handler_does_not_block_event_throughput(
                 _new_events_in_db,
                 timeout=15,
                 msg=(
-                    "B-H REGRESSION: post_call events did not flow "
+                    "REGRESSION: post_call events did not flow "
                     "while custom handler was blocked"
                 ),
             )
@@ -1873,7 +1900,7 @@ def test_slow_handler_does_not_block_event_throughput(
             # And the handler is STILL running -- proves the events
             # above flowed independently of directive handler progress.
             assert not handler_done.is_set(), (
-                "handler completed too early -- could not prove B-H"
+                "handler completed too early -- could not prove the two-queue guarantee"
             )
             assert handler_started.is_set()
 
@@ -1883,13 +1910,10 @@ def test_slow_handler_does_not_block_event_throughput(
                 e
                 for e in _query_events_for_flavor(flavor)
                 if e.get("event_type") == "directive_result"
-                and (e.get("payload") or {}).get(
-                    "directive_name"
-                ) == "e2e_slow_handler"
+                and (e.get("payload") or {}).get("directive_name") == "e2e_slow_handler"
             ]
             assert results == [], (
-                f"directive_result appeared while handler was still "
-                f"blocked: {results}"
+                f"directive_result appeared while handler was still blocked: {results}"
             )
 
             # Release the handler
@@ -1910,12 +1934,13 @@ def test_slow_handler_does_not_block_event_throughput(
 
 
 def test_pattern_d_custom_then_shutdown_ordering(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """Custom directive posted before shutdown -- both must be applied
     in issuance order. Custom handler runs to completion, its
     directive_result lands first, THEN shutdown ack lands and the
-    session closes. Single-consumer directive queue (B-H) gives the
+    session closes. Single-consumer directive queue gives the
     ordering guarantee.
     """
     flavor = unique_flavor
@@ -1931,9 +1956,7 @@ def test_pattern_d_custom_then_shutdown_ordering(
         return {"done": True}
 
     fingerprint = _directive_registry["e2e_pre_shutdown"].fingerprint
-    _register_directive_via_api(
-        flavor, fingerprint, "e2e_pre_shutdown"
-    )
+    _register_directive_via_api(flavor, fingerprint, "e2e_pre_shutdown")
 
     with respx.mock(assert_all_called=False) as rmock:
         _mock_anthropic_messages(rmock)
@@ -1941,27 +1964,29 @@ def test_pattern_d_custom_then_shutdown_ordering(
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
         try:
             session_id = flightdeck_sensor.get_status().session_id
-            client = flightdeck_sensor.wrap(
-                anthropic.Anthropic(api_key="test-key")
-            )
+            client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
 
             # Post custom THEN shutdown -- the directives table orders
             # by issued_at and ingestion's LookupPending returns the
             # oldest first, so two consecutive post_call events deliver
             # them in this order.
-            code, _ = _post_directive({
-                "action": "custom",
-                "directive_name": "e2e_pre_shutdown",
-                "fingerprint": fingerprint,
-                "session_id": session_id,
-            })
+            code, _ = _post_directive(
+                {
+                    "action": "custom",
+                    "directive_name": "e2e_pre_shutdown",
+                    "fingerprint": fingerprint,
+                    "session_id": session_id,
+                }
+            )
             assert code == 201
 
-            code, _ = _post_directive({
-                "action": "shutdown",
-                "session_id": session_id,
-                "reason": "after custom",
-            })
+            code, _ = _post_directive(
+                {
+                    "action": "shutdown",
+                    "session_id": session_id,
+                    "reason": "after custom",
+                }
+            )
             assert code == 201
 
             # Make calls until the shutdown raises. Each call may
@@ -2023,7 +2048,8 @@ def test_pattern_d_custom_then_shutdown_ordering(
 
 
 def test_pattern_b_degrade_seen_by_all_threads(
-    sensor_reset: None, unique_flavor: str,
+    sensor_reset: None,
+    unique_flavor: str,
 ) -> None:
     """Multiple workers sharing one Session. The workers' policy
     evaluator writes a degrade directive after enough tokens
@@ -2039,41 +2065,39 @@ def test_pattern_b_degrade_seen_by_all_threads(
     # tokens. Each call adds 18 tokens, so the workers fire degrade
     # after ~12 cumulative calls across all threads -- a couple of
     # seconds at most.
-    code, policy_body = _post_policy({
-        "scope": "flavor",
-        "scope_value": flavor,
-        "token_limit": 10_000,
-        "warn_at_pct": 1,
-        "degrade_at_pct": 2,
-        "block_at_pct": 100,
-        "degrade_to": degraded_model,
-    })
+    code, policy_body = _post_policy(
+        {
+            "scope": "flavor",
+            "scope_value": flavor,
+            "token_limit": 10_000,
+            "warn_at_pct": 1,
+            "degrade_at_pct": 2,
+            "block_at_pct": 100,
+            "degrade_to": degraded_model,
+        }
+    )
     assert code == 201
 
     def _echo_model_handler(request: httpx.Request) -> httpx.Response:
         # 50 ms latency simulates real LLM provider RTT so the four
         # concurrent workers cannot fire faster than the drain
         # thread can flush. See _mock_anthropic_messages docstring
-        # and KI16 for the rationale.
+        # for the rationale.
         time.sleep(0.05)
         body = json.loads(request.content)
         model = body.get("model", "claude-sonnet-4-6")
-        return httpx.Response(
-            200, json={**ANTHROPIC_RESPONSE, "model": model}
-        )
+        return httpx.Response(200, json={**ANTHROPIC_RESPONSE, "model": model})
 
     try:
         with respx.mock(assert_all_called=False) as rmock:
-            rmock.post(
-                "https://api.anthropic.com/v1/messages"
-            ).mock(side_effect=_echo_model_handler)
+            rmock.post("https://api.anthropic.com/v1/messages").mock(
+                side_effect=_echo_model_handler
+            )
 
             flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
             try:
                 session_id = flightdeck_sensor.get_status().session_id
-                client = flightdeck_sensor.wrap(
-                    anthropic.Anthropic(api_key="test-key")
-                )
+                client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
 
                 # Phase tracking. Phase 1 = pre-degrade-ack,
                 # Phase 2 = post-degrade-ack. Calls in phase 2 from
@@ -2090,19 +2114,19 @@ def test_pattern_b_degrade_seen_by_all_threads(
                         while not stop.is_set():
                             resp = client.messages.create(
                                 model="claude-sonnet-4-6",
-                                messages=[{
-                                    "role": "user",
-                                    "content": f"t{thread_id}",
-                                }],
+                                messages=[
+                                    {
+                                        "role": "user",
+                                        "content": f"t{thread_id}",
+                                    }
+                                ],
                                 max_tokens=10,
                             )
                             with phase_lock:
                                 cur = phase[0]
                             if cur == 2:
                                 with results_lock:
-                                    phase2_results.append(
-                                        (thread_id, resp.model)
-                                    )
+                                    phase2_results.append((thread_id, resp.model))
                     except BaseException as exc:  # noqa: BLE001
                         errors.append(exc)
 
@@ -2130,14 +2154,15 @@ def test_pattern_b_degrade_seen_by_all_threads(
                     # worker contributes at least once.
                     def _enough_phase2() -> bool:
                         with results_lock:
-                            return len({tid for tid, _ in phase2_results}) >= _MT_NUM_THREADS
+                            return (
+                                len({tid for tid, _ in phase2_results})
+                                >= _MT_NUM_THREADS
+                            )
 
                     wait_until(
                         _enough_phase2,
                         timeout=20,
-                        msg=(
-                            "not all workers contributed phase-2 calls"
-                        ),
+                        msg=("not all workers contributed phase-2 calls"),
                     )
                 finally:
                     stop.set()
@@ -2151,9 +2176,7 @@ def test_pattern_b_degrade_seen_by_all_threads(
                 # thread missed the directive update -- regression.
                 with results_lock:
                     snapshot = list(phase2_results)
-                non_haiku = [
-                    (tid, m) for tid, m in snapshot if m != degraded_model
-                ]
+                non_haiku = [(tid, m) for tid, m in snapshot if m != degraded_model]
                 assert non_haiku == [], (
                     f"phase-2 calls used the wrong model: {non_haiku}"
                 )
@@ -2172,29 +2195,28 @@ def test_pattern_b_degrade_seen_by_all_threads(
 
 
 # ======================================================================
-# Test M8 -- Pattern C: KI15 singleton limitation (DOCUMENTS the bug)
+# Test M8 -- Pattern C: init() singleton limitation (DOCUMENTS the behaviour)
 # ======================================================================
 
 
-def test_pattern_c_ki15_singleton_limitation(
+def test_pattern_c_init_singleton_limitation(
     sensor_reset: None,
 ) -> None:
-    """KI15: ``init()`` is process-wide. The second call is a no-op.
+    """``init()`` is process-wide. The second call is a no-op.
 
     This test does NOT use the ``unique_flavor`` fixture because the
     point is to set TWO flavors and demonstrate that only one wins.
-    Per Phase 4.5 audit Part 1 finding B-I/B-J, this is a tracked
-    architectural limitation; future developers reading this test
-    should NOT "fix" it without resolving KI15 first (the resolution
-    is a Session-handle API change tracked for Phase 5).
+    This is an accepted architectural limitation (closed as v1
+    won't-fix); future developers reading this test should NOT "fix"
+    it without a Session-handle API change.
 
     If this assertion ever flips -- e.g. if per-thread Sessions
     become supported -- update this test to verify the new behaviour.
     The framework-coverage bullet of the Roadmap in README.md is the
     home for any follow-up.
     """
-    flavor_a = f"e2e-ki15-a-{uuid.uuid4().hex[:8]}"
-    flavor_b = f"e2e-ki15-b-{uuid.uuid4().hex[:8]}"
+    flavor_a = f"e2e-singleton-a-{uuid.uuid4().hex[:8]}"
+    flavor_b = f"e2e-singleton-b-{uuid.uuid4().hex[:8]}"
 
     init_results: list[str | Exception] = []
     init_lock = threading.Lock()
@@ -2216,22 +2238,21 @@ def test_pattern_c_ki15_singleton_limitation(
 
     try:
         ta = threading.Thread(
-            target=_init_thread, args=("a", flavor_a), name="ki15-a"
+            target=_init_thread, args=("a", flavor_a), name="singleton-a"
         )
         ta.start()
         ta.join(timeout=10)
         assert not ta.is_alive()
 
         tb = threading.Thread(
-            target=_init_thread, args=("b", flavor_b), name="ki15-b"
+            target=_init_thread, args=("b", flavor_b), name="singleton-b"
         )
         tb.start()
         tb.join(timeout=10)
         assert not tb.is_alive()
 
         assert init_results == ["a", "b"], (
-            f"both init calls should return without error, got "
-            f"{init_results}"
+            f"both init calls should return without error, got {init_results}"
         )
 
         # The CURRENT behaviour: only the FIRST init() created a
@@ -2239,9 +2260,9 @@ def test_pattern_c_ki15_singleton_limitation(
         # flavor_a (the env var Thread A set before its init).
         status = flightdeck_sensor.get_status()
         assert status.flavor == flavor_a, (
-            f"KI15: expected the singleton to be the first init's "
+            f"expected the singleton to be the first init's "
             f"flavor ({flavor_a}), got {status.flavor}. If this "
-            f"assertion now fails, KI15 has been resolved -- update "
+            f"assertion now fails, the singleton limitation has been resolved -- update "
             f"this test."
         )
 
@@ -2249,9 +2270,7 @@ def test_pattern_c_ki15_singleton_limitation(
         # singleton Session, so all events land under flavor_a.
         with respx.mock(assert_all_called=False) as rmock:
             _mock_anthropic_messages(rmock)
-            client = flightdeck_sensor.wrap(
-                anthropic.Anthropic(api_key="test-key")
-            )
+            client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
 
             errors: list[BaseException] = []
 
@@ -2276,21 +2295,24 @@ def test_pattern_c_ki15_singleton_limitation(
             # Both calls landed under flavor_a -- there is no flavor_b
             # session because the second init() was a no-op.
             wait_until(
-                lambda: sum(
-                    1
-                    for e in _query_events_for_flavor(flavor_a)
-                    if e.get("event_type") == "post_call"
-                ) >= 2,
+                lambda: (
+                    sum(
+                        1
+                        for e in _query_events_for_flavor(flavor_a)
+                        if e.get("event_type") == "post_call"
+                    )
+                    >= 2
+                ),
                 timeout=15,
                 msg="expected ≥ 2 post_calls for flavor_a",
             )
 
             sess_b = _query_session_for_flavor(flavor_b)
             assert sess_b is None, (
-                f"KI15: expected NO session for flavor_b, got "
+                f"expected NO session for flavor_b, got "
                 f"{sess_b}. If this is None, the singleton is still "
                 f"in effect (current behaviour). If this returns a "
-                f"row, KI15 has been resolved -- update this test."
+                f"row, the singleton limitation has been resolved -- update this test."
             )
     finally:
         os.environ.pop("AGENT_FLAVOR", None)

@@ -1,7 +1,7 @@
 import { TruncatedText } from "@/components/ui/TruncatedText";
 
 /**
- * D126 § 7.fix.A — always-on relationship pill on the SwimLane left
+ * Always-on relationship pill on the SwimLane left
  * panel. Distinct from ``SubAgentRolePill`` (which surfaces the
  * agent's role string) and from the L8 red dot (which surfaces a
  * failure cue): this pill answers "who is my parent / how many

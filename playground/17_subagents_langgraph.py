@@ -1,7 +1,7 @@
 """LangGraph sub-agent observability — real graph with two agent-bearing nodes.
 
 Drives a real two-node LangGraph (Researcher + Writer) through
-``flightdeck_sensor``'s LangGraph sub-agent interceptor (D126).
+``flightdeck_sensor``'s LangGraph sub-agent interceptor.
 The interceptor patches ``StateGraph.add_node`` so every registered
 node body lands as its own child session, with role attribution
 from the node name and inbound / outbound state capture (gated on
@@ -15,7 +15,7 @@ Two scale points are exercised:
    ``payload.outgoing_message`` directly (no event_content row
    created).
 2. **Overflow path** — the Writer node's incoming state is padded
-   past the 8 KiB threshold so the body routes through the D119
+   past the 8 KiB threshold so the body routes through the
    ``event_content`` overflow path. ``has_content=true`` on the
    event payload + a stub ``content_bytes`` count on
    ``incoming_message`` signals the overflow; the full body is
@@ -47,7 +47,7 @@ from _helpers import (
 
 # Mirror of the threshold in sensor/flightdeck_sensor/core/session.py
 # and observe_cli.mjs. Setting the ``Writer`` incoming state body
-# above this drives the D119 event_content overflow path; staying
+# above this drives the event_content overflow path; staying
 # under it keeps the body inline on payload.
 _INLINE_THRESHOLD_BYTES = 8 * 1024
 
@@ -76,7 +76,7 @@ def main() -> None:
         # vocabulary we register below. Without this every internal
         # LangGraph helper node would also emit child sessions and
         # the assertions would have to allow-list noise. The regex
-        # gate (D126 langgraph_agent_node_pattern) is the production
+        # gate (langgraph_agent_node_pattern) is the production
         # knob for the same case.
         langgraph_agent_node_pattern="^(Researcher|Writer)$",
     )
@@ -289,7 +289,7 @@ def main() -> None:
         and agent_ids_by_role["Researcher"] != agent_ids_by_role["Writer"]
     )
     print_result(
-        "distinct agent_id per role (D126 § 1 derivation)",
+        "distinct agent_id per role (identity derivation)",
         bool(distinct_ok),
         0,
     )
@@ -313,7 +313,7 @@ def main() -> None:
         pl = e.get("payload") or {}
         msg = pl.get("incoming_message") or {}
         # The worker projects ``has_content`` from the payload onto the
-        # event row's top-level field (D119 contract — the dashboard
+        # event row's top-level field (the dashboard
         # uses it to decide whether to show the "Show full content"
         # affordance). Read both the event-level signal and the
         # incoming_message stub so a future projection change surfaces
@@ -324,7 +324,7 @@ def main() -> None:
             overflow_size = msg.get("content_bytes")
             break
     print_result(
-        "incoming_message routes to D119 event_content on overflow",
+        "incoming_message routes to event_content on overflow",
         overflow_seen,
         0,
         f"size={overflow_size!r} event_id={overflow_event_id!r}",

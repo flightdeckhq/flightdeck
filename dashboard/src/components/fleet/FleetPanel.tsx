@@ -550,7 +550,7 @@ export function FleetPanel({
 }
 
 /**
- * Curated CONTEXT whitelist for the Fleet sidebar (D115/D116). The
+ * Curated CONTEXT whitelist for the Fleet sidebar. The
  * server returns many context keys -- pid, frameworks, git_commit,
  * working_dir, supports_directives -- that are noise as fleet
  * filters (every session has a unique pid, etc.). The Investigate
@@ -769,7 +769,7 @@ function FlavorItem({
   // observer-only (Claude Code and every future hook-based plugin).
   // A mixed flavor keeps the button because the shutdown_flavor
   // directive will still reach whichever sessions poll for directives.
-  // See DECISIONS.md D103 / dashboard/src/lib/directives.ts.
+  // See dashboard/src/lib/directives.ts.
   const canStopFlavor = flavorHasDirectiveCapableSession(flavor.sessions);
 
   async function handleStopAll() {
@@ -813,7 +813,7 @@ function FlavorItem({
       onClick={() => onFlavorClick?.(flavor.flavor)}
     >
       <div className="flex items-center gap-2 min-w-0">
-        {/* D115: ClaudeCode logo now keys off ``client_type``
+        {/* ClaudeCode logo keys off ``client_type``
             (authoritative) with the legacy ``flavor === "claude-code"``
             string as a fallback for rows built before client_type
             propagated through the store. */}
@@ -821,7 +821,7 @@ function FlavorItem({
           flavor.flavor === "claude-code") && (
           <ClaudeCodeLogo size={14} className="shrink-0" />
         )}
-        {/* D115 label: prefer the human-readable agent_name over
+        {/* Label: prefer the human-readable agent_name over
             the agent_id-hijacked ``flavor`` field. Falls back to
             ``flavor`` only when agent_name is absent (legacy rows,
             WebSocket updates that land before the agents roster
@@ -832,19 +832,18 @@ function FlavorItem({
           style={{ flexShrink: 1 }}
           text={flavor.agent_name ?? flavor.flavor}
         />
-        {/* Two sibling pills (D115 pill pair):
+        {/* Two sibling pills:
               - agent_type badge: Coding agent pill for coding, no pill
-                for production (matches pre-D115 "no badge for
-                autonomous" behaviour so production agents render
-                cleanly).
-              - client_type pill: Claude Code / Sensor. Added in D115
-                so the sidebar reads "what tool produced this" at a
+                for production (no badge for the default so production
+                agents render cleanly).
+              - client_type pill: Claude Code / Sensor, so the
+                sidebar reads "what tool produced this" at a
                 glance without hovering the icon.
             Both shrink to ellipsis at narrow sidebar widths; the name
             keeps its default shrink-1 so the pills trim first. */}
         {sidebarWidth >= FLEET_PILL_HIDE_MIN_WIDTH &&
           flavor.agent_type === AgentType.Coding && (
-            // Pills never truncate (Phase 2 Supervisor smoke rule):
+            // Pills never truncate:
             // ``flex-shrink: 0`` so the sibling ``<TruncatedText/>``
             // agent_name is the shrink target instead.
             <CodingAgentBadge style={{ flexShrink: 0 }} />

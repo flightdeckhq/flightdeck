@@ -27,8 +27,7 @@ const TOP_N = 8;
 /** Row 5 right -- grouped bar chart showing p50 (lighter) and p95
  *  (accent) latency per model so the tail latency is immediately
  *  visible alongside the typical case. Uses the new latency_p50 and
- *  latency_p95 metrics added in this change; see ARCHITECTURE.md for
- *  the metric list and D099 notes in DECISIONS.md.
+ *  latency_p95 metrics; see ARCHITECTURE.md for the metric list.
  *
  *  Two independent analytics queries are issued (p50 and p95) and the
  *  results are joined client-side on model name. p95 inherits the

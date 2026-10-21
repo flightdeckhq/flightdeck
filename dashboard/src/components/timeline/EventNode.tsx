@@ -24,7 +24,7 @@ const eventTypeConfig: Record<
   session_end: { cssVar: "var(--event-lifecycle)", Icon: Square, label: "Run End" },
   directive_result: { cssVar: "var(--event-directive)", Icon: Check, label: "Directive Result" },
   heartbeat: { cssVar: "var(--event-lifecycle)", Icon: Circle, label: "Heartbeat" },
-  // Phase 4 event-type additions. ``embeddings`` reuses the cyan
+  // ``embeddings`` reuses the cyan
   // RAG/semantic-search visual family; ``llm_error`` is the
   // danger-red ``--event-error`` token. Distinct glyphs (Database
   // / AlertCircle) keep the 24px circle readable at a glance so a
@@ -35,15 +35,15 @@ const eventTypeConfig: Record<
   // separates them.
   embeddings: { cssVar: "var(--event-embeddings)", Icon: Database, label: "Embeddings" },
   llm_error: { cssVar: "var(--event-error)", Icon: AlertCircle, label: "LLM Error" },
-  // Phase 5 — MCP. Three colour families × two glyph variants per
+  // MCP. Three colour families × two glyph variants per
   // family. Solid (call/read/get) gets the more pictographic glyph;
   // outline (list) gets the list-style glyph. Wrench shares with the
   // LLM tool_call type but the cyan-2 chroma + label disambiguate at
   // any size. ListChecks is the discovery shape; FileText reads as a
   // document for resource reads; Folder reads as the resource bucket;
   // MessageSquare for prompt fetches; List for prompt enumeration.
-  // Phase 5 MCP — Title-Case "MCP " prefix matches the badge labels
-  // in lib/events.ts (D123 restores the prefix). A hover tooltip on
+  // Title-Case "MCP " prefix matches the badge labels
+  // in lib/events.ts. A hover tooltip on
   // the swimlane circle now reads identically to the badge of the
   // corresponding drawer row, including the category prefix.
   mcp_tool_call: { cssVar: "var(--event-mcp-tool)", Icon: Wrench, label: "MCP Tool Call" },
@@ -123,7 +123,7 @@ function EventNodeComponent({
   const attachColor =
     isAttachment && eventType === "session_start" ? "var(--warning)" : null;
   const color = attachColor ?? override?.cssVar ?? config.cssVar;
-  // Phase 5 (B-5b) — MCP family is rendered as HEXAGONS, not circles.
+  // The MCP family is rendered as HEXAGONS, not circles.
   // The shape itself is the family identifier so an operator scanning
   // the swimlane can tell at a glance which events are MCP vs LLM /
   // tool / embeddings / policy. The pre-B-5b 3px mauve box-shadow
@@ -206,7 +206,7 @@ function EventNodeComponent({
           // immediately when they render.
           hovered && "transition-transform duration-150 ease-out",
         )}
-        // Phase 5 (B-5b) — ``data-mcp-family`` is the structural
+        // ``data-mcp-family`` is the structural
         // marker E2E + unit tests use to identify the hexagon
         // primitive without depending on inline-style introspection.
         // Always emitted on MCP events; never on non-MCP.

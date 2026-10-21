@@ -196,7 +196,7 @@ describe("deriveAgentLinkage", () => {
 describe("deriveRelationship", () => {
   it("resolves a child via agents-roster parent_agent_id when fleet flavors miss the spawn session", () => {
     // The production omria@Omri-PC repro: parent's spawn session
-    // is outside both windows; pre-fix the pill mislabeled the
+    // is outside both windows; the guarded regression mislabeled the
     // child as "lone". The direct projection on the child's
     // recent_sessions resolves it to "child of <parent name>".
     const ownSessions = [mkSession("s-c1", "s-spawn-old")];

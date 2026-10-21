@@ -329,7 +329,7 @@ def init(
                 _log.warning("flightdeck_sensor.init() called twice; ignoring")
             return
 
-        # H-01: env-var precedence is preserved (env wins over the kwarg,
+        # Env-var precedence is preserved (env wins over the kwarg,
         # matching every other init() knob), but a silent override of an
         # explicitly-passed value is the vulnerability — a stale/hostile
         # FLIGHTDECK_SERVER in the environment could redirect egress with
@@ -353,7 +353,7 @@ def init(
         if not resolved_token:
             raise ConfigurationError("token is required")
 
-        # H-01: resolve the plaintext-transport opt-in. Env wins over the
+        # Resolve the plaintext-transport opt-in. Env wins over the
         # kwarg (same precedence as every other flag); default False.
         resolved_allow_insecure = _env_bool(
             _env.ENV_ALLOW_INSECURE_TRANSPORT, allow_insecure_transport
@@ -370,7 +370,7 @@ def init(
         if "/ingest" not in resolved_server:
             resolved_server = resolved_server.rstrip("/") + "/ingest"
 
-        # H-01: same silent-override guard for the control-plane API URL.
+        # Same silent-override guard for the control-plane API URL.
         env_api_url = os.environ.get(_env.ENV_API_URL)
         if env_api_url and api_url and env_api_url != api_url:
             _log.warning(

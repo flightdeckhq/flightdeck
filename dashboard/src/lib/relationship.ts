@@ -1,11 +1,11 @@
 import type { AgentSummary, FlavorSummary, Session } from "@/lib/types";
 
 /**
- * D126 sub-agent relationship rollup. Derives a per-agent place in
+ * Sub-agent relationship rollup. Derives a per-agent place in
  * the sub-agent graph from session-level linkage data already in
  * the fleet store. Pure function so unit tests can drive it without
- * mounting a component (the +11-vs-+40-60 test gap on D126 step 7
- * was tightly correlated with components without unit tests; the
+ * mounting a component (components without unit tests have shipped
+ * broken renders before; the
  * helper lives here so SwimLane and AgentTable can share both the
  * implementation and the test surface).
  *
@@ -39,7 +39,7 @@ export function deriveRelationship(
   // Build a session_id → (agent_id, agent_name) lookup from the
   // fleet store. The store partitions sessions per agent under
   // ``flavors[].sessions`` and ``flavors[].flavor === agent_id``
-  // for D115 swimlanes.
+  // for agent-keyed swimlanes.
   const sessionToAgent = new Map<
     string,
     { agentId: string; agentName: string }

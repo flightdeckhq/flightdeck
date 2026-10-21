@@ -176,7 +176,7 @@ describe("seedBucketEntries", () => {
   });
 });
 
-// ---- groupChildrenUnderParents (D126 UX revision 2026-05-03) -----------
+// ---- groupChildrenUnderParents -----------------------------------------
 
 describe("groupChildrenUnderParents", () => {
   // Toy row shape — minimal surface area so the helper test stays

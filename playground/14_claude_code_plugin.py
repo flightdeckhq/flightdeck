@@ -1,5 +1,5 @@
 """Claude Code plugin -- MCP-emission demo via synthetic PostToolUse hooks
-plus D126 sub-agent SubagentStart / SubagentStop emission demo.
+plus sub-agent SubagentStart / SubagentStop emission demo.
 
 The Claude Code plugin is observation-only: when Claude Code itself
 invokes an ``mcp__<server>__<tool>``-named tool, the PostToolUse hook
@@ -8,7 +8,7 @@ fires and ``plugin/hooks/scripts/observe_cli.mjs`` POSTs an
 shape applies to the failure path (``PostToolUseFailure``) which
 populates the structured error block.
 
-D126 extends the same plugin to emit child ``session_start`` /
+The same plugin emits child ``session_start`` /
 ``session_end`` events when Claude Code spawns a Task subagent. The
 plugin's ``SubagentStart`` / ``SubagentStop`` dispatch derives a
 deterministic child ``session_id`` via
@@ -34,7 +34,7 @@ Claude Code session needed. Three demonstrations:
    the outer session, ``agent_role="Explore"``, and
    ``incoming_message.body`` / ``outgoing_message.body`` carry the
    Task prompt + response. Same correlator (``tool_use_id``) on both
-   hooks → same child session_id (D126 deterministic uuid5
+   hooks → same child session_id (deterministic uuid5
    derivation).
 
 Skipped cleanly when ``node`` is missing or the plugin script isn't
@@ -168,8 +168,8 @@ def _demo_success() -> None:
     payload = event.get("payload") or {}
     server_ok = payload.get("server_name") == "filesystem"
     tool_ok = event.get("tool_name") == "read_file"
-    # Phase 7 Step 3.b (D150): tool args migrated from inline
-    # payload.arguments to event_content.tool_input. The plugin
+    # Tool args live in event_content.tool_input, not inline in
+    # payload.arguments. The plugin
     # path mirrors the sensor: has_content=true signals operators
     # to fetch via /v1/events/:id/content; payload no longer
     # carries arguments inline.
@@ -177,8 +177,8 @@ def _demo_success() -> None:
     no_inline_args = "arguments" not in payload
     print_result("plugin mcp_tool_call.server_name=filesystem", server_ok, 0)
     print_result("plugin mcp_tool_call.tool_name=read_file", tool_ok, 0)
-    print_result("plugin mcp_tool_call.has_content=True (D150)", has_content_ok, 0)
-    print_result("plugin mcp_tool_call no inline arguments (D150)", no_inline_args, 0)
+    print_result("plugin mcp_tool_call.has_content=True", has_content_ok, 0)
+    print_result("plugin mcp_tool_call no inline arguments", no_inline_args, 0)
     if not (server_ok and tool_ok and has_content_ok and no_inline_args):
         raise AssertionError(f"plugin mcp_tool_call payload mismatch: {event!r}")
 
@@ -222,7 +222,7 @@ def _demo_subagent() -> None:
     ``parent_session_id`` pointing back at the outer session.
 
     The two hooks share a ``tool_use_id`` correlator so the plugin
-    derives the same child ``session_id`` for both — this is the D126
+    derives the same child ``session_id`` for both — this is the
     pairing contract. With ``capture_prompts=true`` (the playground
     default), the parent's prompt rides on
     ``payload.incoming_message.body`` and the child's response rides
@@ -236,13 +236,10 @@ def _demo_subagent() -> None:
     child_session_id = _child_session_id(outer_session_id, correlator)
 
     incoming_prompt = (
-        "Find every TODO(D126) comment under sensor/ and report the file + "
+        "Find every TODO comment under sensor/ and report the file + "
         "line for each. Skip vendored deps."
     )
-    outgoing_response = (
-        "Found 0 TODO(D126) comments under sensor/. The D126 implementation "
-        "is complete (per CHANGELOG)."
-    )
+    outgoing_response = "Found 0 TODO comments under sensor/. The tree is clean."
 
     print(
         f"[playground:14_claude_code_plugin] subagent "

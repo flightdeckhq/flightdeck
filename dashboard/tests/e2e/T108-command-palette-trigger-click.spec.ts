@@ -1,7 +1,7 @@
 /**
  * T108 — nav search bar opens the command palette on click.
  *
- * Phase 0 confirmed the click handler is wired (App.tsx:76) and
+ * The click handler is wired (App.tsx:76) and
  * the original "search bar isn't clickable" report was stale.
  * This spec locks both the mouse-click trigger and the
  * Cmd/Ctrl+K keyboard trigger so a future Radix-portal regression
@@ -35,7 +35,7 @@ test.describe("T108 — palette opens on nav search click + keyboard shortcut", 
       .toBe(true);
 
     // Input is focused so typing lands in the search field
-    // immediately. Phase B's solid-token highlight contract means
+    // immediately. The solid-token highlight contract means
     // the auto-focus needs no extra wiring; this assertion locks
     // that pre-condition for downstream typing tests.
     await expect(dialog.getByRole("textbox", { name: "Search" })).toBeFocused();

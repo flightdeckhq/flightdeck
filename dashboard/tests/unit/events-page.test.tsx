@@ -24,7 +24,7 @@ const h = vi.hoisted(() => {
     originating_call_context: [],
     mcp_server: [],
     terminal: [],
-    // Runtime-context dimensions (D160). Each must be a present
+    // Runtime-context dimensions. Each must be a present
     // ``[]`` so ``facetDimension(facets, key)`` returns the empty
     // slice rather than ``undefined`` — the Investigate render
     // path reads ``.length`` on every group's values, so a
@@ -124,7 +124,7 @@ describe("Investigate (event-grain /events page)", () => {
       originating_call_context: [],
       mcp_server: [],
       terminal: [],
-      // Runtime-context dimensions (D160). Must be present as
+      // Runtime-context dimensions. Must be present as
       // empty arrays so the Investigate render path's
       // ``facets[key].length`` read at the facetGroups memo
       // doesn't crash with "Cannot read properties of

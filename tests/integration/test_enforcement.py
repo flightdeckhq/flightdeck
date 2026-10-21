@@ -32,8 +32,10 @@ def test_warn_threshold_fires_and_records() -> None:
 
     try:
         policy = create_policy(
-            scope="flavor", scope_value=flavor,
-            token_limit=500, warn_at_pct=1,
+            scope="flavor",
+            scope_value=flavor,
+            token_limit=500,
+            warn_at_pct=1,
         )
 
         post_event(make_event(sid, flavor, "session_start"))
@@ -43,10 +45,15 @@ def test_warn_threshold_fires_and_records() -> None:
             msg=f"session {sid} did not appear in fleet after session_start",
         )
 
-        post_event(make_event(
-            sid, flavor, "post_call",
-            tokens_total=10, tokens_used_session=10,
-        ))
+        post_event(
+            make_event(
+                sid,
+                flavor,
+                "post_call",
+                tokens_total=10,
+                tokens_used_session=10,
+            )
+        )
 
         wait_until(
             lambda: get_session_event_count(sid) >= 2,
@@ -81,8 +88,10 @@ def test_block_threshold_writes_shutdown_directive() -> None:
 
     try:
         policy = create_policy(
-            scope="flavor", scope_value=flavor,
-            token_limit=100, block_at_pct=1,
+            scope="flavor",
+            scope_value=flavor,
+            token_limit=100,
+            block_at_pct=1,
         )
 
         post_event(make_event(sid, flavor, "session_start"))
@@ -92,16 +101,18 @@ def test_block_threshold_writes_shutdown_directive() -> None:
             msg=f"session {sid} did not appear in fleet after session_start",
         )
 
-        post_event(make_event(
-            sid, flavor, "post_call",
-            tokens_total=5, tokens_used_session=5,
-        ))
+        post_event(
+            make_event(
+                sid,
+                flavor,
+                "post_call",
+                tokens_total=5,
+                tokens_used_session=5,
+            )
+        )
 
         wait_until(
-            lambda: any(
-                d.get("action") == "shutdown"
-                for d in query_directives(sid)
-            ),
+            lambda: any(d.get("action") == "shutdown" for d in query_directives(sid)),
             timeout=10,
             msg=f"no shutdown directive written for session {sid}",
         )
@@ -126,8 +137,10 @@ def test_flavor_policy_applies_to_all_sessions() -> None:
 
     try:
         policy = create_policy(
-            scope="flavor", scope_value=flavor,
-            token_limit=50000, warn_at_pct=80,
+            scope="flavor",
+            scope_value=flavor,
+            token_limit=50000,
+            warn_at_pct=80,
         )
 
         post_event(make_event(sid_a, flavor, "session_start"))
@@ -169,8 +182,10 @@ def test_org_policy_applies_when_no_flavor_policy() -> None:
 
     try:
         policy = create_policy(
-            scope="org", scope_value="",
-            token_limit=200000, warn_at_pct=90,
+            scope="org",
+            scope_value="",
+            token_limit=200000,
+            warn_at_pct=90,
         )
 
         post_event(make_event(sid, flavor, "session_start"))
@@ -203,12 +218,16 @@ def test_session_policy_overrides_flavor_policy() -> None:
 
     try:
         flavor_policy = create_policy(
-            scope="flavor", scope_value=flavor,
-            token_limit=100000, warn_at_pct=80,
+            scope="flavor",
+            scope_value=flavor,
+            token_limit=100000,
+            warn_at_pct=80,
         )
         session_policy = create_policy(
-            scope="session", scope_value=sid,
-            token_limit=10000, warn_at_pct=50,
+            scope="session",
+            scope_value=sid,
+            token_limit=10000,
+            warn_at_pct=50,
         )
 
         post_event(make_event(sid, flavor, "session_start"))

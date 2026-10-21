@@ -31,11 +31,11 @@ type AnalyticsParams struct {
 	// the UUID shape before the value reaches the store.
 	FilterAgentID string
 
-	// D126 — sub-agent observability filters. All three compose via
+	// Sub-agent observability filters. All three compose via
 	// AND in the WHERE clause. Each is independent and skipped when
 	// unset (empty string for FilterParentSessionID, false for the
 	// boolean toggles), so non-sub-agent callers see exactly the
-	// pre-D126 query shape.
+	// unfiltered query shape.
 	//
 	// FilterParentSessionID scopes the analytics window to children
 	// of one specific parent session — used by the per-agent
@@ -53,9 +53,9 @@ type AnalyticsParams struct {
 
 // DataPoint is a single time series data point. “Breakdown“ carries
 // per-secondary-axis segments when the caller passes a two-dimension
-// “group_by“ (D126 § 6.4). Single-dim queries leave “Breakdown“
+// “group_by“. Single-dim queries leave “Breakdown“
 // nil — the JSON “omitempty“ keeps the wire shape byte-identical to
-// the pre-6.4 contract for those callers.
+// the single-dimension contract for those callers.
 type DataPoint struct {
 	Date      string            `json:"date"`
 	Value     float64           `json:"value"`
@@ -92,7 +92,7 @@ type AnalyticsTotals struct {
 // and is true when the window contains post_call rows for models that
 // are not in the static pricing table (pricing.go). The dashboard
 // surfaces an amber disclaimer above the cost chart when this flag
-// is set. See DECISIONS.md D099.
+// is set.
 type AnalyticsResponse struct {
 	Metric          string            `json:"metric"`
 	GroupBy         string            `json:"group_by"`
@@ -168,12 +168,12 @@ var dimensions = map[string]dimensionSource{
 	// team maps to flavor until a real team field lands.
 	"team":     {exprEvents: "e.flavor", exprSessions: "s.flavor"},
 	"provider": {exprEvents: providerCase("e.model"), exprSessions: providerCase("s.model")},
-	// D126 — sub-agent observability dimensions. Both bake their
+	// Sub-agent observability dimensions. Both bake their
 	// COALESCE-to-(root) into the expression so the outer
 	// ``COALESCE(<dim>, 'unknown')`` in the query builder never
 	// overrides the (root) label. Standardising on (root) for these
 	// two dims matches the design spec (ARCHITECTURE.md analytics
-	// section + CLAUDE.md Rule 25 + DECISIONS.md D126 § 6.4) where
+	// section + CLAUDE.md Rule 25) where
 	// "no parent" / "no role" is a meaningful bucket label, not
 	// the unknown-data fallback that ``unknown`` implies for the
 	// other dimensions.
@@ -201,7 +201,7 @@ var dimensions = map[string]dimensionSource{
 // expression over the given model column (e.g. e.model or s.model).
 // Mirrors pricing.ProviderCaseSQL but parameterised on the model
 // reference so the same logic works whether the base query is on
-// events or sessions. See DECISIONS.md D098.
+// events or sessions.
 func providerCase(modelCol string) string {
 	return strings.ReplaceAll(ProviderCaseSQL, "model", modelCol)
 }
@@ -224,7 +224,7 @@ type metricSpec struct {
 	whereClause string
 }
 
-// subagentMetricNames is the set of D126 metrics that operate over
+// subagentMetricNames is the set of sub-agent metrics that operate over
 // the parent / child relationship rather than over a single events
 // or sessions column. They share a query shape distinct from the
 // dynamic-SQL builder used for “tokens“ / “sessions“ / ... —
@@ -234,9 +234,9 @@ type metricSpec struct {
 // dispatches to “querySubagentAnalytics“ when the requested
 // metric is in this set.
 //
-// See D126 § 6.4 for the metric definitions and the
-// "Accepted properties / known performance characteristics" note
-// in D126 for the recursive-CTE cost flag.
+// See the ARCHITECTURE.md analytics endpoint section for the metric
+// definitions and the known-performance-characteristic note on the
+// recursive CTE.
 var subagentMetricNames = map[string]bool{
 	"parent_token_sum":                 true,
 	"child_token_sum":                  true,
@@ -245,7 +245,7 @@ var subagentMetricNames = map[string]bool{
 }
 
 // IsSubagentMetric reports whether the given metric name is in the
-// D126 sub-agent set. Exported so handlers can validate the metric
+// sub-agent set. Exported so handlers can validate the metric
 // against the union of the standard metrics map and this set
 // without duplicating the membership check.
 func IsSubagentMetric(metric string) bool {
@@ -254,7 +254,7 @@ func IsSubagentMetric(metric string) bool {
 
 // metricSpecs returns the specification for the requested metric.
 // “estimated_cost“ is computed from the static pricing table; see
-// pricing.go / DECISIONS.md D099.
+// pricing.go.
 func metricSpecs() map[string]metricSpec {
 	return map[string]metricSpec{
 		"tokens": {
@@ -378,7 +378,7 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 	if !ok {
 		return nil, fmt.Errorf("invalid group_by: %s", params.GroupBy)
 	}
-	// D126 § 6.4 — optional secondary dimension. Validated against
+	// Optional secondary dimension. Validated against
 	// the same locked vocabulary as the primary dim so the two-dim
 	// path inherits the dimension whitelist without duplication.
 	var secDim dimensionSource
@@ -400,7 +400,7 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 				params.GroupBy)
 		}
 	}
-	// D126 — sub-agent metrics dispatch to a dedicated query path
+	// Sub-agent metrics dispatch to a dedicated query path
 	// because their shape (recursive CTE for parent_token_sum /
 	// child_token_sum, correlated subqueries for child_count and
 	// parent_to_first_child_latency_ms) doesn't fit the standard
@@ -506,7 +506,7 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 		argIdx++
 	}
 
-	// D126 — sub-agent observability filters. All three reference
+	// Sub-agent observability filters. All three reference
 	// sessions columns (parent_session_id, sessions self-join for
 	// has_sub_agents); ensure the sessions join is present when the
 	// metric's base table is events. The "s" alias is the join's,
@@ -530,8 +530,8 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 		// that does bind requires re-introducing the increment in
 		// the same edit.
 	}
-	// D126 TOPOLOGY composition. When both filters are set, OR them
-	// (D126 § 7.fix.F — "(the OR of the two)"). Single-flag paths
+	// TOPOLOGY composition. When both filters are set, OR them so
+	// the pair reads as "any sub-agent relationship". Single-flag paths
 	// preserved exactly. See sessions.go for the same logic on the
 	// list endpoint.
 	switch {
@@ -580,7 +580,7 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 	// model / framework values from collapsing into a single empty
 	// dimension label.
 	//
-	// Two-dim shape (D126 § 6.4): when ``hasSecondary``, the SELECT
+	// Two-dim shape: when ``hasSecondary``, the SELECT
 	// projects three keys (primary, secondary, bucket) and the GROUP
 	// BY follows. Single-dim queries take the original two-key
 	// shape. The fold loop below walks the rows once and dispatches
@@ -718,7 +718,7 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 }
 
 // =====================================================================
-// D126 § 6.4 — sub-agent-aware analytics
+// Sub-agent-aware analytics
 // =====================================================================
 //
 // The four sub-agent metrics — parent_token_sum, child_token_sum,
@@ -741,7 +741,7 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 // vocabulary as the standard path (so caller code is uniform), but
 // the SQL is bespoke per the metric's shape.
 //
-// Known performance characteristic (D126): the recursive CTE for
+// Known performance characteristic: the recursive CTE for
 // parent_token_sum / child_token_sum walks the descendant set per
 // session; cost grows with descendant fan-out. At 100k+ session
 // scales this is the path that benefits from a denorm rollup
@@ -920,7 +920,7 @@ func (s *Store) querySubagentAnalytics(
 		// No argIdx++ here — see comment in QueryAnalytics' main
 		// dispatch path for the same chain.
 	}
-	// D126 TOPOLOGY composition — same OR-when-both rule as the
+	// TOPOLOGY composition — same OR-when-both rule as the
 	// standard analytics + sessions list paths.
 	switch {
 	case params.FilterIsSubAgent && params.FilterHasSubAgents:
@@ -939,7 +939,7 @@ func (s *Store) querySubagentAnalytics(
 	// expressions are correlated subqueries against sessions
 	// directly).
 	//
-	// Two-dim shape (D126 § 6.4) folds a secondary dimension into
+	// The two-dim shape folds a secondary dimension into
 	// the GROUP BY exactly like the standard path — see
 	// QueryAnalytics for the matching shape. The recursive CTE
 	// remains the parent / child anchor, which means

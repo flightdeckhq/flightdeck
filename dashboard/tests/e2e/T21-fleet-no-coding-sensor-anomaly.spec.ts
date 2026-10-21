@@ -6,8 +6,7 @@ import { waitForFleetReady } from "./_fixtures";
 // exclusive by design — coding agents are observed via the Claude
 // Code plugin (client_type=claude_code), production agents via the
 // Python sensor (client_type=flightdeck_sensor). A row carrying
-// both is the canonical "fleet anomaly" the original Phase 1 brief
-// flagged: it indicates a misconfigured init() (probably a sensor
+// both is the canonical "fleet anomaly": it indicates a misconfigured init() (probably a sensor
 // SDK call setting agent_type="coding") and corrupts every facet
 // rollup that splits by agent_type or client_type.
 //

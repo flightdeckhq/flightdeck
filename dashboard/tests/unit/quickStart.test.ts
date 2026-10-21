@@ -1,4 +1,4 @@
-// D146: tests for the per-scope ephemeral quick-start tracking
+// Tests for the per-scope ephemeral quick-start tracking
 // store. Each scope is independent — applying on Global doesn't
 // suppress the link on a flavor that still has zero entries.
 

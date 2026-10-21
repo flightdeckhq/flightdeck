@@ -1,7 +1,7 @@
-// D146: per-server policy decision rendered inline next to the
+// Per-server policy decision rendered inline next to the
 // server name in the SessionDrawer MCP SERVERS panel. Replaces
-// MCPServerPolicyPill (retired step 6.8 commit 7) — two pill
-// iterations (steps 6.6 + 6.7) failed the 1-second-glance bar
+// MCPServerPolicyPill — two earlier pill
+// iterations failed the 1-second-glance bar
 // because the pill's background-fill / text-contrast budget kept
 // fighting the chroma readability. Inline coloured text passes
 // the bar by removing the background-fill axis entirely.
@@ -12,13 +12,13 @@
 //   foo     · WARN
 //   bar     · BLOCK
 //
-// Mode-default branch (D135 decision_path === "mode_default"):
+// Mode-default branch (decision_path === "mode_default"):
 // reduced opacity + italic + "(default)" textual qualifier so
 // the operator can distinguish at a glance whether a server's
 // decision came from an explicit policy entry vs the global
 // mode fall-through. Native title attribute carries the
 // attribution copy — no Radix Tooltip portal (the y=-324
-// collision bug from step 6.7 A2 dies with the pill).
+// collision bug of the earlier pill dies with it).
 
 import type { MCPPolicyResolveResult } from "@/lib/types";
 

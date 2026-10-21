@@ -44,7 +44,7 @@ openai = ["openai>=1.0", "tiktoken>=0.5"]
 # sensor's SensorLitellm wrapper then intercepts ``litellm.completion``
 # / ``litellm.acompletion`` via module-level patching.
 litellm = ["litellm>=1.0"]
-# Phase 5: Model Context Protocol (MCP) observability. The sensor's
+# Model Context Protocol (MCP) observability. The sensor's
 # MCP interceptor patches ``mcp.client.session.ClientSession`` so any
 # framework that uses the official Python ``mcp`` SDK (LangChain via
 # langchain-mcp-adapters, LlamaIndex via llama-index-tools-mcp, CrewAI
@@ -71,7 +71,7 @@ dev = [
     "httpx>=0.25",
     # Used by tests/integration/test_sensor_e2e.py to mock provider HTTP
     # so the sensor can be exercised end-to-end against a live stack
-    # without real Anthropic / OpenAI tokens. See Phase 4.5 audit Part 5.
+    # without real Anthropic / OpenAI tokens.
     "respx>=0.20",
     # Same floor as the [project.optional-dependencies] anthropic extra.
     "anthropic>=0.86",
@@ -130,7 +130,7 @@ dev = [
     # per-dep marker is needed here -- pip resolves crewai cleanly on
     # every supported Python.
     "crewai>=1.14",
-    # Phase 5: MCP unit tests construct a ClientSession against in-memory
+    # MCP unit tests construct a ClientSession against in-memory
     # anyio streams, apply the patch, and assert event-emission shape.
     # The smoke matrix uses the same package against a real reference
     # MCP server subprocess. Both share this dev install.

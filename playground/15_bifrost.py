@@ -21,6 +21,7 @@ Optional env vars:
   upstream. Optional; defaults to ``"dummy"`` for gateways that don't
   enforce a per-request key.
 """
+
 from __future__ import annotations
 
 import os
@@ -64,7 +65,8 @@ def _run_openai_route() -> None:
         messages=[{"role": "user", "content": "say ok"}],
     )
     print_result(
-        "openai SDK -> bifrost", True,
+        "openai SDK -> bifrost",
+        True,
         int((time.monotonic() - t0) * 1000),
     )
     assert_event_landed(session_id, "post_call", timeout=8)
@@ -100,7 +102,8 @@ def _run_anthropic_route() -> None:
         messages=[{"role": "user", "content": "say ok"}],
     )
     print_result(
-        "anthropic SDK -> bifrost", True,
+        "anthropic SDK -> bifrost",
+        True,
         int((time.monotonic() - t0) * 1000),
     )
     assert_event_landed(session_id, "post_call", timeout=8)

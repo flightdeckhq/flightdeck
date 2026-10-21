@@ -186,7 +186,7 @@ export function resolveConfig(env = process.env) {
  *   1. process.env.CLAUDE_SESSION_ID
  *   2. process.env.ANTHROPIC_CLAUDE_SESSION_ID
  *   3. Marker file cache keyed on ``hookEvent.session_id``
- *      (populated by step 4 on the first hook of this invocation;
+ *      (populated by the fresh-uuid fallback on the first hook;
  *      read verbatim by every subsequent hook in the same run)
  *   4. Fresh uuid4 -- written to the hook-id-keyed marker file so
  *      steps 3 and 4 converge the moment the file lands

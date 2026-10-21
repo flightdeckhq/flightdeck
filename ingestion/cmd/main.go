@@ -42,8 +42,8 @@ func (a *directiveAdapter) LookupPending(ctx context.Context, sessionID string) 
 	// Payload is the JSONB blob for action="custom" directives
 	// (directive_name / fingerprint / parameters). Project it through
 	// so the sensor's DirectivePayloadSchema can validate and dispatch
-	// to the registered handler. Dropping it here was Phase 4.5 audit
-	// finding B-F.
+	// to the registered handler. Dropping it here would leave the
+	// sensor unable to dispatch the directive.
 	return &handlers.DirectiveResponse{
 		ID:            d.ID,
 		Action:        d.Action,

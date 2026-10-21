@@ -4,7 +4,7 @@ import { test, expect } from "@playwright/test";
  * T98 — Agent drawer header renders four rows in a fixed
  * vertical order: identity / status / action-links / sub-agents.
  *
- * Pre-fix the action links shared a row with the status badge
+ * Guarded regression: the action links shared a row with the status badge
  * and topology cell, right-aligned via ``marginLeft: auto`` +
  * ``flexWrap``. A wide topology label or the presence of
  * sub-agent linkage badges would push the action links onto a

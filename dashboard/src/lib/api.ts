@@ -64,7 +64,7 @@ const REQUEST_TIMEOUT_MS = 30_000;
 
 // apiFetch is the single fetch wrapper used by every call site in
 // this module. Callers pass the same options they would to the
-// global fetch; the wrapper injects the Authorization header (D095)
+// global fetch; the wrapper injects the Authorization header
 // and resolves the base URL. Keep all /api/* fetches routed through
 // here so token rotation is a one-line change.
 //
@@ -175,8 +175,8 @@ export function fetchAgentSummary(
 /**
  * Fetch session detail. When ``eventsLimit`` is provided the server
  * returns at most the N newest events (still sorted ASC). The drawer
- * uses this to cap the initial load on long-running stable sessions
- * (D113); Fleet-side callers continue to call without the arg and
+ * uses this to cap the initial load on long-running stable sessions;
+ * Fleet-side callers continue to call without the arg and
  * receive the full history.
  */
 export function fetchSession(id: string, eventsLimit?: number): Promise<SessionDetail> {
@@ -277,7 +277,7 @@ export async function fetchSearch(query: string, signal?: AbortSignal): Promise<
 
 /**
  * Return distinct flavor strings seen across recent sessions. The
- * v0.4.0 Phase 1 fleet response is agent-keyed and no longer groups
+ * fleet response is agent-keyed and does not group
  * sessions by flavor, so this helper sources the list from the
  * paginated /v1/sessions endpoint. Used by the policy editor and
  * directive trigger forms that still scope on sessions.flavor.
@@ -454,10 +454,10 @@ export interface SessionsParams {
   to?: string;
   state?: string[];
   flavor?: string[];
-  /** D115 single-agent filter. Empty = no filter. */
+  /** Single-agent filter. Empty = no filter. */
   agent_id?: string;
   /**
-   * Filter by sessions.agent_type. D114 vocabulary
+   * Filter by sessions.agent_type. Locked vocabulary
    * (``coding`` / ``production``). Repeatable: OR within the group,
    * AND with every other filter.
    */
@@ -491,7 +491,7 @@ export interface SessionsParams {
   git_repo?: string[];
   orchestration?: string[];
   /**
-   * Phase 4: filter to sessions that emitted an llm_error event of
+   * Filter to sessions that emitted an llm_error event of
    * one of the listed taxonomy values (rate_limit, authentication,
    * etc.). Repeatable; OR within the dimension, AND with every
    * other filter. Backed by an EXISTS subquery over the events
@@ -507,14 +507,14 @@ export interface SessionsParams {
    */
   policy_event_type?: string[];
   /**
-   * Phase 5: filter to sessions that connected to at least one MCP
+   * Filter to sessions that connected to at least one MCP
    * server with a matching name. Repeatable; OR within. Backed by an
    * EXISTS subquery against ``sessions.context.mcp_servers`` JSONB on
    * the API side. Powers the Investigate MCP SERVER facet.
    */
   mcp_server?: string[];
   /**
-   * D126 sub-agent observability filters. ``parent_session_id``
+   * Sub-agent observability filters. ``parent_session_id``
    * scopes to children of one specific parent (powers the
    * SubAgentsTab "Sub-agents" list). ``agent_role`` is repeatable
    * — backs the Investigate ROLE facet's multi-select shape. The
@@ -547,7 +547,7 @@ export interface SessionsParams {
   matched_entry_id?: string[];
   originating_call_context?: string[];
   /**
-   * D126 UX revision 2026-05-03 — when explicitly false, excludes
+   * When explicitly false, excludes
    * pure children (sessions whose ``parent_session_id`` is set
    * AND that themselves have no descendants), leaving
    * parents-with-children + lone sessions in the response. The
@@ -657,7 +657,7 @@ export function fetchAnalytics(
   return fetchJson<AnalyticsResponse>(`/v1/analytics?${searchParams.toString()}`, { signal });
 }
 
-// ---- Access tokens (D095/D096) --------------------------------------
+// ---- Access tokens ---------------------------------------------------
 //
 // All four endpoints run through apiFetch so the bearer token is
 // attached. Errors propagate as thrown Error so the Settings page

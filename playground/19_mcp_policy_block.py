@@ -1,4 +1,4 @@
-"""MCP Protection Policy -- block enforcement (D130 / D131).
+"""MCP Protection Policy -- block enforcement.
 
 Provisions a flavor policy: deny entry with ``enforcement=block``.
 Opens an MCP ClientSession, calls a tool, expects:
@@ -98,7 +98,7 @@ async def run_demo() -> int:
     server_name_for_policy = "flightdeck-mcp-reference"
 
     # 2. Provision a flavor policy: deny+block against the matched
-    # server. Flavor entry takes precedence (D135 step 1).
+    # server. Flavor entry takes precedence.
     provision_flavor_policy(
         flavor,
         {

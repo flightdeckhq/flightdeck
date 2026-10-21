@@ -7,7 +7,7 @@ import { bringSwimlaneRowIntoView, waitForFleetReady } from "./_fixtures";
 // METHODOLOGY L8 — surface the failure on the row so an operator
 // scanning the list spots trouble without expanding.
 //
-// (Phase 4 wave 2: the third surface — the session-grain
+// (The third surface — the session-grain
 // /investigate session row — was retired with the session-grain
 // table. The /events page is event-grain and has no per-session
 // rows; the L8 cue lives on the two Fleet surfaces below.)

@@ -3,7 +3,7 @@
 // Loads the model pricing table from ``pricing.yaml`` at service
 // startup. Replaces the previous hard-coded Go map so a pricing
 // refresh is a YAML edit and a PR rather than a Go edit and a
-// release (D102).
+// release.
 //
 // Path resolution order:
 //

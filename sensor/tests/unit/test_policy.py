@@ -1,4 +1,4 @@
-"""Tests for PolicyCache: thresholds, fire-once, update, local limit (D035)."""
+"""Tests for PolicyCache: thresholds, fire-once, update, local limit."""
 
 from __future__ import annotations
 
@@ -68,7 +68,7 @@ def test_no_limit_always_allows() -> None:
     assert result.decision == PolicyDecision.ALLOW
 
 
-# --- D035: Local limit tests ---
+# --- Local limit tests ---
 
 
 def test_local_limit_fires_warn_with_source_local() -> None:
@@ -107,7 +107,7 @@ def test_most_restrictive_threshold_fires_first() -> None:
 
 def test_local_limit_does_not_upgrade_to_block() -> None:
     # Local limit = 1000, tokens used = 5000 -- far exceeds limit
-    # But local can only WARN (D035), never BLOCK
+    # But local can only WARN, never BLOCK
     cache = PolicyCache(local_limit=1000, local_warn_at=0.8)
     result = cache.check(tokens_used=5000, estimated=100)
     assert result.decision != PolicyDecision.BLOCK

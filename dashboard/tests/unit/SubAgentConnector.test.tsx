@@ -8,13 +8,13 @@ import {
   type SubAgentConnectorSpec,
 } from "@/components/timeline/SubAgentConnector";
 
-// D126 § 4.3 — sub-agent connector overlay. Pure-math helpers
+// Sub-agent connector overlay. Pure-math helpers
 // drive the geometry; the React component renders a single SVG
 // with one <path> per spec. Tests below exercise the math AND the
 // rendering contract (testid + opacity + hover state) so a future
 // regression in either layer surfaces with a focused failure.
 
-describe("anchorOnCircle (D126 § 4.3 hemisphere lock)", () => {
+describe("anchorOnCircle (hemisphere lock)", () => {
   // Children rendered ABOVE the parent connect via the top of the
   // circle (negative y in screen coordinates); children BELOW
   // connect via the bottom. The natural direction projection

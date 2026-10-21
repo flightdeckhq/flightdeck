@@ -27,7 +27,7 @@ import { cn } from "@/lib/utils";
  *     want richer Radix-based tooltips can wrap ``<TruncatedText/>``
  *     in a ``<Tooltip>`` at the site level.
  *
- * Rule (added to ``audit-phase-2.md`` in this same PR): any
+ * Rule: any
  * dashboard component rendering text sourced from user / DB /
  * dynamic data MUST default to ``<TruncatedText/>``. Raw ``truncate``
  * Tailwind utility or hand-rolled ``textOverflow: ellipsis`` styles

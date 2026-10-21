@@ -3,10 +3,10 @@ import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import type { AgentEvent, Session, SessionListItem, SubagentMessage } from "@/lib/types";
 
-// D126 § 7.fix.K — SubAgentsTab unit suite. Covers the three case
+// SubAgentsTab unit suite. Covers the three case
 // shapes (parent only, child only, depth-2), the per-child MESSAGES
 // preview lifecycle (200-char preview + expand-on-click for inline,
-// fetch via /v1/events/{id}/content for D126 § 6 overflow), the
+// fetch via /v1/events/{id}/content for the overflow case), the
 // capture_prompts=false disabled state (Rule 21), and the drawer
 // rebind via onSwitchSession.
 
@@ -97,7 +97,7 @@ beforeEach(() => {
   fetchEventContentMock.mockResolvedValue(null);
 });
 
-describe("SubAgentsTab — three layout cases (D126 § 4.2)", () => {
+describe("SubAgentsTab — three layout cases", () => {
   it("Parent only: renders SUB-AGENTS but NOT SPAWNED FROM", async () => {
     fetchSessionsMock.mockResolvedValue({
       sessions: [mkChild({ session_id: "c-1", agent_role: "Researcher" })],
@@ -248,7 +248,7 @@ describe("SubAgentsTab — MESSAGES preview", () => {
         incomingMessage: { body: longBody, captured_at: "" },
       }),
     });
-    // Per the D126 UX revision, message previews render INSIDE the
+    // Message previews render INSIDE the
     // chevron-expanded body. Expand the SPAWNED FROM card first.
     const cardToggle = await screen.findByTestId(
       "sub-agents-spawned-from-toggle",
@@ -340,7 +340,7 @@ describe("SubAgentsTab — MESSAGES preview", () => {
   it("capture_prompts=false AND no message bodies renders Rule 21 disabled state", async () => {
     // SubAgentsTab's capture-enabled gate fires when EITHER the
     // API flag is true OR the session's events carry an inline
-    // message body (D126 § 6 — sub-agent messages bypass the
+    // message body (sub-agent messages bypass the
     // existing has_content=true convention used for LLM prompts).
     // A user with capture_prompts=false produces no message body;
     // both conditions are false → the Rule 21 disabled state
@@ -488,7 +488,7 @@ describe("SubAgentsTab — drawer rebind via onSwitchSession", () => {
   });
 });
 
-// D126 UX revision (post-merge polish, pre-merge land):
+// Sub-agents tab UX contract:
 // chevron-expand-inline + session-id-link-navigate split. The
 // chevron and the session-id link are independent affordances —
 // clicking one does NOT invoke the other's behaviour. Inline
@@ -578,13 +578,13 @@ describe("SubAgentsTab — UX revision: chevron-expand-inline split", () => {
   });
 
   it("inline mini-timeline renders the SAME EventRow component the Timeline tab uses (Timeline-fidelity)", async () => {
-    // D126 UX revision 2026-05-04 — Issue 2. The supervisor's
+    // The supervisor's
     // explicit contract: the inline mini-timeline must reuse the
     // EXACT same event-row component the Timeline tab uses, not a
     // simplified copy. ``EventRow``'s row contract carries an
     // ``event-type-pill`` testid (the colour-coded type pill) on
     // every event, plus the per-type testids
-    // (``embeddings-event-row-...``, etc.). Pre-fix the mini-
+    // (``embeddings-event-row-...``, etc.). Guarded regression: the mini-
     // timeline used a stripped-down ``EventDetail`` that emitted
     // none of those testids — the bare-event-list state the
     // supervisor flagged. Asserting the post-fix testid presence
@@ -722,7 +722,7 @@ describe("SubAgentsTab — UX revision: chevron-expand-inline split", () => {
 
   it("inline mini-timeline renders events DESC by occurred_at (newest first), matching the main Timeline tab", async () => {
     // The main Timeline tab in SessionDrawer renders events
-    // newest-first. Pre-fix the SubAgentsTab mini-timeline
+    // newest-first. Guarded regression: the SubAgentsTab mini-timeline
     // rendered ASC (the API's wire order), so a user expanding
     // SPAWNED FROM saw the oldest 12 events at the top — opposite
     // of what the same user would see one tab over. The fix flips
@@ -807,7 +807,7 @@ describe("SubAgentsTab — UX revision: chevron-expand-inline split", () => {
 
   it("'View N more in Timeline tab' footer invokes onOpenSession with tab='timeline'", async () => {
     // The footer's text promises navigation to the Timeline tab.
-    // Pre-fix it called onOpenSession(id) with no tab override and
+    // Guarded regression: it called onOpenSession(id) with no tab override and
     // the drawer kept the user on Sub-agents — text and behaviour
     // disagreed. The contract: when the footer fires, the second
     // argument MUST be "timeline" so the drawer routes through the

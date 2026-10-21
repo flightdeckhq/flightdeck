@@ -158,7 +158,7 @@ func TestEventsHandler_MalformedPayload_Returns400(t *testing.T) {
 	}
 }
 
-// D115 / D116: agent identity validation at the wire boundary. Each
+// Agent identity validation at the wire boundary. Each
 // sub-case exercises one invariant. The stack never reaches NATS on
 // any of these -- the handler returns 400 before the publish path.
 func TestEventsHandler_AgentIdentityValidation(t *testing.T) {
@@ -183,7 +183,7 @@ func TestEventsHandler_AgentIdentityValidation(t *testing.T) {
 			name: "invalid_client_type",
 			body: `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"post_call","agent_id":"` + validAgentID + `","agent_type":"coding","client_type":"rogue"}`,
 		},
-		// Phase 4 additions (V-pass D7, D8, D10, D15):
+		// Structured-event additions:
 		{
 			name: "malformed_session_id",
 			body: `{"session_id":"not-a-uuid","event_type":"post_call","agent_id":"` + validAgentID + `","agent_type":"coding","client_type":"claude_code"}`,
@@ -212,7 +212,7 @@ func TestEventsHandler_AgentIdentityValidation(t *testing.T) {
 			name: "negative_tokens_total",
 			body: `{"session_id":"22222222-2222-4222-8222-222222222222","event_type":"post_call","agent_id":"` + validAgentID + `","agent_type":"coding","client_type":"claude_code","tokens_total":-1}`,
 		},
-		// D126 — sub-agent identity validation. parent_session_id
+		// Sub-agent identity validation. parent_session_id
 		// (when present) is canonical UUID; agent_role (when present)
 		// is a non-empty string ≤ 256 chars. Both are optional, so
 		// "absent" is not in this rejection table — only malformed
@@ -511,7 +511,7 @@ func TestRateLimitNonPositiveCapFallsBackToDefault(t *testing.T) {
 	}
 }
 
-// --- D094: session attachment tests ---
+// --- Session attachment tests ---
 
 // Brand-new session_id → attacher returns attached=false, handler
 // passes that through to the envelope unchanged.
@@ -570,7 +570,7 @@ func TestEventsHandler_SessionStart_ExistingSession_AttachedTrue(t *testing.T) {
 	}
 }
 
-// D095: ingestion injects the resolved token id+name into the NATS
+// Ingestion injects the resolved token id+name into the NATS
 // payload for session_start events so workers can persist them onto
 // the session row. Other event types are passed through untouched.
 func TestEventsHandler_SessionStart_InjectsTokenIDAndName(t *testing.T) {
@@ -606,7 +606,7 @@ func TestEventsHandler_SessionStart_InjectsTokenIDAndName(t *testing.T) {
 	}
 }
 
-// D095: post_call (and any non-session_start event) must NOT carry
+// post_call (and any non-session_start event) must NOT carry
 // token_id / token_name in the published payload -- the worker
 // deliberately ignores those fields outside HandleSessionStart and
 // stamping them on every event would waste bandwidth on the hot path.
@@ -638,7 +638,7 @@ func TestEventsHandler_NonSessionStart_OmitsTokenFields(t *testing.T) {
 	}
 }
 
-// D095: when the validator surfaces a Reason (e.g. tok_dev rejected
+// When the validator surfaces a Reason (e.g. tok_dev rejected
 // outside dev mode), the handler must put that reason verbatim in
 // the 401 body so operators see the actionable message.
 func TestEventsHandler_RejectionReasonSurfacedIn401(t *testing.T) {
@@ -667,7 +667,7 @@ func TestEventsHandler_RejectionReasonSurfacedIn401(t *testing.T) {
 }
 
 // Non-session_start events must never consult the attacher and must
-// report attached=false (D094: only session_start responses carry
+// report attached=false (only session_start responses carry
 // attached=true).
 func TestEventsHandler_NonSessionStart_DoesNotAttach(t *testing.T) {
 	attacher := &mockSessAttacher{attached: true}
@@ -697,7 +697,7 @@ func TestEventsHandler_NonSessionStart_DoesNotAttach(t *testing.T) {
 	}
 }
 
-// ----- D131 MCP Protection Policy event-type validation ----------
+// ----- MCP Protection Policy event-type validation ---------------
 
 // makeMCPPolicyDecisionPayload builds a baseline payload for
 // policy_mcp_warn / policy_mcp_block tests; callers mutate the
@@ -922,7 +922,7 @@ func TestEventsHandler_MCPServerNameChanged_MissingNameOldReturns400(t *testing.
 	}
 }
 
-// D140 step 6.6 A2 — mcp_server_attached payload validation.
+// mcp_server_attached payload validation.
 // Required non-empty: fingerprint, server_name, attached_at.
 // server_url_canonical required as a string but allowed empty
 // (sensor emits "" for stdio without a stashed URL).
@@ -1020,7 +1020,7 @@ func TestEventsHandler_NonMCPEventType_BypassesMCPValidation(t *testing.T) {
 	}
 }
 
-// ----- D139 mcp_policy_user_remembered validation -----------------
+// ----- mcp_policy_user_remembered validation ----------------------
 
 func makeMCPPolicyUserRememberedPayload() map[string]any {
 	return map[string]any{
@@ -1087,7 +1087,7 @@ func TestEventsHandler_MCPPolicyUserRemembered_MissingFlavorReturns400(t *testin
 	}
 }
 
-// ----- Phase 7 Step 4 (D152) session lifecycle validators ---------
+// ----- Session lifecycle validators ------------------------------
 
 func TestEventsHandler_SessionStart_MissingSensorVersion_Returns400(t *testing.T) {
 	payload := map[string]any{

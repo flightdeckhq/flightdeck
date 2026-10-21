@@ -86,7 +86,7 @@ export function LiveFeed({ events, onEventClick, activeFilter, onFilterChange, i
   const [sortCol, setSortCol] = useState<SortCol>("time");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
-  // D122 — hide MCP discovery events (mcp_*_list) by default. The
+  // Hide MCP discovery events (mcp_*_list) by default. The
   // discovery filter is applied BEFORE the FEED_MAX_EVENTS cap so
   // the cap reflects "last N visible events", not "last N raw
   // events of which some are hidden". An MCP-heavy session that

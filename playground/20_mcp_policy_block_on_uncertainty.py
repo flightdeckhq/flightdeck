@@ -1,4 +1,4 @@
-"""MCP Protection Policy -- block-on-uncertainty failsafe (D129 / D135).
+"""MCP Protection Policy -- block-on-uncertainty failsafe.
 
 Exercises the operator failsafe path: control plane unreachable
 + ``init(mcp_block_on_uncertainty=True)``. The sensor's preflight

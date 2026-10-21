@@ -1,4 +1,4 @@
-// D115: Node twin of sensor/tests/unit/test_agent_id.py. Both files
+// Node twin of sensor/tests/unit/test_agent_id.py. Both files
 // assert the same locked fixture vector so a drift between the
 // Python and Node implementations fails loudly in CI.
 

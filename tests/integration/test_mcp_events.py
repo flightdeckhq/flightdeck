@@ -1,10 +1,10 @@
-"""Phase 5 MCP event-shape integration tests.
+"""MCP event-shape integration tests.
 
-Wire-seeded (not sensor-driven): hand-crafts the six Phase 5 MCP event
+Wire-seeded (not sensor-driven): hand-crafts the six MCP event
 payloads, POSTs them through the real ingestion API, and asserts they
 round-trip through NATS + worker + Postgres + the Query API with the
 correct structured fields. Mirrors the methodology of
-``test_phase4_event_shapes.py`` -- everything from the wire boundary
+``test_event_shapes.py`` -- everything from the wire boundary
 inwards is real; only the SDK-side patching is out of scope (the smoke
 matrix exercises that).
 
@@ -81,7 +81,8 @@ def _fetch_session_listing(**filters: Any) -> dict[str, Any]:
         {"from": "2020-01-01T00:00:00Z", "limit": 100, **filters}
     )
     req = urllib.request.Request(
-        f"{API_URL}/v1/sessions?{qs}", headers=auth_headers(),
+        f"{API_URL}/v1/sessions?{qs}",
+        headers=auth_headers(),
     )
     with urllib.request.urlopen(req, timeout=5) as resp:
         return json.loads(resp.read())  # type: ignore[no-any-return]
@@ -105,58 +106,98 @@ def test_mcp_six_event_types_roundtrip_with_structured_fields() -> None:
 
     post_event(make_event(sid, flavor, "session_start"))
     wait_until(
-        lambda: session_exists_in_fleet(sid), timeout=10,
+        lambda: session_exists_in_fleet(sid),
+        timeout=10,
         msg=f"session {sid} did not appear",
     )
 
     server = "demo-mcp"
     transport = "stdio"
 
-    post_event(make_event(
-        sid, flavor, "mcp_tool_list",
-        server_name=server, transport=transport, count=3, duration_ms=12,
-    ))
-    post_event(make_event(
-        sid, flavor, "mcp_tool_call",
-        server_name=server, transport=transport,
-        tool_name="echo",
-        arguments={"text": "hello world"},
-        result={"content": [{"type": "text", "text": "hello world"}]},
-        duration_ms=42,
-    ))
-    post_event(make_event(
-        sid, flavor, "mcp_resource_list",
-        server_name=server, transport=transport, count=7, duration_ms=15,
-    ))
-    post_event(make_event(
-        sid, flavor, "mcp_resource_read",
-        server_name=server, transport=transport,
-        resource_uri="file:///tmp/notes.md",
-        content_bytes=128,
-        mime_type="text/markdown",
-        duration_ms=20,
-    ))
-    post_event(make_event(
-        sid, flavor, "mcp_prompt_list",
-        server_name=server, transport=transport, count=2, duration_ms=11,
-    ))
-    post_event(make_event(
-        sid, flavor, "mcp_prompt_get",
-        server_name=server, transport=transport,
-        prompt_name="summarize",
-        arguments={"topic": "phase 5"},
-        rendered={"messages": [{"role": "user", "content": "Summarize phase 5"}]},
-        duration_ms=18,
-    ))
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "mcp_tool_list",
+            server_name=server,
+            transport=transport,
+            count=3,
+            duration_ms=12,
+        )
+    )
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "mcp_tool_call",
+            server_name=server,
+            transport=transport,
+            tool_name="echo",
+            arguments={"text": "hello world"},
+            result={"content": [{"type": "text", "text": "hello world"}]},
+            duration_ms=42,
+        )
+    )
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "mcp_resource_list",
+            server_name=server,
+            transport=transport,
+            count=7,
+            duration_ms=15,
+        )
+    )
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "mcp_resource_read",
+            server_name=server,
+            transport=transport,
+            resource_uri="file:///tmp/notes.md",
+            content_bytes=128,
+            mime_type="text/markdown",
+            duration_ms=20,
+        )
+    )
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "mcp_prompt_list",
+            server_name=server,
+            transport=transport,
+            count=2,
+            duration_ms=11,
+        )
+    )
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "mcp_prompt_get",
+            server_name=server,
+            transport=transport,
+            prompt_name="summarize",
+            arguments={"topic": "phase 5"},
+            rendered={"messages": [{"role": "user", "content": "Summarize phase 5"}]},
+            duration_ms=18,
+        )
+    )
 
     _wait_for_event_count(sid, 7)
     events = _fetch_session_events(sid)
 
     # 1) Every MCP type carried server_name + transport into payload.
     for et in (
-        "mcp_tool_list", "mcp_tool_call",
-        "mcp_resource_list", "mcp_resource_read",
-        "mcp_prompt_list", "mcp_prompt_get",
+        "mcp_tool_list",
+        "mcp_tool_call",
+        "mcp_resource_list",
+        "mcp_resource_read",
+        "mcp_prompt_list",
+        "mcp_prompt_get",
     ):
         rows = _by_event_type(events, et)
         assert len(rows) == 1, f"expected one {et} event, got {rows!r}"
@@ -225,16 +266,21 @@ def test_mcp_server_fingerprint_persists_via_context_and_filters_listing() -> No
     }
 
     # The session that DID connect to ``server_name``.
-    post_event(make_event(
-        sid_with, flavor, "session_start",
-        context={"mcp_servers": [fingerprint], "deployment_id": "test-mcp"},
-    ))
+    post_event(
+        make_event(
+            sid_with,
+            flavor,
+            "session_start",
+            context={"mcp_servers": [fingerprint], "deployment_id": "test-mcp"},
+        )
+    )
     # Control session, no MCP servers in its context.
     post_event(make_event(sid_without, flavor, "session_start"))
 
     wait_until(
-        lambda: session_exists_in_fleet(sid_with)
-        and session_exists_in_fleet(sid_without),
+        lambda: (
+            session_exists_in_fleet(sid_with) and session_exists_in_fleet(sid_without)
+        ),
         timeout=10,
         msg="sessions did not appear",
     )
@@ -277,8 +323,7 @@ def test_mcp_server_fingerprint_persists_via_context_and_filters_listing() -> No
         f"unfiltered listing missing control session: {list(by_id)!r}"
     )
     assert by_id[sid_without].get("mcp_server_names") == [], (
-        f"non-MCP session must carry empty mcp_server_names, got "
-        f"{by_id[sid_without]!r}"
+        f"non-MCP session must carry empty mcp_server_names, got {by_id[sid_without]!r}"
     )
 
 
@@ -294,7 +339,8 @@ def test_mcp_resource_read_overflow_content_fetchable_via_endpoint() -> None:
 
     post_event(make_event(sid, flavor, "session_start"))
     wait_until(
-        lambda: session_exists_in_fleet(sid), timeout=10,
+        lambda: session_exists_in_fleet(sid),
+        timeout=10,
         msg=f"session {sid} did not appear",
     )
 
@@ -319,17 +365,21 @@ def test_mcp_resource_read_overflow_content_fetchable_via_endpoint() -> None:
         "event_id": "",
         "captured_at": "2026-04-25T00:00:00Z",
     }
-    post_event(make_event(
-        sid, flavor, "mcp_resource_read",
-        server_name="demo",
-        transport="stdio",
-        resource_uri="mem://big-log",
-        content_bytes=len(big_text),
-        mime_type="text/plain",
-        duration_ms=42,
-        has_content=True,
-        content=overflow_content,
-    ))
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "mcp_resource_read",
+            server_name="demo",
+            transport="stdio",
+            resource_uri="mem://big-log",
+            content_bytes=len(big_text),
+            mime_type="text/plain",
+            duration_ms=42,
+            has_content=True,
+            content=overflow_content,
+        )
+    )
     _wait_for_event_count(sid, 2)
 
     events = _fetch_session_events(sid)
@@ -341,7 +391,8 @@ def test_mcp_resource_read_overflow_content_fetchable_via_endpoint() -> None:
     )
 
     req = urllib.request.Request(
-        f"{API_URL}/v1/events/{event_id}/content", headers=auth_headers(),
+        f"{API_URL}/v1/events/{event_id}/content",
+        headers=auth_headers(),
     )
     with urllib.request.urlopen(req, timeout=5) as resp:
         body = json.loads(resp.read())
@@ -367,7 +418,8 @@ def test_mcp_failure_event_carries_structured_error_taxonomy() -> None:
 
     post_event(make_event(sid, flavor, "session_start"))
     wait_until(
-        lambda: session_exists_in_fleet(sid), timeout=10,
+        lambda: session_exists_in_fleet(sid),
+        timeout=10,
         msg=f"session {sid} did not appear",
     )
 
@@ -376,14 +428,18 @@ def test_mcp_failure_event_carries_structured_error_taxonomy() -> None:
         "error_class": "McpError",
         "message": "stream closed before response",
     }
-    post_event(make_event(
-        sid, flavor, "mcp_tool_call",
-        server_name="demo",
-        transport="stdio",
-        tool_name="echo",
-        duration_ms=120,
-        error=error_payload,
-    ))
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "mcp_tool_call",
+            server_name="demo",
+            transport="stdio",
+            tool_name="echo",
+            duration_ms=120,
+            error=error_payload,
+        )
+    )
     _wait_for_event_count(sid, 2)
 
     events = _fetch_session_events(sid)
@@ -418,53 +474,83 @@ def test_mcp_error_types_rollup_on_session_listing() -> None:
     # Session that emits two mcp_tool_call events with two distinct
     # error_types plus a clean mcp_resource_read alongside.
     post_event(make_event(sid_with_failures, flavor, "session_start"))
-    post_event(make_event(
-        sid_with_failures, flavor, "mcp_tool_call",
-        server_name="demo", transport="stdio", tool_name="echo",
-        duration_ms=12,
-        error={
-            "error_type": "invalid_params",
-            "error_class": "McpError",
-            "message": "bad arguments",
-        },
-    ))
-    post_event(make_event(
-        sid_with_failures, flavor, "mcp_tool_call",
-        server_name="demo", transport="stdio", tool_name="echo",
-        duration_ms=8,
-        error={
-            "error_type": "connection_closed",
-            "error_class": "McpError",
-            "message": "transport dropped",
-        },
-    ))
+    post_event(
+        make_event(
+            sid_with_failures,
+            flavor,
+            "mcp_tool_call",
+            server_name="demo",
+            transport="stdio",
+            tool_name="echo",
+            duration_ms=12,
+            error={
+                "error_type": "invalid_params",
+                "error_class": "McpError",
+                "message": "bad arguments",
+            },
+        )
+    )
+    post_event(
+        make_event(
+            sid_with_failures,
+            flavor,
+            "mcp_tool_call",
+            server_name="demo",
+            transport="stdio",
+            tool_name="echo",
+            duration_ms=8,
+            error={
+                "error_type": "connection_closed",
+                "error_class": "McpError",
+                "message": "transport dropped",
+            },
+        )
+    )
     # Duplicate of the first error_type — should de-dup in the rollup.
-    post_event(make_event(
-        sid_with_failures, flavor, "mcp_tool_call",
-        server_name="demo", transport="stdio", tool_name="echo",
-        duration_ms=11,
-        error={
-            "error_type": "invalid_params",
-            "error_class": "McpError",
-            "message": "bad arguments again",
-        },
-    ))
+    post_event(
+        make_event(
+            sid_with_failures,
+            flavor,
+            "mcp_tool_call",
+            server_name="demo",
+            transport="stdio",
+            tool_name="echo",
+            duration_ms=11,
+            error={
+                "error_type": "invalid_params",
+                "error_class": "McpError",
+                "message": "bad arguments again",
+            },
+        )
+    )
     # Clean MCP event on the same session — must NOT contribute to
     # the rollup.
-    post_event(make_event(
-        sid_with_failures, flavor, "mcp_resource_read",
-        server_name="demo", transport="stdio",
-        resource_uri="mem://demo", content_bytes=4,
-    ))
+    post_event(
+        make_event(
+            sid_with_failures,
+            flavor,
+            "mcp_resource_read",
+            server_name="demo",
+            transport="stdio",
+            resource_uri="mem://demo",
+            content_bytes=4,
+        )
+    )
 
     # Control session: no MCP errors. Listing row's mcp_error_types
     # must be ``[]`` (empty array, not null).
     post_event(make_event(sid_clean, flavor, "session_start"))
-    post_event(make_event(
-        sid_clean, flavor, "mcp_tool_call",
-        server_name="demo", transport="stdio", tool_name="echo",
-        duration_ms=15,
-    ))
+    post_event(
+        make_event(
+            sid_clean,
+            flavor,
+            "mcp_tool_call",
+            server_name="demo",
+            transport="stdio",
+            tool_name="echo",
+            duration_ms=15,
+        )
+    )
 
     _wait_for_event_count(sid_with_failures, 5)
     _wait_for_event_count(sid_clean, 2)
@@ -474,9 +560,7 @@ def test_mcp_error_types_rollup_on_session_listing() -> None:
     assert sid_with_failures in by_id, (
         f"failures session missing from listing: {list(by_id)!r}"
     )
-    assert sid_clean in by_id, (
-        f"clean session missing from listing: {list(by_id)!r}"
-    )
+    assert sid_clean in by_id, f"clean session missing from listing: {list(by_id)!r}"
     failures_row = by_id[sid_with_failures]
     clean_row = by_id[sid_clean]
 
@@ -484,8 +568,7 @@ def test_mcp_error_types_rollup_on_session_listing() -> None:
     # de-duped despite the duplicate ``invalid_params`` event.
     got = sorted(failures_row.get("mcp_error_types") or [])
     assert got == ["connection_closed", "invalid_params"], (
-        f"expected deduplicated mcp_error_types, got {got!r} "
-        f"on row {failures_row!r}"
+        f"expected deduplicated mcp_error_types, got {got!r} on row {failures_row!r}"
     )
 
     # Clean session: empty array (not null) — same wire posture as
@@ -515,28 +598,32 @@ def test_mcp_only_session_advances_last_seen_without_token_pollution() -> None:
 
     post_event(make_event(sid, flavor, "session_start"))
     wait_until(
-        lambda: session_exists_in_fleet(sid), timeout=10,
+        lambda: session_exists_in_fleet(sid),
+        timeout=10,
         msg=f"session {sid} did not appear",
     )
 
     # Three MCP_TOOL_CALL events; lean payload, no model / token deltas.
     for i in range(3):
-        post_event(make_event(
-            sid, flavor, "mcp_tool_call",
-            server_name="demo",
-            transport="stdio",
-            tool_name=f"call_{i}",
-            duration_ms=10 + i,
-        ))
+        post_event(
+            make_event(
+                sid,
+                flavor,
+                "mcp_tool_call",
+                server_name="demo",
+                transport="stdio",
+                tool_name=f"call_{i}",
+                duration_ms=10 + i,
+            )
+        )
     _wait_for_event_count(sid, 4)
 
     body = _fetch_session_listing(flavor=flavor)
     row = next(
-        (s for s in body.get("sessions", []) if s["session_id"] == sid), None,
+        (s for s in body.get("sessions", []) if s["session_id"] == sid),
+        None,
     )
-    assert row is not None, (
-        f"MCP-only session missing from listing: {body!r}"
-    )
+    assert row is not None, f"MCP-only session missing from listing: {body!r}"
     # tokens_used_session must remain the seed value (0). The MCP path
     # must not coerce a NULL token delta into a zero UPDATE.
     assert row.get("tokens_used_session") in (0, None), (

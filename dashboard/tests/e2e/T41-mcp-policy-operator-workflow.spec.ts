@@ -4,16 +4,16 @@ import { CODING_AGENT } from "./_fixtures";
 
 // T41 — MCP Protection Policy operator-workflow contract.
 //
-// Locks the cumulative shape after the step 6.9 chain:
-//   - D138: quick-start link is suppressed on Global scope; the
+// Locks the cumulative shape:
+//   - Quick-start link is suppressed on Global scope; the
 //     ``apply_template`` API rejects ``flavor=global`` by design.
 //   - Mutation affordances (Add / Edit / Delete, mode toggle, BOU
 //     switch) render unconditionally — single-tier auth, every valid
-//     bearer token has full access (D156).
-//   - Step 6.9 InfoIcon migration: every label-side help affordance
+//     bearer token has full access.
+//   - InfoIcon migration: every label-side help affordance
 //     uses the shared ``<InfoIcon>`` primitive (button trigger with
 //     aria-label, not text-styled "info" links).
-//   - Step 6.9 dialog rewrite: placeholders + InfoIcons on URL /
+//   - Entry dialog: placeholders + InfoIcons on URL /
 //     Name / Decision / Enforcement.
 //
 // All cases are read-only. The dev DB stays clean across runs.
@@ -50,7 +50,7 @@ async function switchToFlavorTab(page: Page, flavor: string): Promise<void> {
 }
 
 test.describe("T41 — MCP Protection Policy operator workflow", () => {
-  test("Global tab: mode + BOU controls render; quick-start link is suppressed (D138 regression guard)", async ({
+  test("Global tab: mode + BOU controls render; quick-start link is suppressed (regression guard)", async ({
     page,
   }) => {
     await navigateToMCPPolicy(page);
@@ -71,7 +71,7 @@ test.describe("T41 — MCP Protection Policy operator workflow", () => {
     expect(await modeInfo.evaluate((el) => el.tagName)).toBe("BUTTON");
     expect(await modeInfo.getAttribute("aria-label")).toBe("Policy mode help");
 
-    // D138 regression guard: NO quick-start link inside the Global
+    // Regression guard: NO quick-start link inside the Global
     // scope's empty-state. apply_template returns 400 with
     // "templates apply to flavor policies only" by design — the
     // dashboard must not render a CTA the API will always reject.
@@ -104,7 +104,7 @@ test.describe("T41 — MCP Protection Policy operator workflow", () => {
       ),
     ).toBeVisible();
 
-    // All three D138 templates land. Each row carries a stable
+    // All three locked templates land. Each row carries a stable
     // testid keyed on the template name.
     for (const name of [
       "strict-baseline",
@@ -117,7 +117,7 @@ test.describe("T41 — MCP Protection Policy operator workflow", () => {
     }
 
     // The maintenance-warning chip renders on
-    // ``strict-with-common-allows`` only — D138 contract surface for
+    // ``strict-with-common-allows`` only — the contract surface for
     // operators reviewing the URL-maintenance commitment.
     await expect(
       page.locator(
@@ -131,7 +131,7 @@ test.describe("T41 — MCP Protection Policy operator workflow", () => {
     ).toHaveCount(0);
   });
 
-  test("Add entry dialog: spec placeholders + InfoIcons on every field (step 6.9 dialog rewrite)", async ({
+  test("Add entry dialog: spec placeholders + InfoIcons on every field", async ({
     page,
   }) => {
     await navigateToMCPPolicy(page);
@@ -146,7 +146,7 @@ test.describe("T41 — MCP Protection Policy operator workflow", () => {
       page.locator('[data-testid="mcp-policy-entry-dialog-title"]'),
     ).toBeVisible();
 
-    // Spec-required placeholders verbatim per step 6.9.
+    // Spec-required placeholders verbatim.
     await expect(
       page.locator('[data-testid="mcp-policy-entry-url"]'),
     ).toHaveAttribute(
@@ -178,8 +178,8 @@ test.describe("T41 — MCP Protection Policy operator workflow", () => {
       ).toBeTruthy();
     }
 
-    // Live-preview empty state renders before URL/Name fill — D135
-    // § Add-edit dialog contract.
+    // Live-preview empty state renders before URL/Name fill — the
+    // add/edit dialog contract.
     await expect(
       page.locator('[data-testid="mcp-policy-entry-resolve-empty"]'),
     ).toBeVisible();

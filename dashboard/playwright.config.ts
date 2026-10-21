@@ -4,7 +4,7 @@ import {
   THEME_STORAGE_KEY,
 } from "./src/lib/constants";
 
-// D095 + Phase 5 Part 1b hardcoded access token. Every request
+// Hardcoded access token. Every request
 // (page navigations, XHRs, and fetches fired by the app) picks up
 // this header so the dashboard reaches the gated /v1/* endpoints.
 // Matches the dev-time ACCESS_TOKEN in src/lib/api.ts.
@@ -18,9 +18,9 @@ const ACCESS_TOKEN = "tok_dev";
 // clean-light) for human readability; the localStorage VALUES must
 // be ``dark`` / ``light`` because that's what useTheme accepts (see
 // dashboard/src/hooks/useTheme.ts: getInitialTheme rejects any other
-// value and falls to "dark"). Pre-fix the values matched the project
-// names, which silently degraded clean-light into a second dark-theme
-// run for an unknown number of phases — Rule 40c.3 (theme coverage)
+// value and falls to "dark"). Using the project names as values
+// silently degrades clean-light into a second dark-theme run —
+// Rule 40c.3 (theme coverage)
 // requires the matrix to actually exercise both themes.
 // ``THEME_STORAGE_KEY`` is imported from ``src/lib/constants.ts`` so
 // the key the seeded localStorage entry lands at is the same key the

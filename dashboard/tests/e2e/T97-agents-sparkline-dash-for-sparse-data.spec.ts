@@ -4,7 +4,7 @@ import { test, expect } from "@playwright/test";
  * T97 — /agents sparkline renders the neutral dash placeholder
  * when a row's KPI series has fewer than two non-zero points.
  *
- * Pre-fix a single non-zero bucket rendered as a stray
+ * Guarded regression: a single non-zero bucket rendered as a stray
  * accent-coloured dot (the recharts ``LineChart`` reduces a
  * one-point series to a degenerate single mark). The polish
  * collapses any "sparse" case (zero or one non-zero data points)

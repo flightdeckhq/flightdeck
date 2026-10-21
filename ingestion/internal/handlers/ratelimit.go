@@ -10,8 +10,8 @@ import (
 const (
 	rateLimitWindow = time.Minute
 	// cleanupInterval governs how often idle token windows are
-	// reaped from the in-memory map. Phase 4.5 M-22: shortened from
-	// 5 min to 1 min so a deployed-token churn pattern (short-lived
+	// reaped from the in-memory map. One minute rather than five, so
+	// a deployed-token churn pattern (short-lived
 	// tokens that auth, hit the limiter once, then never appear
 	// again) cannot keep dead entries in memory for up to 5 minutes.
 	// Auth runs BEFORE Allow(), so the keys are bounded by deployed

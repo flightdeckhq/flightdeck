@@ -977,7 +977,7 @@ def _emit_resource_read(
         if capture_prompts:
             extras["mime_type"] = mime_type
             content_dict = _model_to_dict(result)
-            # B-6 — gate the resource body. read_resource against a
+            # Gate the resource body. read_resource against a
             # multi-MB log file / PDF extract overflows to event_content
             # via the existing has_content=true path. The wire
             # ``content`` field shape is meaning-shifted by has_content:

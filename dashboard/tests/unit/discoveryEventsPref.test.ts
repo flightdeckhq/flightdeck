@@ -11,12 +11,12 @@ import {
 } from "@/lib/discoveryEventsPref";
 import { FEED_SHOW_DISCOVERY_EVENTS_KEY } from "@/lib/constants";
 
-// D122 — predicate + persisted-preference tests. Lock down the
+// Predicate + persisted-preference tests. Lock down the
 // closed-set membership of MCP_DISCOVERY_EVENT_TYPES (so adding a new
 // MCP event_type to the canon doesn't accidentally inherit discovery
 // hiding) and the localStorage round-trip contract.
 
-describe("isDiscoveryEvent (D122)", () => {
+describe("isDiscoveryEvent", () => {
   it("returns true for the three list/discovery MCP types", () => {
     expect(isDiscoveryEvent("mcp_tool_list")).toBe(true);
     expect(isDiscoveryEvent("mcp_resource_list")).toBe(true);
@@ -54,7 +54,7 @@ describe("isDiscoveryEvent (D122)", () => {
   });
 });
 
-describe("readShowDiscoveryEvents / persistShowDiscoveryEvents (D122)", () => {
+describe("readShowDiscoveryEvents / persistShowDiscoveryEvents", () => {
   beforeEach(() => {
     localStorage.clear();
   });
@@ -99,7 +99,7 @@ describe("readShowDiscoveryEvents / persistShowDiscoveryEvents (D122)", () => {
   });
 });
 
-describe("useShowDiscoveryEvents (D122)", () => {
+describe("useShowDiscoveryEvents", () => {
   beforeEach(() => {
     localStorage.clear();
   });

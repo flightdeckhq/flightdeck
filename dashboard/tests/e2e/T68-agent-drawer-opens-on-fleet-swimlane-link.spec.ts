@@ -2,10 +2,10 @@
  * T68 — clicking the agent name in the Fleet swimlane label strip
  * opens that agent's drawer inline (no route change).
  *
- * Phase 4 contract: the swimlane agent-name link sets the
+ * The swimlane agent-name link sets the
  * `?agent_drawer=` URL param; the app-level AgentDrawerHost opens
  * the drawer over the still-mounted Fleet view. Replaces the
- * Phase 3 `/agents?focus=` cross-page jump.
+ * `/agents?focus=` cross-page jump.
  *
  * Theme-agnostic — structural locators only.
  */

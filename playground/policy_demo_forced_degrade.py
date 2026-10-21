@@ -8,6 +8,7 @@ the armed session afterwards. Per-call swaps are visible only via
 
 Run: ``python playground/policy_demo_forced_degrade.py``
 """
+
 from __future__ import annotations
 
 import json
@@ -20,7 +21,8 @@ import uuid
 try:
     import anthropic
 except ImportError:
-    print("SKIP: pip install anthropic"); sys.exit(2)
+    print("SKIP: pip install anthropic")
+    sys.exit(2)
 import flightdeck_sensor
 from flightdeck_sensor import Provider
 from _helpers import init_sensor, print_result
@@ -46,26 +48,38 @@ def main() -> None:
     # degrade_at_pct=1 so the first call already crosses the threshold.
     # Per Decision 1, POLICY_DEGRADE fires ONCE per arm regardless of
     # how many subsequent calls land.
-    policy = _api("POST", "/v1/policies", {
-        "scope": "flavor", "scope_value": flavor,
-        "token_limit": 1000,
-        "warn_at_pct": 1, "degrade_at_pct": 2, "block_at_pct": 99,
-        "degrade_to": haiku,
-    })
+    policy = _api(
+        "POST",
+        "/v1/policies",
+        {
+            "scope": "flavor",
+            "scope_value": flavor,
+            "token_limit": 1000,
+            "warn_at_pct": 1,
+            "degrade_at_pct": 2,
+            "block_at_pct": 99,
+            "degrade_to": haiku,
+        },
+    )
     try:
         init_sensor(session_id, flavor=flavor)
         flightdeck_sensor.patch(providers=[Provider.ANTHROPIC], quiet=True)
-        print(f"[playground:policy_forced_degrade] session_id={session_id} flavor={flavor}")
+        print(
+            f"[playground:policy_forced_degrade] session_id={session_id} flavor={flavor}"
+        )
         c = anthropic.Anthropic()
         N = 6
         for i in range(N):
             t0 = time.monotonic()
             r = c.messages.create(
-                model=sonnet, max_tokens=5,
+                model=sonnet,
+                max_tokens=5,
                 messages=[{"role": "user", "content": "hi"}],
             )
             print_result(
-                f"call {i+1}", True, int((time.monotonic() - t0) * 1000),
+                f"call {i + 1}",
+                True,
+                int((time.monotonic() - t0) * 1000),
                 f"model={r.model}",
             )
         flightdeck_sensor.teardown()
@@ -97,7 +111,9 @@ def main() -> None:
         # actual proof that the directive landed and was applied.
         swap_landed = haiku_calls >= 1
         print_result(
-            "post_call.model swapped to haiku at least once", swap_landed, 0,
+            "post_call.model swapped to haiku at least once",
+            swap_landed,
+            0,
             f"post_calls={len(post_calls)} haiku_calls={haiku_calls} "
             f"(per-call swap visible via post_call.model only)",
         )

@@ -6,11 +6,11 @@ demos 22 (CrewAI via mcpadapt) and 23/24 (LangGraph + LangChain via
 langchain-mcp-adapters) exercise. Drift surface is independent: a
 LlamaIndex-internal change to how ``BasicMCPClient`` /
 ``McpToolSpec`` invokes the underlying MCP ``ClientSession`` could
-silently bypass the sensor's ``ClientSession.call_tool`` patch
-(D117). This demo exercises the explicit FunctionAgent path so a
+silently bypass the sensor's ``ClientSession.call_tool`` patch.
+This demo exercises the explicit FunctionAgent path so a
 future SDK shift is caught by the playground gate.
 
-Three sub-scenarios run back-to-back per Step 6.5 PR Part A spec:
+Three sub-scenarios run back-to-back:
 
   1. WARN  — flavor deny entry with enforcement=warn. Tool call
      completes; ``policy_mcp_warn`` event lands.
@@ -67,7 +67,7 @@ for _modname in (
         )
         sys.exit(2)
 
-from _helpers import (
+from _helpers import (  # noqa: E402  (after the optional-dependency guard above)
     API_URL,
     fetch_events_for_session,
     init_sensor,
@@ -76,7 +76,7 @@ from _helpers import (
     wait_for_dev_stack,
 )
 
-import flightdeck_sensor
+import flightdeck_sensor  # noqa: E402  (after the optional-dependency guard above)
 
 
 def _admin_headers(content_type: str | None = None) -> dict[str, str]:

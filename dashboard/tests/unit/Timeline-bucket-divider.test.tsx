@@ -118,15 +118,15 @@ const defaultProps = {
 describe("Timeline bucket dividers — parent-child cluster integrity", () => {
   it("renders no bucket-divider between a LIVE parent and its RECENT-bucket sub-agent", () => {
     // Parent in LIVE bucket (5s ago); child in RECENT bucket (2 min ago).
-    // Pre-fix the loop saw the bucket transition mid-cluster and
-    // injected a horizontal line. Post-fix children inherit their
+    // Guarded regression: the loop saw the bucket transition mid-cluster and
+    // injected a horizontal line. Now children inherit their
     // parent's cluster scope so no divider appears.
     const flavors = buildClusteredFleet(seconds(5), 1, minutes(2));
 
     renderWithRouter(<Timeline {...defaultProps} flavors={flavors} />);
 
     // The divider is the cross-bucket transition. With one parent
-    // and one child in different buckets, the pre-fix loop would
+    // and one child in different buckets, the regressed loop would
     // have rendered exactly one divider. Asserting zero confirms
     // the cluster reads as a single visual unit.
     const dividers = screen.queryAllByTestId(/bucket-divider-/);
@@ -137,7 +137,7 @@ describe("Timeline bucket dividers — parent-child cluster integrity", () => {
     // Mirrors the supervisor's reported scenario: omria@Omri-PC with
     // 5 named sub-agents (qa-engineer, architect, python-principal,
     // go-principal, ts-principal) where the parent is active and
-    // every child closed. Pre-fix this rendered five spurious
+    // every child closed. The guarded regression rendered five spurious
     // dividers (one between each parent-child boundary plus
     // between consecutive children if they crossed bucket lines).
     const flavors = buildClusteredFleet(seconds(5), 5, minutes(2));
@@ -221,7 +221,7 @@ describe("Timeline bucket dividers — parent-child cluster integrity", () => {
     // Build a list with TWO independent live→recent transitions:
     //   liveA, recentA, liveB, recentB
     // Each transition emits its own divider; both must coexist in
-    // the rendered DOM (pre-fix React deduped by colliding keys).
+    // the rendered DOM (the guarded regression: React deduped by colliding keys).
     const liveA: FlavorSummary = {
       flavor: "live-A",
       agent_id: "live-A",
@@ -257,9 +257,9 @@ describe("Timeline bucket dividers — parent-child cluster integrity", () => {
     );
 
     // Two separate live→recent transitions plus one recent→live in
-    // between (recentA → liveB). Three dividers in total. Pre-fix
-    // the two live→recent dividers shared a key and React dropped
-    // one silently; post-fix all three coexist.
+    // between (recentA → liveB). Three dividers in total. In the
+    // guarded regression the two live→recent dividers shared a key
+    // and React dropped one silently; now all three coexist.
     const dividers = screen.queryAllByTestId(/bucket-divider-/);
     expect(dividers).toHaveLength(3);
   });

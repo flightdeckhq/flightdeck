@@ -270,11 +270,11 @@ function SwimLaneComponent({
 					// .swimlane-row-label { padding-left: 28px }``
 					// rule in globals.css). Setting a flat 12 px
 					// here would silently kill the child-row indent
-					// (the regression D157 shipped — child swimlanes
+					// (a regression once shipped where child swimlanes
 					// rendered flush with parents instead of 16 px
 					// inset under the parent's left edge). Mirrors
 					// the same inline-override pattern AgentTableRow
-					// used pre-D163.
+					// used before the shared table primitive.
 					paddingLeft: topology === "child" ? 28 : 12,
 					paddingRight: BADGE_RESERVED_ZONE_PX,
 				}}
@@ -401,8 +401,8 @@ function SwimLaneComponent({
 				    right edge so it always reads as a fully visible
 				    anchor even when the strip's flex content (name
 				    + pills + icons + topology pill) overflows the
-				    strip width — the pre-fix in-flex ``ml-auto``
-				    placement let a wide topology pill push the badge
+				    strip width — an in-flex ``ml-auto``
+				    placement would let a wide topology pill push the badge
 				    past the strip's right edge, where
 				    ``overflow: hidden`` either clipped it entirely
 				    or left it crowded by the first event circle in

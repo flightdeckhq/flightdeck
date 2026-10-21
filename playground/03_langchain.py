@@ -23,6 +23,7 @@ The sensor patches ``ClientSession`` directly so every adapter-routed
 tool invocation produces an ``mcp_tool_call`` event with the
 ``transport=stdio`` attribution intact.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -77,12 +78,15 @@ def _run_embeddings_and_attribution(session_id: str) -> None:
     t0 = time.monotonic()
     OpenAIEmbeddings(model="text-embedding-3-small").embed_documents([payload])
     print_result(
-        "OpenAIEmbeddings.embed_documents", True,
+        "OpenAIEmbeddings.embed_documents",
+        True,
         int((time.monotonic() - t0) * 1000),
     )
 
     events = fetch_events_for_session(
-        session_id, expect_event_types=["embeddings"], timeout_s=8.0,
+        session_id,
+        expect_event_types=["embeddings"],
+        timeout_s=8.0,
     )
     embed = next((e for e in events if e.get("event_type") == "embeddings"), None)
     if embed is None:
@@ -101,8 +105,12 @@ def _run_embeddings_and_attribution(session_id: str) -> None:
         raise AssertionError(
             f"expected non-empty list input; got {captured!r}",
         )
-    print_result("embeddings capture round-trip", True, 0,
-                 f"captured shape: list of {len(captured)} item(s)")
+    print_result(
+        "embeddings capture round-trip",
+        True,
+        0,
+        f"captured shape: list of {len(captured)} item(s)",
+    )
 
     # Framework attribution lives on the SESSION row.
     req = urllib.request.Request(
@@ -113,7 +121,9 @@ def _run_embeddings_and_attribution(session_id: str) -> None:
         session_body = json.loads(r.read()).get("session") or {}
     fw = session_body.get("framework")
     print_result(
-        "session.framework attribution", fw == "langchain", 0,
+        "session.framework attribution",
+        fw == "langchain",
+        0,
         f"framework={fw!r}",
     )
     if fw != "langchain":
@@ -154,7 +164,8 @@ def _run_mcp(session_id: str) -> None:
         t0 = time.monotonic()
         tools = await client.get_tools()
         print_result(
-            "MultiServerMCPClient.get_tools", True,
+            "MultiServerMCPClient.get_tools",
+            True,
             int((time.monotonic() - t0) * 1000),
             f"{len(tools)} tools exposed as LangChain tools",
         )
@@ -167,7 +178,9 @@ def _run_mcp(session_id: str) -> None:
         t0 = time.monotonic()
         await echo.ainvoke({"text": "hello from langchain playground"})
         print_result(
-            "echo.ainvoke", True, int((time.monotonic() - t0) * 1000),
+            "echo.ainvoke",
+            True,
+            int((time.monotonic() - t0) * 1000),
         )
 
     asyncio.run(run())
@@ -188,8 +201,12 @@ def _run_mcp(session_id: str) -> None:
     # carries has_content=true to signal operators to fetch.
     args_ok = tcs[-1].get("has_content") is True and "arguments" not in payload
     print_result("mcp payload.server_name", server_ok, 0)
-    print_result("mcp payload.transport", transport_ok, 0,
-                 f"transport={payload.get('transport')!r}")
+    print_result(
+        "mcp payload.transport",
+        transport_ok,
+        0,
+        f"transport={payload.get('transport')!r}",
+    )
     print_result("mcp args captured to event_content (not inline)", args_ok, 0)
     if not (server_ok and transport_ok and args_ok):
         raise AssertionError(f"mcp_tool_call payload mismatch: {tcs[-1]!r}")

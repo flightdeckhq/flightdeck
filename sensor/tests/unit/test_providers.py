@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import typing
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -313,7 +314,170 @@ def test_anthropic_stop_reason_from_stream_chunk_reads_message_delta_only() -> N
     assert provider.stop_reason_from_stream_chunk(None) is None
 
 
-def test_openai_and_litellm_report_no_stop_reason() -> None:
-    for provider in (OpenAIProvider(), LitellmProvider()):
-        assert provider.response_stop_reason(_Plain(stop_reason="refusal")) is None
-        assert provider.stop_reason_from_stream_chunk(_Plain(type="message_delta")) is None
+def test_anthropic_response_stop_reason_fails_open_on_raising_accessors() -> None:
+    provider = AnthropicProvider()
+
+    class _RaisingParse:
+        def parse(self) -> Any:
+            raise RuntimeError("parse detonates")
+
+    class _RaisingStopReason:
+        @property
+        def stop_reason(self) -> str:
+            raise RuntimeError("stop_reason detonates")
+
+    class _RaisingSnapshot:
+        stop_reason = "refusal"
+
+        @property
+        def current_message_snapshot(self) -> Any:
+            raise RuntimeError("snapshot detonates")
+
+    assert provider.response_stop_reason(_RaisingParse()) is None
+    assert provider.response_stop_reason(_RaisingStopReason()) is None
+    # A snapshot that cannot be read leaves the object itself to answer.
+    assert provider.response_stop_reason(_RaisingSnapshot()) == "refusal"
+
+
+def test_adapters_carry_their_wire_names() -> None:
+    assert AnthropicProvider.name == "anthropic"
+    assert OpenAIProvider.name == "openai"
+    assert LitellmProvider.name == "litellm"
+
+
+def _chat_completion(finish_reason: str, refusal: str | None = None) -> Any:
+    from openai.types.chat import ChatCompletion
+
+    return ChatCompletion.model_validate(
+        {
+            "id": "c",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "gpt-5.5",
+            "choices": [
+                {
+                    "index": 0,
+                    "finish_reason": finish_reason,
+                    "message": {"role": "assistant", "content": None, "refusal": refusal},
+                }
+            ],
+        }
+    )
+
+
+def _responses_dict(status: str, reason: str | None) -> dict[str, Any]:
+    return {
+        "id": "r",
+        "object": "response",
+        "created_at": 1.0,
+        "model": "gpt-5.5",
+        "status": status,
+        "output": [],
+        "parallel_tool_calls": True,
+        "tool_choice": "auto",
+        "tools": [],
+        "incomplete_details": {"reason": reason} if reason else None,
+    }
+
+
+def test_openai_response_stop_reason_reads_chat_finish_reason_and_refusal() -> None:
+    provider = OpenAIProvider()
+    assert provider.response_stop_reason(_chat_completion("content_filter")) == "content_filter"
+    assert provider.response_stop_reason(_chat_completion("stop", refusal="No.")) == "refusal"
+    assert provider.response_stop_reason(_chat_completion("stop")) == "stop"
+    assert provider.response_stop_reason(_chat_completion("length")) == "length"
+    # An Anthropic-shaped object, an embeddings response, nothing at all.
+    assert provider.response_stop_reason(_Plain(stop_reason="refusal")) is None
+    assert provider.response_stop_reason(_Plain(data=[], usage=_Plain(prompt_tokens=1))) is None
+    assert provider.response_stop_reason(None) is None
+
+
+def test_openai_response_stop_reason_reads_incomplete_responses() -> None:
+    from openai.types.responses import Response
+
+    provider = OpenAIProvider()
+    filtered = Response.model_validate(_responses_dict("incomplete", "content_filter"))
+    assert provider.response_stop_reason(filtered) == "content_filter"
+    truncated = Response.model_validate(_responses_dict("incomplete", "max_output_tokens"))
+    assert provider.response_stop_reason(truncated) == "max_output_tokens"
+    done = Response.model_validate(_responses_dict("completed", None))
+    assert provider.response_stop_reason(done) is None
+
+
+def test_openai_response_stop_reason_parses_raw_wrappers() -> None:
+    provider = OpenAIProvider()
+    wrapper = _Plain(parse=lambda: _chat_completion("content_filter"))
+    assert provider.response_stop_reason(wrapper) == "content_filter"
+
+
+def test_openai_stop_reason_from_stream_chunk() -> None:
+    from openai.types.chat import ChatCompletionChunk
+    from openai.types.responses import ResponseIncompleteEvent
+
+    provider = OpenAIProvider()
+
+    def chunk(finish_reason: str | None, content: str | None = None) -> ChatCompletionChunk:
+        return ChatCompletionChunk.model_validate(
+            {
+                "id": "c",
+                "object": "chat.completion.chunk",
+                "created": 1,
+                "model": "gpt-5.5",
+                "choices": [
+                    {"index": 0, "delta": {"content": content}, "finish_reason": finish_reason}
+                ],
+            }
+        )
+
+    assert provider.stop_reason_from_stream_chunk(chunk("content_filter")) == "content_filter"
+    assert provider.stop_reason_from_stream_chunk(chunk(None, "hi")) is None
+    assert provider.stop_reason_from_stream_chunk(chunk("stop")) == "stop"
+    incomplete = ResponseIncompleteEvent.model_validate(
+        {
+            "type": "response.incomplete",
+            "sequence_number": 7,
+            "response": _responses_dict("incomplete", "content_filter"),
+        }
+    )
+    assert provider.stop_reason_from_stream_chunk(incomplete) == "content_filter"
+    assert provider.stop_reason_from_stream_chunk(_Plain(type="response.completed")) is None
+    assert provider.stop_reason_from_stream_chunk(None) is None
+
+
+def test_litellm_stop_reason_reads_finish_reason_on_response_and_chunk() -> None:
+    from litellm.types.utils import ModelResponse, ModelResponseStream
+
+    provider = LitellmProvider()
+    filtered = ModelResponse(
+        choices=[
+            {
+                "index": 0,
+                "finish_reason": "content_filter",
+                "message": {"role": "assistant", "content": ""},
+            }
+        ]
+    )
+    assert provider.response_stop_reason(filtered) == "content_filter"
+    done = ModelResponse(
+        choices=[
+            {"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "hi"}}
+        ]
+    )
+    assert provider.response_stop_reason(done) == "stop"
+    chunk = ModelResponseStream(
+        choices=[
+            {
+                "index": 0,
+                "finish_reason": "content_filter",
+                "delta": {"role": "assistant", "content": ""},
+            }
+        ]
+    )
+    assert provider.stop_reason_from_stream_chunk(chunk) == "content_filter"
+    mid = ModelResponseStream(
+        choices=[
+            {"index": 0, "finish_reason": None, "delta": {"role": "assistant", "content": "hi"}}
+        ]
+    )
+    assert provider.stop_reason_from_stream_chunk(mid) is None
+    assert provider.response_stop_reason(_Plain(stop_reason="refusal")) is None

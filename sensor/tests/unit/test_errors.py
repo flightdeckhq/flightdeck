@@ -8,11 +8,15 @@ concrete test failure rather than silent drift to ``error_type="other"``.
 
 from __future__ import annotations
 
+import json
+import logging
+import time
 from typing import Any
 
 import pytest
 
 from flightdeck_sensor.core.errors import (
+    _MESSAGE_HINT_MAX_CHARS,
     NON_SUCCESS_STOP_REASONS,
     OTEL_ERROR_TYPE,
     STOP_REASON_HTTP_STATUS,
@@ -633,3 +637,126 @@ def test_stop_reason_payload_has_the_llm_error_wire_shape() -> None:
         "retry_after": None,
         "is_retryable": False,
     }
+
+
+def test_content_filter_stop_reason_classifies_as_content_filter() -> None:
+    # OpenAI chat and litellm finish_reason, and the reason of a Responses
+    # call left incomplete by the content filter.
+    c = classify_stop_reason("content_filter", provider="openai")
+    assert c is not None
+    assert c.error_type is ErrorType.CONTENT_FILTER
+    assert c.provider == "openai"
+    assert c.http_status == 200
+
+
+@pytest.mark.parametrize("reason", ["length", "max_output_tokens", "max_tokens", "stop"])
+def test_truncation_and_normal_finish_reasons_are_success(reason: str) -> None:
+    assert classify_stop_reason(reason, provider="openai") is None
+
+
+# ---------------------------------------------------------------------------
+# Billing-phrase match: Anthropic only, phrases only, bounded, never stored
+# ---------------------------------------------------------------------------
+
+
+def test_billing_phrase_match_is_gated_to_anthropic() -> None:
+    # The same spend-limit wording on another provider's 429 stays a
+    # retryable rate limit: only Anthropic hides billing under 429 / 400.
+    for module in ("openai", "litellm.exceptions", "some.vendor"):
+        exc = _mk("RateLimitError", module=module, status=429, message="spend limit reached")
+        c = classify_exception(exc)
+        assert c.error_type is ErrorType.RATE_LIMIT, module
+        assert c.is_retryable is True
+
+
+def test_per_minute_quota_message_stays_rate_limit() -> None:
+    # A litellm / Vertex per-minute quota is a genuine rate limit.
+    exc = _mk(
+        "RateLimitError",
+        module="litellm.exceptions",
+        status=429,
+        message="Quota exceeded for online_prediction_requests_per_base_model per minute",
+    )
+    c = classify_exception(exc)
+    assert c.error_type is ErrorType.RATE_LIMIT
+    assert c.is_retryable is True
+    # From Anthropic too: "quota" alone is not a billing phrase.
+    exc = _mk("RateLimitError", status=429, message="Quota exceeded per minute")
+    assert classify_exception(exc).error_type is ErrorType.RATE_LIMIT
+
+
+def test_caller_identifiers_with_billing_words_stay_invalid_request() -> None:
+    # A 400 echoes caller-supplied names back; single words must not match.
+    for module in ("openai", "anthropic"):
+        exc = _mk(
+            "BadRequestError",
+            module=module,
+            status=400,
+            code="invalid_request_error",
+            message="tools[0].name 'get_billing_info' and schema 'monthly_report' are invalid",
+        )
+        assert classify_exception(exc).error_type is ErrorType.INVALID_REQUEST, module
+
+
+def test_billing_phrase_is_not_read_outside_400_and_429() -> None:
+    # A 500 whose message mentions a spend limit is still an api_error.
+    exc = _mk("InternalServerError", status=500, message="spend limit service unavailable")
+    assert classify_exception(exc).error_type is ErrorType.API_ERROR
+
+
+def test_billing_phrase_match_is_capped_and_never_raises_on_hostile_messages() -> None:
+    # A phrase past the cap is not seen: bounded work on a huge message.
+    huge = "x" * (4 * 1024 * 1024) + " credit balance is too low"
+    started = time.perf_counter()
+    c = classify_exception(_mk("BadRequestError", status=400, message=huge))
+    assert time.perf_counter() - started < 2.0
+    assert c.error_type is ErrorType.INVALID_REQUEST
+    # A phrase within the cap is seen.
+    within = "y" * (_MESSAGE_HINT_MAX_CHARS - 40) + " credit balance is too low"
+    c = classify_exception(_mk("BadRequestError", status=400, message=within))
+    assert c.error_type is ErrorType.QUOTA_EXCEEDED
+
+    # Non-string message attributes fall through to the class verdict.
+    odd = _mk("BadRequestError", status=400)
+    odd.message = 42  # type: ignore[attr-defined]
+    odd.body = {"error": {"message": ["not", "a", "string"]}}  # type: ignore[attr-defined]
+    assert classify_exception(odd).error_type is ErrorType.INVALID_REQUEST
+
+    class _Raising(Exception):
+        __module__ = "anthropic"
+
+        @property
+        def body(self) -> Any:
+            raise RuntimeError("body detonates")
+
+        @property
+        def message(self) -> Any:
+            raise RuntimeError("message detonates")
+
+        def __str__(self) -> str:
+            raise RuntimeError("str detonates")
+
+    raising = _Raising()
+    raising.status_code = 429  # type: ignore[attr-defined]
+    c = classify_exception(raising)
+    assert c.error_type is ErrorType.OTHER
+    assert c.error_message == "_Raising"
+
+
+def test_billing_message_text_lands_nowhere_when_capture_is_off(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sentinel = "SENTINEL-BILLING-7f3a"
+    exc = _mk(
+        "BadRequestError",
+        status=400,
+        code="invalid_request_error",
+        message=f"Your credit balance is too low ({sentinel}).",
+    )
+    with caplog.at_level(logging.DEBUG):
+        c = classify_exception(exc)
+    assert c.error_type is ErrorType.QUOTA_EXCEEDED
+    wire = json.dumps(ErrorPayload(classification=c).to_payload())
+    assert sentinel not in wire
+    assert "credit balance" not in wire
+    assert sentinel not in caplog.text

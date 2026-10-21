@@ -1,9 +1,11 @@
 """Error classification for LLM provider exceptions.
 
 LLM API errors are first-class structured events: :func:`classify_exception`
-maps a provider exception to a 14-entry taxonomy and
-:func:`build_error_payload` constructs the structured ``error`` sub-object
-attached to an :class:`EventType.LLM_ERROR` event.
+maps a provider exception to a 14-entry taxonomy,
+:func:`classify_stop_reason` maps the non-success stop reason of a
+response the provider answered with HTTP 200 onto the same taxonomy, and
+:class:`ErrorPayload` wraps a classification into the structured ``error``
+sub-object attached to an :class:`EventType.LLM_ERROR` event.
 
 The taxonomy is deliberately provider-agnostic. Each entry maps to the
 recommended OTel ``gen_ai.error.type`` value so an OpenTelemetry exporter
@@ -119,11 +121,13 @@ class ErrorClassification:
 # Classifier
 # ---------------------------------------------------------------------------
 
-# The classifier walks two signals: (a) the exception class name, which each
-# SDK namespaces consistently; (b) the HTTP status if the exception exposes
-# one. Class-name matching is deliberate -- we do NOT import the provider
-# SDKs here because the sensor must stay install-optional (a user with
-# ``openai`` but not ``anthropic`` installed cannot pay a hard import cost).
+# The classifier reads four signals: (a) the exception class name, which
+# each SDK namespaces consistently; (b) the HTTP status if the exception
+# exposes one; (c) the provider's error code; (d) the provider's message,
+# used for a keyword match only and never stored. Class-name matching is
+# deliberate -- we do NOT import the provider SDKs here because the sensor
+# must stay install-optional (a user with ``openai`` but not ``anthropic``
+# installed cannot pay a hard import cost).
 #
 # Exception class names (SDK, stdlib and httpx) that mean the request or
 # the response timed out. Shared with the stream guard, which reports such
@@ -191,23 +195,39 @@ _CLASS_TO_TYPE: list[tuple[tuple[str, ...], ErrorType]] = [
 ]
 
 
-# Message fragments a provider uses when the account, not the request, is
-# what failed: an organisation or per-user spend limit, an exhausted
-# prepaid balance, a billing hold. Anthropic reports these under the
-# generic error type of their status (429 rate_limit_error for the
-# organisation spend cap, 400 invalid_request_error for a user spend limit
-# or a too-low credit balance), so the message is the only signal that
-# separates them from a real rate limit or a malformed request. Matched
-# against the lower-cased message; the text itself is never stored here.
+# Phrases Anthropic uses when the account, not the request, is what
+# failed: an organisation or per-user spend limit, an exhausted prepaid
+# balance. Anthropic reports these under the generic error type of their
+# status (429 rate_limit_error for the organisation spend cap, 400
+# invalid_request_error for a user spend limit or a too-low credit
+# balance), so the message is the only signal that separates them from a
+# real rate limit or a malformed request. Multi-word phrases only: a
+# single word such as "billing", "quota" or "monthly" also occurs in
+# caller-supplied identifiers a 400 echoes back (a schema named
+# monthly_report, a tool get_billing_info) and in per-minute quota
+# messages that are genuine rate limits. Matched against the lower-cased
+# message of Anthropic exceptions only; the text itself is never stored.
 _BILLING_MESSAGE_HINTS: tuple[str, ...] = (
     "spend limit",
     "spending limit",
     "spend cap",
     "credit balance",
-    "billing",
-    "quota",
-    "monthly",
 )
+
+# Statuses under which Anthropic reports a billing condition with a
+# generic error type, so the message is consulted; under every other
+# status the class and status decide and the message is never read.
+_MESSAGE_HINT_STATUSES: frozenset[int] = frozenset({400, 429})
+
+# Only the first 2 KiB of a provider message is inspected for a billing
+# phrase. The phrases open every known message, a provider message is
+# normally well under 1 KiB, and the cap bounds the work the hot path
+# does on a pathological multi-megabyte message: the slice is taken
+# before lower-casing, so neither copy is larger than the cap.
+_MESSAGE_HINT_MAX_CHARS = 2048
+
+# The provider whose messages the billing-phrase match applies to.
+_MESSAGE_HINT_PROVIDER = "anthropic"
 
 
 def _mentions_billing(message_hint: str) -> bool:
@@ -324,11 +344,17 @@ def classify_exception(
                 if cls_name in names:
                     base = etype
                     break
+            # The message is read only where it can change the verdict:
+            # an Anthropic 400 or 429. A status-less, foreign or huge
+            # exception pays nothing for it.
+            message_hint = ""
+            if provider == _MESSAGE_HINT_PROVIDER and http_status in _MESSAGE_HINT_STATUSES:
+                message_hint = _extract_message_hint(exc)
             base = _override_from_status_and_code(
                 base,
                 http_status,
                 provider_error_code,
-                _extract_message_hint(exc),
+                message_hint,
             )
 
         message = _redacted_message(exc, cls_name, capture_prompts=capture_prompts)
@@ -358,17 +384,27 @@ def classify_exception(
 
 
 # ---------------------------------------------------------------------------
-# Non-success stop reasons. Anthropic answers HTTP 200 with
-# ``stop_reason="refusal"`` when its safety classifiers decline the request
-# and ``"model_context_window_exceeded"`` when the context window runs out
-# mid-response. Neither is a completed call from the operator's point of
-# view, so the interceptor files an llm_error beside the post_call (the
-# call was billed, so the post_call keeps its usage).
+# Non-success stop reasons. A provider can answer HTTP 200 with a stop
+# reason that still means the call did not succeed: Anthropic's
+# ``refusal`` (its safety classifiers declined) and
+# ``model_context_window_exceeded`` (the context window ran out
+# mid-response), OpenAI's and litellm's ``content_filter`` finish reason.
+# None is a completed call from the operator's point of view, so the
+# interceptor files an llm_error beside the post_call (the call was billed,
+# so the post_call keeps its usage). A truncated response (``max_tokens``,
+# ``length``, ``max_output_tokens``) is a success: the text is valid, just
+# cut short, and the caller sees that on the response itself.
 # ---------------------------------------------------------------------------
 
 NON_SUCCESS_STOP_REASONS: dict[str, ErrorType] = {
+    # Anthropic stop_reason; also an OpenAI structured-output refusal
+    # (message.refusal), which the OpenAI adapter reports under this key.
     "refusal": ErrorType.CONTENT_FILTER,
+    # Anthropic stop_reason.
     "model_context_window_exceeded": ErrorType.CONTEXT_OVERFLOW,
+    # OpenAI chat and litellm finish_reason, and the reason of an OpenAI
+    # Responses call left incomplete by the content filter.
+    "content_filter": ErrorType.CONTENT_FILTER,
 }
 
 # The HTTP status recorded on a stop-reason classification. The provider
@@ -384,7 +420,7 @@ def classify_stop_reason(
     provider: str,
     request_id: str | None = None,
 ) -> ErrorClassification | None:
-    """Classify a provider's end-of-response reason.
+    """Classify a provider's stop reason.
 
     Returns ``None`` for every reason that is not in
     :data:`NON_SUCCESS_STOP_REASONS` (``end_turn``, ``max_tokens``,
@@ -474,9 +510,10 @@ def _extract_provider_error_code(exc: BaseException) -> str | None:
 
 
 def _extract_message_hint(exc: BaseException) -> str:
-    """Lower-cased provider message for keyword matching only. It is never
-    stored: ``error_message`` goes through :func:`_redacted_message`, which
-    keeps the capture-off posture. Empty string on any failure."""
+    """The first ``_MESSAGE_HINT_MAX_CHARS`` of the provider message,
+    lower-cased, for phrase matching only. It is never stored:
+    ``error_message`` goes through :func:`_redacted_message`, which keeps
+    the capture-off posture. Empty string on any failure."""
     try:
         body = getattr(exc, "body", None)
         if isinstance(body, dict):
@@ -484,11 +521,11 @@ def _extract_message_hint(exc: BaseException) -> str:
             if isinstance(err, dict):
                 msg = err.get("message")
                 if isinstance(msg, str) and msg:
-                    return msg.lower()
+                    return msg[:_MESSAGE_HINT_MAX_CHARS].lower()
         msg = getattr(exc, "message", None)
         if isinstance(msg, str) and msg:
-            return msg.lower()
-        return str(exc).lower()
+            return msg[:_MESSAGE_HINT_MAX_CHARS].lower()
+        return str(exc)[:_MESSAGE_HINT_MAX_CHARS].lower()
     except Exception:
         return ""
 

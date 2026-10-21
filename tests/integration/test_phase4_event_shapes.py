@@ -116,6 +116,49 @@ def test_llm_error_event_roundtrips_with_structured_error() -> None:
     assert payload_error["request_id"] == "req_abc123"
 
 
+def test_stop_reason_llm_error_roundtrips_with_http_200() -> None:
+    """An llm_error the sensor derives from a 200 response (a refusal or
+    content-filter stop reason) carries http_status 200 and terminal
+    true; the pipeline stores and serves it like any other error."""
+    sid = str(uuid.uuid4())
+    flavor = f"test-phase4-stopreason-{uuid.uuid4().hex[:6]}"
+
+    post_event(make_event(sid, flavor, "session_start"))
+    wait_until(
+        lambda: session_exists_in_fleet(sid), timeout=10,
+        msg=f"session {sid} did not appear",
+    )
+
+    error_payload = {
+        "error_type": "content_filter",
+        "provider": "anthropic",
+        "http_status": 200,
+        "provider_error_code": "refusal",
+        "error_message": "stop_reason=refusal",
+        "request_id": "req_refusal_1",
+        "retry_after": None,
+        "is_retryable": False,
+    }
+    post_event(make_event(
+        sid, flavor, "llm_error",
+        model="claude-sonnet-4-6",
+        latency_ms=80,
+        error=error_payload,
+        retry_attempt=1,
+        terminal=True,
+    ))
+    _wait_for_event_count(sid, 2)
+    events = _fetch_session_events(sid)
+    err_evt = next((e for e in events if e["event_type"] == "llm_error"), None)
+    assert err_evt is not None, f"no llm_error event in {events!r}"
+    payload = err_evt.get("payload", {})
+    assert payload["terminal"] is True
+    assert payload["error"]["error_type"] == "content_filter"
+    assert payload["error"]["http_status"] == 200
+    assert payload["error"]["provider_error_code"] == "refusal"
+    assert payload["error"]["is_retryable"] is False
+
+
 def test_streaming_post_call_preserves_ttft_and_chunk_stats() -> None:
     sid = str(uuid.uuid4())
     flavor = f"test-phase4-stream-{uuid.uuid4().hex[:6]}"

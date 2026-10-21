@@ -43,6 +43,7 @@ class AnthropicProvider:
     exceptions -- failures return zero/empty defaults.
     """
 
+    name = "anthropic"
     _client: Any = None
 
     def __init__(self, capture_prompts: bool = False) -> None:

@@ -411,7 +411,7 @@ class _GuardCore:
         self._exhausted = False
         self._finalized = False
         self._saw_terminal_chunk = False
-        # The end-of-response reason a streamed event announced (a raw
+        # The stop reason a streamed event announced (a raw
         # stream has no final message to read it from at settle time).
         self._stop_reason: str | None = None
         self._hooks_failed: set[str] = set()
@@ -1309,7 +1309,7 @@ def _post_call(
     :class:`GuardedStream`. Omitted entirely for non-streaming calls so the
     wire shape stays identical for non-streaming calls.
 
-    ``stop_reason`` is the end-of-response reason a stream guard read from
+    ``stop_reason`` is the stop reason a stream guard read from
     the streamed events; when ``None`` the provider is asked to read it
     from the response. A reason that means the call did not succeed files
     an llm_error beside the post_call.
@@ -1474,7 +1474,9 @@ def _post_call(
     # the session's terminal-error flag see it; the post_call stays
     # because the call was billed and its usage must count.
     if event_type == EventType.POST_CALL:
-        _emit_stop_reason_error(session, provider, response, resp_model, latency_ms, stop_reason)
+        _emit_stop_reason_error(
+            session, provider, response, resp_model, latency_ms, stop_reason, prov_meta
+        )
 
     # Emit one tool_call event per tool invocation in the response.
     # Supplementary to post_call (not a replacement) so dashboards can
@@ -1629,14 +1631,26 @@ def _enqueue_error_event(
     session.event_queue.enqueue(payload)
 
 
-def _provider_label(provider: Provider) -> str:
-    """The provider's wire name derived from its adapter class
-    (``AnthropicProvider`` -> ``anthropic``): the adapters carry no name
-    attribute and a stop reason has no exception module to infer from."""
+def _provider_name(provider: Provider) -> str:
+    """The adapter's wire name; ``unknown`` for an adapter that carries
+    none (a stop reason has no exception module to infer it from)."""
     name = getattr(provider, "name", None)
-    if isinstance(name, str) and name:
-        return name
-    return type(provider).__name__.removesuffix("Provider").lower() or "unknown"
+    return name if isinstance(name, str) and name else "unknown"
+
+
+def _response_request_id(response: Any, prov_meta: dict[str, Any] | None) -> str | None:
+    """The provider's request id of a 200 response: the SDK stamps it on
+    the parsed object as ``_request_id``; a raw-response wrapper exposes
+    it through the headers the provider metadata already read."""
+    with contextlib.suppress(Exception):
+        stamped = getattr(response, "_request_id", None)
+        if isinstance(stamped, str) and stamped:
+            return stamped
+    if prov_meta:
+        from_headers = prov_meta.get("request_id")
+        if isinstance(from_headers, str) and from_headers:
+            return from_headers
+    return None
 
 
 def _emit_stop_reason_error(
@@ -1646,16 +1660,23 @@ def _emit_stop_reason_error(
     model: str | None,
     latency_ms: int,
     stop_reason: str | None,
+    prov_meta: dict[str, Any] | None = None,
 ) -> None:
     """File an llm_error for a 200 response whose stop reason means the
     call did not succeed. ``stop_reason`` is what a stream guard saw in
-    the events; otherwise the provider reads it from the response. Never
-    raises and emits nothing for every success reason."""
+    the events; otherwise the provider reads it from the response. The
+    response's request id keys the per-provider retry counter, so two
+    refusals in one session are two attempts, not one chain. Never raises
+    and emits nothing for every success reason."""
     try:
         reason = stop_reason
         if reason is None:
             reason = provider.response_stop_reason(response)
-        classification = classify_stop_reason(reason, provider=_provider_label(provider))
+        classification = classify_stop_reason(
+            reason,
+            provider=_provider_name(provider),
+            request_id=_response_request_id(response, prov_meta),
+        )
         if classification is None:
             return
         _enqueue_error_event(session, provider, classification.to_payload(), model, latency_ms)

@@ -1,6 +1,6 @@
 """Direct Anthropic SDK -- sync, async, streaming (sync + async), beta.messages,
 plus invalid-model and request-timeout error-classification demos and a
-check that the estimator's fallback count_tokens model is still served.
+check that the estimator's default count_tokens model is still served.
 
 A developer using the raw `anthropic` package copies this file, drops
 in their own prompts, and has Flightdeck telemetry on every call. The
@@ -246,7 +246,7 @@ def main() -> None:
     if not timeout_err.get("is_retryable") or timeout_errors[-1]["payload"].get("terminal"):
         raise AssertionError(f"timeout error must be retryable and non-terminal: {timeout_err!r}")
 
-    # The estimator's fallback count_tokens model must still be served: a
+    # The estimator's default count_tokens model must still be served: a
     # request without ``model`` has to reach the SDK's count_tokens
     # (source "tiktoken"); a retired default makes it 404 and every such
     # estimate silently degrades to the char heuristic.

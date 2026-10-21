@@ -128,22 +128,24 @@ def _answered_body(raw: Any) -> Any | None:
     """The provider's answer behind a raw response whose parse failed, as
     a plain object the intercept can meter: the JSON body's fields
     (``usage``, ``model``, ``choices`` / ``output``) plus the response
-    ``headers``. ``None`` when the body is not a JSON object. Never
-    raises."""
+    ``headers``. ``None`` when the body is not a JSON object. A body key
+    named ``headers`` would collide with that attribute and is dropped.
+    Never raises."""
     try:
         body = json.loads(raw.text)
+        if not isinstance(body, dict):
+            return None
+        fields = {key: value for key, value in body.items() if key != "headers"}
+        return types.SimpleNamespace(**fields, headers=getattr(raw, "headers", None))
     except Exception:
         return None
-    if not isinstance(body, dict):
-        return None
-    return types.SimpleNamespace(**body, headers=getattr(raw, "headers", None))
 
 
 class _ParseOutcome:
     """What a wrapped ``parse()`` call kept aside for the intercept's
     caller: the exception a billed-but-failed parse raised (reported as
-    the ``llm_error`` once the ``post_call`` is out) and, on the
-    raw-response path, the raw response the caller still receives."""
+    the ``llm_error`` once the ``post_call`` is out) and the raw
+    response, which the raw-response path's caller still receives."""
 
     def __init__(self) -> None:
         self.exc: BaseException | None = None
@@ -157,13 +159,16 @@ def _call_parse(
     provider: OpenAIProvider,
     *,
     is_async: bool,
-    raw: bool = False,
+    return_raw: bool,
 ) -> Any:
-    """Run a ``parse()`` method through the non-streaming intercept.
+    """Run a raw-response ``parse`` closure through the non-streaming
+    intercept, parsing the response eagerly.
 
     ``parse()`` never streams: the SDK posts with ``stream=False`` and
     parses the completion into the caller's ``response_format`` /
-    ``text_format`` type.
+    ``text_format`` type. ``real_fn`` is the SDK's raw-response closure
+    for it, so the response reaches the sensor before the SDK parses it;
+    the parse runs here, and the SDK caches a successful one.
 
     A call the provider answered (HTTP 200) and billed, but that still
     failed for the caller, is reported as both: the ``post_call`` built
@@ -172,37 +177,35 @@ def _call_parse(
     ``post_call`` first, the wrapped ``real_fn`` hands that answer to the
     intercept as the response and keeps the exception aside; the error
     is emitted once the intercept has returned. The answer is the
-    completion the exception carries (``LengthFinishReasonError``); a
-    failure that carries none (``ContentFilterFinishReasonError``, a
-    schema failure) raises through the intercept and is reported as the
-    ``llm_error`` alone, since the direct path has no body to read.
+    completion the exception carries (``LengthFinishReasonError``) or
+    else the HTTP body (``ContentFilterFinishReasonError``, a schema
+    failure). When neither can be read (a 200 whose body is not a JSON
+    object) the exception raises through the intercept, which reports
+    the ``llm_error`` alone: a failed parse never lands as a
+    success-looking ``post_call``.
 
-    On the raw-response path (``raw=True``) the SDK returns the
-    ``LegacyAPIResponse`` unparsed and would only fail at the caller's
-    ``.parse()``, where the sensor cannot see it; the intercept parses
-    it eagerly (the SDK caches a successful parse), reports a failure
-    as above from the exception's completion or else from the HTTP
-    body, and still returns the raw response to the caller, whose own
-    ``.parse()`` raises as it would without the sensor. The direct path
-    re-raises the kept exception, as the SDK did.
+    With ``return_raw`` the caller gets the raw response, as from the
+    SDK's ``with_raw_response.parse()``, and its own ``.parse()`` raises
+    as it would without the sensor; otherwise the caller gets the parsed
+    object, or the SDK's exception, as from the plain ``parse()``.
     """
     outcome = _ParseOutcome()
 
     def _answered(response: Any) -> Any:
-        """The response the intercept meters: the raw response's parsed
-        form when that fails, the provider's answer stands in."""
-        if not raw:
-            return response
+        """What the intercept meters for a raw response: its parsed
+        form, or when parsing fails, the provider's answer."""
         try:
-            response.parse()
-            return response
+            parsed = response.parse()
         except Exception as exc:
-            outcome.exc = exc
-            outcome.raw = response
             answer = _billed_completion_of(exc)
             if answer is None:
                 answer = _answered_body(response)
-            return answer if answer is not None else response
+            if answer is None:
+                raise
+            outcome.exc = exc
+            outcome.raw = response
+            return answer
+        return response if return_raw else parsed
 
     def _failed(exc: Exception) -> Any:
         """The answer a failed call still carries, or re-raise."""
@@ -217,7 +220,7 @@ def _call_parse(
             return response
         latency_ms = int((time.monotonic() - t0) * 1000)
         base._emit_error(session, provider, outcome.exc, latency_ms, kwargs)
-        if outcome.raw is not None:
+        if return_raw:
             return outcome.raw
         raise outcome.exc
 
@@ -245,6 +248,32 @@ def _call_parse(
     t0 = time.monotonic()
     response = base.call(_wrapped, kwargs, session, provider)
     return _finish(response, t0)
+
+
+def _parse_via_raw(
+    resource: Any,
+    kwargs: dict[str, Any],
+    session: Session,
+    provider: OpenAIProvider,
+    *,
+    is_async: bool,
+) -> Any:
+    """``parse()`` on a chat-completions or Responses resource, fetched
+    through the resource's own raw-response closure so the sensor sees
+    the response before the SDK parses it (see :func:`_call_parse`). The
+    caller gets the parsed object, or the SDK's exception, exactly as
+    from the plain ``parse()``. A resource that is itself a raw-response
+    wrapper (a client reached through ``with_raw_response``) has no
+    ``with_raw_response`` of its own; its caller asked for the raw
+    response and gets it, as for ``create``."""
+    raw_resource = getattr(resource, "with_raw_response", None)
+    if raw_resource is None:
+        return _call_parse(
+            resource.parse, kwargs, session, provider, is_async=is_async, return_raw=True
+        )
+    return _call_parse(
+        raw_resource.parse, kwargs, session, provider, is_async=is_async, return_raw=False
+    )
 
 
 class SensorCompletions:
@@ -319,12 +348,13 @@ class SensorCompletions:
         Same pre/post intercept as a non-streaming ``create()``; the
         returned ``ParsedChatCompletion`` carries the usual ``usage`` and
         the request id the SDK stamps on it. A completion the provider
-        billed but the SDK could not parse (``LengthFinishReasonError``)
-        lands as a ``post_call`` followed by the ``llm_error``; see
+        billed but the SDK could not parse (``LengthFinishReasonError``,
+        ``ContentFilterFinishReasonError``, a schema failure) lands as a
+        ``post_call`` followed by the ``llm_error``; see
         :func:`_call_parse`.
         """
-        return _call_parse(
-            self._real.parse,
+        return _parse_via_raw(
+            self._real,
             kwargs,
             self._session,
             self._provider,
@@ -418,7 +448,7 @@ class _SensorRawResponseWrapper:
             self._session,
             self._provider,
             is_async=self._is_async,
-            raw=True,
+            return_raw=True,
         )
 
     def __getattr__(self, name: str) -> Any:
@@ -514,10 +544,12 @@ class SensorResponses:
 
         Same pre/post intercept as a non-streaming ``create()``; the
         returned ``ParsedResponse`` carries the usual ``usage`` and the
-        request id the SDK stamps on it.
+        request id the SDK stamps on it. A response that fails the
+        caller's ``text_format`` schema lands as a ``post_call`` followed
+        by the ``llm_error``; see :func:`_call_parse`.
         """
-        return _call_parse(
-            self._real.parse,
+        return _parse_via_raw(
+            self._real,
             kwargs,
             self._session,
             self._provider,

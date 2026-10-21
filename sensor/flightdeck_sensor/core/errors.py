@@ -17,7 +17,9 @@ Design rules baked in here:
 * ``error_message`` is redacted to the exception class name plus an
   optional short summary. The sensor never logs prompt content through
   an error event -- this module does not receive the prompt and does not
-  need to.
+  need to. The parse failures OpenAI's ``parse()`` raises after a billed
+  response (``_PARSE_FAILURE_DETAILS``) carry a sensor-authored summary
+  instead, under either capture posture.
 * ``is_retryable`` is set from the taxonomy, not from the provider's
   ``retry_after`` header. Retry strategy lives with the caller; this
   flag is a hint to operators viewing the error on the dashboard.
@@ -164,6 +166,19 @@ _PARSE_FAILURE_DETAILS: dict[str, tuple[str, str]] = {
         "the completion did not match the requested schema",
     ),
 }
+# Modules whose ``ValidationError`` is the SDK's structured-output parse
+# failing the caller's schema. A ``ValidationError`` from any other
+# module is some other library's failure and keeps its own
+# classification.
+_PYDANTIC_MODULE_PREFIXES: tuple[str, ...] = ("pydantic", "pydantic_core")
+
+
+def _parse_failure_details(cls_name: str, module: str) -> tuple[str, str] | None:
+    """The parse-failure code and message for an exception class, keyed
+    on pydantic's module for ``ValidationError``; ``None`` otherwise."""
+    if cls_name == "ValidationError" and not module.startswith(_PYDANTIC_MODULE_PREFIXES):
+        return None
+    return _PARSE_FAILURE_DETAILS.get(cls_name)
 
 
 class StreamOutcome(str, enum.Enum):
@@ -286,7 +301,9 @@ def classify_exception(
     ``_ERROR_MESSAGE_MAX_LEN`` chars). Capture posture is enforced here:
     content_filter exceptions echo the offending prompt fragment in
     their string representation, so capture-off must NOT pass that
-    string through.
+    string through. The exception: the parse failures in
+    ``_PARSE_FAILURE_DETAILS`` carry a sensor-authored message under
+    either posture, which echoes nothing from the provider.
 
     Never raises. An internal failure falls through to
     ``error_type="other"``.
@@ -298,7 +315,7 @@ def classify_exception(
 
         http_status = _extract_http_status(exc)
         provider_error_code = _extract_provider_error_code(exc)
-        parse_failure = _PARSE_FAILURE_DETAILS.get(cls_name)
+        parse_failure = _parse_failure_details(cls_name, module)
         if parse_failure is not None:
             if http_status is None:
                 http_status = _HTTP_STATUS_OK
@@ -470,7 +487,9 @@ def _redacted_message(
     (notably content_filter rejections), and that fragment is
     user-prompt content that capture-off must not forward to events.
     When True, returns ``f"{cls_name}: {str(exc)[:200]}"`` with newlines
-    replaced so the dashboard renders inline.
+    replaced so the dashboard renders inline. The parse failures in
+    ``_PARSE_FAILURE_DETAILS`` do not pass through here: their message
+    is sensor-authored under either posture.
     """
     if not capture_prompts:
         return cls_name

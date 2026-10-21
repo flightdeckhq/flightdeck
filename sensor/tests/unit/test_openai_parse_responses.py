@@ -19,12 +19,13 @@ import httpx
 import openai
 import pytest
 import respx
-from openai.types.chat import ChatCompletion, ChatCompletionChunk
-from openai.types.responses import Response
+from openai.types.chat import ChatCompletion, ChatCompletionChunk, ParsedChatCompletion
+from openai.types.responses import ParsedResponse, Response
 from pydantic import BaseModel, ValidationError
 
 import flightdeck_sensor
 from flightdeck_sensor.core.errors import ErrorType, classify_exception
+from flightdeck_sensor.core.exceptions import BudgetExceededError
 from flightdeck_sensor.core.policy import PolicyCache
 from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import SensorConfig, TokenUsage
@@ -591,6 +592,28 @@ def test_estimate_prices_inline_binary_payloads_at_a_fixed_allowance() -> None:
         assert 1_000 <= estimate < 1_200, estimate
 
 
+def test_estimate_counts_prose_that_starts_with_data_as_text() -> None:
+    provider = OpenAIProvider()
+    prose = "word " * 200
+    plain, _ = provider.estimate_tokens({"model": "gpt-4o-mini", "input": prose})
+    prefixed, _ = provider.estimate_tokens({"model": "gpt-4o-mini", "input": "data: " + prose})
+    # Only a base64 data URL is binary; "data:" prose is counted as text.
+    assert prefixed >= plain
+    assert prefixed < 1_000
+
+
+def test_large_data_prefixed_prompt_still_trips_the_pre_call_block() -> None:
+    session = _session()
+    session.policy = PolicyCache(token_limit=100_000, block_at_pct=50)
+    real = MagicMock()
+    responses = SensorResponses(real, session, OpenAIProvider())
+
+    with pytest.raises(BudgetExceededError):
+        responses.create(model="gpt-4o-mini", input="data: " + "x" * 3_000_000)
+
+    real.create.assert_not_called()
+
+
 def test_estimate_counts_responses_input_and_instructions() -> None:
     provider = OpenAIProvider()
     empty, _ = provider.estimate_tokens({"model": "gpt-4o-mini"})
@@ -680,7 +703,10 @@ def test_chat_parse_sync_is_metered_and_returns_the_parsed_completion(
 
     result = completions.parse(model="gpt-4o-mini", messages=MESSAGES, response_format=City)
 
+    # The caller gets exactly what the SDK's parse() returns.
+    assert isinstance(result, ParsedChatCompletion)
     assert result.choices[0].message.parsed == City(city="Paris")
+    assert result._request_id == REQUEST_ID
     (pc,) = _events_of(session, "post_call")
     assert (pc["tokens_input"], pc["tokens_output"], pc["tokens_cache_read"]) == (40, 7, 16)
     assert pc["provider_metadata"] == {"request_id": REQUEST_ID}
@@ -790,7 +816,9 @@ def test_chat_parse_length_failure_with_capture_stores_the_billed_completion(
 
 
 @respx.mock(base_url=BASE_URL)
-def test_chat_parse_content_filter_failure_emits_llm_error(respx_mock: respx.MockRouter) -> None:
+def test_chat_parse_content_filter_failure_meters_the_body_and_raises(
+    respx_mock: respx.MockRouter,
+) -> None:
     _mock_route(respx_mock, "/chat/completions", _chat_body(finish_reason="content_filter"))
     session = _session()
     completions = SensorCompletions(_sync_client().chat.completions, session, OpenAIProvider())
@@ -798,20 +826,22 @@ def test_chat_parse_content_filter_failure_emits_llm_error(respx_mock: respx.Moc
     with pytest.raises(openai.ContentFilterFinishReasonError):
         completions.parse(model="gpt-4o-mini", messages=MESSAGES, response_format=City)
 
-    # The exception carries no completion, so there is nothing billed to
-    # report: the llm_error alone.
-    assert _events_of(session, "post_call") == []
-    (err,) = _events_of(session, "llm_error")
+    # The exception carries no completion; the direct path fetches the
+    # raw response internally, so the billed body is still metered.
+    pc, err = _billed_then_failed(session)
+    assert (pc["tokens_input"], pc["tokens_output"]) == (40, 7)
+    assert pc["model"] == "gpt-4o-mini"
+    assert pc["provider_metadata"]["request_id"] == REQUEST_ID
     assert err["error"]["error_type"] == "content_filter"
     assert err["error"]["http_status"] == 200
     assert err["error"]["provider_error_code"] == "content_filter"
     assert err["terminal"] is True
     assert "partial_tokens_input" not in err["error"]
-    assert session.tokens_used == 0
+    assert session.tokens_used == 47
 
 
 @respx.mock(base_url=BASE_URL)
-def test_chat_parse_schema_failure_direct_path_is_llm_error_only(
+def test_chat_parse_schema_failure_direct_path_meters_the_body_and_raises(
     respx_mock: respx.MockRouter,
 ) -> None:
     _mock_route(respx_mock, "/chat/completions", _chat_body(content='{"town": "Paris"}'))
@@ -821,14 +851,116 @@ def test_chat_parse_schema_failure_direct_path_is_llm_error_only(
     with pytest.raises(ValidationError):
         completions.parse(model="gpt-4o-mini", messages=MESSAGES, response_format=City)
 
-    # The direct path has no body to meter once the SDK has raised.
-    assert _events_of(session, "post_call") == []
-    (err,) = _events_of(session, "llm_error")
+    pc, err = _billed_then_failed(session)
+    assert (pc["tokens_input"], pc["tokens_output"]) == (40, 7)
     assert err["error"]["error_type"] == "other"
     assert err["error"]["http_status"] == 200
     assert err["error"]["provider_error_code"] == "schema"
     assert err["terminal"] is True
+    assert session.tokens_used == 47
+
+
+@pytest.mark.parametrize(
+    ("body", "exc_type"),
+    [
+        (_chat_body(finish_reason="length"), openai.LengthFinishReasonError),
+        (_chat_body(finish_reason="content_filter"), openai.ContentFilterFinishReasonError),
+        (_chat_body(content='{"town": "Paris"}'), ValidationError),
+    ],
+    ids=["length", "content_filter", "schema"],
+)
+@respx.mock(base_url=BASE_URL)
+def test_direct_parse_failure_is_the_sdk_exception(
+    respx_mock: respx.MockRouter, body: dict[str, Any], exc_type: type[Exception]
+) -> None:
+    """Routing the direct path through the raw closure must not change
+    what the caller sees: the same exception type and message as the
+    unwrapped SDK raises for the same response."""
+    _mock_route(respx_mock, "/chat/completions", body)
+    with pytest.raises(exc_type) as sdk_raised:
+        _sync_client().chat.completions.parse(
+            model="gpt-4o-mini", messages=MESSAGES, response_format=City
+        )
+    session = _session()
+    completions = SensorCompletions(_sync_client().chat.completions, session, OpenAIProvider())
+
+    with pytest.raises(exc_type) as sensor_raised:
+        completions.parse(model="gpt-4o-mini", messages=MESSAGES, response_format=City)
+
+    assert type(sensor_raised.value) is type(sdk_raised.value)
+    assert str(sensor_raised.value) == str(sdk_raised.value)
+
+
+@respx.mock(base_url=BASE_URL)
+def test_direct_parse_success_returns_the_parsed_response(respx_mock: respx.MockRouter) -> None:
+    _mock_route(respx_mock, "/responses", _response_body([_message_item()]))
+    session = _session()
+    responses = SensorResponses(_sync_client().responses, session, OpenAIProvider())
+
+    result = responses.parse(model="gpt-4o-mini", input="Capital of France?", text_format=City)
+
+    assert isinstance(result, ParsedResponse)
+    assert result.output_parsed == City(city="Paris")
+    assert result._request_id == REQUEST_ID
+
+
+@respx.mock(base_url=BASE_URL)
+def test_hostile_body_with_a_headers_key_is_still_metered(respx_mock: respx.MockRouter) -> None:
+    body = {**_chat_body(finish_reason="content_filter"), "headers": {"x-request-id": "spoof"}}
+    _mock_route(respx_mock, "/chat/completions", body)
+    session = _session()
+    completions = SensorCompletions(_sync_client().chat.completions, session, OpenAIProvider())
+
+    # Raw path: the caller gets the raw response and its own parse() raises.
+    raw = completions.with_raw_response.parse(
+        model="gpt-4o-mini", messages=MESSAGES, response_format=City
+    )
+    with pytest.raises(openai.ContentFilterFinishReasonError):
+        raw.parse()
+    pc, err = _billed_then_failed(session)
+    assert (pc["tokens_input"], pc["tokens_output"]) == (40, 7)
+    # The response's own headers win over the body's "headers" key.
+    assert pc["provider_metadata"]["request_id"] == REQUEST_ID
+    assert err["error"]["error_type"] == "content_filter"
+
+    # Direct path: the original exception, not a sensor TypeError.
+    session2 = _session()
+    completions2 = SensorCompletions(_sync_client().chat.completions, session2, OpenAIProvider())
+    with pytest.raises(openai.ContentFilterFinishReasonError):
+        completions2.parse(model="gpt-4o-mini", messages=MESSAGES, response_format=City)
+    pc2, _err2 = _billed_then_failed(session2)
+    assert (pc2["tokens_input"], pc2["tokens_output"]) == (40, 7)
+
+
+@respx.mock(base_url=BASE_URL)
+def test_non_json_200_body_reports_the_llm_error_alone(respx_mock: respx.MockRouter) -> None:
+    respx_mock.post("/chat/completions").mock(
+        return_value=httpx.Response(
+            200, text="<html>not json</html>", headers={"content-type": "text/html"}
+        )
+    )
+    session = _session()
+    completions = SensorCompletions(_sync_client().chat.completions, session, OpenAIProvider())
+
+    with pytest.raises(Exception):  # noqa: B017 - whatever the SDK raises on a non-JSON body
+        completions.with_raw_response.parse(
+            model="gpt-4o-mini", messages=MESSAGES, response_format=City
+        )
+
+    # Nothing billed can be read, so no post_call of estimated tokens.
+    assert _events_of(session, "post_call") == []
+    (err,) = _events_of(session, "llm_error")
+    assert err["error"]["http_status"] is None
     assert session.tokens_used == 0
+
+
+def test_foreign_validation_error_keeps_its_own_classification() -> None:
+    exc = type("ValidationError", (Exception,), {"__module__": "myapp.validation"})("bad input")
+    classification = classify_exception(exc)
+    assert classification.error_type is ErrorType.OTHER
+    assert classification.http_status is None
+    assert classification.provider_error_code is None
+    assert classification.error_message == "ValidationError"
 
 
 @respx.mock(base_url=BASE_URL)

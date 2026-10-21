@@ -50,6 +50,11 @@ server.
 - **Sensor: the request id was missing from `post_call` on the parsed
   path.** `provider_metadata.request_id` is now read from the id the SDK
   stamps on every parsed object, not only from raw-response headers.
+- **Sensor: an inline image or file body was counted as text in the
+  pre-call estimate.** A base64 data URL or a `file_data` body now counts
+  as 1,000 tokens instead of its bytes, so a multi-megabyte image no
+  longer estimates as hundreds of thousands of tokens; pre-call policy
+  outcomes for such requests change accordingly.
 - **Worker: a short-lived session could be left unclosed.** The worker
   pool processes one session's events concurrently, so a `session_end`
   published within tens of milliseconds of its `session_start` could be
@@ -171,19 +176,21 @@ server.
   after the provider answered with HTTP 200, land as `invalid_request`
   (`provider_error_code` `length`: `max_tokens` too small for the
   schema) and `content_filter`, with `http_status` 200 and `terminal`;
-  previously all three fell through to `other`. The length case also
-  emits the `post_call` with the billed usage before the `llm_error`,
-  on the direct and the raw-response path, so the tokens reach session
-  totals and analytics; a raw-response parse that fails for any reason
-  is reported the same way instead of as a success-looking `post_call`
-  of estimated tokens.
+  `OAuthError` previously fell through to `other`, and the two
+  finish-reason errors were never seen before `parse()` was metered.
+  Every parse failure after a billed response also emits the `post_call`
+  with the billed usage before the `llm_error`, on the direct and the
+  raw-response path, so the tokens reach session totals and analytics;
+  a raw-response parse that fails for any reason is reported the same
+  way instead of as a success-looking `post_call` of estimated tokens.
 - **Analytics: `estimated_cost` for OpenAI sessions with prompt-cache
   reads shifts on upgrade.** Those reads now reach the cache term of the
-  cost formula, which applies the uniform 90% read discount; OpenAI
-  discounts cached input by about 50%, not 90%, so such estimates
-  understate the cached-input cost until per-model cache ratios land
-  (Roadmap: token and cost model). The OpenAI SDK exposes no cache-write
-  count, so cache-write charges on models that bill them are left out.
+  cost formula, which applies the uniform 0.10x read ratio; OpenAI's
+  cached-input rate is model-dependent (0.50x to 0.05x of the input rate
+  in `pricing.yaml`), so such estimates can be off in either direction
+  until per-model cache ratios land (Roadmap: token and cost model). The
+  OpenAI SDK exposes no cache-write count, so cache-write charges on
+  models that bill them are left out.
 - **Worker: failed processing attempts are redelivered after a growing
   delay** (one second times the deliveries so far, within the
   three-delivery budget) instead of immediately, so a transient database

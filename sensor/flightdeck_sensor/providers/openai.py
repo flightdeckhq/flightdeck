@@ -27,7 +27,13 @@ _CHARS_PER_TOKEN_ESTIMATE = 4
 # a 2 MB image would estimate as hundreds of thousands of tokens and could
 # trip a policy limit before the call.
 _BINARY_INPUT_TOKEN_ALLOWANCE = 1_000
+# A base64 data URL opens with ``data:<media type>[;parameter]*;base64,``.
+# The media type and its parameters are short, so the ``;base64,`` marker
+# sits within this many characters of the start; prose that merely begins
+# with "data:" has no marker there and is counted as the text it is.
 _DATA_URL_PREFIX = "data:"
+_DATA_URL_BASE64_MARKER = ";base64,"
+_DATA_URL_HEADER_MAX_CHARS = 100
 _BINARY_INPUT_KEYS = frozenset({"file_data"})
 
 # Longest request id the sensor reports. OpenAI's ids are 36 characters
@@ -200,13 +206,22 @@ def _responses_input_as_messages(request_kwargs: dict[str, Any]) -> list[Any]:
     return out
 
 
+def _is_base64_data_url(value: str) -> bool:
+    """Whether a string is an inline base64 data URL (see
+    :data:`_DATA_URL_HEADER_MAX_CHARS`)."""
+    return (
+        value.startswith(_DATA_URL_PREFIX)
+        and _DATA_URL_BASE64_MARKER in value[:_DATA_URL_HEADER_MAX_CHARS]
+    )
+
+
 def _without_binary_payloads(value: Any) -> tuple[Any, int]:
-    """``value`` with every inline binary payload (a ``data:`` URL string,
-    a ``file_data`` body) replaced by an empty string, and the number of
-    payloads removed. Containers are copied; everything else is returned
-    as is."""
+    """``value`` with every inline binary payload (a base64 data URL
+    string, a ``file_data`` body) replaced by an empty string, and the
+    number of payloads removed. Containers are copied; everything else is
+    returned as is."""
     if isinstance(value, str):
-        return ("", 1) if value.startswith(_DATA_URL_PREFIX) else (value, 0)
+        return ("", 1) if _is_base64_data_url(value) else (value, 0)
     if isinstance(value, dict):
         out: dict[Any, Any] = {}
         removed = 0
@@ -706,6 +721,7 @@ class OpenAIProvider:
                         tool_id=str(tool_id) if tool_id else None,
                     )
                 )
-            except Exception:
-                _log.debug("responses output item skipped", exc_info=True)
+            except Exception as exc:
+                # Class name only: the exception text can echo the item.
+                _log.debug("responses output item skipped (%s)", type(exc).__name__)
         return invocations

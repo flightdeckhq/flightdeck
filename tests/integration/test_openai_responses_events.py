@@ -3,7 +3,7 @@
 Hand-crafts the payloads the sensor emits for the Responses API --
 a ``tool_call`` for a hosted tool item (``web_search_call``) with its
 captured input, a ``post_call`` carrying the request id read off a parsed
-object, and a ``post_call`` carrying a prompt-cache hit -- POSTs them
+object, and a ``post_call`` carrying a prompt-cache read -- POSTs them
 through the real ingestion API, and asserts they round-trip through
 NATS + worker + Postgres onto ``/v1/sessions/:id`` and
 ``/v1/events/:id/content``.

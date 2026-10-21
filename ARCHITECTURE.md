@@ -2471,10 +2471,10 @@ formula:
 
 Cache ratios follow Anthropic's published structure (90% discount on
 reads, 25% premium on writes) and apply uniformly to every model that
-reports cache tokens, OpenAI's prompt-cache reads included. The uniform
-read ratio understates OpenAI's cached-input cost: OpenAI discounts
-cached input by about 50%, not 90%, so `estimated_cost` runs low for an
-OpenAI session with cache reads. The OpenAI SDK exposes no cache-write
+reports cache tokens, OpenAI's prompt-cache reads included. OpenAI's
+cached-input rate is model-dependent (0.50x to 0.05x of the input rate
+in `pricing.yaml`), so the uniform 0.10x read ratio can be off in either
+direction for an OpenAI session with cache reads. The OpenAI SDK exposes no cache-write
 count, so the write term is always 0 for OpenAI and cache-write charges
 on models that bill them are left out. Per-model cache ratios are a
 README Roadmap item (token and cost model). Providers that report no
@@ -4019,7 +4019,7 @@ Structured error event with a 14-entry taxonomy:
 | `overloaded` | 529 / 503 | Anthropic 529, OpenAI engine overloaded | `overloaded_error` | ✅ |
 | `timeout` | — | Client-side timeout before response | `timeout_error` | ✅ |
 | `stream_error` | — | Mid-stream error after a 200 response | `stream_error` | ⚠ case-by-case |
-| `other` | — | Fallback for unknown | `other` | ❌ |
+| `other` | — / 200 | Fallback for unknown; also a `chat.completions.parse()` completion that fails the caller's schema (`http_status` 200, `provider_error_code` `schema`) | `other` | ❌ |
 
 Plus `provider`, `http_status`, `provider_error_code`, `request_id`,
 `retry_after`, `is_retryable`. For a streamed call, `abort_reason` and the
@@ -4053,18 +4053,23 @@ completion the SDK failed to parse) and then the `llm_error`
 the session totals and the analytics metrics like any completed call.
 `ContentFilterFinishReasonError` (`content_filter`) and a completion that
 fails the caller's schema (a pydantic `ValidationError`: `other`,
-`provider_error_code` `schema`) carry no completion, so on the direct
-path they are reported as the `llm_error` alone, `http_status` 200. On
-the raw-response path (`with_raw_response.parse()`) the SDK hands back
-the unparsed response and would only fail at the caller's own
-`.parse()`, out of the sensor's sight; the sensor parses it eagerly (a
-successful parse is cached by the SDK), reports a failure as above, with
-the `post_call` built from the exception's completion or else from the
-HTTP body (usage, model, request id from the headers), and still returns
-the raw response, so the caller's `.parse()` raises as it would without
-the sensor. A failed parse never lands as a success-looking `post_call`
-of estimated tokens. `responses.parse()` returns an incomplete result
-without raising, so none of this applies to it.
+`provider_error_code` `schema`) carry no completion, so the `post_call`
+is built from the HTTP body (usage, model, request id from the headers).
+To have that body, `chat.completions.parse()` and `responses.parse()`
+fetch the response through the SDK's own raw-response closure and parse
+it eagerly (the SDK caches a successful parse); the caller still gets
+the parsed object, or the SDK's exception with its message, exactly as
+from the plain `parse()`. On the raw-response path
+(`with_raw_response.parse()`), where the SDK would only fail at the
+caller's own `.parse()`, out of the sensor's sight, the same eager parse
+reports the failure and still returns the raw response, so the caller's
+`.parse()` raises as it would without the sensor. When neither a
+completion nor a JSON body can be read (a 200 whose body is not a JSON
+object), the exception raises through the intercept and only the
+`llm_error` is emitted; a failed parse never lands as a success-looking
+`post_call` of estimated tokens. `responses.parse()` returns an
+incomplete result without raising, so the length case does not apply to
+it; a schema failure does.
 
 Operator-actionable retry-chain context:
 

@@ -57,10 +57,11 @@ func KnownPricedModels() []string {
 // relative to the uncached input rate. Anthropic bills cache reads at
 // 10% of the input list price (90% discount). Applied uniformly to
 // every model that reports cache tokens, OpenAI's prompt-cache reads
-// included, which understates OpenAI's cached-input cost (OpenAI
-// discounts cached input by about 50%, not 90%). The per-model override
-// on ModelPricing that a differing published ratio calls for is a
-// README Roadmap item (token and cost model), not a pricing.yaml edit.
+// included; OpenAI's cached-input rate is model-dependent (0.50x to
+// 0.05x of the input rate in pricing.yaml), so the uniform ratio can be
+// off in either direction for OpenAI rows. The per-model override on
+// ModelPricing that those ratios call for is a README Roadmap item
+// (token and cost model), not a pricing.yaml edit.
 // Providers that report no cache tokens contribute 0 to the cache_read
 // term and the formula collapses to the two-term input/output formula.
 const cacheReadRatio = 0.10
@@ -99,9 +100,9 @@ const cacheCreationRatio = 1.25
 // vanish and uncached = tokens_input, collapsing the formula back to
 // the plain two-term expression. The read ratio applies uniformly, so
 // OpenAI rows with cache reads are discounted at the Anthropic read
-// rate, which understates OpenAI's cached-input cost (OpenAI discounts
-// cached input by about 50%, not 90%); per-model ratios are a README
-// Roadmap item.
+// rate while OpenAI's own rate is model-dependent (0.50x to 0.05x of
+// the input rate in pricing.yaml), so the estimate can be off in either
+// direction; per-model ratios are a README Roadmap item.
 //
 // The expression is a bare aggregate -- the caller supplies FROM /
 // WHERE / GROUP BY. All values are constants generated at startup so

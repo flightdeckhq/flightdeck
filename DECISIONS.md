@@ -10162,13 +10162,16 @@ usage and then the `llm_error` (`http_status` 200, terminal, chained to
 the `post_call`). For `chat.completions.parse()` the failures are
 `LengthFinishReasonError` (the completion the exception carries is the
 `post_call`), `ContentFilterFinishReasonError` and a completion that
-fails the caller's schema (no completion on the exception: on the
-direct path the `llm_error` alone, since the SDK has consumed the
-body). On the raw-response path the sensor parses the raw response
-eagerly, builds the `post_call` from the exception's completion or from
-the HTTP body, emits the `llm_error`, and returns the raw response to
-the caller unchanged; a failed parse never lands as a success-looking
-`post_call` of estimated tokens.
+fails the caller's schema (no completion on the exception: the
+`post_call` is built from the HTTP body). To have that body on the
+direct path, `parse()` fetches the response through the SDK's own
+raw-response closure and parses it eagerly; the caller still gets the
+parsed object or the SDK's exception, type and message unchanged. On
+the raw-response path the same eager parse reports the failure and
+returns the raw response to the caller unchanged. When neither a
+completion nor a JSON body can be read, the exception raises through
+the intercept and only the `llm_error` is emitted: a failed parse never
+lands as a success-looking `post_call` of estimated tokens.
 
 **Classification.** `OAuthError` classifies as `authentication`.
 `LengthFinishReasonError` classifies as `invalid_request` with
@@ -10240,12 +10243,13 @@ no cache-write count at all (`PromptTokensDetails` carries
 them are left out. `cached_tokens` is a subset of `prompt_tokens` /
 `input_tokens`, which is exactly the `TokenUsage` contract for
 `cache_read_tokens`, so the existing `estimated_cost` formula applies to
-it unchanged. That formula applies the uniform cache-read ratio to
-OpenAI reads, which understates OpenAI's cached-input cost: OpenAI
-discounts cached input by about 50%, not 90%. `estimated_cost` for an
-OpenAI session with cache reads therefore shifts on upgrade and runs
-low until per-model cache ratios land (README Roadmap, token and cost
-model), which this change does not touch.
+it unchanged. That formula applies the uniform 0.10x cache-read ratio to
+OpenAI reads, while OpenAI's cached-input rate is model-dependent (0.50x
+to 0.05x of the input rate in `pricing.yaml`), so the uniform ratio can
+be off in either direction. `estimated_cost` for an OpenAI session with
+cache reads therefore shifts on upgrade and stays approximate until
+per-model cache ratios land (README Roadmap, token and cost model),
+which this change does not touch.
 
 A `LengthFinishReasonError` means the output hit the caller's
 `max_tokens` before the structured output was complete: the request was

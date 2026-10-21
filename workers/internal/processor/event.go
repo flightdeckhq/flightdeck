@@ -94,6 +94,20 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if e.DurationMs != nil {
 		extra["duration_ms"] = *e.DurationMs
 	}
+	// Claude Code's tool_use_id, sent by the plugin on tool_call and
+	// mcp_tool_call so an event maps back to the exact tool invocation
+	// in the transcript. Sensor events never carry it.
+	if e.ToolUseID != "" {
+		extra["tool_use_id"] = e.ToolUseID
+	}
+	// MCP server identity as Claude Code reports it ({name, source}),
+	// decoded and re-attached so the stored payload is one document.
+	if len(e.MCPServer) > 0 {
+		var v interface{}
+		if err := json.Unmarshal(e.MCPServer, &v); err == nil {
+			extra["mcp_server"] = v
+		}
+	}
 	if len(e.Streaming) > 0 {
 		// Phase 4 streaming sub-object. Same shape handling as Error
 		// above: decode + re-attach so the final payload is a single
@@ -168,6 +182,11 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	}
 	if e.CloseReason != "" {
 		extra["close_reason"] = e.CloseReason
+	}
+	// Claude Code's own exit reason (clear, resume, logout,
+	// prompt_input_exit, other) next to the coarse close_reason enum.
+	if e.EndReason != "" {
+		extra["end_reason"] = e.EndReason
 	}
 	if len(e.PolicyActionsSummary) > 0 {
 		extra["policy_actions_summary"] = e.PolicyActionsSummary
@@ -344,12 +363,12 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 // shape BuildEventExtra writes into events.payload per D126 § 6 +
 // Rule 20. Two shapes land here:
 //
-//   * Inline (body ≤ 8 KiB): ``{body, captured_at}`` — body is
+//   - Inline (body ≤ 8 KiB): “{body, captured_at}“ — body is
 //     decoded back into the framework's source shape (string /
 //     dict / list / scalar / null).
-//   * Overflow (body > 8 KiB): ``{has_content, content_bytes,
-//     captured_at}`` — body lives in event_content; the dashboard
-//     fetches via ``GET /v1/events/{id}/content``. The stub here
+//   - Overflow (body > 8 KiB): “{has_content, content_bytes,
+//     captured_at}“ — body lives in event_content; the dashboard
+//     fetches via “GET /v1/events/{id}/content“. The stub here
 //     lets the dashboard render a size-aware "load full message"
 //     affordance without an extra round-trip.
 //
@@ -379,10 +398,10 @@ func subagentMessageToMap(m *consumer.SubagentMessage) map[string]interface{} {
 	return out
 }
 
-// isMCPEventType reports whether ``eventType`` is one of the six Phase 5
+// isMCPEventType reports whether “eventType“ is one of the six Phase 5
 // MCP event types. Used by BuildEventExtra to gate the MCP-content
-// projection: ``content`` on MCP_RESOURCE_READ goes inline into
-// events.payload (small, render-inline), whereas ``content`` on LLM
+// projection: “content“ on MCP_RESOURCE_READ goes inline into
+// events.payload (small, render-inline), whereas “content“ on LLM
 // events routes via HasContent into the event_content table (large,
 // fetch-on-demand). Centralising the membership test keeps every
 // MCP-specific branch in BuildEventExtra and Process self-consistent.

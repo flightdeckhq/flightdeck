@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import atexit
 import collections
+import dataclasses
 import json
 import logging
 import os
@@ -18,7 +19,7 @@ import threading
 import urllib.request
 import uuid
 import weakref
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
@@ -184,6 +185,27 @@ SUBAGENT_HARD_CAP_BYTES = 2 * 1024 * 1024
 # Discriminator the dashboard's content-fetch consumer reads to pick
 # the sub-agent renderer over the LLM PromptViewer.
 SUBAGENT_OVERFLOW_PROVIDER = "flightdeck-subagent"
+
+
+def _json_default(value: Any) -> Any:
+    """``json.dumps`` fallback for a sub-agent message body. Framework
+    state carries objects the json module cannot encode: LangChain
+    messages and other pydantic models (dumped in JSON mode), dataclasses,
+    sets and tuples, dates. Anything else is stored as its string form
+    rather than dropping the whole body."""
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        try:
+            return dump(mode="json", warnings=False)
+        except TypeError:
+            return dump()
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+        return dataclasses.asdict(value)
+    if isinstance(value, (set, frozenset, tuple)):
+        return list(value)
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return str(value)
 
 
 class Session:
@@ -571,7 +593,19 @@ class Session:
         # the authoritative measure for the inline-vs-overflow
         # decision (rather than ``len(str(body))`` which varies per
         # framework body type).
-        body_bytes = json.dumps(message.body).encode("utf-8")
+        try:
+            encoded = json.dumps(message.body, default=_json_default)
+        except Exception as exc:
+            # A body that still cannot be encoded (a cycle, a raising
+            # model_dump) is dropped; the session events still go out.
+            _log.warning(
+                "sub-agent %s_message body is not JSON-encodable (%s); dropped",
+                direction,
+                type(exc).__name__,
+            )
+            return None, None
+        body: Any = json.loads(encoded)
+        body_bytes = encoded.encode("utf-8")
         size = len(body_bytes)
         if size > SUBAGENT_HARD_CAP_BYTES:
             _log.warning(
@@ -585,7 +619,7 @@ class Session:
             return None, None
         if size <= SUBAGENT_INLINE_THRESHOLD_BYTES:
             return {
-                "body": message.body,
+                "body": body,
                 "captured_at": message.captured_at,
             }, None
         # Overflow: stub on the payload field, full envelope on
@@ -609,7 +643,7 @@ class Session:
             "tools": None,
             "response": {
                 "direction": direction,
-                "body": message.body,
+                "body": body,
                 "captured_at": message.captured_at,
             },
             "input": None,

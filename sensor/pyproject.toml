@@ -105,22 +105,11 @@ dev = [
     # client; the sensor's patch reaches it (the Anthropic Messages
     # resource methods; the OpenAI client descriptor on first .chat
     # access).
-    #
-    # The langchain ecosystem upper bound is pinned <1.0 because
-    # langchain-mcp-adapters>=0.2 / langgraph>=1 introduced a stricter
-    # ToolNode runtime contract (RunnableConfig with explicit runtime
-    # key) that the playground/smoke MCP path doesn't supply. Pre-1.0
-    # ToolNode.ainvoke({"messages":[...]}) works without the runtime
-    # config — sensor patching is unaffected by the version pin.
-    "langchain-anthropic>=0.1,<1",
-    "langchain-openai>=0.1,<1",
+    "langchain-anthropic>=1,<2",
+    "langchain-openai>=1,<2",
     # langchain umbrella package — provides ``langchain.agents.
-    # AgentExecutor`` + ``create_tool_calling_agent`` used by the
-    # explicit-LangChain MCP-policy playground demo (24). Same
-    # <1 upper bound as the langchain-* siblings; LangChain 1.0
-    # restructured the agents API and would need a sweep before
-    # we bump.
-    "langchain>=0.3,<1",
+    # create_agent`` used by the LangChain MCP-policy playground (24).
+    "langchain>=1,<2",
     "llama-index-llms-anthropic>=0.1",
     "llama-index-llms-openai>=0.1",
     # MCP adapters per framework. langgraph's ToolNode + langchain
@@ -129,8 +118,10 @@ dev = [
     # the CrewAI MCP path. Without these, smoke / playground MCP
     # sections skip and the wire-level event emission isn't
     # exercised.
-    "langchain-mcp-adapters<0.2",
-    "langgraph<1",
+    # langchain-mcp-adapters stays on the mcp 1.x line the sensor
+    # supports; ``langchain[mcp]`` (fastmcp 4) needs mcp 2.x.
+    "langchain-mcp-adapters>=0.3,<0.4",
+    "langgraph>=1,<2",
     "llama-index-tools-mcp>=0.1",
     "mcpadapt>=0.0.6",
     # CrewAI 1.14+ ships native provider classes that use the official

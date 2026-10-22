@@ -290,6 +290,28 @@ def mcp_server_params(module: str) -> Any:
 # ---------------------------------------------------------------------
 
 
+def llama_index_anthropic_incompatibility() -> str | None:
+    """Why LlamaIndex's Anthropic LLM cannot run against the installed
+    ``anthropic`` SDK, or None. llama-index-llms-anthropic (through
+    0.12.3) always sends ``temperature``, which anthropic 1.x's
+    ``Messages.create`` no longer accepts; the call fails inside the SDK
+    with or without the sensor."""
+    import inspect
+
+    try:
+        from anthropic.resources.messages.messages import Messages
+    except ImportError:
+        return None
+    if "temperature" in inspect.signature(Messages.create).parameters:
+        return None
+    import anthropic
+
+    return (
+        f"anthropic {anthropic.__version__} rejects the temperature argument "
+        "llama-index-llms-anthropic always sends"
+    )
+
+
 def print_result(label: str, passed: bool, duration_ms: int, details: str = "") -> None:
     """Standard result line: '  PASS  <label>  (1240ms)  <details>'."""
     tag = "PASS" if passed else "FAIL"

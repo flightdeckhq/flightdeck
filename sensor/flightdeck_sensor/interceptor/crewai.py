@@ -41,6 +41,7 @@ missing, framework signature drift), the original
 
 from __future__ import annotations
 
+import functools
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -306,9 +307,12 @@ def patch_crewai_classes(*, quiet: bool = False) -> None:
             _log.debug("emit_subagent_session_end (async) failed", exc_info=True)
         return result
 
-    _CrewAIAgent.execute_task = _sync_wrapper
+    # functools.wraps keeps the method's name, docstring and signature
+    # (through __wrapped__) visible to anything that introspects it, as
+    # the LangGraph node wrapper does.
+    _CrewAIAgent.execute_task = functools.wraps(original_sync)(_sync_wrapper)
     if original_async is not None:
-        _CrewAIAgent.aexecute_task = _async_wrapper
+        _CrewAIAgent.aexecute_task = functools.wraps(original_async)(_async_wrapper)
     setattr(_CrewAIAgent, _PATCHED_SENTINEL, True)
     setattr(_CrewAIAgent, f"{_PATCHED_SENTINEL}_orig_sync", original_sync)
     if original_async is not None:

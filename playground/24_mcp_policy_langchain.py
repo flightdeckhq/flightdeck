@@ -3,11 +3,11 @@
 LangChain integrates MCP through the same ``langchain-mcp-adapters``
 package that demo 23 (LangGraph) uses transitively. Rule 40d
 requires explicit per-framework coverage because LangChain agents
-set up differently than LangGraph state machines (``AgentExecutor``
-+ ``create_tool_calling_agent`` + ``ChatPromptTemplate`` vs
-LangGraph's ``create_react_agent`` graph). Strict per-invocation-
-pattern coverage protects against a future SDK upgrade silently
-breaking the LangChain wire-up while LangGraph stays green.
+set up differently than a hand-built LangGraph loop (LangChain's
+``create_agent`` vs demo 23's model node + ``ToolNode``). Strict
+per-invocation-pattern coverage protects against a future SDK
+upgrade silently breaking the LangChain wire-up while LangGraph stays
+green.
 
 Three sub-scenarios run back-to-back:
 
@@ -43,9 +43,8 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 
 try:
     import mcp.client.stdio as _mcp_stdio
-    from langchain.agents import AgentExecutor, create_tool_calling_agent  # type: ignore[import-not-found]
+    from langchain.agents import create_agent  # type: ignore[import-not-found]
     from langchain_anthropic import ChatAnthropic  # type: ignore[import-not-found]
-    from langchain_core.prompts import ChatPromptTemplate  # type: ignore[import-not-found]
     from langchain_mcp_adapters.tools import load_mcp_tools  # type: ignore[import-not-found]
     from mcp.client.session import ClientSession
 except ImportError:
@@ -110,20 +109,17 @@ async def _run_langchain_agent(prompt_text: str) -> None:
             await session.initialize()
             tools = await load_mcp_tools(session)
             llm = ChatAnthropic(model="claude-sonnet-4-5", max_tokens=400)
-            prompt = ChatPromptTemplate.from_messages(
-                [
-                    (
-                        "system",
-                        "You exercise MCP tools under Flightdeck policy "
-                        "enforcement. Call the tool the user asks for.",
-                    ),
-                    ("user", "{input}"),
-                    ("placeholder", "{agent_scratchpad}"),
-                ]
+            agent = create_agent(
+                llm,
+                tools,
+                system_prompt=(
+                    "You exercise MCP tools under Flightdeck policy "
+                    "enforcement. Call the tool the user asks for."
+                ),
             )
-            agent = create_tool_calling_agent(llm, tools, prompt)
-            executor = AgentExecutor(agent=agent, tools=tools, verbose=False)
-            await executor.ainvoke({"input": prompt_text})
+            await agent.ainvoke(
+                {"messages": [{"role": "user", "content": prompt_text}]}
+            )
 
 
 async def _scenario_warn() -> str | None:
@@ -201,9 +197,9 @@ async def _scenario_block() -> str | None:
         except flightdeck_sensor.MCPPolicyBlocked:
             blocked_observed = True
         except Exception as exc:  # noqa: BLE001
-            # LangChain's AgentExecutor wraps tool exceptions in its
-            # own error type before re-raising. Walk __cause__ /
-            # __context__ chain to find the MCPPolicyBlocked.
+            # The agent may wrap a tool exception in its own error type
+            # before re-raising. Walk __cause__ / __context__ chain to
+            # find the MCPPolicyBlocked.
             cur: BaseException | None = exc
             while cur is not None:
                 if isinstance(cur, flightdeck_sensor.MCPPolicyBlocked):

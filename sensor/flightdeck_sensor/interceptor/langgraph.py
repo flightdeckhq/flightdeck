@@ -151,12 +151,19 @@ def _wrap_node_action(node_name: str, action: Callable[..., Any]) -> Callable[..
     session_end after the node action. Preserves sync / async by
     runtime-detecting the original callable's coroutine status —
     LangGraph supports both, and we don't want to force-cast the
-    user's node into one shape.
+    user's node into one shape -- and the node's signature, so the
+    arguments LangGraph injects by parameter name still reach it.
     """
     import asyncio
+    import functools
 
     role = node_name
 
+    # functools.wraps sets __wrapped__, through which LangGraph reads the
+    # node's signature to decide which of config / runtime / store /
+    # writer to inject; a bare (*args, **kwargs) would hide them and the
+    # node would fail with a missing-argument TypeError.
+    @functools.wraps(action)
     def _sync_wrapper(*args: Any, **kwargs: Any) -> Any:
         session = _current_session()
         if session is None:
@@ -206,6 +213,7 @@ def _wrap_node_action(node_name: str, action: Callable[..., Any]) -> Callable[..
             _log.debug("emit_subagent_session_end failed", exc_info=True)
         return result
 
+    @functools.wraps(action)
     async def _async_wrapper(*args: Any, **kwargs: Any) -> Any:
         session = _current_session()
         if session is None:

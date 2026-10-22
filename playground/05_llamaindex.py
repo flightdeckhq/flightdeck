@@ -26,6 +26,7 @@ except ImportError:
 
 import flightdeck_sensor
 from _helpers import (
+    llama_index_anthropic_incompatibility,
     assert_event_landed,
     fetch_events_for_session,
     init_sensor,
@@ -35,13 +36,17 @@ from _helpers import (
 
 
 def _run_chat() -> None:
-    t0 = time.monotonic()
-    LlamaAnthropic(model="claude-haiku-4-5-20251001", max_tokens=5).complete("hi")
-    print_result(
-        "LlamaAnthropic.complete",
-        True,
-        int((time.monotonic() - t0) * 1000),
-    )
+    reason = llama_index_anthropic_incompatibility()
+    if reason is not None:
+        print(f"SKIP LlamaAnthropic.complete: {reason}")
+    else:
+        t0 = time.monotonic()
+        LlamaAnthropic(model="claude-haiku-4-5-20251001", max_tokens=5).complete("hi")
+        print_result(
+            "LlamaAnthropic.complete",
+            True,
+            int((time.monotonic() - t0) * 1000),
+        )
 
     t0 = time.monotonic()
     LlamaOpenAI(model="gpt-4o-mini", max_tokens=5).complete("hi")

@@ -372,6 +372,22 @@ def test_langgraph_patched_intercepts_call(
 # ======================================================================
 
 
+def _anthropic_create_accepts_temperature() -> bool:
+    """Whether the installed SDK's ``Messages.create`` takes ``temperature``.
+    anthropic 1.x dropped it while llama-index-llms-anthropic (through
+    0.12.3) still always sends it, so that pairing fails inside the SDK
+    with or without the sensor."""
+    import inspect
+
+    from anthropic.resources.messages.messages import Messages
+
+    return "temperature" in inspect.signature(Messages.create).parameters
+
+
+@pytest.mark.skipif(
+    not _anthropic_create_accepts_temperature(),
+    reason="llama-index-llms-anthropic sends temperature, which this anthropic SDK rejects",
+)
 def test_llama_index_anthropic_patched_intercepts_call(
     sensor_reset: None,
     unique_flavor: str,

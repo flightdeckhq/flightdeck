@@ -47,8 +47,13 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
-from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.prompts import base as prompt_base
+try:
+    # mcp 2.x renamed FastMCP to MCPServer.
+    from mcp.server.mcpserver import MCPServer as FastMCP
+    from mcp.server.mcpserver.prompts import base as prompt_base
+except ImportError:
+    from mcp.server.fastmcp import FastMCP
+    from mcp.server.fastmcp.prompts import base as prompt_base
 
 
 # Server identity. The name surfaces on session_start.context.mcp_servers

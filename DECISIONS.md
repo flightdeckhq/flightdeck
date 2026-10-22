@@ -11075,3 +11075,53 @@ anthropic 1.x, which LangChain users get). Keeping `create_react_agent`
 in playground 23 (deprecated since LangGraph 1.0). Moving both MCP
 policy playgrounds to `create_agent` (23 would no longer exercise
 LangGraph's own primitives).
+
+---
+
+## D195 -- The sensor supports mcp 1.x and 2.x; on 2.x the fingerprint comes from adopt and the Client's target
+
+**Date:** 2026-10-22
+
+**Refines:** the mcp 2.x item of the October 2026 update plan (support
+both lines, two CI lanes), D193 (the SDK-majors lane).
+
+**Decision:** The `mcp` extra allows `mcp>=1.20,<3`. The interceptor
+looks the error class up by either name (`MCPError` on 2.x, `McpError`
+on 1.x). On 2.x it wraps `ClientSession.adopt` instead of `initialize`:
+every 2.x handshake installs its result there (the legacy
+`initialize()`, the `server/discover` probe of `Client(mode="auto")`, a
+caller adopting a prior discover result), and the fingerprint is read
+from the session's negotiated `server_info`, `protocol_version`,
+`server_capabilities` and `instructions`. It also wraps
+`mcp.Client._build_session` to stamp the transport label and server URL
+from the `Client`'s target (URL string: `http`; `StdioServerParameters`:
+`stdio` with `<command> <args>`; in-process server: neither), because
+the `Client` builds its session over a dispatcher and binds its
+transport factories at import, beyond the transport patches. Result
+models are dumped with `by_alias=True` so both lines store the
+protocol's JSON names, and `-32001` (the dispatchers' request timeout)
+classifies as `timeout`. The dev extra stays on mcp 1.x (CrewAI pins
+`~=1.28`, langchain-mcp-adapters `<2`); the SDK-majors CI lane installs
+`mcp>=2,<3`. The playground reference servers import `MCPServer` on 2.x
+and `FastMCP` on 1.x.
+
+**Reasoning:** mcp 1.x is security-only and llama-index-tools-mcp,
+fastmcp 4, langchain[mcp] and recent litellm already require 2.x, so a
+cap below 2 excluded a growing share of users; with the cap lifted and
+no port, the import guard failed and MCP traffic went unobserved. With
+only the import fixed, events went out with no server name or
+fingerprint, so policy fell to its mode default. Reading the
+negotiated state from the session after `adopt` covers all handshake
+paths with one hook and no reliance on the result's field casing.
+Dumping by alias keeps stored MCP content identical in shape whichever
+line produced it; the one change on 1.x is the protocol-correct
+`_meta` key in place of `meta`, which nothing reads.
+
+**Rejected:** Keeping the `<2` cap (blocks users of frameworks that
+require 2.x). Wrapping both `initialize` and `adopt` on 2.x
+(`initialize` calls `adopt`, so the fingerprint would be recorded
+twice). Patching the transport factories `mcp.client.client` imported
+by name (only works when the sensor patches before that module is
+imported). Making policy identity URL/command-only in the same change:
+it needs a fingerprint-recompute migration across the Go services and
+the plugin, and lands as its own change.

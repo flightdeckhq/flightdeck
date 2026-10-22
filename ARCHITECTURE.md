@@ -255,7 +255,7 @@ flightdeck/
 │   │       └── crewai_mcp.py   # Opt-in fixup for the mcpadapt → CrewAI args_schema JSON Schema bug
 │   └── tests/
 │       ├── conftest.py         # Mock control plane + provider fixtures
-│       └── unit/               # 38 files
+│       └── unit/               # 39 files
 │           ├── test_agent_id.py
 │           ├── test_agent_type_validation.py
 │           ├── test_anthropic_resource_patch.py
@@ -272,6 +272,7 @@ flightdeck/
 │           ├── test_interceptor_langgraph.py
 │           ├── test_interceptor_litellm.py
 │           ├── test_llm_event_enrichment.py
+│           ├── test_mcp_2x_paths.py
 │           ├── test_mcp_availability.py
 │           ├── test_mcp_identity.py
 │           ├── test_mcp_interceptor.py
@@ -4700,9 +4701,23 @@ fields, which the workers service does not read for MCP rows:
 `timeout` / `api_error` / `other`) is populated on failure paths
 across every type.
 
-**Server fingerprint at session level**. `ClientSession.initialize`
-is patched to capture the `InitializeResult` and stamp an
-`MCPServerFingerprint` onto the sensor session. When the sensor's
+**Server fingerprint at session level**. The handshake is patched to
+stamp an `MCPServerFingerprint` onto the sensor session: on mcp 1.x
+`ClientSession.initialize` (from its `InitializeResult`); on mcp 2.x
+`ClientSession.adopt`, which every 2.x handshake reaches (the legacy
+`initialize()`, the `server/discover` probe of `Client(mode="auto")`,
+and a caller adopting a prior discover result), reading the session's
+negotiated `server_info`, `protocol_version`, `server_capabilities`
+and `instructions`. mcp 2.x's high-level `Client` builds its session
+over a dispatcher rather than a marked stream pair and binds its
+transport factories at import, so `Client._build_session` is patched
+to stamp the transport and server URL from the `Client`'s target (a
+URL string is `http`; `StdioServerParameters` is `stdio` with
+`<command> <args>`; an in-process server has neither). Result models
+are stored under the protocol's JSON names on both SDK lines
+(`model_dump(by_alias=True)`: 2.x models use snake_case fields with
+camelCase aliases), and the JSON-RPC request-timeout code `-32001`
+classifies as `timeout`. When the sensor's
 session_start ships AFTER the initialize call, `context.mcp_servers`
 carries the full fingerprint list — name, transport, protocol_version
 (str | int, preserved verbatim per Override 5), version, capabilities,

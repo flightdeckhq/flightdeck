@@ -561,8 +561,8 @@ def _litellm_responses_unavailable() -> str | None:
 
     Recent litellm releases import their MCP gateway handler inside
     ``responses()``, and that handler needs a type that only mcp 2.x
-    ships. The sensor caps mcp below 2 until its MCP interceptor is
-    ported, so with such a litellm every ``responses()`` call fails
+    ships. Where mcp 1.x is installed (the framework lane, held there by
+    CrewAI and langchain-mcp-adapters), every ``responses()`` call fails
     inside litellm before any patch is reached; the sensor has nothing
     to report and the routing below cannot be observed."""
     import importlib

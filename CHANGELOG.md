@@ -17,6 +17,17 @@ server.
 
 ### Added
 
+- **Sensor: mcp 2.x is supported alongside 1.x.** The `mcp` extra
+  allows `mcp>=1.20,<3`. On mcp 2.x the sensor captures the server
+  fingerprint from `ClientSession.adopt`, which every handshake reaches
+  (`initialize()`, `Client(mode="auto")`'s `server/discover` probe, an
+  adopted discover result), and stamps the transport and server URL onto
+  sessions the high-level `mcp.Client` builds. MCP policy enforcement,
+  `mcp_server_attached` and per-call `server_name` work on both lines.
+  MCP results are stored under the protocol's JSON names on both lines
+  (on 1.x the only visible change is `meta` becoming `_meta`), and the
+  JSON-RPC request-timeout code `-32001` classifies as `timeout`. The
+  playground reference servers run on both lines.
 - **Sensor: litellm streams are metered.** `litellm.completion(stream=True)`
   and `litellm.acompletion(stream=True)` go through the same stream guard
   as the SDKs (in-stream usage, `payload.streaming`, cache breakdown),
@@ -337,6 +348,8 @@ server.
 
 ### Changed
 
+- **CI: the SDK-majors lane tests mcp 2.x**; the framework lane stays on
+  mcp 1.x, where CrewAI and langchain-mcp-adapters pin it.
 - **Sensor dev dependencies move to LangChain 1.x, LangGraph 1.x and
   langchain-mcp-adapters 0.3**, so the framework CI lane tests the
   current releases (it now resolves anthropic 1.x). Playgrounds 04, 23

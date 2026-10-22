@@ -20,7 +20,7 @@
 // node:path, node:os, fetch, AbortController). No npm
 // dependencies — preserves the plugin's zero-dep posture.
 
-import { mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -42,7 +42,12 @@ const FETCH_TIMEOUT_MS = 1500;
 function pluginTmpDir() {
   const dir = join(tmpdir(), PLUGIN_TMP_DIRNAME);
   try {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    try {
+      chmodSync(dir, 0o700); // tighten a directory an earlier version created 0755
+    } catch {
+      /* best effort */
+    }
   } catch {
     /* dir exists or unwritable — caller handles via fail-open */
   }

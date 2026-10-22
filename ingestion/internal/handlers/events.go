@@ -67,6 +67,19 @@ var validClientTypes = map[string]bool{
 // length boundary the validation contract was specified against.
 const maxAgentRoleLen = 256
 
+// Bounds on the Claude Code plugin's tool-event and session-end fields.
+// tool_use_id and the mcp_server name / source are identity strings and
+// share agent_role's 256-character cap; end_reason is one of Claude
+// Code's short exit-reason words (clear, resume, logout,
+// prompt_input_exit, other), for which 64 characters is generous. The
+// value sets stay open pass-throughs; only the shapes and sizes are
+// enforced here.
+const (
+	maxToolUseIDLen      = 256
+	maxMCPServerFieldLen = 256
+	maxEndReasonLen      = 64
+)
+
 // uuidRegex matches the canonical 8-4-4-4-12 hex form. Any version
 // (v1/v4/v5) and any variant bits are accepted -- the identity
 // derivation produces v5 UUIDs and legacy session_ids may be v4, but
@@ -424,6 +437,16 @@ func EventsHandler(
 				writeError(w, http.StatusBadRequest, msg)
 				return
 			}
+		case "tool_call", "mcp_tool_call":
+			// The Claude Code plugin's tool_use_id and mcp_server are
+			// optional; when present they must have the documented
+			// shape so the worker's projection and the dashboard never
+			// meet a number or an array where an id or an object is
+			// expected.
+			if msg := validateToolCallPayload(payload, eventType); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
 		case "pre_call":
 			if msg := validatePreCallPayload(payload); msg != "" {
 				writeError(w, http.StatusBadRequest, msg)
@@ -664,6 +687,9 @@ func validateSessionStartPayload(payload map[string]any) string {
 // worker-filled values; missing field is fine (worker fills on
 // the orphan-detector / sigkill path).
 func validateSessionEndPayload(payload map[string]any) string {
+	if msg := validateEndReason(payload); msg != "" {
+		return msg
+	}
 	raw, present := payload["close_reason"]
 	if !present {
 		return ""
@@ -681,6 +707,65 @@ func validateSessionEndPayload(payload map[string]any) string {
 		"close_reason must be one of: normal_exit, directive_shutdown, "+
 			"policy_block, orphan_timeout, sigkill_detected, unknown (got %q)", v,
 	)
+}
+
+// validateEndReason enforces the Claude Code plugin's end_reason on
+// session_end: a bounded string when present (null counts as absent).
+func validateEndReason(payload map[string]any) string {
+	raw, present := payload["end_reason"]
+	if !present || raw == nil {
+		return ""
+	}
+	v, ok := raw.(string)
+	if !ok {
+		return "end_reason must be a string when present on session_end"
+	}
+	if len(v) > maxEndReasonLen {
+		return fmt.Sprintf("end_reason exceeds %d-character limit", maxEndReasonLen)
+	}
+	return ""
+}
+
+// validateToolCallPayload enforces the shape of the Claude Code
+// plugin's optional tool-event fields on tool_call / mcp_tool_call:
+// tool_use_id is a bounded string, mcp_server is an object with a
+// bounded string name and a source that is a bounded string or null.
+// Null for either field counts as absent.
+func validateToolCallPayload(payload map[string]any, eventType string) string {
+	if raw, present := payload["tool_use_id"]; present && raw != nil {
+		v, ok := raw.(string)
+		if !ok {
+			return fmt.Sprintf("tool_use_id must be a string when present on %s", eventType)
+		}
+		if len(v) > maxToolUseIDLen {
+			return fmt.Sprintf("tool_use_id exceeds %d-character limit", maxToolUseIDLen)
+		}
+	}
+	raw, present := payload["mcp_server"]
+	if !present || raw == nil {
+		return ""
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return fmt.Sprintf("mcp_server must be an object when present on %s", eventType)
+	}
+	name, ok := obj["name"].(string)
+	if !ok || name == "" {
+		return "mcp_server.name must be a non-empty string"
+	}
+	if len(name) > maxMCPServerFieldLen {
+		return fmt.Sprintf("mcp_server.name exceeds %d-character limit", maxMCPServerFieldLen)
+	}
+	if source, has := obj["source"]; has && source != nil {
+		s, ok := source.(string)
+		if !ok {
+			return "mcp_server.source must be a string or null"
+		}
+		if len(s) > maxMCPServerFieldLen {
+			return fmt.Sprintf("mcp_server.source exceeds %d-character limit", maxMCPServerFieldLen)
+		}
+	}
+	return ""
 }
 
 // validateMCPPolicyUserRememberedPayload enforces the required-

@@ -72,6 +72,34 @@ server.
   `tokens_cache_read` and the `cache_write_tokens` detail as
   `tokens_cache_creation` on direct and streamed chat and Responses
   calls, so both show in the token fields and in `estimated_cost`.
+- **Plugin: failed tool calls are reported.** `PostToolUseFailure`
+  produces a `tool_call` (or `mcp_tool_call`) for every tool, not only
+  MCP tools, with a structured `error` block, after the same transcript
+  flush as a successful call: a failed `Bash` command or a `Read` on a
+  missing file shows up in the session instead of vanishing. The error
+  text is content and ships only when both capture knobs are on; the
+  workers service redacts it when the session's stored capture posture
+  is off. Today a plugin tool failure shows in the unscoped `/v1/events`
+  `error_type` facet and the Investigate status chip; the session
+  drawer's error indicator, the `tool_call` rows, the session
+  `error_types[]` aggregate and the agent `errors` count do not include
+  it yet (README Roadmap). Tool failures land under `error_type=other`,
+  the bucket the sensor's unclassified LLM errors use.
+- **Plugin: tool events carry Claude Code's `tool_use_id` and measured
+  `duration_ms`.** MCP tool events pass through the server identity
+  Claude Code reports (`mcp_server {name, source}`, 2.1.274 and later)
+  when the hook carried it, and the workers service stores
+  `tool_use_id`, `mcp_server` and `end_reason` in `events.payload`.
+  Ingestion rejects a non-string `tool_use_id` or `end_reason` and a
+  non-object `mcp_server`.
+- **Plugin: the session context says what kind of run it is.** The
+  native Claude Code session id, the version read from the transcript,
+  how the session started (`session_source`: `startup`, `resume`,
+  `clear`, `compact` among the known values), the entrypoint (`cli`,
+  `sdk-cli`), whether a human is attending, and nested-session, cloud
+  and CI markers, each bounded to 64 characters and passed through as
+  sent. `session_end` carries Claude Code's own exit reason as
+  `end_reason` next to `close_reason`.
 
 ### Fixed
 
@@ -243,6 +271,44 @@ server.
   now marks its call as in flight and the SDK interceptors pass a marked
   call through, so it lands once: one `pre_call`, one policy check, one
   `post_call`.
+- **Plugin: `latency_ms` on tool calls was the hook's own run time, not
+  the tool's.** Tool events now report the tool's execution time as
+  Claude Code measures it (`duration_ms`), and null on Claude Code
+  versions that do not report it.
+- **Plugin: `session_end` was lost when the server was slow.** Claude
+  Code gives `SessionEnd` hooks 1.5 seconds in total; the hook's
+  transcript flush plus the `session_end` POST took 2.5 seconds against
+  a server answering in 700 ms and was cut off. The hook now hands the
+  network work to a detached worker process and waits up to 0.8 s for
+  it, so a local stack still receives the events before Claude Code
+  exits while a slow server no longer holds the hook past its budget;
+  the worker stops an unflushed backlog after 20 s and logs failed POSTs
+  to an owner-only, size-capped file under the plugin's temp directory.
+- **Plugin: MCP servers bundled with other plugins were misattributed.**
+  A tool named `mcp__plugin_<plugin>_<server>__<tool>` was reported under
+  the flattened `plugin_<plugin>_<server>` string. It is now reported
+  under Claude Code's `plugin:<plugin>:<server>` key, taken from the
+  hook's `mcp_server` field or rebuilt from the name on older Claude
+  Code versions. Rows stored before this release keep the flattened key,
+  so one such server reads as two values in the per-session MCP-server
+  facet across the upgrade.
+- **Plugin: hooks could be inert on Windows and behind a symlinked
+  plugin directory.** The script's entry check compared its own path to
+  the invoked path as plain strings, which fails when Claude Code
+  expands `${CLAUDE_PLUGIN_ROOT}` with forward slashes or a differently
+  cased drive letter, or when the plugin directory is a symlink; both
+  sides are now resolved through realpath and compared case-insensitively
+  on Windows.
+- **Plugin: a git remote given as a Windows file path yielded no
+  repository name.** Both path separators are now accepted.
+- **Plugin: `CLAUDE_CODE_SESSION_ID` was ignored.** The variable Claude
+  Code exports to hook processes now keys the per-session marker when a
+  hook payload carries no `session_id`; `CLAUDE_SESSION_ID` remains the
+  explicit override of the Flightdeck session id.
+- **Plugin: a server URL with credentials leaked them into log lines.**
+  Credentials in `FLIGHTDECK_SERVER` are stripped before use (fetch
+  refuses them anyway) and redacted from every logged URL; the bearer
+  token is the one credential the plugin uses.
 
 ### Changed
 
@@ -268,6 +334,11 @@ server.
   in `pricing.yaml`), so such estimates can be off in either direction
   until per-model cache ratios land (Roadmap: token and cost model).
   OpenAI cache writes are priced at the same uniform 1.25x write ratio.
+- **Plugin: the MCP policy gate resolves the server from the hook's
+  `mcp_server.name` first**, then the parsed tool-name segment, and
+  looks the `.mcp.json` fingerprint up by the resolved key or by the
+  literal segment, so a project server declared under a `plugin_`-prefixed
+  name is gated instead of falling through open.
 - **Worker: failed processing attempts are redelivered after a growing
   delay** (one second times the deliveries so far, within the
   three-delivery budget) instead of immediately, so a transient database
@@ -281,7 +352,7 @@ server.
   attribution) and the fact that no service serves `/metrics`
   yet. README gains a Roadmap section (replacing "Coming soon"), the
   plugin README documents identity, enforcement and updating, METHODOLOGY
-  records the severity scale, and DECISIONS.md records D164 to D189, D191 and D192.
+  records the severity scale, and DECISIONS.md records D164 onward.
 - **Repository hygiene.** Retired known-issue identifiers and decision
   pointers in source, CI and Helm comments; `sensor/.venv` is no longer
   tracked; test files and functions no longer carry decision numbers.

@@ -80,6 +80,11 @@ type EventPayload struct {
 	TokenLimitSess  *int            `json:"token_limit_session"`
 	LatencyMs       *int            `json:"latency_ms"`
 	ToolName        *string         `json:"tool_name"`
+	// ToolUseID is Claude Code's identifier for the tool invocation a
+	// plugin tool_call / mcp_tool_call reports -- the tool_use block id
+	// in the session transcript -- so an event maps back to the exact
+	// call. Sensor events do not carry it.
+	ToolUseID       string          `json:"tool_use_id,omitempty"`
 	HasContent      bool            `json:"has_content"`
 	Content         json.RawMessage `json:"content"`
 	// CapturePrompts is the session's declared capture posture, carried
@@ -179,6 +184,17 @@ type EventPayload struct {
 	MimeType     string          `json:"mime_type,omitempty"`
 	PromptName   string          `json:"prompt_name,omitempty"`
 	Rendered     json.RawMessage `json:"rendered,omitempty"`
+	// MCPServer is the server identity Claude Code attaches to MCP tool
+	// hooks, passed through by the plugin exactly as sent and only when
+	// the hook carried it: {name, source}, where name is the server key
+	// as Claude Code holds it ("filesystem", "plugin:<plugin>:<server>")
+	// and source is where the server was declared (a string such as
+	// project, user, plugin or sdk, or null). ServerName above is the
+	// resolved identity on every Claude Code version; this field says
+	// what Claude Code itself reported. Kept as a RawMessage and
+	// re-attached to events.payload as one document when it is an
+	// object; sensor MCP events do not carry it.
+	MCPServer    json.RawMessage `json:"mcp_server,omitempty"`
 
 	// Sub-agent observability. Populated only on sub-agent
 	// session_start / session_end events:
@@ -290,6 +306,9 @@ type EventPayload struct {
 	//     "directive_shutdown"; worker fills "orphan_timeout" /
 	//     "sigkill_detected" / "policy_block" via session-table
 	//     update on the post-mortem path.
+	//   * EndReason — Claude Code's own exit reason on a plugin
+	//     session_end (clear, resume, logout, prompt_input_exit,
+	//     other), carried next to the coarse close_reason enum.
 	//   * PolicyActionsSummary — worker computes at session_end
 	//     insert time via the events table GROUP BY query.
 	//   * LastEventID — worker resolves at session_end insert time
@@ -304,6 +323,7 @@ type EventPayload struct {
 	InterceptorVersions    map[string]string      `json:"interceptor_versions,omitempty"`
 	PolicySnapshot         map[string]interface{} `json:"policy_snapshot,omitempty"`
 	CloseReason            string                 `json:"close_reason,omitempty"`
+	EndReason              string                 `json:"end_reason,omitempty"`
 	PolicyActionsSummary   map[string]int         `json:"policy_actions_summary,omitempty"`
 	LastEventID            string                 `json:"last_event_id,omitempty"`
 	PolicyDecisionAtAttach json.RawMessage        `json:"policy_decision_at_attach,omitempty"`

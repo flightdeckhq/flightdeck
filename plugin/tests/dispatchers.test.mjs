@@ -591,6 +591,84 @@ describe("dispatchMcpPolicyPreToolUse", () => {
     }
   });
 
+  it("matches a project server whose literal name carries the plugin_ prefix", () => {
+    // The tool name parses to the plugin:my:server key; the .mcp.json
+    // fingerprint keeps the literal name, and the gate must still find
+    // it rather than fail open.
+    const sid = "sess-pre-block-plugin-prefix";
+    writeProjectMcpJson({ plugin_my_server: { command: "npx", args: ["-y", "x"] } });
+    seedPolicyCache(sid, {
+      global: globalDoc(),
+      flavor: flavorDoc({
+        entries: [
+          policyEntry({
+            url: "npx -y x", name: "plugin_my_server",
+            kind: "deny", enforcement: "block",
+          }),
+        ],
+      }),
+    });
+    const out = captureStdout();
+    const savedEnvSid = process.env.CLAUDE_SESSION_ID;
+    try {
+      process.env.CLAUDE_SESSION_ID = sid;
+      const handled = dispatchMcpPolicyPreToolUse(
+        { server: "http://127.0.0.1:9999", token: "tok-test" },
+        {
+          hook_event_name: "PreToolUse",
+          session_id: sid,
+          tool_name: "mcp__plugin_my_server__doit",
+          cwd: scratchProject,
+        },
+      );
+      assert.equal(handled, true);
+      const decisions = out.decisions();
+      assert.equal(decisions.length, 1);
+      assert.equal(decisions[0].hookSpecificOutput.permissionDecision, "deny");
+    } finally {
+      out.restore();
+      if (savedEnvSid === undefined) delete process.env.CLAUDE_SESSION_ID;
+      else process.env.CLAUDE_SESSION_ID = savedEnvSid;
+    }
+  });
+
+  it("matches that project server through the hook's mcp_server hint as well", () => {
+    const sid = "sess-pre-block-plugin-prefix-hint";
+    writeProjectMcpJson({ plugin_foo_bar: { command: "npx", args: ["-y", "x"] } });
+    seedPolicyCache(sid, {
+      global: globalDoc(),
+      flavor: flavorDoc({
+        entries: [
+          policyEntry({
+            url: "npx -y x", name: "plugin_foo_bar",
+            kind: "deny", enforcement: "block",
+          }),
+        ],
+      }),
+    });
+    const out = captureStdout();
+    const savedEnvSid = process.env.CLAUDE_SESSION_ID;
+    try {
+      process.env.CLAUDE_SESSION_ID = sid;
+      const handled = dispatchMcpPolicyPreToolUse(
+        { server: "http://127.0.0.1:9999", token: "tok-test" },
+        {
+          hook_event_name: "PreToolUse",
+          session_id: sid,
+          tool_name: "mcp__plugin_foo_bar__doit",
+          mcp_server: { name: "plugin_foo_bar", source: "project" },
+          cwd: scratchProject,
+        },
+      );
+      assert.equal(handled, true);
+      assert.equal(out.decisions()[0].hookSpecificOutput.permissionDecision, "deny");
+    } finally {
+      out.restore();
+      if (savedEnvSid === undefined) delete process.env.CLAUDE_SESSION_ID;
+      else process.env.CLAUDE_SESSION_ID = savedEnvSid;
+    }
+  });
+
   it("returns ask when unknown server in allowlist mode + no remembered decision", () => {
     const sid = "sess-pre-ask-1";
     writeProjectMcpJson({ x: { command: "npx", args: ["-y", "x"] } });
@@ -844,6 +922,42 @@ describe("dispatchMcpPolicyPostToolUse", () => {
       assert.ok(remEvents[0].decided_at, "decided_at missing");
     } finally {
       capture.server.close();
+    }
+  });
+
+  it("remembers a project server named with the plugin_ prefix, with and without the hint", async () => {
+    for (const hint of [null, { name: "plugin_foo_bar", source: "project" }]) {
+      const sid = `sess-post-plugin-prefix-${hint ? "hint" : "parse"}`;
+      const token = `tok-post-plugin-prefix-${hint ? "hint" : "parse"}`;
+      writeProjectMcpJson({ plugin_foo_bar: { command: "npx", args: ["-y", "x"] } });
+      seedPolicyCache(sid, {
+        global: globalDoc({ mode: "allowlist" }),
+        flavor: flavorDoc(),
+      });
+      const capture = await startCaptureServer();
+      try {
+        await dispatchMcpPolicyPostToolUse({
+          cfg: { server: `http://127.0.0.1:${capture.port}`, token },
+          hookEvent: {
+            hook_event_name: "PostToolUse",
+            session_id: sid,
+            tool_name: "mcp__plugin_foo_bar__doit",
+            ...(hint ? { mcp_server: hint } : {}),
+            cwd: scratchProject,
+          },
+          sessionId: sid,
+          basePayload: basePayloadFixture(sid),
+          toolName: "mcp__plugin_foo_bar__doit",
+        });
+        const remembered = JSON.parse(readFileSync(rememberedFilePath(token), "utf8"));
+        assert.equal(remembered.decisions.length, 1, `remembered with hint=${JSON.stringify(hint)}`);
+        assert.equal(remembered.decisions[0].server_name, "plugin_foo_bar");
+        const remEvents = capture.bodies().filter((e) => e.event_type === "mcp_policy_user_remembered");
+        assert.equal(remEvents.length, 1);
+        assert.equal(remEvents[0].server_name, "plugin_foo_bar");
+      } finally {
+        capture.server.close();
+      }
     }
   });
 

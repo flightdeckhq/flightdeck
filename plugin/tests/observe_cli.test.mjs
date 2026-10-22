@@ -28,6 +28,11 @@ import {
   resolveConfig,
   sanitizeToolInput,
   tokensFromUsage,
+  boundedIdentity,
+  MAX_MCP_IDENTITY_BYTES,
+  SESSION_END_WORKER_GRACE_MAX_MS,
+  SESSION_END_WORKER_GRACE_MS,
+  sessionEndWorkerGraceMs,
 } from "../hooks/scripts/observe_cli.mjs";
 import { deriveAgentId } from "../hooks/scripts/agent_id.mjs";
 import {
@@ -37,6 +42,20 @@ import {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, "..", "hooks", "scripts", "observe_cli.mjs");
+
+// Private temp root for this file. The plugin keeps its markers under
+// $TMPDIR/flightdeck-plugin and os.tmpdir() reads TMPDIR on every call,
+// so pointing it at a scratch directory isolates both the in-process
+// helper tests and every hook subprocess (runScript spreads
+// process.env) from the other test files node runs concurrently --
+// several of which wipe their own plugin marker directory, which used
+// to be this shared one and silently reset the per-message dedup
+// markers mid-test.
+const privateTmp = mkdtempSync(join(tmpdir(), "fd-observe-"));
+process.env.TMPDIR = privateTmp;
+process.env.TEMP = privateTmp;
+process.env.TMP = privateTmp;
+after(() => rmSync(privateTmp, { recursive: true, force: true }));
 
 function clearSessionMarkers() {
   // Nukes every ``session-*.txt`` in the plugin tmpdir. The
@@ -87,6 +106,21 @@ function runScript(stdinData, env = {}) {
     if (stdinData != null) child.stdin.write(stdinData);
     child.stdin.end();
   });
+}
+
+// Re-evaluates the predicate until it returns a truthy value. The
+// deadline is a safety bound against a hung worker, not a wait: the
+// loop returns the moment the condition holds.
+async function pollUntil(predicate, label, deadlineMs = 15000) {
+  const start = Date.now();
+  for (;;) {
+    const value = predicate();
+    if (value) return value;
+    if (Date.now() - start > deadlineMs) {
+      throw new Error(`pollUntil(${label}): condition not met within ${deadlineMs} ms`);
+    }
+    await new Promise((r) => setTimeout(r, 20));
+  }
 }
 
 function startCaptureServer() {
@@ -363,12 +397,21 @@ describe("observe_cli.mjs", () => {
     };
     const result = await runScript(input, env);
     assert.equal(result.code, 0);
-    const body = capture.bodies().at(-1);
-    assert.equal(body.event_type, "session_end");
+    // The hook hands the POST to a detached worker so it returns inside
+    // Claude Code's SessionEnd budget; the event lands shortly after.
+    const body = await pollUntil(
+      () =>
+        capture
+          .bodies()
+          .find((b) => b.event_type === "session_end" && b.session_id === "sess-end-1"),
+      "session_end from the detached worker",
+    );
     // Plugin-driven SessionEnd is always a normal exit. The dashboard's
     // CLOSE REASON facet reads this; without an explicit value it would
     // fall through to the worker's unknown-default.
     assert.equal(body.close_reason, "normal_exit");
+    // No reason on the hook event -> no end_reason on the wire.
+    assert.equal(body.end_reason, undefined);
   });
 
   it("Stop keeps the per-session MCP policy cache armed; SessionEnd removes it", async () => {
@@ -908,13 +951,18 @@ describe("observe_cli helpers", () => {
     beforeEach(() => {
       delete process.env.CLAUDE_SESSION_ID;
       delete process.env.ANTHROPIC_CLAUDE_SESSION_ID;
+      // Claude Code exports its own session id to hook and tool
+      // subprocesses; the cwd fallback only applies when neither the
+      // hook event nor the environment names one.
+      delete process.env.CLAUDE_CODE_SESSION_ID;
       clearSessionMarkers();
     });
 
     // Precedence chain under test:
     //   1. CLAUDE_SESSION_ID env var
     //   2. ANTHROPIC_CLAUDE_SESSION_ID env var
-    //   3. Marker file keyed on sha256(hookEvent.session_id)
+    //   3. Marker file keyed on sha256(Claude Code's native session
+    //      id: hookEvent.session_id, else $CLAUDE_CODE_SESSION_ID)
     //      (populated by the fresh-uuid fallback on the first hook; read verbatim by
     //      every subsequent hook in the same invocation)
     //   4. Fresh uuid4 written to the hook-id-keyed marker
@@ -987,6 +1035,20 @@ describe("observe_cli helpers", () => {
       assert.match(id, V4_UUID_RE);
     });
 
+    it("CLAUDE_CODE_SESSION_ID keys the marker when the hook event carries no session_id", () => {
+      process.env.CLAUDE_CODE_SESSION_ID = "native-from-env";
+      try {
+        const viaEnv = getSessionId({});
+        const viaHook = getSessionId({ session_id: "native-from-env" });
+        assert.match(viaEnv, V4_UUID_RE);
+        assert.equal(viaHook, viaEnv, "env and hook forms of the same native id share one marker");
+        const other = getSessionId({ session_id: "some-other-native-id" });
+        assert.notEqual(other, viaEnv);
+      } finally {
+        delete process.env.CLAUDE_CODE_SESSION_ID;
+      }
+    });
+
     it("clearing the marker triggers a fresh uuid4 on the next call", () => {
       const hookEvent = { session_id: "invocation-F" };
       const first = getSessionId(hookEvent);
@@ -1001,6 +1063,10 @@ describe("observe_cli helpers", () => {
     beforeEach(() => {
       delete process.env.CLAUDE_SESSION_ID;
       delete process.env.ANTHROPIC_CLAUDE_SESSION_ID;
+      // Claude Code exports its own session id to hook and tool
+      // subprocesses; the cwd fallback only applies when neither the
+      // hook event nor the environment names one.
+      delete process.env.CLAUDE_CODE_SESSION_ID;
       clearSessionMarkers();
     });
 
@@ -1439,6 +1505,7 @@ describe("observe_cli helpers", () => {
       assert.equal(EVENT_MAP.SessionStart, "session_start");
       assert.equal(EVENT_MAP.UserPromptSubmit, "pre_call");
       assert.equal(EVENT_MAP.PostToolUse, "tool_call");
+      assert.equal(EVENT_MAP.PostToolUseFailure, "tool_call");
       assert.equal(EVENT_MAP.Stop, "post_call");
       assert.equal(EVENT_MAP.SessionEnd, "session_end");
       assert.equal(EVENT_MAP.PreCompact, "tool_call");
@@ -1728,23 +1795,80 @@ describe("observe_cli end-to-end (new fields)", () => {
     assert.equal(body.parent_session_id, body.session_id);
   });
 
-  it("PostToolUse populates latency_ms", async () => {
-    const post = await runScript(
+  it("PostToolUse reports Claude Code's duration_ms as latency_ms and duration_ms, null when absent", async () => {
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-lat-1",
+    };
+    const withDuration = await runScript(
+      JSON.stringify({
+        hook_event_name: "PostToolUse",
+        tool_name: "Read",
+        session_id: "sess-lat-1",
+        tool_use_id: "toolu_01lat",
+        duration_ms: 1234,
+      }),
+      env,
+    );
+    assert.equal(withDuration.code, 0);
+    const measured = capture.bodies().at(-1);
+    assert.equal(measured.latency_ms, 1234);
+    assert.equal(measured.duration_ms, 1234);
+    assert.equal(measured.tool_use_id, "toolu_01lat");
+
+    // Older Claude Code without duration_ms: the plugin must not
+    // substitute its own process runtime.
+    const without = await runScript(
       JSON.stringify({
         hook_event_name: "PostToolUse",
         tool_name: "Read",
         session_id: "sess-lat-1",
       }),
+      env,
+    );
+    assert.equal(without.code, 0);
+    const unmeasured = capture.bodies().at(-1);
+    assert.equal(unmeasured.latency_ms, null);
+    assert.equal(unmeasured.duration_ms, null);
+    assert.equal("tool_use_id" in unmeasured, false);
+  });
+
+  it("PostToolUseFailure on a plain tool emits tool_call with the structured error block", async () => {
+    const before = capture.bodies().length;
+    const result = await runScript(
+      JSON.stringify({
+        hook_event_name: "PostToolUseFailure",
+        tool_name: "Bash",
+        tool_input: { command: "ls /missing" },
+        tool_use_id: "toolu_01fail",
+        error: "Exit code 2\nls: cannot access '/missing': No such file or directory",
+        is_interrupt: false,
+        duration_ms: 449,
+        session_id: "sess-fail-generic-1",
+      }),
       {
         FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
         FLIGHTDECK_TOKEN: "tok_test",
-        CLAUDE_SESSION_ID: "sess-lat-1",
+        CLAUDE_SESSION_ID: "sess-fail-generic-1",
       },
     );
-    assert.equal(post.code, 0);
-    const postBody = capture.bodies().at(-1);
-    assert.equal(typeof postBody.latency_ms, "number");
-    assert.ok(postBody.latency_ms >= 0);
+    assert.equal(result.code, 0);
+    const failed = capture
+      .bodies()
+      .slice(before)
+      .find((b) => b.event_type === "tool_call" && b.tool_name === "Bash");
+    assert.ok(failed, "generic tool failure must emit a tool_call");
+    assert.equal(failed.tool_use_id, "toolu_01fail");
+    assert.equal(failed.latency_ms, 449);
+    assert.equal(failed.duration_ms, 449);
+    assert.deepEqual(failed.error, {
+      error_type: "other",
+      error_class: "PluginToolError",
+      message: "Exit code 2\nls: cannot access '/missing': No such file or directory",
+      interrupted: false,
+    });
+    assert.equal(JSON.parse(failed.tool_input).command, "ls /missing");
   });
 
   // Mid-turn flush: PostToolUse emits post_call events for any
@@ -2837,5 +2961,45 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
       result.stderr.includes("hard cap"),
       `expected stderr WARN about hard cap; got: ${result.stderr}`,
     );
+  });
+});
+
+
+describe("sessionEndWorkerGraceMs", () => {
+  it("uses the default when the override is unset, empty or invalid", () => {
+    for (const value of [undefined, "", "   ", "abc", "-5", "Infinity"]) {
+      const env = value === undefined ? {} : { FLIGHTDECK_SESSION_END_GRACE_MS: value };
+      assert.equal(sessionEndWorkerGraceMs(env), SESSION_END_WORKER_GRACE_MS, `value ${value}`);
+    }
+  });
+
+  it("honours a valid override", () => {
+    assert.equal(sessionEndWorkerGraceMs({ FLIGHTDECK_SESSION_END_GRACE_MS: "0" }), 0);
+    assert.equal(sessionEndWorkerGraceMs({ FLIGHTDECK_SESSION_END_GRACE_MS: "2500" }), 2500);
+  });
+
+  it("clamps an override above the ceiling", () => {
+    assert.equal(
+      sessionEndWorkerGraceMs({ FLIGHTDECK_SESSION_END_GRACE_MS: "600000" }),
+      SESSION_END_WORKER_GRACE_MAX_MS,
+    );
+  });
+});
+
+describe("boundedIdentity", () => {
+  it("passes short strings and non-strings through", () => {
+    assert.equal(boundedIdentity("github"), "github");
+    assert.equal(boundedIdentity(null), null);
+  });
+
+  it("cuts to the byte cap on a code point boundary", () => {
+    for (const unit of ["a", "\u00e9", "\u20ac", "\u{1F600}"]) {
+      const cut = boundedIdentity(unit.repeat(400));
+      const bytes = Buffer.byteLength(cut, "utf8");
+      assert.ok(bytes <= MAX_MCP_IDENTITY_BYTES, `${unit}: ${bytes} bytes`);
+      assert.ok(bytes > MAX_MCP_IDENTITY_BYTES - Buffer.byteLength(unit, "utf8"), `${unit}: cut too short`);
+      assert.ok(!cut.includes("\uFFFD"), `${unit}: split a code point`);
+      assert.equal(cut, unit.repeat(Array.from(cut).length));
+    }
   });
 });

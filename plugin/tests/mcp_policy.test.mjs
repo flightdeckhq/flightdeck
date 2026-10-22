@@ -65,6 +65,49 @@ function flavorDoc({ scopeValue = "production", entries = [] } = {}) {
 // ----- evaluateServer (resolution precedence) -----------------------
 
 describe("evaluateServer — policy resolution", () => {
+  it("matches the URL whatever name the server reports", () => {
+    // Identity is the server URL: a deny recorded under one name still
+    // applies when the server reports another name, or none.
+    const policies = {
+      global: globalDoc({ mode: "blocklist" }),
+      flavor: flavorDoc({
+        entries: [
+          policyEntry({
+            url: "https://maps.example.com/mcp",
+            name: "maps",
+            kind: "deny",
+            enforcement: "block",
+          }),
+        ],
+      }),
+    };
+    for (const reported of ["maps", "maps-v2", ""]) {
+      const d = evaluateServer(policies, "https://maps.example.com/mcp", reported);
+      assert.equal(d.decision, "block", reported);
+      assert.equal(d.decisionPath, "flavor_entry", reported);
+    }
+  });
+
+  it("picks the strictest entry for a URL whatever the order", () => {
+    const kinds = {
+      allow: { kind: "allow" },
+      warn: { kind: "deny", enforcement: "warn" },
+      block: { kind: "deny", enforcement: "block" },
+    };
+    for (const order of [["allow", "warn", "block"], ["block", "warn", "allow"]]) {
+      const policies = {
+        global: globalDoc({ mode: "blocklist" }),
+        flavor: flavorDoc({
+          entries: order.map((k) =>
+            policyEntry({ url: "https://x.example.com/mcp", name: `n-${k}`, ...kinds[k] }),
+          ),
+        }),
+      };
+      const d = evaluateServer(policies, "https://x.example.com/mcp", "anything");
+      assert.equal(d.decision, "block", order.join(","));
+    }
+  });
+
   it("flavor allow entry returns allow / flavor_entry", () => {
     const policies = {
       global: globalDoc({ mode: "allowlist" }),

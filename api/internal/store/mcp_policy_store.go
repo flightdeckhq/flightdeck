@@ -324,12 +324,24 @@ func (s *Store) DeleteMCPPolicy(ctx context.Context, flavor string, actorTokenID
 	return nil
 }
 
+// entryRestrictivenessOrder orders a scope's entries for one server URL
+// most restrictive first, so a URL that carries several entries (names
+// differ) resolves to the strictest: a deny that blocks (bare deny,
+// block, interactive), then a deny that warns, then an allow. Entries of
+// equal rank yield the same decision, so which of them is returned does
+// not matter. The sensor and the plugin rank the same way.
+const entryRestrictivenessOrder = `CASE
+	WHEN mpe.entry_kind = 'allow' THEN 2
+	WHEN mpe.enforcement = 'warn' THEN 1
+	ELSE 0
+END, mpe.created_at DESC`
+
 // ResolveMCPPolicy implements the resolution algorithm: flavor entry →
 // global entry → global mode default. The caller passes the
 // fingerprint that the API-side identity helper has already computed
 // from server_url + server_name. Returns a non-nil result on every
 // path; flavor=="" routes the resolve against global only.
-func (s *Store) ResolveMCPPolicy(ctx context.Context, flavor, fingerprint string) (*MCPPolicyResolveResult, error) {
+func (s *Store) ResolveMCPPolicy(ctx context.Context, flavor, canonicalURL, fingerprint string) (*MCPPolicyResolveResult, error) {
 	// Step 1: flavor entry?
 	if flavor != "" {
 		const flavorEntrySQL = `
@@ -337,14 +349,16 @@ func (s *Store) ResolveMCPPolicy(ctx context.Context, flavor, fingerprint string
 			  FROM mcp_policies mp
 			  JOIN mcp_policy_entries mpe ON mpe.policy_id = mp.id
 			 WHERE mp.scope = 'flavor' AND mp.scope_value = $1
-			   AND mpe.fingerprint = $2
+			   AND mpe.server_url_canonical = $2
+			 ORDER BY ` + entryRestrictivenessOrder + `
+			 LIMIT 1
 		`
 		var (
 			policyID    string
 			entryKind   string
 			enforcement *string
 		)
-		err := s.pool.QueryRow(ctx, flavorEntrySQL, flavor, fingerprint).Scan(
+		err := s.pool.QueryRow(ctx, flavorEntrySQL, flavor, canonicalURL).Scan(
 			&policyID, &entryKind, &enforcement)
 		switch {
 		case err == nil:
@@ -366,14 +380,16 @@ func (s *Store) ResolveMCPPolicy(ctx context.Context, flavor, fingerprint string
 		  FROM mcp_policies mp
 		  JOIN mcp_policy_entries mpe ON mpe.policy_id = mp.id
 		 WHERE mp.scope = 'global'
-		   AND mpe.fingerprint = $1
+		   AND mpe.server_url_canonical = $1
+		 ORDER BY ` + entryRestrictivenessOrder + `
+		 LIMIT 1
 	`
 	var (
 		gPolicyID    string
 		gEntryKind   string
 		gEnforcement *string
 	)
-	err := s.pool.QueryRow(ctx, globalEntrySQL, fingerprint).Scan(
+	err := s.pool.QueryRow(ctx, globalEntrySQL, canonicalURL).Scan(
 		&gPolicyID, &gEntryKind, &gEnforcement)
 	switch {
 	case err == nil:

@@ -82,6 +82,19 @@ pytestmark = pytest.mark.skipif(
 # ---------------------------------------------------------------------
 
 
+def _mcp_error(code: int, message: str) -> BaseException:
+    """The installed mcp's error class: ``McpError(ErrorData)`` on 1.x,
+    ``MCPError(code, message)`` on 2.x."""
+    error_cls = mcp_interceptor._MCPError
+    assert error_cls is not None
+    try:
+        return error_cls(code, message)  # type: ignore[call-arg]
+    except TypeError:
+        from mcp.types import ErrorData
+
+        return error_cls(ErrorData(code=code, message=message))  # type: ignore[call-arg]
+
+
 def _make_sensor_session(*, capture_prompts: bool = False) -> Session:
     """Construct a sensor Session with a mock control-plane client.
 
@@ -257,11 +270,10 @@ async def test_call_tool_error_path_emits_structured_error_and_reraises(
     install_session: Session,
 ) -> None:
     """Failure path lands an event AND re-raises."""
-    from mcp.shared.exceptions import McpError
-    from mcp.types import ErrorData
+    McpError = mcp_interceptor._MCPError
 
     async def fake_orig(self: Any, name: str, arguments: Any = None) -> Any:
-        raise McpError(ErrorData(code=-32602, message="bad arg"))
+        raise _mcp_error(-32602, "bad arg")
 
     wrapped = _make_async_wrapper(
         "call_tool",
@@ -865,15 +877,44 @@ def test_init_wrapper_unmarked_stream_yields_none_transport() -> None:
 
 
 def test_classify_mcp_error_handles_jsonrpc_codes() -> None:
-    from mcp.shared.exceptions import McpError
-    from mcp.types import ErrorData
-
-    err = McpError(ErrorData(code=-32602, message="bad params"))
+    err = _mcp_error(-32602, "bad params")
     classified = _classify_mcp_error(err)
     assert classified["error_type"] == "invalid_params"
     assert classified["code"] == -32602
     assert classified["message"] == "bad params"
-    assert classified["error_class"] == "McpError"
+    # McpError on mcp 1.x, MCPError on 2.x.
+    assert classified["error_class"] == type(err).__name__
+
+
+def test_classify_mcp_error_maps_the_request_timeout_code() -> None:
+    """mcp 2.x's dispatchers raise the JSON-RPC request-timeout code
+    (-32001) when a request outlives its read timeout."""
+    classified = _classify_mcp_error(_mcp_error(-32001, "request timed out"))
+    assert classified["error_type"] == "timeout"
+    assert classified["code"] == -32001
+
+
+def test_model_dump_uses_the_protocol_field_names() -> None:
+    """Results are stored under the protocol's JSON names on both mcp
+    lines (2.x models use snake_case fields with camelCase aliases)."""
+    from mcp.types import CallToolResult, TextContent
+
+    result = CallToolResult(content=[TextContent(type="text", text="42")], isError=False)
+    dumped = mcp_interceptor._model_to_dict(result)
+    assert dumped["isError"] is False
+    assert "is_error" not in dumped
+
+
+def test_client_target_reads_url_and_stdio_parameters() -> None:
+    from mcp.client.stdio import StdioServerParameters
+
+    assert mcp_interceptor._client_target("https://mcp.example/mcp") == (
+        "http",
+        "https://mcp.example/mcp",
+    )
+    params = StdioServerParameters(command="uvx", args=["mcp-server-git", "--repo", "."])
+    assert mcp_interceptor._client_target(params) == ("stdio", "uvx mcp-server-git --repo .")
+    assert mcp_interceptor._client_target(object()) == (None, "")
 
 
 def test_classify_mcp_error_handles_timeout() -> None:

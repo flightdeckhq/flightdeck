@@ -11075,3 +11075,91 @@ anthropic 1.x, which LangChain users get). Keeping `create_react_agent`
 in playground 23 (deprecated since LangGraph 1.0). Moving both MCP
 policy playgrounds to `create_agent` (23 would no longer exercise
 LangGraph's own primitives).
+
+---
+
+## D195 -- The sensor supports mcp 1.x and 2.x; on 2.x the fingerprint comes from adopt and the Client's target
+
+**Date:** 2026-10-22
+
+**Refines:** the mcp 2.x item of the October 2026 update plan (support
+both lines, two CI lanes), D193 (the SDK-majors lane).
+
+**Decision:** The `mcp` extra allows `mcp>=1.20,<3`. The interceptor
+looks the error class up by either name (`MCPError` on 2.x, `McpError`
+on 1.x). On 2.x it wraps `ClientSession.adopt` instead of `initialize`:
+every 2.x handshake installs its result there (the legacy
+`initialize()`, the `server/discover` probe of `Client(mode="auto")`, a
+caller adopting a prior discover result), and the fingerprint is read
+from the session's negotiated `server_info`, `protocol_version`,
+`server_capabilities` and `instructions`. It also wraps
+`mcp.Client._build_session` to stamp the transport label and server URL
+from the `Client`'s target (URL string: `http`; `StdioServerParameters`:
+`stdio` with `<command> <args>`; in-process server: neither), because
+the `Client` builds its session over a dispatcher and binds its
+transport factories at import, beyond the transport patches. Result
+models are dumped with `by_alias=True` so both lines store the
+protocol's JSON names, and `-32001` (the dispatchers' request timeout)
+classifies as `timeout`. The dev extra stays on mcp 1.x (CrewAI pins
+`~=1.28`, langchain-mcp-adapters `<2`); the SDK-majors CI lane installs
+`mcp>=2,<3`. The playground reference servers import `MCPServer` on 2.x
+and `FastMCP` on 1.x.
+
+**Reasoning:** mcp 1.x is security-only and llama-index-tools-mcp,
+fastmcp 4, langchain[mcp] and recent litellm already require 2.x, so a
+cap below 2 excluded a growing share of users; with the cap lifted and
+no port, the import guard failed and MCP traffic went unobserved. With
+only the import fixed, events went out with no server name or
+fingerprint, so policy fell to its mode default. Reading the
+negotiated state from the session after `adopt` covers all handshake
+paths with one hook and no reliance on the result's field casing.
+Dumping by alias keeps stored MCP content identical in shape whichever
+line produced it; the one change on 1.x is the protocol-correct
+`_meta` key in place of `meta`, which nothing reads.
+
+**Rejected:** Keeping the `<2` cap (blocks users of frameworks that
+require 2.x). Wrapping both `initialize` and `adopt` on 2.x
+(`initialize` calls `adopt`, so the fingerprint would be recorded
+twice). Patching the transport factories `mcp.client.client` imported
+by name (only works when the sensor patches before that module is
+imported). Making policy identity URL/command-only in the same change:
+it needs a fingerprint-recompute migration across the Go services and
+the plugin, and lands as its own change.
+
+---
+
+## D196 -- MCP policy entries match on the canonical server URL; the stored fingerprint stays as it is
+
+**Date:** 2026-10-22
+
+**Refines:** the update plan's MCP identity decision (URL/command-only
+identity with a fingerprint-recompute migration) and D195.
+
+**Decision:** The sensor's policy cache, the plugin's policy evaluator
+and the API's resolve query match a server against a scope's entries by
+canonical server URL alone. When a scope holds several entries for one
+URL (recorded under different names), the most restrictive applies: a
+blocking deny (bare, block or interactive), then a warning deny, then
+an allow; entries of equal rank yield the same decision. The decision's fingerprint is still
+`sha256(canonical_url + 0x00 + name)[:16]`, and entries keep storing
+that fingerprint; nothing is migrated. `server_name` is optional on
+`GET /v1/mcp-policies/resolve`.
+
+**Reasoning:** Review of the mcp 2.x support found that a 2.x server
+which omits its `server_info` (or reports a different name) missed the
+entry for its URL and fell to the mode default, so a blocklist deny
+allowed it. The policy model already said identity resolves on the
+URL; the code keyed on (URL, name). Matching on the URL fixes the bypass
+on every SDK line and in the plugin. Recomputing the stored
+fingerprints instead, as the plan proposed, would have made every
+sensor and plugin still running the previous release miss every entry
+once the server upgraded (both key their lookup on the fingerprint the
+server sends), silently turning blocklists permissive across a rolling
+upgrade, and the unique (policy, fingerprint) index would have forced
+the migration to drop entries that share a URL. Leaving the stored
+fingerprint alone keeps older clients matching exactly as before.
+
+**Rejected:** Recomputing fingerprints as `sha256(canonical_url)` with
+a migration (the rollout hazard and data loss above). Treating a
+missing server name as uncertainty (`block_on_uncertainty`) instead
+(would still let a server pick a name that matches no entry).

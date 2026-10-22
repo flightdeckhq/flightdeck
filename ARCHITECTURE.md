@@ -255,7 +255,7 @@ flightdeck/
 │   │       └── crewai_mcp.py   # Opt-in fixup for the mcpadapt → CrewAI args_schema JSON Schema bug
 │   └── tests/
 │       ├── conftest.py         # Mock control plane + provider fixtures
-│       └── unit/               # 38 files
+│       └── unit/               # 39 files
 │           ├── test_agent_id.py
 │           ├── test_agent_type_validation.py
 │           ├── test_anthropic_resource_patch.py
@@ -272,6 +272,7 @@ flightdeck/
 │           ├── test_interceptor_langgraph.py
 │           ├── test_interceptor_litellm.py
 │           ├── test_llm_event_enrichment.py
+│           ├── test_mcp_2x_paths.py
 │           ├── test_mcp_availability.py
 │           ├── test_mcp_identity.py
 │           ├── test_mcp_interceptor.py
@@ -4700,9 +4701,23 @@ fields, which the workers service does not read for MCP rows:
 `timeout` / `api_error` / `other`) is populated on failure paths
 across every type.
 
-**Server fingerprint at session level**. `ClientSession.initialize`
-is patched to capture the `InitializeResult` and stamp an
-`MCPServerFingerprint` onto the sensor session. When the sensor's
+**Server fingerprint at session level**. The handshake is patched to
+stamp an `MCPServerFingerprint` onto the sensor session: on mcp 1.x
+`ClientSession.initialize` (from its `InitializeResult`); on mcp 2.x
+`ClientSession.adopt`, which every 2.x handshake reaches (the legacy
+`initialize()`, the `server/discover` probe of `Client(mode="auto")`,
+and a caller adopting a prior discover result), reading the session's
+negotiated `server_info`, `protocol_version`, `server_capabilities`
+and `instructions`. mcp 2.x's high-level `Client` builds its session
+over a dispatcher rather than a marked stream pair and binds its
+transport factories at import, so `Client._build_session` is patched
+to stamp the transport and server URL from the `Client`'s target (a
+URL string is `http`; `StdioServerParameters` is `stdio` with
+`<command> <args>`; an in-process server has neither). Result models
+are stored under the protocol's JSON names on both SDK lines
+(`model_dump(by_alias=True)`: 2.x models use snake_case fields with
+camelCase aliases), and the JSON-RPC request-timeout code `-32001`
+classifies as `timeout`. When the sensor's
 session_start ships AFTER the initialize call, `context.mcp_servers`
 carries the full fingerprint list — name, transport, protocol_version
 (str | int, preserved verbatim per Override 5), version, capabilities,
@@ -4728,14 +4743,12 @@ default fall-through path populates the block with
 decisions populate the block; deny decisions populate it AND the
 enforcement path raises `MCPPolicyBlocked`.
 
-`mcp_server_name_changed` carries `policy_entries_orphaned`, a
-worker-computed block from a query against `mcp_policy_entries`
-for rows whose fingerprint matched the old server name. Shape:
-`{count, sample_entry_ids[<=5], affected_policies[]}`. Operator
-reading the row sees how many policy entries silently stopped
-binding when the server's `serverInfo.name` drifted. Dashboard
-renders inline as "name drift: \<old\> → \<new\> (N entries
-orphaned)".
+`mcp_server_name_changed` records the rename itself. A rename leaves
+every policy entry for the server's URL in force, because entries match
+on the URL, so the worker adds nothing to the event. A stored row that
+carries a `policy_entries_orphaned` block (`{count,
+sample_entry_ids[<=5], affected_policies[]}`) is rendered inline as
+"name drift: \<old\> → \<new\> (N entries orphaned)".
 
 **Content overflow** (B-6). `MCP_RESOURCE_READ` payloads can carry
 large captured bodies. The wire envelope routes content one of two
@@ -4964,13 +4977,16 @@ session's lifetime; mid-session policy updates apply at the next
 
 ### Identity model
 
-Server identity is the pair `(URL, name)`. The URL is the security key
-— two servers with the same URL but different declared names are the
-same enforcement target. The name is the display label and the
-tamper-evidence axis: when an agent declares a server with a known URL
-under a new name, the sensor emits a `mcp_server_name_changed` event so
-operators can see drift, but the policy decision still resolves on the
-URL.
+Server identity for policy is the canonical URL (or stdio command).
+Entries match on it alone: two servers with the same URL but different
+declared names are the same enforcement target, and a server that
+reports another name, or none (an mcp 2.x server may omit its
+`server_info`), still meets the entries for its URL. The name is the
+display label and the tamper-evidence axis: when an agent declares a
+server with a known URL under a new name, the sensor emits a
+`mcp_server_name_changed` event so operators can see drift. The sensor,
+the plugin and the API's resolve endpoint all match this way, so a
+dashboard preview agrees with enforcement.
 
 **HTTP canonical form.** Lowercase scheme + host. Strip default ports
 (`:80` for `http`, `:443` for `https`). Strip a trailing slash only at
@@ -4987,10 +5003,11 @@ current environment. Args are case-sensitive (file paths and flags
 matter byte-for-byte).
 
 **Hash recipe.** `sha256(canonical_url + 0x00 + name)`, hex-encoded.
-The first 16 hex characters are the display fingerprint; the full hash
-is the storage key. The 0x00 separator prevents
-`("https://a.com", "bservice")` and `("https://a.combservice", "")`
-from colliding.
+The first 16 hex characters are the display fingerprint stored on each
+entry and stamped on policy decisions; it names a (URL, name) pair for
+display and drift tracking, and is not the matching key. The 0x00
+separator prevents `("https://a.com", "bservice")` and
+`("https://a.combservice", "")` from colliding.
 
 ### Two-scope policy model
 
@@ -5007,7 +5024,10 @@ deployment; locking down a flavor is opt-in.
 
 ### Per-server resolution
 
-For an `(URL, name)` evaluated against `(global, flavor)`:
+For a server URL evaluated against `(global, flavor)`, where a scope
+that holds several entries for the URL (recorded under different names)
+uses the most restrictive one (a blocking deny, then a warning deny,
+then an allow):
 
 1. If the per-flavor policy has an entry whose canonical URL matches,
    use that entry's enforcement decision (allow / deny + warn / block;

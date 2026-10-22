@@ -266,6 +266,12 @@ class MCPPolicyCache:
         """Apply the resolution algorithm (flavor entry → global entry
         → global-mode default) to the cached policy.
 
+        Entries match on the canonical server URL alone: the server name
+        is display metadata (it still feeds the decision's fingerprint),
+        so a server that reports a different name, or none, cannot step
+        around an entry for its URL. When a scope holds several entries
+        for one URL the most restrictive wins.
+
         Returns the canonical decision the emit path acts on directly —
         the sensor enforces as configured, with no soft-launch override.
         """
@@ -274,12 +280,12 @@ class MCPPolicyCache:
 
         with self._lock:
             # Step 1: flavor entry?
-            entry = self._flavor_entries.get(fp)
+            entry = _strictest_entry_for_url(self._flavor_entries, canonical)
             if entry is not None:
                 return _decision_from_entry(entry, "flavor_entry", fp)
 
             # Step 2: global entry?
-            entry = self._global_entries.get(fp)
+            entry = _strictest_entry_for_url(self._global_entries, canonical)
             if entry is not None:
                 return _decision_from_entry(entry, "global_entry", fp)
 
@@ -396,26 +402,44 @@ class MCPPolicyCache:
             return self._populated
 
 
+# Restrictiveness rank of an entry's decision; higher is stricter. The
+# API's resolve query and the plugin rank the same way.
+_DECISION_RANK: dict[str, int] = {"allow": 0, "warn": 1, "block": 2}
+
+
+def _strictest_entry_for_url(
+    entries: dict[str, _PolicyEntry],
+    canonical_url: str,
+) -> _PolicyEntry | None:
+    """The most restrictive entry for ``canonical_url`` in one scope, or
+    None. Ties keep the entry seen first."""
+    best: _PolicyEntry | None = None
+    best_rank = -1
+    for entry in entries.values():
+        if entry.server_url_canonical != canonical_url:
+            continue
+        rank = _DECISION_RANK[_entry_decision(entry)]
+        if rank > best_rank:
+            best, best_rank = entry, rank
+    return best
+
+
+def _entry_decision(entry: _PolicyEntry) -> Decision:
+    """The decision an entry yields: allow, or the deny's enforcement
+    (warn / block; a bare or interactive deny blocks)."""
+    if entry.entry_kind == "allow":
+        return "allow"
+    if entry.enforcement == "warn":
+        return "warn"
+    return "block"
+
+
 def _decision_from_entry(
     entry: _PolicyEntry,
     decision_path: DecisionPath,
     fingerprint: str,
 ) -> MCPPolicyDecision:
-    if entry.entry_kind == "allow":
-        decision: Decision = "allow"
-    else:
-        # deny entry — enforcement field upgrades bare deny to warn /
-        # block. Default for deny without enforcement: block. Explicit
-        # equality on each Literal value lets mypy narrow without a
-        # type-ignore directive — matches the trust-boundary pattern
-        # from the base.py:1167 cast → isinstance fix in the prior
-        # reviewer round.
-        if entry.enforcement == "warn":
-            decision = "warn"
-        elif entry.enforcement == "block":
-            decision = "block"
-        else:
-            decision = "block"
+    decision = _entry_decision(entry)
     return MCPPolicyDecision(
         decision=decision,
         decision_path=decision_path,

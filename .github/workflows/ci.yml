@@ -106,7 +106,7 @@ jobs:
     # The job above installs the framework packages, whose pins hold the
     # provider SDKs below their current majors. This lane installs the
     # sensor with the newest anthropic and openai releases (2.x / 3.x and
-    # later, built on httpx2) and no frameworks, so a fresh
+    # later, built on httpx2), mcp 2.x and no frameworks, so a fresh
     # `pip install flightdeck-sensor[anthropic,openai]` is tested too.
     # Framework tests skip here; tests/conftest.py aliases httpx to httpx2
     # so the HTTP mocks see the new SDKs.
@@ -123,7 +123,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install the sensor with the newest SDK majors
-        run: pip install -e ".[test]" "anthropic>=2" "openai>=3" "litellm>=1.83.0" "mcp>=1.20,<2"
+        run: pip install -e ".[test]" "anthropic>=2" "openai>=3" "litellm>=1.83.0" "mcp>=2,<3"
 
       - name: Installed SDK versions
         run: pip list | grep -iE "^(anthropic|openai|litellm|httpx2?|mcp) "

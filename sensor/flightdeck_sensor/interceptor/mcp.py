@@ -79,17 +79,25 @@ _log = logging.getLogger("flightdeck_sensor.interceptor.mcp")
 # ----------------------------------------------------------------------
 
 # Keep in sync with the ``mcp`` extra in pyproject.toml.
-_MCP_SUPPORTED_RANGE = "mcp>=1.20,<2"
+_MCP_SUPPORTED_RANGE = "mcp>=1.20,<3"
+
+# The error class is McpError on mcp 1.x and MCPError on 2.x; looked up
+# by name so the module type-checks against either line.
+_MCPError: Any = None
 
 try:
+    import mcp.shared.exceptions as _mcp_exceptions
     from mcp.client.session import ClientSession as _MCPClientSession
-    from mcp.shared.exceptions import McpError as _MCPError
 
+    _MCPError = getattr(_mcp_exceptions, "MCPError", None) or getattr(
+        _mcp_exceptions, "McpError", None
+    )
+    if _MCPError is None:
+        raise ImportError("mcp.shared.exceptions defines neither MCPError nor McpError")
     _MCP_AVAILABLE = True
     _MCP_IMPORT_ERROR: str | None = None
 except ImportError as _import_exc:  # pragma: no cover - mcp not installed
     _MCPClientSession = None  # type: ignore[assignment,misc]
-    _MCPError = None  # type: ignore[assignment,misc]
     _MCP_AVAILABLE = False
     _MCP_IMPORT_ERROR = str(_import_exc)
 
@@ -205,7 +213,16 @@ def _model_to_dict(obj: Any) -> Any:
     dump = getattr(obj, "model_dump", None)
     if callable(dump):
         try:
-            return dump(mode="json")
+            # by_alias gives the protocol's own JSON names on both SDK
+            # lines: mcp 1.x models use camelCase field names, 2.x
+            # snake_case fields with camelCase aliases.
+            return dump(mode="json", by_alias=True)
+        except TypeError:
+            # A model_dump without by_alias (a non-pydantic look-alike).
+            try:
+                return dump(mode="json")
+            except Exception:  # pragma: no cover - defensive only
+                return None
         except Exception:  # pragma: no cover - defensive only
             return None
     return obj
@@ -399,6 +416,11 @@ def _build_tool_capture_content(
 # ----------------------------------------------------------------------
 
 
+# JSON-RPC error code the mcp SDK's dispatchers raise when a request
+# outlives its read timeout (mcp 2.x; 1.x surfaces a TimeoutError).
+_JSONRPC_REQUEST_TIMEOUT = -32001
+
+
 def _classify_mcp_error(exc: BaseException) -> dict[str, Any]:
     """Translate an MCP-side exception into the structured error payload.
 
@@ -433,7 +455,7 @@ def _classify_mcp_error(exc: BaseException) -> dict[str, Any]:
         error_type = "connection_closed"
     elif code == -32601:
         error_type = "method_not_found"
-    elif code == 408 or isinstance(exc, TimeoutError):
+    elif code in (_JSONRPC_REQUEST_TIMEOUT, 408) or isinstance(exc, TimeoutError):
         error_type = "timeout"
     elif _MCPError is not None and isinstance(exc, _MCPError):
         error_type = "api_error"
@@ -972,7 +994,7 @@ def _emit_resource_read(
                 except Exception:  # pragma: no cover - defensive
                     total_bytes += len(blob) if isinstance(blob, (str, bytes)) else 0
             if mime_type is None:
-                mime_type = getattr(piece, "mimeType", None)
+                mime_type = getattr(piece, "mime_type", None) or getattr(piece, "mimeType", None)
         extras["content_bytes"] = total_bytes
         if capture_prompts:
             extras["mime_type"] = mime_type
@@ -1264,82 +1286,101 @@ def _make_async_wrapper(
 # ----------------------------------------------------------------------
 
 
+def _record_server_identity(
+    client_session: Any,
+    *,
+    name: Any,
+    version: Any,
+    protocol_version_raw: Any,
+    capabilities: Any,
+    instructions: Any,
+) -> None:
+    """Record a handshake's server identity: stash the server name on the
+    ClientSession for per-call attribution and capture the fingerprint
+    onto the sensor session (emitting ``mcp_server_attached`` the first
+    time). Shared by the mcp 1.x ``initialize`` wrapper and the 2.x
+    ``adopt`` wrapper. Never raises: a malformed result (older mcp,
+    mocked tests, a future SDK shape change) must not break the user's
+    MCP session."""
+    with contextlib.suppress(Exception):
+        # Preserve the SDK's ``str | int`` typing rather than coercing
+        # to str -- the dashboard handles both with a one-line type
+        # guard. ``or ""`` on the str path is intentional: if the SDK
+        # returns None / empty, we substitute an empty string to keep
+        # the field non-null on the wire. Integer 0 is left intact.
+        protocol_version: str | int
+        if isinstance(protocol_version_raw, int):
+            protocol_version = protocol_version_raw
+        else:
+            protocol_version = str(protocol_version_raw or "")
+        transport = getattr(client_session, _INSTANCE_TRANSPORT_ATTR, None)
+        # MCP Protection Policy identity model: URL is the primary
+        # security key. Capture into the fingerprint so the dashboard
+        # SessionDrawer pill can resolve each server against the active
+        # policy. Empty string when the transport didn't expose a URL
+        # marker (rare).
+        server_url = getattr(client_session, _INSTANCE_SERVER_URL_ATTR, "") or ""
+        if not name:
+            return
+        # Stash on the ClientSession instance for fast lookup by
+        # per-method wrappers.
+        with contextlib.suppress(Exception):
+            setattr(client_session, _INSTANCE_SERVER_NAME_ATTR, name)
+
+        fingerprint = MCPServerFingerprint(
+            name=name,
+            transport=transport,
+            protocol_version=protocol_version,
+            version=version,
+            capabilities=_capabilities_dict(capabilities),
+            instructions=instructions,
+            server_url=server_url,
+        )
+        sensor_session = _current_session()
+        if sensor_session is None:
+            return
+        is_new = sensor_session.record_mcp_server(fingerprint)
+        if is_new:
+            # Emit only on the first record per (name, transport) so a
+            # framework reconnecting to the same server doesn't
+            # re-broadcast. Worker dedups again by (name, server_url) but
+            # suppressing the duplicate at the source keeps the wire
+            # quiet and the audit trail honest.
+            _emit_mcp_server_attached(
+                sensor_session=sensor_session,
+                fingerprint=fingerprint,
+            )
+        _emit_name_drift_if_any(
+            sensor_session=sensor_session,
+            client_session=client_session,
+            declared_name=name,
+            transport=transport,
+        )
+
+
 def _make_initialize_wrapper(orig_initialize: Any) -> Any:
-    """Produce a patched ClientSession.initialize that captures the
-    server fingerprint onto the sensor session and stashes
+    """Produce a patched ClientSession.initialize (mcp 1.x) that captures
+    the server fingerprint onto the sensor session and stashes
     server_name + transport on the ClientSession instance.
 
     No event is emitted for initialize itself — the fingerprint lands
     on session_start via context.mcp_servers, and per-call MCP events
-    attribute via the stashed instance attributes.
+    attribute via the stashed instance attributes. On mcp 2.x the
+    handshake installs its result through ``adopt`` (see
+    :func:`_make_adopt_wrapper`) and this wrapper is not installed.
     """
 
     async def _patched_initialize(self: Any) -> Any:
         result = await orig_initialize(self)
-        # Best-effort capture. A malformed InitializeResult (older mcp,
-        # mocked tests, future SDK shape change) must never crash the
-        # initialize call — the user's MCP session must continue to work.
-        with contextlib.suppress(Exception):
-            server_info = getattr(result, "serverInfo", None)
-            name = getattr(server_info, "name", None) if server_info else None
-            version = getattr(server_info, "version", None) if server_info else None
-            # Preserve the SDK's ``str | int`` typing rather than coercing
-            # to str — the dashboard handles both with a one-line type
-            # guard. ``or ""`` on the str path is intentional: if the SDK
-            # returns None / empty, we substitute an empty string to keep
-            # the field non-null on the wire. Integer 0 is left intact.
-            protocol_version_raw = getattr(result, "protocolVersion", "")
-            protocol_version: str | int
-            if isinstance(protocol_version_raw, int):
-                protocol_version = protocol_version_raw
-            else:
-                protocol_version = str(protocol_version_raw or "")
-            capabilities = _capabilities_dict(getattr(result, "capabilities", None))
-            instructions = getattr(result, "instructions", None)
-            transport = getattr(self, _INSTANCE_TRANSPORT_ATTR, None)
-            # MCP Protection Policy identity model: URL is the
-            # primary security key. Capture into the fingerprint so
-            # the dashboard SessionDrawer pill can resolve each server
-            # against the active policy. Empty string when the
-            # transport didn't expose a URL marker (rare).
-            server_url = getattr(self, _INSTANCE_SERVER_URL_ATTR, "") or ""
-
-            if name:
-                # Stash on the ClientSession instance for fast lookup
-                # by per-method wrappers.
-                with contextlib.suppress(Exception):
-                    setattr(self, _INSTANCE_SERVER_NAME_ATTR, name)
-
-                fingerprint = MCPServerFingerprint(
-                    name=name,
-                    transport=transport,
-                    protocol_version=protocol_version,
-                    version=version,
-                    capabilities=capabilities,
-                    instructions=instructions,
-                    server_url=server_url,
-                )
-                sensor_session = _current_session()
-                if sensor_session is not None:
-                    is_new = sensor_session.record_mcp_server(fingerprint)
-                    if is_new:
-                        # Emit only on the first
-                        # record per (name, transport) so a framework
-                        # reconnecting to the same server doesn't
-                        # re-broadcast. Worker dedups again by
-                        # (name, server_url) but suppressing the
-                        # duplicate at the source keeps the wire
-                        # quiet and the audit trail honest.
-                        _emit_mcp_server_attached(
-                            sensor_session=sensor_session,
-                            fingerprint=fingerprint,
-                        )
-                    _emit_name_drift_if_any(
-                        sensor_session=sensor_session,
-                        client_session=self,
-                        declared_name=name,
-                        transport=transport,
-                    )
+        server_info = getattr(result, "serverInfo", None)
+        _record_server_identity(
+            self,
+            name=getattr(server_info, "name", None) if server_info else None,
+            version=getattr(server_info, "version", None) if server_info else None,
+            protocol_version_raw=getattr(result, "protocolVersion", ""),
+            capabilities=getattr(result, "capabilities", None),
+            instructions=getattr(result, "instructions", None),
+        )
         return result
 
     _patched_initialize.__name__ = "initialize"
@@ -1351,6 +1392,77 @@ def _make_initialize_wrapper(orig_initialize: Any) -> Any:
         "+ transport on the ClientSession instance for per-call attribution."
     )
     return _patched_initialize
+
+
+def _make_adopt_wrapper(orig_adopt: Any) -> Any:
+    """Produce a patched ClientSession.adopt (mcp 2.x). Every 2.x
+    handshake installs its result through ``adopt``: the legacy
+    ``initialize()``, the ``server/discover`` probe of ``mode="auto"``,
+    and a caller adopting a prior discover result. After the original
+    runs, the session's own ``server_info`` / ``protocol_version`` /
+    ``server_capabilities`` / ``instructions`` properties hold the
+    negotiated values whichever path ran, so the fingerprint is read
+    from them."""
+
+    def _patched_adopt(self: Any, result: Any) -> Any:
+        returned = orig_adopt(self, result)
+        with contextlib.suppress(Exception):
+            server_info = self.server_info
+            _record_server_identity(
+                self,
+                name=getattr(server_info, "name", None) if server_info else None,
+                version=getattr(server_info, "version", None) if server_info else None,
+                protocol_version_raw=self.protocol_version,
+                capabilities=self.server_capabilities,
+                instructions=self.instructions,
+            )
+        return returned
+
+    _patched_adopt.__name__ = "adopt"
+    _patched_adopt.__qualname__ = "ClientSession.adopt"
+    _patched_adopt.__doc__ = (
+        "flightdeck-sensor patched adopt. Captures the negotiated server "
+        "fingerprint onto the sensor session, as the 1.x initialize "
+        "wrapper does."
+    )
+    return _patched_adopt
+
+
+def _client_target(server: Any) -> tuple[str | None, str]:
+    """The transport label and server URL of an mcp 2.x ``Client``'s
+    ``server`` argument: a URL string is Streamable HTTP, a
+    ``StdioServerParameters`` is stdio (``<command> <args>``, as the
+    stdio transport wrapper records it). An in-process server or a
+    caller-built transport has neither."""
+    if isinstance(server, str):
+        return "http", server
+    command = getattr(server, "command", None)
+    if isinstance(command, str) and command:
+        args = getattr(server, "args", None) or []
+        return "stdio", " ".join([command, *(str(a) for a in args)])
+    return None, ""
+
+
+def _make_build_session_wrapper(orig_build_session: Any) -> Any:
+    """Produce a patched ``mcp.Client._build_session`` (mcp 2.x). The
+    ``Client`` builds its ``ClientSession`` over a dispatcher rather than
+    a marked stream pair, and binds its transport factories at import
+    time, out of reach of the transport patches; the target it was given
+    is stamped onto the session here instead."""
+
+    async def _patched_build_session(self: Any, exit_stack: Any) -> Any:
+        session = await orig_build_session(self, exit_stack)
+        with contextlib.suppress(Exception):
+            transport, server_url = _client_target(getattr(self, "server", None))
+            if transport is not None:
+                setattr(session, _INSTANCE_TRANSPORT_ATTR, transport)
+            if server_url:
+                setattr(session, _INSTANCE_SERVER_URL_ATTR, server_url)
+        return session
+
+    _patched_build_session.__name__ = "_build_session"
+    _patched_build_session.__qualname__ = "Client._build_session"
+    return _patched_build_session
 
 
 # ----------------------------------------------------------------------
@@ -1375,6 +1487,11 @@ def _make_init_wrapper(orig_init: Any) -> Any:
         # stream is positional arg 0 after self. We support both kwargs
         # and positional in case future SDK versions reorder.
         read_stream = args[0] if args else kwargs.get("read_stream")
+        if read_stream is None:
+            # mcp 2.x: a session built over a dispatcher (mcp.Client
+            # given a transport) reaches the marked streams through it.
+            dispatcher = kwargs.get("dispatcher")
+            read_stream = getattr(dispatcher, "_read_stream", None)
 
         if read_stream is not None:
             transport = getattr(read_stream, _TRANSPORT_MARKER, None)
@@ -1510,6 +1627,43 @@ _TRANSPORT_PATCHES: tuple[tuple[str, str, str], ...] = (
 )
 
 
+def _mcp_client_class() -> Any:
+    """``mcp.client.client.Client`` (mcp 2.x), or None on mcp 1.x."""
+    import importlib
+
+    try:
+        client_module = importlib.import_module("mcp.client.client")
+    except ImportError:
+        return None
+    client_cls = getattr(client_module, "Client", None)
+    return client_cls if hasattr(client_cls, "_build_session") else None
+
+
+def _patch_client_class() -> None:
+    """Wrap ``Client._build_session`` so a session the 2.x ``Client``
+    builds carries its target (see :func:`_make_build_session_wrapper`)."""
+    client_cls = _mcp_client_class()
+    if client_cls is None or getattr(client_cls, _PATCHED_SENTINEL, False):
+        return
+    orig = client_cls._build_session
+    setattr(client_cls, f"{_ORIG_ATTR_PREFIX}_build_session", orig)
+    client_cls._build_session = _make_build_session_wrapper(orig)
+    setattr(client_cls, _PATCHED_SENTINEL, True)
+
+
+def _unpatch_client_class() -> None:
+    client_cls = _mcp_client_class()
+    if client_cls is None or not getattr(client_cls, _PATCHED_SENTINEL, False):
+        return
+    orig = getattr(client_cls, f"{_ORIG_ATTR_PREFIX}_build_session", None)
+    if orig is not None:
+        client_cls._build_session = orig
+        with contextlib.suppress(AttributeError):
+            delattr(client_cls, f"{_ORIG_ATTR_PREFIX}_build_session")
+    with contextlib.suppress(AttributeError):
+        delattr(client_cls, _PATCHED_SENTINEL)
+
+
 def _patch_transport_modules(quiet: bool) -> None:
     """Wrap each transport client factory to mark streams with a label."""
     import importlib
@@ -1597,10 +1751,18 @@ def patch_mcp_classes(quiet: bool = False) -> None:
     setattr(_MCPClientSession, f"{_ORIG_ATTR_PREFIX}__init__", orig_init)
     _MCPClientSession.__init__ = _make_init_wrapper(orig_init)  # type: ignore[method-assign]
 
-    # initialize — fingerprint capture.
-    orig_initialize = _MCPClientSession.initialize
-    setattr(_MCPClientSession, f"{_ORIG_ATTR_PREFIX}initialize", orig_initialize)
-    _MCPClientSession.initialize = _make_initialize_wrapper(orig_initialize)  # type: ignore[method-assign]
+    # Fingerprint capture: mcp 2.x installs every handshake result
+    # through adopt (initialize calls it too); mcp 1.x has initialize only.
+    orig_adopt = getattr(_MCPClientSession, "adopt", None)
+    if orig_adopt is not None:
+        setattr(_MCPClientSession, f"{_ORIG_ATTR_PREFIX}adopt", orig_adopt)
+        setattr(_MCPClientSession, "adopt", _make_adopt_wrapper(orig_adopt))  # noqa: B010  (adopt exists on mcp 2.x only; typed against either line)
+    else:
+        orig_initialize = _MCPClientSession.initialize
+        setattr(_MCPClientSession, f"{_ORIG_ATTR_PREFIX}initialize", orig_initialize)
+        _MCPClientSession.initialize = _make_initialize_wrapper(orig_initialize)  # type: ignore[method-assign]
+
+    _patch_client_class()
 
     # Six event-emitting methods.
     for method_name, (event_type, emit_handler) in _PATCH_TABLE.items():
@@ -1649,16 +1811,19 @@ def unpatch_mcp_classes(quiet: bool = False) -> None:
         with contextlib.suppress(AttributeError):
             delattr(_MCPClientSession, f"{_ORIG_ATTR_PREFIX}__init__")
 
-    # initialize
-    orig_initialize = getattr(
-        _MCPClientSession,
-        f"{_ORIG_ATTR_PREFIX}initialize",
-        None,
-    )
-    if orig_initialize is not None:
-        _MCPClientSession.initialize = orig_initialize  # type: ignore[method-assign]
-        with contextlib.suppress(AttributeError):
-            delattr(_MCPClientSession, f"{_ORIG_ATTR_PREFIX}initialize")
+    # initialize (mcp 1.x) / adopt (mcp 2.x)
+    for handshake_name in ("initialize", "adopt"):
+        orig_handshake = getattr(
+            _MCPClientSession,
+            f"{_ORIG_ATTR_PREFIX}{handshake_name}",
+            None,
+        )
+        if orig_handshake is not None:
+            setattr(_MCPClientSession, handshake_name, orig_handshake)
+            with contextlib.suppress(AttributeError):
+                delattr(_MCPClientSession, f"{_ORIG_ATTR_PREFIX}{handshake_name}")
+
+    _unpatch_client_class()
 
     # Six event-emitting methods.
     for method_name in _PATCH_TABLE:

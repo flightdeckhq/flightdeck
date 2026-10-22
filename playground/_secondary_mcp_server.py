@@ -18,7 +18,11 @@ Run as a stdio MCP server::
 
 from __future__ import annotations
 
-from mcp.server.fastmcp import FastMCP
+try:
+    # mcp 2.x renamed FastMCP to MCPServer.
+    from mcp.server.mcpserver import MCPServer as FastMCP
+except ImportError:
+    from mcp.server.fastmcp import FastMCP
 
 
 _SERVER_NAME = "flightdeck-mcp-secondary"

@@ -317,8 +317,9 @@ type EventPayload struct {
 	//   * PolicyDecisionAtAttach — sensor evaluates at attach time;
 	//     worker passes through.
 	// mcp_server_name_changed:
-	//   * PolicyEntriesOrphaned — worker computes by querying
-	//     mcp_policy_entries against the OLD fingerprint.
+	//   * PolicyEntriesOrphaned — passed through when present; the
+	//     worker does not compute it, because policy entries match on
+	//     the server URL and a rename leaves them in force.
 	SensorVersion          string                 `json:"sensor_version,omitempty"`
 	InterceptorVersions    map[string]string      `json:"interceptor_versions,omitempty"`
 	PolicySnapshot         map[string]interface{} `json:"policy_snapshot,omitempty"`

@@ -314,7 +314,7 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Install dependencies
         run: npm ci
@@ -551,11 +551,20 @@ jobs:
       # node:test, the URL global, process.env). No npm install
       # step needed; the make target invokes `node --test` directly
       # against tests/*.test.mjs.
+      # Run on the plugin's minimum supported Node (engines.node >=22)
+      # and on the current LTS the rest of the repo builds with.
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
-          node-version: "20"
+          node-version: "22"
 
-      - name: Plugin unit tests
+      - name: Plugin unit tests (Node 22)
+        run: make test-plugin
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+        with:
+          node-version: "24"
+
+      - name: Plugin unit tests (Node 24)
         run: make test-plugin
 
   integration:
@@ -673,7 +682,7 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Install sensor (required by seed.py's event-builder helpers)
         # tests/shared/fixtures.py imports

@@ -378,6 +378,11 @@ server.
 
 ### Changed
 
+- **Dashboard toolchain:** Node 24 (production image builder, dev
+  compose, CI), Vite 8 with `@vitejs/plugin-react` 6, Vitest 5, jsdom 30
+  and Playwright 1.64. The Vite configs use `import.meta.dirname` and drop
+  the `esbuild.target` option Vite 8 ignores. CI runs the plugin's tests
+  on Node 22 (its minimum) and Node 24.
 - **Go toolchain:** the services build with Go 1.27.3 on an Alpine 3.24
   runtime; pgx 5.11.0, golang-migrate 4.20.1 and golang.org/x/text
   0.43.0 (the query API reached two x/text advisories, GO-2026-6629 and

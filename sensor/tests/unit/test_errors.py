@@ -8,13 +8,23 @@ concrete test failure rather than silent drift to ``error_type="other"``.
 
 from __future__ import annotations
 
+import json
+import logging
+import time
 from typing import Any
 
+import pytest
+
 from flightdeck_sensor.core.errors import (
+    _MESSAGE_HINT_MAX_CHARS,
+    NON_SUCCESS_STOP_REASONS,
     OTEL_ERROR_TYPE,
+    REQUEST_ID_MAX_LEN,
+    STOP_REASON_HTTP_STATUS,
     ErrorPayload,
     ErrorType,
     classify_exception,
+    classify_stop_reason,
 )
 
 # ---------------------------------------------------------------------------
@@ -428,3 +438,341 @@ def test_classify_capture_off_default_value() -> None:
     exc = _mk("BadRequestError", module="openai", status=400, message="prompt content")
     c = classify_exception(exc)  # no capture_prompts argument
     assert c.error_message == "BadRequestError"
+
+
+# ---------------------------------------------------------------------------
+# Anthropic SDK classes and account-level failures
+# ---------------------------------------------------------------------------
+#
+# The SDK declares DeadlineExceededError (504), OverloadedError (529) and
+# RequestTooLargeError (413) but its status mapping only raises the last
+# two; a real 504 arrives as InternalServerError(status_code=504) and a
+# 402 billing_error as a bare APIStatusError. Spend limits hide under the
+# generic error type of their status, so the message is the signal.
+
+
+def test_deadline_exceeded_class_maps_to_timeout() -> None:
+    c = classify_exception(_mk("DeadlineExceededError", status=504))
+    assert c.error_type is ErrorType.TIMEOUT
+    assert c.is_retryable is True
+
+
+def test_504_maps_to_timeout_whatever_the_class() -> None:
+    # The SDK folds 504 into InternalServerError; the status decides.
+    c = classify_exception(_mk("InternalServerError", status=504, code="api_error"))
+    assert c.error_type is ErrorType.TIMEOUT
+    assert c.http_status == 504
+
+
+def test_overloaded_and_request_too_large_classes_map_without_status() -> None:
+    assert classify_exception(_mk("OverloadedError")).error_type is ErrorType.OVERLOADED
+    assert classify_exception(_mk("RequestTooLargeError")).error_type is ErrorType.REQUEST_TOO_LARGE
+
+
+def test_402_billing_error_maps_to_quota_exceeded_and_is_terminal() -> None:
+    exc = _mk("APIStatusError", status=402, code="billing_error", message="billing problem")
+    c = classify_exception(exc)
+    assert c.error_type is ErrorType.QUOTA_EXCEEDED
+    assert c.http_status == 402
+    assert c.provider_error_code == "billing_error"
+    assert c.is_retryable is False
+
+
+def test_429_spend_cap_message_upgrades_rate_limit_to_quota_exceeded() -> None:
+    exc = _mk(
+        "RateLimitError",
+        status=429,
+        code="rate_limit_error",
+        message="Your organization has reached its monthly spend limit.",
+    )
+    c = classify_exception(exc)
+    assert c.error_type is ErrorType.QUOTA_EXCEEDED
+    assert c.is_retryable is False
+
+
+def test_429_plain_rate_limit_message_stays_rate_limit() -> None:
+    exc = _mk(
+        "RateLimitError",
+        status=429,
+        code="rate_limit_error",
+        message="This request would exceed your organization's rate limit of 50 requests/min.",
+    )
+    c = classify_exception(exc)
+    assert c.error_type is ErrorType.RATE_LIMIT
+    assert c.is_retryable is True
+
+
+def test_400_user_spend_limit_message_upgrades_to_quota_exceeded() -> None:
+    exc = _mk(
+        "BadRequestError",
+        status=400,
+        code="invalid_request_error",
+        message="This user has reached its spend limit for the current period.",
+    )
+    assert classify_exception(exc).error_type is ErrorType.QUOTA_EXCEEDED
+
+
+def test_400_credit_balance_message_upgrades_to_quota_exceeded() -> None:
+    exc = _mk(
+        "BadRequestError",
+        status=400,
+        code="invalid_request_error",
+        message="Your credit balance is too low to access the Anthropic API.",
+    )
+    assert classify_exception(exc).error_type is ErrorType.QUOTA_EXCEEDED
+
+
+def test_400_plain_invalid_request_message_stays_invalid_request() -> None:
+    exc = _mk(
+        "BadRequestError",
+        status=400,
+        code="invalid_request_error",
+        message='messages: roles must alternate between "user" and "assistant"',
+    )
+    assert classify_exception(exc).error_type is ErrorType.INVALID_REQUEST
+
+
+def test_billing_message_is_read_from_body_error_message() -> None:
+    # Real SDK exceptions carry the API's message in body.error.message.
+    exc = _mk(
+        "RateLimitError",
+        status=429,
+        body={"error": {"type": "rate_limit_error", "message": "Spend cap reached"}},
+    )
+    c = classify_exception(exc)
+    assert c.error_type is ErrorType.QUOTA_EXCEEDED
+    assert c.provider_error_code == "rate_limit_error"
+
+
+def test_billing_message_never_lands_in_error_message_when_capture_off() -> None:
+    exc = _mk(
+        "BadRequestError",
+        status=400,
+        message="Your credit balance is too low to access the Anthropic API.",
+    )
+    c = classify_exception(exc)
+    assert c.error_type is ErrorType.QUOTA_EXCEEDED
+    assert c.error_message == "BadRequestError"
+
+
+def test_real_anthropic_sdk_shapes_classify_by_status() -> None:
+    """The installed SDK's own classes, built the way the client builds
+    them (an httpx response, no network): a 504 wrapped in
+    InternalServerError and a 402 in APIStatusError."""
+    anthropic = pytest.importorskip("anthropic")
+    httpx = pytest.importorskip("httpx")
+    request = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+
+    resp_504 = httpx.Response(504, request=request, headers={"request-id": "req_504"})
+    gateway = anthropic.InternalServerError("gateway timeout", response=resp_504, body=None)
+    c = classify_exception(gateway)
+    assert c.error_type is ErrorType.TIMEOUT
+    assert c.provider == "anthropic"
+    assert c.request_id == "req_504"
+
+    body = {"type": "error", "error": {"type": "billing_error", "message": "Billing problem"}}
+    resp_402 = httpx.Response(402, request=request)
+    billing = anthropic.APIStatusError("billing problem", response=resp_402, body=body)
+    c = classify_exception(billing)
+    assert c.error_type is ErrorType.QUOTA_EXCEEDED
+    assert c.provider_error_code == "billing_error"
+    assert c.is_retryable is False
+
+    # Declared in every SDK generation's _exceptions module; only the 1.x
+    # line re-exports it at the package top level.
+    sdk_exceptions = pytest.importorskip("anthropic._exceptions")
+    deadline_cls = getattr(sdk_exceptions, "DeadlineExceededError", None)
+    assert deadline_cls is not None, "SDK dropped DeadlineExceededError; update the classifier"
+    deadline = deadline_cls("deadline", response=resp_504, body=None)
+    assert classify_exception(deadline).error_type is ErrorType.TIMEOUT
+
+
+# ---------------------------------------------------------------------------
+# Non-success stop reasons on a 200 response
+# ---------------------------------------------------------------------------
+
+
+def test_refusal_stop_reason_classifies_as_content_filter() -> None:
+    c = classify_stop_reason("refusal", provider="anthropic", request_id="req_r")
+    assert c is not None
+    assert c.error_type is ErrorType.CONTENT_FILTER
+    assert c.http_status == STOP_REASON_HTTP_STATUS == 200
+    assert c.provider == "anthropic"
+    assert c.provider_error_code == "refusal"
+    assert c.error_message == "stop_reason=refusal"
+    assert c.request_id == "req_r"
+    assert c.is_retryable is False
+
+
+def test_context_window_exceeded_stop_reason_classifies_as_context_overflow() -> None:
+    c = classify_stop_reason("model_context_window_exceeded", provider="anthropic")
+    assert c is not None
+    assert c.error_type is ErrorType.CONTEXT_OVERFLOW
+    assert c.provider_error_code == "model_context_window_exceeded"
+    assert c.is_retryable is False
+
+
+@pytest.mark.parametrize(
+    "reason", ["end_turn", "max_tokens", "stop_sequence", "tool_use", "pause_turn", None, 7, ""]
+)
+def test_success_and_malformed_stop_reasons_classify_as_nothing(reason: Any) -> None:
+    assert classify_stop_reason(reason, provider="anthropic") is None
+
+
+def test_non_success_stop_reasons_all_have_otel_mappings() -> None:
+    for error_type in NON_SUCCESS_STOP_REASONS.values():
+        assert error_type in OTEL_ERROR_TYPE
+
+
+def test_stop_reason_payload_has_the_llm_error_wire_shape() -> None:
+    c = classify_stop_reason("refusal", provider="anthropic")
+    assert c is not None
+    payload = c.to_payload()
+    assert payload == {
+        "error_type": "content_filter",
+        "provider": "anthropic",
+        "http_status": 200,
+        "provider_error_code": "refusal",
+        "error_message": "stop_reason=refusal",
+        "request_id": None,
+        "retry_after": None,
+        "is_retryable": False,
+    }
+
+
+def test_content_filter_stop_reason_classifies_as_content_filter() -> None:
+    # OpenAI chat and litellm finish_reason, and the reason of a Responses
+    # call left incomplete by the content filter.
+    c = classify_stop_reason("content_filter", provider="openai")
+    assert c is not None
+    assert c.error_type is ErrorType.CONTENT_FILTER
+    assert c.provider == "openai"
+    assert c.http_status == 200
+
+
+@pytest.mark.parametrize("reason", ["length", "max_output_tokens", "max_tokens", "stop"])
+def test_truncation_and_normal_finish_reasons_are_success(reason: str) -> None:
+    assert classify_stop_reason(reason, provider="openai") is None
+
+
+# ---------------------------------------------------------------------------
+# Billing-phrase match: Anthropic only, phrases only, bounded, never stored
+# ---------------------------------------------------------------------------
+
+
+def test_billing_phrase_match_is_gated_to_anthropic() -> None:
+    # The same spend-limit wording on another provider's 429 stays a
+    # retryable rate limit: only Anthropic hides billing under 429 / 400.
+    for module in ("openai", "litellm.exceptions", "some.vendor"):
+        exc = _mk("RateLimitError", module=module, status=429, message="spend limit reached")
+        c = classify_exception(exc)
+        assert c.error_type is ErrorType.RATE_LIMIT, module
+        assert c.is_retryable is True
+
+
+def test_per_minute_quota_message_stays_rate_limit() -> None:
+    # A litellm / Vertex per-minute quota is a genuine rate limit.
+    exc = _mk(
+        "RateLimitError",
+        module="litellm.exceptions",
+        status=429,
+        message="Quota exceeded for online_prediction_requests_per_base_model per minute",
+    )
+    c = classify_exception(exc)
+    assert c.error_type is ErrorType.RATE_LIMIT
+    assert c.is_retryable is True
+    # From Anthropic too: "quota" alone is not a billing phrase.
+    exc = _mk("RateLimitError", status=429, message="Quota exceeded per minute")
+    assert classify_exception(exc).error_type is ErrorType.RATE_LIMIT
+
+
+def test_caller_identifiers_with_billing_words_stay_invalid_request() -> None:
+    # A 400 echoes caller-supplied names back; single words must not match.
+    for module in ("openai", "anthropic"):
+        exc = _mk(
+            "BadRequestError",
+            module=module,
+            status=400,
+            code="invalid_request_error",
+            message="tools[0].name 'get_billing_info' and schema 'monthly_report' are invalid",
+        )
+        assert classify_exception(exc).error_type is ErrorType.INVALID_REQUEST, module
+
+
+def test_billing_phrase_is_not_read_outside_400_and_429() -> None:
+    # A 500 whose message mentions a spend limit is still an api_error.
+    exc = _mk("InternalServerError", status=500, message="spend limit service unavailable")
+    assert classify_exception(exc).error_type is ErrorType.API_ERROR
+
+
+def test_billing_phrase_match_is_capped_and_never_raises_on_hostile_messages() -> None:
+    # A phrase past the cap is not seen: bounded work on a huge message.
+    huge = "x" * (4 * 1024 * 1024) + " credit balance is too low"
+    started = time.perf_counter()
+    c = classify_exception(_mk("BadRequestError", status=400, message=huge))
+    assert time.perf_counter() - started < 2.0
+    assert c.error_type is ErrorType.INVALID_REQUEST
+    # A phrase within the cap is seen.
+    within = "y" * (_MESSAGE_HINT_MAX_CHARS - 40) + " credit balance is too low"
+    c = classify_exception(_mk("BadRequestError", status=400, message=within))
+    assert c.error_type is ErrorType.QUOTA_EXCEEDED
+
+    # Non-string message attributes fall through to the class verdict.
+    odd = _mk("BadRequestError", status=400)
+    odd.message = 42  # type: ignore[attr-defined]
+    odd.body = {"error": {"message": ["not", "a", "string"]}}  # type: ignore[attr-defined]
+    assert classify_exception(odd).error_type is ErrorType.INVALID_REQUEST
+
+    class _Raising(Exception):
+        __module__ = "anthropic"
+
+        @property
+        def body(self) -> Any:
+            raise RuntimeError("body detonates")
+
+        @property
+        def message(self) -> Any:
+            raise RuntimeError("message detonates")
+
+        def __str__(self) -> str:
+            raise RuntimeError("str detonates")
+
+    raising = _Raising()
+    raising.status_code = 429  # type: ignore[attr-defined]
+    c = classify_exception(raising)
+    assert c.error_type is ErrorType.OTHER
+    assert c.error_message == "_Raising"
+
+
+def test_billing_message_text_lands_nowhere_when_capture_is_off(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    sentinel = "SENTINEL-BILLING-7f3a"
+    exc = _mk(
+        "BadRequestError",
+        status=400,
+        code="invalid_request_error",
+        message=f"Your credit balance is too low ({sentinel}).",
+    )
+    with caplog.at_level(logging.DEBUG):
+        c = classify_exception(exc)
+    assert c.error_type is ErrorType.QUOTA_EXCEEDED
+    wire = json.dumps(ErrorPayload(classification=c).to_payload())
+    assert sentinel not in wire
+    assert "credit balance" not in wire
+    assert sentinel not in caplog.text
+
+
+def test_exception_request_id_is_capped_on_attribute_and_header_paths() -> None:
+    """A hostile gateway can answer with a megabyte-long request id; the
+    classifier keeps at most ``REQUEST_ID_MAX_LEN`` characters from either
+    source so the error event stays under ingestion's body limit."""
+    huge = "r" * 1_000_000
+    from_attr = classify_exception(_mk("RateLimitError", status=429, request_id=huge))
+    assert from_attr.request_id == "r" * REQUEST_ID_MAX_LEN
+    from_header = classify_exception(
+        _mk("RateLimitError", status=429, headers={"x-request-id": huge})
+    )
+    assert from_header.request_id == "r" * REQUEST_ID_MAX_LEN
+    short = classify_exception(_mk("RateLimitError", status=429, request_id="req_abc"))
+    assert short.request_id == "req_abc"

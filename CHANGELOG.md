@@ -5,9 +5,11 @@ All notable changes to Flightdeck are documented here.
 ## Unreleased
 
 Correctness patch for the Claude Code plugin, the sensor's streaming
-token accounting and its MCP dependency, the worker's handling of
-short-lived and re-attached sessions, a pricing refresh, and a
-documentation truth-up. One schema migration (000027) adds two nullable
+token accounting, error classification, its OpenAI coverage (structured
+outputs, the Responses raw-response path, Responses tool calls and
+prompt-cache reads and writes) and its MCP dependency, the worker's
+handling of short-lived and re-attached sessions, a pricing refresh, and
+a documentation truth-up. One schema migration (000027) adds two nullable
 columns to `sessions`; the workers apply it at start-up. **Upgrade
 note:** marketplace installs of the plugin do not update themselves; run
 `claude plugin update flightdeck@flightdeck-plugins` after upgrading the
@@ -32,9 +34,66 @@ server.
   Responses API is reported once as a chat call (litellm bridges it
   through `completion`), and litellm's own httpx routes of either are
   unobserved.
+- **Sensor: the Anthropic raw view and streaming view are metered, and
+  every Anthropic `post_call` records its platform.**
+  `messages.with_raw_response.create` is metered like a plain call;
+  `messages.with_streaming_response.create` is metered when you call
+  `parse()` (`await parse()` on the async client), the sensor never reads
+  the body itself, and `create(stream=True)` through either view is
+  metered as the parsed stream is iterated. `messages.parse` (structured
+  output) is intercepted on the top-level and beta resources. Every
+  Anthropic `post_call` carries `provider_metadata.platform`
+  (`anthropic`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`,
+  `google-cloud`, `foundry`, or the host of a gateway the SDK was pointed
+  at). `wrap()` accepts any `anthropic` client class. With
+  `capture_prompts=True`, prompts sent through the cloud clients
+  (Bedrock, Vertex, Google Cloud, Foundry, AWS, Mantle) now
+  reach the control plane like any other captured prompt.
+- **Sensor: OpenAI structured outputs and the Responses raw-response
+  path are metered.** `chat.completions.parse()` and `responses.parse()`
+  go through the same intercept as `create()`, as do
+  `responses.with_raw_response.create()` / `.parse()` and
+  `chat.completions.with_raw_response.parse()`; previously those calls
+  bypassed the sensor. A `chat.completions.parse()` call the provider
+  answered and billed but the SDK could not parse
+  (`LengthFinishReasonError`: `max_tokens` too small for the schema)
+  lands as a `post_call` with the billed usage followed by an
+  `llm_error`. Not covered: the `.stream()` helpers and
+  `with_streaming_response` on either resource.
+- **Sensor: Responses tool calls emit `tool_call` events.** Each output
+  item that is a tool call lands as one `tool_call`: function, MCP and
+  custom tool calls under the tool's own name, hosted tools (web search,
+  file search, code interpreter, image generation, computer use, shells,
+  apply-patch, tool search) under the item type, such as
+  `web_search_call`. The input is captured only with `capture_prompts`
+  on; tool results are never captured as input.
+- **Sensor: OpenAI prompt-cache reads and writes land in the token
+  fields.** The `cached_tokens` usage detail is recorded as
+  `tokens_cache_read` and the `cache_write_tokens` detail as
+  `tokens_cache_creation` on direct and streamed chat and Responses
+  calls, so both show in the token fields and in `estimated_cost`.
 
 ### Fixed
 
+- **Sensor: calls through the Anthropic cloud clients landed no events.**
+  `AnthropicBedrock`, `AnthropicVertex`, `AnthropicBedrockMantle`,
+  `AnthropicFoundry`, `AnthropicAWS` and their async forms were never
+  intercepted by `patch()`. They are now metered like `Anthropic` /
+  `AsyncAnthropic`, including clients built before `patch()` ran (a
+  `with_raw_response` / `with_streaming_response` view first touched
+  before `patch()` stays unmetered).
+- **Sensor: the pre-call estimate for a Responses request was a fixed 2
+  tokens.** The estimator now counts the request's `input` and
+  `instructions` (and an embeddings request's `input`), so `pre_call`
+  carries a real estimate on every OpenAI call path.
+- **Sensor: the request id was missing from `post_call` on the parsed
+  path.** `provider_metadata.request_id` is now read from the id the SDK
+  stamps on every parsed object, not only from raw-response headers.
+- **Sensor: an inline image or file body was counted as text in the
+  pre-call estimate.** A base64 data URL or a `file_data` body now counts
+  as 1,000 tokens instead of its bytes, so a multi-megabyte image no
+  longer estimates as hundreds of thousands of tokens; pre-call policy
+  outcomes for such requests change accordingly.
 - **Worker: a short-lived session could be left unclosed.** The worker
   pool processes one session's events concurrently, so a `session_end`
   published within tens of milliseconds of its `session_start` could be
@@ -97,6 +156,37 @@ server.
   reset), whoever raised it;
   a stream still open when the session ends is reported before the session
   closes; and an aborted stream's `latency_ms` runs to its last chunk.
+- **Sensor: Anthropic billing and gateway failures were misclassified.**
+  A 504 was filed as `api_error` (the SDK wraps it in
+  `InternalServerError`) and is now `timeout`; a 402 `billing_error` was
+  `api_error` and is now `quota_exceeded`; the organisation spend cap (a
+  429 whose message names the spend limit) and a per-user spend limit or
+  exhausted credit balance (a 400) were `rate_limit` and
+  `invalid_request` and are now `quota_exceeded`, so they read as
+  terminal rather than retryable; the message match is limited to
+  Anthropic and to those phrases, so a per-minute quota 429 elsewhere
+  stays a retryable `rate_limit`. Every `llm_error` now names the adapter
+  that produced it in `error.provider` (`anthropic`, `openai`,
+  `litellm`); a transport or builtin error raised inside an intercepted
+  call used to report `unknown`.
+- **Sensor: a refused or cut-off response counted as a success.** A
+  response the provider answered with 200 but did not complete (an
+  Anthropic `stop_reason` `refusal` or `model_context_window_exceeded`,
+  an OpenAI chat or litellm `finish_reason` `content_filter`, an OpenAI
+  structured-output refusal, a Responses call left `incomplete` by the
+  content filter) landed as a plain `post_call`; it now also lands an
+  `llm_error` (`content_filter` / `context_overflow`, `http_status` 200,
+  the stop reason as `provider_error_code`, the response's request id,
+  terminal, `originating_event_id` pointing at the `post_call`) beside
+  the `post_call`, which keeps the billed usage. A truncated response
+  (`max_tokens`, `length`, `max_output_tokens`) is still a success. Such
+  calls now count in the per-agent error count and mark the session as
+  having a terminal error.
+- **Sensor: the pre-call estimate silently degraded for requests without
+  a model.** The estimator counted those against the retired
+  `claude-sonnet-4-20250514`, which the `count_tokens` endpoint answers
+  with 404, so every such estimate fell back to the character heuristic.
+  The default model is now `claude-sonnet-4-6`.
 - **Plugin: MCP policy decisions were never applied.** `PreToolUse`
   answered with the legacy top-level `decision` field, which Claude Code
   2.1 rejects; the hook now writes
@@ -156,6 +246,28 @@ server.
 
 ### Changed
 
+- **Sensor: the `anthropic` floor rises from 0.20 to 0.86**, the lowest release with the resource layout the patch imports; an older SDK is reported with a warning at import and its calls are not metered.
+- **Sensor: three more OpenAI exceptions are classified, and a billed
+  call that fails for the caller is reported as both events.**
+  `OAuthError` lands as `authentication`. `LengthFinishReasonError` and
+  `ContentFilterFinishReasonError`, raised by `chat.completions.parse()`
+  after the provider answered with HTTP 200, land as `invalid_request`
+  (`provider_error_code` `length`: `max_tokens` too small for the
+  schema) and `content_filter`, with `http_status` 200 and `terminal`;
+  `OAuthError` previously fell through to `other`, and the two
+  finish-reason errors were never seen before `parse()` was metered.
+  Every parse failure after a billed response also emits the `post_call`
+  with the billed usage before the `llm_error`, on the direct and the
+  raw-response path, so the tokens reach session totals and analytics;
+  a raw-response parse that fails for any reason is reported the same
+  way instead of as a success-looking `post_call` of estimated tokens.
+- **Analytics: `estimated_cost` for OpenAI sessions with prompt-cache
+  reads shifts on upgrade.** Those reads now reach the cache term of the
+  cost formula, which applies the uniform 0.10x read ratio; OpenAI's
+  cached-input rate is model-dependent (0.50x to 0.05x of the input rate
+  in `pricing.yaml`), so such estimates can be off in either direction
+  until per-model cache ratios land (Roadmap: token and cost model).
+  OpenAI cache writes are priced at the same uniform 1.25x write ratio.
 - **Worker: failed processing attempts are redelivered after a growing
   delay** (one second times the deliveries so far, within the
   three-delivery budget) instead of immediately, so a transient database
@@ -169,7 +281,7 @@ server.
   attribution) and the fact that no service serves `/metrics`
   yet. README gains a Roadmap section (replacing "Coming soon"), the
   plugin README documents identity, enforcement and updating, METHODOLOGY
-  records the severity scale, and DECISIONS.md records D164 to D186.
+  records the severity scale, and DECISIONS.md records D164 to D189, D191 and D192.
 - **Repository hygiene.** Retired known-issue identifiers and decision
   pointers in source, CI and Helm comments; `sensor/.venv` is no longer
   tracked; test files and functions no longer carry decision numbers.

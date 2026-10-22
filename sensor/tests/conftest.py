@@ -35,10 +35,17 @@ def _no_ambient_provider_credentials(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+
+    def _refuse(**_kwargs: Any) -> None:
+        # A fresh exception on every call: a single shared instance would
+        # keep the traceback, and with it the whole call stack, of the
+        # latest call alive, pinning objects a test expects to be
+        # collected (a response proxy abandoned inside an SDK context
+        # manager, for one).
+        raise RuntimeError("unit tests never count tokens remotely")
+
     refusing = MagicMock()
-    refusing.messages.count_tokens.side_effect = RuntimeError(
-        "unit tests never count tokens remotely"
-    )
+    refusing.messages.count_tokens.side_effect = _refuse
     monkeypatch.setattr(AnthropicProvider, "_client", refusing)
 
 

@@ -26,11 +26,13 @@ import weakref
 from typing import TYPE_CHECKING, Any, cast
 
 from flightdeck_sensor.core.errors import (
+    REQUEST_ID_MAX_LEN,
     TIMEOUT_EXCEPTION_NAMES,
     AbortReason,
     ErrorType,
     StreamOutcome,
     classify_exception,
+    classify_stop_reason,
 )
 from flightdeck_sensor.core.exceptions import (
     BudgetExceededError,
@@ -119,7 +121,8 @@ _KEY_PARTIAL_TOKENS_OUTPUT = "partial_tokens_output"
 #   the sensor, ``if outer_intercept_active(): return <the raw path>``.
 #   openai.py does this where ``client.chat.completions`` is resolved
 #   (SensorChat.completions) and in SensorEmbeddings.create; anthropic.py
-#   in SensorMessages.create.
+#   in the patched resource methods (_intercepting_method) and, for a
+#   wrap()-built client, in SensorMessages.create / stream / parse.
 
 
 class _OuterCall:
@@ -499,6 +502,9 @@ class _GuardCore:
         self._exhausted = False
         self._finalized = False
         self._saw_terminal_chunk = False
+        # The stop reason a streamed event announced (a raw
+        # stream has no final message to read it from at settle time).
+        self._stop_reason: str | None = None
         self._hooks_failed: set[str] = set()
         self._open_error: BaseException | None = None
         drain_deferred_settles(session)
@@ -637,6 +643,13 @@ class _GuardCore:
                 self._saw_terminal_chunk = True
         except Exception:
             self._hook_failed("chunk_completes_stream")
+        try:
+            reason = self._provider.stop_reason_from_stream_chunk(chunk)
+        except Exception:
+            self._hook_failed("stop_reason_from_stream_chunk")
+            reason = None
+        if isinstance(reason, str):
+            self._stop_reason = reason
 
     def _merge_settled_usage(self) -> None:
         """Fold in the usage the SDK stream object holds at settle time
@@ -747,6 +760,7 @@ class _GuardCore:
                 ),
                 estimated_via=self._estimated_via,
                 usage_override=self._usage,
+                stop_reason=self._stop_reason,
             )
         except Exception as emit_exc:
             # No exc_info: the provider exception is the active context and
@@ -1373,6 +1387,7 @@ def _post_call(
     streaming: dict[str, Any] | None = None,
     estimated_via: str = "none",
     usage_override: TokenUsage | None = None,
+    stop_reason: str | None = None,
 ) -> None:
     """Extract actual usage, reconcile with estimate, post event.
 
@@ -1384,6 +1399,11 @@ def _post_call(
     chunk stats, ``final_outcome``) when the response came from
     :class:`GuardedStream`. Omitted entirely for non-streaming calls so the
     wire shape stays identical for non-streaming calls.
+
+    ``stop_reason`` is the stop reason a stream guard read from
+    the streamed events; when ``None`` the provider is asked to read it
+    from the response. A reason that means the call did not succeed files
+    an llm_error beside the post_call.
     """
     # ``usage_override`` carries the counts a stream guard read from the
     # provider's in-stream usage events; stream objects themselves expose
@@ -1539,6 +1559,16 @@ def _post_call(
         session.set_current_call_event_id(payload["id"])
     session.event_queue.enqueue(payload)
 
+    # A provider can answer 200 with a stop reason that still means the
+    # call did not succeed (Anthropic's refusal or context-window
+    # overrun). File an llm_error beside the post_call so error views and
+    # the session's terminal-error flag see it; the post_call stays
+    # because the call was billed and its usage must count.
+    if event_type == EventType.POST_CALL:
+        _emit_stop_reason_error(
+            session, provider, response, resp_model, latency_ms, stop_reason, prov_meta
+        )
+
     # Emit one tool_call event per tool invocation in the response.
     # Supplementary to post_call (not a replacement) so dashboards can
     # filter/aggregate tool usage independently of the underlying LLM
@@ -1638,44 +1668,109 @@ def _emit_error(
         error_payload = classification.to_payload()
         if partial is not None:
             error_payload.update(partial)
-
-        # Per-(provider, request_id) retry counter — bounded LRU on
-        # Session — answers "did the retry chain finally give up".
-        # terminal is best-effort: an error is terminal when the
-        # classifier marks it non-retryable. The alternative
-        # (lookback to confirm caller actually retried) needs cross-
-        # event correlation that adds latency to the hot path; the
-        # classifier-driven heuristic is correct for the vast
-        # majority of real retry chains.
-        # error_payload.get(...) returns Any | None; the `or
-        # getattr(provider, "name", "")` fallback already produces a
-        # str at runtime. cast(str, ...) tells mypy the result is str
-        # without manufacturing a third "" fallback that would conflate
-        # missing-key, present-but-None, and present-but-empty cases.
-        provider_name = cast("str", error_payload.get("provider") or getattr(provider, "name", ""))
-        # Trust-boundary check: error_payload is sensor-internal but
-        # composed from provider-supplied error attributes (request_id
-        # is whatever the SDK exposed). isinstance enforces the
-        # str | None contract record_retry_attempt expects, instead of
-        # papering over a malformed value type with cast(). A non-str
-        # request_id falls through to None — record_retry_attempt then
-        # treats the call as a fresh attempt rather than crashing on a
-        # type mismatch.
-        request_id_raw = error_payload.get("request_id")
-        request_id = request_id_raw if isinstance(request_id_raw, str) else None
-        retry_attempt = session.record_retry_attempt(provider_name, request_id)
-        terminal = not bool(error_payload.get("is_retryable", False))
-
-        payload = session._build_payload(
-            EventType.LLM_ERROR,
-            model=model,
-            latency_ms=latency_ms,
-        )
-        payload["error"] = error_payload
-        payload["retry_attempt"] = retry_attempt
-        payload["terminal"] = terminal
-        session.event_queue.enqueue(payload)
+        _enqueue_error_event(session, provider, error_payload, model, latency_ms)
     except Exception as emit_exc:
         # No exc_info: the provider exception is the active context and
         # may echo prompt text; the failure class is enough.
         _log.warning("Failed to emit llm_error event (%s)", type(emit_exc).__name__)
+
+
+def _enqueue_error_event(
+    session: Session,
+    provider: Provider,
+    error_payload: dict[str, Any],
+    model: str | None,
+    latency_ms: int,
+) -> None:
+    """Build and enqueue the LLM_ERROR event around a finished ``error``
+    sub-object, whether it came from an exception or a stop reason."""
+    # Per-(provider, request_id) retry counter — bounded LRU on
+    # Session — answers "did the retry chain finally give up".
+    # terminal is best-effort: an error is terminal when the
+    # classifier marks it non-retryable. The alternative
+    # (lookback to confirm caller actually retried) needs cross-
+    # event correlation that adds latency to the hot path; the
+    # classifier-driven heuristic is correct for the vast
+    # majority of real retry chains.
+    # error_payload.get(...) returns Any | None; the `or
+    # getattr(provider, "name", "")` fallback already produces a
+    # str at runtime. cast(str, ...) tells mypy the result is str
+    # without manufacturing a third "" fallback that would conflate
+    # missing-key, present-but-None, and present-but-empty cases.
+    provider_name = cast("str", error_payload.get("provider") or getattr(provider, "name", ""))
+    # Trust-boundary check: error_payload is sensor-internal but
+    # composed from provider-supplied error attributes (request_id
+    # is whatever the SDK exposed). isinstance enforces the
+    # str | None contract record_retry_attempt expects, instead of
+    # papering over a malformed value type with cast(). A non-str
+    # request_id falls through to None — record_retry_attempt then
+    # treats the call as a fresh attempt rather than crashing on a
+    # type mismatch.
+    request_id_raw = error_payload.get("request_id")
+    request_id = request_id_raw if isinstance(request_id_raw, str) else None
+    retry_attempt = session.record_retry_attempt(provider_name, request_id)
+    terminal = not bool(error_payload.get("is_retryable", False))
+
+    payload = session._build_payload(
+        EventType.LLM_ERROR,
+        model=model,
+        latency_ms=latency_ms,
+    )
+    payload["error"] = error_payload
+    payload["retry_attempt"] = retry_attempt
+    payload["terminal"] = terminal
+    session.event_queue.enqueue(payload)
+
+
+def _provider_name(provider: Provider) -> str:
+    """The adapter's wire name; ``unknown`` for an adapter that carries
+    none (a stop reason has no exception module to infer it from)."""
+    name = getattr(provider, "name", None)
+    return name if isinstance(name, str) and name else "unknown"
+
+
+def _response_request_id(response: Any, prov_meta: dict[str, Any] | None) -> str | None:
+    """The provider's request id of a 200 response, capped at
+    ``REQUEST_ID_MAX_LEN`` characters: the SDK stamps it on the parsed
+    object as ``_request_id``; a raw-response wrapper exposes it through
+    the headers the provider metadata already read."""
+    with contextlib.suppress(Exception):
+        stamped = getattr(response, "_request_id", None)
+        if isinstance(stamped, str) and stamped:
+            return stamped[:REQUEST_ID_MAX_LEN]
+    if prov_meta:
+        from_headers = prov_meta.get("request_id")
+        if isinstance(from_headers, str) and from_headers:
+            return from_headers[:REQUEST_ID_MAX_LEN]
+    return None
+
+
+def _emit_stop_reason_error(
+    session: Session,
+    provider: Provider,
+    response: Any,
+    model: str | None,
+    latency_ms: int,
+    stop_reason: str | None,
+    prov_meta: dict[str, Any] | None = None,
+) -> None:
+    """File an llm_error for a 200 response whose stop reason means the
+    call did not succeed. ``stop_reason`` is what a stream guard saw in
+    the events; otherwise the provider reads it from the response. The
+    response's request id keys the per-provider retry counter, so two
+    refusals in one session are two attempts, not one chain. Never raises
+    and emits nothing for every success reason."""
+    try:
+        reason = stop_reason
+        if reason is None:
+            reason = provider.response_stop_reason(response)
+        classification = classify_stop_reason(
+            reason,
+            provider=_provider_name(provider),
+            request_id=_response_request_id(response, prov_meta),
+        )
+        if classification is None:
+            return
+        _enqueue_error_event(session, provider, classification.to_payload(), model, latency_ms)
+    except Exception as emit_exc:
+        _log.warning("Failed to emit llm_error for stop reason (%s)", type(emit_exc).__name__)

@@ -40,12 +40,12 @@ intercepted" limitation:
   imports ``Anthropic`` BEFORE ``patch()``, then calls ``patch()``,
   then constructs and uses the captured reference. Proves the
   captured-reference fix works against the live DB.
-* ``test_pre_existing_instance_not_intercepted`` -- constructs an
-  ``Anthropic`` instance and accesses ``.messages`` BEFORE
+* ``test_pre_existing_instance_intercepted_after_patch`` -- constructs
+  an ``Anthropic`` instance and accesses ``.messages`` BEFORE
   ``patch()``. Calls ``patch()``. Uses the pre-existing instance to
-  make a call. Verifies NO ``post_call`` lands in the DB. Documents
-  the known cached_property limitation end-to-end so future
-  developers understand the boundary.
+  make a call. Verifies its ``post_call`` lands in the DB, because the
+  patch sits on the ``Messages`` resource class the cached instance
+  already belongs to.
 """
 
 from __future__ import annotations
@@ -74,7 +74,6 @@ from .conftest import (
 from .test_sensor_e2e import (
     ANTHROPIC_RESPONSE,
     OPENAI_RESPONSE,
-    _query_events_for_flavor,
     _query_session_for_flavor,
     _wait_for_event_type,
 )
@@ -635,42 +634,19 @@ def test_captured_anthropic_reference_intercepted_after_patch(
 # ======================================================================
 
 
-def test_pre_existing_instance_not_intercepted(
+def test_pre_existing_instance_intercepted_after_patch(
     sensor_reset: None,
     unique_flavor: str,
 ) -> None:
-    """Documented limitation: instances created BEFORE patch() are NOT wrapped.
+    """A client constructed AND first-accessed before ``patch()`` is metered.
 
-    ``anthropic.Anthropic.messages`` is a ``functools.cached_property``.
-    On first access on an instance, the resource is cached into
-    ``instance.__dict__``. Python's attribute lookup checks
-    ``instance.__dict__`` BEFORE non-data descriptors on the class,
-    so once the cache is populated the descriptor is bypassed
-    entirely.
-
-    Therefore: an instance constructed AND first-accessed before
-    ``patch()`` ran has the unwrapped raw ``Messages`` cached in
-    its ``__dict__``. After ``patch()`` installs the new descriptor
-    on the class, this instance still hits its own cached value
-    and bypasses the descriptor on every subsequent access. Calls
-    through this instance are NOT intercepted.
-
-    This is a known limitation of any cached_property-based intercept
-    approach. The design accepts it because:
-
-    * Frameworks construct LLM clients during agent setup, well
-      before any LLM call loop begins. ``init()`` + ``patch()``
-      runs at agent startup, which precedes framework setup in
-      practice.
-    * Walking arbitrary live instances to clear their __dict__
-      caches is not feasible without a heavy gc traversal.
-    * The unit test ``test_descriptor_caches_messages_on_instance``
-      proves the cache behavior; this test proves the resulting
-      end-to-end limitation against the live DB.
-
-    This test exists to document the boundary so a future developer
-    sees a deliberate "this is intentional" assertion rather than
-    discovering the gap by accident.
+    ``patch()`` replaces ``create`` / ``stream`` / ``parse`` on the SDK's
+    ``Messages`` resource classes themselves, so a ``Messages`` instance
+    already cached in a client's ``__dict__`` resolves the patched method
+    on its class like any other. Frameworks that build their client
+    before the sensor is initialised are therefore covered. (Views built
+    with ``with_raw_response`` before ``patch()`` bind the original
+    method and stay unmetered; the unit suite pins that.)
     """
     flavor = unique_flavor
 
@@ -679,27 +655,15 @@ def test_pre_existing_instance_not_intercepted(
 
         flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
 
-        # Construct AND first-access the messages resource BEFORE
-        # patch(). The first access populates instance.__dict__
-        # with the raw, unwrapped Messages object.
+        # Construct AND first-access the messages resource BEFORE patch().
         client = anthropic.Anthropic(api_key="test-key")
-        _ = client.messages  # populates instance.__dict__["messages"]
+        _ = client.messages
         assert "messages" in vars(client), (
             "precondition: messages must be cached on the instance before patch() runs"
         )
 
-        # NOW patch the class. The descriptor lands on
-        # anthropic.Anthropic.messages, but this specific instance
-        # already has the raw Messages cached in its __dict__ which
-        # shadows any class-level descriptor.
         flightdeck_sensor.patch()
 
-        # Make a call through the pre-existing instance. The Messages
-        # object it accesses is the unwrapped raw one, so the call
-        # never goes through the sensor's intercept pipeline. The
-        # mock still answers the HTTP request because respx is
-        # patching at a lower layer (httpx transport), but no
-        # post_call event reaches the DB.
         response = client.messages.create(
             model="claude-sonnet-4-6",
             messages=[{"role": "user", "content": "Hello"}],
@@ -707,34 +671,10 @@ def test_pre_existing_instance_not_intercepted(
         )
         assert response.id == "msg_test123"
 
-        # session_start IS in the DB because Session.start() ran
-        # synchronously inside init(). That's the only event we
-        # expect to find.
-        _wait_for_event_type(flavor, "session_start", timeout=10)
-
-        # Wait a bounded period for any post_call to potentially
-        # appear, then assert it has NOT appeared. We can't
-        # ``wait_until`` for the negative case because that loops
-        # forever; instead we sleep a fixed budget that's well
-        # beyond normal drain latency (which the slow_handler test
-        # established at sub-second under realistic producer rates),
-        # then check the DB once.
-        time.sleep(2.0)
-
-        events = _query_events_for_flavor(flavor)
-        post_calls = [e for e in events if e.get("event_type") == "post_call"]
-        assert post_calls == [], (
-            "pre-existing instance limitation broken: expected zero "
-            "post_call events for a client constructed AND first-accessed "
-            "before patch(), but found "
-            f"{len(post_calls)}: {post_calls}"
-        )
-
-        # And session_start is the only event we expect to see.
-        event_types = sorted({e.get("event_type") for e in events})
-        assert event_types == ["session_start"], (
-            f"expected only session_start events, got {event_types}"
-        )
+        post_call = _wait_for_event_type(flavor, "post_call", timeout=15)
+        assert post_call["tokens_input"] == 10
+        assert post_call["tokens_output"] == 8
+        assert post_call["payload"]["provider_metadata"]["platform"] == "anthropic"
 
 
 # ======================================================================
@@ -872,12 +812,10 @@ def test_anthropic_beta_messages_intercepted(
 ) -> None:
     """``client.beta.messages.create()`` is intercepted via patch().
 
-    The class-level patch installs
-    :class:`_AnthropicMessagesDescriptor` on the ``Beta`` class's
-    ``messages`` cached_property. On first access, the raw beta
-    ``Messages`` resource is wrapped in :class:`SensorMessages` and
-    the call goes through the sensor pre/post pipeline exactly like
-    a top-level ``client.messages.create`` call.
+    The resource-level patch replaces ``create`` / ``stream`` /
+    ``parse`` on the beta ``Messages`` resource class, so the call goes
+    through the sensor pre/post pipeline exactly like a top-level
+    ``client.messages.create`` call.
 
     This path matters because Anthropic's Claude 4 family (Opus 4.6,
     Sonnet 4.6) uses the beta API for extended / adaptive thinking,

@@ -74,8 +74,13 @@ func main() {
 	cons := consumer.New(nc, cfg.WorkerPoolSize, proc)
 	go func() {
 		slog.Info("workers starting", "pool_size", cfg.WorkerPoolSize)
+		// Start returns an error only when setup fails (JetStream
+		// unavailable, stream or subscription refused). Exit so the
+		// supervisor restarts the worker and retries, rather than
+		// leaving a live process that consumes nothing.
 		if err := cons.Start(ctx); err != nil {
-			slog.Error("consumer error", "err", err)
+			slog.Error("consumer setup failed, exiting", "err", err)
+			os.Exit(1)
 		}
 	}()
 

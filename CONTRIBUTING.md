@@ -6,7 +6,7 @@
 - **Python** 3.10+
 - **Node.js** 20+
 - **Docker** and Docker Compose
-- **golangci-lint** v2.14+ (for Go linting; earlier releases cannot type-check Go 1.27)
+- **golangci-lint** v2.13+ (for Go linting; earlier releases cannot type-check Go 1.27; CI pins v2.14.0)
 - **govulncheck** (for the Go vulnerability scan CI runs: `go install golang.org/x/vuln/cmd/govulncheck@v1.9.0`)
 
 ## Getting Started

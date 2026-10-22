@@ -382,7 +382,16 @@ server.
   runtime; pgx 5.11.0, golang-migrate 4.20.1 and golang.org/x/text
   0.43.0 (the query API reached two x/text advisories, GO-2026-6629 and
   GO-2026-5970, through pgx). CI lints with golangci-lint v2.14.0 and
-  runs `govulncheck` on every Go module.
+  runs `govulncheck` on every Go module. **Upgrade note:** pgx 5.11
+  reads a `postgres://` URL the way libpq does and ends the
+  `user:password` part at the first `@`, so a reserved character
+  (`@ : / ? #`, space) in a `FLIGHTDECK_POSTGRES_URL` or
+  `postgres.externalUrl` password must be percent-encoded (`@` as
+  `%40`). The Helm chart now encodes the bundled-Postgres user and
+  password itself.
+- **Workers exit when their consumer cannot start.** A worker whose
+  stream creation or subscription failed logged the error and stayed
+  up consuming nothing; it now exits so its supervisor restarts it.
 - **Helm: production installs require `nats.auth.token`.** The event
   bus now requires a client token, as the production compose file
   already does; a production render without it fails with an

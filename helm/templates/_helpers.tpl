@@ -104,7 +104,19 @@ Bundled Postgres DSN. Only used when .Values.postgres.externalUrl is empty.
 */}}
 {{- define "flightdeck.bundledPostgresURL" -}}
 {{- $pw := include "flightdeck.postgresPassword" . -}}
-{{- printf "postgres://%s:%s@%s:%d/%s?sslmode=%s" .Values.postgres.user $pw (include "flightdeck.postgresServiceName" .) (int .Values.postgres.port) .Values.postgres.database .Values.postgres.sslmode -}}
+{{- printf "postgres://%s:%s@%s:%d/%s?sslmode=%s" (include "flightdeck.urlUserinfoEscape" .Values.postgres.user) (include "flightdeck.urlUserinfoEscape" $pw) (include "flightdeck.postgresServiceName" .) (int .Values.postgres.port) .Values.postgres.database .Values.postgres.sslmode -}}
+{{- end -}}
+
+{{/*
+Percent-encode a URL user or password. The Postgres driver splits the
+user:password part at the first "@", so an unencoded "@" (or "/", "?",
+"#", ":") in a password would be read as part of the host. urlquery
+encodes everything but writes a space as "+", which a URL's user part
+keeps literally, so spaces are rewritten to "%20" (urlquery has already
+turned any literal "+" into "%2B").
+*/}}
+{{- define "flightdeck.urlUserinfoEscape" -}}
+{{- . | urlquery | replace "+" "%20" -}}
 {{- end -}}
 
 {{/*

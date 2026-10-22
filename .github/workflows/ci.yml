@@ -155,8 +155,8 @@ jobs:
         # the upstream repo without changing the version string. SHA
         # is the only anchor that survives an upstream tag rewrite.
         # Bump deliberately; keep the tag name in the comment for
-        # human readability. Current pin: v2.14.0 (793d0531), the first
-        # release line that type-checks Go 1.27.
+        # human readability. Current pin: v2.14.0 (793d0531); v2.13 is
+        # the first release line that type-checks Go 1.27.
         run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@793d05316077345337ae9a11ae05ec8f23edfe1b
 
       - name: Lint ingestion
@@ -844,6 +844,20 @@ jobs:
           if ! grep -q "nats.auth.token may contain only" /tmp/helm-err; then
             echo "Expected actionable 'nats.auth.token may contain only' message; got:"
             cat /tmp/helm-err
+            exit 1
+          fi
+
+      - name: helm template percent-encodes the bundled Postgres password
+        run: |
+          out=$(helm template flightdeck helm/ \
+            --set postgres.password='p@ss w+rd/x' \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set nats.auth.token=ci-test-nats-token \
+            --set api.corsOrigin=https://dashboard.example.com \
+            --show-only templates/secret.yaml)
+          if ! grep -q 'postgres://flightdeck:p%40ss%20w%2Brd%2Fx@' <<< "$out"; then
+            echo "Expected the DSN password percent-encoded; got:"
+            grep POSTGRES_URL <<< "$out"
             exit 1
           fi
 

@@ -316,7 +316,7 @@ flightdeck/
 │   │   └── directive/store.go  # Pending directive lookup (atomic UPDATE...RETURNING)
 │   └── tests/handler_test.go
 │
-├── workers/                    # Go event processing workers (no HTTP port)
+├── workers/                    # Go event processing workers (HTTP only for /metrics)
 │   ├── Makefile
 │   ├── Dockerfile
 │   ├── cmd/main.go             # Entry, applies migrations, NATS consumer pool, graceful shutdown
@@ -1783,7 +1783,8 @@ metrics endpoint.
 
 ## Worker / Event Processing
 
-The worker has no HTTP surface. It connects to NATS, consumes events from
+The worker's only HTTP surface is its metrics listener (see Metrics).
+It connects to NATS, consumes events from
 the `FLIGHTDECK` stream, processes them through the session state machine
 and policy evaluator, writes to Postgres, and emits `flightdeck_fleet`
 NOTIFY events.
@@ -5612,7 +5613,7 @@ Constraint #4).
 | Variable | Purpose |
 |---|---|
 | `FLIGHTDECK_PORT` | HTTP port (default 8080) |
-| `FLIGHTDECK_POSTGRES_URL` | Postgres DSN (required) |
+| `FLIGHTDECK_POSTGRES_URL` | Postgres DSN (required); percent-encode reserved characters in the password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
 | `FLIGHTDECK_NATS_URL` | NATS connection URL (default `nats://nats:4222`). The production compose overlay starts NATS with `--auth` and embeds the token in the URL's user slot (`nats://<FLIGHTDECK_NATS_TOKEN>@nats:4222`; a lone user is sent as the auth token, so the token is limited to URL-unreserved characters); the dev stack runs NATS unauthenticated and bound to 127.0.0.1 |
 | `ENVIRONMENT` | `dev` enables `tok_dev` token; any other value rejects it with 401 |
 | `SHUTDOWN_TIMEOUT_SECS` | Graceful shutdown deadline (default 30) |
@@ -5621,7 +5622,7 @@ Constraint #4).
 
 | Variable | Purpose |
 |---|---|
-| `FLIGHTDECK_POSTGRES_URL` | DSN (required) |
+| `FLIGHTDECK_POSTGRES_URL` | DSN (required); percent-encode reserved characters in the password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
 | `FLIGHTDECK_NATS_URL` | NATS URL, same token convention as the ingestion API |
 | `FLIGHTDECK_WORKER_POOL_SIZE` | NATS consumer goroutine count (default 10) |
 | `FLIGHTDECK_MIGRATE_ONLY` | `true` applies pending migrations and exits without consuming |
@@ -5635,7 +5636,7 @@ Constraint #4).
 | Variable | Purpose |
 |---|---|
 | `FLIGHTDECK_PORT` | HTTP port (default 8081) |
-| `FLIGHTDECK_POSTGRES_URL` | DSN (required) |
+| `FLIGHTDECK_POSTGRES_URL` | DSN (required); percent-encode reserved characters in the password (`@` as `%40`), since the URL's `user:password` part ends at the first `@` |
 | `ENVIRONMENT` | Same `tok_dev` semantics as ingestion; also registers the dev-only `DELETE /v1/directives/custom` route |
 | `FLIGHTDECK_CORS_ORIGIN` | `Access-Control-Allow-Origin` (default `*`); lock to the dashboard origin in prod |
 | `FLIGHTDECK_JWT_SECRET` | Signs dashboard login tokens; production Helm renders fail unless it is set |
@@ -5666,9 +5667,11 @@ StatefulSet.
 Every service except `workers` exposes `GET /health` returning
 `{"status":"ok","service":"<name>"}`. The compose health check polls
 this endpoint at 5s intervals; nginx waits for `service_healthy` before
-serving traffic. `workers` has no HTTP surface — its readiness is
-derived from successful NATS subscription, surfaced via container
-liveness probe.
+serving traffic. `workers` has no `/health`: the Helm chart reads its
+readiness from the metrics listener (`/metrics`), which opens after the
+startup migrations and the NATS connection, and a worker whose consumer
+cannot create the stream or subscribe exits so its supervisor restarts
+it.
 
 ### Stream sequences
 
@@ -5718,10 +5721,12 @@ the Prometheus text format: a `# TYPE <family> counter` line per family,
 then one sample per label value in sorted order. The counters are
 process-local and start at zero when a worker starts, so with several
 worker replicas each one is scraped separately and the series summed.
-The listener opens after the startup migrations and the Postgres and
-NATS connections, so the Helm chart uses it as the workers' readiness
-probe (liveness stays a process-alive check, so a long migration never
-restarts the pod); a port that cannot be bound is logged and event
+The listener opens after the startup migrations and the NATS
+connection, and a consumer that cannot create the stream or subscribe
+exits the worker, so the Helm chart uses the listener as the workers'
+readiness probe (liveness stays a process-alive check, so a long
+migration never restarts the pod) and lists it on the workers' headless
+Service for scrapers. A port that cannot be bound is logged and event
 processing continues. Compose does not publish the port; nginx does not
 route to it. The worker's log lines for the same events (drops, reaper
 closes, revivals) remain the signal when the listener is off. Request

@@ -51,8 +51,9 @@ spec:
           {{- end }}
           readinessProbe:
             {{- if gt (int .Values.workers.metricsPort) 0 }}
-            # The metrics listener answers once the workers have migrated
-            # the database and connected to Postgres and NATS.
+            # The metrics listener opens once the startup migrations are
+            # done and the NATS connection is up; a worker whose consumer
+            # cannot subscribe exits, so a Ready pod is consuming.
             httpGet:
               path: /metrics
               port: metrics

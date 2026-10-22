@@ -1,11 +1,9 @@
 {{- $component := "workers" -}}
 {{- /*
-Workers expose no HTTP port -- they are pure NATS consumers. The Service
-is a headless record so operators can resolve workers pods for debugging
-(e.g. kubectl exec via stable DNS) and to satisfy the ARCHITECTURE.md
-deliverable list. The Service has no ports because there is nothing to
-route to. Any client that tries to connect will get ECONNREFUSED by
-design.
+Headless record for the workers pods. Its one port is the metrics
+listener, so a scraper (or a ServiceMonitor) can find every worker
+through it; with the listener off (workers.metricsPort=0) there is
+nothing to route to and the Service carries a placeholder port.
 */ -}}
 apiVersion: v1
 kind: Service
@@ -18,6 +16,13 @@ spec:
   selector:
     {{- include "flightdeck.selectorLabels" (dict "root" . "component" $component) | nindent 4 }}
   ports:
+    {{- if gt (int .Values.workers.metricsPort) 0 }}
+    - name: metrics
+      port: {{ .Values.workers.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+    {{- else }}
     - name: noop
       port: 1
       targetPort: 1
+    {{- end }}

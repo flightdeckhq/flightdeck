@@ -185,7 +185,9 @@ postgres:
   # externalUrl is the single escape hatch for Postgres: when set to a full
   # DSN (e.g. postgres://user:pass@host:5432/flightdeck?sslmode=require) the
   # bundled StatefulSet and Service are not rendered and every dependent
-  # service reads this DSN from the generated secret. When empty the chart
+  # service reads this DSN from the generated secret. Percent-encode
+  # reserved characters in the password (`@` as %40): the URL's
+  # user:password part ends at the first `@`. When empty the chart
   # ships its own single-instance StatefulSet. v0.5.3 does not provide HA or
   # backups for the bundled database; use externalUrl for either.
   externalUrl: ""

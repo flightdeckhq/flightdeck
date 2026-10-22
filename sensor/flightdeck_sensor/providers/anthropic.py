@@ -15,7 +15,16 @@ from flightdeck_sensor.providers.protocol import PromptContent, ToolInvocation
 
 _log = logging.getLogger("flightdeck_sensor.providers.anthropic")
 
-_DEFAULT_COUNT_TOKENS_MODEL = "claude-sonnet-4-20250514"
+# Model the SDK ``count_tokens`` call names when the request carries no
+# ``model``. The endpoint rejects a retired id with 404, and the estimator
+# swallows that and silently falls back to the char/4 heuristic, so this
+# must be a model Anthropic still serves. Sonnet 4.6 is the served
+# successor of the previous default (Sonnet 4, retired 2026-06-15) in the
+# same tokenizer family, so estimates stay comparable; it is listed in the
+# SDK's model literal and priced in pricing.yaml, both of which the unit
+# tests check so a future retirement fails loudly instead of degrading
+# every estimate.
+DEFAULT_COUNT_TOKENS_MODEL = "claude-sonnet-4-6"
 _CHARS_PER_TOKEN_ESTIMATE = 4
 
 
@@ -34,10 +43,20 @@ class AnthropicProvider:
     exceptions -- failures return zero/empty defaults.
     """
 
+    name = "anthropic"
     _client: Any = None
 
-    def __init__(self, capture_prompts: bool = False) -> None:
+    def __init__(self, capture_prompts: bool = False, platform: str | None = None) -> None:
         self._capture_prompts = capture_prompts
+        # The platform the client talks to (anthropic, bedrock, vertex,
+        # ...), reported under ``provider_metadata.platform`` on every
+        # call. None when the caller attributed none, in which case the
+        # metadata block stays headers-only.
+        self._platform = platform
+
+    @property
+    def platform(self) -> str | None:
+        return self._platform
 
     def estimate_tokens(self, request_kwargs: dict[str, Any]) -> tuple[int, str]:
         """Estimate input tokens; returns ``(count, source)``.
@@ -52,7 +71,7 @@ class AnthropicProvider:
             if AnthropicProvider._client is None:
                 AnthropicProvider._client = _anthropic.Anthropic()
             count: int = AnthropicProvider._client.messages.count_tokens(
-                model=request_kwargs.get("model", _DEFAULT_COUNT_TOKENS_MODEL),
+                model=request_kwargs.get("model", DEFAULT_COUNT_TOKENS_MODEL),
                 messages=request_kwargs.get("messages", []),
                 system=request_kwargs.get("system", ""),
                 tools=request_kwargs.get("tools", []),
@@ -72,7 +91,13 @@ class AnthropicProvider:
             return 0, "none"
 
     def extract_response_metadata(self, response: Any) -> dict[str, Any] | None:
-        """Pull rate-limit headers + request id from anthropic responses."""
+        """Pull rate-limit headers + request id from anthropic responses,
+        plus the platform this provider was attributed to (see
+        ``__init__``), which is reported whether or not the response
+        exposes any header."""
+        out: dict[str, Any] = {}
+        if self._platform:
+            out["platform"] = self._platform
         try:
             obj = response
             with contextlib.suppress(Exception):
@@ -83,11 +108,9 @@ class AnthropicProvider:
                 headers = getattr(response, attr, None) or getattr(obj, attr, None)
                 if headers:
                     break
-            if not headers:
-                return None
-            getter = getattr(headers, "get", None)
+            getter = getattr(headers, "get", None) if headers else None
             if not callable(getter):
-                return None
+                return out or None
             mapping = {
                 "anthropic-ratelimit-tokens-remaining": "ratelimit_remaining_tokens",
                 "anthropic-ratelimit-requests-remaining": "ratelimit_remaining_requests",
@@ -95,7 +118,6 @@ class AnthropicProvider:
                 "request-id": "request_id",
                 "x-request-id": "request_id",
             }
-            out: dict[str, Any] = {}
             for src, dst in mapping.items():
                 val = getter(src)
                 if val is None:
@@ -107,9 +129,9 @@ class AnthropicProvider:
                         out[dst] = val
                 else:
                     out[dst] = val
-            return out or None
         except Exception:
-            return None
+            _log.debug("extract_response_metadata failed", exc_info=True)
+        return out or None
 
     def extract_output_dimensions(self, response: Any) -> dict[str, int] | None:
         """Anthropic has no native embeddings API; return None."""
@@ -261,6 +283,36 @@ class AnthropicProvider:
             return getattr(getattr(chunk, "delta", None), "stop_reason", None) is not None
         return False
 
+    def response_stop_reason(self, response: Any) -> str | None:
+        """``stop_reason`` of a complete response: a ``Message``, a
+        raw-response wrapper (parsed first), or a helper stream whose
+        accumulated snapshot carries it. ``None`` for a raw stream object
+        and whenever the field is missing or not a string."""
+        try:
+            obj = response
+            with contextlib.suppress(Exception):
+                if hasattr(obj, "parse") and callable(obj.parse):
+                    obj = obj.parse()
+            snapshot = self._snapshot(obj)
+            if snapshot is not None:
+                obj = snapshot
+            reason = getattr(obj, "stop_reason", None)
+            return reason if isinstance(reason, str) else None
+        except Exception:
+            return None
+
+    def stop_reason_from_stream_chunk(self, chunk: Any) -> str | None:
+        """``stop_reason`` carried by a ``message_delta`` event, which is
+        where a raw stream announces how the response ended; ``None`` for
+        every other event."""
+        try:
+            if getattr(chunk, "type", None) != _EVENT_MESSAGE_DELTA:
+                return None
+            reason = getattr(getattr(chunk, "delta", None), "stop_reason", None)
+            return reason if isinstance(reason, str) else None
+        except Exception:
+            return None
+
     def extract_content(
         self,
         request_kwargs: dict[str, Any],
@@ -301,7 +353,17 @@ class AnthropicProvider:
                 response = snapshot
             resp_dict: dict[str, Any] = {}
             if hasattr(response, "model_dump"):
-                resp_dict = response.model_dump()
+                # ``warnings=False``: a structured-output ``ParsedMessage``
+                # carries ``ParsedTextBlock`` content under the SDK's
+                # content-block union, which pydantic's serializer flags
+                # with UserWarnings in the caller's process; the dump is
+                # fine for storage, so keep the caller's warning stream
+                # clean. Objects whose model_dump takes no such argument
+                # get the plain call.
+                try:
+                    resp_dict = response.model_dump(warnings=False)
+                except TypeError:
+                    resp_dict = response.model_dump()
             elif hasattr(response, "__dict__"):
                 # Last-resort fallback: prune attributes whose values
                 # are not JSON-serialisable so the wire payload stays

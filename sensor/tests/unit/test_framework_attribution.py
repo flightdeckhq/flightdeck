@@ -32,6 +32,20 @@ import pytest
 import flightdeck_sensor as fd
 
 
+@pytest.fixture(autouse=True)
+def _no_real_frameworks_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hide every framework module a classifier looks for, so each test
+    sees only the fakes it installs. Without this the result depends on
+    which real frameworks earlier tests in the same worker imported (a
+    loaded ``crewai`` outranks a faked ``langchain``)."""
+    from flightdeck_sensor.core.context import FrameworkCollector
+
+    for classifier in FrameworkCollector.CLASSIFIERS:
+        names = (classifier.module,) if isinstance(classifier.module, str) else classifier.module
+        for name in names:
+            monkeypatch.delitem(sys.modules, name, raising=False)
+
+
 def _reset_sensor() -> None:
     """Hard reset between tests so ``init()``'s
     ``if _session is not None: return`` short-circuit doesn't leak

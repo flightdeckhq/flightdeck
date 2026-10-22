@@ -34,10 +34,12 @@ from flightdeck_sensor.core.types import (
 )
 from flightdeck_sensor.interceptor.anthropic import (
     SensorAnthropic,
-    _OrigAnthropic,
-    _OrigAsyncAnthropic,
+    _OrigBaseClient,
     patch_anthropic_classes,
     unpatch_anthropic_classes,
+)
+from flightdeck_sensor.interceptor.anthropic import (
+    is_patched as _anthropic_is_patched,
 )
 from flightdeck_sensor.interceptor.crewai import (
     patch_crewai_classes,
@@ -545,22 +547,26 @@ def init(
 def wrap(client: Any, quiet: bool = False) -> Any:
     """Wrap an Anthropic or OpenAI client for interception.
 
+    Any Anthropic SDK client is accepted: ``Anthropic``, ``AsyncAnthropic``,
+    ``AnthropicBedrock``, ``AnthropicVertex``, ``AnthropicFoundry``,
+    ``AnthropicAWS``, ``AnthropicBedrockMantle`` and their async forms
+    (everything deriving from ``anthropic._base_client.BaseClient``).
+
     ``init()`` must be called first.
 
-    If :func:`patch` has already been called, the client's class has
-    a class-level ``messages`` / ``chat`` descriptor installed and the
-    client's resource access is already intercepted -- in that case
-    ``wrap()`` is a no-op and returns the client unchanged. This
-    avoids double-wrapping.
+    If :func:`patch` has already been called, the Anthropic resource
+    classes (or the OpenAI client class) are already intercepted -- in
+    that case ``wrap()`` is a no-op and returns the client unchanged.
+    This avoids double-wrapping.
     """
     session = _require_session("wrap")
 
     # Detect Anthropic client
     if _is_anthropic(client):
-        # If the class is already patched, the descriptor handles
-        # interception transparently and wrapping again would produce
-        # a SensorMessages-of-SensorMessages on first .messages access.
-        if hasattr(type(client), "_flightdeck_patched"):
+        # If the resource classes are already patched, every call on
+        # the client is intercepted there; wrapping as well would be
+        # harmless (the proxy calls the original methods) but pointless.
+        if _anthropic_is_patched():
             return client
         return SensorAnthropic(client, session)
 
@@ -582,34 +588,44 @@ def patch(
     quiet: bool = False,
     providers: list[str | Provider] | None = None,
 ) -> None:
-    """Class-level patch the Anthropic and OpenAI SDKs.
+    """Patch the Anthropic and OpenAI SDKs in place.
 
-    After ``patch()``, every instance of ``anthropic.Anthropic``,
-    ``anthropic.AsyncAnthropic``, ``openai.OpenAI``, and
+    After ``patch()``, every Anthropic SDK client (``Anthropic``,
+    ``AsyncAnthropic``, ``AnthropicBedrock``, ``AnthropicVertex``,
+    ``AnthropicFoundry``, ``AnthropicAWS``, ``AnthropicBedrockMantle``
+    and their async forms) and every instance of ``openai.OpenAI`` and
     ``openai.AsyncOpenAI`` -- including instances constructed
     transparently by frameworks such as ``langchain-anthropic``,
     ``langchain-openai``, ``llama-index-llms-anthropic``, and
-    ``llama-index-llms-openai`` -- will have its first ``.messages``
-    or ``.chat`` access return a flightdeck-managed proxy that posts
-    pre/post events for every LLM call.
+    ``llama-index-llms-openai`` -- posts pre/post events for every LLM
+    call.
 
-    The patch mutates each class object in place by replacing the
-    ``messages``/``chat`` ``cached_property`` descriptor with a custom
-    descriptor and tagging the class with a ``_flightdeck_patched``
-    sentinel attribute. ``isinstance(x, anthropic.Anthropic)`` and
-    captured references like ``from anthropic import Anthropic``
-    continue to work correctly because the class object's identity is
-    preserved.
+    For Anthropic the patch replaces ``create`` / ``stream`` / ``parse``
+    on the SDK's ``Messages`` / ``AsyncMessages`` resource classes (top
+    level and beta), which every client hands out, so the raw-response
+    and streaming views are covered too. For OpenAI it
+    replaces the ``chat`` / ``responses`` / ``embeddings``
+    ``cached_property`` descriptors on the client classes with custom
+    descriptors. Each patched class is tagged with a
+    ``_flightdeck_patched`` sentinel attribute. ``isinstance(x,
+    anthropic.Anthropic)`` and captured references like ``from
+    anthropic import Anthropic`` continue to work correctly because the
+    class objects' identities are preserved.
 
     **Idempotent**: calling ``patch()`` twice is a no-op on the second
-    call -- the descriptor is only installed if the class does not
-    already carry the ``_flightdeck_patched`` sentinel.
+    call -- a class is only patched if it does not already carry the
+    ``_flightdeck_patched`` sentinel.
 
-    **Limitation**: instances of these classes that were constructed
-    BEFORE ``patch()`` was called and that already accessed
-    ``.messages`` / ``.chat`` once will have the unwrapped resource
-    cached in their ``__dict__`` and will not be intercepted. New
+    **Limitation (OpenAI)**: instances constructed BEFORE ``patch()``
+    was called that already accessed ``.chat`` once have the unwrapped
+    resource cached in their ``__dict__`` and are not intercepted. New
     instances and new accesses on existing instances ARE intercepted.
+    Anthropic clients built before ``patch()`` are intercepted from
+    their next call on, because the patch lives on the resource class;
+    the one exception is a raw or streaming view
+    (``messages.with_raw_response`` / ``with_streaming_response``) first
+    touched before ``patch()``, which binds the unpatched method when
+    the SDK builds it and is not metered.
 
     ``init()`` must be called first.
 
@@ -687,12 +703,12 @@ def unpatch() -> None:
     ``litellm.completion`` / ``litellm.acompletion`` module attributes,
     and removes every ``_flightdeck_patched`` sentinel.
 
-    Instances that have already accessed ``.messages`` / ``.chat``
-    after ``patch()`` was called keep the wrapped version cached in
-    their ``__dict__`` until the instance is garbage collected. This
-    is a known limitation -- documented in
-    :func:`unpatch_anthropic_classes` and
-    :func:`unpatch_openai_classes`.
+    OpenAI instances that have already accessed ``.chat`` after
+    ``patch()`` was called keep the wrapped version cached in their
+    ``__dict__`` until the instance is garbage collected -- a known
+    limitation documented in :func:`unpatch_openai_classes`. Anthropic
+    resources revert at once, views built while patched included
+    (see :func:`unpatch_anthropic_classes`).
     """
     with _patch_lock:
         unpatch_anthropic_classes()
@@ -764,15 +780,14 @@ def _env_bool(key: str, default: bool) -> bool:
 
 
 def _is_anthropic(client: Any) -> bool:
-    """Detect an Anthropic / AsyncAnthropic client via captured references.
-
-    Uses the original class references captured at interceptor-module
-    import time so that ``isinstance`` checks survive ``patch()``
-    mutating the module attributes.
+    """Detect any Anthropic SDK client (first-party, Bedrock, Vertex,
+    Foundry, AWS, Mantle; sync or async) via the ``BaseClient`` reference
+    captured at interceptor-module import time, which every SDK client
+    class derives from.
     """
-    if _OrigAnthropic is None or _OrigAsyncAnthropic is None:
+    if _OrigBaseClient is None:
         return False
-    return isinstance(client, (_OrigAnthropic, _OrigAsyncAnthropic))
+    return isinstance(client, _OrigBaseClient)
 
 
 def _is_openai(client: Any) -> bool:

@@ -31,7 +31,13 @@ classifiers = [
 Repository = "https://github.com/flightdeckhq/flightdeck"
 
 [project.optional-dependencies]
-anthropic = ["anthropic>=0.20"]
+# Floor 0.86: the lowest release carrying the resource layout the
+# resource-level patch imports (anthropic.resources.messages.messages
+# with parse, anthropic.lib.bedrock._beta_messages,
+# anthropic.lib.vertex._beta_messages, the raw-response header); the
+# layout canary test pins those paths and the matrix runs against
+# 0.94.0. Keep in step with the floor in [project] dependencies below.
+anthropic = ["anthropic>=0.86"]
 openai = ["openai>=1.0", "tiktoken>=0.5"]
 # litellm is a framework-level router that aggregates multiple
 # underlying providers. Installing the extra pulls in litellm; the
@@ -67,7 +73,8 @@ dev = [
     # so the sensor can be exercised end-to-end against a live stack
     # without real Anthropic / OpenAI tokens.
     "respx>=0.20",
-    "anthropic>=0.20",
+    # Same floor as the [project.optional-dependencies] anthropic extra.
+    "anthropic>=0.86",
     "openai>=1.0",
     # Unit-test-time litellm so tests/unit/test_patch.py and
     # tests/unit/test_providers.py can import litellm and exercise the
@@ -80,8 +87,9 @@ dev = [
     # that flightdeck_sensor.patch() transparently intercepts LLM calls
     # made through agent frameworks without any explicit wrap() call.
     # The framework instantiates its own internal Anthropic / OpenAI
-    # client; the sensor's class-level patching descriptor wraps it
-    # on first .messages / .chat access.
+    # client; the sensor's patch reaches it (the Anthropic Messages
+    # resource methods; the OpenAI client descriptor on first .chat
+    # access).
     #
     # The langchain ecosystem upper bound is pinned <1.0 because
     # langchain-mcp-adapters>=0.2 / langgraph>=1 introduced a stricter

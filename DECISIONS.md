@@ -10144,6 +10144,351 @@ safe ones).
 
 ---
 
+## D188 -- Errors derived from a provider-answered 200 response are llm_errors with http_status 200 (the stop-reason rule); the Anthropic classifier refresh; the count_tokens default
+
+**Date:** 2026-10-21
+
+**Decision:** When a provider answers a call with HTTP 200 and a stop
+reason that means the call did not succeed, the sensor emits an
+`llm_error` beside the `post_call`. The reasons: Anthropic's
+`stop_reason` `refusal` (its safety classifiers declined the request)
+and `model_context_window_exceeded` (the context window ran out
+mid-response); an OpenAI chat or litellm `finish_reason` of
+`content_filter` (litellm folds every provider's stop reason into
+`finish_reason` and raises nothing, so an Anthropic refusal routed
+through litellm arrives this way); an OpenAI structured-output refusal
+(`message.refusal`, reported as `refusal`); and an OpenAI Responses call
+left `incomplete` with `incomplete_details.reason` `content_filter`. A
+truncated response (`max_tokens`, `length`, `max_output_tokens`) is a
+success. The error carries the existing `llm_error` shape and nothing
+else: `error.error_type` is `content_filter`, or `context_overflow` for
+the context-window overrun, `error.http_status` is 200,
+`error.provider_error_code` is the stop reason, `error.error_message` is
+`stop_reason=<reason>`, `error.request_id` is the response's request id
+(the SDK stamps it on the parsed object; a raw-response wrapper exposes
+it in its headers), capped at 128 characters (`_REQUEST_ID_MAX_LEN` in
+`interceptor/base.py`: provider request ids are short opaque tokens, and
+the cap bounds both the stored field and the retry-counter key against a
+hostile header), so the per-provider retry counter keys each refusal on
+its own request rather than on an empty id, `error.is_retryable` is
+false, the top-level `terminal` is true and `originating_event_id` is
+the `post_call`'s id. The `post_call` is unchanged and keeps the billed
+usage. Any error the sensor derives from a response the provider
+answered with HTTP 200 -- this stop-reason rule, and an SDK exception
+raised after such a response, such as the finish-reason errors of the
+OpenAI parsing helpers -- records `error.http_status` 200; this entry is
+the home of that convention. The reason reaches the interceptor through
+two new provider-protocol hooks, `response_stop_reason(response)` for a
+complete message, a raw-response wrapper or a helper stream's snapshot,
+and `stop_reason_from_stream_chunk(chunk)` for a raw stream, where the
+reason appears on one streamed event (Anthropic `message_delta`, an
+OpenAI chat chunk carrying `finish_reason`, a Responses
+`response.incomplete` event; litellm streams are not metered on this
+branch, so the litellm adapter's chunk hook is exercised only by its
+unit test); the stream guard records it as events pass and hands it to
+the settle. Each adapter carries an explicit `name` (`anthropic`,
+`openai`, `litellm`) that fills the error's `provider` field on every
+`llm_error` the adapter's calls produce: it is the classifier's
+`provider_hint` on the exception path too, so a transport or builtin
+error raised inside an intercepted call (an `httpx` timeout, a
+`ConnectionError`, the builtin `TimeoutError`) reports the adapter's
+wire name instead of `unknown`, and the per-provider retry counter keys
+on it.
+
+The general rule this entry fixes: a call the provider billed and then
+failed emits the `post_call` with the billed usage and the `llm_error`
+chained to it through `originating_event_id`; neither replaces the
+other. The stop-reason case is one instance of it. Only `post_call` events are examined; `embeddings` carry no stop
+reason. An integration seed
+(`tests/integration/test_event_shapes.py::test_stop_reason_llm_error_roundtrips_with_http_200`)
+posts the 200-status `llm_error` through the real ingestion API and
+reads it back.
+
+The same change refreshes the exception classifier for the Anthropic
+SDK: `DeadlineExceededError`, `OverloadedError` and
+`RequestTooLargeError` are mapped by class name in a block of their own,
+and two status rules apply whatever class the SDK raised, 402 to
+`quota_exceeded` and 504 to `timeout`. An Anthropic 429 or 400 whose
+provider message contains the phrase `spend limit`, `spending limit`,
+`spend cap` or `credit balance` is `quota_exceeded` instead of
+`rate_limit` or `invalid_request`; the match is gated to Anthropic
+exceptions and to those statuses, reads only the first 2,048 characters
+of the message, is a substring test only, and the message is still redacted
+from `error_message` under capture-off. The pre-call estimator's default `count_tokens`
+model is `claude-sonnet-4-6`, and a unit test fails when that id is
+absent from `pricing.yaml`, marked retired or deprecated there, or
+missing from the installed SDK's model list.
+
+**Reasoning:** A refusal or a context-window overrun is not a completed
+call from the operator's point of view, yet it arrived as an ordinary
+`post_call` with tokens and latency and nothing to search or alert on.
+The event payload schema is a contract between the sensor and the
+ingestion API (rule 33): adding an outcome field to `post_call` would
+have changed that contract, needed a validator entry, a worker
+projection, a dashboard renderer and an analytics facet, and would have
+left the existing error views blind to the new outcome. The `llm_error`
+shape already has everything the outcome needs: a taxonomy entry whose
+meaning fits (`content_filter`, `context_overflow`), an `http_status`
+slot that can say 200, a `provider_error_code` slot for the stop reason,
+and the `terminal` flag, and the dashboard, the per-agent summary, the
+session listing's `error_types[]` and `has_terminal_error`, and the
+`error_type` facet render it today. Reusing it means the new outcome
+appears everywhere errors already appear with no server or dashboard
+change. The consequence is deliberate: the per-agent error count
+(`llm_error` rows) and the session's terminal-error flag now count
+refusals and context overruns, because an operator triaging an agent
+wants to see them exactly where a 429 shows up. The `post_call` stays
+because the provider billed the call; dropping it or zeroing its usage
+would understate spend, which is the one number the sensor exists to
+get right. `terminal` is true because neither outcome is cured by a
+retry of the same request: a refusal needs a different prompt and an
+overrun needs a shorter conversation, which is the meaning the flag
+already has for the non-retryable classes. `http_status` is 200 rather
+than null so the error row says honestly that the provider answered and
+points the reader at `provider_error_code`.
+
+The hooks live on the provider protocol rather than as an Anthropic
+special case in the interceptor because the interceptor is provider
+neutral and every other response reading goes through the protocol; a
+raw stream needs the per-chunk hook because `create(stream=True)`
+returns an SDK stream with no final message, and the reason is seen
+once, on the `message_delta` event the guard already inspects to know
+the response has ended. The error row's `provider` comes from the
+adapter's `name` attribute: unlike an exception, a stop reason has no
+module to infer the provider from, and a name declared on the adapter
+is checked by the type checker where a label derived from the class
+name would not be.
+
+The classifier's status rules are status-driven because neither SDK
+generation has a dedicated class for the two cases: the installed 0.94.0
+and the 1.17.0 wheel both declare `DeadlineExceededError` for 504 but
+their status mapping folds every 5xx other than 529 into
+`InternalServerError`, and a 402 falls through to a bare
+`APIStatusError`. Mapping the class names alone would therefore have
+classified a real 504 as a retryable `api_error`, and a local probe of
+the SDK's status mapping confirmed it delivers a 504 as
+`InternalServerError`. The
+spend-limit cases are message-driven because Anthropic reports them
+under the generic error type of their status (`rate_limit_error` for the
+organisation spend cap, `invalid_request_error` for a per-user spend
+limit or an exhausted credit balance), so the error code carries no
+signal. The match is gated to Anthropic exceptions with status 400 or
+429 and to multi-word phrases: a 400 echoes caller-supplied identifiers
+back (a schema named `monthly_report`, a tool `get_billing_info`), and a
+litellm or Vertex per-minute "quota exceeded" 429 is a genuine,
+retryable rate limit, so the single words `billing`, `quota` and
+`monthly` match nothing on their own (the `provider_error_code` check
+still recognises codes that contain them, and 402 is decided by status).
+Only the first 2,048 characters of the message are inspected, so a huge
+or hostile message costs at most that slice, and nothing is read at all
+for another provider or another status. The exact Anthropic strings were not
+confirmed against the live API (none can be provoked without exhausting
+an account), so the phrases are the documented wording; the message is
+matched only and never stored, because a provider message can quote
+user-supplied identifiers.
+
+`claude-sonnet-4-6` is the default `count_tokens` model because the
+previous default, `claude-sonnet-4-20250514`, was retired and the
+endpoint answers 404 for it; the estimator swallows that and falls back
+to the character heuristic, so every estimate for a request without a
+`model` had been degrading silently (confirmed live: the retired id
+returns `not_found_error`, the new id returns a count). Sonnet 4.6 is
+the served successor in the same tokenizer family, so estimates for
+such requests stay comparable with what callers saw before, and it is
+both priced in `pricing.yaml` and listed in the installed SDK's model
+literal, which the canary test checks so the next retirement fails a
+unit test instead of degrading estimates again.
+
+**Rejected alternatives:** An outcome field on `post_call` (a schema
+contract change with four consumers to update and no error-view
+coverage, as above). A new `final_outcome` value on the streaming
+sub-object (covers streams only, and the dashboard keys its badge off
+the two existing values). Raising an exception for a refusal so the
+existing exception path files the error (the SDK returned a message the
+caller is entitled to read; the sensor must never change what the
+caller receives). Dropping or zeroing the `post_call` (understates
+spend). `http_status` null on the stop-reason error (hides that the
+provider answered). A spend-limit match on the provider error code only
+(the code is `rate_limit_error` or `invalid_request_error` in every
+case, so nothing would match). Keeping the retired `count_tokens`
+default or removing the default and estimating with the heuristic when
+no model is named (both leave the SDK path unused for those requests).
+`claude-haiku-4-5` or `claude-sonnet-5-5` as the default (Haiku changes
+the tokenizer family the previous default used; Sonnet 5.5 is not in
+the installed SDK's model list, which the canary requires so the id is
+one the pinned SDK knows). Matching single billing words on every
+provider's 400 and 429 (false positives on echoed identifiers and
+per-minute quotas, as above). Treating a truncated response (`length`,
+`max_output_tokens`, `max_tokens`) as a failure (the text is valid and
+the caller already sees the cut on the response). Deriving the error's
+`provider` from the adapter class name (a naming convention the type
+checker cannot see).
+
+---
+
+## D189 -- OpenAI parse and raw-response calls are metered, Responses tool-call items become tool_call events, and OpenAI usage details map onto the existing token fields
+
+**Date:** 2026-10-21
+
+**Decision:**
+
+**Parse and raw-response metering.** The OpenAI interceptor meters
+`chat.completions.parse()`, `responses.parse()` and the
+`with_raw_response` forms of the chat and Responses `create` / `parse`
+calls through the same non-streaming intercept as `create()`. The
+`.stream()` helpers and `with_streaming_response` on both resources
+stay unintercepted.
+
+**Billed calls that fail for the caller.** D188's rule applies: when
+the provider answered with HTTP 200 and billed the call but it still
+failed for the caller, the sensor emits the `post_call` with the billed
+usage and then the `llm_error` (`http_status` 200, terminal, chained to
+the `post_call`). For `chat.completions.parse()` the failures are
+`LengthFinishReasonError` (the completion the exception carries is the
+`post_call`), `ContentFilterFinishReasonError` and a completion that
+fails the caller's schema (no completion on the exception: the
+`post_call` is built from the HTTP body). To have that body on the
+direct path, `parse()` fetches the response through the SDK's own
+raw-response closure and parses it eagerly; the caller still gets the
+parsed object or the SDK's exception, type and message unchanged. On
+the raw-response path the same eager parse reports the failure and
+returns the raw response to the caller unchanged. When neither a
+completion nor a JSON body can be read, only the `llm_error` is
+emitted (the direct path raises, the raw-response path still returns
+the raw response): a failed parse never lands as a success-looking
+`post_call` of estimated tokens.
+
+**Classification.** `OAuthError` classifies as `authentication`.
+`LengthFinishReasonError` classifies as `invalid_request` with
+`provider_error_code` `length` and a sensor-authored message that
+`max_tokens` is too small for the schema; `ContentFilterFinishReasonError`
+as `content_filter` (`content_filter`); a schema failure as `other`
+(`schema`). All three record `http_status` 200.
+
+**Responses tool calls.** Every Responses output item that is a tool
+call emits one `tool_call` event in the shape chat tool calls use:
+`tool_name` and `model` on the event, the input in the `event_content`
+envelope (`tool_input`) when capture is on. `function_call`, `mcp_call`
+and `custom_tool_call` carry the tool's own name; hosted tools
+(`web_search_call`, `file_search_call`, `code_interpreter_call`,
+`image_generation_call`, `computer_call`, `local_shell_call`,
+`shell_call`, `apply_patch_call`, `tool_search_call`) carry the item
+type as `tool_name`. The provider's id for a call (a function call's
+`call_id`, an MCP or hosted item's id) is kept in-process on
+`ToolInvocation.tool_id` and is not shipped on the event; neither is
+`mcp_call.server_label`. The captured input of a hosted tool is an
+allowlist of the fields that are the model's request to the tool; a
+search action's `sources`, a shell action's `env`, a computer call's
+pending safety checks and every tool result are never captured.
+
+**Usage details.** OpenAI's `cached_tokens` usage detail
+(`prompt_tokens_details` on chat, `input_tokens_details` on Responses)
+maps onto `cache_read_tokens` and so onto `tokens_cache_read`, on direct
+and streamed calls; `tokens_cache_creation` stays 0 for OpenAI;
+`reasoning_tokens` is not stored.
+
+**Request id and estimate.** When no raw-response headers are
+reachable, the request id is read from the `_request_id` the SDK stamps
+on every parsed object; a request id is bounded to 128 characters. The
+pre-call estimate counts a Responses request's `instructions` and
+`input`, and prices an inline binary payload (`data:` URL, `file_data`)
+at a fixed 1,000-token allowance instead of its bytes.
+
+**Serializer warnings.** The capture path dumps `Parsed*` results with
+pydantic's serializer warnings off.
+
+**Reasoning:** Chat tool calls already emit one `tool_call` per
+invocation with `tool_name` and, under capture, `tool_input`; Responses
+items are the same thing in another shape, and one event shape keeps
+the dashboard's tool filters and the `event_content.tool_input` column
+working unchanged. A new wire field (the call id, the MCP server label)
+is a payload change that belongs with the token and identity work, not
+with a coverage change, so the id stays in-process and the server label
+is a Roadmap item. Hosted tools have no per-call name, and the item
+type is the provider's own vocabulary for them, so it is preserved
+verbatim rather than mapped onto invented names. The function call's
+`call_id` is the id the API pairs a call with its output item, which is
+what a chat tool call's `id` is, so it is the right in-process id to
+keep; the item id (`fc_...`) pairs with nothing. The input allowlist
+exists because dumping an action whole captures what the provider put
+on it: a completed search action carries its `sources` (the results),
+a local shell action carries the `env` the command runs with, and a
+computer call its safety verdicts; capturing those under "input" would
+mislabel them, bloat `event_content`, and on the shell path copy
+secrets the model set into the environment.
+
+`reasoning_tokens` is already counted inside `output_tokens` (the
+provider bills it there), so storing it again would double-count on any
+sum, and there is no wire field for it; a separate field is a schema
+change that belongs with the token-model work. Current OpenAI SDKs
+report the cache write as `cache_write_tokens` on `PromptTokensDetails`
+(optional) and `InputTokensDetails` (required), and newer models bill
+it, so it maps onto `tokens_cache_creation`; a response without it
+records 0. `cached_tokens` and `cache_write_tokens` are subsets of
+`prompt_tokens` / `input_tokens`, which is exactly the `TokenUsage`
+contract for the cache breakdown, so the existing `estimated_cost`
+formula applies to both unchanged, writes at the uniform 1.25x ratio. That formula applies the uniform 0.10x cache-read ratio to
+OpenAI reads, while OpenAI's cached-input rate is model-dependent (0.50x
+to 0.05x of the input rate in `pricing.yaml`), so the uniform ratio can
+be off in either direction. `estimated_cost` for an OpenAI session with
+cache reads therefore shifts on upgrade and stays approximate until
+per-model cache ratios land (README Roadmap, token and cost model),
+which this change does not touch.
+
+A `LengthFinishReasonError` means the output hit the caller's
+`max_tokens` before the structured output was complete: the request was
+mis-specified for the schema, which is what `invalid_request` describes;
+`context_overflow` means the input exceeded the context window, which
+did not happen. The 14-entry taxonomy has no closer value, and adding
+one is a vocabulary change. A null `http_status` on these errors would
+read as "no response", the connection-failure case; 200 states what
+happened. The post_call-plus-llm_error pair follows D188 because the
+provider billed the call: the tokens belong in the session totals and
+the analytics metrics, which read `post_call` events, and the
+`partial_tokens_*` fields describe an aborted stream, which these calls
+are not. The raw-response path is parsed eagerly because the SDK
+defers parsing to the caller's `.parse()`, where the sensor cannot see
+it; without that, `extract_usage` swallowed the failure and filed a
+success-looking `post_call` of estimated tokens with no `llm_error`.
+The caller still receives the raw response, so the SDK's contract
+holds. Classification stays a pure function of the exception and the
+interceptor owns session accounting, which is why the classifier
+supplies the status, code and message while the interceptor arranges
+the `post_call` before the error. The SDK's generic `Parsed*` models
+trip pydantic serializer warnings on every `model_dump()`, which
+surfaced as UserWarnings in the agent's process; the sensor must not
+add noise to the hot path. A 2 MB inline image counted as text would
+estimate as hundreds of thousands of tokens and could trip a policy
+limit before the call; the provider prices an image by its detail
+level, so a fixed allowance is the honest estimate.
+
+**Rejected alternatives:** Shipping `tool_id` on the `tool_call` event
+now (a payload change; it belongs with the token and identity work).
+Naming hosted tool calls by the tool configured in the request
+(`web_search_preview` versus `web_search` differ by SDK version and
+several hosted items carry no reference to their tool). Keeping the item
+id as every call's in-process id (loses the pairing with
+`function_call_output` that a chat tool call's `id` has). Folding
+`server_label` into `tool_name` (`github/list_issues`) or into
+`tool_input` (changes the vocabulary or pollutes the model's arguments).
+Dumping a hosted action whole and stripping known result fields
+(a denylist misses the next field the provider adds; the allowlist
+fails closed). Storing `reasoning_tokens` under `provider_metadata` (a
+free-form slot for rate-limit headers, not a token field; a sum over it
+would still double-count). Carrying the billed usage of a length
+failure as `partial_tokens_*` on the `llm_error` (the call is complete
+and billed, not aborted, and the session totals and analytics would
+never see the tokens). Classifying the length failure as
+`context_overflow` (the input fitted; the output limit was the caller's)
+or adding a vocabulary value for it. Recording a null `http_status` on
+the parse-failure errors (indistinguishable from a connection failure).
+Raising the parse failure at `with_raw_response.parse()` instead of
+returning the raw response (changes the SDK's contract for the caller).
+Suppressing the pydantic warnings with a `warnings` filter in the
+agent's process (global state the sensor has no business changing).
+
+---
+
 ## D190 -- Plugin tool failures reuse `tool_call` with a capture-gated error block; Claude Code's session id is context; MCP servers use Claude Code's key; `SessionEnd` posts from a detached worker
 
 **Date:** 2026-10-21
@@ -10300,3 +10645,186 @@ flush exists for). Keeping the `SessionEnd` hook synchronous and
 documenting the budget (loses every `session_end` on a slow server).
 Waiting for the worker without a bound (a slow server holds the hook
 past the 1.5 s cut-off and loses the `session_end` the same way).
+
+---
+
+## D192 -- The Anthropic patch binds to the Messages resource classes, and the platform lives in provider_metadata
+
+**Date:** 2026-10-21
+
+**Supersedes:** the Anthropic half of D087 (the sensor descriptors
+installed on `anthropic.Anthropic`, `AsyncAnthropic`, `Beta` and
+`AsyncBeta` and the two Anthropic descriptor classes). The OpenAI half
+of D087 stands.
+
+**Refines:** D175, which chose the `Messages` resource classes as the
+intercept point and said the raw-response and streaming-response
+accessors are proxied. The method patch covers both views on its own,
+because the views bind the resource method when they are built; only the
+streaming view gets a deferred proxy; and the Bedrock / Vertex beta
+resource classes are patched in their own right.
+
+**Decision:** `patch()` intercepts the Anthropic SDK by replacing
+`create`, `stream` and `parse` on the resource classes every client
+hands out -- `anthropic.resources.messages.messages.Messages` /
+`AsyncMessages`, the beta `Messages` / `AsyncMessages` under
+`anthropic.resources.beta.messages`, and the Bedrock and Vertex beta
+resources in `anthropic.lib.bedrock._beta_messages` and
+`anthropic.lib.vertex._beta_messages` -- instead of replacing the
+`messages` `cached_property` on the `Anthropic`, `AsyncAnthropic`,
+`Beta` and `AsyncBeta` classes. Each patched class keeps its original
+methods on a `_flightdeck_patched` sentinel, which `unpatch` restores and
+the `wrap()` proxy calls directly; with no session active a patched
+method calls the original. `wrap()` accepts any
+`anthropic._base_client.BaseClient`. Every Anthropic `post_call` carries
+`provider_metadata.platform`, derived from `client.base_url.host` and
+nothing else: `anthropic`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`,
+`google-cloud` or `foundry` for the hosts the SDK's client classes default to, else the
+bare host when it is a well-formed hostname (at most 253 characters,
+the DNS limit; lowercase letters, digits, dots and hyphens), else the
+fixed label `invalid-host`. Adding this key to the documented free-form
+`provider_metadata` object is documented in ARCHITECTURE first but is
+not a payload-schema change. `PromptContent.provider` stays
+`"anthropic"` on every platform. A streaming-view response abandoned
+without `parse()` or `close()` is settled with the estimate through the
+stream guards' mechanism: the proxy's finalizer queues the settle on the
+session, the next intercept or the session's end runs it, and a
+response still referenced at session end is settled by the session's
+open-guard sweep; the sensor never reads such a body. A patched method
+passes straight through once its class no longer resolves to it, so a
+view built while patched stops metering at `unpatch()`. Message Batches
+and `count_tokens` are not patched. A client that is both wrapped and
+patched is metered once, except when its resource class overrides a
+patched method and calls `super()`: the `wrap()`-built proxy resolves
+the override, the override re-enters the patched base method, and one
+request is reported twice (two `pre_call`, two `post_call`); a test
+pins that count. What collapses it is the outer-call mark that D191
+adds to `interceptor/base.py`: the `wrap()`-built proxy will run its SDK
+call under that mark, so the patched base method it re-enters recognises
+an outer call in progress and passes through. The
+`with_streaming_response` view is metered by a proxy that defers the
+`post_call` to the caller's `parse()` / `await parse()`, or to close
+(parsing only a body already read; the pre-call estimate when the body
+was never read), built on the package-private `_pre_call`, `_post_call`
+and `_emit_error` of `interceptor/base.py`; a stream obtained from a raw
+view's `parse()` is handed to the stream guard, whose latency runs from
+that `parse()`. A module-layout test pins the resource classes and
+methods, the client roots, the raw-response header, the way the raw
+views bind the resource method, and the set of exported client classes
+the patch relies on.
+
+**Reasoning:** Only `Anthropic` and `AsyncAnthropic` build `messages`
+through a class-level descriptor. `AnthropicBedrock`, `AnthropicVertex`,
+`AnthropicBedrockMantle` and their async forms assign
+`self.messages = Messages(self)` in `__init__`, and `AnthropicFoundry`
+overrides the descriptor with a `Messages` subclass, so a descriptor
+installed on `Anthropic` never ran for them and their calls landed no
+events. The resource classes are the one place every client passes
+through, and a method replaced on the class reaches instances that
+already exist, which removes the "patch before constructing clients"
+limitation for a client's `messages` resource. The SDK's raw and
+streaming views are the one exception: they bind the resource's method
+when they are built, so a view first touched before `patch()` keeps the
+unpatched method and is not metered; the SDK's view objects offer no
+call-time resolution to hook, so the limitation is documented and
+pinned by a strict `xfail` test that will flip if a later SDK resolves
+at call time. The floor rises to `anthropic>=0.86`, the lowest release
+(of 0.86, 0.91, 0.94, 0.102, 0.125 and 1.15, the ones inspected)
+carrying the resource layout the patch imports; an older SDK logs one
+warning at import instead of silently metering nothing. The SDK's raw and streaming views capture
+`messages.create` when they are built
+(`self.create = to_raw_response_wrapper(messages.create)`), so patching
+the resource method covers the views without any view-specific code.
+The Bedrock and Vertex beta resources are not subclasses of the
+first-party beta class: they copy its function objects into their own
+class bodies at import (`create = FirstPartyMessagesAPI.create`), so the
+first-party patch cannot reach them and they are listed as targets of
+their own; they carry only what their platform supports, so a missing
+method on them is expected rather than a warning.
+
+`platform` goes into `provider_metadata` because that block is the
+per-call provider annotation the pipeline already carries end to end:
+ingestion only requires it to be an object, the workers store it
+verbatim, and the dashboard renders every entry. Adding a key to the
+documented `provider_metadata` object is made in ARCHITECTURE first,
+which this change does, and needs no schema, migration or dashboard
+change.
+The host is the only source of the platform: no SDK client class carries
+a platform label, and a label derived from the class would mislabel a
+first-party client pointed at a gateway. The host is bounded because it
+is caller-controlled input written into every `post_call` of a session:
+unbounded, a 60,000-character host stored 60,004 bytes per event, and an
+arbitrary string could carry anything into the dashboard's metadata
+table; a well-formed hostname within the DNS limit is all an operator
+needs to recognise a gateway, and the fixed label keeps a malformed
+`base_url` visible without storing it. The known-platform rows match
+dot-separated suffixes (with the prefixes the SDK's defaults carry) and
+`vertex` only the Vertex AI API hosts, so a look-alike such as
+`evilanthropic.com` or an unrelated Google API host such as
+`storage.googleapis.com` is reported bare rather than labelled. The
+wrapper hands the originals of the class it patched to the proxy, so a
+resource subclass that overrides `create` and calls `super()` reaches
+the SDK's own method rather than resolving through the instance again
+and recursing; a structured-output `ParsedMessage` is dumped with
+pydantic's serializer warnings off so capture never writes into the
+caller's warning stream. Batches and `count_tokens` stay
+unpatched because a batch is not an in-process inference call (its
+spend lands asynchronously, outside the kill switch and the budget) and
+`count_tokens` is the sensor's own estimator. Changing `PromptContent.provider` to the
+platform would have broken the dashboard's provider-specific prompt
+rendering, which keys on `anthropic` versus `openai` to show `system` +
+`messages`; the platform is a deployment fact about the same provider
+format, not a different provider. An unknown host is reported bare so a
+gateway or proxy stays visible rather than being mislabelled as
+Anthropic's own API; the host is the API endpoint, not prompt content.
+
+The streaming view hands the caller a response whose body is unread. A
+`post_call` emitted at the call would have to parse the body first,
+which reads it from the network before the caller does and breaks
+callers that iterate bytes, and the async view's `parse()` is a
+coroutine, which the previous code called and dropped (the call then
+reported the estimate with zero output). Deferring to the caller's
+`parse()` keeps the body untouched and the usage exact; settling at
+close covers callers that read the body some other way without ever
+reading further; a never-read body reports the estimate because the
+sensor has nothing else to meter. The split between the pre-call check
+and the deferred post_call is exactly what `base.py` already factors into
+`_pre_call` / `_post_call` / `_emit_error`; the deferred call is specific
+to one SDK's view, so it lives with that interceptor and composes those
+package-private helpers rather than adding a view-specific call type to
+the shared core. A stream obtained from a raw view's `parse()` opens the
+guard at the parse, so its latency runs from there: the request was sent
+earlier, but the guard cannot time what it did not see, and the pre-call
+check already ran at the request. A raw-view response with `stream=True`
+that is never parsed emits no `post_call`: the SDK returns it outside any
+context manager, so there is no close hook to settle on, and reading the
+body to settle would consume the stream the caller still holds; the
+streaming view always settles, because its context manager closes the
+response.
+
+The layout canary exists because the patch depends on private SDK
+structure (`anthropic.lib.*._beta_messages`, the `X-Stainless-Raw-Response`
+header, the view classes binding the resource method); an SDK release
+that moves any of it should fail one test that names the move, not fail
+silently in the field.
+
+**Rejected:** Keeping the client-class descriptors and adding one per
+cloud client (Bedrock, Vertex and Mantle set `messages` in `__init__`,
+so no descriptor on the class can intercept them; it also leaves the
+pre-existing-instance limitation). Wrapping the client's `__init__` to
+replace the resource after construction (per-client code for every
+client class, and still misses resources built lazily). A new top-level
+`platform` field on the event (a payload-schema change needing
+ingestion validation, a worker column and dashboard work for a value
+the metadata block already carries). Setting `PromptContent.provider` to
+the platform (breaks the prompt viewer's provider-keyed rendering).
+Parsing the streaming-view body eagerly at the call (reads the body
+before the caller; breaks byte iteration). Teaching `base.py` a deferred
+call type (a shape specific to one SDK's view does not belong in the
+shared core).
+Mapping unknown hosts to `anthropic` (hides gateways) or to `unknown`
+(loses the host for no privacy gain). Attributing the platform by client
+class instead of host, or honouring a client-side label such as an
+`_otel_platform` attribute (no SDK class defines one, and a label the
+class carries mislabels a first-party client pointed at a gateway as
+`anthropic`).

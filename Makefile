@@ -107,7 +107,7 @@ playground-litellm: ## Rule 40d playground: litellm multi-provider chat (sync + 
 playground-mcp: ## Rule 40d playground: bare mcp SDK, all six event types + multi-server attribution.
 	$(PYTHON) playground/13_mcp.py
 
-playground-claude-code: ## Rule 40d playground: Claude Code plugin MCP-emission demo (success + PluginToolError). Requires Node 20+.
+playground-claude-code: ## Rule 40d playground: Claude Code plugin MCP-emission demo (success + PluginToolError). Requires Node 22+.
 	$(PYTHON) playground/14_claude_code_plugin.py
 
 playground-bifrost: ## Rule 40d playground: bifrost gateway (optional). Requires BIFROST_URL.

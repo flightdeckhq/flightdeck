@@ -5866,7 +5866,7 @@ Dashboard job and blocks the PR.
 Why a separate image build (rather than reusing the integration / e2e
 job stacks): those jobs use the `docker-compose.dev.yml` override
 which swaps the dashboard image for `vite dev` running in a
-node:20-alpine container. vite serves the file but emits its own
+node:24-alpine container. vite serves the file but emits its own
 default `Cache-Control: no-cache` header on `/runtime-config.json` and
 no headers at all on `/assets/` — the production discipline only
 ships when the actual dashboard nginx config is in play. So the smoke

@@ -32,6 +32,104 @@ _log = logging.getLogger("flightdeck_sensor.providers.litellm")
 _CHARS_PER_TOKEN_ESTIMATE = 4
 
 
+def _assembled_response(stream: Any) -> dict[str, Any] | None:
+    """``litellm.stream_chunk_builder`` over the chunks the wrapper kept,
+    dumped to a plain dict with ``usage`` included; ``None`` when there
+    are no chunks or the builder raises."""
+    chunks = getattr(stream, "chunks", None)
+    if not isinstance(chunks, list) or not chunks:
+        return None
+    try:
+        import litellm as _litellm
+
+        built = _litellm.stream_chunk_builder(chunks)
+        if built is None or not hasattr(built, "model_dump"):
+            return None
+        dumped: dict[str, Any] = built.model_dump()
+        usage = getattr(built, "usage", None)
+        if "usage" not in dumped and usage is not None and hasattr(usage, "model_dump"):
+            dumped["usage"] = usage.model_dump()
+        return dumped
+    except Exception:
+        _log.debug("stream_chunk_builder failed; storing the assembled text", exc_info=True)
+        return None
+
+
+def _stream_text(stream: Any) -> str | None:
+    """The response text of a streamed call, assembled from the chunks
+    litellm's wrapper keeps (``chunks``), or ``None`` when it kept none.
+    Text deltas only; streamed tool calls are not assembled."""
+    chunks = getattr(stream, "chunks", None)
+    if not isinstance(chunks, list):
+        return None
+    pieces: list[str] = []
+    for chunk in chunks:
+        for choice in getattr(chunk, "choices", None) or []:
+            delta = getattr(choice, "delta", None)
+            content = getattr(delta, "content", None) if delta is not None else None
+            if isinstance(content, str):
+                pieces.append(content)
+    return "".join(pieces) if pieces else None
+
+
+def _stream_response_summary(stream: Any) -> dict[str, Any]:
+    """What a streamed call stores as its captured ``response``: the
+    response litellm's own ``stream_chunk_builder`` assembles from the
+    chunks the wrapper kept (the assistant message, ``model`` and
+    ``usage``, the shape a non-streamed litellm response has), or, when
+    the builder cannot be used, the id, model, finish reason and the
+    text assembled here.
+
+    Never the wrapper's ``__dict__``: that carries the request's messages
+    a second time, ``_hidden_params`` (the caller's ``api_base``
+    verbatim, so a userinfo password or a query token), the provider's
+    response headers (``Set-Cookie``, organisation and project headers),
+    ``stream_options``, the logging object and the SDK stream. A denylist
+    would leak whatever a litellm upgrade adds, so only the assembled
+    response is read."""
+    built = _assembled_response(stream)
+    if built is not None:
+        return built
+    finish_reason = getattr(stream, "received_finish_reason", None)
+    summary: dict[str, Any] = {
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": "assistant", "content": _stream_text(stream)},
+                "finish_reason": finish_reason if isinstance(finish_reason, str) else None,
+            }
+        ]
+    }
+    response_id = getattr(stream, "response_id", None)
+    if isinstance(response_id, str):
+        summary["id"] = response_id
+    model = getattr(stream, "model", None)
+    if isinstance(model, str):
+        summary["model"] = model
+    return summary
+
+
+def _count(value: Any) -> int | None:
+    """A provider-supplied counter, or ``None`` when it is not a real
+    integer (absent, ``None``, a bool, or some object standing in for the
+    usage): the sensor never guesses a cache count."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _cache_breakdown(usage: Any) -> tuple[int, int]:
+    """``(cache_read, cache_creation)`` from a litellm ``Usage``: the
+    ``prompt_tokens_details`` wrapper first, then the Anthropic-named
+    attributes litellm sets on older shapes. Zeros when absent."""
+    details = getattr(usage, "prompt_tokens_details", None)
+    cache_read = _count(getattr(details, "cached_tokens", None))
+    cache_creation = _count(getattr(details, "cache_creation_tokens", None))
+    if cache_read is None:
+        cache_read = _count(getattr(usage, "cache_read_input_tokens", None))
+    if cache_creation is None:
+        cache_creation = _count(getattr(usage, "cache_creation_input_tokens", None))
+    return cache_read or 0, cache_creation or 0
+
+
 class LitellmProvider:
     """Provider adapter for litellm's completion / acompletion surface.
 
@@ -122,8 +220,16 @@ class LitellmProvider:
 
         ``response.usage.prompt_tokens`` / ``completion_tokens`` match
         the OpenAI chat-completion shape regardless of the underlying
-        provider litellm routed the call to. Returns ``TokenUsage(0, 0)``
-        on any failure -- never raises.
+        provider litellm routed the call to, and ``prompt_tokens``
+        already includes any cached or cache-written tokens (litellm sums
+        Anthropic's three input counters into it). The cache breakdown
+        litellm exposes under ``usage.prompt_tokens_details``
+        (``cached_tokens``, ``cache_creation_tokens``), or as the
+        Anthropic-named ``cache_read_input_tokens`` /
+        ``cache_creation_input_tokens`` attributes on older shapes, is
+        surfaced on the separate cache fields without being added to
+        the input sum again. Returns ``TokenUsage(0, 0)`` on any failure
+        -- never raises.
         """
         try:
             usage = getattr(response, "usage", None)
@@ -131,16 +237,20 @@ class LitellmProvider:
                 return TokenUsage(input_tokens=0, output_tokens=0)
             prompt_tokens = getattr(usage, "prompt_tokens", 0) or 0
             completion_tokens = getattr(usage, "completion_tokens", 0) or 0
+            cache_read, cache_creation = _cache_breakdown(usage)
             return TokenUsage(
                 input_tokens=prompt_tokens,
                 output_tokens=completion_tokens,
+                cache_read_tokens=cache_read,
+                cache_creation_tokens=cache_creation,
             )
         except Exception:
             return TokenUsage(input_tokens=0, output_tokens=0)
 
     def usage_from_stream_chunk(self, chunk: Any) -> TokenUsage | None:
-        """Usage on litellm's final streaming chunk (present when the
-        request asked for ``stream_options.include_usage``)."""
+        """Usage on litellm's trailing streaming chunk (present when the
+        request asked for ``stream_options.include_usage``, which the
+        litellm interceptor always does); same fields as a response."""
         try:
             if getattr(chunk, "usage", None) is None:
                 return None
@@ -237,7 +347,12 @@ class LitellmProvider:
             if hasattr(response, "model_dump"):
                 resp_dict = response.model_dump()
             elif hasattr(response, "__dict__"):
-                resp_dict = dict(response.__dict__)
+                # A streamed call settles with litellm's
+                # ``CustomStreamWrapper`` as the response. Only the
+                # allowlisted response fields are stored (see
+                # _stream_response_summary); the wrapper's own state is
+                # never dumped.
+                resp_dict = _stream_response_summary(response)
             else:
                 resp_dict = {"raw": str(response)}
 

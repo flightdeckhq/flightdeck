@@ -425,6 +425,61 @@ PATH_METHOD = {
 
 
 @pytest.mark.parametrize("beta", [False, True], ids=["messages", "beta.messages"])
+# The streaming-view helper asserts that parse() meters; it has its own
+# test under the mark below.
+@pytest.mark.parametrize("path", sorted(set(PATHS) - {"streaming_response"}))
+@pytest.mark.parametrize("name", ["Anthropic", "AsyncAnthropic"])
+def test_patched_resource_under_the_outer_call_mark_reports_nothing(
+    session: Session, name: str, path: str, beta: bool
+) -> None:
+    """An outer interceptor (litellm) that already meters a call runs
+    it under the outer-call mark; the patched resource method then hands
+    the call to the SDK untouched, so the request leaves once and the
+    sensor reports nothing for it. Outside the mark the same call is
+    metered."""
+    transport = _Transport()
+    client = _build(name, transport)
+
+    with base.outer_intercept():
+        result = asyncio.run(PATHS[path](client, beta, session))
+
+    assert result is not None
+    assert len(transport.requests) == 1
+    assert _events_of(session, "pre_call") == []
+    assert _post_calls(session) == []
+
+    asyncio.run(PATHS[path](client, beta, session))
+    assert len(_post_calls(session)) == 1
+
+
+@pytest.mark.parametrize("beta", [False, True], ids=["messages", "beta.messages"])
+@pytest.mark.parametrize("name", ["Anthropic", "AsyncAnthropic"])
+def test_streaming_view_under_the_outer_call_mark_reports_nothing(
+    session: Session, name: str, beta: bool
+) -> None:
+    transport = _Transport()
+    client = _build(name, transport)
+
+    async def _run() -> Any:
+        manager = _resource(client, beta).with_streaming_response.create(
+            model=MODEL, max_tokens=8, messages=HI
+        )
+        if hasattr(manager, "__aenter__"):
+            async with manager as response:
+                return await response.parse()
+        with manager as response:
+            return response.parse()
+
+    with base.outer_intercept():
+        message = asyncio.run(_run())
+
+    assert message.usage.output_tokens == OUTPUT_TOKENS
+    assert len(transport.requests) == 1
+    assert _events_of(session, "pre_call") == []
+    assert _post_calls(session) == []
+
+
+@pytest.mark.parametrize("beta", [False, True], ids=["messages", "beta.messages"])
 @pytest.mark.parametrize("path", sorted(PATHS))
 @pytest.mark.parametrize("name", CLIENT_NAMES)
 def test_every_client_class_on_every_path(
@@ -1110,15 +1165,13 @@ def test_degrade_swaps_the_model_on_the_wire_on_every_path(
 
 
 @pytest.mark.parametrize("override", [False, True], ids=["plain", "overriding-subclass"])
-def test_wrap_then_patch_counts_an_override_calling_super_twice(
+def test_wrap_then_patch_meters_once_even_with_an_override_calling_super(
     monkeypatch: pytest.MonkeyPatch, override: bool
 ) -> None:
-    """wrap() then patch(): a plain resource is metered once, but a
-    resource class that overrides create() and calls super() is reported
-    twice for one request (the proxy resolves the override, which
-    re-enters the patched base method). Pins the current count, which
-    stays two until the wrap() proxy runs its SDK call under an
-    outer-call mark."""
+    """wrap() then patch(): one request is metered once, also when the
+    resource class overrides create() and calls super(). The proxy runs
+    the override under the outer-call mark, so the patched base method
+    it re-enters passes through."""
     from anthropic.resources.messages.messages import Messages
 
     class _Overriding(Messages):
@@ -1137,10 +1190,80 @@ def test_wrap_then_patch_counts_an_override_calling_super_twice(
         wrapped.messages.create(model=MODEL, max_tokens=8, messages=HI)
     finally:
         ai.unpatch_anthropic_classes()
-    expected = 2 if override else 1
     assert len(transport.requests) == 1
-    assert len(_events_of(session, "pre_call")) == expected
-    assert len(_post_calls(session)) == expected
+    assert len(_events_of(session, "pre_call")) == 1
+    assert len(_post_calls(session)) == 1
+
+
+def _overriding_resource(is_async: bool) -> Any:
+    """A Messages subclass whose create() and stream() override the SDK's
+    and call super(), as a framework's own resource class might."""
+    from anthropic.resources.messages.messages import AsyncMessages, Messages
+
+    if is_async:
+
+        class _AsyncOverriding(AsyncMessages):
+            async def create(self, **kwargs: Any) -> Any:  # type: ignore[override]
+                return await super().create(**kwargs)
+
+            def stream(self, **kwargs: Any) -> Any:  # type: ignore[override]
+                return super().stream(**kwargs)
+
+        return _AsyncOverriding
+
+    class _Overriding(Messages):
+        def create(self, **kwargs: Any) -> Any:  # type: ignore[override]
+            return super().create(**kwargs)
+
+        def stream(self, **kwargs: Any) -> Any:  # type: ignore[override]
+            return super().stream(**kwargs)
+
+    return _Overriding
+
+
+async def _override_create(wrapped: Any) -> None:
+    result = wrapped.messages.create(model=MODEL, max_tokens=8, messages=HI)
+    if inspect.isawaitable(result):
+        await result
+
+
+async def _override_stream(wrapped: Any) -> None:
+    manager = wrapped.messages.stream(model=MODEL, max_tokens=8, messages=HI)
+    if hasattr(manager, "__aenter__"):
+        async with manager as stream:
+            async for _ in stream:
+                pass
+        return
+    with manager as stream:
+        for _ in stream:
+            pass
+
+
+@pytest.mark.parametrize("call", [_override_create, _override_stream], ids=["create", "stream"])
+@pytest.mark.parametrize("name", ["Anthropic", "AsyncAnthropic"])
+def test_wrap_then_patch_meters_an_overriding_resource_once_sync_and_async(
+    monkeypatch: pytest.MonkeyPatch, name: str, call: Any
+) -> None:
+    """The override runs under the outer-call mark on every shape the
+    proxy forwards: a direct call, an awaited coroutine (async create),
+    and a stream() context manager whose request leaves inside the
+    override's super() call. One request, one pre_call, one post_call,
+    and the mark is gone afterwards."""
+    session = _make_session()
+    monkeypatch.setattr(flightdeck_sensor, "_session", session)
+    transport = _Transport()
+    client = _build(name, transport)
+    client.messages = _overriding_resource(name == "AsyncAnthropic")(client)
+    wrapped = ai.SensorAnthropic(client, session)
+    ai.patch_anthropic_classes(quiet=True)
+    try:
+        asyncio.run(call(wrapped))
+    finally:
+        ai.unpatch_anthropic_classes()
+    assert len(transport.requests) == 1
+    assert len(_events_of(session, "pre_call")) == 1
+    assert len(_post_calls(session)) == 1
+    assert not base.outer_intercept_active()
 
 
 def test_subclass_overriding_create_and_calling_super_is_metered_once(session: Session) -> None:

@@ -46,10 +46,13 @@ in ``flightdeck_sensor/__init__.py`` short-circuits and returns the
 client unchanged because the resource classes are already patched.
 ``wrap()`` followed by ``patch()`` is safe too: :class:`SensorMessages`
 calls the resource's original methods, so a wrapped client is metered
-exactly once -- except when the resource class overrides a patched
-method and calls ``super()``, where the proxy resolves the override,
-the override re-enters the patched base method, and one request is
-reported twice.
+exactly once. When the resource class overrides a patched method and
+calls ``super()``, the proxy resolves the override and runs it under
+the outer-call mark, so the patched base method it re-enters passes
+through instead of reporting the request a second time. An override
+that defers its ``super()`` call into an object it returns (a context
+manager's ``__enter__``) runs outside the mark and is still reported
+twice.
 
 Platform attribution: every ``post_call`` carries the platform the
 client talks to under ``provider_metadata.platform`` (``anthropic``,
@@ -636,7 +639,10 @@ class SensorMessages:
         of its class; a proxy built by ``wrap()`` finds the class that
         defines the method along the MRO (Foundry hands out subclasses of
         the patched classes) and binds its stored original when that
-        class is patched, else reads the method as usual."""
+        class is patched, else reads the method as usual. That last case
+        can be a subclass override that calls ``super()`` into a patched
+        base method, so it runs under the outer-call mark: this proxy
+        already meters the call and the patched base passes through."""
         if self._originals is not None and name in self._originals:
             return types.MethodType(self._originals[name], self._real)
         for klass in type(self._real).__mro__:
@@ -646,7 +652,7 @@ class SensorMessages:
             if isinstance(originals, dict) and name in originals:
                 return types.MethodType(originals[name], self._real)
             break
-        return getattr(self._real, name)
+        return _under_outer_mark(getattr(self._real, name))
 
     def _deferred(self, real_fn: Any, kwargs: dict[str, Any]) -> Any:
         """Send the request now, meter when the caller parses the response
@@ -705,6 +711,10 @@ class SensorMessages:
         body read already and is metered like a plain call.
         """
         real_fn = self._method("create")
+        # An outer interceptor (litellm) making this call already meters
+        # it: hand the call to the SDK untouched (see base.outer_intercept).
+        if base.outer_intercept_active():
+            return real_fn(**kwargs)
         raw_mode = _raw_response_mode(kwargs)
         if raw_mode == _RAW_MODE_STREAM or (raw_mode == _RAW_MODE_READ and kwargs.get("stream")):
             return self._deferred(real_fn, kwargs)
@@ -735,6 +745,10 @@ class SensorMessages:
         caller decides which surface based on their client type.
         """
         real_fn = self._method("stream")
+        # An outer interceptor (litellm) making this call already meters
+        # it: hand the call to the SDK untouched (see base.outer_intercept).
+        if base.outer_intercept_active():
+            return real_fn(**kwargs)
         if self._is_async:
             return base.call_stream_async(real_fn, kwargs, self._session, self._provider)
         return base.call_stream(real_fn, kwargs, self._session, self._provider)
@@ -745,6 +759,10 @@ class SensorMessages:
         and tool calls come out as for ``create()``. Through the
         streaming view it is deferred like ``create()``."""
         real_fn = self._method("parse")
+        # An outer interceptor (litellm) making this call already meters
+        # it: hand the call to the SDK untouched (see base.outer_intercept).
+        if base.outer_intercept_active():
+            return real_fn(**kwargs)
         if _raw_response_mode(kwargs) == _RAW_MODE_STREAM:
             return self._deferred(real_fn, kwargs)
         if self._is_async:
@@ -933,12 +951,38 @@ def _installed(cls: type, name: str, wrapper: Any) -> bool:
     return any(klass.__dict__.get(name) is wrapper for klass in cls.__mro__)
 
 
+def _under_outer_mark(fn: Any) -> Any:
+    """``fn`` run under the outer-call mark (see ``base.outer_intercept``),
+    including the await of a coroutine it returns, so a patched resource
+    method it reaches hands the call to the SDK untouched. An override
+    that returns something else (a context manager or generator) and
+    calls ``super()`` only later, when that object is used, runs outside
+    the mark, and that request is reported twice."""
+
+    @functools.wraps(fn)
+    def run(*args: Any, **kwargs: Any) -> Any:
+        with base.outer_intercept():
+            result = fn(*args, **kwargs)
+        if inspect.iscoroutine(result):
+            pending = result
+
+            async def _awaited() -> Any:
+                with base.outer_intercept():
+                    return await pending
+
+            return _awaited()
+        return result
+
+    return run
+
+
 def _intercepting_method(
     name: str, originals: dict[str, Callable[..., Any]], *, is_async: bool
 ) -> Any:
     """The replacement for a resource method: with an active session the
     call goes through a :class:`SensorMessages` built over the resource,
-    which calls the class's original (handed over in ``originals``, so a
+    unless an outer interceptor is already metering it, and that proxy
+    calls the class's original (handed over in ``originals``, so a
     subclass override that reaches here through ``super()`` is not
     re-entered); with no session, or once the class has been unpatched,
     it is the original, untouched, so a client built before ``init()``
@@ -950,7 +994,14 @@ def _intercepting_method(
     @functools.wraps(original)
     def method(self: Any, **kwargs: Any) -> Any:
         session = _current_session()
-        if session is None or not _installed(type(self), name, method):
+        # No session, an outer interceptor (litellm) already metering this
+        # call (see base.outer_intercept), or the class was unpatched: the
+        # original runs untouched.
+        if (
+            session is None
+            or base.outer_intercept_active()
+            or not _installed(type(self), name, method)
+        ):
             return original(self, **kwargs)
         client = getattr(self, "_client", None)
         proxy = SensorMessages(

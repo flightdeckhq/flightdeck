@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence } from "motion/react";
 import { X } from "lucide-react";
 import { PromptViewer } from "@/components/session/PromptViewer";
 import { MCPEventDetails, isMCPEvent } from "@/components/session/MCPEventDetails";

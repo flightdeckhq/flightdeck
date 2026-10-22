@@ -206,6 +206,12 @@ test.describe("T103 — swimlane right-edge clearance", () => {
     // flake pattern.
     await page.setViewportSize({ width: 1700, height: 900 });
     await page.goto("/");
+    // Brackets render only for runs whose start is inside the
+    // visible window, and Fleet opens on the 1m range, so on the
+    // default range a bracket exists only if a run happened to
+    // start in the last minute. Widen to 1h, as T47 / T48 / T53
+    // do, so every freshly seeded run is in view.
+    await page.getByRole("button", { name: "1h", exact: true }).click();
     // Wait for the swimlane to mount and render at least one
     // bracket. ``expect.toBeVisible`` on a global locator is
     // the cheapest precondition that proves brackets exist

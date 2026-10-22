@@ -382,6 +382,10 @@ server.
 
 ### Changed
 
+- **Dashboard runs on React 19.** React and React DOM 19.3, React
+  Testing Library 16 (with `@testing-library/dom` 10) and jest-dom 7,
+  zustand 5, lucide-react 1.53, and `motion` 13.5 in place of
+  `framer-motion` 11 (imports move to `motion/react`).
 - **Dashboard dependencies:** `react-router` 7 replaces
   `react-router-dom` 6 (fixes its open-redirect and error-deserialisation
   advisories), and the two Geist variable fonts are vendored under

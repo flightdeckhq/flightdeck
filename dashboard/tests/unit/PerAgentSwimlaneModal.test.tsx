@@ -186,6 +186,40 @@ describe("PerAgentSwimlaneModal", () => {
     expect(labels.some((l) => l.includes("Cost"))).toBe(true);
   });
 
+  it("snaps the swim viewport to its right edge once the dialog content mounts", async () => {
+    // jsdom does no layout, so give the scroll container a content
+    // width wider than its viewport, as the real Timeline does.
+    const scrollWidth = vi
+      .spyOn(HTMLElement.prototype, "scrollWidth", "get")
+      .mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === "per-agent-swimlane-modal-scroll" ? 1280 : 0;
+      });
+    const clientWidth = vi
+      .spyOn(HTMLElement.prototype, "clientWidth", "get")
+      .mockImplementation(function (this: HTMLElement) {
+        return this.dataset.testid === "per-agent-swimlane-modal-scroll" ? 900 : 0;
+      });
+    try {
+      // Open after first mount, as the Agents page does: the modal
+      // is mounted closed and its agent prop flips later.
+      const { rerender } = render(
+        <MemoryRouter>
+          <PerAgentSwimlaneModal agent={null} onClose={() => {}} />
+        </MemoryRouter>,
+      );
+      rerender(
+        <MemoryRouter>
+          <PerAgentSwimlaneModal agent={mkAgent()} onClose={() => {}} />
+        </MemoryRouter>,
+      );
+      const scroller = await screen.findByTestId("per-agent-swimlane-modal-scroll");
+      await waitFor(() => expect(scroller.scrollLeft).toBe(380));
+    } finally {
+      scrollWidth.mockRestore();
+      clientWidth.mockRestore();
+    }
+  });
+
   it("calls onClose when the dialog is dismissed", () => {
     const onClose = vi.fn();
     const { rerender } = render(

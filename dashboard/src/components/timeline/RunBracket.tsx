@@ -320,7 +320,7 @@ function RunBracketTooltipPortal({
 	// viewport (not a transformed ancestor's containing block) AND
 	// the tooltip escapes every parent stacking context — the
 	// per-agent swimlane modal, the timeline panel's
-	// ``overflow: hidden`` clip, any framer-motion transform layer
+	// ``overflow: hidden`` clip, any motion (Framer Motion) transform layer
 	// in between. Mirrors the pattern ``EventNode`` already uses.
 	return createPortal(
 		<span

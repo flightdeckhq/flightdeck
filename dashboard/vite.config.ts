@@ -22,7 +22,7 @@ export default defineConfig({
       "@radix-ui/react-dialog",
       "@radix-ui/react-tooltip",
       "zustand",
-      "framer-motion",
+      "motion/react",
       "clsx",
       "tailwind-merge",
     ],

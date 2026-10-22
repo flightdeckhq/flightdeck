@@ -11066,7 +11066,8 @@ llama-index-llms-anthropic (through 0.12.3) allows any anthropic
 `Messages.create` no longer accepts; the pairing fails inside the SDK
 with or without the sensor. The integration test and the LlamaIndex
 playgrounds skip the Anthropic LLM when the installed SDK rejects
-`temperature`; LlamaIndex's OpenAI path stays covered.
+`temperature` and the adapter is 0.12.3 or older, so a fixed adapter
+release runs them again; LlamaIndex's OpenAI path stays covered.
 
 **Rejected:** Capping `anthropic<1` in the dev extra to keep the
 LlamaIndex Anthropic test running (would drop the only lane that tests

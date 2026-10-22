@@ -193,12 +193,14 @@ def _json_default(value: Any) -> Any:
     messages and other pydantic models (dumped in JSON mode), dataclasses,
     sets and tuples, dates. Anything else is stored as its string form
     rather than dropping the whole body."""
-    dump = getattr(value, "model_dump", None)
+    dump = None if isinstance(value, type) else getattr(value, "model_dump", None)
     if callable(dump):
         try:
             return dump(mode="json", warnings=False)
-        except TypeError:
-            return dump()
+        except Exception:
+            # A field pydantic cannot serialise (a lock, a client):
+            # store the string form rather than drop the whole body.
+            return str(value)
     if dataclasses.is_dataclass(value) and not isinstance(value, type):
         return dataclasses.asdict(value)
     if isinstance(value, (set, frozenset, tuple)):

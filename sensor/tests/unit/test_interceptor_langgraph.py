@@ -335,3 +335,32 @@ def test_state_holding_langchain_messages_is_captured(patched_langgraph: Any) ->
     (outgoing,) = end_p["outgoing_message"]["body"]["messages"]
     assert outgoing["content"] == "draft ready"
     assert outgoing["type"] == "ai"
+
+
+async def test_callable_instance_with_async_call_is_awaited(
+    patched_langgraph: Any,
+) -> None:
+    """A node that is an instance with ``async def __call__`` is async only
+    through its __call__; the wrapper must await it, and the unnamed node
+    keeps the class name LangGraph gives it."""
+    _session, client, StateGraph = patched_langgraph
+    from typing import TypedDict
+
+    from langgraph.graph import END, START
+
+    class _State(TypedDict, total=False):
+        text: str
+
+    class Researcher:
+        async def __call__(self, state: dict[str, Any]) -> dict[str, Any]:
+            return {"text": "out"}
+
+    graph = StateGraph(_State)
+    graph.add_node(Researcher())
+    graph.add_edge(START, "Researcher")
+    graph.add_edge("Researcher", END)
+    result = await graph.compile().ainvoke({"text": "in"})
+
+    assert result == {"text": "out"}
+    event_types = [p["event_type"] for p in _post_event_calls(client)]
+    assert event_types == ["session_start", "session_end"]

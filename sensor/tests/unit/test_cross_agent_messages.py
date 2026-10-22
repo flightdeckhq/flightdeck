@@ -424,3 +424,30 @@ def test_crewai_and_langgraph_emit_identical_message_envelope_shape() -> None:
     # normalisation at the sensor boundary.
     assert p_crewai["incoming_message"]["body"] == "task: find x"
     assert p_lg["incoming_message"]["body"] == {"text": "node input"}
+
+
+def test_body_field_pydantic_cannot_serialise_is_stored_as_text() -> None:
+    """A pydantic model holding a value it cannot serialise (a lock) is
+    stored in its string form; the rest of the body is kept."""
+    import threading
+
+    import pydantic
+
+    class Holder(pydantic.BaseModel):
+        model_config = pydantic.ConfigDict(arbitrary_types_allowed=True)
+        lock: Any
+
+    session, client = _build_session(capture_prompts=True)
+    session.emit_subagent_session_start(
+        child_session_id="c-1",
+        child_agent_id="agent-1",
+        child_agent_name="parent/child",
+        agent_role="child",
+        incoming_message=SubagentMessage(
+            body={"note": "keep me", "holder": Holder(lock=threading.Lock())},
+            captured_at="2026-10-22T00:00:00Z",
+        ),
+    )
+    body = client.post_event.call_args.args[0]["incoming_message"]["body"]
+    assert body["note"] == "keep me"
+    assert isinstance(body["holder"], str)

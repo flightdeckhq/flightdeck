@@ -791,9 +791,15 @@ different levels:
   layout; the floor is `anthropic>=0.86`, the lowest release carrying
   it. An installed SDK below the
   floor is reported once, at import, with a warning rather than
-  silently left unmetered. The raw view returns a response whose body is already
-  read and whose `parse()` is synchronous on both client kinds, and is
-  metered like a plain call. The streaming view hands the caller an
+  silently left unmetered. The raw view returns a response whose body is
+  already read, and is metered like a plain call. Its `parse()` is
+  synchronous on both client kinds up to the 0.x SDKs; from 2.x the async
+  client's raw view returns an `AsyncAPIResponse` whose `parse()` is a
+  coroutine, so the sensor awaits it (no network, and the SDK caches the
+  result for the caller's own `parse()`), meters the parsed message and
+  hands the caller the response. The view marks its requests with
+  `X-Stainless-Raw-Response: true` up to 0.x and `raw` from 2.x; the
+  sensor reads both. The streaming view hands the caller an
   unread response, so the sensor returns a proxy that meters at the
   caller's `parse()` (`await parse()` on the async client) and never
   reads the body itself: a response closed after being read some other
@@ -4147,7 +4153,9 @@ the workers roll the tokens up on an open session.
 Leaving the `with` block on an exception emits `llm_error` only when the
 response had not been read in full and either the error classifier knows
 the exception's class or the guard recognises its module (`httpx`,
-`httpcore`, `anyio`, `h11`, `anthropic`, `openai`) or a `ConnectionError`:
+`httpcore`, `httpx2`, `httpcore2` (the transport of the anthropic 2.x and
+openai 3.x SDKs), `anyio`, `h11`, `h2`, `anthropic`, `openai`) or a
+`ConnectionError`:
 an SDK error, a raw transport error such as `httpx.ReadTimeout` or
 `httpx.RemoteProtocolError` raised by a helper method that read the stream
 itself, a connection reset, or a look-alike such as the builtin
@@ -4419,15 +4427,20 @@ billed but that still failed for the caller: it is reported as both a
 `LengthFinishReasonError` when the completion arrived but the output hit
 the caller's `max_tokens` before the structured output was complete; the
 sensor emits the `post_call` from the completion the exception carries
-(its usage, model and tool calls; the request id is not stamped on a
-completion the SDK failed to parse) and then the `llm_error`
+(its usage, model and tool calls, with the request id and rate-limit
+headers of the HTTP response it came from) and then the `llm_error`
 (`http_status` 200, terminal, chained to that `post_call` through
 `originating_event_id`), and re-raises. The billed tokens therefore reach
 the session totals and the analytics metrics like any completed call.
-`ContentFilterFinishReasonError` (`content_filter`) and a completion that
-fails the caller's schema (a pydantic `ValidationError`: `other`,
-`provider_error_code` `schema`) carry no completion, so the `post_call`
-is built from the HTTP body (usage, model, request id from the headers).
+`ContentFilterFinishReasonError` (`content_filter`) carries the
+completion from openai 3.x and none before; a completion that fails the
+caller's schema (a pydantic `ValidationError`: `other`,
+`provider_error_code` `schema`) carries none. Without a carried
+completion the `post_call` is built from the HTTP body (usage, model,
+request id from the headers). One failure is one `llm_error`: when the
+`post_call`'s own stop reason already filed it (a carried
+content-filtered completion ends with `finish_reason` `content_filter`),
+the exception is not reported again.
 To have that body, `chat.completions.parse()` and `responses.parse()`
 fetch the response through the SDK's own raw-response closure and parse
 it eagerly (the SDK caches a successful parse); the caller still gets
@@ -5745,7 +5758,16 @@ and `api/Makefile` run `swag init -g cmd/main.go -o docs` before
   calls. Mock control plane and provider clients. Covers session
   lifecycle, policy enforcement, transport unavailability, provider
   token estimation, content extraction, framework attribution, runtime
-  context, agent_id derivation. mypy `--strict` clean.
+  context, agent_id derivation. mypy `--strict` clean. CI runs the
+  suite twice: once with the framework packages installed (they pin the
+  provider SDKs below their current majors) and once with the newest
+  anthropic and openai releases and no frameworks, where the framework
+  tests skip. Those SDKs are built on `httpx2`, so `tests/conftest.py`
+  aliases `httpx` to `httpx2` when the installed SDK needs it, and the
+  pytest config disables respx's plugin, which would import `httpx`
+  first. An autouse fixture refuses every non-loopback connection, so a
+  provider mock that stops matching fails the test instead of reaching
+  the real API.
 - **Go components (ingestion / workers / api):** Go testing package.
   Mock NATS and Postgres at the boundary. Covers handler validation,
   session state machine transitions, policy evaluation, NATS

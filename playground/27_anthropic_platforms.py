@@ -15,6 +15,7 @@ only when its credentials are present and prints a SKIP line otherwise, so
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import sys
 import time
@@ -115,7 +116,11 @@ def main() -> None:
     async def _async_raw() -> int:
         async with anthropic.AsyncAnthropic() as client:
             raw = await client.messages.with_raw_response.create(model=MODEL, max_tokens=5, messages=HI)
-            return raw.parse().usage.output_tokens
+            # A synchronous parse() up to the 0.x SDKs, a coroutine from 2.x.
+            message = raw.parse()
+            if inspect.isawaitable(message):
+                message = await message
+            return message.usage.output_tokens
     t0 = time.monotonic()
     out = asyncio.run(_async_raw())
     print_result("AsyncAnthropic().messages.with_raw_response.create", out > 0,

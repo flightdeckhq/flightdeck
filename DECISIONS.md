@@ -10976,3 +10976,56 @@ class instead of host, or honouring a client-side label such as an
 `_otel_platform` attribute (no SDK class defines one, and a label the
 class carries mislabels a first-party client pointed at a gateway as
 `anthropic`).
+
+---
+
+## D193 -- The sensor's unit suite runs in a second CI lane against the newest SDK majors, and the tests alias httpx to httpx2 for them
+
+**Date:** 2026-10-22
+
+**Refines:** D187 (CI job layout) and D192 (the Anthropic raw view).
+
+**Decision:** CI runs the sensor's unit suite in two lanes. The existing
+job installs the `dev` extra, whose framework packages pin the provider
+SDKs below their current majors. A second job,
+`Sensor (Python, SDK majors)`, installs the new `test` extra (test
+tooling only) with `anthropic>=2`, `openai>=3`, `litellm>=1.83.0` and
+`mcp>=1.20,<2`, so the resolver picks the newest SDK majors and a
+litellm compatible with them; framework tests skip there, and mypy runs
+`--strict` with `import-not-found` disabled for the absent frameworks.
+anthropic 2.x and openai 3.x are built on `httpx2`: they reject an
+`httpx` client and respx cannot see their traffic. `tests/conftest.py`
+calls `httpx2.alias_httpx()` when an installed SDK requires `httpx2`
+(nothing changes on the older SDKs), and the pytest config passes
+`-p no:respx` because respx's plugin imports `httpx` before any conftest
+can alias it; the tests use respx through its decorator, which needs no
+plugin. An autouse fixture refuses every non-loopback connection.
+
+The lane surfaced four sensor gaps on the new SDKs, fixed with it: the
+Anthropic raw view's header value is `raw` from 2.x (`true` before), and
+an async client's raw response has a coroutine `parse()`, which the
+sensor now awaits on the already-read body; the stream guard counts
+`httpx2`, `httpcore2` and `h2` exceptions as transport failures; on
+openai 3.x `ContentFilterFinishReasonError` carries the completion, so
+the parse path meters that completion with the HTTP response's headers
+(never a body field named `headers`) and skips reporting the exception
+when the `post_call`'s own stop reason already filed the same failure.
+
+**Reasoning:** The extras have no upper bound on either SDK, so a fresh
+`pip install flightdeck-sensor[anthropic,openai]` gets the newest majors
+while CI only tested what the framework pins allowed. Three PRs on
+2026-10-21 failed CI on SDK drift the local venv did not have, and the
+majors themselves would have shipped mis-metering unnoticed. Testing the
+SDK majors without the frameworks is the only combination that resolves
+today; it is also what a user who installs only the SDK extras gets.
+The no-network fixture exists because, before the alias, respx missed
+the new SDKs' requests and 28 tests reached the real OpenAI API.
+
+**Rejected:** Capping `anthropic<2` and `openai<3` in the extras (hides
+the breakage from CI and blocks users from current SDKs). Running the
+majors lane with the frameworks installed (no resolution exists until
+the frameworks lift their pins). Aliasing `httpx` unconditionally (would
+put the 0.x SDKs on a transport they were not built for). A pytest
+plugin module loaded with `-p` before the entry points (the `pytest`
+console script does not put the sensor directory on `sys.path`, so the
+module would not import for anyone running plain `pytest`).

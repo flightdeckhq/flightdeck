@@ -99,6 +99,42 @@ jobs:
           path: sensor/htmlcov/
           retention-days: 14
 
+  sensor-sdk-majors:
+    name: Sensor (Python, SDK majors)
+    runs-on: ubuntu-latest
+    # The job above installs the framework packages, whose pins hold the
+    # provider SDKs below their current majors. This lane installs the
+    # sensor with the newest anthropic and openai releases (2.x / 3.x and
+    # later, built on httpx2) and no frameworks, so a fresh
+    # `pip install flightdeck-sensor[anthropic,openai]` is tested too.
+    # Framework tests skip here; tests/conftest.py aliases httpx to httpx2
+    # so the HTTP mocks see the new SDKs.
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    defaults:
+      run:
+        working-directory: sensor
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install the sensor with the newest SDK majors
+        run: pip install -e ".[test]" "anthropic>=2" "openai>=3" "litellm>=1.83.0" "mcp>=1.20,<2"
+
+      - name: Installed SDK versions
+        run: pip list | grep -iE "^(anthropic|openai|litellm|httpx2?|mcp) "
+
+      # The frameworks are not installed in this lane, so their optional
+      # imports cannot resolve; everything else is checked strictly.
+      - name: mypy --strict
+        run: mypy flightdeck_sensor/ --strict --disable-error-code=import-not-found
+
+      - name: Unit tests
+        run: pytest tests/unit -q -n auto
+
   go:
     name: Go (ingestion, workers, api)
     runs-on: ubuntu-latest

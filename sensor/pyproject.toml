@@ -60,6 +60,18 @@ litellm = ["litellm>=1.83.0"]
 # the import guard fails and MCP calls go unobserved. Lift the cap
 # together with the 2.x port (tracked on the README Roadmap).
 mcp = ["mcp>=1.20,<2"]
+# Test tooling without the frameworks. The CI lane that runs the unit
+# suite against the newest SDK majors installs this, because the
+# framework packages in ``dev`` pin the SDKs below their current majors.
+test = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-xdist>=3.5,<4",
+    "mypy>=1.8",
+    "ruff>=0.3",
+    "respx>=0.20",
+    "tiktoken>=0.5",
+]
 dev = [
     "pytest>=7.0",
     "pytest-asyncio>=0.21",
@@ -172,3 +184,7 @@ select = ["E", "F", "I", "N", "W", "UP", "B", "SIM", "TCH"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+# respx's pytest plugin imports httpx as pytest starts, before
+# tests/conftest.py can alias httpx to httpx2 for SDKs built on httpx2;
+# the tests use respx through its decorator, which needs no plugin.
+addopts = "-p no:respx"

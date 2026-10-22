@@ -315,6 +315,19 @@ def test_no_request_id_when_parsed_object_was_not_stamped() -> None:
 # ----- provider: Responses output items -> tool invocations -------------------
 
 
+def _mcp_call_error() -> Any:
+    """An MCP call's ``error``: a string on openai 2.x, a typed object
+    (``mcp_tool_execution_error``) from 3.x. The sensor never reads it."""
+    from openai.types.responses.response_output_item import McpCall
+
+    if McpCall.model_fields["error"].annotation in (str, str | None):
+        return "tool failed"
+    return {"type": "mcp_tool_execution_error", "content": "tool failed"}
+
+
+_MCP_CALL_ERROR = _mcp_call_error()
+
+
 @pytest.mark.parametrize(
     ("item", "name", "tool_input", "tool_id"),
     [
@@ -481,7 +494,7 @@ def test_no_request_id_when_parsed_object_was_not_stamped() -> None:
             "ts_1",
         ),
         (
-            {**MCP_CALL_ITEM, "id": "mcp_2", "error": "tool failed", "output": None},
+            {**MCP_CALL_ITEM, "id": "mcp_2", "error": _MCP_CALL_ERROR, "output": None},
             "list_issues",
             {"repo": "flightdeck"},
             "mcp_2",
@@ -798,9 +811,11 @@ def test_chat_parse_length_failure_emits_post_call_then_llm_error(
         completions.parse(model="gpt-4o-mini", messages=MESSAGES, response_format=City)
 
     pc, err = _billed_then_failed(session)
-    # The provider answered and billed: the post_call carries that usage.
+    # The provider answered and billed: the post_call carries that usage,
+    # and the request id of the HTTP response the completion came from.
     assert (pc["tokens_input"], pc["tokens_output"], pc["tokens_cache_read"]) == (40, 7, 8)
     assert pc["model"] == "gpt-4o-mini"
+    assert pc["provider_metadata"]["request_id"] == REQUEST_ID
     assert session.tokens_used == 47
     # ... and the call still failed for the caller.
     assert err["error"]["error_type"] == "invalid_request"

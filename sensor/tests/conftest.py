@@ -16,12 +16,59 @@ import pytest
 # the network (nor stall on DNS). Set before any test module imports it.
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
+
+def _sdk_uses_httpx2() -> bool:
+    """Whether an installed provider SDK is built on ``httpx2`` (anthropic
+    2.x, openai 3.x) rather than ``httpx``."""
+    from importlib import metadata
+
+    for dist in ("anthropic", "openai"):
+        try:
+            requires = metadata.requires(dist) or []
+        except metadata.PackageNotFoundError:
+            continue
+        if any(req.split(";")[0].strip().startswith("httpx2") for req in requires):
+            return True
+    return False
+
+
+# The tests mock provider traffic with respx and ``httpx.MockTransport``.
+# SDKs built on ``httpx2`` reject an ``httpx`` client and are invisible
+# to respx, so make ``import httpx`` resolve to ``httpx2`` before anything
+# imports it; on SDKs still built on ``httpx`` nothing changes.
+if _sdk_uses_httpx2():
+    import httpx2
+
+    httpx2.alias_httpx()
+
 from flightdeck_sensor.core.types import SensorConfig  # noqa: E402
-from flightdeck_sensor.providers.anthropic import AnthropicProvider
-from flightdeck_sensor.transport.client import ControlPlaneClient
+from flightdeck_sensor.providers.anthropic import AnthropicProvider  # noqa: E402
+from flightdeck_sensor.transport.client import ControlPlaneClient  # noqa: E402
 
 if TYPE_CHECKING:
     from collections.abc import Generator
+
+
+# Hosts a unit test may connect to: the in-process control-plane stubs.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Refuse every connection that leaves the machine. A provider mock
+    that stops matching (an SDK moving to a new HTTP library, a changed
+    route) must fail the test, not send a request to the real API."""
+    import socket
+
+    real_connect = socket.socket.connect
+
+    def _connect(self: socket.socket, address: Any) -> Any:
+        host = address[0] if isinstance(address, tuple) else address
+        if isinstance(host, str) and host not in _LOOPBACK_HOSTS:
+            raise ConnectionRefusedError(f"unit tests may not connect to {address!r}")
+        return real_connect(self, address)
+
+    monkeypatch.setattr(socket.socket, "connect", _connect)
 
 
 @pytest.fixture(autouse=True)

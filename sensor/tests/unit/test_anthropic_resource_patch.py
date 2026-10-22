@@ -719,6 +719,13 @@ async def test_async_streaming_response_closed_unparsed_reports_the_estimate(
     assert posts[0]["tokens_output"] == 0
 
 
+async def _resolved(value: Any) -> Any:
+    """``value``, awaited when it is awaitable: a raw response's
+    ``parse()`` is synchronous on the 0.x SDKs and a coroutine on an async
+    client from 2.x."""
+    return await value if inspect.isawaitable(value) else value
+
+
 async def test_async_parse_is_awaited_not_called(session: Session) -> None:
     """The async streaming-response ``parse()`` is a coroutine; the sensor
     must await it through the caller, never call it and discard it."""
@@ -730,7 +737,9 @@ async def test_async_parse_is_awaited_not_called(session: Session) -> None:
         ) as response:
             message = await response.parse()
         raw = await client.messages.with_raw_response.create(model=MODEL, max_tokens=8, messages=HI)
-        assert raw.parse().usage.output_tokens == OUTPUT_TOKENS
+        # 0.x hands an async client a raw response with a synchronous
+        # parse(); from 2.x it is a coroutine.
+        assert (await _resolved(raw.parse())).usage.output_tokens == OUTPUT_TOKENS
     assert message.usage.output_tokens == OUTPUT_TOKENS
     assert not [w for w in caught if "never awaited" in str(w.message)]
     posts = _post_calls(session)
@@ -778,7 +787,7 @@ async def test_async_raw_response_with_stream_true_is_metered_at_parse(session: 
         model=MODEL, max_tokens=8, messages=HI, stream=True
     )
     assert not _post_calls(session)
-    stream = raw.parse()
+    stream = await _resolved(raw.parse())
     assert isinstance(stream, base.GuardedAsyncStream)
     async for _ in stream:
         pass

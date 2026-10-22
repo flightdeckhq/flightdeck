@@ -103,6 +103,18 @@ server.
 
 ### Fixed
 
+- **Sensor: current anthropic 2.x and openai 3.x releases were
+  mis-metered in places.** The sensor's extras never capped either SDK,
+  so a fresh install already gets them. On anthropic 2.x an async
+  client's `with_raw_response` call was metered with the pre-call
+  estimate instead of the provider's usage, and `create(stream=True)`
+  through a raw view was not handed to the stream guard; both are
+  metered as on 0.x. On openai 3.x a content-filtered `parse()` filed two
+  `llm_error` events for one failure and its `post_call` lost the request
+  id; it files one, with the request id. A connection that drops
+  mid-stream on either SDK (whose transport is `httpx2`) is reported as a
+  failed stream. A billed `parse()` failure now carries the response's
+  request id on every SDK.
 - **Sensor: calls through the Anthropic cloud clients landed no events.**
   `AnthropicBedrock`, `AnthropicVertex`, `AnthropicBedrockMantle`,
   `AnthropicFoundry`, `AnthropicAWS` and their async forms were never
@@ -312,6 +324,11 @@ server.
 
 ### Changed
 
+- **CI: the sensor's unit suite also runs against the newest SDK
+  majors.** A second lane installs the sensor with the newest anthropic
+  and openai releases and no framework packages (which pin the SDKs
+  lower); the sensor gains a `test` extra for it. Unit tests now refuse
+  any connection that leaves the machine.
 - **Sensor: the `anthropic` floor rises from 0.20 to 0.86**, the lowest release with the resource layout the patch imports; an older SDK is reported with a warning at import and its calls are not metered.
 - **Sensor: three more OpenAI exceptions are classified, and a billed
   call that fails for the caller is reported as both events.**

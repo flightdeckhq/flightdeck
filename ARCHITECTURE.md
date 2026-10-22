@@ -4743,14 +4743,12 @@ default fall-through path populates the block with
 decisions populate the block; deny decisions populate it AND the
 enforcement path raises `MCPPolicyBlocked`.
 
-`mcp_server_name_changed` carries `policy_entries_orphaned`, a
-worker-computed block from a query against `mcp_policy_entries`
-for rows whose fingerprint matched the old server name. Shape:
-`{count, sample_entry_ids[<=5], affected_policies[]}`. Operator
-reading the row sees how many policy entries silently stopped
-binding when the server's `serverInfo.name` drifted. Dashboard
-renders inline as "name drift: \<old\> → \<new\> (N entries
-orphaned)".
+`mcp_server_name_changed` records the rename itself. A rename leaves
+every policy entry for the server's URL in force, because entries match
+on the URL, so the worker adds nothing to the event. A stored row that
+carries a `policy_entries_orphaned` block (`{count,
+sample_entry_ids[<=5], affected_policies[]}`) is rendered inline as
+"name drift: \<old\> → \<new\> (N entries orphaned)".
 
 **Content overflow** (B-6). `MCP_RESOURCE_READ` payloads can carry
 large captured bodies. The wire envelope routes content one of two

@@ -669,17 +669,12 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 			}
 		}
 	}
-	// Worker-side enrichment for session_end
-	// (policy_actions_summary + last_event_id) and
-	// mcp_server_name_changed (policy_entries_orphaned). Computed
-	// here because the data lives in tables the sensor can't query
-	// efficiently. Both are best-effort; failures log + drop the
-	// enrichment rather than block event ingestion.
-	switch e.EventType {
-	case "session_end":
+	// Worker-side enrichment for session_end (policy_actions_summary +
+	// last_event_id), computed here because the data lives in tables
+	// the sensor can't query efficiently. Best-effort; failures log +
+	// drop the enrichment rather than block event ingestion.
+	if e.EventType == "session_end" {
 		extra = p.enrichSessionEnd(ctx, e, extra)
-	case "mcp_server_name_changed":
-		extra = p.enrichServerNameChanged(ctx, e, extra)
 	}
 	// Pass the sensor-minted event id (from
 	// payload.id) into InsertEvent. Empty string → DB-side
@@ -804,81 +799,3 @@ func (p *Processor) enrichSessionEnd(
 	return out
 }
 
-// enrichServerNameChanged adds policy_entries_orphaned to the
-// mcp_server_name_changed event's payload. Counts mcp_policy_entries
-// rows whose fingerprint matched the OLD server name; an operator
-// reading the row sees how many policy entries silently stopped
-// matching when the server's serverInfo.name drifted.
-func (p *Processor) enrichServerNameChanged(
-	ctx context.Context, e consumer.EventPayload, extra []byte,
-) []byte {
-	merged := map[string]interface{}{}
-	if len(extra) > 0 {
-		if err := json.Unmarshal(extra, &merged); err != nil {
-			slog.Warn("enrichServerNameChanged: parse extra error",
-				"err", err, "session_id", e.SessionID)
-			return extra
-		}
-	}
-	if e.FingerprintOld == "" {
-		// Sensor didn't capture the old fingerprint — nothing to
-		// enrich. Pass through.
-		return extra
-	}
-	// Query mcp_policy_entries for entries that matched the OLD
-	// fingerprint. Returns the count + up to 5 sample entry ids
-	// for the dashboard's drawer view.
-	rows, err := p.pool.Query(ctx, `
-		SELECT id::text, policy_id::text
-		FROM mcp_policy_entries
-		WHERE fingerprint = $1
-		ORDER BY id
-		LIMIT 5
-	`, e.FingerprintOld)
-	if err != nil {
-		slog.Warn("enrichServerNameChanged: query error",
-			"err", err, "fingerprint_old", e.FingerprintOld)
-		return extra
-	}
-	defer rows.Close()
-	sampleIDs := []string{}
-	policyIDs := map[string]struct{}{}
-	for rows.Next() {
-		var id, pid string
-		if scanErr := rows.Scan(&id, &pid); scanErr == nil {
-			sampleIDs = append(sampleIDs, id)
-			policyIDs[pid] = struct{}{}
-		}
-	}
-	// Total count: separate fast COUNT(*) so the sample slice
-	// stays bounded but the operator-actionable number is exact.
-	var total int
-	err = p.pool.QueryRow(ctx, `
-		SELECT count(*) FROM mcp_policy_entries WHERE fingerprint = $1
-	`, e.FingerprintOld).Scan(&total)
-	if err != nil {
-		slog.Warn("enrichServerNameChanged: count error",
-			"err", err, "fingerprint_old", e.FingerprintOld)
-		return extra
-	}
-	if total == 0 {
-		// No orphans — operator-uninteresting; skip the field.
-		return extra
-	}
-	policyIDList := make([]string, 0, len(policyIDs))
-	for k := range policyIDs {
-		policyIDList = append(policyIDList, k)
-	}
-	merged["policy_entries_orphaned"] = map[string]interface{}{
-		"count":             total,
-		"sample_entry_ids":  sampleIDs,
-		"affected_policies": policyIDList,
-	}
-	out, err := json.Marshal(merged)
-	if err != nil {
-		slog.Warn("enrichServerNameChanged: re-marshal error",
-			"err", err, "session_id", e.SessionID)
-		return extra
-	}
-	return out
-}

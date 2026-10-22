@@ -290,6 +290,11 @@ def mcp_server_params(module: str) -> Any:
 # ---------------------------------------------------------------------
 
 
+# The newest llama-index-llms-anthropic release known to send
+# ``temperature``, which anthropic 1.x's Messages.create rejects.
+LLAMA_INDEX_ANTHROPIC_LAST_INCOMPATIBLE = (0, 12, 3)
+
+
 def llama_index_anthropic_incompatibility() -> str | None:
     """Why LlamaIndex's Anthropic LLM cannot run against the installed
     ``anthropic`` SDK, or None. llama-index-llms-anthropic (through
@@ -297,12 +302,21 @@ def llama_index_anthropic_incompatibility() -> str | None:
     ``Messages.create`` no longer accepts; the call fails inside the SDK
     with or without the sensor."""
     import inspect
+    from importlib import metadata
 
     try:
         from anthropic.resources.messages.messages import Messages
     except ImportError:
         return None
     if "temperature" in inspect.signature(Messages.create).parameters:
+        return None
+    # Scoped to the releases known to send it, so a fixed release runs.
+    try:
+        adapter = metadata.version("llama-index-llms-anthropic")
+    except metadata.PackageNotFoundError:
+        return None
+    parts = tuple(int(p) for p in adapter.split(".")[:3] if p.isdigit())
+    if parts > LLAMA_INDEX_ANTHROPIC_LAST_INCOMPATIBLE:
         return None
     import anthropic
 

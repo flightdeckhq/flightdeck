@@ -366,14 +366,12 @@ def test_crewai_and_langgraph_emit_identical_message_envelope_shape() -> None:
     This test wraps both interceptors in turn against the same
     Session and asserts the schema parity directly on the wire.
     """
-    from flightdeck_sensor.interceptor.crewai import (
-        _CREWAI_AVAILABLE,
-    )
-    from flightdeck_sensor.interceptor.langgraph import (
-        _LANGGRAPH_AVAILABLE,
-    )
+    from flightdeck_sensor.interceptor import crewai as crewai_interceptor
+    from flightdeck_sensor.interceptor import langgraph as langgraph_interceptor
 
-    if not _CREWAI_AVAILABLE or not _LANGGRAPH_AVAILABLE:
+    # The availability flags are lazy (None until checked); ask the
+    # interceptors, which import the framework on first call.
+    if not crewai_interceptor._ensure_imported() or not langgraph_interceptor._ensure_imported():
         pytest.skip("crewai or langgraph not installed")
 
     session, client = _build_session(capture_prompts=True)

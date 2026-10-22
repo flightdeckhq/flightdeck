@@ -17,6 +17,12 @@ server.
 
 ### Added
 
+- **Workers: the metrics counters are served over HTTP.** Each worker
+  serves `dropped_events_total`, `sessions_closed_total` and
+  `sessions_revived_total` at `GET /metrics` on port 9102
+  (`FLIGHTDECK_METRICS_PORT`; `0` turns it off) in the Prometheus text
+  format. The Helm chart exposes the port and uses it as the workers'
+  readiness probe (`workers.metricsPort`).
 - **Sensor: mcp 2.x is supported alongside 1.x.** The `mcp` extra
   allows `mcp>=1.20,<3`. On mcp 2.x the sensor captures the server
   fingerprint from `ClientSession.adopt`, which every handshake reaches
@@ -372,6 +378,11 @@ server.
 
 ### Changed
 
+- **Go toolchain:** the services build with Go 1.27.3 on an Alpine 3.24
+  runtime; pgx 5.11.0, golang-migrate 4.20.1 and golang.org/x/text
+  0.43.0 (the query API reached two x/text advisories, GO-2026-6629 and
+  GO-2026-5970, through pgx). CI lints with golangci-lint v2.14.0 and
+  runs `govulncheck` on every Go module.
 - **Helm: production installs require `nats.auth.token`.** The event
   bus now requires a client token, as the production compose file
   already does; a production render without it fails with an

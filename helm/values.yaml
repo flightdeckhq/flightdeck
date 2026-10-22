@@ -67,6 +67,10 @@ workers:
   poolSize: 10
   shutdownTimeoutSecs: 30
   migrationsDir: /migrations
+  # Port of the metrics listener (the counter registry at /metrics, in
+  # the Prometheus text format). The readiness probe uses it too. 0
+  # turns the listener off and readiness falls back to process-alive.
+  metricsPort: 9102
   resources:
     requests:
       cpu: 100m

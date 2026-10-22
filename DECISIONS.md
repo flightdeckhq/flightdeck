@@ -11213,3 +11213,43 @@ existing installs and is on the README Roadmap.
 **Rejected:** Defaulting to one NATS replica (hides the defect and
 drops the redundancy the default promised). A token in the ConfigMap
 (the ConfigMap is not secret).
+
+---
+
+## D198 -- The workers serve their counters on a listener of their own; the Go toolchain moves to 1.27
+
+**Date:** 2026-10-22
+
+**Decision:** The workers open a dedicated HTTP listener on
+`FLIGHTDECK_METRICS_PORT` (default 9102, `0` turns it off) that serves
+the existing counter registry at `GET /metrics` in the Prometheus text
+format, now with a `# TYPE <family> counter` line per family. The
+listener starts after migrations and the Postgres and NATS
+connections; a bind failure is logged and processing continues. Helm
+declares the port and uses it for the workers' readiness probe; the
+liveness probe stays process-alive. Compose does not publish the port
+and nginx does not route to it.
+
+The Go services move to Go 1.27.3 with golangci-lint v2.14.0, pgx
+5.11.0, golang-migrate 4.20.1, golang.org/x/text 0.43.0 and an Alpine
+3.24 runtime, and CI runs `govulncheck` per module.
+
+**Reasoning:** The handler existed but nothing mounted it, so the drop,
+close and revive counters could not be read from outside the process.
+Serving it on the workers' own port keeps it off the public edge (it
+carries no auth) and keeps the workers free of the Prometheus client
+library. 9102 is in the exporter range above node_exporter's 9100 and
+clear of the ingestion (8080) and query (8081) ports. Liveness does not
+use the listener because it opens only after the startup migrations; a
+long migration would otherwise fail liveness and restart the pod
+mid-migration. golangci-lint v2.13 is the first line that type-checks
+Go 1.27; v2.14.0 is used rather than v2.15.0, which was six days old,
+so the lint binary has had time in the wild. govulncheck fails only on
+advisories the code can reach, so an unfixed advisory in an unused part
+of a dependency (golang.org/x/crypto GO-2026-5932 today) does not block
+CI.
+
+**Rejected:** Mounting `/metrics` on the ingestion or query API (wrong
+process: the counters live in the workers). The Prometheus client
+library (a dependency for three counter families). Using the listener
+for liveness (restarts a pod during a long migration).

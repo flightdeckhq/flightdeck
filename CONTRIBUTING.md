@@ -2,11 +2,12 @@
 
 ## Prerequisites
 
-- **Go** 1.26+
+- **Go** 1.27+
 - **Python** 3.10+
 - **Node.js** 20+
 - **Docker** and Docker Compose
-- **golangci-lint** (for Go linting)
+- **golangci-lint** v2.14+ (for Go linting; earlier releases cannot type-check Go 1.27)
+- **govulncheck** (for the Go vulnerability scan CI runs: `go install golang.org/x/vuln/cmd/govulncheck@v1.9.0`)
 
 ## Getting Started
 

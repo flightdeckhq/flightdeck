@@ -43,17 +43,32 @@ spec:
             - name: migrations
               mountPath: {{ .Values.workers.migrationsDir }}
               readOnly: true
+          {{- if gt (int .Values.workers.metricsPort) 0 }}
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.workers.metricsPort }}
+              protocol: TCP
+          {{- end }}
           readinessProbe:
-            # Workers exposes no HTTP endpoint; probe confirms the process is
-            # alive as PID 1. A crash triggers container restart anyway, so
-            # this is a minimal "scheduled and running" signal.
+            {{- if gt (int .Values.workers.metricsPort) 0 }}
+            # The metrics listener answers once the workers have migrated
+            # the database and connected to Postgres and NATS.
+            httpGet:
+              path: /metrics
+              port: metrics
+            {{- else }}
+            # No listener: confirm the process is alive as PID 1.
             exec:
               command: ["/bin/sh", "-c", "kill -0 1"]
+            {{- end }}
             initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 3
             failureThreshold: 3
           livenessProbe:
+            # Process-alive only: the metrics listener opens after the
+            # startup migrations, so probing it here would restart a pod
+            # whose migration is still running.
             exec:
               command: ["/bin/sh", "-c", "kill -0 1"]
             initialDelaySeconds: 30

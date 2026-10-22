@@ -147,7 +147,7 @@ jobs:
 
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
         with:
-          go-version: "1.26.2"
+          go-version: "1.27.3"
 
       - name: Install golangci-lint v2
         # Pinned to an immutable commit SHA (not a tag like @v2.11.4)
@@ -155,8 +155,9 @@ jobs:
         # the upstream repo without changing the version string. SHA
         # is the only anchor that survives an upstream tag rewrite.
         # Bump deliberately; keep the tag name in the comment for
-        # human readability. Current pin: v2.11.4 (8f3b0c7e).
-        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@8f3b0c7ed018e57905fbd873c697e0b1ede605a5
+        # human readability. Current pin: v2.14.0 (793d0531), the first
+        # release line that type-checks Go 1.27.
+        run: go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@793d05316077345337ae9a11ae05ec8f23edfe1b
 
       - name: Lint ingestion
         working-directory: ingestion
@@ -169,6 +170,22 @@ jobs:
       - name: Lint api
         working-directory: api
         run: golangci-lint run ./... --timeout=5m
+
+      - name: Install govulncheck
+        # A module version is immutable once the Go checksum database
+        # has recorded it, so a version pin is as fixed as a commit SHA.
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.9.0
+
+      # govulncheck fails only on a vulnerability the code can reach;
+      # advisories in a required module that no call path touches are
+      # reported without failing the job.
+      - name: Vulnerability scan (ingestion, workers, api)
+        run: |
+          for m in ingestion workers api; do
+            echo "::group::govulncheck $m"
+            (cd "$m" && govulncheck ./...)
+            echo "::endgroup::"
+          done
 
       - name: Test ingestion
         working-directory: ingestion

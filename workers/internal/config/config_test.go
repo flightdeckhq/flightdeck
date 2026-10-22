@@ -110,3 +110,39 @@ func TestLoad_ReconcilerIntervalSecs_NegativePanics(t *testing.T) {
 	}()
 	Load()
 }
+
+func TestLoad_MetricsPort_DefaultIs9102(t *testing.T) {
+	t.Setenv("FLIGHTDECK_POSTGRES_URL", "postgres://test")
+	t.Setenv("FLIGHTDECK_METRICS_PORT", "")
+	cfg := Load()
+	if cfg.MetricsPort != defaultMetricsPort || defaultMetricsPort != 9102 {
+		t.Errorf("default: want 9102, got %d", cfg.MetricsPort)
+	}
+}
+
+func TestLoad_MetricsPort_ZeroTurnsListenerOff(t *testing.T) {
+	t.Setenv("FLIGHTDECK_POSTGRES_URL", "postgres://test")
+	t.Setenv("FLIGHTDECK_METRICS_PORT", "0")
+	if cfg := Load(); cfg.MetricsPort != 0 {
+		t.Errorf("explicit 0: want 0, got %d", cfg.MetricsPort)
+	}
+}
+
+func TestLoad_MetricsPort_OutOfRangePanics(t *testing.T) {
+	for _, raw := range []string{"-1", "65536"} {
+		t.Run(raw, func(t *testing.T) {
+			t.Setenv("FLIGHTDECK_POSTGRES_URL", "postgres://test")
+			t.Setenv("FLIGHTDECK_METRICS_PORT", raw)
+			defer func() {
+				r := recover()
+				if r == nil {
+					t.Fatalf("expected panic for FLIGHTDECK_METRICS_PORT=%s; Load returned cleanly", raw)
+				}
+				if msg, ok := r.(string); !ok || !strings.Contains(msg, "FLIGHTDECK_METRICS_PORT must be between 0") {
+					t.Errorf("panic message should explain the range; got %v", r)
+				}
+			}()
+			Load()
+		})
+	}
+}

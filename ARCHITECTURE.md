@@ -324,7 +324,7 @@ flightdeck/
 │   │   ├── config/config.go
 │   │   ├── consumer/nats.go    # JetStream consumer goroutine pool, ack handling
 │   │   ├── migrate/migrate.go  # golang-migrate runner: applies docker/postgres/migrations at boot
-│   │   ├── metrics/metrics.go  # Atomic, reason-labelled dropped / closed / revived counters + Snapshot + text Handler (not mounted on any listener)
+│   │   ├── metrics/metrics.go  # Atomic, reason-labelled dropped / closed / revived counters + Snapshot + Prometheus-text Handler + NewServer (the /metrics listener)
 │   │   ├── processor/
 │   │   │   ├── event.go        # Route incoming event to session, writer, policy evaluator
 │   │   │   ├── session.go      # State machine: active/idle/stale/closed/lost + reconciler
@@ -1657,8 +1657,8 @@ the reaper closes it. A database error during the lookup is not read as
 "missing": the worker NAKs the message and NATS redelivers it.
 
 The worker counts the drop as `dropped_events_total{reason}` in its
-in-process metrics registry and logs it; no service serves that registry
-over HTTP today (README Roadmap).
+in-process metrics registry, served at `/metrics` on the workers' metrics
+listener, and logs it.
 
 ### Response envelope
 
@@ -1888,8 +1888,8 @@ nodes) would age to `stale → lost → orphan_timeout` closure while
 its children clearly streamed events. Closed parents are
 untouched (terminal state). Revivals via this path bump
 `sessions_revived_total{trigger="child_event"}` in the worker's
-in-process metrics registry so a future exposition can chart parent-via-child
-revivals separately from any future revival path. Scope is direct
+in-process metrics registry, so parent-via-child revivals can be charted
+separately from any future revival path. Scope is direct
 parent only — transitive ancestor revival is deferred until a
 framework that exercises depth>2 trees ships.
 
@@ -5627,6 +5627,7 @@ Constraint #4).
 | `FLIGHTDECK_MIGRATE_ONLY` | `true` applies pending migrations and exits without consuming |
 | `FLIGHTDECK_RECONCILER_INTERVAL_SECS` | Seconds between reconciler ticks, 1 to 3600 (default 60); the worker refuses to start outside that range. The dev compose override sets 5 so the integration tests that wait for a tick stay short |
 | `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS` | Silence window after which a `lost` session is closed with `close_reason=orphan_timeout` (default 24, must be above 0; the worker refuses to start otherwise) |
+| `FLIGHTDECK_METRICS_PORT` | Port of the metrics listener that serves `/metrics` (default 9102; `0` turns it off; the worker refuses to start outside 0 to 65535) |
 | `SHUTDOWN_TIMEOUT_SECS` | Graceful shutdown deadline (default 30) |
 
 **Query API:**
@@ -5711,12 +5712,21 @@ The workers keep an in-process, reason-labelled counter registry
   bumps the parent's `last_seen_at` and revives the parent if it
   was stale/lost).
 
-The package ships a Prometheus-text `Handler`, but the workers open no
-HTTP listener and no service mounts it, so the counters cannot be read
-from outside the process today; the worker's log lines for the same
-events (drops, reaper closes, revivals) are the operator's signal.
-Serving the registry, and adding request-latency histograms to the
-ingestion and query APIs, is on the README Roadmap.
+The workers serve the registry at `GET /metrics` on a listener of their
+own (`FLIGHTDECK_METRICS_PORT`, default 9102; any other path is 404) in
+the Prometheus text format: a `# TYPE <family> counter` line per family,
+then one sample per label value in sorted order. The counters are
+process-local and start at zero when a worker starts, so with several
+worker replicas each one is scraped separately and the series summed.
+The listener opens after the startup migrations and the Postgres and
+NATS connections, so the Helm chart uses it as the workers' readiness
+probe (liveness stays a process-alive check, so a long migration never
+restarts the pod); a port that cannot be bound is logged and event
+processing continues. Compose does not publish the port; nginx does not
+route to it. The worker's log lines for the same events (drops, reaper
+closes, revivals) remain the signal when the listener is off. Request
+latency histograms for the ingestion and query APIs are on the README
+Roadmap.
 
 ### Operator endpoints
 

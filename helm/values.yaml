@@ -143,10 +143,23 @@ nats:
   enabled: true  # There is no external-NATS escape hatch in v0.5.3.
   image:
     repository: nats
-    tag: "2.10.22-alpine"
+    tag: "2.14.3-alpine"
+  # With more than one replica the servers form a NATS cluster over
+  # clusterPort (routes between the StatefulSet pods), so a message
+  # published on any server reaches a consumer on any other and
+  # JetStream runs clustered.
   replicas: 3
   clientPort: 4222
   monitorPort: 8222
+  clusterPort: 6222
+  auth:
+    # Client token for the event bus. Required for a production install
+    # (api.env=production): an unauthenticated bus lets any pod that can
+    # reach it forge events or drain the queue. Set via
+    # --set nats.auth.token=<strong-random-token>; letters, digits and
+    # . _ ~ - only, since it is placed in NATS URLs (openssl rand -hex 32).
+    # With replicas > 1 the cluster routes authenticate with it as well.
+    token: ""
   jetstream:
     enabled: true
     fileStore:
@@ -174,7 +187,7 @@ postgres:
   externalUrl: ""
   image:
     repository: postgres
-    tag: "16.4-alpine"
+    tag: "16.15-alpine"
   user: flightdeck
   # Required when postgres.externalUrl is empty (the bundled StatefulSet path).
   # Set via --set postgres.password=<strong-password> or pass through a values

@@ -406,10 +406,15 @@ The dashboard fetches its bearer token at runtime from `/runtime-config.json` ra
 helm install flightdeck helm/ \
   --namespace flightdeck --create-namespace \
   --values helm/values.prod.yaml \
-  --set postgres.externalUrl="postgres://user:pass@rds.example.com:5432/flightdeck?sslmode=require"
+  --set postgres.externalUrl="postgres://user:pass@rds.example.com:5432/flightdeck?sslmode=require" \
+  --set api.auth.jwtSecret="<strong-random-secret>" \
+  --set api.corsOrigin="https://flightdeck.example.com" \
+  --set nats.auth.token="<strong-random-token>"
 ```
 
-Without `postgres.externalUrl` the chart ships its own single-instance Postgres StatefulSet (fine for small deployments, not HA, not backed up). NATS is always bundled.
+A production render (`api.env=production`, the default) refuses to proceed without the JWT secret, a non-wildcard CORS origin and the NATS token, and without `postgres.password` when it bundles Postgres. Without `postgres.externalUrl` the chart ships its own single-instance Postgres StatefulSet (fine for small deployments, not HA, not backed up). NATS is always bundled; with more than one replica the servers form a cluster, so events published on any of them reach the workers. The `FLIGHTDECK` JetStream stream itself is created with one replica, so it lives on one server. The token may contain only letters, digits and `. _ ~ -` because it is placed in NATS URLs (`openssl rand -hex 32` works); with more than one replica the cluster routes authenticate with it too.
+
+**Upgrading a v0.5.3 install with `nats.replicas` above 1** (the default is 3): the NATS StatefulSet's pod start policy changes, which Kubernetes does not allow in place. Scale ingestion to zero, give the workers a minute to drain, then run `kubectl delete statefulset <release>-flightdeck-nats` (the data volumes stay) before `helm upgrade`. On first start the clustered servers discard the old per-server streams and ingestion recreates the stream, so any event still on the bus at that point is dropped. A one-replica install upgrades in place and keeps its stream.
 
 The chart is at `version` 0.5.3 with `appVersion` 0.5.3; the default `image.tag` is `v0.5.3`. See [`helm/values.yaml`](helm/values.yaml) for the full schema, including replicas, HPA bounds, ingress, resources, and security contexts.
 
@@ -424,7 +429,8 @@ The chart is at `version` 0.5.3 with `appVersion` 0.5.3; the default `image.tag`
 | `dashboard.replicas` | `2` | Dashboard pod count. |
 | `postgres.externalUrl` | *(empty)* | When set, bundled Postgres StatefulSet is not rendered. |
 | `postgres.storage.size` | `20Gi` | PVC size for the bundled StatefulSet. |
-| `nats.replicas` | `3` | NATS StatefulSet replica count. |
+| `nats.replicas` | `3` | NATS StatefulSet replica count; more than one forms a NATS cluster. |
+| `nats.auth.token` | *(empty)* | Client token for the event bus. Required in production. |
 | `nats.jetstream.fileStore.size` | `10Gi` | PVC size per NATS replica. |
 | `ingress.enabled` | `false` | Render an Ingress routing `/` to dashboard, `/api` to query API, `/ingest` to ingestion API. |
 | `ingress.tls` | `[]` | Pass through to the Ingress `tls:` stanza. |
@@ -449,6 +455,7 @@ Deferred and planned work lives here so it stays visible and user demand can pri
 
 ### Next up (v0.6.0 and v0.7.0)
 
+- Helm: replicate the `FLIGHTDECK` JetStream stream across the NATS cluster (it is created with one replica today, so losing that server stalls ingestion until it returns); needs an in-place stream update for existing installs.
 - Sensor correctness on current SDKs: the `OpenAI.beta.chat.completions.parse` structured-output path (the non-beta `parse()` on chat and Responses is intercepted), litellm `text_completion` / `responses`.
 - Streamed-call coverage: with `capture_prompts` on, `messages.create(stream=True)` and `chat.completions.create(stream=True)` store the request but not the streamed response text, because the raw event stream is never assembled into a message; `responses.create(stream=True)` stores neither, having no request `input` on any path; none of the raw streams emit `tool_call` events (the `messages.stream()` helper does both). The OpenAI `chat.completions.stream()` and `responses.stream()` helpers and `chat.completions.with_streaming_response` / `responses.with_streaming_response` are not intercepted (the non-streaming `.parse()` on both APIs is).
 - Failed-stream accounting: the provider-billed tokens a stream delivered before a mid-stream failure (`llm_error.partial_tokens_*`) count only against the sensor's local session budget; server-side session totals (which add `post_call` and `embeddings` events) and the analytics `tokens` and `estimated_cost` metrics (`post_call`) do not include them yet.
@@ -476,7 +483,6 @@ Deferred and planned work lives here so it stays visible and user demand can pri
 ### Carried over
 
 - Continuous live-API smoke runs (a scheduled playground job).
-- NATS authentication in the Helm chart (the compose production overlay already requires it).
 - nginx rate limiting at the edge (a per-token limiter exists in ingestion).
 - Dashboard authentication beyond the single bearer token (lands with OIDC above).
 - MCP policy version history, dry-run preview and YAML import / export (dropped from the first MCP policy release; reinstated on demand).

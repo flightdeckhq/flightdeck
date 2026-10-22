@@ -114,6 +114,19 @@ server.
 
 ### Fixed
 
+- **Helm: the bundled NATS replicas did not form a cluster.** The chart
+  ran three NATS servers with no routes between them, so an event
+  published on one server never reached a worker connected to another.
+  With more than one replica the servers now cluster over `clusterPort`
+  (6222), start in parallel, and use JetStream-aware health checks.
+  Clients connect through a new `<release>-flightdeck-nats-client`
+  Service that lists only ready servers, and the NetworkPolicy admits
+  only NATS peers to the cluster port.
+- **Production compose: ingestion and workers could not authenticate to
+  the bus.** The overlay put the token in the URL's password slot
+  (`nats://:<token>@nats:4222`), which the token-protected server
+  rejects, so both services exited at start. The URL is now
+  `nats://<token>@nats:4222`.
 - **MCP policy: a deny could be stepped around by renaming the server.**
   Entries were looked up by a fingerprint of (URL, name), so a server
   that reported a different name, or none (mcp 2.x servers may omit
@@ -359,6 +372,23 @@ server.
 
 ### Changed
 
+- **Helm: production installs require `nats.auth.token`.** The event
+  bus now requires a client token, as the production compose file
+  already does; a production render without it fails with an
+  actionable message. The token may contain only letters, digits and
+  `. _ ~ -` (it is placed in NATS URLs), and with more than one replica
+  the cluster routes authenticate with it too. **Upgrade note:** add
+  `--set nats.auth.token=<strong-random-token>` to `helm upgrade`. With
+  `nats.replicas` above 1 (the default is 3), first scale ingestion to
+  zero, let the workers drain, and run
+  `kubectl delete statefulset <release>-flightdeck-nats` (the data
+  volumes stay): the pod start policy cannot change in place, and the
+  clustered servers discard the old per-server streams, so events still
+  on the bus are dropped. A one-replica install upgrades in place.
+- **Data plane:** Helm pins `postgres:16.15-alpine` and
+  `nats:2.14.3-alpine`; compose runs `nats:2.14-alpine`; ingestion and
+  workers use nats.go 1.54. CI runs the integration suite on Postgres 18
+  as well as 16.
 - **CI: the SDK-majors lane tests mcp 2.x**; the framework lane stays on
   mcp 1.x, where CrewAI and langchain-mcp-adapters pin it.
 - **Sensor dev dependencies move to LangChain 1.x, LangGraph 1.x and

@@ -11163,3 +11163,53 @@ fingerprint alone keeps older clients matching exactly as before.
 a migration (the rollout hazard and data loss above). Treating a
 missing server name as uncertainty (`block_on_uncertainty`) instead
 (would still let a server pick a name that matches no entry).
+
+---
+
+## D197 -- The Helm NATS replicas form a cluster and the bus requires a token in production
+
+**Date:** 2026-10-22
+
+**Decision:** With `nats.replicas` above one, the chart starts the NATS
+servers with `--cluster_name`, `--cluster` on `nats.clusterPort` (6222)
+and `--routes` to every StatefulSet pod through the headless Service
+(which publishes not-ready addresses so routes form during start-up).
+The pods start in parallel (`podManagementPolicy: Parallel`); a startup
+probe on `/healthz` allows up to fifteen minutes for the cluster to
+form and recover, readiness checks `/healthz?js-server-only=true` and
+liveness `/healthz?js-enabled-only=true`. `nats.auth.token` sets
+`--auth`; the token and the tokenised `FLIGHTDECK_NATS_URL` live in the
+Secret (the plain URL stays in the ConfigMap only when no token is
+set), and a production render requires it, matching
+`docker-compose.prod.yml`. The token sits in the URL's user slot
+(`nats://<token>@host`; nats.go sends a lone user as the auth token,
+while `nats://:<token>@host` sends a password the server rejects, a
+defect the production compose overlay carried until this change), and
+it is limited to URL-unreserved characters because it is also written,
+unencoded, into the cluster route URLs (`route:<token>@`), so the
+cluster port is not a way around client auth. Clients use a separate
+ClusterIP Service that lists ready pods only; the headless Service keeps
+publishing not-ready addresses for pod DNS and routes. A one-replica
+install keeps the ordered start, so it upgrades in place; a
+multi-replica install deletes the NATS StatefulSet (data volumes kept)
+before `helm upgrade`, after which the clustered servers discard the old
+per-server streams as orphans and ingestion recreates the stream. The
+`FLIGHTDECK` stream stays at one replica.
+
+**Reasoning:** The chart defaulted to three NATS replicas with no
+routes, so each pod was an independent server behind one Service: a
+publish and a consume could land on different servers and an event
+would never reach the workers. Verified on a kind cluster: with routes
+the three servers report one JetStream meta leader for a cluster of
+three, an unauthenticated client is refused, a message published on
+pod 0 reaches a subscriber on pod 2, and a one-replica stream created
+through pod 0 accepts a publish through pod 1 and serves a consumer on
+pod 2. The default ordered start deadlocked on the same cluster (pod 0
+waits for peers that are not started until it is ready), hence the
+parallel start and the narrower probes, as the upstream NATS chart
+does. Replicating the stream (R3) needs an in-place stream update for
+existing installs and is on the README Roadmap.
+
+**Rejected:** Defaulting to one NATS replica (hides the defect and
+drops the redundancy the default promised). A token in the ConfigMap
+(the ConfigMap is not secret).

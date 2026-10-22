@@ -8,6 +8,9 @@ metadata:
     {{- include "flightdeck.labels" (dict "root" . "component" $component) | nindent 4 }}
 spec:
   clusterIP: None
+  # Pod DNS must resolve before a pod is ready so the cluster routes can
+  # form while the servers start.
+  publishNotReadyAddresses: true
   selector:
     {{- include "flightdeck.selectorLabels" (dict "root" . "component" $component) | nindent 4 }}
   ports:
@@ -18,5 +21,9 @@ spec:
     - name: monitor
       port: {{ .Values.nats.monitorPort }}
       targetPort: monitor
+      protocol: TCP
+    - name: cluster
+      port: {{ .Values.nats.clusterPort }}
+      targetPort: cluster
       protocol: TCP
 {{- end }}

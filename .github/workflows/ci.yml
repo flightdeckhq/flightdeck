@@ -542,8 +542,21 @@ jobs:
         run: make test-plugin
 
   integration:
-    name: Integration + sensor e2e
+    # The suite runs on Postgres 16 (the default image) and on Postgres
+    # 18, the current major. The 16 entry keeps the job's established
+    # name.
+    name: ${{ matrix.name }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Integration + sensor e2e
+            postgres_image: postgres:16-alpine
+            postgres_data_dir: /var/lib/postgresql/data
+          - name: Integration + sensor e2e (Postgres 18)
+            postgres_image: postgres:18-alpine
+            postgres_data_dir: /var/lib/postgresql
     # No `needs:` on the unit jobs: this job boots its own stack and
     # shares nothing with them, so it starts as soon as the push lands
     # instead of queueing behind the slowest unit job, which cost about
@@ -561,6 +574,8 @@ jobs:
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       PYTHON: python
+      FLIGHTDECK_POSTGRES_IMAGE: ${{ matrix.postgres_image }}
+      FLIGHTDECK_POSTGRES_DATA_DIR: ${{ matrix.postgres_data_dir }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
 
@@ -728,6 +743,7 @@ jobs:
           helm template flightdeck helm/ \
             --set postgres.password=ci-test-password \
             --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set nats.auth.token=ci-test-nats-token \
             --set api.corsOrigin=https://dashboard.example.com > /dev/null
 
       - name: helm template WITHOUT password fails with actionable message
@@ -768,6 +784,7 @@ jobs:
           if helm template flightdeck helm/ \
             --set postgres.password=ci-test-password \
             --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set nats.auth.token=ci-test-nats-token \
             > /tmp/helm-out 2> /tmp/helm-err; then
             echo "EXPECTED FAILURE: production render should fail when api.corsOrigin is '*'"
             cat /tmp/helm-out
@@ -779,11 +796,46 @@ jobs:
             exit 1
           fi
 
+      - name: helm template WITHOUT a NATS token fails in production
+        run: |
+          if helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set api.corsOrigin=https://dashboard.example.com \
+            > /tmp/helm-out 2> /tmp/helm-err; then
+            echo "EXPECTED FAILURE: production render should fail when nats.auth.token is unset"
+            cat /tmp/helm-out
+            exit 1
+          fi
+          if ! grep -q "nats.auth.token must be set" /tmp/helm-err; then
+            echo "Expected actionable 'nats.auth.token must be set' message; got:"
+            cat /tmp/helm-err
+            exit 1
+          fi
+
+      - name: helm template with a NATS token that is not URL-safe fails
+        run: |
+          if helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set api.corsOrigin=https://dashboard.example.com \
+            --set nats.auth.token='a/b@c' \
+            > /tmp/helm-out 2> /tmp/helm-err; then
+            echo "EXPECTED FAILURE: a token with URL-reserved characters should fail the render"
+            exit 1
+          fi
+          if ! grep -q "nats.auth.token may contain only" /tmp/helm-err; then
+            echo "Expected actionable 'nats.auth.token may contain only' message; got:"
+            cat /tmp/helm-err
+            exit 1
+          fi
+
       - name: helm template renders NetworkPolicies for postgres and nats
         run: |
           count=$(helm template flightdeck helm/ \
             --set postgres.password=ci-test-password \
             --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set nats.auth.token=ci-test-nats-token \
             --set api.corsOrigin=https://dashboard.example.com \
             | grep -c 'kind: NetworkPolicy')
           if [ "$count" -ne 2 ]; then
@@ -802,6 +854,7 @@ jobs:
           helm template flightdeck helm/ \
             --set postgres.externalUrl=postgres://u:p@h:5432/d?sslmode=require \
             --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set nats.auth.token=ci-test-nats-token \
             --set api.corsOrigin=https://dashboard.example.com > /dev/null
 
   # Schema-validate the Claude Code plugin marketplace manifest. The

@@ -178,9 +178,29 @@ def test_ws_broadcast_last_event_matches_notify_event() -> None:
             )
         )
         await asyncio.sleep(0.2)
-        post_event(make_event(sid, flavor, "post_call", tokens_total=750))
+        # The fixture timestamps are whole seconds, so two events
+        # posted 50 ms apart usually tie on occurred_at and the DB
+        # order below would be arbitrary. Stamp them a second apart.
+        now = time.time()
+        post_event(
+            make_event(
+                sid,
+                flavor,
+                "post_call",
+                tokens_total=750,
+                timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now)),
+            )
+        )
         time.sleep(0.05)
-        post_event(make_event(sid, flavor, "tool_call", tool_name="Read"))
+        post_event(
+            make_event(
+                sid,
+                flavor,
+                "tool_call",
+                tool_name="Read",
+                timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now + 1)),
+            )
+        )
         return await task
 
     received = asyncio.run(drive())

@@ -961,8 +961,8 @@ clients internally are intercepted without user-side wrapping.
 | Framework | Path covered |
 |---|---|
 | LangChain | `ChatAnthropic.invoke` (langchain-anthropic); `ChatOpenAI.invoke` (langchain-openai 0.3+ sends it through `chat.completions.with_raw_response.create`, which is intercepted as a non-streaming chat call); `OpenAIEmbeddings.embed_*` (transitive). `ChatOpenAI.stream` calls `chat.completions.create(stream=True)` and is metered from the stream; with `include_response_headers=True` it goes through the raw-response wrapper and records the pre-call estimate (see "Patch surface — out of scope"). `chat.completions.parse()`, `responses.parse()` and `responses.with_raw_response.create()` / `.parse()` are intercepted when a framework uses them |
-| LangGraph | Transitive via LangChain — graphs routing through `ChatAnthropic` / `ChatOpenAI`, including `langgraph.prebuilt.create_react_agent` tool loops |
-| LlamaIndex | `llama-index-llms-anthropic.complete`, `llama-index-llms-openai.complete` |
+| LangGraph | Transitive via LangChain — graphs routing through `ChatAnthropic` / `ChatOpenAI`, including tool loops built from a model node and `ToolNode`, and LangChain's `create_agent` (built on LangGraph) |
+| LlamaIndex | `llama-index-llms-anthropic.complete`, `llama-index-llms-openai.complete`. llama-index-llms-anthropic (through 0.12.3) always sends `temperature`, which anthropic 1.x's `Messages.create` rejects, so that pairing fails inside the SDK with or without the sensor |
 | CrewAI 1.14+ | `LLM(model=...).call` via the native Anthropic and OpenAI provider classes. Model strings without a native-provider prefix (e.g. `openrouter/`, `deepseek/`) fall through to litellm |
 | litellm | `litellm.completion` / `acompletion` chat path, `stream=True` included (sync and async, metered from litellm's trailing usage chunk); a call litellm serves through the OpenAI SDK is reported once, by the litellm wrapper; `embedding` / `aembedding`. `text_completion` and `responses` are not intercepted |
 | Claude Code plugin | Observational hook-based path; emits the same event shape as the sensor |
@@ -1025,7 +1025,19 @@ context entry and stamps it on the child `session_start` payload as
 `session_end` payload as `outgoing_message`. Bodies route through
 the existing `event_content` table — small bodies inline, large
 bodies through the overflow path (8 KiB inline / 2 MiB hard
-cap). `capture_prompts=false` produces neither field.
+cap). `capture_prompts=false` produces neither field. A body is
+stored in its JSON form: framework state that the json module cannot
+encode is converted first (pydantic models such as LangChain messages
+dumped in JSON mode, dataclasses as objects, sets and tuples as lists,
+dates as ISO strings, anything else as its string form); a body that
+still cannot be encoded is dropped with a warning while the session
+events go out.
+
+The LangGraph wrapper keeps the node's signature (through
+`__wrapped__`): LangGraph injects `config`, `runtime`, `store` and
+`writer` by parameter name and type, so a node that declares one still
+receives it once wrapped. The CrewAI wrappers keep `execute_task` /
+`aexecute_task`'s name and signature the same way.
 
 Sub-agent emission failure (the framework's `Agent.execute` or
 equivalent raises an exception inside the interceptor's context
@@ -5767,7 +5779,10 @@ and `api/Makefile` run `swag init -g cmd/main.go -o docs` before
   pytest config disables respx's plugin, which would import `httpx`
   first. An autouse fixture refuses every non-loopback connection, so a
   provider mock that stops matching fails the test instead of reaching
-  the real API.
+  the real API. The repo-level integration suite does the same in
+  `tests/integration/conftest.py`; the Makefile targets pass
+  `-p no:respx`, and a run without it stops with a message naming the
+  flag when an installed SDK needs the alias.
 - **Go components (ingestion / workers / api):** Go testing package.
   Mock NATS and Postgres at the boundary. Covers handler validation,
   session state machine transitions, policy evaluation, NATS

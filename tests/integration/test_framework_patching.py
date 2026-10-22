@@ -372,6 +372,36 @@ def test_langgraph_patched_intercepts_call(
 # ======================================================================
 
 
+# The newest llama-index-llms-anthropic release known to send
+# ``temperature``, which anthropic 1.x's Messages.create rejects.
+_LLAMA_INDEX_ANTHROPIC_LAST_INCOMPATIBLE = (0, 12, 3)
+
+
+def _llama_index_anthropic_incompatible() -> bool:
+    """Whether the installed llama-index-llms-anthropic and anthropic SDK
+    are the known-broken pairing: the SDK's ``Messages.create`` no longer
+    takes ``temperature`` (anthropic 1.x) and the adapter release always
+    sends it, so the call fails inside the SDK with or without the
+    sensor. A newer adapter release runs the test again."""
+    import inspect
+    from importlib import metadata
+
+    from anthropic.resources.messages.messages import Messages
+
+    if "temperature" in inspect.signature(Messages.create).parameters:
+        return False
+    try:
+        version = metadata.version("llama-index-llms-anthropic")
+    except metadata.PackageNotFoundError:
+        return False
+    parts = tuple(int(p) for p in version.split(".")[:3] if p.isdigit())
+    return parts <= _LLAMA_INDEX_ANTHROPIC_LAST_INCOMPATIBLE
+
+
+@pytest.mark.skipif(
+    _llama_index_anthropic_incompatible(),
+    reason="llama-index-llms-anthropic <= 0.12.3 sends temperature, which anthropic 1.x rejects",
+)
 def test_llama_index_anthropic_patched_intercepts_call(
     sensor_reset: None,
     unique_flavor: str,

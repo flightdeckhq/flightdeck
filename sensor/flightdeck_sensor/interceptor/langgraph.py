@@ -151,12 +151,19 @@ def _wrap_node_action(node_name: str, action: Callable[..., Any]) -> Callable[..
     session_end after the node action. Preserves sync / async by
     runtime-detecting the original callable's coroutine status —
     LangGraph supports both, and we don't want to force-cast the
-    user's node into one shape.
+    user's node into one shape -- and the node's signature, so the
+    arguments LangGraph injects by parameter name still reach it.
     """
-    import asyncio
+    import functools
+    import inspect
 
     role = node_name
 
+    # functools.wraps sets __wrapped__, through which LangGraph reads the
+    # node's signature to decide which of config / runtime / store /
+    # writer to inject; a bare (*args, **kwargs) would hide them and the
+    # node would fail with a missing-argument TypeError.
+    @functools.wraps(action)
     def _sync_wrapper(*args: Any, **kwargs: Any) -> Any:
         session = _current_session()
         if session is None:
@@ -206,6 +213,7 @@ def _wrap_node_action(node_name: str, action: Callable[..., Any]) -> Callable[..
             _log.debug("emit_subagent_session_end failed", exc_info=True)
         return result
 
+    @functools.wraps(action)
     async def _async_wrapper(*args: Any, **kwargs: Any) -> Any:
         session = _current_session()
         if session is None:
@@ -255,7 +263,9 @@ def _wrap_node_action(node_name: str, action: Callable[..., Any]) -> Callable[..
             _log.debug("emit_subagent_session_end (async) failed", exc_info=True)
         return result
 
-    if asyncio.iscoroutinefunction(action):
+    # A callable instance with ``async def __call__`` is a coroutine
+    # function only through its __call__, which LangGraph also checks.
+    if inspect.iscoroutinefunction(action) or inspect.iscoroutinefunction(type(action).__call__):
         return _async_wrapper
     return _sync_wrapper
 
@@ -297,7 +307,8 @@ def patch_langgraph_classes(*, quiet: bool = False) -> None:
             node_action = action
         else:
             node_action = node
-            node_name = getattr(node, "__name__", str(node))
+            # The name LangGraph itself gives an unnamed node.
+            node_name = getattr(node, "__name__", type(node).__name__)
 
         if node_action is None or not callable(node_action):
             # Pass through — node is not a wrappable callable (e.g.
@@ -309,9 +320,10 @@ def patch_langgraph_classes(*, quiet: bool = False) -> None:
             return original_add_node(self, node, action=action, **kwargs)
 
         wrapped = _wrap_node_action(node_name, node_action)
-        if isinstance(node, str):
-            return original_add_node(self, node_name, action=wrapped, **kwargs)
-        return original_add_node(self, wrapped, **kwargs)
+        # Registered under the name explicitly: a callable instance has no
+        # __name__ to hand on, so the wrapper alone would register as
+        # "_sync_wrapper" and break edges that use the class name.
+        return original_add_node(self, node_name, action=wrapped, **kwargs)
 
     _StateGraph.add_node = _wrapped_add_node
     setattr(_StateGraph, _PATCHED_SENTINEL, True)

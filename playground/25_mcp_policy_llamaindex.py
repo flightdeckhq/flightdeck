@@ -68,6 +68,7 @@ for _modname in (
         sys.exit(2)
 
 from _helpers import (  # noqa: E402  (after the optional-dependency guard above)
+    llama_index_anthropic_incompatibility,
     API_URL,
     fetch_events_for_session,
     init_sensor,
@@ -77,6 +78,11 @@ from _helpers import (  # noqa: E402  (after the optional-dependency guard above
 )
 
 import flightdeck_sensor  # noqa: E402  (after the optional-dependency guard above)
+
+_INCOMPATIBLE = llama_index_anthropic_incompatibility()
+if _INCOMPATIBLE is not None:
+    print(f"SKIP: {_INCOMPATIBLE}")
+    sys.exit(2)
 
 
 def _admin_headers(content_type: str | None = None) -> dict[str, str]:

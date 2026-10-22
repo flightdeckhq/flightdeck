@@ -103,6 +103,19 @@ server.
 
 ### Fixed
 
+- **Sensor: a LangGraph node that declares `config` failed once
+  patched.** LangGraph injects `config`, `runtime`, `store` and `writer`
+  only into nodes whose signature names them; the sensor's node wrapper
+  hid the signature, so such a node raised a missing-argument
+  `TypeError`. The wrapper now keeps it. A node that is an instance with
+  `async def __call__` is now awaited (it returned an un-awaited
+  coroutine once patched), and an unnamed callable-instance node keeps
+  the class name LangGraph gives it.
+- **Sensor: sub-agent messages holding LangChain message objects were
+  dropped.** With `capture_prompts` on, a `MessagesState` body (and any
+  framework state with pydantic models, dataclasses, sets or dates)
+  could not be JSON-encoded and no child session carried a message. The
+  body is now converted to its JSON form.
 - **Sensor: current anthropic 2.x and openai 3.x releases were
   mis-metered in places.** The sensor's extras never capped either SDK,
   so a fresh install already gets them. On anthropic 2.x an async
@@ -324,6 +337,15 @@ server.
 
 ### Changed
 
+- **Sensor dev dependencies move to LangChain 1.x, LangGraph 1.x and
+  langchain-mcp-adapters 0.3**, so the framework CI lane tests the
+  current releases (it now resolves anthropic 1.x). Playgrounds 04, 23
+  and 24 use the 1.x APIs (a `ToolNode` inside a graph, a hand-built
+  LangGraph loop, LangChain's `create_agent`); the LlamaIndex
+  playgrounds skip the Anthropic LLM on anthropic 1.x with
+  llama-index-llms-anthropic 0.12.3 or older, which is incompatible
+  upstream. The integration
+  Makefile targets pass `-p no:respx`.
 - **CI: the sensor's unit suite also runs against the newest SDK
   majors.** A second lane installs the sensor with the newest anthropic
   and openai releases and no framework packages (which pin the SDKs

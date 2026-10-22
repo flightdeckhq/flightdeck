@@ -65,6 +65,7 @@ def _run_mcp(session_id: str) -> None:
     try:
         from langchain_core.messages import AIMessage  # type: ignore[import-untyped]
         from langchain_mcp_adapters.client import MultiServerMCPClient  # type: ignore[import-untyped]
+        from langgraph.graph import END, START, MessagesState, StateGraph  # type: ignore[import-untyped]
         from langgraph.prebuilt import ToolNode  # type: ignore[import-untyped]
         import mcp  # noqa: F401  -- presence check
     except ImportError:
@@ -86,7 +87,13 @@ def _run_mcp(session_id: str) -> None:
             },
         )
         tools = await client.get_tools()
-        node = ToolNode(tools)
+        # LangGraph 1.x runs a ToolNode only inside a graph, which supplies
+        # the runtime it needs; a one-node graph is the smallest such.
+        graph = StateGraph(MessagesState)
+        graph.add_node("tools", ToolNode(tools))
+        graph.add_edge(START, "tools")
+        graph.add_edge("tools", END)
+        app = graph.compile()
         ai_msg = AIMessage(
             content="",
             tool_calls=[
@@ -98,9 +105,9 @@ def _run_mcp(session_id: str) -> None:
             ],
         )
         t0 = time.monotonic()
-        await node.ainvoke({"messages": [ai_msg]})
+        await app.ainvoke({"messages": [ai_msg]})
         print_result(
-            "ToolNode.ainvoke(echo)",
+            "ToolNode in a graph: ainvoke(echo)",
             True,
             int((time.monotonic() - t0) * 1000),
         )

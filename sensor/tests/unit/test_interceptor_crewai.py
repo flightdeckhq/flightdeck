@@ -386,3 +386,26 @@ def test_patch_idempotent(
     unpatch_crewai_classes()
 
     assert first_wrapper is second_wrapper
+
+
+def test_patched_execute_task_keeps_its_signature(
+    sensor_session: Any, crewai_agent_cls: Any
+) -> None:
+    """The real ``execute_task`` / ``aexecute_task`` keep their name and
+    signature once patched, so introspection sees the method CrewAI
+    defines."""
+    import inspect
+
+    before = {
+        name: inspect.signature(getattr(crewai_agent_cls, name))
+        for name in ("execute_task", "aexecute_task")
+        if hasattr(crewai_agent_cls, name)
+    }
+    patch_crewai_classes(quiet=True)
+    try:
+        for name, signature in before.items():
+            patched = getattr(crewai_agent_cls, name)
+            assert patched.__name__ == name
+            assert inspect.signature(patched) == signature
+    finally:
+        unpatch_crewai_classes()

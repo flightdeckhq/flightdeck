@@ -10,7 +10,7 @@ with one only matching node names get child sessions.
 from __future__ import annotations
 
 import contextlib
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,6 +25,9 @@ from flightdeck_sensor.interceptor.langgraph import (
     unpatch_langgraph_classes,
 )
 from flightdeck_sensor.transport.client import ControlPlaneClient
+
+if TYPE_CHECKING:
+    from langchain_core.runnables import RunnableConfig
 
 
 def _langgraph_or_skip() -> Any:
@@ -250,3 +253,114 @@ def test_patch_idempotent(sensor_session: Any, StateGraph: Any) -> None:
     second = StateGraph.add_node
     unpatch_langgraph_classes()
     assert first is second
+
+
+# ----------------------------------------------------------------------
+# Signature passthrough and message serialisation
+# ----------------------------------------------------------------------
+
+
+def test_node_declaring_config_still_receives_it_when_patched(
+    patched_langgraph: Any,
+) -> None:
+    """LangGraph injects ``config`` only into a node whose signature names
+    it. The wrapper keeps the node's signature (``__wrapped__``), so a
+    patched node still gets it instead of failing with a missing
+    argument."""
+    _session, client, StateGraph = patched_langgraph
+    from langgraph.graph import END, START
+
+    # LangGraph injects ``config`` only into a parameter annotated
+    # RunnableConfig (resolved by name under postponed annotations).
+    seen: list[Any] = []
+
+    def researcher(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
+        seen.append(config)
+        return {"text": "out"}
+
+    graph = _build_graph_with_node(StateGraph, "researcher", researcher)
+    graph.add_edge(START, "researcher")
+    graph.add_edge("researcher", END)
+    result = graph.compile().invoke({"text": "in"})
+
+    assert result == {"text": "out"}
+    assert len(seen) == 1 and seen[0] is not None
+    event_types = [p["event_type"] for p in _post_event_calls(client)]
+    assert event_types == ["session_start", "session_end"]
+
+
+async def test_async_node_declaring_config_still_receives_it_when_patched(
+    patched_langgraph: Any,
+) -> None:
+    _session, client, StateGraph = patched_langgraph
+    from langgraph.graph import END, START
+
+    # LangGraph injects ``config`` only into a parameter annotated
+    # RunnableConfig (resolved by name under postponed annotations).
+    seen: list[Any] = []
+
+    async def researcher(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
+        seen.append(config)
+        return {"text": "out"}
+
+    graph = _build_graph_with_node(StateGraph, "researcher", researcher)
+    graph.add_edge(START, "researcher")
+    graph.add_edge("researcher", END)
+    result = await graph.compile().ainvoke({"text": "in"})
+
+    assert result == {"text": "out"}
+    assert len(seen) == 1
+    event_types = [p["event_type"] for p in _post_event_calls(client)]
+    assert event_types == ["session_start", "session_end"]
+
+
+def test_state_holding_langchain_messages_is_captured(patched_langgraph: Any) -> None:
+    """A ``MessagesState``-style body holds LangChain message objects,
+    which the json module cannot encode; the child session still gets the
+    body, with each message in its JSON form."""
+    _session, client, StateGraph = patched_langgraph
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    def writer(state: dict[str, Any]) -> dict[str, Any]:
+        return {"messages": [AIMessage(content="draft ready")]}
+
+    graph = _build_graph_with_node(StateGraph, "writer", writer)
+    wrapped = graph.nodes["writer"].runnable.func  # type: ignore[attr-defined]
+    wrapped({"messages": [HumanMessage(content="write a draft")]})
+
+    start_p, end_p = _post_event_calls(client)
+    (incoming,) = start_p["incoming_message"]["body"]["messages"]
+    assert incoming["content"] == "write a draft"
+    assert incoming["type"] == "human"
+    (outgoing,) = end_p["outgoing_message"]["body"]["messages"]
+    assert outgoing["content"] == "draft ready"
+    assert outgoing["type"] == "ai"
+
+
+async def test_callable_instance_with_async_call_is_awaited(
+    patched_langgraph: Any,
+) -> None:
+    """A node that is an instance with ``async def __call__`` is async only
+    through its __call__; the wrapper must await it, and the unnamed node
+    keeps the class name LangGraph gives it."""
+    _session, client, StateGraph = patched_langgraph
+    from typing import TypedDict
+
+    from langgraph.graph import END, START
+
+    class _State(TypedDict, total=False):
+        text: str
+
+    class Researcher:
+        async def __call__(self, state: dict[str, Any]) -> dict[str, Any]:
+            return {"text": "out"}
+
+    graph = StateGraph(_State)
+    graph.add_node(Researcher())
+    graph.add_edge(START, "Researcher")
+    graph.add_edge("Researcher", END)
+    result = await graph.compile().ainvoke({"text": "in"})
+
+    assert result == {"text": "out"}
+    event_types = [p["event_type"] for p in _post_event_calls(client)]
+    assert event_types == ["session_start", "session_end"]

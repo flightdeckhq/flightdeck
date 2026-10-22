@@ -16,13 +16,48 @@ below, so no test file needs editing.
 
 from __future__ import annotations
 
+import sys
 import time
 import warnings
 from typing import Any
 
 import pytest
 
-from ..shared.fixtures import (
+
+def _sdk_uses_httpx2() -> bool:
+    """Whether an installed provider SDK is built on ``httpx2`` (anthropic
+    1.x and later, openai 3.x) rather than ``httpx``. Mirrors the check
+    in sensor/tests/conftest.py."""
+    from importlib import metadata
+
+    for dist in ("anthropic", "openai"):
+        try:
+            requires = metadata.requires(dist) or []
+        except metadata.PackageNotFoundError:
+            continue
+        if any(req.split(";")[0].strip().startswith("httpx2") for req in requires):
+            return True
+    return False
+
+
+# The respx-driven tests mock provider HTTP. SDKs built on httpx2 reject
+# an httpx client and are invisible to respx, so ``import httpx`` must
+# resolve to httpx2 before anything imports it. respx's pytest plugin
+# imports httpx as pytest starts, so the Makefile targets pass
+# ``-p no:respx``; a run without it cannot alias and stops here rather
+# than letting a test reach a real provider.
+if _sdk_uses_httpx2():
+    import httpx2
+
+    if "httpx" in sys.modules and sys.modules["httpx"] is not httpx2:
+        raise RuntimeError(
+            "an installed provider SDK uses httpx2 but httpx was imported before "
+            "tests/integration/conftest.py could alias it; run pytest with -p no:respx "
+            "(the Makefile targets do)"
+        )
+    httpx2.alias_httpx()
+
+from ..shared.fixtures import (  # noqa: E402  (after the httpx alias above)
     # Constants
     API_HEALTH,
     API_URL,
@@ -213,3 +248,29 @@ def pytest_configure(config: pytest.Config) -> None:
         "test-integration` runs the rest of the suite in parallel under "
         "pytest-xdist and these one at a time afterwards.",
     )
+
+
+# Hosts an integration test may connect to: the dev stack is published on
+# the loopback interface.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+@pytest.fixture(autouse=True)
+def _no_provider_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Refuse every internet connection that leaves the machine. Provider
+    traffic is mocked; a mock that stops matching (an SDK moving to a new
+    HTTP library) must fail the test, not reach the real API."""
+    import socket
+
+    real_connect = socket.socket.connect
+
+    def _connect(self: socket.socket, address: Any) -> Any:
+        if self.family in (socket.AF_INET, socket.AF_INET6):
+            host = address[0] if isinstance(address, tuple) else address
+            if host not in _LOOPBACK_HOSTS:
+                raise ConnectionRefusedError(
+                    f"integration tests may not connect to {address!r}"
+                )
+        return real_connect(self, address)
+
+    monkeypatch.setattr(socket.socket, "connect", _connect)

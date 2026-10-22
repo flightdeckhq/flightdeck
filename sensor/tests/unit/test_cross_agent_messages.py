@@ -366,14 +366,12 @@ def test_crewai_and_langgraph_emit_identical_message_envelope_shape() -> None:
     This test wraps both interceptors in turn against the same
     Session and asserts the schema parity directly on the wire.
     """
-    from flightdeck_sensor.interceptor.crewai import (
-        _CREWAI_AVAILABLE,
-    )
-    from flightdeck_sensor.interceptor.langgraph import (
-        _LANGGRAPH_AVAILABLE,
-    )
+    from flightdeck_sensor.interceptor import crewai as crewai_interceptor
+    from flightdeck_sensor.interceptor import langgraph as langgraph_interceptor
 
-    if not _CREWAI_AVAILABLE or not _LANGGRAPH_AVAILABLE:
+    # The availability flags are lazy (None until checked); ask the
+    # interceptors, which import the framework on first call.
+    if not crewai_interceptor._ensure_imported() or not langgraph_interceptor._ensure_imported():
         pytest.skip("crewai or langgraph not installed")
 
     session, client = _build_session(capture_prompts=True)
@@ -426,3 +424,30 @@ def test_crewai_and_langgraph_emit_identical_message_envelope_shape() -> None:
     # normalisation at the sensor boundary.
     assert p_crewai["incoming_message"]["body"] == "task: find x"
     assert p_lg["incoming_message"]["body"] == {"text": "node input"}
+
+
+def test_body_field_pydantic_cannot_serialise_is_stored_as_text() -> None:
+    """A pydantic model holding a value it cannot serialise (a lock) is
+    stored in its string form; the rest of the body is kept."""
+    import threading
+
+    import pydantic
+
+    class Holder(pydantic.BaseModel):
+        model_config = pydantic.ConfigDict(arbitrary_types_allowed=True)
+        lock: Any
+
+    session, client = _build_session(capture_prompts=True)
+    session.emit_subagent_session_start(
+        child_session_id="c-1",
+        child_agent_id="agent-1",
+        child_agent_name="parent/child",
+        agent_role="child",
+        incoming_message=SubagentMessage(
+            body={"note": "keep me", "holder": Holder(lock=threading.Lock())},
+            captured_at="2026-10-22T00:00:00Z",
+        ),
+    )
+    body = client.post_event.call_args.args[0]["incoming_message"]["body"]
+    assert body["note"] == "keep me"
+    assert isinstance(body["holder"], str)

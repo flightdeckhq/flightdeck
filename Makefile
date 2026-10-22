@@ -60,12 +60,12 @@ INTEGRATION_WORKERS ?= 4
 test-integration: ## Run integration tests (requires running stack)
 	$(MAKE) -C docker dev
 	$(MAKE) seed-e2e
-	$(PYTHON) -m pytest tests/integration -v -n $(INTEGRATION_WORKERS) --dist load -m "not manual and not exclusive"
-	$(PYTHON) -m pytest tests/integration -v -m "exclusive"
+	$(PYTHON) -m pytest tests/integration -p no:respx -v -n $(INTEGRATION_WORKERS) --dist load -m "not manual and not exclusive"
+	$(PYTHON) -m pytest tests/integration -p no:respx -v -m "exclusive"
 
 test-sensor-e2e: ## Run sensor respx-driven end-to-end tests (requires running stack)
 	$(MAKE) -C docker dev
-	$(PYTHON) -m pytest tests/integration/test_sensor_e2e.py -v
+	$(PYTHON) -m pytest tests/integration/test_sensor_e2e.py -p no:respx -v
 
 # ---------------------------------------------------------------------------
 # Rule 40d playground demos. Each runs the per-framework playground

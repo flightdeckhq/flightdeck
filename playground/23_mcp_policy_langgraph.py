@@ -4,7 +4,9 @@ LangGraph integrates MCP through ``langchain-mcp-adapters``. The
 sensor's ``ClientSession`` patch is the protocol-level seam,
 so LangGraph's MCP usage flows through the same call_tool wrapper.
 This demo provisions a flavor warn policy and runs a real LangGraph
-``create_react_agent`` with an MCP tool to verify the wrapper fires.
+agent loop built from LangGraph's own primitives (a model node, a
+``ToolNode`` and ``tools_condition``) with an MCP tool to verify the
+wrapper fires. Demo 24 covers LangChain's ``create_agent``.
 
 Self-skips when:
   - langchain-mcp-adapters / langgraph are not installed.
@@ -31,7 +33,8 @@ try:
     import mcp.client.stdio as _mcp_stdio
     from langchain_anthropic import ChatAnthropic  # type: ignore[import-not-found]
     from langchain_mcp_adapters.tools import load_mcp_tools  # type: ignore[import-not-found]
-    from langgraph.prebuilt import create_react_agent  # type: ignore[import-not-found]
+    from langgraph.graph import START, MessagesState, StateGraph  # type: ignore[import-not-found]
+    from langgraph.prebuilt import ToolNode, tools_condition  # type: ignore[import-not-found]
     from mcp.client.session import ClientSession
 except ImportError:
     print(
@@ -113,8 +116,20 @@ async def run_demo() -> int:
         async with ClientSession(read, write) as session:
             await session.initialize()
             tools = await load_mcp_tools(session)
-            llm = ChatAnthropic(model="claude-sonnet-4-5", max_tokens=400)
-            agent = create_react_agent(llm, tools)
+            llm = ChatAnthropic(model="claude-sonnet-4-5", max_tokens=400).bind_tools(
+                tools
+            )
+
+            async def call_model(state: MessagesState) -> dict[str, list[object]]:
+                return {"messages": [await llm.ainvoke(state["messages"])]}
+
+            graph = StateGraph(MessagesState)
+            graph.add_node("model", call_model)
+            graph.add_node("tools", ToolNode(tools))
+            graph.add_edge(START, "model")
+            graph.add_conditional_edges("model", tools_condition)
+            graph.add_edge("tools", "model")
+            agent = graph.compile()
             await agent.ainvoke(
                 {
                     "messages": [

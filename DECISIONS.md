@@ -11029,3 +11029,49 @@ put the 0.x SDKs on a transport they were not built for). A pytest
 plugin module loaded with `-p` before the entry points (the `pytest`
 console script does not put the sensor directory on `sys.path`, so the
 module would not import for anyone running plain `pytest`).
+
+---
+
+## D194 -- The sensor's framework lane tracks LangChain and LangGraph 1.x; sub-agent bodies are stored in their JSON form
+
+**Date:** 2026-10-22
+
+**Refines:** D193 (the two CI lanes).
+
+**Decision:** The `dev` extra pins `langchain>=1,<2`,
+`langchain-anthropic>=1,<2`, `langchain-openai>=1,<2`, `langgraph>=1,<2`
+and `langchain-mcp-adapters>=0.3,<0.4`, so the framework lane tests
+the current releases; with them it resolves anthropic 1.x and openai
+2.x. `langchain[mcp]` (fastmcp 4) waits for the sensor's mcp 2.x
+support, since it needs mcp 2.x. The LangGraph node wrapper and the
+CrewAI method wrappers use `functools.wraps`, so the wrapped callable
+keeps its signature: LangGraph injects `config` / `runtime` / `store` /
+`writer` by parameter name and annotation. The session encodes a
+sub-agent message body with a JSON fallback (pydantic models in JSON
+mode, dataclasses, sets and tuples, dates, else the string form) and
+stores that JSON form inline or in `event_content`. The repo-level
+integration suite gets the same httpx2 alias and no-network guard as
+the unit suite.
+
+**Reasoning:** The `<1` pins kept CI on releases users have moved off,
+and hid two defects that 1.x surfaces at once: a patched node that asks
+for `config` failed with a `TypeError`, and a `MessagesState` body
+(LangChain message objects) made the json module raise inside the
+session, so no child session carried a message. Storing the JSON form
+instead of the raw object also keeps the inline payload and the
+overflow envelope identical to what was sized.
+
+llama-index-llms-anthropic (through 0.12.3) allows any anthropic
+>= 0.75 but always sends `temperature`, which anthropic 1.x's
+`Messages.create` no longer accepts; the pairing fails inside the SDK
+with or without the sensor. The integration test and the LlamaIndex
+playgrounds skip the Anthropic LLM when the installed SDK rejects
+`temperature` and the adapter is 0.12.3 or older, so a fixed adapter
+release runs them again; LlamaIndex's OpenAI path stays covered.
+
+**Rejected:** Capping `anthropic<1` in the dev extra to keep the
+LlamaIndex Anthropic test running (would drop the only lane that tests
+anthropic 1.x, which LangChain users get). Keeping `create_react_agent`
+in playground 23 (deprecated since LangGraph 1.0). Moving both MCP
+policy playgrounds to `create_agent` (23 would no longer exercise
+LangGraph's own primitives).

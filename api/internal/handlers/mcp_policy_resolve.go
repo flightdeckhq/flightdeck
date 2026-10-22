@@ -24,12 +24,12 @@ import (
 // ResolveMCPPolicyHandler handles GET /v1/mcp-policies/resolve.
 //
 // @Summary      Resolve MCP policy decision
-// @Description  Sensor / plugin preflight. Returns the decision (allow / warn / block) for a (flavor, server_url, server_name) tuple -- a flavor entry wins, then a global entry, then the global-mode default -- plus the decision_path that produced it (flavor_entry / global_entry / mode_default). The server canonicalizes the URL using the same algorithm as the Python and JS identity primitives.
+// @Description  Sensor / plugin preflight. Returns the decision (allow / warn / block) for a server in a flavor -- a flavor entry wins, then a global entry, then the global-mode default -- plus the decision_path that produced it (flavor_entry / global_entry / mode_default). Entries match on the canonical server URL alone (the server name is display metadata); when a scope holds several entries for one URL the most restrictive wins. The server canonicalizes the URL using the same algorithm as the Python and JS identity primitives.
 // @Tags         mcp-policy
 // @Produce      json
 // @Param        flavor       query  string  false  "Agent flavor; omit to resolve against global only"
 // @Param        server_url   query  string  true   "Raw MCP server URL or stdio command"
-// @Param        server_name  query  string  true   "Server display name"
+// @Param        server_name  query  string  false  "Server display name; recorded in the fingerprint, not used to match entries"
 // @Success      200  {object}  store.MCPPolicyResolveResult
 // @Failure      400  {object}  ErrorResponse
 // @Failure      401  {object}  ErrorResponse
@@ -45,10 +45,6 @@ func ResolveMCPPolicyHandler(s store.Querier) http.HandlerFunc {
 			writeError(w, http.StatusBadRequest, "server_url is required")
 			return
 		}
-		if serverName == "" {
-			writeError(w, http.StatusBadRequest, "server_name is required")
-			return
-		}
 
 		canonical, err := mcpid.CanonicalizeURL(serverURL)
 		if err != nil {
@@ -57,7 +53,7 @@ func ResolveMCPPolicyHandler(s store.Querier) http.HandlerFunc {
 		}
 		fingerprint := mcpid.FingerprintShort(canonical, serverName)
 
-		result, err := s.ResolveMCPPolicy(r.Context(), flavor, fingerprint)
+		result, err := s.ResolveMCPPolicy(r.Context(), flavor, canonical, fingerprint)
 		if err != nil {
 			slog.Error("resolve mcp policy",
 				"err", err, "flavor", flavor, "fingerprint", fingerprint)

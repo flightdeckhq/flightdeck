@@ -105,7 +105,7 @@ type Querier interface {
 	CreateMCPPolicy(ctx context.Context, flavor string, mut MCPPolicyMutation, resolvedEntries []MCPPolicyEntry, actorTokenID *string) (*MCPPolicy, error)
 	UpdateMCPPolicy(ctx context.Context, scope, scopeValue string, mut MCPPolicyMutation, resolvedEntries []MCPPolicyEntry, actorTokenID *string, auditPayloadExtras map[string]any) (*MCPPolicy, error)
 	DeleteMCPPolicy(ctx context.Context, flavor string, actorTokenID *string) error
-	ResolveMCPPolicy(ctx context.Context, flavor, fingerprint string) (*MCPPolicyResolveResult, error)
+	ResolveMCPPolicy(ctx context.Context, flavor, canonicalURL, fingerprint string) (*MCPPolicyResolveResult, error)
 	ListMCPPolicyAuditLog(ctx context.Context, scope, scopeValue, eventType string, from, to *time.Time, limit, offset int) ([]MCPPolicyAuditLog, error)
 	GetMCPPolicyMetrics(ctx context.Context, scope, scopeValue, period string) (*MCPPolicyMetrics, error)
 }

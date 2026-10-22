@@ -1487,6 +1487,11 @@ def _make_init_wrapper(orig_init: Any) -> Any:
         # stream is positional arg 0 after self. We support both kwargs
         # and positional in case future SDK versions reorder.
         read_stream = args[0] if args else kwargs.get("read_stream")
+        if read_stream is None:
+            # mcp 2.x: a session built over a dispatcher (mcp.Client
+            # given a transport) reaches the marked streams through it.
+            dispatcher = kwargs.get("dispatcher")
+            read_stream = getattr(dispatcher, "_read_stream", None)
 
         if read_stream is not None:
             transport = getattr(read_stream, _TRANSPORT_MARKER, None)

@@ -4979,13 +4979,16 @@ session's lifetime; mid-session policy updates apply at the next
 
 ### Identity model
 
-Server identity is the pair `(URL, name)`. The URL is the security key
-— two servers with the same URL but different declared names are the
-same enforcement target. The name is the display label and the
-tamper-evidence axis: when an agent declares a server with a known URL
-under a new name, the sensor emits a `mcp_server_name_changed` event so
-operators can see drift, but the policy decision still resolves on the
-URL.
+Server identity for policy is the canonical URL (or stdio command).
+Entries match on it alone: two servers with the same URL but different
+declared names are the same enforcement target, and a server that
+reports another name, or none (an mcp 2.x server may omit its
+`server_info`), still meets the entries for its URL. The name is the
+display label and the tamper-evidence axis: when an agent declares a
+server with a known URL under a new name, the sensor emits a
+`mcp_server_name_changed` event so operators can see drift. The sensor,
+the plugin and the API's resolve endpoint all match this way, so a
+dashboard preview agrees with enforcement.
 
 **HTTP canonical form.** Lowercase scheme + host. Strip default ports
 (`:80` for `http`, `:443` for `https`). Strip a trailing slash only at
@@ -5002,10 +5005,11 @@ current environment. Args are case-sensitive (file paths and flags
 matter byte-for-byte).
 
 **Hash recipe.** `sha256(canonical_url + 0x00 + name)`, hex-encoded.
-The first 16 hex characters are the display fingerprint; the full hash
-is the storage key. The 0x00 separator prevents
-`("https://a.com", "bservice")` and `("https://a.combservice", "")`
-from colliding.
+The first 16 hex characters are the display fingerprint stored on each
+entry and stamped on policy decisions; it names a (URL, name) pair for
+display and drift tracking, and is not the matching key. The 0x00
+separator prevents `("https://a.com", "bservice")` and
+`("https://a.combservice", "")` from colliding.
 
 ### Two-scope policy model
 
@@ -5022,7 +5026,10 @@ deployment; locking down a flavor is opt-in.
 
 ### Per-server resolution
 
-For an `(URL, name)` evaluated against `(global, flavor)`:
+For a server URL evaluated against `(global, flavor)`, where a scope
+that holds several entries for the URL (recorded under different names)
+uses the most restrictive one (a blocking deny, then a warning deny,
+then an allow):
 
 1. If the per-flavor policy has an entry whose canonical URL matches,
    use that entry's enforcement decision (allow / deny + warn / block;

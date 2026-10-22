@@ -303,8 +303,9 @@ export function MCPPolicyEntryDialog({
               className="mt-1 text-[11px]"
               style={{ color: "var(--text-muted)" }}
             >
-              Human-readable identifier declared by the MCP server. Used
-              for display + part of the fingerprint hash.
+              Human-readable identifier declared by the MCP server, for
+              display. The entry matches on the server URL, whatever name
+              the server reports.
             </p>
           </div>
 

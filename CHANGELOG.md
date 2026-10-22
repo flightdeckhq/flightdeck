@@ -114,6 +114,17 @@ server.
 
 ### Fixed
 
+- **MCP policy: a deny could be stepped around by renaming the server.**
+  Entries were looked up by a fingerprint of (URL, name), so a server
+  that reported a different name, or none (mcp 2.x servers may omit
+  their `server_info`), missed the entry for its URL and fell to the
+  mode default; in blocklist mode that allowed it. The sensor, the
+  Claude Code plugin and `GET /v1/mcp-policies/resolve` now match
+  entries on the canonical server URL alone, as the policy model always
+  described, and when a scope has several entries for one URL the most
+  restrictive wins. Stored fingerprints are unchanged, so older sensors
+  and plugins keep working against an upgraded server. `server_name` is
+  now optional on the resolve endpoint.
 - **Sensor: a LangGraph node that declares `config` failed once
   patched.** LangGraph injects `config`, `runtime`, `store` and `writer`
   only into nodes whose signature names them; the sensor's node wrapper

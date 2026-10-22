@@ -30,6 +30,7 @@ type stubQuerier struct {
 	updateScope    func(context.Context, string, string, store.MCPPolicyMutation, []store.MCPPolicyEntry, *string, map[string]any) (*store.MCPPolicy, error)
 	deleteFlavor   func(context.Context, string, *string) error
 	resolveFlavor  func(context.Context, string, string) (*store.MCPPolicyResolveResult, error)
+	resolvedURL    string
 }
 
 func (q *stubQuerier) GetGlobalMCPPolicy(ctx context.Context) (*store.MCPPolicy, error) {
@@ -47,7 +48,11 @@ func (q *stubQuerier) UpdateMCPPolicy(ctx context.Context, scope, scopeValue str
 func (q *stubQuerier) DeleteMCPPolicy(ctx context.Context, flavor string, actor *string) error {
 	return q.deleteFlavor(ctx, flavor, actor)
 }
-func (q *stubQuerier) ResolveMCPPolicy(ctx context.Context, flavor, fingerprint string) (*store.MCPPolicyResolveResult, error) {
+func (q *stubQuerier) ResolveMCPPolicy(ctx context.Context, flavor, canonicalURL, fingerprint string) (*store.MCPPolicyResolveResult, error) {
+	q.resolvedURL = canonicalURL
+	if q.resolveFlavor == nil {
+		return &store.MCPPolicyResolveResult{Decision: "allow", DecisionPath: "mode_default"}, nil
+	}
 	return q.resolveFlavor(ctx, flavor, fingerprint)
 }
 
@@ -366,13 +371,18 @@ func TestResolveMCPPolicyHandlerRequiresServerURL(t *testing.T) {
 	}
 }
 
-func TestResolveMCPPolicyHandlerRequiresServerName(t *testing.T) {
+func TestResolveMCPPolicyHandlerMatchesOnURLWithoutServerName(t *testing.T) {
+	// The server name is display metadata: a request without one still
+	// resolves, and the store receives the canonical URL to match on.
 	q := &stubQuerier{}
-	req := httptest.NewRequest(http.MethodGet, "/v1/mcp-policies/resolve?server_url=https://x", nil)
+	req := httptest.NewRequest(http.MethodGet, "/v1/mcp-policies/resolve?server_url=HTTPS://X.example.com:443/mcp", nil)
 	rec := httptest.NewRecorder()
 	ResolveMCPPolicyHandler(q)(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Errorf("status = %d, want 400", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if q.resolvedURL != "https://x.example.com/mcp" {
+		t.Errorf("store received url %q, want the canonical form", q.resolvedURL)
 	}
 }
 

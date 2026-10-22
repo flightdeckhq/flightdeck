@@ -3363,7 +3363,7 @@ func (m *mockStore) UpdateMCPPolicy(_ context.Context, _, _ string, _ store.MCPP
 	return nil, nil
 }
 func (m *mockStore) DeleteMCPPolicy(_ context.Context, _ string, _ *string) error { return nil }
-func (m *mockStore) ResolveMCPPolicy(_ context.Context, _, _ string) (*store.MCPPolicyResolveResult, error) {
+func (m *mockStore) ResolveMCPPolicy(_ context.Context, _, _, _ string) (*store.MCPPolicyResolveResult, error) {
 	return nil, nil
 }
 func (m *mockStore) ListMCPPolicyAuditLog(_ context.Context, _, _, _ string, _, _ *time.Time, _, _ int) ([]store.MCPPolicyAuditLog, error) {

@@ -172,7 +172,7 @@ Direct SDK calls outside a multi-agent framework emit root sessions; identity is
 
 Flightdeck observes MCP traffic as a first-class event surface alongside chat and embeddings. Six event types (`mcp_tool_list`, `mcp_tool_call`, `mcp_resource_list`, `mcp_resource_read`, `mcp_prompt_list`, `mcp_prompt_get`) emit per operation. The sensor patches `mcp.client.session.ClientSession` directly, so every framework that mediates MCP through the official SDK is observed: LangChain via `langchain-mcp-adapters`, LangGraph via the same, LlamaIndex via `llama-index-tools-mcp`, CrewAI via `mcpadapt`, plus the raw `mcp` SDK.
 
-The sensor supports the official `mcp` SDK from 1.20 up to, but not including, 2.0 (the `mcp` extra pins `<2`); the 2.x line renamed and reshaped the client surface and is on the Roadmap.
+The sensor supports the official `mcp` SDK 1.x (from 1.20) and 2.x; on 2.x it also covers the high-level `mcp.Client`.
 
 The Claude Code plugin's MCP coverage is limited to tool calls; resource reads and prompt fetches are below the plugin hook layer.
 
@@ -306,6 +306,7 @@ The sensor reports over HTTP on background daemon threads. Control plane downtim
 - Anthropic Message Batches (`messages.batches.*`) and `count_tokens` are not patched: batch spend runs outside the kill switch and the token budget.
 - With `capture_prompts=True`, prompts sent through the Bedrock, Vertex, Foundry, AWS and Mantle clients — platforms often chosen for data residency — reach the Flightdeck control plane like any other captured prompt. Keep capture off for those sessions, or keep the control plane inside the same residency boundary.
 - llama-index-llms-anthropic (through 0.12.3) always sends `temperature`, which anthropic 1.x's `Messages.create` rejects, so LlamaIndex's Anthropic LLM fails on anthropic 1.x with or without the sensor; the playgrounds skip it there.
+- On mcp 2.x, `mcp.Client` answers `list_tools`, `list_resources`, `list_resource_templates`, `list_prompts` and `read_resource` from its response cache when it can; a cached answer makes no MCP request, so no `mcp_*` event is emitted for it (pass `cache=None` to the `Client` to observe every request). Tool calls are not cached and are always observed and policed.
 - Per-thread Session isolation is not yet supported. Multi-agent frameworks (CrewAI, LangGraph, etc.) work fine under a single `init()` and shared `AGENT_FLAVOR`.
 - Custom directive handler input validation is yours. The `parameters` schema drives the dashboard form and the directive fingerprint; it is not enforced at execution time.
 - litellm's `text_completion` and `responses` entry points are not patched: `text_completion` on an OpenAI chat model is reported by the OpenAI interceptor, `responses` on a provider without a native Responses API is reported once as a chat call, and litellm's own httpx routes of either are unobserved. Chat calls, streaming or not, and embeddings round-trip cleanly.
@@ -329,7 +330,7 @@ On install, Flightdeck auto-creates an empty global policy in `blocklist` mode w
 
 Per-server resolution: most-specific scope wins. If the per-flavor policy has an entry for the URL, use it; else if the global policy has an entry, use it; else apply the global mode default (allowlist blocks unknown, blocklist allows unknown).
 
-Server identity is the pair `(URL, name)`. The URL is the security key; the name is the display label and tamper-evidence axis. The fingerprint is `sha256(canonical_url + 0x00 + name)`.
+Server identity is the canonical URL (or stdio command): entries match on it whatever name the server reports, and when a scope has several entries for one URL the most restrictive wins. The name is the display label and tamper-evidence axis; the displayed fingerprint is `sha256(canonical_url + 0x00 + name)`.
 
 ### Configuration
 

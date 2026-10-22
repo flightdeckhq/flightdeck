@@ -1390,7 +1390,7 @@ const docTemplate = `{
         },
         "/v1/mcp-policies/resolve": {
             "get": {
-                "description": "Sensor / plugin preflight. Returns the decision (allow / warn / block) for a (flavor, server_url, server_name) tuple -- a flavor entry wins, then a global entry, then the global-mode default -- plus the decision_path that produced it (flavor_entry / global_entry / mode_default). The server canonicalizes the URL using the same algorithm as the Python and JS identity primitives.",
+                "description": "Sensor / plugin preflight. Returns the decision (allow / warn / block) for a server in a flavor -- a flavor entry wins, then a global entry, then the global-mode default -- plus the decision_path that produced it (flavor_entry / global_entry / mode_default). Entries match on the canonical server URL alone (the server name is display metadata); when a scope holds several entries for one URL the most restrictive wins. The server canonicalizes the URL using the same algorithm as the Python and JS identity primitives.",
                 "produces": [
                     "application/json"
                 ],
@@ -1414,10 +1414,9 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Server display name",
+                        "description": "Server display name; recorded in the fingerprint, not used to match entries",
                         "name": "server_name",
-                        "in": "query",
-                        "required": true
+                        "in": "query"
                     }
                 ],
                 "responses": {

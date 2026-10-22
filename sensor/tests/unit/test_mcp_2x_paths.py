@@ -118,3 +118,24 @@ def test_unpatch_restores_adopt_and_build_session() -> None:
         mcp_interceptor.unpatch_mcp_classes(quiet=True)
     assert ClientSession.adopt is original_adopt
     assert Client._build_session is original_build
+
+
+async def test_client_given_a_transport_keeps_the_stream_markers(patched: Session) -> None:
+    """mcp.Client handed a transport wraps the marked streams in a
+    dispatcher; the session it builds still carries the transport and URL
+    the patched transport recorded, so policy can resolve the server."""
+    import anyio
+    from mcp.shared.jsonrpc_dispatcher import JSONRPCDispatcher
+
+    send, receive = anyio.create_memory_object_stream[Any](1)
+    receive._flightdeck_transport = "stdio"  # type: ignore[attr-defined]
+    receive._flightdeck_server_url = "uvx mcp-server-git"  # type: ignore[attr-defined]
+    try:
+        from mcp.client.session import ClientSession
+
+        session = ClientSession(dispatcher=JSONRPCDispatcher(receive, send))
+        assert session._flightdeck_mcp_transport == "stdio"  # type: ignore[attr-defined]
+        assert session._flightdeck_mcp_server_url == "uvx mcp-server-git"  # type: ignore[attr-defined]
+    finally:
+        await send.aclose()
+        await receive.aclose()

@@ -126,10 +126,12 @@ async function fetchOne(apiUrl, token, scopeSegment) {
  */
 export function evaluateServer(policies, serverUrl, serverName) {
   const canonical = canonicalizeUrl(serverUrl);
+  // The fingerprint still names the server for the decision record;
+  // entries match on the canonical URL alone (see findEntry).
   const fp = fingerprintShort(canonical, serverName);
 
   // Step 1: flavor entry?
-  const flavorEntry = findEntry(policies.flavor, fp);
+  const flavorEntry = findEntry(policies.flavor, canonical);
   if (flavorEntry) {
     return decisionFromEntry(
       flavorEntry, "flavor_entry", policies.flavor, fp,
@@ -137,7 +139,7 @@ export function evaluateServer(policies, serverUrl, serverName) {
   }
 
   // Step 2: global entry?
-  const globalEntry = findEntry(policies.global, fp);
+  const globalEntry = findEntry(policies.global, canonical);
   if (globalEntry) {
     return decisionFromEntry(
       globalEntry, "global_entry", policies.global, fp,
@@ -211,27 +213,41 @@ export function classifyServer(policies, serverUrl, serverName) {
   return { classification: "allow", decision };
 }
 
-function findEntry(policy, fingerprint) {
+// Restrictiveness rank of an entry's decision; higher is stricter. The
+// API's resolve query and the sensor rank the same way.
+const DECISION_RANK = { allow: 0, warn: 1, block: 2 };
+
+function entryDecision(entry) {
+  if (entry.entry_kind === "allow") return "allow";
+  if (entry.enforcement === "warn") return "warn";
+  return "block";
+}
+
+/**
+ * The most restrictive entry for a canonical server URL in one policy,
+ * or null. Identity is the URL: the server name is display metadata,
+ * so a server reporting a different name cannot step around an entry
+ * for its URL. Ties keep the entry listed first.
+ */
+function findEntry(policy, canonicalUrl) {
   if (!policy || !Array.isArray(policy.entries)) {
     return null;
   }
+  let best = null;
+  let bestRank = -1;
   for (const entry of policy.entries) {
-    if (entry?.fingerprint === fingerprint) {
-      return entry;
+    if (entry?.server_url !== canonicalUrl) continue;
+    const rank = DECISION_RANK[entryDecision(entry)];
+    if (rank > bestRank) {
+      best = entry;
+      bestRank = rank;
     }
   }
-  return null;
+  return best;
 }
 
 function decisionFromEntry(entry, decisionPath, policyDoc, fingerprint) {
-  let decisionValue;
-  if (entry.entry_kind === "allow") {
-    decisionValue = "allow";
-  } else if (entry.enforcement === "warn" || entry.enforcement === "block") {
-    decisionValue = entry.enforcement;
-  } else {
-    decisionValue = "block";
-  }
+  const decisionValue = entryDecision(entry);
   let scope = "global";
   if (policyDoc?.scope === "flavor") {
     scope = `flavor:${policyDoc.scope_value || ""}`;

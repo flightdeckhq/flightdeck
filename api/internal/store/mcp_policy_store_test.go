@@ -324,7 +324,7 @@ func TestResolveMCPPolicyPrecedence(t *testing.T) {
 	})
 
 	// Step 1: flavor entry wins
-	r, err := store.ResolveMCPPolicy(ctx, flavor, flavorEntryFP)
+	r, err := store.ResolveMCPPolicy(ctx, flavor, "https://flavor.example.com", flavorEntryFP)
 	if err != nil {
 		t.Fatalf("resolve flavor: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestResolveMCPPolicyPrecedence(t *testing.T) {
 	}
 
 	// Step 2: global entry catches when flavor has no opinion
-	r, err = store.ResolveMCPPolicy(ctx, flavor, globalEntryFP)
+	r, err = store.ResolveMCPPolicy(ctx, flavor, "https://global.example.com", globalEntryFP)
 	if err != nil {
 		t.Fatalf("resolve global: %v", err)
 	}
@@ -348,7 +348,7 @@ func TestResolveMCPPolicyPrecedence(t *testing.T) {
 	}
 
 	// Step 3: mode default applies to truly unknown URLs
-	r, err = store.ResolveMCPPolicy(ctx, flavor, unmatchedFP)
+	r, err = store.ResolveMCPPolicy(ctx, flavor, "https://unmatched.example.com", unmatchedFP)
 	if err != nil {
 		t.Fatalf("resolve mode default: %v", err)
 	}
@@ -464,5 +464,50 @@ func TestMigration000020DroppedVersioningSchema(t *testing.T) {
 	}
 	if colCount != 0 {
 		t.Errorf("mcp_policies.version column still exists post-migration 000020")
+	}
+}
+
+
+func TestResolveMCPPolicyMatchesOnURLAndPicksTheStrictestEntry(t *testing.T) {
+	store, cleanup := newTestStore(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	if err := store.EnsureGlobalMCPPolicy(ctx); err != nil {
+		t.Fatalf("ensure global: %v", err)
+	}
+	flavor := uniqueFlavor(t)
+	t.Cleanup(func() { cleanupMCPPolicyByFlavor(t, store, flavor) })
+
+	// Two entries for one URL under different names: an allow and a
+	// deny that warns. The URL matches whatever name the server reports
+	// (or none), and the stricter entry wins.
+	warn := "warn"
+	entries := []MCPPolicyEntry{
+		{
+			ServerURLCanonical: "https://shared.example.com/mcp",
+			ServerName:         "old-name",
+			Fingerprint:        fingerprintLiteral("shared-allow"),
+			EntryKind:          "allow",
+		},
+		{
+			ServerURLCanonical: "https://shared.example.com/mcp",
+			ServerName:         "new-name",
+			Fingerprint:        fingerprintLiteral("shared-warn"),
+			EntryKind:          "deny",
+			Enforcement:        &warn,
+		},
+	}
+	if _, err := store.CreateMCPPolicy(ctx, flavor,
+		MCPPolicyMutation{BlockOnUncertainty: false}, entries, nil); err != nil {
+		t.Fatalf("create flavor: %v", err)
+	}
+
+	r, err := store.ResolveMCPPolicy(ctx, flavor, "https://shared.example.com/mcp", fingerprintLiteral("renamed"))
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if r.DecisionPath != "flavor_entry" || r.Decision != "warn" {
+		t.Errorf("got %s / %s, want flavor_entry / warn", r.DecisionPath, r.Decision)
 	}
 }

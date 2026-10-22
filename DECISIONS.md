@@ -11125,3 +11125,42 @@ by name (only works when the sensor patches before that module is
 imported). Making policy identity URL/command-only in the same change:
 it needs a fingerprint-recompute migration across the Go services and
 the plugin, and lands as its own change.
+
+---
+
+## D196 -- MCP policy entries match on the canonical server URL; the stored fingerprint stays as it is
+
+**Date:** 2026-10-22
+
+**Refines:** the update plan's MCP identity decision (URL/command-only
+identity with a fingerprint-recompute migration) and D195.
+
+**Decision:** The sensor's policy cache, the plugin's policy evaluator
+and the API's resolve query match a server against a scope's entries by
+canonical server URL alone. When a scope holds several entries for one
+URL (recorded under different names), the most restrictive applies: a
+blocking deny (bare, block or interactive), then a warning deny, then
+an allow; the API breaks remaining ties by the newest entry, the
+clients by list order. The decision's fingerprint is still
+`sha256(canonical_url + 0x00 + name)[:16]`, and entries keep storing
+that fingerprint; nothing is migrated. `server_name` is optional on
+`GET /v1/mcp-policies/resolve`.
+
+**Reasoning:** Review of the mcp 2.x support found that a 2.x server
+which omits its `server_info` (or reports a different name) missed the
+entry for its URL and fell to the mode default, so a blocklist deny
+allowed it. The policy model already said identity resolves on the
+URL; the code keyed on (URL, name). Matching on the URL fixes the bypass
+on every SDK line and in the plugin. Recomputing the stored
+fingerprints instead, as the plan proposed, would have made every
+sensor and plugin still running the previous release miss every entry
+once the server upgraded (both key their lookup on the fingerprint the
+server sends), silently turning blocklists permissive across a rolling
+upgrade, and the unique (policy, fingerprint) index would have forced
+the migration to drop entries that share a URL. Leaving the stored
+fingerprint alone keeps older clients matching exactly as before.
+
+**Rejected:** Recomputing fingerprints as `sha256(canonical_url)` with
+a migration (the rollout hazard and data loss above). Treating a
+missing server name as uncertainty (`block_on_uncertainty`) instead
+(would still let a server pick a name that matches no entry).

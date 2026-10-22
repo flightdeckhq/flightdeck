@@ -321,6 +321,55 @@ def test_evaluate_canonical_url_normalisation_drives_lookup() -> None:
 # ----- populate path ----------------------------------------------
 
 
+def test_evaluate_matches_the_url_whatever_name_the_server_reports() -> None:
+    """Identity is the server URL: an entry recorded under one name still
+    applies when the server reports another name, or none (an mcp 2.x
+    server may omit its server_info), so a deny cannot be stepped around
+    by renaming the server."""
+    cache = MCPPolicyCache()
+    _populate_cache(
+        cache,
+        global_doc=_global_doc(mode="blocklist"),
+        flavor_doc=_flavor_doc(
+            entries=[
+                _entry(
+                    server_url="https://maps.example.com/mcp",
+                    server_name="maps",
+                    entry_kind="deny",
+                    enforcement="block",
+                )
+            ]
+        ),
+    )
+    for reported_name in ("maps", "maps-v2", ""):
+        decision = cache.evaluate("https://maps.example.com/mcp", reported_name)
+        assert decision.decision == "block", reported_name
+        assert decision.decision_path == "flavor_entry"
+
+
+def test_evaluate_picks_the_strictest_entry_for_a_url() -> None:
+    """Entries for one URL under different names: the strictest wins,
+    whatever their order."""
+    for order in (("allow", "warn", "block"), ("block", "warn", "allow")):
+        kinds = {
+            "allow": {"entry_kind": "allow"},
+            "warn": {"entry_kind": "deny", "enforcement": "warn"},
+            "block": {"entry_kind": "deny", "enforcement": "block"},
+        }
+        cache = MCPPolicyCache()
+        _populate_cache(
+            cache,
+            global_doc=_global_doc(mode="blocklist"),
+            flavor_doc=_flavor_doc(
+                entries=[
+                    _entry(server_url="https://x.example.com/mcp", server_name=f"n-{k}", **kinds[k])
+                    for k in order
+                ]
+            ),
+        )
+        assert cache.evaluate("https://x.example.com/mcp", "anything").decision == "block", order
+
+
 def test_populate_handles_missing_flavor_404() -> None:
     """When the flavor policy doesn't exist (HTTP 404), only the
     global policy populates and evaluation falls through to global."""

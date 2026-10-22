@@ -2,6 +2,8 @@
 #   helm install flightdeck helm/ -f helm/values.prod.yaml \
 #     --set postgres.externalUrl=postgres://... \
 #     --set api.auth.jwtSecret=... \
+#     --set api.corsOrigin=https://flightdeck.example.com \
+#     --set nats.auth.token=... \
 #     --set api.auth.adminPassword=...
 #
 # This file pins production-shaped defaults (replicas, resources, auth)

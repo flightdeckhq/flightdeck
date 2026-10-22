@@ -5,7 +5,11 @@ metadata:
   labels:
     {{- include "flightdeck.labels" (dict "root" . "component" "shared") | nindent 4 }}
 data:
+  {{- if not .Values.nats.auth.token }}
+  # With nats.auth.token set the URL carries the token and lives in the
+  # Secret instead.
   FLIGHTDECK_NATS_URL: {{ include "flightdeck.natsURL" . | quote }}
+  {{- end }}
   FLIGHTDECK_ENV: {{ .Values.api.env | quote }}
   FLIGHTDECK_WORKER_POOL_SIZE: {{ .Values.workers.poolSize | quote }}
   FLIGHTDECK_MIGRATIONS_DIR: {{ .Values.workers.migrationsDir | quote }}

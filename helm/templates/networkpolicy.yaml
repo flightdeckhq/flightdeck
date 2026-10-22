@@ -58,5 +58,5 @@ spec:
         - protocol: TCP
           port: {{ .Values.nats.clientPort }}
         - protocol: TCP
-          port: 6222
+          port: {{ .Values.nats.clusterPort }}
 {{- end }}

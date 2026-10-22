@@ -114,7 +114,26 @@ set; otherwise to the bundled in-cluster service.
 NATS URL -- always the bundled in-cluster service (no escape hatch in v0.5.3).
 */}}
 {{- define "flightdeck.natsURL" -}}
+{{- if .Values.nats.auth.token -}}
+{{- printf "nats://:%s@%s:%d" .Values.nats.auth.token (include "flightdeck.natsServiceName" .) (int .Values.nats.clientPort) -}}
+{{- else -}}
 {{- printf "nats://%s:%d" (include "flightdeck.natsServiceName" .) (int .Values.nats.clientPort) -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Comma-separated cluster routes to every NATS pod (a route to the pod
+itself is ignored by the server). Pod DNS comes from the headless
+Service: <statefulset>-<ordinal>.<service>.
+*/}}
+{{- define "flightdeck.natsRoutes" -}}
+{{- $sts := include "flightdeck.componentName" (dict "root" . "component" "nats") -}}
+{{- $svc := include "flightdeck.natsServiceName" . -}}
+{{- $routes := list -}}
+{{- range $i := until (int .Values.nats.replicas) -}}
+{{- $routes = append $routes (printf "nats://%s-%d.%s:%d" $sts $i $svc (int $.Values.nats.clusterPort)) -}}
+{{- end -}}
+{{- join "," $routes -}}
 {{- end -}}
 
 {{/*

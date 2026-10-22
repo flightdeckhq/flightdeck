@@ -9,6 +9,10 @@ metadata:
 spec:
   serviceName: {{ include "flightdeck.natsServiceName" . }}
   replicas: {{ .Values.nats.replicas }}
+  # A clustered JetStream server is not healthy until it reaches its
+  # peers, so the pods start together rather than one at a time (the
+  # default ordered start would wait on pod 0 forever).
+  podManagementPolicy: Parallel
   selector:
     matchLabels:
       {{- include "flightdeck.selectorLabels" (dict "root" . "component" $component) | nindent 6 }}
@@ -48,11 +52,30 @@ spec:
             - "{{ .Values.nats.clientPort }}"
             - "--name"
             - "$(POD_NAME)"
+            {{- if gt (int .Values.nats.replicas) 1 }}
+            - "--cluster_name"
+            - {{ include "flightdeck.natsServiceName" . | quote }}
+            - "--cluster"
+            - "nats://0.0.0.0:{{ .Values.nats.clusterPort }}"
+            - "--routes"
+            - {{ include "flightdeck.natsRoutes" . | quote }}
+            {{- end }}
+            {{- if .Values.nats.auth.token }}
+            - "--auth"
+            - "$(NATS_TOKEN)"
+            {{- end }}
           env:
             - name: POD_NAME
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            {{- if .Values.nats.auth.token }}
+            - name: NATS_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "flightdeck.secretName" . }}
+                  key: FLIGHTDECK_NATS_TOKEN
+            {{- end }}
           ports:
             - name: client
               containerPort: {{ .Values.nats.clientPort }}
@@ -60,21 +83,34 @@ spec:
             - name: monitor
               containerPort: {{ .Values.nats.monitorPort }}
               protocol: TCP
-          readinessProbe:
+            - name: cluster
+              containerPort: {{ .Values.nats.clusterPort }}
+              protocol: TCP
+          # Full health (JetStream meta layer included) gates startup, with
+          # room for the cluster to form and recover its streams; after
+          # that readiness asks only whether this server accepts clients
+          # and liveness whether JetStream is enabled, so one slow peer
+          # does not restart or unready the others.
+          startupProbe:
             httpGet:
               path: /healthz
               port: monitor
-            initialDelaySeconds: 5
-            periodSeconds: 5
-            timeoutSeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 90
+          readinessProbe:
+            httpGet:
+              path: /healthz?js-server-only=true
+              port: monitor
+            periodSeconds: 10
+            timeoutSeconds: 5
             failureThreshold: 3
           livenessProbe:
             httpGet:
-              path: /healthz
+              path: /healthz?js-enabled-only=true
               port: monitor
-            initialDelaySeconds: 15
-            periodSeconds: 10
-            timeoutSeconds: 3
+            periodSeconds: 30
+            timeoutSeconds: 5
             failureThreshold: 3
           resources:
             {{- toYaml .Values.nats.resources | nindent 12 }}

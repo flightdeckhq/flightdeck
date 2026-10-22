@@ -10685,7 +10685,10 @@ patched method and calls `super()`: the `wrap()`-built proxy resolves
 the override and runs it under the outer-call mark D191 adds to
 `interceptor/base.py`, so the patched base method it re-enters
 recognises an outer call in progress and passes through instead of
-reporting the request a second time. The
+reporting the request a second time. An override that defers its
+`super()` call into an object it returns (a context manager's
+`__enter__`) runs outside the mark and is still reported twice; no SDK
+class does this. The
 `with_streaming_response` view is metered by a proxy that defers the
 `post_call` to the caller's `parse()` / `await parse()`, or to close
 (parsing only a body already read; the pre-call estimate when the body

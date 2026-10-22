@@ -836,7 +836,9 @@ proxy calls directly, so a client that is both wrapped and patched is
 metered once. When its resource class overrides a patched method and
 calls `super()`, the proxy resolves the override and runs it under the
 outer-call mark, so the patched base method it re-enters passes through
-instead of reporting the request a second time.
+instead of reporting the request a second time. An override that defers
+its `super()` call into an object it returns (a context manager's
+`__enter__`) runs outside the mark and is still reported twice.
 
 Idempotency: a class carrying its sentinel is skipped. Safe across
 multiple `patch` / `unpatch` cycles.

@@ -49,7 +49,10 @@ calls the resource's original methods, so a wrapped client is metered
 exactly once. When the resource class overrides a patched method and
 calls ``super()``, the proxy resolves the override and runs it under
 the outer-call mark, so the patched base method it re-enters passes
-through instead of reporting the request a second time.
+through instead of reporting the request a second time. An override
+that defers its ``super()`` call into an object it returns (a context
+manager's ``__enter__``) runs outside the mark and is still reported
+twice.
 
 Platform attribution: every ``post_call`` carries the platform the
 client talks to under ``provider_metadata.platform`` (``anthropic``,
@@ -951,7 +954,10 @@ def _installed(cls: type, name: str, wrapper: Any) -> bool:
 def _under_outer_mark(fn: Any) -> Any:
     """``fn`` run under the outer-call mark (see ``base.outer_intercept``),
     including the await of a coroutine it returns, so a patched resource
-    method it reaches hands the call to the SDK untouched."""
+    method it reaches hands the call to the SDK untouched. An override
+    that returns something else (a context manager or generator) and
+    calls ``super()`` only later, when that object is used, runs outside
+    the mark, and that request is reported twice."""
 
     @functools.wraps(fn)
     def run(*args: Any, **kwargs: Any) -> Any:

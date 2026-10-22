@@ -1195,6 +1195,77 @@ def test_wrap_then_patch_meters_once_even_with_an_override_calling_super(
     assert len(_post_calls(session)) == 1
 
 
+def _overriding_resource(is_async: bool) -> Any:
+    """A Messages subclass whose create() and stream() override the SDK's
+    and call super(), as a framework's own resource class might."""
+    from anthropic.resources.messages.messages import AsyncMessages, Messages
+
+    if is_async:
+
+        class _AsyncOverriding(AsyncMessages):
+            async def create(self, **kwargs: Any) -> Any:  # type: ignore[override]
+                return await super().create(**kwargs)
+
+            def stream(self, **kwargs: Any) -> Any:  # type: ignore[override]
+                return super().stream(**kwargs)
+
+        return _AsyncOverriding
+
+    class _Overriding(Messages):
+        def create(self, **kwargs: Any) -> Any:  # type: ignore[override]
+            return super().create(**kwargs)
+
+        def stream(self, **kwargs: Any) -> Any:  # type: ignore[override]
+            return super().stream(**kwargs)
+
+    return _Overriding
+
+
+async def _override_create(wrapped: Any) -> None:
+    result = wrapped.messages.create(model=MODEL, max_tokens=8, messages=HI)
+    if inspect.isawaitable(result):
+        await result
+
+
+async def _override_stream(wrapped: Any) -> None:
+    manager = wrapped.messages.stream(model=MODEL, max_tokens=8, messages=HI)
+    if hasattr(manager, "__aenter__"):
+        async with manager as stream:
+            async for _ in stream:
+                pass
+        return
+    with manager as stream:
+        for _ in stream:
+            pass
+
+
+@pytest.mark.parametrize("call", [_override_create, _override_stream], ids=["create", "stream"])
+@pytest.mark.parametrize("name", ["Anthropic", "AsyncAnthropic"])
+def test_wrap_then_patch_meters_an_overriding_resource_once_sync_and_async(
+    monkeypatch: pytest.MonkeyPatch, name: str, call: Any
+) -> None:
+    """The override runs under the outer-call mark on every shape the
+    proxy forwards: a direct call, an awaited coroutine (async create),
+    and a stream() context manager whose request leaves inside the
+    override's super() call. One request, one pre_call, one post_call,
+    and the mark is gone afterwards."""
+    session = _make_session()
+    monkeypatch.setattr(flightdeck_sensor, "_session", session)
+    transport = _Transport()
+    client = _build(name, transport)
+    client.messages = _overriding_resource(name == "AsyncAnthropic")(client)
+    wrapped = ai.SensorAnthropic(client, session)
+    ai.patch_anthropic_classes(quiet=True)
+    try:
+        asyncio.run(call(wrapped))
+    finally:
+        ai.unpatch_anthropic_classes()
+    assert len(transport.requests) == 1
+    assert len(_events_of(session, "pre_call")) == 1
+    assert len(_post_calls(session)) == 1
+    assert not base.outer_intercept_active()
+
+
 def test_subclass_overriding_create_and_calling_super_is_metered_once(session: Session) -> None:
     """A resource subclass that overrides create() and calls super() reaches
     the patched parent through the wrapper; the proxy must call the

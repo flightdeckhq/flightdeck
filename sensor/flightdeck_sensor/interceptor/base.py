@@ -414,7 +414,11 @@ def _is_provider_failure(exc_val: BaseException | None) -> bool:
 
 
 # Modules whose exceptions mean the stream or its transport failed.
-_TRANSPORT_MODULES = frozenset({"httpx", "httpcore", "anyio", "h11", "anthropic", "openai"})
+# httpx2 / httpcore2 are the transport of the anthropic 2.x and openai
+# 3.x SDKs; h2 raises for HTTP/2 connections on either transport.
+_TRANSPORT_MODULES = frozenset(
+    {"httpx", "httpcore", "httpx2", "httpcore2", "anyio", "h11", "h2", "anthropic", "openai"}
+)
 
 
 # Stands in for a stream the finalizer dropped: it has no attributes, so

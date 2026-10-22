@@ -227,8 +227,11 @@ if _ANTHROPIC_AVAILABLE:
 # disabling the whole interceptor; the layout canary test pins the two
 # spellings to each other.
 _RAW_RESPONSE_HEADER = "X-Stainless-Raw-Response"
-_RAW_MODE_READ = "true"
 _RAW_MODE_STREAM = "stream"
+# The raw view's value: "true" up to the 0.x SDKs, "raw" from 2.x. Both
+# read the body before the caller gets the response; only "stream"
+# leaves it unread.
+_RAW_MODES_READ = frozenset({"true", "raw"})
 
 # Sentinel attribute on a patched resource class, holding the original
 # methods so unpatch can restore them and SensorMessages can bypass the
@@ -694,6 +697,41 @@ class SensorMessages:
         )
         return _deferred_proxy(response, call)
 
+    def _async_raw_read(self, real_fn: Any, kwargs: dict[str, Any]) -> Any:
+        """A call through an async client's raw view, metered like a plain
+        call. From the 2.x SDKs the view returns an ``AsyncAPIResponse``
+        whose ``parse()`` is a coroutine; its body is already read, so the
+        sensor awaits that parse (no network, and the SDK caches the
+        result for the caller's own ``parse()``), meters the parsed
+        message and hands the caller the response itself. A body that
+        fails to parse is metered with the estimate and the caller's own
+        ``parse()`` raises, exactly as without the sensor. A response
+        with a synchronous ``parse()`` (the 0.x ``LegacyAPIResponse``) is
+        metered as returned."""
+        kept: dict[str, Any] = {}
+
+        async def _read(**call_kwargs: Any) -> Any:
+            response = await real_fn(**call_kwargs)
+            parse = getattr(response, "parse", None)
+            if not inspect.iscoroutinefunction(parse):
+                return response
+            kept["response"] = response
+            headers = getattr(response, "headers", None)
+            try:
+                parsed = await parse()
+            except Exception:
+                # The caller's own parse() raises this, as it would without
+                # the sensor; the call itself succeeded and is metered with
+                # the estimate, as on the 0.x raw view.
+                return _ParsedRawResponse(None, headers)
+            return _ParsedRawResponse(parsed, headers)
+
+        async def _call() -> Any:
+            result = await base.call_async(_read, kwargs, self._session, self._provider)
+            return kept.get("response", result)
+
+        return _call()
+
     def create(self, **kwargs: Any) -> Any:
         """Intercept messages.create() -- sync or async depending on client type.
 
@@ -716,8 +754,10 @@ class SensorMessages:
         if base.outer_intercept_active():
             return real_fn(**kwargs)
         raw_mode = _raw_response_mode(kwargs)
-        if raw_mode == _RAW_MODE_STREAM or (raw_mode == _RAW_MODE_READ and kwargs.get("stream")):
+        if raw_mode == _RAW_MODE_STREAM or (raw_mode in _RAW_MODES_READ and kwargs.get("stream")):
             return self._deferred(real_fn, kwargs)
+        if raw_mode in _RAW_MODES_READ and self._is_async:
+            return self._async_raw_read(real_fn, kwargs)
         if kwargs.get("stream"):
             # Opened eagerly: the unguarded SDK sends the request inside
             # create(), so provider errors must surface here, not at the
@@ -763,8 +803,11 @@ class SensorMessages:
         # it: hand the call to the SDK untouched (see base.outer_intercept).
         if base.outer_intercept_active():
             return real_fn(**kwargs)
-        if _raw_response_mode(kwargs) == _RAW_MODE_STREAM:
+        raw_mode = _raw_response_mode(kwargs)
+        if raw_mode == _RAW_MODE_STREAM:
             return self._deferred(real_fn, kwargs)
+        if raw_mode in _RAW_MODES_READ and self._is_async:
+            return self._async_raw_read(real_fn, kwargs)
         if self._is_async:
             return base.call_async(real_fn, kwargs, self._session, self._provider)
         return base.call(real_fn, kwargs, self._session, self._provider)

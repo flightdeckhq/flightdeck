@@ -72,6 +72,7 @@ import time
 import types
 from typing import TYPE_CHECKING, Any
 
+from flightdeck_sensor.core.errors import classify_stop_reason
 from flightdeck_sensor.interceptor import base
 from flightdeck_sensor.providers.openai import OpenAIProvider
 
@@ -124,6 +125,27 @@ def _billed_completion_of(exc: BaseException) -> Any | None:
     return None
 
 
+class _CarriedCompletion:
+    """A completion a parse failure carries, metered with the HTTP
+    response it came from: ``headers`` are the response's own (request
+    id, rate limits), never a field the provider's body might hold under
+    that name; every other attribute is the completion's."""
+
+    def __init__(self, completion: Any, headers: Any) -> None:
+        self._completion = completion
+        self.headers = headers
+
+    def model_dump(self, **kwargs: Any) -> Any:
+        return self._completion.model_dump(**kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        # Single-underscore names are forwarded on purpose: the SDK stamps
+        # the request id on the completion as ``_request_id``.
+        if name.startswith("__"):
+            raise AttributeError(name)
+        return getattr(self._completion, name)
+
+
 def _answered_body(raw: Any) -> Any | None:
     """The provider's answer behind a raw response whose parse failed, as
     a plain object the intercept can meter: the JSON body's fields
@@ -139,6 +161,16 @@ def _answered_body(raw: Any) -> Any | None:
         return types.SimpleNamespace(**fields, headers=getattr(raw, "headers", None))
     except Exception:
         return None
+
+
+def _stop_reason_already_reported(provider: OpenAIProvider, answer: Any) -> bool:
+    """Whether the post_call built from ``answer`` filed its own llm_error
+    for a stop reason that means the call failed. Never raises."""
+    try:
+        reason = provider.response_stop_reason(answer)
+        return classify_stop_reason(reason, provider=provider.name) is not None
+    except Exception:
+        return False
 
 
 class _ParseOutcome:
@@ -204,7 +236,9 @@ def _call_parse(
             parsed = response.parse()
         except Exception as exc:
             answer = _billed_completion_of(exc)
-            if answer is None:
+            if answer is not None:
+                answer = _CarriedCompletion(answer, getattr(response, "headers", None))
+            else:
                 answer = _answered_body(response)
             if answer is None:
                 if return_raw:
@@ -228,7 +262,13 @@ def _call_parse(
         if outcome.exc is None:
             return response
         latency_ms = int((time.monotonic() - t0) * 1000)
-        base._emit_error(session, provider, outcome.exc, latency_ms, kwargs)
+        # ``response`` is the answer the post_call was built from. When its
+        # own stop reason already filed the llm_error (openai 3.x hands a
+        # content-filtered completion to ContentFilterFinishReasonError, so
+        # the post_call sees finish_reason content_filter), the exception
+        # is the same failure and is not reported a second time.
+        if not _stop_reason_already_reported(provider, response):
+            base._emit_error(session, provider, outcome.exc, latency_ms, kwargs)
         if return_raw:
             return outcome.raw
         raise outcome.exc

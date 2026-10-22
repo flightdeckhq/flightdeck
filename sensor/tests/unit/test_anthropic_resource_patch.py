@@ -719,6 +719,13 @@ async def test_async_streaming_response_closed_unparsed_reports_the_estimate(
     assert posts[0]["tokens_output"] == 0
 
 
+async def _resolved(value: Any) -> Any:
+    """``value``, awaited when it is awaitable: a raw response's
+    ``parse()`` is synchronous on the 0.x SDKs and a coroutine on an async
+    client from 2.x."""
+    return await value if inspect.isawaitable(value) else value
+
+
 async def test_async_parse_is_awaited_not_called(session: Session) -> None:
     """The async streaming-response ``parse()`` is a coroutine; the sensor
     must await it through the caller, never call it and discard it."""
@@ -730,7 +737,9 @@ async def test_async_parse_is_awaited_not_called(session: Session) -> None:
         ) as response:
             message = await response.parse()
         raw = await client.messages.with_raw_response.create(model=MODEL, max_tokens=8, messages=HI)
-        assert raw.parse().usage.output_tokens == OUTPUT_TOKENS
+        # 0.x hands an async client a raw response with a synchronous
+        # parse(); from 2.x it is a coroutine.
+        assert (await _resolved(raw.parse())).usage.output_tokens == OUTPUT_TOKENS
     assert message.usage.output_tokens == OUTPUT_TOKENS
     assert not [w for w in caught if "never awaited" in str(w.message)]
     posts = _post_calls(session)
@@ -772,13 +781,40 @@ def test_raw_response_with_stream_true_is_metered_at_parse(session: Session) -> 
     assert "streaming" in posts[0]
 
 
+class _UnparseableBody(_Transport):
+    """A 200 whose body is not the JSON message (a proxy's HTML page)."""
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        return httpx.Response(
+            200,
+            headers={"content-type": "application/json", "request-id": "req_test"},
+            content=b"<html>proxy</html>",
+        )
+
+
+async def test_async_raw_view_with_an_unparseable_body_behaves_as_without_the_sensor(
+    session: Session,
+) -> None:
+    """The raw view hands back the response and the caller's own parse()
+    raises, as without the sensor; the call is metered with the estimate,
+    never reported as a failed request."""
+    client = _build("AsyncAnthropic", _UnparseableBody())
+    raw = await client.messages.with_raw_response.create(model=MODEL, max_tokens=8, messages=HI)
+    assert raw.headers["request-id"] == "req_test"
+    with pytest.raises(ValueError):  # json.JSONDecodeError on either SDK generation
+        await _resolved(raw.parse())
+    assert len(_post_calls(session)) == 1
+    assert not _events_of(session, "llm_error")
+
+
 async def test_async_raw_response_with_stream_true_is_metered_at_parse(session: Session) -> None:
     client = _build("AsyncAnthropic", _Transport())
     raw = await client.messages.with_raw_response.create(
         model=MODEL, max_tokens=8, messages=HI, stream=True
     )
     assert not _post_calls(session)
-    stream = raw.parse()
+    stream = await _resolved(raw.parse())
     assert isinstance(stream, base.GuardedAsyncStream)
     async for _ in stream:
         pass

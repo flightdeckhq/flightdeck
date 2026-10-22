@@ -11282,3 +11282,36 @@ it if one ever does.
 **Rejected:** `npm` overrides to drop `next` from the tree (fragile and
 hides the dependency rather than removing it); `@fontsource` packages
 (another dependency for two static files).
+
+---
+
+## D200 -- The dashboard moves to React 19 with motion 13.5, not 14
+
+**Date:** 2026-10-22
+
+**Decision:** React and React DOM 19.3.1, React Testing Library 16 with
+`@testing-library/dom` 10, jest-dom 7, zustand 5.0.15 (`~5.0.15`) and
+lucide-react 1.53.0 (`~1.53.0`). Animation moves from `framer-motion` 11
+to its successor package `motion`, pinned to the 13.5 line (`~13.5.1`),
+with imports from `motion/react`.
+
+**Reasoning:** React 19 is the supported line; 19.3.1 is the patch
+release shipped alongside backports to 19.1 and 19.2. The code needed
+three changes: two `useRef` calls that React 19's types require to pass
+an initial value, and the per-agent modal's scroll-to-now snap, which
+read a plain ref in the commit that opened the dialog; under React 19
+the dialog's portal content mounts in a later commit, so the ref was
+still null and the snap never ran (the E2E suite caught it). The modal
+now holds the scroll element in state through a callback ref. Every
+zustand selector returns a single stored field, a primitive, or the
+whole store, so zustand 5's stricter equality, which loops on selectors
+that build a new object or array per call, does not apply. `motion` 14
+was three weeks old with nine releases in that time; 13.5.1 is the last
+release of the previous major, supports React 19, and is what the
+dashboard's four animated components need. lucide-react and zustand use
+releases at least two weeks old rather than the same-week latest, held
+by tilde ranges.
+
+**Rejected:** `motion` 14 now (still settling; the dependency automation
+added to CI next proposes it). Staying on React 18 (out of active
+support, and React Testing Library 16 and current Radix target 19).

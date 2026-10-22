@@ -3278,7 +3278,7 @@ Modal layout:
 - **Event circle click** — sets the modal's local
   `selectedEvent` state which mounts the existing
   `EventDetailDrawer` inside the Dialog content. The drawer
-  is a `framer-motion` position-fixed overlay (not a nested
+  is a `motion` (`motion/react`) position-fixed overlay (not a nested
   Radix Dialog), so it stacks above the modal without
   Radix focus-trap or backdrop-click conflicts. Closing the
   drawer clears `selectedEvent`; the modal stays open.
@@ -3291,7 +3291,7 @@ Modal layout:
 ### Agent drawer
 
 `dashboard/src/components/agents/AgentDrawer.tsx` — a right-rail
-slide-in panel (520px, the same width and `framer-motion` slide
+slide-in panel (520px, the same width and `motion` slide
 as `SessionDrawer`). It is mounted once at the app level and
 driven entirely by the `?agent_drawer=<agent_id>` URL param, so
 it opens identically from the `/agents` table (row click) and

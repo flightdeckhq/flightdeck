@@ -272,14 +272,18 @@ export function PerAgentSwimlaneModal({
   // pole surfaces at the right edge of the visible swim
   // viewport in the same place Fleet shows it. Manual user
   // scrolling between these events is preserved.
-  const swimScrollRef = useRef<HTMLDivElement | null>(null);
+  //
+  // The scroll container lives in the dialog's portal, which can
+  // mount in a later commit than the one that flips ``open``; a
+  // plain ref read in that first commit is still null. Holding the
+  // element in state (set by a callback ref) re-runs the snap when
+  // it actually attaches.
+  const [swimScrollEl, setSwimScrollEl] = useState<HTMLDivElement | null>(null);
   const open = agent !== null;
   useLayoutEffect(() => {
-    if (!open) return;
-    const el = swimScrollRef.current;
-    if (!el) return;
-    el.scrollLeft = el.scrollWidth - el.clientWidth;
-  }, [open, timeRange, scopedSessionIdsKey]);
+    if (!open || !swimScrollEl) return;
+    swimScrollEl.scrollLeft = swimScrollEl.scrollWidth - swimScrollEl.clientWidth;
+  }, [open, swimScrollEl, timeRange, scopedSessionIdsKey]);
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -501,7 +505,7 @@ export function PerAgentSwimlaneModal({
               }}
             >
               <div
-                ref={swimScrollRef}
+                ref={setSwimScrollEl}
                 data-testid="per-agent-swimlane-modal-scroll"
                 style={{ flex: 1, minHeight: 0, overflow: "auto" }}
               >
@@ -530,7 +534,7 @@ export function PerAgentSwimlaneModal({
 
             {/* Event detail drawer — mounts inside the Dialog so
                 it visually layers above the modal content.
-                EventDetailDrawer is a framer-motion position-
+                EventDetailDrawer is a motion (Framer Motion) position-
                 fixed overlay (not a nested Radix Dialog), so no
                 portal coordination is required; the drawer
                 overlays the page on its own and the modal's

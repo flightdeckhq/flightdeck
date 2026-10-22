@@ -295,7 +295,7 @@ export function Investigate() {
   // Refresh state.
   const [autoRefreshMs, setAutoRefreshMs] = useState(0);
   const [isRefreshing, setIsRefreshing] = useState(false);
-  const autoRefreshRef = useRef<ReturnType<typeof setInterval>>();
+  const autoRefreshRef = useRef<ReturnType<typeof setInterval> | undefined>(undefined);
 
   // Resizable left sidebar — pointer-event drag, localStorage
   // round-trip. Lifted verbatim from the session-grain page so the
@@ -358,7 +358,7 @@ export function Investigate() {
   // box.
   const [searchInput, setSearchInput] = useState(urlState.q);
 
-  const abortRef = useRef<AbortController>();
+  const abortRef = useRef<AbortController | undefined>(undefined);
 
   // Legacy `?session=` → `?run=` redirect. A bookmark from the
   // session-grain page keeps resolving.

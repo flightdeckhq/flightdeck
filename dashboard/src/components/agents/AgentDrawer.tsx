@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence, motion } from "motion/react";
 import { Link } from "react-router";
 import { Activity, ListTree } from "lucide-react";
 import { useFleetStore } from "@/store/fleet";

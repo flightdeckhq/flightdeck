@@ -1,5 +1,8 @@
-import { useEffect, useRef, useCallback } from "react";
+import { useEffect, useRef } from "react";
 
+/** First reconnect delay; doubles on each failed attempt. */
+const INITIAL_BACKOFF_MS = 1000;
+/** Ceiling for the reconnect delay. */
 const MAX_BACKOFF_MS = 30_000;
 
 /**
@@ -22,9 +25,6 @@ export function useWebSocket(
   url: string | null,
   onMessage: (data: string) => void
 ) {
-  const wsRef = useRef<WebSocket | null>(null);
-  const backoffRef = useRef(1000);
-  const mountedRef = useRef(true);
   const handlerRef = useRef(onMessage);
 
   // Keep the handler ref in sync without triggering connect.
@@ -32,40 +32,47 @@ export function useWebSocket(
     handlerRef.current = onMessage;
   }, [onMessage]);
 
-  const connect = useCallback(() => {
-    if (!mountedRef.current) return;
-    if (url == null) return;
-
-    const ws = new WebSocket(url);
-    wsRef.current = ws;
-
-    ws.onopen = () => {
-      backoffRef.current = 1000; // reset on successful connect
-    };
-
-    ws.onmessage = (event: MessageEvent) => {
-      handlerRef.current(event.data as string);
-    };
-
-    ws.onclose = () => {
-      if (!mountedRef.current) return;
-      const delay = backoffRef.current;
-      backoffRef.current = Math.min(delay * 2, MAX_BACKOFF_MS);
-      setTimeout(connect, delay);
-    };
-
-    ws.onerror = () => {
-      ws.close();
-    };
-  }, [url]);
-
+  // One connection loop per url. ``active`` is cleared on unmount or
+  // url change so a socket closing during teardown does not schedule
+  // a reconnect, and a pending reconnect timer is cancelled.
   useEffect(() => {
-    mountedRef.current = true;
+    if (url == null) return;
+    let active = true;
+    let ws: WebSocket | null = null;
+    let backoff = INITIAL_BACKOFF_MS;
+    let reconnectTimer: number | undefined;
+
+    const connect = () => {
+      if (!active) return;
+      const socket = new WebSocket(url);
+      ws = socket;
+
+      socket.onopen = () => {
+        backoff = INITIAL_BACKOFF_MS; // reset on successful connect
+      };
+
+      socket.onmessage = (event: MessageEvent) => {
+        handlerRef.current(event.data as string);
+      };
+
+      socket.onclose = () => {
+        if (!active) return;
+        const delay = backoff;
+        backoff = Math.min(delay * 2, MAX_BACKOFF_MS);
+        reconnectTimer = window.setTimeout(connect, delay);
+      };
+
+      socket.onerror = () => {
+        socket.close();
+      };
+    };
+
     connect();
 
     return () => {
-      mountedRef.current = false;
-      wsRef.current?.close();
+      active = false;
+      window.clearTimeout(reconnectTimer);
+      ws?.close();
     };
-  }, [connect]);
+  }, [url]);
 }

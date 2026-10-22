@@ -120,6 +120,11 @@ server.
 
 ### Fixed
 
+- **Dashboard: Fleet sidebar rows for coding agents hid the agent
+  name.** The logo, both pills and the session count did not fit the
+  default 240 px sidebar, so the name was squeezed to zero width and
+  the pills ran under the row's stop-all and directives buttons. The
+  row's label now wraps its trailing pills to a second line instead.
 - **Dashboard: every page requested `/v1/agents//summary`.** The
   per-agent modal stays mounted while closed and asked for a summary
   with an empty agent id, which logged a 404 on each page load. An
@@ -382,6 +387,14 @@ server.
 
 ### Changed
 
+- **Dashboard lint and types:** ESLint 10 with
+  `eslint-plugin-react-hooks` 7 and TypeScript 6 (the deprecated
+  `baseUrl` is gone; target and lib move to ES2022). The new hook rules'
+  findings are fixed (chart tick components moved out of render, a
+  `useNow` clock instead of `Date.now()` during render, a WebSocket
+  reconnect loop that also cancels a pending reconnect on unmount), and
+  `react-hooks/set-state-in-effect` reports as a warning until its call
+  sites are rewritten.
 - **Dashboard runs on React 19.** React and React DOM 19.3, React
   Testing Library 16 (with `@testing-library/dom` 10) and jest-dom 7,
   zustand 5, lucide-react 1.53, and `motion` 13.5 in place of

@@ -11315,3 +11315,40 @@ by tilde ranges.
 **Rejected:** `motion` 14 now (still settling; the dependency automation
 added to CI next proposes it). Staying on React 18 (out of active
 support, and React Testing Library 16 and current Radix target 19).
+
+---
+
+## D201 -- ESLint 10 and TypeScript 6; set-state-in-effect lands as a warning first
+
+**Date:** 2026-10-22
+
+**Decision:** The dashboard lints with ESLint 10, `@eslint/js` 10,
+`typescript-eslint` 8.71 and `eslint-plugin-react-hooks` 7, and
+type-checks with TypeScript 6.0 (the newest line `typescript-eslint`
+supports). `baseUrl` is removed from `tsconfig.json` (paths resolve
+relative to the file) and target / lib move to ES2022, which Vite 8's
+default build target already covers and which types `Error`'s `cause`.
+Every finding of the new React Compiler rules is fixed except
+`react-hooks/set-state-in-effect`, which reports as a warning; its 48
+call sites are rewritten in the next dashboard change, which sets it
+back to an error.
+
+The Fleet sidebar row's label wraps instead of overflowing. Pills keep
+their full width (the earlier decision that pills never truncate
+stands); the agent name claims at least 64 px of its line and
+truncates beyond its own width.
+
+**Reasoning:** The 13 other findings were local and mechanical; the 48
+`set-state-in-effect` sites each need a judgement about whether the
+state is derived (compute it in render) or genuinely an effect, across
+30 files, and belong in a change of their own rather than in the
+toolchain bump. Hiding the CODING AGENT pill at narrow widths would
+also have fixed the sidebar, but it removes information the row shows
+today and reverses the pills decision; wrapping keeps every element. The cost is height: at the default
+240 px width a coding-agent row takes two lines, so the flavor list
+(capped at 240 px) shows about half as many of those rows before it
+scrolls.
+
+**Rejected:** Disabling `set-state-in-effect` (it would stay off).
+TypeScript 7 (`typescript-eslint` does not support it yet).
+

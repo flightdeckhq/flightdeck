@@ -33,7 +33,7 @@ export function PolicyEventDetails({ event }: { event: AgentEvent }) {
 
   // Human one-liner, distinct per type. Reads naturally so a reader
   // can paste it into a Slack thread without composing.
-  let plainEnglish = "";
+  let plainEnglish: string;
   switch (event.event_type) {
     case "policy_warn":
       plainEnglish =

@@ -717,6 +717,12 @@ function SidebarRow({
   );
 }
 
+/** Width the agent name keeps on its line in a Fleet sidebar row
+ *  before a pill wraps to the next line: about eight characters of
+ *  the 12 px monospace label, enough to tell agents apart at the
+ *  default 240 px sidebar width. */
+const SIDEBAR_NAME_MIN_PX = 64;
+
 function FlavorItem({
   flavor,
   isActive,
@@ -812,7 +818,15 @@ function FlavorItem({
       }
       onClick={() => onFlavorClick?.(flavor.flavor)}
     >
-      <div className="flex items-center gap-2 min-w-0">
+      {/* The label group wraps instead of overflowing: pills keep
+          their full width, so when the name, both pills and the count
+          do not fit beside the action buttons, the trailing items move
+          to a second line. Without the wrap the group overflowed under
+          the action buttons and squeezed the name to zero width. */}
+      <div
+        data-testid="fleet-sidebar-agent-label"
+        className="flex flex-wrap items-center gap-x-2 gap-y-1 min-w-0"
+      >
         {/* ClaudeCode logo keys off ``client_type``
             (authoritative) with the legacy ``flavor === "claude-code"``
             string as a fallback for rows built before client_type
@@ -829,7 +843,15 @@ function FlavorItem({
             full value as a native tooltip on narrow sidebars. */}
         <TruncatedText
           className="font-mono text-xs"
-          style={{ flexShrink: 1 }}
+          style={{
+            // Line breaking uses the flex basis, so the name claims at
+            // least SIDEBAR_NAME_MIN_PX of its line before a pill
+            // wraps; it then grows up to its own width and truncates
+            // with an ellipsis beyond that.
+            flex: `1 1 ${SIDEBAR_NAME_MIN_PX}px`,
+            minWidth: 0,
+            maxWidth: "max-content",
+          }}
           text={flavor.agent_name ?? flavor.flavor}
         />
         {/* Two sibling pills:
@@ -839,8 +861,8 @@ function FlavorItem({
               - client_type pill: Claude Code / Sensor, so the
                 sidebar reads "what tool produced this" at a
                 glance without hovering the icon.
-            Both shrink to ellipsis at narrow sidebar widths; the name
-            keeps its default shrink-1 so the pills trim first. */}
+            Both keep their full width and wrap to the next line when
+            the row is too narrow; the name truncates instead. */}
         {sidebarWidth >= FLEET_PILL_HIDE_MIN_WIDTH &&
           flavor.agent_type === AgentType.Coding && (
             // Pills never truncate:
@@ -875,7 +897,10 @@ function FlavorItem({
           truncate at the default 240px sidebar width. Both buttons
           carry a title attribute so the action is discoverable on
           hover and a data-testid for tests. */}
-      <div className="flex items-center gap-1 shrink-0">
+      <div
+        data-testid="fleet-sidebar-agent-actions"
+        className="flex items-center gap-1 shrink-0"
+      >
       {hasDirectives && (
         <Dialog
           open={directivesDialogOpen}

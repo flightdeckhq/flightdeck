@@ -40,6 +40,50 @@ function colorForProvider(name: string): string {
   return "var(--text-muted)";
 }
 
+/** Custom Y-axis tick: renders the provider brand-mark next to the
+ *  capitalised label via ``ProviderIconSvg`` so the icon source of
+ *  truth stays in ``provider-icons.ts``. Recharts hands us
+ *  ``(x, y)`` at the axis line intersection with the row centreline;
+ *  we draw to the left with ``text-anchor="end"`` so the label's
+ *  right edge sits 6px clear of the axis and the icon hugs the
+ *  label's leading edge. Unknown dimensions render a muted circle
+ *  fallback (provided by ProviderIconSvg for null icons). */
+const ProviderTick = ({
+  x,
+  y,
+  payload,
+}: {
+  x?: number;
+  y?: number;
+  payload?: { value: string };
+}) => {
+  const value = payload?.value ?? "";
+  const isKnown = value in PROVIDER_META;
+  const label = isKnown ? PROVIDER_META[value as Provider].label : value;
+  const cx = x ?? 0;
+  const cy = y ?? 0;
+  return (
+    <g>
+      <ProviderIconSvg
+        provider={value as Provider}
+        x={cx - 18}
+        y={cy - 6}
+        size={12}
+      />
+      <text
+        x={cx - 22}
+        y={cy}
+        dy={4}
+        textAnchor="end"
+        fill="var(--text-muted)"
+        fontSize={10}
+      >
+        {label}
+      </text>
+    </g>
+  );
+};
+
 /** Row 3 left -- horizontal bar chart of tokens per provider over the
  *  active period, sorted descending. Shares the provider color map so
  *  the anthropic / openai bars match the areas in the chart above. */
@@ -77,50 +121,6 @@ export function ProviderBarChart({
       }))
       .sort((a, b) => b.total - a.total);
   }, [data]);
-
-  /** Custom Y-axis tick: renders the provider brand-mark next to the
-   *  capitalised label via ``ProviderIconSvg`` so the icon source of
-   *  truth stays in ``provider-icons.ts``. Recharts hands us
-   *  ``(x, y)`` at the axis line intersection with the row centreline;
-   *  we draw to the left with ``text-anchor="end"`` so the label's
-   *  right edge sits 6px clear of the axis and the icon hugs the
-   *  label's leading edge. Unknown dimensions render a muted circle
-   *  fallback (provided by ProviderIconSvg for null icons). */
-  const ProviderTick = ({
-    x,
-    y,
-    payload,
-  }: {
-    x?: number;
-    y?: number;
-    payload?: { value: string };
-  }) => {
-    const value = payload?.value ?? "";
-    const isKnown = value in PROVIDER_META;
-    const label = isKnown ? PROVIDER_META[value as Provider].label : value;
-    const cx = x ?? 0;
-    const cy = y ?? 0;
-    return (
-      <g>
-        <ProviderIconSvg
-          provider={value as Provider}
-          x={cx - 18}
-          y={cy - 6}
-          size={12}
-        />
-        <text
-          x={cx - 22}
-          y={cy}
-          dy={4}
-          textAnchor="end"
-          fill="var(--text-muted)"
-          fontSize={10}
-        >
-          {label}
-        </text>
-      </g>
-    );
-  };
 
   return (
     <ChartCard

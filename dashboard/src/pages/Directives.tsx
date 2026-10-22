@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import type { CustomDirective, CustomDirectiveParameter } from "@/lib/types";
 import { fetchCustomDirectives, fetchFlavors, triggerCustomDirective } from "@/lib/api";
 import { useFleetStore } from "@/store/fleet";
+import { useNow } from "@/hooks/useNow";
 import { truncateSessionId } from "@/lib/events";
 import { formatRelativeTime } from "@/lib/time";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -19,6 +20,14 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 // Sentinel <Select> value meaning "no flavor filter". Radix Select cannot
 // use an empty string as an item value, so null maps to this token.
 const ALL_AGENTS_SENTINEL = "__all__";
+
+/** A directive whose handler registered within this window is shown
+ *  as "registered"; older ones as "may not respond". */
+const RECENT_REGISTRATION_MS = 10 * 60 * 1000;
+
+/** How often a directive card re-evaluates that window: a 30 s step
+ *  is a twentieth of it, fine-grained enough for a status label. */
+const REGISTRATION_CLOCK_TICK_MS = 30_000;
 
 const CODE_SNIPPET = `@flightdeck_sensor.directive(
     name="my_action",
@@ -185,8 +194,9 @@ function DirectiveCard({ directive }: { directive: CustomDirective }) {
     return result;
   }, [flavors, directive.flavor]);
 
+  const now = useNow(REGISTRATION_CLOCK_TICK_MS);
   const isRecentlyRegistered = directive.last_seen_at &&
-    Date.now() - new Date(directive.last_seen_at).getTime() < 10 * 60 * 1000;
+    now - new Date(directive.last_seen_at).getTime() < RECENT_REGISTRATION_MS;
   const [params, setParams] = useState<Record<string, unknown>>(() => {
     const defaults: Record<string, unknown> = {};
     for (const p of directive.parameters) {

@@ -24,6 +24,54 @@ interface LatencyDistributionProps {
 
 const TOP_N = 8;
 
+/** Custom X-axis tick: provider brand-mark + rotated model label.
+ *  Recharts hands us ``(x, y)`` at the tick intersection with the
+ *  axis line; we rotate the whole group ``-35°`` around that point
+ *  so the label flows up-left into free space above, then place the
+ *  icon in pre-rotation local space to the left of the text's end
+ *  anchor. Text width is estimated at ~6px per char at fontSize
+ *  10 -- short labels get their icon close by, long names push the
+ *  icon further out so the icon-to-text gap stays roughly
+ *  consistent. */
+const ICON_SIZE = 12;
+const ICON_GAP = 4;
+const ModelXTick = ({
+  x,
+  y,
+  payload,
+}: {
+  x?: number;
+  y?: number;
+  payload?: { value: string };
+}) => {
+  const value = payload?.value ?? "";
+  const estTextWidth = value.length * 6;
+  const iconX = -(estTextWidth + ICON_GAP + ICON_SIZE);
+  const iconY = -ICON_SIZE / 2;
+  const cx = x ?? 0;
+  const cy = y ?? 0;
+  return (
+    <g transform={`translate(${cx},${cy}) rotate(-35)`}>
+      <ProviderIconSvg
+        provider={getProvider(value)}
+        x={iconX}
+        y={iconY}
+        size={ICON_SIZE}
+      />
+      <text
+        x={-2}
+        y={0}
+        dy={4}
+        textAnchor="end"
+        fill="var(--text-muted)"
+        fontSize={10}
+      >
+        {value}
+      </text>
+    </g>
+  );
+};
+
 /** Row 5 right -- grouped bar chart showing p50 (lighter) and p95
  *  (accent) latency per model so the tail latency is immediately
  *  visible alongside the typical case. Uses the new latency_p50 and
@@ -81,54 +129,6 @@ export function LatencyDistribution({
       .sort((a, b) => b.p95 - a.p95)
       .slice(0, TOP_N);
   }, [p50.data, p95.data]);
-
-  /** Custom X-axis tick: provider brand-mark + rotated model label.
-   *  Recharts hands us ``(x, y)`` at the tick intersection with the
-   *  axis line; we rotate the whole group ``-35°`` around that point
-   *  so the label flows up-left into free space above, then place the
-   *  icon in pre-rotation local space to the left of the text's end
-   *  anchor. Text width is estimated at ~6px per char at fontSize
-   *  10 -- short labels get their icon close by, long names push the
-   *  icon further out so the icon-to-text gap stays roughly
-   *  consistent. */
-  const ICON_SIZE = 12;
-  const ICON_GAP = 4;
-  const ModelXTick = ({
-    x,
-    y,
-    payload,
-  }: {
-    x?: number;
-    y?: number;
-    payload?: { value: string };
-  }) => {
-    const value = payload?.value ?? "";
-    const estTextWidth = value.length * 6;
-    const iconX = -(estTextWidth + ICON_GAP + ICON_SIZE);
-    const iconY = -ICON_SIZE / 2;
-    const cx = x ?? 0;
-    const cy = y ?? 0;
-    return (
-      <g transform={`translate(${cx},${cy}) rotate(-35)`}>
-        <ProviderIconSvg
-          provider={getProvider(value)}
-          x={iconX}
-          y={iconY}
-          size={ICON_SIZE}
-        />
-        <text
-          x={-2}
-          y={0}
-          dy={4}
-          textAnchor="end"
-          fill="var(--text-muted)"
-          fontSize={10}
-        >
-          {value}
-        </text>
-      </g>
-    );
-  };
 
   return (
     <ChartCard

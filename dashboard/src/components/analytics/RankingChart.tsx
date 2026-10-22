@@ -31,52 +31,52 @@ interface RankingChartProps {
   series: AnalyticsSeries[];
 }
 
+/** Custom Y-axis tick: provider-icon leader + dimension label.
+ *  ``getProvider`` maps model names to a provider; dimensions that
+ *  aren't model-shaped (flavors, agent types on other ranking
+ *  charts) resolve to ``unknown`` and ProviderIconSvg renders a
+ *  muted circle bullet so the row still aligns with the icon
+ *  column. */
+const DimensionTick = ({
+  x,
+  y,
+  payload,
+}: {
+  x?: number;
+  y?: number;
+  payload?: { value: string };
+}) => {
+  const value = payload?.value ?? "";
+  const cx = x ?? 0;
+  const cy = y ?? 0;
+  const iconX = cx - Y_AXIS_WIDTH + 2;
+  const textX = iconX + ICON_SIZE + ICON_GAP;
+  return (
+    <g>
+      <ProviderIconSvg
+        provider={getProvider(value)}
+        x={iconX}
+        y={cy - ICON_SIZE / 2}
+        size={ICON_SIZE}
+      />
+      <text
+        x={textX}
+        y={cy}
+        dy={4}
+        textAnchor="start"
+        fill="var(--text-muted)"
+        fontSize={10}
+      >
+        {value}
+      </text>
+    </g>
+  );
+};
+
 export function RankingChart({ series }: RankingChartProps) {
   const chartData = series
     .map((s) => ({ name: s.dimension, total: s.total }))
     .sort((a, b) => b.total - a.total);
-
-  /** Custom Y-axis tick: provider-icon leader + dimension label.
-   *  ``getProvider`` maps model names to a provider; dimensions that
-   *  aren't model-shaped (flavors, agent types on other ranking
-   *  charts) resolve to ``unknown`` and ProviderIconSvg renders a
-   *  muted circle bullet so the row still aligns with the icon
-   *  column. */
-  const DimensionTick = ({
-    x,
-    y,
-    payload,
-  }: {
-    x?: number;
-    y?: number;
-    payload?: { value: string };
-  }) => {
-    const value = payload?.value ?? "";
-    const cx = x ?? 0;
-    const cy = y ?? 0;
-    const iconX = cx - Y_AXIS_WIDTH + 2;
-    const textX = iconX + ICON_SIZE + ICON_GAP;
-    return (
-      <g>
-        <ProviderIconSvg
-          provider={getProvider(value)}
-          x={iconX}
-          y={cy - ICON_SIZE / 2}
-          size={ICON_SIZE}
-        />
-        <text
-          x={textX}
-          y={cy}
-          dy={4}
-          textAnchor="start"
-          fill="var(--text-muted)"
-          fontSize={10}
-        >
-          {value}
-        </text>
-      </g>
-    );
-  };
 
   return (
     <ResponsiveContainer width="100%" height={260}>

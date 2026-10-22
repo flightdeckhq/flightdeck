@@ -346,12 +346,11 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   // Filter the fleet-wide custom directive list down to ones
   // registered for this session's flavor. The Directives tab button
   // and its content are gated on this being non-empty.
+  const sessionFlavor = data?.session.flavor;
   const flavorDirectives = useMemo(() => {
-    if (!data?.session.flavor) return [];
-    return customDirectives.filter(
-      (d) => d.flavor === data.session.flavor,
-    );
-  }, [customDirectives, data?.session.flavor]);
+    if (!sessionFlavor) return [];
+    return customDirectives.filter((d) => d.flavor === sessionFlavor);
+  }, [customDirectives, sessionFlavor]);
 
   // Gate the Sub-agents tab. The tab surfaces when EITHER
   // this session is a sub-agent (has parent_session_id) OR it has

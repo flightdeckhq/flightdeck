@@ -34,6 +34,48 @@ interface ModelBarChartProps {
   filterProvider: string | null;
 }
 
+/** Custom Y-axis tick: provider icon (left) + model name. Recharts
+ *  hands us ``(x, y)`` at the axis line intersection with the row
+ *  centreline; we anchor the icon at the far-left edge of the
+ *  reserved width and the text right after it with
+ *  ``text-anchor: start`` so short and long labels both read left
+ *  to right from under the icon. */
+const ModelTick = ({
+  x,
+  y,
+  payload,
+}: {
+  x?: number;
+  y?: number;
+  payload?: { value: string };
+}) => {
+  const value = payload?.value ?? "";
+  const cx = x ?? 0;
+  const cy = y ?? 0;
+  const iconX = cx - Y_AXIS_WIDTH + 2;
+  const textX = iconX + ICON_SIZE + ICON_GAP;
+  return (
+    <g>
+      <ProviderIconSvg
+        provider={getProvider(value)}
+        x={iconX}
+        y={cy - ICON_SIZE / 2}
+        size={ICON_SIZE}
+      />
+      <text
+        x={textX}
+        y={cy}
+        dy={4}
+        textAnchor="start"
+        fill="var(--text-muted)"
+        fontSize={10}
+      >
+        {value}
+      </text>
+    </g>
+  );
+};
+
 /** Row 3 right -- horizontal bar chart of tokens per model, capped
  *  at top N (8) to keep the card readable on large fleets. Each bar
  *  is colored by the model's provider so the reader can see which
@@ -67,48 +109,6 @@ export function ModelBarChart({
       .sort((a, b) => b.total - a.total)
       .slice(0, TOP_N);
   }, [data]);
-
-  /** Custom Y-axis tick: provider icon (left) + model name. Recharts
-   *  hands us ``(x, y)`` at the axis line intersection with the row
-   *  centreline; we anchor the icon at the far-left edge of the
-   *  reserved width and the text right after it with
-   *  ``text-anchor: start`` so short and long labels both read left
-   *  to right from under the icon. */
-  const ModelTick = ({
-    x,
-    y,
-    payload,
-  }: {
-    x?: number;
-    y?: number;
-    payload?: { value: string };
-  }) => {
-    const value = payload?.value ?? "";
-    const cx = x ?? 0;
-    const cy = y ?? 0;
-    const iconX = cx - Y_AXIS_WIDTH + 2;
-    const textX = iconX + ICON_SIZE + ICON_GAP;
-    return (
-      <g>
-        <ProviderIconSvg
-          provider={getProvider(value)}
-          x={iconX}
-          y={cy - ICON_SIZE / 2}
-          size={ICON_SIZE}
-        />
-        <text
-          x={textX}
-          y={cy}
-          dy={4}
-          textAnchor="start"
-          fill="var(--text-muted)"
-          fontSize={10}
-        >
-          {value}
-        </text>
-      </g>
-    );
-  };
 
   return (
     <ChartCard

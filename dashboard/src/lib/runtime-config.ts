@@ -144,6 +144,7 @@ async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
     const cause = err instanceof Error ? err.message : String(err);
     throw new Error(
       `No access token configured. Failed to fetch ${RUNTIME_CONFIG_URL}: ${cause}. ${helpHint}`,
+      { cause: err },
     );
   }
   if (!resp.ok) {
@@ -158,6 +159,7 @@ async function fetchRuntimeConfig(): Promise<RuntimeConfig> {
     const cause = err instanceof Error ? err.message : String(err);
     throw new Error(
       `Malformed ${RUNTIME_CONFIG_URL}: not valid JSON (${cause}). ${helpHint}`,
+      { cause: err },
     );
   }
   if (

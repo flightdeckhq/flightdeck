@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Timeline } from "@/components/timeline/Timeline";
@@ -7,6 +7,7 @@ import { AgentStatusBadge } from "@/components/timeline/AgentStatusBadge";
 import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { LiveFeed } from "@/components/fleet/LiveFeed";
 import { useAgentSummary } from "@/hooks/useAgentSummary";
+import { useNow } from "@/hooks/useNow";
 import { eventsCache } from "@/hooks/useSessionEvents";
 import { useFleetStore } from "@/store/fleet";
 import { fetchSession } from "@/lib/api";
@@ -24,6 +25,19 @@ import {
   TIMELINE_RANGE_MS,
   type TimeRange,
 } from "@/lib/constants";
+
+/** How often the Live feed strip's time window advances. The
+ *  narrowest picker range is one minute, so a five-second step keeps
+ *  the strip's oldest edge within a twelfth of the window of the
+ *  swimlane's, without re-rendering the modal (and its Timeline)
+ *  every second. */
+const FEED_WINDOW_TICK_MS = 5_000;
+
+/** Scroll the swim viewport to its right edge, where the "now" pole
+ *  sits. */
+function snapToNow(el: HTMLDivElement): void {
+  el.scrollLeft = el.scrollWidth - el.clientWidth;
+}
 
 interface PerAgentSwimlaneModalProps {
   /** The agent whose swimlane is being viewed. ``null`` keeps the
@@ -248,15 +262,17 @@ export function PerAgentSwimlaneModal({
   // so widening the picker (e.g. 5m → 1h) re-exposes them
   // without a re-fetch. The Live feed strip below only sees the
   // subset whose ``occurred_at`` falls inside the current
-  // picker window. The cutoff is recomputed on every render the
-  // memo runs (timeRange change, new lastEvent arrival), which
-  // is what the swimlane lanes do via their own scale domain.
+  // picker window. The cutoff follows a clock that advances every
+  // FEED_WINDOW_TICK_MS, so the window slides with time as the
+  // swimlane lanes' scale domain does, and also recomputes on a
+  // timeRange change or a new lastEvent arrival.
+  const now = useNow(FEED_WINDOW_TICK_MS);
   const visibleFeedEvents = useMemo(() => {
-    const cutoffMs = Date.now() - TIMELINE_RANGE_MS[timeRange];
+    const cutoffMs = now - TIMELINE_RANGE_MS[timeRange];
     return feedEvents.filter(
       (fe) => new Date(fe.event.occurred_at).getTime() >= cutoffMs,
     );
-  }, [feedEvents, timeRange]);
+  }, [feedEvents, timeRange, now]);
 
   // Modal swim viewport is narrower than the Timeline's natural
   // ``leftPanelWidth + TIMELINE_WIDTH_PX`` (≈1280 px) at the
@@ -275,15 +291,20 @@ export function PerAgentSwimlaneModal({
   //
   // The scroll container lives in the dialog's portal, which can
   // mount in a later commit than the one that flips ``open``; a
-  // plain ref read in that first commit is still null. Holding the
-  // element in state (set by a callback ref) re-runs the snap when
-  // it actually attaches.
-  const [swimScrollEl, setSwimScrollEl] = useState<HTMLDivElement | null>(null);
+  // ref read in that first commit is still null. The callback ref
+  // snaps when the element attaches, and the layout effect snaps
+  // again when the range or the scope changes.
+  const swimScrollRef = useRef<HTMLDivElement | null>(null);
+  const attachSwimScroll = useCallback((el: HTMLDivElement | null) => {
+    swimScrollRef.current = el;
+    if (el) snapToNow(el);
+  }, []);
   const open = agent !== null;
   useLayoutEffect(() => {
-    if (!open || !swimScrollEl) return;
-    swimScrollEl.scrollLeft = swimScrollEl.scrollWidth - swimScrollEl.clientWidth;
-  }, [open, swimScrollEl, timeRange, scopedSessionIdsKey]);
+    if (!open) return;
+    const el = swimScrollRef.current;
+    if (el) snapToNow(el);
+  }, [open, timeRange, scopedSessionIdsKey]);
 
   return (
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
@@ -505,7 +526,7 @@ export function PerAgentSwimlaneModal({
               }}
             >
               <div
-                ref={setSwimScrollEl}
+                ref={attachSwimScroll}
                 data-testid="per-agent-swimlane-modal-scroll"
                 style={{ flex: 1, minHeight: 0, overflow: "auto" }}
               >

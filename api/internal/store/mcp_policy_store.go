@@ -327,9 +327,9 @@ func (s *Store) DeleteMCPPolicy(ctx context.Context, flavor string, actorTokenID
 // entryRestrictivenessOrder orders a scope's entries for one server URL
 // most restrictive first, so a URL that carries several entries (names
 // differ) resolves to the strictest: a deny that blocks (bare deny,
-// block, interactive), then a deny that warns, then an allow; the
-// newest entry breaks a tie. The sensor and the plugin rank the same
-// way.
+// block, interactive), then a deny that warns, then an allow. Entries of
+// equal rank yield the same decision, so which of them is returned does
+// not matter. The sensor and the plugin rank the same way.
 const entryRestrictivenessOrder = `CASE
 	WHEN mpe.entry_kind = 'allow' THEN 2
 	WHEN mpe.enforcement = 'warn' THEN 1

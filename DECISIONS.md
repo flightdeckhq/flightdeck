@@ -11140,8 +11140,7 @@ and the API's resolve query match a server against a scope's entries by
 canonical server URL alone. When a scope holds several entries for one
 URL (recorded under different names), the most restrictive applies: a
 blocking deny (bare, block or interactive), then a warning deny, then
-an allow; the API breaks remaining ties by the newest entry, the
-clients by list order. The decision's fingerprint is still
+an allow; entries of equal rank yield the same decision. The decision's fingerprint is still
 `sha256(canonical_url + 0x00 + name)[:16]`, and entries keep storing
 that fingerprint; nothing is migrated. `server_name` is optional on
 `GET /v1/mcp-policies/resolve`.

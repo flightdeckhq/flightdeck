@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter } from "react-router";
 import { AgentTable } from "@/components/agents/AgentTable";
 import { ClientType } from "@/lib/agent-identity";
 import type { AgentSummary, AgentSummaryResponse } from "@/lib/types";

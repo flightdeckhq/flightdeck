@@ -6,7 +6,7 @@ import {
   NavLink,
   useNavigate,
   useSearchParams,
-} from "react-router-dom";
+} from "react-router";
 import { Search, Settings as SettingsIcon, Sun, Moon } from "lucide-react";
 import { Fleet } from "@/pages/Fleet";
 import { Agents } from "@/pages/Agents";

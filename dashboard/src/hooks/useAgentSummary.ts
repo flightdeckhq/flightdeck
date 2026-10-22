@@ -144,7 +144,8 @@ function patchAgentSummaryFromEvent(
  * for a cached agent.
  *
  * Returns `{ summary, loading }` — `summary` is `null` while the
- * initial fetch is in flight.
+ * initial fetch is in flight. An empty `agentId` fetches nothing and
+ * returns `{ summary: null, loading: false }`.
  */
 export function useAgentSummary(
   agentId: string,
@@ -157,6 +158,9 @@ export function useAgentSummary(
   // Initial-fetch effect. ``ensureAgentSummary`` dedupes so
   // concurrent mounts of the same tuple share one HTTP request.
   useEffect(() => {
+    // An empty id means "no agent selected" (the per-agent modal
+    // stays mounted while closed); there is nothing to fetch.
+    if (!agentId) return;
     const { cached, inflight } = ensureAgentSummary(agentId, opts);
     if (cached || !inflight) return;
     // ``.catch`` swallows the rejection so concurrent subscribers
@@ -192,7 +196,7 @@ export function useAgentSummary(
 
   return {
     summary,
-    loading: summary === null,
+    loading: agentId !== "" && summary === null,
   };
 }
 

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter } from "react-router";
 import { Timeline } from "@/components/timeline/Timeline";
 import { TIMELINE_WIDTH_PX } from "@/lib/constants";
 import type { FlavorSummary } from "@/lib/types";

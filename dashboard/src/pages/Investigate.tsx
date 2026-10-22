@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router";
 import { RefreshCw, MessageSquareText } from "lucide-react";
 import { fetchBulkEvents, fetchEventFacets } from "@/lib/api";
 import type { AgentEvent, EventFacets, EventFacetValue } from "@/lib/types";

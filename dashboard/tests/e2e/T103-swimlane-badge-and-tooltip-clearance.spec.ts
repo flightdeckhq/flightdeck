@@ -223,13 +223,19 @@ test.describe("T103 — swimlane right-edge clearance", () => {
     // ``""`` when the tooltip element is absent so the poll
     // keeps retrying until it lands. React's synthetic
     // onMouseEnter requires ``.hover()`` —
-    // ``dispatchEvent('mouseenter')`` does NOT fire it.
+    // ``dispatchEvent('mouseenter')`` does NOT fire it. Each
+    // iteration first moves the pointer off the swimlane: the
+    // tooltip lives in the bracket's own state, so if the live
+    // swimlane remounts the bracket under a pointer that is
+    // already there, re-hovering the same point never fires a new
+    // mouseenter and the tooltip never returns.
     const tooltip = page
       .locator('[data-testid^="swimlane-run-bracket-tooltip-"]')
       .first();
     await expect
       .poll(
         async () => {
+          await page.mouse.move(0, 0);
           await anyBracket.hover({ force: true });
           return page.evaluate(() => {
             // Tooltip selector is duplicated here so the

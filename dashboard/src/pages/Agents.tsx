@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router";
 import { useFleetStore } from "@/store/fleet";
 import { useFleet } from "@/hooks/useFleet";
 import type { AgentSummary } from "@/lib/types";

@@ -998,7 +998,7 @@ histogram when individual events are less important than volume patterns.
 ## D063 -- Geist font for UI and monospace
 
 **Decision:** Geist (sans) for UI text, GeistMono for identifiers, timestamps,
-and code. Installed via npm package `geist`.
+and code. Installed via npm package `geist` (vendored instead since D199).
 
 **Reasoning:** Free and open source (Vercel). Superior readability at small sizes
 (11-13px) compared to Inter. GeistMono has consistent character widths ideal for
@@ -11253,3 +11253,32 @@ CI.
 process: the counters live in the workers). The Prometheus client
 library (a dependency for three counter families). Using the listener
 for liveness (restarts a pod during a long migration).
+
+---
+
+## D199 -- The Geist fonts are vendored; react-router replaces react-router-dom
+
+**Date:** 2026-10-22
+
+**Decision:** The dashboard ships `Geist-Variable.woff2` and
+`GeistMono-Variable.woff2` from `geist` 1.7.0, unchanged, with the
+package's OFL 1.1 license, under `dashboard/src/assets/fonts/geist`,
+and no longer depends on the `geist` package. `globals.css` loads them
+from there. The router moves from `react-router-dom` 6 to
+`react-router` 7, imported from `react-router` directly.
+
+**Reasoning:** The dashboard uses only those two files, but `geist`
+declares a peer dependency on `next`, which npm installs, bringing
+Next.js and sharp (with a critical and a high advisory) into the
+dependency tree of a Vite app that uses neither. `react-router-dom` 6
+carried two advisories (an open redirect through backslashes in links
+and constructor injection in error deserialisation); in 7 it is only a
+re-export of `react-router`, and 8 drops it, so the imports move now.
+With both changes `npm audit --omit=dev` reports nothing. React Router
+7's `BrowserRouter` wraps navigations in transitions; no screen depends
+on the old synchronous behaviour, and `useTransitions={false}` restores
+it if one ever does.
+
+**Rejected:** `npm` overrides to drop `next` from the tree (fragile and
+hides the dependency rather than removing it); `@fontsource` packages
+(another dependency for two static files).

@@ -16,7 +16,7 @@
 // inline as a private function below since it's small.
 
 import { useCallback, useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useSearchParams } from "react-router";
 
 import { MCPProtectionTab } from "@/components/policy/MCPProtectionTab";
 import { PolicyEditor } from "@/components/policy/PolicyEditor";

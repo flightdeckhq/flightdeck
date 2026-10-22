@@ -63,6 +63,18 @@ afterEach(() => {
 });
 
 describe("useAgentSummary", () => {
+  it("fetches nothing for an empty agent id and is not loading", async () => {
+    fetchAgentSummaryMock.mockClear();
+    const { result } = renderHook(() =>
+      useAgentSummary("", { period: "7d", bucket: "day" }),
+    );
+    expect(result.current.summary).toBeNull();
+    expect(result.current.loading).toBe(false);
+    // Flush effects and any microtask a fetch would have scheduled.
+    await act(async () => {});
+    expect(fetchAgentSummaryMock).not.toHaveBeenCalled();
+  });
+
   it("fetches on first mount and returns the summary", async () => {
     const { result } = renderHook(() =>
       useAgentSummary("agent-1", { period: "7d", bucket: "day" }),

@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter } from "react-router";
 import { Investigate } from "@/pages/Investigate";
 import { fetchBulkEvents } from "@/lib/api";
 import { useFleetStore } from "@/store/fleet";

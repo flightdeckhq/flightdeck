@@ -120,6 +120,10 @@ server.
 
 ### Fixed
 
+- **Dashboard: every page requested `/v1/agents//summary`.** The
+  per-agent modal stays mounted while closed and asked for a summary
+  with an empty agent id, which logged a 404 on each page load. An
+  empty id now fetches nothing.
 - **Helm: the bundled NATS replicas did not form a cluster.** The chart
   ran three NATS servers with no routes between them, so an event
   published on one server never reached a worker connected to another.
@@ -378,6 +382,13 @@ server.
 
 ### Changed
 
+- **Dashboard dependencies:** `react-router` 7 replaces
+  `react-router-dom` 6 (fixes its open-redirect and error-deserialisation
+  advisories), and the two Geist variable fonts are vendored under
+  `dashboard/src/assets/fonts/geist` with their OFL license instead of
+  coming from the `geist` package, which pulled Next.js and sharp (and
+  their critical and high advisories) into the dependency tree. `npm audit
+  --omit=dev` reports no findings.
 - **Dashboard toolchain:** Node 24 (production image builder, dev
   compose, CI), Vite 8 with `@vitejs/plugin-react` 6, Vitest 5, jsdom 30
   and Playwright 1.64. The Vite configs use `import.meta.dirname` and drop

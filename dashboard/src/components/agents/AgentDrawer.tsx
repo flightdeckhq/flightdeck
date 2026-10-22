@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import { Activity, ListTree } from "lucide-react";
 import { useFleetStore } from "@/store/fleet";
 import { type AgentLink, deriveAgentLinkage } from "@/lib/relationship";

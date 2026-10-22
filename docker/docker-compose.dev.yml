@@ -65,7 +65,7 @@ services:
       start_period: 120s
 
   dashboard:
-    image: node:20-alpine
+    image: node:24-alpine
     working_dir: /app
     command: ["sh", "-c", "npm install && npm run dev -- --host 0.0.0.0"]
     volumes:

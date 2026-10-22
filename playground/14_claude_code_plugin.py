@@ -347,7 +347,7 @@ def _demo_subagent() -> None:
 
 def main() -> None:
     if shutil.which("node") is None:
-        print("SKIP: Claude Code plugin demo requires Node 20+ on PATH")
+        print("SKIP: Claude Code plugin demo requires Node 22+ on PATH")
         sys.exit(2)
     if not PLUGIN_SCRIPT.exists():
         print(f"SKIP: plugin script not present at {PLUGIN_SCRIPT}")

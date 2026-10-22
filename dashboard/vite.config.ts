@@ -6,7 +6,7 @@ export default defineConfig({
   plugins: [react()],
   resolve: {
     alias: {
-      "@": path.resolve(__dirname, "./src"),
+      "@": path.resolve(import.meta.dirname, "./src"),
     },
   },
   optimizeDeps: {
@@ -26,9 +26,6 @@ export default defineConfig({
       "clsx",
       "tailwind-merge",
     ],
-  },
-  esbuild: {
-    target: "chrome90",
   },
   build: {
     sourcemap: true,

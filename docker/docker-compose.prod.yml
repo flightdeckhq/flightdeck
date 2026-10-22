@@ -67,8 +67,11 @@ services:
       # unset so the seed row is rejected with 401.
       ENVIRONMENT: ""
       FLIGHTDECK_ENV: production
-      # Authenticate to the token-protected prod NATS bus.
-      FLIGHTDECK_NATS_URL: "nats://:${FLIGHTDECK_NATS_TOKEN:?FLIGHTDECK_NATS_TOKEN must be set for a production deployment}@nats:4222"
+      # Authenticate to the token-protected prod NATS bus. The token
+      # goes in the user slot: nats.go sends a lone user as the auth
+      # token, while nats://:<token>@ sends a password, which the
+      # server rejects.
+      FLIGHTDECK_NATS_URL: "nats://${FLIGHTDECK_NATS_TOKEN:?FLIGHTDECK_NATS_TOKEN must be set for a production deployment}@nats:4222"
     mem_limit: 1g
     mem_reservation: 256m
     cpus: 1.0
@@ -76,7 +79,7 @@ services:
   workers:
     restart: unless-stopped
     environment:
-      FLIGHTDECK_NATS_URL: "nats://:${FLIGHTDECK_NATS_TOKEN:?FLIGHTDECK_NATS_TOKEN must be set for a production deployment}@nats:4222"
+      FLIGHTDECK_NATS_URL: "nats://${FLIGHTDECK_NATS_TOKEN:?FLIGHTDECK_NATS_TOKEN must be set for a production deployment}@nats:4222"
     mem_limit: 1g
     mem_reservation: 256m
     cpus: 1.0

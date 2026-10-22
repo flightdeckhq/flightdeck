@@ -9,10 +9,14 @@ metadata:
 spec:
   serviceName: {{ include "flightdeck.natsServiceName" . }}
   replicas: {{ .Values.nats.replicas }}
+  {{- if gt (int .Values.nats.replicas) 1 }}
   # A clustered JetStream server is not healthy until it reaches its
   # peers, so the pods start together rather than one at a time (the
-  # default ordered start would wait on pod 0 forever).
+  # default ordered start would wait on pod 0 forever). A single server
+  # keeps the default, so a one-replica install upgrades in place (the
+  # field cannot change on an existing StatefulSet).
   podManagementPolicy: Parallel
+  {{- end }}
   selector:
     matchLabels:
       {{- include "flightdeck.selectorLabels" (dict "root" . "component" $component) | nindent 6 }}
@@ -55,8 +59,10 @@ spec:
             {{- if gt (int .Values.nats.replicas) 1 }}
             - "--cluster_name"
             - {{ include "flightdeck.natsServiceName" . | quote }}
+            # With a token set, routes authenticate with it too, so the
+            # cluster port is not a way around client auth.
             - "--cluster"
-            - "nats://0.0.0.0:{{ .Values.nats.clusterPort }}"
+            - "nats://{{ include "flightdeck.natsRouteAuth" . }}0.0.0.0:{{ .Values.nats.clusterPort }}"
             - "--routes"
             - {{ include "flightdeck.natsRoutes" . | quote }}
             {{- end }}

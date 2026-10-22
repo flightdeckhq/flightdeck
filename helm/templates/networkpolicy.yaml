@@ -46,10 +46,9 @@ spec:
     - Ingress
   ingress:
     # Client port: only the services that publish (ingestion) or
-    # consume (workers) events. NATS peers also need the cluster port
-    # when replicas > 1.
+    # consume (workers) events.
     - from:
-        {{- range $c := list "ingestion" "workers" "nats" }}
+        {{- range $c := list "ingestion" "workers" }}
         - podSelector:
             matchLabels:
               {{- include "flightdeck.selectorLabels" (dict "root" $ "component" $c) | nindent 14 }}
@@ -57,6 +56,12 @@ spec:
       ports:
         - protocol: TCP
           port: {{ .Values.nats.clientPort }}
+    # Cluster port: NATS peers only (replicas > 1).
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "flightdeck.selectorLabels" (dict "root" . "component" "nats") | nindent 14 }}
+      ports:
         - protocol: TCP
           port: {{ .Values.nats.clusterPort }}
 {{- end }}

@@ -5613,7 +5613,7 @@ Constraint #4).
 |---|---|
 | `FLIGHTDECK_PORT` | HTTP port (default 8080) |
 | `FLIGHTDECK_POSTGRES_URL` | Postgres DSN (required) |
-| `FLIGHTDECK_NATS_URL` | NATS connection URL (default `nats://nats:4222`). The production compose overlay starts NATS with `--auth` and embeds the token here (`nats://:<FLIGHTDECK_NATS_TOKEN>@nats:4222`); the dev stack runs NATS unauthenticated and bound to 127.0.0.1 |
+| `FLIGHTDECK_NATS_URL` | NATS connection URL (default `nats://nats:4222`). The production compose overlay starts NATS with `--auth` and embeds the token in the URL's user slot (`nats://<FLIGHTDECK_NATS_TOKEN>@nats:4222`; a lone user is sent as the auth token, so the token is limited to URL-unreserved characters); the dev stack runs NATS unauthenticated and bound to 127.0.0.1 |
 | `ENVIRONMENT` | `dev` enables `tok_dev` token; any other value rejects it with 401 |
 | `SHUTDOWN_TIMEOUT_SECS` | Graceful shutdown deadline (default 30) |
 

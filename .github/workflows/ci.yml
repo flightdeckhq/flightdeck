@@ -813,6 +813,23 @@ jobs:
             exit 1
           fi
 
+      - name: helm template with a NATS token that is not URL-safe fails
+        run: |
+          if helm template flightdeck helm/ \
+            --set postgres.password=ci-test-password \
+            --set api.auth.jwtSecret=ci-test-jwt-secret \
+            --set api.corsOrigin=https://dashboard.example.com \
+            --set nats.auth.token='a/b@c' \
+            > /tmp/helm-out 2> /tmp/helm-err; then
+            echo "EXPECTED FAILURE: a token with URL-reserved characters should fail the render"
+            exit 1
+          fi
+          if ! grep -q "nats.auth.token may contain only" /tmp/helm-err; then
+            echo "Expected actionable 'nats.auth.token may contain only' message; got:"
+            cat /tmp/helm-err
+            exit 1
+          fi
+
       - name: helm template renders NetworkPolicies for postgres and nats
         run: |
           count=$(helm template flightdeck helm/ \

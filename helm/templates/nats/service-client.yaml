@@ -1,0 +1,22 @@
+{{- if .Values.nats.enabled -}}
+{{- $component := "nats" -}}
+# Clients (ingestion, workers) connect here. Unlike the headless Service
+# the StatefulSet uses for pod DNS and cluster routes, this one lists
+# only ready servers, so a client never lands on a server that is still
+# starting or recovering.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "flightdeck.natsClientServiceName" . }}
+  labels:
+    {{- include "flightdeck.labels" (dict "root" . "component" $component) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "flightdeck.selectorLabels" (dict "root" . "component" $component) | nindent 4 }}
+  ports:
+    - name: client
+      port: {{ .Values.nats.clientPort }}
+      targetPort: client
+      protocol: TCP
+{{- end }}

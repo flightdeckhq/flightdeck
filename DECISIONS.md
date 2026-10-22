@@ -11181,7 +11181,20 @@ liveness `/healthz?js-enabled-only=true`. `nats.auth.token` sets
 `--auth`; the token and the tokenised `FLIGHTDECK_NATS_URL` live in the
 Secret (the plain URL stays in the ConfigMap only when no token is
 set), and a production render requires it, matching
-`docker-compose.prod.yml`. The `events` stream stays at one replica.
+`docker-compose.prod.yml`. The token sits in the URL's user slot
+(`nats://<token>@host`; nats.go sends a lone user as the auth token,
+while `nats://:<token>@host` sends a password the server rejects, a
+defect the production compose overlay carried until this change), and
+it is limited to URL-unreserved characters because it is also written,
+unencoded, into the cluster route URLs (`route:<token>@`), so the
+cluster port is not a way around client auth. Clients use a separate
+ClusterIP Service that lists ready pods only; the headless Service keeps
+publishing not-ready addresses for pod DNS and routes. A one-replica
+install keeps the ordered start, so it upgrades in place; a
+multi-replica install deletes the NATS StatefulSet (data volumes kept)
+before `helm upgrade`, after which the clustered servers discard the old
+per-server streams as orphans and ingestion recreates the stream. The
+`FLIGHTDECK` stream stays at one replica.
 
 **Reasoning:** The chart defaulted to three NATS replicas with no
 routes, so each pod was an independent server behind one Service: a

@@ -156,7 +156,9 @@ nats:
     # Client token for the event bus. Required for a production install
     # (api.env=production): an unauthenticated bus lets any pod that can
     # reach it forge events or drain the queue. Set via
-    # --set nats.auth.token=<strong-random-token>.
+    # --set nats.auth.token=<strong-random-token>; letters, digits and
+    # . _ ~ - only, since it is placed in NATS URLs (openssl rand -hex 32).
+    # With replicas > 1 the cluster routes authenticate with it as well.
     token: ""
   jetstream:
     enabled: true

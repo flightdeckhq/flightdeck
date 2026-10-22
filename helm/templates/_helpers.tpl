@@ -79,6 +79,15 @@ In-cluster hostnames.
 {{- end -}}
 
 {{/*
+Client Service for the event bus. It lists ready pods only, unlike the
+headless natsServiceName (which also lists starting pods so the cluster
+routes can form).
+*/}}
+{{- define "flightdeck.natsClientServiceName" -}}
+{{- printf "%s-nats-client" (include "flightdeck.fullname" .) -}}
+{{- end -}}
+
+{{/*
 Bundled Postgres password. Fails the render when postgres.externalUrl is
 empty AND postgres.password is unset — prior releases silently defaulted
 to the literal "flightdeck", which left every bundled-Postgres install
@@ -111,14 +120,38 @@ set; otherwise to the bundled in-cluster service.
 {{- end -}}
 
 {{/*
-NATS URL -- always the bundled in-cluster service (no escape hatch in v0.5.3).
+NATS URL -- always the bundled in-cluster client Service. A token goes
+in the user slot (nats://<token>@host): nats.go sends a lone user as the
+auth token, while nats://:<token>@host sends an empty user and a
+password, which a token-protected server rejects.
 */}}
 {{- define "flightdeck.natsURL" -}}
 {{- if .Values.nats.auth.token -}}
-{{- printf "nats://:%s@%s:%d" .Values.nats.auth.token (include "flightdeck.natsServiceName" .) (int .Values.nats.clientPort) -}}
+{{- printf "nats://%s@%s:%d" .Values.nats.auth.token (include "flightdeck.natsClientServiceName" .) (int .Values.nats.clientPort) -}}
 {{- else -}}
-{{- printf "nats://%s:%d" (include "flightdeck.natsServiceName" .) (int .Values.nats.clientPort) -}}
+{{- printf "nats://%s:%d" (include "flightdeck.natsClientServiceName" .) (int .Values.nats.clientPort) -}}
 {{- end -}}
+{{- end -}}
+
+{{/*
+Validated NATS token. The token is written into URLs unencoded (the
+client URL and the cluster route URLs, the latter expanded from an env
+var by the kubelet), so it is limited to URL-unreserved characters.
+*/}}
+{{- define "flightdeck.natsToken" -}}
+{{- $token := .Values.nats.auth.token -}}
+{{- if and $token (not (regexMatch "^[A-Za-z0-9._~-]+$" $token)) -}}
+{{- fail "nats.auth.token may contain only letters, digits and . _ ~ - (it is placed in NATS URLs); generate one with: openssl rand -hex 32" -}}
+{{- end -}}
+{{- $token -}}
+{{- end -}}
+
+{{/*
+Userinfo the cluster routes authenticate with when a token is set. The
+password is the NATS_TOKEN env var, expanded by the kubelet in args.
+*/}}
+{{- define "flightdeck.natsRouteAuth" -}}
+{{- if .Values.nats.auth.token -}}route:$(NATS_TOKEN)@{{- end -}}
 {{- end -}}
 
 {{/*
@@ -129,9 +162,10 @@ Service: <statefulset>-<ordinal>.<service>.
 {{- define "flightdeck.natsRoutes" -}}
 {{- $sts := include "flightdeck.componentName" (dict "root" . "component" "nats") -}}
 {{- $svc := include "flightdeck.natsServiceName" . -}}
+{{- $auth := include "flightdeck.natsRouteAuth" . -}}
 {{- $routes := list -}}
 {{- range $i := until (int .Values.nats.replicas) -}}
-{{- $routes = append $routes (printf "nats://%s-%d.%s:%d" $sts $i $svc (int $.Values.nats.clusterPort)) -}}
+{{- $routes = append $routes (printf "nats://%s%s-%d.%s:%d" $auth $sts $i $svc (int $.Values.nats.clusterPort)) -}}
 {{- end -}}
 {{- join "," $routes -}}
 {{- end -}}

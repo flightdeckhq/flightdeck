@@ -4,7 +4,10 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -12,6 +15,7 @@ import (
 
 	"github.com/flightdeckhq/flightdeck/workers/internal/config"
 	"github.com/flightdeckhq/flightdeck/workers/internal/consumer"
+	"github.com/flightdeckhq/flightdeck/workers/internal/metrics"
 	dbmigrate "github.com/flightdeckhq/flightdeck/workers/internal/migrate"
 	"github.com/flightdeckhq/flightdeck/workers/internal/processor"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -70,10 +74,29 @@ func main() {
 	cons := consumer.New(nc, cfg.WorkerPoolSize, proc)
 	go func() {
 		slog.Info("workers starting", "pool_size", cfg.WorkerPoolSize)
+		// Start returns an error only when setup fails (JetStream
+		// unavailable, stream or subscription refused). Exit so the
+		// supervisor restarts the worker and retries, rather than
+		// leaving a live process that consumes nothing.
 		if err := cons.Start(ctx); err != nil {
-			slog.Error("consumer error", "err", err)
+			slog.Error("consumer setup failed, exiting", "err", err)
+			os.Exit(1)
 		}
 	}()
+
+	// Metrics listener. A failure to bind is logged, not fatal: the
+	// counters are observability, and event processing must not stop
+	// because a port is taken.
+	var metricsSrv *http.Server
+	if cfg.MetricsPort > 0 {
+		metricsSrv = metrics.NewServer(fmt.Sprintf(":%d", cfg.MetricsPort))
+		go func() {
+			slog.Info("metrics listener starting", "addr", metricsSrv.Addr)
+			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				slog.Error("metrics listener failed", "err", err)
+			}
+		}()
+	}
 
 	// Graceful shutdown on SIGTERM/SIGINT
 	quit := make(chan os.Signal, 1)
@@ -82,6 +105,14 @@ func main() {
 
 	slog.Info("shutting down workers")
 	cancel()
+	if metricsSrv != nil {
+		shutdownCtx, shutdownCancel := context.WithTimeout(
+			context.Background(), time.Duration(cfg.ShutdownTimeoutSecs)*time.Second)
+		if err := metricsSrv.Shutdown(shutdownCtx); err != nil {
+			slog.Warn("metrics listener shutdown", "err", err)
+		}
+		shutdownCancel()
+	}
 
 	// Allow in-flight messages to drain
 	time.Sleep(time.Duration(cfg.ShutdownTimeoutSecs) * time.Second / 10)

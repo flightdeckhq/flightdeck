@@ -3,7 +3,7 @@
 
 services:
   ingestion:
-    image: golang:1.26.2-alpine
+    image: golang:1.27.3-alpine
     working_dir: /app
     command: ["go", "run", "./cmd/"]
     volumes:
@@ -28,7 +28,7 @@ services:
       start_period: 120s
 
   workers:
-    image: golang:1.26.2-alpine
+    image: golang:1.27.3-alpine
     working_dir: /app
     command: ["go", "run", "./cmd/"]
     volumes:
@@ -48,7 +48,7 @@ services:
       FLIGHTDECK_RECONCILER_INTERVAL_SECS: "5"
 
   api:
-    image: golang:1.26.2-alpine
+    image: golang:1.27.3-alpine
     working_dir: /app
     command: ["go", "run", "./cmd/"]
     volumes:

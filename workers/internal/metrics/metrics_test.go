@@ -198,3 +198,55 @@ func TestConcurrentIncrSessionClosedDoesNotRace(t *testing.T) {
 		t.Errorf("race detected or counter lost updates: got %d, want %d", got, want)
 	}
 }
+
+func TestHandlerEmitsTypeLinePerFamily(t *testing.T) {
+	Reset()
+	IncrDropped(ReasonUnmarshalError)
+
+	w := httptest.NewRecorder()
+	Handler().ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
+
+	body := w.Body.String()
+	for _, family := range []string{"dropped_events_total", "sessions_closed_total", "sessions_revived_total"} {
+		if !strings.Contains(body, "# TYPE "+family+" counter\n") {
+			t.Errorf("missing TYPE line for %s:\n%s", family, body)
+		}
+	}
+	// The TYPE line precedes its samples.
+	typeIdx := strings.Index(body, "# TYPE dropped_events_total counter")
+	sampleIdx := strings.Index(body, `dropped_events_total{reason="unmarshal_error"} 1`)
+	if sampleIdx == -1 || typeIdx > sampleIdx {
+		t.Errorf("TYPE line should precede the sample:\n%s", body)
+	}
+}
+
+func TestNewServerServesMetricsOnly(t *testing.T) {
+	Reset()
+	IncrSessionRevived(RevivalTriggerChildEvent)
+
+	srv := NewServer(":0")
+	if srv.ReadHeaderTimeout != readHeaderTimeout {
+		t.Errorf("ReadHeaderTimeout: want %v, got %v", readHeaderTimeout, srv.ReadHeaderTimeout)
+	}
+
+	w := httptest.NewRecorder()
+	srv.Handler.ServeHTTP(w, httptest.NewRequest("GET", "/metrics", nil))
+	if w.Code != 200 {
+		t.Fatalf("GET /metrics: want 200, got %d", w.Code)
+	}
+	if !strings.Contains(w.Body.String(), `sessions_revived_total{trigger="child_event"} 1`) {
+		t.Errorf("GET /metrics body missing revived counter: %s", w.Body.String())
+	}
+
+	w = httptest.NewRecorder()
+	srv.Handler.ServeHTTP(w, httptest.NewRequest("GET", "/", nil))
+	if w.Code != 404 {
+		t.Errorf("GET /: want 404, got %d", w.Code)
+	}
+
+	w = httptest.NewRecorder()
+	srv.Handler.ServeHTTP(w, httptest.NewRequest("POST", "/metrics", nil))
+	if w.Code != 405 {
+		t.Errorf("POST /metrics: want 405, got %d", w.Code)
+	}
+}

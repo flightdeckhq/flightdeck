@@ -15,6 +15,16 @@ import (
 // a typo and refused at startup rather than honoured silently.
 const maxReconcilerIntervalSecs = 3600
 
+// defaultMetricsPort is where the workers serve /metrics. The workers
+// open no other listener, so any free port would do; 9102 sits in the
+// range Prometheus exporters conventionally use (9100 and up) without
+// taking node_exporter's 9100, and stays clear of the ingestion (8080)
+// and query (8081) API ports.
+const defaultMetricsPort = 9102
+
+// maxPort is the highest TCP port number.
+const maxPort = 65535
+
 // Config holds all configuration for the worker service.
 type Config struct {
 	PostgresURL         string
@@ -54,6 +64,13 @@ type Config struct {
 	// hour is a typo (see the constant). Load() panics on a value
 	// outside that range.
 	ReconcilerIntervalSecs int
+	// MetricsPort is the port of the workers' metrics listener, which
+	// serves the counter registry at /metrics. Zero turns the listener
+	// off.
+	//
+	// Env: FLIGHTDECK_METRICS_PORT (default defaultMetricsPort). Load()
+	// panics on a value outside 0..maxPort.
+	MetricsPort int
 }
 
 // Load reads configuration from environment variables.
@@ -67,6 +84,13 @@ func Load() Config {
 		MigrationsDir:          envOrDefault("FLIGHTDECK_MIGRATIONS_DIR", "/migrations"),
 		OrphanTimeoutHours:     envIntOrDefault("FLIGHTDECK_ORPHAN_TIMEOUT_HOURS", 24),
 		ReconcilerIntervalSecs: envIntOrDefault("FLIGHTDECK_RECONCILER_INTERVAL_SECS", 60),
+		MetricsPort:            envIntOrDefault("FLIGHTDECK_METRICS_PORT", defaultMetricsPort),
+	}
+	if cfg.MetricsPort < 0 || cfg.MetricsPort > maxPort {
+		panic(fmt.Sprintf(
+			"FLIGHTDECK_METRICS_PORT must be between 0 (listener off) and %d, got %d",
+			maxPort, cfg.MetricsPort,
+		))
 	}
 	if cfg.OrphanTimeoutHours <= 0 {
 		panic(fmt.Sprintf(

@@ -38,11 +38,10 @@
 //   - max_retries_exhausted — consumer hit NATS maxDeliver after
 //                             redelivering an event N times.
 //
-// The counters live in process. Handler renders them as one text line
-// per counter so scrapers (and humans) can parse them without a client
-// library, but no service mounts it yet (see the README Roadmap);
-// today the counters are observed through the log lines that accompany
-// each increment.
+// The counters live in process. Handler renders them in the Prometheus
+// text format (a TYPE line per family, then one line per label value)
+// so scrapers and humans can read them without a client library;
+// NewServer mounts it at /metrics on the workers' metrics listener.
 package metrics
 
 import (
@@ -51,7 +50,14 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 )
+
+// readHeaderTimeout bounds how long the metrics listener waits for a
+// request's headers. A scrape sends a few hundred bytes at once, so
+// five seconds is generous for any real client while stopping a slow
+// or idle connection from holding a goroutine open indefinitely.
+const readHeaderTimeout = 5 * time.Second
 
 // DropReason is a named string for type safety at call sites. Zero
 // cost at runtime.
@@ -252,13 +258,30 @@ func Reset() {
 	revivedSessions = map[RevivalTrigger]*atomic.Uint64{}
 }
 
-// Handler renders the counters as a metrics page (not mounted by any
-// service yet; see the README Roadmap). Trivial text format, one line
-// per (counter, reason) pair, to keep the worker free of the
-// prometheus client dependency until it is needed.
+// NewServer returns the workers' metrics listener: Handler at
+// /metrics on addr, and 404 for every other path. The caller starts
+// it with ListenAndServe and stops it with Shutdown.
+func NewServer(addr string) *http.Server {
+	mux := http.NewServeMux()
+	mux.Handle("GET /metrics", Handler())
+	return &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: readHeaderTimeout,
+	}
+}
+
+// Handler renders the counters in the Prometheus text format: a TYPE
+// line per counter family, then one line per label value in sorted
+// order. Hand-written to keep the worker free of the Prometheus client
+// dependency.
 func Handler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
+		// Errors writing to the response body aren't actionable
+		// inside a handler -- the connection is either gone or will
+		// drop the tail silently. Discard the return values.
+		_, _ = fmt.Fprintln(w, "# TYPE dropped_events_total counter")
 		snap := Snapshot()
 		// Deterministic ordering so the output is scrape-friendly.
 		reasons := make([]DropReason, 0, len(snap))
@@ -269,13 +292,11 @@ func Handler() http.Handler {
 			return string(reasons[i]) < string(reasons[j])
 		})
 		for _, reason := range reasons {
-			// Errors writing to the response body aren't actionable
-			// inside a handler -- the connection is either gone or
-			// will drop the tail silently. Discard the return value.
 			_, _ = fmt.Fprintf(w, "dropped_events_total{reason=%q} %d\n",
 				string(reason), snap[reason])
 		}
 
+		_, _ = fmt.Fprintln(w, "# TYPE sessions_closed_total counter")
 		closedSnap := SnapshotClosed()
 		closeReasons := make([]CloseReason, 0, len(closedSnap))
 		for reason := range closedSnap {
@@ -289,6 +310,7 @@ func Handler() http.Handler {
 				string(reason), closedSnap[reason])
 		}
 
+		_, _ = fmt.Fprintln(w, "# TYPE sessions_revived_total counter")
 		revivedSnap := SnapshotRevived()
 		triggers := make([]RevivalTrigger, 0, len(revivedSnap))
 		for trigger := range revivedSnap {

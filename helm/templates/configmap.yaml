@@ -12,6 +12,7 @@ data:
   {{- end }}
   FLIGHTDECK_ENV: {{ .Values.api.env | quote }}
   FLIGHTDECK_WORKER_POOL_SIZE: {{ .Values.workers.poolSize | quote }}
+  FLIGHTDECK_METRICS_PORT: {{ .Values.workers.metricsPort | quote }}
   FLIGHTDECK_MIGRATIONS_DIR: {{ .Values.workers.migrationsDir | quote }}
   FLIGHTDECK_RATE_LIMIT_PER_MINUTE: {{ .Values.ingestion.rateLimitPerMinute | quote }}
   {{- if and (eq .Values.api.env "production") (eq .Values.api.corsOrigin "*") }}

@@ -4,7 +4,7 @@
 // like ``/mcp-policies`` (a retired route) or any
 // other unmatched URL.
 
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 
 export function NotFound() {
   return (

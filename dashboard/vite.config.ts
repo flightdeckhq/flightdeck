@@ -13,7 +13,7 @@ export default defineConfig({
     include: [
       "react",
       "react-dom",
-      "react-router-dom",
+      "react-router",
       "recharts",
       "d3-scale",
       "d3-time",

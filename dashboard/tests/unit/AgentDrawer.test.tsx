@@ -6,7 +6,7 @@ import {
   act,
   waitFor,
 } from "@testing-library/react";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter } from "react-router";
 import { AgentDrawer } from "@/components/agents/AgentDrawer";
 import { useFleetStore } from "@/store/fleet";
 import { ClientType } from "@/lib/agent-identity";

@@ -1,5 +1,5 @@
 import { memo, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 import { ClientType, clientIncursMeteredCost } from "@/lib/agent-identity";
 import type { AgentSummary } from "@/lib/types";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";

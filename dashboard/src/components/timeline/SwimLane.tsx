@@ -1,5 +1,5 @@
 import { memo, useMemo } from "react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import type { ScaleTime } from "d3-scale";
 import { ChevronRight } from "lucide-react";
 import type { Session, AgentEvent } from "@/lib/types";

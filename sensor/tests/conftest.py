@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import TYPE_CHECKING, Any
@@ -10,7 +11,12 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from flightdeck_sensor.core.types import SensorConfig
+# litellm fetches its model-cost map from GitHub when it is imported
+# unless told to use the bundled copy; the unit suite must not touch
+# the network (nor stall on DNS). Set before any test module imports it.
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+
+from flightdeck_sensor.core.types import SensorConfig  # noqa: E402
 from flightdeck_sensor.providers.anthropic import AnthropicProvider
 from flightdeck_sensor.transport.client import ControlPlaneClient
 

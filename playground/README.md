@@ -19,7 +19,7 @@ The suite also doubles as Flightdeck's canonical Rule 40d manual-exercise surfac
 | `09_capture.py` | anthropic | `capture_prompts` OFF (404) vs ON (200) |
 | `10_killswitch.py` | anthropic | POST `shutdown` directive → `DirectiveError` |
 | `11_unavailability.py` | anthropic | `continue` vs `halt` against a dead URL |
-| `12_litellm.py` | `litellm` | Anthropic + OpenAI routes, embeddings capture round-trip, invalid-model `llm_error` |
+| `12_litellm.py` | `litellm` | Anthropic + OpenAI routes / sync-stream (Anthropic route) / async-stream (OpenAI route); asserts every streamed `post_call` carries real token usage and that the four chat calls land as exactly four `post_call`s (the two served through the OpenAI SDK are counted once); embeddings capture round-trip; invalid-model `llm_error` |
 | `13_mcp.py` | bare `mcp` SDK | All six MCP event types against the in-tree reference server, plus a multi-server attribution scenario using a sibling secondary server (`_secondary_mcp_server.py`). Verifies `transport=stdio` on every event. |
 | `14_claude_code_plugin.py` | Claude Code plugin (`observe_cli.mjs` over Node 20+) | Synthetic `PostToolUse` + `PostToolUseFailure` hooks → `mcp_tool_call` event with parsed server attribution, plus `PluginToolError` structured-error path |
 | `15_bifrost.py` | bifrost gateway (optional, opt-in via `BIFROST_URL`) | openai SDK and anthropic SDK pointed at bifrost; both protocols intercepted independently |
@@ -85,7 +85,7 @@ The pattern is print + assert, so each script reads as a working demonstration A
 
 ## Coverage notes
 
-- **litellm** has its own module-level interceptor (`12_litellm.py`). `litellm.completion` and `litellm.acompletion` are wrapped regardless of underlying provider, closing the previous gap where litellm's raw-httpx Anthropic route bypassed the SDK-class patches. Streaming (`stream=True`) is not yet supported -- see the Roadmap in the root `README.md`. For the full "what's caught, what's not" breakdown of the litellm interceptor, see `sensor/README.md`.
+- **litellm** has its own module-level interceptor (`12_litellm.py`). `litellm.completion` and `litellm.acompletion` are wrapped regardless of underlying provider, closing the previous gap where litellm's raw-httpx Anthropic route bypassed the SDK-class patches. `12_litellm.py` exercises sync and async streaming (`stream=True` returns the sensor's stream guard, iterated like litellm's own wrapper) and asserts the single count for the calls litellm serves through the OpenAI SDK. For the full "what's caught, what's not" breakdown of the litellm interceptor, see `sensor/README.md`.
 - **CrewAI 1.14+** uses the official `anthropic` / `openai` SDKs directly, so its LLM calls are intercepted through the SDK-class patches (see `06_crewai.py`). The MCP section uses `mcpadapt` directly (rather than `crewai_tools.MCPServerAdapter` which sits on top of it) so a future `crewai-tools` upgrade that silently bumps to an incompatible `mcpadapt` release breaks the demo loudly.
 - **Claude Code plugin** is observation-only and doesn't itself call providers; the plugin demo (`14_claude_code_plugin.py`) pipes synthetic hook events to `observe_cli.mjs` to exercise the success and failure code paths without needing a real Claude Code session.
 - **bifrost** (`15_bifrost.py`) is opt-in via `BIFROST_URL`. Skips silently when unset. Both the OpenAI-protocol and Anthropic-protocol forwarding paths are exercised so a regression in either interceptor trips the demo.

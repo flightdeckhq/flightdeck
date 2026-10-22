@@ -42,6 +42,7 @@ import openai
 import pytest
 
 import flightdeck_sensor
+from flightdeck_sensor.interceptor import base
 from flightdeck_sensor.interceptor.anthropic import (
     SensorAnthropic,
     SensorBeta,
@@ -435,10 +436,11 @@ def test_sensor_beta_messages_create_routes_through_intercept(
     )
     assert result is sentinel
     # The captured real_fn is the bound `create` method on the raw
-    # beta.messages resource. Bound methods are not identity-stable
+    # beta.messages resource, run under the outer-call mark (the wrapper
+    # keeps it as __wrapped__). Bound methods are not identity-stable
     # across attribute lookups, so compare by qualified name + the
     # underlying function instead.
-    real_fn = captured["real_fn"]
+    real_fn = getattr(captured["real_fn"], "__wrapped__", captured["real_fn"])
     assert getattr(real_fn, "__self__", None) is client.beta.messages
     assert getattr(real_fn, "__func__", None) is type(client.beta.messages).create
     assert captured["kwargs"]["model"] == "claude-sonnet-4-6"
@@ -795,27 +797,27 @@ def test_litellm_two_providers_agnostic(
     assert mock_completion.call_count == 2
 
 
-def test_litellm_streaming_raises_not_implemented(
+def test_litellm_streaming_returns_the_stream_guard(
     sensor_init: Any,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """stream=True raises NotImplementedError with a Roadmap pointer.
-
-    Streaming support is deferred; the interceptor's scope is non-streaming
-    sync and async only. The error message points users to the Roadmap so they
-    can find the tracking issue rather than hit an opaque crash.
+    """stream=True goes through the sensor's stream guard: the patched
+    function hands the caller a GuardedStream around what litellm
+    returned, and asked litellm for in-stream usage on the way.
     """
-    monkeypatch.setattr(_litellm, "completion", MagicMock())
+    mock_completion = MagicMock(return_value=iter([]))
+    monkeypatch.setattr(_litellm, "completion", mock_completion)
     flightdeck_sensor.patch(quiet=True)
 
-    with pytest.raises(NotImplementedError) as exc_info:
-        _litellm.completion(
-            model="claude-haiku-4-5-20251001",
-            messages=[{"role": "user", "content": "hi"}],
-            stream=True,
-        )
-    assert "Roadmap" in str(exc_info.value)
-    assert "stream" in str(exc_info.value).lower()
+    stream = _litellm.completion(
+        model="claude-haiku-4-5-20251001",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    assert isinstance(stream, base.GuardedStream)
+    mock_completion.assert_called_once()
+    assert mock_completion.call_args.kwargs["stream"] is True
+    assert mock_completion.call_args.kwargs["stream_options"] == {"include_usage": True}
 
 
 def test_unpatch_litellm_without_patch_is_noop(sensor_init: Any) -> None:
@@ -875,20 +877,24 @@ def test_sensor_litellm_per_instance_wrap(
     assert response is mock_response
 
 
-def test_sensor_litellm_streaming_raises_not_implemented(
+def test_sensor_litellm_streaming_returns_the_stream_guard(
     sensor_init: Any,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """SensorLitellm's per-instance path also rejects stream=True
-    with the same Roadmap message as the patched path. Ensures the two
-    intercept paths present a consistent streaming contract.
+    """SensorLitellm's per-instance path streams through the same guard
+    as the patched path, so the two intercept paths present one
+    streaming contract.
     """
+    from flightdeck_sensor.interceptor import litellm as _litellm_interceptor
+
+    mock_completion = MagicMock(return_value=iter([]))
+    monkeypatch.setattr(_litellm_interceptor, "_OrigCompletion", mock_completion)
     session = flightdeck_sensor._session
     assert session is not None
-    wrapped = SensorLitellm(session)
-    with pytest.raises(NotImplementedError) as exc_info:
-        wrapped.completion(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": "hi"}],
-            stream=True,
-        )
-    assert "Roadmap" in str(exc_info.value)
+    stream = SensorLitellm(session).completion(
+        model="gpt-4o",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    assert isinstance(stream, base.GuardedStream)
+    assert mock_completion.call_args.kwargs["stream_options"] == {"include_usage": True}

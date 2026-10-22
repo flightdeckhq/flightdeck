@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import collections
 import contextlib
+import contextvars
 import copy
 import inspect
 import logging
@@ -72,6 +73,95 @@ _KEY_ABORT_REASON = "abort_reason"
 _KEY_PARTIAL_CHUNKS = "partial_chunks"
 _KEY_PARTIAL_TOKENS_INPUT = "partial_tokens_input"
 _KEY_PARTIAL_TOKENS_OUTPUT = "partial_tokens_output"
+
+
+# ------------------------------------------------------------------
+# Outer-call mark: an outer interceptor and the SDK interceptors it
+# reaches report one call once
+# ------------------------------------------------------------------
+#
+# litellm serves its OpenAI route by calling the OpenAI SDK, whose
+# ``chat.completions`` the sensor also intercepts. Without coordination
+# that one call is reported twice: by the litellm wrapper, and again by
+# the SDK interceptor the wrapper ends up calling. So the outer
+# interceptor runs the underlying call inside ``outer_intercept()``, and
+# an SDK interceptor that finds ``outer_intercept_active()`` true hands
+# the call to the SDK untouched -- no pre_call, no policy check, no
+# stream guard, no post_call -- because the outer interceptor already
+# does all of that for the same call.
+#
+# The mark lives in a ContextVar and is a small per-call flag object:
+# another thread, or a task created before the call, never sees it, so
+# an SDK call they make at the same time is still reported; a task
+# created inside the call inherits a copy of the context (asyncio copies
+# it into new tasks) and reads the mark active while the call is in
+# flight and inactive once it has ended, because the flag is cleared
+# when the call ends rather than only reset in the creating context.
+# (litellm's executor hop for sync-only providers copies the context,
+# so the mark follows that too.) Reading the mark costs one ContextVar
+# lookup and one attribute read per intercepted call.
+#
+# Scope, stated as a limitation: the mark covers the whole outer call,
+# so an SDK call made from inside it while it is in flight -- by a
+# litellm callback, guardrail or custom provider, or by a task created
+# inside the call -- is neither policed nor metered. Narrowing the mark
+# to the one SDK call the outer interceptor serves (a per-call client
+# identity) was judged not worth the complexity for now. Pinned by
+# test_sdk_call_from_a_litellm_pre_call_hook_runs_under_the_mark_and_emits_nothing
+# in tests/unit/test_interceptor_litellm.py.
+#
+# Opting in:
+# * Outer side: wrap the function handed to call / call_async /
+#   call_stream / call_stream_async so it runs under
+#   ``with outer_intercept():`` (see ``_as_outer_call`` in litellm.py).
+#   The mark covers the call only; a stream's chunks are read later,
+#   outside the block, which is fine because the SDK request itself is
+#   sent inside the call.
+# * Inner side: at the point where the SDK wrapper would otherwise enter
+#   the sensor, ``if outer_intercept_active(): return <the raw path>``.
+#   openai.py does this where ``client.chat.completions`` is resolved
+#   (SensorChat.completions) and in SensorEmbeddings.create; anthropic.py
+#   in the patched resource methods (_intercepting_method) and, for a
+#   wrap()-built client, in SensorMessages.create / stream / parse.
+
+
+class _OuterCall:
+    """The mark of one outer call: ``active`` is cleared when the call
+    ends, so every context that copied a reference (a task created inside
+    the call) reads the call as over, not only the context that set it."""
+
+    __slots__ = ("active",)
+
+    def __init__(self) -> None:
+        self.active = True
+
+
+_OUTER_INTERCEPT: contextvars.ContextVar[_OuterCall | None] = contextvars.ContextVar(
+    "flightdeck_outer_intercept", default=None
+)
+
+
+@contextlib.contextmanager
+def outer_intercept() -> Iterator[None]:
+    """Mark the provider call made inside the block as already metered by
+    the interceptor running it, so an SDK interceptor the call reaches
+    passes it through. Nesting is safe: the outer mark stays active until
+    the outermost block exits."""
+    mark = _OuterCall()
+    token = _OUTER_INTERCEPT.set(mark)
+    try:
+        yield
+    finally:
+        mark.active = False
+        _OUTER_INTERCEPT.reset(token)
+
+
+def outer_intercept_active() -> bool:
+    """Whether an outer interceptor is making the current call (see
+    :func:`outer_intercept`); an SDK interceptor that sees ``True`` hands
+    the call to the SDK untouched."""
+    mark = _OUTER_INTERCEPT.get()
+    return mark is not None and mark.active
 
 
 def drain_deferred_settles(session: Session) -> None:

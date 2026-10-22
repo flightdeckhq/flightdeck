@@ -207,6 +207,27 @@ def test_litellm_extract_content_respects_capture_flag() -> None:
     assert content.response == {"id": "resp-1"}
 
 
+def test_cache_counts_that_are_not_integers_are_ignored() -> None:
+    """A provider-shaped stand-in or a malformed counter must not become a
+    cache count: only real integers are read, everything else is zero."""
+    import types
+
+    for bad in (True, "12", 3.5, MagicMock(), None):
+        details = types.SimpleNamespace(cached_tokens=bad, cache_creation_tokens=bad)
+        usage = types.SimpleNamespace(
+            prompt_tokens=10,
+            completion_tokens=4,
+            prompt_tokens_details=details,
+            cache_read_input_tokens=bad,
+            cache_creation_input_tokens=bad,
+        )
+        result = LitellmProvider().extract_usage(types.SimpleNamespace(usage=usage))
+        assert result.input_tokens == 10, bad
+        assert result.output_tokens == 4, bad
+        assert result.cache_read_tokens == 0, bad
+        assert result.cache_creation_tokens == 0, bad
+
+
 # ----------------------------------------------------------------------
 # count_tokens default model: must be a served, priced model id
 # ----------------------------------------------------------------------

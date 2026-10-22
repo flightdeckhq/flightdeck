@@ -703,7 +703,9 @@ class SensorMessages:
         whose ``parse()`` is a coroutine; its body is already read, so the
         sensor awaits that parse (no network, and the SDK caches the
         result for the caller's own ``parse()``), meters the parsed
-        message and hands the caller the response itself. A response
+        message and hands the caller the response itself. A body that
+        fails to parse is metered with the estimate and the caller's own
+        ``parse()`` raises, exactly as without the sensor. A response
         with a synchronous ``parse()`` (the 0.x ``LegacyAPIResponse``) is
         metered as returned."""
         kept: dict[str, Any] = {}
@@ -714,7 +716,15 @@ class SensorMessages:
             if not inspect.iscoroutinefunction(parse):
                 return response
             kept["response"] = response
-            return _ParsedRawResponse(await parse(), getattr(response, "headers", None))
+            headers = getattr(response, "headers", None)
+            try:
+                parsed = await parse()
+            except Exception:
+                # The caller's own parse() raises this, as it would without
+                # the sensor; the call itself succeeded and is metered with
+                # the estimate, as on the 0.x raw view.
+                return _ParsedRawResponse(None, headers)
+            return _ParsedRawResponse(parsed, headers)
 
         async def _call() -> Any:
             result = await base.call_async(_read, kwargs, self._session, self._provider)

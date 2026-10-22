@@ -139,6 +139,8 @@ class _CarriedCompletion:
         return self._completion.model_dump(**kwargs)
 
     def __getattr__(self, name: str) -> Any:
+        # Single-underscore names are forwarded on purpose: the SDK stamps
+        # the request id on the completion as ``_request_id``.
         if name.startswith("__"):
             raise AttributeError(name)
         return getattr(self._completion, name)

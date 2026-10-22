@@ -63,9 +63,12 @@ def _no_network(monkeypatch: pytest.MonkeyPatch) -> None:
     real_connect = socket.socket.connect
 
     def _connect(self: socket.socket, address: Any) -> Any:
-        host = address[0] if isinstance(address, tuple) else address
-        if isinstance(host, str) and host not in _LOOPBACK_HOSTS:
-            raise ConnectionRefusedError(f"unit tests may not connect to {address!r}")
+        # Only internet sockets leave the machine; a Unix socket's address
+        # is a path.
+        if self.family in (socket.AF_INET, socket.AF_INET6):
+            host = address[0] if isinstance(address, tuple) else address
+            if host not in _LOOPBACK_HOSTS:
+                raise ConnectionRefusedError(f"unit tests may not connect to {address!r}")
         return real_connect(self, address)
 
     monkeypatch.setattr(socket.socket, "connect", _connect)

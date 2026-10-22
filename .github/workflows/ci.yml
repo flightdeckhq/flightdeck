@@ -102,6 +102,7 @@ jobs:
   sensor-sdk-majors:
     name: Sensor (Python, SDK majors)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     # The job above installs the framework packages, whose pins hold the
     # provider SDKs below their current majors. This lane installs the
     # sensor with the newest anthropic and openai releases (2.x / 3.x and

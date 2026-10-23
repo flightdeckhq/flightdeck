@@ -24,6 +24,13 @@ import (
 // only because workers and api are separate Go modules.
 const NotifyChannel = "flightdeck_fleet"
 
+// AccessTokenRevokedChannel carries the id of every deleted access_tokens
+// row. Migration 000028's trigger is the producer; the token validators
+// in this module and in ingestion are the consumers, which drop cached
+// validations for that id. The literal is duplicated in
+// ingestion/internal/auth because the services are separate Go modules.
+const AccessTokenRevokedChannel = "flightdeck_access_token_revoked"
+
 // NotifyDirectiveRegistered is the sentinel payload broadcast on
 // NotifyChannel after a successful directive registration. The hub
 // special-cases this literal (it has no JSON envelope) and re-broadcasts

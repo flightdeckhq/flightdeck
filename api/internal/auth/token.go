@@ -111,6 +111,9 @@ type Validator struct {
 	cache map[string]cacheEntry
 	mu    sync.RWMutex
 	env   envLookup
+	// onListening, when set (tests only), runs each time the revocation
+	// listener has issued LISTEN and flushed the cache.
+	onListening func()
 }
 
 // NewValidator creates a Validator backed by the given pool.

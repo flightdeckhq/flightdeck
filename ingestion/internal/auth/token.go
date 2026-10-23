@@ -90,10 +90,10 @@ func (a *poolAdapter) Exec(ctx context.Context, sql string, args ...any) error {
 
 type pgxRowsAdapter struct{ rows pgx.Rows }
 
-func (a *pgxRowsAdapter) Next() bool              { return a.rows.Next() }
-func (a *pgxRowsAdapter) Scan(dest ...any) error  { return a.rows.Scan(dest...) }
-func (a *pgxRowsAdapter) Close()                  { a.rows.Close() }
-func (a *pgxRowsAdapter) Err() error              { return a.rows.Err() }
+func (a *pgxRowsAdapter) Next() bool             { return a.rows.Next() }
+func (a *pgxRowsAdapter) Scan(dest ...any) error { return a.rows.Scan(dest...) }
+func (a *pgxRowsAdapter) Close()                 { a.rows.Close() }
+func (a *pgxRowsAdapter) Err() error             { return a.rows.Err() }
 
 // envLookup abstracts os.Getenv so tests can flip ENVIRONMENT without
 // leaking state into the real process environment.
@@ -110,6 +110,9 @@ type Validator struct {
 	cache map[string]cacheEntry
 	mu    sync.RWMutex
 	env   envLookup
+	// onListening, when set (tests only), runs each time the revocation
+	// listener has issued LISTEN and flushed the cache.
+	onListening func()
 }
 
 // NewValidator creates a Validator backed by the given pool. Env

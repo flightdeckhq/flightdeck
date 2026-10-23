@@ -151,3 +151,55 @@ def test_capture_on_writes_row_and_serves_content() -> None:
     assert result.get("provider") == "openai", (
         f"expected provider=openai, got {result.get('provider')}"
     )
+
+
+def test_content_the_database_rejects_lands_the_event_without_content() -> None:
+    """Content Postgres cannot store (a NUL byte in the system prompt)
+    must not leave an event that claims content: the worker writes the
+    event and its content in one transaction, and when the content row
+    is rejected it stores the event alone with has_content false, so
+    GET /events/:id/content is a plain 404.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"capture-rejected-{uuid.uuid4().hex[:6]}"
+
+    post_event(make_event(sid, flavor, "session_start"))
+    wait_until(
+        lambda: session_exists_in_fleet(sid),
+        timeout=10,
+        msg=f"session {sid} did not appear in fleet",
+    )
+
+    content = {
+        "provider": "openai",
+        "model": "gpt-4o",
+        "system": "before\u0000after",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "tools": None,
+        "response": {"choices": []},
+    }
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "post_call",
+            tokens_total=50,
+            has_content=True,
+            content=content,
+        )
+    )
+    wait_until(
+        lambda: get_session_event_count(sid) >= 2,
+        timeout=10,
+        msg=f"post_call event not processed for session {sid}",
+    )
+
+    event_ids = _get_event_ids(sid)
+    assert len(event_ids) == 1, f"expected one post_call, got {event_ids}"
+    has_content = exec_sql(
+        "SELECT has_content FROM events WHERE id = :'eid'::uuid",
+        eid=event_ids[0],
+    )
+    assert has_content == "f", f"event still claims content: has_content={has_content!r}"
+    assert _query_event_content_rows(event_ids[0]) == 0
+    assert _get_event_content(event_ids[0]) is None

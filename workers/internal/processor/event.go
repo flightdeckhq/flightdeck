@@ -683,23 +683,40 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	// gate: if content is not permitted for this session, the event row
 	// must not advertise content the /content endpoint can never serve.
 	hasContent := e.HasContent && captureOn
-	eventID, err := p.w.InsertEvent(
-		ctx, e.ID, e.SessionID, e.Flavor, e.EventType, e.Model,
-		e.TokensInput, e.TokensOutput, e.TokensTotal,
-		e.TokensCacheRead, e.TokensCacheCreation,
-		e.LatencyMs, e.ToolName, hasContent, ts, extra,
-	)
-	if err != nil {
-		return err
+	insert := func(hasContent bool) (string, error) {
+		return p.w.InsertEvent(
+			ctx, e.ID, e.SessionID, e.Flavor, e.EventType, e.Model,
+			e.TokensInput, e.TokensOutput, e.TokensTotal,
+			e.TokensCacheRead, e.TokensCacheCreation,
+			e.LatencyMs, e.ToolName, hasContent, ts, extra,
+		)
 	}
-
+	var eventID string
 	// Store prompt content only when the session's server-authoritative
 	// capture posture permits it (captureOn), not merely when the event
 	// claims has_content. This is the core capture-posture contract.
-	if captureOn && e.HasContent && len(e.Content) > 0 {
-		if err := p.w.InsertEventContent(ctx, eventID, e.SessionID, e.Content); err != nil {
-			slog.Warn("insert event content error", "err", err)
+	// The event and its content go in one transaction, so the event is
+	// never visible claiming content the /content endpoint cannot serve
+	// yet. Content that cannot be stored (it does not parse, or its row
+	// is rejected) is dropped and the event is stored without it, with
+	// has_content false, rather than retried into the same failure.
+	if hasContent && len(e.Content) > 0 {
+		eventID, err = p.w.InsertEventWithContent(
+			ctx, e.ID, e.SessionID, e.Flavor, e.EventType, e.Model,
+			e.TokensInput, e.TokensOutput, e.TokensTotal,
+			e.TokensCacheRead, e.TokensCacheCreation,
+			e.LatencyMs, e.ToolName, hasContent, ts, extra, e.Content,
+		)
+		if errors.Is(err, writer.ErrEventContent) {
+			slog.Warn("event content could not be stored; storing the event without it",
+				"err", err, "event_type", e.EventType, "session_id", e.SessionID)
+			eventID, err = insert(false)
 		}
+	} else {
+		eventID, err = insert(hasContent)
+	}
+	if err != nil {
+		return err
 	}
 
 	// NOTIFY for real-time dashboard push. eventID is the one just

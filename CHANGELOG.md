@@ -132,6 +132,13 @@ server.
 
 ### Fixed
 
+- **Workers: an event and its captured content are written together.**
+  The event row (with `has_content` true) and its `event_content` row
+  were written by two separate statements, so for a moment the API could
+  report content that `GET /v1/events/:id/content` answered with 404, and
+  a content row the database rejected left the event claiming content
+  forever. Both rows now go in one transaction; content that cannot be
+  stored is dropped and the event is stored with `has_content` false.
 - **Dashboard: live token and error counts were double-counted for an
   agent shown in two places.** Each mounted summary hook applied every
   WebSocket event to the shared summary cache, so with the Agents table

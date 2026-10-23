@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import { ChevronDown, ChevronRight, Database } from "lucide-react";
 import { fetchEventContent } from "@/lib/api";
 import type { EventContent } from "@/lib/types";
@@ -52,31 +53,22 @@ export function EmbeddingsContentViewer({
   eventId,
   hasContent,
 }: EmbeddingsContentViewerProps) {
-  const [content, setContent] = useState<EventContent | null>(null);
-  const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
 
-  useEffect(() => {
-    if (!hasContent) {
-      // Short-circuit: caller knows there's nothing to fetch.
-      setContent(null);
-      setLoading(false);
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    setContent(null);
-    fetchEventContent(eventId).then((result) => {
-      if (cancelled) return;
-      setLoading(false);
-      setContent(result);
-    });
-    return () => {
-      cancelled = true;
-    };
-  }, [eventId, hasContent]);
+  // No request when the caller knows there is nothing to fetch. Only
+  // this event's result is shown.
+  const contentFetch = useKeyedFetch<EventContent | null>(hasContent ? eventId : null, () =>
+    fetchEventContent(eventId),
+  );
+  const loading = contentFetch.loading;
+  const content: EventContent | null =
+    hasContent && contentFetch.dataKey === eventId ? (contentFetch.data ?? null) : null;
 
-  if (!hasContent) {
+  // Nothing captured: either the caller knows there is no content, or
+  // the content request came back empty (capture off, or the body is
+  // gone). Without the second case a null response showed "Loading…"
+  // forever.
+  if (!hasContent || (!loading && content === null)) {
     return (
       <div
         data-testid="embeddings-content-viewer"

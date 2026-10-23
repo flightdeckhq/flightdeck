@@ -422,7 +422,12 @@ server.
   state from the request key and writes state only when a request
   settles; the agent events and runs lists, analytics, search, session
   detail and historical events hooks use it, and the agent summary cache
-  is read through `useSyncExternalStore`.
+  is read through `useSyncExternalStore`. The session drawer, the
+  sub-agents tab and the prompt and embeddings viewers follow the same
+  pattern. The embeddings viewer now shows "content not captured" when
+  the content request comes back empty instead of "Loading…" forever,
+  and the MCP servers panel no longer sticks on "loading" when its
+  lookups are restarted.
 - **Dashboard lint and types:** ESLint 10 with
   `eslint-plugin-react-hooks` 7 and TypeScript 6 (the deprecated
   `baseUrl` is gone; target and lib move to ES2022). The new hook rules'

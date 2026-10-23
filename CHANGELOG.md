@@ -420,9 +420,12 @@ server.
 - **nginx 1.30.** The dashboard image is now built on
   `nginx:1.30.6-alpine`, pinned by its multi-arch digest, and the
   Compose edge proxy runs `nginx:1.30-alpine`. Both used 1.25, a branch
-  that stopped receiving security fixes in 2024. The configs work on
-  1.30 unchanged, and the image still passes the production smoke:
-  `runtime-config.json` is never cached, hashed assets carry one
+  that stopped receiving security fixes in 2024. nginx 1.30 keeps idle
+  connections to the backends open by default, so the edge proxy's
+  upstreams now close them after 50 seconds, before ingestion's
+  60-second idle timeout can close one under a request (which would
+  answer that request with a 502). The image still passes the production
+  smoke: `runtime-config.json` is never cached, hashed assets carry one
   immutable `Cache-Control`, and nginx runs as UID 101.
 - **Dashboard data hooks no longer set state synchronously inside
   effects.** A shared `useKeyedFetch` hook derives loading and error

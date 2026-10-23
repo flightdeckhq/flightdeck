@@ -63,8 +63,9 @@ import importlib.metadata
 import json
 import logging
 import time
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Callable
+from collections.abc import Callable
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 from flightdeck_sensor.core.types import EventType, MCPServerFingerprint
 
@@ -357,7 +358,7 @@ def _build_overflow_event_content(
         "model": server_name or "",
         "session_id": session_id,
         "event_id": "",
-        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "captured_at": datetime.now(UTC).isoformat(),
     }
 
 
@@ -407,7 +408,7 @@ def _build_tool_capture_content(
         "model": server_name or "",
         "session_id": session_id,
         "event_id": "",
-        "captured_at": datetime.now(timezone.utc).isoformat(),
+        "captured_at": datetime.now(UTC).isoformat(),
     }
 
 
@@ -714,7 +715,7 @@ def _emit_mcp_server_attached(
     Wrapped in try/except per Rule 27 (the sensor never breaks the
     agent's hot path on a metadata-emit failure).
     """
-    from datetime import datetime, timezone
+    from datetime import datetime
 
     from flightdeck_sensor.interceptor.mcp_identity import (
         canonicalize_url,
@@ -724,7 +725,7 @@ def _emit_mcp_server_attached(
     try:
         canonical_url = canonicalize_url(fingerprint.server_url or "")
         fp_hex = fingerprint_short(canonical_url, fingerprint.name)
-        attached_at = datetime.now(timezone.utc).isoformat()
+        attached_at = datetime.now(UTC).isoformat()
         extras: dict[str, Any] = {
             "fingerprint": fp_hex,
             "server_url_canonical": canonical_url,

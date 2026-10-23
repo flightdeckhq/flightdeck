@@ -9,18 +9,16 @@ that passes ``patch(providers=["anthropic"])`` keeps working without
 edits, and a partially-migrated codebase can mix
 ``patch(providers=[Provider.ANTHROPIC, "openai"])`` cleanly.
 
-Why ``(str, Enum)`` rather than ``StrEnum``: the project supports
-Python ``>= 3.10`` (sensor/pyproject.toml requires-python). ``StrEnum``
-landed in 3.11. The mixin form gives the same "member IS a string"
-semantics on 3.10.
+``Provider`` is a ``StrEnum``, so ``str()`` and f-strings of a member
+also give the plain value (``"anthropic"``), not ``Provider.ANTHROPIC``.
 """
 
 from __future__ import annotations
 
-from enum import Enum
+from enum import StrEnum
 
 
-class Provider(str, Enum):
+class Provider(StrEnum):
     """Interceptor targets ``flightdeck_sensor.patch()`` knows how to
     install hooks for.
 

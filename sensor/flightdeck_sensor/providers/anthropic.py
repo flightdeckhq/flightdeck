@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from datetime import UTC
 from typing import Any
 
 from flightdeck_sensor.core.types import TokenUsage
@@ -337,7 +338,7 @@ class AnthropicProvider:
         if not self._capture_prompts:
             return None
         try:
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             # A helper stream (``MessageStream`` / ``AsyncMessageStream``)
             # reaching this point was still open when the call settled:
@@ -389,7 +390,7 @@ class AnthropicProvider:
                 model=request_kwargs.get("model", ""),
                 session_id="",  # Filled by caller
                 event_id="",  # Filled by caller
-                captured_at=datetime.now(timezone.utc).isoformat(),
+                captured_at=datetime.now(UTC).isoformat(),
             )
         except Exception:
             _log.debug("extract_content failed", exc_info=True)

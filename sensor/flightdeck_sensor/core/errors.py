@@ -34,7 +34,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 
-class ErrorType(str, enum.Enum):
+class ErrorType(enum.StrEnum):
     """The 14-entry error taxonomy. Values are the wire-level strings."""
 
     RATE_LIMIT = "rate_limit"
@@ -185,7 +185,7 @@ def _parse_failure_details(cls_name: str, module: str) -> tuple[str, str] | None
     return _PARSE_FAILURE_DETAILS.get(cls_name)
 
 
-class StreamOutcome(str, enum.Enum):
+class StreamOutcome(enum.StrEnum):
     """``payload.streaming.final_outcome`` of a streamed post_call. The
     dashboard keys its outcome badge off these exact strings."""
 
@@ -193,7 +193,7 @@ class StreamOutcome(str, enum.Enum):
     ABORTED = "aborted"
 
 
-class AbortReason(str, enum.Enum):
+class AbortReason(enum.StrEnum):
     """``abort_reason`` of a streamed call: ``CLIENT_ABORTED`` on the
     post_call of a stream the caller left early, the others on the
     llm_error of a stream that failed."""

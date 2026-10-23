@@ -45,8 +45,12 @@ concurrency:
 
 jobs:
   sensor:
-    name: Sensor (Python)
+    name: Sensor (Python ${{ matrix.python-version }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     defaults:
       run:
         working-directory: sensor
@@ -55,20 +59,30 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
 
-      # Install directly into the actions/setup-python interpreter --
-      # NOT into a fresh sensor/.venv. A previous attempt to mirror the
-      # local-dev venv layout in CI segfaulted pytest under --cov on
-      # the GHA Linux x86_64 runner during collection: identical
-      # package set as the system install, but the venv-installed
-      # variant crashes the coverage tracer (likely a C-extension
-      # RPATH interaction in the heavy onnxruntime/protobuf chain
-      # pulled in transitively via crewai). System pip-install is the
-      # configuration that worked through every prior green run; keep
-      # it that way.
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version: "0.12.24"
+          enable-cache: true
+          cache-dependency-glob: sensor/uv.lock
+
+      # Install the locked versions (sensor/uv.lock) directly into the
+      # actions/setup-python interpreter -- NOT into a fresh venv. A
+      # previous attempt to mirror the local-dev venv layout in CI
+      # segfaulted pytest under --cov on the GHA Linux x86_64 runner
+      # during collection: identical package set as the system install,
+      # but the venv-installed variant crashes the coverage tracer
+      # (likely a C-extension RPATH interaction in the heavy
+      # onnxruntime/protobuf chain pulled in transitively via crewai).
+      # UV_PROJECT_ENVIRONMENT pointed at that interpreter's prefix makes
+      # uv install there; --inexact leaves the runner's own packages in
+      # place. On 3.14 crewai is not installed (it does not support
+      # 3.14 yet) and its tests skip.
       - name: Install dependencies
-        run: pip install -e ".[dev,anthropic,openai]"
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ env.pythonLocation }}
+        run: uv sync --locked --inexact --extra dev --extra anthropic --extra openai
 
       - name: mypy --strict
         run: mypy flightdeck_sensor/ --strict
@@ -89,21 +103,40 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
-          name: coverage-sensor
+          name: coverage-sensor-${{ matrix.python-version }}
           path: sensor/htmlcov/
           retention-days: 14
 
+  # Branch protection requires a check named "Sensor (Python)". The
+  # matrix above reports one check per Python version, so this job turns
+  # them into that single required check: it passes only when every
+  # version passed.
+  sensor-all-versions:
+    name: Sensor (Python)
+    if: always()
+    needs: sensor
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Every Python version passed
+        run: test "${{ needs.sensor.result }}" = success
+
   sensor-sdk-majors:
-    name: Sensor (Python, SDK majors)
+    name: Sensor (Python ${{ matrix.python-version }}, SDK majors)
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
     # The job above installs the framework packages, whose pins hold the
     # provider SDKs below their current majors. This lane installs the
     # sensor with the newest anthropic and openai releases (2.x / 3.x and
-    # later, built on httpx2), mcp 2.x and no frameworks, so a fresh
-    # `pip install flightdeck-sensor[anthropic,openai]` is tested too.
-    # Framework tests skip here; tests/conftest.py aliases httpx to httpx2
-    # so the HTTP mocks see the new SDKs.
+    # later, built on httpx2), mcp 2.x and no frameworks (the lock's
+    # sdk-majors group), so a fresh
+    # `pip install flightdeck-sensor[anthropic,openai]` is tested too, on
+    # the oldest and newest supported Python. Framework tests skip here;
+    # tests/conftest.py aliases httpx to httpx2 so the HTTP mocks see the
+    # new SDKs.
     defaults:
       run:
         working-directory: sensor
@@ -112,10 +145,18 @@ jobs:
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python-version }}
+
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version: "0.12.24"
+          enable-cache: true
+          cache-dependency-glob: sensor/uv.lock
 
       - name: Install the sensor with the newest SDK majors
-        run: pip install -e ".[test]" "anthropic>=2" "openai>=3" "litellm>=1.83.0" "mcp>=2,<3"
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ env.pythonLocation }}
+        run: uv sync --locked --inexact --extra test --extra anthropic --extra openai --group sdk-majors
 
       - name: Installed SDK versions
         run: pip list | grep -iE "^(anthropic|openai|litellm|httpx2?|mcp) "
@@ -589,9 +630,17 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version: "0.12.24"
+          enable-cache: true
+          cache-dependency-glob: sensor/uv.lock
+
       - name: Install sensor with dev + provider extras
         working-directory: sensor
-        run: pip install -e ".[dev,anthropic,openai]"
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ env.pythonLocation }}
+        run: uv sync --locked --inexact --extra dev --extra anthropic --extra openai
 
       - name: Boot the dev stack
         # `make dev` returns once all services have been instructed to
@@ -663,12 +712,20 @@ jobs:
         with:
           node-version: "24"
 
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7  # v10.2.0
+        with:
+          version: "0.12.24"
+          enable-cache: true
+          cache-dependency-glob: sensor/uv.lock
+
       - name: Install sensor (required by seed.py's event-builder helpers)
         # tests/shared/fixtures.py imports
         # flightdeck_sensor.core.agent_id.derive_agent_id. Without the
         # install the seeder crashes before POSTing anything.
         working-directory: sensor
-        run: pip install -e ".[dev,anthropic,openai]"
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ env.pythonLocation }}
+        run: uv sync --locked --inexact --extra dev --extra anthropic --extra openai
 
       - name: Install dashboard deps
         working-directory: dashboard

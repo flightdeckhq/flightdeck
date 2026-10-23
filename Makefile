@@ -9,11 +9,11 @@
 # ``PYTHON=python make ...`` works because actions/setup-python already
 # pinned the right interpreter at job start.
 #
-# Required Python: 3.10 ≤ x < 3.14 (sensor/pyproject.toml requires-python).
-# Reasoning: crewai 1.x metadata declares <3.14, our floor matches the
-# project's classifier list. The single 3.12 venv discipline is
-# what eliminates the "silent skip on wrong Python" failure mode that
-# bites when ambient ``python`` is 3.14.
+# Required Python for the playground and integration tests: 3.11 ≤ x < 3.14.
+# The sensor itself supports 3.14 (sensor/pyproject.toml requires-python),
+# but crewai 1.x declares <3.14 and is not installed there, so its demos
+# and tests would SKIP. The single 3.12 venv discipline is what
+# eliminates that "silent skip on wrong Python" failure mode.
 # ---------------------------------------------------------------------------
 PYTHON ?= ./sensor/.venv/bin/python
 

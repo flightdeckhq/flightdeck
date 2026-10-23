@@ -11398,3 +11398,48 @@ ingested event, the cost D048 removed). A shorter TTL alone (narrows the
 window without closing it). Deleting from the local cache in the DELETE
 handler only (misses ingestion, other API replicas and manual deletes).
 
+
+---
+
+## D203 -- The sensor supports Python 3.11 to 3.14; CI installs from a universal uv.lock
+
+**Date:** 2026-10-23
+
+**Decision:** `requires-python` is `>=3.11,<3.15`, with classifiers for
+3.11 to 3.14. The sensor CI lane runs on all four versions, and the
+newest-SDK lane on 3.11 and 3.14. crewai, which declares `<3.14`, is
+installed only below 3.14 (`python_version < '3.14'` marker); its tests
+skip on 3.14. CI installs every Python job from `sensor/uv.lock`, a single
+universal lockfile that covers all four versions and both lanes (the
+release workflow still builds the wheel with `pip install build`): the
+framework lane (`dev` extra) and the newest-SDK lane (`sdk-majors`
+dependency group, not published), declared as conflicting so each gets
+its own resolution. `uv lock` only resolves releases at least 14 days
+old (`exclude-newer = "14 days"`); anthropic only has to be a day old, in
+both lanes, so the newest-SDK lane can test a new major within days of
+its release. Both are rolling spans, so neither goes stale; a fixed
+cutoff date would stop anthropic updating once it passed. Dependabot's `uv`
+ecosystem keeps the lock current. Floors: `pydantic>=2.10,<3`,
+`mcp>=1.28`, `pytest>=9` (with `pytest-asyncio>=1.0`), `mypy>=2.4`. Ruff
+reads its target version from `requires-python`, and the four
+`(str, Enum)` classes become `StrEnum`.
+
+**Reasoning:** The update plan set the `mcp` floor at 1.30, but CrewAI
+pins `mcp~=1.28.1` (1.28.x only), so any higher floor would make the
+sensor's `mcp` extra uninstallable next to CrewAI; 1.28 is the highest
+floor that keeps it installable. One universal lock instead of a
+constraints file per lane and Python version gives a single file to
+review and update. The lock's frameworks lane carries `litellm>=1.100`
+in the `dev` extra because current litellm releases cap `openai<3`: in
+one lock the SDK-majors lane (openai 3) can only take litellm 1.83.0,
+and uv would otherwise hold the frameworks lane on that release too.
+CI keeps installing into the `actions/setup-python` interpreter
+(`UV_PROJECT_ENVIRONMENT` set to its prefix) rather than a venv, because
+a venv install once crashed the coverage tracer on the CI runner. The
+required "Sensor (Python)" check is kept by a job that passes only when
+every Python version passed.
+
+**Rejected:** The plan's `mcp>=1.30` floor (conflicts with CrewAI).
+Per-lane constraints files (several files to keep in step). Dropping
+3.14 until crewai supports it (the sensor itself runs there; only the
+crewai tests skip).

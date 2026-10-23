@@ -4,8 +4,8 @@ In-process agent observability sensor for [Flightdeck](https://github.com/flight
 
 ## Local development venv
 
-Flightdeck pins **Python 3.12** for local development. The project
-bound is `3.10 ≤ x < 3.14` (pyproject `requires-python`); `sensor/.venv`
+Flightdeck pins **Python 3.12** for local development. The sensor
+supports `3.11 ≤ x < 3.15` (pyproject `requires-python`); `sensor/.venv`
 is the canonical interpreter for every Make target that runs Python.
 
 Recreate from a fresh clone or after a `rm -rf sensor/.venv`:
@@ -15,9 +15,19 @@ python3.12 -m venv sensor/.venv
 ./sensor/.venv/bin/python -m pip install -e ".[dev,anthropic,openai]"
 ```
 
-`make -C sensor install` does the same once the venv exists. CI
-overrides via env (`PYTHON=python make -C sensor test`) where
-`actions/setup-python` already pinned the interpreter.
+`make -C sensor install` does the same once the venv exists. To get
+the exact versions CI tests with, install from the lockfile instead:
+
+```bash
+cd sensor && uv sync --locked --python 3.12 --extra dev --extra anthropic --extra openai
+```
+
+CI installs from `sensor/uv.lock` into the `actions/setup-python`
+interpreter and overrides via env (`PYTHON=python make -C sensor
+test`). The lock covers Python 3.11 to 3.14 and both CI lanes: the
+framework lane (`dev` extra) and the newest-SDK lane (`sdk-majors`
+dependency group). `uv lock` resolves only releases at least 14 days
+old, anthropic a day old (`[tool.uv]` in `pyproject.toml`).
 
 ## Optional `session_id` hint
 
@@ -49,6 +59,7 @@ from temporalio import workflow
 # workflow_id + namespace always produces the same session UUID,
 # so re-runs of the same workflow all map to the same sessions row.
 FLIGHTDECK_NS = uuid.UUID("00000000-0000-0000-0000-000000000001")
+
 
 @workflow.defn
 class MyWorkflow:
@@ -104,7 +115,8 @@ import flightdeck_sensor
 import litellm
 
 flightdeck_sensor.init(
-    server="http://flightdeck.internal/ingest", token="ftd_...",
+    server="http://flightdeck.internal/ingest",
+    token="ftd_...",
 )
 flightdeck_sensor.patch()
 

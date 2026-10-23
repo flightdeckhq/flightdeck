@@ -417,6 +417,17 @@ server.
 
 ### Changed
 
+- **Sensor: Python 3.11 to 3.14.** The sensor supports Python 3.11, 3.12,
+  3.13 and 3.14 (it was 3.10 to 3.13); CI tests all four. On 3.14 the
+  CrewAI integration is not installed in development and CI, because
+  CrewAI does not support 3.14 yet. Dependency floors rise to
+  `pydantic>=2.10,<3` and, for the `mcp` extra, `mcp>=1.28` (the lowest
+  release CrewAI accepts). CI installs the sensor's dependencies from a
+  lockfile, `sensor/uv.lock`, which takes releases at least 14 days old
+  (anthropic at least a day old, so the newest-SDK lane can test its new
+  majors); Dependabot proposes updates to it. The sensor's error, stream-outcome,
+  abort-reason and provider enums are `StrEnum`s, so `str()` of a member
+  gives its plain value.
 - **CI and release pipeline.**
   - **Actions:** every GitHub Action in the CI and release workflows is
     on its current major, pinned by commit SHA (checkout 7, setup-python

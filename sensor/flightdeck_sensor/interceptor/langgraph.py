@@ -53,12 +53,14 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Callable
+from datetime import UTC, datetime
+from typing import TYPE_CHECKING, Any
 
 from flightdeck_sensor.core.types import SubagentMessage
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
     from flightdeck_sensor.core.session import Session
 
 _log = logging.getLogger("flightdeck_sensor.interceptor.langgraph")
@@ -132,7 +134,7 @@ def _current_session() -> Session | None:
 def _capture_message(body: Any) -> SubagentMessage:
     return SubagentMessage(
         body=body,
-        captured_at=datetime.now(timezone.utc).isoformat(),
+        captured_at=datetime.now(UTC).isoformat(),
     )
 
 

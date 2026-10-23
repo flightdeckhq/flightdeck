@@ -14,7 +14,7 @@ import os
 import socket
 import threading
 import uuid
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from flightdeck_sensor import config as _env
 from flightdeck_sensor.core.agent_id import derive_agent_id
@@ -70,6 +70,9 @@ from flightdeck_sensor.interceptor.openai import (
 )
 from flightdeck_sensor.provider import Provider
 from flightdeck_sensor.transport.client import ControlPlaneClient
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 Parameter = DirectiveParameter
 
@@ -674,8 +677,8 @@ def patch(
     if providers is None:
         targets: set[str] = {p.value for p in Provider}
     else:
-        # Normalize Provider members → str. Members ARE str (mixin
-        # form), so this is a no-op equality-wise but it gives every
+        # Normalize Provider members → str. Members ARE str (StrEnum),
+        # so this is a no-op equality-wise but it gives every
         # downstream branch a clean ``str``-typed lookup target and
         # keeps the unknown-string-silently-ignored behavior intact.
         targets = {t.value if isinstance(t, Provider) else t for t in providers}

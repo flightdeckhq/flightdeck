@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+from datetime import UTC
 from typing import Any
 
 from flightdeck_sensor.core.types import TokenUsage
@@ -306,11 +307,11 @@ class LitellmProvider:
         if not self._capture_prompts:
             return None
         try:
-            from datetime import datetime, timezone
+            from datetime import datetime
 
             from flightdeck_sensor.core.types import EventType
 
-            now_iso = datetime.now(timezone.utc).isoformat()
+            now_iso = datetime.now(UTC).isoformat()
             model = request_kwargs.get("model", "")
 
             if event_type == EventType.EMBEDDINGS:

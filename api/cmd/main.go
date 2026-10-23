@@ -67,6 +67,8 @@ func main() {
 
 	// Start Postgres NOTIFY listener
 	go hub.ListenNotify(ctx, pool)
+	// Drop cached validations of a token as soon as its row is deleted.
+	go validator.ListenRevocations(ctx, pool)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
 	srv := server.New(addr, s, hub, validator, cfg.CORSOrigin)

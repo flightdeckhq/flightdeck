@@ -15,6 +15,18 @@ note:** marketplace installs of the plugin do not update themselves; run
 `claude plugin update flightdeck@flightdeck-plugins` after upgrading the
 server.
 
+### Security
+
+- **Revoking an access token takes effect immediately.** Both services
+  cache successful token validations for up to 60 seconds, and deleting
+  a token's row did not clear those caches, so a revoked token stayed
+  usable for up to a minute on any replica that had cached it. A new
+  trigger (migration 000028) announces each deleted token on a Postgres
+  NOTIFY channel; the ingestion API and the query API drop the cached
+  entry as soon as it arrives, and clear their whole cache whenever
+  their listener reconnects. Reported privately by an external
+  researcher.
+
 ### Added
 
 - **Workers: the metrics counters are served over HTTP.** Each worker

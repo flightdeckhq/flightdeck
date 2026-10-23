@@ -90,10 +90,10 @@ func (a *poolAdapter) Exec(ctx context.Context, sql string, args ...any) error {
 
 type pgxRowsAdapter struct{ rows pgx.Rows }
 
-func (a *pgxRowsAdapter) Next() bool              { return a.rows.Next() }
-func (a *pgxRowsAdapter) Scan(dest ...any) error  { return a.rows.Scan(dest...) }
-func (a *pgxRowsAdapter) Close()                  { a.rows.Close() }
-func (a *pgxRowsAdapter) Err() error              { return a.rows.Err() }
+func (a *pgxRowsAdapter) Next() bool             { return a.rows.Next() }
+func (a *pgxRowsAdapter) Scan(dest ...any) error { return a.rows.Scan(dest...) }
+func (a *pgxRowsAdapter) Close()                 { a.rows.Close() }
+func (a *pgxRowsAdapter) Err() error             { return a.rows.Err() }
 
 // envLookup abstracts os.Getenv so tests can flip ENVIRONMENT without
 // leaking state into the real process environment.
@@ -109,7 +109,16 @@ type Validator struct {
 	db    dbQuerier
 	cache map[string]cacheEntry
 	mu    sync.RWMutex
-	env   envLookup
+	// generation counts cache invalidations (Invalidate, Flush). A
+	// lookup that missed the cache records it before querying the
+	// database and caches its result only if no invalidation happened
+	// meanwhile, so a revocation that lands while the query is in
+	// flight cannot be overwritten by the stale result.
+	generation uint64
+	env        envLookup
+	// onListening, when set (tests only), runs each time the revocation
+	// listener has issued LISTEN and flushed the cache.
+	onListening func()
 }
 
 // NewValidator creates a Validator backed by the given pool. Env
@@ -163,6 +172,7 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (ValidationRe
 	key := cacheKey(rawToken)
 	v.mu.RLock()
 	entry, found := v.cache[key]
+	generation := v.generation
 	v.mu.RUnlock()
 	if found && time.Since(entry.validAt) < cacheTTL {
 		return entry.result, nil
@@ -179,10 +189,12 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (ValidationRe
 	// cacheTTL wait. The cache check above must also gate on this.
 	if result.Valid || result.Reason != "" {
 		v.mu.Lock()
-		if len(v.cache) >= cacheMaxSize {
-			v.evictOldest()
+		if v.generation == generation {
+			if len(v.cache) >= cacheMaxSize {
+				v.evictOldest()
+			}
+			v.cache[key] = cacheEntry{result: result, validAt: time.Now()}
 		}
-		v.cache[key] = cacheEntry{result: result, validAt: time.Now()}
 		v.mu.Unlock()
 	}
 

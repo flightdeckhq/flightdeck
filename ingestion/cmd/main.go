@@ -80,6 +80,12 @@ func main() {
 	}
 
 	validator := auth.NewValidator(pool)
+
+	// runCtx lives until shutdown begins; background loops stop with it.
+	runCtx, stopRun := context.WithCancel(context.Background())
+	defer stopRun()
+	// Drop cached validations of a token as soon as its row is deleted.
+	go validator.ListenRevocations(runCtx, pool)
 	dirStore := &directiveAdapter{store: directive.NewStore(pool)}
 	sessAttacher := session.NewStore(pool)
 
@@ -101,6 +107,7 @@ func main() {
 	<-quit
 
 	slog.Info("shutting down ingestion API")
+	stopRun()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.ShutdownTimeoutSecs)*time.Second)
 	defer cancel()
 

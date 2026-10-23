@@ -11352,3 +11352,39 @@ scrolls.
 **Rejected:** Disabling `set-state-in-effect` (it would stay off).
 TypeScript 7 (`typescript-eslint` does not support it yet).
 
+---
+
+## D202 -- Token revocation invalidates the validation caches through Postgres NOTIFY
+
+**Date:** 2026-10-23
+
+**Decision:** A trigger on `access_tokens` (`AFTER DELETE ... FOR EACH
+ROW`) sends the deleted row's id on the `flightdeck_access_token_revoked`
+channel. The ingestion API and the query API each run a listener that
+removes every cached validation for that token id. On every (re)connect
+the listener clears the whole cache before it starts reading, because
+NOTIFY is not delivered to a connection that was not listening when it
+fired. Each invalidation bumps a generation counter that a validation
+records before querying the database; its result is cached only if the
+counter is unchanged, so a lookup in flight when the revocation lands
+cannot re-cache the revoked token. The listener uses a dedicated
+connection rather than one held out of the request pool. The 60-second
+validation cache (D048) stays as the fallback when a process cannot
+listen.
+
+**Reasoning:** An external report showed that revoking a token by
+deleting its row, as D095 describes, left it usable for up to 60
+seconds on any process that had cached it, because neither service's
+cache was told about the deletion. A trigger rather than a NOTIFY from
+the delete handler covers every way a row is deleted, including an
+operator's manual `DELETE` (the path D095 documents), and every replica
+of both services, which a local cache delete in the handler would not.
+Both services already depend on Postgres and the query API already
+holds a LISTEN connection for the fleet stream, so this adds no new
+infrastructure.
+
+**Rejected:** Dropping the cache (a database round trip on every
+ingested event, the cost D048 removed). A shorter TTL alone (narrows the
+window without closing it). Deleting from the local cache in the DELETE
+handler only (misses ingestion, other API replicas and manual deletes).
+

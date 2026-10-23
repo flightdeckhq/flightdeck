@@ -2405,6 +2405,7 @@ always create a new numbered migration.
 | 000025 | `sessions (agent_id, started_at DESC)` composite index backing the per-agent latest-session lookup |
 | 000026 | `sessions.capture_prompts` nullable BOOLEAN: server-authoritative capture posture written once from `session_start` |
 | 000027 | `sessions.start_seq` and `sessions.closed_seq` nullable BIGINT: NATS stream sequence of the `session_start` that opened the current run and of the `session_end` that closed it, so the worker orders a session's start and end without holding events back |
+| 000028 | `access_tokens_notify_revoked` trigger: every deleted `access_tokens` row sends its id on the `flightdeck_access_token_revoked` NOTIFY channel, so both services drop cached validations of a revoked token at once |
 
 ---
 
@@ -2505,6 +2506,35 @@ For `session_start` events the ingestion API injects those values into the
 NATS payload so the worker's `UpsertSession` persists them onto the new
 session row. Subsequent events on the same session do not rewrite the
 token fields — a session belongs to whichever token opened it.
+
+#### Validation cache and revocation
+
+Both the ingestion API and the query API keep an in-memory cache of
+successful validations (keyed by the SHA-256 of the raw token, never the
+plaintext; at most 1000 entries, each trusted for 60 seconds) so repeat
+clients do not hit Postgres on every request. Unknown tokens are never
+cached, so a newly created token works at once.
+
+Revocation reaches every replica of both services as soon as the delete
+commits. Deleting an `access_tokens` row, through
+`DELETE /v1/access-tokens/:id` or directly in SQL, fires the
+`access_tokens_notify_revoked` trigger, which sends the token id on the
+`flightdeck_access_token_revoked` NOTIFY channel when the transaction
+commits. Each service process holds a dedicated LISTEN connection (outside
+its request pool) on that channel and drops the cached validations for
+that id when the notification arrives. Every invalidation also bumps a
+generation counter; a validation that was already querying the database
+when the revocation arrived caches its result only if the counter has not
+moved, so a lookup that read the row just before the delete cannot put
+the revoked token back into the cache. A NOTIFY is not queued for a
+listener that is not connected, so each process clears its whole cache
+every time its LISTEN connection is (re)established; a revocation that
+happens while a listener is down never outlives the reconnect. The
+60-second limit is the last backstop: if a process cannot listen, or its
+listen connection dies without the process noticing (a half-open TCP
+connection is only detected by keepalive, after about two and a half
+minutes), a revoked token it has cached is accepted for at most 60
+seconds.
 
 #### Endpoint auth scope
 

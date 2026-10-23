@@ -132,6 +132,12 @@ server.
 
 ### Fixed
 
+- **Dashboard: live token and error counts were double-counted for an
+  agent shown in two places.** Each mounted summary hook applied every
+  WebSocket event to the shared summary cache, so with the Agents table
+  and the per-agent modal both showing an agent, each event was counted
+  twice. The cache now applies each event once through a single
+  subscription.
 - **Dashboard: long event-type labels spilled out of their Live Feed
   pill.** Labels such as "MCP PROMPT FETCHED" wrapped onto a second line
   below the fixed-height pill. They now stay on one line and end in an
@@ -411,6 +417,12 @@ server.
 
 ### Changed
 
+- **Dashboard data hooks no longer set state synchronously inside
+  effects.** A shared `useKeyedFetch` hook derives loading and error
+  state from the request key and writes state only when a request
+  settles; the agent events and runs lists, analytics, search, session
+  detail and historical events hooks use it, and the agent summary cache
+  is read through `useSyncExternalStore`.
 - **Dashboard lint and types:** ESLint 10 with
   `eslint-plugin-react-hooks` 7 and TypeScript 6 (the deprecated
   `baseUrl` is gone; target and lib move to ES2022). The new hook rules'

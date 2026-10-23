@@ -1,10 +1,12 @@
-import { useState, useEffect } from "react";
+import { useKeyedFetch } from "./useKeyedFetch";
 import { fetchSession } from "@/lib/api";
 import type { SessionDetail } from "@/lib/types";
 import { attachmentsCache, eventsCache } from "./useSessionEvents";
 
-// Cache session metadata so reopening the same drawer doesn't re-fetch
-const sessionCache = new Map<string, SessionDetail>();
+// Cache session metadata so reopening the same drawer doesn't re-fetch.
+// Each entry records the revalidation revision it was fetched under, so
+// a caller that bumps ``revalidationKey`` past it gets a fresh fetch.
+const sessionCache = new Map<string, { detail: SessionDetail; revision: number }>();
 
 /**
  * Drop any cached state for a session so the next useSession() mount
@@ -39,45 +41,21 @@ export function useSession(
   eventsLimit?: number,
   revalidationKey?: number,
 ) {
-  const [data, setData] = useState<SessionDetail | null>(
-    () => (sessionId ? sessionCache.get(sessionId) ?? null : null)
-  );
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // revalidationKey 0 / undefined is the initial-mount sentinel; only a
+  // positive value asks for data newer than the cached entry.
+  const revision = revalidationKey && revalidationKey > 0 ? revalidationKey : 0;
+  const cached = sessionId ? sessionCache.get(sessionId) : undefined;
+  const cacheFresh = cached !== undefined && cached.revision >= revision;
 
-  useEffect(() => {
-    if (!sessionId) {
-      setData(null);
-      return;
-    }
-
-    // When revalidationKey changes, drop cache so
-    // the fetch below runs with fresh data. revalidationKey === 0
-    // is the initial-mount sentinel; only > 0 forces invalidation.
-    if (revalidationKey && revalidationKey > 0) {
-      sessionCache.delete(sessionId);
-    }
-
-    // Use cached session metadata if available
-    const cached = sessionCache.get(sessionId);
-    if (cached) {
-      setData(cached);
-      return;
-    }
-
-    // Cancellation guard: if sessionId / eventsLimit / revalidationKey
-    // changes (or the consumer unmounts) before fetchSession resolves,
-    // the cleanup flips `cancelled` so the .then() / .catch() / .finally()
-    // chain bails out without writing stale state into the next mount's
-    // useState slots. Same idiom as PromptViewer's local guard.
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    fetchSession(sessionId, eventsLimit)
-      .then((detail) => {
-        if (cancelled) return;
-        sessionCache.set(sessionId, detail);
-        setData(detail);
+  const { data, dataKey, loading, error } = useKeyedFetch<SessionDetail>(
+    sessionId && !cacheFresh ? `${sessionId}|${eventsLimit}|${revision}` : null,
+    async (signal) => {
+      const detail = await fetchSession(sessionId ?? "", eventsLimit);
+      // A superseded request (session, page size or revision changed
+      // while it was in flight) must not overwrite the caches with an
+      // answer to a question nobody is asking any more.
+      if (sessionId && !signal.aborted) {
+        sessionCache.set(sessionId, { detail, revision });
         // Populate eventsCache so swimlane and drawer share the same data
         if (detail.events && detail.events.length > 0) {
           const existing = eventsCache.get(sessionId);
@@ -91,20 +69,26 @@ export function useSession(
         // themselves. Always set (including empty array) so callers
         // can tell "not fetched" from "fetched with no attachments".
         attachmentsCache.set(sessionId, detail.attachments ?? []);
-      })
-      .catch((e: Error) => {
-        if (cancelled) return;
-        setError(e.message);
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setLoading(false);
-      });
+      }
+      return detail;
+    },
+  );
 
-    return () => {
-      cancelled = true;
-    };
-  }, [sessionId, eventsLimit, revalidationKey]);
-
-  return { data, loading, error };
+  if (!sessionId) return { data: null, loading: false, error: null };
+  // While this session is (re)fetching, show its own last data: the
+  // fetched result only if it belongs to this session, else the stale
+  // cache entry (a revision bump leaves it in place), else nothing.
+  // Never another session's data.
+  const fetchedForThisSession =
+    data !== undefined && dataKey?.startsWith(`${sessionId}|`) ? data : undefined;
+  return {
+    data: cacheFresh ? cached.detail : (fetchedForThisSession ?? cached?.detail ?? null),
+    loading: cacheFresh ? false : loading,
+    error:
+      cacheFresh || error === null
+        ? null
+        : error instanceof Error
+          ? error.message
+          : String(error),
+  };
 }

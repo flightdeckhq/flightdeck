@@ -1,50 +1,22 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useKeyedFetch } from "./useKeyedFetch";
 import { fetchAnalytics } from "@/lib/api";
 import type { AnalyticsParams, AnalyticsResponse } from "@/lib/types";
 
+/** Fetches one analytics query, re-running when any parameter changes. */
 export function useAnalytics(params: AnalyticsParams) {
-  const [data, setData] = useState<AnalyticsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-
-  const load = useCallback(async () => {
-    // Cancel any in-flight request
-    if (abortRef.current) {
-      abortRef.current.abort();
-    }
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    setLoading(true);
-    setError(null);
-
-    try {
-      const result = await fetchAnalytics(params, controller.signal);
-      if (!controller.signal.aborted) {
-        setData(result);
-        setLoading(false);
-      }
-    } catch (err) {
-      if (!controller.signal.aborted) {
-        setError(err instanceof Error ? err.message : "Failed to load analytics");
-        setLoading(false);
-      }
-    }
-  }, [params]);
-
-  useEffect(() => {
-    void load();
-    return () => {
-      if (abortRef.current) {
-        abortRef.current.abort();
-      }
-    };
-  }, [load]);
-
-  const refetch = useCallback(() => {
-    void load();
-  }, [load]);
-
-  return { data, loading, error, refetch };
+  const { data, loading, error, refetch } = useKeyedFetch<AnalyticsResponse>(
+    JSON.stringify(params),
+    (signal) => fetchAnalytics(params, signal),
+  );
+  return {
+    data: data ?? null,
+    loading,
+    error:
+      error === null
+        ? null
+        : error instanceof Error
+          ? error.message
+          : "Failed to load analytics",
+    refetch,
+  };
 }

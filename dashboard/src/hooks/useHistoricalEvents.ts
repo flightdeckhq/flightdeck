@@ -1,7 +1,23 @@
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useCallback, useMemo, useState } from "react";
+import { useKeyedFetch } from "./useKeyedFetch";
 import { fetchBulkEvents } from "@/lib/api";
 import type { AgentEvent } from "@/lib/types";
 import { TIMELINE_RANGE_MS, type TimeRange } from "@/lib/constants";
+
+/** Events per request. */
+const PAGE_SIZE = 500;
+
+/** Stable empty list, so an idle result does not change identity. */
+const NO_EVENTS: AgentEvent[] = [];
+
+interface ExtraPages {
+  /** The range whose first page these pages extend. */
+  range: TimeRange;
+  from: string;
+  events: AgentEvent[];
+  total: number;
+  hasMore: boolean;
+}
 
 /**
  * Fetches all events for the selected time range in one bulk request.
@@ -15,75 +31,62 @@ import { TIMELINE_RANGE_MS, type TimeRange } from "@/lib/constants";
  * response paint on top of a fresh "1m" selection.
  */
 export function useHistoricalEvents(timeRange: TimeRange) {
-  const [events, setEvents] = useState<AgentEvent[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [hasMore, setHasMore] = useState(false);
-  const [total, setTotal] = useState(0);
-  const offsetRef = useRef(0);
-  const inflightControllerRef = useRef<AbortController | null>(null);
+  const first = useKeyedFetch(timeRange, async (signal) => {
+    const from = new Date(Date.now() - TIMELINE_RANGE_MS[timeRange]).toISOString();
+    const resp = await fetchBulkEvents({ from, limit: PAGE_SIZE, offset: 0 }, signal);
+    return { from, range: timeRange, resp };
+  });
+  // Pages added by loadMore, kept with the range they extend so a
+  // range change drops them without an effect.
+  const [extra, setExtra] = useState<ExtraPages | null>(null);
+  const [moreError, setMoreError] = useState<string | null>(null);
 
-  const load = useCallback(async (append = false) => {
-    const rangeMs = TIMELINE_RANGE_MS[timeRange];
-    const from = new Date(Date.now() - rangeMs).toISOString();
-    const offset = append ? offsetRef.current : 0;
-
-    // Cancel any inflight request; the new fetch supersedes it.
-    inflightControllerRef.current?.abort();
-    const controller = new AbortController();
-    inflightControllerRef.current = controller;
-
-    if (!append) {
-      setLoading(true);
-      setError(null);
-    }
-
-    try {
-      const resp = await fetchBulkEvents(
-        { from, limit: 500, offset },
-        controller.signal,
-      );
-      // Bail if a newer fetch superseded us mid-flight.
-      if (controller.signal.aborted) return;
-      const newEvents = resp.events ?? [];
-
-      if (append) {
-        setEvents((prev) => [...prev, ...newEvents]);
-      } else {
-        setEvents(newEvents);
-      }
-
-      offsetRef.current = offset + newEvents.length;
-      setTotal(resp.total);
-      setHasMore(resp.has_more);
-    } catch (e) {
-      // Aborted fetches throw — swallow them since they're our own
-      // cancellation, not a real failure.
-      if ((e as Error).name === "AbortError" || controller.signal.aborted) {
-        return;
-      }
-      setError((e as Error).message);
-    } finally {
-      if (!controller.signal.aborted) {
-        setLoading(false);
-      }
-    }
-  }, [timeRange]);
-
-  // Fetch on mount and when timeRange changes. The cleanup aborts any
-  // inflight request so an unmount or timeRange change mid-fetch doesn't
-  // leak a stale setState onto a no-longer-mounted hook.
-  useEffect(() => {
-    offsetRef.current = 0;
-    load(false);
-    return () => {
-      inflightControllerRef.current?.abort();
-    };
-  }, [load]);
+  // The last loaded first page stays visible while a new range loads,
+  // so the swimlane does not flash empty on a range change.
+  const base = first.data;
+  const more = base && extra?.range === base.range && extra.from === base.from ? extra : null;
+  const baseEvents = base?.resp.events ?? NO_EVENTS;
+  const events = useMemo(
+    () => (more ? [...baseEvents, ...more.events] : baseEvents),
+    [baseEvents, more],
+  );
+  const total = more ? more.total : (base?.resp.total ?? 0);
+  const hasMore = more ? more.hasMore : (base?.resp.has_more ?? false);
 
   const loadMore = useCallback(() => {
-    if (hasMore) load(true);
-  }, [hasMore, load]);
+    // Only extend the current range's first page.
+    if (!base || base.range !== timeRange || !hasMore) return;
+    const offset = events.length;
+    fetchBulkEvents({ from: base.from, limit: PAGE_SIZE, offset })
+      .then((resp) => {
+        const page = resp.events ?? [];
+        setExtra((prev) => ({
+          range: base.range,
+          from: base.from,
+          events: [
+            ...(prev && prev.range === base.range && prev.from === base.from ? prev.events : []),
+            ...page,
+          ],
+          total: resp.total,
+          hasMore: resp.has_more,
+        }));
+        setMoreError(null);
+      })
+      .catch((e: unknown) => setMoreError(e instanceof Error ? e.message : String(e)));
+  }, [base, timeRange, hasMore, events.length]);
 
-  return { events, loading, error, hasMore, total, loadMore };
+  const baseError =
+    first.error === null
+      ? null
+      : first.error instanceof Error
+        ? first.error.message
+        : String(first.error);
+  return {
+    events,
+    loading: first.loading,
+    error: baseError ?? (more ? moreError : null),
+    hasMore,
+    total,
+    loadMore,
+  };
 }

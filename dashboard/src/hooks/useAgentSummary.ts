@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { fetchAgentSummary } from "@/lib/api";
 import type {
   AgentEvent,
@@ -14,13 +14,44 @@ import { useFleetStore } from "@/store/fleet";
  * tracked per key so concurrent mounts (e.g. the table + the
  * modal opening on the same agent) issue only one HTTP request.
  *
- * The cache is mutated in place by `patchAgentSummaryFromEvent`
- * when a fleet-store WebSocket event lands for one of the cached
- * agents; the hook's local tick state re-reads it on the next
- * render.
+ * The cache is an external store: a fetch landing or a fleet-store
+ * WebSocket event patching a cached entry (`patchAgentSummaryFromEvent`,
+ * applied once per event by a single module-level subscription) bumps
+ * `cacheVersion` and notifies the hooks, which re-read the cache through
+ * `useSyncExternalStore`.
  */
 const agentSummaryCache = new Map<string, AgentSummaryResponse>();
 const agentSummaryInflight = new Map<string, Promise<AgentSummaryResponse>>();
+
+let cacheVersion = 0;
+const cacheListeners = new Set<() => void>();
+let fleetUnsubscribe: (() => void) | null = null;
+
+function notifyCacheChanged(): void {
+  cacheVersion += 1;
+  for (const listener of cacheListeners) listener();
+}
+
+function getCacheVersion(): number {
+  return cacheVersion;
+}
+
+/** Subscribes to cache changes. The first subscriber also starts the
+ *  single fleet-store subscription that applies each WebSocket event
+ *  to the cache exactly once, however many hooks show that agent. */
+function subscribeToCache(listener: () => void): () => void {
+  cacheListeners.add(listener);
+  if (fleetUnsubscribe === null) {
+    fleetUnsubscribe = useFleetStore.subscribe((state, prev) => {
+      const event = state.lastEvent;
+      if (!event || event === prev.lastEvent) return;
+      if (patchAgentSummaryFromEvent(event.flavor, event)) notifyCacheChanged();
+    });
+  }
+  return () => {
+    cacheListeners.delete(listener);
+  };
+}
 
 interface SummaryOpts {
   period: AgentSummaryPeriod;
@@ -56,10 +87,12 @@ function ensureAgentSummary(
     .then((resp) => {
       agentSummaryCache.set(key, resp);
       agentSummaryInflight.delete(key);
+      notifyCacheChanged();
       return resp;
     })
     .catch((err) => {
       agentSummaryInflight.delete(key);
+      notifyCacheChanged();
       throw err;
     });
   agentSummaryInflight.set(key, promise);
@@ -152,24 +185,18 @@ export function useAgentSummary(
   opts: SummaryOpts,
 ): { summary: AgentSummaryResponse | null; loading: boolean } {
   const key = cacheKey(agentId, opts.period, opts.bucket);
-  const [, setTick] = useState(0);
-  const lastEvent = useFleetStore((s) => s.lastEvent);
+  // Re-render whenever the cache changes (a fetch lands or a live
+  // event patches an entry); the read below is then current.
+  useSyncExternalStore(subscribeToCache, getCacheVersion);
 
-  // Initial-fetch effect. ``ensureAgentSummary`` dedupes so
-  // concurrent mounts of the same tuple share one HTTP request.
+  // Start the fetch for this tuple unless it is cached or in flight.
+  // An empty id means "no agent selected" (the per-agent modal stays
+  // mounted while closed); there is nothing to fetch.
   useEffect(() => {
-    // An empty id means "no agent selected" (the per-agent modal
-    // stays mounted while closed); there is nothing to fetch.
     if (!agentId) return;
-    const { cached, inflight } = ensureAgentSummary(agentId, opts);
-    if (cached || !inflight) return;
-    // ``.catch`` swallows the rejection so concurrent subscribers
-    // don't all surface an unhandled-rejection warning; a remount
-    // retries because ``ensureAgentSummary`` re-fetches once the
-    // inflight entry is cleared.
-    inflight
-      .then(() => setTick((t) => t + 1))
-      .catch(() => setTick((t) => t + 1));
+    ensureAgentSummary(agentId, opts).inflight?.catch(() => {
+      // A failed fetch leaves the entry uncached; the next mount retries.
+    });
     // ESLint can't see that `opts.period` / `opts.bucket` are
     // stable per call (parents pass them as literals). The
     // composite `key` IS in deps and encodes agent_id + period +
@@ -178,22 +205,7 @@ export function useAgentSummary(
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
 
-  // WS-event patch effect. When a new event arrives for the
-  // cached agent, mutate the totals in place and tick to re-read.
-  useEffect(() => {
-    if (!lastEvent) return;
-    const eventAgentId = lastEvent.flavor;
-    if (eventAgentId !== agentId) return;
-    if (patchAgentSummaryFromEvent(agentId, lastEvent)) {
-      setTick((t) => t + 1);
-    }
-  }, [agentId, lastEvent]);
-
-  // Direct cache read — the setTick fires on every cache mutation
-  // (initial fetch resolve, parallel-mount subscriber tick, WS
-  // patch) so a fresh read here always reflects the latest state.
   const summary = agentSummaryCache.get(key) ?? null;
-
   return {
     summary,
     loading: agentId !== "" && summary === null,
@@ -218,12 +230,8 @@ export function useAgentSummaries(
   agentIds: string[],
   opts: SummaryOpts,
 ): Map<string, AgentSummaryResponse> {
-  // `tick` is the cache-mutation signal. It increments on every
-  // fetch resolve and every WS patch; the returned-map memo lists
-  // it as a dep so the map identity refreshes exactly when the
-  // underlying cache changes — and never otherwise.
-  const [tick, setTick] = useState(0);
-  const lastEvent = useFleetStore((s) => s.lastEvent);
+  // Changes whenever the cache does; the returned-map memo keys on it.
+  const version = useSyncExternalStore(subscribeToCache, getCacheVersion);
   // Destructure the opts fields so the effect / memo deps are the
   // stable primitive literals rather than the per-render `opts`
   // object identity (the caller passes `opts` as an inline
@@ -235,42 +243,17 @@ export function useAgentSummaries(
   // so it sits directly in the effect dep arrays without
   // thrashing — it changes identity only when membership changes.
   useEffect(() => {
-    let cancelled = false;
     for (const agentId of agentIds) {
-      const { cached, inflight } = ensureAgentSummary(agentId, {
-        period,
-        bucket,
+      ensureAgentSummary(agentId, { period, bucket }).inflight?.catch(() => {
+        // A failed fetch leaves the entry uncached; a later mount retries.
       });
-      if (cached || !inflight) continue;
-      inflight
-        .then(() => {
-          if (!cancelled) setTick((t) => t + 1);
-        })
-        .catch(() => {
-          if (!cancelled) setTick((t) => t + 1);
-        });
     }
-    return () => {
-      cancelled = true;
-    };
   }, [agentIds, period, bucket]);
 
-  // WS-event patch effect — patch the cache for the affected
-  // agent and tick so the returned-map memo recomputes.
-  useEffect(() => {
-    if (!lastEvent) return;
-    const eventAgentId = lastEvent.flavor;
-    if (!agentIds.includes(eventAgentId)) return;
-    if (patchAgentSummaryFromEvent(eventAgentId, lastEvent)) {
-      setTick((t) => t + 1);
-    }
-  }, [agentIds, lastEvent]);
-
-  // Rebuild the map only when the agent set, the period/bucket,
-  // or the cache (via `tick`) changes — cheap either way (a few
-  // dozen Map.get calls) but the memo keeps the returned map's
-  // identity stable across unrelated re-renders (e.g. a WS event
-  // that touches no agent in this set) so the caller's sort memo
+  // Rebuild the map only when the agent set, the period/bucket, or the
+  // cache (via `version`) changes — cheap either way (a few dozen
+  // Map.get calls) but the memo keeps the returned map's identity
+  // stable across unrelated re-renders so the caller's sort memo
   // doesn't thrash.
   return useMemo(() => {
     const out = new Map<string, AgentSummaryResponse>();
@@ -279,20 +262,14 @@ export function useAgentSummaries(
       if (resp) out.set(agentId, resp);
     }
     return out;
-    // ESLint flags `tick` as unnecessary because the memo body
-    // never reads it — but it is the load-bearing cache-mutation
-    // signal: the module-level `agentSummaryCache` is patched in
-    // place, so the only thing that tells the memo to re-read it
-    // is the `tick` increment fired by the fetch/WS effects above.
-    // Dropping it would freeze the map at its first-render value.
+    // ESLint flags `version` as unnecessary because the memo body never
+    // reads it — but it is the load-bearing cache-change signal: the
+    // module-level cache is patched in place, so the version bump is
+    // the only thing that tells the memo to re-read it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [agentIds, period, bucket, tick]);
+  }, [agentIds, period, bucket, version]);
 }
 
-/**
- * Imperative cache reset — exported for tests. Clears every
- * cached agent summary + every in-flight promise.
- */
 export function __resetAgentSummaryCacheForTests(): void {
   agentSummaryCache.clear();
   agentSummaryInflight.clear();

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useKeyedFetch } from "./useKeyedFetch";
 import { fetchBulkEvents } from "@/lib/api";
 import type { AgentEvent } from "@/lib/types";
 
@@ -7,6 +7,9 @@ import type { AgentEvent } from "@/lib/types";
 // the agent drawer's Events tab shows the agent's whole history,
 // newest-first.
 const FROM_EPOCH = "1970-01-01T00:00:00Z";
+
+/** Stable empty list, so an idle result does not change identity. */
+const EMPTY_EVENTS: AgentEvent[] = [];
 
 export interface UseAgentEventsResult {
   events: AgentEvent[];
@@ -27,45 +30,28 @@ export function useAgentEvents(
   page: number,
   pageSize: number,
 ): UseAgentEventsResult {
-  const [events, setEvents] = useState<AgentEvent[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(false);
-
-  useEffect(() => {
-    if (!agentId) {
-      setEvents([]);
-      setTotal(0);
-      setLoading(false);
-      setError(false);
-      return;
-    }
-    const controller = new AbortController();
-    setLoading(true);
-    setError(false);
-    fetchBulkEvents(
-      {
-        from: FROM_EPOCH,
-        agent_id: agentId,
-        order: "desc",
-        limit: pageSize,
-        offset: page * pageSize,
-      },
-      controller.signal,
-    )
-      .then((resp) => {
-        setEvents(resp.events);
-        setTotal(resp.total);
-        setLoading(false);
-      })
-      .catch(() => {
-        // An aborted request is a superseded fetch, not a failure.
-        if (controller.signal.aborted) return;
-        setError(true);
-        setLoading(false);
-      });
-    return () => controller.abort();
-  }, [agentId, page, pageSize]);
-
-  return { events, total, loading, error };
+  // The agent prefix lets the result tell this agent's data from the
+  // previous agent's, which is never shown.
+  const agentPrefix = `${agentId}|`;
+  const { data, dataKey, loading, error } = useKeyedFetch(
+    agentId ? `${agentPrefix}${page}|${pageSize}` : null,
+    (signal) =>
+      fetchBulkEvents(
+        {
+          from: FROM_EPOCH,
+          agent_id: agentId ?? "",
+          order: "desc",
+          limit: pageSize,
+          offset: page * pageSize,
+        },
+        signal,
+      ),
+  );
+  const current = agentId !== null && dataKey?.startsWith(agentPrefix) && data;
+  return {
+    events: current ? data.events : EMPTY_EVENTS,
+    total: current ? data.total : 0,
+    loading,
+    error: error !== null,
+  };
 }

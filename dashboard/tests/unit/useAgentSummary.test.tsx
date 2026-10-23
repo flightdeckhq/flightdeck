@@ -130,6 +130,40 @@ describe("useAgentSummary", () => {
     });
   });
 
+  it("applies a live event once however many hooks show the agent", async () => {
+    // The Agents table row and the per-agent modal can both be mounted
+    // for the same agent; they share one cached summary, so the event
+    // must be counted once, not once per mounted hook.
+    const opts = { period: "7d" as const, bucket: "day" as const };
+    const { result: row } = renderHook(() => useAgentSummary("agent-1", opts));
+    const { result: modal } = renderHook(() => useAgentSummary("agent-1", opts));
+    await waitFor(() => {
+      expect(row.current.summary).not.toBeNull();
+      expect(modal.current.summary).not.toBeNull();
+    });
+    const event = {
+      id: "e-once",
+      session_id: "s-1",
+      flavor: "agent-1",
+      event_type: "post_call",
+      model: "claude-sonnet-4-6",
+      tokens_input: 30,
+      tokens_output: 20,
+      tokens_total: 50,
+      latency_ms: 10,
+      tool_name: null,
+      has_content: false,
+      occurred_at: "2026-05-14T12:00:00Z",
+    } as unknown as AgentEvent;
+    act(() => {
+      useFleetStore.setState({ lastEvent: event });
+    });
+    await waitFor(() => {
+      expect(row.current.summary!.totals.tokens).toBe(150);
+    });
+    expect(modal.current.summary!.totals.tokens).toBe(150);
+  });
+
   it("patches errors on llm_error events", async () => {
     const { result } = renderHook(() =>
       useAgentSummary("agent-4", { period: "7d", bucket: "day" }),

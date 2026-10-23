@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useKeyedFetch } from "./useKeyedFetch";
 import { fetchSessions } from "@/lib/api";
 import type { SessionListItem } from "@/lib/types";
 
@@ -6,6 +6,9 @@ import type { SessionListItem } from "@/lib/types";
 // ``agent_id`` filter plus offset pagination are the only bounds —
 // the agent drawer's Runs tab shows the agent's whole run history.
 const FROM_EPOCH = "1970-01-01T00:00:00Z";
+
+/** Stable empty list, so an idle result does not change identity. */
+const EMPTY_RUNS: SessionListItem[] = [];
 
 /** Server-backed sort columns for the Runs tab. Each maps to an
  *  entry in the `/v1/sessions` `allowedSorts` whitelist; the
@@ -41,46 +44,31 @@ export function useAgentRuns(
   pageSize: number,
   sort: RunSortState,
 ): UseAgentRunsResult {
-  const [runs, setRuns] = useState<SessionListItem[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(false);
-
-  useEffect(() => {
-    if (!agentId) {
-      setRuns([]);
-      setTotal(0);
-      setLoading(false);
-      setError(false);
-      return;
-    }
-    const controller = new AbortController();
-    setLoading(true);
-    setError(false);
-    fetchSessions(
-      {
-        from: FROM_EPOCH,
-        agent_id: agentId,
-        sort: sort.column,
-        order: sort.direction,
-        limit: pageSize,
-        offset: page * pageSize,
-      },
-      controller.signal,
-    )
-      .then((resp) => {
-        setRuns(resp.sessions);
-        setTotal(resp.total);
-        setLoading(false);
-      })
-      .catch(() => {
-        // An aborted request is a superseded fetch, not a failure.
-        if (controller.signal.aborted) return;
-        setError(true);
-        setLoading(false);
-      });
-    return () => controller.abort();
-  }, [agentId, page, pageSize, sort.column, sort.direction]);
-
-  return { runs, total, loading, error };
+  // The agent prefix lets the result tell this agent's data from the
+  // previous agent's, which is never shown.
+  const agentPrefix = `${agentId}|`;
+  const { data, dataKey, loading, error } = useKeyedFetch(
+    agentId
+      ? `${agentPrefix}${page}|${pageSize}|${sort.column}|${sort.direction}`
+      : null,
+    (signal) =>
+      fetchSessions(
+        {
+          from: FROM_EPOCH,
+          agent_id: agentId ?? "",
+          sort: sort.column,
+          order: sort.direction,
+          limit: pageSize,
+          offset: page * pageSize,
+        },
+        signal,
+      ),
+  );
+  const current = agentId !== null && dataKey?.startsWith(agentPrefix) && data;
+  return {
+    runs: current ? data.sessions : EMPTY_RUNS,
+    total: current ? data.total : 0,
+    loading,
+    error: error !== null,
+  };
 }

@@ -289,7 +289,12 @@ export function Investigate() {
   const [events, setEvents] = useState<AgentEvent[]>([]);
   const [total, setTotal] = useState(0);
   const [facets, setFacets] = useState<EventFacets | null>(null);
-  const [loading, setLoading] = useState(false);
+  // The URL state the last fetch settled for. Loading is "the current
+  // URL state has not settled yet"; background refreshes of the same
+  // state keep showing the current rows (their spinner is
+  // ``isRefreshing``).
+  const [settledFor, setSettledFor] = useState<EventsUrlState | null>(null);
+  const loading = settledFor !== urlState;
   const [error, setError] = useState(false);
 
   // Refresh state.
@@ -346,11 +351,13 @@ export function Investigate() {
   // (architect review §critical 1). When the URL params appear,
   // relinquish the local slot to the app-level host so there is
   // exactly one drawer on screen.
-  useEffect(() => {
-    if (searchParams.get("event")) {
-      setSelectedEvent(null);
-    }
-  }, [searchParams]);
+  // Adjusted during render, keyed on the ``event`` param.
+  const routedEventParam = searchParams.get("event");
+  const [routedEventSeen, setRoutedEventSeen] = useState(routedEventParam);
+  if (routedEventParam !== routedEventSeen) {
+    setRoutedEventSeen(routedEventParam);
+    if (routedEventParam) setSelectedEvent(null);
+  }
 
   // Search box — local input state so typing stays instant; the URL
   // `q` filter is updated on a SEARCH_DEBOUNCE_MS trailing debounce.
@@ -381,13 +388,9 @@ export function Investigate() {
   // Data fetch
   // -----------------------------------------------------------------------
 
-  const doFetch = useCallback(async (state: EventsUrlState) => {
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setLoading(true);
-    setError(false);
-
+  // Fetches one page of events plus the facet counts for a URL state.
+  // Pure: no state writes, so effects and handlers can share it.
+  const loadPage = useCallback(async (state: EventsUrlState, signal: AbortSignal) => {
     const filterParams = {
       from: state.from,
       to: state.to,
@@ -416,35 +419,73 @@ export function Investigate() {
       q: state.q || undefined,
     };
 
-    try {
-      const [rows, facetCounts] = await Promise.all([
-        fetchBulkEvents(
-          {
-            ...filterParams,
-            order: "desc",
-            limit: state.perPage,
-            offset: (state.page - 1) * state.perPage,
-          },
-          controller.signal,
-        ),
-        fetchEventFacets(filterParams, controller.signal),
-      ]);
-      setEvents(rows.events);
-      setTotal(rows.total);
-      setFacets(facetCounts);
-      setLoading(false);
-    } catch {
-      if (controller.signal.aborted) return;
-      setError(true);
-      setLoading(false);
-    }
+    return Promise.all([
+      fetchBulkEvents(
+        {
+          ...filterParams,
+          order: "desc",
+          limit: state.perPage,
+          offset: (state.page - 1) * state.perPage,
+        },
+        signal,
+      ),
+      fetchEventFacets(filterParams, signal),
+    ]);
   }, []);
 
-  // Fetch on every URL-state change.
+  // Applies a settled page (or failure) for ``state``.
+  const applyPage = useCallback(
+    (
+      state: EventsUrlState,
+      result: Awaited<ReturnType<typeof loadPage>> | null,
+    ) => {
+      if (result) {
+        const [rows, facetCounts] = result;
+        setEvents(rows.events);
+        setTotal(rows.total);
+        setFacets(facetCounts);
+        setError(false);
+      } else {
+        setError(true);
+      }
+      setSettledFor(state);
+    },
+    [],
+  );
+
+  // Manual and auto refresh: re-run the current state, superseding any
+  // request in flight.
+  const doFetch = useCallback(
+    async (state: EventsUrlState) => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      try {
+        const result = await loadPage(state, controller.signal);
+        if (!controller.signal.aborted) applyPage(state, result);
+      } catch {
+        if (!controller.signal.aborted) applyPage(state, null);
+      }
+    },
+    [loadPage, applyPage],
+  );
+
+  // Fetch on every URL-state change; results are applied when the
+  // request settles.
   useEffect(() => {
-    void doFetch(urlState);
-    return () => abortRef.current?.abort();
-  }, [doFetch, urlState]);
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    loadPage(urlState, controller.signal).then(
+      (result) => {
+        if (!controller.signal.aborted) applyPage(urlState, result);
+      },
+      () => {
+        if (!controller.signal.aborted) applyPage(urlState, null);
+      },
+    );
+    return () => controller.abort();
+  }, [loadPage, applyPage, urlState]);
 
   // Auto-refresh.
   useEffect(() => {
@@ -486,12 +527,13 @@ export function Investigate() {
   // The guard skips the no-op write on the common path where the
   // box itself drove the change (debounce → patchUrl → urlState.q),
   // so a fast typist does not pay an extra render per keystroke.
-  useEffect(() => {
+  // Adjusted during render, keyed on `q` alone: the box's own typing
+  // does not trigger it.
+  const [qSeen, setQSeen] = useState(urlState.q);
+  if (urlState.q !== qSeen) {
+    setQSeen(urlState.q);
     if (urlState.q !== searchInput) setSearchInput(urlState.q);
-    // searchInput intentionally omitted — this effect reacts to
-    // outside-driven `q` changes, not to the box's own typing.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlState.q]);
+  }
 
   // Toggle a value in a multi-select facet dimension.
   const toggleFacet = useCallback(
@@ -888,7 +930,7 @@ export function Investigate() {
                     </TableCell>
                   </TableRow>
                 )}
-                {!error && loading && events.length === 0 && (
+                {loading && events.length === 0 && (
                   <TableRow data-testid="events-table-loading">
                     <TableCell
                       colSpan={7}
@@ -899,7 +941,7 @@ export function Investigate() {
                     </TableCell>
                   </TableRow>
                 )}
-                {error && (
+                {error && !loading && (
                   <TableRow data-testid="events-table-error">
                     <TableCell
                       colSpan={7}

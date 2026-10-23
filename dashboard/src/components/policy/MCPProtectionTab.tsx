@@ -68,15 +68,28 @@ export function MCPProtectionTab() {
     }
   }, []);
 
-  const loadFlavors = useCallback(async () => {
-    const list = await fetchFlavors();
-    setFlavors(list);
-  }, []);
-
+  // Initial load. State starts as "loading", so the first fetch only
+  // writes when it settles; loadGlobal (used after a save) is the
+  // awaitable reload that shows loading again.
   useEffect(() => {
-    void loadGlobal();
-    void loadFlavors();
-  }, [loadGlobal, loadFlavors]);
+    let cancelled = false;
+    fetchGlobalMCPPolicy().then(
+      (policy) => {
+        if (!cancelled) setGlobalState({ policy, loading: false, error: null });
+      },
+      () => {
+        if (!cancelled) {
+          setGlobalState({ policy: null, loading: false, error: "Failed to load global MCP policy" });
+        }
+      },
+    );
+    fetchFlavors().then((list) => {
+      if (!cancelled) setFlavors(list);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const tabs = useMemo<{ value: string; label: string }[]>(
     () => [
@@ -317,9 +330,22 @@ function FlavorPanel({
     }
   }, [flavor]);
 
+  // Initial load; state starts as "loading". ``reload`` (after a save)
+  // is the awaitable refresh that shows loading again.
   useEffect(() => {
-    void reload();
-  }, [reload]);
+    let cancelled = false;
+    fetchFlavorMCPPolicy(flavor).then(
+      (policy) => {
+        if (!cancelled) setState({ policy, loading: false, error: null });
+      },
+      () => {
+        if (!cancelled) setState({ policy: null, loading: false, error: "Failed to load flavor policy" });
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [flavor]);
 
   const saveEntry = useCallback(
     async (next: MCPPolicyMutationEntry, previous?: MCPPolicyEntry) => {
@@ -529,16 +555,23 @@ function ScopePicker({
     return tabs.filter((t) => t.label.toLowerCase().includes(q));
   }, [tabs, query]);
 
-  // Reset query + highlight whenever the panel opens. Focus the
-  // input on the next paint so the operator can type immediately.
-  useEffect(() => {
+  // Reset query + highlight whenever the panel opens (adjusted during
+  // render, keyed on ``open``), and focus the input on the next paint
+  // so the operator can type immediately.
+  const [openSeen, setOpenSeen] = useState(open);
+  if (open !== openSeen) {
+    setOpenSeen(open);
     if (open) {
       setQuery("");
       setHighlight(0);
-      requestAnimationFrame(() => {
-        inputRef.current?.focus();
-      });
     }
+  }
+  useEffect(() => {
+    if (!open) return;
+    const frame = requestAnimationFrame(() => {
+      inputRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
   }, [open]);
 
   // Click-outside collapse.

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { X } from "lucide-react";
 import { PromptViewer } from "@/components/session/PromptViewer";
@@ -33,12 +33,14 @@ export function EventDetailDrawer({ event, onClose, onSwapEvent, onViewRun }: Ev
   // selection still work by storing the swapped event in local
   // state and rendering that instead of the prop.
   const [swappedEvent, setSwappedEvent] = useState<AgentEvent | null>(null);
-
-  useEffect(() => {
-    // Reset the local swap when the host changes the prop event so
-    // a new external selection always wins over a stale internal swap.
+  // Reset the local swap when the host changes the prop event so a new
+  // external selection always wins over a stale internal swap. Adjusted
+  // during render, keyed on the prop event's id.
+  const [swapBaseId, setSwapBaseId] = useState(event?.id);
+  if (event?.id !== swapBaseId) {
+    setSwapBaseId(event?.id);
     setSwappedEvent(null);
-  }, [event?.id]);
+  }
 
   const displayed = swappedEvent ?? event;
   if (!displayed) return null;

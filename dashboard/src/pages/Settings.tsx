@@ -54,9 +54,26 @@ export function Settings() {
     }
   }, []);
 
+  // Initial load; state starts as "loading". ``load`` (after a save
+  // or delete) is the awaitable refresh that shows loading again.
   useEffect(() => {
-    void load();
-  }, [load]);
+    let cancelled = false;
+    fetchAccessTokens().then(
+      (rows) => {
+        if (cancelled) return;
+        setTokens(rows);
+        setLoading(false);
+      },
+      () => {
+        if (cancelled) return;
+        setError("Failed to load access tokens");
+        setLoading(false);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // The dashboard cannot read ENVIRONMENT directly from the server,
   // so we heuristically assume "dev mode" whenever the only token on
@@ -500,14 +517,17 @@ function CreateAccessTokenDialog({
   // Reset dialog internals every time it opens so a previous run's
   // state (leftover name, old created token) can never flash back
   // onto a fresh create flow.
-  useEffect(() => {
+  // Adjusted during render, keyed on ``open``.
+  const [openSeen, setOpenSeen] = useState(open);
+  if (open !== openSeen) {
+    setOpenSeen(open);
     if (open) {
       setName("");
       setSubmitting(false);
       setError(null);
       setCreated(null);
     }
-  }, [open]);
+  }
 
   const submit = async () => {
     const trimmed = name.trim();

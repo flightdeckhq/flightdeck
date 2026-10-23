@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
+import { useKeyedFetch, useShownKey } from "@/hooks/useKeyedFetch";
 import {
   BrowserRouter,
   Routes,
@@ -258,10 +259,11 @@ function AgentDrawerHost() {
  * Hydration: a single ``fetchBulkEvents`` call scoped to the
  * session_id (no new endpoint) provides the AgentEvent the
  * drawer needs; the matching event is picked by id. While the
- * fetch is in flight EventDetailDrawer renders null (its prop
- * gate), so there is no half-rendered shell to manage.
+ * first fetch is in flight EventDetailDrawer renders null (its prop
+ * gate), so there is no half-rendered shell to manage; switching to
+ * another event keeps the current one open until the next lands.
  */
-function EventDetailDrawerHost() {
+export function EventDetailDrawerHost() {
   const [searchParams, setSearchParams] = useSearchParams();
   const rawEvent = searchParams.get("event");
   const rawSession = searchParams.get("event_session");
@@ -270,42 +272,31 @@ function EventDetailDrawerHost() {
     rawSession !== null &&
     EVENT_DRAWER_ID_RE.test(rawEvent) &&
     EVENT_DRAWER_ID_RE.test(rawSession);
-  const [event, setEvent] = useState<AgentEvent | null>(null);
-  // ``notFound`` is true when the fetch returned a page (possibly
-  // with has_more) but the target event id was absent. Used to
-  // render an explicit empty state rather than an invisible drawer.
-  const [notFound, setNotFound] = useState(false);
-
-  useEffect(() => {
-    if (!active || !rawSession || !rawEvent) {
-      setEvent(null);
-      setNotFound(false);
-      return;
-    }
-    const controller = new AbortController();
-    setNotFound(false);
+  const requestKey = active ? `${rawSession}|${rawEvent}` : null;
+  const lookup = useKeyedFetch(requestKey, (signal) =>
     fetchBulkEvents(
       {
         from: EVENT_DRAWER_FETCH_FROM,
-        session_id: rawSession,
+        session_id: rawSession ?? "",
         limit: EVENT_DRAWER_FETCH_LIMIT,
       },
-      controller.signal,
-    )
-      .then((resp) => {
-        if (controller.signal.aborted) return;
-        const hit = resp.events.find((e) => e.id === rawEvent) ?? null;
-        setEvent(hit);
-        setNotFound(hit === null);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setEvent(null);
-          setNotFound(true);
-        }
-      });
-    return () => controller.abort();
-  }, [active, rawSession, rawEvent]);
+      signal,
+    ),
+  );
+  // While a different event loads, the drawer keeps showing the one
+  // it had (the shown key still names it).
+  const shownKey = useShownKey(requestKey, lookup);
+  const shownEventId = shownKey === null ? null : shownKey.slice(shownKey.indexOf("|") + 1);
+  const event: AgentEvent | null =
+    shownEventId === null
+      ? null
+      : (lookup.data?.events.find((e) => e.id === shownEventId) ?? null);
+  // ``notFound`` is true when the fetch returned a page (possibly
+  // with has_more) but the target event id was absent, or the fetch
+  // failed. Used to render an explicit empty state rather than an
+  // invisible drawer.
+  const notFound =
+    requestKey !== null && !lookup.loading && (lookup.error !== null || event === null);
 
   const close = useCallback(() => {
     setSearchParams(

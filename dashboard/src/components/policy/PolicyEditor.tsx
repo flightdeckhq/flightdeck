@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useMemo } from "react";
 import type { Policy, PolicyRequest } from "@/lib/types";
 import { useFleetStore } from "@/store/fleet";
 import { truncateSessionId } from "@/lib/events";
@@ -83,9 +83,13 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
   // Flavor list from fleet store
   const flavorNames = useMemo(() => flavors.map((f) => f.flavor), [flavors]);
 
-  useEffect(() => {
+  // Org scope has no value; clear it when the scope becomes org.
+  // Adjusted during render, keyed on the scope.
+  const [scopeSeen, setScopeSeen] = useState(scope);
+  if (scope !== scopeSeen) {
+    setScopeSeen(scope);
     if (scope === "org") setScopeValue("");
-  }, [scope]);
+  }
 
   function validate(): Record<string, string> {
     const e: Record<string, string> = {};

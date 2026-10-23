@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 
+import { useKeyedFetch, useShownKey } from "@/hooks/useKeyedFetch";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { InfoIcon } from "@/components/ui/info-icon";
@@ -77,62 +78,52 @@ export function MCPPolicyEntryDialog({
   // dialog opening with the cursor where typing should land.
   const urlInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Reset every time the dialog opens with a new ``initial``.
-  useEffect(() => {
-    if (!open) return;
-    setServerUrl(initial?.server_url ?? "");
-    setServerName(initial?.server_name ?? "");
-    setEntryKind(initial?.entry_kind ?? "allow");
-    setEnforcement(
-      (initial?.enforcement as EnforcementValue | null) ?? "none",
-    );
-    setError(null);
-    setSubmitAttempted(false);
-  }, [open, initial]);
+  // Reset every time the dialog opens, or opens with a new
+  // ``initial``. Adjusted during render, keyed on both.
+  const [resetFor, setResetFor] = useState<{ open: boolean; initial: typeof initial }>({
+    open: false,
+    initial: undefined,
+  });
+  if (open !== resetFor.open || initial !== resetFor.initial) {
+    setResetFor({ open, initial });
+    if (open) {
+      setServerUrl(initial?.server_url ?? "");
+      setServerName(initial?.server_name ?? "");
+      setEntryKind(initial?.entry_kind ?? "allow");
+      setEnforcement((initial?.enforcement as EnforcementValue | null) ?? "none");
+      setError(null);
+      setSubmitAttempted(false);
+    }
+  }
 
   const debouncedUrl = useDebouncedValue(serverUrl, RESOLVE_DEBOUNCE_MS);
   const debouncedName = useDebouncedValue(serverName, RESOLVE_DEBOUNCE_MS);
 
-  const [resolveResult, setResolveResult] = useState<MCPPolicyResolveResult | null>(
-    null,
-  );
-  const [resolveError, setResolveError] = useState<string | null>(null);
-  const [resolving, setResolving] = useState(false);
-
-  useEffect(() => {
-    if (!open) return;
-    if (!debouncedUrl.trim() || !debouncedName.trim()) {
-      setResolveResult(null);
-      setResolveError(null);
-      return;
-    }
-    let cancelled = false;
-    setResolving(true);
-    setResolveError(null);
+  // Resolve preview for the debounced URL + name while the dialog is
+  // open. The previous preview stays while the next one loads; a
+  // failure or an emptied field clears it.
+  const resolveUrl = debouncedUrl.trim();
+  const resolveName = debouncedName.trim();
+  const resolveKey =
+    open && resolveUrl && resolveName ? JSON.stringify([flavor ?? null, resolveUrl, resolveName]) : null;
+  const resolve = useKeyedFetch(resolveKey, () =>
     resolveMCPPolicy({
       flavor: flavor ?? undefined,
-      server_url: debouncedUrl.trim(),
-      server_name: debouncedName.trim(),
-    })
-      .then((res) => {
-        if (cancelled) return;
-        setResolveResult(res);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setResolveResult(null);
-        setResolveError(
-          err instanceof Error ? err.message : "Resolve preview failed",
-        );
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setResolving(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [debouncedUrl, debouncedName, flavor, open]);
+      server_url: resolveUrl,
+      server_name: resolveName,
+    }),
+  );
+  const resolveShownKey = useShownKey(resolveKey, resolve);
+  const resolveResult: MCPPolicyResolveResult | null =
+    resolveShownKey === null ? null : (resolve.data ?? null);
+  const resolveError =
+    resolve.error === null
+      ? null
+      : resolve.error instanceof Error
+        ? resolve.error.message
+        : "Resolve preview failed";
+  const resolving = resolve.loading;
+
 
   const validation = useMemo(() => validate(serverUrl, serverName), [
     serverUrl,

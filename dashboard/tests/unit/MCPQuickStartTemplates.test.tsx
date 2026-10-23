@@ -251,4 +251,31 @@ describe("MCPQuickStartTemplates", () => {
       useMCPQuickStartStore.getState().wasApplied("flavor:prod"),
     ).toBe(false);
   });
+  it("retries a failed template load when the popover is reopened", async () => {
+    listMock
+      .mockRejectedValueOnce(new Error("templates unavailable"))
+      .mockResolvedValueOnce([STRICT_TEMPLATE]);
+    render(
+      <MCPQuickStartTemplates
+        flavor="research-agent"
+        scopeKey="research-agent"
+        entryCount={0}
+        onApplied={async () => undefined}
+      />,
+    );
+    const trigger = screen.getByTestId("mcp-quickstart-templates-trigger-research-agent");
+
+    fireEvent.click(trigger);
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-quickstart-templates-error-research-agent")).toBeTruthy();
+    });
+    expect(listMock).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(trigger);
+    fireEvent.click(trigger);
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-quickstart-templates-row-strict-baseline")).toBeTruthy();
+    });
+    expect(listMock).toHaveBeenCalledTimes(2);
+  });
 });

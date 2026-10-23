@@ -337,7 +337,12 @@ export function Fleet() {
       }
     });
 
-    // Increment versions for all affected sessions
+    // Increment versions for all affected sessions. This effect
+    // synchronises an external store (the module-level eventsCache
+    // written above, which the swimlane reads); the version bump is
+    // what tells the swimlane to re-read it, so it has to follow the
+    // cache write and cannot move into render.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setSessionVersions((prev) => {
       const next = { ...prev };
       grouped.forEach((_, sessionId) => {

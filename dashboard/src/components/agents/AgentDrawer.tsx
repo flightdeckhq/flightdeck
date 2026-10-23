@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Link } from "react-router";
 import { Activity, ListTree } from "lucide-react";
@@ -82,13 +82,16 @@ export function AgentDrawer({
 
   // Reset transient state whenever the drawer re-points at a fresh
   // agent so a stale tab / nested drawer never bleeds across agents.
-  useEffect(() => {
+  // Adjusted during render, keyed on the agent id.
+  const [resetFor, setResetFor] = useState(agentId);
+  if (agentId !== resetFor) {
+    setResetFor(agentId);
     setTab("events");
     setSelectedEvent(null);
     setSelectedRunId(null);
     setSwimlaneOpen(false);
     setOpenPanels({ mcp: false, context: false, policy: false });
-  }, [agentId]);
+  }
 
   // Page-0 runs feeding the header panels.
   const { runs: panelRuns } = useAgentRuns(agentId, 0, PANEL_RUNS, {

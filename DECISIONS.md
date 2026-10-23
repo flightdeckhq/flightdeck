@@ -11352,6 +11352,16 @@ scrolls.
 **Rejected:** Disabling `set-state-in-effect` (it would stay off).
 TypeScript 7 (`typescript-eslint` does not support it yet).
 
+**Update (2026-10-23):** The call sites are rewritten and
+`set-state-in-effect` is an error again. Fetches go through
+`useKeyedFetch`, which derives loading and error from the request key;
+resets on a changed input happen during render, keyed on the previous
+value; lazy fetches use a "requested" flag set by the event that asks
+for them. One site keeps a scoped disable: the Fleet page writes live
+events into a module-level cache the swimlane reads, then bumps a
+per-session version so the swimlane re-reads it; the bump has to follow
+the cache write, so it stays in the effect.
+
 ---
 
 ## D202 -- Token revocation invalidates the validation caches through Postgres NOTIFY

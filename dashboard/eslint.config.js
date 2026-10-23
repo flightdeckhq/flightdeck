@@ -17,12 +17,7 @@ export default tseslint.config(
     },
     rules: {
       ...reactHooks.configs.recommended.rules,
-      // react-hooks 7 flags setState called synchronously inside an
-      // effect. The 48 existing call sites are being rewritten in the
-      // dashboard PR that follows the ESLint 10 upgrade; until then
-      // the rule reports without failing the lint gate, and that PR
-      // sets it back to "error".
-      "react-hooks/set-state-in-effect": "warn",
+      "react-hooks/set-state-in-effect": "error",
       "@typescript-eslint/no-unused-vars": [
         "error",
         { argsIgnorePattern: "^_" },

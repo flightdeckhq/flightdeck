@@ -110,9 +110,26 @@ function TokenBudgetTab() {
     }
   }, []);
 
+  // Initial load; state starts as "loading". ``load`` (after a save
+  // or delete) is the awaitable refresh that shows loading again.
   useEffect(() => {
-    void load();
-  }, [load]);
+    let cancelled = false;
+    fetchPolicies().then(
+      (rows) => {
+        if (cancelled) return;
+        setPolicies(rows);
+        setLoading(false);
+      },
+      () => {
+        if (cancelled) return;
+        setError("Failed to load policies");
+        setLoading(false);
+      },
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   function openCreate() {
     setEditingPolicy(undefined);

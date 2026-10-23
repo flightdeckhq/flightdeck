@@ -235,9 +235,10 @@ export function Timeline({
       // Without this snap, scaleEnd would stay frozen at the value
       // it held when rAF last stopped, and a new event arriving at
       // wall-clock would sit just outside [scaleStart, scaleEnd]
-      // forever.
-      setNow(new Date());
-      return;
+      // forever. Done on the next frame rather than synchronously in
+      // the effect, which would render twice in a row.
+      const snap = requestAnimationFrame(() => setNow(new Date()));
+      return () => cancelAnimationFrame(snap);
     }
     let rafId: number;
     let lastUpdate = 0;

@@ -9,6 +9,7 @@
  * Theme-agnostic — every assertion is a structural locator.
  */
 import { test, expect } from "@playwright/test";
+import { openAgentDrawerFromRow } from "./_fixtures";
 
 test.describe("T67 — agent drawer opens on /agents row click", () => {
   test("clicking an agent row opens the drawer and sets the URL param", async ({
@@ -20,7 +21,7 @@ test.describe("T67 — agent drawer opens on /agents row click", () => {
       .first();
     await expect(firstRow).toBeVisible({ timeout: 10_000 });
 
-    await firstRow.click();
+    await openAgentDrawerFromRow(firstRow);
 
     await expect(page.locator('[data-testid="agent-drawer"]')).toBeVisible();
     await expect(page).toHaveURL(/agent_drawer=/);
@@ -37,7 +38,7 @@ test.describe("T67 — agent drawer opens on /agents row click", () => {
       .locator('[data-testid^="agent-row-"][data-agent-id]')
       .first();
     await expect(firstRow).toBeVisible({ timeout: 10_000 });
-    await firstRow.click();
+    await openAgentDrawerFromRow(firstRow);
     await expect(page.locator('[data-testid="agent-drawer"]')).toBeVisible();
 
     await page.locator('[data-testid="agent-drawer-close"]').click();

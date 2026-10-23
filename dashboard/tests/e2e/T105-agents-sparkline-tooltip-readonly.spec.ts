@@ -61,9 +61,27 @@ test.describe("T105 — /agents sparkline tooltip + read-only click", () => {
       return;
     }
     await chart.scrollIntoViewIfNeeded();
-    await chart.hover({ force: true });
+    // The tooltip shows only while the pointer is within a few pixels
+    // of a data point, and the chart's centre can fall between two
+    // points. Sweep the pointer across the chart, one position per
+    // poll, until it lands on a point.
+    const box = await chart.boundingBox();
+    expect(box).not.toBeNull();
     const tooltip = page.locator('[data-testid="agent-sparkline-tooltip"]');
-    await expect(tooltip).toBeVisible({ timeout: 5_000 });
+    let x = box!.x + 1;
+    await expect
+      .poll(
+        async () => {
+          await page.mouse.move(x, box!.y + box!.height / 2);
+          x = x >= box!.x + box!.width - 1 ? box!.x + 1 : x + 2;
+          return tooltip.count();
+        },
+        // A short, fixed interval lets the sweep cross the whole chart
+        // within the timeout instead of stalling on the default backoff.
+        { timeout: 5_000, intervals: [50] },
+      )
+      .toBeGreaterThan(0);
+    await expect(tooltip).toBeVisible();
     // Tooltip text is always "<short-date>: <formatted-value>".
     // Assert structurally (colon-separator + non-empty values on
     // either side) rather than nailing a specific date / value

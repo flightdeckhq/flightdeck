@@ -138,6 +138,10 @@ server.
   and the per-agent modal both showing an agent, each event was counted
   twice. The cache now applies each event once through a single
   subscription.
+- **Dashboard: long event-type labels spilled out of their Live Feed
+  pill.** Labels such as "MCP PROMPT FETCHED" wrapped onto a second line
+  below the fixed-height pill. They now stay on one line and end in an
+  ellipsis when the Type column is narrow, with the full label on hover.
 - **Claude Code plugin: an outage at session start silently turned off
   prompt capture for the whole session.** The plugin marked
   `session_start` as sent even when ingestion was unreachable or

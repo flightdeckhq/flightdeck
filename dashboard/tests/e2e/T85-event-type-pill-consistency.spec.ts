@@ -25,7 +25,7 @@
  * attribute is the literal CSS-variable string, identical in both).
  */
 import { test, expect, type Locator } from "@playwright/test";
-import { waitForInvestigateReady } from "./_fixtures";
+import { waitForInvestigateReady, openAgentDrawerFromRow } from "./_fixtures";
 
 const PINNED_TYPE = "tool_call";
 const PILL = `[data-testid="event-type-pill"][data-event-type="${PINNED_TYPE}"]`;
@@ -82,7 +82,7 @@ test.describe("T85 — EventTypePill renders consistently on all three surfaces"
       .locator('[data-testid^="agent-row-"][data-agent-id]')
       .first();
     await expect(firstAgentRow).toBeVisible({ timeout: 10_000 });
-    await firstAgentRow.click();
+    await openAgentDrawerFromRow(firstAgentRow);
     const agentDrawer = page.locator('[data-testid="agent-drawer"]');
     await expect(agentDrawer).toBeVisible();
     const agentDrawerPill = agentDrawer.locator(PILL).first();

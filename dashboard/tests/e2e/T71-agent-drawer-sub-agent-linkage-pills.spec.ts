@@ -10,6 +10,7 @@
  * Theme-agnostic — structural locators only.
  */
 import { test, expect } from "@playwright/test";
+import { openAgentDrawerFromRow } from "./_fixtures";
 
 test.describe("T71 — agent drawer sub-agent linkage pills", () => {
   test("a non-lone agent's drawer renders linkage pills", async ({ page }) => {
@@ -23,7 +24,7 @@ test.describe("T71 — agent drawer sub-agent linkage pills", () => {
       )
       .first();
     await expect(linkedRow).toBeVisible({ timeout: 10_000 });
-    await linkedRow.click();
+    await openAgentDrawerFromRow(linkedRow);
 
     await expect(page.locator('[data-testid="agent-drawer"]')).toBeVisible();
     await expect(

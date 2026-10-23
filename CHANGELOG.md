@@ -417,25 +417,31 @@ server.
 
 ### Changed
 
-- **Dashboard data hooks no longer set state synchronously inside
-  effects.** A shared `useKeyedFetch` hook derives loading and error
-  state from the request key and writes state only when a request
-  settles; the agent events and runs lists, analytics, search, session
-  detail and historical events hooks use it, and the agent summary cache
-  is read through `useSyncExternalStore`. The session drawer, the
-  sub-agents tab and the prompt and embeddings viewers follow the same
-  pattern. The embeddings viewer now shows "content not captured" when
-  the content request comes back empty instead of "Loading…" forever,
-  and the MCP servers panel no longer sticks on "loading" when its
-  lookups are restarted.
+- **The dashboard no longer sets state synchronously inside effects.**
+  A shared `useKeyedFetch` hook derives loading and error state from
+  the request key and writes state only when a request settles; the
+  agent events and runs lists, analytics, search, session detail and
+  historical events hooks use it, and the agent summary cache is read
+  through `useSyncExternalStore`. The drawers, the policy and settings
+  pages, the events page, the directives and audit views, the command
+  palette and the timeline follow the same pattern: derived values are
+  computed during render, and resets on a changed input happen during
+  render instead of in an effect. `react-hooks/set-state-in-effect` is
+  an error again. Fixed along the way:
+  - The embeddings viewer shows "content not captured" when the content
+    request comes back empty, instead of "Loading…" forever.
+  - The MCP servers panel no longer sticks on "loading" when its lookups
+    are restarted.
+  - A failed quick-start template load retries when the popover is
+    reopened.
+  - Switching straight from one agent's swimlane to another's no longer
+    shows the first agent's events while the second loads.
 - **Dashboard lint and types:** ESLint 10 with
   `eslint-plugin-react-hooks` 7 and TypeScript 6 (the deprecated
   `baseUrl` is gone; target and lib move to ES2022). The new hook rules'
   findings are fixed (chart tick components moved out of render, a
   `useNow` clock instead of `Date.now()` during render, a WebSocket
-  reconnect loop that also cancels a pending reconnect on unmount), and
-  `react-hooks/set-state-in-effect` reports as a warning until its call
-  sites are rewritten.
+  reconnect loop that also cancels a pending reconnect on unmount).
 - **Dashboard runs on React 19.** React and React DOM 19.3, React
   Testing Library 16 (with `@testing-library/dom` 10) and jest-dom 7,
   zustand 5, lucide-react 1.53, and `motion` 13.5 in place of

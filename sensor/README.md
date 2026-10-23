@@ -19,7 +19,7 @@ python3.12 -m venv sensor/.venv
 the exact versions CI tests with, install from the lockfile instead:
 
 ```bash
-cd sensor && uv sync --locked --extra dev --extra anthropic --extra openai
+cd sensor && uv sync --locked --python 3.12 --extra dev --extra anthropic --extra openai
 ```
 
 CI installs from `sensor/uv.lock` into the `actions/setup-python`
@@ -27,7 +27,7 @@ interpreter and overrides via env (`PYTHON=python make -C sensor
 test`). The lock covers Python 3.11 to 3.14 and both CI lanes: the
 framework lane (`dev` extra) and the newest-SDK lane (`sdk-majors`
 dependency group). `uv lock` resolves only releases at least 14 days
-old (`[tool.uv]` in `pyproject.toml`).
+old, anthropic a day old (`[tool.uv]` in `pyproject.toml`).
 
 ## Optional `session_id` hint
 

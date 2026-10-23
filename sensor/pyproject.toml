@@ -170,12 +170,12 @@ conflicts = [
 ]
 # Every `uv lock` resolves to releases at least 14 days old: brand-new
 # releases are where hijacked or broken versions are caught and yanked
-# (Dependabot applies the same cooldown). anthropic is exempt up to the
-# date below because the SDK-majors lane exists to test its newest major
-# (2.0.0 shipped 2026-10-21); move the date when that lane should pick up
-# a newer release.
+# (Dependabot applies the same cooldown). anthropic only has to be a day
+# old, in both lanes, because the SDK-majors lane exists to test its
+# newest major, which can be days old (2.0.0 shipped 2026-10-21). Both
+# are rolling spans, so they never go stale.
 exclude-newer = "14 days"
-exclude-newer-package = { anthropic = "2026-10-23T23:59:59Z" }
+exclude-newer-package = { anthropic = "1 day" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["flightdeck_sensor"]

@@ -11410,12 +11410,15 @@ handler only (misses ingestion, other API replicas and manual deletes).
 newest-SDK lane on 3.11 and 3.14. crewai, which declares `<3.14`, is
 installed only below 3.14 (`python_version < '3.14'` marker); its tests
 skip on 3.14. CI installs every Python job from `sensor/uv.lock`, a single
-universal lockfile that covers all four versions and both lanes: the
+universal lockfile that covers all four versions and both lanes (the
+release workflow still builds the wheel with `pip install build`): the
 framework lane (`dev` extra) and the newest-SDK lane (`sdk-majors`
 dependency group, not published), declared as conflicting so each gets
 its own resolution. `uv lock` only resolves releases at least 14 days
-old (`exclude-newer = "14 days"`), with anthropic exempt up to a fixed
-date so the newest-SDK lane can test its new 2.x line. Dependabot's `uv`
+old (`exclude-newer = "14 days"`); anthropic only has to be a day old, in
+both lanes, so the newest-SDK lane can test a new major within days of
+its release. Both are rolling spans, so neither goes stale; a fixed
+cutoff date would stop anthropic updating once it passed. Dependabot's `uv`
 ecosystem keeps the lock current. Floors: `pydantic>=2.10,<3`,
 `mcp>=1.28`, `pytest>=9` (with `pytest-asyncio>=1.0`), `mypy>=2.4`. Ruff
 reads its target version from `requires-python`, and the four

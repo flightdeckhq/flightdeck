@@ -421,10 +421,11 @@ server.
   3.13 and 3.14 (it was 3.10 to 3.13); CI tests all four. On 3.14 the
   CrewAI integration is not installed in development and CI, because
   CrewAI does not support 3.14 yet. Dependency floors rise to
-  `pydantic>=2.10` and, for the `mcp` extra, `mcp>=1.28` (the lowest
+  `pydantic>=2.10,<3` and, for the `mcp` extra, `mcp>=1.28` (the lowest
   release CrewAI accepts). CI installs the sensor's dependencies from a
-  lockfile, `sensor/uv.lock`, which only takes releases at least 14 days
-  old; Dependabot keeps it current. The sensor's error, stream-outcome,
+  lockfile, `sensor/uv.lock`, which takes releases at least 14 days old
+  (anthropic at least a day old, so the newest-SDK lane can test its new
+  majors); Dependabot proposes updates to it. The sensor's error, stream-outcome,
   abort-reason and provider enums are `StrEnum`s, so `str()` of a member
   gives its plain value.
 - **CI and release pipeline.**

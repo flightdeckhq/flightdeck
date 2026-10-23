@@ -677,8 +677,8 @@ def patch(
     if providers is None:
         targets: set[str] = {p.value for p in Provider}
     else:
-        # Normalize Provider members → str. Members ARE str (mixin
-        # form), so this is a no-op equality-wise but it gives every
+        # Normalize Provider members → str. Members ARE str (StrEnum),
+        # so this is a no-op equality-wise but it gives every
         # downstream branch a clean ``str``-typed lookup target and
         # keeps the unknown-string-silently-ignored behavior intact.
         targets = {t.value if isinstance(t, Provider) else t for t in providers}

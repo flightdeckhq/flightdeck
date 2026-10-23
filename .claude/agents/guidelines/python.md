@@ -2,7 +2,7 @@
 
 ## Hard rules
 - No magic strings or magic numbers anywhere. Define module-level constants in UPPER_SNAKE_CASE, or use `enum.Enum` / `enum.IntEnum` / `enum.StrEnum` for related values. The only exceptions are 0, 1, -1, "", and identity test values in tests.
-- Type hints on every public function and method. Use modern syntax (`list[int]`, `X | None`, `Self`) on Python 3.10+.
+- Type hints on every public function and method. Use modern syntax (`list[int]`, `X | None`, `Self`) on Python 3.11+.
 - All public functions, classes, and modules have docstrings. Use Google style or NumPy style consistently within a project.
 - Use `pathlib.Path` for filesystem paths, never `os.path`.
 - Use `logging` (or `structlog`) with module-level loggers (`logger = logging.getLogger(__name__)`). Never `print` for diagnostics.

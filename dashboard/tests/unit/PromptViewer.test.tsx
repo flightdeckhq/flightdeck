@@ -29,6 +29,18 @@ beforeEach(() => {
 });
 
 describe("PromptViewer", () => {
+  it("a failed content request ends the spinner instead of spinning forever", async () => {
+    const api = await import("@/lib/api");
+    vi.mocked(api.fetchEventContent).mockImplementationOnce(() =>
+      Promise.reject(new Error("network down")),
+    );
+    const { container } = render(<PromptViewer eventId="e-fail" />);
+    expect(container.querySelector(".animate-spin")).not.toBeNull();
+    await waitFor(() => expect(container.querySelector(".animate-spin")).toBeNull());
+    // Failure is not reported as "capture not enabled".
+    expect(screen.queryByText(/Prompt capture is not enabled/)).toBeNull();
+  });
+
   it("renders nothing when eventId is null", () => {
     const { container } = render(<PromptViewer eventId={null} />);
     expect(container.firstChild).toBeNull();

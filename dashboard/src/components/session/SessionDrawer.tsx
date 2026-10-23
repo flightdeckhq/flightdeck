@@ -3,6 +3,7 @@ import { motion, AnimatePresence } from "motion/react";
 import { X, FileText } from "lucide-react";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { TruncatedText } from "@/components/ui/TruncatedText";
+import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import { invalidateSessionCache, useSession } from "@/hooks/useSession";
 import { useFleetStore } from "@/store/fleet";
 import { SHUTDOWN_GRACE_PERIOD_MS, SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/constants";
@@ -274,9 +275,13 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   // so a user tuning down to 50 on one session doesn't silently carry
   // the cap across to the next drawer.
   const [eventsLimit, setEventsLimit] = useState<number>(DEFAULT_EVENTS_LIMIT);
-  useEffect(() => {
+  // Adjusted during render rather than in an effect, so the reset lands
+  // in the same render as the new session id.
+  const [limitSessionId, setLimitSessionId] = useState(sessionId);
+  if (sessionId !== limitSessionId) {
+    setLimitSessionId(sessionId);
     if (sessionId) setEventsLimit(DEFAULT_EVENTS_LIMIT);
-  }, [sessionId]);
+  }
 
   // has_more flag derived from pagination fetches; seeded to true when
   // the initial capped fetch returns exactly ``eventsLimit`` rows (a
@@ -297,17 +302,21 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   // event matches our session_id + the new event type. The
   // revalidationKey threads into useSession as a useEffect dep so
   // the next render fetches fresh data from the API.
-  const lastEvent = useFleetStore((s) => s.lastEvent);
   const [revalidationKey, setRevalidationKey] = useState(0);
   useEffect(() => {
-    if (!sessionId || !lastEvent) return;
-    if (
-      lastEvent.session_id === sessionId &&
-      lastEvent.event_type === "mcp_server_attached"
-    ) {
-      setRevalidationKey((k) => k + 1);
-    }
-  }, [lastEvent, sessionId]);
+    if (!sessionId) return;
+    return useFleetStore.subscribe((state, prev) => {
+      const event = state.lastEvent;
+      if (
+        event &&
+        event !== prev.lastEvent &&
+        event.session_id === sessionId &&
+        event.event_type === "mcp_server_attached"
+      ) {
+        setRevalidationKey((k) => k + 1);
+      }
+    });
+  }, [sessionId]);
 
   const { data, loading } = useSession(sessionId, eventsLimit, revalidationKey);
   const customDirectives = useFleetStore((s) => s.customDirectives);
@@ -325,11 +334,11 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   // via the Investigate camera icon would only work the first time
   // -- subsequent opens would land on whatever tab the user last
   // selected manually.
-  useEffect(() => {
-    if (sessionId && initialTab) {
-      setActiveTab(initialTab);
-    }
-  }, [sessionId, initialTab]);
+  const [tabRequest, setTabRequest] = useState({ sessionId, initialTab });
+  if (sessionId !== tabRequest.sessionId || initialTab !== tabRequest.initialTab) {
+    setTabRequest({ sessionId, initialTab });
+    if (sessionId && initialTab) setActiveTab(initialTab);
+  }
   const [expandedEventId, setExpandedEventId] = useState<string | null>(null);
   const [selectedEventId, setSelectedEventId] = useState<string | null>(null);
   // Event id passed through from a Timeline "View Prompts →" click.
@@ -367,28 +376,18 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   // visibility AND rendering the headline "→ N" relationship pill.
   // ``r.total`` carries the unpaginated count so a single ``limit=1``
   // probe covers both jobs without a second round-trip.
-  const [childCount, setChildCount] = useState<number>(0);
-  useEffect(() => {
-    if (!data?.session.session_id) {
-      setChildCount(0);
-      return;
-    }
-    let alive = true;
-    // Cheapest possible probe: limit=1 returns at most one row plus
-    // the unpaginated total. Worker keeps the partial index
-    // sessions_parent_session_id_idx hot so the underlying scan is
-    // ~ms.
-    fetchSessions({ parent_session_id: data.session.session_id, limit: 1 })
-      .then((r) => {
-        if (alive) setChildCount(r.total ?? 0);
-      })
-      .catch(() => {
-        if (alive) setChildCount(0);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [data?.session.session_id]);
+  const childProbeSessionId = data?.session.session_id ?? null;
+  // Cheapest possible probe: limit=1 returns at most one row plus
+  // the unpaginated total. Worker keeps the partial index
+  // sessions_parent_session_id_idx hot so the underlying scan is
+  // ~ms. A failed probe counts as no children.
+  const childProbe = useKeyedFetch(childProbeSessionId, () =>
+    fetchSessions({ parent_session_id: childProbeSessionId ?? "", limit: 1 }),
+  );
+  const childCount =
+    childProbe.dataKey === childProbeSessionId && childProbe.error === null
+      ? (childProbe.data?.total ?? 0)
+      : 0;
   const hasChildren = childCount > 0;
 
   // Parent agent display name for the headline "↳ <parentName>" pill.
@@ -396,27 +395,12 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   // is set). Falls back to the parent's flavor when agent_name is null
   // (legacy sessions without identity). Failure is silent — the pill simply
   // collapses to "(unknown parent)" rather than blocking the drawer.
-  const [parentAgentLabel, setParentAgentLabel] = useState<string | null>(null);
-  useEffect(() => {
-    const parentId = data?.session.parent_session_id;
-    if (!parentId) {
-      setParentAgentLabel(null);
-      return;
-    }
-    let alive = true;
-    fetchSession(parentId, 1)
-      .then((d) => {
-        if (alive) {
-          setParentAgentLabel(d.session?.agent_name ?? d.session?.flavor ?? null);
-        }
-      })
-      .catch(() => {
-        if (alive) setParentAgentLabel(null);
-      });
-    return () => {
-      alive = false;
-    };
-  }, [data?.session.parent_session_id]);
+  const parentId = data?.session.parent_session_id ?? null;
+  const parentFetch = useKeyedFetch(parentId, () => fetchSession(parentId ?? "", 1));
+  const parentAgentLabel =
+    parentFetch.dataKey === parentId && parentFetch.error === null && parentFetch.data
+      ? (parentFetch.data.session?.agent_name ?? parentFetch.data.session?.flavor ?? null)
+      : null;
 
   const showSubAgentsTab =
     !!data?.session.parent_session_id || hasChildren;
@@ -462,11 +446,15 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   // Running on data.events instead of drawerEvents avoids a false
   // negative on live-WS-populated sessions where the cache already
   // exceeds the server cap.
-  useEffect(() => {
-    if (!data) return;
-    const fetched = data.events?.length ?? 0;
-    setHasMoreOlder(fetched >= eventsLimit);
-  }, [data, eventsLimit]);
+  // Re-seed when the fetched page changes (session, size or cap); the
+  // key is built from values, not the data object's identity.
+  const fetchedCount = data?.events?.length ?? 0;
+  const seedKey = data ? `${data.session.session_id}|${fetchedCount}|${eventsLimit}` : null;
+  const [seededKey, setSeededKey] = useState<string | null>(null);
+  if (seedKey !== null && seedKey !== seededKey) {
+    setSeededKey(seedKey);
+    setHasMoreOlder(fetchedCount >= eventsLimit);
+  }
 
   const handleLimitChange = useCallback(
     (next: number) => {
@@ -1223,15 +1211,12 @@ function MCPServersPanel({ context, flavor, expanded, onToggle }: MCPServersPane
 
     if (targets.length === 0) return;
 
+    // A target with no decision yet renders as loading (the decision
+    // text treats a missing entry and "loading" alike), so nothing is
+    // written until a result arrives. If the effect re-runs before
+    // then, the cancelled batch's targets are still undecided and are
+    // requested again.
     let cancelled = false;
-    setDecisions((prev) => {
-      const next = { ...prev };
-      for (const t of targets) {
-        next[t.key] = { kind: "loading" };
-      }
-      return next;
-    });
-
     Promise.all(
       targets.map(async (t) => {
         if (!t.url || !t.name) {
@@ -1270,14 +1255,11 @@ function MCPServersPanel({ context, flavor, expanded, onToggle }: MCPServersPane
       cancelled = true;
     };
     // ``decisions`` is read inside the effect body to compute
-    // ``targets`` (skip already-fetched keys) but is intentionally
-    // omitted from the deps array. Including it would re-fire the
-    // effect every time setDecisions(loading) lands, triggering
-    // cleanup → cancelled=true on the in-flight Promise.all so the
-    // resolve responses never reach setDecisions(ok). Effect runs
-    // only when the underlying inputs (expanded / servers / flavor)
-    // change; the in-effect "skip already-fetched" filter handles
-    // partial-fetch state without needing reactive deps.
+    // ``targets`` (skip already-decided keys) but is intentionally
+    // omitted from the deps array: including it would re-fire the
+    // effect when results land and cancel nothing useful. The effect
+    // runs only when the underlying inputs (expanded / servers /
+    // flavor) change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [expanded, servers, flavor]);
 
@@ -1911,7 +1893,11 @@ function EventDetailView({ event: initialEvent, session, onBack }: { event: Agen
   // can navigate within the detail view without bouncing back to the
   // session timeline.
   const [swapped, setSwapped] = useState<AgentEvent | null>(null);
-  useEffect(() => { setSwapped(null); }, [initialEvent.id]);
+  const [swapBaseId, setSwapBaseId] = useState(initialEvent.id);
+  if (initialEvent.id !== swapBaseId) {
+    setSwapBaseId(initialEvent.id);
+    setSwapped(null);
+  }
   const event = swapped ?? initialEvent;
   const badge = getBadge(event.event_type);
   const summaryRows = getSummaryRows(event);

@@ -57,6 +57,24 @@ describe("LiveFeed", () => {
     expect(screen.getByText("WARN")).toBeInTheDocument();
   });
 
+  it("keeps a long type label on one truncating line inside its pill", () => {
+    render(
+      <LiveFeed
+        events={[makeFeedEvent({ id: "e-long", event_type: "mcp_prompt_get", model: null }, 1000)]}
+        onEventClick={() => {}}
+      />,
+    );
+    const badge = screen.getByTestId("feed-badge");
+    expect(badge.textContent).toBe("MCP PROMPT FETCHED");
+    // The label sits in a single-line, overflow-clipped element so a
+    // long label ends in an ellipsis instead of wrapping out of the
+    // fixed-height pill.
+    const label = badge.firstElementChild as HTMLElement;
+    expect(label.className).toContain("whitespace-nowrap");
+    expect(label.className).toContain("overflow-hidden");
+    expect(badge.style.minWidth).toBe("0px");
+  });
+
   it("new event appends (renders additional row)", () => {
     const { rerender } = render(
       <LiveFeed events={mockFeedEvents.slice(0, 2)} onEventClick={() => {}} />

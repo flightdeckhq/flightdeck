@@ -376,3 +376,16 @@ export async function waitForInvestigateReady(page: Page): Promise<void> {
     .first()
     .waitFor({ state: "visible", timeout: 15_000 });
 }
+
+/**
+ * Open the agent drawer from an /agents table row by clicking the
+ * row's agent name. Clicking the row itself aims at the centre of its
+ * box, and which cell sits there depends on the data and column widths:
+ * it can be a topology pill or a sparkline, which handle the click
+ * themselves and do not open the drawer. The name cell is plain text
+ * on every row, so the click always reaches the row's handler.
+ */
+export async function openAgentDrawerFromRow(row: Locator): Promise<void> {
+  await row.locator('[data-testid^="agent-row-name-"]').first().click();
+}
+

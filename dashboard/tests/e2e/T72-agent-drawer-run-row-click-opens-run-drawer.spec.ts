@@ -10,6 +10,7 @@
  * Theme-agnostic — structural locators only.
  */
 import { test, expect } from "@playwright/test";
+import { openAgentDrawerFromRow } from "./_fixtures";
 
 test.describe("T72 — Runs tab row opens the run drawer", () => {
   test("clicking a run row opens the run drawer with a back breadcrumb", async ({
@@ -20,7 +21,7 @@ test.describe("T72 — Runs tab row opens the run drawer", () => {
       .locator('[data-testid^="agent-row-"][data-agent-id]')
       .first();
     await expect(firstRow).toBeVisible({ timeout: 10_000 });
-    await firstRow.click();
+    await openAgentDrawerFromRow(firstRow);
     await expect(page.locator('[data-testid="agent-drawer"]')).toBeVisible();
 
     await page.locator('[data-testid="agent-drawer-tab-runs"]').click();

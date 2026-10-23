@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { openAgentDrawerFromRow } from "./_fixtures";
 
 /**
  * T101 — Agent drawer header redesign.
@@ -30,7 +31,7 @@ test.describe("T101 — Agent drawer header redesign", () => {
       .filter({ hasText: "e2e-test-crewai-parent" })
       .first();
     await row.scrollIntoViewIfNeeded();
-    await row.click();
+    await openAgentDrawerFromRow(row);
 
     const drawer = page.locator('[data-testid="agent-drawer"]');
     await expect(drawer).toBeVisible({ timeout: 10_000 });
@@ -107,7 +108,7 @@ test.describe("T101 — Agent drawer header redesign", () => {
     await page.goto("/agents");
     const row = page.locator('[data-testid^="agent-row-"]').first();
     await row.scrollIntoViewIfNeeded();
-    await row.click();
+    await openAgentDrawerFromRow(row);
 
     const drawer = page.locator('[data-testid="agent-drawer"]');
     await expect(drawer).toBeVisible({ timeout: 10_000 });

@@ -312,9 +312,16 @@ function FeedRow({ fe, colWidths, onClick }: { fe: FeedEvent; colWidths: ColWidt
           color: badge.cssVar,
           border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`,
           borderRadius: 3,
+          // The pill is a fixed-height box in a resizable column; a
+          // long label stays on one line and ends in an ellipsis
+          // (full text on hover) instead of wrapping out of the pill.
+          padding: "0 4px",
+          minWidth: 0,
         }}
         data-testid="feed-badge"
-      >{badge.label}</span>
+      >
+        <TruncatedText text={badge.label} />
+      </span>
       <span
         // Mixed content (provider logo + detail text). Native
         // ``title`` surfaces the text value on hover; the primitive

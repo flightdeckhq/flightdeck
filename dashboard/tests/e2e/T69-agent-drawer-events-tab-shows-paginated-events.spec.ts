@@ -9,6 +9,7 @@
  * Theme-agnostic — structural locators only.
  */
 import { test, expect } from "@playwright/test";
+import { openAgentDrawerFromRow } from "./_fixtures";
 
 test.describe("T69 — agent drawer Events tab", () => {
   test("the Events tab lists the agent's events with run badges", async ({
@@ -19,7 +20,7 @@ test.describe("T69 — agent drawer Events tab", () => {
       .locator('[data-testid^="agent-row-"][data-agent-id]')
       .first();
     await expect(firstRow).toBeVisible({ timeout: 10_000 });
-    await firstRow.click();
+    await openAgentDrawerFromRow(firstRow);
 
     await expect(page.locator('[data-testid="agent-drawer"]')).toBeVisible();
     // Events is the default tab.

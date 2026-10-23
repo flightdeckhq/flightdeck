@@ -46,20 +46,14 @@ concurrency:
 jobs:
   sensor:
     name: Sensor (Python)
-    runs-on: ubuntu-latest
-    # Opt into Node 24 for every JavaScript-based action on this job
-    # ahead of GitHub's 2026-06-02 default flip; suppresses
-    # the "Node.js 20 actions are deprecated" runner annotations on
-    # actions/checkout, setup-python, upload-artifact, etc.
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: sensor
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
 
@@ -92,7 +86,7 @@ jobs:
             --cov-fail-under=70
 
       - name: Upload sensor coverage report
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
           name: coverage-sensor
@@ -101,7 +95,7 @@ jobs:
 
   sensor-sdk-majors:
     name: Sensor (Python, SDK majors)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     # The job above installs the framework packages, whose pins hold the
     # provider SDKs below their current majors. This lane installs the
@@ -110,15 +104,13 @@ jobs:
     # `pip install flightdeck-sensor[anthropic,openai]` is tested too.
     # Framework tests skip here; tests/conftest.py aliases httpx to httpx2
     # so the HTTP mocks see the new SDKs.
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
     defaults:
       run:
         working-directory: sensor
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
 
@@ -138,14 +130,11 @@ jobs:
 
   go:
     name: Go (ingestion, workers, api)
-    runs-on: ubuntu-latest
-    # Opt this job's JavaScript actions into Node 24.
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff  # v5
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version: "1.27.3"
 
@@ -218,7 +207,7 @@ jobs:
           go tool cover -html=coverage.out -o coverage.html
 
       - name: Upload ingestion coverage report
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
           name: coverage-ingestion
@@ -248,7 +237,7 @@ jobs:
           go tool cover -html=coverage.out -o coverage.html
 
       - name: Upload workers coverage report
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
           name: coverage-workers
@@ -293,7 +282,7 @@ jobs:
           go tool cover -html=coverage.out -o coverage.html
 
       - name: Upload api coverage report
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         if: always()
         with:
           name: coverage-api
@@ -302,17 +291,14 @@ jobs:
 
   dashboard:
     name: Dashboard (TypeScript)
-    runs-on: ubuntu-latest
-    # Opt this job's JavaScript actions into Node 24.
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    runs-on: ubuntu-24.04
     defaults:
       run:
         working-directory: dashboard
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: "24"
 
@@ -356,7 +342,7 @@ jobs:
       # directly, no compose involved.
 
       - name: Build dashboard production image
-        # docker is preinstalled on ubuntu-latest runners.
+        # docker is preinstalled on ubuntu-24.04 runners.
         # working-directory: dashboard inherits from defaults above,
         # so the context is `.` (the dashboard directory).
         run: docker build -t flightdeck-dashboard-smoke .
@@ -539,12 +525,9 @@ jobs:
 
   plugin:
     name: Plugin (Claude Code, node --test)
-    runs-on: ubuntu-latest
-    # Opt this job's JavaScript actions into Node 24.
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       # The plugin is zero-dep (`agent_id.mjs` / `uuid5.mjs` /
       # `mcp_identity.mjs` use only Node built-ins — node:crypto,
@@ -553,14 +536,14 @@ jobs:
       # against tests/*.test.mjs.
       # Run on the plugin's minimum supported Node (engines.node >=22)
       # and on the current LTS the rest of the repo builds with.
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: "22"
 
       - name: Plugin unit tests (Node 22)
         run: make test-plugin
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: "24"
 
@@ -572,7 +555,7 @@ jobs:
     # 18, the current major. The 16 entry keeps the job's established
     # name.
     name: ${{ matrix.name }}
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       fail-fast: false
       matrix:
@@ -589,8 +572,6 @@ jobs:
     # four minutes of wall-clock per push. A unit failure still fails
     # the run on its own job.
     #
-    # Opt this job's JavaScript actions into Node 24.
-    #
     # PYTHON: the Makefile defaults $(PYTHON) to
     # ./sensor/.venv/bin/python (single-venv discipline for local
     # dev). CI uses actions/setup-python directly without a project
@@ -598,14 +579,13 @@ jobs:
     # invoked below ($(PYTHON), $(MAKE) -C sensor, etc.) inherits this
     # without per-step overrides. One env-var, no per-step trap.
     env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       PYTHON: python
       FLIGHTDECK_POSTGRES_IMAGE: ${{ matrix.postgres_image }}
       FLIGHTDECK_POSTGRES_DATA_DIR: ${{ matrix.postgres_data_dir }}
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
 
@@ -656,7 +636,7 @@ jobs:
 
   e2e:
     name: E2E (Playwright)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Rule 40c: browser end-to-end tests run parallel to
     # the integration job so neither blocks the other, and, like it,
     # with no `needs:` on the unit jobs: this job boots its own stack
@@ -671,16 +651,15 @@ jobs:
     # the Makefile's $(PYTHON) default points at the local sensor/.venv
     # which CI doesn't create. ``make seed-e2e`` resolves through this.
     env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
       PYTHON: python
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
           python-version: "3.12"
 
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
         with:
           node-version: "24"
 
@@ -715,7 +694,7 @@ jobs:
 
       - name: Upload Playwright HTML report on failure
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: playwright-report
           path: dashboard/playwright-report/
@@ -723,7 +702,7 @@ jobs:
 
       - name: Upload Playwright test-results on failure
         if: failure()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: playwright-test-results
           path: dashboard/test-results/
@@ -750,14 +729,12 @@ jobs:
   # so a future refactor that drops a guard surfaces immediately.
   helm:
     name: Helm chart lint
-    runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Install Helm
-        uses: azure/setup-helm@bf6a7d304bc2fdb57e0331155b7ebf2c504acf0a  # v4
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310  # v5.0.1
         with:
           version: v3.16.2
 
@@ -907,11 +884,9 @@ jobs:
   # install time.
   marketplace-schema:
     name: Marketplace manifest schema
-    runs-on: ubuntu-latest
-    env:
-      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Validate marketplace.json structure
         run: |

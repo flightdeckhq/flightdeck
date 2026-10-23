@@ -417,6 +417,26 @@ server.
 
 ### Changed
 
+- **CI and release pipeline.**
+  - **Actions:** every GitHub Action in the CI and release workflows is
+    on its current major, pinned by commit SHA (checkout 7, setup-python
+    7, setup-node 7, setup-go 7, upload-artifact 7, build-push-action 7,
+    setup-buildx-action 4, login-action 4, setup-helm 5,
+    action-gh-release 3).
+  - **Runners:** jobs run on `ubuntu-24.04` instead of the moving
+    `ubuntu-latest`.
+  - **Image scan:** a release now builds and scans the four Docker
+    images with Trivy before anything is published. It stops on a fixable
+    HIGH or CRITICAL vulnerability or an end-of-life base image, so a
+    failed scan publishes nothing to PyPI or Docker Hub.
+  - **Release gate:** `make test` now runs the dashboard's unit tests,
+    `make lint` runs its ESLint and type-check, and the release script
+    runs both.
+  - **Dependabot:** proposes weekly updates for GitHub Actions, the
+    Dockerfiles, the Compose files, the Go modules, the dashboard's npm
+    packages and the sensor's Python dependencies. A release must be 14
+    days old before Dependabot proposes it; security updates are not
+    held back.
 - **nginx 1.30.** The dashboard image is now built on
   `nginx:1.30.6-alpine`, pinned by its multi-arch digest, and the
   Compose edge proxy runs `nginx:1.30-alpine`. Both used 1.25, a branch

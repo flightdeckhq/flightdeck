@@ -46,9 +46,10 @@ echo "Updated sensor/pyproject.toml version to $PEP_VERSION"
 # --- Run tests ---
 
 echo ""
-echo "Running tests..."
+echo "Running tests and linters..."
 make test
-echo "All tests passed."
+make lint
+echo "All tests and linters passed."
 
 # --- Commit, tag, push ---
 

@@ -31,7 +31,11 @@ The script:
 4. Verifies `make migrate-local-status` shows the expected version with
    `dirty=false`. Do not tag a release with dirty migrations.
 5. Updates `version` in `sensor/pyproject.toml`
-6. Runs `make test` to verify all tests pass
+6. Runs `make test` (sensor, Go services, plugin and dashboard unit tests)
+   and `make lint` (mypy, ruff, golangci-lint, the dashboard's ESLint and
+   type-check); the release stops if either fails. Both need the sensor
+   venv, the dashboard's dependencies (`make -C dashboard install`) and
+   `golangci-lint` on `PATH`
 7. Commits: `chore: release vX.Y.Z`
 8. Creates an annotated git tag
 9. Pushes the commit and tag to origin

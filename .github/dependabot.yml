@@ -1,0 +1,114 @@
+# Dependency update PRs for every ecosystem the repo ships.
+#
+# - Weekly, Monday morning UTC, so updates land as one predictable batch.
+# - cooldown: a release must be 14 days old before Dependabot proposes
+#   it. Brand-new releases are where hijacked or broken versions are
+#   caught and yanked; the same two-week floor applies to hand-picked
+#   pins (action SHAs, base-image digests).
+# - Minor and patch updates are grouped into one PR per ecosystem;
+#   majors arrive one PR each, because they are where breaking changes
+#   live and each needs its own review.
+# - Commit messages follow the repo's conventional-commit rule:
+#   "chore(deps): ...".
+#
+# Security updates are not subject to the cooldown and arrive as soon
+# as an advisory is published.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    cooldown:
+      default-days: 14
+    groups:
+      github-actions-minor-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: chore
+      include: scope
+
+  - package-ecosystem: docker
+    directories:
+      - "/api"
+      - "/ingestion"
+      - "/workers"
+      - "/dashboard"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    cooldown:
+      default-days: 14
+    groups:
+      docker-minor-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: chore
+      include: scope
+
+  - package-ecosystem: docker-compose
+    directory: "/docker"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    cooldown:
+      default-days: 14
+    groups:
+      docker-compose-minor-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: chore
+      include: scope
+
+  - package-ecosystem: gomod
+    directories:
+      - "/api"
+      - "/ingestion"
+      - "/workers"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    cooldown:
+      default-days: 14
+    groups:
+      gomod-minor-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: chore
+      include: scope
+
+  - package-ecosystem: npm
+    directory: "/dashboard"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    cooldown:
+      default-days: 14
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: chore
+      include: scope
+
+  - package-ecosystem: pip
+    directory: "/sensor"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "06:00"
+    cooldown:
+      default-days: 14
+    groups:
+      pip-minor-patch:
+        update-types: [minor, patch]
+    commit-message:
+      prefix: chore
+      include: scope

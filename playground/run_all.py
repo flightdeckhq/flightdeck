@@ -20,15 +20,15 @@ import sys
 import time
 from pathlib import Path
 
-# Python-version gate. The project bound is 3.10–3.13 (sensor/pyproject
-# .toml requires-python = ">=3.10,<3.14"). crewai 1.x metadata bars
+# Python-version gate: 3.11–3.13. The sensor supports 3.11–3.14
+# (sensor/pyproject.toml requires-python), but crewai 1.x metadata bars
 # 3.14, so a run on the wrong interpreter would silently SKIP every
 # crewai-touching demo and mask real coverage gaps -- the failure mode
 # the single-venv discipline exists to eliminate. Refuse to run instead of producing a
 # misleading green matrix.
-if sys.version_info < (3, 10) or sys.version_info >= (3, 14):
+if sys.version_info < (3, 11) or sys.version_info >= (3, 14):
     print(
-        f"FAIL: playground requires Python 3.10–3.13 (found "
+        f"FAIL: playground requires Python 3.11–3.13 (found "
         f"{sys.version_info.major}.{sys.version_info.minor}). "
         "Use ./sensor/.venv/bin/python or run via 'make playground-all'.",
         file=sys.stderr,

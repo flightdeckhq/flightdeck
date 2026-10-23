@@ -3,7 +3,8 @@
 ## Prerequisites
 
 - **Go** 1.27+
-- **Python** 3.10+
+- **Python** 3.11 to 3.14 (local development uses 3.12)
+- **uv** 0.12+ (optional locally: installs the exact versions CI uses from `sensor/uv.lock`)
 - **Node.js** 24+ (the Claude Code plugin itself runs on Node 22+)
 - **Docker** and Docker Compose
 - **golangci-lint** v2.13+ (for Go linting; earlier releases cannot type-check Go 1.27; CI pins v2.14.0)

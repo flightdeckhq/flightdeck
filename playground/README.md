@@ -42,7 +42,7 @@ The suite also doubles as Flightdeck's canonical Rule 40d manual-exercise surfac
 
 ## Prerequisites
 
-- **Python 3.10 ≤ x < 3.14.** Run via the project venv (`./sensor/.venv/bin/python` — see root `README.md` setup), or via `make playground-*` targets which resolve through `$(PYTHON)` to the venv. `run_all.py` refuses to run on the wrong interpreter so a misconfigured local box can't silently SKIP framework-touching demos.
+- **Python 3.11 ≤ x < 3.14.** (The sensor supports 3.14, but crewai does not install there yet, so its demos would skip.) Run via the project venv (`./sensor/.venv/bin/python` — see root `README.md` setup), or via `make playground-*` targets which resolve through `$(PYTHON)` to the venv. `run_all.py` refuses to run on the wrong interpreter so a misconfigured local box can't silently SKIP framework-touching demos.
 - A running Flightdeck stack. Default: `make dev` on `localhost:4000`. Override via `FLIGHTDECK_SERVER` / `FLIGHTDECK_TOKEN` / `FLIGHTDECK_API_URL`.
 - `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` in the environment for the chat / embeddings demos.
 - Optional: `BIFROST_URL` (for `15_bifrost.py`), `node` 20+ (for `14_claude_code_plugin.py`).

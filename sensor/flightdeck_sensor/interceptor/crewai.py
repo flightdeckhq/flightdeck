@@ -44,7 +44,7 @@ from __future__ import annotations
 import functools
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from flightdeck_sensor.core.types import SubagentMessage
@@ -119,7 +119,7 @@ def _capture_message(body: Any) -> SubagentMessage:
     """
     return SubagentMessage(
         body=body,
-        captured_at=datetime.now(timezone.utc).isoformat(),
+        captured_at=datetime.now(UTC).isoformat(),
     )
 
 

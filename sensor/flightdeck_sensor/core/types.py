@@ -6,8 +6,11 @@ import enum
 import ipaddress
 import uuid
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 # Schemes the sensor is willing to egress control-plane traffic over.
 # Anything else (file://, ftp://, gopher://, a bare host with no

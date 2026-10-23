@@ -12,7 +12,7 @@ import logging
 import queue
 import threading
 import urllib.request
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 from urllib.error import HTTPError, URLError
 
 from pydantic import ValidationError
@@ -20,6 +20,9 @@ from pydantic import ValidationError
 from flightdeck_sensor.core.exceptions import DirectiveError
 from flightdeck_sensor.core.types import Directive, DirectiveAction
 from flightdeck_sensor.transport.retry import with_retry
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _log = logging.getLogger("flightdeck_sensor.transport.client")
 

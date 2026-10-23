@@ -29,7 +29,7 @@ Built and maintained by [Omri Arnon](https://github.com/pykul) ([LinkedIn](https
 
 ## Quickstart
 
-Prerequisites: Docker Engine 28+ with Compose v2. Python 3.10+ for the sensor path; Claude Code for the plugin path.
+Prerequisites: Docker Engine 28+ with Compose v2. Python 3.11 to 3.14 for the sensor path; Claude Code for the plugin path.
 
 Start the stack:
 
@@ -463,7 +463,7 @@ Deferred and planned work lives here so it stays visible and user demand can pri
 - Responses MCP tool calls: the `tool_call` event for an `mcp_call` output item carries the tool's name but not its `server_label`; carry the server label so the event names the MCP server the call went to.
 - Signal-handler shutdown: the SIGTERM / SIGINT handler runs `Session.end()` on the interrupted thread, which may already hold the session, policy or queue lock, so the shutdown can hang; move that shutdown work off the interrupted thread.
 - Ingestion validation of streaming fields: `streaming.final_outcome`, `streaming.abort_reason`, `error.abort_reason` and the non-negativity of `partial_chunks` / `partial_tokens_*` are stored as sent; only `tokens_input` / `tokens_output` / `tokens_total` are range-checked today.
-- Toolchain currency: Python 3.11 through 3.14, and npm and pip vulnerability scanning in CI (Go modules are checked by govulncheck and release images by Trivy today).
+- Toolchain currency: npm and pip vulnerability scanning in CI (Go modules are checked by govulncheck and release images by Trivy today).
 - Operations: add request-latency histograms to the Go services, bound the NATS stream (`MaxAge` / `MaxBytes`; the `FLIGHTDECK` stream keeps every message today) and rotate the workers' logs in the compose files, so a flood of events cannot fill the NATS store or the host disk.
 - Claude Code plugin tool failures in the dashboard: a failed tool call is stored as a `tool_call` with an `error` block and already shows in the unscoped `/v1/events` `error_type` facet and the Investigate status chip, but the session drawer's error indicator, the `tool_call` rows, the per-session `error_types[]` aggregate and the agent `errors` count do not include it yet. The per-session MCP-server facet keys plugin-bundled servers as `plugin:<plugin>:<server>` for rows stored from v0.6.0 on while older rows keep `plugin_<plugin>_<server>`.
 - Workers: validate the `session_id` shape and cap log field sizes at the NATS consumer boundary. Ingestion validates today and the NATS stream is treated as untrusted, so a direct publisher can still make the worker log oversized ids.

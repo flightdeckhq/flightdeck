@@ -19,7 +19,7 @@ import threading
 import urllib.request
 import uuid
 import weakref
-from datetime import date, datetime, timezone
+from datetime import UTC, date, datetime
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
@@ -791,7 +791,7 @@ class Session:
             "host": self._host,
             # Event metadata.
             "event_type": event_type.value,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
             # LLM-baseline nulls (kept for wire-shape parity with
             # other non-MCP events; child sessions don't directly
             # carry per-call token data on session_start /
@@ -1249,7 +1249,7 @@ class Session:
             "framework": framework,
             "tokens_used_session": tokens_used_session,
             "token_limit_session": self._token_limit,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "timestamp": datetime.now(UTC).isoformat(),
         }
 
         # originating_event_id chain. Stamp the

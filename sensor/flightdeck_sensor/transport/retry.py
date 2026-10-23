@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Callable, TypeVar
+from typing import TYPE_CHECKING, TypeVar
 from urllib.error import URLError
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 _T = TypeVar("_T")
 

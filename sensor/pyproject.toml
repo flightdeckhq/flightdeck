@@ -11,19 +11,19 @@ license = "Apache-2.0"
 authors = [
     { name = "Omri Arnon", email = "omri.arnon@gmail.com" },
 ]
-requires-python = ">=3.10,<3.14"
+requires-python = ">=3.11,<3.15"
 dependencies = [
-    "pydantic>=2.0",
+    "pydantic>=2.10,<3",
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: Apache Software License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Typing :: Typed",
 ]
 
@@ -52,33 +52,35 @@ litellm = ["litellm>=1.83.0"]
 # langchain-mcp-adapters, LlamaIndex via llama-index-tools-mcp, CrewAI
 # via mcpadapt, raw SDK callers) emits MCP_TOOL_CALL / MCP_TOOL_LIST /
 # MCP_RESOURCE_* / MCP_PROMPT_* events transitively. Both SDK lines are
-# supported: 1.x (CrewAI pins ~=1.28, langchain-mcp-adapters <2) and 2.x
+# supported: 1.x (CrewAI pins ~=1.28.1, langchain-mcp-adapters <2) and 2.x
 # (llama-index-tools-mcp 0.6+, fastmcp 4, langchain[mcp]). The floor
-# 1.20 covers the framework adapters without forcing a bump; the
-# interceptor imports the error class under either name and captures
-# the server fingerprint from 2.x's ``adopt`` handshake.
-mcp = ["mcp>=1.20,<3"]
+# is 1.28 because CrewAI pins mcp~=1.28.1 (1.28.x only): a higher floor
+# would make this extra uninstallable next to CrewAI. The interceptor
+# imports the error class under either name and captures the server
+# fingerprint from 2.x's ``adopt`` handshake.
+mcp = ["mcp>=1.28,<3"]
 # Test tooling without the frameworks. The CI lane that runs the unit
 # suite against the newest SDK majors installs this, because the
 # framework packages in ``dev`` pin the SDKs below their current majors.
 test = [
-    "pytest>=7.0",
-    "pytest-asyncio>=0.21",
+    "pytest>=9",
+    # 1.x is the line that supports pytest 9.
+    "pytest-asyncio>=1.0",
     "pytest-xdist>=3.5,<4",
-    "mypy>=1.8",
+    "mypy>=2.4",
     "ruff>=0.3",
     "respx>=0.20",
     "tiktoken>=0.5",
 ]
 dev = [
-    "pytest>=7.0",
-    "pytest-asyncio>=0.21",
-    "pytest-cov>=4.0",
+    "pytest>=9",
+    "pytest-asyncio>=1.0",
+    "pytest-cov>=7.0",
     # Runs the parallel phase of the integration suite: `make
     # test-integration` splits it into an xdist phase and a serial
     # phase of the tests marked `exclusive`.
     "pytest-xdist>=3.5,<4",
-    "mypy>=1.8",
+    "mypy>=2.4",
     "ruff>=0.3",
     "httpx>=0.25",
     # Used by tests/integration/test_sensor_e2e.py to mock provider HTTP
@@ -93,9 +95,13 @@ dev = [
     # SensorLitellm interceptor + LitellmProvider extractor. Unit tests
     # do not make real API calls -- they mock ``litellm.completion``'s
     # return value and assert the sensor emits the right pre/post-call
-    # events around it. Same 1.83.0 floor as the extra (compromised
-    # 1.82.7 / 1.82.8 builds).
-    "litellm>=1.83.0",
+    # events around it. The floor sits on the litellm line that is
+    # current with openai 2.x: uv.lock resolves this lane together with
+    # the SDK-majors lane, where only litellm 1.83.0 still accepts
+    # openai 3, and without a higher floor here the lock would hold this
+    # lane on that old release too. The published litellm extra keeps
+    # the 1.83.0 floor (compromised 1.82.7 / 1.82.8 builds).
+    "litellm>=1.100",
     # Used by tests/integration/test_framework_patching.py to verify
     # that flightdeck_sensor.patch() transparently intercepts LLM calls
     # made through agent frameworks without any explicit wrap() call.
@@ -129,19 +135,47 @@ dev = [
     # (responses API, beta.messages, beta.chat.completions.parse) are
     # NOT intercepted -- documented as a known constraint in
     # ARCHITECTURE.md "Framework limitations". See
-    # test_crewai_native_openai_patched_intercepts_call. The
-    # project-level ``requires-python`` already bars 3.14, so no
-    # per-dep marker is needed here -- pip resolves crewai cleanly on
-    # every supported Python.
-    "crewai>=1.14",
+    # test_crewai_native_openai_patched_intercepts_call. crewai declares
+    # requires-python <3.14, so it is installed only below 3.14; on 3.14
+    # the crewai tests skip (pytest.importorskip) and the rest of the
+    # framework lane still runs.
+    "crewai>=1.14; python_version < '3.14'",
     # MCP unit tests construct a ClientSession against in-memory
     # anyio streams, apply the patch, and assert event-emission shape.
     # The smoke matrix uses the same package against a real reference
     # MCP server subprocess. Both share this dev install. The framework
     # lane stays on mcp 1.x because CrewAI and langchain-mcp-adapters pin
     # it; the SDK-majors CI lane tests mcp 2.x.
-    "mcp>=1.20,<2",
+    "mcp>=1.28,<2",
 ]
+
+[dependency-groups]
+# The newest SDK majors, which the framework packages in the dev extra
+# hold back. CI's SDK-majors lane installs this group with the test
+# extra, so a fresh `pip install flightdeck-sensor[anthropic,openai]` is
+# tested too. A dependency group is not part of the published package.
+sdk-majors = [
+    "anthropic>=2",
+    "openai>=3",
+    "litellm>=1.83.0",
+    "mcp>=2,<3",
+]
+
+[tool.uv]
+# uv.lock resolves both CI lanes in one file; the framework lane (dev
+# extra) and the SDK-majors lane need different majors of the same
+# packages, so they are declared as alternatives.
+conflicts = [
+    [{ extra = "dev" }, { group = "sdk-majors" }],
+]
+# Every `uv lock` resolves to releases at least 14 days old: brand-new
+# releases are where hijacked or broken versions are caught and yanked
+# (Dependabot applies the same cooldown). anthropic is exempt up to the
+# date below because the SDK-majors lane exists to test its newest major
+# (2.0.0 shipped 2026-10-21); move the date when that lane should pick up
+# a newer release.
+exclude-newer = "14 days"
+exclude-newer-package = { anthropic = "2026-10-23T23:59:59Z" }
 
 [tool.hatch.build.targets.wheel]
 packages = ["flightdeck_sensor"]
@@ -158,8 +192,15 @@ no_implicit_optional = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 
+# crewai is not installed on Python 3.14 (it declares <3.14), so the
+# 3.14 CI job type-checks without it. Where it is installed, it is
+# checked as usual; this only tolerates its absence.
+[[tool.mypy.overrides]]
+module = ["crewai", "crewai.*"]
+ignore_missing_imports = true
+
 [tool.ruff]
-target-version = "py39"
+# No target-version: ruff reads the minimum Python from requires-python.
 line-length = 100
 
 [tool.ruff.lint]

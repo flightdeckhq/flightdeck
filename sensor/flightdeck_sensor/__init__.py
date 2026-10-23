@@ -14,7 +14,7 @@ import os
 import socket
 import threading
 import uuid
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from flightdeck_sensor import config as _env
 from flightdeck_sensor.core.agent_id import derive_agent_id
@@ -70,6 +70,9 @@ from flightdeck_sensor.interceptor.openai import (
 )
 from flightdeck_sensor.provider import Provider
 from flightdeck_sensor.transport.client import ControlPlaneClient
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 Parameter = DirectiveParameter
 

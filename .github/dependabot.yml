@@ -127,7 +127,9 @@ updates:
       prefix: chore
       include: scope
 
-  - package-ecosystem: pip
+  # uv, not pip: the sensor's CI installs come from sensor/uv.lock, which
+  # this ecosystem keeps in step with pyproject.toml.
+  - package-ecosystem: uv
     directory: "/sensor"
     schedule:
       interval: weekly
@@ -136,7 +138,7 @@ updates:
     cooldown:
       default-days: 14
     groups:
-      pip-minor-patch:
+      uv-minor-patch:
         update-types: [minor, patch]
     commit-message:
       prefix: chore

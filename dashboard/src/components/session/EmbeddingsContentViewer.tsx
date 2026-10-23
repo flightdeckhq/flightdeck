@@ -64,7 +64,11 @@ export function EmbeddingsContentViewer({
   const content: EventContent | null =
     hasContent && contentFetch.dataKey === eventId ? (contentFetch.data ?? null) : null;
 
-  if (!hasContent) {
+  // Nothing captured: either the caller knows there is no content, or
+  // the content request came back empty (capture off, or the body is
+  // gone). Without the second case a null response showed "Loading…"
+  // forever.
+  if (!hasContent || (!loading && content === null)) {
     return (
       <div
         data-testid="embeddings-content-viewer"

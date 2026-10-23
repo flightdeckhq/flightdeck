@@ -146,6 +146,16 @@ describe("EmbeddingsContentViewer", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
+  it("renders the empty placeholder when the content request comes back empty", async () => {
+    vi.spyOn(api, "fetchEventContent").mockResolvedValue(null);
+    render(<EmbeddingsContentViewer eventId="evt-null" hasContent={true} />);
+    expect(screen.getByTestId("embeddings-content-state-loading")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId("embeddings-content-state-empty")).toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("embeddings-content-state-loading")).toBeNull();
+  });
+
   it("renders truncated text + expand-to-show-more for a single-string input", async () => {
     const longText = "x".repeat(500);
     vi.spyOn(api, "fetchEventContent").mockResolvedValue(makeContent(longText));

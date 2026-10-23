@@ -974,7 +974,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                       // session rebind. The local activeTab state
                       // persists across the rebind because the host
                       // page's onSwitchSession passes initialTab=
-                      // undefined, and the initialTab effect only
+                      // undefined, and the initial-tab request only
                       // re-applies when initialTab is truthy. Net
                       // result: drawer rebinds to the new session
                       // AND lands on the requested tab without

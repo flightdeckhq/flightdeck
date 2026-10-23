@@ -198,19 +198,17 @@ test.describe("T113 — /agents family grouping sticks under any sort", () => {
     const tokensHead = page.locator('[data-testid="agent-table-th-tokens_7d"]');
     await expect(tokensHead).toBeVisible({ timeout: 10_000 });
     // TOKENS_7D defaults to DESC on activation (numeric column).
-    await expect
-      .poll(
-        async () => {
-          const active =
-            (await tokensHead.getAttribute("data-sort-active")) === "true";
-          const dir = await tokensHead.getAttribute("data-sort-direction");
-          if (active && dir === "desc") return "desc";
-          await tokensHead.click();
-          return tokensHead.getAttribute("data-sort-direction");
-        },
-        { timeout: 5_000 },
-      )
-      .toBe("desc");
+    // Activate it, wait for the table to report it, and only then
+    // flip the direction if it landed on ASC: clicking on every poll
+    // tick could toggle past DESC again before the re-render landed.
+    if ((await tokensHead.getAttribute("data-sort-active")) !== "true") {
+      await tokensHead.click();
+    }
+    await expect(tokensHead).toHaveAttribute("data-sort-active", "true");
+    if ((await tokensHead.getAttribute("data-sort-direction")) !== "desc") {
+      await tokensHead.click();
+    }
+    await expect(tokensHead).toHaveAttribute("data-sort-direction", "desc");
 
     for (const family of FAMILIES) {
       await assertFamilyContiguous(page, family);

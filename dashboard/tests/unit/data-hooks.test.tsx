@@ -71,6 +71,51 @@ describe("useSession", () => {
   });
 });
 
+describe("useSession review regressions", () => {
+  it("shows this session's own data while it revalidates, never another session's", async () => {
+    for (const id of ["s-A", "s-B"]) invalidateSessionCache(id);
+    api.fetchSession.mockImplementation(async (id: string) => detail(id));
+    const { result, rerender } = renderHook(({ id, rk }) => useSession(id, undefined, rk), {
+      initialProps: { id: "s-A", rk: 0 },
+    });
+    await waitFor(() => expect(result.current.data?.session.session_id).toBe("s-A"));
+    rerender({ id: "s-B", rk: 0 });
+    await waitFor(() => expect(result.current.data?.session.session_id).toBe("s-B"));
+    rerender({ id: "s-A", rk: 0 });
+    expect(result.current.data?.session.session_id).toBe("s-A");
+
+    // Revalidate A; hold the response so the in-flight state is visible.
+    let release: (v: unknown) => void = () => {};
+    api.fetchSession.mockImplementationOnce(() => new Promise((r) => (release = r)));
+    rerender({ id: "s-A", rk: 1 });
+    expect(result.current.loading).toBe(true);
+    expect(result.current.data?.session.session_id).toBe("s-A");
+    await act(async () => release(detail("s-A")));
+    expect(result.current.data?.session.session_id).toBe("s-A");
+  });
+
+  it("a superseded fetch that settles late does not overwrite the cache", async () => {
+    invalidateSessionCache("s-limit");
+    let releaseOld: (v: unknown) => void = () => {};
+    const oldDetail = { ...detail("s-limit"), events: new Array(100).fill({ id: "x" }) };
+    const newDetail = { ...detail("s-limit"), events: new Array(50).fill({ id: "y" }) };
+    api.fetchSession
+      .mockImplementationOnce(() => new Promise((r) => (releaseOld = r)))
+      .mockResolvedValueOnce(newDetail);
+    const { result, rerender, unmount } = renderHook(({ limit }) => useSession("s-limit", limit), {
+      initialProps: { limit: 100 },
+    });
+    rerender({ limit: 50 });
+    await waitFor(() => expect(result.current.data?.events).toHaveLength(50));
+    await act(async () => releaseOld(oldDetail));
+    expect(result.current.data?.events).toHaveLength(50);
+    unmount();
+    // A fresh mount reads the cache: it must hold the 50-event answer.
+    const again = renderHook(() => useSession("s-limit", 50));
+    expect(again.result.current.data?.events).toHaveLength(50);
+  });
+});
+
 describe("useSearch", () => {
   it("does not search short queries", () => {
     const { result } = renderHook(() => useSearch("a"));
@@ -133,6 +178,32 @@ describe("useHistoricalEvents", () => {
     const [firstArgs, secondArgs] = api.fetchBulkEvents.mock.calls.map((c) => c[0]);
     expect(secondArgs.offset).toBe(2);
     expect(secondArgs.from).toBe(firstArgs.from);
+  });
+
+  it("a second loadMore before the first settles does not append the same page twice", async () => {
+    let releaseFirst: (v: unknown) => void = () => {};
+    api.fetchBulkEvents
+      .mockResolvedValueOnce({ events: [ev("a")], total: 3, has_more: true })
+      .mockImplementationOnce(() => new Promise((r) => (releaseFirst = r)))
+      .mockResolvedValueOnce({ events: [ev("b")], total: 3, has_more: true });
+    const { result } = renderHook(() => useHistoricalEvents("1h"));
+    await waitFor(() => expect(result.current.events).toHaveLength(1));
+    act(() => result.current.loadMore());
+    act(() => result.current.loadMore());
+    await waitFor(() => expect(result.current.events).toHaveLength(2));
+    // The superseded first request settling late changes nothing.
+    await act(async () => releaseFirst({ events: [ev("b")], total: 3, has_more: true }));
+    expect(result.current.events.map((e) => (e as { id: string }).id)).toEqual(["a", "b"]);
+  });
+
+  it("reports a failed first loadMore", async () => {
+    api.fetchBulkEvents
+      .mockResolvedValueOnce({ events: [ev("a")], total: 2, has_more: true })
+      .mockRejectedValueOnce(new Error("page failed"));
+    const { result } = renderHook(() => useHistoricalEvents("1h"));
+    await waitFor(() => expect(result.current.events).toHaveLength(1));
+    act(() => result.current.loadMore());
+    await waitFor(() => expect(result.current.error).toBe("page failed"));
   });
 
   it("keeps the previous range's events until the new range loads, then drops appended pages", async () => {

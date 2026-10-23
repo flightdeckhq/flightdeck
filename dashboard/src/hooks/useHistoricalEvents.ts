@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useKeyedFetch } from "./useKeyedFetch";
 import { fetchBulkEvents } from "@/lib/api";
 import type { AgentEvent } from "@/lib/types";
@@ -39,7 +39,9 @@ export function useHistoricalEvents(timeRange: TimeRange) {
   // Pages added by loadMore, kept with the range they extend so a
   // range change drops them without an effect.
   const [extra, setExtra] = useState<ExtraPages | null>(null);
-  const [moreError, setMoreError] = useState<string | null>(null);
+  // A loadMore failure, kept with the first page it was extending.
+  const [moreError, setMoreError] = useState<{ from: string; message: string } | null>(null);
+  const moreRequestRef = useRef<AbortController | null>(null);
 
   // The last loaded first page stays visible while a new range loads,
   // so the swimlane does not flash empty on a range change.
@@ -53,12 +55,23 @@ export function useHistoricalEvents(timeRange: TimeRange) {
   const total = more ? more.total : (base?.resp.total ?? 0);
   const hasMore = more ? more.hasMore : (base?.resp.has_more ?? false);
 
+  // A range change (new first page) or unmount cancels an in-flight
+  // loadMore, so its page can never land on the wrong base.
+  const baseFrom = base?.from;
+  useEffect(() => () => moreRequestRef.current?.abort(), [baseFrom]);
+
   const loadMore = useCallback(() => {
     // Only extend the current range's first page.
     if (!base || base.range !== timeRange || !hasMore) return;
+    // A newer loadMore supersedes one still in flight: both would ask
+    // for the same offset and append the same page twice.
+    moreRequestRef.current?.abort();
+    const controller = new AbortController();
+    moreRequestRef.current = controller;
     const offset = events.length;
-    fetchBulkEvents({ from: base.from, limit: PAGE_SIZE, offset })
+    fetchBulkEvents({ from: base.from, limit: PAGE_SIZE, offset }, controller.signal)
       .then((resp) => {
+        if (controller.signal.aborted) return;
         const page = resp.events ?? [];
         setExtra((prev) => ({
           range: base.range,
@@ -72,7 +85,10 @@ export function useHistoricalEvents(timeRange: TimeRange) {
         }));
         setMoreError(null);
       })
-      .catch((e: unknown) => setMoreError(e instanceof Error ? e.message : String(e)));
+      .catch((e: unknown) => {
+        if (controller.signal.aborted) return;
+        setMoreError({ from: base.from, message: e instanceof Error ? e.message : String(e) });
+      });
   }, [base, timeRange, hasMore, events.length]);
 
   const baseError =
@@ -84,7 +100,7 @@ export function useHistoricalEvents(timeRange: TimeRange) {
   return {
     events,
     loading: first.loading,
-    error: baseError ?? (more ? moreError : null),
+    error: baseError ?? (moreError && base && moreError.from === base.from ? moreError.message : null),
     hasMore,
     total,
     loadMore,

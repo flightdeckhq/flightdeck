@@ -28,9 +28,14 @@ test.describe("T117 — Live Feed type pill fits its label", () => {
           if (!label) return [`${badge.textContent}: no label element`];
           const b = badge.getBoundingClientRect();
           const l = label.getBoundingClientRect();
-          return l.height > b.height || l.top < b.top - 1 || l.bottom > b.bottom + 1
-            ? [`${badge.textContent}: label ${Math.round(l.height)}px tall in a ${Math.round(b.height)}px pill`]
-            : [];
+          const out: string[] = [];
+          if (l.height > b.height || l.top < b.top - 1 || l.bottom > b.bottom + 1) {
+            out.push(`${badge.textContent}: label ${Math.round(l.height)}px tall in a ${Math.round(b.height)}px pill`);
+          }
+          if (l.left < b.left - 1 || l.right > b.right + 1) {
+            out.push(`${badge.textContent}: label runs past the pill's sides`);
+          }
+          return out;
         }),
       );
     expect(overflowing).toEqual([]);

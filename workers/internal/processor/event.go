@@ -697,10 +697,16 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	// claims has_content. This is the core capture-posture contract.
 	// The event and its content go in one transaction, so the event is
 	// never visible claiming content the /content endpoint cannot serve
-	// yet. Content that cannot be stored (it does not parse, or its row
-	// is rejected) is dropped and the event is stored without it, with
-	// has_content false, rather than retried into the same failure.
-	if hasContent && len(e.Content) > 0 {
+	// yet. Content that can never be stored (it does not parse, or
+	// Postgres rejects it as invalid data) is dropped and the event is
+	// stored without it, with has_content false, rather than retried
+	// into the same failure; any other error is returned, so the event
+	// is redelivered and retried whole. An event that claims content but
+	// carries none is stored with has_content false: there is nothing
+	// for /content to serve.
+	// A JSON null content field carries no content.
+	contentBlob := len(e.Content) > 0 && string(e.Content) != "null"
+	if hasContent && contentBlob {
 		eventID, err = p.w.InsertEventWithContent(
 			ctx, e.ID, e.SessionID, e.Flavor, e.EventType, e.Model,
 			e.TokensInput, e.TokensOutput, e.TokensTotal,
@@ -713,7 +719,7 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 			eventID, err = insert(false)
 		}
 	} else {
-		eventID, err = insert(hasContent)
+		eventID, err = insert(false)
 	}
 	if err != nil {
 		return err

@@ -196,3 +196,25 @@ func TestInsertEventWithContent_RedeliveryIsIdempotent(t *testing.T) {
 		t.Fatalf("%d event_content rows, want 1", n)
 	}
 }
+
+func TestPermanentContentError(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"NUL byte in text (22021)", &pgconn.PgError{Code: "22021"}, true},
+		{"not-null violation (23502)", &pgconn.PgError{Code: "23502"}, true},
+		{"program limit (54000)", &pgconn.PgError{Code: "54000"}, true},
+		{"wrapped data exception", fmt.Errorf("insert event content: %w", &pgconn.PgError{Code: "22P05"}), true},
+		{"statement timeout (57014)", &pgconn.PgError{Code: "57014"}, false},
+		{"serialization failure (40001)", &pgconn.PgError{Code: "40001"}, false},
+		{"deadlock (40P01)", &pgconn.PgError{Code: "40P01"}, false},
+		{"connection error", errors.New("conn closed"), false},
+	}
+	for _, c := range cases {
+		if got := permanentContentError(c.err); got != c.want {
+			t.Errorf("%s: permanentContentError = %v, want %v", c.name, got, c.want)
+		}
+	}
+}

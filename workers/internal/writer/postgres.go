@@ -39,12 +39,31 @@ type querier interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 }
 
-// ErrEventContent marks a failure that is about an event's captured
-// content (it does not parse, or Postgres rejects the row), as opposed
-// to the event itself. InsertEventWithContent returns it with nothing
-// written, so the caller can store the event without its content
-// instead of retrying a write that will fail the same way every time.
+// ErrEventContent marks an event's captured content as impossible to
+// store: it does not parse, or Postgres rejects the row as invalid data
+// (see permanentContentError). InsertEventWithContent returns it with
+// nothing written, so the caller can store the event without its
+// content instead of retrying a write that will fail the same way every
+// time.
 var ErrEventContent = errors.New("event content")
+
+// permanentContentError reports whether a failed content insert will
+// fail the same way on every attempt: the data is invalid (SQLSTATE
+// class 22, e.g. a NUL byte in a text field), breaks a constraint
+// (class 23, e.g. a content blob without a response) or exceeds a
+// limit (class 54). Anything else, such as a dropped connection, a
+// timeout or a deadlock, is worth retrying.
+func permanentContentError(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || len(pgErr.Code) < 2 {
+		return false
+	}
+	switch pgErr.Code[:2] {
+	case "22", "23", "54":
+		return true
+	}
+	return false
+}
 
 // New creates a Writer.
 func New(pool *pgxpool.Pool) *Writer {
@@ -425,10 +444,12 @@ func (w *Writer) InsertEvent(
 // write never leaves such an event behind. The arguments are
 // InsertEvent's plus the content blob.
 //
-// A content problem (the blob does not parse, or its row is rejected)
-// returns an error wrapping ErrEventContent and writes nothing; any
-// other error is about the event itself and is returned as InsertEvent
-// would return it.
+// Content that can never be stored (the blob does not parse, or
+// Postgres rejects its row as invalid data) returns an error wrapping
+// ErrEventContent and writes nothing. Every other error, including a
+// transient failure of the content insert, is returned unwrapped with
+// nothing written, so the caller's redelivery can retry the whole
+// event.
 func (w *Writer) InsertEventWithContent(
 	ctx context.Context,
 	sensorEventID string,
@@ -459,7 +480,10 @@ func (w *Writer) InsertEventWithContent(
 		return "", err
 	}
 	if err := insertEventContent(ctx, tx, eventID, sessionID, c); err != nil {
-		return "", fmt.Errorf("%w: %w", ErrEventContent, err)
+		if permanentContentError(err) {
+			return "", fmt.Errorf("%w: %w", ErrEventContent, err)
+		}
+		return "", err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return "", fmt.Errorf("commit event transaction: %w", err)

@@ -1613,10 +1613,14 @@ capture-off session. When `capture_prompts=true` for the session, the
 `event_content`, setting `has_content=true` on the event row. The event
 row and its `event_content` row are written in one transaction, so no
 reader sees an event that claims content before the content exists. If
-the content cannot be stored (it does not parse, or Postgres rejects the
-row, for example a NUL byte in a text field), the worker stores the
-event alone with `has_content=false` and logs a warning, rather than
-retrying a write that would fail the same way on every delivery.
+the content can never be stored (it does not parse, or Postgres rejects
+the row as invalid data, for example a NUL byte in a text field), the
+worker stores the event alone with `has_content=false` and logs a
+warning, rather than retrying a write that would fail the same way on
+every delivery. A transient failure (a dropped connection, a timeout)
+writes nothing and the event is redelivered whole. An event that sets
+`has_content` without a `content` blob is stored with
+`has_content=false`.
 
 `session_start` events additionally carry an optional top-level `context`
 field with the runtime context dict (orchestration, git, frameworks, etc.).

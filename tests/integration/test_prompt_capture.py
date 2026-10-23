@@ -203,3 +203,34 @@ def test_content_the_database_rejects_lands_the_event_without_content() -> None:
     assert has_content == "f", f"event still claims content: has_content={has_content!r}"
     assert _query_event_content_rows(event_ids[0]) == 0
     assert _get_event_content(event_ids[0]) is None
+
+
+def test_has_content_without_a_content_blob_is_stored_as_no_content() -> None:
+    """An event that sets has_content but carries no content blob has
+    nothing for /content to serve, so the worker stores it with
+    has_content false instead of leaving it claiming content forever.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"capture-empty-{uuid.uuid4().hex[:6]}"
+
+    post_event(make_event(sid, flavor, "session_start"))
+    wait_until(
+        lambda: session_exists_in_fleet(sid),
+        timeout=10,
+        msg=f"session {sid} did not appear in fleet",
+    )
+    post_event(make_event(sid, flavor, "post_call", tokens_total=50, has_content=True))
+    wait_until(
+        lambda: get_session_event_count(sid) >= 2,
+        timeout=10,
+        msg=f"post_call event not processed for session {sid}",
+    )
+
+    event_ids = _get_event_ids(sid)
+    assert len(event_ids) == 1, f"expected one post_call, got {event_ids}"
+    has_content = exec_sql(
+        "SELECT has_content FROM events WHERE id = :'eid'::uuid",
+        eid=event_ids[0],
+    )
+    assert has_content == "f", f"event claims content it never sent: has_content={has_content!r}"
+    assert _get_event_content(event_ids[0]) is None

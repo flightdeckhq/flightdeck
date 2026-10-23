@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -28,6 +29,40 @@ const (
 // Writer performs all Postgres writes for the worker pipeline.
 type Writer struct {
 	pool *pgxpool.Pool
+}
+
+// querier is what the event and event-content inserts run on: the pool
+// for a standalone write, or a transaction when an event and its
+// content must land together.
+type querier interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// ErrEventContent marks an event's captured content as impossible to
+// store: it does not parse, or Postgres rejects the row as invalid data
+// (see permanentContentError). InsertEventWithContent returns it with
+// nothing written, so the caller can store the event without its
+// content instead of retrying a write that will fail the same way every
+// time.
+var ErrEventContent = errors.New("event content")
+
+// permanentContentError reports whether a failed content insert will
+// fail the same way on every attempt: the data is invalid (SQLSTATE
+// class 22, e.g. a NUL byte in a text field), breaks a constraint
+// (class 23, e.g. a content blob without a response) or exceeds a
+// limit (class 54). Anything else, such as a dropped connection, a
+// timeout or a deadlock, is worth retrying.
+func permanentContentError(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || len(pgErr.Code) < 2 {
+		return false
+	}
+	switch pgErr.Code[:2] {
+	case "22", "23", "54":
+		return true
+	}
+	return false
 }
 
 // New creates a Writer.
@@ -398,6 +433,77 @@ func (w *Writer) InsertEvent(
 	occurredAt time.Time,
 	payload []byte,
 ) (string, error) {
+	return insertEvent(ctx, w.pool, sensorEventID, sessionID, flavor, eventType, model,
+		tokensInput, tokensOutput, tokensTotal, tokensCacheRead, tokensCacheCreation,
+		latencyMs, toolName, hasContent, occurredAt, payload)
+}
+
+// InsertEventWithContent inserts an event and its captured content in
+// one transaction, so a reader never sees an event that claims content
+// (has_content) before the content row exists, and a failed content
+// write never leaves such an event behind. The arguments are
+// InsertEvent's plus the content blob.
+//
+// Content that can never be stored (the blob does not parse, or
+// Postgres rejects its row as invalid data) returns an error wrapping
+// ErrEventContent and writes nothing. Every other error, including a
+// transient failure of the content insert, is returned unwrapped with
+// nothing written, so the caller's redelivery can retry the whole
+// event.
+func (w *Writer) InsertEventWithContent(
+	ctx context.Context,
+	sensorEventID string,
+	sessionID, flavor, eventType, model string,
+	tokensInput, tokensOutput, tokensTotal *int,
+	tokensCacheRead, tokensCacheCreation *int64,
+	latencyMs *int,
+	toolName *string,
+	hasContent bool,
+	occurredAt time.Time,
+	payload []byte,
+	content json.RawMessage,
+) (string, error) {
+	c, err := parseEventContent(content)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrEventContent, err)
+	}
+	tx, err := w.pool.Begin(ctx)
+	if err != nil {
+		return "", fmt.Errorf("begin event transaction: %w", err)
+	}
+	// A no-op once Commit has succeeded.
+	defer func() { _ = tx.Rollback(ctx) }()
+	eventID, err := insertEvent(ctx, tx, sensorEventID, sessionID, flavor, eventType, model,
+		tokensInput, tokensOutput, tokensTotal, tokensCacheRead, tokensCacheCreation,
+		latencyMs, toolName, hasContent, occurredAt, payload)
+	if err != nil {
+		return "", err
+	}
+	if err := insertEventContent(ctx, tx, eventID, sessionID, c); err != nil {
+		if permanentContentError(err) {
+			return "", fmt.Errorf("%w: %w", ErrEventContent, err)
+		}
+		return "", err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return "", fmt.Errorf("commit event transaction: %w", err)
+	}
+	return eventID, nil
+}
+
+func insertEvent(
+	ctx context.Context,
+	q querier,
+	sensorEventID string,
+	sessionID, flavor, eventType, model string,
+	tokensInput, tokensOutput, tokensTotal *int,
+	tokensCacheRead, tokensCacheCreation *int64,
+	latencyMs *int,
+	toolName *string,
+	hasContent bool,
+	occurredAt time.Time,
+	payload []byte,
+) (string, error) {
 	// Cache columns are NOT NULL DEFAULT 0; coalesce nil pointers to 0 rather
 	// than relying on a NULL insert, which the column definition rejects.
 	cacheRead := int64(0)
@@ -417,7 +523,7 @@ func (w *Writer) InsertEvent(
 	// ingestion failure lands cleanly even if the first attempt's
 	// commit raced.
 	var eventID string
-	err := w.pool.QueryRow(ctx, `
+	err := q.QueryRow(ctx, `
 		INSERT INTO events (id, session_id, flavor, event_type, model, tokens_input, tokens_output, tokens_total, tokens_cache_read, tokens_cache_creation, latency_ms, tool_name, has_content, occurred_at, payload)
 		VALUES (COALESCE(NULLIF($1, '')::uuid, gen_random_uuid()), $2::uuid, $3, $4, NULLIF($5, ''), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		ON CONFLICT (id, occurred_at) DO NOTHING
@@ -453,21 +559,32 @@ func (w *Writer) InsertEvent(
 // LLM-prompt-style Messages/Response slots. See migration
 // 000021_event_content_tool_capture.
 func (w *Writer) InsertEventContent(ctx context.Context, eventID, sessionID string, content json.RawMessage) error {
-	// Parse the content JSON to extract fields
-	var c struct {
-		Provider        string          `json:"provider"`
-		Model           string          `json:"model"`
-		SystemPrompt    *string         `json:"system"`
-		Messages        json.RawMessage `json:"messages"`
-		Tools           json.RawMessage `json:"tools"`
-		Response        json.RawMessage `json:"response"`
-		Input           json.RawMessage `json:"input"`
-		ToolInput       json.RawMessage `json:"tool_input"`
-		ToolOutput      json.RawMessage `json:"tool_output"`
-		EmbeddingOutput json.RawMessage `json:"embedding_output"`
+	c, err := parseEventContent(content)
+	if err != nil {
+		return err
 	}
+	return insertEventContent(ctx, w.pool, eventID, sessionID, c)
+}
+
+// eventContent is the parsed content blob, one field per event_content
+// column.
+type eventContent struct {
+	Provider        string          `json:"provider"`
+	Model           string          `json:"model"`
+	SystemPrompt    *string         `json:"system"`
+	Messages        json.RawMessage `json:"messages"`
+	Tools           json.RawMessage `json:"tools"`
+	Response        json.RawMessage `json:"response"`
+	Input           json.RawMessage `json:"input"`
+	ToolInput       json.RawMessage `json:"tool_input"`
+	ToolOutput      json.RawMessage `json:"tool_output"`
+	EmbeddingOutput json.RawMessage `json:"embedding_output"`
+}
+
+func parseEventContent(content json.RawMessage) (eventContent, error) {
+	var c eventContent
 	if err := json.Unmarshal(content, &c); err != nil {
-		return fmt.Errorf("parse event content: %w", err)
+		return c, fmt.Errorf("parse event content: %w", err)
 	}
 	// Default Messages to "[]"::jsonb when absent so the column's
 	// (post-000016) NULL allowance never produces a literal SQL NULL
@@ -476,7 +593,11 @@ func (w *Writer) InsertEventContent(ctx context.Context, eventID, sessionID stri
 	if len(c.Messages) == 0 {
 		c.Messages = json.RawMessage("[]")
 	}
-	_, err := w.pool.Exec(ctx, `
+	return c, nil
+}
+
+func insertEventContent(ctx context.Context, q querier, eventID, sessionID string, c eventContent) error {
+	_, err := q.Exec(ctx, `
 		INSERT INTO event_content (event_id, session_id, provider, model, system_prompt, messages, tools, response, input, tool_input, tool_output, embedding_output)
 		VALUES ($1::uuid, $2::uuid, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
 		ON CONFLICT (event_id) DO NOTHING

@@ -132,6 +132,10 @@ server.
 
 ### Fixed
 
+- **Dashboard: long event-type labels spilled out of their Live Feed
+  pill.** Labels such as "MCP PROMPT FETCHED" wrapped onto a second line
+  below the fixed-height pill. They now stay on one line and end in an
+  ellipsis when the Type column is narrow, with the full label on hover.
 - **Dashboard: Fleet sidebar rows for coding agents hid the agent
   name.** The logo, both pills and the session count did not fit the
   default 240 px sidebar, so the name was squeezed to zero width and

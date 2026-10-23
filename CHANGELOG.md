@@ -138,6 +138,14 @@ server.
   and the per-agent modal both showing an agent, each event was counted
   twice. The cache now applies each event once through a single
   subscription.
+- **Claude Code plugin: an outage at session start silently turned off
+  prompt capture for the whole session.** The plugin marked
+  `session_start` as sent even when ingestion was unreachable or
+  rejected it, so it was never re-sent; the server then created the
+  session from a later event without knowing its capture posture, and
+  dropped every prompt and tool body. The plugin now marks
+  `session_start` sent only once the server accepts it, so the next hook
+  re-sends it and the session's capture posture is filled in.
 - **Dashboard: Fleet sidebar rows for coding agents hid the agent
   name.** The logo, both pills and the session count did not fit the
   default 240 px sidebar, so the name was squeezed to zero width and

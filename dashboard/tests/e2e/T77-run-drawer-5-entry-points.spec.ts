@@ -24,8 +24,11 @@ test.describe("T77 — run drawer opens from 5 entry points", () => {
     const row = await bringSwimlaneRowIntoView(page, CODING_AGENT.name);
     // Scope to the in-view row's circles (not the global ``.first()``)
     // so a re-render between scroll and click can't resolve the
-    // locator to an off-screen row's circle.
-    const circle = row.locator('[data-testid^="session-circle-"]').first();
+    // locator to an off-screen row's circle. Take the last circle:
+    // seeded runs that start together stack their circles and a later
+    // one paints over an earlier one, and the newest circle sits
+    // furthest from the sticky row label.
+    const circle = row.locator('[data-testid^="session-circle-"]').last();
     await expect(circle).toBeVisible({ timeout: 10_000 });
     // A regular click (no ``force``) — ``EventNode.tsx`` carries
     // ``pointerEvents: "none"`` on the icon glyph, so even when
@@ -49,11 +52,14 @@ test.describe("T77 — run drawer opens from 5 entry points", () => {
     // Scope the bracket to the in-view row so it is on-screen and
     // not the sticky row label's first global match — the swimlane
     // re-renders on WebSocket pushes, so a global .first() can
-    // resolve to an off-screen / label-occluded glyph.
+    // resolve to an off-screen / label-occluded glyph. Take the last
+    // bracket: two runs that start within a pixel of each other stack
+    // their glyphs, and a later glyph paints over an earlier one, so
+    // the first can be covered while the last never is.
     const row = await bringSwimlaneRowIntoView(page, CODING_AGENT.name);
     const bracket = row
       .locator('[data-testid^="swimlane-run-bracket-start-"]')
-      .first();
+      .last();
     await expect(bracket).toBeVisible({ timeout: 10_000 });
     await bracket.click();
     await expect(page.locator('[data-testid="session-drawer"]')).toBeVisible({

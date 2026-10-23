@@ -547,6 +547,68 @@ describe("observe_cli.mjs", () => {
     }
   });
 
+  it("re-sends session_start on a later hook when the first one was not accepted", async () => {
+    clearAllPluginMarkers();
+    const sid = "sess-start-retry-1";
+    const markerDir = join(tmpdir(), "flightdeck-plugin");
+    const startedMarkers = () => {
+      try {
+        return readdirSync(markerDir).filter((n) => n.startsWith("started-"));
+      } catch {
+        return [];
+      }
+    };
+
+    // Ingestion is down when the session starts.
+    const failing = await startFailingServer(503);
+    try {
+      const result = await runScript(
+        JSON.stringify({ hook_event_name: "SessionStart", session_id: sid, source: "startup" }),
+        {
+          FLIGHTDECK_SERVER: `http://127.0.0.1:${failing.port}`,
+          FLIGHTDECK_TOKEN: "tok_test",
+          CLAUDE_SESSION_ID: sid,
+        },
+      );
+      assert.equal(result.code, 0);
+      assert.ok(failing.requestCount() >= 1, "session_start was attempted");
+    } finally {
+      failing.server.close();
+    }
+    assert.deepEqual(startedMarkers(), [], "an unaccepted session_start must not be marked sent");
+
+    // Ingestion is back for the next hook: session_start goes out again,
+    // with the capture posture, and only now is it marked sent.
+    const back = await startCaptureServer();
+    try {
+      const env = {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${back.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: sid,
+      };
+      await runScript(
+        JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: sid, prompt: "hi" }),
+        env,
+      );
+      const starts = back.bodies().filter((b) => b && b.event_type === "session_start");
+      assert.equal(starts.length, 1, "session_start re-sent once ingestion is reachable");
+      assert.equal(starts[0].capture_prompts, true);
+      assert.equal(startedMarkers().length, 1, "accepted session_start is marked sent");
+
+      // Once accepted, later hooks do not send it again.
+      await runScript(
+        JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: sid, prompt: "again" }),
+        env,
+      );
+      assert.equal(
+        back.bodies().filter((b) => b && b.event_type === "session_start").length,
+        1,
+      );
+    } finally {
+      back.server.close();
+    }
+  });
+
   it("HTTP 401 (auth) is also flagged and not retried", async () => {
     clearAllPluginMarkers();
     const failing = await startFailingServer(401);

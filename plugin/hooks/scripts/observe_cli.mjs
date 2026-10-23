@@ -1952,6 +1952,9 @@ function shortErrorFrom(err) {
   return (err.message || "unknown error").split("\n")[0];
 }
 
+// Returns true when the server accepted the event (2xx), false on any
+// network or HTTP failure. Callers that only fire and forget may ignore
+// it; ensureSessionStarted uses it to retry an unaccepted session_start.
 async function postEvent(server, token, sessionId, payload) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
@@ -1971,7 +1974,7 @@ async function postEvent(server, token, sessionId, payload) {
     // timeout, fetch rejection. Log and return -- the next hook
     // invocation is a fresh process and will try again.
     logUnreachable(server, shortErrorFrom(err));
-    return;
+    return false;
   } finally {
     clearTimeout(timeout);
   }
@@ -1983,7 +1986,9 @@ async function postEvent(server, token, sessionId, payload) {
   // Claude Code invokes a fresh plugin process.
   if (!response.ok) {
     logUnreachable(server, `HTTP ${response.status}`);
+    return false;
   }
+  return true;
 }
 
 // ---------------------------------------------------------------------
@@ -2086,7 +2091,12 @@ async function ensureSessionStarted(server, token, sessionId, basePayload, extra
   if (startContext) startPayload.context = startContext;
   if (extras.model) startPayload.model = extras.model;
 
-  await postEvent(server, token, sessionId, startPayload);
+  // Mark the session started only once the server has accepted the
+  // session_start. If ingestion is down or rejects it, the next hook
+  // sends it again: session_start carries the capture posture, and a
+  // session whose row was created from a later event (posture unknown,
+  // so content is dropped) only learns it from a session_start.
+  if (!(await postEvent(server, token, sessionId, startPayload))) return;
 
   try {
     mkdirOwnerOnly(dir);
@@ -2603,11 +2613,12 @@ async function main() {
   // post_call, tool_call, session_end) carries it -- not only
   // session_start. The worker's lazy-create path and the
   // UpgradeSessionContext upgrade depend on seeing context on the first
-  // event that actually reaches the server. Without this, a session
-  // whose session_start POST failed (stack down at start, dead-TLS
-  // window, ...) would land with "unknown" flavor and NULL context
-  // forever because the session_start dedup marker on disk prevents
-  // a retry. ``safeCollectContext`` returns null on throw or empty
+  // event that actually reaches the server. A session whose
+  // session_start POST failed (stack down at start, dead-TLS window,
+  // ...) gets its row from whichever event lands first, and the
+  // session_start is only re-sent by a later hook; with context on
+  // every event the row has the right flavor and context meanwhile.
+  // ``safeCollectContext`` returns null on throw or empty
   // result, in which case the field is omitted -- the worker's
   // COALESCE upgrade treats "missing" and "empty dict" identically.
   const baseContext = safeCollectContext({

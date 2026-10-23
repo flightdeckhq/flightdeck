@@ -89,3 +89,25 @@ export function useKeyedFetch<T>(
     refetch,
   };
 }
+
+/**
+ * The key whose data a form-style preview should show: the current
+ * key once its request has succeeded, or, while it loads, the key that
+ * was showing before. A null key or a failure in between drops the old
+ * data, so an emptied or failed input never brings back a result that
+ * belongs to different inputs. Returns null when nothing should show.
+ */
+export function useShownKey<T>(
+  key: string | null,
+  fetch: KeyedFetchResult<T>,
+): string | null {
+  const [shown, setShown] = useState<string | null>(null);
+  const next =
+    key === null || fetch.error !== null
+      ? null
+      : !fetch.loading && fetch.dataKey === key
+        ? key
+        : shown;
+  if (next !== shown) setShown(next);
+  return next;
+}

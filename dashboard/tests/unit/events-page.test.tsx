@@ -325,6 +325,32 @@ describe("Investigate (event-grain /events page)", () => {
     expect(screen.getByTestId("events-row")).toBeInTheDocument();
   });
 
+  it("hides a failed load's error while the next filter loads", async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      let release: (v: BulkEventsResponse) => void = () => undefined;
+      vi.mocked(fetchBulkEvents)
+        .mockRejectedValueOnce(new Error("down"))
+        .mockImplementationOnce(() => new Promise((resolve) => (release = resolve)));
+      await renderPage();
+      expect(screen.getByTestId("events-table-error")).toBeInTheDocument();
+
+      fireEvent.change(screen.getByTestId("events-search-input"), {
+        target: { value: "checkout" },
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(400);
+      });
+      expect(screen.queryByTestId("events-table-error")).toBeNull();
+      expect(screen.getByTestId("events-table-loading")).toBeInTheDocument();
+
+      await act(async () => release(h.events));
+      expect(screen.getByTestId("events-table-empty")).toBeInTheDocument();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("debounces the search box and fetches events carrying the typed q", async () => {
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {

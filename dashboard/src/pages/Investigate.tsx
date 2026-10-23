@@ -930,7 +930,7 @@ export function Investigate() {
                     </TableCell>
                   </TableRow>
                 )}
-                {!error && loading && events.length === 0 && (
+                {loading && events.length === 0 && (
                   <TableRow data-testid="events-table-loading">
                     <TableCell
                       colSpan={7}
@@ -941,7 +941,7 @@ export function Investigate() {
                     </TableCell>
                   </TableRow>
                 )}
-                {error && (
+                {error && !loading && (
                   <TableRow data-testid="events-table-error">
                     <TableCell
                       colSpan={7}

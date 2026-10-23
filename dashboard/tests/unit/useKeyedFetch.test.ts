@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { renderHook, act, waitFor } from "@testing-library/react";
-import { useKeyedFetch } from "@/hooks/useKeyedFetch";
+import { useKeyedFetch, useShownKey } from "@/hooks/useKeyedFetch";
 
 // A fetcher whose calls resolve or reject on demand, so tests control
 // the order in which requests settle.
@@ -90,5 +90,54 @@ describe("useKeyedFetch", () => {
     );
     rerender({ k: "b" });
     await waitFor(() => expect(seen).toEqual(["a", "b"]));
+  });
+});
+
+describe("useShownKey", () => {
+  function useBoth(k: string | null, fetcher: (s: AbortSignal) => Promise<string>) {
+    const fetch = useKeyedFetch(k, fetcher);
+    return { fetch, shown: useShownKey(k, fetch) };
+  }
+
+  it("shows the previous key while the next one loads, then the new key", async () => {
+    const { fetcher, calls } = controllable<string>();
+    const { result, rerender } = renderHook(({ k }) => useBoth(k, fetcher), {
+      initialProps: { k: "a" as string | null },
+    });
+    expect(result.current.shown).toBeNull();
+    await act(async () => calls[0]!.resolve("A"));
+    expect(result.current.shown).toBe("a");
+    rerender({ k: "b" });
+    expect(result.current.shown).toBe("a");
+    await act(async () => calls[1]!.resolve("B"));
+    expect(result.current.shown).toBe("b");
+  });
+
+  it("drops the old data after a failure, even once the key moves on", async () => {
+    const { fetcher, calls } = controllable<string>();
+    const { result, rerender } = renderHook(({ k }) => useBoth(k, fetcher), {
+      initialProps: { k: "a" as string | null },
+    });
+    await act(async () => calls[0]!.resolve("A"));
+    rerender({ k: "b" });
+    await act(async () => calls[1]!.reject(new Error("boom")));
+    expect(result.current.shown).toBeNull();
+    rerender({ k: "c" });
+    expect(result.current.fetch.dataKey).toBe("a");
+    expect(result.current.shown).toBeNull();
+  });
+
+  it("drops the old data once the key is null, so new inputs never show it", async () => {
+    const { fetcher, calls } = controllable<string>();
+    const { result, rerender } = renderHook(({ k }) => useBoth(k, fetcher), {
+      initialProps: { k: "a" as string | null },
+    });
+    await act(async () => calls[0]!.resolve("A"));
+    rerender({ k: null });
+    expect(result.current.shown).toBeNull();
+    rerender({ k: "d" });
+    expect(result.current.shown).toBeNull();
+    await act(async () => calls[1]!.resolve("D"));
+    expect(result.current.shown).toBe("d");
   });
 });

@@ -1,5 +1,5 @@
 import { useState, useCallback } from "react";
-import { useKeyedFetch } from "@/hooks/useKeyedFetch";
+import { useKeyedFetch, useShownKey } from "@/hooks/useKeyedFetch";
 import {
   BrowserRouter,
   Routes,
@@ -259,10 +259,11 @@ function AgentDrawerHost() {
  * Hydration: a single ``fetchBulkEvents`` call scoped to the
  * session_id (no new endpoint) provides the AgentEvent the
  * drawer needs; the matching event is picked by id. While the
- * fetch is in flight EventDetailDrawer renders null (its prop
- * gate), so there is no half-rendered shell to manage.
+ * first fetch is in flight EventDetailDrawer renders null (its prop
+ * gate), so there is no half-rendered shell to manage; switching to
+ * another event keeps the current one open until the next lands.
  */
-function EventDetailDrawerHost() {
+export function EventDetailDrawerHost() {
   const [searchParams, setSearchParams] = useSearchParams();
   const rawEvent = searchParams.get("event");
   const rawSession = searchParams.get("event_session");
@@ -282,17 +283,20 @@ function EventDetailDrawerHost() {
       signal,
     ),
   );
-  const settled = requestKey !== null && !lookup.loading && lookup.dataKey === requestKey;
+  // While a different event loads, the drawer keeps showing the one
+  // it had (the shown key still names it).
+  const shownKey = useShownKey(requestKey, lookup);
+  const shownEventId = shownKey === null ? null : shownKey.slice(shownKey.indexOf("|") + 1);
   const event: AgentEvent | null =
-    settled && lookup.error === null
-      ? (lookup.data?.events.find((e) => e.id === rawEvent) ?? null)
-      : null;
+    shownEventId === null
+      ? null
+      : (lookup.data?.events.find((e) => e.id === shownEventId) ?? null);
   // ``notFound`` is true when the fetch returned a page (possibly
   // with has_more) but the target event id was absent, or the fetch
   // failed. Used to render an explicit empty state rather than an
   // invisible drawer.
   const notFound =
-    requestKey !== null && !lookup.loading && (lookup.error !== null || (settled && event === null));
+    requestKey !== null && !lookup.loading && (lookup.error !== null || event === null);
 
   const close = useCallback(() => {
     setSearchParams(

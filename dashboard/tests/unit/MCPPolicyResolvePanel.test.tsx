@@ -109,4 +109,92 @@ describe("MCPPolicyResolvePanel", () => {
       (screen.getByTestId("resolve-name-prod") as HTMLInputElement).value,
     ).toBe("");
   });
+  function fill(scope: string, url: string, name: string) {
+    fireEvent.change(screen.getByTestId(`resolve-url-${scope}`), {
+      target: { value: url },
+    });
+    fireEvent.change(screen.getByTestId(`resolve-name-${scope}`), {
+      target: { value: name },
+    });
+  }
+
+  it("shows the preview again when the cleared inputs are typed again", async () => {
+    resolveMock.mockResolvedValue({
+      decision: "block",
+      decision_path: "flavor_entry",
+      policy_id: "p",
+      scope: "flavor:prod",
+      fingerprint: "abcdef0123456789",
+    });
+    render(<MCPPolicyResolvePanel flavor="prod" scopeKey="prod" />);
+    fireEvent.click(screen.getByTestId("mcp-policy-resolve-panel-toggle-prod"));
+    fill("prod", "https://maps.example.com", "maps");
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-policy-resolve-panel-pill-block")).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId("mcp-policy-resolve-panel-clear-prod"));
+    expect(screen.queryByTestId("mcp-policy-resolve-panel-pill-block")).toBeNull();
+
+    // Typed again before the cleared inputs' debounce settled, the
+    // same inputs are a new request, not a cleared one.
+    fill("prod", "https://maps.example.com", "maps");
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-policy-resolve-panel-pill-block")).toBeTruthy();
+    });
+  });
+
+  it("does not bring back an earlier preview after a failure", async () => {
+    // Answer per server name, so the intermediate keys produced while
+    // the two debounced fields catch up cannot consume a scripted reply.
+    let releaseC: (v: unknown) => void = () => undefined;
+    resolveMock.mockImplementation(({ server_name }: { server_name: string }) => {
+      if (server_name === "a") {
+        return Promise.resolve({
+          decision: "allow",
+          decision_path: "global_entry",
+          policy_id: "p",
+          scope: "global",
+          fingerprint: "abcdef0123456789",
+        });
+      }
+      if (server_name === "c") return new Promise((resolve) => (releaseC = resolve));
+      return Promise.reject(new Error("resolve exploded"));
+    });
+    render(<MCPPolicyResolvePanel flavor={null} scopeKey="global" />);
+    fireEvent.click(screen.getByTestId("mcp-policy-resolve-panel-toggle-global"));
+
+    fill("global", "https://a.example.com", "a");
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-policy-resolve-panel-pill-allow")).toBeTruthy();
+    });
+    fill("global", "https://b.example.com", "b");
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-policy-resolve-panel-error-global")).toBeTruthy();
+    });
+    expect(screen.queryByTestId("mcp-policy-resolve-panel-pill-allow")).toBeNull();
+
+    // While C's request is in flight, A's decision stays hidden.
+    fill("global", "https://c.example.com", "c");
+    await waitFor(() => {
+      expect(resolveMock).toHaveBeenCalledWith({
+        flavor: undefined,
+        server_url: "https://c.example.com",
+        server_name: "c",
+      });
+    });
+    expect(screen.queryByTestId("mcp-policy-resolve-panel-pill-allow")).toBeNull();
+    expect(screen.queryByTestId("mcp-policy-resolve-panel-error-global")).toBeNull();
+
+    releaseC({
+      decision: "block",
+      decision_path: "global_entry",
+      policy_id: "p",
+      scope: "global",
+      fingerprint: "abcdef0123456789",
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId("mcp-policy-resolve-panel-pill-block")).toBeTruthy();
+    });
+  });
 });

@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 
-import { useKeyedFetch } from "@/hooks/useKeyedFetch";
+import { useKeyedFetch, useShownKey } from "@/hooks/useKeyedFetch";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { InfoIcon } from "@/components/ui/info-icon";
@@ -101,7 +101,7 @@ export function MCPPolicyEntryDialog({
 
   // Resolve preview for the debounced URL + name while the dialog is
   // open. The previous preview stays while the next one loads; a
-  // failure clears it.
+  // failure or an emptied field clears it.
   const resolveUrl = debouncedUrl.trim();
   const resolveName = debouncedName.trim();
   const resolveKey =
@@ -113,8 +113,9 @@ export function MCPPolicyEntryDialog({
       server_name: resolveName,
     }),
   );
+  const resolveShownKey = useShownKey(resolveKey, resolve);
   const resolveResult: MCPPolicyResolveResult | null =
-    resolveKey === null || resolve.error !== null ? null : (resolve.data ?? null);
+    resolveShownKey === null ? null : (resolve.data ?? null);
   const resolveError =
     resolve.error === null
       ? null

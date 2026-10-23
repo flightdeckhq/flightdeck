@@ -111,9 +111,10 @@ export function MCPQuickStartTemplates({
       <button
         type="button"
         onClick={() => {
-          setOpen((v) => !v);
           // Lazy-load templates on first open; keeps the empty-state
-          // render cheap.
+          // render cheap. Reopening after a failed load retries it.
+          if (!open && templatesFetch.error !== null) templatesFetch.refetch();
+          setOpen((v) => !v);
           setTemplatesRequested(true);
         }}
         className={cn(

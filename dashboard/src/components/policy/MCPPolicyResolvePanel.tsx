@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useKeyedFetch } from "@/hooks/useKeyedFetch";
+import { useKeyedFetch, useShownKey } from "@/hooks/useKeyedFetch";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -47,8 +47,8 @@ export function MCPPolicyResolvePanel({
   const debouncedName = useDebouncedValue(serverName, RESOLVE_DEBOUNCE_MS);
 
   // Resolve for the debounced URL + name while the panel is expanded.
-  // The previous result stays while the next one loads; a failure
-  // clears it.
+  // The previous result stays while the next one loads; a failure or
+  // an emptied field clears it.
   const resolveUrl = debouncedUrl.trim();
   const resolveName = debouncedName.trim();
   const resolveKey =
@@ -60,12 +60,16 @@ export function MCPPolicyResolvePanel({
       server_name: resolveName,
     }),
   );
+  const shownKey = useShownKey(resolveKey, resolve);
   // "Clear" hides the current preview at once, before the cleared
-  // inputs' debounce settles and the key becomes null.
+  // inputs' debounce settles and the key becomes null. It stays hidden
+  // only while the fields on screen differ from the cleared inputs, so
+  // typing the same server again shows its preview.
   const [clearedKey, setClearedKey] = useState<string | null>(null);
-  const hidden = resolveKey !== null && resolveKey === clearedKey;
+  const typedKey = JSON.stringify([flavor ?? null, serverUrl.trim(), serverName.trim()]);
+  const hidden = resolveKey !== null && resolveKey === clearedKey && typedKey !== resolveKey;
   const result: MCPPolicyResolveResult | null =
-    resolveKey === null || hidden || resolve.error !== null ? null : (resolve.data ?? null);
+    hidden || shownKey === null ? null : (resolve.data ?? null);
   const error =
     hidden || resolve.error === null
       ? null

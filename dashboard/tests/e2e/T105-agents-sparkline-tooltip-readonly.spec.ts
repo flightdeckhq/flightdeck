@@ -76,7 +76,9 @@ test.describe("T105 — /agents sparkline tooltip + read-only click", () => {
           x = x >= box!.x + box!.width - 1 ? box!.x + 1 : x + 2;
           return tooltip.count();
         },
-        { timeout: 5_000 },
+        // A short, fixed interval lets the sweep cross the whole chart
+        // within the timeout instead of stalling on the default backoff.
+        { timeout: 5_000, intervals: [50] },
       )
       .toBeGreaterThan(0);
     await expect(tooltip).toBeVisible();

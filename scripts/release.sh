@@ -46,9 +46,10 @@ echo "Updated sensor/pyproject.toml version to $PEP_VERSION"
 # --- Run tests ---
 
 echo ""
-echo "Running tests..."
+echo "Running tests and linters..."
 make test
-echo "All tests passed."
+make lint
+echo "All tests and linters passed."
 
 # --- Commit, tag, push ---
 
@@ -64,8 +65,9 @@ echo ""
 echo "Release $VERSION pushed successfully."
 echo ""
 echo "The GitHub Actions release workflow will now:"
-echo "  1. Publish flightdeck-sensor to PyPI"
-echo "  2. Build and push Docker images to Docker Hub"
-echo "  3. Create a GitHub Release"
+echo "  1. Scan the Docker images (stops the release on a fixable HIGH/CRITICAL finding or an EOL base)"
+echo "  2. Publish flightdeck-sensor to PyPI"
+echo "  3. Build and push Docker images to Docker Hub"
+echo "  4. Create a GitHub Release"
 echo ""
 echo "Monitor: https://github.com/flightdeckhq/flightdeck/actions"

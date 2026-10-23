@@ -32,6 +32,7 @@ test: ## Run all unit tests
 	$(MAKE) -C workers test
 	$(MAKE) -C api test
 	$(MAKE) test-plugin
+	$(MAKE) -C dashboard test
 
 test-plugin: ## Run the Claude Code plugin unit tests (zero-dep, node --test)
 	cd plugin && node --test tests/*.test.mjs
@@ -186,6 +187,7 @@ lint: ## Lint all components
 	$(MAKE) -C ingestion lint
 	$(MAKE) -C workers lint
 	$(MAKE) -C api lint
+	$(MAKE) -C dashboard lint
 
 dev: ## Start full local dev environment
 	$(MAKE) -C docker dev

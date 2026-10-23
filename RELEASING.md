@@ -31,7 +31,11 @@ The script:
 4. Verifies `make migrate-local-status` shows the expected version with
    `dirty=false`. Do not tag a release with dirty migrations.
 5. Updates `version` in `sensor/pyproject.toml`
-6. Runs `make test` to verify all tests pass
+6. Runs `make test` (sensor, Go services, plugin and dashboard unit tests)
+   and `make lint` (mypy, ruff, golangci-lint, the dashboard's ESLint and
+   type-check); the release stops if either fails. Both need the sensor
+   venv, the dashboard's dependencies (`make -C dashboard install`) and
+   `golangci-lint` on `PATH`
 7. Commits: `chore: release vX.Y.Z`
 8. Creates an annotated git tag
 9. Pushes the commit and tag to origin
@@ -40,15 +44,20 @@ The script:
 
 Pushing the tag triggers `.github/workflows/release.yml`, which:
 
-- **Job 1 -- Publish sensor to PyPI:** Builds the wheel and sdist,
+- **Job 1 -- Scan Docker images:** Builds the four images without
+  pushing them and scans each with Trivy. The release stops here, before
+  anything is published, if an image has a HIGH or CRITICAL
+  vulnerability with a fixed version available or a base image whose OS
+  has reached end of life. The job log names each failing image.
+- **Job 2 -- Publish sensor to PyPI:** Builds the wheel and sdist,
   publishes via OIDC trusted publishing (no API key stored)
-- **Job 2 -- Build and push Docker images:** Builds and pushes four
+- **Job 3 -- Build and push Docker images:** Builds and pushes four
   images to Docker Hub under the `flightdeckhq` org:
   - `flightdeckhq/flightdeck-ingestion`
   - `flightdeckhq/flightdeck-workers`
   - `flightdeckhq/flightdeck-api`
   - `flightdeckhq/flightdeck-dashboard`
-- **Job 3 -- Create GitHub release:** Auto-generates release notes
+- **Job 4 -- Create GitHub release:** Auto-generates release notes
 
 ### 3. Verify
 
@@ -68,6 +77,13 @@ If the release pipeline fails mid-way:
    version (e.g. v0.1.1).
 
 2. **Nothing published:** Fix the issue, delete the tag, re-tag, re-push.
+   A failed image scan always lands here. The fix is usually a newer
+   base image (`alpine`, `nginx`) or Go toolchain in the failing
+   image's Dockerfile, or a dependency bump for a finding in the Go
+   binary. The scan job's log says why each image failed: the package
+   and its fixed version, "Detected EOL OS" for an end-of-life base, or
+   the error if the vulnerability database could not be downloaded (a
+   re-run usually clears that one).
 
 3. **Everything published but release notes wrong:** Edit the GitHub
    release manually.

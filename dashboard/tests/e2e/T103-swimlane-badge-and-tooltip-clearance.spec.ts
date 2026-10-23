@@ -85,6 +85,10 @@ test.describe("T103 — swimlane right-edge clearance", () => {
     await page.waitForSelector('[data-testid="fleet-main-scroll"]', {
       timeout: 10_000,
     });
+    // On the default 1m range a circle exists only if an event landed
+    // in the last minute; the 1h range always holds the seeded events.
+    // The inset geometry checked below does not depend on the range.
+    await page.getByRole("button", { name: "1h", exact: true }).click();
     // Poll until at least one session-circle has mounted inside
     // a swimlane row — replaces a fixed waitForTimeout (qa.md
     // hard rule: no fixed timeouts). The buffer geometry check

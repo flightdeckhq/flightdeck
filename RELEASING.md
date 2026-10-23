@@ -80,7 +80,10 @@ If the release pipeline fails mid-way:
    A failed image scan always lands here. The fix is usually a newer
    base image (`alpine`, `nginx`) or Go toolchain in the failing
    image's Dockerfile, or a dependency bump for a finding in the Go
-   binary; the scan job's log names the package and the fixed version.
+   binary. The scan job's log says why each image failed: the package
+   and its fixed version, "Detected EOL OS" for an end-of-life base, or
+   the error if the vulnerability database could not be downloaded (a
+   re-run usually clears that one).
 
 3. **Everything published but release notes wrong:** Edit the GitHub
    release manually.

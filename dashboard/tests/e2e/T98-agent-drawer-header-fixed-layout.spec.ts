@@ -1,4 +1,5 @@
 import { test, expect } from "@playwright/test";
+import { openAgentDrawerFromRow } from "./_fixtures";
 
 /**
  * T98 — Agent drawer header renders four rows in a fixed
@@ -39,7 +40,7 @@ test.describe("T98 — Agent drawer header fixed four-row layout", () => {
         .first();
       await row.scrollIntoViewIfNeeded();
       await expect(row).toBeVisible();
-      await row.click();
+      await openAgentDrawerFromRow(row);
 
       const drawer = page.locator('[data-testid="agent-drawer"]');
       await expect(drawer).toBeVisible({ timeout: 10_000 });

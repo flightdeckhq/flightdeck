@@ -13,11 +13,7 @@
  * Theme-agnostic — structural locators only.
  */
 import { test, expect } from "@playwright/test";
-import {
-  bringSwimlaneRowIntoView,
-  CODING_AGENT,
-  waitForFleetReady,
-} from "./_fixtures";
+import { bringSwimlaneRowIntoView, CODING_AGENT, waitForFleetReady, openAgentDrawerFromRow } from "./_fixtures";
 
 test.use({ viewport: { width: 1280, height: 1800 } });
 
@@ -73,7 +69,7 @@ test.describe("T77 — run drawer opens from 5 entry points", () => {
       .locator('[data-testid^="agent-row-"][data-agent-id]')
       .first();
     await expect(row).toBeVisible({ timeout: 10_000 });
-    await row.click();
+    await openAgentDrawerFromRow(row);
     await page.locator('[data-testid="agent-drawer-tab-runs"]').click();
     const runRow = page
       .locator('[data-testid^="agent-drawer-run-row-"]')

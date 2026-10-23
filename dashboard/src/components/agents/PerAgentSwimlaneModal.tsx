@@ -26,6 +26,9 @@ import {
   type TimeRange,
 } from "@/lib/constants";
 
+/** Stable empty feed, so a closed modal's feed keeps its identity. */
+const EMPTY_FEED: FeedEvent[] = [];
+
 /** How often the Live feed strip's time window advances. The
  *  narrowest picker range is one minute, so a five-second step keeps
  *  the strip's oldest edge within a twelfth of the window of the
@@ -65,13 +68,16 @@ export function PerAgentSwimlaneModal({
   );
   const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
 
-  useEffect(() => {
+  // Reset the toggle and the window to the shared default whenever the
+  // modal re-points at a different agent — a reopen never inherits the
+  // prior agent's range. Adjusted during render, keyed on the agent.
+  const pointedAt = `${agent?.agent_id ?? ""}|${agent?.topology ?? ""}`;
+  const [resetFor, setResetFor] = useState(pointedAt);
+  if (pointedAt !== resetFor) {
+    setResetFor(pointedAt);
     setShowSubAgents(agent?.topology === "parent");
-    // Reset the window to the shared default whenever the modal
-    // re-points at a different agent, mirroring the showSubAgents
-    // reset — a reopen never inherits the prior agent's range.
     setTimeRange(DEFAULT_TIME_RANGE);
-  }, [agent?.agent_id, agent?.topology]);
+  }
 
   const { summary } = useAgentSummary(agent?.agent_id ?? "", {
     period: "7d",
@@ -161,7 +167,11 @@ export function PerAgentSwimlaneModal({
     [scopedSessionIdsKey],
   );
   const lastEvent = useFleetStore((s) => s.lastEvent);
-  const [feedEvents, setFeedEvents] = useState<FeedEvent[]>([]);
+  const [feedState, setFeedEvents] = useState<FeedEvent[]>([]);
+  // The agent whose seed the feed state holds. The feed is shown only
+  // for that agent, so a reopened modal never shows the previous
+  // agent's events while the new seed loads.
+  const [feedAgentId, setFeedAgentId] = useState<string | undefined>(undefined);
   const arrivalCounter = useRef(0);
   const agentId = agent?.agent_id;
 
@@ -173,10 +183,7 @@ export function PerAgentSwimlaneModal({
   // Deps key off the agent_id string and the scope key so the
   // effect doesn't re-run on every parent re-render.
   useEffect(() => {
-    if (!agentId) {
-      setFeedEvents([]);
-      return;
-    }
+    if (!agentId) return;
     let cancelled = false;
     const sessionIds = scopedSessionIdsKey
       ? scopedSessionIdsKey.split(",")
@@ -212,6 +219,7 @@ export function PerAgentSwimlaneModal({
         // the order here keeps the slice-cap aligned with what
         // the operator sees at the top.
         all.sort((a, b) => b.arrivedAt - a.arrivedAt);
+        setFeedAgentId(agentId);
         setFeedEvents(all.slice(0, FEED_MAX_EVENTS));
       })
       // Inner per-session catches swallow fetch errors and
@@ -267,6 +275,7 @@ export function PerAgentSwimlaneModal({
   // swimlane lanes' scale domain does, and also recomputes on a
   // timeRange change or a new lastEvent arrival.
   const now = useNow(FEED_WINDOW_TICK_MS);
+  const feedEvents = agentId && feedAgentId === agentId ? feedState : EMPTY_FEED;
   const visibleFeedEvents = useMemo(() => {
     const cutoffMs = now - TIMELINE_RANGE_MS[timeRange];
     return feedEvents.filter(

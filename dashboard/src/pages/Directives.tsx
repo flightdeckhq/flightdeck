@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useMemo } from "react";
+import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import type { CustomDirective, CustomDirectiveParameter } from "@/lib/types";
 import { fetchCustomDirectives, fetchFlavors, triggerCustomDirective } from "@/lib/api";
 import { useFleetStore } from "@/store/fleet";
@@ -21,6 +22,9 @@ import { ChevronDown, ChevronRight } from "lucide-react";
 // use an empty string as an item value, so null maps to this token.
 const ALL_AGENTS_SENTINEL = "__all__";
 
+/** Stable empty list for the first load. */
+const NO_DIRECTIVES: CustomDirective[] = [];
+
 /** A directive whose handler registered within this window is shown
  *  as "registered"; older ones as "may not respond". */
 const RECENT_REGISTRATION_MS = 10 * 60 * 1000;
@@ -40,29 +44,20 @@ flightdeck_sensor.init(
     server="...", token="...")`;
 
 export function Directives() {
-  const [directives, setDirectives] = useState<CustomDirective[]>([]);
   const [flavors, setFlavors] = useState<string[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [flavorFilter, setFlavorFilter] = useState<string | null>(null);
   const [search, setSearch] = useState("");
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const data = await fetchCustomDirectives(flavorFilter ?? undefined);
-      setDirectives(data);
-    } catch (e) {
-      setError((e as Error).message);
-    } finally {
-      setLoading(false);
-    }
-  }, [flavorFilter]);
-
-  useEffect(() => {
-    void load();
-  }, [load]);
+  // Re-runs when the flavor filter changes; ``load`` (the Retry
+  // button) re-runs the current filter. The previous list stays while
+  // the next loads.
+  const directivesFetch = useKeyedFetch(flavorFilter ?? "", () =>
+    fetchCustomDirectives(flavorFilter ?? undefined),
+  );
+  const directives: CustomDirective[] = directivesFetch.data ?? NO_DIRECTIVES;
+  const loading = directivesFetch.loading;
+  const error = directivesFetch.error === null ? null : (directivesFetch.error as Error).message;
+  const load = directivesFetch.refetch;
 
   useEffect(() => {
     void fetchFlavors()

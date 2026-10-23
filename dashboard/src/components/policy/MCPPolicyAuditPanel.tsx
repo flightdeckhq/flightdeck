@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
+import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import { ChevronDown, ChevronRight, FileText } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -57,38 +58,34 @@ export function MCPPolicyAuditPanel({
   const [toIso, setToIso] = useState<string>("");
   const [page, setPage] = useState(0);
 
-  const [rows, setRows] = useState<MCPPolicyAuditLog[] | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
 
   const offset = page * PAGE_SIZE;
 
-  const reload = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const list = await listMCPPolicyAuditLog(flavorOrGlobal, {
+  // Re-runs whenever a filter or the page changes. GET audit-log is
+  // read-open; no admin-wall special-case — real errors surface as
+  // real errors. Rows from the previous query stay until the next
+  // lands.
+  const audit = useKeyedFetch(
+    JSON.stringify([flavorOrGlobal, eventType, fromIso, toIso, offset]),
+    () =>
+      listMCPPolicyAuditLog(flavorOrGlobal, {
         event_type: eventType || undefined,
         from: fromIso || undefined,
         to: toIso || undefined,
         limit: PAGE_SIZE,
         offset,
-      });
-      setRows(list);
-    } catch (err) {
-      // GET audit-log is read-open; no admin-wall special-
-      // case — surface real errors as real errors.
-      setError(err instanceof Error ? err.message : "Failed to load audit log");
-    } finally {
-      setLoading(false);
-    }
-  }, [flavorOrGlobal, eventType, fromIso, toIso, offset]);
-
-  useEffect(() => {
-    void reload();
-  }, [reload]);
+      }),
+  );
+  const rows: MCPPolicyAuditLog[] | null = audit.data ?? null;
+  const loading = audit.loading;
+  const error =
+    audit.error === null
+      ? null
+      : audit.error instanceof Error
+        ? audit.error.message
+        : "Failed to load audit log";
 
   function toggle(id: string) {
     setExpanded((prev) => {

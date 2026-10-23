@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import { ChevronDown, ChevronRight } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -41,45 +42,37 @@ export function MCPPolicyResolvePanel({
   });
   const [serverUrl, setServerUrl] = useState("");
   const [serverName, setServerName] = useState("");
-  const [result, setResult] = useState<MCPPolicyResolveResult | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
 
   const debouncedUrl = useDebouncedValue(serverUrl, RESOLVE_DEBOUNCE_MS);
   const debouncedName = useDebouncedValue(serverName, RESOLVE_DEBOUNCE_MS);
 
-  useEffect(() => {
-    if (!expanded) return;
-    if (!debouncedUrl.trim() || !debouncedName.trim()) {
-      setResult(null);
-      setError(null);
-      return;
-    }
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
+  // Resolve for the debounced URL + name while the panel is expanded.
+  // The previous result stays while the next one loads; a failure
+  // clears it.
+  const resolveUrl = debouncedUrl.trim();
+  const resolveName = debouncedName.trim();
+  const resolveKey =
+    expanded && resolveUrl && resolveName ? JSON.stringify([flavor ?? null, resolveUrl, resolveName]) : null;
+  const resolve = useKeyedFetch(resolveKey, () =>
     resolveMCPPolicy({
       flavor: flavor ?? undefined,
-      server_url: debouncedUrl.trim(),
-      server_name: debouncedName.trim(),
-    })
-      .then((res) => {
-        if (cancelled) return;
-        setResult(res);
-      })
-      .catch((err: unknown) => {
-        if (cancelled) return;
-        setResult(null);
-        setError(err instanceof Error ? err.message : "Resolve failed");
-      })
-      .finally(() => {
-        if (cancelled) return;
-        setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [debouncedUrl, debouncedName, flavor, expanded]);
+      server_url: resolveUrl,
+      server_name: resolveName,
+    }),
+  );
+  // "Clear" hides the current preview at once, before the cleared
+  // inputs' debounce settles and the key becomes null.
+  const [clearedKey, setClearedKey] = useState<string | null>(null);
+  const hidden = resolveKey !== null && resolveKey === clearedKey;
+  const result: MCPPolicyResolveResult | null =
+    resolveKey === null || hidden || resolve.error !== null ? null : (resolve.data ?? null);
+  const error =
+    hidden || resolve.error === null
+      ? null
+      : resolve.error instanceof Error
+        ? resolve.error.message
+        : "Resolve failed";
+  const loading = resolve.loading;
 
   function toggleExpanded() {
     const next = !expanded;
@@ -166,8 +159,7 @@ export function MCPPolicyResolvePanel({
               onClick={() => {
                 setServerUrl("");
                 setServerName("");
-                setResult(null);
-                setError(null);
+                setClearedKey(resolveKey);
               }}
               disabled={!serverUrl && !serverName}
               data-testid={`mcp-policy-resolve-panel-clear-${scopeKey}`}

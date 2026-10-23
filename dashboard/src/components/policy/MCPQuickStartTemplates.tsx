@@ -3,6 +3,7 @@
 // operator hasn't applied a template on this scope this session
 // (per-scope ephemeral flag in useMCPQuickStartStore).
 
+import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import { useEffect, useRef, useState } from "react";
 import { AlertTriangle, BookOpen, ChevronDown } from "lucide-react";
 
@@ -38,9 +39,20 @@ export function MCPQuickStartTemplates({
   const markApplied = useMCPQuickStartStore((s) => s.markApplied);
 
   const [open, setOpen] = useState(false);
-  const [templates, setTemplates] = useState<MCPPolicyTemplate[] | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  // Set by the first open and never cleared, so the list is fetched
+  // once per mount rather than on every open.
+  const [templatesRequested, setTemplatesRequested] = useState(false);
+  const templatesFetch = useKeyedFetch(templatesRequested ? "templates" : null, () =>
+    listMCPPolicyTemplates(),
+  );
+  const templates: MCPPolicyTemplate[] | null = templatesFetch.data ?? null;
+  const loading = templatesFetch.loading;
+  const error =
+    templatesFetch.error === null
+      ? null
+      : templatesFetch.error instanceof Error
+        ? templatesFetch.error.message
+        : "Failed to load templates";
 
   const [applyingName, setApplyingName] = useState<string | null>(null);
   const [applyError, setApplyError] = useState<string | null>(null);
@@ -64,20 +76,6 @@ export function MCPQuickStartTemplates({
     return () => document.removeEventListener("mousedown", handleMouseDown);
   }, [open]);
 
-  // Lazy-load templates only on first open. Keeps the empty-state
-  // render cheap — one HTTP roundtrip per session instead of one
-  // per render.
-  useEffect(() => {
-    if (!open || templates !== null || loading) return;
-    setLoading(true);
-    setError(null);
-    listMCPPolicyTemplates()
-      .then((list) => setTemplates(list))
-      .catch((err) =>
-        setError(err instanceof Error ? err.message : "Failed to load templates"),
-      )
-      .finally(() => setLoading(false));
-  }, [open, templates, loading]);
 
   // Visibility gates.
   if (entryCount > 0) return null;
@@ -112,7 +110,12 @@ export function MCPQuickStartTemplates({
     >
       <button
         type="button"
-        onClick={() => setOpen((v) => !v)}
+        onClick={() => {
+          setOpen((v) => !v);
+          // Lazy-load templates on first open; keeps the empty-state
+          // render cheap.
+          setTemplatesRequested(true);
+        }}
         className={cn(
           "inline-flex items-center gap-1.5 text-[13px] font-medium",
           "underline decoration-dotted underline-offset-2",

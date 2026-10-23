@@ -44,16 +44,22 @@ export function CommandPalette({
   const inputRef = useRef<HTMLInputElement>(null);
   const { results, loading, error } = useSearch(query);
 
-  // Reset state when opening/closing
-  useEffect(() => {
+  // Reset state when the palette opens (adjusted during render, keyed
+  // on ``open``), then focus the input once the dialog has painted.
+  const [openSeen, setOpenSeen] = useState(open);
+  if (open !== openSeen) {
+    setOpenSeen(open);
     if (open) {
       setQuery("");
       setFocusedIndex(0);
-      // Focus input after dialog opens
-      requestAnimationFrame(() => {
-        inputRef.current?.focus();
-      });
     }
+  }
+  useEffect(() => {
+    if (!open) return;
+    const frame = requestAnimationFrame(() => {
+      inputRef.current?.focus();
+    });
+    return () => cancelAnimationFrame(frame);
   }, [open]);
 
   // Global keyboard shortcut: Cmd+K / Ctrl+K
@@ -123,10 +129,12 @@ export function CommandPalette({
     }
   }
 
-  // Reset focused index when results change
-  useEffect(() => {
+  // Reset focused index when results change (adjusted during render).
+  const [resultsSeen, setResultsSeen] = useState(results);
+  if (results !== resultsSeen) {
+    setResultsSeen(results);
     setFocusedIndex(0);
-  }, [results]);
+  }
 
   const showNoResults =
     query.length >= 2 && !loading && results && totalItems === 0;

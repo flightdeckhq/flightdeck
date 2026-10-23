@@ -1,4 +1,5 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useCallback } from "react";
+import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import {
   BrowserRouter,
   Routes,
@@ -270,42 +271,28 @@ function EventDetailDrawerHost() {
     rawSession !== null &&
     EVENT_DRAWER_ID_RE.test(rawEvent) &&
     EVENT_DRAWER_ID_RE.test(rawSession);
-  const [event, setEvent] = useState<AgentEvent | null>(null);
-  // ``notFound`` is true when the fetch returned a page (possibly
-  // with has_more) but the target event id was absent. Used to
-  // render an explicit empty state rather than an invisible drawer.
-  const [notFound, setNotFound] = useState(false);
-
-  useEffect(() => {
-    if (!active || !rawSession || !rawEvent) {
-      setEvent(null);
-      setNotFound(false);
-      return;
-    }
-    const controller = new AbortController();
-    setNotFound(false);
+  const requestKey = active ? `${rawSession}|${rawEvent}` : null;
+  const lookup = useKeyedFetch(requestKey, (signal) =>
     fetchBulkEvents(
       {
         from: EVENT_DRAWER_FETCH_FROM,
-        session_id: rawSession,
+        session_id: rawSession ?? "",
         limit: EVENT_DRAWER_FETCH_LIMIT,
       },
-      controller.signal,
-    )
-      .then((resp) => {
-        if (controller.signal.aborted) return;
-        const hit = resp.events.find((e) => e.id === rawEvent) ?? null;
-        setEvent(hit);
-        setNotFound(hit === null);
-      })
-      .catch(() => {
-        if (!controller.signal.aborted) {
-          setEvent(null);
-          setNotFound(true);
-        }
-      });
-    return () => controller.abort();
-  }, [active, rawSession, rawEvent]);
+      signal,
+    ),
+  );
+  const settled = requestKey !== null && !lookup.loading && lookup.dataKey === requestKey;
+  const event: AgentEvent | null =
+    settled && lookup.error === null
+      ? (lookup.data?.events.find((e) => e.id === rawEvent) ?? null)
+      : null;
+  // ``notFound`` is true when the fetch returned a page (possibly
+  // with has_more) but the target event id was absent, or the fetch
+  // failed. Used to render an explicit empty state rather than an
+  // invisible drawer.
+  const notFound =
+    requestKey !== null && !lookup.loading && (lookup.error !== null || (settled && event === null));
 
   const close = useCallback(() => {
     setSearchParams(

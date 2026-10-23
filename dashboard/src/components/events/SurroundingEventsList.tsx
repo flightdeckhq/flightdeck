@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useMemo } from "react";
+import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import { fetchBulkEvents } from "@/lib/api";
 import { getBadge, getEventDetail } from "@/lib/events";
 import type { AgentEvent } from "@/lib/types";
@@ -35,46 +36,44 @@ export function SurroundingEventsList({
   onSelect,
   window: windowSize = DEFAULT_WINDOW,
 }: SurroundingEventsListProps) {
-  const [events, setEvents] = useState<AgentEvent[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    setEvents(null);
-    setError(null);
-    const limit = windowSize * 4 + 1;
+  // Keyed on the session and window size; the anchor only selects the
+  // slice, so switching anchors within a session reuses the fetch.
+  const requestKey = `${event.session_id}|${windowSize}`;
+  const fetched = useKeyedFetch(requestKey, () =>
     fetchBulkEvents({
       from: "1970-01-01T00:00:00Z",
       session_id: event.session_id,
-      limit,
-    })
-      .then((resp) => {
-        if (cancelled) return;
-        const sorted = [...resp.events].sort(
-          (a, b) =>
-            new Date(a.occurred_at).getTime() - new Date(b.occurred_at).getTime(),
-        );
-        const idx = sorted.findIndex((e) => e.id === event.id);
-        if (idx === -1) {
-          // Anchor not in the returned page (rare — happens when the
-          // session has many more events than our limit and the
-          // anchor is mid-history). Show whatever we got centered
-          // around the most recent N.
-          setEvents(sorted.slice(-(windowSize * 2 + 1)));
-          return;
-        }
-        const lo = Math.max(0, idx - windowSize);
-        const hi = Math.min(sorted.length, idx + windowSize + 1);
-        setEvents(sorted.slice(lo, hi));
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : "fetch failed");
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [event.id, event.session_id, windowSize]);
+      limit: windowSize * 4 + 1,
+    }).then((resp) =>
+      [...resp.events].sort(
+        (a, b) => new Date(a.occurred_at).getTime() - new Date(b.occurred_at).getTime(),
+      ),
+    ),
+  );
+  const error =
+    fetched.error === null
+      ? null
+      : fetched.error instanceof Error
+        ? fetched.error.message
+        : "fetch failed";
+  // Only this session's list is shown; another session's never stands
+  // in while the new one loads.
+  const sorted =
+    !fetched.loading && error === null && fetched.dataKey === requestKey ? fetched.data : undefined;
+  const events = useMemo<AgentEvent[] | null>(() => {
+    if (!sorted) return null;
+    const idx = sorted.findIndex((e) => e.id === event.id);
+    if (idx === -1) {
+      // Anchor not in the returned page (rare — happens when the
+      // session has many more events than our limit and the
+      // anchor is mid-history). Show whatever we got centered
+      // around the most recent N.
+      return sorted.slice(-(windowSize * 2 + 1));
+    }
+    const lo = Math.max(0, idx - windowSize);
+    const hi = Math.min(sorted.length, idx + windowSize + 1);
+    return sorted.slice(lo, hi);
+  }, [sorted, event.id, windowSize]);
 
   if (error) {
     return (

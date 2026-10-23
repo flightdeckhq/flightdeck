@@ -140,7 +140,7 @@ dev = [
     # MCP server subprocess. Both share this dev install. The framework
     # lane stays on mcp 1.x because CrewAI and langchain-mcp-adapters pin
     # it; the SDK-majors CI lane tests mcp 2.x.
-    "mcp>=1.20,<2",
+    "mcp>=1.20,<3",
 ]
 
 [tool.hatch.build.targets.wheel]

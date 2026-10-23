@@ -66,12 +66,17 @@ vi.mock("@/hooks/useSession", () => ({
 // returns the per-test list. The zustand selector shape is a
 // function that receives the state and returns a slice.
 vi.mock("@/store/fleet", () => ({
-  useFleetStore: (selector: (state: unknown) => unknown) =>
-    selector({
-      customDirectives: mockCustomDirectives,
-      shuttingDown: new Set<string>(),
-      markShuttingDown: () => {},
-    }),
+  useFleetStore: Object.assign(
+    (selector: (state: unknown) => unknown) =>
+      selector({
+        customDirectives: mockCustomDirectives,
+        shuttingDown: new Set<string>(),
+        markShuttingDown: () => {},
+      }),
+    // The drawer subscribes for live mcp_server_attached events; the
+    // mocked store never emits, so subscribing is a no-op.
+    { subscribe: () => () => {} },
+  ),
 }));
 
 vi.mock("@/lib/api", () => ({

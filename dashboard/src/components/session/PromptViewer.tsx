@@ -1,4 +1,5 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
+import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { fetchEventContent } from "@/lib/api";
 import { getProvider } from "@/lib/models";
@@ -94,35 +95,18 @@ function RoleBadge({ role }: { role: string }) {
 /* ---- Main component ---- */
 
 export function PromptViewer({ eventId }: PromptViewerProps) {
-  const [content, setContent] = useState<EventContent | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [notFound, setNotFound] = useState(false);
   const [responseMode, setResponseMode] = useState<"pretty" | "raw">("pretty");
 
-  useEffect(() => {
-    if (!eventId) {
-      setContent(null);
-      setNotFound(false);
-      return;
-    }
-
-    let cancelled = false;
-    setLoading(true);
-    setNotFound(false);
-    setContent(null);
-
-    fetchEventContent(eventId).then((result) => {
-      if (cancelled) return;
-      setLoading(false);
-      if (result === null) {
-        setNotFound(true);
-      } else {
-        setContent(result);
-      }
-    });
-
-    return () => { cancelled = true; };
-  }, [eventId]);
+  // fetchEventContent resolves null when the content does not exist
+  // (capture off for the session). Only this event's result is shown;
+  // a failed request ends the spinner and renders nothing.
+  const contentFetch = useKeyedFetch<EventContent | null>(eventId || null, () =>
+    fetchEventContent(eventId ?? ""),
+  );
+  const current = contentFetch.dataKey === eventId && contentFetch.error === null;
+  const loading = contentFetch.loading;
+  const notFound = current && contentFetch.data === null;
+  const content: EventContent | null = current ? (contentFetch.data ?? null) : null;
 
   if (!eventId) return null;
 

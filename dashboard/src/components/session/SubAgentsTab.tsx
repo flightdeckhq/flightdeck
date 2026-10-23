@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import type { AgentEvent, Session, SessionDetail, SessionListItem, SubagentMessage } from "@/lib/types";
 import { fetchEventContent, fetchSession, fetchSessions } from "@/lib/api";
@@ -160,56 +161,33 @@ function SpawnedFromSection({
   // mini-timeline limit) so the inline preview shows what the
   // parent has been doing without forcing the user to navigate
   // away from this drawer.
-  const [parent, setParent] = useState<Session | null>(null);
-  const [parentEvents, setParentEvents] = useState<AgentEvent[] | null>(null);
-  const [headerLoading, setHeaderLoading] = useState(true);
-  const [eventsLoading, setEventsLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
+  // Set by the first expand and never cleared, so collapsing and
+  // re-expanding reuses the fetched events instead of re-fetching.
+  const [eventsRequested, setEventsRequested] = useState(false);
 
-  // Fetch the parent header (just the session row; events stay
-  // unfetched until the user expands the card so we don't pay the
-  // events-list cost up front).
-  useEffect(() => {
-    setHeaderLoading(true);
-    let cancelled = false;
-    fetchSession(parentSessionId, 1)
-      .then((d) => {
-        if (!cancelled) setParent(d.session);
-      })
-      .catch(() => {
-        if (!cancelled) setParent(null);
-      })
-      .finally(() => {
-        setHeaderLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [parentSessionId]);
+  // The parent header (just the session row; events stay unfetched
+  // until the user expands the card so we don't pay the events-list
+  // cost up front). A failed fetch reads as "parent not yet known".
+  const header = useKeyedFetch(parentSessionId, () => fetchSession(parentSessionId, 1));
+  const headerLoading = header.loading;
+  const parent =
+    header.dataKey === parentSessionId && header.error === null
+      ? (header.data?.session ?? null)
+      : null;
 
-  // Lazy-fetch parent events on first expand. Cached for the
-  // lifetime of this component instance so collapse → re-expand
-  // doesn't re-fetch.
-  useEffect(() => {
-    if (!expanded || parentEvents !== null) return;
-    setEventsLoading(true);
-    let cancelled = false;
-    fetchSession(parentSessionId)
-      .then((d) => {
-        if (!cancelled) setParentEvents(d.events);
-      })
-      .catch(() => {
-        if (!cancelled) setParentEvents([]);
-      })
-      .finally(() => {
-        // Always clear loading even if cancelled — see MessagePreview
-        // for the React-18-strict-mode rationale on this pattern.
-        setEventsLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [expanded, parentEvents, parentSessionId]);
+  // Parent events, fetched on first expand. A failure shows as no events.
+  const eventsFetch = useKeyedFetch(eventsRequested ? parentSessionId : null, () =>
+    fetchSession(parentSessionId),
+  );
+  const parentEvents: AgentEvent[] | null = !eventsRequested
+    ? null
+    : eventsFetch.error !== null
+      ? []
+      : eventsFetch.dataKey === parentSessionId
+        ? (eventsFetch.data?.events ?? [])
+        : null;
+  const eventsLoading = eventsFetch.loading;
 
   return (
     <Section title="Spawned from" testId="sub-agents-spawned-from">
@@ -229,7 +207,10 @@ function SpawnedFromSection({
         <ExpandableSessionCard
           headerTestId="sub-agents-spawned-from-card"
           expanded={expanded}
-          onToggleExpand={() => setExpanded((v) => !v)}
+          onToggleExpand={() => {
+            setExpanded((v) => !v);
+            setEventsRequested(true);
+          }}
           onOpenSession={() => onOpenSession(parent.session_id)}
           sessionIdLinkTestId="sub-agents-spawned-from-link"
           chevronToggleTestId="sub-agents-spawned-from-toggle"
@@ -672,32 +653,22 @@ function ChildRow({
   // so the previews render off the same payload shape the parent
   // view above uses for its own session AND the events list that
   // drives the inline mini-timeline + metrics summary.
-  const [detail, setDetail] = useState<SessionDetail | null>(null);
-  const [loading, setLoading] = useState(false);
   const [expanded, setExpanded] = useState(false);
-
-  useEffect(() => {
-    if (!expanded || detail !== null) return;
-    setLoading(true);
-    let cancelled = false;
-    fetchSession(child.session_id)
-      .then((d) => {
-        if (!cancelled) setDetail(d);
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setDetail({ session: child as unknown as Session, events: [] });
-        }
-      })
-      .finally(() => {
-        // Clear loading unconditionally — see MessagePreview for
-        // the same React-18-strict-mode rationale.
-        setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [expanded, detail, child.session_id, child]);
+  // Set by the first expand and never cleared, so collapsing and
+  // re-expanding reuses the fetched detail instead of re-fetching.
+  const [detailRequested, setDetailRequested] = useState(false);
+  const detailFetch = useKeyedFetch(detailRequested ? child.session_id : null, () =>
+    fetchSession(child.session_id),
+  );
+  // A failed fetch falls back to the list row with no events.
+  const detail: SessionDetail | null = !detailRequested
+    ? null
+    : detailFetch.error !== null
+      ? { session: child as unknown as Session, events: [] }
+      : detailFetch.dataKey === child.session_id
+        ? (detailFetch.data ?? null)
+        : null;
+  const loading = detailFetch.loading;
 
   const events = detail?.events ?? [];
   const incoming = events.find((e) => e.event_type === "session_start")
@@ -711,7 +682,10 @@ function ChildRow({
     <ExpandableSessionCard
       headerTestId={`sub-agents-child-${child.session_id}`}
       expanded={expanded}
-      onToggleExpand={() => setExpanded((v) => !v)}
+      onToggleExpand={() => {
+        setExpanded((v) => !v);
+        setDetailRequested(true);
+      }}
       onOpenSession={() => onOpenSession(child.session_id)}
       sessionIdLinkTestId={`sub-agents-child-open-${child.session_id}`}
       chevronToggleTestId={`sub-agents-child-toggle-${child.session_id}`}
@@ -826,53 +800,27 @@ function MessagePreview({
   testId: string;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const [overflowBody, setOverflowBody] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  // Set by the first expand and never cleared, so collapsing and
+  // re-expanding reuses the fetched body instead of re-fetching.
+  const [bodyRequested, setBodyRequested] = useState(false);
 
   // Lazy-fetch the overflow body only on expand. Inline messages
   // (has_content=false) skip this entirely; the inline string is
   // already in ``message.message``. The 200-char preview always
   // truncates from the inline copy when present, falling back to
   // the fetched body when the inline is empty (overflow case
-  // pre-expand).
-  //
-  // No ``alive`` cleanup flag — under React 18 strict mode the
-  // double-invoke pattern would set ``alive = false`` on the first
-  // cleanup, dropping the .finally setLoading(false) for the first
-  // fetch. The second invocation's fetch eventually fires but the
-  // visible state was momentarily stuck on "Loading…", which broke
-  // the unit test environment. Letting both writes land is benign
-  // — the second one wins, and React's strict-mode contract is
-  // explicitly that effects must be idempotent under double-invoke.
-  useEffect(() => {
-    if (!expanded || !message.has_content || overflowBody !== null) return;
-    setLoading(true);
-    let cancelled = false;
-    fetchEventContent(eventId)
-      .then((c) => {
-        if (cancelled) return;
-        const raw = c?.input;
-        const text =
-          typeof raw === "string"
-            ? raw
-            : raw == null
-              ? ""
-              : JSON.stringify(raw, null, 2);
-        setOverflowBody(text);
-      })
-      .catch(() => {
-        if (!cancelled) setOverflowBody("");
-      })
-      .finally(() => {
-        // Always clear loading, even if cancelled — the alternative
-        // strands the spinner on a remounted component whose state
-        // is otherwise current.
-        setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [expanded, message.has_content, eventId, overflowBody]);
+  // pre-expand). A failed fetch shows an empty body.
+  const bodyFetch = useKeyedFetch(
+    bodyRequested && message.has_content ? eventId : null,
+    async () => {
+      const c = await fetchEventContent(eventId);
+      const raw = c?.input;
+      return typeof raw === "string" ? raw : raw == null ? "" : JSON.stringify(raw, null, 2);
+    },
+  );
+  const overflowBody: string | null =
+    bodyFetch.error !== null ? "" : bodyFetch.dataKey === eventId ? (bodyFetch.data ?? null) : null;
+  const loading = bodyFetch.loading;
 
   // Inline body when small; overflow placeholder otherwise. The
   // preview is whichever string we have, truncated. The wire
@@ -925,7 +873,10 @@ function MessagePreview({
         {previewIsTruncated && (
           <button
             type="button"
-            onClick={() => setExpanded((v) => !v)}
+            onClick={() => {
+              setExpanded((v) => !v);
+              setBodyRequested(true);
+            }}
             data-testid={`${testId}-expand`}
             style={{
               marginLeft: "auto",

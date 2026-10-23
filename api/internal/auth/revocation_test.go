@@ -55,6 +55,49 @@ func TestInvalidate_DropsOnlyTheRevokedToken(t *testing.T) {
 	}
 }
 
+// blockingDB holds the ftd_ lookup until release is closed, so a test
+// can revoke a token while a validation of it is mid-query.
+type blockingDB struct {
+	*fakeDB
+	started chan struct{}
+	release chan struct{}
+}
+
+func (b *blockingDB) Query(ctx context.Context, sql string, args ...any) (pgxRows, error) {
+	close(b.started)
+	<-b.release
+	return b.fakeDB.Query(ctx, sql, args...)
+}
+
+// A lookup that read the token row before it was deleted must not
+// cache its (now stale) Valid result once the revocation has been
+// processed; otherwise the revoked token would be accepted from the
+// cache for a full cacheTTL.
+func TestInvalidate_DuringLookupKeepsStaleResultOutOfCache(t *testing.T) {
+	salt := "dddddddddddddddddddddddddddddddd"
+	raw := "ftd_a3f8b00b1234567890abcdef01234567"
+	db := &blockingDB{
+		fakeDB:  &fakeDB{ftdCandidates: [][4]string{{"token-d", "D", hashWithSalt(salt, raw), salt}}},
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	v := newValidatorWithDB(db, envFn(""))
+
+	done := make(chan ValidationResult, 1)
+	go func() {
+		res, _ := v.Validate(context.Background(), raw)
+		done <- res
+	}()
+	<-db.started
+	v.Invalidate("token-d")
+	close(db.release)
+	<-done
+
+	if n := cachedIDs(v)["token-d"]; n != 0 {
+		t.Fatalf("stale validation cached after the token was revoked (%d entries)", n)
+	}
+}
+
 func TestFlush_ClearsEveryEntry(t *testing.T) {
 	salt := "cccccccccccccccccccccccccccccccc"
 	raw := "ftd_a3f8b00b1234567890abcdef01234567"
@@ -83,19 +126,24 @@ func TestListenRevocations_DeletedRowStopsCachedToken(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	pool, err := pgxpool.New(ctx, dsn)
-	if err != nil || pool.Ping(ctx) != nil {
+	if err != nil {
 		cancel()
 		t.Skipf("postgres unavailable, skipping DB test: %v", err)
 	}
-	// Cleanups run last-in first-out: the listener is stopped (and has
-	// returned its pooled connection) before the pool closes, which
-	// would otherwise wait for that connection forever.
+	if pingErr := pool.Ping(ctx); pingErr != nil {
+		pool.Close()
+		cancel()
+		t.Skipf("postgres unavailable, skipping DB test: %v", pingErr)
+	}
+	// Cleanups run last-in first-out: the listener stops before the row
+	// cleanup and the pool close.
 	t.Cleanup(pool.Close)
 
-	secret := make([]byte, 16)
+	secret, saltBytes := make([]byte, 16), make([]byte, 16)
 	_, _ = rand.Read(secret)
+	_, _ = rand.Read(saltBytes)
 	raw := "ftd_" + hex.EncodeToString(secret)
-	salt := hex.EncodeToString(secret[:8]) + hex.EncodeToString(secret[8:])
+	salt := hex.EncodeToString(saltBytes)
 	var id string
 	if err := pool.QueryRow(ctx,
 		`INSERT INTO access_tokens (name, token_hash, salt, prefix)

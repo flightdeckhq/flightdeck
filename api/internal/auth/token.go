@@ -110,7 +110,13 @@ type Validator struct {
 	db    dbQuerier
 	cache map[string]cacheEntry
 	mu    sync.RWMutex
-	env   envLookup
+	// generation counts cache invalidations (Invalidate, Flush). A
+	// lookup that missed the cache records it before querying the
+	// database and caches its result only if no invalidation happened
+	// meanwhile, so a revocation that lands while the query is in
+	// flight cannot be overwritten by the stale result.
+	generation uint64
+	env        envLookup
 	// onListening, when set (tests only), runs each time the revocation
 	// listener has issued LISTEN and flushed the cache.
 	onListening func()
@@ -144,6 +150,7 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (ValidationRe
 
 	v.mu.RLock()
 	entry, found := v.cache[cacheKey(rawToken)]
+	generation := v.generation
 	v.mu.RUnlock()
 	if found && time.Since(entry.validAt) < cacheTTL {
 		return entry.result, nil
@@ -156,10 +163,12 @@ func (v *Validator) Validate(ctx context.Context, rawToken string) (ValidationRe
 
 	if result.Valid || result.Reason != "" {
 		v.mu.Lock()
-		if len(v.cache) >= cacheMaxSize {
-			v.evictOldest()
+		if v.generation == generation {
+			if len(v.cache) >= cacheMaxSize {
+				v.evictOldest()
+			}
+			v.cache[cacheKey(rawToken)] = cacheEntry{result: result, validAt: time.Now()}
 		}
-		v.cache[cacheKey(rawToken)] = cacheEntry{result: result, validAt: time.Now()}
 		v.mu.Unlock()
 	}
 

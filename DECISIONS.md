@@ -11364,8 +11364,13 @@ channel. The ingestion API and the query API each run a listener that
 removes every cached validation for that token id. On every (re)connect
 the listener clears the whole cache before it starts reading, because
 NOTIFY is not delivered to a connection that was not listening when it
-fired. The 60-second validation cache (D048) stays as the fallback when
-a process cannot listen.
+fired. Each invalidation bumps a generation counter that a validation
+records before querying the database; its result is cached only if the
+counter is unchanged, so a lookup in flight when the revocation lands
+cannot re-cache the revoked token. The listener uses a dedicated
+connection rather than one held out of the request pool. The 60-second
+validation cache (D048) stays as the fallback when a process cannot
+listen.
 
 **Reasoning:** An external report showed that revoking a token by
 deleting its row, as D095 describes, left it usable for up to 60

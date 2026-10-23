@@ -2515,18 +2515,26 @@ plaintext; at most 1000 entries, each trusted for 60 seconds) so repeat
 clients do not hit Postgres on every request. Unknown tokens are never
 cached, so a newly created token works at once.
 
-Revocation is immediate on every replica of both services. Deleting an
-`access_tokens` row, through `DELETE /v1/access-tokens/:id` or directly
-in SQL, fires the `access_tokens_notify_revoked` trigger, which sends the
-token id on the `flightdeck_access_token_revoked` NOTIFY channel. Each
-service process holds a LISTEN connection on that channel and drops the
-cached validations for that id when the notification arrives. A NOTIFY is
-not queued for a listener that is not connected, so each process clears
-its whole cache every time its LISTEN connection is (re)established; a
-revocation that happens while a listener is down therefore never outlives
-the reconnect. The 60-second limit is the last backstop: if a process
-cannot reach Postgres to listen, a revoked token it has cached is accepted
-for at most 60 seconds.
+Revocation reaches every replica of both services as soon as the delete
+commits. Deleting an `access_tokens` row, through
+`DELETE /v1/access-tokens/:id` or directly in SQL, fires the
+`access_tokens_notify_revoked` trigger, which sends the token id on the
+`flightdeck_access_token_revoked` NOTIFY channel when the transaction
+commits. Each service process holds a dedicated LISTEN connection (outside
+its request pool) on that channel and drops the cached validations for
+that id when the notification arrives. Every invalidation also bumps a
+generation counter; a validation that was already querying the database
+when the revocation arrived caches its result only if the counter has not
+moved, so a lookup that read the row just before the delete cannot put
+the revoked token back into the cache. A NOTIFY is not queued for a
+listener that is not connected, so each process clears its whole cache
+every time its LISTEN connection is (re)established; a revocation that
+happens while a listener is down never outlives the reconnect. The
+60-second limit is the last backstop: if a process cannot listen, or its
+listen connection dies without the process noticing (a half-open TCP
+connection is only detected by keepalive, after about two and a half
+minutes), a revoked token it has cached is accepted for at most 60
+seconds.
 
 #### Endpoint auth scope
 

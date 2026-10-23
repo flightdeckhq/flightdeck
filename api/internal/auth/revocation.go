@@ -19,6 +19,10 @@ import (
 // without hammering a database that is restarting.
 const revocationReconnectDelay = 2 * time.Second
 
+// closeTimeout bounds closing the listener's connection at shutdown, so
+// an unreachable server cannot hold up the process exit.
+const closeTimeout = 2 * time.Second
+
 // Invalidate drops every cached validation that resolved to the token
 // with the given id. Called when that token's access_tokens row is
 // deleted, so the next request with it is re-checked against the
@@ -26,6 +30,7 @@ const revocationReconnectDelay = 2 * time.Second
 func (v *Validator) Invalidate(tokenID string) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	v.generation++
 	for key, entry := range v.cache {
 		if entry.result.ID == tokenID {
 			delete(v.cache, key)
@@ -37,6 +42,7 @@ func (v *Validator) Invalidate(tokenID string) {
 func (v *Validator) Flush() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	v.generation++
 	v.cache = make(map[string]cacheEntry)
 }
 
@@ -62,20 +68,20 @@ func (v *Validator) ListenRevocations(ctx context.Context, pool *pgxpool.Pool) {
 }
 
 func (v *Validator) listenRevocationsOnce(ctx context.Context, pool *pgxpool.Pool) error {
-	conn, err := pool.Acquire(ctx)
+	// A dedicated connection, not one borrowed from the pool: the
+	// listener holds it for the life of the process, and the pool is
+	// sized for request traffic.
+	conn, err := pgx.ConnectConfig(ctx, pool.Config().ConnConfig.Copy())
 	if err != nil {
-		return fmt.Errorf("acquire conn for LISTEN: %w", err)
+		return fmt.Errorf("connect for LISTEN: %w", err)
 	}
 	channel := pgx.Identifier{store.AccessTokenRevokedChannel}.Sanitize()
 	defer func() {
-		// The caller's ctx is usually cancelled by now; UNLISTEN on a
-		// fresh short context so the pooled connection goes back clean.
-		uctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		// The caller's ctx is usually cancelled by now; close on a fresh
+		// short context so the server side is released promptly.
+		cctx, cancel := context.WithTimeout(context.Background(), closeTimeout)
 		defer cancel()
-		if _, uErr := conn.Exec(uctx, "UNLISTEN "+channel); uErr != nil {
-			slog.Debug("UNLISTEN failed during release", "err", uErr)
-		}
-		conn.Release()
+		_ = conn.Close(cctx)
 	}()
 
 	if _, err := conn.Exec(ctx, "LISTEN "+channel); err != nil {
@@ -88,7 +94,7 @@ func (v *Validator) listenRevocationsOnce(ctx context.Context, pool *pgxpool.Poo
 	slog.Info("listening for token revocations", "channel", store.AccessTokenRevokedChannel)
 
 	for {
-		n, err := conn.Conn().WaitForNotification(ctx)
+		n, err := conn.WaitForNotification(ctx)
 		if err != nil {
 			return fmt.Errorf("wait for notification: %w", err)
 		}

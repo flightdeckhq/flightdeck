@@ -24,8 +24,11 @@ jobs:
   # an unfixable finding cannot be acted on by bumping) and on a base
   # image whose OS has reached end of life (--exit-on-eol). Trivy runs
   # from its official image pinned by digest rather than through a
-  # third-party action. publish-sensor waits for this job, so a failing
-  # scan publishes nothing to PyPI or Docker Hub.
+  # third-party action; Dependabot does not see a pin inside a run:
+  # script, so bump it by hand. publish-sensor waits for this job, so a
+  # failing scan publishes nothing to PyPI or Docker Hub. publish-docker
+  # rebuilds the images from the same commit minutes later rather than
+  # reusing these.
   scan-images:
     name: Scan Docker images
     runs-on: ubuntu-24.04
@@ -75,12 +78,15 @@ jobs:
           tags: flightdeck-dashboard:scan
 
       - name: Scan images
-        # Scans every image before failing, so one run reports all findings.
+        # Scans every image before failing, so one run reports all
+        # findings. The trivy-cache volume keeps the vulnerability DB
+        # from being downloaded once per image.
         run: |
           failed=""
           for image in ingestion workers api dashboard; do
             echo "::group::flightdeck-$image"
             docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+              -v trivy-cache:/root/.cache \
               aquasec/trivy:0.75.0@sha256:af6acf9a6b85dfe389a1941505c0ce9efef52a4719635e1a962f022a3d855daa \
               image --quiet --severity HIGH,CRITICAL --ignore-unfixed \
               --exit-code 1 --exit-on-eol 1 "flightdeck-$image:scan" \

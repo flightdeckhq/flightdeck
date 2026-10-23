@@ -44,15 +44,20 @@ The script:
 
 Pushing the tag triggers `.github/workflows/release.yml`, which:
 
-- **Job 1 -- Publish sensor to PyPI:** Builds the wheel and sdist,
+- **Job 1 -- Scan Docker images:** Builds the four images without
+  pushing them and scans each with Trivy. The release stops here, before
+  anything is published, if an image has a HIGH or CRITICAL
+  vulnerability with a fixed version available or a base image whose OS
+  has reached end of life. The job log names each failing image.
+- **Job 2 -- Publish sensor to PyPI:** Builds the wheel and sdist,
   publishes via OIDC trusted publishing (no API key stored)
-- **Job 2 -- Build and push Docker images:** Builds and pushes four
+- **Job 3 -- Build and push Docker images:** Builds and pushes four
   images to Docker Hub under the `flightdeckhq` org:
   - `flightdeckhq/flightdeck-ingestion`
   - `flightdeckhq/flightdeck-workers`
   - `flightdeckhq/flightdeck-api`
   - `flightdeckhq/flightdeck-dashboard`
-- **Job 3 -- Create GitHub release:** Auto-generates release notes
+- **Job 4 -- Create GitHub release:** Auto-generates release notes
 
 ### 3. Verify
 
@@ -72,6 +77,10 @@ If the release pipeline fails mid-way:
    version (e.g. v0.1.1).
 
 2. **Nothing published:** Fix the issue, delete the tag, re-tag, re-push.
+   A failed image scan always lands here. The fix is usually a newer
+   base image (`alpine`, `nginx`) or Go toolchain in the failing
+   image's Dockerfile, or a dependency bump for a finding in the Go
+   binary; the scan job's log names the package and the fixed version.
 
 3. **Everything published but release notes wrong:** Edit the GitHub
    release manually.

@@ -6,13 +6,24 @@
 #   caught and yanked; the same two-week floor applies to hand-picked
 #   pins (action SHAs, base-image digests).
 # - Minor and patch updates are grouped into one PR per ecosystem;
-#   majors arrive one PR each, because they are where breaking changes
-#   live and each needs its own review.
+#   majors arrive as separate PRs (one per directory), because they are
+#   where breaking changes live and each needs its own review.
 # - Commit messages follow the repo's conventional-commit rule:
-#   "chore(deps): ...".
+#   "chore(deps): ..." ("chore(deps-dev): ..." for development
+#   dependencies).
+# - Branch moves stay manual, because each one moves several pins
+#   together or needs a migration: nginx and Go minor and major
+#   versions (nginx's odd minors are mainline releases; a Go version
+#   moves with go.mod, CI's setup-go and the compose dev images), and
+#   Node, Postgres and NATS majors (a Postgres major needs a data
+#   migration).
 #
 # Security updates are not subject to the cooldown and arrive as soon
-# as an advisory is published.
+# as an advisory is published (Dependabot security updates are enabled
+# in the repository settings).
+#
+# Not covered: the Trivy image pinned in release.yml's scan step and
+# the image tags in the Helm chart's values; bump those by hand.
 version: 2
 
 updates:
@@ -46,6 +57,13 @@ updates:
     groups:
       docker-minor-patch:
         update-types: [minor, patch]
+    ignore:
+      - dependency-name: nginx
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: golang
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: node
+        update-types: [version-update:semver-major]
     commit-message:
       prefix: chore
       include: scope
@@ -61,6 +79,17 @@ updates:
     groups:
       docker-compose-minor-patch:
         update-types: [minor, patch]
+    ignore:
+      - dependency-name: nginx
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: golang
+        update-types: [version-update:semver-major, version-update:semver-minor]
+      - dependency-name: node
+        update-types: [version-update:semver-major]
+      - dependency-name: postgres
+        update-types: [version-update:semver-major]
+      - dependency-name: nats
+        update-types: [version-update:semver-major]
     commit-message:
       prefix: chore
       include: scope

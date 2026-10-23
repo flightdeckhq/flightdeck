@@ -417,6 +417,13 @@ server.
 
 ### Changed
 
+- **nginx 1.30.** The dashboard image is now built on
+  `nginx:1.30.6-alpine`, pinned by its multi-arch digest, and the
+  Compose edge proxy runs `nginx:1.30-alpine`. Both used 1.25, a branch
+  that stopped receiving security fixes in 2024. The configs work on
+  1.30 unchanged, and the image still passes the production smoke:
+  `runtime-config.json` is never cached, hashed assets carry one
+  immutable `Cache-Control`, and nginx runs as UID 101.
 - **Dashboard data hooks no longer set state synchronously inside
   effects.** A shared `useKeyedFetch` hook derives loading and error
   state from the request key and writes state only when a request

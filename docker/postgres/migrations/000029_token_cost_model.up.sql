@@ -18,13 +18,17 @@ ALTER TABLE events
     ADD COLUMN IF NOT EXISTS model_requested  TEXT,
     ADD COLUMN IF NOT EXISTS model_served     TEXT;
 
--- NOT VALID: every existing row holds NULL in the new columns and so
--- satisfies the checks; skipping the validation scan keeps the
--- migration from reading the whole events table under its lock. New
--- and updated rows are checked.
+-- NOT VALID, deliberately and permanently: every existing row holds
+-- NULL in the new columns and so satisfies the checks, which makes a
+-- VALIDATE CONSTRAINT scan of the whole events table pointless. New and
+-- updated rows are checked. Ingestion validates the same vocabularies
+-- first, so these are a backstop against a direct publisher on the bus.
 ALTER TABLE events
     ADD CONSTRAINT events_billing_mode_check
         CHECK (billing_mode IN ('metered', 'subscription', 'local')) NOT VALID,
+    ADD CONSTRAINT events_provider_check
+        CHECK (provider IN ('anthropic', 'openai', 'google', 'xai', 'mistral',
+                            'meta', 'deepseek', 'other')) NOT VALID,
     ADD CONSTRAINT events_cost_source_check
         CHECK (cost_source IN ('provider', 'agent')) NOT VALID,
     ADD CONSTRAINT events_cost_reported_pair_check

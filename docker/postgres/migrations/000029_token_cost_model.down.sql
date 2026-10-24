@@ -8,6 +8,7 @@ ALTER TABLE events
     DROP CONSTRAINT IF EXISTS events_tokens_reasoning_check,
     DROP CONSTRAINT IF EXISTS events_cost_reported_pair_check,
     DROP CONSTRAINT IF EXISTS events_cost_source_check,
+    DROP CONSTRAINT IF EXISTS events_provider_check,
     DROP CONSTRAINT IF EXISTS events_billing_mode_check;
 
 ALTER TABLE events

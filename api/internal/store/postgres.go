@@ -874,7 +874,7 @@ func (s *Store) GetSessionEvents(ctx context.Context, sessionID string, limit in
 			SELECT id::text, session_id::text, flavor, event_type, model,
 			       tokens_input, tokens_output, tokens_total,
 			       tokens_cache_read, tokens_cache_creation,
-			       `+tokenCostColumns("")+`,
+			       ` + tokenCostColumns("") + `,
 			       latency_ms, tool_name, has_content, payload, occurred_at
 			FROM events
 			WHERE session_id = $1::uuid
@@ -887,7 +887,7 @@ func (s *Store) GetSessionEvents(ctx context.Context, sessionID string, limit in
 			SELECT id::text, session_id::text, flavor, event_type, model,
 			       tokens_input, tokens_output, tokens_total,
 			       tokens_cache_read, tokens_cache_creation,
-			       `+tokenCostColumns("")+`,
+			       ` + tokenCostColumns("") + `,
 			       latency_ms, tool_name, has_content, payload, occurred_at
 			FROM events
 			WHERE session_id = $1::uuid

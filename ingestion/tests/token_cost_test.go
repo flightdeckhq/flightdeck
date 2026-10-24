@@ -92,6 +92,14 @@ func TestEventsHandler_TokenCostFields_Rejections(t *testing.T) {
 		{"negative server tool counter", func(p map[string]any) {
 			p["server_tool_use"] = map[string]any{"web_search_requests": -1}
 		}, "server_tool_use.web_search_requests"},
+		{"huge reasoning", func(p map[string]any) {
+			p["tokens_reasoning"] = 1e30
+			p["tokens_output"] = 1e31
+		}, "tokens_reasoning"},
+		{"cost at the column limit", func(p map[string]any) { p["cost_reported"] = 1_000_000 }, "cost_reported"},
+		{"fractional server tool counter", func(p map[string]any) {
+			p["server_tool_use"] = map[string]any{"web_search_requests": 1.5}
+		}, "server_tool_use.web_search_requests"},
 		{"oversize platform", func(p map[string]any) {
 			p["provider_metadata"] = map[string]any{"platform": strings.Repeat("h", 254)}
 		}, "provider_metadata.platform"},
@@ -121,5 +129,26 @@ func TestEventsHandler_TokenCostFields_SubsetCheckNeedsBothFields(t *testing.T) 
 	payload["tokens_reasoning"] = 10_000
 	if code, body := runEventValidationTest(t, payload); code != http.StatusOK {
 		t.Errorf("expected 200, got %d body=%s", code, body)
+	}
+}
+
+func TestEventsHandler_TokenCostFields_BoundaryValuesAccepted(t *testing.T) {
+	payload := postCallWithTokenCost()
+	payload["cost_reported"] = 999_999.99999999
+	payload["tokens_output"] = float64(1 << 53)
+	payload["tokens_reasoning"] = float64(1 << 53)
+	if code, body := runEventValidationTest(t, payload); code != http.StatusOK {
+		t.Errorf("expected 200, got %d body=%s", code, body)
+	}
+}
+
+// provider_metadata is validated as an object on post_call; a
+// non-object never reaches the platform check.
+func TestEventsHandler_TokenCostFields_ProviderMetadataNotAnObject(t *testing.T) {
+	payload := postCallWithTokenCost()
+	payload["provider_metadata"] = "bedrock"
+	code, body := runEventValidationTest(t, payload)
+	if code != http.StatusBadRequest || !strings.Contains(body, "provider_metadata") {
+		t.Errorf("expected 400 naming provider_metadata, got %d body=%s", code, body)
 	}
 }

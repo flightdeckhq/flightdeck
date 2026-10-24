@@ -41,6 +41,18 @@ var (
 // on the other identity strings an event carries.
 const maxTokenCostStringLen = 256
 
+// maxCostReported is the exclusive upper bound on cost_reported. The
+// column is NUMERIC(14, 8): six integer digits, so a value of one million
+// dollars or more would fail the worker's insert on every redelivery. No
+// single LLM call costs anywhere near that.
+const maxCostReported = 1_000_000
+
+// maxTokenCount bounds token counts and server-tool counters at 2^53,
+// the largest integer a JSON number decoded as float64 holds exactly.
+// The worker decodes these fields into int64; a larger value would
+// either lose precision here or fail its decode.
+const maxTokenCount = 1 << 53
+
 // maxPlatformLen bounds provider_metadata.platform, which is either a
 // fixed label or a hostname: 253 characters is the DNS limit on a fully
 // qualified name, the bound the sensor applies before sending it.
@@ -71,8 +83,8 @@ func validateTokenCostFields(payload map[string]any) string {
 	}
 	if hasCost {
 		n, ok := cost.(float64)
-		if !ok || n < 0 || math.IsInf(n, 0) || math.IsNaN(n) {
-			return "cost_reported must be a non-negative number"
+		if !ok || n < 0 || n >= maxCostReported || math.IsInf(n, 0) || math.IsNaN(n) {
+			return fmt.Sprintf("cost_reported must be a non-negative number below %d", maxCostReported)
 		}
 		if msg := checkEnum("cost_source", source, validCostSources); msg != "" {
 			return msg
@@ -112,7 +124,7 @@ func validateTokenCostFields(payload map[string]any) string {
 			return "server_tool_use must be an object"
 		}
 		for name, count := range counters {
-			if n, isNum := count.(float64); !isNum || n < 0 || n != math.Trunc(n) {
+			if !isCount(count) {
 				return fmt.Sprintf("server_tool_use.%s must be a non-negative integer", name)
 			}
 		}
@@ -141,10 +153,17 @@ func checkCount(payload map[string]any, key string) string {
 	if !ok {
 		return ""
 	}
-	if n, isNum := v.(float64); !isNum || n < 0 || n != math.Trunc(n) {
+	if !isCount(v) {
 		return fmt.Sprintf("%s must be a non-negative integer", key)
 	}
 	return ""
+}
+
+// isCount reports whether a decoded JSON value is a whole number in
+// [0, maxTokenCount].
+func isCount(v any) bool {
+	n, isNum := v.(float64)
+	return isNum && n >= 0 && n <= maxTokenCount && n == math.Trunc(n)
 }
 
 // checkSubset rejects a count that exceeds the total it is a share of,

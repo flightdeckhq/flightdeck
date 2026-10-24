@@ -12,112 +12,119 @@ import { CODING_AGENT, waitForInvestigateReady } from "./_fixtures";
 //     visible with the ``ABORTED`` label and the title attribute
 //     carries abort_reason.
 //
-// Both scenes deep-link into the candidate session via
-// ``?session=<id>`` -- the dashboard's drawer URL param. Sequential
-// row clicks against the drawer overlay are flaky, deep-linking
-// avoids the choreography entirely.
+// Both scenes deep-link into the session via ``?session=<id>`` --
+// the dashboard's drawer URL param. Sequential row clicks against
+// the drawer overlay are flaky, deep-linking avoids the
+// choreography entirely.
+//
+// The session ids are derived deterministically by the seed (uuid5
+// of ``flightdeck-e2e/<agent>/<role>``, see seed.py), and the
+// streaming event's id is read from the API first, so each test
+// waits on the one badge it expects. Probing badge counts before
+// the drawer's events had loaded read as "no badge" and failed
+// under CI load.
+const FRESH_ACTIVE_SESSION_ID = "8660f293-7039-5cae-9f0a-f4c3428f20d6";
+const ERROR_ACTIVE_SESSION_ID = "bff110c2-9605-5359-8161-92b58cb461fe";
+
+// The drawer's default page size; the streaming event has to be
+// inside it to render without "Show older".
+const DRAWER_EVENTS_LIMIT = 100;
+
 test.describe("T15 — Streaming indicators", () => {
   test("happy-path streaming post_call shows STREAM badge with chunk stats", async ({
     page,
   }) => {
-    const sessionIds = await fetchActiveCodingSessionIds(page);
-    expect(sessionIds.length).toBeGreaterThanOrEqual(1);
+    const eventId = await findStreamingEventId(
+      page,
+      FRESH_ACTIVE_SESSION_ID,
+      "completed",
+    );
+    await openDrawer(page, FRESH_ACTIVE_SESSION_ID);
 
-    let asserted = false;
-    for (const sid of sessionIds) {
-      const params = new URLSearchParams({
-        from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-        to: new Date().toISOString(),
-        flavor: CODING_AGENT.flavor,
-        state: "active",
-        session: sid,
-      });
-      await page.goto(`/investigate?${params.toString()}`);
-      await waitForInvestigateReady(page);
-      const drawer = page.locator('[data-testid="session-drawer"]');
-      await expect(drawer).toBeVisible();
-      const happy = drawer.locator('[data-testid^="stream-badge-"]');
-      const aborted = drawer.locator('[data-testid^="stream-aborted-"]');
-      if (
-        (await happy.count()) > 0 &&
-        (await aborted.count()) === 0
-      ) {
-        asserted = true;
-        const first = happy.first();
-        await expect(first).toBeVisible();
-        await expect(first).toHaveText("STREAM");
-        const title = await first.getAttribute("title");
-        expect(title).not.toBeNull();
-        expect(title!).toContain("chunks=42");
-        expect(title!).toContain("p50=25ms");
-        expect(title!).toContain("p95=80ms");
-        expect(title!).toContain("max_gap=150ms");
-        break;
-      }
-    }
-    expect(
-      asserted,
-      "at least one active coding session must carry a happy-path STREAM badge",
-    ).toBe(true);
+    const drawer = page.locator('[data-testid="session-drawer"]');
+    const badge = drawer.locator(`[data-testid="stream-badge-${eventId}"]`);
+    await expect(
+      badge,
+      "fresh-active session must surface a STREAM badge",
+    ).toBeVisible();
+    await expect(badge).toHaveText("STREAM");
+    await expect(badge).toHaveAttribute("title", /chunks=42/);
+    await expect(badge).toHaveAttribute("title", /p50=25ms/);
+    await expect(badge).toHaveAttribute("title", /p95=80ms/);
+    await expect(badge).toHaveAttribute("title", /max_gap=150ms/);
+    await expect(
+      drawer.locator('[data-testid^="stream-aborted-"]'),
+    ).toHaveCount(0);
   });
 
   test("aborted streaming post_call shows ABORTED badge with abort_reason", async ({
     page,
   }) => {
-    // Filter the API directly to the error-active session: state=
-    // active + error_type=rate_limit narrows to error-active only
-    // (recent-closed has rate_limit but is state=closed).
-    const sessionIds = await fetchActiveCodingSessionIds(
+    const eventId = await findStreamingEventId(
       page,
-      "&error_type=rate_limit",
+      ERROR_ACTIVE_SESSION_ID,
+      "aborted",
     );
-    expect(
-      sessionIds.length,
-      "expected exactly one active coding session matching rate_limit (error-active)",
-    ).toBeGreaterThanOrEqual(1);
-
-    const params = new URLSearchParams({
-      from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
-      to: new Date().toISOString(),
-      flavor: CODING_AGENT.flavor,
-      error_type: "rate_limit",
-      state: "active",
-      session: sessionIds[0],
-    });
-    await page.goto(`/investigate?${params.toString()}`);
-    await waitForInvestigateReady(page);
+    await openDrawer(page, ERROR_ACTIVE_SESSION_ID, "rate_limit");
 
     const drawer = page.locator('[data-testid="session-drawer"]');
-    await expect(drawer).toBeVisible();
-
-    const abortedBadge = drawer
-      .locator('[data-testid^="stream-aborted-"]')
-      .first();
+    const badge = drawer.locator(`[data-testid="stream-aborted-${eventId}"]`);
     await expect(
-      abortedBadge,
+      badge,
       "error-active session must surface an ABORTED stream badge",
     ).toBeVisible();
-    await expect(abortedBadge).toHaveText("ABORTED");
-
-    const title = await abortedBadge.getAttribute("title");
-    expect(title).not.toBeNull();
-    expect(title!).toContain("abort_reason=client_aborted");
+    await expect(badge).toHaveText("ABORTED");
+    await expect(badge).toHaveAttribute("title", /abort_reason=client_aborted/);
   });
 });
 
-async function fetchActiveCodingSessionIds(
+async function openDrawer(
   page: Page,
-  extraQs: string = "",
-): Promise<string[]> {
+  sessionId: string,
+  errorType?: string,
+): Promise<void> {
+  const params = new URLSearchParams({
+    from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+    to: new Date().toISOString(),
+    flavor: CODING_AGENT.flavor,
+    ...(errorType ? { error_type: errorType } : {}),
+    session: sessionId,
+  });
+  await page.goto(`/investigate?${params.toString()}`);
+  await waitForInvestigateReady(page);
+  await expect(page.locator('[data-testid="session-drawer"]')).toBeVisible();
+}
+
+/**
+ * Return the id of the session's streaming post_call with the given
+ * final outcome, from the same page of events the drawer loads.
+ */
+async function findStreamingEventId(
+  page: Page,
+  sessionId: string,
+  finalOutcome: "completed" | "aborted",
+): Promise<string> {
   const resp = await page.request.get(
-    `http://localhost:4000/api/v1/sessions?flavor=${encodeURIComponent(
-      CODING_AGENT.flavor,
-    )}&state=active&from=2020-01-01T00:00:00Z&limit=100${extraQs}`,
+    `http://localhost:4000/api/v1/sessions/${sessionId}?events_limit=${DRAWER_EVENTS_LIMIT}`,
     { headers: { Authorization: "Bearer tok_dev" } },
   );
-  expect(resp.ok()).toBe(true);
-  const body = await resp.json();
-  return ((body.sessions ?? []) as Array<{ session_id: string }>).map(
-    (s) => s.session_id,
+  expect(resp.ok(), `GET session ${sessionId}`).toBe(true);
+  const body = (await resp.json()) as {
+    events?: Array<{
+      id: string;
+      event_type: string;
+      payload?: { streaming?: { final_outcome?: string } } | null;
+    }>;
+  };
+  const match = (body.events ?? []).find(
+    (e) =>
+      e.event_type === "post_call" &&
+      e.payload?.streaming?.final_outcome === finalOutcome,
   );
+  expect(
+    match,
+    `seeded session ${sessionId} must carry a ${finalOutcome} streaming post_call ` +
+      `within the drawer's first ${DRAWER_EVENTS_LIMIT} events`,
+  ).toBeDefined();
+  return match!.id;
 }

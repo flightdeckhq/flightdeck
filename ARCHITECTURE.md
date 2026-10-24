@@ -2959,7 +2959,9 @@ Bedrock id or inference profile (`anthropic.claude-sonnet-4-5-20250929-v1:0`,
 The worker canonicalises every LLM event's model id once, when it writes
 the row, with a pure function in the workers module, and stores:
 
-- `model_requested`: the id the caller asked for, verbatim.
+- `model_requested`: the id the caller asked for, verbatim. For an
+  event that sends only the legacy `model` field, the worker stores
+  that raw value here before canonicalising it.
 - `model_served`: the id the provider's response named, verbatim
   (`response.model`); it differs from the request on a server-side
   fallback or alias resolution.
@@ -2981,10 +2983,14 @@ rules do not recognise is stored as given (lower-cased, whitespace
 trimmed). The rules are pinned by a table of test vectors.
 
 Rows stored with a raw id are rewritten by a backfill the worker runs in
-the background: it takes batches of LLM events whose `model_requested`
-is empty (`FOR UPDATE SKIP LOCKED`, so several workers share the work),
-moves the raw id into `model_requested`, stores the canonical id in
-`model`, and fills `provider` and `billing_mode` by the rules here. It
+the background. Because the write path always fills `model_requested`
+for an LLM event that names a model, a row with a `model` and an empty
+`model_requested` is one the write path never canonicalised. The
+backfill takes batches of those rows (`FOR UPDATE SKIP LOCKED`, so
+several workers share the work), moves the raw id into
+`model_requested`, stores the canonical id in `model`, copies
+`provider_metadata.platform` from the payload into `platform`, and fills
+`provider` and `billing_mode` by the rules here. It
 is idempotent and resumes where it stopped after a restart.
 
 Two mappings depend on configuration and so are applied when cost is
@@ -2993,8 +2999,12 @@ past events too:
 
 - **Aliases.** Operators map deployment names (Azure, a gateway's
   custom routes) to a model id in the `aliases` section of
-  `pricing.yaml`; each alias becomes a `model_pricing` row with the
-  target model's rates.
+  `pricing.yaml`. Each alias key is normalised like an event's id
+  (canonicalised, lower-cased, trimmed) and becomes a `model_pricing`
+  row with the target model's rates, under the platform family the
+  alias names (`platform`, default `direct`). An alias whose key
+  collides with a catalogue id fails the load with an error naming
+  it.
 - **Undated fallback.** A dated id with no price of its own (a
   snapshot the catalogue does not list) is priced as its undated id.
 

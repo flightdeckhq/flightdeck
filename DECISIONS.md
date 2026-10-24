@@ -11584,9 +11584,11 @@ local model in the same session).
 when it writes the row, with a pure Go function (string rules only, no
 lookup) and a test-vector table, and stores the verbatim
 `model_requested` and `model_served` beside the canonical `model`.
-Clients send ids verbatim. Rows already stored with raw ids are
-rewritten by a batched, idempotent worker backfill that also fills
-`provider` and `billing_mode`. The two mappings that depend on
+Clients send ids verbatim; for an event that sends only the legacy
+`model` field the worker keeps that raw value as `model_requested`. Rows
+stored before the write path canonicalised are rewritten by a batched,
+idempotent worker backfill that also fills `platform` (from the
+payload), `provider` and `billing_mode`. The two mappings that depend on
 configuration, operator aliases from `pricing.yaml` and the fallback
 from an unpriced dated id to its undated id, are applied by the cost
 query, so they reach past events. This replaces the update plan's
@@ -11626,7 +11628,13 @@ and server-tool fees are held by the API and passed as query
 parameters; the per-model priority ratio and the context tier's five
 rates (5-minute and 1-hour cache writes priced apart) are columns. The
 endpoint is stored in an `events.platform` column, beside its copy in
-`provider_metadata`, so the grouping does not read JSON per row. A cost reported by a gateway or client
+`provider_metadata`, so the platform lookup does not read JSON per row;
+the multiplier inputs (`service_tier`, `speed`, `inference_geo`,
+`inference_scope`, `server_tool_use`) stay in the payload, and are the
+candidates for columns if the benchmark misses its target. Alias keys
+are normalised like event model ids, keyed under the platform family
+the alias names (default `direct`), and an alias that collides with a
+catalogue id fails the load. A cost reported by a gateway or client
 (`cost_source` `provider` or `agent`) is used in place of the estimate.
 `embeddings` events are priced alongside `post_call`. The one-hour cache
 write share travels as `tokens_cache_creation_1h` and the five-minute

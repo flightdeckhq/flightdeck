@@ -11443,3 +11443,34 @@ every Python version passed.
 Per-lane constraints files (several files to keep in step). Dropping
 3.14 until crewai supports it (the sensor itself runs there; only the
 crewai tests skip).
+
+---
+
+## D204 -- motion 14 and react-router 8; swag runs at the version each module pins
+
+**Date:** 2026-10-24
+
+**Decision:** The dashboard moves to `motion` 14.0 (`~14.0.0`, superseding
+D200's 13.5 pin) and `react-router` 8.4. The Swagger generator for each Go
+service is a `tool` dependency in that service's `go.mod` (ingestion:
+`github.com/swaggo/swag/v2/cmd/swag`, which writes OpenAPI 3.1 with
+`--v3.1`; api: `github.com/swaggo/swag/cmd/swag` v1, which writes Swagger
+2.0), and each Makefile's `build` target runs it as `go tool swag`.
+
+**Reasoning:** D200 kept `motion` on 13.5 only because 14 was three weeks
+old and still settling, and said the dependency automation would propose
+it later; Dependabot did, past its 14-day cooldown. 14.0.0 removes only
+internal APIs that 13.5.1 had restored for `framer-motion` 13.0-13.4; the
+dashboard's four animated components use `AnimatePresence` and
+`motion.div` with initial / animate / exit, which do not change.
+`react-router` 8 removes `react-router-dom`, the v8 future flags and
+data-router APIs the dashboard does not use, and needs Node 22.22+ and
+React 19.2.7+, both met. The Makefiles called whatever `swag` binary was
+on `PATH` without `--v3.1`, so `make -C ingestion build` would have
+rewritten the committed OpenAPI 3.1 spec as Swagger 2.0; pinning the
+generator in `go.mod` keeps it in step with the swag runtime the docs
+package imports, and a Dependabot bump moves both.
+
+**Rejected:** Staying on `motion` 13.5 (the deferral's reason has
+passed). Pinning the swag version separately in each Makefile (it would
+drift from `go.mod` on the next bump).

@@ -385,7 +385,9 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
     - Required annotations: @Summary, @Description, @Tags, @Accept, @Produce,
       @Param (every param including query params), @Success with the correct
       response struct, @Failure for every error code the handler can return, @Router
-    - Run `swag init -g cmd/main.go -o docs` in the component after adding annotations
+    - Regenerate the docs with `make -C <component> build` (it runs
+      `go tool swag`, the version the component's `go.mod` pins; ingestion
+      writes OpenAPI 3.1 with `--v3.1`, the api Swagger 2.0)
     - Commit the regenerated `docs/` directory
 
     At the end of every phase audit, verify:

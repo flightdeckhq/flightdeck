@@ -173,11 +173,13 @@
 }
 
 /* Element-level resets sit in the base layer: Tailwind 4 puts its
-   utilities in @layer utilities, and an unlayered rule beats any layered
-   one regardless of specificity, so an unlayered `* { margin: 0;
-   padding: 0 }` would override every spacing utility. Class rules in
-   this file stay unlayered, as they followed the utilities in Tailwind
-   3 and win over them the same way. */
+   utilities in @layer utilities, and an unlayered rule beats every
+   layered one regardless of specificity, so an unlayered `* { margin: 0;
+   padding: 0 }` would override every spacing utility. The class rules
+   below stay unlayered: in Tailwind 3 they came after the utilities and
+   won ties, and none of them shares an element with a hover: / focus:
+   variant they would now also beat (the topology row backgrounds did,
+   and moved to the components layer). */
 @layer base {
   * {
     box-sizing: border-box;
@@ -192,6 +194,19 @@
     color: var(--text);
     -webkit-font-smoothing: antialiased;
     min-height: 100vh;
+  }
+
+  /* Two Tailwind 3 preflight defaults that Tailwind 4 dropped: enabled
+     buttons show the pointer cursor, and placeholders keep their fixed
+     grey instead of half the input's text colour. */
+  button:not(:disabled),
+  [role="button"]:not(:disabled) {
+    cursor: pointer;
+  }
+
+  input::placeholder,
+  textarea::placeholder {
+    color: #9ca3af;
   }
 }
 
@@ -260,12 +275,18 @@
    inline ``background: var(--surface)`` on the row container —
    the inline style has been removed from SwimLane.tsx so these
    CSS rules are now the sole source of truth for the row bg. */
-[data-topology="root"] {
-  background-color: var(--surface);
-}
-[data-topology="child"] {
-  background-color: var(--swimlane-row-child-bg);
-  box-shadow: inset 2px 0 0 var(--accent);
+/* In the components layer so an interactive row's hover:bg-surface-hover
+   utility still wins on hover, as its higher specificity made it win in
+   Tailwind 3: an unlayered rule beats every layered utility, variants
+   included. No row sets a resting bg-* utility these would compete with. */
+@layer components {
+  [data-topology="root"] {
+    background-color: var(--surface);
+  }
+  [data-topology="child"] {
+    background-color: var(--swimlane-row-child-bg);
+    box-shadow: inset 2px 0 0 var(--accent);
+  }
 }
 [data-topology="child"] .swimlane-row-label,
 [data-topology="child"] .investigate-row-indent-target {

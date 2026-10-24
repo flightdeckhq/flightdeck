@@ -621,7 +621,7 @@ function NameStep({
                 onSubmit();
               }
             }}
-            className="mt-1 w-full rounded-sm border px-2 py-1.5 text-sm focus:outline-hidden focus:ring-1"
+            className="mt-1 w-full rounded-sm border px-2 py-1.5 text-sm focus:outline-hidden focus:ring-1 focus:ring-primary"
             style={{
               background: "var(--bg)",
               borderColor: "var(--border)",

@@ -9,9 +9,11 @@ All notable changes to Flightdeck are documented here.
 - **Dashboard: Tailwind CSS 4.** The dashboard builds with Tailwind 4.3
   through `@tailwindcss/vite` (replacing PostCSS and autoprefixer) and
   tailwind-merge 3; the colour tokens move from `tailwind.config.js` into
-  a CSS `@theme` block. Every page and drawer renders as it did, in both
-  themes; the one visible change is that the `Ctrl K` hint in the search
-  box uses the dashboard's mono font.
+  a CSS `@theme` block. Pages, drawers, hover states and cursors look and
+  behave as before in both themes. Small visible changes: the `Ctrl K`
+  hint in the search box uses the dashboard's mono font, the stop-confirm
+  buttons fade slightly on hover, and the Settings token-name field's
+  focus ring uses the primary colour like the other inputs.
 
 ## v0.6.0 — 2026-10-24
 

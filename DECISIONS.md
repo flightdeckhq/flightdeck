@@ -11486,21 +11486,29 @@ drift from `go.mod` on the next bump).
 **Date:** 2026-10-24
 
 **Decision:** The dashboard moves to Tailwind CSS 4.3 with
-`@tailwindcss/vite` (no PostCSS step) and tailwind-merge 3. Three choices
-keep the rendered pages identical to Tailwind 3:
+`@tailwindcss/vite` (no PostCSS step) and tailwind-merge 3. Four choices
+keep the rendered pages and their hover / focus behaviour identical to
+Tailwind 3:
 
 1. Element-level resets (`*`, `body`, the scrollbar pseudo-elements) live
    in `@layer base`. Tailwind 4 emits utilities in `@layer utilities`, and
-   an unlayered rule beats every layered one, so the unlayered
-   `* { margin: 0; padding: 0 }` would have overridden every spacing
-   utility. Class rules stay unlayered: in Tailwind 3 they followed the
-   utilities and won ties, and unlayered keeps that.
+   an unlayered rule beats every layered one regardless of specificity,
+   so the unlayered `* { margin: 0; padding: 0 }` would have overridden
+   every spacing utility. Class rules stay unlayered, which keeps them
+   winning ties with utilities as they did in Tailwind 3; but unlayered
+   they now also beat higher-specificity variants (`hover:`, `focus:`)
+   they used to lose to, so the `[data-topology]` row backgrounds, which
+   share rows with `hover:bg-surface-hover`, move to `@layer components`
+   (no other class rule shares an element with a variant utility).
 2. `@import 'tailwindcss'` comes before `@import './themes.css'
    layer(base)`. Layer order is fixed by the first time a layer is named;
    importing the themes first put `base` ahead of Tailwind's `theme`
    layer, and Tailwind's default `--font-mono` replaced the dashboard's
    Geist Mono.
-3. The `text-xs` .. `text-4xl` line-heights are set back to Tailwind 3's
+3. Two Tailwind 3 preflight defaults that Tailwind 4 dropped are restored
+   in `@layer base`: enabled buttons and `[role=button]` show the pointer
+   cursor, and input placeholders keep the fixed `#9ca3af`.
+4. The `text-xs` .. `text-4xl` line-heights are set back to Tailwind 3's
    fixed values in `@theme`. Tailwind 4's unitless ratios are inherited
    as ratios, so text with an arbitrary size (`text-[11px]`) inside a
    `text-sm` parent got a 15.7px line instead of 20px, and cards and rows
@@ -11517,7 +11525,13 @@ on the static pages (404, Policies, Directives, Settings) and differ on
 the data pages only where live data differs. The one systematic change is
 the `<kbd>` hint, which Tailwind 4's preflight sets in the theme's mono
 font (Geist Mono) instead of the system mono stack; it matches the rest
-of the dashboard's mono text and was kept.
+of the dashboard's mono text and was kept. Two interaction changes are
+kept on purpose: the stop-confirm buttons' `hover:bg-(--danger)/90` now
+fades on hover (Tailwind 3 emitted no CSS for opacity on an arbitrary
+`var()` colour), and the Settings token-name field's focus ring, which
+fell back to Tailwind 3's default blue, now uses `ring-primary` like
+every other input. Hover, focus and cursor were checked with a browser
+probe, since screenshots do not exercise them.
 
 **Rejected:** Accepting Tailwind 4's line-height ratios (a visible shift
 in dense tables and cards for no gain). Keeping PostCSS (`@tailwindcss/vite`

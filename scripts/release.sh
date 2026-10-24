@@ -5,10 +5,11 @@ set -euo pipefail
 # bump goes through a pull request; only the tag is pushed directly.
 #
 #   ./scripts/release.sh prep v0.6.0   (or: make release-prep VERSION=v0.6.0)
-#       From an up-to-date main: create release/v0.6.0, write the version
-#       into every file that carries it (scripts/version.py), date the
-#       CHANGELOG's Unreleased section, run make test + make lint, commit,
-#       push the branch and open the release PR.
+#       From an up-to-date main: run make test + make lint first (before
+#       anything changes, so a failure leaves nothing behind), then create
+#       release/v0.6.0, write the version into every file that carries it
+#       (scripts/version.py), date the CHANGELOG's Unreleased section,
+#       commit, push the branch and open the release PR.
 #
 #   ./scripts/release.sh tag v0.6.0    (or: make release-tag VERSION=v0.6.0)
 #       After the release PR is merged: on an up-to-date main, check that
@@ -24,8 +25,10 @@ usage() {
 }
 
 [[ "$MODE" == "prep" || "$MODE" == "tag" ]] || usage
-[[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([a-z]+[0-9]+)?$ ]] || {
-  echo "Error: version must look like v0.6.0 (or v0.6.0rc1)" >&2
+# Pre-releases are not supported yet: the sensor needs the PEP 440 form
+# (0.6.0rc1) and the Helm chart the SemVer form (0.6.0-rc1).
+[[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+  echo "Error: version must look like v0.6.0" >&2
   exit 1
 }
 PLAIN="${VERSION#v}"
@@ -51,15 +54,28 @@ fi
 
 if [[ "$MODE" == "prep" ]]; then
   BRANCH="release/$VERSION"
-  git checkout -b "$BRANCH"
-  python3 scripts/version.py set "$PLAIN"
-  python3 scripts/version.py changelog "$PLAIN"
+  for tool in python3 gh uv golangci-lint npm go; do
+    command -v "$tool" >/dev/null || {
+      echo "Error: $tool is not on PATH; make test, make lint and the PR need it." >&2
+      exit 1
+    }
+  done
+  if git rev-parse -q --verify "refs/heads/$BRANCH" >/dev/null; then
+    echo "Error: branch $BRANCH already exists (an earlier prep?). See RELEASING.md." >&2
+    exit 1
+  fi
 
-  echo ""
-  echo "Running tests and linters..."
+  # Tests and lint run on main before anything changes: the version
+  # bump does not affect them, and a failure here leaves no half-made
+  # branch or modified files behind.
+  echo "Running tests and linters on main..."
   make test
   make lint
   echo "All tests and linters passed."
+
+  git checkout -b "$BRANCH"
+  python3 scripts/version.py set "$PLAIN"
+  python3 scripts/version.py changelog "$PLAIN"
 
   git add VERSION
   git add -u

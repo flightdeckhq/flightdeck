@@ -7,7 +7,9 @@ Flightdeck follows [Semantic Versioning](https://semver.org/):
 - **Major** (v1.0.0): Breaking API changes
 - **Minor** (v0.2.0): New features, backward-compatible
 - **Patch** (v0.1.1): Bug fixes
-- **Pre-release** (v0.1.0a1): Alpha/beta releases
+- **Pre-release** (v0.1.0a1): not supported by the release script yet. The
+  sensor needs the PEP 440 form (`0.6.0rc1`) and the Helm chart the SemVer
+  form (`0.6.0-rc1`), so one `VERSION` string cannot serve both.
 
 ## Release Process
 
@@ -32,16 +34,24 @@ make release-prep VERSION=vX.Y.Z
 ```
 
 From a clean, up-to-date `main`, the script:
-1. Creates the branch `release/vX.Y.Z`
-2. Writes `X.Y.Z` into `VERSION` and every version location
-3. Dates the CHANGELOG: the `## Unreleased` entries move under
-   `## vX.Y.Z — <date>`, and an empty `## Unreleased` stays above them
-4. Runs `make test` (sensor, Go services, plugin and dashboard unit tests)
+1. Checks that `python3`, `gh`, `uv`, `golangci-lint`, `npm` and `go` are
+   on `PATH`
+2. Runs `make test` (sensor, Go services, plugin and dashboard unit tests)
    and `make lint` (mypy, ruff, golangci-lint, the dashboard's ESLint and
-   type-check); it stops if either fails. Both need the sensor venv, the
-   dashboard's dependencies (`make -C dashboard install`) and
-   `golangci-lint` on `PATH`
-5. Commits `chore: release vX.Y.Z`, pushes the branch and opens the PR
+   type-check) on `main`, before changing anything; it stops if either
+   fails. Both need the sensor venv and the dashboard's dependencies
+   (`make -C dashboard install`)
+3. Creates the branch `release/vX.Y.Z`
+4. Writes `X.Y.Z` into `VERSION` and every version location (including
+   `sensor/uv.lock`'s own entry, so CI's `uv sync --locked` accepts it)
+5. Dates the CHANGELOG: the `## Unreleased` entries move under
+   `## vX.Y.Z — <date>`, and an empty `## Unreleased` stays above them
+6. Commits `chore: release vX.Y.Z`, pushes the branch and opens the PR
+
+If the push or `gh pr create` fails, the commit is on the local
+`release/vX.Y.Z` branch: fix the cause, then run
+`git push -u origin release/vX.Y.Z` and `gh pr create` by hand (a second
+`prep` refuses to run while that branch exists).
 
 Before merging, edit the release section's opening summary on the branch
 if it no longer describes the release. The PR's CI is the rest of the
@@ -57,6 +67,10 @@ release PR.
 
 ### 2. Tag the merged release
 
+Tag as soon as the release PR merges. From the merge until the tag
+exists, `main`'s marketplace entry points at a `vX.Y.Z` ref that does not
+exist yet, so plugin installs and updates fail in that window.
+
 ```bash
 make release-tag VERSION=vX.Y.Z
 # or
@@ -64,8 +78,9 @@ make release-tag VERSION=vX.Y.Z
 ```
 
 On an up-to-date `main` that contains the merged release PR, the script
-checks that every version location matches `vX.Y.Z`, then creates the
-annotated tag and pushes it.
+checks that every version location matches `vX.Y.Z` and that the
+CHANGELOG has a dated `## vX.Y.Z` section, then creates the annotated tag
+and pushes it.
 
 Installed plugins do not pick up a release on their own. Claude Code's
 background auto-update is off for third-party marketplaces unless each
@@ -119,7 +134,9 @@ If the release pipeline fails mid-way:
 
 2. **Nothing published:** Fix the issue on `main` (through a PR), delete
    the tag (`git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`) and
-   run `make release-tag VERSION=vX.Y.Z` again on the fixed `main`.
+   run `make release-tag VERSION=vX.Y.Z` again on the fixed `main`. Until
+   the tag is back, plugin installs fail (the marketplace entry points at
+   it), so keep the gap short.
    A failed image scan always lands here. The fix is usually a newer
    base image (`alpine`, `nginx`) or Go toolchain in the failing
    image's Dockerfile, or a dependency bump for a finding in the Go

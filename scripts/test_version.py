@@ -62,14 +62,22 @@ class VersionScriptTest(unittest.TestCase):
         )
         self.assertEqual(self.run_quiet(version.check, None), 1)
 
-    def test_check_with_a_tag_requires_it_to_match(self) -> None:
+    def test_check_with_a_tag_requires_it_to_match_and_a_dated_changelog(self) -> None:
         current = (self.tmp / "VERSION").read_text().strip()
+        # The repository's CHANGELOG already has a dated section for the
+        # current release.
         self.assertEqual(self.run_quiet(version.check, f"v{current}"), 0)
         self.assertEqual(self.run_quiet(version.check, "v99.0.0"), 1)
+        # A bump without the dated section is refused at tag time.
+        self.assertEqual(self.run_quiet(version.set_version, "9.8.7"), 0)
+        self.assertEqual(self.run_quiet(version.check, "v9.8.7"), 1)
+        self.assertEqual(self.run_quiet(version.changelog, "9.8.7"), 0)
+        self.assertEqual(self.run_quiet(version.check, "v9.8.7"), 0)
 
     def test_set_rejects_a_non_release_version(self) -> None:
-        with self.assertRaises(SystemExit):
-            self.run_quiet(version.set_version, "v1.2.3")
+        for bad in ("v1.2.3", "1.2.3rc1", "1.2"):
+            with self.assertRaises(SystemExit, msg=bad):
+                self.run_quiet(version.set_version, bad)
 
     def test_changelog_dates_the_unreleased_section(self) -> None:
         self.assertEqual(self.run_quiet(version.changelog, "9.8.7"), 0)

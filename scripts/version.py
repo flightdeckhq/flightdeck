@@ -25,8 +25,10 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = ROOT / "VERSION"
 
-# A release version: X.Y.Z with an optional pre-release suffix (a1, rc1).
-VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[a-z]+\d+)?$")
+# A release version: X.Y.Z. Pre-releases are not supported yet: the sensor
+# needs the PEP 440 form (0.6.0rc1) and the Helm chart the SemVer form
+# (0.6.0-rc1), so one string cannot serve every location.
+VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
 # (path, pattern, expected matches). Each pattern's ``v`` group is the
 # version text; set() replaces exactly that span. The expected count
@@ -34,6 +36,9 @@ VERSION_RE = re.compile(r"^\d+\.\d+\.\d+(?:[a-z]+\d+)?$")
 # copy appearing that this table does not know about.
 LOCATIONS: list[tuple[str, str, int]] = [
     ("sensor/pyproject.toml", r'(?m)^version = "(?P<v>[^"]+)"', 1),
+    # uv.lock records the project's own version; CI's `uv sync --locked`
+    # fails when it differs from pyproject.toml.
+    ("sensor/uv.lock", r'(?m)^name = "flightdeck-sensor"\nversion = "(?P<v>[^"]+)"', 1),
     ("plugin/.claude-plugin/plugin.json", r'(?m)^  "version": "(?P<v>[^"]+)"', 1),
     ("plugin/package.json", r'(?m)^  "version": "(?P<v>[^"]+)"', 1),
     (".claude-plugin/marketplace.json", r'(?m)^      "version": "(?P<v>[^"]+)"', 1),
@@ -79,6 +84,9 @@ def check(tag: str | None) -> int:
         problems.append(
             f"tag {tag} does not match VERSION {version} (expected v{version})"
         )
+    changelog_text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    if tag is not None and f"\n## v{version} — " not in changelog_text:
+        problems.append(f"CHANGELOG.md has no dated '## v{version} — ' section")
     for path, pattern, expected in LOCATIONS:
         found = found_versions(path, pattern)
         if len(found) != expected:

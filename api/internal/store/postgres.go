@@ -236,6 +236,14 @@ type Event struct {
 	TokensTotal         *int           `json:"tokens_total,omitempty"`
 	TokensCacheRead     int64          `json:"tokens_cache_read"`     // prompt-cache tokens read; 0 when the provider reports none
 	TokensCacheCreation int64          `json:"tokens_cache_creation"` // prompt-cache tokens written; 0 when the provider reports none
+	TokensReasoning     *int64         `json:"tokens_reasoning,omitempty"`
+	ModelRequested      *string        `json:"model_requested,omitempty"`
+	ModelServed         *string        `json:"model_served,omitempty"`
+	Provider            *string        `json:"provider,omitempty"`
+	BillingMode         *string        `json:"billing_mode,omitempty"`
+	Platform            *string        `json:"platform,omitempty"`
+	CostReported        *float64       `json:"cost_reported,omitempty"`
+	CostSource          *string        `json:"cost_source,omitempty"`
 	LatencyMs           *int           `json:"latency_ms,omitempty"`
 	ToolName            *string        `json:"tool_name,omitempty"`
 	HasContent          bool           `json:"has_content"`
@@ -833,6 +841,17 @@ func (s *Store) GetEffectivePolicy(ctx context.Context, flavor, sessionID string
 	return nil, nil
 }
 
+// tokenCostColumns lists the events token and cost columns in the order
+// Event's TokensReasoning .. CostSource fields scan them, each column
+// qualified with prefix (an alias and a dot, or "" for none).
+// cost_reported is NUMERIC and is read as float8 for the JSON response.
+func tokenCostColumns(prefix string) string {
+	return prefix + "tokens_reasoning, " + prefix + "model_requested, " +
+		prefix + "model_served, " + prefix + "provider, " +
+		prefix + "billing_mode, " + prefix + "platform, " +
+		prefix + "cost_reported::float8, " + prefix + "cost_source"
+}
+
 // GetSessionEvents returns events for a session in chronological (ASC)
 // order. When limit <= 0 the full history is returned (legacy behaviour
 // used by Fleet-side callers that still expect the whole timeline).
@@ -855,6 +874,7 @@ func (s *Store) GetSessionEvents(ctx context.Context, sessionID string, limit in
 			SELECT id::text, session_id::text, flavor, event_type, model,
 			       tokens_input, tokens_output, tokens_total,
 			       tokens_cache_read, tokens_cache_creation,
+			       ` + tokenCostColumns("") + `,
 			       latency_ms, tool_name, has_content, payload, occurred_at
 			FROM events
 			WHERE session_id = $1::uuid
@@ -867,6 +887,7 @@ func (s *Store) GetSessionEvents(ctx context.Context, sessionID string, limit in
 			SELECT id::text, session_id::text, flavor, event_type, model,
 			       tokens_input, tokens_output, tokens_total,
 			       tokens_cache_read, tokens_cache_creation,
+			       ` + tokenCostColumns("") + `,
 			       latency_ms, tool_name, has_content, payload, occurred_at
 			FROM events
 			WHERE session_id = $1::uuid
@@ -888,6 +909,8 @@ func (s *Store) GetSessionEvents(ctx context.Context, sessionID string, limit in
 			&e.ID, &e.SessionID, &e.Flavor, &e.EventType, &e.Model,
 			&e.TokensInput, &e.TokensOutput, &e.TokensTotal,
 			&e.TokensCacheRead, &e.TokensCacheCreation,
+			&e.TokensReasoning, &e.ModelRequested, &e.ModelServed, &e.Provider,
+			&e.BillingMode, &e.Platform, &e.CostReported, &e.CostSource,
 			&e.LatencyMs, &e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
 		); err != nil {
 			return nil, fmt.Errorf("scan event: %w", err)
@@ -929,6 +952,7 @@ func (s *Store) GetEvent(ctx context.Context, eventID string) (*Event, error) {
 		SELECT id::text, session_id::text, flavor, event_type, model,
 		       tokens_input, tokens_output, tokens_total,
 		       tokens_cache_read, tokens_cache_creation,
+		       `+tokenCostColumns("")+`,
 		       latency_ms, tool_name, has_content, payload, occurred_at
 		FROM events
 		WHERE id = $1::uuid
@@ -936,6 +960,8 @@ func (s *Store) GetEvent(ctx context.Context, eventID string) (*Event, error) {
 		&e.ID, &e.SessionID, &e.Flavor, &e.EventType, &e.Model,
 		&e.TokensInput, &e.TokensOutput, &e.TokensTotal,
 		&e.TokensCacheRead, &e.TokensCacheCreation,
+		&e.TokensReasoning, &e.ModelRequested, &e.ModelServed, &e.Provider,
+		&e.BillingMode, &e.Platform, &e.CostReported, &e.CostSource,
 		&e.LatencyMs, &e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {

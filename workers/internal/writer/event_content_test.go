@@ -77,10 +77,11 @@ func testSession(t *testing.T, pool *pgxpool.Pool) string {
 }
 
 func insertWithContent(w *Writer, eventID, sessionID string, content json.RawMessage) (string, error) {
-	return w.InsertEventWithContent(
-		context.Background(), eventID, sessionID, "writer-test", "post_call", "claude-sonnet-4-6",
-		nil, nil, nil, nil, nil, nil, nil, true, time.Now().UTC(), nil, content,
-	)
+	return w.InsertEventWithContent(context.Background(), EventRow{
+		SensorEventID: eventID, SessionID: sessionID, Flavor: "writer-test",
+		EventType: "post_call", Model: "claude-sonnet-4-6",
+		HasContent: true, OccurredAt: time.Now().UTC(),
+	}, content)
 }
 
 func countRows(t *testing.T, pool *pgxpool.Pool, table, sessionID string) int {
@@ -178,10 +179,10 @@ func TestInsertEventWithContent_RedeliveryIsIdempotent(t *testing.T) {
 	occurredAt := time.Now().UTC()
 
 	for i := 0; i < 2; i++ {
-		got, err := w.InsertEventWithContent(
-			context.Background(), eventID, sessionID, "writer-test", "post_call", "",
-			nil, nil, nil, nil, nil, nil, nil, true, occurredAt, nil, content,
-		)
+		got, err := w.InsertEventWithContent(context.Background(), EventRow{
+			SensorEventID: eventID, SessionID: sessionID, Flavor: "writer-test",
+			EventType: "post_call", HasContent: true, OccurredAt: occurredAt,
+		}, content)
 		if err != nil {
 			t.Fatalf("attempt %d: %v", i+1, err)
 		}
@@ -218,3 +219,81 @@ func TestPermanentContentError(t *testing.T) {
 		}
 	}
 }
+
+// The token and cost columns round-trip; empty strings and nil pointers
+// are stored as NULL.
+func TestInsertEvent_TokenCostColumns(t *testing.T) {
+	pool := testPool(t)
+	sessionID := testSession(t, pool)
+	w := New(pool)
+	ctx := context.Background()
+
+	reasoning := int64(40)
+	cost := 0.0125
+	withFields, err := w.InsertEvent(ctx, EventRow{
+		SessionID: sessionID, Flavor: "writer-test", EventType: "post_call",
+		Model: "claude-sonnet-4-5", TokensReasoning: &reasoning,
+		ModelRequested: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+		ModelServed:    "claude-sonnet-4-5-20250929",
+		Provider:       "anthropic", BillingMode: "metered", Platform: "bedrock",
+		CostReported: &cost, CostSource: "agent",
+		OccurredAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("insert with fields: %v", err)
+	}
+	without, err := w.InsertEvent(ctx, EventRow{
+		SessionID: sessionID, Flavor: "writer-test", EventType: "post_call",
+		OccurredAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatalf("insert without fields: %v", err)
+	}
+
+	var (
+		gotReasoning                                     *int64
+		gotRequested, gotServed, gotProvider, gotBilling *string
+		gotPlatform, gotSource                           *string
+		gotCost                                          *float64
+	)
+	read := func(id string) {
+		t.Helper()
+		if err := pool.QueryRow(ctx, `
+			SELECT tokens_reasoning, model_requested, model_served, provider,
+			       billing_mode, platform, cost_reported::float8, cost_source
+			FROM events WHERE id = $1::uuid`, id).Scan(
+			&gotReasoning, &gotRequested, &gotServed, &gotProvider,
+			&gotBilling, &gotPlatform, &gotCost, &gotSource,
+		); err != nil {
+			t.Fatalf("read event %s: %v", id, err)
+		}
+	}
+
+	read(withFields)
+	if gotReasoning == nil || *gotReasoning != 40 {
+		t.Errorf("tokens_reasoning = %v, want 40", gotReasoning)
+	}
+	for name, pair := range map[string][2]*string{
+		"model_requested": {gotRequested, ptr("us.anthropic.claude-sonnet-4-5-20250929-v1:0")},
+		"model_served":    {gotServed, ptr("claude-sonnet-4-5-20250929")},
+		"provider":        {gotProvider, ptr("anthropic")},
+		"billing_mode":    {gotBilling, ptr("metered")},
+		"platform":        {gotPlatform, ptr("bedrock")},
+		"cost_source":     {gotSource, ptr("agent")},
+	} {
+		if pair[0] == nil || *pair[0] != *pair[1] {
+			t.Errorf("%s = %v, want %q", name, pair[0], *pair[1])
+		}
+	}
+	if gotCost == nil || *gotCost != 0.0125 {
+		t.Errorf("cost_reported = %v, want 0.0125", gotCost)
+	}
+
+	read(without)
+	if gotReasoning != nil || gotRequested != nil || gotServed != nil || gotProvider != nil ||
+		gotBilling != nil || gotPlatform != nil || gotCost != nil || gotSource != nil {
+		t.Error("absent token and cost fields must be stored as NULL")
+	}
+}
+
+func ptr(s string) *string { return &s }

@@ -50,51 +50,72 @@ type EventPayload struct {
 	// it via COALESCE($1::uuid, gen_random_uuid()) so legacy callers
 	// without the field stay compatible. ON CONFLICT (id,
 	// occurred_at) DO NOTHING handles sensor retries idempotently.
-	ID              string          `json:"id,omitempty"`
-	SessionID       string          `json:"session_id"`
-	Flavor          string          `json:"flavor"`
-	AgentType       string          `json:"agent_type"`
+	ID        string `json:"id,omitempty"`
+	SessionID string `json:"session_id"`
+	Flavor    string `json:"flavor"`
+	AgentType string `json:"agent_type"`
 	// Agent identity fields. The ingestion API validates agent_id is
 	// a canonical UUID, and agent_type / client_type are from their
 	// respective locked vocabularies, so by the time the worker
 	// sees a payload here these values are known-good.
-	AgentID         string          `json:"agent_id"`
-	AgentName       string          `json:"agent_name"`
-	ClientType      string          `json:"client_type"`
-	User            string          `json:"user"`
-	Hostname        string          `json:"hostname"`
-	EventType       string          `json:"event_type"`
-	Host            string          `json:"host"`
-	Framework       string          `json:"framework"`
-	Model           string          `json:"model"`
-	TokensInput     *int            `json:"tokens_input"`
-	TokensOutput    *int            `json:"tokens_output"`
-	TokensTotal     *int            `json:"tokens_total"`
+	AgentID      string `json:"agent_id"`
+	AgentName    string `json:"agent_name"`
+	ClientType   string `json:"client_type"`
+	User         string `json:"user"`
+	Hostname     string `json:"hostname"`
+	EventType    string `json:"event_type"`
+	Host         string `json:"host"`
+	Framework    string `json:"framework"`
+	Model        string `json:"model"`
+	TokensInput  *int   `json:"tokens_input"`
+	TokensOutput *int   `json:"tokens_output"`
+	TokensTotal  *int   `json:"tokens_total"`
 	// Cache-token breakdown. Populated by the Python sensor's providers
 	// (Anthropic cache reads and writes; OpenAI cache reads and writes
 	// from its cached_tokens and cache_write_tokens usage details) and by
 	// the Claude Code plugin's transcript reader. Absent on non-LLM events.
-	TokensCacheRead     *int64      `json:"tokens_cache_read,omitempty"`
-	TokensCacheCreation *int64      `json:"tokens_cache_creation,omitempty"`
-	TokensUsedSess  int             `json:"tokens_used_session"`
-	TokenLimitSess  *int            `json:"token_limit_session"`
-	LatencyMs       *int            `json:"latency_ms"`
-	ToolName        *string         `json:"tool_name"`
+	TokensCacheRead     *int64 `json:"tokens_cache_read,omitempty"`
+	TokensCacheCreation *int64 `json:"tokens_cache_creation,omitempty"`
+	// Token, model and cost fields of LLM events (ARCHITECTURE.md,
+	// POST /v1/events). The first group is stored in events columns;
+	// the second goes into events.payload. All are optional: clients
+	// that do not send them leave the columns NULL and the payload
+	// keys absent. Ingestion has validated their vocabularies and
+	// ranges.
+	TokensReasoning *int64   `json:"tokens_reasoning,omitempty"`
+	ModelRequested  string   `json:"model_requested,omitempty"`
+	ModelServed     string   `json:"model_served,omitempty"`
+	Provider        string   `json:"provider,omitempty"`
+	BillingMode     string   `json:"billing_mode,omitempty"`
+	CostReported    *float64 `json:"cost_reported,omitempty"`
+	CostSource      string   `json:"cost_source,omitempty"`
+
+	TokensCacheCreation1h *int64           `json:"tokens_cache_creation_1h,omitempty"`
+	ServiceTier           string           `json:"service_tier,omitempty"`
+	Speed                 string           `json:"speed,omitempty"`
+	InferenceGeo          string           `json:"inference_geo,omitempty"`
+	InferenceScope        string           `json:"inference_scope,omitempty"`
+	ServerToolUse         map[string]int64 `json:"server_tool_use,omitempty"`
+	StopReason            string           `json:"stop_reason,omitempty"`
+	TokensUsedSess        int              `json:"tokens_used_session"`
+	TokenLimitSess        *int             `json:"token_limit_session"`
+	LatencyMs             *int             `json:"latency_ms"`
+	ToolName              *string          `json:"tool_name"`
 	// ToolUseID is Claude Code's identifier for the tool invocation a
 	// plugin tool_call / mcp_tool_call reports -- the tool_use block id
 	// in the session transcript -- so an event maps back to the exact
 	// call. Sensor events do not carry it.
-	ToolUseID       string          `json:"tool_use_id,omitempty"`
-	HasContent      bool            `json:"has_content"`
-	Content         json.RawMessage `json:"content"`
+	ToolUseID  string          `json:"tool_use_id,omitempty"`
+	HasContent bool            `json:"has_content"`
+	Content    json.RawMessage `json:"content"`
 	// CapturePrompts is the session's declared capture posture, carried
 	// on the session_start event. The worker persists it write-once on
 	// the sessions row and gates all prompt-content storage on the
 	// stored value -- never on the per-event HasContent flag, which is
 	// attacker-controllable on the message bus. Absent => false =>
 	// content is not stored (fail-safe). See migration 000026.
-	CapturePrompts  bool            `json:"capture_prompts"`
-	Timestamp       string          `json:"timestamp"`
+	CapturePrompts bool   `json:"capture_prompts"`
+	Timestamp      string `json:"timestamp"`
 
 	// Directive metadata (directive_result events only).
 	DirectiveName   string          `json:"directive_name,omitempty"`
@@ -106,14 +127,14 @@ type EventPayload struct {
 	// json.RawMessage so unmarshal cannot fail on either shape; the
 	// event-extra builder preserves it verbatim into the payload JSONB
 	// column for the dashboard to narrow via typeof.
-	Error           json.RawMessage `json:"error,omitempty"`
-	DurationMs      *int64          `json:"duration_ms,omitempty"`
+	Error      json.RawMessage `json:"error,omitempty"`
+	DurationMs *int64          `json:"duration_ms,omitempty"`
 	// Optional streaming sub-object on post_call events.
 	// Populated by the sensor's GuardedStream / GuardedAsyncStream
 	// with TTFT + chunk stats + final_outcome. Absent for non-stream
 	// calls so the wire shape is unchanged for callers that never
 	// stream.
-	Streaming       json.RawMessage `json:"streaming,omitempty"`
+	Streaming json.RawMessage `json:"streaming,omitempty"`
 
 	// Policy enforcement event metadata (policy_warn / policy_degrade /
 	// policy_block). Populated by the sensor's _pre_call (WARN, BLOCK)
@@ -122,13 +143,13 @@ type EventPayload struct {
 	// DEGRADE adds (from_model, to_model) and BLOCK adds intended_model.
 	// Absent on every other event type so the wire shape is unchanged
 	// for non-policy paths.
-	Source         string  `json:"source,omitempty"`
-	ThresholdPct   *int    `json:"threshold_pct,omitempty"`
-	TokensUsed     *int64  `json:"tokens_used,omitempty"`
-	TokenLimit     *int64  `json:"token_limit,omitempty"`
-	FromModel      string  `json:"from_model,omitempty"`
-	ToModel        string  `json:"to_model,omitempty"`
-	IntendedModel  string  `json:"intended_model,omitempty"`
+	Source        string `json:"source,omitempty"`
+	ThresholdPct  *int   `json:"threshold_pct,omitempty"`
+	TokensUsed    *int64 `json:"tokens_used,omitempty"`
+	TokenLimit    *int64 `json:"token_limit,omitempty"`
+	FromModel     string `json:"from_model,omitempty"`
+	ToModel       string `json:"to_model,omitempty"`
+	IntendedModel string `json:"intended_model,omitempty"`
 
 	// Runtime context collected by the sensor at init() time and by
 	// the Claude Code plugin on every hook invocation. Populated on
@@ -194,7 +215,7 @@ type EventPayload struct {
 	// what Claude Code itself reported. Kept as a RawMessage and
 	// re-attached to events.payload as one document when it is an
 	// object; sensor MCP events do not carry it.
-	MCPServer    json.RawMessage `json:"mcp_server,omitempty"`
+	MCPServer json.RawMessage `json:"mcp_server,omitempty"`
 
 	// Sub-agent observability. Populated only on sub-agent
 	// session_start / session_end events:
@@ -281,9 +302,9 @@ type EventPayload struct {
 	// unchanged; OriginatingEventID + OriginatingCallContext travel
 	// alongside on chained event types. Both are state metadata,
 	// always included regardless of capture_prompts.
-	PolicyDecision          json.RawMessage `json:"policy_decision,omitempty"`
-	OriginatingEventID      string          `json:"originating_event_id,omitempty"`
-	OriginatingCallContext  string          `json:"originating_call_context,omitempty"`
+	PolicyDecision         json.RawMessage `json:"policy_decision,omitempty"`
+	OriginatingEventID     string          `json:"originating_event_id,omitempty"`
+	OriginatingCallContext string          `json:"originating_call_context,omitempty"`
 
 	// MCP discovery family carries the list
 	// of identifiers the server returned. Sensor caps at 100 +
@@ -369,31 +390,31 @@ type EventPayload struct {
 // without normalising (Rule 20). The actual shape varies
 // by framework:
 //
-//   * CrewAI ``Agent.execute_task`` — string (task description) or
-//     structured object (when the user populates ``expected_output``
+//   - CrewAI “Agent.execute_task“ — string (task description) or
+//     structured object (when the user populates “expected_output“
 //     with a JSON shape).
-//   * LangGraph node — dict (the inbound or outbound graph state).
-//   * Claude Code Task plugin — string (the Task tool ``prompt``
+//   - LangGraph node — dict (the inbound or outbound graph state).
+//   - Claude Code Task plugin — string (the Task tool “prompt“
 //     argument).
-//   * AutoGen (Roadmap) — framework-internal message object shape.
+//   - AutoGen (Roadmap) — framework-internal message object shape.
 //
-// Aliased to ``json.RawMessage`` rather than declared as a richer
+// Aliased to “json.RawMessage“ rather than declared as a richer
 // discriminated union because no consumer in the worker / API /
 // dashboard chain actually switches on the body shape — the
 // dashboard's MESSAGES sub-section renders whatever decodes from
 // the JSON. Adding a discriminator wrapper would be maintenance
 // without value. The named type makes the polymorphism explicit
 // at the EventPayload field signature so readers don't conflate
-// it with the structured ``Streaming`` / ``Error`` / ``Arguments``
+// it with the structured “Streaming“ / “Error“ / “Arguments“
 // fields that happen to share the same underlying type.
 type SubagentMessageBody = json.RawMessage
 
 // SubagentMessage is the wire envelope for a single cross-agent
 // message body captured at a sub-agent session boundary.
 //
-// On a sub-agent ``session_start`` event the sensor or plugin
-// stamps ``IncomingMessage`` with the parent's input to the child.
-// On the matching ``session_end`` event ``OutgoingMessage`` carries
+// On a sub-agent “session_start“ event the sensor or plugin
+// stamps “IncomingMessage“ with the parent's input to the child.
+// On the matching “session_end“ event “OutgoingMessage“ carries
 // the child's response back to the parent. capture_prompts gates
 // emission at the sensor / plugin boundary, so capture-off events
 // land on the wire with both fields nil and the worker has nothing
@@ -401,28 +422,28 @@ type SubagentMessageBody = json.RawMessage
 //
 // Two routing shapes:
 //
-//   * **Inline** (body ≤ 8 KiB) — ``Body`` + ``CapturedAt``
+//   - **Inline** (body ≤ 8 KiB) — “Body“ + “CapturedAt“
 //     populated. The body lands in events.payload via
 //     BuildEventExtra; HasContent stays false on the event row.
 //
-//   * **Overflow** (body > 8 KiB and ≤ 2 MiB) — ``HasContent``
-//     true, ``ContentBytes`` set to the body size in bytes,
-//     ``CapturedAt`` populated, ``Body`` empty. The full body
-//     rides on the event payload's separate ``content`` field
-//     (PromptContent shape with ``provider="flightdeck-subagent"``)
+//   - **Overflow** (body > 8 KiB and ≤ 2 MiB) — “HasContent“
+//     true, “ContentBytes“ set to the body size in bytes,
+//     “CapturedAt“ populated, “Body“ empty. The full body
+//     rides on the event payload's separate “content“ field
+//     (PromptContent shape with “provider="flightdeck-subagent"“)
 //     and lands in event_content via the existing
 //     InsertEventContent path; the dashboard fetches it via
-//     ``GET /v1/events/{id}/content``. The stub here lets the
+//     “GET /v1/events/{id}/content“. The stub here lets the
 //     dashboard render a size-aware "load full message" affordance
 //     without an extra round-trip.
 //
-//   * Bodies above 2 MiB are dropped at the sensor / plugin with
+//   - Bodies above 2 MiB are dropped at the sensor / plugin with
 //     a WARN log; the worker never sees them.
 //
 // See SubagentMessageBody for the rationale behind the polymorphic
 // body type. CapturedAt is the ISO 8601 / RFC 3339 timestamp the
 // sensor / plugin stamped at capture time. Kept as a string on the
-// wire (rather than ``time.Time``) so a clock-skewed agent can
+// wire (rather than “time.Time“) so a clock-skewed agent can
 // still produce a parseable payload — the dashboard renders it as
 // a relative offset from the event row's occurred_at and doesn't
 // need timezone-rich semantics.

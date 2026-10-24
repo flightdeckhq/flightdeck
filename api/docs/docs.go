@@ -3110,7 +3110,16 @@ const docTemplate = `{
                 "agent_type": {
                     "type": "string"
                 },
+                "billing_mode": {
+                    "type": "string"
+                },
                 "client_type": {
+                    "type": "string"
+                },
+                "cost_reported": {
+                    "type": "number"
+                },
+                "cost_source": {
                     "type": "string"
                 },
                 "event_type": {
@@ -3134,12 +3143,24 @@ const docTemplate = `{
                 "model": {
                     "type": "string"
                 },
+                "model_requested": {
+                    "type": "string"
+                },
+                "model_served": {
+                    "type": "string"
+                },
                 "occurred_at": {
                     "type": "string"
                 },
                 "payload": {
                     "type": "object",
                     "additionalProperties": {}
+                },
+                "platform": {
+                    "type": "string"
+                },
+                "provider": {
+                    "type": "string"
                 },
                 "session_id": {
                     "type": "string"
@@ -3156,6 +3177,9 @@ const docTemplate = `{
                     "type": "integer"
                 },
                 "tokens_output": {
+                    "type": "integer"
+                },
+                "tokens_reasoning": {
                     "type": "integer"
                 },
                 "tokens_total": {

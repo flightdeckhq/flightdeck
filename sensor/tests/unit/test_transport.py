@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from typing import Any
 from unittest.mock import MagicMock, patch
@@ -142,17 +143,28 @@ class TestEventQueue:
         1:1 correspondence between drops and warnings so any future
         attempt to silence them lands as a failed test.
         """
+        # The drain thread takes one event and then blocks in post_event.
+        # `draining` is set once it is blocked there, so the queue is
+        # static from then on except for the test's own enqueues.
+        draining = threading.Event()
+
+        def blocking_post(_: object) -> tuple[None, bool]:
+            draining.set()
+            time.sleep(10)
+            return None, False
+
         mock_client = MagicMock(spec=ControlPlaneClient)
-        mock_client.post_event.side_effect = lambda _: (time.sleep(10), None, False)[1:]
+        mock_client.post_event.side_effect = blocking_post
         eq = EventQueue(mock_client)
         try:
-            # Pre-fill so every subsequent enqueue triggers the
-            # drop-oldest path. The first N enqueues may themselves
-            # trigger drops if the drain thread pops one in flight,
-            # so we clear the captured log records below before the
-            # 10-drop measurement loop.
             for i in range(_MAX_QUEUE_SIZE + 50):
                 eq.enqueue({"i": i})
+            assert draining.wait(timeout=5), "drain thread never took an event"
+            # The drain thread's pop may have landed after the pre-fill;
+            # top the queue back up to exactly full so every enqueue in
+            # the measurement loop below has to drop one.
+            while eq._queue.qsize() < _MAX_QUEUE_SIZE:
+                eq.enqueue({"top_up": True})
             caplog.clear()
             with caplog.at_level(logging.WARNING, logger="flightdeck_sensor.transport.client"):
                 # 10 forced drops -> expect 10 warning lines, no

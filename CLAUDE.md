@@ -95,8 +95,8 @@ Frontend code rules (11-17) live in `dashboard/CLAUDE.md`.
 25. **Available dimensions are exactly:** `flavor`, `model`, `framework`, `host`,
     `agent_type`, `team`, `provider`, `agent_role`, `parent_session_id`. No other
     values. Do not add dimensions without updating ARCHITECTURE.md first.
-    `provider` is derived at query time via SQL CASE over `model` (see
-    DECISIONS.md D098). `agent_role` (D126) groups by the framework-supplied
+    `provider` reads the sensor-stamped `events.provider` and falls back
+    to a SQL CASE over `model` for older rows (DECISIONS.md D098, D170). `agent_role` (D126) groups by the framework-supplied
     sub-agent role string; sessions with null `agent_role` bucket as `(root)`.
     `parent_session_id` (D126 § 6.4) groups by the parent session UUID; root
     sessions bucket as `(root)`. The `group_by` query param accepts **one or
@@ -109,9 +109,11 @@ Frontend code rules (11-17) live in `dashboard/CLAUDE.md`.
     `latency_p50`, `latency_p95`, `policy_events`, `estimated_cost`,
     `parent_token_sum`, `child_token_sum`, `child_count`,
     `parent_to_first_child_latency_ms`. Same rule applies. `estimated_cost`
-    uses the pricing table in `pricing.yaml` at the repo root, loaded at
-    API startup by `api/internal/store/pricing_loader.go` (D099); update the
-    YAML when provider list prices change (CONTRIBUTING.md has the steps).
+    sums metered calls only (D206) and prices them from the `model_pricing`
+    table, which `api/internal/store/pricing_loader.go` rebuilds at API
+    startup from the vendored litellm catalogue and the `pricing.yaml`
+    overrides (D169, D208); refresh the catalogue with `make
+    pricing-refresh` (CONTRIBUTING.md has the steps).
     The four sub-agent-aware metrics (D126) operate over the parent / child
     relationship via recursive
     CTE on `parent_session_id`; see ARCHITECTURE.md analytics endpoint section

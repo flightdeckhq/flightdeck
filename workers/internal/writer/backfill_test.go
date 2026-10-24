@@ -153,3 +153,110 @@ func TestRunModelBackfill_KeepsValuesAlreadySet(t *testing.T) {
 		t.Errorf("got %v, want %v", got, want)
 	}
 }
+
+// Small batches cover a backlog over several transactions, and a row
+// whose model canonicalises to nothing still leaves the work set, so
+// the run terminates.
+func TestBackfillModelBatch_SeveralBatchesAndBlankModel(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	w := New(pool)
+	session := legacySession(t, pool, "flightdeck_sensor", "")
+	ids := []string{
+		legacyEvent(t, pool, session, "post_call", "gpt-4o-mini", nil),
+		legacyEvent(t, pool, session, "post_call", "openai/gpt-4o", nil),
+		legacyEvent(t, pool, session, "post_call", "   ", nil),
+	}
+
+	// Drain with batches of one; the live worker may claim some rows of
+	// this test's session itself, which is fine: every row must end up
+	// rewritten either way.
+	for i := 0; i < 1000; i++ {
+		n, err := w.backfillModelBatch(ctx, 1)
+		if err != nil {
+			t.Fatalf("batch %d: %v", i, err)
+		}
+		if n == 0 {
+			break
+		}
+	}
+
+	want := map[string][2]string{ // id -> model, model_requested
+		ids[0]: {"gpt-4o-mini", "gpt-4o-mini"},
+		ids[1]: {"gpt-4o", "openai/gpt-4o"},
+		ids[2]: {"<nil>", "   "},
+	}
+	for id, w := range want {
+		b := readBackfilled(t, pool, id)
+		if got := [2]string{str(b.model), str(b.requested)}; got != w {
+			t.Errorf("event %s: got %v, want %v", id, got, w)
+		}
+	}
+}
+
+// The sessions update is a compare-and-set: a session whose model moved
+// on to a newer id after the raw one was stored keeps the newer id.
+func TestRunModelBackfill_DoesNotOverwriteANewerSessionModel(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	session := legacySession(t, pool, "flightdeck_sensor", "claude-opus-4-6")
+	legacyEvent(t, pool, session, "post_call", "claude-opus-4.5", nil)
+
+	New(pool).RunModelBackfill(ctx)
+
+	var model string
+	if err := pool.QueryRow(ctx, `SELECT model FROM sessions WHERE session_id = $1::uuid`, session).Scan(&model); err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	if model != "claude-opus-4-6" {
+		t.Errorf("sessions.model = %q, want the newer claude-opus-4-6 kept", model)
+	}
+}
+
+// Two workers backfilling at once share the rows without failing:
+// SKIP LOCKED splits the events and the ordered session locks keep
+// shared sessions from deadlocking.
+func TestRunModelBackfill_ConcurrentRunsShareTheWork(t *testing.T) {
+	pool := testPool(t)
+	ctx := context.Background()
+	sessions := []string{
+		legacySession(t, pool, "flightdeck_sensor", "gpt-4o-mini"),
+		legacySession(t, pool, "claude_code", "claude-sonnet-4.5"),
+	}
+	var ids []string
+	for i := 0; i < 50; i++ {
+		ids = append(ids,
+			legacyEvent(t, pool, sessions[0], "post_call", "gpt-4o-mini", nil),
+			legacyEvent(t, pool, sessions[1], "post_call", "claude-sonnet-4.5", nil),
+		)
+	}
+
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			w := New(pool)
+			for {
+				n, err := w.backfillModelBatch(ctx, 7)
+				if err != nil || n == 0 {
+					errs <- err
+					return
+				}
+			}
+		}()
+	}
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("concurrent backfill: %v", err)
+		}
+	}
+
+	var left int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM events
+		WHERE id = ANY($1::uuid[]) AND model_requested IS NULL`, ids).Scan(&left); err != nil {
+		t.Fatalf("count remaining: %v", err)
+	}
+	if left != 0 {
+		t.Errorf("%d rows left unrewritten", left)
+	}
+}

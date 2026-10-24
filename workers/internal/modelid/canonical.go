@@ -52,12 +52,34 @@ var openRouterVariants = map[string]bool{
 // uses a hyphen ("claude-sonnet-4-5").
 var claudeDottedVersion = regexp.MustCompile(`(\d)\.(\d)`)
 
+// fineTunedPrefix starts an OpenAI fine-tuned model id:
+// "ft:<base model>:<org>:<suffix>:<job id>".
+const fineTunedPrefix = "ft:"
+
+// huggingFaceHosts prefix a model pulled from the Hugging Face Hub by a
+// local server ("hf.co/<org>/<model>:<quant>"). The organisation is part
+// of such a model's identity, so these keep "<org>/<model>".
+var huggingFaceHosts = []string{"hf.co/", "huggingface.co/"}
+
 // Canonicalize returns the canonical form of a raw model id. An id the
 // rules do not recognise is returned lower-cased and trimmed.
 func Canonicalize(raw string) Canonical {
 	id := strings.ToLower(strings.TrimSpace(raw))
 	if id == "" {
 		return Canonical{}
+	}
+	// An OpenAI fine-tune is priced, and named, by its base model; the
+	// organisation and job id stay in the verbatim model_requested.
+	if rest, ok := strings.CutPrefix(id, fineTunedPrefix); ok {
+		base, _, _ := strings.Cut(rest, ":")
+		if base != "" {
+			return Canonical{Model: fineTunedPrefix + Canonicalize(base).Model}
+		}
+	}
+	for _, host := range huggingFaceHosts {
+		if rest, ok := strings.CutPrefix(id, host); ok && rest != "" {
+			return Canonical{Model: rest}
+		}
 	}
 	// Gateway and platform prefixes ("openrouter/anthropic/...",
 	// "bedrock/...", "vertex_ai/...", "meta-llama/..."): the model is
@@ -101,6 +123,9 @@ var openAIModel = regexp.MustCompile(
 // Provider derives the model's vendor from a canonical model id:
 // anthropic, openai, google, xai, mistral, meta, deepseek or other.
 func Provider(canonical string) string {
+	if base, ok := strings.CutPrefix(canonical, fineTunedPrefix); ok {
+		return Provider(base)
+	}
 	// A Bedrock id that keeps its vendor prefix ("meta.llama3-...")
 	// names the vendor directly.
 	if vendor, _, ok := strings.Cut(canonical, "."); ok {

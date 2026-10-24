@@ -42,6 +42,13 @@ func TestCanonicalize(t *testing.T) {
 		{"claude-3.5-sonnet", "claude-3-5-sonnet", ""},
 		{"claude-opus-4.1", "claude-opus-4-1", ""},
 		{"gemini-2.5-flash", "gemini-2.5-flash", ""},
+		// OpenAI fine-tunes keep "ft:" and the canonical base model.
+		{"ft:gpt-4o-mini-2024-07-18:acme::AbC123", "ft:gpt-4o-mini-2024-07-18", ""},
+		{"ft:gpt-4.1:acme:support-bot:XyZ9", "ft:gpt-4.1", ""},
+		{"ft:", "ft:", ""},
+		// Hugging Face Hub models keep their organisation.
+		{"hf.co/bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M", "bartowski/llama-3.2-3b-instruct-gguf:q4_k_m", ""},
+		{"huggingface.co/Qwen/Qwen2.5-7B", "qwen/qwen2.5-7b", ""},
 		// Unrecognised ids pass through lower-cased; empty stays empty.
 		{"My-Azure-Deployment", "my-azure-deployment", ""},
 		{"", "", ""},
@@ -65,6 +72,8 @@ func TestCanonicalize_IsIdempotent(t *testing.T) {
 		"claude-sonnet-4-5@20250929",
 		"llama3.1:8b",
 		"amazon.titan-embed-text-v2:0",
+		"ft:gpt-4o-mini-2024-07-18:acme::AbC123",
+		"hf.co/bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M",
 	} {
 		once := Canonicalize(raw).Model
 		if twice := Canonicalize(once).Model; twice != once {
@@ -83,6 +92,7 @@ func TestProvider(t *testing.T) {
 		"o3":                              "openai",
 		"o3-mini":                         "openai",
 		"o4-mini-2025-04-16":              "openai",
+		"ft:gpt-4o-mini-2024-07-18":       "openai",
 		"text-embedding-3-small":          "openai",
 		"gpt-image-1":                     "openai",
 		"omni-moderation-latest":          "openai",

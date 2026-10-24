@@ -2983,7 +2983,11 @@ strips gateway and platform prefixes, Bedrock region prefixes (`us.`,
 `eu.`, `apac.`, `global.`) and the `anthropic.` vendor prefix with its
 `-v1:0` suffix, the Vertex `@date` suffix and OpenRouter's `:free` /
 `:beta` suffixes, and turns dotted Claude versions into the API's
-hyphenated form. A dated snapshot keeps its date. Stripping a Bedrock
+hyphenated form. A dated snapshot keeps its date. An OpenAI fine-tune
+(`ft:<base>:<org>:...`) becomes `ft:` plus its canonical base model, the
+form the catalogue prices it under, and a Hugging Face Hub model a local
+server pulled (`hf.co/<org>/<model>:<quant>`) keeps its organisation.
+Stripping a Bedrock
 region prefix records its scope first: `global.` is
 `inference_scope=global`, any other region prefix `regional`. An id the
 rules do not recognise is stored as given (lower-cased, whitespace
@@ -2994,7 +2998,8 @@ the background. Because the write path always fills `model_requested`
 for an LLM event that names a model, a row with a `model` and an empty
 `model_requested` is one the write path never canonicalised. The
 backfill takes batches of those rows (`FOR UPDATE SKIP LOCKED`, so
-several workers share the work), moves the raw id into
+several workers share the work, and a failed batch is retried with
+backoff), moves the raw id into
 `model_requested`, stores the canonical id in `model`, copies
 `provider_metadata.platform` from the payload into `platform`, adds the
 `inference_scope` a Bedrock region prefix implies, and fills `provider`

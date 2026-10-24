@@ -11581,11 +11581,16 @@ local model in the same session).
 **Date:** 2026-10-24
 
 **Decision:** The worker canonicalises the model id of every LLM event
-when it writes the row, with a pure Go function and a test-vector table,
-and stores the verbatim `model_requested` and `model_served` beside the
-canonical `model`. Clients send ids verbatim. Operators map deployment
-names to model ids in the `aliases` section of `pricing.yaml`. This
-replaces the update plan's sensor-side `canonicalize()`.
+when it writes the row, with a pure Go function (string rules only, no
+lookup) and a test-vector table, and stores the verbatim
+`model_requested` and `model_served` beside the canonical `model`.
+Clients send ids verbatim. Rows already stored with raw ids are
+rewritten by a batched, idempotent worker backfill that also fills
+`provider` and `billing_mode`. The two mappings that depend on
+configuration, operator aliases from `pricing.yaml` and the fallback
+from an unpriced dated id to its undated id, are applied by the cost
+query, so they reach past events. This replaces the update plan's
+sensor-side `canonicalize()`.
 
 **Reasoning:** The id has to be canonical for every client, not only the
 Python sensor: the Claude Code plugin, events from released sensors that
@@ -11612,9 +11617,16 @@ binary as `pricing_catalogue.json`; at startup the API merges it with
 `pricing.yaml` (field-by-field overrides, model-id aliases, the service
 tier, speed and region multipliers, and server-tool fees) and rebuilds
 `model_pricing` in one transaction, skipping the write when the merged
-content's hash is unchanged. Cost is computed at query time by joining
-events to `model_pricing` on canonical model id and platform family,
-falling back to the `direct` row. A cost reported by a gateway or client
+content's hash is unchanged; each alias becomes a row with its target's
+rates. Cost is computed at query time: token terms are summed per group
+of canonical model, platform family, context tier and multiplier values,
+and each group is joined to its `model_pricing` row (exact id, then the
+undated id; the platform family, then `direct`). The flat multipliers
+and server-tool fees are held by the API and passed as query
+parameters; the per-model priority ratio and the context tier's five
+rates (5-minute and 1-hour cache writes priced apart) are columns. The
+endpoint is stored in an `events.platform` column, beside its copy in
+`provider_metadata`, so the grouping does not read JSON per row. A cost reported by a gateway or client
 (`cost_source` `provider` or `agent`) is used in place of the estimate.
 `embeddings` events are priced alongside `post_call`. The one-hour cache
 write share travels as `tokens_cache_creation_1h` and the five-minute
@@ -11638,3 +11650,27 @@ generated CASE expression (unmaintainable at catalogue size); seeding
 refresh and every operator override, which is configuration, not schema).
 The query-time join has to hold up on large windows; the pricing-engine
 change benchmarks it on 100,000 events before it merges.
+
+---
+
+## D209 -- A policy's degrade_to must name a current, priced model
+
+**Date:** 2026-10-24
+
+**Decision:** `POST /v1/policies`, and a `PUT` that changes `degrade_to`,
+reject a `degrade_to` that is not a model id in `model_pricing` or whose
+`deprecated_on` date has passed. A `PUT` that leaves `degrade_to` as it
+is does not re-validate it, so existing policies keep working and an
+operator can still edit their other fields. The dashboard's degrade-to
+list offers only the ids the check accepts.
+
+**Reasoning:** `degrade_to` was never validated. A typo or a retired id
+turned a DEGRADE decision into an outage: the sensor swapped every call
+to a model the provider rejects. The pricing table already lists every
+model the deployment can price, with retirement dates, so it is the
+natural catalogue to check against.
+
+**Rejected alternative:** Validating against a hand-kept list in the
+dashboard (drifts from the catalogue, and the API stays unprotected), or
+re-validating `degrade_to` on every update (an unrelated edit to an old
+policy would fail on a model id that was valid when it was set).

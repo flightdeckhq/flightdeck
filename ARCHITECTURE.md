@@ -1369,10 +1369,14 @@ state-revival path: the child session ages from
 PostToolUseFailure hook with `markEmittedTurn` per-messageId disk-marker dedup so mid-turn LLM
 activity surfaces in real time instead of batching at Stop.
 
-Each `post_call` carries `provider=anthropic` and the session's
-`billing_mode`, which the `SessionStart` hook determines once (see Cost
-estimation) and keeps in the session's marker directory beside the
-cached model, so later hooks do not run `claude auth status` again.
+Each `post_call` carries `provider=anthropic`, the session's
+`billing_mode` and `provider_metadata.platform`, which the
+`SessionStart` hook determines once (see Cost estimation) and keeps in
+the session's marker directory beside the cached model, so later hooks
+do not run `claude auth status` again. A Vertex AI session also carries
+`inference_scope`: `global` when `CLOUD_ML_REGION` is `global`, else
+`regional`; a Bedrock session's scope comes from its model id (see
+Model ids).
 `model_requested` is the model the transcript turn names; Claude Code
 does not expose a separate served id, so `model_served` is the same
 value.
@@ -1663,6 +1667,7 @@ feeds is described under Cost estimation.
 | `model_served` | `events.model_served` | The model id the response named, verbatim |
 | `provider` | `events.provider` | The model's vendor |
 | `billing_mode` | `events.billing_mode` | `metered`, `subscription` or `local` |
+| `provider_metadata.platform` | `events.platform` (and `payload`) | The endpoint that served the call |
 | `tokens_reasoning` | `events.tokens_reasoning` | Reasoning or thinking tokens, a subset of `tokens_output` |
 | `tokens_cache_creation_1h` | `payload` | One-hour cache writes, a subset of `tokens_cache_creation` |
 | `cost_reported` | `events.cost_reported` | USD cost the gateway or client reported for this call |
@@ -1670,12 +1675,11 @@ feeds is described under Cost estimation.
 | `service_tier` | `payload` | The tier that served the call as the response reports it (`standard`, `batch`, `flex`, `priority`, ...) |
 | `speed` | `payload` | Anthropic's inference speed (`standard`, `fast`) |
 | `inference_geo` | `payload` | Data-residency setting the response reports (Anthropic `us`, ...) |
-| `inference_scope` | `payload` | `global` or `regional` cloud endpoint; sent by the sensor for Vertex AI, derived by the worker from a Bedrock inference-profile prefix |
+| `inference_scope` | `payload` | `global` or `regional` cloud endpoint; sent by the sensor and the plugin for Vertex AI, derived by the worker from a Bedrock inference-profile prefix |
 | `server_tool_use` | `payload` | Server-side tool request counters (`web_search_requests`, `web_fetch_requests`, `code_execution_requests`) |
 | `stop_reason` | `payload` | Why generation stopped (`end_turn`, `max_tokens`, `tool_use`, `stop`, `length`, ...), verbatim from the provider |
 
-`provider_metadata.request_id` and `provider_metadata.platform` (see
-`post_call`) complete the set. The worker copies each payload field
+`provider_metadata.request_id` (see `post_call`) completes the set. The worker copies each payload field
 above into `events.payload` under the same key.
 
 ### Validation rules
@@ -1697,9 +1701,13 @@ The ingestion handler rejects events with 400 when:
   is outside `{anthropic, openai, google, xai, mistral, meta, deepseek,
   other}`, or `cost_source` is outside `{provider, agent}`.
 - `cost_reported` and `cost_source` are not both set or both absent.
+- `tokens_reasoning` exceeds `tokens_output`, or
+  `tokens_cache_creation_1h` exceeds `tokens_cache_creation`, when both
+  fields of the pair are present.
 - `model_requested`, `model_served`, `service_tier`, `speed`,
   `inference_geo` or `stop_reason` is longer than 256 characters, or
-  `inference_scope` is outside `{global, regional}`.
+  `inference_scope` is outside `{global, regional}`, or
+  `provider_metadata.platform` is longer than 253 characters.
 
 A `session_end` for a `session_id` Flightdeck has never seen (an orphan
 `session_end`) is **not** rejected at ingestion — the event is accepted and
@@ -2272,8 +2280,9 @@ CREATE TABLE events (
     tokens_cache_read     BIGINT NOT NULL DEFAULT 0,
     tokens_cache_creation BIGINT NOT NULL DEFAULT 0,
     tokens_reasoning      BIGINT,                      -- subset of tokens_output; NULL when not reported
-    provider              TEXT,                        -- model vendor; NULL on rows written before it existed
-    billing_mode          TEXT,                        -- metered / subscription / local; NULL on older rows
+    provider              TEXT,                        -- model vendor; NULL until the worker or the backfill fills it
+    billing_mode          TEXT,                        -- metered / subscription / local; NULL until filled, as provider
+    platform              TEXT,                        -- endpoint that served the call (provider_metadata.platform)
     cost_reported         NUMERIC(14, 8),              -- USD reported by a gateway or client
     cost_source           TEXT,                        -- provider / agent; set exactly when cost_reported is
     model_requested       TEXT,                        -- verbatim request model id
@@ -2365,8 +2374,10 @@ CREATE TABLE model_pricing (
     tier_input             NUMERIC(14, 6),
     tier_output            NUMERIC(14, 6),
     tier_cache_read        NUMERIC(14, 6),
-    tier_cache_write       NUMERIC(14, 6),
-    source                 TEXT NOT NULL,              -- catalogue / override
+    tier_cache_write_5m    NUMERIC(14, 6),
+    tier_cache_write_1h    NUMERIC(14, 6),
+    priority_multiplier    NUMERIC(8, 4),              -- NULL: no priority rate in the catalogue
+    source                 TEXT NOT NULL,              -- catalogue / override / alias
     deprecated_on          DATE,
     PRIMARY KEY (model_id, platform)
 );
@@ -2517,7 +2528,7 @@ always create a new numbered migration.
 | 000026 | `sessions.capture_prompts` nullable BOOLEAN: server-authoritative capture posture written once from `session_start` |
 | 000027 | `sessions.start_seq` and `sessions.closed_seq` nullable BIGINT: NATS stream sequence of the `session_start` that opened the current run and of the `session_end` that closed it, so the worker orders a session's start and end without holding events back |
 | 000028 | `access_tokens_notify_revoked` trigger: every deleted `access_tokens` row sends its id on the `flightdeck_access_token_revoked` NOTIFY channel, so both services drop cached validations of a revoked token at once |
-| 000029 | Token and cost model: `events.tokens_reasoning`, `provider`, `billing_mode`, `cost_reported`, `cost_source`, `model_requested`, `model_served`; the `model_pricing` and `model_pricing_meta` tables |
+| 000029 | Token and cost model: `events.tokens_reasoning`, `provider`, `billing_mode`, `platform`, `cost_reported`, `cost_source`, `model_requested`, `model_served`; the `model_pricing` and `model_pricing_meta` tables |
 
 ---
 
@@ -2541,7 +2552,7 @@ authoritative parameter-level reference.
 | `GET` | `/v1/policy` | Sensor preflight: returns the policy applicable to a flavor + session_id |
 | `GET` | `/v1/policies` | List all token policies (org + flavor + session scopes) |
 | `POST` | `/v1/policies` | Create a policy; validates `warn < degrade < block`, and that `degrade_to` names a model in `model_pricing` that has no `deprecated_on` date in the past |
-| `PUT` | `/v1/policies/:id` | Update a policy; the same validation as `POST` |
+| `PUT` | `/v1/policies/:id` | Update a policy; the same validation as `POST`, except that an unchanged `degrade_to` is not re-checked |
 | `DELETE` | `/v1/policies/:id` | Delete a policy |
 | `POST` | `/v1/directives` | Create a `shutdown`, `shutdown_flavor`, or `custom` directive |
 | `GET` | `/v1/directives/custom` | List registered custom directives; optional `flavor` filter |
@@ -2782,8 +2793,8 @@ renaming fields is not.
   Allowed dimension values (in either position): `flavor`, `model`,
   `framework`, `host`, `agent_type`, `team`, `provider`,
   `agent_role`, `parent_session_id`. `provider` reads
-  `events.provider` and, for rows written before that column existed,
-  falls back to a SQL CASE over the model id's prefix. `agent_role` groups
+  `events.provider` and, for a row whose `provider` is empty, falls
+  back to a SQL CASE over the model id's prefix. `agent_role` groups
   by the framework-supplied role string; sessions with null
   `agent_role` bucket as `(root)`. `parent_session_id`
   groups by parent session UUID; sessions without a parent (root
@@ -2886,7 +2897,10 @@ paid per token.
 | `local` | A self-hosted model with no per-token charge (Ollama, vLLM, LM Studio and similar servers on the operator's own hardware) | No (costs $0, and is not reported as unpriced) |
 
 The sensor stamps `metered` on every call by default and `local` when the
-client's base URL is a loopback or private address. The Claude Code
+client's base URL is a loopback address (`localhost`, `127.0.0.0/8`,
+`::1`). A model server elsewhere on a private network is not assumed to
+be free, since a gateway or a metered proxy often sits on such an
+address; the override below covers a self-hosted server there. The Claude Code
 plugin determines the mode once at `SessionStart`: Bedrock, Vertex AI
 and Foundry sessions (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`,
 `CLAUDE_CODE_USE_FOUNDRY`) and API-key logins are `metered`; a
@@ -2907,9 +2921,12 @@ billing, or a team that routinely runs on extra usage) sets
 `FLIGHTDECK_BILLING_MODE=metered` in the plugin's environment, and its
 sessions are then priced like any API-key session.
 
-Events written before the billing mode existed carry none; they are
-read as `subscription` when their session's `client_type` is
-`claude_code` and as `metered` otherwise.
+An event that arrives without a `billing_mode` (a client that does not
+send one) is stored as `subscription` when its session's `client_type`
+is `claude_code` and as `metered` otherwise; the worker fills it in when
+it writes the row. The cost query applies the same rule to a row whose
+`billing_mode` is empty, so a row the backfill (see Model ids) has not
+reached yet is counted the same way.
 
 #### Where a call's cost comes from
 
@@ -2952,32 +2969,55 @@ the row, with a pure function in the workers module, and stores:
   Display surfaces show the canonical id and keep the verbatim ids in
   the event detail.
 
-Canonicalisation strips gateway and platform prefixes, Bedrock region
-prefixes (`us.`, `eu.`, `apac.`, `global.`) and the `anthropic.` vendor
-prefix with its `-v1:0` suffix, the Vertex `@date` suffix and
-OpenRouter's `:free` / `:beta` suffixes, and turns dotted Claude
-versions into the API's hyphenated form. A dated snapshot keeps its date
-when the pricing table has the dated id and otherwise falls back to the
-undated id. Stripping a Bedrock region prefix records its scope first:
-`global.` is `inference_scope=global`, any other region prefix
-`regional` (the sensor reports the scope of a Vertex AI client from its
-configured region). An id the rules do not recognise is stored as given
-(lower-cased, whitespace trimmed). Operators map deployment names (Azure,
-a gateway's custom routes) to a model id in the `aliases` section of
-`pricing.yaml`. The rules are pinned by a table of test vectors.
+Canonicalisation is a fixed set of string rules with no lookup: it
+strips gateway and platform prefixes, Bedrock region prefixes (`us.`,
+`eu.`, `apac.`, `global.`) and the `anthropic.` vendor prefix with its
+`-v1:0` suffix, the Vertex `@date` suffix and OpenRouter's `:free` /
+`:beta` suffixes, and turns dotted Claude versions into the API's
+hyphenated form. A dated snapshot keeps its date. Stripping a Bedrock
+region prefix records its scope first: `global.` is
+`inference_scope=global`, any other region prefix `regional`. An id the
+rules do not recognise is stored as given (lower-cased, whitespace
+trimmed). The rules are pinned by a table of test vectors.
+
+Rows stored with a raw id are rewritten by a backfill the worker runs in
+the background: it takes batches of LLM events whose `model_requested`
+is empty (`FOR UPDATE SKIP LOCKED`, so several workers share the work),
+moves the raw id into `model_requested`, stores the canonical id in
+`model`, and fills `provider` and `billing_mode` by the rules here. It
+is idempotent and resumes where it stopped after a restart.
+
+Two mappings depend on configuration and so are applied when cost is
+computed rather than when the row is written, which means they reach
+past events too:
+
+- **Aliases.** Operators map deployment names (Azure, a gateway's
+  custom routes) to a model id in the `aliases` section of
+  `pricing.yaml`; each alias becomes a `model_pricing` row with the
+  target model's rates.
+- **Undated fallback.** A dated id with no price of its own (a
+  snapshot the catalogue does not list) is priced as its undated id.
 
 #### Provider and platform
 
 - `provider` (column) is the model's vendor: `anthropic`, `openai`,
   `google`, `xai`, `mistral`, `meta`, `deepseek` or `other`. The sensor
-  stamps it from the SDK it intercepted; the plugin stamps `anthropic`.
-  For an event that carries none, the worker derives it from the
-  canonical model id, and the analytics `provider` dimension falls back
-  to the same model-prefix rule for rows written before the column
-  existed.
-- `platform` (in `provider_metadata`, see `post_call`) is the endpoint
-  that served the call: `anthropic`, `openai`, `bedrock`, `vertex`,
-  `foundry`, `azure`, or the bare host of a gateway or local server. It
+  stamps it only when the endpoint settles it: the Anthropic SDK's
+  clients (`anthropic`), and the OpenAI SDK against the `openai` or
+  `azure` platform (`openai`). An OpenAI-compatible client pointed
+  anywhere else (xAI, DeepSeek, OpenRouter, a local server) leaves it
+  out. The plugin stamps `anthropic`. For an event that carries none,
+  the worker derives it from the canonical model id, and the analytics
+  `provider` dimension applies the same model-prefix rule to a row whose
+  `provider` is empty.
+- `platform` is the endpoint that served the call: `anthropic`,
+  `openai`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`, `google-cloud`,
+  `foundry`, `azure`, the bare host of a gateway or local server, or
+  `invalid-host`. Clients send it as `provider_metadata.platform` (see
+  `post_call`; the plugin sets `bedrock`, `vertex` or `foundry` from the
+  Claude Code provider variables, else `anthropic`, or the host of
+  `ANTHROPIC_BASE_URL` when that names a gateway). The worker copies it
+  into the `events.platform` column, which the cost query groups by. It
   selects which price list applies and is shown in the event detail. It
   is not an analytics dimension.
 
@@ -3003,13 +3043,17 @@ Each row is keyed by canonical model id and platform family (`direct`
 for the provider's own API, `bedrock`, `vertex`, `foundry`, `azure`) and
 holds, in USD per million tokens: `input`, `output`, `cache_read`,
 `cache_write_5m`, `cache_write_1h`, and optionally `reasoning` (when
-reasoning tokens are priced apart from output) and a context tier
-(`tier_threshold_tokens` with the four rates that apply above it). A
+reasoning tokens are priced apart from output), a context tier
+(`tier_threshold_tokens` with the five rates that apply above it) and
+`priority_multiplier` (the ratio of the catalogue's priority-tier rate
+to the standard rate). A
 call on a platform with no row of its own is priced from the `direct`
 row. Platform labels map to a family: `bedrock` and `bedrock-mantle` to
 `bedrock`, `vertex` to `vertex`, `foundry` to `foundry`, `azure` to
-`azure`; every other label (the provider's own API, a gateway or local
-host) prices from `direct`. The load replaces the table's contents in one transaction and is
+`azure`; `anthropic`, `openai`, `aws` (Claude Platform on AWS) and
+`google-cloud` (Claude Platform on Google Cloud), which bill at the
+provider's own prices, and every gateway host and `invalid-host` price
+from `direct`. The load replaces the table's contents in one transaction and is
 skipped when the merged content's hash matches what the table holds, so
 several API replicas starting together write it at most once each.
 
@@ -3020,20 +3064,26 @@ Per `post_call` and `embeddings` event, with `t_in` the input tokens
 `t_cw1h` the one-hour subset of the cache writes:
 
 ```
-t_uncached = t_in - t_cache_read - t_cache_creation
+t_uncached = GREATEST(t_in - t_cache_read - t_cache_creation, 0)
+t_cw5m     = GREATEST(t_cache_creation - t_cw1h, 0)
+t_plain    = GREATEST(t_out - t_reasoning, 0)
 rates      = tier rates when t_in > tier_threshold_tokens, else base rates
 
-cost = ( t_uncached                     * input
-       + t_cache_read                   * cache_read
-       + (t_cache_creation - t_cw1h)    * cache_write_5m
-       + t_cw1h                         * cache_write_1h
-       + (t_out - t_reasoning)          * output
-       + t_reasoning                    * COALESCE(reasoning, output)
+cost = ( t_uncached     * input
+       + t_cache_read   * cache_read
+       + t_cw5m         * cache_write_5m
+       + t_cw1h         * cache_write_1h
+       + t_plain        * output
+       + t_reasoning    * COALESCE(reasoning, output)
        ) / 1e6
        * multiplier(service_tier) * multiplier(speed)
        * multiplier(inference_geo) * multiplier(inference_scope)
        + server-tool fees
 ```
+
+Ingestion rejects counts that break the subset rules (below), and the
+`GREATEST` clamps keep a row stored before that check from producing a
+negative term.
 
 Reasoning tokens are a subset of `tokens_output` on every provider; the
 sensor adds Gemini's separately reported thinking tokens into
@@ -3045,8 +3095,8 @@ The multipliers and server-tool fees live in `pricing.yaml`, so a
 provider's change is a data edit. A missing or unrecognised value
 multiplies by 1.
 
-- `service_tier`: `batch` and `flex` 0.5; `priority` at the ratio of
-  the model's catalogue priority rate to its standard rate.
+- `service_tier`: `batch` and `flex` 0.5; `priority` at the model's
+  `priority_multiplier` (1 when the catalogue has no priority rate).
 - `speed`: `fast` at the multiplier Anthropic publishes for fast mode.
 - `inference_geo`: 1.1 for Anthropic's US-only inference.
 - `inference_scope`: 1.1 for a `regional` cloud endpoint (a Bedrock
@@ -3056,17 +3106,25 @@ multiplies by 1.
 - Server tools: per-request fees, such as web search per 1,000
   searches from `server_tool_use.web_search_requests`.
 
-The cost is computed at query time, by joining the events to
-`model_pricing`, rather than stored per event, so a price correction
-or a new override applies to past events as well as new ones.
+The cost is computed at query time rather than stored per event, so a
+price correction, a new override or a new alias applies to past events
+as well as new ones. The query first sums each token term per group of
+canonical model, platform family, context tier and multiplier values,
+then joins each group to its `model_pricing` row (exact id, then the
+undated id; the platform family's row, then `direct`), so the pricing
+work scales with the number of distinct groups, not the number of
+events. The API holds the multipliers and server-tool fees from
+`pricing.yaml` in memory and passes them to the query as parameters.
 
 Every response that carries a cost also says what the number leaves
-out: `partial_estimate` is true when `models_unpriced` (the canonical
-ids of metered calls in the window that had neither a price nor a
-reported cost) is non-empty, and `billing_modes` lists every billing
-mode the window's calls used, so a surface can say that subscription
-usage is not included, or show `Subscription` where nothing was
-metered.
+out, with three keys: `partial_estimate` is true when `models_unpriced`
+(the canonical ids of metered calls in the window that had neither a
+price nor a reported cost) is non-empty, and `billing_modes` lists every
+billing mode the window's calls used, so a surface can say that
+subscription usage is not included, or show `Subscription` where nothing
+was metered. `GET /v1/analytics` with `metric=estimated_cost` returns
+them at the top level of the response, beside `series`; the per-agent
+summary returns them inside `totals`.
 
 ### Search
 

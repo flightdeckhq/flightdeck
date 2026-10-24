@@ -2986,7 +2986,8 @@ strips gateway and platform prefixes, Bedrock region prefixes (`us.`,
 hyphenated form. A dated snapshot keeps its date. An OpenAI fine-tune
 (`ft:<base>:<org>:...`) becomes `ft:` plus its canonical base model, the
 form the catalogue prices it under, and a Hugging Face Hub model a local
-server pulled (`hf.co/<org>/<model>:<quant>`) keeps its organisation.
+server pulled (`hf.co/<org>/<model>:<quant>`) is kept whole, host and
+organisation included.
 Stripping a Bedrock
 region prefix records its scope first: `global.` is
 `inference_scope=global`, any other region prefix `regional`. An id the

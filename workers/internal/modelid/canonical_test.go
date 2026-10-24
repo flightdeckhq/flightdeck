@@ -47,8 +47,8 @@ func TestCanonicalize(t *testing.T) {
 		{"ft:gpt-4.1:acme:support-bot:XyZ9", "ft:gpt-4.1", ""},
 		{"ft:", "ft:", ""},
 		// Hugging Face Hub models keep their organisation.
-		{"hf.co/bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M", "bartowski/llama-3.2-3b-instruct-gguf:q4_k_m", ""},
-		{"huggingface.co/Qwen/Qwen2.5-7B", "qwen/qwen2.5-7b", ""},
+		{"hf.co/bartowski/Llama-3.2-3B-Instruct-GGUF:Q4_K_M", "hf.co/bartowski/llama-3.2-3b-instruct-gguf:q4_k_m", ""},
+		{"huggingface.co/Qwen/Qwen2.5-7B", "huggingface.co/qwen/qwen2.5-7b", ""},
 		// Unrecognised ids pass through lower-cased; empty stays empty.
 		{"My-Azure-Deployment", "my-azure-deployment", ""},
 		{"", "", ""},

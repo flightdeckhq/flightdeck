@@ -58,7 +58,9 @@ const fineTunedPrefix = "ft:"
 
 // huggingFaceHosts prefix a model pulled from the Hugging Face Hub by a
 // local server ("hf.co/<org>/<model>:<quant>"). The organisation is part
-// of such a model's identity, so these keep "<org>/<model>".
+// of such a model's identity, so these ids are kept whole: stripping the
+// host would leave "<org>/<model>", which the path rule below would cut
+// to "<model>" on the next pass.
 var huggingFaceHosts = []string{"hf.co/", "huggingface.co/"}
 
 // Canonicalize returns the canonical form of a raw model id. An id the
@@ -77,8 +79,8 @@ func Canonicalize(raw string) Canonical {
 		}
 	}
 	for _, host := range huggingFaceHosts {
-		if rest, ok := strings.CutPrefix(id, host); ok && rest != "" {
-			return Canonical{Model: rest}
+		if strings.HasPrefix(id, host) && len(id) > len(host) {
+			return Canonical{Model: id}
 		}
 	}
 	// Gateway and platform prefixes ("openrouter/anthropic/...",

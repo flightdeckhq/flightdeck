@@ -11462,7 +11462,11 @@ old and still settling, and said the dependency automation would propose
 it later; Dependabot did, past its 14-day cooldown. 14.0.0 removes only
 internal APIs that 13.5.1 had restored for `framer-motion` 13.0-13.4; the
 dashboard's four animated components use `AnimatePresence` and
-`motion.div` with initial / animate / exit, which do not change.
+`motion.div` with initial / animate / exit, which do not change. 14.1.0
+adds `animateLayout` and an `AnimatePresence` `popLayout` fix (neither
+used here) and delays an animation's start while the main thread is
+busy, so a drawer slide can finish slightly later under load; nothing
+depends on its completion time.
 `react-router` 8 removes `react-router-dom`, the v8 future flags and
 data-router APIs the dashboard does not use, and needs Node 22.22+ and
 React 19.2.7+, both met. The Makefiles called whatever `swag` binary was

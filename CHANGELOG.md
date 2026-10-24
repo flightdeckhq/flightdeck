@@ -35,6 +35,11 @@ nginx 1.30, current GitHub Actions, a release image scan and Dependabot.
 
 ### Security
 
+- **Dashboard image: Alpine packages are patched at build time.** The
+  image's nginx base is pinned by digest, which also froze its Alpine
+  packages, so `brotli-libs` 1.2.0 (CVE-2026-111497, an out-of-bounds
+  write in the decoder) would have shipped. The image now upgrades its
+  Alpine packages when it is built.
 - **Revoking an access token takes effect immediately.** Both services
   cache successful token validations for up to 60 seconds, and deleting
   a token's row did not clear those caches, so a revoked token stayed

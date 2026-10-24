@@ -11450,7 +11450,7 @@ crewai tests skip).
 
 **Date:** 2026-10-24
 
-**Decision:** The dashboard moves to `motion` 14.0 (`~14.0.0`, superseding
+**Decision:** The dashboard moves to `motion` 14.1 (`~14.1.0`, superseding
 D200's 13.5 pin) and `react-router` 8.4. The Swagger generator for each Go
 service is a `tool` dependency in that service's `go.mod` (ingestion:
 `github.com/swaggo/swag/v2/cmd/swag`, which writes OpenAPI 3.1 with

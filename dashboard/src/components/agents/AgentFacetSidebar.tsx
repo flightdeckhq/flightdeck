@@ -110,7 +110,7 @@ export function AgentFacetSidebar({
   return (
     <div
       data-testid="agents-facet-sidebar"
-      className="relative flex-shrink-0 overflow-y-auto"
+      className="relative shrink-0 overflow-y-auto"
       style={{
         width: AGENT_FACET_SIDEBAR_WIDTH,
         borderRight: "1px solid var(--border-subtle)",
@@ -498,7 +498,7 @@ function FacetEntry({
       // active fill is the inline `background` below (it always wins
       // over the hover class, so an active entry never tints on
       // hover).
-      className="flex w-full items-center cursor-pointer transition-colors duration-150 hover:data-[active=false]:bg-[var(--bg-elevated)]"
+      className="flex w-full items-center cursor-pointer transition-colors duration-150 hover:data-[active=false]:bg-(--bg-elevated)"
       style={{
         fontSize: 13,
         padding: "4px 12px",

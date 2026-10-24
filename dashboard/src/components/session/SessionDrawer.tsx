@@ -633,7 +633,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                     </TooltipProvider>
                   )}
                   <span
-                    className="rounded font-mono text-[10px] px-1.5 py-0.5"
+                    className="rounded-sm font-mono text-[10px] px-1.5 py-0.5"
                     style={{
                       background: stateBadge.bg,
                       color: stateBadge.color,
@@ -674,7 +674,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                   ) : (
                     <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
                       <DialogTrigger asChild>
-                        <Button size="sm" className="bg-[var(--danger)] text-white hover:bg-[var(--danger)]/90">
+                        <Button size="sm" className="bg-(--danger) text-white hover:bg-(--danger)/90">
                           Stop Agent
                         </Button>
                       </DialogTrigger>
@@ -689,7 +689,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                           </DialogClose>
                           <Button
                             size="sm"
-                            className="bg-[var(--danger)] text-white hover:bg-[var(--danger)]/90"
+                            className="bg-(--danger) text-white hover:bg-(--danger)/90"
                             onClick={handleKill}
                             disabled={killLoading}
                           >
@@ -708,7 +708,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                 onClick={onClose}
                 aria-label="Close drawer"
                 data-testid="session-drawer-close"
-                className="flex h-7 w-7 items-center justify-center rounded transition-colors hover:bg-surface-hover"
+                className="flex h-7 w-7 items-center justify-center rounded-sm transition-colors hover:bg-surface-hover"
               >
                 <X size={16} style={{ color: "var(--text-muted)" }} />
               </button>
@@ -1855,7 +1855,7 @@ function EventsLimitPills({
             type="button"
             data-testid={`events-limit-pill-${opt}`}
             onClick={() => onChange(opt)}
-            className="rounded px-2.5 py-[3px] text-xs transition-colors"
+            className="rounded-sm px-2.5 py-[3px] text-xs transition-colors"
             style={
               value === opt
                 ? {
@@ -1928,7 +1928,7 @@ function EventDetailView({ event: initialEvent, session, onBack }: { event: Agen
         <button className="text-xs" style={{ color: "var(--accent)" }} onClick={onBack} data-testid="back-to-session">← Back to run</button>
       </div>
       <div className="flex h-14 shrink-0 items-center gap-2 px-4" style={{ borderBottom: "1px solid var(--border)" }}>
-        <span className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"
+        <span className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-2 font-mono text-[10px] font-semibold uppercase"
           style={{ background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`, color: badge.cssVar, border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`, borderRadius: 3 }}>
           {badge.label}
         </span>
@@ -2070,7 +2070,7 @@ function PromptsTab({
             }}
             onClick={() => onSelectEvent(event.id)}
           >
-            <span className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"
+            <span className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-2 font-mono text-[10px] font-semibold uppercase"
               style={{ background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`, color: badge.cssVar, border: `1px solid color-mix(in srgb, ${badge.cssVar} 30%, transparent)`, borderRadius: 3 }}>
               {badge.label}
             </span>

@@ -182,7 +182,7 @@ export function ParameterField({
     <label className="text-[11px] text-text-muted block mb-0.5">
       {param.name}
       {param.required && (
-        <span className="text-[var(--danger)]"> *</span>
+        <span className="text-(--danger)"> *</span>
       )}
     </label>
   );
@@ -194,7 +194,7 @@ export function ParameterField({
           type="checkbox"
           checked={Boolean(value)}
           onChange={(e) => onChange(e.target.checked)}
-          className="accent-[var(--primary)]"
+          className="accent-(--primary)"
           aria-label={param.name}
         />
         <span className="text-[11px] text-text-muted">{param.name}</span>
@@ -242,7 +242,7 @@ export function ParameterField({
           }
           placeholder={param.description || param.name}
           aria-label={param.name}
-          className="w-full rounded border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
+          className="w-full rounded-sm border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text focus:outline-hidden focus:ring-1 focus:ring-(--primary)"
         />
       </div>
     );
@@ -261,7 +261,7 @@ export function ParameterField({
           }
           placeholder={param.description || param.name}
           aria-label={param.name}
-          className="w-full rounded border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
+          className="w-full rounded-sm border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text focus:outline-hidden focus:ring-1 focus:ring-(--primary)"
         />
       </div>
     );
@@ -277,7 +277,7 @@ export function ParameterField({
         onChange={(e) => onChange(e.target.value)}
         placeholder={param.description || param.name}
         aria-label={param.name}
-        className="w-full rounded border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
+        className="w-full rounded-sm border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text focus:outline-hidden focus:ring-1 focus:ring-(--primary)"
       />
     </div>
   );

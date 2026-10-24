@@ -646,7 +646,7 @@ export function Investigate() {
             }}
             placeholder="Search events…"
             aria-label="Search events"
-            className="h-7 w-full rounded-md border px-2 focus:outline-none focus:ring-1 focus:ring-primary"
+            className="h-7 w-full rounded-md border px-2 focus:outline-hidden focus:ring-1 focus:ring-primary"
             style={{
               fontSize: 12,
               borderColor: "var(--border)",
@@ -701,7 +701,7 @@ export function Investigate() {
             <select
               value={autoRefreshMs}
               onChange={(e) => setAutoRefreshMs(Number(e.target.value))}
-              className="h-7 rounded-md border px-1.5 focus:outline-none focus:ring-1 focus:ring-primary"
+              className="h-7 rounded-md border px-1.5 focus:outline-hidden focus:ring-1 focus:ring-primary"
               style={{
                 fontSize: 12,
                 borderColor: "var(--border)",
@@ -724,7 +724,7 @@ export function Investigate() {
       <div className="flex flex-1 overflow-hidden">
         {/* Facet sidebar */}
         <div
-          className="relative flex-shrink-0 overflow-y-auto"
+          className="relative shrink-0 overflow-y-auto"
           style={{
             width: sidebarWidth,
             borderRight: "1px solid var(--border-subtle)",
@@ -1077,7 +1077,7 @@ function EventRow({
           }}
           aria-label={`Open run ${event.session_id}`}
           title={`Open run ${event.session_id}`}
-          className="font-mono text-[10px] px-1.5 py-0.5 rounded-sm border border-border bg-transparent text-text-secondary cursor-pointer"
+          className="font-mono text-[10px] px-1.5 py-0.5 rounded-xs border border-border bg-transparent text-text-secondary cursor-pointer"
         >
           {truncateSessionId(event.session_id)}
         </button>
@@ -1139,7 +1139,7 @@ function EventRow({
               size={13}
               role="img"
               aria-label="Prompt content captured"
-              className="text-text-muted flex-shrink-0"
+              className="text-text-muted shrink-0"
             >
               <title>Prompt content captured</title>
             </MessageSquareText>
@@ -1155,7 +1155,7 @@ function EventRow({
         {status && (
           <span
             data-testid="events-row-status"
-            className="font-mono text-[9px] px-1.5 py-0.5 rounded-sm border"
+            className="font-mono text-[9px] px-1.5 py-0.5 rounded-xs border"
             style={{
               borderColor: status.color,
               color: status.color,

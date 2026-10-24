@@ -186,7 +186,7 @@ function EventNodeComponent({
       <div
         data-testid={`session-circle-${sessionId}`}
         className={cn(
-          "absolute top-1/2 -translate-y-1/2 cursor-pointer flex items-center justify-center flex-shrink-0",
+          "absolute top-1/2 -translate-y-1/2 cursor-pointer flex items-center justify-center shrink-0",
           // Non-MCP events keep the rounded-full circle shape via
           // Tailwind. MCP events are clip-path hexagons (see B-5b)
           // and override border-radius inline — applying

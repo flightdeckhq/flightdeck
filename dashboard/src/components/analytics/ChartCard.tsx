@@ -46,7 +46,7 @@ export function ChartCard({
       </CardHeader>
       {warning && (
         <div
-          className="mx-6 -mt-2 mb-3 rounded border px-3 py-2 text-[11px] leading-relaxed"
+          className="mx-6 -mt-2 mb-3 rounded-sm border px-3 py-2 text-[11px] leading-relaxed"
           style={{
             background: "var(--color-warn-soft)",
             borderColor: "var(--color-warn-border)",

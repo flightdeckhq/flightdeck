@@ -34,7 +34,7 @@ export function EventTypePill({
     <span
       data-testid={testId}
       data-event-type={eventType}
-      className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"
+      className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-2 font-mono text-[10px] font-semibold uppercase"
       style={{
         background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
         color: badge.cssVar,

@@ -4,6 +4,15 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Changed
+
+- **Dashboard: Tailwind CSS 4.** The dashboard builds with Tailwind 4.3
+  through `@tailwindcss/vite` (replacing PostCSS and autoprefixer) and
+  tailwind-merge 3; the colour tokens move from `tailwind.config.js` into
+  a CSS `@theme` block. Every page and drawer renders as it did, in both
+  themes; the one visible change is that the `Ctrl K` hint in the search
+  box uses the dashboard's mono font.
+
 ## v0.6.0 — 2026-10-24
 
 The currency and correctness release. A security fix (revoked access

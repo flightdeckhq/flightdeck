@@ -23,7 +23,7 @@ export function FrameworkPill({
   return (
     <span
       data-testid={testId}
-      className="rounded-sm font-medium"
+      className="rounded-xs font-medium"
       style={{
         padding: "1px 5px",
         fontSize: 10,

@@ -1,23 +1,88 @@
-@import "./themes.css";
+/* Tailwind first: cascade layer order is fixed by the first time each
+   layer is named, so importing themes.css into layer(base) before
+   Tailwind would put `base` ahead of Tailwind's `theme` layer, and
+   Tailwind's default --font-mono would then override the theme's. */
+@import "tailwindcss";
+@import "./themes.css" layer(base);
 
 /* Geist fonts, vendored under src/assets/fonts/geist (see its README) */
-@font-face {
-  font-family: "Geist";
-  src: url("../assets/fonts/geist/Geist-Variable.woff2") format("woff2");
-  font-weight: 100 900;
-  font-display: swap;
+
+@theme {
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-surface-hover: var(--surface-hover);
+  --color-border: var(--border);
+  --color-border-subtle: var(--border-subtle);
+  --color-border-strong: var(--border-strong);
+  --color-text: var(--text);
+  --color-text-muted: var(--text-muted);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-disabled: var(--text-disabled);
+  --color-primary: var(--primary);
+  --color-primary-glow: var(--primary-glow);
+  --color-accent: var(--accent);
+  --color-accent-glow: var(--accent-glow);
+  --color-status-active: var(--status-active);
+  --color-status-idle: var(--status-idle);
+  --color-status-stale: var(--status-stale);
+  --color-status-lost: var(--status-lost);
+  --color-status-closed: var(--status-closed);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+  --color-color-warn: var(--color-warn);
+  --color-color-degrade: var(--color-degrade);
+  --color-color-block: var(--color-block);
+
+  /* Tailwind 3's fixed line-heights for the text-* sizes. Tailwind 4
+     uses unitless ratios instead, which a child inherits as a ratio, so
+     text-[11px] inside a text-sm parent got a 15.7px line instead of
+     the 20px it had, and many rows and cards came out a few pixels
+     shorter. Fixed values keep every layout where it was. */
+  --text-xs--line-height: 1rem;
+  --text-sm--line-height: 1.25rem;
+  --text-base--line-height: 1.5rem;
+  --text-lg--line-height: 1.75rem;
+  --text-xl--line-height: 1.75rem;
+  --text-2xl--line-height: 2rem;
+  --text-3xl--line-height: 2.25rem;
+  --text-4xl--line-height: 2.5rem;
 }
 
-@font-face {
-  font-family: "GeistMono";
-  src: url("../assets/fonts/geist/GeistMono-Variable.woff2") format("woff2");
-  font-weight: 100 900;
-  font-display: swap;
+/*
+  The default border color has changed to `currentcolor` in Tailwind CSS v4,
+  so we've added these compatibility styles to make sure everything still
+  looks the same as it did with Tailwind CSS v3.
+
+  If we ever want to remove these styles, we need to add an explicit border
+  color utility to any element that depends on these defaults.
+*/
+@layer base {
+  *,
+  ::after,
+  ::before,
+  ::backdrop,
+  ::file-selector-button {
+    border-color: var(--color-gray-200, currentcolor);
+  }
 }
 
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@layer base {
+  @font-face {
+    font-family: "Geist";
+    src: url("../assets/fonts/geist/Geist-Variable.woff2") format("woff2");
+    font-weight: 100 900;
+    font-display: swap;
+  }
+
+  @font-face {
+    font-family: "GeistMono";
+    src: url("../assets/fonts/geist/GeistMono-Variable.woff2") format("woff2");
+    font-weight: 100 900;
+    font-display: swap;
+  }
+}
 
 /* Active session pulsing indicator */
 @keyframes pulse-dot {
@@ -107,19 +172,27 @@
   outline-offset: 1px;
 }
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
-}
+/* Element-level resets sit in the base layer: Tailwind 4 puts its
+   utilities in @layer utilities, and an unlayered rule beats any layered
+   one regardless of specificity, so an unlayered `* { margin: 0;
+   padding: 0 }` would override every spacing utility. Class rules in
+   this file stay unlayered, as they followed the utilities in Tailwind
+   3 and win over them the same way. */
+@layer base {
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
 
-body {
-  font-family: var(--font-ui);
-  font-size: 13px;
-  background: var(--bg);
-  color: var(--text);
-  -webkit-font-smoothing: antialiased;
-  min-height: 100vh;
+  body {
+    font-family: var(--font-ui);
+    font-size: 13px;
+    background: var(--bg);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+  }
 }
 
 /* Mono class for identifiers, timestamps, hex values.
@@ -132,22 +205,24 @@ body {
 }
 
 /* Scrollbar styling */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
-}
+@layer base {
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
 
-::-webkit-scrollbar-track {
-  background: var(--bg);
-}
+  ::-webkit-scrollbar-track {
+    background: var(--bg);
+  }
 
-::-webkit-scrollbar-thumb {
-  background: var(--border);
-  border-radius: 3px;
-}
+  ::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+  }
 
-::-webkit-scrollbar-thumb:hover {
-  background: var(--text-muted);
+  ::-webkit-scrollbar-thumb:hover {
+    background: var(--text-muted);
+  }
 }
 
 /* Thin variant for nested scrollers (e.g. flavor list inside the

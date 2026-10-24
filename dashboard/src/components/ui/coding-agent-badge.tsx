@@ -30,7 +30,7 @@ export function CodingAgentBadge({
     <span
       data-testid={testId ?? "coding-agent-badge"}
       className={
-        "rounded px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide " +
+        "rounded-sm px-1 py-0.5 text-[10px] font-semibold uppercase tracking-wide " +
         (className ?? "")
       }
       style={{

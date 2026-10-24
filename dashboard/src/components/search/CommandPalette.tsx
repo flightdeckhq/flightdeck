@@ -157,7 +157,7 @@ export function CommandPalette({
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             placeholder="Search agents, runs, events..."
-            className="flex-1 bg-transparent text-sm text-text placeholder:text-text-muted focus:outline-none"
+            className="flex-1 bg-transparent text-sm text-text placeholder:text-text-muted focus:outline-hidden"
             aria-label="Search"
           />
           {loading && (

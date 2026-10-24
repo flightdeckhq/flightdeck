@@ -80,8 +80,8 @@ function SummaryCard({
       className={cn(
         "flex-1 min-w-[180px] cursor-pointer transition-colors",
         "border",
-        active ? "border-[color:var(--accent)]" : "border-[color:var(--border)]",
-        "hover:bg-[color:var(--surface-hover)]",
+        active ? "border-(--accent)" : "border-(--border)",
+        "hover:bg-(--surface-hover)",
       )}
       style={
         active

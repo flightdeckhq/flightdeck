@@ -631,7 +631,7 @@ function ScopePicker({
         // B10 styling preserved verbatim — accent left-border +
         // font-semibold so the scope being edited reads as the
         // page's primary context.
-        className="flex h-9 w-[28rem] max-w-full items-center justify-between rounded-md border border-l-2 border-border bg-surface px-3 text-sm font-semibold focus:outline-none focus:ring-1 focus:ring-primary"
+        className="flex h-9 w-md max-w-full items-center justify-between rounded-md border border-l-2 border-border bg-surface px-3 text-sm font-semibold focus:outline-hidden focus:ring-1 focus:ring-primary"
         style={{
           borderLeftColor: "var(--accent)",
           color: "var(--text)",
@@ -647,7 +647,7 @@ function ScopePicker({
       </button>
       {open ? (
         <div
-          className="absolute left-0 top-[calc(100%+4px)] z-50 w-[28rem] max-w-[calc(100vw-3rem)] rounded-md border shadow-md"
+          className="absolute left-0 top-[calc(100%+4px)] z-50 w-md max-w-[calc(100vw-3rem)] rounded-md border shadow-md"
           style={{
             borderColor: "var(--border)",
             background: "var(--surface)",
@@ -669,7 +669,7 @@ function ScopePicker({
               onKeyDown={onKeyDown}
               placeholder="Filter scopes…"
               spellCheck={false}
-              className="block w-full rounded border px-2 py-1 text-xs outline-none focus:border-[var(--accent)]"
+              className="block w-full rounded-sm border px-2 py-1 text-xs outline-hidden focus:border-(--accent)"
               style={{
                 borderColor: "var(--border)",
                 background: "var(--background-elevated)",
@@ -705,7 +705,7 @@ function ScopePicker({
                     onClick={() => commit(tab.value)}
                     onMouseEnter={() => setHighlight(i)}
                     data-testid={`mcp-policies-tab-${tab.value}`}
-                    className="flex w-full cursor-pointer items-center justify-between rounded px-2 py-1.5 text-left text-sm"
+                    className="flex w-full cursor-pointer items-center justify-between rounded-sm px-2 py-1.5 text-left text-sm"
                     style={{
                       background: isHighlighted
                         ? "var(--background-elevated)"

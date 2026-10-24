@@ -35,7 +35,7 @@ export interface MCPPolicyEntryDialogProps {
 const RESOLVE_DEBOUNCE_MS = 300;
 
 const inputClass =
-  "h-9 w-full rounded-md border bg-[var(--background-elevated)] px-3 py-1 text-sm outline-none transition-colors focus:border-[var(--accent)]";
+  "h-9 w-full rounded-md border bg-(--background-elevated) px-3 py-1 text-sm outline-hidden transition-colors focus:border-(--accent)";
 
 /**
  * Add / edit dialog for an MCP policy entry. While the operator
@@ -194,20 +194,20 @@ export function MCPPolicyEntryDialog({
                     Examples:
                     <ul className="mt-1 list-disc pl-4">
                       <li>
-                        <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+                        <code className="rounded-sm bg-(--background-elevated) px-1 py-0.5 font-mono text-[10px]">
                           https://mcp.example.com/sse
                         </code>{" "}
                         (HTTP-based)
                       </li>
                       <li>
-                        <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+                        <code className="rounded-sm bg-(--background-elevated) px-1 py-0.5 font-mono text-[10px]">
                           stdio:///usr/local/bin/mcp-server
                         </code>{" "}
                         (local binary)
                       </li>
                     </ul>
                     For stdio: prefix with{" "}
-                    <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+                    <code className="rounded-sm bg-(--background-elevated) px-1 py-0.5 font-mono text-[10px]">
                       stdio://
                     </code>{" "}
                     and include the binary path. The system normalizes
@@ -238,12 +238,12 @@ export function MCPPolicyEntryDialog({
             >
               The URL the agent uses to reach the MCP server. HTTP /
               WebSocket: full URL with scheme and host. Stdio: the{" "}
-              <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+              <code className="rounded-sm bg-(--background-elevated) px-1 py-0.5 font-mono text-[10px]">
                 stdio://
               </code>
               {" "}prefix + binary path and args (mirrors the
               {" "}
-              <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+              <code className="rounded-sm bg-(--background-elevated) px-1 py-0.5 font-mono text-[10px]">
                 .mcp.json
               </code>
               {" "}declaration).
@@ -266,7 +266,7 @@ export function MCPPolicyEntryDialog({
                   <>
                     A short identifier the operator + agent share. Use
                     the same name your{" "}
-                    <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+                    <code className="rounded-sm bg-(--background-elevated) px-1 py-0.5 font-mono text-[10px]">
                       .mcp.json
                     </code>{" "}
                     declares (e.g. filesystem, github, slack). Name and
@@ -552,7 +552,7 @@ function DT({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="flex items-center gap-2">
       <dt
-        className="min-w-[5rem] text-[10px] uppercase tracking-wide"
+        className="min-w-20 text-[10px] uppercase tracking-wide"
         style={{ color: "var(--text-muted)" }}
       >
         {label}

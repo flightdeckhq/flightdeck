@@ -126,7 +126,7 @@ export function MCPPolicyEntryTable({
             placeholder="Search URL, name, or fingerprint"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="h-8 w-full rounded-md border bg-[var(--background-elevated)] pl-7 pr-3 text-xs outline-none transition-colors focus:border-[var(--accent)]"
+            className="h-8 w-full rounded-md border bg-(--background-elevated) pl-7 pr-3 text-xs outline-hidden transition-colors focus:border-(--accent)"
             style={{
               borderColor: "var(--border)",
               color: "var(--text)",
@@ -203,7 +203,7 @@ export function MCPPolicyEntryTable({
             {filtered.map((entry) => (
               <tr
                 key={entry.id}
-                className="border-b transition-colors hover:bg-[var(--background-elevated)]"
+                className="border-b transition-colors hover:bg-(--background-elevated)"
                 style={{ borderColor: "var(--border)" }}
                 data-testid={`mcp-policy-entry-${entry.id}`}
               >
@@ -290,7 +290,7 @@ function SortableTh({
         onClick={onClick}
         className={cn(
           "inline-flex items-center gap-1 transition-colors",
-          active ? "text-[var(--text)]" : "text-[var(--text-muted)] hover:text-[var(--text)]",
+          active ? "text-(--text)" : "text-(--text-muted) hover:text-(--text)",
         )}
         aria-label={`Sort by ${label}`}
       >
@@ -408,7 +408,7 @@ function SkeletonRows() {
       {[0, 1, 2].map((i) => (
         <div
           key={i}
-          className="mb-2 h-8 animate-pulse rounded"
+          className="mb-2 h-8 animate-pulse rounded-sm"
           style={{
             background:
               "color-mix(in srgb, var(--text-muted) 10%, transparent)",

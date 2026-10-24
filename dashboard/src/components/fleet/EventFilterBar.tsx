@@ -24,7 +24,7 @@ export function EventFilterBar({ activeFilter, onFilterChange }: EventFilterBarP
         return (
           <button
             key={pill.label}
-            className="flex items-center gap-1.5 rounded font-mono text-[11px] font-medium transition-all"
+            className="flex items-center gap-1.5 rounded-sm font-mono text-[11px] font-medium transition-all"
             style={{
               height: 22,
               padding: "0 10px",
@@ -89,7 +89,7 @@ export function EventFilterBar({ activeFilter, onFilterChange }: EventFilterBarP
         }
         onClick={() => setShowDiscovery(!showDiscovery)}
         data-testid="filter-pill-show-discovery"
-        className="ml-auto flex items-center gap-1.5 rounded font-mono text-[11px] font-medium transition-all"
+        className="ml-auto flex items-center gap-1.5 rounded-sm font-mono text-[11px] font-medium transition-all"
         style={{
           height: 22,
           padding: "0 10px",

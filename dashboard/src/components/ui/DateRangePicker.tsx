@@ -164,7 +164,7 @@ export function DateRangePicker({
               setCustomFrom(e.target.value);
               handleCustomDateChange(e.target.value, customTo);
             }}
-            className="h-7 rounded-md border border-border bg-surface px-2 text-xs text-text focus:outline-none focus:ring-1 focus:ring-primary"
+            className="h-7 rounded-md border border-border bg-surface px-2 text-xs text-text focus:outline-hidden focus:ring-1 focus:ring-primary"
           />
           <span className="text-xs text-text-muted">to</span>
           <input
@@ -176,7 +176,7 @@ export function DateRangePicker({
               setCustomTo(e.target.value);
               handleCustomDateChange(customFrom, e.target.value);
             }}
-            className="h-7 rounded-md border border-border bg-surface px-2 text-xs text-text focus:outline-none focus:ring-1 focus:ring-primary"
+            className="h-7 rounded-md border border-border bg-surface px-2 text-xs text-text focus:outline-hidden focus:ring-1 focus:ring-primary"
           />
         </div>
       )}

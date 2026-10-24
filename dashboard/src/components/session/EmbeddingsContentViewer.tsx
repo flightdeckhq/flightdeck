@@ -73,7 +73,7 @@ export function EmbeddingsContentViewer({
       <div
         data-testid="embeddings-content-viewer"
         data-state="empty"
-        className="mt-2 flex items-center gap-2 rounded text-xs"
+        className="mt-2 flex items-center gap-2 rounded-sm text-xs"
         style={{
           background: "var(--bg-elevated)",
           border: "1px dashed var(--border-subtle)",
@@ -156,7 +156,7 @@ function SingleInputView({
     <div
       data-testid="embeddings-content-viewer"
       data-state="string"
-      className="mt-2 rounded"
+      className="mt-2 rounded-sm"
       style={{
         background: "var(--bg-elevated)",
         border: "1px solid var(--border-subtle)",
@@ -226,7 +226,7 @@ function ListInputView({
     <div
       data-testid="embeddings-content-viewer"
       data-state="list"
-      className="mt-2 rounded"
+      className="mt-2 rounded-sm"
       style={{
         background: "var(--bg-elevated)",
         border: "1px solid var(--border-subtle)",

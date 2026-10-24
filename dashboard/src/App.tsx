@@ -94,13 +94,13 @@ export function Nav({ onSearchClick }: { onSearchClick: () => void }) {
       <div className="ml-auto flex items-center gap-2">
         <button
           onClick={onSearchClick}
-          className="flex items-center gap-1.5 rounded border border-border px-2 py-1 text-xs text-text-muted transition-colors hover:border-primary hover:text-text"
+          className="flex items-center gap-1.5 rounded-sm border border-border px-2 py-1 text-xs text-text-muted transition-colors hover:border-primary hover:text-text"
           aria-label="Search"
           data-testid="nav-search-trigger"
         >
           <Search className="h-3.5 w-3.5" />
           <span className="hidden sm:inline">Search</span>
-          <kbd className="hidden rounded bg-bg-elevated px-1 py-0.5 text-[11px] font-medium sm:inline">
+          <kbd className="hidden rounded-sm bg-bg-elevated px-1 py-0.5 text-[11px] font-medium sm:inline">
             {/Mac/i.test(navigator.userAgent) ? "\u2318" : "Ctrl"}K
           </kbd>
         </button>
@@ -125,7 +125,7 @@ export function Nav({ onSearchClick }: { onSearchClick: () => void }) {
         </NavLink>
         <button
           onClick={toggleTheme}
-          className="flex h-8 w-8 items-center justify-center rounded transition-colors hover:bg-surface-hover"
+          className="flex h-8 w-8 items-center justify-center rounded-sm transition-colors hover:bg-surface-hover"
           aria-label={theme === "dark" ? "Switch to light theme" : "Switch to dark theme"}
         >
           {theme === "dark" ? (
@@ -319,7 +319,7 @@ export function EventDetailDrawerHost() {
       <div
         role="dialog"
         aria-label="Event not found"
-        className="fixed right-0 top-0 z-[60] flex h-full w-[520px] flex-col p-6"
+        className="fixed right-0 top-0 z-60 flex h-full w-[520px] flex-col p-6"
         style={{
           background: "var(--surface)",
           borderLeft: "1px solid var(--border)",
@@ -334,7 +334,7 @@ export function EventDetailDrawerHost() {
         </div>
         <button
           type="button"
-          className="mt-4 self-start rounded border border-border px-2 py-1 text-xs text-text-muted hover:text-text"
+          className="mt-4 self-start rounded-sm border border-border px-2 py-1 text-xs text-text-muted hover:text-text"
           onClick={close}
         >
           Close

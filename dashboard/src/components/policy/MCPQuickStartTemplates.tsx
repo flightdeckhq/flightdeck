@@ -120,7 +120,7 @@ export function MCPQuickStartTemplates({
         className={cn(
           "inline-flex items-center gap-1.5 text-[13px] font-medium",
           "underline decoration-dotted underline-offset-2",
-          "transition-colors hover:text-[var(--accent)]",
+          "transition-colors hover:text-(--accent)",
         )}
         style={{ color: "var(--text-secondary)" }}
         data-testid={`mcp-quickstart-templates-trigger-${scopeKey}`}
@@ -167,7 +167,7 @@ export function MCPQuickStartTemplates({
               {templates.map((tpl) => (
                 <li
                   key={tpl.name}
-                  className="rounded px-3 py-2 transition-colors hover:bg-[var(--background-elevated)]"
+                  className="rounded-sm px-3 py-2 transition-colors hover:bg-(--background-elevated)"
                   data-testid={`mcp-quickstart-templates-row-${tpl.name}`}
                 >
                   <div className="flex items-start justify-between gap-3">

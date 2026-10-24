@@ -640,7 +640,7 @@ function AllSwimLaneComponent({
 					aria-expanded={!collapsed}
 					aria-label={collapsed ? "Expand ALL row" : "Collapse ALL row"}
 					onClick={onToggle}
-					className="flex h-full cursor-pointer items-center gap-1.5 border-0 bg-transparent p-0 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[var(--accent)]"
+					className="flex h-full cursor-pointer items-center gap-1.5 border-0 bg-transparent p-0 focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-(--accent)"
 					style={{
 						color: "var(--text-muted)",
 						fontFamily: "var(--font-ui)",

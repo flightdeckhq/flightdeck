@@ -11478,3 +11478,47 @@ package imports, and a Dependabot bump moves both.
 **Rejected:** Staying on `motion` 13.5 (the deferral's reason has
 passed). Pinning the swag version separately in each Makefile (it would
 drift from `go.mod` on the next bump).
+
+---
+
+## D205 -- Tailwind 4, kept pixel-faithful to the Tailwind 3 layout
+
+**Date:** 2026-10-24
+
+**Decision:** The dashboard moves to Tailwind CSS 4.3 with
+`@tailwindcss/vite` (no PostCSS step) and tailwind-merge 3. Three choices
+keep the rendered pages identical to Tailwind 3:
+
+1. Element-level resets (`*`, `body`, the scrollbar pseudo-elements) live
+   in `@layer base`. Tailwind 4 emits utilities in `@layer utilities`, and
+   an unlayered rule beats every layered one, so the unlayered
+   `* { margin: 0; padding: 0 }` would have overridden every spacing
+   utility. Class rules stay unlayered: in Tailwind 3 they followed the
+   utilities and won ties, and unlayered keeps that.
+2. `@import 'tailwindcss'` comes before `@import './themes.css'
+   layer(base)`. Layer order is fixed by the first time a layer is named;
+   importing the themes first put `base` ahead of Tailwind's `theme`
+   layer, and Tailwind's default `--font-mono` replaced the dashboard's
+   Geist Mono.
+3. The `text-xs` .. `text-4xl` line-heights are set back to Tailwind 3's
+   fixed values in `@theme`. Tailwind 4's unitless ratios are inherited
+   as ratios, so text with an arbitrary size (`text-[11px]`) inside a
+   `text-sm` parent got a 15.7px line instead of 20px, and cards and rows
+   shrank by a few pixels.
+
+The upgrade tool's border-colour compatibility rule stays, the `ring` /
+`shadow` / `rounded` renames it made keep Tailwind 3's sizes, and its
+edits to comments and to Button `variant` props (which it mistook for
+the `outline` utility) were reverted.
+
+**Reasoning:** Before / after screenshots of every route and both drawers
+in both themes, taken against the same seeded data, are pixel-identical
+on the static pages (404, Policies, Directives, Settings) and differ on
+the data pages only where live data differs. The one systematic change is
+the `<kbd>` hint, which Tailwind 4's preflight sets in the theme's mono
+font (Geist Mono) instead of the system mono stack; it matches the rest
+of the dashboard's mono text and was kept.
+
+**Rejected:** Accepting Tailwind 4's line-height ratios (a visible shift
+in dense tables and cards for no gain). Keeping PostCSS (`@tailwindcss/vite`
+is the plan's choice and removes a build step).

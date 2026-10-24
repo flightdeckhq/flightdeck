@@ -424,8 +424,8 @@ server.
 
 ### Changed
 
-- **Swagger generation is pinned.** Each Go service's `go.mod` pins its
-  Swagger generator as a tool (`go tool swag`), so `make -C ingestion
+- **Swagger generation is pinned.** ingestion's and api's `go.mod` pin
+  their Swagger generator as a tool (`go tool swag`), so `make -C ingestion
   build` regenerates the same OpenAPI 3.1 spec that is committed instead of
   overwriting it as Swagger 2.0 with whatever `swag` was on `PATH`.
 - **Sensor: Python 3.11 to 3.14.** The sensor supports Python 3.11, 3.12,
@@ -500,8 +500,8 @@ server.
   `framer-motion` 11 (imports move to `motion/react`).
 - **Dashboard dependencies:** `react-router` 8 replaces
   `react-router-dom` 6 (fixes its open-redirect and error-deserialisation
-  advisories); the Radix primitives and recharts are on their current
-  minor releases; and the two Geist variable fonts are vendored under
+  advisories); Radix Dialog 1.2, Select 2.3, Tabs 1.1 and Tooltip 1.3
+  and recharts 3.10; and the two Geist variable fonts are vendored under
   `dashboard/src/assets/fonts/geist` with their OFL license instead of
   coming from the `geist` package, which pulled Next.js and sharp (and
   their critical and high advisories) into the dependency tree. `npm audit

@@ -5832,8 +5832,10 @@ targets:
 Each component (`sensor/`, `ingestion/`, `workers/`, `api/`,
 `dashboard/`, `docker/`, `helm/`, `plugin/`) has its own Makefile with
 `build`, `test`, `lint`, `clean` targets at minimum. `ingestion/Makefile`
-and `api/Makefile` run `swag init -g cmd/main.go -o docs` before
-`go build` so the Swagger UI matches the latest annotations.
+and `api/Makefile` run `go tool swag init -g cmd/main.go -o docs` (the
+generator version each `go.mod` pins; ingestion adds `--v3.1` for its
+OpenAPI 3.1 spec, the api writes Swagger 2.0) before `go build` so the
+Swagger UI matches the latest annotations.
 
 ---
 

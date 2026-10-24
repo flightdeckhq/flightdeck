@@ -11451,8 +11451,8 @@ crewai tests skip).
 **Date:** 2026-10-24
 
 **Decision:** The dashboard moves to `motion` 14.1 (`~14.1.0`, superseding
-D200's 13.5 pin) and `react-router` 8.4. The Swagger generator for each Go
-service is a `tool` dependency in that service's `go.mod` (ingestion:
+D200's 13.5 pin) and `react-router` 8.4. The Swagger generator for ingestion
+and the api is a `tool` dependency in that service's `go.mod` (ingestion:
 `github.com/swaggo/swag/v2/cmd/swag`, which writes OpenAPI 3.1 with
 `--v3.1`; api: `github.com/swaggo/swag/cmd/swag` v1, which writes Swagger
 2.0), and each Makefile's `build` target runs it as `go tool swag`.

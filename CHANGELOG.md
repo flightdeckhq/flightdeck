@@ -6,16 +6,25 @@ All notable changes to Flightdeck are documented here.
 
 ## v0.6.0 — 2026-10-24
 
-Correctness patch for the Claude Code plugin, the sensor's streaming
-token accounting, error classification, its OpenAI coverage (structured
-outputs, the Responses raw-response path, Responses tool calls and
-prompt-cache reads and writes) and its MCP dependency, the worker's
-handling of short-lived and re-attached sessions, a pricing refresh, and
-a documentation truth-up. One schema migration (000027) adds two nullable
-columns to `sessions`; the workers apply it at start-up. **Upgrade
-note:** marketplace installs of the plugin do not update themselves; run
-`claude plugin update flightdeck@flightdeck-plugins` after upgrading the
-server.
+The currency and correctness release. A security fix (revoked access
+tokens stopped working only after up to a minute), about fifty fixes
+across the Claude Code plugin, the sensor, the workers and the dashboard,
+broader SDK coverage (anthropic 2.x and openai 3.x, mcp 2.x, litellm
+streams, OpenAI structured outputs and Responses tool calls), and a
+toolchain refresh: Python 3.11 to 3.14, React 19, Node 24, Go 1.27,
+nginx 1.30, current GitHub Actions, a release image scan and Dependabot.
+
+**Upgrade notes**
+
+- The sensor needs Python 3.11 to 3.14 (3.10 is no longer supported).
+  The `anthropic` extra needs `anthropic>=0.86`, and `pydantic>=2.10`.
+- Helm production installs must set `nats.auth.token`. An install with
+  `nats.replicas` above 1 has to recreate the NATS StatefulSet once (see
+  the README's Helm section).
+- Two schema migrations (000027, 000028) apply when the workers start.
+- Marketplace installs of the Claude Code plugin do not update
+  themselves: run `claude plugin update flightdeck@flightdeck-plugins`
+  after upgrading the server.
 
 ### Security
 

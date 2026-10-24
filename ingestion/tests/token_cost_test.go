@@ -96,7 +96,8 @@ func TestEventsHandler_TokenCostFields_Rejections(t *testing.T) {
 			p["tokens_reasoning"] = 1e30
 			p["tokens_output"] = 1e31
 		}, "tokens_reasoning"},
-		{"cost at the column limit", func(p map[string]any) { p["cost_reported"] = 1_000_000 }, "cost_reported"},
+		{"cost at one million", func(p map[string]any) { p["cost_reported"] = 1_000_000 }, "cost_reported"},
+		{"cost that rounds to one million", func(p map[string]any) { p["cost_reported"] = 999_999.999999999 }, "cost_reported"},
 		{"fractional server tool counter", func(p map[string]any) {
 			p["server_tool_use"] = map[string]any{"web_search_requests": 1.5}
 		}, "server_tool_use.web_search_requests"},

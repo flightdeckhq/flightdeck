@@ -41,11 +41,12 @@ var (
 // on the other identity strings an event carries.
 const maxTokenCostStringLen = 256
 
-// maxCostReported is the exclusive upper bound on cost_reported. The
-// column is NUMERIC(14, 8): six integer digits, so a value of one million
-// dollars or more would fail the worker's insert on every redelivery. No
-// single LLM call costs anywhere near that.
-const maxCostReported = 1_000_000
+// maxCostReported is the largest cost_reported accepted: the largest
+// value NUMERIC(14, 8) holds. A larger one, including a value just
+// below one million that rounds up to it at eight decimals, would fail
+// the worker's insert on every redelivery. No single LLM call costs
+// anywhere near it.
+const maxCostReported = 999_999.99999999
 
 // maxTokenCount bounds token counts and server-tool counters at 2^53,
 // the largest integer a JSON number decoded as float64 holds exactly.
@@ -83,8 +84,8 @@ func validateTokenCostFields(payload map[string]any) string {
 	}
 	if hasCost {
 		n, ok := cost.(float64)
-		if !ok || n < 0 || n >= maxCostReported || math.IsInf(n, 0) || math.IsNaN(n) {
-			return fmt.Sprintf("cost_reported must be a non-negative number below %d", maxCostReported)
+		if !ok || n < 0 || n > maxCostReported || math.IsInf(n, 0) || math.IsNaN(n) {
+			return fmt.Sprintf("cost_reported must be a non-negative number up to %.8f", maxCostReported)
 		}
 		if msg := checkEnum("cost_source", source, validCostSources); msg != "" {
 			return msg

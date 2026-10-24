@@ -263,6 +263,29 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if len(e.ProviderMetadata) > 0 {
 		extra["provider_metadata"] = e.ProviderMetadata
 	}
+	// Token and cost fields that are not events columns (the columns
+	// are written by InsertEvent from the same payload).
+	if e.TokensCacheCreation1h != nil {
+		extra["tokens_cache_creation_1h"] = *e.TokensCacheCreation1h
+	}
+	if e.ServiceTier != "" {
+		extra["service_tier"] = e.ServiceTier
+	}
+	if e.Speed != "" {
+		extra["speed"] = e.Speed
+	}
+	if e.InferenceGeo != "" {
+		extra["inference_geo"] = e.InferenceGeo
+	}
+	if e.InferenceScope != "" {
+		extra["inference_scope"] = e.InferenceScope
+	}
+	if len(e.ServerToolUse) > 0 {
+		extra["server_tool_use"] = e.ServerToolUse
+	}
+	if e.StopReason != "" {
+		extra["stop_reason"] = e.StopReason
+	}
 	if len(e.PolicyDecisionPre) > 0 {
 		var v interface{}
 		if err := json.Unmarshal(e.PolicyDecisionPre, &v); err == nil {
@@ -683,13 +706,10 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	// gate: if content is not permitted for this session, the event row
 	// must not advertise content the /content endpoint can never serve.
 	hasContent := e.HasContent && captureOn
+	row := eventRow(e, ts, extra)
 	insert := func(hasContent bool) (string, error) {
-		return p.w.InsertEvent(
-			ctx, e.ID, e.SessionID, e.Flavor, e.EventType, e.Model,
-			e.TokensInput, e.TokensOutput, e.TokensTotal,
-			e.TokensCacheRead, e.TokensCacheCreation,
-			e.LatencyMs, e.ToolName, hasContent, ts, extra,
-		)
+		row.HasContent = hasContent
+		return p.w.InsertEvent(ctx, row)
 	}
 	var eventID string
 	// Store prompt content only when the session's server-authoritative
@@ -707,12 +727,8 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	// A JSON null content field carries no content.
 	contentBlob := len(e.Content) > 0 && string(e.Content) != "null"
 	if hasContent && contentBlob {
-		eventID, err = p.w.InsertEventWithContent(
-			ctx, e.ID, e.SessionID, e.Flavor, e.EventType, e.Model,
-			e.TokensInput, e.TokensOutput, e.TokensTotal,
-			e.TokensCacheRead, e.TokensCacheCreation,
-			e.LatencyMs, e.ToolName, hasContent, ts, extra, e.Content,
-		)
+		row.HasContent = hasContent
+		eventID, err = p.w.InsertEventWithContent(ctx, row, e.Content)
 		if errors.Is(err, writer.ErrEventContent) {
 			slog.Warn("event content could not be stored; storing the event without it",
 				"err", err, "event_type", e.EventType, "session_id", e.SessionID)
@@ -822,3 +838,41 @@ func (p *Processor) enrichSessionEnd(
 	return out
 }
 
+// eventRow maps an event payload onto the events row the writer
+// inserts, with extra as its encoded payload column. HasContent is left
+// for the caller, which decides it from the session's capture posture.
+func eventRow(e consumer.EventPayload, occurredAt time.Time, extra []byte) writer.EventRow {
+	return writer.EventRow{
+		SensorEventID:       e.ID,
+		SessionID:           e.SessionID,
+		Flavor:              e.Flavor,
+		EventType:           e.EventType,
+		Model:               e.Model,
+		TokensInput:         e.TokensInput,
+		TokensOutput:        e.TokensOutput,
+		TokensTotal:         e.TokensTotal,
+		TokensCacheRead:     e.TokensCacheRead,
+		TokensCacheCreation: e.TokensCacheCreation,
+		TokensReasoning:     e.TokensReasoning,
+		ModelRequested:      e.ModelRequested,
+		ModelServed:         e.ModelServed,
+		Provider:            e.Provider,
+		BillingMode:         e.BillingMode,
+		Platform:            platformOf(e),
+		CostReported:        e.CostReported,
+		CostSource:          e.CostSource,
+		LatencyMs:           e.LatencyMs,
+		ToolName:            e.ToolName,
+		OccurredAt:          occurredAt,
+		Payload:             extra,
+	}
+}
+
+// platformOf returns the endpoint that served an LLM call, as the
+// client reported it in provider_metadata.platform, or "" when it sent
+// none. The events.platform column carries it so the cost query does
+// not read JSON per row.
+func platformOf(e consumer.EventPayload) string {
+	platform, _ := e.ProviderMetadata["platform"].(string)
+	return platform
+}

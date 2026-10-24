@@ -370,6 +370,7 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 		SELECT e.id::text, e.session_id::text, e.flavor, e.event_type, e.model,
 		       e.tokens_input, e.tokens_output, e.tokens_total,
 		       e.tokens_cache_read, e.tokens_cache_creation,
+		       `+tokenCostColumns("e.")+`,
 		       e.latency_ms, e.tool_name, e.has_content, e.payload, e.occurred_at,
 		       s.framework, s.client_type, s.agent_type
 		FROM (
@@ -397,6 +398,8 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 			&e.ID, &e.SessionID, &e.Flavor, &e.EventType, &e.Model,
 			&e.TokensInput, &e.TokensOutput, &e.TokensTotal,
 			&e.TokensCacheRead, &e.TokensCacheCreation,
+			&e.TokensReasoning, &e.ModelRequested, &e.ModelServed, &e.Provider,
+			&e.BillingMode, &e.Platform, &e.CostReported, &e.CostSource,
 			&e.LatencyMs, &e.ToolName, &e.HasContent, &payloadRaw, &e.OccurredAt,
 			&e.Framework, &e.ClientType, &e.AgentType,
 		); err != nil {

@@ -10,6 +10,7 @@ import (
 
 	"github.com/flightdeckhq/flightdeck/workers/internal/consumer"
 	"github.com/flightdeckhq/flightdeck/workers/internal/processor"
+	"github.com/flightdeckhq/flightdeck/workers/internal/writer"
 )
 
 func ptrInt64(v int64) *int64 { return &v }
@@ -40,12 +41,12 @@ func (m *mockWriter) UpsertSession(_ context.Context, sessionID, _, _, _, _, _, 
 	return nil
 }
 
-func (m *mockWriter) InsertEvent(_ context.Context, sensorEventID, sessionID, _, _, _ string, _, _, _ *int, _, _ *int64, _ *int, _ *string, _ bool, _ time.Time, _ []byte) (string, error) {
-	m.eventsInserted = append(m.eventsInserted, sessionID)
-	if sensorEventID != "" {
-		return sensorEventID, nil
+func (m *mockWriter) InsertEvent(_ context.Context, row writer.EventRow) (string, error) {
+	m.eventsInserted = append(m.eventsInserted, row.SessionID)
+	if row.SensorEventID != "" {
+		return row.SensorEventID, nil
 	}
-	return "evt-" + sessionID, nil
+	return "evt-" + row.SessionID, nil
 }
 
 func (m *mockWriter) InsertEventContent(_ context.Context, _, _ string, _ json.RawMessage) error {
@@ -501,7 +502,9 @@ func TestProcessDirectiveResultEvent(t *testing.T) {
 	}
 	// Verify the mock writer handles directive_result (routes to InsertEvent, not policy)
 	w := newMockWriter()
-	_, err := w.InsertEvent(context.Background(), "", e.SessionID, e.Flavor, e.EventType, "", nil, nil, nil, nil, nil, nil, nil, false, time.Now(), nil)
+	_, err := w.InsertEvent(context.Background(), writer.EventRow{
+		SessionID: e.SessionID, Flavor: e.Flavor, EventType: e.EventType, OccurredAt: time.Now(),
+	})
 	if err != nil {
 		t.Fatalf("InsertEvent failed: %v", err)
 	}

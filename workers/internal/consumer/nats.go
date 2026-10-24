@@ -76,6 +76,27 @@ type EventPayload struct {
 	// the Claude Code plugin's transcript reader. Absent on non-LLM events.
 	TokensCacheRead     *int64      `json:"tokens_cache_read,omitempty"`
 	TokensCacheCreation *int64      `json:"tokens_cache_creation,omitempty"`
+	// Token, model and cost fields of LLM events (ARCHITECTURE.md,
+	// POST /v1/events). The first group is stored in events columns;
+	// the second goes into events.payload. All are optional: clients
+	// that do not send them leave the columns NULL and the payload
+	// keys absent. Ingestion has validated their vocabularies and
+	// ranges.
+	TokensReasoning *int64   `json:"tokens_reasoning,omitempty"`
+	ModelRequested  string   `json:"model_requested,omitempty"`
+	ModelServed     string   `json:"model_served,omitempty"`
+	Provider        string   `json:"provider,omitempty"`
+	BillingMode     string   `json:"billing_mode,omitempty"`
+	CostReported    *float64 `json:"cost_reported,omitempty"`
+	CostSource      string   `json:"cost_source,omitempty"`
+
+	TokensCacheCreation1h *int64           `json:"tokens_cache_creation_1h,omitempty"`
+	ServiceTier           string           `json:"service_tier,omitempty"`
+	Speed                 string           `json:"speed,omitempty"`
+	InferenceGeo          string           `json:"inference_geo,omitempty"`
+	InferenceScope        string           `json:"inference_scope,omitempty"`
+	ServerToolUse         map[string]int64 `json:"server_tool_use,omitempty"`
+	StopReason            string           `json:"stop_reason,omitempty"`
 	TokensUsedSess  int             `json:"tokens_used_session"`
 	TokenLimitSess  *int            `json:"token_limit_session"`
 	LatencyMs       *int            `json:"latency_ms"`

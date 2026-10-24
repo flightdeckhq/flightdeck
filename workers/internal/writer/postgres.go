@@ -413,36 +413,56 @@ func (w *Writer) AppendMCPServerToContext(
 	return nil
 }
 
-// InsertEvent inserts a new event record (metadata only) and returns the generated event ID.
-//
-// The optional payload argument is a JSON-encoded blob written into the
-// events.payload JSONB column. It carries per-event-type metadata that
-// does not fit the canonical schema columns -- in particular the
-// directive_name / directive_action / directive_status / result fields
-// emitted by the sensor for directive_result events. Pass nil for
-// events that have no extra metadata; the payload column stays NULL.
-func (w *Writer) InsertEvent(
-	ctx context.Context,
-	sensorEventID string,
-	sessionID, flavor, eventType, model string,
-	tokensInput, tokensOutput, tokensTotal *int,
-	tokensCacheRead, tokensCacheCreation *int64,
-	latencyMs *int,
-	toolName *string,
-	hasContent bool,
-	occurredAt time.Time,
-	payload []byte,
-) (string, error) {
-	return insertEvent(ctx, w.pool, sensorEventID, sessionID, flavor, eventType, model,
-		tokensInput, tokensOutput, tokensTotal, tokensCacheRead, tokensCacheCreation,
-		latencyMs, toolName, hasContent, occurredAt, payload)
+// EventRow is one events row as the worker writes it. Pointer fields
+// are NULL when nil; the string fields that map to nullable columns are
+// NULL when empty.
+type EventRow struct {
+	// SensorEventID is the client-minted event UUID (payload.id); empty
+	// lets Postgres generate one.
+	SensorEventID string
+	SessionID     string
+	Flavor        string
+	EventType     string
+	Model         string
+
+	TokensInput         *int
+	TokensOutput        *int
+	TokensTotal         *int
+	TokensCacheRead     *int64
+	TokensCacheCreation *int64
+	TokensReasoning     *int64
+
+	// Token and cost columns (migration 000029).
+	ModelRequested string
+	ModelServed    string
+	Provider       string
+	BillingMode    string
+	Platform       string
+	CostReported   *float64
+	CostSource     string
+
+	LatencyMs  *int
+	ToolName   *string
+	HasContent bool
+	OccurredAt time.Time
+
+	// Payload is the JSON-encoded events.payload blob: per-event-type
+	// metadata that has no column of its own (directive results, error
+	// taxonomy, streaming stats, the token and cost fields that stay in
+	// JSON). nil leaves the column NULL.
+	Payload []byte
+}
+
+// InsertEvent inserts a new event record (metadata only) and returns the
+// event ID.
+func (w *Writer) InsertEvent(ctx context.Context, row EventRow) (string, error) {
+	return insertEvent(ctx, w.pool, row)
 }
 
 // InsertEventWithContent inserts an event and its captured content in
 // one transaction, so a reader never sees an event that claims content
 // (has_content) before the content row exists, and a failed content
-// write never leaves such an event behind. The arguments are
-// InsertEvent's plus the content blob.
+// write never leaves such an event behind.
 //
 // Content that can never be stored (the blob does not parse, or
 // Postgres rejects its row as invalid data) returns an error wrapping
@@ -450,19 +470,7 @@ func (w *Writer) InsertEvent(
 // transient failure of the content insert, is returned unwrapped with
 // nothing written, so the caller's redelivery can retry the whole
 // event.
-func (w *Writer) InsertEventWithContent(
-	ctx context.Context,
-	sensorEventID string,
-	sessionID, flavor, eventType, model string,
-	tokensInput, tokensOutput, tokensTotal *int,
-	tokensCacheRead, tokensCacheCreation *int64,
-	latencyMs *int,
-	toolName *string,
-	hasContent bool,
-	occurredAt time.Time,
-	payload []byte,
-	content json.RawMessage,
-) (string, error) {
+func (w *Writer) InsertEventWithContent(ctx context.Context, row EventRow, content json.RawMessage) (string, error) {
 	c, err := parseEventContent(content)
 	if err != nil {
 		return "", fmt.Errorf("%w: %w", ErrEventContent, err)
@@ -473,13 +481,11 @@ func (w *Writer) InsertEventWithContent(
 	}
 	// A no-op once Commit has succeeded.
 	defer func() { _ = tx.Rollback(ctx) }()
-	eventID, err := insertEvent(ctx, tx, sensorEventID, sessionID, flavor, eventType, model,
-		tokensInput, tokensOutput, tokensTotal, tokensCacheRead, tokensCacheCreation,
-		latencyMs, toolName, hasContent, occurredAt, payload)
+	eventID, err := insertEvent(ctx, tx, row)
 	if err != nil {
 		return "", err
 	}
-	if err := insertEventContent(ctx, tx, eventID, sessionID, c); err != nil {
+	if err := insertEventContent(ctx, tx, eventID, row.SessionID, c); err != nil {
 		if permanentContentError(err) {
 			return "", fmt.Errorf("%w: %w", ErrEventContent, err)
 		}
@@ -491,28 +497,16 @@ func (w *Writer) InsertEventWithContent(
 	return eventID, nil
 }
 
-func insertEvent(
-	ctx context.Context,
-	q querier,
-	sensorEventID string,
-	sessionID, flavor, eventType, model string,
-	tokensInput, tokensOutput, tokensTotal *int,
-	tokensCacheRead, tokensCacheCreation *int64,
-	latencyMs *int,
-	toolName *string,
-	hasContent bool,
-	occurredAt time.Time,
-	payload []byte,
-) (string, error) {
+func insertEvent(ctx context.Context, q querier, row EventRow) (string, error) {
 	// Cache columns are NOT NULL DEFAULT 0; coalesce nil pointers to 0 rather
 	// than relying on a NULL insert, which the column definition rejects.
 	cacheRead := int64(0)
-	if tokensCacheRead != nil {
-		cacheRead = *tokensCacheRead
+	if row.TokensCacheRead != nil {
+		cacheRead = *row.TokensCacheRead
 	}
 	cacheCreation := int64(0)
-	if tokensCacheCreation != nil {
-		cacheCreation = *tokensCacheCreation
+	if row.TokensCacheCreation != nil {
+		cacheCreation = *row.TokensCacheCreation
 	}
 	// The sensor mints the event UUID and ships
 	// it in payload.id (string form). NULLIF + COALESCE: empty
@@ -524,18 +518,39 @@ func insertEvent(
 	// commit raced.
 	var eventID string
 	err := q.QueryRow(ctx, `
-		INSERT INTO events (id, session_id, flavor, event_type, model, tokens_input, tokens_output, tokens_total, tokens_cache_read, tokens_cache_creation, latency_ms, tool_name, has_content, occurred_at, payload)
-		VALUES (COALESCE(NULLIF($1, '')::uuid, gen_random_uuid()), $2::uuid, $3, $4, NULLIF($5, ''), $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+		INSERT INTO events (
+			id, session_id, flavor, event_type, model,
+			tokens_input, tokens_output, tokens_total,
+			tokens_cache_read, tokens_cache_creation, tokens_reasoning,
+			model_requested, model_served, provider, billing_mode, platform,
+			cost_reported, cost_source,
+			latency_ms, tool_name, has_content, occurred_at, payload
+		)
+		VALUES (
+			COALESCE(NULLIF($1, '')::uuid, gen_random_uuid()), $2::uuid, $3, $4, NULLIF($5, ''),
+			$6, $7, $8,
+			$9, $10, $11,
+			NULLIF($12, ''), NULLIF($13, ''), NULLIF($14, ''), NULLIF($15, ''), NULLIF($16, ''),
+			$17, NULLIF($18, ''),
+			$19, $20, $21, $22, $23
+		)
 		ON CONFLICT (id, occurred_at) DO NOTHING
 		RETURNING id::text
-	`, sensorEventID, sessionID, flavor, eventType, model, tokensInput, tokensOutput, tokensTotal, cacheRead, cacheCreation, latencyMs, toolName, hasContent, occurredAt, payload).Scan(&eventID)
+	`,
+		row.SensorEventID, row.SessionID, row.Flavor, row.EventType, row.Model,
+		row.TokensInput, row.TokensOutput, row.TokensTotal,
+		cacheRead, cacheCreation, row.TokensReasoning,
+		row.ModelRequested, row.ModelServed, row.Provider, row.BillingMode, row.Platform,
+		row.CostReported, row.CostSource,
+		row.LatencyMs, row.ToolName, row.HasContent, row.OccurredAt, row.Payload,
+	).Scan(&eventID)
 	if err != nil {
 		// pgx returns ErrNoRows when ON CONFLICT DO NOTHING suppresses
 		// the insert (no row to RETURN). Surface the sensor-supplied
 		// id back to the caller so downstream NOTIFY + content writes
 		// reference the canonical row that already exists.
-		if errors.Is(err, pgx.ErrNoRows) && sensorEventID != "" {
-			return sensorEventID, nil
+		if errors.Is(err, pgx.ErrNoRows) && row.SensorEventID != "" {
+			return row.SensorEventID, nil
 		}
 		return "", fmt.Errorf("insert event: %w", err)
 	}

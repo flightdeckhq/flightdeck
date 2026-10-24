@@ -308,6 +308,10 @@ func EventsHandler(
 				}
 			}
 		}
+		if msg := validateTokenCostFields(payload); msg != "" {
+			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
 
 		// Agent identity validation at the wire boundary.
 		// Every event payload must carry a valid agent_id (UUID

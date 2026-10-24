@@ -311,6 +311,7 @@ flightdeck/
 │   │   ├── server/server.go    # HTTP server, routes, recovery middleware, request logging
 │   │   ├── handlers/
 │   │   │   ├── events.go       # POST /v1/events: validate, publish NATS, return directive
+│   │   │   ├── token_cost.go   # Validation of the token, model and cost fields
 │   │   │   ├── heartbeat.go    # POST /v1/heartbeat
 │   │   │   ├── health.go       # GET /health
 │   │   │   ├── ratelimit.go    # Per-token sliding-window rate limiter (in-memory, keyed by token hash; auth runs first)
@@ -319,7 +320,9 @@ flightdeck/
 │   │   ├── nats/publisher.go   # JetStream publisher (event_type → subject routing)
 │   │   ├── session/store.go    # Synchronous attach-on-session_start and the start-sequence stamp (writer)
 │   │   └── directive/store.go  # Pending directive lookup (atomic UPDATE...RETURNING)
-│   └── tests/handler_test.go
+│   └── tests/
+│       ├── handler_test.go
+│       └── token_cost_test.go  # Token, model and cost field validation
 │
 ├── workers/                    # Go event processing workers (HTTP only for /metrics)
 │   ├── Makefile
@@ -343,7 +346,8 @@ flightdeck/
 │       ├── processor_test.go
 │       ├── build_event_extra_test.go           # events.payload projection: llm_error + streaming sub-objects, plugin tool_use_id / mcp_server / end_reason
 │       ├── build_event_extra_mcp_test.go       # events.payload projection: MCP event fields
-│       └── build_event_extra_subagent_test.go  # events.payload projection: sub-agent fields
+│       ├── build_event_extra_subagent_test.go  # events.payload projection: sub-agent fields
+│       └── build_event_extra_token_cost_test.go  # events.payload projection: token and cost fields
 │
 ├── api/                        # Query API (Go)
 │   ├── Makefile                # build target runs swag init before go build

@@ -4,6 +4,19 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Added
+
+- **Token and cost fields on LLM events.** Events can carry reasoning
+  tokens, one-hour cache writes, the requested and served model ids,
+  the provider, the billing mode (`metered`, `subscription`, `local`),
+  the serving platform, a cost reported by a gateway or client, and the
+  service tier, speed, data residency, server-tool counters and stop
+  reason. Ingestion validates them, the worker stores them (migration
+  000029 adds the `events` columns and the `model_pricing` table), and
+  `GET /v1/sessions/:id` and `GET /v1/events` return them. Clients start
+  sending them, and cost starts using them, in the next changes of the
+  token and cost model.
+
 ### Changed
 
 - **Dashboard: Tailwind CSS 4.** The dashboard builds with Tailwind 4.3

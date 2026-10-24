@@ -439,7 +439,13 @@ definitions:
     properties:
       agent_type:
         type: string
+      billing_mode:
+        type: string
       client_type:
+        type: string
+      cost_reported:
+        type: number
+      cost_source:
         type: string
       event_type:
         type: string
@@ -455,11 +461,19 @@ definitions:
         type: integer
       model:
         type: string
+      model_requested:
+        type: string
+      model_served:
+        type: string
       occurred_at:
         type: string
       payload:
         additionalProperties: {}
         type: object
+      platform:
+        type: string
+      provider:
+        type: string
       session_id:
         type: string
       tokens_cache_creation:
@@ -471,6 +485,8 @@ definitions:
       tokens_input:
         type: integer
       tokens_output:
+        type: integer
+      tokens_reasoning:
         type: integer
       tokens_total:
         type: integer

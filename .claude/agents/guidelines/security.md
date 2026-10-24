@@ -192,7 +192,8 @@ Flightdeck conventions (see `CLAUDE.md`):
   swaggo annotations (`@Summary`, `@Description`, `@Tags`, `@Accept`,
   `@Produce`, `@Param` for every parameter including query params,
   `@Success`, `@Failure` for every error code, `@Router`). Regenerate
-  `docs/` via `swag init -g cmd/main.go -o docs` and commit it.
+  `docs/` with `make -C <component> build` (it runs the pinned
+  `go tool swag`; ingestion's spec is OpenAPI 3.1) and commit it.
   Undocumented endpoints are a critical finding at phase-close audit.
 - **MCP Protection Policy.** When reviewing MCP-related changes:
   policy enforcement applies at all six MCP entry points (not just

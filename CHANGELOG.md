@@ -435,6 +435,10 @@ server.
   The two services' Swagger versions, stuck at 0.5.1 and 0.1.0, now follow
   the release. RELEASING.md describes the flow and keeps the playground
   out of the gate (it calls the paid provider APIs).
+- **Swagger generation is pinned.** ingestion's and api's `go.mod` pin
+  their Swagger generator as a tool (`go tool swag`), so `make -C ingestion
+  build` regenerates the same OpenAPI 3.1 spec that is committed instead of
+  overwriting it as Swagger 2.0 with whatever `swag` was on `PATH`.
 - **Sensor: Python 3.11 to 3.14.** The sensor supports Python 3.11, 3.12,
   3.13 and 3.14 (it was 3.10 to 3.13); CI tests all four. On 3.14 the
   CrewAI integration is not installed in development and CI, because
@@ -503,11 +507,12 @@ server.
   reconnect loop that also cancels a pending reconnect on unmount).
 - **Dashboard runs on React 19.** React and React DOM 19.3, React
   Testing Library 16 (with `@testing-library/dom` 10) and jest-dom 7,
-  zustand 5, lucide-react 1.53, and `motion` 13.5 in place of
+  zustand 5, lucide-react 1.54, and `motion` 14 in place of
   `framer-motion` 11 (imports move to `motion/react`).
-- **Dashboard dependencies:** `react-router` 7 replaces
+- **Dashboard dependencies:** `react-router` 8 replaces
   `react-router-dom` 6 (fixes its open-redirect and error-deserialisation
-  advisories), and the two Geist variable fonts are vendored under
+  advisories); the dashboard is on Radix Dialog 1.2, Select 2.3, Tabs 1.1
+  and Tooltip 1.3 and recharts 3.10; and the two Geist variable fonts are vendored under
   `dashboard/src/assets/fonts/geist` with their OFL license instead of
   coming from the `geist` package, which pulled Next.js and sharp (and
   their critical and high advisories) into the dependency tree. `npm audit

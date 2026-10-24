@@ -4,6 +4,8 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+## v0.6.0 — 2026-10-24
+
 Correctness patch for the Claude Code plugin, the sensor's streaming
 token accounting, error classification, its OpenAI coverage (structured
 outputs, the Responses raw-response path, Responses tool calls and

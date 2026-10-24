@@ -334,12 +334,14 @@ flightdeck/
 │   │   ├── migrate/migrate.go  # golang-migrate runner: applies docker/postgres/migrations at boot
 │   │   ├── metrics/metrics.go  # Atomic, reason-labelled dropped / closed / revived counters + Snapshot + Prometheus-text Handler + NewServer (the /metrics listener)
 │   │   ├── modelid/canonical.go  # Model-id canonicalisation and provider derivation (pure; test-vector table)
+│   │   ├── billing/billing.go    # Billing-mode defaults for LLM events
 │   │   ├── processor/
 │   │   │   ├── event.go        # Route incoming event to session, writer, policy evaluator
 │   │   │   ├── session.go      # State machine: active/idle/stale/closed/lost + reconciler
 │   │   │   └── policy.go       # Threshold evaluation, directive emission
 │   │   ├── writer/
 │   │   │   ├── postgres.go     # Upsert agents, sessions, events, event_content via pgx
+│   │   │   ├── backfill.go     # Batched model-id backfill of events stored with raw ids
 │   │   │   └── notify.go       # Postgres NOTIFY after each write (real-time dashboard push)
 │   │   └── models/             # Go structs mirroring all Postgres tables
 │   └── tests/
@@ -2533,6 +2535,7 @@ always create a new numbered migration.
 | 000027 | `sessions.start_seq` and `sessions.closed_seq` nullable BIGINT: NATS stream sequence of the `session_start` that opened the current run and of the `session_end` that closed it, so the worker orders a session's start and end without holding events back |
 | 000028 | `access_tokens_notify_revoked` trigger: every deleted `access_tokens` row sends its id on the `flightdeck_access_token_revoked` NOTIFY channel, so both services drop cached validations of a revoked token at once |
 | 000029 | Token and cost model: `events.tokens_reasoning`, `provider`, `billing_mode`, `platform`, `cost_reported`, `cost_source`, `model_requested`, `model_served`; the `model_pricing` and `model_pricing_meta` tables |
+| 000030 | `events_model_backfill_idx`: partial index on events that name a model but have no `model_requested`, the rows the worker's model-id backfill rewrites |
 
 ---
 
@@ -2993,8 +2996,12 @@ for an LLM event that names a model, a row with a `model` and an empty
 backfill takes batches of those rows (`FOR UPDATE SKIP LOCKED`, so
 several workers share the work), moves the raw id into
 `model_requested`, stores the canonical id in `model`, copies
-`provider_metadata.platform` from the payload into `platform`, and fills
-`provider` and `billing_mode` by the rules here. It
+`provider_metadata.platform` from the payload into `platform`, adds the
+`inference_scope` a Bedrock region prefix implies, and fills `provider`
+and `billing_mode` by the rules here. The sessions those rows belong to
+get the canonical id in `sessions.model` while it still holds the raw
+one. A partial index on the rows still to do keeps each batch from
+scanning the table; it is empty once the backfill has run. It
 is idempotent and resumes where it stopped after a restart.
 
 Two mappings depend on configuration and so are applied when cost is

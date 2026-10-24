@@ -138,7 +138,10 @@ def test_every_token_cost_field_round_trips() -> None:
         )
 
 
-def test_event_without_the_fields_comes_back_without_them() -> None:
+def test_event_without_the_fields_gets_only_the_worker_defaults() -> None:
+    """An older client's post_call names only ``model``: the worker fills
+    ``model_requested``, ``provider`` and ``billing_mode`` and leaves the
+    fields only a client can know absent."""
     sid = str(uuid.uuid4())
     flavor = f"test-token-cost-absent-{uuid.uuid4().hex[:6]}"
     _start_session(sid, flavor)
@@ -155,12 +158,12 @@ def test_event_without_the_fields_comes_back_without_them() -> None:
     )
 
     event = _post_call(sid)
+    assert event["model_requested"] == "gpt-4o-mini"
+    assert event["provider"] == "openai"
+    assert event["billing_mode"] == "metered"
     for key in (
         "tokens_reasoning",
-        "model_requested",
         "model_served",
-        "provider",
-        "billing_mode",
         "platform",
         "cost_reported",
         "cost_source",
@@ -188,3 +191,69 @@ def test_malformed_token_cost_fields_are_rejected_at_ingestion() -> None:
         )
         assert status == 400, f"{override}: expected 400, got {status} ({body})"
         assert message in body, f"{override}: expected {message!r} in {body!r}"
+
+
+def test_worker_canonicalises_the_model_and_fills_defaults() -> None:
+    """A sensor-style post_call that sends only ``model`` comes back with
+    the canonical id, the raw id as ``model_requested``, the provider
+    derived from it and the metered default; a Bedrock profile's region
+    lands as ``inference_scope``."""
+    sid = str(uuid.uuid4())
+    flavor = f"test-model-canonical-{uuid.uuid4().hex[:6]}"
+    _start_session(sid, flavor)
+    raw = "us.anthropic.claude-sonnet-4-5-20250929-v1:0"
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "post_call",
+            model=raw,
+            tokens_input=10,
+            tokens_output=5,
+            tokens_total=15,
+        )
+    )
+
+    event = _post_call(sid)
+    assert event["model"] == "claude-sonnet-4-5-20250929"
+    assert event["model_requested"] == raw
+    assert event["provider"] == "anthropic"
+    assert event["billing_mode"] == "metered"
+    assert event["payload"]["inference_scope"] == "regional"
+    assert get_session_detail(sid)["session"]["model"] == "claude-sonnet-4-5-20250929"
+
+
+def test_claude_code_calls_default_to_subscription() -> None:
+    sid = str(uuid.uuid4())
+    flavor = f"test-model-subscription-{uuid.uuid4().hex[:6]}"
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "session_start",
+            client_type="claude_code",
+            sensor_version="flightdeck-plugin/test",
+        )
+    )
+    wait_until(
+        lambda: session_exists_in_fleet(sid),
+        timeout=10,
+        msg=f"session {sid} did not appear in fleet",
+    )
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "post_call",
+            client_type="claude_code",
+            model="claude-opus-4.6",
+            tokens_input=10,
+            tokens_output=5,
+            tokens_total=15,
+        )
+    )
+
+    event = _post_call(sid)
+    assert event["model"] == "claude-opus-4-6"
+    assert event["model_requested"] == "claude-opus-4.6"
+    assert event["billing_mode"] == "subscription"

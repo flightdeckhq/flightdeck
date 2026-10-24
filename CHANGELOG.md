@@ -54,7 +54,7 @@ nginx 1.30, current GitHub Actions, a release image scan and Dependabot.
   format. The Helm chart exposes the port and uses it as the workers'
   readiness probe (`workers.metricsPort`).
 - **Sensor: mcp 2.x is supported alongside 1.x.** The `mcp` extra
-  allows `mcp>=1.20,<3`. On mcp 2.x the sensor captures the server
+  allows `mcp>=1.28,<3`. On mcp 2.x the sensor captures the server
   fingerprint from `ClientSession.adopt`, which every handshake reaches
   (`initialize()`, `Client(mode="auto")`'s `server/discover` probe, an
   adopted discover result), and stamps the transport and server URL onto

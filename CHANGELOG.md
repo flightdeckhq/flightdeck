@@ -16,6 +16,15 @@ All notable changes to Flightdeck are documented here.
   `GET /v1/sessions/:id` and `GET /v1/events` return them. Clients start
   sending them, and cost starts using them, in the next changes of the
   token and cost model.
+- **Canonical model ids.** The worker stores one canonical id per model
+  however a client spelled it (Bedrock inference profiles, Vertex
+  `@version` ids, gateway prefixes such as `openrouter/anthropic/...`,
+  dotted Claude versions), keeping the raw id as `model_requested`. It
+  also fills the provider and the billing mode (`subscription` for
+  Claude Code, `metered` otherwise) when the client sent none. A
+  background backfill rewrites events and sessions stored before this,
+  so the `model` analytics dimension stops splitting one model across
+  several spellings (migration 000030 adds the index it uses).
 
 ### Changed
 

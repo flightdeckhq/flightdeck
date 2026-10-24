@@ -18,6 +18,7 @@ import (
 	"github.com/flightdeckhq/flightdeck/workers/internal/metrics"
 	dbmigrate "github.com/flightdeckhq/flightdeck/workers/internal/migrate"
 	"github.com/flightdeckhq/flightdeck/workers/internal/processor"
+	"github.com/flightdeckhq/flightdeck/workers/internal/writer"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 )
@@ -69,6 +70,10 @@ func main() {
 	reconcilerInterval := time.Duration(cfg.ReconcilerIntervalSecs) * time.Second
 	orphanTimeout := time.Duration(cfg.OrphanTimeoutHours) * time.Hour
 	go proc.StartReconciler(ctx, reconcilerInterval, orphanTimeout)
+
+	// Rewrite events stored before the write path canonicalised model
+	// ids; returns once none are left (see writer.RunModelBackfill).
+	go writer.New(pool).RunModelBackfill(ctx)
 
 	// Start NATS consumer pool
 	cons := consumer.New(nc, cfg.WorkerPoolSize, proc)

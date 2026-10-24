@@ -32,6 +32,13 @@ RUN npm run build
 #   4. Land the bump in a focused PR (one digest, one commit) so the
 #      diff is unambiguous if it ever needs to be reverted.
 FROM nginx:1.30.6-alpine@sha256:47928bf67eb62a1863cb08d9ecb52d3e704304ba614eaee17884204677702951
+# The digest pin freezes the base's Alpine packages until upstream
+# rebuilds the image, so a library fixed in Alpine after that build
+# (brotli-libs CVE-2026-111497, fixed in 1.2.1-r0, stopped the v0.6.0
+# release scan) would ship unpatched. Upgrade the installed packages to
+# the current Alpine 3.24 fixes at build time; the release scan checks
+# the result.
+RUN apk upgrade --no-cache
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 

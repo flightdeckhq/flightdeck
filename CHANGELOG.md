@@ -16,15 +16,22 @@ nginx 1.30, current GitHub Actions, a release image scan and Dependabot.
 
 **Upgrade notes**
 
-- The sensor needs Python 3.11 to 3.14 (3.10 is no longer supported).
-  The `anthropic` extra needs `anthropic>=0.86`, and `pydantic>=2.10`.
-- Helm production installs must set `nats.auth.token`. An install with
+- The sensor needs Python 3.11 to 3.14 (3.10 is no longer supported)
+  and `pydantic>=2.10,<3`. Its extras raise their floors: `anthropic>=0.86`,
+  `litellm>=1.83.0` and `mcp>=1.28` (mcp 1.x and 2.x are both supported).
+- A password in `FLIGHTDECK_POSTGRES_URL` or Helm's
+  `postgres.externalUrl` that contains `@ : / ? #` or a space must be
+  percent-encoded (`@` as `%40`): the Postgres driver now ends the
+  password at the first `@`, as libpq does.
+- Helm production installs must set `nats.auth.token` (letters, digits
+  and `. _ ~ -` only; `openssl rand -hex 32` works). An install with
   `nats.replicas` above 1 has to recreate the NATS StatefulSet once (see
   the README's Helm section).
 - Two schema migrations (000027, 000028) apply when the workers start.
-- Marketplace installs of the Claude Code plugin do not update
-  themselves: run `claude plugin update flightdeck@flightdeck-plugins`
-  after upgrading the server.
+- The Claude Code plugin needs Node 22 or newer. Marketplace installs do
+  not update themselves: run
+  `claude plugin update flightdeck@flightdeck-plugins` after upgrading
+  the server.
 
 ### Security
 
@@ -362,10 +369,10 @@ nginx 1.30, current GitHub Actions, a release image scan and Dependabot.
   `${CLAUDE_PLUGIN_ROOT}` so a plugin path with spaces works; the
   manifest declares `engines.node >= 22`, homepage, repository and
   license.
-- **Sensor: `mcp` 2.x silently disabled MCP observation.** The `mcp`
-  extra and dev dependency are capped at `<2`; when an installed `mcp`
-  cannot be imported the sensor logs a WARNING instead of a debug line,
-  and the MCP interceptor test module fails instead of skipping.
+- **Sensor: `mcp` 2.x silently disabled MCP observation.** When an
+  installed `mcp` cannot be imported the sensor logs a WARNING instead of
+  a debug line, and the MCP interceptor test module fails instead of
+  skipping. (mcp 2.x itself is supported; see Added.)
 - **Sensor: sub-agent content was dropped server-side.** Child
   `session_start` events (CrewAI, LangGraph) did not carry the
   `capture_prompts` flag, so the server stored the child session as
@@ -613,12 +620,11 @@ nginx 1.30, current GitHub Actions, a release image scan and Dependabot.
   error no longer spends the whole budget within milliseconds.
 - **Docs match the code.** ARCHITECTURE.md now describes the repository
   tree, the `sessions` / `agents` / `directives` / `custom_directives` /
-  `token_policies` DDL, migrations through 000027, plugin session identity
+  `token_policies` DDL, every migration, plugin session identity
   (one random id per Claude Code invocation), the MCP enforcement contract,
   NATS subjects and authentication, service environment variable names,
   the framework coverage caveats (langchain-openai 1.x, gateway
-  attribution) and the fact that no service serves `/metrics`
-  yet. README gains a Roadmap section (replacing "Coming soon"), the
+  attribution) and the workers' `/metrics` endpoint. README gains a Roadmap section (replacing "Coming soon"), the
   plugin README documents identity, enforcement and updating, METHODOLOGY
   records the severity scale, and DECISIONS.md records D164 onward.
 - **Repository hygiene.** Retired known-issue identifiers and decision

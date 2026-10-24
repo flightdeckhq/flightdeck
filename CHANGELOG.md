@@ -424,6 +424,17 @@ server.
 
 ### Changed
 
+- **Releases: one version source and a release that goes through a PR.**
+  The root `VERSION` file holds the release version, and
+  `scripts/version.py` writes it into every file that carries it (sensor,
+  plugin, marketplace pin, Helm chart and image tag, README, Swagger); CI
+  and the release workflow fail if any of them differs. `make
+  release-prep VERSION=vX.Y.Z` opens the release PR with the bump and a
+  dated CHANGELOG section, and `make release-tag VERSION=vX.Y.Z` tags the
+  merged commit; the old script committed the bump straight to `main`.
+  The two services' Swagger versions, stuck at 0.5.1 and 0.1.0, now follow
+  the release. RELEASING.md describes the flow and keeps the playground
+  out of the gate (it calls the paid provider APIs).
 - **Sensor: Python 3.11 to 3.14.** The sensor supports Python 3.11, 3.12,
   3.13 and 3.14 (it was 3.10 to 3.13); CI tests all four. On 3.14 the
   CrewAI integration is not installed in development and CI, because

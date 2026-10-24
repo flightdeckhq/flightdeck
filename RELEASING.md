@@ -7,44 +7,99 @@ Flightdeck follows [Semantic Versioning](https://semver.org/):
 - **Major** (v1.0.0): Breaking API changes
 - **Minor** (v0.2.0): New features, backward-compatible
 - **Patch** (v0.1.1): Bug fixes
-- **Pre-release** (v0.1.0a1): Alpha/beta releases
+- **Pre-release** (v0.1.0a1): not supported by the release script yet. The
+  sensor needs the PEP 440 form (`0.6.0rc1`) and the Helm chart the SemVer
+  form (`0.6.0-rc1`), so one `VERSION` string cannot serve both.
 
 ## Release Process
 
-### 1. Run the release script
+The version lives in one place, the root `VERSION` file.
+`scripts/version.py` writes it into every other file that carries it: the
+sensor (`sensor/pyproject.toml`), the plugin (`plugin/package.json`,
+`plugin/.claude-plugin/plugin.json`), the marketplace entry (`version` and
+`source.ref` in `.claude-plugin/marketplace.json`), the Helm chart
+(`version`, `appVersion` and the default `image.tag`), the README's Helm
+section and the two services' Swagger version. CI fails if any of them
+differs from `VERSION` (`make version-check`).
 
-Before running it, bump the plugin manifest versions and the marketplace pin to the new version (`plugin/.claude-plugin/plugin.json`, `plugin/package.json`, and `version` plus `source.ref` in `.claude-plugin/marketplace.json`): the bump must land before the tag is cut so the tagged plugin content always matches the marketplace entry that points at it.
+`main` is protected, so a release is two steps: the version bump goes
+through a pull request, and only the tag is pushed directly.
 
-Installed plugins do not pick up a release on their own. Claude Code's background auto-update is off for third-party marketplaces unless each user enables it under **Marketplaces** in `/plugin` (or an admin sets `autoUpdate` in managed settings), and even then a user receives a new copy only when the plugin's `version` changes. So: keep `version` identical in `plugin/.claude-plugin/plugin.json` and the marketplace entry, bump it on every release, and tell users in the release notes to run `claude plugin update flightdeck@flightdeck-plugins` (or `/plugin marketplace update flightdeck-plugins` inside a session). To pin installs to the exact tested commit rather than the tag name, set `source.sha` on the marketplace entry in a follow-up commit on `main` once the tag exists (`claude plugin validate .` checks the file).
+### 1. Open the release PR
 
 ```bash
-make release VERSION=vX.Y.Z
+make release-prep VERSION=vX.Y.Z
 # or
-./scripts/release.sh vX.Y.Z
+./scripts/release.sh prep vX.Y.Z
 ```
 
-The script:
-1. Validates the working tree is clean
-2. Confirms you are on the `main` branch
-3. Runs `make dev-reset` on a clean local environment to verify all
-   migrations apply cleanly from scratch
-4. Verifies `make migrate-local-status` shows the expected version with
-   `dirty=false`. Do not tag a release with dirty migrations.
-5. Updates `version` in `sensor/pyproject.toml`
-6. Runs `make test` (sensor, Go services, plugin and dashboard unit tests)
+From a clean, up-to-date `main`, the script:
+1. Checks that `python3`, `gh`, `uv`, `golangci-lint`, `npm` and `go` are
+   on `PATH`
+2. Runs `make test` (sensor, Go services, plugin and dashboard unit tests)
    and `make lint` (mypy, ruff, golangci-lint, the dashboard's ESLint and
-   type-check); the release stops if either fails. Both need the sensor
-   venv, the dashboard's dependencies (`make -C dashboard install`) and
-   `golangci-lint` on `PATH`
-7. Commits: `chore: release vX.Y.Z`
-8. Creates an annotated git tag
-9. Pushes the commit and tag to origin
+   type-check) on `main`, before changing anything; it stops if either
+   fails. Both need the sensor venv and the dashboard's dependencies
+   (`make -C dashboard install`)
+3. Creates the branch `release/vX.Y.Z`
+4. Writes `X.Y.Z` into `VERSION` and every version location (including
+   `sensor/uv.lock`'s own entry, so CI's `uv sync --locked` accepts it)
+5. Dates the CHANGELOG: the `## Unreleased` entries move under
+   `## vX.Y.Z — <date>`, and an empty `## Unreleased` stays above them
+6. Commits `chore: release vX.Y.Z`, pushes the branch and opens the PR
+
+If the push or `gh pr create` fails, the commit is on the local
+`release/vX.Y.Z` branch: fix the cause, then run
+`git push -u origin release/vX.Y.Z` and `gh pr create` by hand (a second
+`prep` refuses to run while that branch exists).
+
+Before merging, edit the release section's opening summary on the branch
+if it no longer describes the release. The PR's CI is the rest of the
+gate: it boots a fresh stack and applies every migration from scratch on
+Postgres 16 and 18, runs the integration suites and the full Playwright
+suite in both themes.
+
+The playground (`make playground-all`) is **not** part of the gate: it
+calls the real provider APIs, costs money and needs live credentials.
+Run it by hand before a release that changes the sensor's interceptors
+or event shapes (sensor/CLAUDE.md rule 40d), and note the result in the
+release PR.
+
+### 2. Tag the merged release
+
+Tag as soon as the release PR merges. From the merge until the tag
+exists, `main`'s marketplace entry points at a `vX.Y.Z` ref that does not
+exist yet, so plugin installs and updates fail in that window.
+
+```bash
+make release-tag VERSION=vX.Y.Z
+# or
+./scripts/release.sh tag vX.Y.Z
+```
+
+On an up-to-date `main` that contains the merged release PR, the script
+checks that every version location matches `vX.Y.Z` and that the
+CHANGELOG has a dated `## vX.Y.Z` section, then creates the annotated tag
+and pushes it.
+
+Installed plugins do not pick up a release on their own. Claude Code's
+background auto-update is off for third-party marketplaces unless each
+user enables it under **Marketplaces** in `/plugin` (or an admin sets
+`autoUpdate` in managed settings), and even then a user receives a new
+copy only when the plugin's `version` changes, which every release does.
+Tell users in the release notes to run
+`claude plugin update flightdeck@flightdeck-plugins` (or
+`/plugin marketplace update flightdeck-plugins` inside a session). To pin
+installs to the exact tested commit rather than the tag name, set
+`source.sha` on the marketplace entry in a follow-up PR once the tag
+exists (`claude plugin validate .` checks the file).
 
 ### 2. GitHub Actions takes over
 
 Pushing the tag triggers `.github/workflows/release.yml`, which:
 
-- **Job 1 -- Scan Docker images:** Builds the four images without
+- **Job 1 -- Scan Docker images:** First checks that the tag matches
+  `VERSION` and every version location; then builds the four images without
   pushing them and scans each with Trivy. The release stops here, before
   anything is published, if an image has a HIGH or CRITICAL
   vulnerability with a fixed version available or a base image whose OS
@@ -71,12 +126,17 @@ Pushing the tag triggers `.github/workflows/release.yml`, which:
 
 If the release pipeline fails mid-way:
 
-1. **PyPI published but Docker failed:** Fix the Dockerfile issue,
-   delete the git tag (`git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`),
-   re-tag and re-push. PyPI will reject the duplicate -- bump to a patch
-   version (e.g. v0.1.1).
+1. **PyPI published but Docker failed:** If the failure was transient (a
+   registry or network error), re-run the failed jobs from the Actions
+   page: the PyPI step skips a version that already exists. If it needs a
+   code change, release a patch version (vX.Y.Z+1). Do not move the tag:
+   the published sensor was built from it.
 
-2. **Nothing published:** Fix the issue, delete the tag, re-tag, re-push.
+2. **Nothing published:** Fix the issue on `main` (through a PR), delete
+   the tag (`git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`) and
+   run `make release-tag VERSION=vX.Y.Z` again on the fixed `main`. Until
+   the tag is back, plugin installs fail (the marketplace entry points at
+   it), so keep the gap short.
    A failed image scan always lands here. The fix is usually a newer
    base image (`alpine`, `nginx`) or Go toolchain in the failing
    image's Dockerfile, or a dependency bump for a finding in the Go

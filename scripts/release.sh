@@ -1,73 +1,111 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Flightdeck release script
-# Usage: ./scripts/release.sh v0.1.0
-#   or:  make release VERSION=v0.1.0
+# Flightdeck release, in two steps. main is protected, so the version
+# bump goes through a pull request; only the tag is pushed directly.
+#
+#   ./scripts/release.sh prep v0.6.0   (or: make release-prep VERSION=v0.6.0)
+#       From an up-to-date main: run make test + make lint first (before
+#       anything changes, so a failure leaves nothing behind), then create
+#       release/v0.6.0, write the version into every file that carries it
+#       (scripts/version.py), date the CHANGELOG's Unreleased section,
+#       commit, push the branch and open the release PR.
+#
+#   ./scripts/release.sh tag v0.6.0    (or: make release-tag VERSION=v0.6.0)
+#       After the release PR is merged: on an up-to-date main, check that
+#       every version location matches the tag, then create and push the
+#       annotated tag. The tag starts .github/workflows/release.yml.
 
-VERSION="${1:-}"
+MODE="${1:-}"
+VERSION="${2:-}"
 
-# --- Validate ---
-
-if [[ -z "$VERSION" ]]; then
-  read -rp "Enter version tag (e.g. v0.1.0): " VERSION
-fi
-
-if [[ ! "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
-  echo "Error: version must match v*.*.* (e.g. v0.1.0, v0.1.0a1)"
+usage() {
+  echo "Usage: $0 prep|tag vX.Y.Z" >&2
   exit 1
-fi
+}
 
-# Strip leading 'v' for pyproject.toml (PEP 440)
-PEP_VERSION="${VERSION#v}"
+[[ "$MODE" == "prep" || "$MODE" == "tag" ]] || usage
+# Pre-releases are not supported yet: the sensor needs the PEP 440 form
+# (0.6.0rc1) and the Helm chart the SemVer form (0.6.0-rc1).
+[[ "$VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+  echo "Error: version must look like v0.6.0" >&2
+  exit 1
+}
+PLAIN="${VERSION#v}"
 
-# Check clean working tree
 if [[ -n "$(git status --porcelain)" ]]; then
-  echo "Error: working tree is not clean. Commit or stash changes first."
-  git status --short
+  echo "Error: working tree is not clean. Commit or stash changes first." >&2
+  git status --short >&2
   exit 1
 fi
 
-# Confirm current branch is main
-BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-if [[ "$BRANCH" != "main" ]]; then
-  echo "Error: must be on main branch (currently on '$BRANCH')"
+# Both steps start from main exactly as it is on origin.
+git fetch origin main --tags
+git checkout main
+git merge --ff-only origin/main
+if [[ "$(git rev-parse HEAD)" != "$(git rev-parse origin/main)" ]]; then
+  echo "Error: local main has commits origin/main does not; main must match origin." >&2
+  exit 1
+fi
+if git rev-parse -q --verify "refs/tags/$VERSION" >/dev/null; then
+  echo "Error: tag $VERSION already exists." >&2
   exit 1
 fi
 
-echo "Releasing $VERSION (pyproject: $PEP_VERSION)"
-echo ""
+if [[ "$MODE" == "prep" ]]; then
+  BRANCH="release/$VERSION"
+  for tool in python3 gh uv golangci-lint npm go; do
+    command -v "$tool" >/dev/null || {
+      echo "Error: $tool is not on PATH; make test, make lint and the PR need it." >&2
+      exit 1
+    }
+  done
+  if git rev-parse -q --verify "refs/heads/$BRANCH" >/dev/null; then
+    echo "Error: branch $BRANCH already exists (an earlier prep?). See RELEASING.md." >&2
+    exit 1
+  fi
 
-# --- Update version ---
+  # Tests and lint run on main before anything changes: the version
+  # bump does not affect them, and a failure here leaves no half-made
+  # branch or modified files behind.
+  echo "Running tests and linters on main..."
+  make test
+  make lint
+  echo "All tests and linters passed."
 
-sed -i "s/^version = \".*\"/version = \"$PEP_VERSION\"/" sensor/pyproject.toml
-echo "Updated sensor/pyproject.toml version to $PEP_VERSION"
+  git checkout -b "$BRANCH"
+  python3 scripts/version.py set "$PLAIN"
+  python3 scripts/version.py changelog "$PLAIN"
 
-# --- Run tests ---
+  git add VERSION
+  git add -u
+  git commit -m "chore: release $VERSION"
+  git push -u origin "$BRANCH"
+  gh pr create --base main --head "$BRANCH" --title "chore: release $VERSION" --body "$(cat <<EOF
+Release $VERSION.
 
-echo ""
-echo "Running tests and linters..."
-make test
-make lint
-echo "All tests and linters passed."
+- \`VERSION\` and every file that carries the version (\`python3 scripts/version.py check\`) are at $PLAIN.
+- \`CHANGELOG.md\`: the Unreleased entries are dated as $VERSION. Edit the section's opening summary on this branch before merging if it no longer describes the release.
 
-# --- Commit, tag, push ---
+After this merges, tag it: \`make release-tag VERSION=$VERSION\`.
+EOF
+)"
+  echo ""
+  echo "Release PR opened. After it merges: make release-tag VERSION=$VERSION"
+  exit 0
+fi
 
-git add sensor/pyproject.toml
-git commit -m "chore: release $VERSION"
+# MODE == tag
+python3 scripts/version.py check --tag "$VERSION"
 git tag -a "$VERSION" -m "Release $VERSION"
+git push origin "$VERSION"
 
 echo ""
-echo "Pushing to origin..."
-git push origin main --tags
-
-echo ""
-echo "Release $VERSION pushed successfully."
-echo ""
-echo "The GitHub Actions release workflow will now:"
-echo "  1. Scan the Docker images (stops the release on a fixable HIGH/CRITICAL finding or an EOL base)"
+echo "Tag $VERSION pushed. The GitHub Actions release workflow will now:"
+echo "  1. Check the tag matches VERSION, then scan the Docker images"
+echo "     (stops on a fixable HIGH/CRITICAL finding or an EOL base image)"
 echo "  2. Publish flightdeck-sensor to PyPI"
-echo "  3. Build and push Docker images to Docker Hub"
-echo "  4. Create a GitHub Release"
+echo "  3. Build and push the Docker images to Docker Hub"
+echo "  4. Create the GitHub Release"
 echo ""
 echo "Monitor: https://github.com/flightdeckhq/flightdeck/actions"

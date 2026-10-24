@@ -35,6 +35,12 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      # Nothing is built or published unless the tag matches the VERSION
+      # file and every file that carries the version (scripts/version.py),
+      # so a tag pushed before the release PR merged stops here.
+      - name: Tag matches VERSION
+        run: python3 scripts/version.py check --tag "${GITHUB_REF_NAME}"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
 

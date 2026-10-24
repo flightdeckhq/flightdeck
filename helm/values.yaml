@@ -1,7 +1,8 @@
 # Default values for the flightdeck chart.
 # All values are documented with their production implications.
 #
-# Image tags are pinned to v0.5.3, the latest published release tag.
+# Image tags are pinned to the release this chart ships with (image.tag;
+# scripts/version.py keeps it in step with the VERSION file).
 # Override image.tag (or a per-component tag) to deploy a different release.
 
 nameOverride: ""
@@ -144,7 +145,7 @@ networkPolicy:
   enabled: true
 
 nats:
-  enabled: true  # There is no external-NATS escape hatch in v0.5.3.
+  enabled: true  # The chart has no external-NATS option.
   image:
     repository: nats
     tag: "2.14.3-alpine"
@@ -188,7 +189,7 @@ postgres:
   # service reads this DSN from the generated secret. Percent-encode
   # reserved characters in the password (`@` as %40): the URL's
   # user:password part ends at the first `@`. When empty the chart
-  # ships its own single-instance StatefulSet. v0.5.3 does not provide HA or
+  # ships its own single-instance StatefulSet. The chart does not provide HA or
   # backups for the bundled database; use externalUrl for either.
   externalUrl: ""
   image:

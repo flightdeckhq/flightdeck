@@ -945,6 +945,14 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      # Every file that carries the release version (sensor, plugin,
+      # marketplace pin, Helm chart and image tag, README, Swagger) must
+      # match the root VERSION file; scripts/version.py lists them.
+      - name: Version locations match VERSION
+        run: |
+          python3 scripts/version.py check
+          python3 -m unittest scripts/test_version.py
+
       - name: Validate marketplace.json structure
         run: |
           python3 - <<'PY'

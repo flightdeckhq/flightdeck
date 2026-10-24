@@ -4,16 +4,34 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
-Correctness patch for the Claude Code plugin, the sensor's streaming
-token accounting, error classification, its OpenAI coverage (structured
-outputs, the Responses raw-response path, Responses tool calls and
-prompt-cache reads and writes) and its MCP dependency, the worker's
-handling of short-lived and re-attached sessions, a pricing refresh, and
-a documentation truth-up. One schema migration (000027) adds two nullable
-columns to `sessions`; the workers apply it at start-up. **Upgrade
-note:** marketplace installs of the plugin do not update themselves; run
-`claude plugin update flightdeck@flightdeck-plugins` after upgrading the
-server.
+## v0.6.0 — 2026-10-24
+
+The currency and correctness release. A security fix (revoked access
+tokens stopped working only after up to a minute), about fifty fixes
+across the Claude Code plugin, the sensor, the workers and the dashboard,
+broader SDK coverage (anthropic 2.x and openai 3.x, mcp 2.x, litellm
+streams, OpenAI structured outputs and Responses tool calls), and a
+toolchain refresh: Python 3.11 to 3.14, React 19, Node 24, Go 1.27,
+nginx 1.30, current GitHub Actions, a release image scan and Dependabot.
+
+**Upgrade notes**
+
+- The sensor needs Python 3.11 to 3.14 (3.10 is no longer supported)
+  and `pydantic>=2.10,<3`. Its extras raise their floors: `anthropic>=0.86`,
+  `litellm>=1.83.0` and `mcp>=1.28` (mcp 1.x and 2.x are both supported).
+- A password in `FLIGHTDECK_POSTGRES_URL` or Helm's
+  `postgres.externalUrl` that contains `@ : / ? #` or a space must be
+  percent-encoded (`@` as `%40`): the Postgres driver now ends the
+  password at the first `@`, as libpq does.
+- Helm production installs must set `nats.auth.token` (letters, digits
+  and `. _ ~ -` only; `openssl rand -hex 32` works). An install with
+  `nats.replicas` above 1 has to recreate the NATS StatefulSet once (see
+  the README's Helm section).
+- Two schema migrations (000027, 000028) apply when the workers start.
+- The Claude Code plugin needs Node 22 or newer. Marketplace installs do
+  not update themselves: run
+  `claude plugin update flightdeck@flightdeck-plugins` after upgrading
+  the server.
 
 ### Security
 
@@ -36,7 +54,7 @@ server.
   format. The Helm chart exposes the port and uses it as the workers'
   readiness probe (`workers.metricsPort`).
 - **Sensor: mcp 2.x is supported alongside 1.x.** The `mcp` extra
-  allows `mcp>=1.20,<3`. On mcp 2.x the sensor captures the server
+  allows `mcp>=1.28,<3`. On mcp 2.x the sensor captures the server
   fingerprint from `ClientSession.adopt`, which every handshake reaches
   (`initialize()`, `Client(mode="auto")`'s `server/discover` probe, an
   adopted discover result), and stamps the transport and server URL onto
@@ -351,10 +369,10 @@ server.
   `${CLAUDE_PLUGIN_ROOT}` so a plugin path with spaces works; the
   manifest declares `engines.node >= 22`, homepage, repository and
   license.
-- **Sensor: `mcp` 2.x silently disabled MCP observation.** The `mcp`
-  extra and dev dependency are capped at `<2`; when an installed `mcp`
-  cannot be imported the sensor logs a WARNING instead of a debug line,
-  and the MCP interceptor test module fails instead of skipping.
+- **Sensor: `mcp` 2.x silently disabled MCP observation.** When an
+  installed `mcp` cannot be imported the sensor logs a WARNING instead of
+  a debug line, and the MCP interceptor test module fails instead of
+  skipping. (mcp 2.x itself is supported; see Added.)
 - **Sensor: sub-agent content was dropped server-side.** Child
   `session_start` events (CrewAI, LangGraph) did not carry the
   `capture_prompts` flag, so the server stored the child session as
@@ -602,12 +620,11 @@ server.
   error no longer spends the whole budget within milliseconds.
 - **Docs match the code.** ARCHITECTURE.md now describes the repository
   tree, the `sessions` / `agents` / `directives` / `custom_directives` /
-  `token_policies` DDL, migrations through 000027, plugin session identity
+  `token_policies` DDL, every migration, plugin session identity
   (one random id per Claude Code invocation), the MCP enforcement contract,
   NATS subjects and authentication, service environment variable names,
   the framework coverage caveats (langchain-openai 1.x, gateway
-  attribution) and the fact that no service serves `/metrics`
-  yet. README gains a Roadmap section (replacing "Coming soon"), the
+  attribution) and the workers' `/metrics` endpoint. README gains a Roadmap section (replacing "Coming soon"), the
   plugin README documents identity, enforcement and updating, METHODOLOGY
   records the severity scale, and DECISIONS.md records D164 onward.
 - **Repository hygiene.** Retired known-issue identifiers and decision

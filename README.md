@@ -416,11 +416,11 @@ A production render (`api.env=production`, the default) refuses to proceed witho
 
 **Upgrading a v0.5.3 install with `nats.replicas` above 1** (the default is 3): the NATS StatefulSet's pod start policy changes, which Kubernetes does not allow in place. Scale ingestion to zero, give the workers a minute to drain, then run `kubectl delete statefulset <release>-flightdeck-nats` (the data volumes stay) before `helm upgrade`. On first start the clustered servers discard the old per-server streams and ingestion recreates the stream, so any event still on the bus at that point is dropped. A one-replica install upgrades in place and keeps its stream.
 
-The chart is at `version` 0.5.3 with `appVersion` 0.5.3; the default `image.tag` is `v0.5.3`. See [`helm/values.yaml`](helm/values.yaml) for the full schema, including replicas, HPA bounds, ingress, resources, and security contexts.
+The chart is at `version` 0.6.0 with `appVersion` 0.6.0; the default `image.tag` is `v0.6.0`. See [`helm/values.yaml`](helm/values.yaml) for the full schema, including replicas, HPA bounds, ingress, resources, and security contexts.
 
 | Key | Default | Description |
 |---|---|---|
-| `image.tag` | `v0.5.3` | Image tag applied to ingestion/workers/api/dashboard. |
+| `image.tag` | `v0.6.0` | Image tag applied to ingestion/workers/api/dashboard. |
 | `ingestion.replicas` | `2` | Initial replica count. HPA overrides at runtime when enabled. |
 | `ingestion.hpa.enabled` | `true` | Enable the HorizontalPodAutoscaler for ingestion. |
 | `workers.replicas` | `2` | NATS consumer pod count. |

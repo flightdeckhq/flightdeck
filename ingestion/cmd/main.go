@@ -1,5 +1,5 @@
 // @title       Flightdeck Ingestion API
-// @version     0.5.3
+// @version     0.6.0
 // @description Receives sensor events and delivers directives to agents
 // @host        localhost:8080
 // @BasePath    /

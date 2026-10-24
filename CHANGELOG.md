@@ -424,6 +424,17 @@ server.
 
 ### Changed
 
+- **Releases: one version source and a release that goes through a PR.**
+  The root `VERSION` file holds the release version, and
+  `scripts/version.py` writes it into every file that carries it (sensor,
+  plugin, marketplace pin, Helm chart and image tag, README, Swagger); CI
+  and the release workflow fail if any of them differs. `make
+  release-prep VERSION=vX.Y.Z` opens the release PR with the bump and a
+  dated CHANGELOG section, and `make release-tag VERSION=vX.Y.Z` tags the
+  merged commit; the old script committed the bump straight to `main`.
+  The two services' Swagger versions, stuck at 0.5.1 and 0.1.0, now follow
+  the release. RELEASING.md describes the flow and keeps the playground
+  out of the gate (it calls the paid provider APIs).
 - **Swagger generation is pinned.** ingestion's and api's `go.mod` pin
   their Swagger generator as a tool (`go tool swag`), so `make -C ingestion
   build` regenerates the same OpenAPI 3.1 spec that is committed instead of
@@ -500,8 +511,8 @@ server.
   `framer-motion` 11 (imports move to `motion/react`).
 - **Dashboard dependencies:** `react-router` 8 replaces
   `react-router-dom` 6 (fixes its open-redirect and error-deserialisation
-  advisories); Radix Dialog 1.2, Select 2.3, Tabs 1.1 and Tooltip 1.3
-  and recharts 3.10; and the two Geist variable fonts are vendored under
+  advisories); the dashboard is on Radix Dialog 1.2, Select 2.3, Tabs 1.1
+  and Tooltip 1.3 and recharts 3.10; and the two Geist variable fonts are vendored under
   `dashboard/src/assets/fonts/geist` with their OFL license instead of
   coming from the `geist` package, which pulled Next.js and sharp (and
   their critical and high advisories) into the dependency tree. `npm audit

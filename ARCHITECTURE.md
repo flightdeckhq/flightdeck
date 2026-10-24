@@ -211,7 +211,9 @@ flightdeck/
 ├── .claude-plugin/marketplace.json  # Claude Code plugin marketplace manifest (points at plugin/ by release tag)
 ├── .claude/                    # Repo-local Claude Code config: review-pipeline agents + guidelines, /audit-repo command, settings
 ├── assets/                     # Demo GIFs embedded in README.md
-├── scripts/release.sh          # Release script behind `make release VERSION=vX.Y.Z`
+├── VERSION                     # The release version; scripts/version.py writes it into every file that carries it
+├── scripts/release.sh          # Release script: `make release-prep` / `make release-tag VERSION=vX.Y.Z`
+├── scripts/version.py          # Version source tool: set / check / check --tag / changelog
 ├── docs/                       # GitHub Pages landing site (index.html, 404.html, CNAME, assets/)
 │
 ├── sensor/                     # flightdeck-sensor Python package (PyPI)
@@ -5827,7 +5829,9 @@ targets:
 | `make playground-all` | All playground demos, skip those without API keys |
 | `make lint` | Per-component lint (ruff, golangci-lint, ESLint, mypy) |
 | `make build` | Docker images for ingestion, workers, api, dashboard |
-| `make release VERSION=vX.Y.Z` | Validate, bump version, tag, push (release pipeline) |
+| `make release-prep VERSION=vX.Y.Z` | Test and lint, bump every version location, date the CHANGELOG, open the release PR |
+| `make release-tag VERSION=vX.Y.Z` | After the release PR merges: check the versions and push the tag (starts the release pipeline) |
+| `make version-check` | Check every version location matches the `VERSION` file |
 
 Each component (`sensor/`, `ingestion/`, `workers/`, `api/`,
 `dashboard/`, `docker/`, `helm/`, `plugin/`) has its own Makefile with

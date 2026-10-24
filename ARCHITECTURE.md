@@ -397,11 +397,9 @@ flightdeck/
 │   ├── Dockerfile
 │   ├── nginx.conf
 │   ├── index.html              # Theme class on html element
-│   ├── vite.config.ts
+│   ├── vite.config.ts          # React and Tailwind CSS 4 (@tailwindcss/vite) plugins
 │   ├── tsconfig.json
 │   ├── package.json
-│   ├── postcss.config.js
-│   ├── tailwind.config.js      # CSS variable-based theme colors
 │   ├── eslint.config.js
 │   ├── vitest.config.ts
 │   ├── playwright.config.ts
@@ -447,7 +445,7 @@ flightdeck/
 │   │   │                       # useSwimlaneScroll, allRowCollapsed, discoveryEventsPref, leftPanelWidth,
 │   │   │                       # investigate-sidebar-width
 │   │   ├── types/context.ts    # Runtime-context types shared by the CONTEXT sidebar and the session drawer
-│   │   └── styles/             # globals.css, themes.css
+│   │   └── styles/             # globals.css (Tailwind import, @theme colour tokens), themes.css
 │   └── tests/                  # unit (Vitest + RTL), e2e (Playwright), setup.ts
 │
 ├── plugin/                     # Claude Code hook plugin

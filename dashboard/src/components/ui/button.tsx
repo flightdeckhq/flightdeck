@@ -4,7 +4,7 @@ import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-50",
+  "inline-flex items-center justify-center whitespace-nowrap rounded-md text-sm font-medium transition-colors focus-visible:outline-hidden focus-visible:ring-1 focus-visible:ring-primary disabled:pointer-events-none disabled:opacity-50",
   {
     variants: {
       // hover:bg-<token>/<N> drops on hex-valued vars; both
@@ -14,10 +14,10 @@ const buttonVariants = cva(
       // that a transparent color-mix can't achieve on a light
       // surface (mixing with transparent lightens, doesn't darken).
       variant: {
-        default: "bg-primary text-white shadow hover:bg-[var(--primary-hover)]",
+        default: "bg-primary text-white shadow-sm hover:bg-(--primary-hover)",
         outline: "border border-border bg-transparent hover:bg-surface-hover",
         ghost: "hover:bg-surface-hover",
-        destructive: "bg-danger text-white hover:bg-[var(--danger-hover)]",
+        destructive: "bg-danger text-white hover:bg-(--danger-hover)",
       },
       size: {
         default: "h-9 px-4 py-2",

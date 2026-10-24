@@ -95,7 +95,7 @@ export function TopologyCell({
         title={childLabel}
         aria-label={`scroll to parent agent ${rel.parentName}`}
       >
-        <span className="flex-shrink-0">↳</span>
+        <span className="shrink-0">↳</span>
         <TruncatedText text={childLabel} />
       </button>
     );

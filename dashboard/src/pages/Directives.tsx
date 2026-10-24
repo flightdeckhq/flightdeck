@@ -121,12 +121,12 @@ export function Directives() {
             fontSize: 13,
             color: "var(--text)",
           }}
-          className="placeholder:text-text-muted focus:outline-none focus:border-[var(--primary)]"
+          className="placeholder:text-text-muted focus:outline-hidden focus:border-(--primary)"
         />
       </div>
 
       {error && (
-        <div className="mb-4 rounded-md border border-[color-mix(in_srgb,var(--danger)_30%,transparent)] bg-[color-mix(in_srgb,var(--danger)_10%,transparent)] px-3 py-2 text-xs text-[var(--danger)]">
+        <div className="mb-4 rounded-md border border-[color-mix(in_srgb,var(--danger)_30%,transparent)] bg-[color-mix(in_srgb,var(--danger)_10%,transparent)] px-3 py-2 text-xs text-(--danger)">
           {error}
           <Button size="sm" className="ml-2 h-5 px-2 text-[11px]" onClick={load}>
             Retry
@@ -144,7 +144,7 @@ export function Directives() {
             No custom directives registered yet. Add @flightdeck_sensor.directive() to your agent
             code and call init() to register directives here.
           </p>
-          <pre className="mx-auto inline-block rounded border border-border bg-surface-hover p-4 text-left text-xs text-text">
+          <pre className="mx-auto inline-block rounded-sm border border-border bg-surface-hover p-4 text-left text-xs text-text">
             {CODE_SNIPPET}
           </pre>
         </div>
@@ -273,13 +273,13 @@ function DirectiveCard({ directive }: { directive: CustomDirective }) {
         )}
 
         {paramsOpen && (
-          <div className="mt-1.5 space-y-1 rounded border border-border p-2">
+          <div className="mt-1.5 space-y-1 rounded-sm border border-border p-2">
             {directive.parameters.map((p) => (
               <div key={p.name} className="text-[11px]">
                 <span className="font-mono font-semibold text-text">{p.name}</span>
                 <span className="ml-1 text-text-muted">({p.type})</span>
                 {p.required && (
-                  <span className="ml-1 text-[var(--danger)]">required</span>
+                  <span className="ml-1 text-(--danger)">required</span>
                 )}
                 {p.description && (
                   <span className="ml-1 text-text-muted">— {p.description}</span>
@@ -309,7 +309,7 @@ function DirectiveCard({ directive }: { directive: CustomDirective }) {
               Trigger
             </Button>
           ) : (
-            <div className="space-y-2 rounded border border-border p-2">
+            <div className="space-y-2 rounded-sm border border-border p-2">
               <div className="flex items-center gap-2">
                 <label className="text-[11px] text-text-muted">Target:</label>
                 <Select
@@ -333,7 +333,7 @@ function DirectiveCard({ directive }: { directive: CustomDirective }) {
                     onChange={(e) => setSessionId(e.target.value)}
                     placeholder="Run ID"
                     aria-label="Run ID"
-                    className="h-6 rounded border border-border bg-surface px-1.5 text-[11px] text-text focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
+                    className="h-6 rounded-sm border border-border bg-surface px-1.5 text-[11px] text-text focus:outline-hidden focus:ring-1 focus:ring-(--primary)"
                   />
                 )}
               </div>
@@ -408,7 +408,7 @@ function DirectiveCard({ directive }: { directive: CustomDirective }) {
 
               {result && (
                 <div
-                  className={`text-[11px] ${result.ok ? "text-success" : "text-[var(--danger)]"}`}
+                  className={`text-[11px] ${result.ok ? "text-success" : "text-(--danger)"}`}
                 >
                   {result.message}
                 </div>
@@ -433,7 +433,7 @@ function ParamInput({
   const label = (
     <label className="text-[11px] text-text-muted block mb-0.5">
       {param.name}
-      {param.required && <span className="text-[var(--danger)]"> *</span>}
+      {param.required && <span className="text-(--danger)"> *</span>}
     </label>
   );
 
@@ -444,7 +444,7 @@ function ParamInput({
           type="checkbox"
           checked={Boolean(value)}
           onChange={(e) => onChange(e.target.checked)}
-          className="accent-[var(--primary)]"
+          className="accent-(--primary)"
           aria-label={param.name}
         />
         <span className="text-[11px] text-text-muted">{param.name}</span>
@@ -483,7 +483,7 @@ function ParamInput({
           onChange={(e) => onChange(e.target.value === "" ? "" : Number(e.target.value))}
           placeholder={param.description || param.name}
           aria-label={param.name}
-          className="w-full rounded border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
+          className="w-full rounded-sm border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text focus:outline-hidden focus:ring-1 focus:ring-(--primary)"
         />
       </div>
     );
@@ -498,7 +498,7 @@ function ParamInput({
         onChange={(e) => onChange(e.target.value)}
         placeholder={param.description || param.name}
         aria-label={param.name}
-        className="w-full rounded border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text focus:outline-none focus:ring-1 focus:ring-[var(--primary)]"
+        className="w-full rounded-sm border border-border bg-surface px-1.5 py-0.5 text-[11px] text-text focus:outline-hidden focus:ring-1 focus:ring-(--primary)"
       />
     </div>
   );

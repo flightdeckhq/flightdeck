@@ -29,7 +29,7 @@ export function AgentTypeBadge({
   return (
     <span
       data-testid={testId}
-      className="rounded-sm font-semibold uppercase tracking-wide"
+      className="rounded-xs font-semibold uppercase tracking-wide"
       style={{
         padding: "0 4px",
         fontSize: 10,

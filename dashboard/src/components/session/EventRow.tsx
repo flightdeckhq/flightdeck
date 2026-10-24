@@ -99,7 +99,7 @@ export function EventRow({
             <Tooltip>
               <TooltipTrigger asChild>
                 <span
-                  className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"
+                  className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-2 font-mono text-[10px] font-semibold uppercase"
                   style={{
                     background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
                     color: badge.cssVar,
@@ -232,7 +232,7 @@ export function StreamingPill({ event }: { event: AgentEvent }) {
         aborted ? `stream-aborted-${event.id}` : `stream-badge-${event.id}`
       }
       title={title}
-      className="ml-1 inline-flex h-[16px] shrink-0 items-center rounded font-mono text-[9px] font-semibold uppercase"
+      className="ml-1 inline-flex h-[16px] shrink-0 items-center rounded-sm font-mono text-[9px] font-semibold uppercase"
       style={{
         padding: "0 5px",
         background: `color-mix(in srgb, ${colorVar} 15%, transparent)`,

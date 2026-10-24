@@ -278,7 +278,7 @@ function SessionEventRowComponent({
           )}
         </div>
         <span
-          className="rounded font-mono text-[10px] px-[5px] py-[1px]"
+          className="rounded-sm font-mono text-[10px] px-[5px] py-px"
           style={{
             background: badge.bg,
             color: badge.color,
@@ -294,7 +294,7 @@ function SessionEventRowComponent({
               <TooltipTrigger asChild>
                 <span
                   data-testid="session-row-token-name"
-                  className="rounded font-mono text-[10px] px-[5px] py-[1px] max-w-[128px] overflow-hidden"
+                  className="rounded-sm font-mono text-[10px] px-[5px] py-px max-w-[128px] overflow-hidden"
                   style={{
                     fontSize: 10,
                     background: "var(--bg-elevated)",

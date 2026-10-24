@@ -305,7 +305,7 @@ function FeedRow({ fe, colWidths, onClick }: { fe: FeedEvent; colWidths: ColWidt
         <TruncatedText text={truncateSessionId(event.session_id)} />
       </span>
       <span
-        className="flex shrink-0 h-[18px] items-center justify-center rounded font-mono text-[10px] font-semibold uppercase"
+        className="flex shrink-0 h-[18px] items-center justify-center rounded-sm font-mono text-[10px] font-semibold uppercase"
         style={{
           width: colWidths.type,
           background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,

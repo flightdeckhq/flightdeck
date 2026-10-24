@@ -226,7 +226,7 @@ function SkeletonRows() {
           {Array.from({ length: 5 }).map((_, j) => (
             <td key={j} className="px-3 py-3">
               <div
-                className="h-4 animate-pulse rounded"
+                className="h-4 animate-pulse rounded-sm"
                 style={{ background: "var(--border)" }}
               />
             </td>
@@ -342,7 +342,7 @@ function TokenRow({ token, onChanged, onError }: TokenRowProps) {
                   // If the value hasn't changed saveEdit short-circuits.
                   void saveEdit();
                 }}
-                className="w-full rounded border px-2 py-1 text-sm focus:outline-none"
+                className="w-full rounded-sm border px-2 py-1 text-sm focus:outline-hidden"
                 style={{
                   background: "var(--bg)",
                   borderColor: "var(--border)",
@@ -381,7 +381,7 @@ function TokenRow({ token, onChanged, onError }: TokenRowProps) {
               {isDev && (
                 <span
                   data-testid={`access-token-dev-badge-${token.id}`}
-                  className="rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
+                  className="rounded-sm px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide"
                   style={{
                     background:
                       "color-mix(in srgb, var(--warning) 20%, transparent)",
@@ -621,7 +621,7 @@ function NameStep({
                 onSubmit();
               }
             }}
-            className="mt-1 w-full rounded border px-2 py-1.5 text-sm focus:outline-none focus:ring-1"
+            className="mt-1 w-full rounded-sm border px-2 py-1.5 text-sm focus:outline-hidden focus:ring-1 focus:ring-primary"
             style={{
               background: "var(--bg)",
               borderColor: "var(--border)",

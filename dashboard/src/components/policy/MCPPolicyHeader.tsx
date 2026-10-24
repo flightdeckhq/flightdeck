@@ -201,7 +201,7 @@ export function MCPPolicyHeader({
                   <>
                     Allow-list mode only. When ON, blocks against
                     servers not in your allow list emit a{" "}
-                    <code className="rounded bg-[var(--background-elevated)] px-1 py-0.5 font-mono text-[10px]">
+                    <code className="rounded-sm bg-(--background-elevated) px-1 py-0.5 font-mono text-[10px]">
                       policy_mcp_block
                     </code>{" "}
                     audit event so you can review first-time encounters
@@ -329,15 +329,15 @@ function ModeSegmented({
             onClick={() => onChange(opt.value)}
             onKeyDown={(e) => onKeyDown(e, idx)}
             className={cn(
-              "rounded-sm px-3 py-1.5 text-sm font-medium",
+              "rounded-xs px-3 py-1.5 text-sm font-medium",
               // Transition only on background-color + color so
               // unrelated properties don't flicker on click.
               "transition-[background-color,color] duration-150 ease-out",
-              "focus:outline-none focus-visible:ring-2 focus-visible:ring-[var(--accent)]",
+              "focus:outline-hidden focus-visible:ring-2 focus-visible:ring-(--accent)",
               "disabled:cursor-not-allowed disabled:opacity-60",
               active
-                ? "bg-[var(--accent)] text-white shadow-sm"
-                : "bg-transparent text-[var(--text-muted)] hover:text-[var(--text)]",
+                ? "bg-(--accent) text-white shadow-xs"
+                : "bg-transparent text-(--text-muted) hover:text-(--text)",
             )}
             data-active={active}
             data-testid={`${testid}-${opt.value}`}

@@ -88,7 +88,7 @@ export function EventDetailDrawer({ event, onClose, onSwapEvent, onViewRun }: Ev
     <AnimatePresence>
       <motion.div
         data-testid="event-detail-drawer"
-        className="fixed right-0 top-0 z-[60] flex h-full w-[520px] flex-col"
+        className="fixed right-0 top-0 z-60 flex h-full w-[520px] flex-col"
         style={{
           background: "var(--surface)",
           borderLeft: "1px solid var(--border)",
@@ -105,7 +105,7 @@ export function EventDetailDrawer({ event, onClose, onSwapEvent, onViewRun }: Ev
         >
           {/* Badge */}
           <span
-            className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded px-2 font-mono text-[10px] font-semibold uppercase"
+            className="flex h-[18px] min-w-[88px] shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-2 font-mono text-[10px] font-semibold uppercase"
             style={{
               background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
               color: badge.cssVar,
@@ -128,7 +128,7 @@ export function EventDetailDrawer({ event, onClose, onSwapEvent, onViewRun }: Ev
 
           {/* Close */}
           <button
-            className="ml-auto flex h-7 w-7 items-center justify-center rounded transition-colors hover:bg-surface-hover"
+            className="ml-auto flex h-7 w-7 items-center justify-center rounded-sm transition-colors hover:bg-surface-hover"
             onClick={onClose}
             aria-label="Close"
           >

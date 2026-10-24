@@ -614,7 +614,7 @@ function ContextFacetSection({
           <button
             type="button"
             onClick={onClear}
-            className="flex h-4 w-4 items-center justify-center rounded hover:bg-surface-hover"
+            className="flex h-4 w-4 items-center justify-center rounded-sm hover:bg-surface-hover"
             aria-label="Clear context filters"
             data-testid="context-clear"
           >
@@ -882,7 +882,7 @@ function FlavorItem({
         </span>
         {isActive && (
           <button
-            className="ml-1 flex h-4 w-4 items-center justify-center rounded hover:bg-surface-hover"
+            className="ml-1 flex h-4 w-4 items-center justify-center rounded-sm hover:bg-surface-hover"
             onClick={(e) => {
               e.stopPropagation();
               onFlavorClick?.(flavor.flavor);
@@ -911,7 +911,7 @@ function FlavorItem({
               data-testid={`flavor-directives-button-${flavor.flavor}`}
               title={`Trigger directives on ${flavor.flavor}`}
               aria-label={`Trigger directives on ${flavor.flavor}`}
-              className="flex h-5 w-5 items-center justify-center rounded transition-colors"
+              className="flex h-5 w-5 items-center justify-center rounded-sm transition-colors"
               style={{
                 background: "var(--accent-glow)",
                 color: "var(--accent)",
@@ -956,7 +956,7 @@ function FlavorItem({
               data-testid={`flavor-stop-all-button-${flavor.flavor}`}
               title={`Stop all runs of ${flavor.flavor}`}
               aria-label={`Stop all runs of ${flavor.flavor}`}
-              className="flex h-5 w-5 items-center justify-center rounded transition-colors"
+              className="flex h-5 w-5 items-center justify-center rounded-sm transition-colors"
               style={{
                 background: "rgba(239,68,68,0.15)",
                 color: "var(--status-lost)",
@@ -983,7 +983,7 @@ function FlavorItem({
               </DialogClose>
               <Button
                 size="sm"
-                className="bg-[var(--danger)] text-white hover:bg-[var(--danger)]/90"
+                className="bg-(--danger) text-white hover:bg-(--danger)/90"
                 onClick={handleStopAll}
                 disabled={loading}
               >

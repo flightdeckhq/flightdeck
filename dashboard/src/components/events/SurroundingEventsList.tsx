@@ -113,7 +113,7 @@ export function SurroundingEventsList({
         return (
           <button
             key={e.id}
-            className="flex w-full items-center gap-2 rounded px-2 py-1 text-left transition-colors hover:bg-surface-hover"
+            className="flex w-full items-center gap-2 rounded-sm px-2 py-1 text-left transition-colors hover:bg-surface-hover"
             style={{
               background: isAnchor
                 ? "color-mix(in srgb, var(--accent) 8%, transparent)"
@@ -134,7 +134,7 @@ export function SurroundingEventsList({
               {time}
             </span>
             <span
-              className="flex h-[14px] min-w-[64px] shrink-0 items-center justify-center whitespace-nowrap rounded px-1 font-mono text-[9px] font-semibold uppercase"
+              className="flex h-[14px] min-w-[64px] shrink-0 items-center justify-center whitespace-nowrap rounded-sm px-1 font-mono text-[9px] font-semibold uppercase"
               style={{
                 background: `color-mix(in srgb, ${badge.cssVar} 15%, transparent)`,
                 color: badge.cssVar,

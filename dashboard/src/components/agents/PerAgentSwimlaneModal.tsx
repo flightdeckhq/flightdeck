@@ -319,7 +319,7 @@ export function PerAgentSwimlaneModal({
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent
         data-testid="per-agent-swimlane-modal"
-        className="!max-w-[80vw]"
+        className="max-w-[80vw]!"
         style={{
           width: "80vw",
           height: "80vh",

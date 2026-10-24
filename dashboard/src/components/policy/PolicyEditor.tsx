@@ -137,7 +137,7 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
   }
 
   const inputClass =
-    "h-8 w-full rounded-md border border-border bg-surface px-3 py-1 text-xs text-text placeholder:text-text-muted focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50";
+    "h-8 w-full rounded-md border border-border bg-surface px-3 py-1 text-xs text-text placeholder:text-text-muted focus:outline-hidden focus:ring-1 focus:ring-primary disabled:opacity-50";
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">

@@ -311,7 +311,7 @@ function AgentTableRowImpl({
               handleOpenInEvents();
             }}
             data-testid={`agent-row-open-events-${agent.agent_id}`}
-            className="agent-row-quick-action font-mono text-[10px] px-1.5 py-0.5 rounded-sm border border-border bg-transparent text-text-secondary cursor-pointer"
+            className="agent-row-quick-action font-mono text-[10px] px-1.5 py-0.5 rounded-xs border border-border bg-transparent text-text-secondary cursor-pointer"
             aria-label={`Open ${agent.agent_name} in Events`}
           >
             Events ↗

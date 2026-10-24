@@ -84,7 +84,7 @@ export function InfoIcon({
           // pointerDown-close so a second click reopens.
           onClick={() => setOpen((v) => !v)}
           className={cn(
-            "inline-flex h-3.5 w-3.5 cursor-help items-center justify-center align-middle text-[var(--text-muted)] transition-colors hover:text-[var(--text)] focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--accent)]",
+            "inline-flex h-3.5 w-3.5 cursor-help items-center justify-center align-middle text-(--text-muted) transition-colors hover:text-(--text) focus:outline-hidden focus-visible:ring-1 focus-visible:ring-(--accent)",
             className,
           )}
           data-testid={resolvedTestId}

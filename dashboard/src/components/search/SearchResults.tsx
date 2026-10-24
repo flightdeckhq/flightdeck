@@ -105,7 +105,7 @@ export function SearchResultsList({
             <div className="flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wider text-text-muted">
               <span>{group.label}</span>
               <span
-                className="rounded bg-surface-hover px-1.5 text-[10px] font-normal text-text-muted"
+                className="rounded-sm bg-surface-hover px-1.5 text-[10px] font-normal text-text-muted"
                 data-testid={`search-group-count-${group.key}`}
               >
                 {group.items.length}

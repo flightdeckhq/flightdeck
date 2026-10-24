@@ -261,7 +261,7 @@ function Filters({
 }) {
   return (
     <div className="flex flex-wrap items-end gap-3 px-4 py-3">
-      <div className="min-w-[10rem]">
+      <div className="min-w-40">
         <label
           className="mb-1 block text-[10px] font-medium uppercase tracking-wide"
           style={{ color: "var(--text-muted)" }}
@@ -329,7 +329,7 @@ function DateField({
   testid: string;
 }) {
   return (
-    <div className="min-w-[10rem]">
+    <div className="min-w-40">
       <label
         htmlFor={testid}
         className="mb-1 block text-[10px] font-medium uppercase tracking-wide"
@@ -342,7 +342,7 @@ function DateField({
         type="datetime-local"
         value={dateToInput(value)}
         onChange={(e) => onChange(inputToISO(e.target.value))}
-        className="h-8 w-full rounded-md border bg-[var(--background-elevated)] px-2 text-xs outline-none transition-colors focus:border-[var(--accent)]"
+        className="h-8 w-full rounded-md border bg-(--background-elevated) px-2 text-xs outline-hidden transition-colors focus:border-(--accent)"
         style={{ borderColor: "var(--border)", color: "var(--text)" }}
         data-testid={testid}
       />
@@ -383,7 +383,7 @@ function RowGroup({
       <tr
         className={cn(
           "border-b transition-colors",
-          "hover:bg-[var(--background-elevated)]",
+          "hover:bg-(--background-elevated)",
         )}
         style={{ borderColor: "var(--border)" }}
         data-testid={`mcp-policy-audit-row-${row.id}`}
@@ -394,7 +394,7 @@ function RowGroup({
             onClick={onToggle}
             aria-label={expanded ? "Collapse payload" : "Expand payload"}
             aria-expanded={expanded}
-            className="text-[var(--text-muted)] transition-colors hover:text-[var(--text)]"
+            className="text-(--text-muted) transition-colors hover:text-(--text)"
             data-testid={`mcp-policy-audit-row-toggle-${row.id}`}
           >
             {expanded ? (
@@ -549,7 +549,7 @@ function SkeletonRows() {
       {[0, 1, 2].map((i) => (
         <div
           key={i}
-          className="h-7 w-full animate-pulse rounded"
+          className="h-7 w-full animate-pulse rounded-sm"
           style={{
             background:
               "color-mix(in srgb, var(--text-muted) 10%, transparent)",

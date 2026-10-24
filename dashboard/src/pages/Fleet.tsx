@@ -565,7 +565,7 @@ export function Fleet() {
             {TIME_RANGE_OPTIONS.map((range) => (
               <button
                 key={range}
-                className="rounded px-2.5 py-[3px] text-xs transition-colors"
+                className="rounded-sm px-2.5 py-[3px] text-xs transition-colors"
                 style={
                   timeRange === range
                     ? {
@@ -595,7 +595,7 @@ export function Fleet() {
           {paused ? (
             <div className="flex gap-1.5">
               <button
-                className="rounded px-2.5 py-[3px] text-xs transition-colors"
+                className="rounded-sm px-2.5 py-[3px] text-xs transition-colors"
                 style={{
                   background: "var(--bg-elevated)",
                   color: "var(--text)",
@@ -609,7 +609,7 @@ export function Fleet() {
                 ▶ Resume
               </button>
               <button
-                className="rounded px-2.5 py-[3px] text-xs font-semibold transition-colors"
+                className="rounded-sm px-2.5 py-[3px] text-xs font-semibold transition-colors"
                 style={{
                   background: "var(--accent-glow)",
                   color: "var(--accent)",
@@ -625,7 +625,7 @@ export function Fleet() {
             </div>
           ) : catchingUp ? (
             <button
-              className="rounded px-2.5 py-[3px] text-xs font-semibold transition-colors"
+              className="rounded-sm px-2.5 py-[3px] text-xs font-semibold transition-colors"
               style={{
                 background: "var(--accent-glow)",
                 color: "var(--accent)",
@@ -640,7 +640,7 @@ export function Fleet() {
             </button>
           ) : (
             <button
-              className="rounded px-2.5 py-[3px] text-xs transition-colors"
+              className="rounded-sm px-2.5 py-[3px] text-xs transition-colors"
               style={{
                 background: "transparent",
                 color: "var(--text-muted)",

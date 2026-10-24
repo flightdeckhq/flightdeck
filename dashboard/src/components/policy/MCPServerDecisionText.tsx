@@ -38,7 +38,7 @@ export function MCPServerDecisionText({
   if (!decision || decision.kind === "loading") {
     return (
       <span
-        className="inline-block h-3 w-16 animate-pulse rounded"
+        className="inline-block h-3 w-16 animate-pulse rounded-sm"
         style={{
           background:
             "color-mix(in srgb, var(--text-muted) 18%, transparent)",

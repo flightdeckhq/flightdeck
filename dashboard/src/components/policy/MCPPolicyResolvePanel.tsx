@@ -214,7 +214,7 @@ function FormField({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         autoComplete="off"
-        className="h-8 w-full rounded-md border px-3 py-1 text-xs outline-none transition-colors focus:border-[var(--accent)]"
+        className="h-8 w-full rounded-md border px-3 py-1 text-xs outline-hidden transition-colors focus:border-(--accent)"
         style={{
           borderColor: "var(--border)",
           background: "var(--background-elevated)",
@@ -327,7 +327,7 @@ function Field({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div className="flex items-center gap-2">
       <dt
-        className="min-w-[5rem] text-[10px] uppercase tracking-wide"
+        className="min-w-20 text-[10px] uppercase tracking-wide"
         style={{ color: "var(--text-muted)" }}
       >
         {label}

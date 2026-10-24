@@ -279,7 +279,7 @@ export function AgentTable({
               data-testid="agent-table-page-prev"
               disabled={safePage === 0}
               onClick={() => setPage((p) => Math.max(0, p - 1))}
-              className="text-[11px] px-2 py-0.5 rounded-sm border border-border bg-transparent text-text disabled:text-text-muted disabled:cursor-not-allowed cursor-pointer"
+              className="text-[11px] px-2 py-0.5 rounded-xs border border-border bg-transparent text-text disabled:text-text-muted disabled:cursor-not-allowed cursor-pointer"
             >
               ← Prev
             </button>
@@ -288,7 +288,7 @@ export function AgentTable({
               data-testid="agent-table-page-next"
               disabled={safePage >= pageCount - 1}
               onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))}
-              className="text-[11px] px-2 py-0.5 rounded-sm border border-border bg-transparent text-text disabled:text-text-muted disabled:cursor-not-allowed cursor-pointer"
+              className="text-[11px] px-2 py-0.5 rounded-xs border border-border bg-transparent text-text disabled:text-text-muted disabled:cursor-not-allowed cursor-pointer"
             >
               Next →
             </button>

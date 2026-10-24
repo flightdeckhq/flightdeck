@@ -140,7 +140,7 @@ function RetryablePill({ value }: { value: boolean }) {
   const colorVar = value ? "var(--status-active)" : "var(--text-muted)";
   return (
     <span
-      className="inline-flex items-center rounded font-mono text-[10px] font-semibold uppercase"
+      className="inline-flex items-center rounded-sm font-mono text-[10px] font-semibold uppercase"
       style={{
         padding: "1px 6px",
         background: `color-mix(in srgb, ${colorVar} 15%, transparent)`,

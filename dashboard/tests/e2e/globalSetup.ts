@@ -1,3 +1,4 @@
+import type { FullConfig } from "@playwright/test";
 import { spawn, spawnSync } from "node:child_process";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -27,7 +28,48 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-export default async function globalSetup(): Promise<void> {
+// `make dev` returns before the dashboard's Vite server is listening
+// (its container installs dependencies first), and until it is, nginx
+// answers every page with 502 Bad Gateway. Specs that started inside
+// that window failed on a 502 page. Wait for the dashboard to serve its
+// index through the edge proxy before seeding and before any spec runs.
+//
+// A cold container on a CI runner (npm install, then Vite's dependency
+// pre-bundling) has been seen to take about a minute; three minutes
+// leaves room for a slow runner without hiding a dashboard that never
+// comes up.
+const DASHBOARD_READY_TIMEOUT_MS = 180_000;
+// One request a second is enough to start the suite within a second of
+// the dashboard coming up, without flooding the proxy log.
+const DASHBOARD_READY_POLL_MS = 1_000;
+
+async function waitForDashboard(baseURL: string): Promise<void> {
+  const deadline = Date.now() + DASHBOARD_READY_TIMEOUT_MS;
+  let last = "no response yet";
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(baseURL, { redirect: "manual" });
+      if (res.status === 200) return;
+      last = `HTTP ${res.status}`;
+    } catch (err) {
+      last = err instanceof Error ? err.message : String(err);
+    }
+    await new Promise((r) => setTimeout(r, DASHBOARD_READY_POLL_MS));
+  }
+  throw new Error(
+    `globalSetup: the dashboard at ${baseURL} did not serve within ` +
+      `${DASHBOARD_READY_TIMEOUT_MS / 1000}s (last: ${last}). Is the dev stack up (make dev)?`,
+  );
+}
+
+export default async function globalSetup(config: FullConfig): Promise<void> {
+  const baseURL = config.projects[0]?.use.baseURL ?? "http://localhost:4000";
+  const tReady = Date.now();
+  await waitForDashboard(baseURL);
+  console.log(
+    `[playwright globalSetup] dashboard ready after ${((Date.now() - tReady) / 1000).toFixed(1)}s`,
+  );
+
   const repoRoot = resolve(__dirname, "..", "..", "..");
   const seedScript = resolve(repoRoot, "tests", "e2e-fixtures", "seed.py");
   const python = process.env.PYTHON ?? "python3";

@@ -62,8 +62,10 @@ no single point of failure introduced into the agent's execution path.
   developer's own session, ships with it on, and
   `FLIGHTDECK_CAPTURE_PROMPTS=false` turns it off.
 - Not an orchestrator. Never tells agents what to do.
-- Not a billing system. `estimated_cost` approximates from public list
-  prices; actual invoices differ.
+- Not a billing system. `estimated_cost` estimates per-token spend from
+  list prices, or uses the cost a gateway or client reported; actual
+  invoices differ. Usage covered by a flat-rate subscription is not
+  priced.
 - Not a notification platform. No Slack, email, or PagerDuty.
 - Not multi-tenant SaaS. Self-hosted only.
 - Not an LLM gateway. No model substitution, no caching, no retries
@@ -207,13 +209,14 @@ flightdeck/
 ├── CODE_OF_CONDUCT.md
 ├── LICENSE                     # Apache-2.0
 ├── Makefile                    # Root Makefile -- orchestrates all components
-├── pricing.yaml                # Model list prices (USD per 1M tokens) the api loads at startup for estimated_cost
+├── pricing.yaml                # Price overrides, model-id aliases and cost multipliers layered over the vendored catalogue
 ├── .claude-plugin/marketplace.json  # Claude Code plugin marketplace manifest (points at plugin/ by release tag)
 ├── .claude/                    # Repo-local Claude Code config: review-pipeline agents + guidelines, /audit-repo command, settings
 ├── assets/                     # Demo GIFs embedded in README.md
 ├── VERSION                     # The release version; scripts/version.py writes it into every file that carries it
 ├── scripts/release.sh          # Release script: `make release-prep` / `make release-tag VERSION=vX.Y.Z`
 ├── scripts/version.py          # Version source tool: set / check / check --tag / changelog
+├── scripts/pricing_refresh.py  # `make pricing-refresh`: regenerates the vendored pricing catalogue from litellm's price list
 ├── docs/                       # GitHub Pages landing site (index.html, 404.html, CNAME, assets/)
 │
 ├── sensor/                     # flightdeck-sensor Python package (PyPI)
@@ -327,6 +330,7 @@ flightdeck/
 │   │   ├── consumer/nats.go    # JetStream consumer goroutine pool, ack handling
 │   │   ├── migrate/migrate.go  # golang-migrate runner: applies docker/postgres/migrations at boot
 │   │   ├── metrics/metrics.go  # Atomic, reason-labelled dropped / closed / revived counters + Snapshot + Prometheus-text Handler + NewServer (the /metrics listener)
+│   │   ├── modelid/canonical.go  # Model-id canonicalisation and provider derivation (pure; test-vector table)
 │   │   ├── processor/
 │   │   │   ├── event.go        # Route incoming event to session, writer, policy evaluator
 │   │   │   ├── session.go      # State machine: active/idle/stale/closed/lost + reconciler
@@ -383,8 +387,9 @@ flightdeck/
 │   │   │   ├── agent_summary.go    # Per-agent windowed activity summary
 │   │   │   ├── agents_reconcile.go # Recompute agents.total_sessions / total_tokens rollups
 │   │   │   ├── analytics.go        # GROUP BY queries across all dimensions
-│   │   │   ├── pricing.go          # Per-model price map + cache ratios for estimated_cost; built-in fallback entries
-│   │   │   ├── pricing_loader.go   # Loads pricing.yaml at startup (FLIGHTDECK_PRICING_PATH → /etc/flightdeck → ./)
+│   │   │   ├── pricing.go          # Cost SQL: joins events to model_pricing, applies the billing-mode rules and multipliers
+│   │   │   ├── pricing_loader.go   # Merges the catalogue with pricing.yaml (FLIGHTDECK_PRICING_PATH → /etc/flightdeck → ./) and rebuilds model_pricing at startup
+│   │   │   ├── pricing_catalogue.json  # Vendored, pruned litellm price list, embedded in the binary
 │   │   │   ├── mcp_policy_store.go # MCP Protection Policy SQL (transactional entries replace + audit row)
 │   │   │   ├── mcp_policy_types.go # Go structs for mcp_policies / mcp_policy_entries rows and API DTOs
 │   │   │   ├── access_tokens.go
@@ -564,6 +569,7 @@ def init(
         FLIGHTDECK_HOSTNAME           -- override socket.gethostname
         FLIGHTDECK_UNAVAILABLE_POLICY -- "continue" (default) or "halt"
         FLIGHTDECK_CAPTURE_PROMPTS    -- "true" to enable
+        FLIGHTDECK_BILLING_MODE       -- "metered" / "subscription" / "local"
 
     When capture_prompts=False (default):
         Event payloads contain token counts, model, latency, tool names only.
@@ -1363,6 +1369,18 @@ state-revival path: the child session ages from
 PostToolUseFailure hook with `markEmittedTurn` per-messageId disk-marker dedup so mid-turn LLM
 activity surfaces in real time instead of batching at Stop.
 
+Each `post_call` carries `provider=anthropic`, the session's
+`billing_mode` and `provider_metadata.platform`, which the
+`SessionStart` hook determines once (see Cost estimation) and keeps in
+the session's marker directory beside the cached model, so later hooks
+do not run `claude auth status` again. A Vertex AI session also carries
+`inference_scope`: `global` when `CLOUD_ML_REGION` is `global`, else
+`regional`; a Bedrock session's scope comes from its model id (see
+Model ids).
+`model_requested` is the model the transcript turn names; Claude Code
+does not expose a separate served id, so `model_served` is the same
+value.
+
 `main` returns naturally instead of calling `process.exit(0)`. Two
 consecutive fetches in a single script invocation crash Node on Windows
 with `STATUS_STACK_BUFFER_OVERRUN` (`0xC0000409`) if `process.exit` fires
@@ -1567,11 +1585,19 @@ fields. Sub-agent sessions additionally carry
   "host": "worker-node-3",
   "framework": "crewai",
   "model": "claude-sonnet-4-6",
+  "model_requested": "claude-sonnet-4-6",
+  "model_served": "claude-sonnet-4-6",
+  "provider": "anthropic",
+  "billing_mode": "metered",
   "tokens_input": 1240,
   "tokens_output": 387,
   "tokens_total": 1627,
   "tokens_cache_read": 0,
   "tokens_cache_creation": 0,
+  "tokens_cache_creation_1h": 0,
+  "tokens_reasoning": 0,
+  "cost_reported": null,
+  "cost_source": null,
   "tokens_used_session": 42180,
   "token_limit_session": 100000,
   "latency_ms": 1840,
@@ -1628,6 +1654,34 @@ Other event types omit it. The worker writes it once to `sessions.context`
 via `UpsertSession ON CONFLICT` deliberately omitting `context` on
 subsequent writes (set-once semantics).
 
+#### Token, model and cost fields
+
+LLM events (`post_call`, `embeddings`) carry these fields; every one is
+optional on the wire, so an older client's events stay valid. What each
+feeds is described under Cost estimation.
+
+| Field | Stored in | Meaning |
+|---|---|---|
+| `model` | `events.model` | Legacy model field; the worker overwrites it with the canonical id |
+| `model_requested` | `events.model_requested` | The model id the caller asked for, verbatim |
+| `model_served` | `events.model_served` | The model id the response named, verbatim |
+| `provider` | `events.provider` | The model's vendor |
+| `billing_mode` | `events.billing_mode` | `metered`, `subscription` or `local` |
+| `provider_metadata.platform` | `events.platform` (and `payload`) | The endpoint that served the call |
+| `tokens_reasoning` | `events.tokens_reasoning` | Reasoning or thinking tokens, a subset of `tokens_output` |
+| `tokens_cache_creation_1h` | `payload` | One-hour cache writes, a subset of `tokens_cache_creation` |
+| `cost_reported` | `events.cost_reported` | USD cost the gateway or client reported for this call |
+| `cost_source` | `events.cost_source` | `provider` (returned by the API or gateway) or `agent` (computed by the client); set exactly when `cost_reported` is |
+| `service_tier` | `payload` | The tier that served the call as the response reports it (`standard`, `batch`, `flex`, `priority`, ...) |
+| `speed` | `payload` | Anthropic's inference speed (`standard`, `fast`) |
+| `inference_geo` | `payload` | Data-residency setting the response reports (Anthropic `us`, ...) |
+| `inference_scope` | `payload` | `global` or `regional` cloud endpoint; sent by the sensor and the plugin for Vertex AI, derived by the worker from a Bedrock inference-profile prefix |
+| `server_tool_use` | `payload` | Server-side tool request counters (`web_search_requests`, `web_fetch_requests`, `code_execution_requests`) |
+| `stop_reason` | `payload` | Why generation stopped (`end_turn`, `max_tokens`, `tool_use`, `stop`, `length`, ...), verbatim from the provider |
+
+`provider_metadata.request_id` (see `post_call`) completes the set. The worker copies each payload field
+above into `events.payload` under the same key.
+
 ### Validation rules
 
 The ingestion handler rejects events with 400 when:
@@ -1641,6 +1695,19 @@ The ingestion handler rejects events with 400 when:
   bound accommodates retry-after-long-outage windows.
 - `tokens_input`, `tokens_output` or `tokens_total` is negative (cache
   counts and a failed stream's `partial_tokens_*` are not range-checked).
+- `tokens_reasoning`, `tokens_cache_creation_1h` or `cost_reported` is
+  negative or not a finite number.
+- `billing_mode` is outside `{metered, subscription, local}`, `provider`
+  is outside `{anthropic, openai, google, xai, mistral, meta, deepseek,
+  other}`, or `cost_source` is outside `{provider, agent}`.
+- `cost_reported` and `cost_source` are not both set or both absent.
+- `tokens_reasoning` exceeds `tokens_output`, or
+  `tokens_cache_creation_1h` exceeds `tokens_cache_creation`, when both
+  fields of the pair are present.
+- `model_requested`, `model_served`, `service_tier`, `speed`,
+  `inference_geo` or `stop_reason` is longer than 256 characters, or
+  `inference_scope` is outside `{global, regional}`, or
+  `provider_metadata.platform` is longer than 253 characters.
 
 A `session_end` for a `session_id` Flightdeck has never seen (an orphan
 `session_end`) is **not** rejected at ingestion — the event is accepted and
@@ -2212,6 +2279,14 @@ CREATE TABLE events (
     source                TEXT,
     tokens_cache_read     BIGINT NOT NULL DEFAULT 0,
     tokens_cache_creation BIGINT NOT NULL DEFAULT 0,
+    tokens_reasoning      BIGINT,                      -- subset of tokens_output; NULL when not reported
+    provider              TEXT,                        -- model vendor; NULL until the worker or the backfill fills it
+    billing_mode          TEXT,                        -- metered / subscription / local; NULL until filled, as provider
+    platform              TEXT,                        -- endpoint that served the call (provider_metadata.platform)
+    cost_reported         NUMERIC(14, 8),              -- USD reported by a gateway or client
+    cost_source           TEXT,                        -- provider / agent; set exactly when cost_reported is
+    model_requested       TEXT,                        -- verbatim request model id
+    model_served          TEXT,                        -- verbatim response model id
     PRIMARY KEY (id, occurred_at)
 );
 
@@ -2224,8 +2299,14 @@ CREATE INDEX events_type_idx    ON events (event_type, occurred_at);
 -- small (only the minority of events carrying the field is indexed).
 ```
 
+The token columns other than the cache pair are nullable so that "not
+reported" stays distinct from zero. `model` holds the canonical model
+id and `model_requested` / `model_served` the verbatim ones (see Cost
+estimation).
+
 `payload` JSONB carries event-type-specific extras: streaming sub-object on
-`post_call`, error taxonomy fields on `llm_error`, `directive_name` /
+`post_call`, the token and cost fields that are not columns (see
+`POST /v1/events`), error taxonomy fields on `llm_error`, `directive_name` /
 `fingerprint` / `parameters` on `directive`, `tool_use_id` /
 `duration_ms` / `error` (and `mcp_server` on MCP calls) on the Claude
 Code plugin's tool events, `end_reason` on a plugin `session_end`, etc.
@@ -2275,6 +2356,37 @@ tool-style request/response capture. Operators querying
 column-name overload semantics. `mcp_resource_read` body
 overflow uses the `response` column path because resource
 bodies are blobs, not request/response shapes.
+
+### `model_pricing` (prices for estimated cost, written by the API at startup)
+
+```sql
+CREATE TABLE model_pricing (
+    model_id               TEXT NOT NULL,              -- canonical model id
+    platform               TEXT NOT NULL,              -- direct / bedrock / vertex / foundry / azure
+    provider               TEXT NOT NULL,
+    input                  NUMERIC(14, 6) NOT NULL,    -- USD per 1M tokens, every rate below too
+    output                 NUMERIC(14, 6) NOT NULL,
+    cache_read             NUMERIC(14, 6) NOT NULL,
+    cache_write_5m         NUMERIC(14, 6) NOT NULL,
+    cache_write_1h         NUMERIC(14, 6) NOT NULL,
+    reasoning              NUMERIC(14, 6),             -- NULL: reasoning tokens bill at the output rate
+    tier_threshold_tokens  BIGINT,                     -- NULL: no context tier
+    tier_input             NUMERIC(14, 6),
+    tier_output            NUMERIC(14, 6),
+    tier_cache_read        NUMERIC(14, 6),
+    tier_cache_write_5m    NUMERIC(14, 6),
+    tier_cache_write_1h    NUMERIC(14, 6),
+    priority_multiplier    NUMERIC(8, 4),              -- NULL: no priority rate in the catalogue
+    source                 TEXT NOT NULL,              -- catalogue / override / alias
+    deprecated_on          DATE,
+    PRIMARY KEY (model_id, platform)
+);
+```
+
+The table is derived data: the API rebuilds it from the vendored
+catalogue and `pricing.yaml` at startup (see Cost estimation), and a
+companion one-row table `model_pricing_meta` records the content hash
+and load time. Nothing else writes to it.
 
 ### `token_policies`
 
@@ -2416,6 +2528,7 @@ always create a new numbered migration.
 | 000026 | `sessions.capture_prompts` nullable BOOLEAN: server-authoritative capture posture written once from `session_start` |
 | 000027 | `sessions.start_seq` and `sessions.closed_seq` nullable BIGINT: NATS stream sequence of the `session_start` that opened the current run and of the `session_end` that closed it, so the worker orders a session's start and end without holding events back |
 | 000028 | `access_tokens_notify_revoked` trigger: every deleted `access_tokens` row sends its id on the `flightdeck_access_token_revoked` NOTIFY channel, so both services drop cached validations of a revoked token at once |
+| 000029 | Token and cost model: `events.tokens_reasoning`, `provider`, `billing_mode`, `platform`, `cost_reported`, `cost_source`, `model_requested`, `model_served`; the `model_pricing` and `model_pricing_meta` tables |
 
 ---
 
@@ -2438,8 +2551,8 @@ authoritative parameter-level reference.
 | `GET` | `/v1/events/:id/content` | Event prompt content; 404 when capture was off for the session |
 | `GET` | `/v1/policy` | Sensor preflight: returns the policy applicable to a flavor + session_id |
 | `GET` | `/v1/policies` | List all token policies (org + flavor + session scopes) |
-| `POST` | `/v1/policies` | Create a policy; validates `warn < degrade < block` |
-| `PUT` | `/v1/policies/:id` | Update a policy |
+| `POST` | `/v1/policies` | Create a policy; validates `warn < degrade < block`, and that `degrade_to` names a model in `model_pricing` that has no `deprecated_on` date in the past |
+| `PUT` | `/v1/policies/:id` | Update a policy; the same validation as `POST`, except that an unchanged `degrade_to` is not re-checked |
 | `DELETE` | `/v1/policies/:id` | Delete a policy |
 | `POST` | `/v1/directives` | Create a `shutdown`, `shutdown_flavor`, or `custom` directive |
 | `GET` | `/v1/directives/custom` | List registered custom directives; optional `flavor` filter |
@@ -2679,8 +2792,9 @@ renaming fields is not.
   [{key, value}]}]` where `key` is the secondary-axis bucket value.
   Allowed dimension values (in either position): `flavor`, `model`,
   `framework`, `host`, `agent_type`, `team`, `provider`,
-  `agent_role`, `parent_session_id`. `provider` is derived at query
-  time via SQL CASE over `model`. `agent_role` groups
+  `agent_role`, `parent_session_id`. `provider` reads
+  `events.provider` and, for a row whose `provider` is empty, falls
+  back to a SQL CASE over the model id's prefix. `agent_role` groups
   by the framework-supplied role string; sessions with null
   `agent_role` bucket as `(root)`. `parent_session_id`
   groups by parent session UUID; sessions without a parent (root
@@ -2748,12 +2862,11 @@ Returns:
 - `totals.sessions`: `COUNT(DISTINCT session_id)` across events
   in the window. Every run with any activity in the window
   counts, regardless of when it started.
-- `totals.cost_usd`: cost aggregate using the static pricing
-  table. The expression is unfiltered at the aggregate level
-  because non-`post_call` events leave the token columns NULL
-  (so the per-row contribution is 0 / NULL and is dropped by
-  SUM) — the numeric result is identical to a FILTERed
-  aggregate.
+- `totals.cost_usd`: metered cost of the window's `post_call` and
+  `embeddings` events (see Cost estimation), with
+  `totals.partial_estimate`, `totals.models_unpriced` and
+  `totals.billing_modes` as in the analytics response, so the page
+  can render the subscription and partial states.
 - `totals.latency_p50_ms` / `totals.latency_p95_ms`:
   `PERCENTILE_CONT` over `events.latency_ms` filtered to
   `event_type='post_call'`, matching the analytics endpoint
@@ -2770,33 +2883,258 @@ contained no events.
 
 ### Cost estimation
 
-`estimated_cost` is a derived analytics metric. The per-event
-formula:
+Cost answers one question: what did this LLM call cost the operator?
+The answer depends on how the call was paid for, so every LLM event
+carries a **billing mode** and cost is only summed for calls that are
+paid per token.
+
+#### Billing modes
+
+| `billing_mode` | Meaning | Counted in `estimated_cost` |
+|---|---|---|
+| `metered` | Paid per token: a provider API key, a cloud platform account (Bedrock, Vertex AI, Foundry, Azure OpenAI) or a gateway account (OpenRouter, a litellm proxy) | Yes |
+| `subscription` | Covered by a flat-rate plan: a Claude Pro, Max, Team or Enterprise seat signed in to Claude Code, or an equivalent plan of another coding agent | No |
+| `local` | A self-hosted model with no per-token charge (Ollama, vLLM, LM Studio and similar servers on the operator's own hardware) | No (costs $0, and is not reported as unpriced) |
+
+The sensor stamps `metered` on every call by default and `local` when the
+client's base URL is a loopback address (`localhost`, `127.0.0.0/8`,
+`::1`). A model server elsewhere on a private network is not assumed to
+be free, since a gateway or a metered proxy often sits on such an
+address; the override below covers a self-hosted server there. The Claude Code
+plugin determines the mode once at `SessionStart`: Bedrock, Vertex AI
+and Foundry sessions (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`,
+`CLAUDE_CODE_USE_FOUNDRY`) and API-key logins are `metered`; a
+`claude.ai` or `oauth_token` login is `subscription`. The login comes
+from `claude auth status` (`api_key` and `api_key_helper` are API-key
+methods); where that command is unavailable, a set `ANTHROPIC_API_KEY`
+or `ANTHROPIC_AUTH_TOKEN` counts as an API-key login, and anything
+else as a subscription. Both clients
+accept `FLIGHTDECK_BILLING_MODE` (`metered`, `subscription`, `local`)
+to override the detected value, for the cases detection cannot see.
+
+The main such case is a subscription's **extra usage**: once a Claude
+plan's included usage runs out, Claude Code continues at API rates,
+billed separately. Claude Code exposes no per-request signal for this,
+so those calls stay `subscription` and are not counted. An organisation
+whose Claude Code usage is billed per token (usage-based Enterprise
+billing, or a team that routinely runs on extra usage) sets
+`FLIGHTDECK_BILLING_MODE=metered` in the plugin's environment, and its
+sessions are then priced like any API-key session.
+
+An event that arrives without a `billing_mode` (a client that does not
+send one) is stored as `subscription` when its session's `client_type`
+is `claude_code` and as `metered` otherwise; the worker fills it in when
+it writes the row. The cost query applies the same rule to a row whose
+`billing_mode` is empty, so a row the backfill (see Model ids) has not
+reached yet is counted the same way.
+
+#### Where a call's cost comes from
+
+For a `metered` call, Flightdeck uses the first of these that exists:
+
+1. **Reported cost** (`cost_reported`, `cost_source`). Some gateways
+   return the billed amount with the response (OpenRouter's
+   `usage.cost`, `cost_source=provider`); some clients compute their
+   own (litellm's `response_cost`, a coding agent's own cost figure,
+   `cost_source=agent`). A client that reports a cost applies pricing
+   Flightdeck cannot see (negotiated rates, a custom price table), so
+   a reported cost is preferred over Flightdeck's own estimate.
+2. **Estimate** from the pricing table and the call's token counts,
+   below.
+3. **Unpriced**: the model has no price and no cost was reported. The
+   call contributes $0, and the response names the model (see
+   `models_unpriced` below) instead of presenting $0 as a price.
+
+#### Model ids
+
+A model id reaches Flightdeck in many spellings: a provider's API id
+(`claude-sonnet-4-5`), a dated snapshot (`claude-sonnet-4-5-20250929`,
+`gpt-5.1-2025-11-13`), a Vertex AI id (`claude-sonnet-4-5@20250929`), a
+Bedrock id or inference profile (`anthropic.claude-sonnet-4-5-20250929-v1:0`,
+`us.anthropic.claude-...`), a gateway-prefixed id (`openrouter/anthropic/claude-sonnet-4.5`,
+`anthropic/claude-sonnet-4-5`, `bedrock/...`), a dotted version
+(`claude-sonnet-4.5`), an Azure deployment name, or a local tag
+(`llama3.1:8b`).
+
+The worker canonicalises every LLM event's model id once, when it writes
+the row, with a pure function in the workers module, and stores:
+
+- `model_requested`: the id the caller asked for, verbatim. For an
+  event that sends only the legacy `model` field, the worker stores
+  that raw value here before canonicalising it.
+- `model_served`: the id the provider's response named, verbatim
+  (`response.model`); it differs from the request on a server-side
+  fallback or alias resolution.
+- `model`: the canonical id, derived from `model_served`, else
+  `model_requested`, else the legacy `model` field. This is the value
+  the `model` dimension groups by and the pricing table is keyed by.
+  Display surfaces show the canonical id and keep the verbatim ids in
+  the event detail.
+
+Canonicalisation is a fixed set of string rules with no lookup: it
+strips gateway and platform prefixes, Bedrock region prefixes (`us.`,
+`eu.`, `apac.`, `global.`) and the `anthropic.` vendor prefix with its
+`-v1:0` suffix, the Vertex `@date` suffix and OpenRouter's `:free` /
+`:beta` suffixes, and turns dotted Claude versions into the API's
+hyphenated form. A dated snapshot keeps its date. Stripping a Bedrock
+region prefix records its scope first: `global.` is
+`inference_scope=global`, any other region prefix `regional`. An id the
+rules do not recognise is stored as given (lower-cased, whitespace
+trimmed). The rules are pinned by a table of test vectors.
+
+Rows stored with a raw id are rewritten by a backfill the worker runs in
+the background. Because the write path always fills `model_requested`
+for an LLM event that names a model, a row with a `model` and an empty
+`model_requested` is one the write path never canonicalised. The
+backfill takes batches of those rows (`FOR UPDATE SKIP LOCKED`, so
+several workers share the work), moves the raw id into
+`model_requested`, stores the canonical id in `model`, copies
+`provider_metadata.platform` from the payload into `platform`, and fills
+`provider` and `billing_mode` by the rules here. It
+is idempotent and resumes where it stopped after a restart.
+
+Two mappings depend on configuration and so are applied when cost is
+computed rather than when the row is written, which means they reach
+past events too:
+
+- **Aliases.** Operators map deployment names (Azure, a gateway's
+  custom routes) to a model id in the `aliases` section of
+  `pricing.yaml`. Each alias key is normalised like an event's id
+  (canonicalised, lower-cased, trimmed) and becomes a `model_pricing`
+  row with the target model's rates, under the platform family the
+  alias names (`platform`, default `direct`). An alias whose key
+  collides with a catalogue id fails the load with an error naming
+  it.
+- **Undated fallback.** A dated id with no price of its own (a
+  snapshot the catalogue does not list) is priced as its undated id.
+
+#### Provider and platform
+
+- `provider` (column) is the model's vendor: `anthropic`, `openai`,
+  `google`, `xai`, `mistral`, `meta`, `deepseek` or `other`. The sensor
+  stamps it only when the endpoint settles it: the Anthropic SDK's
+  clients (`anthropic`), and the OpenAI SDK against the `openai` or
+  `azure` platform (`openai`). An OpenAI-compatible client pointed
+  anywhere else (xAI, DeepSeek, OpenRouter, a local server) leaves it
+  out. The plugin stamps `anthropic`. For an event that carries none,
+  the worker derives it from the canonical model id, and the analytics
+  `provider` dimension applies the same model-prefix rule to a row whose
+  `provider` is empty.
+- `platform` is the endpoint that served the call: `anthropic`,
+  `openai`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`, `google-cloud`,
+  `foundry`, `azure`, the bare host of a gateway or local server, or
+  `invalid-host`. Clients send it as `provider_metadata.platform` (see
+  `post_call`; the plugin sets `bedrock`, `vertex` or `foundry` from the
+  Claude Code provider variables, else `anthropic`, or the host of
+  `ANTHROPIC_BASE_URL` when that names a gateway). The worker copies it
+  into the `events.platform` column, which the cost query groups by. It
+  selects which price list applies and is shown in the event detail. It
+  is not an analytics dimension.
+
+#### Pricing table
+
+Prices come from two layers, merged at API startup into the
+`model_pricing` table:
+
+1. **Catalogue**: a pruned copy of litellm's
+   `model_prices_and_context_window.json` (the chat, responses and
+   embedding modes of the providers above), vendored in the api module
+   and embedded in the binary. `make pricing-refresh` regenerates it
+   and the change ships as an ordinary pull request. The API makes no
+   outbound request for prices.
+2. **Overrides**: `pricing.yaml` (located through
+   `FLIGHTDECK_PRICING_PATH`, then `/etc/flightdeck/`, then the working
+   directory). An entry there replaces the catalogue's entry for the
+   same model and platform field by field, so an operator with
+   negotiated prices states only the rates that differ. It also holds
+   the `aliases` map and the multipliers below.
+
+Each row is keyed by canonical model id and platform family (`direct`
+for the provider's own API, `bedrock`, `vertex`, `foundry`, `azure`) and
+holds, in USD per million tokens: `input`, `output`, `cache_read`,
+`cache_write_5m`, `cache_write_1h`, and optionally `reasoning` (when
+reasoning tokens are priced apart from output), a context tier
+(`tier_threshold_tokens` with the five rates that apply above it) and
+`priority_multiplier` (the ratio of the catalogue's priority-tier rate
+to the standard rate). A
+call on a platform with no row of its own is priced from the `direct`
+row. Platform labels map to a family: `bedrock` and `bedrock-mantle` to
+`bedrock`, `vertex` to `vertex`, `foundry` to `foundry`, `azure` to
+`azure`; `anthropic`, `openai`, `aws` (Claude Platform on AWS) and
+`google-cloud` (Claude Platform on Google Cloud), which bill at the
+provider's own prices, and every gateway host and `invalid-host` price
+from `direct`. The load replaces the table's contents in one transaction and is
+skipped when the merged content's hash matches what the table holds, so
+several API replicas starting together write it at most once each.
+
+#### Formula
+
+Per `post_call` and `embeddings` event, with `t_in` the input tokens
+(cache reads and writes included, as the providers report them) and
+`t_cw1h` the one-hour subset of the cache writes:
 
 ```
-(tokens_input - tokens_cache_read - tokens_cache_creation) * input_price
-  + tokens_cache_read * input_price * 0.10
-  + tokens_cache_creation * input_price * 1.25
-  + tokens_output * output_price
+t_uncached = GREATEST(t_in - t_cache_read - t_cache_creation, 0)
+t_cw5m     = GREATEST(t_cache_creation - t_cw1h, 0)
+t_plain    = GREATEST(t_out - t_reasoning, 0)
+rates      = tier rates when t_in > tier_threshold_tokens, else base rates
+
+cost = ( t_uncached     * input
+       + t_cache_read   * cache_read
+       + t_cw5m         * cache_write_5m
+       + t_cw1h         * cache_write_1h
+       + t_plain        * output
+       + t_reasoning    * COALESCE(reasoning, output)
+       ) / 1e6
+       * multiplier(service_tier) * multiplier(speed)
+       * multiplier(inference_geo) * multiplier(inference_scope)
+       + server-tool fees
 ```
 
-Cache ratios follow Anthropic's published structure (90% discount on
-reads, 25% premium on writes) and apply uniformly to every model that
-reports cache tokens, OpenAI's prompt-cache reads included. OpenAI's
-cached-input rate is model-dependent (0.50x to 0.05x of the input rate
-in `pricing.yaml`), so the uniform 0.10x read ratio can be off in either
-direction for an OpenAI session with cache reads. OpenAI's cache writes
-(`cache_write_tokens`) are priced at the same uniform 1.25x write ratio,
-which is Anthropic's rate, not OpenAI's; responses that carry no
-`cache_write_tokens` (older SDKs and models) contribute 0 to the write
-term. Per-model cache ratios are a
-README Roadmap item (token and cost model). Providers that report no
-cache tokens contribute 0 to both cache terms, so the formula collapses
-to `tokens_input * input_price + tokens_output * output_price`.
+Ingestion rejects counts that break the subset rules (below), and the
+`GREATEST` clamps keep a row stored before that check from producing a
+negative term.
 
-Pricing data lives in `pricing.yaml` at the repo root and is loaded at API
-startup via `api/internal/store/pricing.go`. Update the YAML when provider
-list prices change; it is read-only at runtime.
+Reasoning tokens are a subset of `tokens_output` on every provider; the
+sensor adds Gemini's separately reported thinking tokens into
+`tokens_output` so the subset rule holds. A provider that reports no
+cache or reasoning split leaves those terms at 0 and the formula
+collapses to `t_in * input + t_out * output`.
+
+The multipliers and server-tool fees live in `pricing.yaml`, so a
+provider's change is a data edit. A missing or unrecognised value
+multiplies by 1.
+
+- `service_tier`: `batch` and `flex` 0.5; `priority` at the model's
+  `priority_multiplier` (1 when the catalogue has no priority rate).
+- `speed`: `fast` at the multiplier Anthropic publishes for fast mode.
+- `inference_geo`: 1.1 for Anthropic's US-only inference.
+- `inference_scope`: 1.1 for a `regional` cloud endpoint (a Bedrock
+  regional or multi-region inference profile, a Vertex AI regional
+  endpoint) on the models whose cloud pricing carries that premium;
+  `global` endpoints 1.
+- Server tools: per-request fees, such as web search per 1,000
+  searches from `server_tool_use.web_search_requests`.
+
+The cost is computed at query time rather than stored per event, so a
+price correction, a new override or a new alias applies to past events
+as well as new ones. The query first sums each token term per group of
+canonical model, platform family, context tier and multiplier values,
+then joins each group to its `model_pricing` row (exact id, then the
+undated id; the platform family's row, then `direct`), so the pricing
+work scales with the number of distinct groups, not the number of
+events. The API holds the multipliers and server-tool fees from
+`pricing.yaml` in memory and passes them to the query as parameters.
+
+Every response that carries a cost also says what the number leaves
+out, with three keys: `partial_estimate` is true when `models_unpriced`
+(the canonical ids of metered calls in the window that had neither a
+price nor a reported cost) is non-empty, and `billing_modes` lists every
+billing mode the window's calls used, so a surface can say that
+subscription usage is not included, or show `Subscription` where nothing
+was metered. `GET /v1/analytics` with `metric=estimated_cost` returns
+them at the top level of the response, beside `series`; the per-agent
+summary returns them inside `totals`.
 
 ### Search
 
@@ -3127,11 +3465,13 @@ Columns, left to right:
 4. **Latency p95 (7d)** — total + sparkline.
 5. **Errors (7d)** — total + sparkline.
 6. **Sessions (7d)** — count.
-7. **Cost USD (7d)** — total. Rendered as a bare em-dash for
-   Claude Code agents: `estimated_cost` covers only
-   sensor-instrumented agents — coding agents bill independently
-   and Flightdeck has no pricing for them. The column header
-   carries an info-icon tooltip stating this.
+7. **Cost USD (7d)** — the agent's metered spend (see Cost
+   estimation). An agent whose calls in the window were all
+   `subscription` shows `Subscription` instead of an amount, and a
+   `local`-only agent shows `$0.00`. A total that leaves out
+   unpriced models carries a partial marker whose tooltip names
+   them. The column header's info-icon tooltip explains the billing
+   modes.
 8. **Last seen** — relative time with absolute-time tooltip.
 
 Column order shipped (`COLUMNS` array in `AgentTable.tsx`):
@@ -4103,8 +4443,19 @@ prompt-cache read, a subset of `tokens_input`: Anthropic's
 on direct and streamed calls alike). `tokens_cache_creation` is the
 cache write, also a subset of `tokens_input`: Anthropic's
 `cache_creation_input_tokens`, or OpenAI's `cache_write_tokens` usage
-detail in the same two objects (0 when the response carries none). OpenAI's `reasoning_tokens` detail is not
-stored separately: it is already inside `tokens_output`.
+detail in the same two objects (0 when the response carries none).
+`tokens_reasoning` is the reasoning share of `tokens_output`:
+Anthropic's `output_tokens_details.thinking_tokens`, OpenAI's
+`reasoning_tokens` detail (`completion_tokens_details` on chat,
+`output_tokens_details` on Responses). `tokens_cache_creation_1h` is the
+one-hour share of Anthropic's cache writes
+(`cache_creation.ephemeral_1h_input_tokens`). The event also carries
+`model_requested`, `model_served`, `provider`, `billing_mode`,
+`service_tier`, `speed`, `inference_geo`, `server_tool_use` and
+`stop_reason` where the response reports them, and `cost_reported` with
+`cost_source` when litellm or a gateway returned a cost (see
+`POST /v1/events` for the field table and Cost estimation for how each
+is used).
 Operator-actionable enrichment additionally carries:
 
 - `estimated_via`: passthrough from the pre-call estimator so a row
@@ -4114,8 +4465,9 @@ Operator-actionable enrichment additionally carries:
   processing_ms, request_id, model_info}`. Best-effort per provider
   (raw-response paths surface more headers; parsed-response paths
   may surface none). Field names are normalised across providers.
-  `platform` is set on every Anthropic `post_call` and names the endpoint
-  the client talked to: `anthropic`, `bedrock`, `bedrock-mantle`, `aws`,
+  `platform` is set on every Anthropic and OpenAI `post_call` and names
+  the endpoint the client talked to. An OpenAI call reports `openai`, or
+  `azure` for Azure OpenAI hosts; an Anthropic call reports `anthropic`, `bedrock`, `bedrock-mantle`, `aws`,
   `vertex`, `google-cloud` or `foundry` for the hosts the SDK's own
   client classes default to (matched on dot-separated suffixes, `vertex`
   only for the Vertex AI API hosts and `google-cloud` only for Claude
@@ -5681,7 +6033,7 @@ Constraint #4).
 | `FLIGHTDECK_CORS_ORIGIN` | `Access-Control-Allow-Origin` (default `*`); lock to the dashboard origin in prod |
 | `FLIGHTDECK_JWT_SECRET` | Signs dashboard login tokens; production Helm renders fail unless it is set |
 | `FLIGHTDECK_ADMIN_EMAIL` / `FLIGHTDECK_ADMIN_PASSWORD` | Seed the initial dashboard login |
-| `FLIGHTDECK_PRICING_PATH` | Overrides the location of `pricing.yaml` |
+| `FLIGHTDECK_PRICING_PATH` | Overrides the location of `pricing.yaml` (the price overrides layered over the built-in catalogue) |
 | `SHUTDOWN_TIMEOUT_SECS` | Graceful shutdown deadline (default 30) |
 
 **flightdeck-sensor (agent environment):**
@@ -5693,6 +6045,7 @@ Constraint #4).
 | `FLIGHTDECK_API_URL` | Control-plane base URL (derived from server if unset) |
 | `FLIGHTDECK_SESSION_ID` | Stable session UUID for orchestrator re-runs |
 | `FLIGHTDECK_CAPTURE_PROMPTS` | `true` to enable full payload capture |
+| `FLIGHTDECK_BILLING_MODE` | `metered`, `subscription` or `local`; overrides the billing mode the sensor detects (see Cost estimation) |
 | `FLIGHTDECK_UNAVAILABLE_POLICY` | `continue` (default) or `halt` |
 | `FLIGHTDECK_HOSTNAME` | Override `socket.gethostname` |
 | `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` | Persistent agent label; default `{user}@{hostname}` |

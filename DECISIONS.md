@@ -11536,3 +11536,149 @@ probe, since screenshots do not exercise them.
 **Rejected:** Accepting Tailwind 4's line-height ratios (a visible shift
 in dense tables and cards for no gain). Keeping PostCSS (`@tailwindcss/vite`
 is the plan's choice and removes a build step).
+
+---
+
+## D206 -- Every LLM call carries a billing mode; only metered calls are priced
+
+**Date:** 2026-10-24
+
+**Decision:** LLM events carry `billing_mode` (`metered`, `subscription`,
+`local`) as an `events` column. `estimated_cost` and every cost total sum
+`metered` calls only; `local` calls cost $0 without being reported as
+unpriced; `subscription` calls are not priced and the surfaces say so
+(`Subscription` on the Agents page, `billing_modes` in every cost
+response). The sensor stamps `metered`, or `local` for a loopback or
+private base URL. The Claude Code plugin decides once at `SessionStart`:
+Bedrock, Vertex AI and Foundry sessions and API-key logins (`claude auth
+status`, or `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN`) are `metered`, a
+claude.ai or OAuth-token login is `subscription`. `FLIGHTDECK_BILLING_MODE`
+overrides the detection in both clients. Rows written before the column
+read as `subscription` for `claude_code` sessions and `metered` otherwise.
+
+**Reasoning:** The Supervisor asked that cost follow how the call is paid
+for: a token cost shown for a subscription session is meaningless unless
+the session runs on extra usage, and Bedrock or Vertex usage is real
+spend. Before this, the Agents page hid cost by `client_type` while
+Analytics priced Claude Code tokens anyway, so the two surfaces disagreed.
+Claude Code exposes the login method (`claude auth status`, the cloud
+provider variables) but no per-request signal for extra usage, and its
+own cost figure is documented as an estimate that is not relevant to
+billing for Pro and Max plans; an operator override is the only honest
+way to price subscription sessions that do run on extra usage.
+
+**Rejected alternative:** Keying cost on `client_type` (wrong for Claude
+Code on Bedrock or an API key, and for a future coding agent that uses an
+API key); showing an "API-equivalent value" for subscription usage (a
+number nobody is billed, which the Supervisor asked not to show); a
+per-session column (one sensor process can call a metered provider and a
+local model in the same session).
+
+---
+
+## D207 -- Model ids are canonicalised in the worker, not the sensor
+
+**Date:** 2026-10-24
+
+**Decision:** The worker canonicalises the model id of every LLM event
+when it writes the row, with a pure Go function (string rules only, no
+lookup) and a test-vector table, and stores the verbatim
+`model_requested` and `model_served` beside the canonical `model`.
+Clients send ids verbatim; for an event that sends only the legacy
+`model` field the worker keeps that raw value as `model_requested`. Rows
+stored before the write path canonicalised are rewritten by a batched,
+idempotent worker backfill that also fills `platform` (from the
+payload), `provider` and `billing_mode`. The two mappings that depend on
+configuration, operator aliases from `pricing.yaml` and the fallback
+from an unpriced dated id to its undated id, are applied by the cost
+query, so they reach past events. This replaces the update plan's
+sensor-side `canonicalize()`.
+
+**Reasoning:** The id has to be canonical for every client, not only the
+Python sensor: the Claude Code plugin, events from released sensors that
+will never be upgraded, and the OTLP receiver and coding-agent adapters
+the later phases add. One implementation at the write path covers all of
+them, and the aliases an operator configures are on the server, where
+the worker can read them. Keeping the verbatim ids preserves what the
+provider actually reported.
+
+**Rejected alternative:** Canonicalising in each client (the sensor in
+Python, the plugin in JavaScript, later adapters in other languages: one
+rule set maintained several times, and old clients never corrected), or
+canonicalising at query time (repeats the work on every analytics query
+and leaves the `model` dimension grouping by raw spellings).
+
+---
+
+## D208 -- Cost is computed at query time from a model_pricing table the API rebuilds at startup
+
+**Date:** 2026-10-24
+
+**Decision:** The vendored litellm catalogue (D169) is embedded in the api
+binary as `pricing_catalogue.json`; at startup the API merges it with
+`pricing.yaml` (field-by-field overrides, model-id aliases, the service
+tier, speed and region multipliers, and server-tool fees) and rebuilds
+`model_pricing` in one transaction, skipping the write when the merged
+content's hash is unchanged; each alias becomes a row with its target's
+rates. Cost is computed at query time: token terms are summed per group
+of canonical model, platform family, context tier and multiplier values,
+and each group is joined to its `model_pricing` row (exact id, then the
+undated id; the platform family, then `direct`). The flat multipliers
+and server-tool fees are held by the API and passed as query
+parameters; the per-model priority ratio and the context tier's five
+rates (5-minute and 1-hour cache writes priced apart) are columns. The
+endpoint is stored in an `events.platform` column, beside its copy in
+`provider_metadata`, so the platform lookup does not read JSON per row;
+the multiplier inputs (`service_tier`, `speed`, `inference_geo`,
+`inference_scope`, `server_tool_use`) stay in the payload, and are the
+candidates for columns if the benchmark misses its target. Alias keys
+are normalised like event model ids, keyed under the platform family
+the alias names (default `direct`), and an alias that collides with a
+catalogue id fails the load. A cost reported by a gateway or client
+(`cost_source` `provider` or `agent`) is used in place of the estimate.
+`embeddings` events are priced alongside `post_call`. The one-hour cache
+write share travels as `tokens_cache_creation_1h` and the five-minute
+share is the remainder, rather than the two payload fields D168 listed.
+
+**Reasoning:** Computing at query time means a price correction, a new
+override or an alias applies to past events too, which matters most for
+the many calls the old table left unpriced. The join replaces the SQL
+string with one CASE arm per model, which grows with the catalogue.
+Embedding the catalogue avoids a new deployment artefact while keeping
+`pricing.yaml` as the operator's single file. A reported cost carries
+pricing Flightdeck cannot see (negotiated gateway rates, a client's
+custom price table). Storing only the one-hour share keeps the existing
+`tokens_cache_creation` column as the total, so older clients and the
+formula agree.
+
+**Rejected alternative:** Storing a computed cost on each event (fast to
+sum, but frozen at the price known when the event arrived); keeping the
+generated CASE expression (unmaintainable at catalogue size); seeding
+`model_pricing` from a migration (the data changes with every catalogue
+refresh and every operator override, which is configuration, not schema).
+The query-time join has to hold up on large windows; the pricing-engine
+change benchmarks it on 100,000 events before it merges.
+
+---
+
+## D209 -- A policy's degrade_to must name a current, priced model
+
+**Date:** 2026-10-24
+
+**Decision:** `POST /v1/policies`, and a `PUT` that changes `degrade_to`,
+reject a `degrade_to` that is not a model id in `model_pricing` or whose
+`deprecated_on` date has passed. A `PUT` that leaves `degrade_to` as it
+is does not re-validate it, so existing policies keep working and an
+operator can still edit their other fields. The dashboard's degrade-to
+list offers only the ids the check accepts.
+
+**Reasoning:** `degrade_to` was never validated. A typo or a retired id
+turned a DEGRADE decision into an outage: the sensor swapped every call
+to a model the provider rejects. The pricing table already lists every
+model the deployment can price, with retirement dates, so it is the
+natural catalogue to check against.
+
+**Rejected alternative:** Validating against a hand-kept list in the
+dashboard (drifts from the catalogue, and the API stays unprotected), or
+re-validating `degrade_to` on every update (an unrelated edit to an old
+policy would fail on a model id that was valid when it was set).

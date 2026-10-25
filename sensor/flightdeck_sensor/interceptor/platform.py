@@ -28,6 +28,10 @@ PLATFORM_ANTHROPIC = "anthropic"
 PLATFORM_OPENAI = "openai"
 PLATFORM_AZURE = "azure"
 PLATFORM_VERTEX = "vertex"
+# The platform of a client pointed at this machine, whatever spelling of
+# the loopback host it uses (an IPv6 literal would otherwise fail the
+# hostname check below and read as invalid-host).
+PLATFORM_LOCALHOST = "localhost"
 
 # Hosts the SDKs' own client classes default to, mapped to the platform
 # name reported on the event: (host prefix, host suffix, platform). The
@@ -88,11 +92,13 @@ def is_loopback_host(host: str) -> bool:
     it) or a loopback address. A server elsewhere on a private network is
     not treated as local, since gateways and metered proxies often sit on
     such addresses."""
-    lowered = host.lower().strip("[]")
+    lowered = host.lower().strip("[]").rstrip(".")
     if lowered == "localhost" or lowered.endswith(".localhost"):
         return True
     with contextlib.suppress(ValueError):
-        return ipaddress.ip_address(lowered).is_loopback
+        address = ipaddress.ip_address(lowered)
+        mapped = getattr(address, "ipv4_mapped", None)
+        return (mapped or address).is_loopback
     return False
 
 
@@ -112,7 +118,9 @@ def endpoint_of(client: Any, default_platform: str) -> Endpoint:
     try:
         host = getattr(getattr(client, "base_url", None), "host", None)
         if isinstance(host, str) and host:
-            return Endpoint(platform=platform_for_host(host), local=is_loopback_host(host))
+            if is_loopback_host(host):
+                return Endpoint(platform=PLATFORM_LOCALHOST, local=True)
+            return Endpoint(platform=platform_for_host(host))
     except Exception:
         _log.debug("platform attribution failed", exc_info=True)
     return Endpoint(platform=default_platform)

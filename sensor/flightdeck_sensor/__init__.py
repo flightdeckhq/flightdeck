@@ -320,8 +320,9 @@ def init(
     call is ``metered`` except calls to a model server on this machine
     (a loopback base URL), which are ``local``. Set it when the sensor
     cannot tell: ``local`` for a self-hosted server elsewhere on your
-    network, ``subscription`` for a flat-rate plan. Any other value
-    raises :class:`ConfigurationError`.
+    network, ``subscription`` for a flat-rate plan. Case and surrounding
+    whitespace are ignored; any other value raises
+    :class:`ConfigurationError`.
 
     ``allow_insecure_transport`` opts in to plaintext ``http://`` egress
     for a **non-local** control-plane host. Off by default: the resolved
@@ -404,7 +405,9 @@ def init(
             resolved_api_url = resolved_server.rstrip("/").replace("/ingest", "/api")
 
         capture = _env_bool(_env.ENV_CAPTURE_PROMPTS, capture_prompts)
-        resolved_billing_mode = os.environ.get(_env.ENV_BILLING_MODE) or billing_mode or None
+        resolved_billing_mode = (
+            os.environ.get(_env.ENV_BILLING_MODE) or billing_mode or ""
+        ).strip().lower() or None
         if resolved_billing_mode is not None and resolved_billing_mode not in _BILLING_MODES:
             raise ConfigurationError(
                 f"billing_mode must be one of {sorted(_BILLING_MODES)}, "

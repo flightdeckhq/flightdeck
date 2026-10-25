@@ -397,9 +397,10 @@ BILLING_METERED = "metered"
 BILLING_LOCAL = "local"
 
 # The ingestion API's cap on the free-form strings of the token and cost
-# fields (model ids, tier, speed, residency, stop reason); a longer value
-# would get the whole event rejected, so it is cut to fit instead.
-_MAX_DETAIL_LEN = 256
+# fields (model ids, tier, speed, residency, stop reason), in UTF-8 bytes;
+# a longer value would get the whole event rejected, so it is cut to fit
+# instead.
+_MAX_DETAIL_BYTES = 256
 
 # Set on an exception once an intercept has reported it, so a stream's
 # with-exit does not report the same failure of a nested call again.
@@ -689,7 +690,9 @@ class _GuardCore:
         except Exception:
             self._hook_failed("call_details_from_stream_chunk")
             details = None
-        if details is not None:
+        # Chat chunks repeat the same model and tier on every chunk; fold
+        # only a chunk that reports something new.
+        if details is not None and details != self._details:
             self._details = details if self._details is None else self._details.merged(details)
 
     def _merge_settled_usage(self) -> None:
@@ -1843,7 +1846,7 @@ def _add_token_cost_fields(
             with contextlib.suppress(Exception):
                 reason = provider.response_stop_reason(response)
         if isinstance(reason, str) and reason:
-            fields["stop_reason"] = reason[:_MAX_DETAIL_LEN]
+            fields["stop_reason"] = reason
         if details is not None:
             fields.update(
                 model_served=details.model_served,
@@ -1858,10 +1861,19 @@ def _add_token_cost_fields(
             if value is None:
                 continue
             if isinstance(value, str):
-                value = value[:_MAX_DETAIL_LEN]
+                value = _clip_utf8(value, _MAX_DETAIL_BYTES)
             payload[key] = value
     except Exception:
         _log.debug("token and cost fields failed", exc_info=True)
+
+
+def _clip_utf8(value: str, max_bytes: int) -> str:
+    """``value`` cut to at most ``max_bytes`` of UTF-8, never splitting a
+    character."""
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", errors="ignore")
 
 
 def _share(part: int | None, whole: int) -> int | None:

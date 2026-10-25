@@ -15,7 +15,9 @@ from unittest.mock import MagicMock
 
 import pytest
 from anthropic.types import Message, RawMessageDeltaEvent, RawMessageStartEvent
+from litellm import ModelResponse
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
+from openai.types.responses import Response
 
 import flightdeck_sensor
 from flightdeck_sensor.core.exceptions import ConfigurationError
@@ -332,10 +334,12 @@ def test_configured_billing_mode_wins() -> None:
 # ----- litellm ------------------------------------------------------------
 
 
-def _litellm_response(cost: Any) -> Any:
-    response = MagicMock()
-    response.usage = None
-    response.model = "claude-sonnet-4-5"
+def _litellm_response(cost: Any) -> ModelResponse:
+    response = ModelResponse(
+        model="claude-sonnet-4-5",
+        choices=[{"index": 0, "message": {"role": "assistant", "content": "ok"}}],
+        usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    )
     response._hidden_params = {"response_cost": cost, "api_base": "https://user:pw@gw.example"}
     return response
 
@@ -439,3 +443,115 @@ def test_billing_mode_env_overrides_the_argument(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setenv("FLIGHTDECK_BILLING_MODE", "bogus")
     with pytest.raises(ConfigurationError, match="bogus"):
         flightdeck_sensor.init(server="http://localhost:9999", token="tok", billing_mode="metered")
+
+
+# ----- review additions ---------------------------------------------------
+
+
+def _chunk(body: dict[str, Any]) -> ChatCompletionChunk:
+    return ChatCompletionChunk.model_validate(
+        {"id": "c", "object": "chat.completion.chunk", "created": 1, "model": "gpt-5.1", **body}
+    )
+
+
+def test_streamed_reasoning_larger_than_the_merged_output_is_dropped() -> None:
+    # The stream guard merges usage field by field (the larger value
+    # wins), so a reasoning count can end up above the output total; the
+    # sensor then leaves it out rather than get the event rejected.
+    events = [
+        _chunk({"choices": [{"index": 0, "delta": {"content": "hi"}}]}),
+        _chunk(
+            {
+                "choices": [],
+                "usage": {
+                    "prompt_tokens": 10,
+                    "completion_tokens": 4,
+                    "total_tokens": 14,
+                    "completion_tokens_details": {"reasoning_tokens": 9},
+                },
+            }
+        ),
+    ]
+    session = _session()
+    guarded = base.call_stream(
+        lambda **kw: _FakeStream(events),
+        {**OPENAI_KW, "stream": True},
+        session,
+        OpenAIProvider(platform="openai"),
+    )
+    list(guarded)
+    pc = _post_call(session)
+    assert pc["tokens_output"] == 4
+    assert "tokens_reasoning" not in pc
+    assert pc["model_served"] == "gpt-5.1"
+
+
+def test_openai_responses_details_from_a_real_response() -> None:
+    response = Response.model_validate(
+        {
+            "id": "resp_1",
+            "object": "response",
+            "created_at": 1,
+            "model": "gpt-5.1-2025-11-13",
+            "service_tier": "default",
+            "status": "completed",
+            "output": [],
+            "parallel_tool_calls": True,
+            "tool_choice": "auto",
+            "tools": [],
+            "usage": {
+                "input_tokens": 20,
+                "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+                "output_tokens": 30,
+                "output_tokens_details": {"reasoning_tokens": 18},
+                "total_tokens": 50,
+            },
+        }
+    )
+    provider = OpenAIProvider()
+    assert provider.extract_usage(response).reasoning_tokens == 18
+    assert provider.call_details(response) == CallDetails(
+        model_served="gpt-5.1-2025-11-13", service_tier="default"
+    )
+
+
+def test_call_details_read_through_a_raw_response_wrapper() -> None:
+    raw = MagicMock()
+    raw.parse.return_value = _anthropic_message()
+    details = AnthropicProvider().call_details(raw)
+    assert details is not None
+    assert details.model_served == "claude-sonnet-4-5-20250929"
+    assert details.server_tool_use == {"web_search_requests": 2}
+
+
+def test_long_non_ascii_strings_are_clipped_to_256_bytes() -> None:
+    clipped = base._clip_utf8("é" * 200, 256)
+    assert len(clipped.encode("utf-8")) <= 256
+    assert clipped == "é" * 128
+    assert base._clip_utf8("short", 256) == "short"
+
+
+@pytest.mark.parametrize("host", ["::1", "[::1]", "127.0.0.1", "localhost.", "::ffff:127.0.0.1"])
+def test_every_loopback_spelling_is_local_and_labelled_localhost(host: str) -> None:
+    client = MagicMock()
+    client.base_url.host = host
+    endpoint = endpoint_of(client, "openai")
+    assert endpoint.local is True
+    assert endpoint.platform == "localhost"
+
+
+def test_billing_mode_is_case_and_space_insensitive(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FLIGHTDECK_BILLING_MODE", " Local ")
+    captured: dict[str, Any] = {}
+
+    def _fake_session(*, config: SensorConfig, **_: Any) -> MagicMock:
+        captured["billing_mode"] = config.billing_mode
+        raise RuntimeError("stop after config")
+
+    monkeypatch.setattr(flightdeck_sensor, "Session", _fake_session)
+    try:
+        with pytest.raises(RuntimeError, match="stop after config"):
+            flightdeck_sensor.init(server="http://localhost:9999", token="tok")
+    finally:
+        flightdeck_sensor._client = None
+    assert captured["billing_mode"] == "local"

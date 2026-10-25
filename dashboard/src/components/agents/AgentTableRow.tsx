@@ -1,6 +1,6 @@
 import { memo, useCallback } from "react";
 import { useNavigate } from "react-router";
-import { ClientType, clientIncursMeteredCost } from "@/lib/agent-identity";
+import { ClientType } from "@/lib/agent-identity";
 import type { AgentSummary } from "@/lib/types";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
@@ -11,11 +11,12 @@ import { AgentStatusBadge } from "@/components/timeline/AgentStatusBadge";
 import { TableCell, TableRow } from "@/components/ui/table";
 import { useAgentSummary } from "@/hooks/useAgentSummary";
 import {
-  formatCost,
   formatLatencyMs,
   formatTokens,
   relativeTime,
 } from "@/lib/agents-format";
+import { isSubscriptionOnly } from "@/lib/cost";
+import { AgentCost } from "./AgentCost";
 import { AgentSparkline } from "./AgentSparkline";
 
 interface AgentTableRowProps {
@@ -250,39 +251,32 @@ function AgentTableRowImpl({
         </div>
       </TableCell>
 
-      {/* Cost USD 7d — number first, sparkline trailing. Estimated
-          cost only applies to clients whose LLM usage is billed per
-          call on the operator's bill (sensor-instrumented production
-          agents). Subscription-style coding agents — Claude Code
-          today, Codex / Cursor / etc. in the future — bill
-          independently of per-call usage, so the cell renders a
-          bare em-dash and skips the sparkline. The
-          ``clientIncursMeteredCost`` predicate in
-          ``@/lib/agent-identity`` is the single source of truth so
-          new client types inherit the correct treatment without a
-          row-component edit. */}
+      {/* Cost USD 7d — metered spend first, sparkline trailing. The
+          billing modes of the window's calls decide the reading, not
+          the client type: a Claude Code agent on an API key is
+          metered, one on a subscription shows ``Subscription`` and no
+          sparkline (there is no per-call cost to chart). The sparkline
+          also waits for the summary, so the cell does not reflow. */}
       <TableCell
         mono
         data-testid={`agent-row-cost-${agent.agent_id}`}
       >
-        {clientIncursMeteredCost(agent.client_type) ? (
-          <div className="flex items-center gap-2">
-            <span
-              className="min-w-[50px] text-text"
-              data-testid={`agent-row-cost-total-${agent.agent_id}`}
-            >
-              {totals ? formatCost(totals.cost_usd) : "—"}
-            </span>
+        <div className="flex items-center gap-2">
+          <span className="min-w-[50px] text-text">
+            <AgentCost
+              totals={totals}
+              testId={`agent-row-cost-total-${agent.agent_id}`}
+            />
+          </span>
+          {totals && !isSubscriptionOnly(totals.billing_modes) && (
             <AgentSparkline
               series={series}
               axis="cost_usd"
               width={SPARKLINE_WIDTH}
               height={SPARKLINE_HEIGHT}
             />
-          </div>
-        ) : (
-          <span className="text-text">—</span>
-        )}
+          )}
+        </div>
       </TableCell>
 
       {/* Last seen */}

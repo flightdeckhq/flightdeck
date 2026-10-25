@@ -198,9 +198,12 @@ export function AgentTable({
                           </span>
                         </TooltipTrigger>
                         <TooltipContent>
-                          Estimated from public list prices.
-                          Sensor-instrumented agents only; coding
-                          agents bill independently.
+                          Metered spend: the cost a client reported,
+                          or an estimate from list prices.
+                          Subscription calls have no per-call cost, so
+                          an agent with only those shows Subscription.
+                          A * marks a total that leaves out models
+                          with no price.
                         </TooltipContent>
                       </Tooltip>
                     )}

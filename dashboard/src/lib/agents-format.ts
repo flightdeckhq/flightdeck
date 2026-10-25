@@ -18,9 +18,15 @@ export function formatLatencyMs(n: number): string {
   return `${Math.round(n)}ms`;
 }
 
-/** USD cost: `—` for zero, then 3/2/0 decimal places by magnitude. */
+/** Smallest amount `formatCost` prints as digits: three decimal places. */
+const SMALLEST_SHOWN_COST = 0.001;
+
+/** USD cost: `$0.00` for zero (no spend is a real amount, not missing
+ *  data), `<$0.001` for spend too small for three decimals (so it never
+ *  reads as zero), then 3/2/0 decimal places by magnitude. */
 export function formatCost(n: number): string {
-  if (n === 0) return "—";
+  if (n === 0) return "$0.00";
+  if (n < SMALLEST_SHOWN_COST) return "<$0.001";
   if (n >= 100) return `$${n.toFixed(0)}`;
   if (n >= 1) return `$${n.toFixed(2)}`;
   return `$${n.toFixed(3)}`;

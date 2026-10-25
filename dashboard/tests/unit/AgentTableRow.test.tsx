@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { MemoryRouter, Routes, Route, useLocation } from "react-router";
 import { AgentTableRow } from "@/components/agents/AgentTableRow";
 import { ClientType } from "@/lib/agent-identity";
@@ -29,6 +29,9 @@ vi.mock("@/lib/api", async (orig) => {
           cost_usd: 0,
           latency_p50_ms: 0,
           latency_p95_ms: 0,
+          partial_estimate: false,
+          models_unpriced: [],
+          billing_modes: [],
         },
         series: [],
       }),
@@ -36,12 +39,15 @@ vi.mock("@/lib/api", async (orig) => {
   };
 });
 
-/** Build an `AgentSummaryResponse` with a specific cost total —
- *  the sensor cost-cell test overrides the mock with this so the
- *  `formatCost` path produces a non-em-dash string. */
+/** Build an `AgentSummaryResponse` with a specific cost total and the
+ *  cost coverage fields the cost cell reads. */
 function mkSummary(
   agentId: string,
   costUsd: number,
+  coverage: {
+    billing_modes?: string[];
+    models_unpriced?: string[];
+  } = {},
 ): AgentSummaryResponse {
   return {
     agent_id: agentId,
@@ -54,6 +60,9 @@ function mkSummary(
       cost_usd: costUsd,
       latency_p50_ms: 0,
       latency_p95_ms: 0,
+      partial_estimate: (coverage.models_unpriced ?? []).length > 0,
+      models_unpriced: coverage.models_unpriced ?? [],
+      billing_modes: coverage.billing_modes ?? (costUsd > 0 ? ["metered"] : []),
     },
     series: [],
   };
@@ -242,14 +251,79 @@ describe("AgentTableRow", () => {
     expect(row).toHaveAttribute("data-agent-state", "idle");
   });
 
-  it("renders a bare em-dash in the cost cell for a Claude Code agent", async () => {
-    // Claude Code agents bill independently — the cost cell always
-    // shows "—" regardless of any summary totals fetched.
+  it("shows Subscription and no sparkline when every call was on a subscription", async () => {
+    fetchAgentSummaryMock.mockImplementation(async (agentId: string) =>
+      mkSummary(agentId, 0, { billing_modes: ["subscription"] }),
+    );
     renderRow(
       mkAgent({ agent_id: "a-cc", client_type: ClientType.ClaudeCode }),
     );
     const cell = await screen.findByTestId("agent-row-cost-a-cc");
+    await waitFor(() => expect(cell.textContent).toBe("Subscription"));
+    expect(cell.querySelector("svg")).toBeNull();
+  });
+
+  it("shows the metered amount for a Claude Code agent on an API key", async () => {
+    // The billing mode, not the client type, decides the reading.
+    fetchAgentSummaryMock.mockImplementation(async (agentId: string) =>
+      mkSummary(agentId, 1.5, { billing_modes: ["metered"] }),
+    );
+    renderRow(
+      mkAgent({ agent_id: "a-cc-api", client_type: ClientType.ClaudeCode }),
+    );
+    const cell = await screen.findByTestId("agent-row-cost-a-cc-api");
+    await waitFor(() => expect(cell.textContent).toBe("$1.50"));
+  });
+
+  it("marks a total that leaves out unpriced models, naming them", async () => {
+    fetchAgentSummaryMock.mockImplementation(async (agentId: string) =>
+      mkSummary(agentId, 2, {
+        billing_modes: ["metered"],
+        models_unpriced: ["my-local-finetune"],
+      }),
+    );
+    renderRow(mkAgent({ agent_id: "a-partial" }));
+    const marker = await screen.findByTestId(
+      "agent-row-cost-total-a-partial-partial",
+    );
+    expect(marker).toHaveAttribute(
+      "aria-label",
+      expect.stringContaining("my-local-finetune"),
+    );
+    expect(screen.getByTestId("agent-row-cost-total-a-partial")).toHaveAttribute(
+      "data-cost-state",
+      "partial",
+    );
+  });
+
+  it("a click on the partial marker stays on the page", async () => {
+    fetchAgentSummaryMock.mockImplementation(async (agentId: string) =>
+      mkSummary(agentId, 2, { models_unpriced: ["my-local-finetune"] }),
+    );
+    const onOpenDrawer = vi.fn();
+    renderRow(mkAgent({ agent_id: "a-marker" }), { onOpenDrawer });
+    fireEvent.click(
+      await screen.findByTestId("agent-row-cost-total-a-marker-partial"),
+    );
+    expect(onOpenDrawer).not.toHaveBeenCalled();
+    expect(screen.getByTestId("loc")).toHaveTextContent("/");
+    expect(screen.queryByTestId("events-page")).toBeNull();
+  });
+
+  it("renders no cost sparkline until the summary arrives", () => {
+    fetchAgentSummaryMock.mockImplementation(() => new Promise(() => {}));
+    renderRow(mkAgent({ agent_id: "a-loading" }));
+    const cell = screen.getByTestId("agent-row-cost-a-loading");
     expect(cell.textContent).toBe("—");
+    expect(
+      cell.querySelector('[data-testid^="agent-sparkline"]'),
+    ).toBeNull();
+  });
+
+  it("shows $0.00, not an em-dash, for an agent that spent nothing", async () => {
+    renderRow(mkAgent({ agent_id: "a-zero" }));
+    const cell = await screen.findByTestId("agent-row-cost-a-zero");
+    await waitFor(() => expect(cell.textContent).toBe("$0.00"));
   });
 
   it("renders the formatted cost for a sensor agent with a non-zero total", async () => {
@@ -266,7 +340,7 @@ describe("AgentTableRow", () => {
       }),
     );
     const cell = await screen.findByTestId("agent-row-cost-a-sensor");
-    expect(cell.textContent).toBe("$4.20");
+    await waitFor(() => expect(cell.textContent).toBe("$4.20"));
   });
 
   it("renders an em-dash for a sensor agent with no summary totals", async () => {

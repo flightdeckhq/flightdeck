@@ -3,6 +3,7 @@ import type {
   AgentSummaryResponse,
   FlavorSummary,
 } from "@/lib/types";
+import { isSubscriptionOnly } from "@/lib/cost";
 
 /**
  * Sortable column keys on the `/agents` table. The sparkline tile
@@ -114,12 +115,25 @@ function sortKey(
     case "sessions_7d":
       return summary?.totals.sessions ?? 0;
     case "cost_usd_7d":
-      return summary?.totals.cost_usd ?? 0;
+      return costSortKey(summary);
     case "last_seen_at":
       return new Date(agent.last_seen_at).getTime();
     case "state":
       return STATE_ORDINAL[agent.state] ?? 0;
   }
+}
+
+/** Cost-column keys below any amount: a subscription-only agent sorts
+ *  just under a metered $0.00 one, and an agent whose summary has not
+ *  loaded sorts below both, so descending order reads metered spend,
+ *  then Subscription, then not yet known. */
+const COST_KEY_SUBSCRIPTION = -1;
+const COST_KEY_UNKNOWN = -2;
+
+function costSortKey(summary: AgentSummaryResponse | undefined): number {
+  if (!summary) return COST_KEY_UNKNOWN;
+  if (isSubscriptionOnly(summary.totals.billing_modes)) return COST_KEY_SUBSCRIPTION;
+  return summary.totals.cost_usd;
 }
 
 /**

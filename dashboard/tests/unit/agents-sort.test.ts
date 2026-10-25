@@ -38,6 +38,7 @@ function mkSummary(
   agentId: string,
   tokens: number,
   errors = 0,
+  cost: { cost_usd?: number; billing_modes?: string[] } = {},
 ): AgentSummaryResponse {
   return {
     agent_id: agentId,
@@ -47,9 +48,12 @@ function mkSummary(
       tokens,
       errors,
       sessions: 1,
-      cost_usd: 0,
+      cost_usd: cost.cost_usd ?? 0,
       latency_p50_ms: 0,
       latency_p95_ms: 0,
+      partial_estimate: false,
+      models_unpriced: [],
+      billing_modes: cost.billing_modes ?? [],
     },
     series: [],
   };
@@ -86,6 +90,17 @@ describe("sortAgents", () => {
       sort,
     );
     expect(result.map((a) => a.agent_id)).toEqual(["b", "c", "a"]);
+  });
+
+  it("sorts cost as metered spend, then $0.00, then Subscription, then not loaded", () => {
+    const costs = new Map<string, AgentSummaryResponse>([
+      ["metered", mkSummary("metered", 0, 0, { cost_usd: 1.5, billing_modes: ["metered"] })],
+      ["zero", mkSummary("zero", 0, 0, { cost_usd: 0, billing_modes: ["local"] })],
+      ["sub", mkSummary("sub", 0, 0, { cost_usd: 0, billing_modes: ["subscription"] })],
+    ]);
+    const agents = ["none", "sub", "zero", "metered"].map((id) => mkAgent({ agent_id: id }));
+    const desc = sortAgents(agents, costs, { column: "cost_usd_7d", direction: "desc" });
+    expect(desc.map((a) => a.agent_id)).toEqual(["metered", "zero", "sub", "none"]);
   });
 
   it("sorts numeric column ASC", () => {

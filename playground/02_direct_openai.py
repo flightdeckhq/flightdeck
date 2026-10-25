@@ -28,6 +28,7 @@ except ImportError:
 import flightdeck_sensor
 from flightdeck_sensor import Provider
 from _helpers import (
+    assert_token_cost_fields,
     API_TOKEN,
     API_URL,
     assert_event_landed,
@@ -564,6 +565,19 @@ def main() -> None:
     )
     if not is_auth:
         raise AssertionError(f"auth-error fell through; llm_error types={error_types!r}")
+
+    # The OpenAI SDK against api.openai.com settles the vendor; each call
+    # names its requested and served (dated) model.
+    post_calls = assert_token_cost_fields(session_id, provider="openai", platform="openai")
+    served = [e for e in post_calls if e.get("model_served")]
+    print_result(
+        "model_served reported",
+        len(served) == len(post_calls),
+        0,
+        f"{len(served)}/{len(post_calls)} post_calls carry model_served",
+    )
+    if len(served) != len(post_calls):
+        raise AssertionError(f"post_call without model_served: {post_calls!r}")
 
     flightdeck_sensor.teardown()
 

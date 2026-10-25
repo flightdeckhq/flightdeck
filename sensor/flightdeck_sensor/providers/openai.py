@@ -12,7 +12,7 @@ from datetime import UTC
 from typing import Any
 
 from flightdeck_sensor.core.errors import REQUEST_ID_MAX_LEN
-from flightdeck_sensor.core.types import TokenUsage
+from flightdeck_sensor.core.types import CallDetails, TokenUsage
 from flightdeck_sensor.providers.protocol import PromptContent, ToolInvocation, finish_reason_of
 
 _log = logging.getLogger("flightdeck_sensor.providers.openai")
@@ -120,6 +120,37 @@ def _field(obj: Any, name: str) -> Any:
     if isinstance(obj, dict):
         return obj.get(name)
     return getattr(obj, name, None)
+
+
+# The platforms where the OpenAI SDK reaches OpenAI's own models.
+_OPENAI_PLATFORMS = frozenset({"openai", "azure"})
+
+
+def _reasoning_tokens(usage: Any, details_attr: str) -> int | None:
+    """The reasoning share of the output under the usage's details object
+    (chat: ``completion_tokens_details``, Responses:
+    ``output_tokens_details``), or ``None`` when not reported. Never
+    raises."""
+    try:
+        count = _field(_field(usage, details_attr), "reasoning_tokens")
+        # bool is an int subclass; a True count is malformed, not 1.
+        if isinstance(count, int) and not isinstance(count, bool) and count >= 0:
+            return count
+    except Exception:
+        pass
+    return None
+
+
+def _openai_details(obj: Any) -> CallDetails | None:
+    """The served model and service tier an OpenAI response object (or
+    chat chunk) names, or ``None`` when it names neither."""
+    model = _field(obj, "model")
+    tier = _field(obj, "service_tier")
+    details = CallDetails(
+        model_served=model if isinstance(model, str) and model else None,
+        service_tier=tier if isinstance(tier, str) and tier else None,
+    )
+    return None if details == CallDetails() else details
 
 
 def _cache_detail(usage: Any, details_attr: str, field: str) -> int:
@@ -268,8 +299,39 @@ class OpenAIProvider:
 
     name = "openai"
 
-    def __init__(self, capture_prompts: bool = False) -> None:
+    def __init__(
+        self,
+        capture_prompts: bool = False,
+        platform: str | None = None,
+        *,
+        local: bool = False,
+    ) -> None:
         self._capture_prompts = capture_prompts
+        # The endpoint the client talks to (openai, azure, or the host
+        # of an OpenAI-compatible server), reported under
+        # provider_metadata.platform. None when the caller attributed
+        # none.
+        self._platform = platform
+        self._local = local
+
+    @property
+    def platform(self) -> str | None:
+        return self._platform
+
+    @property
+    def vendor(self) -> str | None:
+        # The OpenAI SDK also talks to OpenAI-compatible servers that
+        # serve other vendors' models; only OpenAI's own API and Azure
+        # OpenAI settle the vendor.
+        return "openai" if self._platform in _OPENAI_PLATFORMS else None
+
+    @property
+    def local(self) -> bool:
+        return self._local
+
+    @property
+    def inference_scope(self) -> str | None:
+        return None
 
     def estimate_tokens(self, request_kwargs: dict[str, Any]) -> tuple[int, str]:
         """Estimate input tokens; returns ``(count, source)``.
@@ -298,6 +360,15 @@ class OpenAIProvider:
             return 0, "none"
 
     def extract_response_metadata(self, response: Any) -> dict[str, Any] | None:
+        """The header metadata below plus the platform this provider was
+        attributed to, which is reported whether or not the response
+        exposes any header."""
+        out = self._header_metadata(response) or {}
+        if self._platform:
+            out = {"platform": self._platform, **out}
+        return out or None
+
+    def _header_metadata(self, response: Any) -> dict[str, Any] | None:
         """Pull rate-limit headers + processing-ms from raw-response paths.
 
         OpenAI surfaces these on ``response.headers`` for raw-response
@@ -422,8 +493,10 @@ class OpenAIProvider:
         ``cache_read_tokens``, and the cache write under
         ``cache_write_tokens`` in the same objects lands in
         ``cache_creation_tokens`` (``0`` when an older SDK or model sends
-        none). ``reasoning_tokens`` has no ``TokenUsage`` field and is
-        part of ``output_tokens`` already.
+        none). The reasoning share of the output
+        (``completion_tokens_details.reasoning_tokens`` on chat,
+        ``output_tokens_details.reasoning_tokens`` on Responses) lands in
+        ``reasoning_tokens``; it is part of ``output_tokens`` already.
         """
         try:
             # ``_field`` so a usage object and a usage dict (the JSON body
@@ -450,6 +523,7 @@ class OpenAIProvider:
                         cache_creation_tokens=_cache_detail(
                             usage, "input_tokens_details", "cache_write_tokens"
                         ),
+                        reasoning_tokens=_reasoning_tokens(usage, "output_tokens_details"),
                     )
 
             return TokenUsage(
@@ -459,6 +533,7 @@ class OpenAIProvider:
                 cache_creation_tokens=_cache_detail(
                     usage, "prompt_tokens_details", "cache_write_tokens"
                 ),
+                reasoning_tokens=_reasoning_tokens(usage, "completion_tokens_details"),
             )
         except Exception:
             return TokenUsage(input_tokens=0, output_tokens=0)
@@ -480,6 +555,30 @@ class OpenAIProvider:
                 return None
             result = self._usage_from_object(usage)
             return result if result.total > 0 else None
+        except Exception:
+            return None
+
+    def call_details(self, response: Any) -> CallDetails | None:
+        """Served model and service tier from a chat completion, a
+        Responses ``Response`` or an embeddings response (or a raw
+        wrapper around one)."""
+        try:
+            obj = response
+            if hasattr(obj, "parse") and callable(obj.parse):
+                with contextlib.suppress(Exception):
+                    obj = obj.parse()
+            return _openai_details(obj)
+        except Exception:
+            return None
+
+    def call_details_from_stream_chunk(self, chunk: Any) -> CallDetails | None:
+        """Chat chunks carry ``model`` and ``service_tier`` themselves;
+        Responses events carry them on ``event.response``."""
+        try:
+            if isinstance(getattr(chunk, "type", None), str):
+                inner = getattr(chunk, "response", None)
+                return _openai_details(inner) if inner is not None else None
+            return _openai_details(chunk)
         except Exception:
             return None
 

@@ -244,6 +244,7 @@ flightdeck/
 │   │   │   └── retry.py        # Exponential backoff, unavailability policy enforcement
 │   │   ├── interceptor/
 │   │   │   ├── base.py         # call, call_async, call_stream, call_stream_async, the stream guards + the outer-call mark
+│   │   │   ├── platform.py     # Endpoint attribution: host → platform label, loopback → local billing
 │   │   │   ├── anthropic.py    # SensorAnthropic + resource-level patch of the SDK's Messages classes
 │   │   │   ├── openai.py       # SensorOpenAI + chat / responses / embeddings descriptors
 │   │   │   ├── litellm.py      # SensorLitellm: module-level completion / embedding patch
@@ -252,7 +253,7 @@ flightdeck/
 │   │   │   ├── crewai.py       # CrewAI Agent.execute_task patch → one child session per agent turn
 │   │   │   └── langgraph.py    # LangGraph StateGraph.add_node patch → one child session per node invocation
 │   │   ├── providers/
-│   │   │   ├── protocol.py     # Provider Protocol: token estimation, usage extraction (incl. in-stream usage), content extraction
+│   │   │   ├── protocol.py     # Provider Protocol: token estimation, usage extraction (incl. in-stream usage), call details, endpoint vendor / locality, content extraction
 │   │   │   ├── anthropic.py    # AnthropicProvider: handles system, messages, tools, response
 │   │   │   ├── openai.py       # OpenAIProvider: handles messages, tools, response, embeddings input
 │   │   │   └── litellm.py      # LitellmProvider: ModelResponse usage / tool-invocation extraction
@@ -549,6 +550,7 @@ def init(
     limit: int | None = None,        # local WARN-only token threshold
     warn_at: float = 0.8,
     session_id: str | None = None,   # optional session-id hint
+    billing_mode: str | None = None, # metered / subscription / local; default per endpoint
 ) -> None:
     """
     Initialize the sensor.

@@ -524,6 +524,101 @@ def test_sensor_openai_full_pipeline(
 
 
 # ======================================================================
+# Token, model and cost fields from the real sensor
+# ======================================================================
+
+ANTHROPIC_RICH_RESPONSE: dict[str, Any] = {
+    **ANTHROPIC_RESPONSE,
+    "model": "claude-sonnet-4-6-20260115",
+    "usage": {
+        "input_tokens": 10,
+        "output_tokens": 80,
+        "cache_read_input_tokens": 500,
+        "cache_creation_input_tokens": 300,
+        "cache_creation": {
+            "ephemeral_5m_input_tokens": 100,
+            "ephemeral_1h_input_tokens": 200,
+        },
+        "output_tokens_details": {"thinking_tokens": 50},
+        "server_tool_use": {"web_search_requests": 1, "web_fetch_requests": 0},
+        "service_tier": "standard",
+        "speed": "standard",
+        "inference_geo": "us",
+    },
+}
+
+
+def test_sensor_anthropic_token_cost_fields_reach_the_database(
+    sensor_reset: None,
+    unique_flavor: str,
+) -> None:
+    """Every field an Anthropic response reports beyond the basic counts
+    is stored: columns for the ones analytics sums or groups by, the
+    payload for the rest."""
+    flavor = unique_flavor
+    with respx.mock(assert_all_called=False) as rmock:
+        _mock_anthropic_messages(rmock, response=ANTHROPIC_RICH_RESPONSE)
+
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
+        client.messages.create(
+            model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": "Hello"}],
+            max_tokens=100,
+        )
+
+        pc = _wait_for_event_type(flavor, "post_call", timeout=15)
+        assert pc["model"] == "claude-sonnet-4-6-20260115"
+        assert pc["model_requested"] == "claude-sonnet-4-6"
+        assert pc["model_served"] == "claude-sonnet-4-6-20260115"
+        assert pc["provider"] == "anthropic"
+        assert pc["billing_mode"] == "metered"
+        assert pc["platform"] == "anthropic"
+        assert pc["tokens_reasoning"] == 50
+        assert pc["tokens_input"] == 810
+        assert pc["tokens_cache_creation"] == 300
+        payload = pc["payload"]
+        assert payload["tokens_cache_creation_1h"] == 200
+        assert payload["service_tier"] == "standard"
+        assert payload["inference_geo"] == "us"
+        assert payload["server_tool_use"] == {"web_search_requests": 1}
+        assert payload["stop_reason"] == "end_turn"
+
+
+def test_sensor_openai_against_a_local_server_is_local_billing(
+    sensor_reset: None,
+    unique_flavor: str,
+) -> None:
+    """An OpenAI-compatible client pointed at a loopback server is a
+    self-hosted model: billing_mode local, the server's host as the
+    platform, and no vendor stamped by the sensor (the worker derives it
+    from the model id)."""
+    flavor = unique_flavor
+    with respx.mock(assert_all_called=False) as rmock:
+        rmock.post("http://localhost:11434/v1/chat/completions").mock(
+            return_value=httpx.Response(
+                200, json={**OPENAI_RESPONSE, "model": "llama3.1:8b"}
+            )
+        )
+
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        client = flightdeck_sensor.wrap(
+            openai.OpenAI(api_key="unused", base_url="http://localhost:11434/v1")
+        )
+        client.chat.completions.create(
+            model="llama3.1:8b",
+            messages=[{"role": "user", "content": "Hello"}],
+            max_tokens=100,
+        )
+
+        pc = _wait_for_event_type(flavor, "post_call", timeout=15)
+        assert pc["billing_mode"] == "local"
+        assert pc["platform"] == "localhost"
+        assert pc["model"] == "llama3.1:8b"
+        assert pc["provider"] == "meta"
+
+
+# ======================================================================
 # Test 3 -- capture_prompts=True
 # ======================================================================
 

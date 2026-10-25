@@ -94,6 +94,10 @@ __all__ = [
 
 _log = logging.getLogger("flightdeck_sensor")
 
+# Billing modes init(billing_mode=) / FLIGHTDECK_BILLING_MODE accept; the
+# ingestion API rejects any other value on the wire.
+_BILLING_MODES = frozenset({"metered", "subscription", "local"})
+
 # Agent-type vocabulary lock. Any other value raises ConfigurationError
 # at init time. See CHANGELOG.md for the v0.4.0 breaking change that
 # narrowed this from {autonomous, supervised, batch, developer}.
@@ -241,6 +245,7 @@ def init(
     langgraph_agent_node_pattern: str | None = None,
     mcp_block_on_uncertainty: bool = False,
     allow_insecure_transport: bool = False,
+    billing_mode: str | None = None,
 ) -> None:
     """Initialize the sensor and start the run.
 
@@ -307,6 +312,17 @@ def init(
     - ``FLIGHTDECK_ALLOW_INSECURE_TRANSPORT`` -- ``"true"`` to allow plain
       ``http://`` egress to a non-local control plane (overrides
       *allow_insecure_transport*)
+    - ``FLIGHTDECK_BILLING_MODE`` -- ``metered``, ``subscription`` or
+      ``local`` (overrides *billing_mode*)
+
+    ``billing_mode`` says how this agent's LLM calls are paid for, which
+    decides whether the dashboard counts them as spend. Left unset, every
+    call is ``metered`` except calls to a model server on this machine
+    (a loopback base URL), which are ``local``. Set it when the sensor
+    cannot tell: ``local`` for a self-hosted server elsewhere on your
+    network, ``subscription`` for a flat-rate plan. Case and surrounding
+    whitespace are ignored; any other value raises
+    :class:`ConfigurationError`.
 
     ``allow_insecure_transport`` opts in to plaintext ``http://`` egress
     for a **non-local** control-plane host. Off by default: the resolved
@@ -389,6 +405,14 @@ def init(
             resolved_api_url = resolved_server.rstrip("/").replace("/ingest", "/api")
 
         capture = _env_bool(_env.ENV_CAPTURE_PROMPTS, capture_prompts)
+        resolved_billing_mode = (
+            os.environ.get(_env.ENV_BILLING_MODE) or billing_mode or ""
+        ).strip().lower() or None
+        if resolved_billing_mode is not None and resolved_billing_mode not in _BILLING_MODES:
+            raise ConfigurationError(
+                f"billing_mode must be one of {sorted(_BILLING_MODES)}, "
+                f"got {resolved_billing_mode!r}"
+            )
 
         # session_id resolution follows the same env-wins pattern as
         # FLIGHTDECK_SERVER / AGENT_FLAVOR: env var overrides kwarg,
@@ -469,6 +493,7 @@ def init(
             "token": resolved_token,
             "api_url": resolved_api_url,
             "capture_prompts": capture,
+            "billing_mode": resolved_billing_mode,
             "allow_insecure_transport": resolved_allow_insecure,
             "unavailable_policy": os.environ.get(_env.ENV_UNAVAILABLE_POLICY, "continue"),
             # Legacy wire-level ``flavor`` field stays populated for

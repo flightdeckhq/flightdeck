@@ -74,6 +74,7 @@ from typing import TYPE_CHECKING, Any
 
 from flightdeck_sensor.core.errors import classify_stop_reason
 from flightdeck_sensor.interceptor import base
+from flightdeck_sensor.interceptor.platform import PLATFORM_OPENAI, endpoint_of
 from flightdeck_sensor.providers.openai import OpenAIProvider
 
 if TYPE_CHECKING:
@@ -101,6 +102,19 @@ except ImportError:
     _OrigOpenAI = None
     _OrigAsyncOpenAI = None
     _OPENAI_AVAILABLE = False
+
+
+def _provider_for(client: Any, session: Session) -> OpenAIProvider:
+    """An OpenAI provider for a client, attributed to the endpoint the
+    client talks to (``openai``, ``azure``, or the host of an
+    OpenAI-compatible server; see
+    :func:`flightdeck_sensor.interceptor.platform.endpoint_of`)."""
+    endpoint = endpoint_of(client, PLATFORM_OPENAI)
+    return OpenAIProvider(
+        capture_prompts=session.config.capture_prompts,
+        platform=endpoint.platform,
+        local=endpoint.local,
+    )
 
 
 def _is_async_client(client: Any) -> bool:
@@ -727,9 +741,7 @@ class SensorOpenAI:
         self._client = client
         self._session = session
         self._is_async = _is_async_client(client)
-        self._provider = provider or OpenAIProvider(
-            capture_prompts=session.config.capture_prompts,
-        )
+        self._provider = provider or _provider_for(client, session)
 
     @property
     def chat(self) -> SensorChat:
@@ -867,9 +879,7 @@ class _OpenAIChatDescriptor:
         if session is None:
             return raw
 
-        provider = OpenAIProvider(
-            capture_prompts=session.config.capture_prompts,
-        )
+        provider = _provider_for(instance, session)
         wrapped = SensorChat(
             raw,
             session,
@@ -913,9 +923,7 @@ class _OpenAIResponsesDescriptor:
         if session is None:
             return raw
 
-        provider = OpenAIProvider(
-            capture_prompts=session.config.capture_prompts,
-        )
+        provider = _provider_for(instance, session)
         wrapped = SensorResponses(
             raw,
             session,
@@ -959,9 +967,7 @@ class _OpenAIEmbeddingsDescriptor:
         if session is None:
             return raw
 
-        provider = OpenAIProvider(
-            capture_prompts=session.config.capture_prompts,
-        )
+        provider = _provider_for(instance, session)
         wrapped = SensorEmbeddings(
             raw,
             session,

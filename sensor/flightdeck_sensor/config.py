@@ -44,6 +44,9 @@ ENV_UNAVAILABLE_POLICY = "FLIGHTDECK_UNAVAILABLE_POLICY"
 # Opt-in to plaintext http:// egress for a non-local control
 # plane. Bool-coerced; default False forces https:// for public hosts.
 ENV_ALLOW_INSECURE_TRANSPORT = "FLIGHTDECK_ALLOW_INSECURE_TRANSPORT"
+# How LLM calls are paid for: "metered", "subscription" or "local".
+# Overrides the per-call detection (loopback servers are local).
+ENV_BILLING_MODE = "FLIGHTDECK_BILLING_MODE"
 
 
 # Stable list of every FLIGHTDECK_* env var the sensor consults, in
@@ -60,4 +63,5 @@ ALL_ENV_VARS: tuple[str, ...] = (
     ENV_CAPTURE_PROMPTS,
     ENV_UNAVAILABLE_POLICY,
     ENV_ALLOW_INSECURE_TRANSPORT,
+    ENV_BILLING_MODE,
 )

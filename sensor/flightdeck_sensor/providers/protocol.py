@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
 if TYPE_CHECKING:
-    from flightdeck_sensor.core.types import EventType, TokenUsage
+    from flightdeck_sensor.core.types import CallDetails, EventType, TokenUsage
 
 
 class Provider(Protocol):
@@ -20,6 +20,41 @@ class Provider(Protocol):
     # the ``provider`` field of the error events the adapter's calls
     # produce, and part of the key of the per-provider retry counter.
     name: str
+
+    @property
+    def vendor(self) -> str | None:
+        """The model vendor the endpoint settles (``anthropic`` for
+        Anthropic's clients, ``openai`` for the OpenAI SDK against
+        OpenAI or Azure OpenAI), stamped as the event's ``provider``;
+        ``None`` when the endpoint could serve any vendor's models (an
+        OpenAI-compatible gateway, litellm), which leaves the worker to
+        derive it from the model id."""
+        ...
+
+    @property
+    def local(self) -> bool:
+        """Whether the client talks to a model server on this machine,
+        whose calls carry the ``local`` billing mode."""
+        ...
+
+    @property
+    def inference_scope(self) -> str | None:
+        """``global`` or ``regional`` for a cloud endpoint whose scope
+        the client's configuration names (a Vertex AI region), else
+        ``None``."""
+        ...
+
+    def call_details(self, response: Any) -> CallDetails | None:
+        """What the response reports about the call beyond token counts
+        (served model, service tier, speed, data residency, server-tool
+        counters, a reported cost), or ``None``. Never raises."""
+        ...
+
+    def call_details_from_stream_chunk(self, chunk: Any) -> CallDetails | None:
+        """The same, carried by one streamed chunk or event; the stream
+        guard folds successive results with :meth:`CallDetails.merged`.
+        Never raises."""
+        ...
 
     def estimate_tokens(self, request_kwargs: dict[str, Any]) -> tuple[int, str]:
         """Estimate input token count before the call. Never raises.

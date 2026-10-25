@@ -262,16 +262,66 @@ class TokenUsage:
     read as ``cached_tokens``, which lands in ``cache_read_tokens``, and
     its cache write as ``cache_write_tokens``, which lands in
     ``cache_creation_tokens`` (0 when the response carries none).
+
+    ``reasoning_tokens`` is the reasoning or thinking share of
+    ``output_tokens`` and ``cache_creation_1h_tokens`` the one-hour share
+    of ``cache_creation_tokens`` (Anthropic's extended cache TTL). Both
+    are subsets already counted in their totals, and ``None`` when the
+    provider reported no such split.
     """
 
     input_tokens: int = 0
     output_tokens: int = 0
     cache_read_tokens: int = 0
     cache_creation_tokens: int = 0
+    reasoning_tokens: int | None = None
+    cache_creation_1h_tokens: int | None = None
 
     @property
     def total(self) -> int:
         return self.input_tokens + self.output_tokens
+
+
+@dataclass(frozen=True)
+class CallDetails:
+    """What a provider reports about one LLM call beyond its token counts
+    (ARCHITECTURE.md, POST /v1/events, token, model and cost fields).
+
+    Every field is ``None`` when the response did not carry it.
+    ``model_served`` is the model id the response named, verbatim;
+    ``cost_reported`` and ``cost_source`` are a cost the client library
+    or a gateway reported for the call (``cost_source`` ``"agent"`` or
+    ``"provider"``).
+    """
+
+    model_served: str | None = None
+    service_tier: str | None = None
+    speed: str | None = None
+    inference_geo: str | None = None
+    server_tool_use: dict[str, int] | None = None
+    cost_reported: float | None = None
+    cost_source: str | None = None
+
+    def merged(self, newer: CallDetails) -> CallDetails:
+        """Fold details read from a later stream event over these: a
+        field the later event carries wins, and server-tool counters,
+        which streams report cumulatively, keep the larger count."""
+        tools: dict[str, int] | None = None
+        if self.server_tool_use or newer.server_tool_use:
+            tools = dict(self.server_tool_use or {})
+            for name, count in (newer.server_tool_use or {}).items():
+                tools[name] = max(count, tools.get(name, 0))
+        return CallDetails(
+            model_served=newer.model_served or self.model_served,
+            service_tier=newer.service_tier or self.service_tier,
+            speed=newer.speed or self.speed,
+            inference_geo=newer.inference_geo or self.inference_geo,
+            server_tool_use=tools,
+            cost_reported=(
+                newer.cost_reported if newer.cost_reported is not None else self.cost_reported
+            ),
+            cost_source=newer.cost_source or self.cost_source,
+        )
 
 
 @dataclass
@@ -299,6 +349,11 @@ class SensorConfig:
     client_type: str = "flightdeck_sensor"
     api_url: str = ""
     capture_prompts: bool = False
+    # Billing mode stamped on every LLM call ("metered", "subscription",
+    # "local"); None lets each call's endpoint decide (loopback servers
+    # are local, everything else metered). Set from init(billing_mode=)
+    # or FLIGHTDECK_BILLING_MODE.
+    billing_mode: str | None = None
     # Opt-in to plaintext http:// egress for a non-local control
     # plane. Default False forces https:// for any public host; local /
     # loopback / private targets are always allowed over http regardless.

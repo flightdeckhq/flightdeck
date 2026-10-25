@@ -255,6 +255,46 @@ def fetch_events_for_session(
     return last
 
 
+def assert_token_cost_fields(
+    session_id: str,
+    *,
+    provider: str,
+    platform: str,
+    billing_mode: str = "metered",
+    require_cost: bool = False,
+) -> list[dict[str, Any]]:
+    """Assert every post_call of the session carries the token, model and
+    cost fields the sensor stamps and the worker fills (ARCHITECTURE.md,
+    Cost estimation): the requested and canonical model ids, the
+    provider, the billing mode and the serving platform, plus a reported
+    cost when ``require_cost``. Returns the post_calls checked."""
+    events = fetch_events_for_session(session_id, expect_event_types=["post_call"])
+    post_calls = [e for e in events if e.get("event_type") == "post_call"]
+    problems: list[str] = []
+    for e in post_calls:
+        want = {"provider": provider, "billing_mode": billing_mode, "platform": platform}
+        for key, value in want.items():
+            if e.get(key) != value:
+                problems.append(f"{e['id']}: {key}={e.get(key)!r}, want {value!r}")
+        if not e.get("model_requested") or not e.get("model"):
+            problems.append(f"{e['id']}: model ids missing ({e.get('model_requested')!r})")
+        if require_cost and not (
+            isinstance(e.get("cost_reported"), (int, float)) and e.get("cost_source") == "agent"
+        ):
+            problems.append(f"{e['id']}: no reported cost ({e.get('cost_reported')!r})")
+    passed = bool(post_calls) and not problems
+    print_result(
+        "post_call token and cost fields",
+        passed,
+        0,
+        f"{len(post_calls)} post_calls; provider={provider} platform={platform}"
+        f" billing={billing_mode}",
+    )
+    if not passed:
+        raise AssertionError(f"token and cost fields wrong: {problems or 'no post_call'}")
+    return post_calls
+
+
 # ---------------------------------------------------------------------
 # MCP server StdioServerParameters factory.
 # ---------------------------------------------------------------------

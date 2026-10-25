@@ -279,3 +279,48 @@ func (s *Store) costCoverage(
 	}
 	return out, nil
 }
+
+// PricedModel is a model a token policy may degrade to.
+type PricedModel struct {
+	ModelID  string `json:"model_id"`
+	Provider string `json:"provider"`
+}
+
+// degradeTargetWhere selects the models a policy may degrade to: priced
+// on the provider's own API (degrade_to is passed to the SDK as the
+// model id), generating output (embedding models price none), not an
+// operator alias, not a fine-tune price key (`ft:<base>` prices every
+// fine-tune of a base model; a callable fine-tune id carries an org and
+// suffix after it), and not past their deprecation date.
+const degradeTargetWhere = `platform = 'direct' AND source <> 'alias' AND output > 0
+	AND model_id NOT LIKE 'ft:%'
+	AND (deprecated_on IS NULL OR deprecated_on > CURRENT_DATE)`
+
+// DegradeTargets lists the models a policy may degrade to, by provider
+// then model id.
+func (s *Store) DegradeTargets(ctx context.Context) ([]PricedModel, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT model_id, provider FROM model_pricing
+		WHERE `+degradeTargetWhere+`
+		ORDER BY provider, model_id`)
+	if err != nil {
+		return nil, fmt.Errorf("degrade targets: %w", err)
+	}
+	models, err := pgx.CollectRows(rows, pgx.RowToStructByPos[PricedModel])
+	if err != nil {
+		return nil, fmt.Errorf("degrade targets: %w", err)
+	}
+	return models, nil
+}
+
+// IsDegradeTarget reports whether modelID is one of DegradeTargets.
+func (s *Store) IsDegradeTarget(ctx context.Context, modelID string) (bool, error) {
+	var ok bool
+	err := s.pool.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM model_pricing WHERE model_id = $1 AND `+degradeTargetWhere+`)`,
+		modelID).Scan(&ok)
+	if err != nil {
+		return false, fmt.Errorf("degrade target check: %w", err)
+	}
+	return ok, nil
+}

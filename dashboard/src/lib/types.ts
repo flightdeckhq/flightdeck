@@ -773,6 +773,12 @@ export interface PolicyRequest {
   block_at_pct: number | null;
 }
 
+/** A model a token policy may degrade to (GET /v1/pricing/models). */
+export interface PricedModel {
+  model_id: string;
+  provider: string;
+}
+
 /** Request body for POST /v1/directives. */
 export interface DirectiveRequest {
   action: "shutdown" | "shutdown_flavor";

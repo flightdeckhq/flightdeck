@@ -73,6 +73,13 @@ All notable changes to Flightdeck are documented here.
   background backfill rewrites events and sessions stored before this,
   so the `model` analytics dimension stops splitting one model across
   several spellings (migration 000030 adds the index it uses).
+- **`GET /v1/pricing/models`.** Lists the models a token policy may
+  degrade to: current chat models priced on each provider's own API.
+  The policy editor's degrade-to list now comes from it instead of a
+  list built into the dashboard.
+- **`pricing.yaml` overrides take `deprecated_on`.** The retired models
+  the file prices for historical sessions now carry their retirement
+  dates, so they are no longer offered as degrade targets.
 
 ### Changed
 
@@ -84,6 +91,12 @@ All notable changes to Flightdeck are documented here.
   hint in the search box uses the dashboard's mono font, the stop-confirm
   buttons fade slightly on hover, and the Settings token-name field's
   focus ring uses the primary colour like the other inputs.
+- **A policy's `degrade_to` must be a current, priced model.**
+  `POST /v1/policies`, and a `PUT` that changes `degrade_to`, return 400
+  when it is not one of the models `GET /v1/pricing/models` lists. A
+  typo or a retired id used to turn a DEGRADE decision into failing
+  calls. A `PUT` that keeps the stored value is not re-checked, so
+  existing policies stay editable.
 
 ## v0.6.0 — 2026-10-24
 

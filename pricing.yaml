@@ -24,7 +24,8 @@ updated: 2026-10-25
 # required). Fields: model_id, platform (direct, bedrock, vertex, azure,
 # foundry; default direct), provider, input, output, cache_read,
 # cache_write_5m, cache_write_1h, reasoning, priority_multiplier,
-# fast_multiplier.
+# fast_multiplier, deprecated_on (YYYY-MM-DD: the provider retires the
+# model that day, and a token policy can no longer degrade to it).
 #
 # Negotiated prices, for example:
 #
@@ -42,6 +43,7 @@ overrides:
     cache_read: 1.50
     cache_write_5m: 18.75
     cache_write_1h: 30.00
+    deprecated_on: 2026-08-05
     notes: Retired 2026-08-05
 
   - model_id: claude-opus-4-20250514
@@ -51,6 +53,7 @@ overrides:
     cache_read: 1.50
     cache_write_5m: 18.75
     cache_write_1h: 30.00
+    deprecated_on: 2026-06-15
     notes: Retired 2026-06-15
 
   - model_id: claude-3-opus-20240229
@@ -60,7 +63,8 @@ overrides:
     cache_read: 1.50
     cache_write_5m: 18.75
     cache_write_1h: 30.00
-    notes: Retired
+    deprecated_on: 2026-01-05
+    notes: Retired 2026-01-05
 
   - model_id: claude-sonnet-4-20250514
     provider: anthropic
@@ -69,6 +73,7 @@ overrides:
     cache_read: 0.30
     cache_write_5m: 3.75
     cache_write_1h: 6.00
+    deprecated_on: 2026-06-15
     notes: Retired 2026-06-15
 
   - model_id: claude-3-5-sonnet-20241022
@@ -78,7 +83,8 @@ overrides:
     cache_read: 0.30
     cache_write_5m: 3.75
     cache_write_1h: 6.00
-    notes: Retired
+    deprecated_on: 2025-10-22
+    notes: Retired 2025-10-22
 
   - model_id: claude-3-5-haiku-20241022
     provider: anthropic
@@ -87,6 +93,7 @@ overrides:
     cache_read: 0.08
     cache_write_5m: 1.00
     cache_write_1h: 1.60
+    deprecated_on: 2026-02-19
     notes: Retired 2026-02-19
 
 # ---------------------------------------------------------------------

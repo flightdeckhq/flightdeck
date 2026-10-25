@@ -1,8 +1,9 @@
-import { useState, useMemo } from "react";
-import type { Policy, PolicyRequest } from "@/lib/types";
+import { useEffect, useState, useMemo } from "react";
+import type { Policy, PolicyRequest, PricedModel } from "@/lib/types";
+import { ApiError, fetchDegradeTargets } from "@/lib/api";
 import { useFleetStore } from "@/store/fleet";
 import { truncateSessionId } from "@/lib/events";
-import { ALL_MODELS as ALL_MODELS_LIST, getProvider } from "@/lib/models";
+import { getProvider } from "@/lib/models";
 import { POLICY_SCOPE_LABELS, type PolicyScope } from "@/lib/policy-scope-labels";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { Button } from "@/components/ui/button";
@@ -23,8 +24,6 @@ export interface PolicyEditorProps {
 type Scope = PolicyScope;
 
 const SCOPE_LABELS = POLICY_SCOPE_LABELS;
-
-// Model lists imported from @/lib/models
 
 function numOrNull(value: string): number | null {
   if (value === "") return null;
@@ -48,6 +47,20 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [customFlavorInput, setCustomFlavorInput] = useState(false);
   const [customModelInput, setCustomModelInput] = useState(false);
+  const [modelFilter, setModelFilter] = useState("");
+  // null while loading; the API rejects a degrade_to outside this list.
+  const [degradeTargets, setDegradeTargets] = useState<PricedModel[] | null>(null);
+  const [targetsFailed, setTargetsFailed] = useState(false);
+
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetchDegradeTargets(ctrl.signal)
+      .then(setDegradeTargets)
+      .catch(() => {
+        if (!ctrl.signal.aborted) setTargetsFailed(true);
+      });
+    return () => ctrl.abort();
+  }, []);
 
   // Selector form so the editor only re-renders
   // when ``flavors`` changes, not on every fleet-store mutation.
@@ -66,6 +79,22 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
     }
     return [...models].sort();
   }, [flavors, scope, scopeValue]);
+
+  const targetIds = useMemo(
+    () => new Set((degradeTargets ?? []).map((m) => m.model_id)),
+    [degradeTargets],
+  );
+  const filterText = modelFilter.trim().toLowerCase();
+  const matchesFilter = (m: string) => !filterText || m.toLowerCase().includes(filterText);
+  // Only models the API accepts are offered, in use or not.
+  const inUseTargets = inUseModels.filter((m) => targetIds.has(m) && matchesFilter(m));
+  const otherTargets = (degradeTargets ?? [])
+    .map((m) => m.model_id)
+    .filter((m) => !inUseModels.includes(m) && matchesFilter(m));
+  // A stored degrade_to that has since left the price list is kept on an
+  // update that leaves it alone; a newly chosen one would be rejected.
+  const degradeToUnlisted =
+    degradeTargets != null && degradeTo.trim() !== "" && !targetIds.has(degradeTo.trim());
 
   // Active/idle sessions for session scope dropdown
   const activeSessions = useMemo(() => {
@@ -131,6 +160,11 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
     setSaving(true);
     try {
       await onSave(data);
+    } catch (err) {
+      const fallback = policy ? "Failed to update policy" : "Failed to create policy";
+      setErrors({
+        submit: err instanceof ApiError && err.status === 400 ? err.message : fallback,
+      });
     } finally {
       setSaving(false);
     }
@@ -326,12 +360,20 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
           <label className="mb-1 block text-xs font-medium text-text">Downgrade to model</label>
           {!customModelInput ? (
             <>
+              <input
+                type="text"
+                className={`${inputClass} mb-1`}
+                value={modelFilter}
+                onChange={(e) => setModelFilter(e.target.value)}
+                placeholder="Filter models"
+                aria-label="Filter models"
+              />
               <div
                 className="max-h-48 overflow-y-auto rounded-md border border-border bg-surface"
                 data-testid="model-dropdown"
               >
                 {/* In use group */}
-                {inUseModels.length > 0 && (
+                {inUseTargets.length > 0 && (
                   <>
                     <div
                       className="px-2.5 pt-1.5 pb-0.5 text-[10px] font-semibold uppercase tracking-[0.08em]"
@@ -339,7 +381,7 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
                     >
                       In use in this scope
                     </div>
-                    {inUseModels.map((m) => (
+                    {inUseTargets.map((m) => (
                       <button
                         key={`inuse-${m}`}
                         type="button"
@@ -366,7 +408,17 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
                 >
                   All models
                 </div>
-                {ALL_MODELS_LIST.filter((m) => !inUseModels.includes(m)).map((m) => (
+                {degradeTargets == null && (
+                  <p className="px-2.5 py-1 text-xs" style={{ color: "var(--text-muted)" }}>
+                    {targetsFailed ? "Could not load the model list." : "Loading models…"}
+                  </p>
+                )}
+                {degradeTargets != null && inUseTargets.length + otherTargets.length === 0 && (
+                  <p className="px-2.5 py-1 text-xs" style={{ color: "var(--text-muted)" }}>
+                    No priced model matches.
+                  </p>
+                )}
+                {otherTargets.map((m) => (
                   <button
                     key={m}
                     type="button"
@@ -402,7 +454,7 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
                 className={inputClass}
                 value={degradeTo}
                 onChange={(e) => setDegradeTo(e.target.value)}
-                placeholder="e.g. claude-haiku-4-5-20251001"
+                placeholder="e.g. claude-haiku-4-5"
               />
               <button
                 type="button"
@@ -414,7 +466,20 @@ export function PolicyEditor({ policy, onSave, onCancel }: PolicyEditorProps) {
               </button>
             </>
           )}
+          {degradeToUnlisted && (
+            <p className="mt-1 text-[11px]" style={{ color: "var(--warning)" }} data-testid="degrade-to-unlisted">
+              {degradeTo.trim() === (policy?.degrade_to ?? "")
+                ? "No longer a current, priced model. Saving keeps it; pick another to replace it."
+                : "Not a current, priced model; the API will reject it."}
+            </p>
+          )}
         </div>
+      )}
+
+      {errors.submit && (
+        <p className="text-xs text-danger" role="alert">
+          {errors.submit}
+        </p>
       )}
 
       <div className="flex justify-end gap-2 pt-2">

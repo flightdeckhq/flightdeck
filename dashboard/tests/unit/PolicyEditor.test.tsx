@@ -2,6 +2,14 @@ import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { PolicyEditor } from "@/components/policy/PolicyEditor";
 import type { Policy } from "@/lib/types";
+import { ApiError } from "@/lib/api";
+
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
+  fetchDegradeTargets: vi.fn().mockResolvedValue([
+    { model_id: "claude-haiku-4-5", provider: "anthropic" },
+  ]),
+}));
 
 const mockPolicy: Policy = {
   id: "p1",
@@ -125,5 +133,55 @@ describe("PolicyEditor", () => {
         screen.getByText("Warn % must be less than block %")
       ).toBeInTheDocument();
     });
+  });
+
+  it("flags a stored degrade_to that is no longer priced, and keeps it", async () => {
+    const onSave = vi.fn().mockResolvedValue(undefined);
+    render(
+      <PolicyEditor
+        policy={{ ...mockPolicy, degrade_to: "claude-3-opus-retired" }}
+        onSave={onSave}
+        onCancel={vi.fn()}
+      />
+    );
+    expect(await screen.findByTestId("degrade-to-unlisted")).toHaveTextContent("Saving keeps it");
+
+    fireEvent.click(screen.getByText("Update"));
+    await waitFor(() =>
+      expect(onSave).toHaveBeenCalledWith(
+        expect.objectContaining({ degrade_to: "claude-3-opus-retired" })
+      )
+    );
+  });
+
+  it("warns when a newly entered degrade_to is not priced", async () => {
+    render(<PolicyEditor policy={mockPolicy} onSave={vi.fn()} onCancel={vi.fn()} />);
+    fireEvent.click(screen.getByText("Or enter model name directly →"));
+    fireEvent.change(screen.getByPlaceholderText("e.g. claude-haiku-4-5"), {
+      target: { value: "gpt-typo" },
+    });
+    expect(await screen.findByTestId("degrade-to-unlisted")).toHaveTextContent(
+      "the API will reject it"
+    );
+  });
+
+  it("shows the API's reason when a save is rejected", async () => {
+    const onSave = vi
+      .fn()
+      .mockRejectedValue(
+        new ApiError(400, "POST /v1/policies", "degrade_to must be a current, priced model")
+      );
+    render(<PolicyEditor onSave={onSave} onCancel={vi.fn()} />);
+    fireEvent.click(screen.getByText("Create"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "degrade_to must be a current, priced model"
+    );
+  });
+
+  it("falls back to a generic message when a save fails otherwise", async () => {
+    const onSave = vi.fn().mockRejectedValue(new ApiError(500, "POST /v1/policies"));
+    render(<PolicyEditor onSave={onSave} onCancel={vi.fn()} />);
+    fireEvent.click(screen.getByText("Create"));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Failed to create policy");
   });
 });

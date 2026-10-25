@@ -283,3 +283,57 @@ func TestProviderCaseSQL_MatchesTheGoRule(t *testing.T) {
 		}
 	}
 }
+
+func TestDegradeTargets_OnlyCurrentDirectChatModels(t *testing.T) {
+	f := newCostFixture(t, "flightdeck_sensor")
+	ctx := context.Background()
+	f.price("chat", "direct", sonnetRates)
+	f.price("chat-bedrock-only", "bedrock", sonnetRates)
+	embedding := sonnetRates
+	embedding.output = 0
+	f.price("embedding", "direct", embedding)
+	f.price("retired", "direct", sonnetRates)
+	if _, err := f.s.pool.Exec(ctx, `UPDATE model_pricing SET deprecated_on = CURRENT_DATE - 1 WHERE model_id = $1`, f.prefix+"retired"); err != nil {
+		t.Fatalf("deprecate: %v", err)
+	}
+	f.price("alias", "direct", sonnetRates)
+	if _, err := f.s.pool.Exec(ctx, `UPDATE model_pricing SET source = 'alias' WHERE model_id = $1`, f.prefix+"alias"); err != nil {
+		t.Fatalf("alias: %v", err)
+	}
+
+	// A fine-tune price key starts with ft:, so it cannot carry the
+	// fixture prefix; it is seeded and removed by hand.
+	fineTune := "ft:" + f.prefix + "chat"
+	if _, err := f.s.pool.Exec(ctx, `INSERT INTO model_pricing (model_id, platform, provider, input, output,
+		cache_read, cache_write_5m, cache_write_1h, source)
+		VALUES ($1, 'direct', 'openai', 3, 15, 1.5, 3, 3, 'catalogue')`, fineTune); err != nil {
+		t.Fatalf("fine-tune row: %v", err)
+	}
+	t.Cleanup(func() { _, _ = f.s.pool.Exec(ctx, `DELETE FROM model_pricing WHERE model_id = $1`, fineTune) })
+
+	models, err := f.s.DegradeTargets(ctx)
+	if err != nil {
+		t.Fatalf("DegradeTargets: %v", err)
+	}
+	var mine []string
+	for _, m := range models {
+		if m.ModelID == fineTune {
+			t.Errorf("fine-tune price key %s offered as a degrade target", fineTune)
+		}
+		if strings.HasPrefix(m.ModelID, f.prefix) {
+			mine = append(mine, strings.TrimPrefix(m.ModelID, f.prefix))
+		}
+	}
+	if len(mine) != 1 || mine[0] != "chat" {
+		t.Errorf("degrade targets = %v, want only the current direct chat model", mine)
+	}
+	for model, want := range map[string]bool{"chat": true, "embedding": false, "retired": false, "alias": false, "chat-bedrock-only": false} {
+		got, err := f.s.IsDegradeTarget(ctx, f.prefix+model)
+		if err != nil || got != want {
+			t.Errorf("IsDegradeTarget(%s) = %v, %v; want %v", model, got, err, want)
+		}
+	}
+	if got, err := f.s.IsDegradeTarget(ctx, fineTune); err != nil || got {
+		t.Errorf("IsDegradeTarget(%s) = %v, %v; want false", fineTune, got, err)
+	}
+}

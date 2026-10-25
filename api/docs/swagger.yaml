@@ -712,6 +712,13 @@ definitions:
       warn_at_pct:
         type: integer
     type: object
+  store.PricedModel:
+    properties:
+      model_id:
+        type: string
+      provider:
+        type: string
+    type: object
   store.RecentSession:
     properties:
       agent_id:
@@ -2574,7 +2581,8 @@ paths:
     post:
       consumes:
       - application/json
-      description: Creates a new token policy
+      description: Creates a new token policy. degrade_to, when set, must be a current,
+        priced model (GET /v1/pricing/models).
       parameters:
       - description: Policy definition
         in: body
@@ -2590,7 +2598,8 @@ paths:
           schema:
             $ref: '#/definitions/store.Policy'
         "400":
-          description: Bad Request
+          description: invalid body, thresholds, or a degrade_to that is not a current,
+            priced model
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
         "500":
@@ -2626,7 +2635,9 @@ paths:
     put:
       consumes:
       - application/json
-      description: Updates an existing token policy
+      description: Updates an existing token policy. A changed degrade_to must be
+        a current, priced model (GET /v1/pricing/models); an unchanged one is not
+        re-checked.
       parameters:
       - description: Policy ID
         in: path
@@ -2690,6 +2701,30 @@ paths:
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
       summary: Get effective policy
+      tags:
+      - policies
+  /v1/pricing/models:
+    get:
+      description: 'Returns the models a token policy''s degrade_to may name: models
+        priced on their provider''s own API that generate output (embedding models
+        are excluded), are not operator aliases or fine-tune price keys (ft:<base>),
+        and are not past their deprecation date. Sorted by provider, then model id.
+        The policy editor offers exactly this list, and POST / PUT /v1/policies reject
+        any other degrade_to.'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            items:
+              $ref: '#/definitions/store.PricedModel'
+            type: array
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: List degrade targets
       tags:
       - policies
   /v1/search:

@@ -227,9 +227,11 @@ def _mock_route(
 def test_chat_usage_reads_cached_tokens_into_cache_read() -> None:
     completion = ChatCompletion.model_validate(_chat_body(cached_tokens=32))
     usage = OpenAIProvider().extract_usage(completion)
-    assert usage == TokenUsage(input_tokens=40, output_tokens=7, cache_read_tokens=32)
+    assert usage == TokenUsage(
+        input_tokens=40, output_tokens=7, cache_read_tokens=32, reasoning_tokens=3
+    )
     # No cache_write_tokens in the details (an older SDK or model) means
-    # no cache write; reasoning tokens are part of the output count already.
+    # no cache write; reasoning tokens are a share of the output count.
     assert usage.cache_creation_tokens == 0
     assert usage.total == 47
 
@@ -237,14 +239,20 @@ def test_chat_usage_reads_cached_tokens_into_cache_read() -> None:
 def test_responses_usage_reads_cached_tokens_into_cache_read() -> None:
     response = Response.model_validate(_response_body([_message_item()], cached_tokens=24))
     usage = OpenAIProvider().extract_usage(response)
-    assert usage == TokenUsage(input_tokens=31, output_tokens=9, cache_read_tokens=24)
+    assert usage == TokenUsage(
+        input_tokens=31, output_tokens=9, cache_read_tokens=24, reasoning_tokens=2
+    )
 
 
 def test_chat_usage_reads_cache_write_tokens_into_cache_creation() -> None:
     completion = ChatCompletion.model_validate(_chat_body(cached_tokens=8, cache_write_tokens=20))
     usage = OpenAIProvider().extract_usage(completion)
     assert usage == TokenUsage(
-        input_tokens=40, output_tokens=7, cache_read_tokens=8, cache_creation_tokens=20
+        input_tokens=40,
+        output_tokens=7,
+        cache_read_tokens=8,
+        cache_creation_tokens=20,
+        reasoning_tokens=3,
     )
     # The cache breakdown is a subset of the input count, never added twice.
     assert usage.total == 47
@@ -256,7 +264,11 @@ def test_responses_usage_reads_cache_write_tokens_into_cache_creation() -> None:
     )
     usage = OpenAIProvider().extract_usage(response)
     assert usage == TokenUsage(
-        input_tokens=31, output_tokens=9, cache_read_tokens=4, cache_creation_tokens=16
+        input_tokens=31,
+        output_tokens=9,
+        cache_read_tokens=4,
+        cache_creation_tokens=16,
+        reasoning_tokens=2,
     )
 
 
@@ -266,7 +278,9 @@ def test_cache_write_count_that_is_not_an_integer_is_ignored() -> None:
     usage_dict = _chat_body(cached_tokens=8, cache_write_tokens=20)["usage"]
     usage_dict["prompt_tokens_details"]["cache_write_tokens"] = "20"
     usage = OpenAIProvider()._usage_from_object(usage_dict)
-    assert usage == TokenUsage(input_tokens=40, output_tokens=7, cache_read_tokens=8)
+    assert usage == TokenUsage(
+        input_tokens=40, output_tokens=7, cache_read_tokens=8, reasoning_tokens=3
+    )
 
 
 def test_usage_without_details_leaves_cache_read_zero() -> None:

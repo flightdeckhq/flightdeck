@@ -288,6 +288,34 @@ def main() -> None:
         f"error_type={(errors[-1].get('payload') or {}).get('error', {}).get('error_type')!r}",
     )
 
+    # litellm prices each call itself: the non-streamed calls carry its
+    # response_cost as an agent-reported cost. The vendor comes from the
+    # model id (the worker derives it, the sensor sends none), and no
+    # platform is reported because litellm picks the endpoint per call.
+    _, priced_calls = settled_post_calls(session_id)
+    problems = []
+    for e in priced_calls:
+        want_provider = "anthropic" if "claude" in (e.get("model") or "") else "openai"
+        if e.get("provider") != want_provider or e.get("billing_mode") != "metered":
+            problems.append(f"{e['id']}: provider={e.get('provider')!r} billing={e.get('billing_mode')!r}")
+        if not e.get("model_requested"):
+            problems.append(f"{e['id']}: model_requested missing")
+    costed = [
+        e for e in priced_calls
+        if e.get("cost_source") == "agent" and (e.get("cost_reported") or 0) > 0
+        and not (e.get("payload") or {}).get("streaming")
+    ]
+    non_streamed = [e for e in priced_calls if not (e.get("payload") or {}).get("streaming")]
+    passed = not problems and non_streamed and len(costed) == len(non_streamed)
+    print_result(
+        "litellm token and cost fields",
+        bool(passed),
+        0,
+        f"{len(costed)}/{len(non_streamed)} non-streamed calls carry litellm's cost",
+    )
+    if not passed:
+        raise AssertionError(f"litellm cost fields wrong: {problems} {priced_calls!r}")
+
     flightdeck_sensor.teardown()
 
 

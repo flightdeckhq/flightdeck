@@ -25,7 +25,7 @@ import logging
 from datetime import UTC
 from typing import Any
 
-from flightdeck_sensor.core.types import TokenUsage
+from flightdeck_sensor.core.types import CallDetails, TokenUsage
 from flightdeck_sensor.providers.protocol import PromptContent, ToolInvocation, finish_reason_of
 
 _log = logging.getLogger("flightdeck_sensor.providers.litellm")
@@ -147,6 +147,23 @@ class LitellmProvider:
     def __init__(self, capture_prompts: bool = False) -> None:
         self._capture_prompts = capture_prompts
 
+    @property
+    def vendor(self) -> str | None:
+        # litellm routes one call surface to every vendor; the worker
+        # derives the vendor from the model id.
+        return None
+
+    @property
+    def local(self) -> bool:
+        # The base URL a call goes to is chosen per call inside litellm
+        # and is not visible here; a self-hosted model reports a zero
+        # response_cost, which prices it at nothing either way.
+        return False
+
+    @property
+    def inference_scope(self) -> str | None:
+        return None
+
     def estimate_tokens(self, request_kwargs: dict[str, Any]) -> tuple[int, str]:
         """Estimate input tokens; returns ``(count, source)``.
 
@@ -244,6 +261,13 @@ class LitellmProvider:
                 output_tokens=completion_tokens,
                 cache_read_tokens=cache_read,
                 cache_creation_tokens=cache_creation,
+                reasoning_tokens=_count(
+                    getattr(
+                        getattr(usage, "completion_tokens_details", None),
+                        "reasoning_tokens",
+                        None,
+                    )
+                ),
             )
         except Exception:
             return TokenUsage(input_tokens=0, output_tokens=0)
@@ -257,6 +281,24 @@ class LitellmProvider:
                 return None
             result = self.extract_usage(chunk)
             return result if result.total > 0 else None
+        except Exception:
+            return None
+
+    def call_details(self, response: Any) -> CallDetails | None:
+        """The served model and the cost litellm computed for the call
+        (``_hidden_params["response_cost"]``, reported as
+        ``cost_source="agent"``: litellm prices it from its own catalogue,
+        including any custom pricing the caller registered)."""
+        try:
+            return _litellm_details(response)
+        except Exception:
+            return None
+
+    def call_details_from_stream_chunk(self, chunk: Any) -> CallDetails | None:
+        """A streamed chunk names the model; the final one may carry
+        litellm's computed cost as a response does."""
+        try:
+            return _litellm_details(chunk)
         except Exception:
             return None
 
@@ -456,3 +498,32 @@ class LitellmProvider:
         except Exception:
             _log.debug("extract_tool_invocations failed", exc_info=True)
             return []
+
+
+# The largest cost the ingestion API accepts (its events column holds
+# six integer digits). A larger value is not a real per-call cost, and
+# sending it would get the whole event rejected.
+_MAX_REPORTED_COST = 999_999.99999999
+
+
+def _litellm_details(obj: Any) -> CallDetails | None:
+    """The served model and litellm's computed cost on a response or
+    chunk, or ``None`` when it carries neither. Only ``response_cost`` is
+    read from ``_hidden_params``, which also holds the caller's
+    ``api_base`` verbatim."""
+    model = getattr(obj, "model", None)
+    hidden = getattr(obj, "_hidden_params", None)
+    cost = hidden.get("response_cost") if isinstance(hidden, dict) else None
+    reported = (
+        float(cost)
+        if isinstance(cost, int | float)
+        and not isinstance(cost, bool)
+        and 0 <= cost <= _MAX_REPORTED_COST
+        else None
+    )
+    details = CallDetails(
+        model_served=model if isinstance(model, str) and model else None,
+        cost_reported=reported,
+        cost_source="agent" if reported is not None else None,
+    )
+    return None if details == CallDetails() else details

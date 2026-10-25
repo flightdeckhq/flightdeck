@@ -40,6 +40,7 @@ from flightdeck_sensor.core.exceptions import (
     MCPPolicyBlocked,
 )
 from flightdeck_sensor.core.types import (
+    CallDetails,
     EventType,
     PolicyDecision,
     PolicyDecisionSummary,
@@ -371,8 +372,34 @@ def _merge_usage(current: TokenUsage | None, new: TokenUsage) -> TokenUsage:
         output_tokens=max(new.output_tokens, current.output_tokens),
         cache_read_tokens=max(new.cache_read_tokens, current.cache_read_tokens),
         cache_creation_tokens=max(new.cache_creation_tokens, current.cache_creation_tokens),
+        reasoning_tokens=_max_reported(new.reasoning_tokens, current.reasoning_tokens),
+        cache_creation_1h_tokens=_max_reported(
+            new.cache_creation_1h_tokens, current.cache_creation_1h_tokens
+        ),
     )
 
+
+def _max_reported(a: int | None, b: int | None) -> int | None:
+    """The larger of two optional cumulative counters; ``None`` only when
+    neither was reported."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return max(a, b)
+
+
+# Billing modes the sensor stamps (ARCHITECTURE.md, Cost estimation): a
+# call to a model server on this machine is local, every other call is
+# paid per token unless init(billing_mode=) / FLIGHTDECK_BILLING_MODE
+# says otherwise.
+BILLING_METERED = "metered"
+BILLING_LOCAL = "local"
+
+# The ingestion API's cap on the free-form strings of the token and cost
+# fields (model ids, tier, speed, residency, stop reason); a longer value
+# would get the whole event rejected, so it is cut to fit instead.
+_MAX_DETAIL_LEN = 256
 
 # Set on an exception once an intercept has reported it, so a stream's
 # with-exit does not report the same failure of a nested call again.
@@ -509,6 +536,9 @@ class _GuardCore:
         # The stop reason a streamed event announced (a raw
         # stream has no final message to read it from at settle time).
         self._stop_reason: str | None = None
+        # Call details the streamed events reported (served model, tier,
+        # server-tool counters), folded event by event.
+        self._details: CallDetails | None = None
         self._hooks_failed: set[str] = set()
         self._open_error: BaseException | None = None
         drain_deferred_settles(session)
@@ -654,6 +684,13 @@ class _GuardCore:
             reason = None
         if isinstance(reason, str):
             self._stop_reason = reason
+        try:
+            details = self._provider.call_details_from_stream_chunk(chunk)
+        except Exception:
+            self._hook_failed("call_details_from_stream_chunk")
+            details = None
+        if details is not None:
+            self._details = details if self._details is None else self._details.merged(details)
 
     def _merge_settled_usage(self) -> None:
         """Fold in the usage the SDK stream object holds at settle time
@@ -765,6 +802,7 @@ class _GuardCore:
                 estimated_via=self._estimated_via,
                 usage_override=self._usage,
                 stop_reason=self._stop_reason,
+                details_override=self._details,
             )
         except Exception as emit_exc:
             # No exc_info: the provider exception is the active context and
@@ -1392,6 +1430,7 @@ def _post_call(
     estimated_via: str = "none",
     usage_override: TokenUsage | None = None,
     stop_reason: str | None = None,
+    details_override: CallDetails | None = None,
 ) -> None:
     """Extract actual usage, reconcile with estimate, post event.
 
@@ -1408,6 +1447,10 @@ def _post_call(
     the streamed events; when ``None`` the provider is asked to read it
     from the response. A reason that means the call did not succeed files
     an llm_error beside the post_call.
+
+    ``details_override`` carries the call details a stream guard folded
+    from the streamed events; the response's own details (a helper
+    stream's final message) are laid over them.
     """
     # ``usage_override`` carries the counts a stream guard read from the
     # provider's in-stream usage events; stream objects themselves expose
@@ -1507,6 +1550,16 @@ def _post_call(
         payload["content"] = content_dict
     if streaming is not None:
         payload["streaming"] = streaming
+    _add_token_cost_fields(
+        payload,
+        session,
+        provider,
+        response,
+        call_kwargs,
+        usage,
+        details_override,
+        stop_reason,
+    )
 
     # provider_metadata: rate-limit headers, request id, processing
     # time. Always-included when the provider exposes any of them so
@@ -1747,6 +1800,74 @@ def _response_request_id(response: Any, prov_meta: dict[str, Any] | None) -> str
         if isinstance(from_headers, str) and from_headers:
             return from_headers[:REQUEST_ID_MAX_LEN]
     return None
+
+
+def _add_token_cost_fields(
+    payload: dict[str, Any],
+    session: Session,
+    provider: Provider,
+    response: Any,
+    call_kwargs: dict[str, Any] | None,
+    usage: TokenUsage,
+    details_override: CallDetails | None,
+    stop_reason: str | None,
+) -> None:
+    """Add the token, model and cost fields of the event contract
+    (ARCHITECTURE.md, POST /v1/events) to an LLM call's payload. A field
+    is sent only when known, so the wire stays as before for whatever a
+    provider does not report. Never raises."""
+    try:
+        details = details_override
+        try:
+            own = provider.call_details(response)
+        except Exception:
+            own = None
+        if own is not None:
+            details = own if details is None else details.merged(own)
+
+        fields: dict[str, Any] = {
+            "model_requested": provider.get_model(call_kwargs or {}) or None,
+            "provider": provider.vendor,
+            "billing_mode": session.config.billing_mode
+            or (BILLING_LOCAL if provider.local else BILLING_METERED),
+            "inference_scope": provider.inference_scope,
+            # Each share must fit inside its total, or ingestion rejects
+            # the whole event; a share that does not is left out.
+            "tokens_reasoning": _share(usage.reasoning_tokens, usage.output_tokens),
+            "tokens_cache_creation_1h": _share(
+                usage.cache_creation_1h_tokens, usage.cache_creation_tokens
+            ),
+        }
+        reason = stop_reason
+        if reason is None:
+            with contextlib.suppress(Exception):
+                reason = provider.response_stop_reason(response)
+        if isinstance(reason, str) and reason:
+            fields["stop_reason"] = reason[:_MAX_DETAIL_LEN]
+        if details is not None:
+            fields.update(
+                model_served=details.model_served,
+                service_tier=details.service_tier,
+                speed=details.speed,
+                inference_geo=details.inference_geo,
+                server_tool_use=details.server_tool_use,
+                cost_reported=details.cost_reported,
+                cost_source=details.cost_source,
+            )
+        for key, value in fields.items():
+            if value is None:
+                continue
+            if isinstance(value, str):
+                value = value[:_MAX_DETAIL_LEN]
+            payload[key] = value
+    except Exception:
+        _log.debug("token and cost fields failed", exc_info=True)
+
+
+def _share(part: int | None, whole: int) -> int | None:
+    """A reported share of a token total, or ``None`` when it was not
+    reported or exceeds the total."""
+    return part if part is not None and 0 <= part <= whole else None
 
 
 def _emit_stop_reason_error(

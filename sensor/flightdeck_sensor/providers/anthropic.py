@@ -11,7 +11,7 @@ import logging
 from datetime import UTC
 from typing import Any
 
-from flightdeck_sensor.core.types import TokenUsage
+from flightdeck_sensor.core.types import CallDetails, TokenUsage
 from flightdeck_sensor.providers.protocol import PromptContent, ToolInvocation
 
 _log = logging.getLogger("flightdeck_sensor.providers.anthropic")
@@ -47,17 +47,40 @@ class AnthropicProvider:
     name = "anthropic"
     _client: Any = None
 
-    def __init__(self, capture_prompts: bool = False, platform: str | None = None) -> None:
+    def __init__(
+        self,
+        capture_prompts: bool = False,
+        platform: str | None = None,
+        *,
+        local: bool = False,
+        inference_scope: str | None = None,
+    ) -> None:
         self._capture_prompts = capture_prompts
         # The platform the client talks to (anthropic, bedrock, vertex,
         # ...), reported under ``provider_metadata.platform`` on every
         # call. None when the caller attributed none, in which case the
         # metadata block stays headers-only.
         self._platform = platform
+        self._local = local
+        self._inference_scope = inference_scope
 
     @property
     def platform(self) -> str | None:
         return self._platform
+
+    @property
+    def vendor(self) -> str | None:
+        # Every endpoint the Anthropic SDK talks to serves Claude models,
+        # gateways and cloud platforms included.
+        return "anthropic"
+
+    @property
+    def local(self) -> bool:
+        return self._local
+
+    @property
+    def inference_scope(self) -> str | None:
+        return self._inference_scope
 
     def estimate_tokens(self, request_kwargs: dict[str, Any]) -> tuple[int, str]:
         """Estimate input tokens; returns ``(count, source)``.
@@ -172,6 +195,8 @@ class AnthropicProvider:
                 output_tokens=output_tokens,
                 cache_read_tokens=cache_read,
                 cache_creation_tokens=cache_creation,
+                reasoning_tokens=_thinking_tokens(usage),
+                cache_creation_1h_tokens=_cache_creation_1h(usage),
             )
         except Exception:
             return TokenUsage()
@@ -199,17 +224,49 @@ class AnthropicProvider:
             cache_read = getattr(usage, "cache_read_input_tokens", None)
             cache_creation = getattr(usage, "cache_creation_input_tokens", None)
             input_tokens = getattr(usage, "input_tokens", None)
+            reasoning = _thinking_tokens(usage)
             if kind == _EVENT_MESSAGE_DELTA and (cache_read is None or cache_creation is None):
                 # A delta that reports input_tokens without the cache
                 # fields must not replace the message_start total, which
                 # includes the cache reads; report the output count only.
-                return TokenUsage(input_tokens=0, output_tokens=output_tokens)
+                return TokenUsage(
+                    input_tokens=0, output_tokens=output_tokens, reasoning_tokens=reasoning
+                )
             return TokenUsage(
                 input_tokens=(input_tokens or 0) + (cache_read or 0) + (cache_creation or 0),
                 output_tokens=output_tokens,
                 cache_read_tokens=cache_read or 0,
                 cache_creation_tokens=cache_creation or 0,
+                reasoning_tokens=reasoning,
+                cache_creation_1h_tokens=_cache_creation_1h(usage),
             )
+        except Exception:
+            return None
+
+    def call_details(self, response: Any) -> CallDetails | None:
+        """Served model, service tier, speed, data residency and server-tool
+        counters from a ``Message`` (or a raw wrapper around one)."""
+        try:
+            obj = response
+            if hasattr(obj, "parse") and callable(obj.parse):
+                with contextlib.suppress(Exception):
+                    obj = obj.parse()
+            return _details(getattr(obj, "model", None), getattr(obj, "usage", None))
+        except Exception:
+            return None
+
+    def call_details_from_stream_chunk(self, chunk: Any) -> CallDetails | None:
+        """``message_start`` names the served model and carries the usage
+        object with tier, speed and residency; every ``message_delta``
+        carries the cumulative usage, server-tool counters included."""
+        try:
+            kind = getattr(chunk, "type", None)
+            if kind == _EVENT_MESSAGE_START:
+                message = getattr(chunk, "message", None)
+                return _details(getattr(message, "model", None), getattr(message, "usage", None))
+            if kind == _EVENT_MESSAGE_DELTA:
+                return _details(None, getattr(chunk, "usage", None))
+            return None
         except Exception:
             return None
 
@@ -452,3 +509,46 @@ class AnthropicProvider:
         except Exception:
             _log.debug("extract_tool_invocations failed", exc_info=True)
             return []
+
+
+def _count(value: Any) -> int | None:
+    """A token or request count as reported, or ``None`` when the field
+    is missing or not an integer (a MagicMock attribute, a string)."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def _thinking_tokens(usage: Any) -> int | None:
+    """The thinking share of the output (``output_tokens_details
+    .thinking_tokens``), or ``None`` when the response reports none."""
+    return _count(getattr(getattr(usage, "output_tokens_details", None), "thinking_tokens", None))
+
+
+def _cache_creation_1h(usage: Any) -> int | None:
+    """The one-hour share of the cache writes (``cache_creation
+    .ephemeral_1h_input_tokens``), or ``None`` when not reported."""
+    return _count(
+        getattr(getattr(usage, "cache_creation", None), "ephemeral_1h_input_tokens", None)
+    )
+
+
+def _text(value: Any) -> str | None:
+    return value if isinstance(value, str) and value else None
+
+
+def _details(model: Any, usage: Any) -> CallDetails | None:
+    """The call details a message's model id and usage object carry, or
+    ``None`` when they carry none."""
+    tools: dict[str, int] = {}
+    server_tool_use = getattr(usage, "server_tool_use", None) if usage is not None else None
+    for field in ("web_search_requests", "web_fetch_requests"):
+        count = _count(getattr(server_tool_use, field, None))
+        if count:
+            tools[field] = count
+    details = CallDetails(
+        model_served=_text(model),
+        service_tier=_text(getattr(usage, "service_tier", None)),
+        speed=_text(getattr(usage, "speed", None)),
+        inference_geo=_text(getattr(usage, "inference_geo", None)),
+        server_tool_use=tools or None,
+    )
+    return None if details == CallDetails() else details

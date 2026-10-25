@@ -38,6 +38,7 @@ from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import SensorConfig
 from flightdeck_sensor.interceptor import anthropic as ai
 from flightdeck_sensor.interceptor import base
+from flightdeck_sensor.interceptor import platform as platform_mod
 from flightdeck_sensor.providers.anthropic import AnthropicProvider
 from flightdeck_sensor.transport.client import ControlPlaneClient
 
@@ -911,7 +912,7 @@ def test_raw_response_stores_no_content_when_capture_is_off(session: Session) ->
     ],
 )
 def test_platform_for_host(host: str, platform: str) -> None:
-    assert ai.platform_for_host(host) == platform
+    assert platform_mod.platform_for_host(host) == platform
 
 
 def test_platform_of_reads_the_host_only() -> None:
@@ -934,8 +935,11 @@ def test_platform_of_falls_back_to_anthropic_without_a_usable_host() -> None:
 @pytest.mark.parametrize(
     ("host", "platform"),
     [
-        ("a" * ai._MAX_PLATFORM_HOST_LENGTH, "a" * ai._MAX_PLATFORM_HOST_LENGTH),
-        ("a" * (ai._MAX_PLATFORM_HOST_LENGTH + 1), "invalid-host"),
+        (
+            "a" * platform_mod._MAX_PLATFORM_HOST_LENGTH,
+            "a" * platform_mod._MAX_PLATFORM_HOST_LENGTH,
+        ),
+        ("a" * (platform_mod._MAX_PLATFORM_HOST_LENGTH + 1), "invalid-host"),
         ("a" * 60_000, "invalid-host"),
         ("evil host!", "invalid-host"),
         ("gätewäy.example", "invalid-host"),
@@ -948,7 +952,7 @@ def test_platform_for_host_bounds_the_host(host: str, platform: str) -> None:
     """An unknown host is reported bare only when it is a well-formed
     hostname within the DNS limit; anything else is a fixed label, so a
     hostile base_url cannot put arbitrary bytes into every post_call."""
-    assert ai.platform_for_host(host) == platform
+    assert platform_mod.platform_for_host(host) == platform
 
 
 def test_platform_of_never_carries_credentials_or_oversized_hosts() -> None:
@@ -956,7 +960,7 @@ def test_platform_of_never_carries_credentials_or_oversized_hosts() -> None:
     assert ai.platform_of(gateway) == "gateway.example"
     oversized = types.SimpleNamespace(base_url=types.SimpleNamespace(host="x" * 60_000))
     assert ai.platform_of(oversized) == "invalid-host"
-    assert len(ai.platform_of(oversized)) <= ai._MAX_PLATFORM_HOST_LENGTH
+    assert len(ai.platform_of(oversized)) <= platform_mod._MAX_PLATFORM_HOST_LENGTH
 
 
 def test_bare_provider_keeps_the_metadata_block_headers_only() -> None:

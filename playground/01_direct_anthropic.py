@@ -18,7 +18,6 @@ import uuid
 
 try:
     import anthropic
-    import httpx  # the SDK's HTTP client; installed with it
 except ImportError:
     print("SKIP: pip install anthropic to run this example")
     sys.exit(2)
@@ -27,6 +26,7 @@ import flightdeck_sensor
 from flightdeck_sensor import Provider
 from flightdeck_sensor.providers.anthropic import DEFAULT_COUNT_TOKENS_MODEL, AnthropicProvider
 from _helpers import (
+    assert_token_cost_fields,
     assert_event_landed,
     fetch_events_for_session,
     init_sensor,
@@ -272,7 +272,10 @@ def main() -> None:
     # answer raises APITimeoutError; the classifier must file it as
     # "timeout" (retryable), not as a generic api_error.
     timeout_seen = False
-    probe_timeout = httpx.Timeout(TIMEOUT_PROBE_CONNECT_S, read=TIMEOUT_PROBE_READ_S)
+    # The SDK's own Timeout type: its HTTP stack is not necessarily the
+    # httpx package (current SDKs ship their own), and a foreign Timeout
+    # object reaches the socket unconverted.
+    probe_timeout = anthropic.Timeout(TIMEOUT_PROBE_CONNECT_S, read=TIMEOUT_PROBE_READ_S)
     try:
         anthropic.Anthropic(timeout=probe_timeout, max_retries=0).messages.create(
             model=MODEL, max_tokens=5, messages=HI,
@@ -321,6 +324,21 @@ def main() -> None:
             f"count_tokens fell back to {source!r} for default model "
             f"{DEFAULT_COUNT_TOKENS_MODEL}; is the model retired?",
         )
+
+    # Every call names its requested and served model, the vendor, the
+    # billing mode and the platform; the extended usage (service tier,
+    # stop reason) arrives on direct and streamed calls alike.
+    post_calls = assert_token_cost_fields(session_id, provider="anthropic", platform="anthropic")
+    tiered = [e for e in post_calls if (e.get("payload") or {}).get("service_tier")]
+    print_result(
+        "service_tier and stop_reason reported",
+        len(tiered) == len(post_calls)
+        and all((e.get("payload") or {}).get("stop_reason") for e in post_calls),
+        0,
+        f"{len(tiered)}/{len(post_calls)} post_calls carry service_tier",
+    )
+    if len(tiered) != len(post_calls):
+        raise AssertionError(f"post_call without service_tier: {post_calls!r}")
 
     flightdeck_sensor.teardown()
 

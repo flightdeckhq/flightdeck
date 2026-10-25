@@ -1834,4 +1834,9 @@ def test_every_adapter_implements_every_provider_method(adapter: type) -> None:
     members = [n for n in dir(Provider) if not n.startswith("_")]
     assert {"usage_from_stream_chunk", "stream_completed", "final_message"} <= set(members)
     for name in members:
-        assert callable(getattr(adapter, name, None)), f"{adapter.__name__} lacks {name}"
+        if isinstance(getattr(Provider, name, None), property):
+            assert isinstance(getattr(adapter, name, None), property), (
+                f"{adapter.__name__} lacks property {name}"
+            )
+        else:
+            assert callable(getattr(adapter, name, None)), f"{adapter.__name__} lacks {name}"

@@ -16,6 +16,19 @@ All notable changes to Flightdeck are documented here.
   `GET /v1/sessions/:id` and `GET /v1/events` return them. Clients start
   sending them, and cost starts using them, in the next changes of the
   token and cost model.
+- **The sensor reports the token, model and cost fields.** Every
+  Anthropic, OpenAI and litellm `post_call` now carries the requested and
+  served model ids, reasoning tokens (Anthropic thinking, OpenAI
+  reasoning), the one-hour share of Anthropic cache writes, the service
+  tier, speed, data residency, server-tool counters and stop reason the
+  response reports, and the billing mode. The vendor is stamped where
+  the endpoint settles it (Anthropic's clients; the OpenAI SDK against
+  OpenAI or Azure OpenAI), OpenAI calls now report their platform
+  (`openai`, `azure` or the server's host) like Anthropic calls do, a
+  Vertex AI client reports its regional or global scope, and litellm's
+  own computed cost is sent as an agent-reported cost. Calls to a model
+  server on this machine are `local`; `init(billing_mode=...)` or
+  `FLIGHTDECK_BILLING_MODE` overrides the detection.
 - **Canonical model ids.** The worker stores one canonical id per model
   however a client spelled it (Bedrock inference profiles, Vertex
   `@version` ids, gateway prefixes such as `openrouter/anthropic/...`,

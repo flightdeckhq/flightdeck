@@ -103,6 +103,11 @@ from typing import TYPE_CHECKING, Any
 
 from flightdeck_sensor.core.exceptions import BudgetExceededError, DirectiveError
 from flightdeck_sensor.interceptor import base
+from flightdeck_sensor.interceptor.platform import (
+    PLATFORM_ANTHROPIC,
+    PLATFORM_VERTEX,
+    endpoint_of,
+)
 from flightdeck_sensor.providers.anthropic import AnthropicProvider
 
 if TYPE_CHECKING:
@@ -245,76 +250,12 @@ _PATCHED_SENTINEL = "_flightdeck_patched"
 # through create / stream, which are already intercepted.
 _PATCHED_METHODS = ("create", "stream", "parse")
 
-# Platform reported when the client is Anthropic's own API; also the
-# fallback when a client exposes no usable base_url at all (a test
-# double), since the SDK is Anthropic's.
-PLATFORM_ANTHROPIC = "anthropic"
-
-# Hosts the SDK's own client classes default to, mapped to the platform
-# name reported on the event: (host prefix, host suffix, platform). The
-# first matching row wins. A host that matches no row -- a gateway or a
-# proxy the caller pointed the SDK at -- is reported verbatim, so the
-# deployment topology stays visible instead of being mislabelled as
-# Anthropic's own API.
-_PLATFORM_HOSTS: tuple[tuple[str, str, str], ...] = (
-    # Every suffix starts with a separator so a look-alike such as
-    # evilanthropic.com or anthropic.com.evil.example stays bare, and
-    # Vertex matches only the Vertex AI API hosts (aiplatform.<...>
-    # .googleapis.com and the regional <region>-aiplatform.googleapis.com)
-    # and google-cloud only Claude Platform on Google Cloud's gateway
-    # (claude.googleapis.com), not every Google API host.
-    ("", ".anthropic.com", PLATFORM_ANTHROPIC),
-    ("bedrock-runtime.", ".amazonaws.com", "bedrock"),
-    ("bedrock-mantle.", ".api.aws", "bedrock-mantle"),
-    ("aws-external-anthropic.", ".api.aws", "aws"),
-    ("claude.", ".googleapis.com", "google-cloud"),
-    ("aiplatform.", ".googleapis.com", "vertex"),
-    ("", "-aiplatform.googleapis.com", "vertex"),
-    ("", ".services.ai.azure.com", "foundry"),
-)
-
-
-# A platform value is one of the names above or a hostname. Hostnames are
-# bounded by the DNS limit on a fully qualified name, and only letters,
-# digits, dots and hyphens are accepted once lowercased; anything longer
-# or containing other characters is reported as PLATFORM_INVALID_HOST,
-# so a malformed or hostile base_url cannot put arbitrary bytes into
-# every post_call of a session.
-_MAX_PLATFORM_HOST_LENGTH = 253
-_PLATFORM_HOST_CHARS = frozenset("abcdefghijklmnopqrstuvwxyz0123456789.-")
-PLATFORM_INVALID_HOST = "invalid-host"
-
-
-def platform_for_host(host: str) -> str:
-    """The platform name for an API host: a known platform (see
-    ``_PLATFORM_HOSTS``), else the host itself when it is a well-formed
-    hostname, else :data:`PLATFORM_INVALID_HOST`."""
-    lowered = host.lower()
-    if (
-        not lowered
-        or len(lowered) > _MAX_PLATFORM_HOST_LENGTH
-        or not set(lowered) <= _PLATFORM_HOST_CHARS
-    ):
-        return PLATFORM_INVALID_HOST
-    for prefix, suffix, platform in _PLATFORM_HOSTS:
-        if lowered.startswith(prefix) and lowered.endswith(suffix):
-            return platform
-    return lowered
-
 
 def platform_of(client: Any) -> str:
-    """The platform a client talks to: the platform of
-    ``client.base_url.host`` (see :func:`platform_for_host`), else
-    :data:`PLATFORM_ANTHROPIC` when the client exposes no usable host.
-    The host is the only source, so a first-party client pointed at a
-    gateway reports the gateway rather than a label its class carries."""
-    try:
-        host = getattr(getattr(client, "base_url", None), "host", None)
-        if isinstance(host, str) and host:
-            return platform_for_host(host)
-    except Exception:
-        _log.debug("platform attribution failed", exc_info=True)
-    return PLATFORM_ANTHROPIC
+    """The platform a client talks to (see
+    :func:`flightdeck_sensor.interceptor.platform.endpoint_of`), else
+    :data:`PLATFORM_ANTHROPIC` when the client exposes no usable host."""
+    return endpoint_of(client, PLATFORM_ANTHROPIC).platform
 
 
 def _is_async_client(client: Any) -> bool:
@@ -344,10 +285,25 @@ def _raw_response_mode(kwargs: dict[str, Any]) -> str | None:
 
 
 def _provider_for(client: Any, session: Session) -> AnthropicProvider:
+    endpoint = endpoint_of(client, PLATFORM_ANTHROPIC)
     return AnthropicProvider(
         capture_prompts=session.config.capture_prompts,
-        platform=platform_of(client),
+        platform=endpoint.platform,
+        local=endpoint.local,
+        inference_scope=_vertex_scope(client, endpoint.platform),
     )
+
+
+def _vertex_scope(client: Any, platform: str) -> str | None:
+    """``global`` or ``regional`` for a Vertex AI client, from the region
+    it was configured with (``AnthropicVertex(region=...)``, defaulting
+    to ``CLOUD_ML_REGION``); ``None`` for every other platform."""
+    if platform != PLATFORM_VERTEX:
+        return None
+    region = getattr(client, "region", None)
+    if not isinstance(region, str) or not region:
+        return None
+    return "global" if region == "global" else "regional"
 
 
 # ----------------------------------------------------------------------

@@ -68,8 +68,9 @@ func (sp *SessionProcessor) settleRow(ctx context.Context, sessionID string, clo
 // handleSessionGuard enforces the revive-or-create-or-skip policy
 // before a non-session_start handler applies its side effects.
 //
-//   - closed -> warn + skip (caller returns nil). The user explicitly
-//     ended the session; reviving would contradict an explicit exit.
+//   - closed -> warn + skip. The user explicitly ended the session;
+//     reviving would contradict an explicit exit. HandlePostCall still
+//     adds the tokens of a call published before the end.
 //   - stale/lost -> warn + revive to active + advance last_seen_at.
 //     Caller proceeds with normal processing.
 //   - not-found (pgx.ErrNoRows) -> lazy-create a new row from
@@ -424,7 +425,7 @@ func (sp *SessionProcessor) bumpParentIfPresent(ctx context.Context, e consumer.
 // load-bearing.
 func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.EventPayload) error {
 	if sp.handleSessionGuard(ctx, e) {
-		return nil
+		return sp.addTokensBeforeEnd(ctx, e)
 	}
 	if e.Model != "" {
 		if err := sp.w.UpdateSessionModel(ctx, e.SessionID, e.Model); err != nil {
@@ -458,6 +459,41 @@ func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.Event
 		}
 	}
 	sp.bumpParentIfPresent(ctx, e)
+	return nil
+}
+
+// addTokensBeforeEnd handles a call event that reaches a closed
+// session. The guard skips its session side effects, but a call
+// published before the session_end still belongs in the session's and
+// the agent's token totals (its event row is stored either way); only
+// the order the worker pool applied the two events differs. A call
+// published after the end is left out, as before.
+func (sp *SessionProcessor) addTokensBeforeEnd(ctx context.Context, e consumer.EventPayload) error {
+	if e.TokensTotal == nil || *e.TokensTotal <= 0 {
+		return nil
+	}
+	delta := *e.TokensTotal
+	added, err := sp.w.AddTokensBeforeEnd(ctx, e.SessionID, e.StreamSeq, delta)
+	if err != nil {
+		return fmt.Errorf("post call on closed session: %w", err)
+	}
+	if !added {
+		return nil
+	}
+	slog.Info("added tokens of a call published before its session ended",
+		"session_id", e.SessionID,
+		"event_type", e.EventType,
+		"tokens", delta,
+	)
+	if e.AgentID != "" {
+		if aErr := sp.w.IncrementAgentTokens(ctx, e.AgentID, int64(delta)); aErr != nil {
+			slog.Warn("increment agent tokens failed",
+				"session_id", e.SessionID,
+				"agent_id", e.AgentID,
+				"err", aErr,
+			)
+		}
+	}
 	return nil
 }
 

@@ -11768,3 +11768,36 @@ builder); storing a computed cost on each event (rejected in D208:
 prices would freeze when the event arrives); leaving JIT on (three
 times slower at the window sizes the dashboard uses).
 
+---
+
+## D212 -- A call published before its session_end still counts toward the closed session
+
+**Date:** 2026-10-25
+
+**Decision:** When a call event (`post_call`, `embeddings` and the other
+types routed through `HandlePostCall`) reaches a session that is already
+closed, the worker still adds its tokens to `sessions.tokens_used` and
+to the agent's `total_tokens` if the event was published before the
+`session_end` that closed the session: its NATS stream sequence is below
+the row's `closed_seq`. The session stays closed, `last_seen_at` does
+not move, and nothing else of the closed-session skip changes. An event
+with an unknown sequence, or one published after the end, is skipped as
+before.
+
+**Reasoning:** The sensor sends a run's last `post_call` and its
+`session_end` back to back, and the worker pool processes events
+concurrently, so the end can commit first. The skip then dropped the
+call's tokens from the session total while the event row (and so the
+cost analytics, which aggregate events) kept them. CI on main caught it
+(`test_stream_still_open_at_teardown_lands_with_its_tokens_rolled_up`,
+and the worker log's `skipping event for closed session ...
+event_type=post_call`). The stream sequence already orders every event
+and is stored on the row by the end, so the check needs no clock.
+
+**Rejected alternative:** Comparing the call's timestamp with
+`ended_at` (`ended_at` is the worker's clock when the end was applied,
+the timestamp the sensor's, so clock skew decides); ordering a
+session's events through one worker (a consumer redesign for one side
+effect); reviving the session for the late call (contradicts the
+explicit end, as D105 and D106 set out).
+

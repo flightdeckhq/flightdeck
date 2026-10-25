@@ -656,6 +656,29 @@ func (w *Writer) UpdateTokensUsed(ctx context.Context, sessionID string, delta i
 	return nil
 }
 
+// AddTokensBeforeEnd rolls a call's tokens into a closed session when
+// the call was published before the session_end that closed it: the
+// sensor sends a run's last post_call and its session_end back to back,
+// and the worker pool can apply the end first. seq is the call's stream
+// sequence; closed_seq is the end's, so the comparison needs no clock.
+// The session stays closed and last_seen_at does not move. An unknown
+// sequence on either side matches nothing. Returns whether the row
+// matched.
+func (w *Writer) AddTokensBeforeEnd(ctx context.Context, sessionID string, seq uint64, delta int) (bool, error) {
+	tag, err := w.pool.Exec(ctx, `
+		UPDATE sessions
+		SET tokens_used = tokens_used + $1
+		WHERE session_id = $2::uuid
+		  AND state = 'closed'
+		  AND $3::bigint > 0
+		  AND closed_seq > $3::bigint
+	`, delta, sessionID, seqParam(seq))
+	if err != nil {
+		return false, fmt.Errorf("add tokens before end for %s: %w", sessionID, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // UpdateLastSeen touches last_seen_at on a session (heartbeat path).
 func (w *Writer) UpdateLastSeen(ctx context.Context, sessionID string) error {
 	_, err := w.pool.Exec(ctx, `

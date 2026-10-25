@@ -297,3 +297,42 @@ func TestInsertEvent_TokenCostColumns(t *testing.T) {
 }
 
 func ptr(s string) *string { return &s }
+
+func TestAddTokensBeforeEnd_OnlyACallPublishedBeforeTheEnd(t *testing.T) {
+	pool := testPool(t)
+	w := New(pool)
+	ctx := context.Background()
+	sessionID := testSession(t, pool)
+	if _, err := pool.Exec(ctx, `UPDATE sessions SET state = 'closed', ended_at = NOW(), closed_seq = 100, tokens_used = 5 WHERE session_id = $1::uuid`, sessionID); err != nil {
+		t.Fatalf("close session: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		seq  uint64
+		want bool
+	}{
+		{"published before the end", 99, true},
+		{"published after the end", 101, false},
+		{"the end itself", 100, false},
+		{"unknown sequence", 0, false},
+	} {
+		added, err := w.AddTokensBeforeEnd(ctx, sessionID, tc.seq, 10)
+		if err != nil || added != tc.want {
+			t.Errorf("%s: added = %v, %v; want %v", tc.name, added, err, tc.want)
+		}
+	}
+	var tokens int
+	var state string
+	if err := pool.QueryRow(ctx, `SELECT tokens_used, state FROM sessions WHERE session_id = $1::uuid`, sessionID).Scan(&tokens, &state); err != nil {
+		t.Fatalf("read session: %v", err)
+	}
+	if tokens != 15 || state != "closed" {
+		t.Errorf("tokens_used = %d, state = %s; want 15, closed", tokens, state)
+	}
+
+	open := testSession(t, pool)
+	if added, err := w.AddTokensBeforeEnd(ctx, open, 1, 10); err != nil || added {
+		t.Errorf("an open session must take tokens through the normal path: added = %v, %v", added, err)
+	}
+}

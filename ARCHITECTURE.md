@@ -1987,7 +1987,12 @@ at any non-closed state transitions directly to `closed`, unless it was
 published before the row's current run began;
 `handleSessionGuard` skips the session side effects (token roll-up,
 freshness, revival) of any later event for a closed session with a warn
-log, while the event row itself is still stored. Revival on `stale` /
+log, while the event row itself is still stored. One side effect is
+kept: a call event published before the `session_end` (its stream
+sequence below the row's `closed_seq`) still adds its tokens to the
+session and the agent, because a sensor sends a run's last `post_call`
+and its `session_end` back to back and the worker pool can apply the
+end first. The session stays closed and `last_seen_at` does not move. Revival on `stale` /
 `lost` is a correctness fix; reviving a `closed` session would contradict
 the user's explicit end signal. The one exception is a re-attachment: a
 `session_start` revives a closed row unless its own `session_end` was

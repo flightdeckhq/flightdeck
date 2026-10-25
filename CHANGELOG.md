@@ -98,6 +98,15 @@ All notable changes to Flightdeck are documented here.
   calls. A `PUT` that keeps the stored value is not re-checked, so
   existing policies stay editable.
 
+### Fixed
+
+- **A session's last call no longer loses its tokens at teardown.** The
+  sensor sends a run's last `post_call` and its `session_end` back to
+  back, and when a worker applied the end first, the call's tokens never
+  reached the session's or the agent's total (its event row was stored,
+  so cost analytics still counted it). A call published before the end
+  now adds its tokens to the closed session; the session stays closed.
+
 ## v0.6.0 — 2026-10-24
 
 The currency and correctness release. A security fix (revoked access

@@ -28,17 +28,11 @@ type ModelPricing struct {
 	OutputPerMTok float64
 }
 
-// modelPricing is the live pricing table. Populated at service startup
-// by LoadPricing (pricing_loader.go) from pricing.yaml at the repo
-// root. The initial value is the small safety map defined in
-// pricing_loader.go so a process that never calls LoadPricing (unit
-// tests, some embedded use) still produces non-zero cost for the
-// handful of models covered by the safety map.
-//
-// Full table lives in pricing.yaml -- a PR editing that file is the
-// supported way to add or update a model. See CONTRIBUTING.md
-// ("Updating pricing data").
-var modelPricing = cloneMap(safetyPricing)
+// modelPricing is the input / output rate of every direct-platform
+// model, the shape the per-model CASE expression below reads. Populated
+// at service startup by LoadPricing (pricing_loader.go) from the
+// vendored catalogue and pricing.yaml; empty until then.
+var modelPricing = map[string]ModelPricing{}
 
 // KnownPricedModels returns the set of models with a pricing entry.
 // Used by the analytics store to decide whether the response's

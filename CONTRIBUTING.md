@@ -220,60 +220,55 @@ To add a new LLM provider to the sensor:
 
 ## Updating pricing data
 
-Model list prices live in [`pricing.yaml`](pricing.yaml) at the repo
-root. Edit that file to add a model or update a price — no Go code
-changes and no release needed.
+Model prices come from two layers (ARCHITECTURE.md, "Cost estimation"):
 
-### Steps
+- **The catalogue**, `api/internal/store/pricing_catalogue.json`: a
+  pruned copy of litellm's `model_prices_and_context_window.json`,
+  embedded in the API binary. It carries each model's input, output,
+  cache-read, five-minute and one-hour cache-write, reasoning, priority
+  and long-context rates, for the providers' own APIs and for Bedrock,
+  Vertex AI, Azure OpenAI and Foundry.
+- **`pricing.yaml`** at the repo root: overrides on top of the
+  catalogue (negotiated prices, retired models the catalogue dropped),
+  deployment-name aliases, and the flat multipliers and server-tool
+  fees.
 
-1. Open `pricing.yaml` at the repo root.
-2. **To add a model:** append an entry with:
-   - `model_id` — the exact string the sensor emits on `events.model`
-     (match case and punctuation)
-   - `provider` — one of `anthropic`, `openai`, `google`, `xai`,
-     `mistral`, `meta`, `other`
-   - `input` — USD per 1M input tokens
-   - `output` — USD per 1M output tokens
-3. **To update a price:** edit the matching entry.
-4. Bump the `updated:` field at the top of the file to today's date.
-5. Run the store tests locally to confirm the file parses and the
-   validation passes:
+### Refreshing the catalogue
+
+```bash
+make pricing-refresh        # downloads litellm's current file and prunes it
+cd api && go test ./internal/store/ -run 'Catalogue|PricingYaml' -count=1
+```
+
+Commit the regenerated `pricing_catalogue.json` in a PR titled
+`pricing: refresh catalogue`. The diff shows every price that moved;
+skim it for surprises (a model priced at zero, a large jump) before
+opening the PR. `scripts/pricing_refresh.py --source <file>` prunes a
+local copy instead of downloading.
+
+### Overriding or adding a price
+
+1. Edit `pricing.yaml`. An entry under `overrides:` replaces the
+   catalogue's rates for one model and platform (`direct`, `bedrock`,
+   `vertex`, `azure`, `foundry`) field by field, so state only the
+   rates that differ. A model the catalogue does not list needs
+   `provider`, `input` and `output`. Rates are USD per 1M tokens.
+2. Use the canonical model id the dashboard shows (the dated snapshot
+   id when that is what the provider served).
+3. Bump `updated:` and run the store tests:
    ```bash
-   cd api && go test ./internal/store/... -run TestParsePricingFile -count=1
+   cd api && go test ./internal/store/ -run 'PricingYaml|ApplyPricingFile' -count=1
    ```
-6. In your PR description, include a link to the provider's pricing
-   page as the source for every change. We need a verifiable origin
-   for every price.
-7. Title the PR `pricing: update <model>` or `pricing: add <model>`.
+4. Link the provider's pricing page in the PR description for every
+   change.
 
-### Cache ratios
+### Validation
 
-Cache-aware cost uses Anthropic's published ratios, applied uniformly
-to every model that reports cache tokens:
-
-```
-cache_read     = input * 0.10   (90% discount)
-cache_creation = input * 1.25   (25% premium)
-```
-
-These ratios live as constants in `api/internal/store/pricing.go`
-(`cacheReadRatio`, `cacheCreationRatio`) — not in `pricing.yaml`. If a
-provider publishes different ratios in the future, **open an issue
-first**. Per-model cache ratios require a `ModelPricing` schema
-expansion, not a `pricing.yaml` edit.
-
-### Validation rules enforced at load time
-
-- No duplicate `model_id`
-- `input >= 0`
-- `output >= 0`
-- `provider` must be in the known set
-
-A malformed `pricing.yaml` logs a WARN at service startup and falls
-back to a tiny safety map (`claude-sonnet-4-6`, `claude-haiku-4-5`,
-`gpt-4o`, `gpt-4o-mini`) so the service still boots. Fix the file
-before merging — the safety map is a guardrail, not an operating
-mode.
+`pricing.yaml` is validated when the API starts: rates `>= 0`, known
+platforms and providers, no duplicate override, an alias may not reuse a
+catalogue id and must point at a priced model, multipliers `> 0`. A file
+that fails is ignored as a whole and logged at WARN, and the catalogue
+alone prices calls; fix the file before merging.
 
 ### Path resolution
 
@@ -286,12 +281,9 @@ Service startup tries these in order, first match wins:
 The API Dockerfile copies `pricing.yaml` to `/etc/flightdeck/` at
 build time, and the docker-compose dev overlay mounts the repo copy
 over that path so local edits take effect on `docker compose restart
-api` without a rebuild.
-
-The cost formula is cache-aware (cache-read and cache-creation tokens are
-priced separately from input/output), and the pricing data is externalized to
-`pricing.yaml` rather than hardcoded so list-price changes need no code
-change. See DECISIONS.md for the full design rationale.
+api` without a rebuild. The API writes the merged list into the
+`model_pricing` table at startup, skipping the write when nothing
+changed.
 
 ## Reporting Bugs
 

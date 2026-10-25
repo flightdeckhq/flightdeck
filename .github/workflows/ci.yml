@@ -953,6 +953,9 @@ jobs:
           python3 scripts/version.py check
           python3 -m unittest scripts/test_version.py
 
+      - name: Pricing catalogue refresh script
+        run: python3 -m unittest scripts/test_pricing_refresh.py
+
       - name: Validate marketplace.json structure
         run: |
           python3 - <<'PY'

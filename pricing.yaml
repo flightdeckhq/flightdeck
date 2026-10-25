@@ -1,604 +1,122 @@
-# Flightdeck model pricing table.
+# Flightdeck price overrides.
 #
-# Prices are USD per 1,000,000 tokens, taken from provider public list
-# prices at the standard tier. Last verified: 2026-10-18 against
-# platform.claude.com (pricing, model lifecycle), developers.openai.com
-# (pricing, deprecations) and ai.google.dev (pricing, models).
+# Model prices come from a vendored copy of litellm's price list
+# (api/internal/store/pricing_catalogue.json, refreshed with
+# `make pricing-refresh`). This file is the layer an operator edits on
+# top of it; see ARCHITECTURE.md, "Cost estimation", and CONTRIBUTING.md,
+# "Updating pricing data".
 #
-# To add or update an entry: see CONTRIBUTING.md ("Updating pricing
-# data"). Include a link to the provider's pricing page in your PR.
+# Rates are USD per 1,000,000 tokens. Model ids are canonicalised the way
+# event model ids are (dated snapshots kept; gateway, Bedrock and Vertex
+# spellings reduced to the provider's API id), so write the id the
+# dashboard shows.
 #
-# Scope of this table (what the cost formula can express today):
-#   * One input rate and one output rate per model. Tiered prices
-#     (prompt-size tiers, long-context surcharges), batch / flex / fast
-#     service tiers, data-residency multipliers and per-call server-tool
-#     fees are not representable; the standard, short-context, standard-
-#     speed rate is recorded and the tier is noted where it exists.
-#   * Cache ratios are uniform constants in api/internal/store/pricing.go:
-#       cache_read     = input * 0.10
-#       cache_creation = input * 1.25
-#     They match Anthropic's 5-minute cache on most models. They are
-#     wrong for one-hour cache writes (2x), for Claude Opus 5.5 /
-#     Sonnet 5.5 cache reads (0.05x), for Claude Fable 5.1 / Mythos 5.1
-#     cache reads (0.025x), and for OpenAI (model-dependent cached-input
-#     rates, cache writes charged on GPT-5.6 and later). Per-model ratios
-#     require the richer pricing model tracked on the README Roadmap.
-#   * Retired model ids stay in the table so historical sessions keep a
-#     cost; they are marked in `notes`.
+# The API reads this file at startup. An entry that fails validation
+# makes the API ignore the whole file (and log why) and price from the
+# catalogue alone.
+
+version: 2
+updated: 2026-10-25
+
+# ---------------------------------------------------------------------
+# overrides: replace a catalogue row's rates field by field, or add a
+# model the catalogue does not list (then provider, input and output are
+# required). Fields: model_id, platform (direct, bedrock, vertex, azure,
+# foundry; default direct), provider, input, output, cache_read,
+# cache_write_5m, cache_write_1h, reasoning, priority_multiplier,
+# fast_multiplier.
 #
-# `provider` must be one of: anthropic, openai, google, xai, mistral,
-# meta, other. `input` and `output` must be >= 0. `model_id` is the
-# exact string the sensor emits on events.model (dated snapshot ids and
-# undated aliases are separate rows). Duplicates are rejected at load
-# time.
-
-version: 1
-updated: 2026-10-18
-
-models:
-  # ------------------------------------------------------------------
-  # Anthropic (platform.claude.com/docs/en/about-claude/pricing)
-  # ------------------------------------------------------------------
-  - model_id: claude-fable-5-1
-    provider: anthropic
-    input: 10.00
-    output: 50.00
-    notes: Cache read is 0.025x on this model (table applies 0.10x)
-
-  - model_id: claude-mythos-5-1
-    provider: anthropic
-    input: 10.00
-    output: 50.00
-    notes: Limited availability; cache read is 0.025x on this model
-
-  - model_id: claude-fable-5
-    provider: anthropic
-    input: 10.00
-    output: 50.00
-
-  - model_id: claude-mythos-5
-    provider: anthropic
-    input: 10.00
-    output: 50.00
-
-  - model_id: claude-opus-5-5
-    provider: anthropic
-    input: 4.00
-    output: 20.00
-    notes: Cache read is 0.05x on this model; fast mode is 2x (not modelled)
-
-  - model_id: claude-opus-5
-    provider: anthropic
-    input: 5.00
-    output: 25.00
-
-  - model_id: claude-opus-4-8
-    provider: anthropic
-    input: 5.00
-    output: 25.00
-
-  - model_id: claude-opus-4-7
-    provider: anthropic
-    input: 5.00
-    output: 25.00
-
-  - model_id: claude-opus-4-6
-    provider: anthropic
-    input: 5.00
-    output: 25.00
-
-  - model_id: claude-opus-4-5
-    provider: anthropic
-    input: 5.00
-    output: 25.00
-    notes: Alias of claude-opus-4-5-20251101
-
-  - model_id: claude-opus-4-5-20251101
-    provider: anthropic
-    input: 5.00
-    output: 25.00
-
+# Negotiated prices, for example:
+#
+#   - model_id: claude-sonnet-4-5
+#     input: 2.40
+#     output: 12.00
+# ---------------------------------------------------------------------
+overrides:
+  # Retired models litellm no longer lists, kept so sessions recorded
+  # while they were served keep a cost. List prices at retirement.
   - model_id: claude-opus-4-1-20250805
     provider: anthropic
     input: 15.00
     output: 75.00
+    cache_read: 1.50
+    cache_write_5m: 18.75
+    cache_write_1h: 30.00
     notes: Retired 2026-08-05
 
   - model_id: claude-opus-4-20250514
     provider: anthropic
     input: 15.00
     output: 75.00
-    notes: Retired 2026-06-15 (launch price; an earlier row priced this at $5/$25)
+    cache_read: 1.50
+    cache_write_5m: 18.75
+    cache_write_1h: 30.00
+    notes: Retired 2026-06-15
 
   - model_id: claude-3-opus-20240229
     provider: anthropic
     input: 15.00
     output: 75.00
+    cache_read: 1.50
+    cache_write_5m: 18.75
+    cache_write_1h: 30.00
     notes: Retired
-
-  - model_id: claude-sonnet-5-5
-    provider: anthropic
-    input: 2.00
-    output: 10.00
-    notes: Cache read is 0.05x on this model
-
-  - model_id: claude-sonnet-5
-    provider: anthropic
-    input: 2.00
-    output: 10.00
-
-  - model_id: claude-sonnet-4-6
-    provider: anthropic
-    input: 3.00
-    output: 15.00
-
-  - model_id: claude-sonnet-4-5
-    provider: anthropic
-    input: 3.00
-    output: 15.00
-    notes: Alias of claude-sonnet-4-5-20250929; deprecated, retires 2026-11-30
-
-  - model_id: claude-sonnet-4-5-20250929
-    provider: anthropic
-    input: 3.00
-    output: 15.00
-    notes: Deprecated 2026-09-30, retires 2026-11-30
 
   - model_id: claude-sonnet-4-20250514
     provider: anthropic
     input: 3.00
     output: 15.00
+    cache_read: 0.30
+    cache_write_5m: 3.75
+    cache_write_1h: 6.00
     notes: Retired 2026-06-15
 
   - model_id: claude-3-5-sonnet-20241022
     provider: anthropic
     input: 3.00
     output: 15.00
+    cache_read: 0.30
+    cache_write_5m: 3.75
+    cache_write_1h: 6.00
     notes: Retired
-
-  - model_id: claude-haiku-5-5
-    provider: anthropic
-    input: 0.10
-    output: 0.50
-    notes: Prompts over 100K tokens are billed at $0.50 / $2.50 (tier not modelled)
-
-  - model_id: claude-haiku-4-5
-    provider: anthropic
-    input: 1.00
-    output: 5.00
-    notes: Alias of claude-haiku-4-5-20251001
-
-  - model_id: claude-haiku-4-5-20251001
-    provider: anthropic
-    input: 1.00
-    output: 5.00
 
   - model_id: claude-3-5-haiku-20241022
     provider: anthropic
     input: 0.80
     output: 4.00
+    cache_read: 0.08
+    cache_write_5m: 1.00
+    cache_write_1h: 1.60
     notes: Retired 2026-02-19
 
-  # ------------------------------------------------------------------
-  # OpenAI (developers.openai.com/api/docs/pricing)
-  # ------------------------------------------------------------------
-  - model_id: gpt-6-astra
-    provider: openai
-    input: 10.00
-    output: 50.00
-    notes: Cached input $1.00, cache write $12.50 (not modelled); long context over 272K priced separately
-
-  - model_id: gpt-6.1-sol
-    provider: openai
-    input: 2.00
-    output: 10.00
-    notes: Cached input $0.10 (0.05x), cache write $2.50
-
-  - model_id: gpt-6-sol
-    provider: openai
-    input: 2.00
-    output: 10.00
-
-  - model_id: gpt-6-luna
-    provider: openai
-    input: 0.10
-    output: 0.50
-
-  - model_id: gpt-5.6
-    provider: openai
-    input: 4.00
-    output: 20.00
-    notes: Alias of gpt-5.6-sol; promotional pricing through at least 2026-11-21
-
-  - model_id: gpt-5.6-sol
-    provider: openai
-    input: 4.00
-    output: 20.00
-
-  - model_id: gpt-5.6-terra
-    provider: openai
-    input: 2.00
-    output: 12.00
-
-  - model_id: gpt-5.6-luna
-    provider: openai
-    input: 0.20
-    output: 1.20
-
-  - model_id: gpt-5.6-cyber
-    provider: openai
-    input: 12.50
-    output: 75.00
-    notes: Access-gated
-
-  - model_id: gpt-5.5-cyber
-    provider: openai
-    input: 12.50
-    output: 75.00
-    notes: Access-gated
-
-  - model_id: gpt-5.5
-    provider: openai
-    input: 5.00
-    output: 30.00
-
-  - model_id: gpt-5.5-2026-04-23
-    provider: openai
-    input: 5.00
-    output: 30.00
-
-  - model_id: gpt-5.5-pro
-    provider: openai
-    input: 30.00
-    output: 180.00
-
-  - model_id: gpt-5.4
-    provider: openai
-    input: 2.50
-    output: 15.00
-
-  - model_id: gpt-5.4-2026-03-05
-    provider: openai
-    input: 2.50
-    output: 15.00
-
-  - model_id: gpt-5.4-mini
-    provider: openai
-    input: 0.75
-    output: 4.50
-
-  - model_id: gpt-5.4-mini-2026-03-17
-    provider: openai
-    input: 0.75
-    output: 4.50
-
-  - model_id: gpt-5.4-nano
-    provider: openai
-    input: 0.20
-    output: 1.25
-    notes: Deprecated 2026-10-01, shutdown 2027-04-01
-
-  - model_id: gpt-5.4-nano-2026-03-17
-    provider: openai
-    input: 0.20
-    output: 1.25
-    notes: Deprecated 2026-10-01, shutdown 2027-04-01
-
-  - model_id: gpt-5.4-pro
-    provider: openai
-    input: 30.00
-    output: 180.00
-
-  - model_id: gpt-5.3-codex
-    provider: openai
-    input: 1.75
-    output: 14.00
-    notes: Deprecated 2026-10-01, shutdown 2027-04-01
-
-  - model_id: gpt-5.2
-    provider: openai
-    input: 1.75
-    output: 14.00
-
-  - model_id: gpt-5.2-2025-12-11
-    provider: openai
-    input: 1.75
-    output: 14.00
-
-  - model_id: gpt-5.2-pro
-    provider: openai
-    input: 21.00
-    output: 168.00
-
-  - model_id: gpt-5.1
-    provider: openai
-    input: 1.25
-    output: 10.00
-    notes: Deprecated 2026-10-01, shutdown 2027-04-01
-
-  - model_id: gpt-5.1-2025-11-13
-    provider: openai
-    input: 1.25
-    output: 10.00
-    notes: Deprecated 2026-10-01, shutdown 2027-04-01
-
-  - model_id: gpt-5
-    provider: openai
-    input: 1.25
-    output: 10.00
-    notes: Deprecated 2026-06-11, shutdown 2026-12-11
-
-  - model_id: gpt-5-2025-08-07
-    provider: openai
-    input: 1.25
-    output: 10.00
-    notes: Deprecated 2026-06-11, shutdown 2026-12-11
-
-  - model_id: gpt-5-mini
-    provider: openai
-    input: 0.25
-    output: 2.00
-    notes: Deprecated, shutdown 2026-12-11
-
-  - model_id: gpt-5-mini-2025-08-07
-    provider: openai
-    input: 0.25
-    output: 2.00
-    notes: Deprecated, shutdown 2026-12-11
-
-  - model_id: gpt-5-nano
-    provider: openai
-    input: 0.05
-    output: 0.40
-    notes: Deprecated, shutdown 2026-12-11
-
-  - model_id: gpt-5-nano-2025-08-07
-    provider: openai
-    input: 0.05
-    output: 0.40
-    notes: Deprecated, shutdown 2026-12-11
-
-  - model_id: gpt-5-pro
-    provider: openai
-    input: 15.00
-    output: 120.00
-    notes: Deprecated, shutdown 2026-12-11
-
-  - model_id: gpt-5-pro-2025-10-06
-    provider: openai
-    input: 15.00
-    output: 120.00
-    notes: Deprecated, shutdown 2026-12-11
-
-  - model_id: gpt-5-codex
-    provider: openai
-    input: 1.25
-    output: 10.00
-    notes: Shut down 2026-07-23
-
-  - model_id: gpt-5-chat-latest
-    provider: openai
-    input: 1.25
-    output: 10.00
-    notes: Shut down 2026-07-23
-
-  - model_id: gpt-5-search-api
-    provider: openai
-    input: 1.25
-    output: 10.00
-
-  - model_id: chat-latest
-    provider: openai
-    input: 5.00
-    output: 30.00
-
-  - model_id: gpt-4.1
-    provider: openai
-    input: 2.00
-    output: 8.00
-    notes: Deprecated 2026-10-14, shutdown 2027-01-14
-
-  - model_id: gpt-4.1-2025-04-14
-    provider: openai
-    input: 2.00
-    output: 8.00
-    notes: Deprecated 2026-10-14, shutdown 2027-01-14
-
-  - model_id: gpt-4.1-mini
-    provider: openai
-    input: 0.40
-    output: 1.60
-    notes: Deprecated 2026-10-14, shutdown 2027-01-14
-
-  - model_id: gpt-4.1-nano
-    provider: openai
-    input: 0.10
-    output: 0.40
-    notes: Shutdown 2026-10-23
-
-  - model_id: gpt-4o
-    provider: openai
-    input: 2.50
-    output: 10.00
-    notes: Deprecated 2026-10-14, shutdown 2027-01-14; cached input is 0.50x on this model
-
-  - model_id: gpt-4o-2024-08-06
-    provider: openai
-    input: 2.50
-    output: 10.00
-    notes: Deprecated 2026-10-14, shutdown 2027-01-14
-
-  - model_id: gpt-4o-2024-11-20
-    provider: openai
-    input: 2.50
-    output: 10.00
-    notes: Deprecated 2026-10-14, shutdown 2027-01-14
-
-  - model_id: gpt-4o-2024-05-13
-    provider: openai
-    input: 5.00
-    output: 15.00
-    notes: Shutdown 2026-10-23
-
-  - model_id: gpt-4o-mini
-    provider: openai
-    input: 0.15
-    output: 0.60
-    notes: Deprecated 2026-10-14, shutdown 2027-01-14
-
-  - model_id: gpt-4o-mini-2024-07-18
-    provider: openai
-    input: 0.15
-    output: 0.60
-    notes: Deprecated 2026-10-14, shutdown 2027-01-14
-
-  - model_id: gpt-4-turbo
-    provider: openai
-    input: 10.00
-    output: 30.00
-    notes: Shutdown 2026-10-23
-
-  - model_id: o1
-    provider: openai
-    input: 15.00
-    output: 60.00
-    notes: Shutdown 2026-10-23
-
-  - model_id: o1-2024-12-17
-    provider: openai
-    input: 15.00
-    output: 60.00
-    notes: Shutdown 2026-10-23
-
-  - model_id: o1-pro
-    provider: openai
-    input: 150.00
-    output: 600.00
-    notes: Shutdown 2026-10-23
-
-  - model_id: o1-mini
-    provider: openai
-    input: 3.00
-    output: 12.00
-    notes: Retired
-
-  - model_id: o3
-    provider: openai
-    input: 2.00
-    output: 8.00
-    notes: Deprecated 2026-06-11, shutdown 2026-12-11
-
-  - model_id: o3-2025-04-16
-    provider: openai
-    input: 2.00
-    output: 8.00
-    notes: Deprecated 2026-06-11, shutdown 2026-12-11
-
-  - model_id: o3-pro
-    provider: openai
-    input: 20.00
-    output: 80.00
-    notes: Shutdown 2026-12-11
-
-  - model_id: o3-mini
-    provider: openai
-    input: 1.10
-    output: 4.40
-    notes: Shutdown 2026-10-23
-
-  - model_id: o4-mini
-    provider: openai
-    input: 1.10
-    output: 4.40
-    notes: Shutdown 2026-10-23
-
-  - model_id: o4-mini-2025-04-16
-    provider: openai
-    input: 1.10
-    output: 4.40
-    notes: Shutdown 2026-10-23
-
-  - model_id: text-embedding-3-small
-    provider: openai
-    input: 0.02
-    output: 0.00
-
-  - model_id: text-embedding-3-large
-    provider: openai
-    input: 0.13
-    output: 0.00
-
-  - model_id: text-embedding-ada-002
-    provider: openai
-    input: 0.10
-    output: 0.00
-
-  # ------------------------------------------------------------------
-  # Google (ai.google.dev/gemini-api/docs/pricing, standard paid tier)
-  # Output rates include thinking tokens. Cached input is model-specific
-  # (0.10x today) with no write premium; explicit-cache storage is billed
-  # per hour and is not modelled.
-  # ------------------------------------------------------------------
-  - model_id: gemini-4-argon
-    provider: google
-    input: 2.00
-    output: 10.00
-    notes: Rises to $4.00 / $20.00 on 2026-12-01
-
-  - model_id: gemini-3.8-flash
-    provider: google
-    input: 0.75
-    output: 3.75
-    notes: Rises to $1.50 / $7.50 on 2027-01-01
-
-  - model_id: gemini-3.6-flash
-    provider: google
-    input: 0.75
-    output: 3.75
-    notes: Rises to $1.50 / $7.50 on 2027-01-01
-
-  - model_id: gemini-3.5-flash-lite
-    provider: google
-    input: 0.30
-    output: 2.50
-
-  - model_id: gemini-3.1-flash-lite
-    provider: google
-    input: 0.25
-    output: 1.50
-    notes: Audio input is $0.50; shutdown no earlier than 2027-05-07
-
-  - model_id: gemini-3.1-pro-preview
-    provider: google
-    input: 2.00
-    output: 12.00
-    notes: Prompts over 200K tokens are billed at $4.00 / $18.00 (tier not modelled)
-
-  - model_id: gemini-3-flash-preview
-    provider: google
-    input: 0.50
-    output: 3.00
-
-  - model_id: gemini-2.5-pro
-    provider: google
-    input: 1.25
-    output: 10.00
-    notes: Restricted access; prompts over 200K tokens are billed at $2.50 / $15.00
-
-  - model_id: gemini-2.5-flash
-    provider: google
-    input: 0.30
-    output: 2.50
-    notes: Restricted access
-
-  - model_id: gemini-2.5-flash-lite
-    provider: google
-    input: 0.10
-    output: 0.40
-    notes: Restricted access
-
-  - model_id: gemini-embedding-2-preview
-    provider: google
-    input: 0.20
-    output: 0.00
-    notes: Text embeddings; image, audio and video inputs are priced separately
+# ---------------------------------------------------------------------
+# aliases: price a deployment or route name (an Azure deployment, a
+# gateway's custom route) as a known model. Fields: alias, model_id,
+# platform (default direct). An alias must not reuse a catalogue id.
+#
+#   - alias: prod-gpt4o
+#     model_id: gpt-4o
+#     platform: azure
+# ---------------------------------------------------------------------
+aliases: []
+
+# ---------------------------------------------------------------------
+# multipliers: applied to a call's cost by the value of a field the call
+# reports. A value not listed multiplies by 1. These are the defaults;
+# a field listed here replaces its defaults as a whole. Anthropic's fast
+# mode is priced per model in the catalogue (fast_multiplier), not here.
+# ---------------------------------------------------------------------
+multipliers:
+  service_tier:
+    batch: 0.5
+    flex: 0.5
+  inference_geo:
+    us: 1.1
+  inference_scope:
+    regional: 1.1
+
+# ---------------------------------------------------------------------
+# server_tools: USD per request, by server_tool_use counter.
+# ---------------------------------------------------------------------
+server_tools:
+  web_search_requests: 0.01

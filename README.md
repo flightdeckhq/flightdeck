@@ -213,7 +213,7 @@ def clear_cache(context, cache_type="all"):
 
 **Analytics (`/analytics`).** Token consumption, run counts, latency, model distribution, policy event volume, and estimated cost on a shared time range, grouped by any of: flavor, model, framework, host, agent_type, team, provider, agent_role, parent_session_id.
 
-**Estimated cost.** Per-run cost computed from public list prices, accounting for cache reads and cache creation. Pricing data lives in [`pricing.yaml`](pricing.yaml). Treat as a sanity check, not an invoice.
+**Estimated cost.** Per-run cost computed from public list prices, accounting for cache reads and cache creation. Prices come from a vendored copy of litellm's price list, with your own overrides in [`pricing.yaml`](pricing.yaml). Treat as a sanity check, not an invoice.
 
 ---
 

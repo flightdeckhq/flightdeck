@@ -11682,3 +11682,35 @@ natural catalogue to check against.
 dashboard (drifts from the catalogue, and the API stays unprotected), or
 re-validating `degrade_to` on every update (an unrelated edit to an old
 policy would fail on a model id that was valid when it was set).
+
+---
+
+## D210 -- Fast mode is priced per model; an invalid pricing.yaml falls back to the catalogue
+
+**Date:** 2026-10-25
+
+**Decision:** Anthropic's fast-mode price multiplier is a per-model
+column, `model_pricing.fast_multiplier` (migration 000031), filled from
+the catalogue's `provider_specific_entry.fast`, rather than one flat
+`speed` multiplier in `pricing.yaml`. The flat settings keep the values
+that are the same for every model (batch and flex 0.5, US-only
+inference 1.1, regional cloud endpoints 1.1, web search USD 0.01 per
+request). A `pricing.yaml` that fails validation is ignored as a whole
+and the catalogue alone prices calls, instead of the previous four-model
+safety map. Retired models litellm has dropped (Claude 3 Opus, 3.5
+Sonnet and Haiku, Opus 4 and 4.1, Sonnet 4) stay priced as
+`pricing.yaml` overrides so historical sessions keep a cost. Where the
+catalogue and the hand-kept list disagreed (`o1-mini`), the catalogue
+wins.
+
+**Reasoning:** The catalogue gives fast mode a different multiplier per
+model (2x on Opus 5.5), so a flat value would misprice every model but
+one; D208 already put the per-model priority ratio in the table for the
+same reason. With the catalogue embedded in the binary, a usable price
+list always exists, so a broken override file no longer needs a
+hand-written fallback.
+
+**Rejected alternative:** A flat `speed.fast` setting (wrong for most
+models); keeping the safety map (strictly worse than the full catalogue
+the binary already carries).
+

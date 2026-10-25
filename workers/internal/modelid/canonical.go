@@ -1,8 +1,9 @@
 // Package modelid turns the many spellings of an LLM model id into one
 // canonical id, and derives the model's vendor from it. Both are pure
 // string rules with no lookup, so the worker applies them identically
-// on the write path and in the backfill, and a table of test vectors
-// pins them.
+// on the write path and in the backfill. The API keeps a twin
+// (api/internal/modelid) for the pricing catalogue's keys; both are
+// pinned by testdata/vectors.json, so change them together.
 package modelid
 
 import (

@@ -296,6 +296,30 @@ describe("AgentTableRow", () => {
     );
   });
 
+  it("a click on the partial marker stays on the page", async () => {
+    fetchAgentSummaryMock.mockImplementation(async (agentId: string) =>
+      mkSummary(agentId, 2, { models_unpriced: ["my-local-finetune"] }),
+    );
+    const onOpenDrawer = vi.fn();
+    renderRow(mkAgent({ agent_id: "a-marker" }), { onOpenDrawer });
+    fireEvent.click(
+      await screen.findByTestId("agent-row-cost-total-a-marker-partial"),
+    );
+    expect(onOpenDrawer).not.toHaveBeenCalled();
+    expect(screen.getByTestId("loc")).toHaveTextContent("/");
+    expect(screen.queryByTestId("events-page")).toBeNull();
+  });
+
+  it("renders no cost sparkline until the summary arrives", () => {
+    fetchAgentSummaryMock.mockImplementation(() => new Promise(() => {}));
+    renderRow(mkAgent({ agent_id: "a-loading" }));
+    const cell = screen.getByTestId("agent-row-cost-a-loading");
+    expect(cell.textContent).toBe("—");
+    expect(
+      cell.querySelector('[data-testid^="agent-sparkline"]'),
+    ).toBeNull();
+  });
+
   it("shows $0.00, not an em-dash, for an agent that spent nothing", async () => {
     renderRow(mkAgent({ agent_id: "a-zero" }));
     const cell = await screen.findByTestId("agent-row-cost-a-zero");

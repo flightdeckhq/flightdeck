@@ -5,6 +5,7 @@ import { useAnalytics } from "@/hooks/useAnalytics";
 import { ChartCard } from "./ChartCard";
 import { StackedSeriesChart } from "./StackedSeriesChart";
 import type { AnalyticsParams } from "@/lib/types";
+import { costEmptyMessage } from "@/lib/cost";
 
 type CostGroupBy = "provider" | "model";
 
@@ -13,19 +14,6 @@ interface CostChartProps {
   from?: string;
   to?: string;
   filterProvider: string | null;
-}
-
-/** What an empty cost chart means, from the window's billing modes: no
- *  calls at all, only subscription calls (nothing is metered), or
- *  metered calls that came to nothing priced. */
-export function costEmptyMessage(billingModes: string[] | undefined): string {
-  if (!billingModes || billingModes.length === 0) {
-    return "No LLM calls in this period.";
-  }
-  if (billingModes.every((m) => m === "subscription")) {
-    return "Every call in this period ran on a subscription plan, so there is no metered cost.";
-  }
-  return "No metered cost in this period.";
 }
 
 /** Row 4 -- Estimated cost over time, stacked bars by provider (default)

@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import type { AnalyticsResponse } from "@/lib/types";
-import { CostChart, costEmptyMessage } from "@/components/analytics/CostChart";
+import { CostChart } from "@/components/analytics/CostChart";
+import { costEmptyMessage } from "@/lib/cost";
 
 let response: Partial<AnalyticsResponse> = {};
 vi.mock("@/hooks/useAnalytics", () => ({

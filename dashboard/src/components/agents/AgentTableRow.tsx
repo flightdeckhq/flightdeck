@@ -15,7 +15,8 @@ import {
   formatTokens,
   relativeTime,
 } from "@/lib/agents-format";
-import { AgentCost, isSubscriptionOnly } from "./AgentCost";
+import { isSubscriptionOnly } from "@/lib/cost";
+import { AgentCost } from "./AgentCost";
 import { AgentSparkline } from "./AgentSparkline";
 
 interface AgentTableRowProps {
@@ -254,7 +255,8 @@ function AgentTableRowImpl({
           billing modes of the window's calls decide the reading, not
           the client type: a Claude Code agent on an API key is
           metered, one on a subscription shows ``Subscription`` and no
-          sparkline (there is no per-call cost to chart). */}
+          sparkline (there is no per-call cost to chart). The sparkline
+          also waits for the summary, so the cell does not reflow. */}
       <TableCell
         mono
         data-testid={`agent-row-cost-${agent.agent_id}`}
@@ -266,7 +268,7 @@ function AgentTableRowImpl({
               testId={`agent-row-cost-total-${agent.agent_id}`}
             />
           </span>
-          {!(totals && isSubscriptionOnly(totals.billing_modes)) && (
+          {totals && !isSubscriptionOnly(totals.billing_modes) && (
             <AgentSparkline
               series={series}
               axis="cost_usd"

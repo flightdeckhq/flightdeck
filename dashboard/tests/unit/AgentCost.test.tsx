@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen } from "@testing-library/react";
-import { AgentCost, costCaveats, isSubscriptionOnly } from "@/components/agents/AgentCost";
+import { AgentCost } from "@/components/agents/AgentCost";
+import { costCaveats, isSubscriptionOnly } from "@/lib/cost";
 
 const totals = (over: Partial<Parameters<typeof costCaveats>[0]> = {}) => ({
   cost_usd: 3.5,
@@ -69,10 +70,9 @@ describe("AgentCost", () => {
   it("marks a mixed metered and subscription total as partial", () => {
     render(<AgentCost totals={totals({ billing_modes: ["metered", "subscription"] })} testId="c" />);
     expect(screen.getByTestId("c")).toHaveAttribute("data-cost-state", "partial");
-    expect(screen.getByTestId("c-partial")).toHaveAttribute(
-      "aria-label",
-      expect.stringContaining("subscription plan"),
-    );
+    const marker = screen.getByRole("button", { name: /Partial cost/ });
+    expect(marker).toBe(screen.getByTestId("c-partial"));
+    expect(marker).toHaveAccessibleName(expect.stringContaining("subscription plan"));
   });
 
   it("renders a local-only agent as $0.00", () => {

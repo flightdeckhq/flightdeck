@@ -127,6 +127,12 @@ func BuildCostAggregateSQL(modelColumn string) string {
 
 	inputRate := inputCases.String()
 	outputRate := outputCases.String()
+	// A CASE with no WHEN arm is a syntax error; with no prices loaded
+	// (LoadPricing not yet run, or the catalogue unreadable) every rate
+	// is 0.
+	if len(models) == 0 {
+		inputRate, outputRate = "0", "0"
+	}
 
 	// uncached = tokens_input - cache_read - cache_creation. Wrapped in
 	// COALESCE at every column reference so NULL tokens_input rows

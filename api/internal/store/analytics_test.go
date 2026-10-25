@@ -639,6 +639,9 @@ func TestQueryAnalytics_SubagentLatencySkipsChildlessParents(t *testing.T) {
 func TestQueryAnalytics_PeriodChangeComparesPreviousWindow(t *testing.T) {
 	s, cleanup := newTestStore(t)
 	defer cleanup()
+	// estimated_cost needs a price for the seeded model; the test does
+	// not depend on whatever list the process loaded.
+	snapshotPricing(t, map[string]ModelPricing{"claude-sonnet-4-6": {InputPerMTok: 3, OutputPerMTok: 15}})
 
 	ctx := context.Background()
 	now := time.Now().UTC().Truncate(time.Microsecond)

@@ -123,3 +123,13 @@ func requireContains(t *testing.T, haystack, needle, reason string) {
 		t.Errorf("expected substring (%s): %q not found in\n%s", reason, needle, haystack)
 	}
 }
+
+// With no prices loaded the expression is still valid SQL: every rate
+// is 0 rather than a CASE without a WHEN arm.
+func TestBuildCostAggregateSQL_NoPricesIsValidSQL(t *testing.T) {
+	snapshotPricing(t, map[string]ModelPricing{})
+	sql := BuildCostAggregateSQL("e.model")
+	if strings.Contains(sql, "CASE e.model ELSE") {
+		t.Errorf("empty price map produced a CASE without WHEN: %s", sql)
+	}
+}

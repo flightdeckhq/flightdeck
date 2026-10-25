@@ -97,6 +97,16 @@ All notable changes to Flightdeck are documented here.
   typo or a retired id used to turn a DEGRADE decision into failing
   calls. A `PUT` that keeps the stored value is not re-checked, so
   existing policies stay editable.
+- **Dashboard cost reads the billing mode.** The Agents table's Cost
+  (7d) cell and the per-agent modal's Cost tile show `Subscription`
+  when every call in the window ran on a subscription, the metered
+  amount otherwise (`$0.00` instead of an em-dash when nothing was
+  spent, `<$0.001` instead of `$0.000` for a fraction of a cent), and
+  a `*` marker whose tooltip names unpriced models or
+  excluded subscription calls. A Claude Code agent on an API key now
+  shows its cost. The Analytics Estimated Cost note says when
+  subscription calls are left out and names the unpriced models, and
+  an empty chart says why it is empty.
 
 ### Fixed
 

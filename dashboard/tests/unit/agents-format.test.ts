@@ -62,8 +62,13 @@ describe("formatLatencyMs", () => {
 });
 
 describe("formatCost", () => {
-  it("renders an em-dash for zero", () => {
-    expect(formatCost(0)).toBe("—");
+  it("renders zero as an amount, not missing data", () => {
+    expect(formatCost(0)).toBe("$0.00");
+  });
+
+  it("never shows real spend below a tenth of a cent as zero", () => {
+    expect(formatCost(0.0002)).toBe("<$0.001");
+    expect(formatCost(0.00099)).toBe("<$0.001");
   });
 
   it("renders 3 decimals below $1", () => {

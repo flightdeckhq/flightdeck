@@ -1,82 +1,50 @@
 /**
- * T114 — the per-agent swimlane modal's KPI header shows the
- * ``Cost (7d)`` tile only for clients whose LLM usage incurs
- * metered, per-call cost on the operator's bill.
+ * T114 — the per-agent swimlane modal's ``Cost (7d)`` tile reads the
+ * agent's billing modes, the same way the Agents table's cost cell
+ * does.
  *
- * Subscription-style coding agents (Claude Code today; Codex /
- * Cursor / Windsurf in the future) bill independently of per-call
- * usage, so the tile is hidden entirely rather than rendered as a
- * placeholder em-dash. Sensor-instrumented agents call paid LLM
- * APIs directly, so the tile is meaningful and present.
- *
- * The single source of truth for the rule is the
- * ``clientIncursMeteredCost`` predicate in
- * ``dashboard/src/lib/agent-identity.ts``; adding a new
- * ``ClientType`` defaults to subscription-style (Cost hidden) until
- * the predicate is explicitly extended. Sibling unit coverage in
- * ``dashboard/tests/unit/PerAgentSwimlaneModal.test.tsx`` locks the
- * 4-vs-5-tile split; this E2E spec locks the same contract against
- * the seeded dev stack so a future regression in the live render
- * surfaces here instead of only in unit-test isolation.
+ * The tile is always present. An agent whose calls in the window all
+ * ran on a subscription shows ``Subscription`` (the seeded Claude Code
+ * agent: its calls carry no billing mode, which reads as subscription
+ * for claude_code sessions); a metered agent shows a dollar amount.
+ * Sibling unit coverage lives in
+ * ``dashboard/tests/unit/PerAgentSwimlaneModal.test.tsx`` and
+ * ``dashboard/tests/unit/AgentCost.test.tsx``. Agents are pinned by
+ * name because other claude_code agents on a dev stack may be metered.
  */
-import { test, expect, type Locator } from "@playwright/test";
+import { test, expect, type Locator, type Page } from "@playwright/test";
+import { CODING_AGENT, SENSOR_AGENT } from "./_fixtures";
 
-async function findAgentRow(
-  page: Locator | import("@playwright/test").Page,
-  clientType: "claude_code" | "flightdeck_sensor",
-): Promise<Locator | null> {
-  const rows = page
-    .locator(`[data-testid^="agent-row-"][data-agent-id]`)
-    .filter({
-      has: page.locator(`[title="client_type=${clientType}"]`),
-    });
-  const count = await rows.count();
-  if (count === 0) return null;
-  return rows.first();
-}
-
-async function openModalFor(
-  page: import("@playwright/test").Page,
-  clientType: "claude_code" | "flightdeck_sensor",
-): Promise<Locator | null> {
+async function openModalFor(page: Page, agentName: string): Promise<Locator> {
   await page.goto("/agents");
   await expect(page.locator('[data-testid="agent-table"]')).toBeVisible();
-  const row = await findAgentRow(page, clientType);
-  if (row == null) return null;
+  const row = page
+    .locator('[data-testid^="agent-row-"][data-agent-id]')
+    .filter({ has: page.getByText(agentName, { exact: true }) });
   await row.locator('[data-testid^="agent-row-open-swimlane-modal-"]').click();
   const modal = page.locator('[data-testid="per-agent-swimlane-modal"]');
   await expect(modal).toBeVisible();
   return modal;
 }
 
-test.describe("T114 — per-agent modal Cost tile conditional on client_type", () => {
-  test("Claude Code agent: 4 KPI tiles and no Cost (7d) label", async ({
-    page,
-  }) => {
-    const modal = await openModalFor(page, "claude_code");
-    test.skip(
-      modal == null,
-      "no claude_code agent in the seeded fleet — nothing to assert",
-    );
-    const tiles = modal!.locator(
-      '[data-testid="per-agent-swimlane-modal-kpi-tile"]',
-    );
-    await expect(tiles).toHaveCount(4);
-    await expect(modal!).not.toContainText("Cost (7d)");
+test.describe("T114 — per-agent modal Cost tile follows the billing modes", () => {
+  test("subscription-only agent: the Cost tile reads Subscription", async ({ page }) => {
+    const modal = await openModalFor(page, CODING_AGENT.name);
+    await expect(
+      modal.locator('[data-testid="per-agent-swimlane-modal-kpi-tile"]'),
+    ).toHaveCount(5);
+    await expect(
+      modal.locator('[data-testid="per-agent-swimlane-modal-cost"]'),
+    ).toHaveText("Subscription");
   });
 
-  test("sensor agent: 5 KPI tiles including Cost (7d) label", async ({
-    page,
-  }) => {
-    const modal = await openModalFor(page, "flightdeck_sensor");
-    test.skip(
-      modal == null,
-      "no flightdeck_sensor agent in the seeded fleet — nothing to assert",
-    );
-    const tiles = modal!.locator(
-      '[data-testid="per-agent-swimlane-modal-kpi-tile"]',
-    );
-    await expect(tiles).toHaveCount(5);
-    await expect(modal!).toContainText("Cost (7d)");
+  test("metered agent: the Cost tile shows a dollar amount", async ({ page }) => {
+    const modal = await openModalFor(page, SENSOR_AGENT.name);
+    await expect(
+      modal.locator('[data-testid="per-agent-swimlane-modal-kpi-tile"]'),
+    ).toHaveCount(5);
+    await expect(
+      modal.locator('[data-testid="per-agent-swimlane-modal-cost"]'),
+    ).toHaveText(/^<?\$\d/);
   });
 });

@@ -1,15 +1,14 @@
 /**
- * T89 — /agents cost column adapts to client_type.
+ * T89 — /agents cost column follows the calls' billing modes.
  *
- * The `/agents` page now renders a left facet sidebar (replacing
- * the old horizontal chip bar) and a conditional Cost (7d)
- * column:
- *   - Claude Code agents bill independently and Flightdeck has no
- *     pricing for them — their cost cell always shows a bare
- *     em-dash "—".
- *   - Sensor-instrumented agents carry estimated cost — their
- *     cell shows a dollar figure (or "—" only when no cost has
- *     accrued).
+ * The `/agents` page renders a left facet sidebar and a Cost (7d)
+ * column whose reading comes from the window's billing modes, not
+ * the client type:
+ *   - An agent whose calls all ran on a subscription shows
+ *     "Subscription" (the seeded Claude Code agent: its calls carry
+ *     no billing mode, which reads as subscription for claude_code).
+ *   - A metered agent shows a dollar figure ("$0.00" when nothing
+ *     accrued, never an em-dash).
  *
  * Theme-agnostic: every assertion is a structural locator or a
  * text comparison, so the spec runs unchanged under neon-dark and
@@ -46,7 +45,7 @@ function costCellForAgent(
   return row.locator('td[data-testid^="agent-row-cost-"]');
 }
 
-test.describe("T89 — cost column is conditional on client_type", () => {
+test.describe("T89 — cost column follows the billing modes", () => {
   test("the facet sidebar renders on /agents", async ({ page }) => {
     await page.goto("/agents");
     await expect(
@@ -62,7 +61,7 @@ test.describe("T89 — cost column is conditional on client_type", () => {
     }
   });
 
-  test("a Claude Code agent's cost cell shows a bare em-dash", async ({
+  test("a subscription-only agent's cost cell shows Subscription", async ({
     page,
   }) => {
     await page.goto("/agents");
@@ -70,13 +69,12 @@ test.describe("T89 — cost column is conditional on client_type", () => {
 
     const cell = costCellForAgent(page, CODING_AGENT.name);
     await expect(cell).toBeVisible();
-    // The cell waits out the per-row summary fetch — its content
-    // is deterministic "—" regardless of any totals because the
-    // agent is a claude_code client.
-    await expect(cell).toHaveText("—");
+    // Web-first assertion: retries until the per-row summary fetch
+    // settles the cell.
+    await expect(cell).toHaveText("Subscription");
   });
 
-  test("a sensor agent's cost cell carries a non-empty value", async ({
+  test("a metered agent's cost cell shows a dollar amount", async ({
     page,
   }) => {
     await page.goto("/agents");
@@ -84,15 +82,7 @@ test.describe("T89 — cost column is conditional on client_type", () => {
 
     const cell = costCellForAgent(page, SENSOR_AGENT.name);
     await expect(cell).toBeVisible();
-    // Sensor agents take the formatCost path: a dollar figure
-    // when cost has accrued, or "—" for a zero-cost week. Either
-    // way the cell text is non-empty. Poll for the summary fetch
-    // to settle the cell content.
-    await expect
-      .poll(async () => (await cell.textContent())?.trim() ?? "", {
-        timeout: 15_000,
-      })
-      .not.toBe("");
+    await expect(cell).toHaveText(/^<?\$\d/);
   });
 
   test("the cost header carries an info affordance", async ({ page }) => {

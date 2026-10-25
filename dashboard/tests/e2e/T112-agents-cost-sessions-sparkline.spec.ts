@@ -15,10 +15,11 @@
  *       cost     → ``var(--warning)``     (amber)
  *       sessions → ``var(--chart-2)``     (cyan)
  *       errors   → ``var(--danger)``      (red)
- *   - A Claude Code agent's Cost cell shows the bare em-dash
- *     (no sparkline at all).
+ *   - An agent whose calls all ran on a subscription (the seeded
+ *     Claude Code agent) shows "Subscription" and no sparkline.
  */
 import { test, expect, type Locator } from "@playwright/test";
+import { CODING_AGENT } from "./_fixtures";
 
 async function findAgentRow(
 	page: Locator | import("@playwright/test").Page,
@@ -126,23 +127,22 @@ test.describe("T112 — Cost + Sessions sparklines", () => {
 	// contract (sparkline tile mounts in cost / sessions cells,
 	// Claude Code agents skip the cost chart).
 
-	test("Claude Code agent's cost cell shows em-dash + no sparkline", async ({
+	test("a subscription-only agent's cost cell shows Subscription + no sparkline", async ({
 		page,
 	}) => {
 		await page.goto("/agents");
 		await expect(page.locator('[data-testid="agent-table"]')).toBeVisible();
 
-		const row = await findAgentRow(page, "claude_code");
-		test.skip(
-			row == null,
-			"no claude_code agent in the seeded fleet — nothing to assert",
-		);
-		const costCell = row!.locator('[data-testid^="agent-row-cost-"]:not([data-testid*="-total-"])');
+		// The seeded Claude Code agent's calls carry no billing mode,
+		// which reads as subscription for claude_code sessions. Pinned
+		// by name: other claude_code agents on a dev stack may be
+		// metered.
+		const row = page
+			.locator('[data-testid^="agent-row-"][data-agent-id]')
+			.filter({ has: page.getByText(CODING_AGENT.name, { exact: true }) });
+		const costCell = row.locator('td[data-testid^="agent-row-cost-"]');
 		await expect(costCell).toBeVisible();
-		// Cost cell text should be the bare em-dash; no chart or
-		// sparse-data placeholder mounts because the cell short-
-		// circuits before rendering AgentSparkline.
-		await expect(costCell).toHaveText("—");
+		await expect(costCell).toHaveText("Subscription");
 		const sparkCount = await costCell
 			.locator(
 				'[data-testid="agent-sparkline"], [data-testid="agent-sparkline-empty"]',

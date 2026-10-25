@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Timeline } from "@/components/timeline/Timeline";
@@ -11,12 +11,11 @@ import { useNow } from "@/hooks/useNow";
 import { eventsCache } from "@/hooks/useSessionEvents";
 import { useFleetStore } from "@/store/fleet";
 import { fetchSession } from "@/lib/api";
-import { clientIncursMeteredCost } from "@/lib/agent-identity";
 import {
-  formatCost,
   formatLatencyMs,
   formatTokens,
 } from "@/lib/agents-format";
+import { AgentCost } from "./AgentCost";
 import type { AgentEvent, AgentSummary, FeedEvent } from "@/lib/types";
 import {
   DEFAULT_TIME_RANGE,
@@ -430,19 +429,18 @@ export function PerAgentSwimlaneModal({
                   label="Sessions (7d)"
                   value={totals ? totals.sessions.toString() : "—"}
                 />
-                {/* Cost tile only renders for clients whose LLM usage
-                    is billed per call on the operator's bill. The
-                    ``clientIncursMeteredCost`` predicate (single
-                    source of truth in ``@/lib/agent-identity``)
-                    mirrors the table-row treatment, so adding a new
-                    subscription-style coding agent automatically
-                    hides the tile without touching this file. */}
-                {clientIncursMeteredCost(agent?.client_type) && (
-                  <KpiTile
-                    label="Cost (7d)"
-                    value={totals ? formatCost(totals.cost_usd) : "—"}
-                  />
-                )}
+                {/* Same reading as the Agents table's cost cell:
+                    ``Subscription`` when nothing was metered, the
+                    amount with a partial marker otherwise. */}
+                <KpiTile
+                  label="Cost (7d)"
+                  value={
+                    <AgentCost
+                      totals={totals}
+                      testId="per-agent-swimlane-modal-cost"
+                    />
+                  }
+                />
 
                 {/* Time range picker. */}
                 <div
@@ -581,7 +579,7 @@ export function PerAgentSwimlaneModal({
   );
 }
 
-function KpiTile({ label, value }: { label: string; value: string }) {
+function KpiTile({ label, value }: { label: string; value: ReactNode }) {
   return (
     <div
       data-testid="per-agent-swimlane-modal-kpi-tile"

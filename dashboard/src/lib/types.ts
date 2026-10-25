@@ -691,6 +691,15 @@ export interface AgentSummaryTotals {
   cost_usd: number;
   latency_p50_ms: number;
   latency_p95_ms: number;
+  /** True when ``models_unpriced`` is non-empty: ``cost_usd`` leaves
+   *  those models' calls out. */
+  partial_estimate: boolean;
+  /** Canonical ids of metered calls in the window with neither a price
+   *  nor a reported cost. */
+  models_unpriced: string[];
+  /** Every billing mode (``metered``, ``subscription``, ``local``) the
+   *  window's LLM calls used; empty when there were none. */
+  billing_modes: string[];
 }
 
 export interface AgentSummarySeriesPoint {
@@ -871,10 +880,16 @@ export interface AnalyticsResponse {
   granularity: string;
   series: AnalyticsSeries[];
   totals: AnalyticsTotals;
-  /** True when metric=estimated_cost and the window contains post_call
-   *  rows for models without a pricing entry. UI shows a partial-
-   *  estimate disclaimer when set. */
+  /** True when metric=estimated_cost and ``models_unpriced`` is
+   *  non-empty. */
   partial_estimate?: boolean;
+  /** metric=estimated_cost only: canonical ids of metered calls in the
+   *  window with neither a price nor a reported cost, over the whole
+   *  window (the chart's filters do not apply). */
+  models_unpriced?: string[];
+  /** metric=estimated_cost only: every billing mode the window's LLM
+   *  calls used, over the whole window. */
+  billing_modes?: string[];
 }
 
 /** Prompt content for a single event, from GET /v1/events/:id/content. */

@@ -3530,11 +3530,15 @@ Columns, left to right:
 6. **Sessions (7d)** — count.
 7. **Cost USD (7d)** — the agent's metered spend (see Cost
    estimation). An agent whose calls in the window were all
-   `subscription` shows `Subscription` instead of an amount, and a
-   `local`-only agent shows `$0.00`. A total that leaves out
-   unpriced models carries a partial marker whose tooltip names
-   them. The column header's info-icon tooltip explains the billing
-   modes.
+   `subscription` shows `Subscription` instead of an amount (and no
+   sparkline), and an agent with no metered spend shows `$0.00`,
+   never an em-dash. A total that leaves out unpriced models or
+   subscription calls carries a `*` marker whose tooltip names what
+   it leaves out. The reading comes from the window's billing modes,
+   not the client type, so a Claude Code agent on an API key shows
+   its metered cost. The column header's info-icon tooltip explains
+   the billing modes, and the per-agent swimlane modal's `Cost (7d)`
+   KPI tile reads the same way (`AgentCost` renders both).
 8. **Last seen** — relative time with absolute-time tooltip.
 
 Column order shipped (`COLUMNS` array in `AgentTable.tsx`):
@@ -3664,7 +3668,8 @@ Modal layout:
   `align="inline"` so the badge hugs the topology pill on the
   left — the badge's default `auto-right` mode applies
   everywhere else `AgentStatusBadge` ships), KPI totals
-  summary, and an explicit close `×` button at the top-right
+  summary (Tokens, Latency p95, Errors, Sessions and Cost, all
+  over 7 days), and an explicit close `×` button at the top-right
   (outside-click and `Esc` also close via Radix's
   `onOpenChange`).
 - **Time-range picker** — the five Fleet ranges `1m / 5m /

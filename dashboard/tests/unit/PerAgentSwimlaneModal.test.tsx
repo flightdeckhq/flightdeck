@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router";
 import { PerAgentSwimlaneModal } from "@/components/agents/PerAgentSwimlaneModal";
 import { ClientType } from "@/lib/agent-identity";
 import { __resetAgentSummaryCacheForTests } from "@/hooks/useAgentSummary";
+import { fetchAgentSummary } from "@/lib/api";
 import { eventsCache } from "@/hooks/useSessionEvents";
 import { useFleetStore } from "@/store/fleet";
 import type {
@@ -47,6 +48,9 @@ vi.mock("@/lib/api", async (orig) => {
           cost_usd: 0,
           latency_p50_ms: 0,
           latency_p95_ms: 0,
+          partial_estimate: false,
+          models_unpriced: [],
+          billing_modes: [],
         },
         series: [],
       }),
@@ -146,32 +150,37 @@ describe("PerAgentSwimlaneModal", () => {
     expect(input.disabled).toBe(true);
   });
 
-  it("renders 4 KPI tiles for a Claude Code agent (Cost suppressed)", () => {
-    // Claude Code agents bill independently of per-call LLM usage so
-    // the Cost (7d) tile is omitted entirely — keeping a fixed em-
-    // dash tile would be visual noise in the modal header. The
-    // remaining four tiles (Tokens / Latency p95 / Errors /
-    // Sessions) carry meaningful values regardless of billing model.
+  it("shows Subscription in the Cost tile when every call was on a subscription", async () => {
+    vi.mocked(fetchAgentSummary).mockImplementationOnce(async (agentId: string) => ({
+      agent_id: agentId,
+      period: "7d",
+      bucket: "day",
+      totals: {
+        tokens: 10,
+        errors: 0,
+        sessions: 1,
+        cost_usd: 0,
+        latency_p50_ms: 0,
+        latency_p95_ms: 0,
+        partial_estimate: false,
+        models_unpriced: [],
+        billing_modes: ["subscription"],
+      },
+      series: [],
+    }));
     render(
       <MemoryRouter>
         <PerAgentSwimlaneModal agent={mkAgent()} onClose={() => {}} />
       </MemoryRouter>,
     );
-    const tiles = screen.getAllByTestId("per-agent-swimlane-modal-kpi-tile");
-    expect(tiles.length).toBe(4);
-    const labels = tiles.map((t) => t.textContent || "");
-    // KpiTile renders the literal label "Cost (7d)" in DOM; CSS
-    // ``text-transform: uppercase`` is visual only and does not
-    // affect ``textContent``.
-    expect(labels.some((l) => l.includes("Cost"))).toBe(false);
+    expect(
+      await screen.findByText("Subscription", {}, { timeout: 3000 }),
+    ).toHaveAttribute("data-testid", "per-agent-swimlane-modal-cost");
   });
 
-  it("renders 5 KPI tiles for a sensor agent (Cost included)", () => {
-    // Sensor-instrumented agents call paid LLM APIs directly so
-    // the Cost (7d) tile is meaningful and present. New
-    // ClientType values default to the Claude-Code treatment via
-    // ``clientIncursMeteredCost``; opt in by extending the
-    // predicate.
+  it("renders 5 KPI tiles, Cost included, whatever the client type", () => {
+    // The billing modes decide what the Cost tile reads; the tile
+    // itself is always present.
     render(
       <MemoryRouter>
         <PerAgentSwimlaneModal

@@ -15,14 +15,24 @@ interface CostChartProps {
   filterProvider: string | null;
 }
 
+/** What an empty cost chart means, from the window's billing modes: no
+ *  calls at all, only subscription calls (nothing is metered), or
+ *  metered calls that came to nothing priced. */
+export function costEmptyMessage(billingModes: string[] | undefined): string {
+  if (!billingModes || billingModes.length === 0) {
+    return "No LLM calls in this period.";
+  }
+  if (billingModes.every((m) => m === "subscription")) {
+    return "Every call in this period ran on a subscription plan, so there is no metered cost.";
+  }
+  return "No metered cost in this period.";
+}
+
 /** Row 4 -- Estimated cost over time, stacked bars by provider (default)
- *  or model. Disclaimer banner sits above the chart whenever the period
- *  contains models outside the static pricing map (partial_estimate on
- *  the API response). When the window has zero cost at all --
- *  typically because events were recorded before tokens_input and
- *  tokens_output started being split -- the card swaps its empty state
- *  for a dedicated message so the user knows the chart is blank by
- *  design rather than a data fetch failure. */
+ *  or model. The note above the chart says what the figure covers and,
+ *  from the response's ``billing_modes`` and ``models_unpriced`` (both
+ *  over the whole window, not the chart's filters), what it leaves out:
+ *  subscription calls, and calls to models with no price. */
 export function CostChart({ range, from, to, filterProvider }: CostChartProps) {
   const [groupBy, setGroupBy] = useState<CostGroupBy>("provider");
 
@@ -43,20 +53,25 @@ export function CostChart({ range, from, to, filterProvider }: CostChartProps) {
     data?.series.some((s) => s.total > 0) ?? false;
   const empty = !loading && !!data && !hasAnyCost;
 
+  const unpriced = data?.models_unpriced ?? [];
   const disclaimer = (
     <>
       <strong className="mr-1">Estimated cost.</strong>
-      Based on public list prices. Excludes volume discounts,
-      enterprise commitments, and cached-token rebates. Models without
-      known pricing are excluded.
-      {data?.partial_estimate && (
-        <>
+      Metered calls, priced from the cost a client reported or from
+      list prices. Excludes volume discounts and enterprise
+      commitments.
+      {data?.billing_modes?.includes("subscription") && (
+        <span data-testid="cost-chart-subscription-note">
           {" "}
-          <span className="font-semibold">
-            Partial estimate — some models in this period have no pricing
-            entry and are excluded.
-          </span>
-        </>
+          Subscription calls have no per-call cost and are not included.
+        </span>
+      )}
+      {data?.partial_estimate && unpriced.length > 0 && (
+        <span className="font-semibold" data-testid="cost-chart-partial-note">
+          {" "}
+          Partial estimate: calls to {unpriced.join(", ")} have no price
+          and are not included.
+        </span>
       )}
     </>
   );
@@ -87,7 +102,7 @@ export function CostChart({ range, from, to, filterProvider }: CostChartProps) {
       error={error}
       onRetry={refetch}
       empty={empty}
-      emptyMessage="Cost estimation requires input/output token breakdown. No data available for this period."
+      emptyMessage={costEmptyMessage(data?.billing_modes)}
       contentHeight={320}
     >
       {data && hasAnyCost && (

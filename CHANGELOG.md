@@ -39,6 +39,20 @@ All notable changes to Flightdeck are documented here.
   `subscription`, an API key or a cloud provider `metered`.
   `FLIGHTDECK_BILLING_MODE` overrides the detection, which is the way
   to have a subscription that runs on extra usage priced.
+- **Estimated cost follows the billing mode and the per-model price
+  list.** Analytics `estimated_cost`, the per-agent summary and the
+  Agents page count metered calls only: Claude Code tokens on a
+  subscription are no longer priced (they were counted before), local
+  models cost nothing, and a cost a gateway or client reported is used
+  as is. Each call is priced from `model_pricing` with its own cache
+  read, five-minute and one-hour cache write, reasoning, long-context,
+  priority, batch / flex, fast-mode, data-residency and regional rates
+  and web search fees, on the platform that served it (Bedrock, Vertex
+  AI, Azure, Foundry or the provider's own API). `embeddings` calls are
+  priced too. Cost responses add `models_unpriced` and `billing_modes`
+  beside `partial_estimate` (inside `totals` on the agent summary). The
+  `provider` dimension reads the stored provider and matches bare `o1` /
+  `o3` ids to OpenAI. The API's database connections run with JIT off.
 - **Prices come from litellm's price list.** The API embeds a pruned
   copy of litellm's `model_prices_and_context_window.json` (about 800
   priced rows across the providers' own APIs, Bedrock, Vertex AI, Azure

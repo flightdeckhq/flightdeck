@@ -2903,6 +2903,12 @@ const docTemplate = `{
         "store.AgentSummaryTotals": {
             "type": "object",
             "properties": {
+                "billing_modes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "cost_usd": {
                     "type": "number"
                 },
@@ -2915,6 +2921,16 @@ const docTemplate = `{
                 "latency_p95_ms": {
                     "type": "integer"
                 },
+                "models_unpriced": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "partial_estimate": {
+                    "description": "What CostUSD leaves out (ARCHITECTURE.md, Cost estimation): the\nmodels of metered calls with no price, whether there were any,\nand every billing mode the agent's calls used.",
+                    "type": "boolean"
+                },
                 "sessions": {
                     "type": "integer"
                 },
@@ -2926,6 +2942,12 @@ const docTemplate = `{
         "store.AnalyticsResponse": {
             "type": "object",
             "properties": {
+                "billing_modes": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "granularity": {
                     "type": "string"
                 },
@@ -2934,6 +2956,12 @@ const docTemplate = `{
                 },
                 "metric": {
                     "type": "string"
+                },
+                "models_unpriced": {
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "partial_estimate": {
                     "type": "boolean"

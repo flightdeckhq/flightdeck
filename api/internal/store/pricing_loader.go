@@ -186,7 +186,6 @@ func LoadPricing() {
 
 	pricingRows = rows
 	pricingSettings = settings
-	modelPricing = legacyPricingMap(rows)
 	slog.Info("pricing loaded", "rows", len(rows), "overrides_path", path)
 }
 
@@ -395,18 +394,6 @@ func applyOverride(row *PriceRow, o pricingOverride, i int) error {
 		row.Provider = o.Provider
 	}
 	return nil
-}
-
-// legacyPricingMap is the input / output rate of every direct-platform
-// row, the shape the per-model CASE cost expression in pricing.go reads.
-func legacyPricingMap(rows []PriceRow) map[string]ModelPricing {
-	out := make(map[string]ModelPricing, len(rows))
-	for _, r := range rows {
-		if r.Platform == platformDirect {
-			out[r.ModelID] = ModelPricing{InputPerMTok: r.Input, OutputPerMTok: r.Output}
-		}
-	}
-	return out
 }
 
 // pricingSchemaTag names the model_pricing column set the rows are

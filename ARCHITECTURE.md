@@ -3162,13 +3162,19 @@ multiplies by 1.
 
 The cost is computed at query time rather than stored per event, so a
 price correction, a new override or a new alias applies to past events
-as well as new ones. The query first sums each token term per group of
-canonical model, platform family, context tier and multiplier values,
-then joins each group to its `model_pricing` row (exact id, then the
-undated id; the platform family's row, then `direct`), so the pricing
-work scales with the number of distinct groups, not the number of
-events. The API holds the multipliers and server-tool fees from
-`pricing.yaml` in memory and passes them to the query as parameters.
+as well as new ones. Each LLM event is joined to its `model_pricing`
+row (exact id, then the undated id; the platform family's row, then
+`direct`) through a lateral lookup that Postgres memoises per distinct
+model and platform, and the formula is summed over the events. The
+multipliers and server-tool fees from `pricing.yaml` are written into
+the query as constants (numbers and quoted literals from the API's own
+configuration, never request input). The `models_unpriced` probe
+collects the window's distinct model and platform pairs first and
+checks only those against the table. The API's database connections
+run with Postgres's JIT disabled: compiling the long cost expression
+costs more than it saves for interactive queries. An estimated-cost
+query over 100,000 LLM calls in its window answers in about half a
+second.
 
 Every response that carries a cost also says what the number leaves
 out, with three keys: `partial_estimate` is true when `models_unpriced`

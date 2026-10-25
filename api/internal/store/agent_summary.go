@@ -42,6 +42,12 @@ type AgentSummaryTotals struct {
 	CostUSD      float64 `json:"cost_usd"`
 	LatencyP50MS int64   `json:"latency_p50_ms"`
 	LatencyP95MS int64   `json:"latency_p95_ms"`
+	// What CostUSD leaves out (ARCHITECTURE.md, Cost estimation): the
+	// models of metered calls with no price, whether there were any,
+	// and every billing mode the agent's calls used.
+	PartialEstimate bool     `json:"partial_estimate"`
+	ModelsUnpriced  []string `json:"models_unpriced"`
+	BillingModes    []string `json:"billing_modes"`
 }
 
 // AgentSummarySeriesPoint is one per-bucket row in the time
@@ -117,7 +123,8 @@ func (s *Store) AgentSummary(
 	end := time.Now().UTC()
 	start := end.Add(-dur)
 
-	costExpr := BuildCostAggregateSQL("e.model")
+	costExpr := BuildCostAggregateSQL()
+	priceJoin := CostPriceJoinSQL()
 
 	// Totals query. FILTER (WHERE ...) lets one pass over the
 	// joined rows produce each metric's filtered aggregate
@@ -152,6 +159,7 @@ func (s *Store) AgentSummary(
 				FILTER (WHERE e.event_type = 'post_call'), 0) AS p95
 		FROM events e
 		JOIN sessions s ON e.session_id = s.session_id
+		` + priceJoin + `
 		WHERE s.agent_id = $1::uuid
 		  AND e.occurred_at >= $2
 		  AND e.occurred_at < $3
@@ -181,6 +189,15 @@ func (s *Store) AgentSummary(
 	totals.CostUSD = costUSD
 	totals.LatencyP50MS = int64(p50)
 	totals.LatencyP95MS = int64(p95)
+	coverage, err := s.costCoverage(ctx, start, end,
+		"JOIN sessions s ON e.session_id = s.session_id", "AND s.agent_id = $3::uuid",
+		params.AgentID)
+	if err != nil {
+		return nil, fmt.Errorf("agent summary: %w", err)
+	}
+	totals.ModelsUnpriced = nonNil(coverage.ModelsUnpriced)
+	totals.PartialEstimate = len(coverage.ModelsUnpriced) > 0
+	totals.BillingModes = nonNil(coverage.BillingModes)
 	resp.Totals = totals
 
 	// Series query. The bucket name is validated against the
@@ -204,12 +221,13 @@ func (s *Store) AgentSummary(
 				FILTER (WHERE e.event_type = 'post_call'), 0) AS p95
 		FROM events e
 		JOIN sessions s ON e.session_id = s.session_id
+		%s
 		WHERE s.agent_id = $1::uuid
 		  AND e.occurred_at >= $2
 		  AND e.occurred_at < $3
 		GROUP BY bucket
 		ORDER BY bucket
-	`, params.Bucket, costExpr)
+	`, params.Bucket, costExpr, priceJoin)
 
 	rows, err := s.pool.Query(ctx, seriesSQL,
 		params.AgentID, start, end)
@@ -240,4 +258,13 @@ func (s *Store) AgentSummary(
 	}
 
 	return resp, nil
+}
+
+// nonNil returns s, or an empty slice for nil, so a JSON field renders
+// as [] rather than null.
+func nonNil(s []string) []string {
+	if s == nil {
+		return []string{}
+	}
+	return s
 }

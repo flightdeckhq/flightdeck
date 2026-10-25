@@ -11714,3 +11714,42 @@ hand-written fallback.
 models); keeping the safety map (strictly worse than the full catalogue
 the binary already carries).
 
+---
+
+## D211 -- Cost is a per-event price lookup, not a per-group one; the API runs without JIT
+
+**Date:** 2026-10-25
+
+**Decision:** The estimated-cost query joins every LLM event to its
+`model_pricing` row through a lateral lookup and sums the formula per
+event, instead of first summing token terms per group of model,
+platform, tier and multipliers and pricing each group (the design D208
+described). Postgres memoises the lookup per distinct model and
+platform, so it runs a few dozen times per query whatever the event
+count. The `models_unpriced` probe collects distinct model and platform
+pairs before checking them against the table. The API's connection pool
+sets `jit = off`. `embeddings` events are priced with `post_call` (as
+D208 decided) and an event with no billing mode falls back by its
+session's client type inside the query, so a row the worker backfill
+has not reached yet is still counted correctly.
+
+**Reasoning:** The per-group form needs the generic analytics query
+builder restructured into a two-level aggregate for every dimension
+and both group-by shapes, and the per-row cost is dominated by
+evaluating the expression, not by the lookup. Measured on the dev stack
+(estimated cost grouped by model, 7-day window): 100,000 events take
+0.25 s per query and about 0.5 s for the whole request (two windows and
+two probes); 1,000,000 events take 2.3 s per query and 3 to 4 s per
+request. With JIT on, Postgres spent 540 ms compiling the expression on
+every 100,000-event query (780 ms in total), and it was slower at
+1,000,000 events too (2.6 s), so it is off for the API's interactive
+queries. The first form of the unpriced probe (a price lookup per
+event) took 4.2 s at 1,000,000 events; collecting pairs first takes
+0.8 s.
+
+**Rejected alternative:** The per-group aggregate (about twice as fast
+again on paper, at the cost of a second query shape in the analytics
+builder); storing a computed cost on each event (rejected in D208:
+prices would freeze when the event arrives); leaving JIT on (three
+times slower at the window sizes the dashboard uses).
+

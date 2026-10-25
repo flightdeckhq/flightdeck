@@ -138,11 +138,54 @@ func catalogueRows() ([]PriceRow, error) {
 	return parseCatalogue(catalogueJSON)
 }
 
+// awsRegion matches an AWS region path segment (us-east-1, ap-northeast-1,
+// us-gov-west-1).
+var awsRegion = regexp.MustCompile(`^[a-z]{2}(-gov)?-[a-z]+-\d+$`)
+
+// regionSegments are the region path segments litellm uses for Azure and
+// Vertex AI keys (azure/eu/gpt-4o, azure/us/...).
+var regionSegments = map[string]bool{
+	"eu": true, "us": true, "us-gov": true, "apac": true, "jp": true, "au": true, "ca": true,
+}
+
+// Key ranks, lowest preferred: a key that names no region carries the
+// standard price; a global one is next; a regional one (data-zone or
+// region pricing, often at a premium) is used only when nothing else
+// prices the model.
+const (
+	rankStandard = iota
+	rankGlobal
+	rankRegional
+)
+
+// keyRank classifies a raw catalogue key by the region it names, from
+// its path segments and from a Bedrock inference-profile prefix.
+func keyRank(key string) int {
+	rank := rankStandard
+	segments := strings.Split(strings.ToLower(key), "/")
+	for _, seg := range segments[:len(segments)-1] {
+		switch {
+		case seg == "global":
+			rank = max(rank, rankGlobal)
+		case regionSegments[seg] || awsRegion.MatchString(seg):
+			rank = rankRegional
+		}
+	}
+	switch modelid.Canonicalize(key).InferenceScope {
+	case modelid.ScopeGlobal:
+		rank = max(rank, rankGlobal)
+	case modelid.ScopeRegional:
+		rank = rankRegional
+	}
+	return rank
+}
+
 // parseCatalogue maps a catalogue document onto model_pricing rows, one
 // per canonical model id and platform family. Several litellm keys can
 // canonicalise to the same row (a Bedrock model and its regional
-// inference profiles); the key without a region prefix wins, then the
-// alphabetically first, so the result does not depend on map order.
+// inference profiles, an Azure model and its eu / us data-zone keys);
+// the best-ranked key wins (see keyRank), then the alphabetically first,
+// so the result does not depend on map order.
 func parseCatalogue(doc []byte) ([]PriceRow, error) {
 	var file catalogueFile
 	if err := json.Unmarshal(doc, &file); err != nil {
@@ -155,8 +198,8 @@ func parseCatalogue(doc []byte) ([]PriceRow, error) {
 	sort.Strings(keys)
 
 	type candidate struct {
-		row      PriceRow
-		regional bool
+		row  PriceRow
+		rank int
 	}
 	chosen := map[rowKey]candidate{}
 	for _, key := range keys {
@@ -174,11 +217,11 @@ func parseCatalogue(doc []byte) ([]PriceRow, error) {
 			continue
 		}
 		k := rowKey{row.ModelID, row.Platform}
-		regional := c.InferenceScope != ""
-		if prev, seen := chosen[k]; seen && (!prev.regional || regional) {
+		rank := keyRank(key)
+		if prev, seen := chosen[k]; seen && prev.rank <= rank {
 			continue
 		}
-		chosen[k] = candidate{row: row, regional: regional}
+		chosen[k] = candidate{row: row, rank: rank}
 	}
 	rows := make([]PriceRow, 0, len(chosen))
 	for _, c := range chosen {

@@ -25,13 +25,16 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"math"
 	"os"
 	"time"
 
@@ -187,17 +190,30 @@ func LoadPricing() {
 	slog.Info("pricing loaded", "rows", len(rows), "overrides_path", path)
 }
 
-// readPricingFile reads and parses pricing.yaml.
+// readPricingFile reads and parses pricing.yaml. An unknown key (a
+// misspelt rate) is an error rather than silently ignored, and the file
+// must declare version 1 or 2.
 func readPricingFile(path string) (pricingFile, error) {
 	var file pricingFile
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return file, fmt.Errorf("read %s: %w", path, err)
 	}
-	if err := yaml.Unmarshal(data, &file); err != nil {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	if err := dec.Decode(&file); err != nil && !errors.Is(err, io.EOF) {
 		return file, fmt.Errorf("parse %s: %w", path, err)
 	}
+	if file.Version != 1 && file.Version != 2 {
+		return file, fmt.Errorf("%s: version must be 1 or 2 (got %d)", path, file.Version)
+	}
 	return file, nil
+}
+
+// validRate reports whether v is a usable rate or multiplier input: a
+// finite number at or above zero.
+func validRate(v float64) bool {
+	return v >= 0 && !math.IsNaN(v) && !math.IsInf(v, 0)
 }
 
 // applyPricingFile lays pricing.yaml over the catalogue rows: overrides
@@ -210,10 +226,6 @@ func applyPricingFile(catalogue []PriceRow, file pricingFile) ([]PriceRow, Prici
 	byKey := make(map[rowKey]PriceRow, len(catalogue))
 	for _, r := range catalogue {
 		byKey[rowKey{r.ModelID, r.Platform}] = r
-	}
-	catalogueIDs := make(map[string]bool, len(catalogue))
-	for _, r := range catalogue {
-		catalogueIDs[r.ModelID] = true
 	}
 
 	overrides := append(append([]pricingOverride{}, file.Models...), file.Overrides...)
@@ -242,6 +254,12 @@ func applyPricingFile(catalogue []PriceRow, file pricingFile) ([]PriceRow, Prici
 		byKey[key] = row
 	}
 
+	// An alias must not reuse any priced model id, catalogue or
+	// override, on any platform: one id would then mean two models.
+	pricedIDs := make(map[string]bool, len(byKey))
+	for k := range byKey {
+		pricedIDs[k.model] = true
+	}
 	for i, a := range file.Aliases {
 		alias := modelid.Canonicalize(a.Alias).Model
 		target := modelid.Canonicalize(a.ModelID).Model
@@ -254,8 +272,8 @@ func applyPricingFile(catalogue []PriceRow, file pricingFile) ([]PriceRow, Prici
 			return nil, settings, fmt.Errorf("alias %d: alias and model_id are required", i)
 		case !validPlatforms[platform]:
 			return nil, settings, fmt.Errorf("alias %d (%s): unknown platform %q", i, a.Alias, platform)
-		case catalogueIDs[alias]:
-			return nil, settings, fmt.Errorf("alias %d: %q is a catalogue model id; an alias must not shadow one", i, a.Alias)
+		case pricedIDs[alias]:
+			return nil, settings, fmt.Errorf("alias %d: %q is a priced model id; an alias must not shadow one", i, a.Alias)
 		}
 		row, ok := byKey[rowKey{target, platform}]
 		if !ok {
@@ -275,15 +293,20 @@ func applyPricingFile(catalogue []PriceRow, file pricingFile) ([]PriceRow, Prici
 		if !multiplierFields[field] {
 			return nil, settings, fmt.Errorf("multipliers: unknown field %q", field)
 		}
+		if settings.Multipliers[field] == nil {
+			settings.Multipliers[field] = map[string]float64{}
+		}
+		// Merged value by value: a file that sets batch keeps the
+		// default flex; setting a value to 1 removes its effect.
 		for value, m := range values {
-			if m <= 0 {
+			if !validRate(m) || m == 0 {
 				return nil, settings, fmt.Errorf("multipliers.%s.%s must be > 0 (got %v)", field, value, m)
 			}
+			settings.Multipliers[field][value] = m
 		}
-		settings.Multipliers[field] = values
 	}
 	for tool, fee := range file.ServerTools {
-		if fee < 0 {
+		if !validRate(fee) {
 			return nil, settings, fmt.Errorf("server_tools.%s must be >= 0 (got %v)", tool, fee)
 		}
 		settings.ServerTools[tool] = fee
@@ -322,11 +345,19 @@ func applyOverride(row *PriceRow, o pricingOverride, i int) error {
 		if src == nil {
 			return nil
 		}
-		if *src < 0 {
+		if !validRate(*src) {
 			return fmt.Errorf("override %d (%s): %s must be >= 0 (got %v)", i, o.ModelID, name, *src)
 		}
 		*dst = *src
 		return nil
+	}
+	// The long-context tier's rates belong to the catalogue's base
+	// rates; an override of any base rate (a negotiated price) drops
+	// the tier, so calls above the threshold are priced at the
+	// override's rates rather than a mix of the two.
+	if o.Input != nil || o.Output != nil || o.CacheRead != nil || o.CacheWrite5m != nil || o.CacheWrite1h != nil {
+		row.TierThreshold, row.TierInput, row.TierOutput = nil, nil, nil
+		row.TierCacheRead, row.TierCacheWrite5m, row.TierCacheWrite1h = nil, nil, nil
 	}
 	for _, f := range []struct {
 		name string
@@ -355,7 +386,7 @@ func applyOverride(row *PriceRow, o pricingOverride, i int) error {
 		if f.src == nil {
 			continue
 		}
-		if *f.src < 0 {
+		if !validRate(*f.src) {
 			return fmt.Errorf("override %d (%s): %s must be >= 0 (got %v)", i, o.ModelID, f.name, *f.src)
 		}
 		*f.dst = ptr(*f.src)
@@ -378,11 +409,18 @@ func legacyPricingMap(rows []PriceRow) map[string]ModelPricing {
 	return out
 }
 
-// pricingContentHash is a digest of the rows, stored beside the table
-// so a start whose prices are unchanged skips the rewrite.
+// pricingSchemaTag names the model_pricing column set the rows are
+// written in. It is part of the content hash, so a release that adds a
+// column rewrites the table even when no price changed; bump it with
+// every migration that changes model_pricing.
+const pricingSchemaTag = "model_pricing/000031"
+
+// pricingContentHash is a digest of the rows and the table schema,
+// stored beside the table so a start whose prices are unchanged skips
+// the rewrite.
 func pricingContentHash(rows []PriceRow) string {
 	encoded, _ := json.Marshal(rows)
-	sum := sha256.Sum256(encoded)
+	sum := sha256.Sum256(append([]byte(pricingSchemaTag+"\n"), encoded...))
 	return hex.EncodeToString(sum[:])
 }
 

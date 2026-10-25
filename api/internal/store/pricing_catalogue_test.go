@@ -34,9 +34,25 @@ const sampleCatalogue = `{
    "input_cost_per_token": 3e-06, "output_cost_per_token": 1.5e-05,
    "deprecation_date": "2026-09-29"
   },
+  "azure/eu/gpt-4o": {
+   "litellm_provider": "azure", "mode": "chat",
+   "input_cost_per_token": 2.75e-06, "output_cost_per_token": 1.1e-05
+  },
+  "azure/global/gpt-4o": {
+   "litellm_provider": "azure", "mode": "chat",
+   "input_cost_per_token": 2.6e-06, "output_cost_per_token": 1e-05
+  },
   "azure/gpt-4o": {
    "litellm_provider": "azure", "mode": "chat",
    "input_cost_per_token": 2.5e-06, "output_cost_per_token": 1e-05
+  },
+  "bedrock/eu-west-1/anthropic.claude-haiku-4-5-20251001-v1:0": {
+   "litellm_provider": "bedrock", "mode": "chat",
+   "input_cost_per_token": 1.1e-06, "output_cost_per_token": 5.5e-06
+  },
+  "global.anthropic.claude-haiku-4-5-20251001-v1:0": {
+   "litellm_provider": "bedrock_converse", "mode": "chat",
+   "input_cost_per_token": 1e-06, "output_cost_per_token": 5e-06
   },
   "gpt-5.1": {
    "litellm_provider": "openai", "mode": "chat",
@@ -115,8 +131,14 @@ func TestParseCatalogue_MapsEachRule(t *testing.T) {
 	if !ok || vertex.DeprecatedOn == nil || *vertex.DeprecatedOn != "2026-09-29" {
 		t.Errorf("vertex row wrong: %+v", vertex)
 	}
-	if _, ok := got[rowKey{"gpt-4o", platformAzure}]; !ok {
-		t.Error("azure gpt-4o row missing")
+	// The key naming no region carries the standard price; a data-zone
+	// or global key does not replace it.
+	if azure, ok := got[rowKey{"gpt-4o", platformAzure}]; !ok || !approx(azure.Input, 2.5) {
+		t.Errorf("azure gpt-4o should take the standard key's price: %+v", azure)
+	}
+	// With no standard key, the global profile beats a region-pinned key.
+	if haiku, ok := got[rowKey{"claude-haiku-4-5-20251001", platformBedrock}]; !ok || !approx(haiku.Input, 1) {
+		t.Errorf("bedrock haiku should take the global profile's price: %+v", haiku)
 	}
 	gpt, ok := got[rowKey{"gpt-5.1", platformDirect}]
 	if !ok || gpt.PriorityMultiplier == nil || !approx(*gpt.PriorityMultiplier, 2) ||
@@ -156,6 +178,25 @@ func TestEmbeddedCatalogue_CoversCurrentModels(t *testing.T) {
 	} {
 		if _, ok := got[k]; !ok {
 			t.Errorf("embedded catalogue lacks %v", k)
+		}
+	}
+}
+
+func TestKeyRank(t *testing.T) {
+	cases := map[string]int{
+		"gpt-4o":       rankStandard,
+		"azure/gpt-4o": rankStandard,
+		"anthropic.claude-sonnet-4-5-20250929-v1:0":  rankStandard,
+		"azure/global/gpt-4o":                        rankGlobal,
+		"global.anthropic.claude-opus-4-6-v1":        rankGlobal,
+		"azure/eu/gpt-4o":                            rankRegional,
+		"azure/us-gov/gpt-4o":                        rankRegional,
+		"bedrock/us-east-1/anthropic.claude-3-haiku": rankRegional,
+		"us.anthropic.claude-sonnet-4-5-v1:0":        rankRegional,
+	}
+	for key, want := range cases {
+		if got := keyRank(key); got != want {
+			t.Errorf("keyRank(%q) = %d, want %d", key, got, want)
 		}
 	}
 }

@@ -64,17 +64,17 @@ class PruneTest(unittest.TestCase):
             source = Path(tmp) / "source.json"
             output = Path(tmp) / "catalogue.json"
             source.write_text(json.dumps(SAMPLE))
-            self.assertEqual(
-                pricing_refresh.main(["--source", str(source), "--output", str(output)]), 0
-            )
+            args = ["--source", str(source), "--output", str(output)]
+            self.assertEqual(pricing_refresh.main(args), 1, "two models are below the minimum")
+            self.assertFalse(output.exists())
+            self.assertEqual(pricing_refresh.main([*args, "--min-models", "2"]), 0)
             document = json.loads(output.read_text())
             self.assertEqual(len(document["models"]), 2)
             self.assertIn("refreshed", document)
 
             source.write_text(json.dumps({"dall-e-3": SAMPLE["dall-e-3"]}))
-            self.assertEqual(
-                pricing_refresh.main(["--source", str(source), "--output", str(output)]), 1
-            )
+            self.assertEqual(pricing_refresh.main([*args, "--min-models", "1"]), 1)
+            self.assertEqual(len(json.loads(output.read_text())["models"]), 2, "kept the old file")
 
 
 if __name__ == "__main__":

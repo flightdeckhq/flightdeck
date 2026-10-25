@@ -264,11 +264,16 @@ local copy instead of downloading.
 
 ### Validation
 
-`pricing.yaml` is validated when the API starts: rates `>= 0`, known
-platforms and providers, no duplicate override, an alias may not reuse a
-catalogue id and must point at a priced model, multipliers `> 0`. A file
-that fails is ignored as a whole and logged at WARN, and the catalogue
-alone prices calls; fix the file before merging.
+`pricing.yaml` is validated when the API starts: `version` 1 or 2, no
+unknown keys (a misspelt rate is an error, not ignored), finite rates
+`>= 0`, known platforms and providers, no duplicate override, an alias
+may not reuse a priced model id and must point at a priced model,
+multipliers `> 0`. A file that fails is ignored as a whole and logged at
+WARN, and the catalogue alone prices calls; fix the file before merging.
+
+Overriding any base rate of a model with a long-context tier drops the
+catalogue's tier for it, so calls above the threshold are priced at your
+rates rather than a mix of yours and the catalogue's.
 
 ### Path resolution
 

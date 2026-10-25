@@ -103,8 +103,9 @@ aliases: []
 # ---------------------------------------------------------------------
 # multipliers: applied to a call's cost by the value of a field the call
 # reports. A value not listed multiplies by 1. These are the defaults;
-# a field listed here replaces its defaults as a whole. Anthropic's fast
-# mode is priced per model in the catalogue (fast_multiplier), not here.
+# each value listed here replaces the default for that value only (set
+# one to 1 to cancel it). Anthropic's fast mode is priced per model in
+# the catalogue (fast_multiplier), not here.
 # ---------------------------------------------------------------------
 multipliers:
   service_tier:

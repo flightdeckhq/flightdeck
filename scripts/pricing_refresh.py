@@ -40,6 +40,11 @@ SOURCE_URL = (
 # enough that a hung connection fails the refresh instead of stalling it.
 DOWNLOAD_TIMEOUT_S = 60
 
+# A full litellm file prunes to well over a thousand models; far fewer
+# means a partial or changed upstream file, which must not replace the
+# vendored catalogue unnoticed.
+MIN_MODELS = 500
+
 MODES = {"chat", "responses", "embedding"}
 
 # litellm provider names kept, as exact names or prefixes (the Vertex AI
@@ -123,18 +128,32 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--source", help="read this local JSON file instead of downloading")
     parser.add_argument("--output", default=str(OUTPUT), help="where to write the catalogue")
+    parser.add_argument(
+        "--min-models",
+        type=int,
+        default=MIN_MODELS,
+        help="refuse to write a catalogue with fewer models (default %(default)s)",
+    )
     args = parser.parse_args(argv)
 
     models = prune(load(args.source))
-    if not models:
-        print("pricing_refresh: no models kept; refusing to write an empty catalogue")
+    if len(models) < max(args.min_models, 1):
+        print(
+            f"pricing_refresh: only {len(models)} models kept (minimum {args.min_models}); "
+            "refusing to replace the catalogue"
+        )
         return 1
     document = {
         "source": args.source or SOURCE_URL,
         "refreshed": datetime.date.today().isoformat(),
         "models": models,
     }
-    Path(args.output).write_text(json.dumps(document, indent=1) + "\n", encoding="utf-8")
+    # Written beside the target and renamed into place, so a failed run
+    # never leaves a truncated catalogue.
+    output = Path(args.output)
+    partial = output.with_suffix(output.suffix + ".tmp")
+    partial.write_text(json.dumps(document, indent=1) + "\n", encoding="utf-8")
+    partial.replace(output)
     print(f"pricing_refresh: wrote {len(models)} models to {args.output}")
     return 0
 

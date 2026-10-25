@@ -3075,7 +3075,9 @@ Prices come from two layers, merged at API startup into the
    directory). An entry there replaces the catalogue's entry for the
    same model and platform field by field, so an operator with
    negotiated prices states only the rates that differ, or adds a model
-   the catalogue does not list (retired models litellm dropped). It also
+   the catalogue does not list (retired models litellm dropped). An
+   override of a base rate drops the model's context tier, so calls
+   above the threshold are priced at the override's rates. It also
    holds the `aliases` map and the multipliers below. A file with an
    invalid entry is ignored as a whole, with a warning naming the entry,
    and the catalogue alone prices calls.
@@ -3085,8 +3087,9 @@ providers above on their own APIs and on Bedrock, Vertex AI, Azure
 OpenAI and Foundry; each litellm key is canonicalised with the same
 rules as event model ids (the API keeps a twin of the worker's rules,
 both pinned by one test-vector file), and when several keys reach the
-same row (a Bedrock model and its regional profiles) the key without a
-region prefix wins.
+same row (a Bedrock model and its regional profiles, an Azure model and
+its `eu` / `us` data-zone keys) the key that names no region wins, then
+a `global` one, then a regional one.
 
 Each row is keyed by canonical model id and platform family (`direct`
 for the provider's own API, `bedrock`, `vertex`, `foundry`, `azure`) and

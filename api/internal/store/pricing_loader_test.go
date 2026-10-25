@@ -155,10 +155,59 @@ multipliers:
 		"negative server-tool fee": `
 server_tools:
   web_search_requests: -0.01`,
+		"NaN rate": `
+overrides:
+  - model_id: claude-sonnet-4-5
+    input: .nan`,
+		"alias reusing an override-added id": `
+overrides:
+  - model_id: house-model
+    provider: other
+    input: 1
+    output: 2
+aliases:
+  - alias: house-model
+    model_id: gpt-4o
+    platform: azure`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
 			if _, _, err := applyYaml(t, "version: 2\n"+strings.TrimPrefix(body, "\n")); err == nil {
+				t.Error("expected an error")
+			}
+		})
+	}
+}
+
+func TestApplyPricingFile_BaseOverrideDropsTheTier(t *testing.T) {
+	rows, _, err := applyYaml(t, `
+version: 2
+overrides:
+  - model_id: claude-sonnet-4-5
+    input: 2.40
+  - model_id: gpt-5.1
+    fast_multiplier: 3
+`)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	got := rowsByKey(t, rows)
+	if s := got[rowKey{"claude-sonnet-4-5", platformDirect}]; s.TierThreshold != nil || s.TierInput != nil {
+		t.Errorf("a base-rate override must drop the catalogue tier: %+v", s)
+	}
+	if g := got[rowKey{"gpt-5.1", platformDirect}]; g.FastMultiplier == nil || *g.FastMultiplier != 3 {
+		t.Errorf("multiplier-only override not applied: %+v", g)
+	}
+}
+
+func TestReadPricingFile_RejectsUnknownKeysAndVersions(t *testing.T) {
+	for name, body := range map[string]string{
+		"misspelt rate":   "version: 2\noverrides:\n  - model_id: gpt-4o\n    cache_wrte_5m: 1\n",
+		"unknown version": "version: 3\n",
+		"no version":      "overrides: []\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := readPricingFile(writeTempYaml(t, "p.yaml", body)); err == nil {
 				t.Error("expected an error")
 			}
 		})
@@ -177,8 +226,8 @@ server_tools:
 	if err != nil {
 		t.Fatalf("apply: %v", err)
 	}
-	if got := settings.Multipliers["service_tier"]; got["batch"] != 0.4 || len(got) != 1 {
-		t.Errorf("service_tier multipliers = %v, want only batch 0.4", got)
+	if got := settings.Multipliers["service_tier"]; got["batch"] != 0.4 || got["flex"] != 0.5 {
+		t.Errorf("service_tier multipliers = %v, want batch 0.4 merged over the default flex 0.5", got)
 	}
 	if settings.Multipliers["inference_geo"]["us"] != 1.1 {
 		t.Error("a field the file does not list keeps its default")

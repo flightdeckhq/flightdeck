@@ -472,6 +472,7 @@ flightdeck/
 │   │       ├── observe_cli.mjs           # Hook entry: reads the hook event + transcript JSONL, POSTs events;
 │       │                             # re-invoked with --session-end-worker as the detached SessionEnd worker
 │   │       ├── agent_id.mjs              # agent_id derivation (Node twin of sensor core/agent_id.py)
+│   │       ├── billing.mjs               # Billing mode + platform detection (`claude auth status`, provider env), usage detail fields
 │   │       ├── uuid5.mjs                 # RFC 4122 v5 UUID, no npm dependency
 │   │       ├── mcp_identity.mjs          # MCP server identity (Node twin of sensor interceptor/mcp_identity.py)
 │   │       ├── mcp_policy.mjs            # MCP policy fetch, per-session policy cache, per-server classification
@@ -2914,10 +2915,12 @@ plugin determines the mode once at `SessionStart`: Bedrock, Vertex AI
 and Foundry sessions (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`,
 `CLAUDE_CODE_USE_FOUNDRY`) and API-key logins are `metered`; a
 `claude.ai` or `oauth_token` login is `subscription`. The login comes
-from `claude auth status` (`api_key` and `api_key_helper` are API-key
-methods); where that command is unavailable, a set `ANTHROPIC_API_KEY`
-or `ANTHROPIC_AUTH_TOKEN` counts as an API-key login, and anything
-else as a subscription. Both clients
+from `claude auth status` (`api_key`, `api_key_helper` and `third_party`
+are metered methods, and its `apiProvider` names a cloud provider);
+where that command is unavailable, a set `ANTHROPIC_API_KEY` or
+`ANTHROPIC_AUTH_TOKEN` counts as an API-key login, and anything else as
+a subscription. A session with `FLIGHTDECK_BILLING_MODE` set does not
+run the command. Both clients
 accept `FLIGHTDECK_BILLING_MODE` (`metered`, `subscription`, `local`)
 to override the detected value, for the cases detection cannot see.
 

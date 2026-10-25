@@ -29,6 +29,16 @@ All notable changes to Flightdeck are documented here.
   own computed cost is sent as an agent-reported cost. Calls to a model
   server on this machine are `local`; `init(billing_mode=...)` or
   `FLIGHTDECK_BILLING_MODE` overrides the detection.
+- **The Claude Code plugin reports the token, model and cost fields.**
+  Each `post_call` now carries the thinking tokens, one-hour cache
+  share, service tier, data residency, web search counts and stop
+  reason from the transcript, the model as requested and served, and
+  the session's billing mode and platform. The plugin decides them once
+  at session start from `claude auth status` and the Bedrock / Vertex
+  AI / Foundry variables: a Claude subscription login is
+  `subscription`, an API key or a cloud provider `metered`.
+  `FLIGHTDECK_BILLING_MODE` overrides the detection, which is the way
+  to have a subscription that runs on extra usage priced.
 - **Canonical model ids.** The worker stores one canonical id per model
   however a client spelled it (Bedrock inference profiles, Vertex
   `@version` ids, gateway prefixes such as `openrouter/anthropic/...`,

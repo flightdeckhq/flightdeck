@@ -267,6 +267,51 @@ function assertIngestionContract(p) {
     default:
       break;
   }
+  assertTokenCostContract(p);
+}
+
+// Mirror of ingestion/internal/handlers/token_cost.go: the token, model
+// and cost fields, validated on every event type when present.
+function assertTokenCostContract(p) {
+  const isCount = (v) => Number.isInteger(v) && v >= 0;
+  for (const key of ["tokens_reasoning", "tokens_cache_creation_1h"]) {
+    if (p[key] != null) assert.ok(isCount(p[key]), `${key} must be a non-negative integer`);
+  }
+  if (typeof p.tokens_reasoning === "number" && typeof p.tokens_output === "number") {
+    assert.ok(p.tokens_reasoning <= p.tokens_output, "tokens_reasoning must not exceed tokens_output");
+  }
+  if (typeof p.tokens_cache_creation_1h === "number" && typeof p.tokens_cache_creation === "number") {
+    assert.ok(
+      p.tokens_cache_creation_1h <= p.tokens_cache_creation,
+      "tokens_cache_creation_1h must not exceed tokens_cache_creation",
+    );
+  }
+  assert.equal(p.cost_reported != null, p.cost_source != null, "cost_reported and cost_source together");
+  const enums = {
+    billing_mode: ["metered", "subscription", "local"],
+    provider: ["anthropic", "openai", "google", "xai", "mistral", "meta", "deepseek", "other"],
+    cost_source: ["provider", "agent"],
+    inference_scope: ["global", "regional"],
+  };
+  for (const [key, values] of Object.entries(enums)) {
+    if (p[key] != null) assert.ok(values.includes(p[key]), `${key} has an unsupported value: ${p[key]}`);
+  }
+  for (const key of ["model_requested", "model_served", "service_tier", "speed", "inference_geo", "stop_reason"]) {
+    if (p[key] != null) {
+      assert.equal(typeof p[key], "string", `${key} must be a string`);
+      assert.ok(Buffer.byteLength(p[key], "utf8") <= 256, `${key} exceeds 256 bytes`);
+    }
+  }
+  if (p.server_tool_use != null) {
+    for (const [name, v] of Object.entries(p.server_tool_use)) {
+      assert.ok(isCount(v), `server_tool_use.${name} must be a non-negative integer`);
+    }
+  }
+  const platform = p.provider_metadata?.platform;
+  if (platform != null) {
+    assert.equal(typeof platform, "string", "provider_metadata.platform must be a string");
+    assert.ok(platform.length <= 253, "provider_metadata.platform exceeds 253 characters");
+  }
 }
 
 function loadFixtureSessions() {

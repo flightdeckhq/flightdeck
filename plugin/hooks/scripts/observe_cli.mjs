@@ -51,6 +51,7 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { deriveAgentId, NAMESPACE_FLIGHTDECK } from "./agent_id.mjs";
+import { BILLING_MODES, detectEndpoint, readAuthStatus, usageDetailFields } from "./billing.mjs";
 import { canonicalizeUrl as _mcpCanonicalizeUrl } from "./mcp_identity.mjs";
 import {
   buildPolicyDecisionBlock,
@@ -1189,6 +1190,9 @@ export function readTurns(transcriptPath) {
       }
       group.lastTimestamp = rec.timestamp || group.lastTimestamp;
       if (rec.message?.usage) group.usage = rec.message.usage;
+      if (typeof rec.message?.stop_reason === "string" && rec.message.stop_reason) {
+        group.stopReason = rec.message.stop_reason;
+      }
       const blocks = rec.message?.content;
       if (Array.isArray(blocks)) {
         for (const b of blocks) group.contentBlocks.push(b);
@@ -1203,6 +1207,7 @@ export function readTurns(transcriptPath) {
       model: group.model,
       firstTimestamp: group.firstTimestamp,
       lastTimestamp: group.lastTimestamp,
+      stopReason: group.stopReason || null,
       usage: group.usage || {},
       contentBlocks: group.contentBlocks,
       userTurn: group.userAtStart,
@@ -2013,6 +2018,67 @@ function cacheSessionModel(sessionId, model) {
   }
 }
 
+// ---------------------------------------------------------------------
+// Per-session endpoint cache -- the billing mode, platform and Vertex AI
+// scope SessionStart decides (see billing.mjs) survive on disk so every
+// later hook stamps them without running `claude auth status` again.
+// ---------------------------------------------------------------------
+
+function endpointCachePath(sessionId) {
+  return join(tmpdir(), "flightdeck-plugin", `endpoint-${sessionId}.json`);
+}
+
+/**
+ * The session's endpoint: from the cache when an earlier hook decided
+ * it, else decided now (running `claude auth status` once) and cached.
+ * ``probe`` is injectable for tests. Never throws.
+ */
+export function resolveSessionEndpoint(sessionId, env = process.env, probe = readAuthStatus) {
+  try {
+    const cached = JSON.parse(readFileSync(endpointCachePath(sessionId), "utf8"));
+    if (cached && typeof cached.billingMode === "string" && typeof cached.platform === "string") {
+      return cached;
+    }
+  } catch {
+    /* not cached yet */
+  }
+  // An explicit FLIGHTDECK_BILLING_MODE settles the billing mode, and the
+  // cloud provider is read from the same CLAUDE_CODE_USE_* variables
+  // Claude Code itself uses, so the CLI is not run.
+  const override = BILLING_MODES.has((env.FLIGHTDECK_BILLING_MODE || "").trim().toLowerCase());
+  const endpoint = detectEndpoint(env, override ? null : probe());
+  try {
+    mkdirOwnerOnly(join(tmpdir(), "flightdeck-plugin"));
+    writeFileSync(endpointCachePath(sessionId), JSON.stringify(endpoint));
+  } catch {
+    /* silent */
+  }
+  return endpoint;
+}
+
+/**
+ * The token, model and cost fields of one transcript turn's post_call
+ * (ARCHITECTURE.md, POST /v1/events): the vendor, the session's billing
+ * mode and platform, the model id (Claude Code exposes no separate
+ * served id, so requested and served are the same), and what the
+ * turn's usage and stop reason report.
+ */
+export function turnTokenCostFields(turn, model, endpoint) {
+  const fields = {
+    provider: "anthropic",
+    billing_mode: endpoint.billingMode,
+    provider_metadata: { platform: endpoint.platform },
+    ...usageDetailFields(turn.usage || {}),
+  };
+  if (model) {
+    fields.model_requested = model;
+    fields.model_served = model;
+  }
+  if (endpoint.inferenceScope) fields.inference_scope = endpoint.inferenceScope;
+  if (turn.stopReason) fields.stop_reason = turn.stopReason;
+  return fields;
+}
+
 function readCachedModel(sessionId) {
   try {
     return readFileSync(modelCachePath(sessionId), "utf8").trim() || null;
@@ -2222,6 +2288,7 @@ async function flushPostCallTurns({
       latency_ms: latencyMs,
       timestamp: turn.lastTimestamp || new Date().toISOString(),
       ...tokens,
+      ...turnTokenCostFields(turn, resolvedModel, resolveSessionEndpoint(sessionId)),
       has_content: hasContent,
       content,
     });
@@ -2764,6 +2831,9 @@ async function main() {
     const hookModel = isRealModel(hookEvent.model) ? hookEvent.model : null;
     const model = hookModel || (isRealModel(turn?.model) ? turn.model : null);
     cacheSessionModel(sessionId, model);
+    // Decide the billing mode and platform once, here, so later hooks
+    // read them from the cache.
+    resolveSessionEndpoint(sessionId);
     await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, {
       model,
       claudeCodeVersion: turn?.claudeCodeVersion || hookEvent.version || null,

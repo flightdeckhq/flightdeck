@@ -26,8 +26,12 @@ reported from start to end:
   arguments because the whitelist would empty them, plus the server
   identity Claude Code reports (`mcp_server`) when it sends one.
 - Every LLM turn read from the session transcript: model, input and output
-  tokens, cache tokens, latency, and the prompt and response bodies while
-  `FLIGHTDECK_CAPTURE_PROMPTS` is on.
+  tokens, cache tokens (with their one-hour share), thinking tokens,
+  service tier, data residency, web search counts, stop reason, latency,
+  and the prompt and response bodies while `FLIGHTDECK_CAPTURE_PROMPTS`
+  is on. Each turn also carries the session's billing mode: a Claude
+  subscription login is `subscription` (not counted as spend), an API
+  key or a Bedrock / Vertex AI / Foundry session is `metered`.
 - Context compaction and the MCP servers declared in `.mcp.json`.
 - MCP policy decisions: when a server is warned or blocked by the
   Flightdeck MCP policy for this flavor, the session emits a
@@ -77,6 +81,7 @@ plugin re-reads it at the next session start.
 | `FLIGHTDECK_TOKEN` | `tok_dev` | Access token. The default is the development seed token and prints a warning; set a real token outside local development. |
 | `FLIGHTDECK_CAPTURE_PROMPTS` | `true` | `false` strips prompt, response and tool-result bodies while keeping metadata and token counts. |
 | `FLIGHTDECK_CAPTURE_TOOL_INPUTS` | `true` | `false` strips the sanitised tool arguments. |
+| `FLIGHTDECK_BILLING_MODE` | detected | `metered`, `subscription` or `local`; overrides the billing mode the plugin detects from `claude auth status` and the cloud-provider variables (set `metered` when a subscription runs on extra usage). |
 | `FLIGHTDECK_QUIET` | unset | `1` silences the default-token warning. |
 | `CLAUDE_SESSION_ID` | unset | Forces the session id reported to Flightdeck. |
 | `CLAUDE_CODE_SESSION_ID` | set by Claude Code | Claude Code's own session id; reported as `context.claude_code_session_id` and used to key the per-session marker when a hook payload has no `session_id`. |

@@ -42,6 +42,18 @@ export FLIGHTDECK_CAPTURE_PROMPTS=false       # strip LLM prompt/response conten
 export FLIGHTDECK_CAPTURE_TOOL_INPUTS=false   # strip sanitised tool arguments
 ```
 
+**Cost follows how the session is billed.** At session start the plugin
+runs `claude auth status` once and checks the cloud-provider variables:
+a Claude subscription login (Pro, Max, Team, Enterprise) is reported as
+`subscription` and its tokens are not counted as spend; an API key,
+Amazon Bedrock, Google Vertex AI or Microsoft Foundry session is
+`metered` and priced. Claude Code does not say when a subscription runs
+on extra usage, so if your Claude Code usage is billed per token, set:
+
+```bash
+export FLIGHTDECK_BILLING_MODE=metered        # or subscription / local
+```
+
 Guarantees that hold regardless of the knob settings:
 
 - Raw file bodies written by `Write` and `Edit` are never forwarded. The sanitiser drops the body field at the source; it never reaches the network.

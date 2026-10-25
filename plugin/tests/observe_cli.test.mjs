@@ -332,6 +332,68 @@ describe("observe_cli.mjs", () => {
     assert.equal(body.tool_name, "Read");
   });
 
+  it("stamps the token, model and cost fields on a Stop post_call", async () => {
+    const transcriptPath = writeTranscript([
+      {
+        type: "user",
+        timestamp: "2026-04-17T10:00:00.000Z",
+        message: { role: "user", content: "ping" },
+      },
+      {
+        type: "assistant",
+        timestamp: "2026-04-17T10:00:02.500Z",
+        message: {
+          id: "msg_tc_1",
+          model: "claude-opus-5-5",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "pong" }],
+          usage: {
+            input_tokens: 10,
+            output_tokens: 30,
+            cache_read_input_tokens: 100,
+            cache_creation_input_tokens: 50,
+            cache_creation: { ephemeral_5m_input_tokens: 10, ephemeral_1h_input_tokens: 40 },
+            output_tokens_details: { thinking_tokens: 12 },
+            server_tool_use: { web_search_requests: 1, web_fetch_requests: 0 },
+            service_tier: "standard",
+            inference_geo: "global",
+          },
+        },
+      },
+    ]);
+    const input = JSON.stringify({
+      hook_event_name: "Stop",
+      session_id: "sess-tc-1",
+      transcript_path: transcriptPath,
+    });
+    // Bedrock settles both the billing mode and the platform whatever
+    // `claude auth status` says on the machine running the test.
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      FLIGHTDECK_CAPTURE_PROMPTS: "false",
+      CLAUDE_SESSION_ID: "sess-tc-1",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+    };
+    const result = await runScript(input, env);
+    assert.equal(result.code, 0);
+
+    const body = capture.bodies().at(-1);
+    assert.equal(body.event_type, "post_call");
+    assert.equal(body.provider, "anthropic");
+    assert.equal(body.billing_mode, "metered");
+    assert.equal(body.provider_metadata.platform, "bedrock");
+    assert.equal(body.model_requested, "claude-opus-5-5");
+    assert.equal(body.model_served, "claude-opus-5-5");
+    assert.equal(body.tokens_reasoning, 12);
+    assert.equal(body.tokens_cache_creation_1h, 40);
+    assert.equal(body.service_tier, "standard");
+    assert.equal(body.inference_geo, "global");
+    assert.deepEqual(body.server_tool_use, { web_search_requests: 1 });
+    assert.equal(body.stop_reason, "end_turn");
+    rmSync(dirname(transcriptPath), { recursive: true, force: true });
+  });
+
   it("maps Stop to post_call with transcript tokens and model", async () => {
     const transcriptPath = writeTranscript([
       {

@@ -88,11 +88,13 @@ type AnalyticsTotals struct {
 
 // AnalyticsResponse is the full response for GET /v1/analytics.
 //
-// “PartialEstimate“ is only meaningful when “metric=estimated_cost“
-// and is true when the window contains post_call rows for models that
-// are not in the static pricing table (pricing.go). The dashboard
-// surfaces an amber disclaimer above the cost chart when this flag
-// is set.
+// The last three fields are set only for “metric=estimated_cost“ and
+// say what the cost leaves out (ARCHITECTURE.md, Cost estimation):
+// “ModelsUnpriced“ lists the models of metered calls in the window that
+// had neither a price nor a reported cost, “PartialEstimate“ is true
+// when that list is non-empty, and “BillingModes“ lists every billing
+// mode the window's calls used, so a surface can say that subscription
+// usage is not counted.
 type AnalyticsResponse struct {
 	Metric          string            `json:"metric"`
 	GroupBy         string            `json:"group_by"`
@@ -101,6 +103,8 @@ type AnalyticsResponse struct {
 	Series          []AnalyticsSeries `json:"series"`
 	Totals          AnalyticsTotals   `json:"totals"`
 	PartialEstimate bool              `json:"partial_estimate,omitempty"`
+	ModelsUnpriced  []string          `json:"models_unpriced,omitempty"`
+	BillingModes    []string          `json:"billing_modes,omitempty"`
 }
 
 // dimensionSource describes how to project a group-by dimension. When
@@ -167,7 +171,7 @@ var dimensions = map[string]dimensionSource{
 	"agent_type": {exprEvents: "s.agent_type", exprSessions: "s.agent_type", needsSessionJoin: true},
 	// team maps to flavor until a real team field lands.
 	"team":     {exprEvents: "e.flavor", exprSessions: "s.flavor"},
-	"provider": {exprEvents: providerCase("e.model"), exprSessions: providerCase("s.model")},
+	"provider": {exprEvents: eventProviderSQL, exprSessions: providerCase("s.model")},
 	// Sub-agent observability dimensions. Both bake their
 	// COALESCE-to-(root) into the expression so the outer
 	// ``COALESCE(<dim>, 'unknown')`` in the query builder never
@@ -203,8 +207,12 @@ var dimensions = map[string]dimensionSource{
 // reference so the same logic works whether the base query is on
 // events or sessions.
 func providerCase(modelCol string) string {
-	return strings.ReplaceAll(ProviderCaseSQL, "model", modelCol)
+	return strings.ReplaceAll(ProviderCaseSQL, "{id}", "regexp_replace("+modelCol+", '^ft:', '')")
 }
+
+// eventProviderSQL is an event's vendor: the provider the client or the
+// worker stamped, else the model-prefix rule.
+var eventProviderSQL = "COALESCE(e.provider, " + providerCase("e.model") + ")"
 
 // metricSpec describes how a single metric is aggregated.
 type metricSpec struct {
@@ -216,6 +224,9 @@ type metricSpec struct {
 	alias string
 	// agg is the SQL aggregate expression.
 	agg string
+	// fromExtras is a FROM-clause fragment the aggregate needs (the
+	// price lookup for estimated_cost), appended after every join.
+	fromExtras string
 	// timeCol is the column used for the time-bucket and window
 	// filter, qualified by alias.
 	timeCol string
@@ -298,9 +309,10 @@ func metricSpecs() map[string]metricSpec {
 		},
 		"estimated_cost": {
 			baseTable: "events", alias: "e",
-			agg:         BuildCostAggregateSQL("e.model"),
+			agg:         BuildCostAggregateSQL(),
+			fromExtras:  CostPriceJoinSQL(),
 			timeCol:     "e.occurred_at",
-			whereClause: "e.event_type = 'post_call'",
+			whereClause: costEventFilter,
 		},
 	}
 }
@@ -497,11 +509,11 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 		// provider is a derived expression, not a column, so we filter
 		// on the CASE directly using the same model column the
 		// dimension uses.
-		modelCol := "e.model"
+		providerExpr := eventProviderSQL
 		if spec.baseTable == "sessions" {
-			modelCol = "s.model"
+			providerExpr = providerCase("s.model")
 		}
-		filterSQL += fmt.Sprintf(" AND (%s) = $%d", providerCase(modelCol), argIdx)
+		filterSQL += fmt.Sprintf(" AND (%s) = $%d", providerExpr, argIdx)
 		filterArgs = append(filterArgs, params.FilterProvider)
 		argIdx++
 	}
@@ -587,6 +599,9 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 	// on row arity so the standard / two-dim paths share scan
 	// machinery rather than duplicating the cursor management.
 	//
+	if spec.fromExtras != "" {
+		fromClause = fromClause + " " + spec.fromExtras
+	}
 	//nolint:gosec // dimExpr / secDimExpr from the validated
 	// whitelist; spec strings come from the metricSpecs map;
 	// params.Granularity is validated by the handler.
@@ -693,25 +708,19 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 		},
 	}
 
-	// For estimated_cost, probe for unpriced models in the window and
-	// set partial_estimate accordingly. Separate round-trip so the
-	// flag never falsely flips on because of pricing-aware JOINs in
-	// the main aggregation query.
+	// For estimated_cost, say what the number leaves out: the models
+	// of metered calls with no price, and the billing modes in use.
+	// Separate round trips over the whole window: they are not narrowed
+	// by the chart's filters (ARCHITECTURE.md, Cost estimation), so a
+	// filtered chart may name a model or mode outside its filter.
 	if params.Metric == "estimated_cost" {
-		probeArgs := []any{start, end}
-		known := KnownPricedModels()
-		partial := false
-		probeSQL := `
-			SELECT EXISTS (
-				SELECT 1 FROM events
-				WHERE event_type = 'post_call'
-				  AND occurred_at >= $1 AND occurred_at < $2
-				  AND model IS NOT NULL
-				  AND NOT (model = ANY($3))
-			)
-		`
-		_ = s.pool.QueryRow(ctx, probeSQL, probeArgs[0], probeArgs[1], known).Scan(&partial)
-		resp.PartialEstimate = partial
+		coverage, err := s.costCoverage(ctx, start, end, "", "")
+		if err != nil {
+			return nil, err
+		}
+		resp.ModelsUnpriced = coverage.ModelsUnpriced
+		resp.PartialEstimate = len(coverage.ModelsUnpriced) > 0
+		resp.BillingModes = coverage.BillingModes
 	}
 
 	return resp, nil

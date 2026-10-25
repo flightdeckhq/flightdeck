@@ -3153,22 +3153,31 @@ multiplies by 1.
 - `speed`: `fast` at the model's `fast_multiplier` (1 when it has
   none).
 - `inference_geo`: 1.1 for Anthropic's US-only inference.
-- `inference_scope`: 1.1 for a `regional` cloud endpoint (a Bedrock
-  regional or multi-region inference profile, a Vertex AI regional
-  endpoint) on the models whose cloud pricing carries that premium;
-  `global` endpoints 1.
+- `inference_scope`: 1.1 for every call on a `regional` cloud endpoint
+  (a Bedrock regional or multi-region inference profile, a Vertex AI
+  regional endpoint); `global` endpoints 1. The premium is not limited
+  to the models whose cloud pricing carries it, so a call to an older
+  Claude model on a regional endpoint is priced 10% high; an operator
+  who needs it exact sets `inference_scope.regional: 1` in
+  `pricing.yaml`.
 - Server tools: per-request fees, such as web search per 1,000
   searches from `server_tool_use.web_search_requests`.
 
 The cost is computed at query time rather than stored per event, so a
 price correction, a new override or a new alias applies to past events
-as well as new ones. The query first sums each token term per group of
-canonical model, platform family, context tier and multiplier values,
-then joins each group to its `model_pricing` row (exact id, then the
-undated id; the platform family's row, then `direct`), so the pricing
-work scales with the number of distinct groups, not the number of
-events. The API holds the multipliers and server-tool fees from
-`pricing.yaml` in memory and passes them to the query as parameters.
+as well as new ones. Each LLM event is joined to its `model_pricing`
+row (exact id, then the undated id; the platform family's row, then
+`direct`) through a lateral lookup that Postgres memoises per distinct
+model and platform, and the formula is summed over the events. The
+multipliers and server-tool fees from `pricing.yaml` are written into
+the query as constants (numbers and quoted literals from the API's own
+configuration, never request input). The `models_unpriced` probe
+collects the window's distinct model and platform pairs first and
+checks only those against the table. The API's database connections
+run with Postgres's JIT disabled: compiling the long cost expression
+costs more than it saves for interactive queries. An estimated-cost
+query over 100,000 LLM calls in its window answers in about half a
+second.
 
 Every response that carries a cost also says what the number leaves
 out, with three keys: `partial_estimate` is true when `models_unpriced`
@@ -3177,8 +3186,10 @@ price nor a reported cost) is non-empty, and `billing_modes` lists every
 billing mode the window's calls used, so a surface can say that
 subscription usage is not included, or show `Subscription` where nothing
 was metered. `GET /v1/analytics` with `metric=estimated_cost` returns
-them at the top level of the response, beside `series`; the per-agent
-summary returns them inside `totals`.
+them at the top level of the response, beside `series`, computed over
+the whole window without the chart's filters, so a filtered chart can
+name a model or a mode outside its filter; the per-agent summary
+returns them inside `totals`, scoped to the agent.
 
 ### Search
 

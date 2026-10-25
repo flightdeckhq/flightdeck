@@ -220,6 +220,8 @@
   "meta.llama3-3-70b-instruct-v1:0": "meta",
   "amazon.titan-embed-text-v2:0": "other",
   "mistral.mistral-large-2407-v1:0": "mistral",
-  "": "other"
+  "": "other",
+  "ft:gemini-2.5-flash": "google",
+  "ft:grok-4": "xai"
  }
 }

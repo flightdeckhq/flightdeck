@@ -35,7 +35,19 @@ func main() {
 	store.LoadPricing()
 
 	// Postgres
-	pool, err := pgxpool.New(context.Background(), cfg.PostgresURL)
+	poolConfig, err := pgxpool.ParseConfig(cfg.PostgresURL)
+	if err != nil {
+		slog.Error("postgres connection config invalid", "err", err)
+		os.Exit(1)
+	}
+	// The API's queries are interactive aggregations over an analytics
+	// window. Postgres's JIT compiles the long per-row cost expression
+	// on every query, which costs more than it saves at these sizes
+	// (estimated cost over 100,000 events: 780 ms with JIT, 250 ms
+	// without; 1,000,000 events: 2.6 s against 2.3 s), so the API's
+	// connections run without it.
+	poolConfig.ConnConfig.RuntimeParams["jit"] = "off"
+	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
 	if err != nil {
 		slog.Error("postgres connection failed", "err", err)
 		os.Exit(1)

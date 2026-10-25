@@ -304,6 +304,10 @@ definitions:
     type: object
   store.AgentSummaryTotals:
     properties:
+      billing_modes:
+        items:
+          type: string
+        type: array
       cost_usd:
         type: number
       errors:
@@ -312,6 +316,16 @@ definitions:
         type: integer
       latency_p95_ms:
         type: integer
+      models_unpriced:
+        items:
+          type: string
+        type: array
+      partial_estimate:
+        description: |-
+          What CostUSD leaves out (ARCHITECTURE.md, Cost estimation): the
+          models of metered calls with no price, whether there were any,
+          and every billing mode the agent's calls used.
+        type: boolean
       sessions:
         type: integer
       tokens:
@@ -319,12 +333,20 @@ definitions:
     type: object
   store.AnalyticsResponse:
     properties:
+      billing_modes:
+        items:
+          type: string
+        type: array
       granularity:
         type: string
       group_by:
         type: string
       metric:
         type: string
+      models_unpriced:
+        items:
+          type: string
+        type: array
       partial_estimate:
         type: boolean
       range:

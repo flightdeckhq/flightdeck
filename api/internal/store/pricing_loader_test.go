@@ -253,16 +253,16 @@ func TestRepoPricingYamlIsValid(t *testing.T) {
 
 func TestLoadPricing_IgnoresAnInvalidFile(t *testing.T) {
 	t.Setenv("FLIGHTDECK_PRICING_PATH", writeTempYaml(t, "bad.yaml", "overrides:\n  - model_id: x\n    input: -1\n"))
-	prevRows, prevMap := pricingRows, modelPricing
-	t.Cleanup(func() { pricingRows, modelPricing = prevRows, prevMap })
+	prevRows := pricingRows
+	t.Cleanup(func() { pricingRows = prevRows })
 
 	LoadPricing()
 
 	if len(pricingRows) < 500 {
 		t.Fatalf("the catalogue alone should price calls; got %d rows", len(pricingRows))
 	}
-	if _, ok := modelPricing["claude-haiku-4-5"]; !ok {
-		t.Error("the legacy cost map should hold the catalogue's direct rows")
+	if _, ok := rowsByKey(t, pricingRows)[rowKey{"claude-haiku-4-5", platformDirect}]; !ok {
+		t.Error("the catalogue's direct rows should be loaded")
 	}
 }
 
@@ -275,12 +275,13 @@ overrides:
     input: 7.77
     output: 11.11
 `))
-	prevRows, prevMap := pricingRows, modelPricing
-	t.Cleanup(func() { pricingRows, modelPricing = prevRows, prevMap })
+	prevRows := pricingRows
+	t.Cleanup(func() { pricingRows = prevRows })
 
 	LoadPricing()
 
-	if p := modelPricing["override-sentinel"]; p.InputPerMTok != 7.77 || p.OutputPerMTok != 11.11 {
+	p, ok := rowsByKey(t, pricingRows)[rowKey{"override-sentinel", platformDirect}]
+	if !ok || p.Input != 7.77 || p.Output != 11.11 {
 		t.Errorf("override not applied: %+v", p)
 	}
 }
@@ -324,7 +325,7 @@ func pricingTestPool(t *testing.T) *pgxpool.Pool {
 func TestSyncPricingTable_WritesOnceThenSkips(t *testing.T) {
 	pool := pricingTestPool(t)
 	ctx := context.Background()
-	prevRows, prevMap := pricingRows, modelPricing
+	prevRows := pricingRows
 	t.Cleanup(func() {
 		// Leave the dev table holding the real price list again: the
 		// catalogue plus the repo's pricing.yaml, as the API loads it.
@@ -333,7 +334,7 @@ func TestSyncPricingTable_WritesOnceThenSkips(t *testing.T) {
 		if err := SyncPricingTable(ctx, pool); err != nil {
 			t.Errorf("restore model_pricing: %v", err)
 		}
-		pricingRows, modelPricing = prevRows, prevMap
+		pricingRows = prevRows
 	})
 
 	pricingRows = sampleRows(t)

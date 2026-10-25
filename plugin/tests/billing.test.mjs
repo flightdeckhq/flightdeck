@@ -3,7 +3,7 @@
 // them in observe_cli.mjs).
 
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
@@ -38,6 +38,10 @@ describe("detectEndpoint", () => {
     ["an Anthropic base URL stays anthropic", { ANTHROPIC_BASE_URL: "https://api.anthropic.com" }, API_KEY, "metered", "anthropic"],
     ["a look-alike host stays bare", { ANTHROPIC_BASE_URL: "https://evilanthropic.com" }, API_KEY, "metered", "evilanthropic.com"],
     ["a malformed base URL is invalid-host", { ANTHROPIC_BASE_URL: "::not a url" }, API_KEY, "metered", "invalid-host"],
+    ["an IPv6 loopback proxy is localhost", { ANTHROPIC_BASE_URL: "http://[::1]:8080" }, API_KEY, "metered", "localhost"],
+    ["a 127.x proxy is localhost", { ANTHROPIC_BASE_URL: "http://127.0.0.1:4000" }, API_KEY, "metered", "localhost"],
+    ["a trailing-dot Anthropic host stays anthropic", { ANTHROPIC_BASE_URL: "https://api.anthropic.com./v1" }, API_KEY, "metered", "anthropic"],
+    ["a third-party credential is metered", {}, { authMethod: "third_party", apiProvider: "firstParty" }, "metered", "anthropic"],
   ];
   for (const [name, env, status, billing, platform] of cases) {
     it(name, () => {
@@ -117,6 +121,11 @@ describe("usageDetailFields", () => {
     assert.deepEqual(got, {});
   });
 
+  it("leaves out a string the ingestion API would reject", () => {
+    const got = usageDetailFields({ service_tier: "x".repeat(257), speed: "é".repeat(129), inference_geo: "us" });
+    assert.deepEqual(got, { inference_geo: "us" });
+  });
+
   it("is empty for a usage object that reports no details", () => {
     assert.deepEqual(usageDetailFields({ input_tokens: 1, output_tokens: 1 }), {});
     assert.deepEqual(usageDetailFields(), {});
@@ -146,8 +155,8 @@ describe("resolveSessionEndpoint and turnTokenCostFields", () => {
       return CLAUDE_AI;
     };
     const sid = "11111111-2222-4333-8444-555555555555";
-    const first = observe.resolveSessionEndpoint(sid, {}, probe);
-    const second = observe.resolveSessionEndpoint(sid, {}, probe);
+    const first = observe.resolveSessionEndpoint(sid, { env: {}, probe });
+    const second = observe.resolveSessionEndpoint(sid, { env: {}, probe });
     assert.equal(calls, 1);
     assert.deepEqual(first, second);
     assert.equal(first.billingMode, "subscription");
@@ -159,13 +168,55 @@ describe("resolveSessionEndpoint and turnTokenCostFields", () => {
       calls += 1;
       return API_KEY;
     };
-    const got = observe.resolveSessionEndpoint(
-      "22222222-2222-4333-8444-555555555555",
-      { FLIGHTDECK_BILLING_MODE: "metered", CLAUDE_CODE_USE_VERTEX: "1", CLOUD_ML_REGION: "global" },
+    const got = observe.resolveSessionEndpoint("22222222-2222-4333-8444-555555555555", {
+      env: { FLIGHTDECK_BILLING_MODE: "metered", CLAUDE_CODE_USE_VERTEX: "1", CLOUD_ML_REGION: "global" },
       probe,
-    );
+    });
     assert.equal(calls, 0);
     assert.deepEqual(got, { billingMode: "metered", platform: "vertex", inferenceScope: "global" });
+  });
+
+  it("retries a failed CLI once on a later hook, then keeps the fallback", () => {
+    let calls = 0;
+    const failing = () => {
+      calls += 1;
+      return null;
+    };
+    const sid = "33333333-2222-4333-8444-555555555555";
+    const env = { ANTHROPIC_API_KEY: "sk" };
+    observe.resolveSessionEndpoint(sid, { env, probe: failing });
+    observe.resolveSessionEndpoint(sid, { env, probe: failing });
+    const third = observe.resolveSessionEndpoint(sid, { env, probe: failing });
+    assert.equal(calls, 2);
+    assert.equal(third.billingMode, "metered");
+  });
+
+  it("a later hook's successful retry replaces the fallback", () => {
+    const sid = "44444444-2222-4333-8444-555555555555";
+    observe.resolveSessionEndpoint(sid, { env: {}, probe: () => null });
+    const retried = observe.resolveSessionEndpoint(sid, { env: {}, probe: () => API_KEY });
+    assert.equal(retried.billingMode, "metered");
+    let calls = 0;
+    observe.resolveSessionEndpoint(sid, { env: {}, probe: () => { calls += 1; return CLAUDE_AI; } });
+    assert.equal(calls, 0, "a probe that succeeded is final");
+  });
+
+  it("SessionStart decides afresh, so a new login is picked up", () => {
+    const sid = "55555555-2222-4333-8444-555555555555";
+    observe.resolveSessionEndpoint(sid, { env: {}, probe: () => API_KEY });
+    const refreshed = observe.resolveSessionEndpoint(sid, { env: {}, probe: () => CLAUDE_AI, refresh: true });
+    assert.equal(refreshed.billingMode, "subscription");
+    assert.equal(observe.resolveSessionEndpoint(sid, { env: {}, probe: () => API_KEY }).billingMode, "subscription");
+  });
+
+  it("leaves out an oversized model id or stop reason", () => {
+    const fields = observe.turnTokenCostFields({ usage: {}, stopReason: "s".repeat(300) }, "m".repeat(300), {
+      billingMode: "metered",
+      platform: "anthropic",
+      inferenceScope: null,
+    });
+    assert.equal(fields.model_requested, undefined);
+    assert.equal(fields.stop_reason, undefined);
   });
 
   it("builds the post_call fields of a turn", () => {
@@ -188,5 +239,23 @@ describe("resolveSessionEndpoint and turnTokenCostFields", () => {
       inference_scope: "regional",
       stop_reason: "tool_use",
     });
+  });
+});
+
+describe("readTurns stop reason", () => {
+  it("takes the last stop reason a message's records report", async () => {
+    const { readTurns } = await import("../hooks/scripts/observe_cli.mjs");
+    const dir = mkdtempSync(join(tmpdir(), "fd-turns-"));
+    const path = join(dir, "t.jsonl");
+    const rec = (stopReason) =>
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-10-25T07:00:00.000Z",
+        message: { id: "msg_1", model: "claude-opus-5-5", stop_reason: stopReason, content: [] },
+      });
+    writeFileSync(path, [rec(null), rec("tool_use"), rec(null)].join("\n") + "\n");
+    const [turn] = readTurns(path);
+    assert.equal(turn.stopReason, "tool_use");
+    rmSync(dir, { recursive: true, force: true });
   });
 });

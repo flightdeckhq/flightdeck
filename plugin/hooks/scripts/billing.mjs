@@ -66,6 +66,9 @@ export function readAuthStatus(run = execFileSync) {
       encoding: "utf8",
       timeout: AUTH_STATUS_TIMEOUT_MS,
       stdio: ["ignore", "pipe", "ignore"],
+      // On Windows the CLI is a claude.cmd shim, which only a shell
+      // resolves; the arguments are fixed, so the shell sees no input.
+      shell: process.platform === "win32",
     });
     const parsed = JSON.parse(out);
     if (!parsed || typeof parsed.authMethod !== "string") return null;
@@ -78,14 +81,23 @@ export function readAuthStatus(run = execFileSync) {
   }
 }
 
+// Loopback spellings of ANTHROPIC_BASE_URL (a local proxy), reported as
+// the single platform "localhost" like the Python sensor does.
+const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+
 /** The platform label of ANTHROPIC_BASE_URL, or "anthropic" when unset. */
 function platformOfBaseUrl(baseUrl) {
   if (!baseUrl) return "anthropic";
   let host;
   try {
-    host = new URL(baseUrl).hostname.toLowerCase();
+    // An IPv6 literal keeps its brackets in URL.hostname; a fully
+    // qualified name may end in a dot.
+    host = new URL(baseUrl).hostname.toLowerCase().replace(/^\[|\]$/g, "").replace(/\.$/, "");
   } catch {
     return "invalid-host";
+  }
+  if (LOOPBACK_HOSTS.has(host) || host.endsWith(".localhost") || host.startsWith("127.")) {
+    return "localhost";
   }
   if (host === "anthropic.com" || host.endsWith(ANTHROPIC_HOST_SUFFIX)) return "anthropic";
   return HOSTNAME.test(host) ? host : "invalid-host";
@@ -133,8 +145,20 @@ function count(value) {
   return Number.isInteger(value) && value >= 0 ? value : null;
 }
 
+// The ingestion API caps each free-form token-and-cost string at 256
+// UTF-8 bytes and rejects the whole event above it; a longer value is
+// left out instead.
+const MAX_DETAIL_BYTES = 256;
+
+/** Whether a value is a non-empty string the ingestion API accepts. */
+export function fitsDetailString(value) {
+  return (
+    typeof value === "string" && value !== "" && Buffer.byteLength(value, "utf8") <= MAX_DETAIL_BYTES
+  );
+}
+
 function text(value) {
-  return typeof value === "string" && value ? value : null;
+  return fitsDetailString(value) ? value : null;
 }
 
 /**

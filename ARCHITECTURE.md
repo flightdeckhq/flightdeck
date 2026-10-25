@@ -2919,8 +2919,10 @@ from `claude auth status` (`api_key`, `api_key_helper` and `third_party`
 are metered methods, and its `apiProvider` names a cloud provider);
 where that command is unavailable, a set `ANTHROPIC_API_KEY` or
 `ANTHROPIC_AUTH_TOKEN` counts as an API-key login, and anything else as
-a subscription. A session with `FLIGHTDECK_BILLING_MODE` set does not
-run the command. Both clients
+a subscription. A command that fails is retried by one later hook before
+that fallback stands for the session. A session with
+`FLIGHTDECK_BILLING_MODE` set does not run the command, so its platform
+comes from the provider variables alone. Both clients
 accept `FLIGHTDECK_BILLING_MODE` (`metered`, `subscription`, `local`)
 to override the detected value, for the cases detection cannot see.
 

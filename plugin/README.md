@@ -48,7 +48,11 @@ a Claude subscription login (Pro, Max, Team, Enterprise) is reported as
 `subscription` and its tokens are not counted as spend; an API key,
 Amazon Bedrock, Google Vertex AI or Microsoft Foundry session is
 `metered` and priced. Claude Code does not say when a subscription runs
-on extra usage, so if your Claude Code usage is billed per token, set:
+on extra usage, so if your Claude Code usage is billed per token, set the
+override below. If `claude auth status` cannot run (it is not on the
+hook's `PATH`), the plugin falls back to the environment: a set
+`ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` is metered, anything else a
+subscription.
 
 ```bash
 export FLIGHTDECK_BILLING_MODE=metered        # or subscription / local

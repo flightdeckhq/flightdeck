@@ -89,12 +89,24 @@ function clearAllPluginMarkers() {
   }
 }
 
+// Variables of the developer's own shell that would change what a hook
+// reports (the billing mode and platform); blanked so every test sees
+// the same baseline unless it sets them itself.
+const HERMETIC_ENV = {
+  FLIGHTDECK_BILLING_MODE: "",
+  CLAUDE_CODE_USE_BEDROCK: "",
+  CLAUDE_CODE_USE_VERTEX: "",
+  CLAUDE_CODE_USE_FOUNDRY: "",
+  CLOUD_ML_REGION: "",
+  ANTHROPIC_BASE_URL: "",
+};
+
 function runScript(stdinData, env = {}) {
   return new Promise((resolve) => {
     const child = execFile(
       process.execPath,
       [SCRIPT],
-      { env: { ...process.env, ...env }, timeout: 10000 },
+      { env: { ...process.env, ...HERMETIC_ENV, ...env }, timeout: 10000 },
       (error, stdout, stderr) => {
         resolve({
           code: error ? error.code ?? 1 : 0,

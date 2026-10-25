@@ -35,6 +35,7 @@ import {
   openSync,
   readFileSync,
   realpathSync,
+  renameSync,
   statSync,
   unlinkSync,
   writeFileSync,
@@ -51,7 +52,13 @@ import { basename, dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { deriveAgentId, NAMESPACE_FLIGHTDECK } from "./agent_id.mjs";
-import { BILLING_MODES, detectEndpoint, readAuthStatus, usageDetailFields } from "./billing.mjs";
+import {
+  BILLING_MODES,
+  detectEndpoint,
+  fitsDetailString,
+  readAuthStatus,
+  usageDetailFields,
+} from "./billing.mjs";
 import { canonicalizeUrl as _mcpCanonicalizeUrl } from "./mcp_identity.mjs";
 import {
   buildPolicyDecisionBlock,
@@ -449,7 +456,7 @@ export function clearSessionCacheFiles(hookEvent = {}, sessionId = "") {
     markerKey = createHash("sha256").update(process.cwd()).digest("hex").slice(0, 16);
   }
   const targets = [`session-${markerKey}.txt`];
-  if (sessionId) targets.push(`started-${sessionId}.txt`);
+  if (sessionId) targets.push(`started-${sessionId}.txt`, `endpoint-${sessionId}.json`);
   for (const name of targets) {
     try {
       unlinkSync(join(dir, name));
@@ -2028,32 +2035,71 @@ function endpointCachePath(sessionId) {
   return join(tmpdir(), "flightdeck-plugin", `endpoint-${sessionId}.json`);
 }
 
+// How many hooks of one session may run `claude auth status` while it
+// keeps failing. A failure is usually transient (the CLI busy updating,
+// a slow start), so one later hook retries; past that the environment
+// fallback stands, and later hooks never wait on the CLI again.
+const MAX_AUTH_PROBES = 2;
+
 /**
- * The session's endpoint: from the cache when an earlier hook decided
- * it, else decided now (running `claude auth status` once) and cached.
+ * The session's endpoint. SessionStart (``refresh``) decides it afresh,
+ * so a resumed session or a new login is picked up; later hooks read the
+ * cache. A decision the CLI or an explicit FLIGHTDECK_BILLING_MODE
+ * settled is final; one that fell back to the environment because the
+ * CLI failed is retried by the next hook, up to MAX_AUTH_PROBES runs.
  * ``probe`` is injectable for tests. Never throws.
  */
-export function resolveSessionEndpoint(sessionId, env = process.env, probe = readAuthStatus) {
-  try {
-    const cached = JSON.parse(readFileSync(endpointCachePath(sessionId), "utf8"));
-    if (cached && typeof cached.billingMode === "string" && typeof cached.platform === "string") {
-      return cached;
+export function resolveSessionEndpoint(
+  sessionId,
+  { env = process.env, probe = readAuthStatus, refresh = false } = {},
+) {
+  let cached = null;
+  if (!refresh) {
+    try {
+      cached = JSON.parse(readFileSync(endpointCachePath(sessionId), "utf8"));
+    } catch {
+      /* not cached yet */
     }
-  } catch {
-    /* not cached yet */
+    const valid =
+      cached && typeof cached.billingMode === "string" && typeof cached.platform === "string";
+    if (valid && (cached.final || (cached.probes || 0) >= MAX_AUTH_PROBES)) {
+      return endpointOf(cached);
+    }
   }
   // An explicit FLIGHTDECK_BILLING_MODE settles the billing mode, and the
   // cloud provider is read from the same CLAUDE_CODE_USE_* variables
   // Claude Code itself uses, so the CLI is not run.
   const override = BILLING_MODES.has((env.FLIGHTDECK_BILLING_MODE || "").trim().toLowerCase());
-  const endpoint = detectEndpoint(env, override ? null : probe());
+  const status = override ? null : probe();
+  const endpoint = detectEndpoint(env, status);
+  writeEndpointCache(sessionId, {
+    ...endpoint,
+    final: override || status !== null,
+    probes: (refresh ? 0 : cached?.probes || 0) + (override ? 0 : 1),
+  });
+  return endpoint;
+}
+
+function endpointOf(record) {
+  return {
+    billingMode: record.billingMode,
+    platform: record.platform,
+    inferenceScope: record.inferenceScope ?? null,
+  };
+}
+
+// Written to a temporary file and renamed into place, so a hook reading
+// the cache concurrently never sees half a document.
+function writeEndpointCache(sessionId, record) {
   try {
     mkdirOwnerOnly(join(tmpdir(), "flightdeck-plugin"));
-    writeFileSync(endpointCachePath(sessionId), JSON.stringify(endpoint));
+    const path = endpointCachePath(sessionId);
+    const partial = `${path}.${process.pid}.tmp`;
+    writeFileSync(partial, JSON.stringify(record));
+    renameSync(partial, path);
   } catch {
     /* silent */
   }
-  return endpoint;
 }
 
 /**
@@ -2070,12 +2116,12 @@ export function turnTokenCostFields(turn, model, endpoint) {
     provider_metadata: { platform: endpoint.platform },
     ...usageDetailFields(turn.usage || {}),
   };
-  if (model) {
+  if (fitsDetailString(model)) {
     fields.model_requested = model;
     fields.model_served = model;
   }
   if (endpoint.inferenceScope) fields.inference_scope = endpoint.inferenceScope;
-  if (turn.stopReason) fields.stop_reason = turn.stopReason;
+  if (fitsDetailString(turn.stopReason)) fields.stop_reason = turn.stopReason;
   return fields;
 }
 
@@ -2831,9 +2877,9 @@ async function main() {
     const hookModel = isRealModel(hookEvent.model) ? hookEvent.model : null;
     const model = hookModel || (isRealModel(turn?.model) ? turn.model : null);
     cacheSessionModel(sessionId, model);
-    // Decide the billing mode and platform once, here, so later hooks
-    // read them from the cache.
-    resolveSessionEndpoint(sessionId);
+    // Decide the billing mode and platform here, afresh on every start
+    // or resume, so later hooks read them from the cache.
+    resolveSessionEndpoint(sessionId, { refresh: true });
     await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, {
       model,
       claudeCodeVersion: turn?.claudeCodeVersion || hookEvent.version || null,

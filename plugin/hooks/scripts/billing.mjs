@@ -83,7 +83,8 @@ export function readAuthStatus(run = execFileSync) {
 
 // Loopback spellings of ANTHROPIC_BASE_URL (a local proxy), reported as
 // the single platform "localhost" like the Python sensor does.
-const LOOPBACK_HOSTS = new Set(["localhost", "127.0.0.1", "::1"]);
+const LOOPBACK_HOSTS = new Set(["localhost", "::1"]);
+const IPV4_LOOPBACK = /^127(\.\d{1,3}){3}$/;
 
 /** The platform label of ANTHROPIC_BASE_URL, or "anthropic" when unset. */
 function platformOfBaseUrl(baseUrl) {
@@ -96,7 +97,7 @@ function platformOfBaseUrl(baseUrl) {
   } catch {
     return "invalid-host";
   }
-  if (LOOPBACK_HOSTS.has(host) || host.endsWith(".localhost") || host.startsWith("127.")) {
+  if (LOOPBACK_HOSTS.has(host) || host.endsWith(".localhost") || IPV4_LOOPBACK.test(host)) {
     return "localhost";
   }
   if (host === "anthropic.com" || host.endsWith(ANTHROPIC_HOST_SUFFIX)) return "anthropic";

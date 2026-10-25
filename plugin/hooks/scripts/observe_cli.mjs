@@ -2054,23 +2054,27 @@ export function resolveSessionEndpoint(
   { env = process.env, probe = readAuthStatus, refresh = false } = {},
 ) {
   let cached = null;
-  if (!refresh) {
-    try {
-      cached = JSON.parse(readFileSync(endpointCachePath(sessionId), "utf8"));
-    } catch {
-      /* not cached yet */
-    }
-    const valid =
-      cached && typeof cached.billingMode === "string" && typeof cached.platform === "string";
-    if (valid && (cached.final || (cached.probes || 0) >= MAX_AUTH_PROBES)) {
-      return endpointOf(cached);
-    }
+  try {
+    cached = JSON.parse(readFileSync(endpointCachePath(sessionId), "utf8"));
+  } catch {
+    /* not cached yet */
+  }
+  const valid =
+    cached && typeof cached.billingMode === "string" && typeof cached.platform === "string";
+  if (!valid) cached = null;
+  if (!refresh && cached && (cached.final || (cached.probes || 0) >= MAX_AUTH_PROBES)) {
+    return endpointOf(cached);
   }
   // An explicit FLIGHTDECK_BILLING_MODE settles the billing mode, and the
   // cloud provider is read from the same CLAUDE_CODE_USE_* variables
   // Claude Code itself uses, so the CLI is not run.
   const override = BILLING_MODES.has((env.FLIGHTDECK_BILLING_MODE || "").trim().toLowerCase());
   const status = override ? null : probe();
+  // A refresh whose probe fails keeps a decision an earlier probe made,
+  // rather than replace it with the environment fallback.
+  if (refresh && !override && status === null && cached?.final) {
+    return endpointOf(cached);
+  }
   const endpoint = detectEndpoint(env, status);
   writeEndpointCache(sessionId, {
     ...endpoint,
@@ -2095,8 +2099,16 @@ function writeEndpointCache(sessionId, record) {
     mkdirOwnerOnly(join(tmpdir(), "flightdeck-plugin"));
     const path = endpointCachePath(sessionId);
     const partial = `${path}.${process.pid}.tmp`;
-    writeFileSync(partial, JSON.stringify(record));
-    renameSync(partial, path);
+    try {
+      writeFileSync(partial, JSON.stringify(record));
+      renameSync(partial, path);
+    } catch {
+      try {
+        unlinkSync(partial);
+      } catch {
+        /* already gone */
+      }
+    }
   } catch {
     /* silent */
   }

@@ -40,6 +40,7 @@ describe("detectEndpoint", () => {
     ["a malformed base URL is invalid-host", { ANTHROPIC_BASE_URL: "::not a url" }, API_KEY, "metered", "invalid-host"],
     ["an IPv6 loopback proxy is localhost", { ANTHROPIC_BASE_URL: "http://[::1]:8080" }, API_KEY, "metered", "localhost"],
     ["a 127.x proxy is localhost", { ANTHROPIC_BASE_URL: "http://127.0.0.1:4000" }, API_KEY, "metered", "localhost"],
+    ["a host merely starting with 127. is a gateway", { ANTHROPIC_BASE_URL: "https://127.example.com" }, API_KEY, "metered", "127.example.com"],
     ["a trailing-dot Anthropic host stays anthropic", { ANTHROPIC_BASE_URL: "https://api.anthropic.com./v1" }, API_KEY, "metered", "anthropic"],
     ["a third-party credential is metered", {}, { authMethod: "third_party", apiProvider: "firstParty" }, "metered", "anthropic"],
   ];
@@ -207,6 +208,13 @@ describe("resolveSessionEndpoint and turnTokenCostFields", () => {
     const refreshed = observe.resolveSessionEndpoint(sid, { env: {}, probe: () => CLAUDE_AI, refresh: true });
     assert.equal(refreshed.billingMode, "subscription");
     assert.equal(observe.resolveSessionEndpoint(sid, { env: {}, probe: () => API_KEY }).billingMode, "subscription");
+  });
+
+  it("a refresh whose probe fails keeps the earlier probe's decision", () => {
+    const sid = "66666666-2222-4333-8444-555555555555";
+    observe.resolveSessionEndpoint(sid, { env: {}, probe: () => API_KEY });
+    const kept = observe.resolveSessionEndpoint(sid, { env: {}, probe: () => null, refresh: true });
+    assert.equal(kept.billingMode, "metered");
   });
 
   it("leaves out an oversized model id or stop reason", () => {

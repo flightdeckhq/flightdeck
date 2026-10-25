@@ -252,7 +252,10 @@ local copy instead of downloading.
    catalogue's rates for one model and platform (`direct`, `bedrock`,
    `vertex`, `azure`, `foundry`) field by field, so state only the
    rates that differ. A model the catalogue does not list needs
-   `provider`, `input` and `output`. Rates are USD per 1M tokens.
+   `provider`, `input` and `output`. Rates are USD per 1M tokens. A
+   retired model kept for historical cost also gets `deprecated_on:
+   YYYY-MM-DD`, its retirement date, so token policies stop offering
+   it as a degrade target.
 2. Use the canonical model id the dashboard shows (the dated snapshot
    id when that is what the provider served).
 3. Bump `updated:` and run the store tests:

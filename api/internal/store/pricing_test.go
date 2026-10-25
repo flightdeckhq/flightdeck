@@ -301,12 +301,25 @@ func TestDegradeTargets_OnlyCurrentDirectChatModels(t *testing.T) {
 		t.Fatalf("alias: %v", err)
 	}
 
+	// A fine-tune price key starts with ft:, so it cannot carry the
+	// fixture prefix; it is seeded and removed by hand.
+	fineTune := "ft:" + f.prefix + "chat"
+	if _, err := f.s.pool.Exec(ctx, `INSERT INTO model_pricing (model_id, platform, provider, input, output,
+		cache_read, cache_write_5m, cache_write_1h, source)
+		VALUES ($1, 'direct', 'openai', 3, 15, 1.5, 3, 3, 'catalogue')`, fineTune); err != nil {
+		t.Fatalf("fine-tune row: %v", err)
+	}
+	t.Cleanup(func() { _, _ = f.s.pool.Exec(ctx, `DELETE FROM model_pricing WHERE model_id = $1`, fineTune) })
+
 	models, err := f.s.DegradeTargets(ctx)
 	if err != nil {
 		t.Fatalf("DegradeTargets: %v", err)
 	}
 	var mine []string
 	for _, m := range models {
+		if m.ModelID == fineTune {
+			t.Errorf("fine-tune price key %s offered as a degrade target", fineTune)
+		}
 		if strings.HasPrefix(m.ModelID, f.prefix) {
 			mine = append(mine, strings.TrimPrefix(m.ModelID, f.prefix))
 		}
@@ -319,5 +332,8 @@ func TestDegradeTargets_OnlyCurrentDirectChatModels(t *testing.T) {
 		if err != nil || got != want {
 			t.Errorf("IsDegradeTarget(%s) = %v, %v; want %v", model, got, err, want)
 		}
+	}
+	if got, err := f.s.IsDegradeTarget(ctx, fineTune); err != nil || got {
+		t.Errorf("IsDegradeTarget(%s) = %v, %v; want false", fineTune, got, err)
 	}
 }

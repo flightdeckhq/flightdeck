@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -72,6 +73,8 @@ type mockStore struct {
 	// degradeTargets is the priced-model list the policy degrade_to
 	// check and GET /v1/pricing/models read.
 	degradeTargets []store.PricedModel
+	// degradeTargetErr, when set, fails IsDegradeTarget.
+	degradeTargetErr error
 }
 
 func (m *mockStore) GetContextFacets(_ context.Context) (map[string][]store.ContextFacetValue, error) {
@@ -242,6 +245,9 @@ func (m *mockStore) DegradeTargets(_ context.Context) ([]store.PricedModel, erro
 }
 
 func (m *mockStore) IsDegradeTarget(_ context.Context, modelID string) (bool, error) {
+	if m.degradeTargetErr != nil {
+		return false, m.degradeTargetErr
+	}
 	for _, d := range m.degradeTargets {
 		if d.ModelID == modelID {
 			return true, nil
@@ -1191,6 +1197,30 @@ func TestPolicyUpdateHandler_OnlyAChangedDegradeToIsChecked(t *testing.T) {
 	}
 	if w := policyRequest(t, h, "PUT", "pol-1", base+`,"degrade_to":"claude-haiku-4-5"}`); w.Code != http.StatusOK {
 		t.Errorf("changed to a priced model: expected 200, got %d", w.Code)
+	}
+}
+
+func TestPolicyUpdateHandler_ChecksADegradeToAddedToAPolicyWithout(t *testing.T) {
+	s := &mockStore{
+		degradeTargets: degradeTargetsFixture,
+		policies:       []store.Policy{{ID: "pol-1", Scope: "flavor", ScopeValue: "x"}},
+	}
+	h := handlers.PolicyUpdateHandler(store.WrapStore(s))
+	base := `{"scope":"flavor","scope_value":"x","warn_at_pct":70,"degrade_at_pct":90,"block_at_pct":100`
+	if w := policyRequest(t, h, "PUT", "pol-1", base+`,"degrade_to":"gpt-nope"}`); w.Code != http.StatusBadRequest {
+		t.Errorf("unpriced degrade_to on a policy without one: expected 400, got %d", w.Code)
+	}
+	if w := policyRequest(t, h, "PUT", "pol-1", base+`,"degrade_to":"claude-haiku-4-5"}`); w.Code != http.StatusOK {
+		t.Errorf("priced degrade_to on a policy without one: expected 200, got %d (%s)", w.Code, w.Body)
+	}
+}
+
+func TestPolicyCreateHandler_DegradeToLookupFailureIs500(t *testing.T) {
+	s := &mockStore{degradeTargetErr: errors.New("db down")}
+	h := handlers.PolicyCreateHandler(store.WrapStore(s))
+	body := `{"scope":"flavor","scope_value":"x","degrade_at_pct":90,"block_at_pct":100,"degrade_to":"claude-haiku-4-5"}`
+	if w := policyRequest(t, h, "POST", "", body); w.Code != http.StatusInternalServerError {
+		t.Errorf("expected 500 when the pricing lookup fails, got %d", w.Code)
 	}
 }
 

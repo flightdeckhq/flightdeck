@@ -74,6 +74,35 @@ overrides:
 	}
 }
 
+func TestApplyPricingFile_OverrideSetsDeprecatedOn(t *testing.T) {
+	rows, _, err := applyYaml(t, `
+version: 2
+overrides:
+  - model_id: claude-3-opus-20240229
+    provider: anthropic
+    input: 15
+    output: 75
+    deprecated_on: 2026-01-05
+`)
+	if err != nil {
+		t.Fatalf("apply: %v", err)
+	}
+	r := rowsByKey(t, rows)[rowKey{"claude-3-opus-20240229", platformDirect}]
+	if r.DeprecatedOn == nil || *r.DeprecatedOn != "2026-01-05" {
+		t.Errorf("deprecated_on = %v, want 2026-01-05", r.DeprecatedOn)
+	}
+
+	_, _, err = applyYaml(t, `
+version: 2
+overrides:
+  - model_id: claude-sonnet-4-5
+    deprecated_on: next spring
+`)
+	if err == nil || !strings.Contains(err.Error(), "deprecated_on") {
+		t.Errorf("an unparseable deprecated_on should fail the file, got %v", err)
+	}
+}
+
 func TestApplyPricingFile_ReadsAVersion1ModelsList(t *testing.T) {
 	rows, _, err := applyYaml(t, `
 version: 1

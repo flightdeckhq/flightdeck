@@ -289,8 +289,11 @@ type PricedModel struct {
 // degradeTargetWhere selects the models a policy may degrade to: priced
 // on the provider's own API (degrade_to is passed to the SDK as the
 // model id), generating output (embedding models price none), not an
-// operator alias, and not past their deprecation date.
+// operator alias, not a fine-tune price key (`ft:<base>` prices every
+// fine-tune of a base model; a callable fine-tune id carries an org and
+// suffix after it), and not past their deprecation date.
 const degradeTargetWhere = `platform = 'direct' AND source <> 'alias' AND output > 0
+	AND model_id NOT LIKE 'ft:%'
 	AND (deprecated_on IS NULL OR deprecated_on > CURRENT_DATE)`
 
 // DegradeTargets lists the models a policy may degrade to, by provider

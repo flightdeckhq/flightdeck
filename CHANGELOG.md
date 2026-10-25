@@ -77,6 +77,9 @@ All notable changes to Flightdeck are documented here.
   degrade to: current chat models priced on each provider's own API.
   The policy editor's degrade-to list now comes from it instead of a
   list built into the dashboard.
+- **`pricing.yaml` overrides take `deprecated_on`.** The retired models
+  the file prices for historical sessions now carry their retirement
+  dates, so they are no longer offered as degrade targets.
 
 ### Changed
 

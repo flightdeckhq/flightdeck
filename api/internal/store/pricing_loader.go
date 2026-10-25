@@ -75,7 +75,10 @@ type pricingOverride struct {
 	Reasoning          *float64 `yaml:"reasoning"`
 	PriorityMultiplier *float64 `yaml:"priority_multiplier"`
 	FastMultiplier     *float64 `yaml:"fast_multiplier"`
-	Notes              string   `yaml:"notes,omitempty"`
+	// DeprecatedOn (YYYY-MM-DD) marks a model the provider retires on
+	// that date; a policy cannot degrade to it once the date passes.
+	DeprecatedOn string `yaml:"deprecated_on"`
+	Notes        string `yaml:"notes,omitempty"`
 }
 
 // pricingAlias maps a deployment or route name to a priced model.
@@ -392,6 +395,12 @@ func applyOverride(row *PriceRow, o pricingOverride, i int) error {
 	}
 	if o.Provider != "" {
 		row.Provider = o.Provider
+	}
+	if o.DeprecatedOn != "" {
+		if _, err := time.Parse(time.DateOnly, o.DeprecatedOn); err != nil {
+			return fmt.Errorf("override %d (%s): deprecated_on must be YYYY-MM-DD (got %q)", i, o.ModelID, o.DeprecatedOn)
+		}
+		row.DeprecatedOn = ptr(o.DeprecatedOn)
 	}
 	return nil
 }

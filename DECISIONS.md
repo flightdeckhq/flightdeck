@@ -11688,10 +11688,15 @@ narrowed to the rows a degrade can actually call: priced on the
 provider's own API (`platform = 'direct'`; the sensor passes the id
 straight to the SDK, and a Bedrock or Vertex request needs that
 platform's own id), with an output price (an embedding model cannot
-answer a chat call), and not a `pricing.yaml` alias (aliases name
-gateway-local ids, not provider models). `GET /v1/pricing/models`
-serves the same list to the dashboard, so the editor and the check
-cannot disagree.
+answer a chat call), not a `pricing.yaml` alias (aliases name
+gateway-local ids, not provider models), and not an `ft:<base>`
+fine-tune price key (litellm prices every fine-tune of a base model
+under it; a callable fine-tune id carries an org and suffix). The
+retired models `pricing.yaml` adds for historical cost had no
+`deprecated_on`, so overrides gained a `deprecated_on` field and those
+entries carry their retirement dates. `GET /v1/pricing/models` serves
+the same list to the dashboard, so the editor and the check cannot
+disagree.
 
 ---
 

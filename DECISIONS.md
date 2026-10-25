@@ -11801,3 +11801,11 @@ session's events through one worker (a consumer redesign for one side
 effect); reviving the session for the late call (contradicts the
 explicit end, as D105 and D106 set out).
 
+**Known limits:** The roll-up is at-least-once, like the open-session
+path: tokens are added before the event row is inserted, so a
+redelivery after a failed insert adds them again. After an operator
+recreates the NATS stream, a `closed_seq` that `ClearSequencesAbove`
+leaves in place (one at or below the new stream's last sequence) can
+order a new call as earlier than the end; `start_seq` has the same
+limit, and both only follow a stream recreate.
+

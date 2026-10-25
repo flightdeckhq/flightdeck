@@ -115,6 +115,10 @@ func multiplierSQL(field string, values map[string]float64) string {
 // plus the server-tool fees. Calls that are not metered cost 0; an
 // unpriced call is NULL, which SUM skips.
 func costRowSQL(settings PricingSettings) string {
+	// The payload counters are cast to numbers: ingestion rejects a
+	// non-integer tokens_cache_creation_1h or server_tool_use counter,
+	// and the worker decodes both into integer types before writing the
+	// payload, so a stored value is always numeric.
 	const (
 		in     = "COALESCE(e.tokens_input, 0)"
 		out    = "COALESCE(e.tokens_output, 0)"
@@ -227,16 +231,16 @@ func billingModesSQL(extraJoin, extraWhere string) string {
 // worker's Go rule (workers/internal/modelid.Provider), and a DB test
 // runs both over the shared test vectors so they cannot drift. Used for
 // rows whose events.provider is empty and for the session-level model.
-// "model" is replaced with the column by providerCase.
+// providerCase substitutes {id} with the model column, an OpenAI-style
+// "ft:" fine-tune prefix stripped as the Go rule does.
 const ProviderCaseSQL = `CASE
-	WHEN model ~ '^(ft:)?claude' OR model ~ '^anthropic\.' THEN 'anthropic'
-	WHEN model ~ '^(ft:)?(gpt-|chatgpt-|o[1-9](-|$)|codex-|text-embedding-|dall-e-|gpt-image-|whisper-|tts-|omni-moderation)'
-		OR model ~ '^openai\.' THEN 'openai'
-	WHEN model ~ '^(gemini|gemma)' THEN 'google'
-	WHEN model ~ '^grok' THEN 'xai'
-	WHEN model ~ '^(mistral|mixtral|codestral|ministral|pixtral|magistral|devstral|open-mistral|open-mixtral)' THEN 'mistral'
-	WHEN model ~ '^(llama|meta\.)' THEN 'meta'
-	WHEN model ~ '^deepseek' THEN 'deepseek'
+	WHEN {id} ~ '^(claude|anthropic\.)' THEN 'anthropic'
+	WHEN {id} ~ '^(gpt-|chatgpt-|o[1-9](-|$)|codex-|text-embedding-|dall-e-|gpt-image-|whisper-|tts-|omni-moderation|openai\.)' THEN 'openai'
+	WHEN {id} ~ '^(gemini|gemma)' THEN 'google'
+	WHEN {id} ~ '^grok' THEN 'xai'
+	WHEN {id} ~ '^(mistral|mixtral|codestral|ministral|pixtral|magistral|devstral|open-mistral|open-mixtral)' THEN 'mistral'
+	WHEN {id} ~ '^(llama|meta\.)' THEN 'meta'
+	WHEN {id} ~ '^deepseek' THEN 'deepseek'
 	ELSE 'other'
 END`
 

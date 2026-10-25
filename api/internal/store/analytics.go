@@ -207,7 +207,7 @@ var dimensions = map[string]dimensionSource{
 // reference so the same logic works whether the base query is on
 // events or sessions.
 func providerCase(modelCol string) string {
-	return strings.ReplaceAll(ProviderCaseSQL, "model", modelCol)
+	return strings.ReplaceAll(ProviderCaseSQL, "{id}", "regexp_replace("+modelCol+", '^ft:', '')")
 }
 
 // eventProviderSQL is an event's vendor: the provider the client or the
@@ -599,12 +599,12 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 	// on row arity so the standard / two-dim paths share scan
 	// machinery rather than duplicating the cursor management.
 	//
-	//nolint:gosec // dimExpr / secDimExpr from the validated
-	// whitelist; spec strings come from the metricSpecs map;
-	// params.Granularity is validated by the handler.
 	if spec.fromExtras != "" {
 		fromClause = fromClause + " " + spec.fromExtras
 	}
+	//nolint:gosec // dimExpr / secDimExpr from the validated
+	// whitelist; spec strings come from the metricSpecs map;
+	// params.Granularity is validated by the handler.
 	var seriesSQL string
 	if hasSecondary {
 		seriesSQL = fmt.Sprintf(`
@@ -710,8 +710,9 @@ func (s *Store) QueryAnalytics(ctx context.Context, params AnalyticsParams) (*An
 
 	// For estimated_cost, say what the number leaves out: the models
 	// of metered calls with no price, and the billing modes in use.
-	// Separate round trips over the whole window, so the probes never
-	// depend on the grouping of the main query.
+	// Separate round trips over the whole window: they are not narrowed
+	// by the chart's filters (ARCHITECTURE.md, Cost estimation), so a
+	// filtered chart may name a model or mode outside its filter.
 	if params.Metric == "estimated_cost" {
 		coverage, err := s.costCoverage(ctx, start, end, "", "")
 		if err != nil {

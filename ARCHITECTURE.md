@@ -3153,10 +3153,13 @@ multiplies by 1.
 - `speed`: `fast` at the model's `fast_multiplier` (1 when it has
   none).
 - `inference_geo`: 1.1 for Anthropic's US-only inference.
-- `inference_scope`: 1.1 for a `regional` cloud endpoint (a Bedrock
-  regional or multi-region inference profile, a Vertex AI regional
-  endpoint) on the models whose cloud pricing carries that premium;
-  `global` endpoints 1.
+- `inference_scope`: 1.1 for every call on a `regional` cloud endpoint
+  (a Bedrock regional or multi-region inference profile, a Vertex AI
+  regional endpoint); `global` endpoints 1. The premium is not limited
+  to the models whose cloud pricing carries it, so a call to an older
+  Claude model on a regional endpoint is priced 10% high; an operator
+  who needs it exact sets `inference_scope.regional: 1` in
+  `pricing.yaml`.
 - Server tools: per-request fees, such as web search per 1,000
   searches from `server_tool_use.web_search_requests`.
 
@@ -3183,8 +3186,10 @@ price nor a reported cost) is non-empty, and `billing_modes` lists every
 billing mode the window's calls used, so a surface can say that
 subscription usage is not included, or show `Subscription` where nothing
 was metered. `GET /v1/analytics` with `metric=estimated_cost` returns
-them at the top level of the response, beside `series`; the per-agent
-summary returns them inside `totals`.
+them at the top level of the response, beside `series`, computed over
+the whole window without the chart's filters, so a filtered chart can
+name a model or a mode outside its filter; the per-agent summary
+returns them inside `totals`, scoped to the agent.
 
 ### Search
 

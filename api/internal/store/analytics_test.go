@@ -647,6 +647,10 @@ func TestQueryAnalytics_PeriodChangeComparesPreviousWindow(t *testing.T) {
 	seedAgent(t, s, agentID, now.Add(-3*time.Hour), now.Add(-30*time.Minute), 1, 400)
 	sessionID := randomUUID(t)
 	seedSessionRow(t, s, sessionID, agentID, flavor, nil, nil, `{}`, now.Add(-90*time.Minute), 400)
+	// The events name a model the test prices itself, so estimated
+	// cost does not depend on what the shared model_pricing table holds.
+	model := flavor + "-model"
+	seedPrice(t, s, model, 3, 15)
 	for _, ev := range []struct {
 		at     time.Time
 		tokens int
@@ -657,12 +661,13 @@ func TestQueryAnalytics_PeriodChangeComparesPreviousWindow(t *testing.T) {
 		if _, err := s.pool.Exec(ctx, `
 			INSERT INTO events (
 				id, session_id, flavor, event_type, model, tokens_total,
-				tokens_input, tokens_output, latency_ms, occurred_at, has_content
+				tokens_input, tokens_output, latency_ms, occurred_at, has_content,
+				billing_mode
 			) VALUES (
-				gen_random_uuid(), $1::uuid, $2, 'post_call', 'claude-sonnet-4-6',
-				$3, $3, 0, 250, $4, false
+				gen_random_uuid(), $1::uuid, $2, 'post_call', $5,
+				$3, $3, 0, 250, $4, false, 'metered'
 			)
-		`, sessionID, flavor, ev.tokens, ev.at); err != nil {
+		`, sessionID, flavor, ev.tokens, ev.at, model); err != nil {
 			t.Fatalf("seed event: %v", err)
 		}
 	}
@@ -694,4 +699,21 @@ func TestQueryAnalytics_PeriodChangeComparesPreviousWindow(t *testing.T) {
 			}
 		}
 	}
+}
+
+// seedPrice inserts a direct-platform model_pricing row for model and
+// removes it after the test.
+func seedPrice(t *testing.T, s *Store, model string, input, output float64) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO model_pricing (model_id, platform, provider, input, output, cache_read,
+			cache_write_5m, cache_write_1h, source)
+		VALUES ($1, 'direct', 'other', $2, $3, $2, $2, $2, 'override')`,
+		model, input, output); err != nil {
+		t.Fatalf("seed price for %s: %v", model, err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.pool.Exec(ctx, `DELETE FROM model_pricing WHERE model_id = $1`, model)
+	})
 }

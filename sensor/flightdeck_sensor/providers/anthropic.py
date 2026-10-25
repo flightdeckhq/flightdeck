@@ -22,9 +22,9 @@ _log = logging.getLogger("flightdeck_sensor.providers.anthropic")
 # must be a model Anthropic still serves. Sonnet 4.6 is the served
 # successor of the previous default (Sonnet 4, retired 2026-06-15) in the
 # same tokenizer family, so estimates stay comparable; it is listed in the
-# SDK's model literal and priced in pricing.yaml, both of which the unit
-# tests check so a future retirement fails loudly instead of degrading
-# every estimate.
+# SDK's model literal and in the pricing catalogue without a passed
+# deprecation date, both of which the unit tests check so a future
+# retirement fails loudly instead of degrading every estimate.
 DEFAULT_COUNT_TOKENS_MODEL = "claude-sonnet-4-6"
 _CHARS_PER_TOKEN_ESTIMATE = 4
 

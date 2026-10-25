@@ -29,9 +29,9 @@ import (
 func main() {
 	cfg := config.Load()
 
-	// Load the model pricing table from pricing.yaml. Falls back to a
-	// small safety map on any load failure -- the service must not
-	// crash on a bad pricing file.
+	// Build the price list from the embedded catalogue and the
+	// pricing.yaml overrides. A bad pricing.yaml is logged and ignored
+	// -- the service must not crash on a bad pricing file.
 	store.LoadPricing()
 
 	// Postgres
@@ -43,6 +43,12 @@ func main() {
 	defer pool.Close()
 
 	s := store.New(pool)
+	// Write the price list into model_pricing for the cost queries.
+	// Best-effort: on failure the table keeps its previous content and
+	// the next boot retries.
+	if err := store.SyncPricingTable(context.Background(), pool); err != nil {
+		slog.Warn("pricing table sync at boot failed", "err", err)
+	}
 	// Ensure the empty blocklist global MCP policy exists
 	// before serving traffic. Idempotent INSERT with retry on
 	// unique-violation handles parallel API instances on shared

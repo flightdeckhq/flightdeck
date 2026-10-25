@@ -1,14 +1,11 @@
 // Pricing tests. Run with `go test ./api/internal/store/...`.
 //
-// These tests cover the pure-SQL and pure-Go surface of the pricing
-// table: formula generation and YAML loader. They do not touch
-// Postgres -- analytics/query behaviour is tested via the integration
-// suite.
+// These tests cover the per-model CASE cost expression. The catalogue
+// and loader are tested in pricing_catalogue_test.go and
+// pricing_loader_test.go.
 package store
 
 import (
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -120,186 +117,19 @@ func TestKnownPricedModels_ReturnsSortedKeys(t *testing.T) {
 	}
 }
 
-// ------------------------------------------------------------------
-// pricing_loader tests
-// ------------------------------------------------------------------
-
-func writeTempYaml(t *testing.T, name, body string) string {
-	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
-		t.Fatalf("write fixture: %v", err)
-	}
-	return path
-}
-
-// TestParsePricingFile_Valid covers the happy path: a well-formed YAML
-// with two models parses into a map with the right prices.
-func TestParsePricingFile_Valid(t *testing.T) {
-	path := writeTempYaml(t, "valid.yaml", `
-version: 1
-updated: 2026-04-17
-models:
-  - model_id: claude-sonnet-4-6
-    provider: anthropic
-    input: 3.00
-    output: 15.00
-  - model_id: gpt-4o
-    provider: openai
-    input: 2.50
-    output: 10.00
-`)
-	got, err := parsePricingFile(path)
-	if err != nil {
-		t.Fatalf("expected valid parse, got: %v", err)
-	}
-	if len(got) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(got))
-	}
-	if got["claude-sonnet-4-6"].InputPerMTok != 3.00 {
-		t.Errorf("sonnet input: want 3.00, got %v", got["claude-sonnet-4-6"].InputPerMTok)
-	}
-	if got["gpt-4o"].OutputPerMTok != 10.00 {
-		t.Errorf("gpt-4o output: want 10.00, got %v", got["gpt-4o"].OutputPerMTok)
-	}
-}
-
-// TestParsePricingFile_DuplicateModelID rejects a file with two entries
-// sharing the same model_id. This catches copy-paste mistakes in PRs
-// that would silently keep only one of the conflicting prices.
-func TestParsePricingFile_DuplicateModelID(t *testing.T) {
-	path := writeTempYaml(t, "dup.yaml", `
-version: 1
-models:
-  - model_id: gpt-4o
-    provider: openai
-    input: 2.50
-    output: 10.00
-  - model_id: gpt-4o
-    provider: openai
-    input: 3.00
-    output: 12.00
-`)
-	_, err := parsePricingFile(path)
-	if err == nil {
-		t.Fatal("expected duplicate-model_id error, got nil")
-	}
-	if !strings.Contains(err.Error(), "duplicate") {
-		t.Errorf("error should mention duplicate, got: %v", err)
-	}
-}
-
-// TestParsePricingFile_NegativePriceRejected ensures malformed prices
-// are caught at load time rather than silently producing negative
-// cost numbers.
-func TestParsePricingFile_NegativePriceRejected(t *testing.T) {
-	path := writeTempYaml(t, "neg.yaml", `
-version: 1
-models:
-  - model_id: broken-model
-    provider: anthropic
-    input: -1.00
-    output: 5.00
-`)
-	_, err := parsePricingFile(path)
-	if err == nil || !strings.Contains(err.Error(), "input must be >= 0") {
-		t.Fatalf("expected negative-input error, got: %v", err)
-	}
-}
-
-// TestParsePricingFile_InvalidProviderRejected catches a typo in the
-// provider field. The valid-providers set is closed because the SQL
-// CASE in ProviderCaseSQL only knows those names.
-func TestParsePricingFile_InvalidProviderRejected(t *testing.T) {
-	path := writeTempYaml(t, "provider.yaml", `
-version: 1
-models:
-  - model_id: weird-model
-    provider: cohere
-    input: 1.00
-    output: 2.00
-`)
-	_, err := parsePricingFile(path)
-	if err == nil || !strings.Contains(err.Error(), "unknown provider") {
-		t.Fatalf("expected unknown-provider error, got: %v", err)
-	}
-}
-
-// TestParsePricingFile_EmptyModelsRejected guards against the silent-
-// pricing failure mode where a bad edit wipes the whole models list.
-// We'd rather fail loud than silently ship a zero-price table.
-func TestParsePricingFile_EmptyModelsRejected(t *testing.T) {
-	path := writeTempYaml(t, "empty.yaml", `
-version: 1
-models: []
-`)
-	_, err := parsePricingFile(path)
-	if err == nil || !strings.Contains(err.Error(), "empty") {
-		t.Fatalf("expected empty-models error, got: %v", err)
-	}
-}
-
-// TestParsePricingFile_MissingFile exercises the loader's os.ReadFile
-// error branch -- the public LoadPricing function swallows this and
-// installs the safety map; parsePricingFile propagates it so the
-// caller can log the path.
-func TestParsePricingFile_MissingFile(t *testing.T) {
-	_, err := parsePricingFile(filepath.Join(t.TempDir(), "does-not-exist.yaml"))
-	if err == nil {
-		t.Fatal("expected read error for missing file, got nil")
-	}
-}
-
-// TestLoadPricing_MissingFileFallsBackToSafetyMap verifies the
-// service-start contract: even with a broken path the API still boots
-// with cost estimation for the four safety-map models.
-func TestLoadPricing_MissingFileFallsBackToSafetyMap(t *testing.T) {
-	t.Setenv("FLIGHTDECK_PRICING_PATH", filepath.Join(t.TempDir(), "nope.yaml"))
-	prev := modelPricing
-	t.Cleanup(func() { modelPricing = prev })
-
-	LoadPricing()
-
-	for _, m := range []string{"claude-sonnet-4-6", "gpt-4o"} {
-		if _, ok := modelPricing[m]; !ok {
-			t.Errorf("safety map missing expected model %s", m)
-		}
-	}
-	if len(modelPricing) > 10 {
-		t.Errorf("safety map larger than expected (%d); LoadPricing may have loaded real data", len(modelPricing))
-	}
-}
-
-// TestLoadPricing_EnvVarOverrideIsHonoured confirms the env-var path
-// wins over /etc/flightdeck/pricing.yaml and ./pricing.yaml.
-func TestLoadPricing_EnvVarOverrideIsHonoured(t *testing.T) {
-	path := writeTempYaml(t, "override.yaml", `
-version: 1
-models:
-  - model_id: override-sentinel
-    provider: anthropic
-    input: 7.77
-    output: 11.11
-`)
-	t.Setenv("FLIGHTDECK_PRICING_PATH", path)
-	prev := modelPricing
-	t.Cleanup(func() { modelPricing = prev })
-
-	LoadPricing()
-
-	p, ok := modelPricing["override-sentinel"]
-	if !ok {
-		t.Fatal("override yaml not loaded")
-	}
-	if p.InputPerMTok != 7.77 || p.OutputPerMTok != 11.11 {
-		t.Errorf("override prices wrong: %+v", p)
-	}
-}
-
 func requireContains(t *testing.T, haystack, needle, reason string) {
 	t.Helper()
 	if !strings.Contains(haystack, needle) {
 		t.Errorf("expected substring (%s): %q not found in\n%s", reason, needle, haystack)
+	}
+}
+
+// With no prices loaded the expression is still valid SQL: every rate
+// is 0 rather than a CASE without a WHEN arm.
+func TestBuildCostAggregateSQL_NoPricesIsValidSQL(t *testing.T) {
+	snapshotPricing(t, map[string]ModelPricing{})
+	sql := BuildCostAggregateSQL("e.model")
+	if strings.Contains(sql, "CASE e.model ELSE") {
+		t.Errorf("empty price map produced a CASE without WHEN: %s", sql)
 	}
 }

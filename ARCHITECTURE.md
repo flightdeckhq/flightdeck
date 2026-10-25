@@ -362,6 +362,7 @@ flightdeck/
 │   │   ├── server/server.go    # Router, CORS, auth middleware, withRESTTimeout
 │   │   ├── auth/token.go       # Bearer token validation against access_tokens (same rules as ingestion's)
 │   │   ├── mcp_identity/identity.go  # MCP server identity canonicalisation + fingerprint (Go twin of the sensor / plugin helpers)
+│   │   ├── modelid/canonical.go  # Model-id canonicalisation (twin of workers/internal/modelid, same test vectors)
 │   │   ├── handlers/
 │   │   │   ├── fleet.go            # GET /v1/fleet
 │   │   │   ├── sessions.go         # GET /v1/sessions/:id
@@ -397,6 +398,7 @@ flightdeck/
 │   │   │   ├── pricing.go          # Cost SQL: joins events to model_pricing, applies the billing-mode rules and multipliers
 │   │   │   ├── pricing_loader.go   # Merges the catalogue with pricing.yaml (FLIGHTDECK_PRICING_PATH → /etc/flightdeck → ./) and rebuilds model_pricing at startup
 │   │   │   ├── pricing_catalogue.json  # Vendored, pruned litellm price list, embedded in the binary
+│   │   │   ├── pricing_catalogue.go    # Maps the catalogue onto model_pricing rows (canonical id × platform family)
 │   │   │   ├── mcp_policy_store.go # MCP Protection Policy SQL (transactional entries replace + audit row)
 │   │   │   ├── mcp_policy_types.go # Go structs for mcp_policies / mcp_policy_entries rows and API DTOs
 │   │   │   ├── access_tokens.go
@@ -754,7 +756,7 @@ names no `model` is counted against `claude-sonnet-4-6`
 (`DEFAULT_COUNT_TOKENS_MODEL` in `providers/anthropic.py`): the endpoint
 answers 404 for a retired id and the estimator then falls back to the
 heuristic without a word, so a unit test pins the default to an id that
-`pricing.yaml` prices without a retired or deprecated note and that the
+the pricing catalogue prices without a deprecation date that has passed and that the
 installed SDK lists as a model.
 `OpenAIProvider.estimate_tokens` uses `tiktoken` when installed, falls back to
 `char // 4`. It counts the chat `messages`; for a Responses request it
@@ -2386,6 +2388,7 @@ CREATE TABLE model_pricing (
     tier_cache_write_5m    NUMERIC(14, 6),
     tier_cache_write_1h    NUMERIC(14, 6),
     priority_multiplier    NUMERIC(8, 4),              -- NULL: no priority rate in the catalogue
+    fast_multiplier        NUMERIC(8, 4),              -- NULL: no fast-mode price for the model
     source                 TEXT NOT NULL,              -- catalogue / override / alias
     deprecated_on          DATE,
     PRIMARY KEY (model_id, platform)
@@ -2538,6 +2541,7 @@ always create a new numbered migration.
 | 000027 | `sessions.start_seq` and `sessions.closed_seq` nullable BIGINT: NATS stream sequence of the `session_start` that opened the current run and of the `session_end` that closed it, so the worker orders a session's start and end without holding events back |
 | 000028 | `access_tokens_notify_revoked` trigger: every deleted `access_tokens` row sends its id on the `flightdeck_access_token_revoked` NOTIFY channel, so both services drop cached validations of a revoked token at once |
 | 000029 | Token and cost model: `events.tokens_reasoning`, `provider`, `billing_mode`, `platform`, `cost_reported`, `cost_source`, `model_requested`, `model_served`; the `model_pricing` and `model_pricing_meta` tables |
+| 000031 | `model_pricing.fast_multiplier`: per-model fast-mode price multiplier from the catalogue |
 | 000030 | `events_model_backfill_idx`: partial index on events that name a model but have no `model_requested`, the rows the worker's model-id backfill rewrites |
 
 ---
@@ -3070,17 +3074,32 @@ Prices come from two layers, merged at API startup into the
    `FLIGHTDECK_PRICING_PATH`, then `/etc/flightdeck/`, then the working
    directory). An entry there replaces the catalogue's entry for the
    same model and platform field by field, so an operator with
-   negotiated prices states only the rates that differ. It also holds
-   the `aliases` map and the multipliers below.
+   negotiated prices states only the rates that differ, or adds a model
+   the catalogue does not list (retired models litellm dropped). An
+   override of a base rate drops the model's context tier, so calls
+   above the threshold are priced at the override's rates. It also
+   holds the `aliases` map and the multipliers below. A file with an
+   invalid entry is ignored as a whole, with a warning naming the entry,
+   and the catalogue alone prices calls.
+
+The catalogue keeps chat, responses and embedding models of the
+providers above on their own APIs and on Bedrock, Vertex AI, Azure
+OpenAI and Foundry; each litellm key is canonicalised with the same
+rules as event model ids (the API keeps a twin of the worker's rules,
+both pinned by one test-vector file), and when several keys reach the
+same row (a Bedrock model and its regional profiles, an Azure model and
+its `eu` / `us` data-zone keys) the key that names no region wins, then
+a `global` one, then a regional one.
 
 Each row is keyed by canonical model id and platform family (`direct`
 for the provider's own API, `bedrock`, `vertex`, `foundry`, `azure`) and
 holds, in USD per million tokens: `input`, `output`, `cache_read`,
 `cache_write_5m`, `cache_write_1h`, and optionally `reasoning` (when
 reasoning tokens are priced apart from output), a context tier
-(`tier_threshold_tokens` with the five rates that apply above it) and
+(`tier_threshold_tokens` with the five rates that apply above it),
 `priority_multiplier` (the ratio of the catalogue's priority-tier rate
-to the standard rate). A
+to the standard rate) and `fast_multiplier` (Anthropic's fast-mode price
+for the model). A
 call on a platform with no row of its own is priced from the `direct`
 row. Platform labels map to a family: `bedrock` and `bedrock-mantle` to
 `bedrock`, `vertex` to `vertex`, `foundry` to `foundry`, `azure` to
@@ -3131,7 +3150,8 @@ multiplies by 1.
 
 - `service_tier`: `batch` and `flex` 0.5; `priority` at the model's
   `priority_multiplier` (1 when the catalogue has no priority rate).
-- `speed`: `fast` at the multiplier Anthropic publishes for fast mode.
+- `speed`: `fast` at the model's `fast_multiplier` (1 when it has
+  none).
 - `inference_geo`: 1.1 for Anthropic's US-only inference.
 - `inference_scope`: 1.1 for a `regional` cloud endpoint (a Bedrock
   regional or multi-region inference profile, a Vertex AI regional

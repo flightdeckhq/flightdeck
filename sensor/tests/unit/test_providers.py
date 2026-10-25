@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import datetime
+import json
 import typing
 from pathlib import Path
 from typing import Any
@@ -232,36 +234,29 @@ def test_cache_counts_that_are_not_integers_are_ignored() -> None:
 # count_tokens default model: must be a served, priced model id
 # ----------------------------------------------------------------------
 
-# pricing.yaml lives at the repo root; tests/unit/<file> is three levels
-# below sensor/, which is one below the root.
-_PRICING_YAML = Path(__file__).resolve().parents[3] / "pricing.yaml"
-
-
-def _pricing_row(model_id: str) -> dict[str, str] | None:
-    """The pricing.yaml row for ``model_id`` as a flat mapping, read with a
-    line scan so the test needs no YAML dependency. ``None`` when absent."""
-    rows: list[dict[str, str]] = []
-    for raw in _PRICING_YAML.read_text().splitlines():
-        line = raw.strip()
-        if line.startswith("- model_id:"):
-            rows.append({"model_id": line.split(":", 1)[1].strip()})
-        elif rows and ":" in line and not line.startswith("#") and not raw.startswith("#"):
-            key, value = line.split(":", 1)
-            rows[-1].setdefault(key.strip(), value.strip())
-    return next((row for row in rows if row["model_id"] == model_id), None)
+# The pricing catalogue the API embeds (api/internal/store/
+# pricing_catalogue.json); tests/unit/<file> is three levels below
+# sensor/, which is one below the repo root.
+_PRICING_CATALOGUE = (
+    Path(__file__).resolve().parents[3] / "api" / "internal" / "store" / "pricing_catalogue.json"
+)
 
 
 def test_default_count_tokens_model_is_priced_and_not_retired() -> None:
     """A retired default makes count_tokens 404 and every estimate for a
-    model-less request silently degrade to the char heuristic. The row
-    must exist and must not be marked retired or deprecated."""
-    assert _PRICING_YAML.is_file(), f"pricing.yaml not found at {_PRICING_YAML}"
-    row = _pricing_row(DEFAULT_COUNT_TOKENS_MODEL)
-    assert row is not None, f"{DEFAULT_COUNT_TOKENS_MODEL} is not priced in pricing.yaml"
-    assert row.get("provider") == "anthropic"
-    notes = row.get("notes", "").lower()
-    for marker in ("retired", "deprecated", "retires", "shutdown"):
-        assert marker not in notes, f"{DEFAULT_COUNT_TOKENS_MODEL} is marked {marker!r}: {notes}"
+    model-less request silently degrade to the char heuristic. The model
+    must be priced on Anthropic's own API and carry no deprecation date
+    that has passed."""
+    assert _PRICING_CATALOGUE.is_file(), f"catalogue not found at {_PRICING_CATALOGUE}"
+    models = json.loads(_PRICING_CATALOGUE.read_text())["models"]
+    entry = models.get(DEFAULT_COUNT_TOKENS_MODEL)
+    assert entry is not None, f"{DEFAULT_COUNT_TOKENS_MODEL} is not in the pricing catalogue"
+    assert entry.get("litellm_provider") == "anthropic"
+    deprecated = entry.get("deprecation_date")
+    if deprecated:
+        assert datetime.date.fromisoformat(deprecated) > datetime.date.today(), (
+            f"{DEFAULT_COUNT_TOKENS_MODEL} was deprecated on {deprecated}"
+        )
 
 
 def test_default_count_tokens_model_is_in_the_installed_sdk_model_list() -> None:

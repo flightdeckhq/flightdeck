@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-all
+.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-all
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -208,6 +208,9 @@ release-prep: ## Open the release PR: bump every version location, date the CHAN
 release-tag: ## After the release PR merges: tag main and push the tag (usage: make release-tag VERSION=v0.6.0)
 	@test -n "$(VERSION)" || (echo "Usage: make release-tag VERSION=v0.6.0" && exit 1)
 	./scripts/release.sh tag $(VERSION)
+
+pricing-refresh: ## Regenerate the vendored pricing catalogue from litellm's current price list
+	python3 scripts/pricing_refresh.py
 
 version-check: ## Check every version location matches the VERSION file
 	python3 scripts/version.py check

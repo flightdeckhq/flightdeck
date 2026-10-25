@@ -28,17 +28,11 @@ type ModelPricing struct {
 	OutputPerMTok float64
 }
 
-// modelPricing is the live pricing table. Populated at service startup
-// by LoadPricing (pricing_loader.go) from pricing.yaml at the repo
-// root. The initial value is the small safety map defined in
-// pricing_loader.go so a process that never calls LoadPricing (unit
-// tests, some embedded use) still produces non-zero cost for the
-// handful of models covered by the safety map.
-//
-// Full table lives in pricing.yaml -- a PR editing that file is the
-// supported way to add or update a model. See CONTRIBUTING.md
-// ("Updating pricing data").
-var modelPricing = cloneMap(safetyPricing)
+// modelPricing is the input / output rate of every direct-platform
+// model, the shape the per-model CASE expression below reads. Populated
+// at service startup by LoadPricing (pricing_loader.go) from the
+// vendored catalogue and pricing.yaml; empty until then.
+var modelPricing = map[string]ModelPricing{}
 
 // KnownPricedModels returns the set of models with a pricing entry.
 // Used by the analytics store to decide whether the response's
@@ -133,6 +127,12 @@ func BuildCostAggregateSQL(modelColumn string) string {
 
 	inputRate := inputCases.String()
 	outputRate := outputCases.String()
+	// A CASE with no WHEN arm is a syntax error; with no prices loaded
+	// (LoadPricing not yet run, or the catalogue unreadable) every rate
+	// is 0.
+	if len(models) == 0 {
+		inputRate, outputRate = "0", "0"
+	}
 
 	// uncached = tokens_input - cache_read - cache_creation. Wrapped in
 	// COALESCE at every column reference so NULL tokens_input rows

@@ -39,6 +39,17 @@ All notable changes to Flightdeck are documented here.
   `subscription`, an API key or a cloud provider `metered`.
   `FLIGHTDECK_BILLING_MODE` overrides the detection, which is the way
   to have a subscription that runs on extra usage priced.
+- **Prices come from litellm's price list.** The API embeds a pruned
+  copy of litellm's `model_prices_and_context_window.json` (about 800
+  priced rows across the providers' own APIs, Bedrock, Vertex AI, Azure
+  OpenAI and Foundry, with per-model cache, one-hour cache, reasoning,
+  priority, long-context and fast-mode rates) and writes it, with your
+  `pricing.yaml` overrides, into the new `model_pricing` table at
+  startup. `make pricing-refresh` regenerates the copy. `pricing.yaml`
+  becomes the override layer (version 2: `overrides`, `aliases`,
+  `multipliers`, `server_tools`); a version 1 `models:` list still
+  works and is read as overrides. Migration 000031 adds the per-model
+  fast-mode column.
 - **Canonical model ids.** The worker stores one canonical id per model
   however a client spelled it (Bedrock inference profiles, Vertex
   `@version` ids, gateway prefixes such as `openrouter/anthropic/...`,

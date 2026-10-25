@@ -448,23 +448,24 @@ func TestGetEvents_FrameworkFilter(t *testing.T) {
 			[]string{lc.id, cc.id})
 	})
 
-	resp, err := s.GetEvents(ctx, EventsParams{
-		From: from, To: now, Frameworks: []string{"langchain"}, Limit: 100,
-	})
-	if err != nil {
-		t.Fatalf("GetEvents(framework): %v", err)
-	}
-	foundLC := false
-	for _, ev := range resp.Events {
-		if ev.SessionID == cc.id {
-			t.Errorf("framework=langchain leaked claude-code session %s", cc.id)
+	// Each query is scoped to one seeded session so other rows in the
+	// shared database (E2E fixtures, earlier runs) cannot crowd the page.
+	matches := func(sessionID string) int {
+		t.Helper()
+		resp, err := s.GetEvents(ctx, EventsParams{
+			From: from, To: now, SessionID: sessionID,
+			Frameworks: []string{"langchain"}, Limit: 100,
+		})
+		if err != nil {
+			t.Fatalf("GetEvents(framework): %v", err)
 		}
-		if ev.SessionID == lc.id {
-			foundLC = true
-		}
+		return len(resp.Events)
 	}
-	if !foundLC {
-		t.Error("framework=langchain did not return the seeded langchain event")
+	if n := matches(lc.id); n != 1 {
+		t.Errorf("framework=langchain returned %d events for the langchain session, want 1", n)
+	}
+	if n := matches(cc.id); n != 0 {
+		t.Errorf("framework=langchain leaked %d claude-code events", n)
 	}
 }
 

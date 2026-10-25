@@ -7,6 +7,7 @@ import type {
   SessionState,
   Policy,
   PolicyRequest,
+  PricedModel,
   DirectiveRequest,
   Directive,
   AnalyticsParams,
@@ -218,6 +219,14 @@ export async function fetchPolicies(): Promise<Policy[]> {
   }
 }
 
+// policyError builds the ApiError for a rejected policy write. It
+// carries the API's own reason, which for a 400 names the field that
+// failed validation.
+async function policyError(res: Response, path: string): Promise<ApiError> {
+  const body = (await res.json().catch(() => null)) as { error?: string } | null;
+  return new ApiError(res.status, path, body?.error);
+}
+
 export async function createPolicy(data: PolicyRequest): Promise<Policy> {
   const res = await apiFetch(`/v1/policies`, {
     method: "POST",
@@ -225,7 +234,7 @@ export async function createPolicy(data: PolicyRequest): Promise<Policy> {
     body: JSON.stringify(data),
   });
   if (!res.ok) {
-    throw new Error(`API ${res.status}: POST /v1/policies`);
+    throw await policyError(res, "POST /v1/policies");
   }
   return res.json() as Promise<Policy>;
 }
@@ -237,9 +246,16 @@ export async function updatePolicy(id: string, data: PolicyRequest): Promise<Pol
     body: JSON.stringify(data),
   });
   if (!res.ok) {
-    throw new Error(`API ${res.status}: PUT /v1/policies/${id}`);
+    throw await policyError(res, `PUT /v1/policies/${id}`);
   }
   return res.json() as Promise<Policy>;
+}
+
+/** The models a token policy may degrade to: current chat models
+ *  priced on each provider's own API. The API rejects a degrade_to
+ *  that is not in this list. */
+export async function fetchDegradeTargets(signal?: AbortSignal): Promise<PricedModel[]> {
+  return fetchJson<PricedModel[]>("/v1/pricing/models", { signal });
 }
 
 export async function deletePolicy(id: string): Promise<void> {

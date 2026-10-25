@@ -19,10 +19,6 @@ export const OPENAI_MODELS = new Set([
   "o4-mini", "o3", "o3-pro", "o3-mini", "o1", "o1-mini",
 ]);
 
-export const ANTHROPIC_MODEL_LIST = [...ANTHROPIC_MODELS];
-export const OPENAI_MODEL_LIST = [...OPENAI_MODELS];
-export const ALL_MODELS = [...ANTHROPIC_MODEL_LIST, ...OPENAI_MODEL_LIST];
-
 export type Provider =
   | "anthropic"
   | "openai"

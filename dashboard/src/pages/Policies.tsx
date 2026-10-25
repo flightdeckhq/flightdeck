@@ -141,21 +141,17 @@ function TokenBudgetTab() {
     setEditorOpen(true);
   }
 
+  // A failed save propagates to the editor, which shows the reason
+  // inside the dialog; the page-level banner sits behind the modal.
   async function handleSave(data: PolicyRequest) {
     setError(null);
-    try {
-      if (editingPolicy) {
-        await updatePolicy(editingPolicy.id, data);
-      } else {
-        await createPolicy(data);
-      }
-      setEditorOpen(false);
-      await load();
-    } catch {
-      setError(
-        editingPolicy ? "Failed to update policy" : "Failed to create policy",
-      );
+    if (editingPolicy) {
+      await updatePolicy(editingPolicy.id, data);
+    } else {
+      await createPolicy(data);
     }
+    setEditorOpen(false);
+    await load();
   }
 
   async function handleDelete(policy: Policy) {

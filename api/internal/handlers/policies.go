@@ -80,6 +80,38 @@ func validatePolicyRequest(r PolicyRequest) string {
 	return ""
 }
 
+// errDegradeTarget is the 400 message for a degrade_to the pricing table
+// does not list as a current, priced model.
+const errDegradeTarget = "degrade_to must be a current, priced model (GET /v1/pricing/models lists them)"
+
+// checkDegradeTarget validates a request's degrade_to against the
+// pricing table and writes the error response when it fails. An unset
+// value, or one equal to the policy's stored value (previous, nil on
+// create), is not checked, so an edit to an existing policy's other
+// fields never fails on a model that was valid when it was set.
+// Returns whether the handler may proceed.
+func checkDegradeTarget(
+	w http.ResponseWriter, r *http.Request, s store.Querier, degradeTo, previous *string,
+) bool {
+	if degradeTo == nil || *degradeTo == "" {
+		return true
+	}
+	if previous != nil && *previous == *degradeTo {
+		return true
+	}
+	ok, err := s.IsDegradeTarget(r.Context(), *degradeTo)
+	if err != nil {
+		slog.Error("degrade target check error", "err", err)
+		writeError(w, http.StatusInternalServerError, "internal server error")
+		return false
+	}
+	if !ok {
+		writeError(w, http.StatusBadRequest, errDegradeTarget)
+		return false
+	}
+	return true
+}
+
 // PoliciesListHandler handles GET /v1/policies.
 //
 // @Summary      List policies
@@ -105,13 +137,13 @@ func PoliciesListHandler(s store.Querier) http.HandlerFunc {
 // PolicyCreateHandler handles POST /v1/policies.
 //
 // @Summary      Create policy
-// @Description  Creates a new token policy
+// @Description  Creates a new token policy. degrade_to, when set, must be a current, priced model (GET /v1/pricing/models).
 // @Tags         policies
 // @Accept       json
 // @Produce      json
 // @Param        policy  body      PolicyRequest  true  "Policy definition"
 // @Success      201  {object}  store.Policy
-// @Failure      400  {object}  ErrorResponse
+// @Failure      400  {object}  ErrorResponse  "invalid body, thresholds, or a degrade_to that is not a current, priced model"
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/policies [post]
 func PolicyCreateHandler(s store.Querier) http.HandlerFunc {
@@ -124,6 +156,9 @@ func PolicyCreateHandler(s store.Querier) http.HandlerFunc {
 		}
 		if msg := validatePolicyRequest(req); msg != "" {
 			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+		if !checkDegradeTarget(w, r, s, req.DegradeTo, nil) {
 			return
 		}
 		policy, err := s.UpsertPolicy(r.Context(), store.Policy{
@@ -146,7 +181,7 @@ func PolicyCreateHandler(s store.Querier) http.HandlerFunc {
 // PolicyUpdateHandler handles PUT /v1/policies/{id}.
 //
 // @Summary      Update policy
-// @Description  Updates an existing token policy
+// @Description  Updates an existing token policy. A changed degrade_to must be a current, priced model (GET /v1/pricing/models); an unchanged one is not re-checked.
 // @Tags         policies
 // @Accept       json
 // @Produce      json
@@ -183,6 +218,9 @@ func PolicyUpdateHandler(s store.Querier) http.HandlerFunc {
 		}
 		if msg := validatePolicyRequest(req); msg != "" {
 			writeError(w, http.StatusBadRequest, msg)
+			return
+		}
+		if !checkDegradeTarget(w, r, s, req.DegradeTo, existing.DegradeTo) {
 			return
 		}
 		policy, err := s.UpdatePolicy(r.Context(), id, store.Policy{

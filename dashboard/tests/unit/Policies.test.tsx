@@ -44,6 +44,15 @@ const mockFleetState = {
   applyUpdate: vi.fn(),
   selectSession: vi.fn(),
 };
+vi.mock("@/lib/api", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api")>()),
+  fetchDegradeTargets: vi.fn().mockResolvedValue([
+    { model_id: "claude-haiku-4-5", provider: "anthropic" },
+    { model_id: "claude-sonnet-4-6", provider: "anthropic" },
+    { model_id: "gpt-4o", provider: "openai" },
+    { model_id: "gpt-5-mini", provider: "openai" },
+  ]),
+}));
 vi.mock("@/store/fleet", () => ({
   useFleetStore: <T,>(selector?: (s: typeof mockFleetState) => T) =>
     selector ? selector(mockFleetState) : mockFleetState,
@@ -151,15 +160,32 @@ describe("PolicyEditor enhancements", () => {
     expect(screen.getByText("All models")).toBeInTheDocument();
   });
 
-  it("in-use models show green dot", () => {
+  it("in-use models show green dot", async () => {
     render(<PolicyEditor onSave={vi.fn()} onCancel={vi.fn()} />);
 
     const degradeInputs = screen.getAllByPlaceholderText("1-99");
     fireEvent.change(degradeInputs[1], { target: { value: "85" } });
 
-    // In-use models from fleet store (claude-sonnet-4-6 and gpt-4o)
-    expect(screen.getByText("In use in this scope")).toBeInTheDocument();
-    const dots = screen.getAllByTestId("in-use-dot");
-    expect(dots.length).toBeGreaterThanOrEqual(1);
+    // In-use models from fleet store (claude-sonnet-4-6 and gpt-4o),
+    // both priced, so both are offered with the in-use dot.
+    expect(await screen.findByText("In use in this scope")).toBeInTheDocument();
+    expect(screen.getAllByTestId("in-use-dot")).toHaveLength(2);
+  });
+
+  it("offers only priced models, and the filter narrows them", async () => {
+    render(<PolicyEditor onSave={vi.fn()} onCancel={vi.fn()} />);
+    fireEvent.change(screen.getAllByPlaceholderText("1-99")[1], { target: { value: "85" } });
+
+    const dropdown = await screen.findByTestId("model-dropdown");
+    await waitFor(() => expect(dropdown).toHaveTextContent("claude-haiku-4-5"));
+    expect(dropdown).toHaveTextContent("gpt-5-mini");
+
+    fireEvent.change(screen.getByLabelText("Filter models"), { target: { value: "haiku" } });
+    expect(dropdown).toHaveTextContent("claude-haiku-4-5");
+    expect(dropdown).not.toHaveTextContent("gpt-5-mini");
+    expect(dropdown).not.toHaveTextContent("claude-sonnet-4-6");
+
+    fireEvent.change(screen.getByLabelText("Filter models"), { target: { value: "nope" } });
+    expect(dropdown).toHaveTextContent("No priced model matches.");
   });
 });

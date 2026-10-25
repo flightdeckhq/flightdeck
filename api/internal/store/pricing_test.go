@@ -283,3 +283,41 @@ func TestProviderCaseSQL_MatchesTheGoRule(t *testing.T) {
 		}
 	}
 }
+
+func TestDegradeTargets_OnlyCurrentDirectChatModels(t *testing.T) {
+	f := newCostFixture(t, "flightdeck_sensor")
+	ctx := context.Background()
+	f.price("chat", "direct", sonnetRates)
+	f.price("chat-bedrock-only", "bedrock", sonnetRates)
+	embedding := sonnetRates
+	embedding.output = 0
+	f.price("embedding", "direct", embedding)
+	f.price("retired", "direct", sonnetRates)
+	if _, err := f.s.pool.Exec(ctx, `UPDATE model_pricing SET deprecated_on = CURRENT_DATE - 1 WHERE model_id = $1`, f.prefix+"retired"); err != nil {
+		t.Fatalf("deprecate: %v", err)
+	}
+	f.price("alias", "direct", sonnetRates)
+	if _, err := f.s.pool.Exec(ctx, `UPDATE model_pricing SET source = 'alias' WHERE model_id = $1`, f.prefix+"alias"); err != nil {
+		t.Fatalf("alias: %v", err)
+	}
+
+	models, err := f.s.DegradeTargets(ctx)
+	if err != nil {
+		t.Fatalf("DegradeTargets: %v", err)
+	}
+	var mine []string
+	for _, m := range models {
+		if strings.HasPrefix(m.ModelID, f.prefix) {
+			mine = append(mine, strings.TrimPrefix(m.ModelID, f.prefix))
+		}
+	}
+	if len(mine) != 1 || mine[0] != "chat" {
+		t.Errorf("degrade targets = %v, want only the current direct chat model", mine)
+	}
+	for model, want := range map[string]bool{"chat": true, "embedding": false, "retired": false, "alias": false, "chat-bedrock-only": false} {
+		got, err := f.s.IsDegradeTarget(ctx, f.prefix+model)
+		if err != nil || got != want {
+			t.Errorf("IsDegradeTarget(%s) = %v, %v; want %v", model, got, err, want)
+		}
+	}
+}

@@ -59,6 +59,10 @@ type Querier interface {
 	UpsertPolicy(ctx context.Context, p Policy) (*Policy, error)
 	UpdatePolicy(ctx context.Context, id string, p Policy) (*Policy, error)
 	DeletePolicy(ctx context.Context, id string) error
+	// DegradeTargets and IsDegradeTarget are the models a token
+	// policy's degrade_to may name (pricing.go).
+	DegradeTargets(ctx context.Context) ([]PricedModel, error)
+	IsDegradeTarget(ctx context.Context, modelID string) (bool, error)
 	CreateDirective(ctx context.Context, d Directive) (*Directive, error)
 	GetActiveSessionIDsByFlavor(ctx context.Context, flavor string) ([]string, error)
 	SyncDirectives(ctx context.Context, flavor string, fingerprints []string) ([]string, error)

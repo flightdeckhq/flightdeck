@@ -11683,6 +11683,16 @@ dashboard (drifts from the catalogue, and the API stays unprotected), or
 re-validating `degrade_to` on every update (an unrelated edit to an old
 policy would fail on a model id that was valid when it was set).
 
+**Implementation note (2026-10-25):** "a model in `model_pricing`" is
+narrowed to the rows a degrade can actually call: priced on the
+provider's own API (`platform = 'direct'`; the sensor passes the id
+straight to the SDK, and a Bedrock or Vertex request needs that
+platform's own id), with an output price (an embedding model cannot
+answer a chat call), and not a `pricing.yaml` alias (aliases name
+gateway-local ids, not provider models). `GET /v1/pricing/models`
+serves the same list to the dashboard, so the editor and the check
+cannot disagree.
+
 ---
 
 ## D210 -- Fast mode is priced per model; an invalid pricing.yaml falls back to the catalogue

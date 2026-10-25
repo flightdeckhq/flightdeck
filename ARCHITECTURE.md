@@ -2565,9 +2565,10 @@ authoritative parameter-level reference.
 | `GET` | `/v1/events/:id/content` | Event prompt content; 404 when capture was off for the session |
 | `GET` | `/v1/policy` | Sensor preflight: returns the policy applicable to a flavor + session_id |
 | `GET` | `/v1/policies` | List all token policies (org + flavor + session scopes) |
-| `POST` | `/v1/policies` | Create a policy; validates `warn < degrade < block`, and that `degrade_to` names a model in `model_pricing` that has no `deprecated_on` date in the past |
+| `POST` | `/v1/policies` | Create a policy; validates `warn < degrade < block`, and that `degrade_to` is one of the models `GET /v1/pricing/models` lists |
 | `PUT` | `/v1/policies/:id` | Update a policy; the same validation as `POST`, except that an unchanged `degrade_to` is not re-checked |
 | `DELETE` | `/v1/policies/:id` | Delete a policy |
+| `GET` | `/v1/pricing/models` | The models a policy may degrade to: `model_pricing` rows priced on the provider's own API (the sensor passes `degrade_to` to the SDK as the model id, so a cloud-platform-only id would fail), with an output price (embedding models have none), that are not an operator alias from `pricing.yaml`, and whose `deprecated_on` date has not passed; `[{model_id, provider}]` ordered by provider then model id |
 | `POST` | `/v1/directives` | Create a `shutdown`, `shutdown_flavor`, or `custom` directive |
 | `GET` | `/v1/directives/custom` | List registered custom directives; optional `flavor` filter |
 | `DELETE` | `/v1/directives/custom` | Delete custom directives by name prefix (`name_prefix` query param). Registered only when `ENVIRONMENT=dev`; the route does not exist otherwise |

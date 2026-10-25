@@ -68,6 +68,10 @@ type mockStore struct {
 	// assert the parse → store-params mapping. Nil unless set by a
 	// call.
 	lastSessionsParams *store.SessionsParams
+
+	// degradeTargets is the priced-model list the policy degrade_to
+	// check and GET /v1/pricing/models read.
+	degradeTargets []store.PricedModel
 }
 
 func (m *mockStore) GetContextFacets(_ context.Context) (map[string][]store.ContextFacetValue, error) {
@@ -231,6 +235,19 @@ func (m *mockStore) GetPolicies(_ context.Context) ([]store.Policy, error) {
 		return []store.Policy{}, nil
 	}
 	return m.policies, nil
+}
+
+func (m *mockStore) DegradeTargets(_ context.Context) ([]store.PricedModel, error) {
+	return m.degradeTargets, nil
+}
+
+func (m *mockStore) IsDegradeTarget(_ context.Context, modelID string) (bool, error) {
+	for _, d := range m.degradeTargets {
+		if d.ModelID == modelID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (m *mockStore) GetPolicyByID(_ context.Context, id string) (*store.Policy, error) {
@@ -1125,6 +1142,72 @@ func TestPolicyUpdateHandler_Succeeds(t *testing.T) {
 	handler(w, req)
 	if w.Code != http.StatusOK {
 		t.Errorf("expected 200, got %d", w.Code)
+	}
+}
+
+func policyRequest(t *testing.T, h http.HandlerFunc, method, id, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(method, "/v1/policies/"+id, bytes.NewBufferString(body))
+	if id != "" {
+		req.SetPathValue("id", id)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	h(w, req)
+	return w
+}
+
+var degradeTargetsFixture = []store.PricedModel{{ModelID: "claude-haiku-4-5", Provider: "anthropic"}}
+
+func TestPolicyCreateHandler_DegradeToMustBeAPricedModel(t *testing.T) {
+	s := &mockStore{degradeTargets: degradeTargetsFixture}
+	h := handlers.PolicyCreateHandler(store.WrapStore(s))
+	base := `{"scope":"flavor","scope_value":"x","warn_at_pct":80,"degrade_at_pct":90,"block_at_pct":100`
+	if w := policyRequest(t, h, "POST", "", base+`,"degrade_to":"claude-haiku-4-5"}`); w.Code != http.StatusCreated {
+		t.Errorf("priced degrade_to: expected 201, got %d (%s)", w.Code, w.Body)
+	}
+	w := policyRequest(t, h, "POST", "", base+`,"degrade_to":"claude-3-opus-retired"}`)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "degrade_to") {
+		t.Errorf("unpriced degrade_to: expected 400 naming degrade_to, got %d (%s)", w.Code, w.Body)
+	}
+	if w := policyRequest(t, h, "POST", "", base+`,"degrade_to":""}`); w.Code != http.StatusCreated {
+		t.Errorf("empty degrade_to: expected 201, got %d", w.Code)
+	}
+}
+
+func TestPolicyUpdateHandler_OnlyAChangedDegradeToIsChecked(t *testing.T) {
+	stale := "claude-3-opus-retired"
+	s := &mockStore{
+		degradeTargets: degradeTargetsFixture,
+		policies:       []store.Policy{{ID: "pol-1", Scope: "flavor", ScopeValue: "x", DegradeTo: &stale}},
+	}
+	h := handlers.PolicyUpdateHandler(store.WrapStore(s))
+	base := `{"scope":"flavor","scope_value":"x","warn_at_pct":70,"degrade_at_pct":90,"block_at_pct":100`
+	if w := policyRequest(t, h, "PUT", "pol-1", base+`,"degrade_to":"claude-3-opus-retired"}`); w.Code != http.StatusOK {
+		t.Errorf("unchanged degrade_to: expected 200, got %d (%s)", w.Code, w.Body)
+	}
+	if w := policyRequest(t, h, "PUT", "pol-1", base+`,"degrade_to":"gpt-nope"}`); w.Code != http.StatusBadRequest {
+		t.Errorf("changed to an unpriced model: expected 400, got %d", w.Code)
+	}
+	if w := policyRequest(t, h, "PUT", "pol-1", base+`,"degrade_to":"claude-haiku-4-5"}`); w.Code != http.StatusOK {
+		t.Errorf("changed to a priced model: expected 200, got %d", w.Code)
+	}
+}
+
+func TestDegradeTargetsHandler_ListsModels(t *testing.T) {
+	h := handlers.DegradeTargetsHandler(store.WrapStore(&mockStore{degradeTargets: degradeTargetsFixture}))
+	req := httptest.NewRequest("GET", "/v1/pricing/models", nil)
+	w := httptest.NewRecorder()
+	h(w, req)
+	var got []store.PricedModel
+	_ = json.Unmarshal(w.Body.Bytes(), &got)
+	if w.Code != http.StatusOK || len(got) != 1 || got[0].ModelID != "claude-haiku-4-5" {
+		t.Errorf("got %d %v", w.Code, got)
+	}
+	empty := httptest.NewRecorder()
+	handlers.DegradeTargetsHandler(store.WrapStore(&mockStore{}))(empty, req)
+	if strings.TrimSpace(empty.Body.String()) != "[]" {
+		t.Errorf("no models should be [], got %s", empty.Body)
 	}
 }
 

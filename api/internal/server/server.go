@@ -115,6 +115,7 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 	mux.Handle("POST /v1/policies", gate(handlers.PolicyCreateHandler(s)))
 	mux.Handle("PUT /v1/policies/{id}", gate(handlers.PolicyUpdateHandler(s)))
 	mux.Handle("DELETE /v1/policies/{id}", gate(handlers.PolicyDeleteHandler(s)))
+	mux.Handle("GET /v1/pricing/models", gate(handlers.DegradeTargetsHandler(s)))
 	mux.Handle("POST /v1/directives", gate(handlers.CreateDirectiveHandler(s)))
 
 	mux.Handle("POST /v1/directives/sync", gate(handlers.SyncDirectivesHandler(s)))

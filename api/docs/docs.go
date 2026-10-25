@@ -1948,7 +1948,7 @@ const docTemplate = `{
                 }
             },
             "post": {
-                "description": "Creates a new token policy",
+                "description": "Creates a new token policy. degrade_to, when set, must be a current, priced model (GET /v1/pricing/models).",
                 "consumes": [
                     "application/json"
                 ],
@@ -1978,7 +1978,7 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "Bad Request",
+                        "description": "invalid body, thresholds, or a degrade_to that is not a current, priced model",
                         "schema": {
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
@@ -1994,7 +1994,7 @@ const docTemplate = `{
         },
         "/v1/policies/{id}": {
             "put": {
-                "description": "Updates an existing token policy",
+                "description": "Updates an existing token policy. A changed degrade_to must be a current, priced model (GET /v1/pricing/models); an unchanged one is not re-checked.",
                 "consumes": [
                     "application/json"
                 ],
@@ -2119,6 +2119,35 @@ const docTemplate = `{
                         "description": "Not Found",
                         "schema": {
                             "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    },
+                    "500": {
+                        "description": "Internal Server Error",
+                        "schema": {
+                            "$ref": "#/definitions/handlers.ErrorResponse"
+                        }
+                    }
+                }
+            }
+        },
+        "/v1/pricing/models": {
+            "get": {
+                "description": "Returns the models a token policy's degrade_to may name: models priced on their provider's own API that generate output (embedding models are excluded), are not operator aliases, and are not past their deprecation date. Sorted by provider, then model id. The policy editor offers exactly this list, and POST / PUT /v1/policies reject any other degrade_to.",
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "policies"
+                ],
+                "summary": "List degrade targets",
+                "responses": {
+                    "200": {
+                        "description": "OK",
+                        "schema": {
+                            "type": "array",
+                            "items": {
+                                "$ref": "#/definitions/store.PricedModel"
+                            }
                         }
                     },
                     "500": {
@@ -3500,6 +3529,17 @@ const docTemplate = `{
                 },
                 "warn_at_pct": {
                     "type": "integer"
+                }
+            }
+        },
+        "store.PricedModel": {
+            "type": "object",
+            "properties": {
+                "model_id": {
+                    "type": "string"
+                },
+                "provider": {
+                    "type": "string"
                 }
             }
         },

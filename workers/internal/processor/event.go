@@ -550,6 +550,9 @@ func (p *Processor) afterSessionEnd(sessionID string, closed bool) {
 
 // Process handles a single event from NATS.
 func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error {
+	// Canonical model id, provider and billing defaults first, so the
+	// session's model and the stored event agree.
+	normalizeModelFields(&e)
 	// Route to the correct session handler
 	switch e.EventType {
 	case "session_start":

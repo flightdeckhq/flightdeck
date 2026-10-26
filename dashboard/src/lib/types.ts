@@ -328,6 +328,16 @@ export interface ProviderMetadata {
   processing_ms?: number;
   request_id?: string;
   model_info?: string;
+  /** Endpoint that served the call (`anthropic`, `bedrock`, `vertex`,
+   *  `azure`, a gateway host, ...). Also on the event as `platform`. */
+  platform?: string;
+}
+
+/** Server-side tool request counters an LLM call reports. */
+export interface ServerToolUse {
+  web_search_requests?: number;
+  web_fetch_requests?: number;
+  code_execution_requests?: number;
 }
 
 export interface OutputDimensions {
@@ -336,6 +346,16 @@ export interface OutputDimensions {
 }
 
 export interface EventPayloadFields {
+  // Per-call token and serving detail with no events column of its own.
+  /** One-hour cache writes, a subset of `tokens_cache_creation`. */
+  tokens_cache_creation_1h?: number;
+  service_tier?: string;
+  speed?: string;
+  inference_geo?: string;
+  inference_scope?: string;
+  server_tool_use?: ServerToolUse;
+  /** Why generation stopped, verbatim from the provider. */
+  stop_reason?: string;
   // Operator-actionable enrichment.
   policy_decision?: PolicyDecisionBlock;
   originating_event_id?: string;
@@ -458,6 +478,24 @@ export interface AgentEvent {
   tokens_input: number | null;
   tokens_output: number | null;
   tokens_total: number | null;
+  /** Prompt-cache tokens read and written; 0 when the provider reports
+   *  none. Optional on the type because older fixtures omit them. */
+  tokens_cache_read?: number;
+  tokens_cache_creation?: number;
+  tokens_reasoning?: number | null;
+  /** The model id as the client requested it and as the response
+   *  named it, both verbatim (`model` is the canonical id). */
+  model_requested?: string | null;
+  model_served?: string | null;
+  provider?: string | null;
+  /** `metered`, `subscription` or `local`. */
+  billing_mode?: string | null;
+  platform?: string | null;
+  /** USD the client or gateway reported for this call, with who
+   *  computed it: `provider` (the API or gateway) or `agent` (the
+   *  client). Both set or both absent. */
+  cost_reported?: number | null;
+  cost_source?: string | null;
   latency_ms: number | null;
   tool_name: string | null;
   has_content: boolean;

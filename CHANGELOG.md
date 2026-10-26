@@ -114,6 +114,14 @@ All notable changes to Flightdeck are documented here.
   DeepSeek show their brand marks instead of a generic icon. The
   Analytics summary row shows a card for every provider that used
   tokens, not only Anthropic and OpenAI.
+- **Event detail shows the call's token, serving and cost detail.** An
+  LLM call's summary in the event drawer, the session drawer's expanded
+  row and its full-detail view now lists cache reads and writes (with
+  the one-hour share), reasoning tokens, the stop reason, the requested
+  or served model id when it differs, the billing mode, the platform,
+  the service tier, speed and inference geo and scope, server tool
+  counts, and a reported cost with who computed it. Each row appears
+  only when the client reported the field.
 
 ### Fixed
 

@@ -15,8 +15,8 @@
 #   together or needs a migration: nginx and Go minor and major
 #   versions (nginx's odd minors are mainline releases; a Go version
 #   moves with go.mod, CI's setup-go and the compose dev images), and
-#   Node, Postgres and NATS majors (a Postgres major needs a data
-#   migration).
+#   Node (with @types/node), Postgres and NATS majors (a Postgres major
+#   needs a data migration).
 #
 # Security updates are not subject to the cooldown and arrive as soon
 # as an advisory is published (Dependabot security updates are enabled
@@ -123,6 +123,13 @@ updates:
     groups:
       npm-minor-patch:
         update-types: [minor, patch]
+    # @types/node describes one Node major's API, so it moves with the
+    # Node the dashboard runs on (node:24 in its Dockerfile, engines
+    # >=24.15, CI's setup-node 24), as a manual branch move like Node
+    # itself. Minor and patch updates within that major still arrive.
+    ignore:
+      - dependency-name: "@types/node"
+        update-types: [version-update:semver-major]
     commit-message:
       prefix: chore
       include: scope

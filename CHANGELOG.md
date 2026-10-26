@@ -4,6 +4,8 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+## v0.7.0 — 2026-10-26
+
 ### Added
 
 - **Token and cost fields on LLM events.** Events can carry reasoning

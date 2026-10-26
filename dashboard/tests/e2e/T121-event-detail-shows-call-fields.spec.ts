@@ -15,8 +15,11 @@ const MCP_ACTIVE_SESSION_ID = "f53c6626-fcdb-5452-9cf6-8472ef15dfca";
 
 test.describe("T121 — event detail shows a call's per-call fields", () => {
   test("the drawer lists cache, reasoning, serving, billing and cost rows", async ({ page }) => {
+    // The full history, not a newest-N page: the E2E keep-alive
+    // re-emits this session's MCP events every 30s, so over a long run
+    // the seeded call falls out of any fixed newest-N window.
     const resp = await page.request.get(
-      `http://localhost:4000/api/v1/sessions/${MCP_ACTIVE_SESSION_ID}?events_limit=100`,
+      `http://localhost:4000/api/v1/sessions/${MCP_ACTIVE_SESSION_ID}`,
       { headers: { Authorization: "Bearer tok_dev" } },
     );
     expect(resp.ok(), "session API call must succeed").toBe(true);

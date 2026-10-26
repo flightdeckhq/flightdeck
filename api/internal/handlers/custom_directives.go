@@ -169,13 +169,13 @@ type DeleteCustomDirectivesResponse struct {
 // to reset state between runs on a shared Postgres volume.
 //
 // @Summary      Delete custom directives by name prefix (dev/test only)
-// @Description  Deletes custom_directives rows where name LIKE prefix%. Intended for smoke test idempotency; not a production feature.
+// @Description  Deletes custom_directives rows where name LIKE prefix%. Intended for smoke test idempotency; not a production feature. Mounted only when ENVIRONMENT=dev; on any other server the route does not exist and the request gets a 404.
 // @Tags         custom-directives
 // @Produce      json
 // @Param        name_prefix  query     string  true  "Name prefix to match (e.g. smoke_)"
 // @Success      200          {object}  DeleteCustomDirectivesResponse
 // @Failure      400          {object}  ErrorResponse
-// @Failure      401  {object}  ErrorResponse
+// @Failure      401          {object}  ErrorResponse
 // @Failure      500          {object}  ErrorResponse
 // @Router       /v1/directives/custom [delete]
 func DeleteCustomDirectivesHandler(s store.Querier) http.HandlerFunc {
@@ -206,7 +206,7 @@ func DeleteCustomDirectivesHandler(s store.Querier) http.HandlerFunc {
 // @Produce      json
 // @Param        flavor  query     string  false  "Filter by flavor"
 // @Success      200     {object}  CustomDirectivesListResponse
-// @Failure      401  {object}  ErrorResponse
+// @Failure      401     {object}  ErrorResponse
 // @Failure      500     {object}  ErrorResponse
 // @Router       /v1/directives/custom [get]
 func GetCustomDirectivesHandler(s store.Querier) http.HandlerFunc {

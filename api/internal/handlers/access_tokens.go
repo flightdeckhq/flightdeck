@@ -91,7 +91,6 @@ func AccessTokenCreateHandler(s store.Querier) http.HandlerFunc {
 // @Tags         access-tokens
 // @Param        id  path  string  true  "Token ID"
 // @Success      204
-// @Failure      400  {object}  ErrorResponse
 // @Failure      401  {object}  ErrorResponse
 // @Failure      403  {object}  ErrorResponse
 // @Failure      404  {object}  ErrorResponse

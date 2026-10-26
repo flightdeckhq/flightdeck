@@ -254,7 +254,6 @@ func PolicyUpdateHandler(s store.Querier) http.HandlerFunc {
 // @Tags         policies
 // @Param        id  path  string  true  "Policy ID"
 // @Success      204
-// @Failure      400  {object}  ErrorResponse
 // @Failure      401  {object}  ErrorResponse
 // @Failure      404  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse

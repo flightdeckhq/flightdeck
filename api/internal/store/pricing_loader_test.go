@@ -2,10 +2,12 @@ package store
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -399,5 +401,34 @@ func TestSyncPricingTable_WritesOnceThenSkips(t *testing.T) {
 	}
 	if loadedAt1 != loadedAt2 {
 		t.Error("an unchanged price list must not rewrite the table")
+	}
+}
+
+func TestRetryUntilDone_RetriesUntilTheSyncSucceeds(t *testing.T) {
+	calls := 0
+	ok := retryUntilDone(context.Background(), func(context.Context) error {
+		calls++
+		if calls < 3 {
+			return errors.New(`relation "model_pricing_meta" does not exist`)
+		}
+		return nil
+	}, time.Millisecond, 4*time.Millisecond)
+	if !ok || calls != 3 {
+		t.Fatalf("retryUntilDone = %v after %d calls; want true after 3", ok, calls)
+	}
+}
+
+func TestRetryUntilDone_StopsWhenTheContextEnds(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	calls := 0
+	ok := retryUntilDone(ctx, func(context.Context) error {
+		calls++
+		if calls == 2 {
+			cancel()
+		}
+		return errors.New("database unreachable")
+	}, time.Millisecond, 4*time.Millisecond)
+	if ok || calls != 2 {
+		t.Fatalf("retryUntilDone = %v after %d calls; want false after 2", ok, calls)
 	}
 }

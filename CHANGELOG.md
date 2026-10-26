@@ -126,6 +126,12 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **Prices load on a fresh install.** The API builds its price table
+  when it starts, and on a fresh database it could start before the
+  workers had created that table. The build then failed once and was
+  not retried until the next restart, which left estimated cost empty
+  and every token policy's `degrade_to` rejected. The API now retries in
+  the background until the table exists.
 - **The API reference lists the errors an endpoint really returns.**
   Every authenticated endpoint now documents the 401 a missing or
   invalid token gets, and the event content endpoint documents the 400

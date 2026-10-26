@@ -55,11 +55,17 @@ func main() {
 	defer pool.Close()
 
 	s := store.New(pool)
-	// Write the price list into model_pricing for the cost queries.
-	// Best-effort: on failure the table keeps its previous content and
-	// the next boot retries.
-	if err := store.SyncPricingTable(context.Background(), pool); err != nil {
-		slog.Warn("pricing table sync at boot failed", "err", err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Write the price list into model_pricing for the cost queries. On
+	// a fresh database the workers may not have created the table yet,
+	// so a failed first sync keeps retrying in the background; the
+	// table keeps its previous content until a sync succeeds.
+	if err := store.SyncPricingTable(ctx, pool); err != nil {
+		slog.Warn("pricing table sync at boot failed; retrying in the background", "err", err)
+		go store.RetryPricingSync(ctx, pool)
 	}
 	// Ensure the empty blocklist global MCP policy exists
 	// before serving traffic. Idempotent INSERT with retry on
@@ -76,9 +82,6 @@ func main() {
 	}
 	hub := ws.NewHub(s)
 	validator := auth.NewValidator(pool)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Start Hub event loop
 	go hub.Run(ctx)

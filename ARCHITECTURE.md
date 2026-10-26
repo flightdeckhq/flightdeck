@@ -2403,7 +2403,13 @@ CREATE TABLE model_pricing (
 The table is derived data: the API rebuilds it from the vendored
 catalogue and `pricing.yaml` at startup (see Cost estimation), and a
 companion one-row table `model_pricing_meta` records the content hash
-and load time. Nothing else writes to it.
+and load time. Nothing else writes to it. The workers apply the
+migrations when they start and the API does not wait for them, so on a
+fresh database the API's first rebuild can run before these tables
+exist; the API then retries in the background, waiting 1 s and doubling
+up to 30 s between attempts, until a rebuild succeeds. Until then the
+table is empty, so estimated cost leaves calls unpriced and a token
+policy's `degrade_to` is rejected.
 
 ### `token_policies`
 

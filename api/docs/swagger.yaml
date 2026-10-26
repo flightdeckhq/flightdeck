@@ -1189,7 +1189,7 @@ info:
   contact: {}
   description: Fleet visibility, session history, and control plane for AI agent fleets
   title: Flightdeck Query API
-  version: 0.6.0
+  version: 0.7.0
 paths:
   /health:
     get:

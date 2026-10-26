@@ -11,7 +11,7 @@ import {
 } from "recharts";
 import { useAnalytics } from "@/hooks/useAnalytics";
 import { ChartCard } from "./ChartCard";
-import { PROVIDER_COLOR, PROVIDER_META, type Provider } from "@/lib/models";
+import { PROVIDER_COLOR, PROVIDER_META, isProvider, type Provider } from "@/lib/models";
 import { ProviderIconSvg } from "@/components/ui/provider-icon-svg";
 import type { AnalyticsParams } from "@/lib/types";
 
@@ -22,20 +22,9 @@ interface ProviderBarChartProps {
   filterProvider: string | null;
 }
 
-const KNOWN_PROVIDERS = new Set<Provider>([
-  "anthropic",
-  "openai",
-  "google",
-  "xai",
-  "mistral",
-  "meta",
-  "other",
-  "unknown",
-]);
-
 function colorForProvider(name: string): string {
-  if (KNOWN_PROVIDERS.has(name as Provider)) {
-    return PROVIDER_COLOR[name as Provider];
+  if (isProvider(name)) {
+    return PROVIDER_COLOR[name];
   }
   return "var(--text-muted)";
 }
@@ -58,8 +47,7 @@ const ProviderTick = ({
   payload?: { value: string };
 }) => {
   const value = payload?.value ?? "";
-  const isKnown = value in PROVIDER_META;
-  const label = isKnown ? PROVIDER_META[value as Provider].label : value;
+  const label = isProvider(value) ? PROVIDER_META[value].label : value;
   const cx = x ?? 0;
   const cy = y ?? 0;
   return (

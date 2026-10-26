@@ -15,6 +15,7 @@ import type { AnalyticsSeries } from "@/lib/types";
 import {
   PROVIDER_COLOR,
   PROVIDER_META,
+  isProvider,
   providerLabel,
   type Provider,
 } from "@/lib/models";
@@ -32,20 +33,9 @@ const FALLBACK_VARS = [
   "--text-muted",
 ];
 
-const PROVIDERS = new Set<Provider>([
-  "anthropic",
-  "openai",
-  "google",
-  "xai",
-  "mistral",
-  "meta",
-  "other",
-  "unknown",
-]);
-
 function colorForDimension(dimension: string, fallbackIndex: number): string {
-  if (PROVIDERS.has(dimension as Provider)) {
-    return PROVIDER_COLOR[dimension as Provider];
+  if (isProvider(dimension)) {
+    return PROVIDER_COLOR[dimension];
   }
   return `var(${FALLBACK_VARS[fallbackIndex % FALLBACK_VARS.length]})`;
 }

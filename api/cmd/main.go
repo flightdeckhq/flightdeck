@@ -55,30 +55,35 @@ func main() {
 	defer pool.Close()
 
 	s := store.New(pool)
-	// Write the price list into model_pricing for the cost queries.
-	// Best-effort: on failure the table keeps its previous content and
-	// the next boot retries.
-	if err := store.SyncPricingTable(context.Background(), pool); err != nil {
-		slog.Warn("pricing table sync at boot failed", "err", err)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Write the price list into model_pricing for the cost queries. On
+	// a fresh database the workers may not have created the table yet,
+	// so a failed first sync keeps retrying in the background; the
+	// table keeps its previous content until a sync succeeds.
+	if err := store.SyncPricingTable(ctx, pool); err != nil {
+		slog.Warn("pricing table sync at boot failed; retrying in the background", "err", err)
+		go store.RetryPricingSync(ctx, pool)
 	}
 	// Ensure the empty blocklist global MCP policy exists
 	// before serving traffic. Idempotent INSERT with retry on
 	// unique-violation handles parallel API instances on shared
-	// Postgres. Best-effort — a transient failure here doesn't
-	// block API startup; the next boot retries.
+	// Postgres. Best-effort: a migration also seeds this row, so a
+	// failure here (for example on a database the workers have not
+	// migrated yet) leaves nothing missing once the migrations have
+	// run.
 	if err := s.EnsureGlobalMCPPolicy(context.Background()); err != nil {
 		slog.Warn("ensure global mcp policy at boot failed",
 			"err", err,
-			"note", "API will continue; auto-create retries at next boot",
+			"note", "API will continue; the migration seeds the global policy",
 		)
 	} else {
 		slog.Info("ensure global mcp policy at boot complete")
 	}
 	hub := ws.NewHub(s)
 	validator := auth.NewValidator(pool)
-
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
 
 	// Start Hub event loop
 	go hub.Run(ctx)

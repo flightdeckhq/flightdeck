@@ -39,7 +39,10 @@ includes.
   (`pip install -U flightdeck-sensor`) and update the Claude Code plugin
   (`claude plugin update flightdeck@flightdeck-plugins`; marketplace
   installs do not update themselves). Older clients keep working; their
-  events get the provider and billing mode the worker infers.
+  events get the provider and billing mode the worker infers. For Claude
+  Code that inference is always `subscription`, so until the plugin is
+  updated, sessions on an API key, Bedrock, Vertex AI or Foundry show no
+  cost (an older plugin does not read `FLIGHTDECK_BILLING_MODE`).
 
 ### Added
 

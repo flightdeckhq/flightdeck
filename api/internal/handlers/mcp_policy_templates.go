@@ -116,7 +116,6 @@ type applyTemplateRequest struct {
 // @Success      200  {object}  store.MCPPolicy
 // @Failure      400  {object}  ErrorResponse
 // @Failure      401  {object}  ErrorResponse
-// @Failure      403  {object}  ErrorResponse
 // @Failure      404  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/mcp-policies/{flavor}/apply_template [post]

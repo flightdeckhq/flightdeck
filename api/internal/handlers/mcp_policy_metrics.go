@@ -25,7 +25,6 @@ import (
 // @Success      200  {object}  store.MCPPolicyMetrics
 // @Failure      400  {object}  ErrorResponse
 // @Failure      401  {object}  ErrorResponse
-// @Failure      403  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/mcp-policies/{flavor}/metrics [get]
 func GetMCPPolicyMetricsHandler(s store.Querier) http.HandlerFunc {

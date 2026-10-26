@@ -79,7 +79,6 @@ func parseTimeParam(r *http.Request, name string) (*time.Time, string) {
 // @Success      200  {array}   store.MCPPolicyAuditLog
 // @Failure      400  {object}  ErrorResponse
 // @Failure      401  {object}  ErrorResponse
-// @Failure      403  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/mcp-policies/{flavor}/audit-log [get]
 func ListMCPPolicyAuditLogHandler(s store.Querier) http.HandlerFunc {
@@ -134,7 +133,6 @@ func ListMCPPolicyAuditLogHandler(s store.Querier) http.HandlerFunc {
 // @Success      200  {array}   store.MCPPolicyAuditLog
 // @Failure      400  {object}  ErrorResponse
 // @Failure      401  {object}  ErrorResponse
-// @Failure      403  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/mcp-policies/global/audit-log [get]
 func ListMCPPolicyAuditLogHandlerGlobalDoc() {}

@@ -42,6 +42,7 @@ type SessionResponse struct {
 // @Param        events_limit  query     int     false  "Return at most N newest events (1-1000). Omit for the full history."
 // @Success      200  {object}  SessionResponse
 // @Failure      400  {object}  ErrorResponse
+// @Failure      401  {object}  ErrorResponse
 // @Failure      404  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/sessions/{id} [get]

@@ -91,6 +91,7 @@ var validGranularities = map[string]bool{
 // @Param        filter_is_sub_agent      query bool   false "When true, restrict to child sessions only (parent_session_id IS NOT NULL)."
 // @Success      200  {object}  store.AnalyticsResponse
 // @Failure      400  {object}  ErrorResponse
+// @Failure      401  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/analytics [get]
 func AnalyticsHandler(s store.Querier) http.HandlerFunc {

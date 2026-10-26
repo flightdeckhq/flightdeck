@@ -37,6 +37,7 @@ type DirectiveRequest struct {
 // @Param        directive  body      DirectiveRequest  true  "Directive definition"
 // @Success      201  {object}  store.Directive
 // @Failure      400  {object}  ErrorResponse
+// @Failure      401  {object}  ErrorResponse
 // @Failure      404  {object}  ErrorResponse
 // @Failure      422  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse

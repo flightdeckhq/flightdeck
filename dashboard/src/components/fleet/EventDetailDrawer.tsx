@@ -198,6 +198,7 @@ export function EventDetailDrawer({ event, onClose, onSwapEvent, onViewRun }: Ev
               <div
                 className="grid gap-x-3 gap-y-1"
                 style={{ gridTemplateColumns: "140px 1fr" }}
+                data-testid="detail-summary"
               >
                 {summaryRows.map(([key, val]) => (
                   <div key={key} className="contents">

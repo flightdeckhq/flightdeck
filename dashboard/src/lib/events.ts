@@ -1,4 +1,5 @@
-import type { AgentEvent, EventPayloadFields } from "./types";
+import { formatCost } from "./agents-format";
+import type { AgentEvent, EventPayloadFields, ServerToolUse } from "./types";
 
 /* ---- Directive activity color helper ---- */
 
@@ -423,6 +424,91 @@ export function getEventDetail(event: AgentEvent): string {
 
 /* ---- Event summary rows for expanded detail ---- */
 
+const BILLING_MODE_LABEL: Record<string, string> = {
+  metered: "Metered",
+  subscription: "Subscription",
+  local: "Local",
+};
+
+const COST_SOURCE_LABEL: Record<string, string> = {
+  provider: "reported by the provider",
+  agent: "computed by the client",
+};
+
+/** Server-side tool counters as `2 web searches · 1 code execution`. */
+function formatServerToolUse(use: ServerToolUse): string | null {
+  const parts: string[] = [];
+  const add = (n: number | undefined, one: string, many: string) => {
+    if (n && n > 0) parts.push(`${n.toLocaleString()} ${n === 1 ? one : many}`);
+  };
+  add(use.web_search_requests, "web search", "web searches");
+  add(use.web_fetch_requests, "web fetch", "web fetches");
+  add(use.code_execution_requests, "code execution", "code executions");
+  return parts.length > 0 ? parts.join(" · ") : null;
+}
+
+/** The generation detail of one LLM call: cache reads and writes,
+ *  reasoning tokens, stop reason and server tool counts. A row appears
+ *  only when the client reported the field with a value above zero. */
+function generationRows(event: AgentEvent): [string, string][] {
+  const p = event.payload;
+  const rows: [string, string][] = [];
+  if (event.tokens_cache_read) {
+    rows.push(["Cache read", event.tokens_cache_read.toLocaleString()]);
+  }
+  if (event.tokens_cache_creation) {
+    const oneHour = p?.tokens_cache_creation_1h;
+    rows.push([
+      "Cache write",
+      oneHour
+        ? `${event.tokens_cache_creation.toLocaleString()} · ${oneHour.toLocaleString()} for 1h`
+        : event.tokens_cache_creation.toLocaleString(),
+    ]);
+  }
+  if (event.tokens_reasoning) {
+    rows.push(["Reasoning tokens", event.tokens_reasoning.toLocaleString()]);
+  }
+  if (p?.stop_reason) rows.push(["Stop reason", p.stop_reason]);
+  const serverTools = p?.server_tool_use ? formatServerToolUse(p.server_tool_use) : null;
+  if (serverTools) rows.push(["Server tools", serverTools]);
+  return rows;
+}
+
+/** The serving, billing and cost detail of an LLM call or an
+ *  embeddings call. A row appears only when the client reported the
+ *  field, so a call from a client that reports none of them keeps the
+ *  base rows alone. */
+function servingRows(event: AgentEvent): [string, string][] {
+  const p = event.payload;
+  const rows: [string, string][] = [];
+  // The verbatim ids, each only when it differs from the Model row.
+  // `model` is the canonical form of the served id (else the requested
+  // one), so the requested id shows when the request named an alias or
+  // a gateway-prefixed id, and the served id shows only when
+  // canonicalising changed it (a cloud prefix or version suffix).
+  if (event.model_requested && event.model_requested !== event.model) {
+    rows.push(["Model requested", event.model_requested]);
+  }
+  if (event.model_served && event.model_served !== event.model) {
+    rows.push(["Model served", event.model_served]);
+  }
+  if (event.billing_mode) {
+    rows.push(["Billing", BILLING_MODE_LABEL[event.billing_mode] ?? event.billing_mode]);
+  }
+  if (event.platform) rows.push(["Platform", event.platform]);
+  if (p?.service_tier) rows.push(["Service tier", p.service_tier]);
+  if (p?.speed) rows.push(["Speed", p.speed]);
+  if (p?.inference_geo) rows.push(["Inference geo", p.inference_geo]);
+  if (p?.inference_scope) rows.push(["Inference scope", p.inference_scope]);
+  if (event.cost_reported != null) {
+    const source = event.cost_source
+      ? ` · ${COST_SOURCE_LABEL[event.cost_source] ?? event.cost_source}`
+      : "";
+    rows.push(["Reported cost", `${formatCost(event.cost_reported)}${source}`]);
+  }
+  return rows;
+}
+
 export function getSummaryRows(event: AgentEvent): [string, string][] {
   switch (event.event_type) {
     case "post_call": {
@@ -432,11 +518,12 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
         ["Tokens output", event.tokens_output?.toLocaleString() ?? "—"],
         ["Total tokens", event.tokens_total?.toLocaleString() ?? "—"],
         ["Latency", event.latency_ms != null ? `${event.latency_ms.toLocaleString()}ms` : "—"],
+        ...generationRows(event),
+        ...servingRows(event),
       ];
       // Surface the streaming sub-object inline so
       // the expanded row shows everything the sensor recorded
-      // without a separate PromptViewer round-trip. Non-streaming
-      // post_calls keep the original five-row layout unchanged.
+      // without a separate PromptViewer round-trip.
       const stream = event.payload?.streaming;
       if (stream) {
         if (stream.ttft_ms != null) {
@@ -565,6 +652,7 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
         ["Model", event.model ?? "unknown"],
         ["Tokens input", event.tokens_input?.toLocaleString() ?? "—"],
         ["Latency", event.latency_ms != null ? `${event.latency_ms.toLocaleString()}ms` : "—"],
+        ...servingRows(event),
       ];
     }
     case "llm_error": {

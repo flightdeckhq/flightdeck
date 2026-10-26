@@ -810,6 +810,47 @@ def _post_session_events(
                 )
             )
             posted += 1
+        elif extra == "call_fields_post_call":
+            # A metered Anthropic call through litellm carrying every
+            # per-call token, serving and cost field, so the event
+            # detail views have one call that renders each row. Values
+            # satisfy the ingestion checks: reasoning <= output, the 1h
+            # writes <= all cache writes, cost and source set together.
+            post_event(
+                make_event(
+                    session_id,
+                    agent_cfg["flavor"],
+                    "post_call",
+                    timestamp=ts,
+                    tokens_input=2400,
+                    tokens_output=900,
+                    tokens_total=3300,
+                    tokens_used_session=320 + 3300,
+                    tokens_cache_read=1800,
+                    tokens_cache_creation=600,
+                    tokens_cache_creation_1h=400,
+                    tokens_reasoning=300,
+                    latency_ms=5200,
+                    provider="anthropic",
+                    billing_mode="metered",
+                    model_requested="anthropic/claude-sonnet-4-5",
+                    model_served="claude-sonnet-4-5-20250929",
+                    stop_reason="end_turn",
+                    service_tier="standard",
+                    speed="fast",
+                    inference_geo="us",
+                    server_tool_use={"web_search_requests": 2},
+                    cost_reported=0.0412,
+                    cost_source="agent",
+                    provider_metadata={
+                        "platform": "anthropic",
+                        "request_id": "req_e2e_call_fields",
+                    },
+                    **identity,
+                    **{**common, "model": "claude-sonnet-4-5"},
+                )
+            )
+            posted += 1
         else:
             print(
                 f"  warn: unknown phase4_extras entry {extra!r} for {session_id[:8]}; ignored",
@@ -911,6 +952,12 @@ def _session_is_complete(
             expected_counts["__streaming_post_call__"] = (
                 expected_counts.get("__streaming_post_call__", 0) + 1
             )
+        elif tag == "call_fields_post_call":
+            # Identified by its stop_reason, which no base post_call
+            # carries.
+            expected_counts["__call_fields_post_call__"] = (
+                expected_counts.get("__call_fields_post_call__", 0) + 1
+            )
     actual_counts: dict[str, int] = {}
     for e in events:
         et = e.get("event_type", "")
@@ -926,6 +973,9 @@ def _session_is_complete(
             actual_counts[et] = actual_counts.get(et, 0) + 1
         if et == "post_call" and payload.get("streaming"):
             key = "__streaming_post_call__"
+            actual_counts[key] = actual_counts.get(key, 0) + 1
+        if et == "post_call" and payload.get("stop_reason"):
+            key = "__call_fields_post_call__"
             actual_counts[key] = actual_counts.get(key, 0) + 1
     for key, want in expected_counts.items():
         if actual_counts.get(key, 0) < want:

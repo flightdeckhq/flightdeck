@@ -432,7 +432,7 @@ flightdeck/
 │   │   │   ├── agents/         # AgentTable, AgentTableRow, AgentFacetSidebar, AgentSparkline,
 │   │   │   │                   # AgentDrawer, AgentDrawerEventsTab, AgentDrawerRunsTab, PerAgentSwimlaneModal
 │   │   │   ├── events/         # EnrichmentSummary, SurroundingEventsList
-│   │   │   ├── session/        # SessionDrawer, SessionTimeline, EventRow, EventDetail, PromptViewer,
+│   │   │   ├── session/        # SessionDrawer, EventRow, PromptViewer,
 │   │   │   │                   # EmbeddingsContentViewer, ErrorEventDetails, MCPEventDetails,
 │   │   │   │                   # PolicyEventDetails, SubAgentsTab, TokenUsageBar, AccordionHeader
 │   │   │   ├── analytics/      # SummaryCards, ChartCard, DimensionChart, DimensionPicker, TimeSeriesChart,

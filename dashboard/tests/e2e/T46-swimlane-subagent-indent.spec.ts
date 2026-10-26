@@ -24,7 +24,7 @@ test.describe("T46 — Sub-agent indent + connector", () => {
 		);
 		// Seeded fixture has at least one parent/child pair under the
 		// CrewAI + LangGraph sub-agent fixtures (T29/T30 cohort).
-		expect(await childRows.count()).toBeGreaterThanOrEqual(1);
+		await expect(childRows).not.toHaveCount(0);
 	});
 
 	test("child swimlane row's label strip indents 28 px", async ({ page }) => {

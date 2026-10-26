@@ -61,8 +61,13 @@ test.describe("T14 — Embeddings event renders in drawer", () => {
       const row = drawer.locator(`[data-testid="embeddings-event-row-${id}"]`);
       await expect(row).toBeVisible();
       await row.click();
-      const viewer = drawer.locator('[data-testid="embeddings-content-viewer"]').first();
+      // The viewer mounts with data-state="loading" while a captured
+      // event's content loads; wait for the settled state before
+      // reading it. The drawer expands one row at a time, so this row's
+      // viewer is the only one mounted.
+      const viewer = drawer.locator('[data-testid="embeddings-content-viewer"]');
       await expect(viewer).toBeVisible();
+      await expect(viewer).not.toHaveAttribute("data-state", "loading");
       const state = await viewer.getAttribute("data-state");
       if (state) observedStates.add(state);
       await row.click();

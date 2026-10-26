@@ -479,7 +479,7 @@ test.describe("T25 — MCP observability rendering", () => {
     const decoratedRow = drawer.locator(
       '[data-testid^="mcp-event-row-"][data-event-type="mcp_tool_call"]:has([data-testid^="mcp-error-indicator-"])',
     );
-    expect(await decoratedRow.count()).toBeGreaterThan(0);
+    await expect(decoratedRow).not.toHaveCount(0);
     // Successful mcp_tool_call rows on the same session must NOT
     // carry the indicator. The seed emits at least one success row
     // alongside the failure; assert that any mcp_tool_call row
@@ -488,7 +488,7 @@ test.describe("T25 — MCP observability rendering", () => {
     const undecoratedRow = drawer.locator(
       '[data-testid^="mcp-event-row-"][data-event-type="mcp_tool_call"]:not(:has([data-testid^="mcp-error-indicator-"]))',
     );
-    expect(await undecoratedRow.count()).toBeGreaterThan(0);
+    await expect(undecoratedRow).not.toHaveCount(0);
   });
 
   // T25-10 — Session drawer header MCP SERVERS panel.

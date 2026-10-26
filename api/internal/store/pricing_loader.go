@@ -468,6 +468,10 @@ func retryUntilDone(ctx context.Context, sync func(context.Context) error, initi
 			slog.Info("pricing table sync succeeded on retry", "attempt", attempt)
 			return true
 		}
+		// A sync cut short by shutdown is not a failure worth logging.
+		if ctx.Err() != nil {
+			return false
+		}
 		wait = min(wait*2, maxWait)
 		slog.Warn("pricing table sync retry failed", "attempt", attempt, "next_in", wait, "err", err)
 	}

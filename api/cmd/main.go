@@ -70,12 +70,14 @@ func main() {
 	// Ensure the empty blocklist global MCP policy exists
 	// before serving traffic. Idempotent INSERT with retry on
 	// unique-violation handles parallel API instances on shared
-	// Postgres. Best-effort — a transient failure here doesn't
-	// block API startup; the next boot retries.
+	// Postgres. Best-effort: a migration also seeds this row, so a
+	// failure here (for example on a database the workers have not
+	// migrated yet) leaves nothing missing once the migrations have
+	// run.
 	if err := s.EnsureGlobalMCPPolicy(context.Background()); err != nil {
 		slog.Warn("ensure global mcp policy at boot failed",
 			"err", err,
-			"note", "API will continue; auto-create retries at next boot",
+			"note", "API will continue; the migration seeds the global policy",
 		)
 	} else {
 		slog.Info("ensure global mcp policy at boot complete")

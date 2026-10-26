@@ -430,6 +430,53 @@ const pricingSyncLockKey = 0x70726963 // "pric"
 // and carries on with the table as it was.
 const pricingSyncTimeout = 30 * time.Second
 
+// The workers apply the database migrations when they start, and the
+// API does not wait for them, so on a fresh database the API's first
+// sync can run before model_pricing exists. RetryPricingSync then
+// retries with a backoff that doubles from pricingSyncRetryInitial up
+// to pricingSyncRetryMax: migrations take seconds, so the first few
+// quick retries usually land, and the cap keeps a database that stays
+// unreachable from being polled more than twice a minute.
+const (
+	pricingSyncRetryInitial = time.Second
+	pricingSyncRetryMax     = 30 * time.Second
+)
+
+// RetryPricingSync retries SyncPricingTable until it succeeds or ctx
+// ends. Run it in a goroutine after a failed first sync: until it
+// succeeds, model_pricing is empty or stale, so estimated cost leaves
+// calls unpriced and a token policy's degrade_to is rejected.
+func RetryPricingSync(ctx context.Context, pool *pgxpool.Pool) {
+	retryUntilDone(ctx, func(ctx context.Context) error {
+		return SyncPricingTable(ctx, pool)
+	}, pricingSyncRetryInitial, pricingSyncRetryMax)
+}
+
+// retryUntilDone calls sync after each wait, starting at initial and
+// doubling up to maxWait, until a call succeeds or ctx ends. It returns
+// whether a call succeeded.
+func retryUntilDone(ctx context.Context, sync func(context.Context) error, initial, maxWait time.Duration) bool {
+	wait := initial
+	for attempt := 1; ; attempt++ {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(wait):
+		}
+		err := sync(ctx)
+		if err == nil {
+			slog.Info("pricing table sync succeeded on retry", "attempt", attempt)
+			return true
+		}
+		// A sync cut short by shutdown is not a failure worth logging.
+		if ctx.Err() != nil {
+			return false
+		}
+		wait = min(wait*2, maxWait)
+		slog.Warn("pricing table sync retry failed", "attempt", attempt, "next_in", wait, "err", err)
+	}
+}
+
 // SyncPricingTable writes the live price list into model_pricing in one
 // transaction, skipping the write when model_pricing_meta already holds
 // the same content hash. Errors are returned for the caller to log; the

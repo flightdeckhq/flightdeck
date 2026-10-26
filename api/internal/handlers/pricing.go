@@ -15,6 +15,7 @@ import (
 // @Tags         policies
 // @Produce      json
 // @Success      200  {array}   store.PricedModel
+// @Failure      401  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/pricing/models [get]
 func DegradeTargetsHandler(s store.Querier) http.HandlerFunc {

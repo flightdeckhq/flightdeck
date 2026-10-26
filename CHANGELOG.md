@@ -126,6 +126,10 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **The API reference lists every error an endpoint returns.** Every
+  authenticated endpoint now documents the 401 a missing or invalid
+  token gets, and the event content, policy delete, access-token delete
+  and MCP policy read endpoints document the 400 for a missing id.
 - **A session's last call no longer loses its tokens at teardown.** The
   sensor sends a run's last `post_call` and its `session_end` back to
   back, and when a worker applied the end first, the call's tokens never

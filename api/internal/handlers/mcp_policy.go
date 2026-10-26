@@ -175,6 +175,7 @@ func GetGlobalMCPPolicyHandler(s store.Querier) http.HandlerFunc {
 // @Produce      json
 // @Param        flavor  path  string  true  "Agent flavor"
 // @Success      200  {object}  store.MCPPolicy
+// @Failure      400  {object}  ErrorResponse
 // @Failure      401  {object}  ErrorResponse
 // @Failure      404  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse

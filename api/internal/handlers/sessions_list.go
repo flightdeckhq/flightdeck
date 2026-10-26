@@ -155,6 +155,7 @@ var validEstimatedVias = map[string]bool{
 // @Param        offset     query  int     false  "Offset for pagination (default 0)"
 // @Success      200  {object}  store.SessionsResponse
 // @Failure      400  {object}  ErrorResponse
+// @Failure      401  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/sessions [get]
 func SessionsListHandler(s store.Querier) http.HandlerFunc {

@@ -18,6 +18,8 @@ import (
 // @Produce      json
 // @Param        id   path      string  true  "Event UUID"
 // @Success      200  {object}  store.EventContent
+// @Failure      400  {object}  ErrorResponse
+// @Failure      401  {object}  ErrorResponse
 // @Failure      404  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/events/{id}/content [get]

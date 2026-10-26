@@ -31,6 +31,7 @@ type FleetResponse struct {
 // @Param        per_page    query  int     false  "Rows per page (default 50, max 200)"
 // @Param        agent_type  query  string  false  "Filter by agent type: 'coding', 'production', or empty for all"
 // @Success      200  {object}  FleetResponse
+// @Failure      401  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/fleet [get]
 func FleetHandler(s store.Querier) http.HandlerFunc {

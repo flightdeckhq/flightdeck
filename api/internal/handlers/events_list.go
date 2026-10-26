@@ -72,6 +72,7 @@ const (
 // @Param        offset                   query  int     false  "Offset for pagination (default 0, max 100000)"
 // @Success      200  {object}  store.EventsResponse
 // @Failure      400  {object}  ErrorResponse
+// @Failure      401  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/events [get]
 func EventsListHandler(s store.Querier) http.HandlerFunc {

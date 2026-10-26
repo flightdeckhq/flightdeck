@@ -20,6 +20,7 @@ import (
 // @Param        flavor      query  string  false  "Agent flavor"
 // @Param        session_id  query  string  false  "Session ID"
 // @Success      200  {object}  store.Policy
+// @Failure      401  {object}  ErrorResponse
 // @Failure      404  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/policy [get]
@@ -119,6 +120,7 @@ func checkDegradeTarget(
 // @Tags         policies
 // @Produce      json
 // @Success      200  {array}   store.Policy
+// @Failure      401  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/policies [get]
 func PoliciesListHandler(s store.Querier) http.HandlerFunc {
@@ -144,6 +146,7 @@ func PoliciesListHandler(s store.Querier) http.HandlerFunc {
 // @Param        policy  body      PolicyRequest  true  "Policy definition"
 // @Success      201  {object}  store.Policy
 // @Failure      400  {object}  ErrorResponse  "invalid body, thresholds, or a degrade_to that is not a current, priced model"
+// @Failure      401  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/policies [post]
 func PolicyCreateHandler(s store.Querier) http.HandlerFunc {
@@ -189,6 +192,7 @@ func PolicyCreateHandler(s store.Querier) http.HandlerFunc {
 // @Param        policy  body      PolicyRequest  true  "Policy definition"
 // @Success      200  {object}  store.Policy
 // @Failure      400  {object}  ErrorResponse
+// @Failure      401  {object}  ErrorResponse
 // @Failure      404  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/policies/{id} [put]
@@ -250,6 +254,8 @@ func PolicyUpdateHandler(s store.Querier) http.HandlerFunc {
 // @Tags         policies
 // @Param        id  path  string  true  "Policy ID"
 // @Success      204
+// @Failure      400  {object}  ErrorResponse
+// @Failure      401  {object}  ErrorResponse
 // @Failure      404  {object}  ErrorResponse
 // @Failure      500  {object}  ErrorResponse
 // @Router       /v1/policies/{id} [delete]

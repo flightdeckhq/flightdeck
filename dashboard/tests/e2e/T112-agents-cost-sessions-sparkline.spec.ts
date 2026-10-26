@@ -75,7 +75,7 @@ test.describe("T112 — Cost + Sessions sparklines", () => {
 		// At least one of the two sparkline shapes must mount
 		// inside the cost cell (a chart for fluctuating cost or
 		// the placeholder for a sparse 7-day window).
-		expect(await costSparkline.count()).toBeGreaterThanOrEqual(1);
+		await expect(costSparkline).not.toHaveCount(0);
 	});
 
 	test("every agent row's Sessions cell carries a sparkline", async ({ page }) => {

@@ -31,7 +31,7 @@ test.describe("T51 — ?view=table toggle removed", () => {
 		const swimlaneRows = page.locator(
 			'[data-testid^="swimlane-agent-row-"]',
 		);
-		expect(await swimlaneRows.count()).toBeGreaterThan(0);
+		await expect(swimlaneRows).not.toHaveCount(0);
 	});
 
 	test("no legacy AgentTable rows mount on the Fleet page", async ({

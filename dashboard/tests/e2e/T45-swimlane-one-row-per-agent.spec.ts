@@ -44,6 +44,6 @@ test.describe("T45 — Swimlane one row per agent", () => {
 		await page.goto("/");
 		await waitForFleetReady(page);
 		const rows = page.locator('[data-testid^="swimlane-agent-row-"]');
-		expect(await rows.count()).toBeGreaterThan(0);
+		await expect(rows).not.toHaveCount(0);
 	});
 });

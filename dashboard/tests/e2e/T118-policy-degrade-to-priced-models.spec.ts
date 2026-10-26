@@ -18,16 +18,24 @@ function modelButton(dropdown: Locator, modelId: string): Locator {
 }
 
 async function openCreateDialog(page: Page): Promise<PricedModel[]> {
-  const models = page.waitForResponse((r) => r.url().includes("/v1/pricing/models"));
+  // The expected list comes from the API directly. The page's own
+  // response body is not readable once the page navigates after it
+  // lands, so the test reads only that response's status.
+  const resp = await page.request.get("http://localhost:4000/api/v1/pricing/models", {
+    headers: { Authorization: "Bearer tok_dev" },
+  });
+  expect(resp.ok(), "pricing models API call must succeed").toBe(true);
+  const expected = (await resp.json()) as PricedModel[];
+
+  const pageFetch = page.waitForResponse((r) => r.url().includes("/v1/pricing/models"));
   await page.goto("/policies");
   const create = page
     .locator('[data-testid="policies-token-budget-create-header"], [data-testid="policy-table-empty-create"]')
     .first();
   await create.click();
   await page.getByPlaceholder("1-99").nth(1).fill("85");
-  const res = await models;
-  expect(res.status()).toBe(200);
-  return (await res.json()) as PricedModel[];
+  expect((await pageFetch).status()).toBe(200);
+  return expected;
 }
 
 test.describe("T118 — policy degrade-to offers priced models", () => {

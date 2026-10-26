@@ -529,7 +529,7 @@ function ExpansionMetricsSummary({
 /**
  * Capped event list rendered inside a row's expanded body. Renders
  * up to MINI_TIMELINE_MAX_EVENTS most recent events using the same
- * ``EventDetail`` component the full Timeline tab uses, so visual
+ * ``EventRow`` component the full Timeline tab uses, so visual
  * patterns and click-to-expand behaviour stay consistent. When the
  * session has more events than the cap, a "View N more in Timeline
  * tab" footer link calls ``onViewMore`` (which navigates to the

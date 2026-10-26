@@ -1589,7 +1589,7 @@ paths:
         name: filter_agent_type
         type: string
       - description: Filter to specific provider (anthropic, openai, google, xai,
-          mistral, meta, other)
+          mistral, meta, deepseek, other)
         in: query
         name: filter_provider
         type: string

@@ -1,21 +1,24 @@
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { fetchAnalytics } from "@/lib/api";
-import { PROVIDER_META, type Provider } from "@/lib/models";
+import { PROVIDER_META, isProvider, type Provider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 
 /**
- * Row 1 of the Analytics v2 page -- five summary cards (total tokens,
- * anthropic tokens, openai tokens, sessions, avg per session).
+ * Row 1 of the Analytics page -- summary cards: total tokens, one card
+ * per provider that used tokens in the window (from a single
+ * ``group_by=provider`` query, largest first), total runs, and average
+ * tokens per run.
  *
- * Cards are clickable: selecting Anthropic or OpenAI promotes the
- * corresponding provider into the `filter_provider` slot that every
- * chart below reads via the page's shared AnalyticsFilters state, so
- * the whole page reflows to that provider without a separate filter
- * control. Clicking Total Tokens / Total Sessions / Avg clears the
- * provider filter (they are "show everything" cards).
+ * Cards are clickable: selecting a provider card promotes that provider
+ * into the `filter_provider` slot that every chart below reads via the
+ * page's shared AnalyticsFilters state, so the whole page reflows to
+ * that provider without a separate filter control. Clicking Total
+ * Tokens / Total Runs / Avg clears the provider filter (they are "show
+ * everything" cards).
  */
 interface SummaryCardsProps {
   range: string;
@@ -30,11 +33,58 @@ interface Totals {
   changePct: number;
 }
 
-async function total(
-  params: Record<string, string | undefined>,
-): Promise<Totals> {
-  const res = await fetchAnalytics(params);
-  return { value: res.totals.grand_total, changePct: res.totals.period_change_pct };
+interface ProviderTotal {
+  provider: Provider;
+  value: number;
+}
+
+interface CardData {
+  tokens: Totals;
+  sessions: Totals;
+  providers: ProviderTotal[];
+}
+
+/** One tokens query grouped by provider gives the grand total and the
+ *  per-provider split; one sessions query gives the run count. */
+async function loadCards(base: Record<string, string | undefined>): Promise<CardData> {
+  const [byProvider, sessions] = await Promise.all([
+    fetchAnalytics({ ...base, metric: "tokens", group_by: "provider" }),
+    fetchAnalytics({ ...base, metric: "sessions", group_by: "flavor" }),
+  ]);
+  return {
+    tokens: {
+      value: byProvider.totals.grand_total,
+      changePct: byProvider.totals.period_change_pct,
+    },
+    sessions: {
+      value: sessions.totals.grand_total,
+      changePct: sessions.totals.period_change_pct,
+    },
+    providers: providerTotals(byProvider.series),
+  };
+}
+
+/** Per-provider token totals, largest first. A dimension outside the
+ *  provider vocabulary counts toward Other, so each provider has at most
+ *  one card. */
+function providerTotals(series: { dimension: string; total: number }[]): ProviderTotal[] {
+  const totals = new Map<Provider, number>();
+  for (const s of series) {
+    if (s.total <= 0) continue;
+    const provider: Provider = isProvider(s.dimension) ? s.dimension : "other";
+    totals.set(provider, (totals.get(provider) ?? 0) + s.total);
+  }
+  return [...totals]
+    .map(([provider, value]) => ({ provider, value }))
+    .sort((x, y) => y.value - x.value);
+}
+
+/** A provider's share of all tokens: one decimal place, and `<0.1%`
+ *  for a share too small to show (so real usage never reads as 0.0%). */
+function formatShare(part: number, whole: number): string {
+  if (whole <= 0 || part <= 0) return "0%";
+  const pct = (part / whole) * 100;
+  return pct < 0.1 ? "<0.1%" : `${pct.toFixed(1)}%`;
 }
 
 function formatCompact(n: number): string {
@@ -55,6 +105,7 @@ interface CardSpec {
   icon?: ReactNode;
   active: boolean;
   onClick: () => void;
+  testId?: string;
 }
 
 function SummaryCard({
@@ -65,10 +116,14 @@ function SummaryCard({
   icon,
   active,
   onClick,
+  testId,
 }: CardSpec) {
   return (
     <Card
+      data-testid={testId}
+      data-active={active ? "true" : undefined}
       role="button"
+      aria-pressed={active}
       tabIndex={0}
       onClick={onClick}
       onKeyDown={(e) => {
@@ -121,54 +176,50 @@ export function SummaryCards({
   filterProvider,
   onSelectProvider,
 }: SummaryCardsProps) {
-  const [tokensTotal, setTokensTotal] = useState<Totals | null>(null);
-  const [anthropicTotal, setAnthropicTotal] = useState<Totals | null>(null);
-  const [openaiTotal, setOpenaiTotal] = useState<Totals | null>(null);
-  const [sessionsTotal, setSessionsTotal] = useState<Totals | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  // The result carries the request it answers, so a new window (or a
+  // retry) reads as loading until its own response lands and the
+  // previous window's figures never show under the new range.
+  const request = `${range}|${from ?? ""}|${to ?? ""}|${attempt}`;
+  const [result, setResult] = useState<{
+    request: string;
+    cards: CardData | null;
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    const base = { range, from, to };
-    Promise.all([
-      total({ ...base, metric: "tokens", group_by: "flavor" }),
-      total({ ...base, metric: "tokens", group_by: "flavor", filter_provider: "anthropic" }),
-      total({ ...base, metric: "tokens", group_by: "flavor", filter_provider: "openai" }),
-      total({ ...base, metric: "sessions", group_by: "flavor" }),
-    ])
-      .then(([tokens, anthropic, openai, sessions]) => {
-        if (cancelled) return;
-        setTokensTotal(tokens);
-        setAnthropicTotal(anthropic);
-        setOpenaiTotal(openai);
-        setSessionsTotal(sessions);
+    loadCards({ range, from, to })
+      .then((data) => {
+        if (!cancelled) setResult({ request, cards: data });
       })
       .catch(() => {
-        /* swallow -- cards render in their loading state */
+        if (!cancelled) setResult({ request, cards: null });
       });
     return () => {
       cancelled = true;
     };
-  }, [range, from, to]);
+  }, [range, from, to, request]);
 
-  const loading =
-    tokensTotal === null ||
-    anthropicTotal === null ||
-    openaiTotal === null ||
-    sessionsTotal === null;
+  const settled = result?.request === request ? result : null;
+  if (settled && settled.cards === null) {
+    return (
+      <div
+        className="flex items-center gap-3 rounded-md border border-(--border) px-4 py-3"
+        data-testid="summary-cards-error"
+      >
+        <span className="text-sm text-danger">Could not load the summary.</span>
+        <Button variant="outline" size="sm" onClick={() => setAttempt((n) => n + 1)}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
 
-  const totalTokens = tokensTotal?.value ?? 0;
-  const anthropicPct =
-    tokensTotal && totalTokens > 0
-      ? ((anthropicTotal?.value ?? 0) / totalTokens) * 100
-      : 0;
-  const openaiPct =
-    tokensTotal && totalTokens > 0
-      ? ((openaiTotal?.value ?? 0) / totalTokens) * 100
-      : 0;
-  const avgPerSession =
-    sessionsTotal && sessionsTotal.value > 0
-      ? totalTokens / sessionsTotal.value
-      : 0;
+  const cards = settled?.cards ?? null;
+  const loading = cards === null;
+  const totalTokens = cards?.tokens.value ?? 0;
+  const runs = cards?.sessions.value ?? 0;
+  const avgPerSession = runs > 0 ? totalTokens / runs : 0;
 
   if (loading) {
     return (
@@ -189,43 +240,32 @@ export function SummaryCards({
         label="Total Tokens"
         value={formatCompact(totalTokens)}
         sub={null}
-        changePct={tokensTotal?.changePct}
+        changePct={cards?.tokens.changePct}
         active={filterProvider === null}
         onClick={() => onSelectProvider(null)}
       />
-      {/* Only render a provider card if that provider actually
-          contributed tokens this period. With flex-wrap + flex-1 the
-          surviving cards expand to fill the row evenly, which is why
-          no ghost placeholder is needed here. */}
-      {(anthropicTotal?.value ?? 0) > 0 && (
+      {/* One card per provider that used tokens in the window. With
+          flex-wrap + flex-1 the cards share the row evenly whatever
+          their number. */}
+      {cards?.providers.map(({ provider, value }) => (
         <SummaryCard
-          label={`${PROVIDER_META.anthropic.label} Tokens`}
-          value={formatCompact(anthropicTotal?.value ?? 0)}
-          sub={`${anthropicPct.toFixed(1)}% of total`}
-          icon={<ProviderLogo provider="anthropic" size={14} />}
-          active={filterProvider === "anthropic"}
+          key={provider}
+          label={`${PROVIDER_META[provider].label} Tokens`}
+          value={formatCompact(value)}
+          sub={`${formatShare(value, totalTokens)} of total`}
+          icon={<ProviderLogo provider={provider} size={14} />}
+          active={filterProvider === provider}
           onClick={() =>
-            onSelectProvider(filterProvider === "anthropic" ? null : "anthropic")
+            onSelectProvider(filterProvider === provider ? null : provider)
           }
+          testId={`summary-card-provider-${provider}`}
         />
-      )}
-      {(openaiTotal?.value ?? 0) > 0 && (
-        <SummaryCard
-          label={`${PROVIDER_META.openai.label} Tokens`}
-          value={formatCompact(openaiTotal?.value ?? 0)}
-          sub={`${openaiPct.toFixed(1)}% of total`}
-          icon={<ProviderLogo provider="openai" size={14} />}
-          active={filterProvider === "openai"}
-          onClick={() =>
-            onSelectProvider(filterProvider === "openai" ? null : "openai")
-          }
-        />
-      )}
+      ))}
       <SummaryCard
         label="Total Runs"
-        value={formatCompact(sessionsTotal?.value ?? 0)}
+        value={formatCompact(runs)}
         sub={null}
-        changePct={sessionsTotal?.changePct}
+        changePct={cards?.sessions.changePct}
         active={filterProvider === null}
         onClick={() => onSelectProvider(null)}
       />

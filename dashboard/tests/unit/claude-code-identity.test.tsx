@@ -100,12 +100,12 @@ describe("ProviderLogo tooltips", () => {
   });
 
   it("adds a <title> on the Sparkles fallback too", () => {
-    // google has no bespoke mark (PROVIDER_ICONS[google] === null) so
-    // the fallback Sparkles renders. Previously silent -- the title
-    // ensures hover still explains what the icon represents.
-    const { container } = render(<ProviderLogo provider="google" />);
+    // xai has no brand mark (PROVIDER_ICONS.xai === null) so the
+    // fallback Sparkles renders; the title ensures hover still explains
+    // what the icon represents.
+    const { container } = render(<ProviderLogo provider="xai" />);
     const title = container.querySelector("title");
-    expect(title?.textContent).toBe("Google");
+    expect(title?.textContent).toBe("xAI");
   });
 
   it("honours title='' opt-out for adjacent-label callers", () => {

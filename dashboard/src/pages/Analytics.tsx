@@ -89,7 +89,10 @@ export function Analytics() {
             </div>
           )}
           {filterProvider && (
-            <div className="ml-auto flex items-center gap-2 text-xs text-text-muted">
+            <div
+              className="ml-auto flex items-center gap-2 text-xs text-text-muted"
+              data-testid="analytics-provider-filter"
+            >
               <span>
                 Filter: provider =
                 <span className="ml-1 font-medium text-text">

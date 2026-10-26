@@ -33,8 +33,8 @@ interface ProviderIconSvgProps {
  *  avoided ``<foreignObject>`` here because it is flaky in Firefox
  *  when printed or exported.
  *
- *  Providers without a bespoke icon (``google``, ``xai``, ``mistral``,
- *  ``meta``, ``other``, ``unknown``) render as a muted filled circle
+ *  Providers without a brand mark (``xai``, ``other``, ``unknown``)
+ *  render as a muted filled circle
  *  at the same anchor so the column layout stays aligned across
  *  mixed-provider rows. */
 export function ProviderIconSvg({

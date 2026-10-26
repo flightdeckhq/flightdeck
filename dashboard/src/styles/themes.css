@@ -73,6 +73,7 @@
   --chart-xai: #f97316;
   --chart-mistral: #ef4444;
   --chart-meta: #22c55e;
+  --chart-deepseek: #6b85ff;
 
   /* Claude Code brand amber. Mirrors the CLAUDE_CODE_ICON / anthropic
      provider icon colour in components/ui/provider-icons.ts so the
@@ -204,6 +205,7 @@
   --chart-xai: #ea580c;
   --chart-mistral: #dc2626;
   --chart-meta: #16a34a;
+  --chart-deepseek: #4d6bfe;
 
   /* Claude Code brand amber. Mirrors CLAUDE_CODE_ICON in
      components/ui/provider-icons.ts. Light-theme value is the

@@ -84,7 +84,7 @@ var validGranularities = map[string]bool{
 // @Param        filter_flavor    query  string  false  "Filter to specific flavor"
 // @Param        filter_model     query  string  false  "Filter to specific model"
 // @Param        filter_agent_type query string  false  "Filter to specific agent_type"
-// @Param        filter_provider  query  string  false  "Filter to specific provider (anthropic, openai, google, xai, mistral, meta, other)"
+// @Param        filter_provider  query  string  false  "Filter to specific provider (anthropic, openai, google, xai, mistral, meta, deepseek, other)"
 // @Param        filter_agent_id  query  string  false  "Filter analytics scope to a single agent (UUID). Joins sessions when the metric's base table is events. Powers the per-agent landing page."
 // @Param        filter_parent_session_id query string false "Filter analytics scope to children of one specific parent session (UUID)."
 // @Param        filter_has_sub_agents    query bool   false "When true, restrict to parent sessions only (those referenced as a parent_session_id by at least one other session)."

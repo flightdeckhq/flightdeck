@@ -1,24 +1,3 @@
-export const ANTHROPIC_MODELS = new Set([
-  "claude-opus-4-6",
-  "claude-sonnet-4-6",
-  "claude-haiku-4-5-20251001",
-  "claude-opus-4-5-20251101",
-  "claude-sonnet-4-5-20250929",
-  "claude-opus-4-20250514",
-  "claude-sonnet-4-20250514",
-  "claude-3-5-sonnet-20241022",
-  "claude-3-5-haiku-20241022",
-  "claude-3-opus-20240229",
-]);
-
-export const OPENAI_MODELS = new Set([
-  "gpt-5.4", "gpt-5.4-mini", "gpt-5.4-nano",
-  "gpt-5.2", "gpt-5", "gpt-5-mini", "gpt-5-nano",
-  "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano",
-  "gpt-4o", "gpt-4o-mini", "gpt-4-turbo",
-  "o4-mini", "o3", "o3-pro", "o3-mini", "o1", "o1-mini",
-]);
-
 export type Provider =
   | "anthropic"
   | "openai"
@@ -26,28 +5,62 @@ export type Provider =
   | "xai"
   | "mistral"
   | "meta"
+  | "deepseek"
   | "other"
   | "unknown";
 
+// The provider rule below mirrors modelid.Provider in the api and
+// workers modules (api/internal/modelid/canonical.go); a Vitest parity
+// test reads the same vectors file the Go twins do, so the dashboard
+// cannot drift from the provider the API groups analytics by.
+
+/** OpenAI model families, by id prefix. */
+const OPENAI_MODEL =
+  /^(gpt-|chatgpt-|o[1-9](-|$)|codex-|text-embedding-|dall-e-|gpt-image-|whisper-|tts-|omni-moderation)/;
+
+/** Vendor prefix of a Bedrock id that keeps it ("meta.llama3-..."). */
+const BEDROCK_VENDORS: Record<string, Provider> = {
+  anthropic: "anthropic",
+  meta: "meta",
+  mistral: "mistral",
+  deepseek: "deepseek",
+  openai: "openai",
+  amazon: "other",
+  cohere: "other",
+  ai21: "other",
+  qwen: "other",
+  writer: "other",
+};
+
+const MISTRAL_PREFIXES = [
+  "mistral", "mixtral", "codestral", "ministral", "pixtral",
+  "magistral", "devstral", "open-mistral", "open-mixtral",
+];
+
+/** The provider of a model id, by the same rule the API applies to
+ *  canonical ids (events store the canonical id in ``model``). A
+ *  missing or blank id is "unknown": the event names no model at all. */
 export function getProvider(model: string | null | undefined): Provider {
-  if (!model) return "unknown";
-  if (ANTHROPIC_MODELS.has(model)) return "anthropic";
-  if (OPENAI_MODELS.has(model)) return "openai";
-  if (model.startsWith("claude-")) return "anthropic";
-  if (
-    model.startsWith("gpt-") ||
-    model.startsWith("o1") ||
-    model.startsWith("o3") ||
-    model.startsWith("o4") ||
-    model.startsWith("text-embedding-") ||
-    model.startsWith("dall-e-")
-  ) {
-    return "openai";
+  const id = model?.trim().toLowerCase();
+  return id ? providerOf(id) : "unknown";
+}
+
+/** The API's rule itself. A fine-tune with an empty base ("ft:") is
+ *  "other" here, as it is in the API, not "unknown". */
+function providerOf(id: string): Provider {
+  if (id.startsWith("ft:")) return providerOf(id.slice(3));
+  const dot = id.indexOf(".");
+  if (dot > 0) {
+    const vendor = BEDROCK_VENDORS[id.slice(0, dot)];
+    if (vendor) return vendor;
   }
-  if (model.startsWith("gemini-")) return "google";
-  if (model.startsWith("grok-")) return "xai";
-  if (model.startsWith("mistral-") || model.startsWith("mixtral-")) return "mistral";
-  if (model.startsWith("llama-")) return "meta";
+  if (id.startsWith("claude")) return "anthropic";
+  if (OPENAI_MODEL.test(id)) return "openai";
+  if (id.startsWith("gemini") || id.startsWith("gemma")) return "google";
+  if (id.startsWith("grok")) return "xai";
+  if (MISTRAL_PREFIXES.some((p) => id.startsWith(p))) return "mistral";
+  if (id.startsWith("llama")) return "meta";
+  if (id.startsWith("deepseek")) return "deepseek";
   return "other";
 }
 
@@ -74,9 +87,15 @@ export const PROVIDER_META: Record<Provider, ProviderMeta> = {
   xai: { label: "xAI", color: "var(--chart-xai)" },
   mistral: { label: "Mistral", color: "var(--chart-mistral)" },
   meta: { label: "Meta", color: "var(--chart-meta)" },
+  deepseek: { label: "DeepSeek", color: "var(--chart-deepseek)" },
   other: { label: "Other", color: "var(--text-muted)" },
   unknown: { label: "Unknown", color: "var(--text-muted)" },
 };
+
+/** True when an analytics dimension value names a known provider. */
+export function isProvider(value: string): value is Provider {
+  return Object.prototype.hasOwnProperty.call(PROVIDER_META, value);
+}
 
 /** Legacy alias: PROVIDER_COLOR[p] === PROVIDER_META[p].color. Kept so
  *  callers that only need the color stay short, and so existing
@@ -91,10 +110,7 @@ export const PROVIDER_COLOR: Record<Provider, string> = Object.fromEntries(
  *  human-readable provider label, falling back to the raw string if it
  *  does not match a known provider. */
 export function providerLabel(dimension: string): string {
-  if (dimension in PROVIDER_META) {
-    return PROVIDER_META[dimension as Provider].label;
-  }
-  return dimension;
+  return isProvider(dimension) ? PROVIDER_META[dimension].label : dimension;
 }
 
 // ---------------------------------------------------------------------

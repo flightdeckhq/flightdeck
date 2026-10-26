@@ -222,6 +222,7 @@
   "mistral.mistral-large-2407-v1:0": "mistral",
   "": "other",
   "ft:gemini-2.5-flash": "google",
-  "ft:grok-4": "xai"
+  "ft:grok-4": "xai",
+  "ft:": "other"
  }
 }

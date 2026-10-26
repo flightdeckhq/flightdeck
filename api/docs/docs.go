@@ -547,7 +547,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Filter to specific provider (anthropic, openai, google, xai, mistral, meta, other)",
+                        "description": "Filter to specific provider (anthropic, openai, google, xai, mistral, meta, deepseek, other)",
                         "name": "filter_provider",
                         "in": "query"
                     },

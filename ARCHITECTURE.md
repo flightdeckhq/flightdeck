@@ -4368,14 +4368,30 @@ tunable magic numbers:
 
 `dashboard/src/lib/models.ts`:
 
-- `ANTHROPIC_MODELS: Set<string>` — exact known Anthropic model IDs.
-- `OPENAI_MODELS: Set<string>` — exact known OpenAI model IDs.
-- `getProvider(model): "anthropic" | "openai" | "unknown"` — O(1) Set
-  lookup with prefix fallback (`claude-`, `gpt-`, `o1`, `o3`, `o4`).
+- `getProvider(model): Provider` — the provider of a model id
+  (`anthropic`, `openai`, `google`, `xai`, `mistral`, `meta`,
+  `deepseek`, `other`; `unknown` when there is no model), by the same
+  rule the API applies to canonical ids (`modelid.Provider`): a
+  `ft:` fine-tune reads its base model, a Bedrock vendor prefix
+  (`meta.`, `mistral.`, ...) names the vendor, then id prefixes. A
+  Vitest test reads the Go twins' shared vectors file
+  (`workers/internal/modelid/testdata/vectors.json`) so the two cannot
+  drift.
+- `PROVIDER_META` — label and chart colour token per provider;
+  `isProvider(value)` tells an analytics dimension value that names a
+  provider from one that does not.
 
 Single source of truth for provider detection used by the policy
 degrade dropdown, PromptViewer, session drawer, live feed rows, and
-analytics legend.
+analytics legend. Provider marks live in
+`dashboard/src/components/ui/provider-icons.ts`: Anthropic and OpenAI
+paths, and Google (the Gemini mark), Mistral, Meta and DeepSeek from
+`simple-icons`; xAI, other and unknown fall back to a generic glyph.
+
+The Analytics page's summary row is built from one `metric=tokens`,
+`group_by=provider` query: total tokens, one card per provider that
+used tokens in the window (largest first; a card toggles the page's
+provider filter), total runs and average tokens per run.
 
 ### OS / orchestration icons
 

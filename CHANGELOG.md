@@ -107,6 +107,13 @@ All notable changes to Flightdeck are documented here.
   shows its cost. The Analytics Estimated Cost note says when
   subscription calls are left out and names the unpriced models, and
   an empty chart says why it is empty.
+- **Dashboard providers.** The dashboard's provider detection now
+  follows the API's rule (fine-tunes, Bedrock vendor prefixes, the
+  wider Mistral, Google and OpenAI families) and knows DeepSeek, with a
+  test against the shared model-id vectors. Google, Mistral, Meta and
+  DeepSeek show their brand marks instead of a generic icon. The
+  Analytics summary row shows a card for every provider that used
+  tokens, not only Anthropic and OpenAI.
 
 ### Fixed
 

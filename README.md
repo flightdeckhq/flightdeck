@@ -453,7 +453,7 @@ The chart is at `version` 0.7.0 with `appVersion` 0.7.0; the default `image.tag`
 
 Deferred and planned work lives here so it stays visible and user demand can prioritise it. Items are added when a release declines or defers them and removed when they ship. The sequence below is the October 2026 update plan; status reflects `main`.
 
-### Next up (v0.6.0 and v0.7.0)
+### Next up (v0.8.0)
 
 - Helm: replicate the `FLIGHTDECK` JetStream stream across the NATS cluster (it is created with one replica today, so losing that server stalls ingestion until it returns); needs an in-place stream update for existing installs.
 - Sensor correctness on current SDKs: the `OpenAI.beta.chat.completions.parse` structured-output path (the non-beta `parse()` on chat and Responses is intercepted), litellm `text_completion` / `responses`.
@@ -467,12 +467,12 @@ Deferred and planned work lives here so it stays visible and user demand can pri
 - Operations: add request-latency histograms to the Go services, bound the NATS stream (`MaxAge` / `MaxBytes`; the `FLIGHTDECK` stream keeps every message today) and rotate the workers' logs in the compose files, so a flood of events cannot fill the NATS store or the host disk.
 - Claude Code plugin tool failures in the dashboard: a failed tool call is stored as a `tool_call` with an `error` block and already shows in the unscoped `/v1/events` `error_type` facet and the Investigate status chip, but the session drawer's error indicator, the `tool_call` rows, the per-session `error_types[]` aggregate and the agent `errors` count do not include it yet. The per-session MCP-server facet keys plugin-bundled servers as `plugin:<plugin>:<server>` for rows stored from v0.6.0 on while older rows keep `plugin_<plugin>_<server>`.
 - Workers: validate the `session_id` shape and cap log field sizes at the NATS consumer boundary. Ingestion validates today and the NATS stream is treated as untrusted, so a direct publisher can still make the worker log oversized ids.
-- Token and cost model: reasoning tokens, the prompt-cache TTL split, per-model cache ratios, a current model catalogue (Claude 5, GPT-6, Gemini 4), agent-reported cost, and model-id normalisation for gateway and cloud-platform ids.
 - Identity model v2: an extensible `client_type` registry and entrypoint detection for headless, SDK and CI runs.
 - Claude Code plugin v2: the remaining hook events (API errors, permission prompts, compaction, model switches, teams and worktrees), native cost from the transcript, async hooks, plugin `userConfig`, and enforcement (kill switch, token budgets and MCP deny) for Claude Code sessions.
 - Claude Agent SDK interceptor for Python agents built on the SDK.
+- Sensor import cost: `import flightdeck_sensor` imports litellm, the MCP SDK and the Anthropic and OpenAI SDKs whenever they are installed, whether or not the application uses them, and importing litellm fetches its price list from GitHub. Patch these when they are first imported instead, so an application pays only for the libraries it uses.
 
-### Planned (v0.8.0 and later)
+### Planned (v0.9.0 and later)
 
 - OTLP / OpenTelemetry ingest (observer class) for Claude Code native telemetry, Codex CLI, Gemini CLI, GitHub Copilot and OTel-instrumented frameworks.
 - Google provider (`google-genai`) and Google ADK; OpenAI Agents SDK, Pydantic AI, LlamaIndex, Strands (Bedrock Converse), Microsoft Agent Framework, Agno, Haystack and smolagents sub-agent coverage; a DSPy callback adapter.

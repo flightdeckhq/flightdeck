@@ -6,6 +6,41 @@ All notable changes to Flightdeck are documented here.
 
 ## v0.7.0 — 2026-10-26
 
+The token and cost model release. Every LLM call now carries what it
+cost to make and how it was billed: reasoning tokens, the one-hour share
+of cache writes, the requested and served model ids, the provider, the
+billing mode (`metered`, `subscription`, `local`), the platform that
+served it, and any cost a gateway or client reported. Estimated cost
+prices each metered call from litellm's per-model price list (with your
+`pricing.yaml` on top) on the platform that served it, and leaves
+subscription and local calls out instead of pricing them. Model ids are
+stored in one canonical form, a token policy can only degrade to a
+current, priced model, and the dashboard says what each cost figure
+includes.
+
+**Upgrade notes**
+
+- Three schema migrations (000029 to 000031) apply when the workers
+  start. Migration 000030 adds the index a background backfill uses to
+  rewrite the `model` of existing events and sessions into canonical
+  form; on a large database the backfill runs for a while after the
+  upgrade, in batches, while the service keeps serving.
+- Estimated cost now counts metered calls only. Claude Code sessions on
+  a Claude subscription are no longer priced, so cost figures that
+  included them drop. An organisation billed per token for Claude Code
+  sets `FLIGHTDECK_BILLING_MODE=metered` in the plugin's environment.
+- `pricing.yaml` is now an override layer on top of the embedded price
+  list. A version 1 file (`models:`) still loads and is read as
+  overrides; see the file's header for the version 2 format.
+- `POST /v1/policies`, and a `PUT` that changes `degrade_to`, now reject
+  a `degrade_to` that `GET /v1/pricing/models` does not list. Existing
+  policies keep their stored value and stay editable.
+- To send the new fields, upgrade the sensor
+  (`pip install -U flightdeck-sensor`) and update the Claude Code plugin
+  (`claude plugin update flightdeck@flightdeck-plugins`; marketplace
+  installs do not update themselves). Older clients keep working; their
+  events get the provider and billing mode the worker infers.
+
 ### Added
 
 - **Token and cost fields on LLM events.** Events can carry reasoning
@@ -15,9 +50,9 @@ All notable changes to Flightdeck are documented here.
   service tier, speed, data residency, server-tool counters and stop
   reason. Ingestion validates them, the worker stores them (migration
   000029 adds the `events` columns and the `model_pricing` table), and
-  `GET /v1/sessions/:id` and `GET /v1/events` return them. Clients start
-  sending them, and cost starts using them, in the next changes of the
-  token and cost model.
+  `GET /v1/sessions/:id` and `GET /v1/events` return them. The sensor
+  and the Claude Code plugin send them and estimated cost uses them
+  (below).
 - **The sensor reports the token, model and cost fields.** Every
   Anthropic, OpenAI and litellm `post_call` now carries the requested and
   served model ids, reasoning tokens (Anthropic thinking, OpenAI
@@ -61,7 +96,8 @@ All notable changes to Flightdeck are documented here.
   OpenAI and Foundry, with per-model cache, one-hour cache, reasoning,
   priority, long-context and fast-mode rates) and writes it, with your
   `pricing.yaml` overrides, into the new `model_pricing` table at
-  startup. `make pricing-refresh` regenerates the copy. `pricing.yaml`
+  startup, retrying until the workers' migrations have created it.
+  `make pricing-refresh` regenerates the copy. `pricing.yaml`
   becomes the override layer (version 2: `overrides`, `aliases`,
   `multipliers`, `server_tools`); a version 1 `models:` list still
   works and is read as overrides. Migration 000031 adds the per-model
@@ -128,12 +164,6 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
-- **Prices load on a fresh install.** The API builds its price table
-  when it starts, and on a fresh database it could start before the
-  workers had created that table. The build then failed once and was
-  not retried until the next restart, which left estimated cost empty
-  and every token policy's `degrade_to` rejected. The API now retries in
-  the background until the table exists.
 - **The API reference lists the errors an endpoint really returns.**
   Every authenticated endpoint now documents the 401 a missing or
   invalid token gets, and the event content endpoint documents the 400

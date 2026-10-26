@@ -11809,3 +11809,22 @@ leaves in place (one at or below the new stream's last sequence) can
 order a new call as earlier than the end; `start_seq` has the same
 limit, and both only follow a stream recreate.
 
+## D213 -- v0.7.0 ships the token and cost model alone
+
+**Date:** 2026-10-26
+
+**Decision:** v0.7.0 is the token and cost model (the October 2026
+update plan's Phase 3) and nothing else. Identity model v2 (the
+`client_type` registry), Claude Code plugin v2 and the Claude Agent
+SDK interceptor, which the plan also placed in v0.7.0, move to v0.8.0,
+and the plan's v0.8.0 and later work moves one release later.
+
+**Reasoning:** Phase 3 is complete and stands on its own, and main
+carries a token-loss fix (D212) that users of v0.6.0 are exposed to.
+Holding it until the identity and plugin work lands would keep finished
+fixes from users for weeks. The user approved cutting the cost-only
+release.
+
+**Rejected alternative:** Keeping v0.7.0 as planned (cost, identity v2,
+plugin v2 and the Agent SDK together): one larger release, but the
+token-loss fix and the cost model wait on unrelated work.

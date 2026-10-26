@@ -55,6 +55,7 @@ describe("getSummaryRows — per-call detail on post_call", () => {
       ["Cache write", "600 · 400 for 1h"],
       ["Reasoning tokens", "300"],
       ["Stop reason", "end_turn"],
+      ["Server tools", "2 web searches · 1 code execution"],
       ["Model requested", "anthropic/claude-sonnet-4-5"],
       ["Billing", "Metered"],
       ["Platform", "anthropic"],
@@ -62,7 +63,6 @@ describe("getSummaryRows — per-call detail on post_call", () => {
       ["Speed", "fast"],
       ["Inference geo", "us"],
       ["Inference scope", "global"],
-      ["Server tools", "2 web searches · 1 code execution"],
       ["Reported cost", "$0.041 · computed by the client"],
     ]);
   });
@@ -83,16 +83,44 @@ describe("getSummaryRows — per-call detail on post_call", () => {
     ).toEqual(BASE_ROWS);
   });
 
-  it("shows a cache write without a 1h split, and a served snapshot that differs", () => {
+  it("shows a cache write without a 1h split, and a served id canonicalising changed", () => {
+    // A Bedrock response names the cloud-prefixed id; the worker
+    // stores its canonical form in `model`.
     const event: AgentEvent = {
       ...base,
-      model: "gpt-4o-mini",
+      model: "claude-sonnet-4-5-20250929",
       tokens_cache_creation: 600,
-      model_served: "gpt-4o-mini-2024-07-18",
+      model_requested: "claude-sonnet-4-5-20250929",
+      model_served: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
     };
     expect(row(event, "Cache write")).toBe("600");
-    expect(row(event, "Model served")).toBe("gpt-4o-mini-2024-07-18");
+    expect(row(event, "Model served")).toBe("us.anthropic.claude-sonnet-4-5-20250929-v1:0");
     expect(row(event, "Model requested")).toBeUndefined();
+  });
+
+  it("gives an embeddings call the serving, billing and cost rows", () => {
+    const event: AgentEvent = {
+      ...base,
+      event_type: "embeddings",
+      model: "text-embedding-3-small",
+      tokens_output: null,
+      tokens_total: null,
+      tokens_cache_read: 0,
+      billing_mode: "metered",
+      platform: "openai",
+      cost_reported: 0.0002,
+      cost_source: "provider",
+      payload: { stop_reason: "ignored on embeddings" },
+    };
+    expect(labels(event)).toEqual([
+      "Model",
+      "Tokens input",
+      "Latency",
+      "Billing",
+      "Platform",
+      "Reported cost",
+    ]);
+    expect(row(event, "Reported cost")).toBe("<$0.001 · reported by the provider");
   });
 
   it("labels the billing mode and cost source, and keeps a zero reported cost", () => {

@@ -447,11 +447,10 @@ function formatServerToolUse(use: ServerToolUse): string | null {
   return parts.length > 0 ? parts.join(" · ") : null;
 }
 
-/** The token, serving and billing detail of one LLM call. A row
- *  appears only when the client reported its field (or, for counts,
- *  reported more than zero), so a call from a client that sends none
- *  of them keeps the base rows alone. */
-function callDetailRows(event: AgentEvent): [string, string][] {
+/** The generation detail of one LLM call: cache reads and writes,
+ *  reasoning tokens, stop reason and server tool counts. A row appears
+ *  only when the client reported the field with a value above zero. */
+function generationRows(event: AgentEvent): [string, string][] {
   const p = event.payload;
   const rows: [string, string][] = [];
   if (event.tokens_cache_read) {
@@ -470,9 +469,23 @@ function callDetailRows(event: AgentEvent): [string, string][] {
     rows.push(["Reasoning tokens", event.tokens_reasoning.toLocaleString()]);
   }
   if (p?.stop_reason) rows.push(["Stop reason", p.stop_reason]);
-  // The verbatim ids, each only when it differs from the Model row's
-  // canonical id: a gateway prefix or an alias the request named, or
-  // a snapshot the response named.
+  const serverTools = p?.server_tool_use ? formatServerToolUse(p.server_tool_use) : null;
+  if (serverTools) rows.push(["Server tools", serverTools]);
+  return rows;
+}
+
+/** The serving, billing and cost detail of an LLM call or an
+ *  embeddings call. A row appears only when the client reported the
+ *  field, so a call from a client that reports none of them keeps the
+ *  base rows alone. */
+function servingRows(event: AgentEvent): [string, string][] {
+  const p = event.payload;
+  const rows: [string, string][] = [];
+  // The verbatim ids, each only when it differs from the Model row.
+  // `model` is the canonical form of the served id (else the requested
+  // one), so the requested id shows when the request named an alias or
+  // a gateway-prefixed id, and the served id shows only when
+  // canonicalising changed it (a cloud prefix or version suffix).
   if (event.model_requested && event.model_requested !== event.model) {
     rows.push(["Model requested", event.model_requested]);
   }
@@ -487,8 +500,6 @@ function callDetailRows(event: AgentEvent): [string, string][] {
   if (p?.speed) rows.push(["Speed", p.speed]);
   if (p?.inference_geo) rows.push(["Inference geo", p.inference_geo]);
   if (p?.inference_scope) rows.push(["Inference scope", p.inference_scope]);
-  const serverTools = p?.server_tool_use ? formatServerToolUse(p.server_tool_use) : null;
-  if (serverTools) rows.push(["Server tools", serverTools]);
   if (event.cost_reported != null) {
     const source = event.cost_source
       ? ` · ${COST_SOURCE_LABEL[event.cost_source] ?? event.cost_source}`
@@ -507,7 +518,8 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
         ["Tokens output", event.tokens_output?.toLocaleString() ?? "—"],
         ["Total tokens", event.tokens_total?.toLocaleString() ?? "—"],
         ["Latency", event.latency_ms != null ? `${event.latency_ms.toLocaleString()}ms` : "—"],
-        ...callDetailRows(event),
+        ...generationRows(event),
+        ...servingRows(event),
       ];
       // Surface the streaming sub-object inline so
       // the expanded row shows everything the sensor recorded
@@ -640,6 +652,7 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
         ["Model", event.model ?? "unknown"],
         ["Tokens input", event.tokens_input?.toLocaleString() ?? "—"],
         ["Latency", event.latency_ms != null ? `${event.latency_ms.toLocaleString()}ms` : "—"],
+        ...servingRows(event),
       ];
     }
     case "llm_error": {

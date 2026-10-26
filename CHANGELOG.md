@@ -120,8 +120,9 @@ All notable changes to Flightdeck are documented here.
   the one-hour share), reasoning tokens, the stop reason, the requested
   or served model id when it differs, the billing mode, the platform,
   the service tier, speed and inference geo and scope, server tool
-  counts, and a reported cost with who computed it. Each row appears
-  only when the client reported the field.
+  counts, and a reported cost with who computed it. An embeddings
+  call shows the same model, billing, serving and cost rows. Each row
+  appears only when the client reported the field.
 
 ### Fixed
 

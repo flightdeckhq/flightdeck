@@ -4036,15 +4036,17 @@ clickable to swap the drawer's displayed event.
 
 The summary grid comes from `getSummaryRows` in
 `dashboard/src/lib/events.ts`, which the session drawer's expanded
-row and its full-detail view use too. For an LLM call it lists the
-model, input, output and total tokens and latency, then each per-call
-field the client reported: cache reads, cache writes with the
-one-hour share, reasoning tokens, stop reason, the verbatim requested
-or served model id where it differs from the canonical `model`,
-billing mode, platform, service tier, speed, inference geo and scope,
-server tool counts, and `cost_reported` with its `cost_source`. A
+row and its full-detail view use too. For an LLM call (`post_call`)
+it lists the model, input, output and total tokens and latency, then
+each generation field the client reported (cache reads, cache writes
+with the one-hour share, reasoning tokens, stop reason, server tool
+counts) and each serving field: the verbatim requested or served
+model id where it differs from the canonical `model`, billing mode,
+platform, service tier, speed, inference geo and scope, and
+`cost_reported` with its `cost_source`. An `embeddings` call lists
+its model, input tokens and latency, then the same serving fields. A
 field the client did not report (or a count of zero) has no row, so
-a call from a client that reports none keeps the five base rows.
+a call from a client that reports none keeps its base rows.
 
 The same `<EnrichmentSummary>` and `<SurroundingEventsList>`
 components are also embedded in the in-page `EventDetailView` that

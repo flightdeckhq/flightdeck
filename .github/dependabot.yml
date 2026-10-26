@@ -1,6 +1,8 @@
 # Dependency update PRs for every ecosystem the repo ships.
 #
-# - Weekly, Monday morning UTC, so updates land as one predictable batch.
+# - Monthly, on the first of the month at 06:00 UTC, so routine updates
+#   land as one predictable batch a month rather than a stream of PRs.
+#   Security updates are not held to this schedule (see below).
 # - cooldown: a release must be 14 days old before Dependabot proposes
 #   it. Brand-new releases are where hijacked or broken versions are
 #   caught and yanked; the same two-week floor applies to hand-picked
@@ -30,8 +32,7 @@ updates:
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "06:00"
     cooldown:
       default-days: 14
@@ -49,8 +50,7 @@ updates:
       - "/workers"
       - "/dashboard"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "06:00"
     cooldown:
       default-days: 14
@@ -71,8 +71,7 @@ updates:
   - package-ecosystem: docker-compose
     directory: "/docker"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "06:00"
     cooldown:
       default-days: 14
@@ -100,8 +99,7 @@ updates:
       - "/ingestion"
       - "/workers"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "06:00"
     cooldown:
       default-days: 14
@@ -115,8 +113,7 @@ updates:
   - package-ecosystem: npm
     directory: "/dashboard"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "06:00"
     cooldown:
       default-days: 14
@@ -139,8 +136,7 @@ updates:
   - package-ecosystem: uv
     directory: "/sensor"
     schedule:
-      interval: weekly
-      day: monday
+      interval: monthly
       time: "06:00"
     cooldown:
       default-days: 14

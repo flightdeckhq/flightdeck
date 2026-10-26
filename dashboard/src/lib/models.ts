@@ -38,11 +38,17 @@ const MISTRAL_PREFIXES = [
 ];
 
 /** The provider of a model id, by the same rule the API applies to
- *  canonical ids (events store the canonical id in ``model``). */
+ *  canonical ids (events store the canonical id in ``model``). A
+ *  missing or blank id is "unknown": the event names no model at all. */
 export function getProvider(model: string | null | undefined): Provider {
-  if (!model) return "unknown";
-  const id = model.trim().toLowerCase();
-  if (id.startsWith("ft:")) return getProvider(id.slice(3));
+  const id = model?.trim().toLowerCase();
+  return id ? providerOf(id) : "unknown";
+}
+
+/** The API's rule itself. A fine-tune with an empty base ("ft:") is
+ *  "other" here, as it is in the API, not "unknown". */
+function providerOf(id: string): Provider {
+  if (id.startsWith("ft:")) return providerOf(id.slice(3));
   const dot = id.indexOf(".");
   if (dot > 0) {
     const vendor = BEDROCK_VENDORS[id.slice(0, dot)];

@@ -63,6 +63,7 @@ describe("SummaryCards", () => {
     expect(onSelect).toHaveBeenLastCalledWith("openai");
     rerender(<SummaryCards range="30d" filterProvider="openai" onSelectProvider={onSelect} />);
     expect(screen.getByTestId("summary-card-provider-openai")).toHaveAttribute("data-active", "true");
+    expect(screen.getByTestId("summary-card-provider-openai")).toHaveAttribute("aria-pressed", "true");
     fireEvent.click(screen.getByTestId("summary-card-provider-openai"));
     expect(onSelect).toHaveBeenLastCalledWith(null);
   });
@@ -82,5 +83,26 @@ describe("SummaryCards", () => {
     render(<SummaryCards range="30d" filterProvider={null} onSelectProvider={vi.fn()} />);
     expect(await screen.findByTestId("summary-card-provider-openai")).toHaveTextContent("<0.1% of total");
     expect(screen.getByTestId("summary-card-provider-anthropic")).toHaveTextContent("100.0% of total");
+  });
+
+  it("says the summary failed to load and retries on request", async () => {
+    vi.mocked(fetchAnalytics).mockRejectedValueOnce(new Error("500"));
+    render(<SummaryCards range="30d" filterProvider={null} onSelectProvider={vi.fn()} />);
+    const error = await screen.findByTestId("summary-cards-error");
+    expect(error).toHaveTextContent("Could not load the summary.");
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    expect(await screen.findByTestId("summary-card-provider-deepseek")).toBeVisible();
+    expect(screen.queryByTestId("summary-cards-error")).toBeNull();
+  });
+
+  it("shows the loading state, not the previous window's cards, while a new range loads", async () => {
+    const { rerender } = render(
+      <SummaryCards range="30d" filterProvider={null} onSelectProvider={vi.fn()} />,
+    );
+    await screen.findByTestId("summary-card-provider-deepseek");
+    vi.mocked(fetchAnalytics).mockImplementation(() => new Promise(() => {}));
+    rerender(<SummaryCards range="7d" filterProvider={null} onSelectProvider={vi.fn()} />);
+    expect(screen.getByTestId("summary-cards-loading")).toBeVisible();
+    expect(screen.queryByTestId("summary-card-provider-deepseek")).toBeNull();
   });
 });

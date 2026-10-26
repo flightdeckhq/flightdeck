@@ -17,7 +17,7 @@ describe("getProvider", () => {
   it("matches the API's provider for every shared vector", () => {
     // An empty id is the one deliberate difference: the dashboard shows
     // "unknown" for an event with no model, where the API buckets it
-    // as "other".
+    // as "other". ("ft:", an empty fine-tune base, agrees: "other".)
     const entries = Object.entries(vectors.provider).filter(([model]) => model !== "");
     expect(entries.length).toBeGreaterThan(10);
     for (const [model, want] of entries) {
@@ -28,6 +28,7 @@ describe("getProvider", () => {
   it("returns unknown for a missing model", () => {
     expect(getProvider(null)).toBe("unknown");
     expect(getProvider("")).toBe("unknown");
+    expect(getProvider("   ")).toBe("unknown");
   });
 
   it("reads the base model of a fine-tune and a Bedrock vendor prefix", () => {

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 import { fetchAnalytics } from "@/lib/api";
@@ -122,6 +123,7 @@ function SummaryCard({
       data-testid={testId}
       data-active={active ? "true" : undefined}
       role="button"
+      aria-pressed={active}
       tabIndex={0}
       onClick={onClick}
       onKeyDown={(e) => {
@@ -174,22 +176,46 @@ export function SummaryCards({
   filterProvider,
   onSelectProvider,
 }: SummaryCardsProps) {
-  const [cards, setCards] = useState<CardData | null>(null);
+  const [attempt, setAttempt] = useState(0);
+  // The result carries the request it answers, so a new window (or a
+  // retry) reads as loading until its own response lands and the
+  // previous window's figures never show under the new range.
+  const request = `${range}|${from ?? ""}|${to ?? ""}|${attempt}`;
+  const [result, setResult] = useState<{
+    request: string;
+    cards: CardData | null;
+  } | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     loadCards({ range, from, to })
       .then((data) => {
-        if (!cancelled) setCards(data);
+        if (!cancelled) setResult({ request, cards: data });
       })
       .catch(() => {
-        /* swallow -- cards render in their loading state */
+        if (!cancelled) setResult({ request, cards: null });
       });
     return () => {
       cancelled = true;
     };
-  }, [range, from, to]);
+  }, [range, from, to, request]);
 
+  const settled = result?.request === request ? result : null;
+  if (settled && settled.cards === null) {
+    return (
+      <div
+        className="flex items-center gap-3 rounded-md border border-(--border) px-4 py-3"
+        data-testid="summary-cards-error"
+      >
+        <span className="text-sm text-danger">Could not load the summary.</span>
+        <Button variant="outline" size="sm" onClick={() => setAttempt((n) => n + 1)}>
+          Retry
+        </Button>
+      </div>
+    );
+  }
+
+  const cards = settled?.cards ?? null;
   const loading = cards === null;
   const totalTokens = cards?.tokens.value ?? 0;
   const runs = cards?.sessions.value ?? 0;

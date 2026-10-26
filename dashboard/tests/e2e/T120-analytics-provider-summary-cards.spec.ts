@@ -12,20 +12,21 @@ import { test, expect } from "@playwright/test";
 
 test.describe("T120 — analytics provider summary cards", () => {
   test("a card per provider comes from the provider breakdown", async ({ page }) => {
-    const byProvider = page.waitForResponse(
-      (r) =>
-        r.url().includes("/v1/analytics") &&
-        r.url().includes("metric=tokens") &&
-        r.url().includes("group_by=provider") &&
-        !r.url().includes("filter_provider"),
+    // The expected providers come from the API directly, for the page's
+    // default 30d window: the page's own response body is not readable
+    // once the page updates its URL after load.
+    const resp = await page.request.get(
+      "http://localhost:4000/api/v1/analytics?metric=tokens&group_by=provider&range=30d",
+      { headers: { Authorization: "Bearer tok_dev" } },
     );
-    await page.goto("/analytics");
-    const body = (await (await byProvider).json()) as {
+    expect(resp.ok(), "analytics API call must succeed").toBe(true);
+    const body = (await resp.json()) as {
       series: { dimension: string; total: number }[];
     };
     const used = body.series.filter((s) => s.total > 0).map((s) => s.dimension);
     expect(used).toEqual(expect.arrayContaining(["anthropic", "openai"]));
 
+    await page.goto("/analytics");
     for (const provider of used) {
       await expect(page.getByTestId(`summary-card-provider-${provider}`)).toBeVisible();
     }

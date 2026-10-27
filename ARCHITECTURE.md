@@ -1382,6 +1382,16 @@ state-revival path: the child session ages from
 PostToolUseFailure hook with `markEmittedTurn` per-messageId disk-marker dedup so mid-turn LLM
 activity surfaces in real time instead of batching at Stop.
 
+The markers are a local optimisation, not the guarantee: they live in
+`$TMPDIR`, which a reboot clears (a resumed conversation's next hook then
+re-reads its whole transcript), and a `claude` process started from
+inside a session can read its parent's transcript. Each turn's
+`post_call` therefore carries an event id derived from the model call's
+message id (`uuid5(NAMESPACE_FLIGHTDECK,
+"flightdeck://claude-code/post_call/<message id>")`), so every copy of
+one call has the same id, and the worker stores it once (see
+`originating_event_id` chain).
+
 Each `post_call` carries `provider=anthropic`, the session's
 `billing_mode` and `provider_metadata.platform`, which the
 `SessionStart` hook determines once (see Cost estimation) and keeps in
@@ -5168,9 +5178,13 @@ landed).
 ### `originating_event_id` chain
 
 Sensor mints a UUID per emission via `Session._build_payload`
-(`payload.id`). Worker's `InsertEvent` uses it via
-`COALESCE(NULLIF($1, '')::uuid, gen_random_uuid)`. Idempotent
-retry semantics via `ON CONFLICT (id, occurred_at) DO NOTHING`.
+(`payload.id`); the Claude Code plugin derives each `post_call`'s id
+from the model call's message id. Worker's `InsertEvent` uses it via
+`COALESCE(NULLIF($1, '')::uuid, gen_random_uuid)`. Before any side
+effect the worker drops an event whose id is already stored, so a
+retried POST, a NATS redelivery or a re-sent model call adds no tokens
+and touches no session; `ON CONFLICT (id, occurred_at) DO NOTHING`
+backs the check up when two copies are processed at once.
 
 `Session._current_call_event_id` tracks the most-recent
 `post_call` emission's id. Every "downstream of an LLM call"

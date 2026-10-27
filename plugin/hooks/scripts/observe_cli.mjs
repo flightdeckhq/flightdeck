@@ -2300,6 +2300,18 @@ function buildContent(turn) {
 // activity in real time instead of waiting for the turn to end at Stop.
 // ---------------------------------------------------------------------
 
+/**
+ * The event id of the ``post_call`` for one model call, derived from the
+ * provider's message id. Every copy of the same call carries the same id
+ * whoever sends it (a hook that re-reads the transcript after the sent
+ * markers were lost, a child process that reads its parent's
+ * transcript), and the worker stores an event id once, so a call is
+ * counted once.
+ */
+export function postCallEventId(messageId) {
+  return uuid5(NAMESPACE_FLIGHTDECK, `flightdeck://claude-code/post_call/${messageId}`);
+}
+
 async function flushPostCallTurns({
   cfg,
   sessionId,
@@ -2338,6 +2350,7 @@ async function flushPostCallTurns({
     cacheSessionModel(sessionId, resolvedModel);
     await postEvent(cfg.server, cfg.token, sessionId, {
       ...basePayload,
+      id: postCallEventId(turn.messageId),
       event_type: "post_call",
       model: resolvedModel,
       tool_name: null,

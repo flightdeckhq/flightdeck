@@ -553,6 +553,22 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	// Canonical model id, provider and billing defaults first, so the
 	// session's model and the stored event agree.
 	normalizeModelFields(&e)
+	// An event whose client-supplied id is already stored is a copy of
+	// one the worker has processed: a re-sent model call (the plugin
+	// re-reads a transcript after losing its sent-markers, a child
+	// process re-reads its parent's) or a retried POST. Drop it before
+	// any side effect, so its tokens are not added twice and its session
+	// is not touched.
+	if e.ID != "" {
+		dup, err := p.w.EventExists(ctx, e.ID)
+		if err != nil {
+			return err
+		}
+		if dup {
+			slog.Debug("dropping duplicate event", "event_id", e.ID, "event_type", e.EventType, "session_id", e.SessionID)
+			return nil
+		}
+	}
 	// Route to the correct session handler
 	switch e.EventType {
 	case "session_start":

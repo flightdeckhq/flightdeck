@@ -88,6 +88,37 @@ describe("sessionSupportsDirectives", () => {
     };
     expect(sessionSupportsDirectives(s)).toBe(false);
   });
+
+  it("falls back to the client type's registry default when the flag is absent", () => {
+    // A hook-based client (observer) defaults to no directives, the
+    // sensor and the Agent SDK interceptor to directives.
+    expect(sessionSupportsDirectives({ ...mkSession("cx", "active"), client_type: "codex" })).toBe(false);
+    expect(sessionSupportsDirectives({ ...mkSession("cc", "active"), client_type: "claude_code" })).toBe(false);
+    expect(sessionSupportsDirectives({ ...mkSession("fs", "active"), client_type: "flightdeck_sensor" })).toBe(true);
+    expect(sessionSupportsDirectives({ ...mkSession("sdk", "active"), client_type: "claude_agent_sdk" })).toBe(true);
+  });
+
+  it("lets an explicit flag override the client type's default", () => {
+    expect(
+      sessionSupportsDirectives({
+        ...mkSession("cx-on", "active", { supports_directives: true }),
+        client_type: "codex",
+      }),
+    ).toBe(true);
+    expect(
+      sessionSupportsDirectives({
+        ...mkSession("fs-off", "active", { supports_directives: false }),
+        client_type: "flightdeck_sensor",
+      }),
+    ).toBe(false);
+  });
+
+  it("uses the registry default, not the flavor, once client_type is known", () => {
+    // A sensor session an operator named "claude-code" keeps its Stop
+    // button: the flavor rule applies only to rows with no client_type.
+    const s = { ...mkSession("named", "active"), flavor: "claude-code", client_type: "flightdeck_sensor" };
+    expect(sessionSupportsDirectives(s)).toBe(true);
+  });
 });
 
 describe("flavorHasDirectiveCapableSession", () => {

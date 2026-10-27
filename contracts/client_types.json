@@ -1,0 +1,14 @@
+{
+  "description": "The client type registry: every client_type value Flightdeck accepts, with its label and defaults. ARCHITECTURE.md, 'Client type registry', describes each field. Every component that checks or shows the list keeps a literal copy pinned to this file by a parity test; change this file and every copy together.",
+  "client_types": [
+    { "id": "claude_code",       "label": "Claude Code",      "agent_type": "coding",     "supports_directives": false, "billing_mode": "subscription", "strips_tool_error_text": true },
+    { "id": "flightdeck_sensor", "label": "Sensor",           "agent_type": "production", "supports_directives": true,  "billing_mode": "metered",      "strips_tool_error_text": false },
+    { "id": "claude_agent_sdk",  "label": "Claude Agent SDK", "agent_type": "production", "supports_directives": true,  "billing_mode": "metered",      "strips_tool_error_text": false },
+    { "id": "codex",             "label": "Codex CLI",        "agent_type": "coding",     "supports_directives": false, "billing_mode": "subscription", "strips_tool_error_text": true },
+    { "id": "copilot",           "label": "GitHub Copilot",   "agent_type": "coding",     "supports_directives": false, "billing_mode": "subscription", "strips_tool_error_text": true },
+    { "id": "opencode",          "label": "OpenCode",         "agent_type": "coding",     "supports_directives": false, "billing_mode": "metered",      "strips_tool_error_text": true },
+    { "id": "gemini_cli",        "label": "Gemini CLI",       "agent_type": "coding",     "supports_directives": false, "billing_mode": "metered",      "strips_tool_error_text": true },
+    { "id": "cursor",            "label": "Cursor",           "agent_type": "coding",     "supports_directives": false, "billing_mode": "subscription", "strips_tool_error_text": true },
+    { "id": "otlp",              "label": "OpenTelemetry",    "agent_type": "production", "supports_directives": false, "billing_mode": "metered",      "strips_tool_error_text": true }
+  ]
+}

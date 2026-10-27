@@ -197,8 +197,8 @@ Flightdeck conventions (see `CLAUDE.md`):
   Undocumented endpoints are a critical finding at phase-close audit.
 - **MCP Protection Policy.** When reviewing MCP-related changes:
   policy enforcement applies at all six MCP entry points (not just
-  `call_tool`), per `DECISIONS.md` D151. The shared `policy_decision`
-  block (D148) and originating-event-id chain (D149) flow on every
+  `call_tool`). The shared `policy_decision` block and the
+  originating-event-id chain flow on every
   policy decision. Fingerprinting events surface server identity for
   operators; do not log fingerprint inputs that could leak sensitive
   config.

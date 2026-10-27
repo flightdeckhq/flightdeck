@@ -81,7 +81,8 @@ Flightdeck conventions (see `CLAUDE.md`):
   rewrite the token-counting logic carried over from `tokencap`; extend
   it. `capture_prompts` defaults to `False` — never flip the default. The
   `init()` `limit` param fires WARN only; never upgrade a local limit to
-  BLOCK or DEGRADE regardless of server policy (see `DECISIONS.md` D035).
+  BLOCK or DEGRADE regardless of server policy: enforcement belongs to
+  the server's policy.
 - **Capture posture (rules 18–21).** When `capture_prompts=False`, event
   payloads contain only token counts, model names, latency, and tool
   names — no message content, no system prompts, no tool inputs / outputs,

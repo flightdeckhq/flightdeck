@@ -14,9 +14,21 @@
  * (e.g. a query param or a response body) into the typed form.
  */
 
+/** Every ``client_type`` value the API accepts: the client type
+ *  registry, mirrored from ``contracts/client_types.json`` (a unit test
+ *  pins this copy to it). Only the Claude Code plugin and the Python
+ *  sensor send events today; the other values are reserved for the
+ *  integrations on the README Roadmap. */
 export const ClientType = {
   ClaudeCode: "claude_code",
   FlightdeckSensor: "flightdeck_sensor",
+  ClaudeAgentSdk: "claude_agent_sdk",
+  Codex: "codex",
+  Copilot: "copilot",
+  OpenCode: "opencode",
+  GeminiCli: "gemini_cli",
+  Cursor: "cursor",
+  Otlp: "otlp",
 } as const;
 export type ClientType = (typeof ClientType)[keyof typeof ClientType];
 
@@ -44,12 +56,38 @@ export function isAgentType(value: unknown): value is AgentType {
   );
 }
 
-/**
- * Human-readable pill label for the ``client_type`` badge rendered
- * next to an agent_name in the Fleet and Investigate views. Kept
- * beside the enum definition so adding a new client in the future
- * forces the caller to supply its label.
- */
+/** One client type's registry entry: its display label and the
+ *  defaults the system applies when a session does not state its own
+ *  (ARCHITECTURE.md, "Client type registry"). */
+export interface ClientTypeMeta {
+  label: string;
+  /** The ``agent_type`` the client sends in normal use. Ingestion does
+   *  not enforce the pairing; the Fleet anomaly check and the test
+   *  fixtures assert it. */
+  agentType: AgentType;
+  /** Whether a session of this type can act on a directive when its
+   *  ``session_start`` does not say. */
+  supportsDirectives: boolean;
+  /** The billing mode the worker stores for a call that arrives
+   *  without one. */
+  billingMode: "metered" | "subscription" | "local";
+  /** Whether the worker redacts a failed tool call's error text on a
+   *  capture-off session for this type. */
+  stripsToolErrorText: boolean;
+}
+
+export const CLIENT_TYPE_META: Record<ClientType, ClientTypeMeta> = {
+  [ClientType.ClaudeCode]: { label: "Claude Code", agentType: AgentType.Coding, supportsDirectives: false, billingMode: "subscription", stripsToolErrorText: true },
+  [ClientType.FlightdeckSensor]: { label: "Sensor", agentType: AgentType.Production, supportsDirectives: true, billingMode: "metered", stripsToolErrorText: false },
+  [ClientType.ClaudeAgentSdk]: { label: "Claude Agent SDK", agentType: AgentType.Production, supportsDirectives: true, billingMode: "metered", stripsToolErrorText: false },
+  [ClientType.Codex]: { label: "Codex CLI", agentType: AgentType.Coding, supportsDirectives: false, billingMode: "subscription", stripsToolErrorText: true },
+  [ClientType.Copilot]: { label: "GitHub Copilot", agentType: AgentType.Coding, supportsDirectives: false, billingMode: "subscription", stripsToolErrorText: true },
+  [ClientType.OpenCode]: { label: "OpenCode", agentType: AgentType.Coding, supportsDirectives: false, billingMode: "metered", stripsToolErrorText: true },
+  [ClientType.GeminiCli]: { label: "Gemini CLI", agentType: AgentType.Coding, supportsDirectives: false, billingMode: "metered", stripsToolErrorText: true },
+  [ClientType.Cursor]: { label: "Cursor", agentType: AgentType.Coding, supportsDirectives: false, billingMode: "subscription", stripsToolErrorText: true },
+  [ClientType.Otlp]: { label: "OpenTelemetry", agentType: AgentType.Production, supportsDirectives: false, billingMode: "metered", stripsToolErrorText: true },
+};
+
 /**
  * Canonical visible labels for ``client_type`` used everywhere a
  * client_type renders (Fleet swimlane pill, Fleet sidebar pill,
@@ -61,10 +99,9 @@ export function isAgentType(value: unknown): value is AgentType {
  * ``text-transform: uppercase`` so the on-screen result is
  * ``CLAUDE CODE`` / ``SENSOR``.
  */
-export const CLIENT_TYPE_LABEL: Record<ClientType, string> = {
-  [ClientType.ClaudeCode]: "Claude Code",
-  [ClientType.FlightdeckSensor]: "Sensor",
-};
+export const CLIENT_TYPE_LABEL = Object.fromEntries(
+  CLIENT_TYPE_VALUES.map((c) => [c, CLIENT_TYPE_META[c].label]),
+) as Record<ClientType, string>;
 
 /**
  * Colour treatment for the ``client_type`` pill.
@@ -87,6 +124,12 @@ export const CLIENT_TYPE_LABEL: Record<ClientType, string> = {
  *                         analytics provider palette rather than any
  *                         SDK brand.
  *
+ *   every other type    → the muted ``--text-secondary`` treatment.
+ *                         These types have no emitter yet, so they
+ *                         render only once a client sends them; each
+ *                         gets its own brand colour (a ``themes.css``
+ *                         token) with its integration.
+ *
  * Adding a new client in the future means adding an entry here. Use
  * existing theme tokens rather than raw hex so dark/light theme
  * parity is free; if a token does not exist yet, introduce it in
@@ -102,6 +145,14 @@ export interface ClientTypeColor {
   border: string;
 }
 
+/** The muted pill treatment for a client type that has no emitter (and
+ *  so no brand colour) yet. */
+const RESERVED_CLIENT_COLOR: ClientTypeColor = {
+  bg: "color-mix(in srgb, var(--text-secondary) 14%, transparent)",
+  fg: "var(--text-secondary)",
+  border: "color-mix(in srgb, var(--text-secondary) 32%, transparent)",
+};
+
 export const CLIENT_TYPE_COLOR: Record<ClientType, ClientTypeColor> = {
   [ClientType.ClaudeCode]: {
     bg: "color-mix(in srgb, var(--claude-code) 15%, transparent)",
@@ -113,6 +164,13 @@ export const CLIENT_TYPE_COLOR: Record<ClientType, ClientTypeColor> = {
     fg: "var(--chart-openai)",
     border: "color-mix(in srgb, var(--chart-openai) 35%, transparent)",
   },
+  [ClientType.ClaudeAgentSdk]: RESERVED_CLIENT_COLOR,
+  [ClientType.Codex]: RESERVED_CLIENT_COLOR,
+  [ClientType.Copilot]: RESERVED_CLIENT_COLOR,
+  [ClientType.OpenCode]: RESERVED_CLIENT_COLOR,
+  [ClientType.GeminiCli]: RESERVED_CLIENT_COLOR,
+  [ClientType.Cursor]: RESERVED_CLIENT_COLOR,
+  [ClientType.Otlp]: RESERVED_CLIENT_COLOR,
 };
 
 /**

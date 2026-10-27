@@ -19,6 +19,7 @@ fixture modules change shape in a way these checks cannot read.
 from __future__ import annotations
 
 import ast
+import json
 import pathlib
 import re
 
@@ -52,12 +53,16 @@ def _load_shared(name: str) -> str:
     return (here / ".." / "shared" / name).resolve().read_text()
 
 
-# Canonical pairings. Any additional client_type values added in the
-# future need a matching allowed agent_type set declared here.
-ALLOWED_PAIRS = {
-    CLAUDE_CODE_CLIENT_TYPE: {CODING_AGENT_TYPE},
-    "flightdeck_sensor": {"production"},
-}
+# Canonical pairings: each client type and the agent_type it is
+# expected to send, read from the client type registry
+# (contracts/client_types.json, its one source). Fails, not skips, when
+# the file is missing.
+_REGISTRY = json.loads(
+    (
+        pathlib.Path(__file__).resolve().parents[2] / "contracts" / "client_types.json"
+    ).read_text()
+)
+ALLOWED_PAIRS = {e["id"]: {e["agent_type"]} for e in _REGISTRY["client_types"]}
 
 
 def test_conftest_default_pair_is_canonical() -> None:
@@ -80,8 +85,8 @@ def test_conftest_default_pair_is_canonical() -> None:
     agent_type = m_at.group(1)
     client_type = m_ct.group(1)
     assert client_type in ALLOWED_PAIRS, (
-        f"DEFAULT_CLIENT_TYPE={client_type!r} not in the known pairing table; "
-        "extend ALLOWED_PAIRS above if a new client_type is legitimate."
+        f"DEFAULT_CLIENT_TYPE={client_type!r} is not in the client type registry "
+        "(contracts/client_types.json)."
     )
     assert agent_type in ALLOWED_PAIRS[client_type], (
         f"shared fixtures default an illegal pair: agent_type={agent_type!r}, "

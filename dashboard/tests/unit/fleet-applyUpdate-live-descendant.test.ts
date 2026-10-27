@@ -202,6 +202,22 @@ describe("fleet store applyUpdate — live sub-agent indent (regression guard)",
     expect(child!.recent_sessions![0].agent_role).toBe("general-purpose");
   });
 
+  it("leaves a synthesised row's client_type null when the update's is missing or unknown", () => {
+    // An unknown or absent client_type is never guessed (it used to be
+    // labelled Sensor); the row then renders no client pill.
+    for (const client_type of [null, "windsurf"]) {
+      seedParentOnly();
+      const update = childSessionStart();
+      useFleetStore.getState().applyUpdate({
+        ...update,
+        session: { ...update.session!, client_type } as typeof update.session,
+      });
+      const child = useFleetStore.getState().agents.find((a) => a.agent_id === CHILD_AGENT_ID);
+      expect(child, String(client_type)).toBeDefined();
+      expect(child?.client_type, String(client_type)).toBeNull();
+    }
+  });
+
   it("deriveFamilyDescendantSet resolves the linkage on the same tick the WS event lands", () => {
     // Pre-event: child not present, descendant set empty.
     expect(deriveFamilyDescendantSet(useFleetStore.getState().agents).size).toBe(

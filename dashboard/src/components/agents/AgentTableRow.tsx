@@ -115,11 +115,13 @@ function AgentTableRowImpl({
           >
             {agent.agent_name}
           </span>
-          <ClientTypePill
-            clientType={agent.client_type}
-            size="compact"
-            testId={`agent-row-client-type-${agent.agent_id}`}
-          />
+          {agent.client_type && (
+            <ClientTypePill
+              clientType={agent.client_type}
+              size="compact"
+              testId={`agent-row-client-type-${agent.agent_id}`}
+            />
+          )}
           <span
             className="font-mono text-[10px] text-text-muted uppercase tracking-[0.06em]"
             data-testid={`agent-row-agent-type-${agent.agent_id}`}

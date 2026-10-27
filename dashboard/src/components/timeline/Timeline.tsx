@@ -551,7 +551,7 @@ export function Timeline({
           key={f.flavor}
           flavor={f.flavor}
           agentName={f.agent_name}
-          clientType={f.client_type}
+          clientType={f.client_type ?? undefined}
           agentType={f.agent_type}
           sessions={f.sessions}
           scale={scale}

@@ -101,7 +101,7 @@ export function agentMatchesSearch(
   const haystack: string[] = [
     agent.agent_name,
     agent.agent_type,
-    agent.client_type,
+    ...(agent.client_type ? [agent.client_type] : []),
     agent.hostname,
     agent.user,
     ...agentFrameworks(agent),
@@ -157,7 +157,10 @@ export function filterAgents(
     if (filter.agentTypes.size > 0 && !filter.agentTypes.has(a.agent_type)) {
       return false;
     }
-    if (filter.clientTypes.size > 0 && !filter.clientTypes.has(a.client_type)) {
+    if (
+      filter.clientTypes.size > 0 &&
+      (a.client_type === null || !filter.clientTypes.has(a.client_type))
+    ) {
       return false;
     }
     if (filter.frameworks.size > 0) {

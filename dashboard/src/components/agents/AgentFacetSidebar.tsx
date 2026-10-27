@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
 import type { AgentSummary, SessionState } from "@/lib/types";
-import { type AgentType, type ClientType } from "@/lib/agent-identity";
+import { type AgentType, CLIENT_TYPE_VALUES } from "@/lib/agent-identity";
 import {
   type AgentFilterState,
   agentFrameworks,
@@ -30,7 +30,6 @@ const STATE_OPTIONS: SessionState[] = [
   "closed",
 ];
 const AGENT_TYPE_OPTIONS: AgentType[] = ["coding", "production"];
-const CLIENT_TYPE_OPTIONS: ClientType[] = ["claude_code", "flightdeck_sensor"];
 
 interface AgentFacetSidebarProps {
   agents: AgentSummary[];
@@ -76,7 +75,14 @@ export function AgentFacetSidebar({
   // real values.
   const stateCounts = countBy(agents, (a) => [a.state]);
   const agentTypeCounts = countBy(agents, (a) => [a.agent_type]);
-  const clientTypeCounts = countBy(agents, (a) => [a.client_type]);
+  const clientTypeCounts = countBy(agents, (a) => (a.client_type ? [a.client_type] : []));
+  // The client facet offers the registry's values that some agent
+  // carries, in registry order, plus any value the filter already
+  // holds so it can still be cleared. A reserved client type with no
+  // agents yet does not appear.
+  const clientTypeOptions = CLIENT_TYPE_VALUES.filter(
+    (c) => (clientTypeCounts.get(c) ?? 0) > 0 || filter.clientTypes.has(c),
+  );
   const frameworkCounts = countBy(agents, (a) => agentFrameworks(a));
   const hostnameCounts = countBy(agents, (a) => valueOrEmpty(a.hostname));
   const userCounts = countBy(agents, (a) => valueOrEmpty(a.user));
@@ -166,7 +172,7 @@ export function AgentFacetSidebar({
       </FacetGroup>
 
       <FacetGroup label="CLIENT" testId="agent-filter-client-type-group">
-        {CLIENT_TYPE_OPTIONS.map((c) => (
+        {clientTypeOptions.map((c) => (
           <FacetEntry
             key={c}
             testId={`agent-filter-client-type-${c}`}

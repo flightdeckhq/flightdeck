@@ -97,9 +97,50 @@ describe("AgentFacetSidebar", () => {
     expect(
       screen.getByTestId("agent-filter-agent-type-production"),
     ).toBeInTheDocument();
+    // The client facet lists only client types some agent carries.
     expect(
       screen.getByTestId("agent-filter-client-type-claude_code"),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByTestId("agent-filter-client-type-flightdeck_sensor"),
+    ).toBeNull();
+  });
+
+  it("lists the client types present in the data, in registry order, and none reserved", () => {
+    render(
+      <AgentFacetSidebar
+        agents={[
+          mkAgent({ agent_id: "s", client_type: ClientType.FlightdeckSensor }),
+          mkAgent({ agent_id: "c", client_type: ClientType.ClaudeCode }),
+          mkAgent({ agent_id: "x", client_type: ClientType.Codex }),
+          mkAgent({ agent_id: "n", client_type: null }),
+        ]}
+        filter={EMPTY_FILTER}
+        onChange={vi.fn()}
+      />,
+    );
+    const group = screen.getByTestId("agent-filter-client-type-group");
+    const ids = Array.from(
+      group.querySelectorAll('[data-testid^="agent-filter-client-type-"]'),
+    )
+      .map((el) => el.getAttribute("data-testid"))
+      .filter((id) => id !== "agent-filter-client-type-group");
+    expect(ids).toEqual([
+      "agent-filter-client-type-claude_code",
+      "agent-filter-client-type-flightdeck_sensor",
+      "agent-filter-client-type-codex",
+    ]);
+    expect(screen.queryByTestId("agent-filter-client-type-cursor")).toBeNull();
+  });
+
+  it("keeps a selected client type listed when no agent carries it", () => {
+    render(
+      <AgentFacetSidebar
+        agents={[mkAgent({ client_type: ClientType.ClaudeCode })]}
+        filter={{ ...EMPTY_FILTER, clientTypes: new Set([ClientType.FlightdeckSensor]) }}
+        onChange={vi.fn()}
+      />,
+    );
     expect(
       screen.getByTestId("agent-filter-client-type-flightdeck_sensor"),
     ).toBeInTheDocument();

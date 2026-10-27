@@ -1,14 +1,15 @@
 import { test, expect } from "@playwright/test";
 import { waitForFleetReady } from "./_fixtures";
+import { CLIENT_TYPE_META, CLIENT_TYPE_VALUES } from "../../src/lib/agent-identity";
 
-// T21 — structural invariant: no agent renders both a CODING-agent
-// signal AND a SENSOR client_type signal. The two are mutually
-// exclusive by design — coding agents are observed via the Claude
-// Code plugin (client_type=claude_code), production agents via the
-// Python sensor (client_type=flightdeck_sensor). A row carrying
-// both is the canonical "fleet anomaly": it indicates a misconfigured init() (probably a sensor
-// SDK call setting agent_type="coding") and corrupts every facet
-// rollup that splits by agent_type or client_type.
+// T21 — structural invariant: every agent's agent_type matches the
+// agent_type its client type is expected to send (the client type
+// registry's "Expected agent_type": coding for the hook-based coding
+// agents, production for the sensor). Ingestion does not enforce the
+// pairing, so a row that breaks it is the canonical "fleet anomaly":
+// typically a misconfigured init() (a sensor SDK call setting
+// agent_type="coding"), which corrupts every facet rollup that splits
+// by agent_type or client_type. The seeded fleet must carry none.
 //
 // The unit-level fleet-store filtering test guards the in-memory
 // data shape; this E2E guard is the browser-rendered surface, run
@@ -17,7 +18,7 @@ import { waitForFleetReady } from "./_fixtures";
 // added to the wrong code path) trips the test even if the data
 // stays clean.
 test.describe("T21 — Fleet renders no coding+sensor anomaly", () => {
-  test("no swimlane row carries both 'coding' agent_type AND a sensor client pill", async ({
+  test("every swimlane row's agent_type matches its client type's expected agent_type", async ({
     page,
   }) => {
     await page.goto("/");
@@ -27,6 +28,7 @@ test.describe("T21 — Fleet renders no coding+sensor anomaly", () => {
     const count = await rows.count();
     expect(count).toBeGreaterThan(0); // sanity: fleet has agents
 
+    let checked = 0;
     for (let i = 0; i < count; i += 1) {
       const row = rows.nth(i);
       // Pull the immediate row container's siblings via XPath up to
@@ -39,24 +41,33 @@ test.describe("T21 — Fleet renders no coding+sensor anomaly", () => {
         .first()
         .textContent()
         .catch(() => "");
-      const pillTitle = await row
-        .locator('[data-testid="swimlane-client-type-pill"]')
-        .first()
-        .getAttribute("title")
-        .catch(() => "");
+      // A row with no client_type renders no pill; look for it before
+      // reading its title so such a row costs no locator timeout.
+      const pill = row.locator('[data-testid="swimlane-client-type-pill"]').first();
+      const pillTitle = (await pill.count()) > 0 ? await pill.getAttribute("title") : "";
 
-      const isCoding = (badgeText ?? "").trim().toLowerCase() === "coding";
-      const isSensor = (pillTitle ?? "").includes("flightdeck_sensor");
+      // The pill's title is "client_type=<value>"; a row with no
+      // client_type renders no pill and has nothing to check.
+      const clientType = CLIENT_TYPE_VALUES.find(
+        (c) => (pillTitle ?? "") === `client_type=${c}`,
+      );
+      if (!clientType) continue;
+      const agentType = (badgeText ?? "").trim().toLowerCase();
 
       // Identifier for the failure message — derive from the testid.
       const testIdAttr = (await row.getAttribute("data-testid")) ?? "<unknown>";
 
       expect(
-        isCoding && isSensor,
-        `swimlane row ${testIdAttr}: agent_type=coding combined with` +
-          " client_type=flightdeck_sensor (canonical fleet anomaly)",
-      ).toBe(false);
+        agentType,
+        `swimlane row ${testIdAttr}: client_type=${clientType} is expected to` +
+          ` send agent_type=${CLIENT_TYPE_META[clientType].agentType} (fleet anomaly)`,
+      ).toBe(CLIENT_TYPE_META[clientType].agentType);
+      checked += 1;
     }
+    // The seeded fleet has pill-bearing rows, so a run that compared
+    // none means the pill's title format changed and the check went
+    // vacuous.
+    expect(checked, "rows with a client pill compared").toBeGreaterThan(0);
   });
 
 });

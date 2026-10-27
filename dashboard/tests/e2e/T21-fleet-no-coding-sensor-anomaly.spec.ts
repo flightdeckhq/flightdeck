@@ -28,6 +28,7 @@ test.describe("T21 — Fleet renders no coding+sensor anomaly", () => {
     const count = await rows.count();
     expect(count).toBeGreaterThan(0); // sanity: fleet has agents
 
+    let checked = 0;
     for (let i = 0; i < count; i += 1) {
       const row = rows.nth(i);
       // Pull the immediate row container's siblings via XPath up to
@@ -40,11 +41,10 @@ test.describe("T21 — Fleet renders no coding+sensor anomaly", () => {
         .first()
         .textContent()
         .catch(() => "");
-      const pillTitle = await row
-        .locator('[data-testid="swimlane-client-type-pill"]')
-        .first()
-        .getAttribute("title")
-        .catch(() => "");
+      // A row with no client_type renders no pill; look for it before
+      // reading its title so such a row costs no locator timeout.
+      const pill = row.locator('[data-testid="swimlane-client-type-pill"]').first();
+      const pillTitle = (await pill.count()) > 0 ? await pill.getAttribute("title") : "";
 
       // The pill's title is "client_type=<value>"; a row with no
       // client_type renders no pill and has nothing to check.
@@ -62,7 +62,12 @@ test.describe("T21 — Fleet renders no coding+sensor anomaly", () => {
         `swimlane row ${testIdAttr}: client_type=${clientType} is expected to` +
           ` send agent_type=${CLIENT_TYPE_META[clientType].agentType} (fleet anomaly)`,
       ).toBe(CLIENT_TYPE_META[clientType].agentType);
+      checked += 1;
     }
+    // The seeded fleet has pill-bearing rows, so a run that compared
+    // none means the pill's title format changed and the check went
+    // vacuous.
+    expect(checked, "rows with a client pill compared").toBeGreaterThan(0);
   });
 
 });

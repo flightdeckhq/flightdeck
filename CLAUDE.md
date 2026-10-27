@@ -210,9 +210,8 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
      Enforced mechanically by ``playground/_helpers.py::init_sensor``.
 
      Without this rule every playground run lands as ``flavor="unknown"`` /
-     ``agent_type="autonomous"`` -- the sensor's old defaults -- which
-     makes the Fleet view unreadable and violates the agent_type vocabulary
-     lock.
+     ``agent_type="autonomous"`` -- outside the locked agent_type vocabulary
+     (``coding``, ``production``) -- which makes the Fleet view unreadable.
 
 40a.B. **Every playground script must enable maximum capture.**
      ``capture_prompts=True`` is the default in

@@ -98,7 +98,8 @@ each pass focused exclusively on that role's concerns.
    coherence (sensor payload ↔ ingestion validator ↔ worker
    projector ↔ API store), L1 (no temporal qualifiers / phase
    tags introduced), L2 (doc-first ordering verified via git log:
-   ARCHITECTURE / DECISIONS commits land before code commits in the
+   ARCHITECTURE commits, and DECISIONS where one is due, land before
+   code commits in the
    same PR).
 
 5. **QA Validation and Automation** — the PR's test posture and
@@ -216,8 +217,8 @@ The Supervisor maintains context across sessions through three documents:
 
 - **ARCHITECTURE.md** -- The single source of truth for what the system
   does and how it is structured
-- **DECISIONS.md** -- Why it is built this way and what alternatives
-  were rejected
+- **DECISIONS.md** -- Why the contracts, schema and trust boundaries are
+  shaped as they are, and the alternatives rejected
 - **CLAUDE.md** -- Standing rules for every Claude Code session
 
 These documents are read at the start of every session. They replace

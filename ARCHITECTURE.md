@@ -200,7 +200,7 @@ no single point of failure introduced into the agent's execution path.
 flightdeck/
 ├── ARCHITECTURE.md             # This file -- read before writing any code
 ├── DECISIONS.md                # Contract, schema and trust-boundary decisions and the alternatives rejected
-├── DECISIONS-ARCHIVE.md        # Frozen decision log, everything recorded before 2026-10-27
+├── DECISIONS-ARCHIVE.md        # Frozen archive of earlier decision records
 ├── CLAUDE.md                   # Standing rules for Claude Code sessions
 ├── CONTRIBUTING.md             # Contributor guide: setup, tests, PR process
 ├── RELEASING.md                # How to cut a release: version bump, tag, verify

@@ -78,9 +78,9 @@ Flightdeck conventions (see `CLAUDE.md` rules 33, 41–45):
 - **Wire contract (rule 33).** The event payload schema is the contract between
   flightdeck-sensor and the ingestion API. Never change the payload schema
   without updating `ARCHITECTURE.md` first. The order is always: update
-  `ARCHITECTURE.md` → record the pivot in `DECISIONS.md` (with what was
-  planned, what changed, why, what was rejected) → write the code → tests
-  pass. Code that contradicts the documented contract is wrong, not the
+  `ARCHITECTURE.md` → record the decision in `DECISIONS.md` (a payload
+  change is a contract change: decision, why, rejected alternative, in
+  10-15 lines) → write the code → tests pass. Code that contradicts the documented contract is wrong, not the
   contract.
 - **Living docs (rules 41–45).** `ARCHITECTURE.md` describes the system as it
   stands today. No phase tags. No "was added in Phase X". No "previously did

@@ -126,7 +126,7 @@ export function MCPPolicyAuditPanel({
           className="text-[11px]"
           style={{ color: "var(--text-muted)" }}
         >
-          mutation history per D128
+          every change to this policy
         </span>
       </header>
 

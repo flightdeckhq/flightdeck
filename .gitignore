@@ -24,7 +24,7 @@ node_modules/
 # source). Do not edit in place; edit the source under
 # docker/postgres/migrations/ and re-run any chart-render target
 # (lint / template / install / upgrade) which gates on
-# sync-migrations. See DECISIONS.md D136.
+# sync-migrations.
 helm/migrations/
 
 # IDE

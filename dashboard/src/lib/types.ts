@@ -1130,7 +1130,7 @@ export interface SessionListItem {
    * (empty array when no MCP event in the session failed). Drives the
    * red MCP-error session-row indicator on Investigate, parallel to
    * the existing ``error_types`` indicator that covers ``llm_error``
-   * rows. See DECISIONS.md "MCP failure surfacing on event-feed rows".
+   * rows.
    */
   mcp_error_types?: string[];
   /**

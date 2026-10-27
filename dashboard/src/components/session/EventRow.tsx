@@ -30,9 +30,8 @@ import { MCPEventDetails, isMCPEvent } from "./MCPEventDetails";
  * pill, same provider-logo + detail string, same expand-into-
  * ExpandedEvent on click.
  *
- * The Sub-agents tab's UX revision (DECISIONS.md "UX revision
- * 2026-05-04") locked the contract that the inline mini-timeline
- * must match Timeline-tab fidelity exactly — pre-extraction the
+ * The Sub-agents tab's inline mini-timeline must match Timeline-tab
+ * fidelity exactly — pre-extraction the
  * mini-timeline used a simpler ``EventDetail`` primitive that
  * dropped the colour pills, streaming badges, and provider logos,
  * which read as a degraded second-class rendering. Sharing the

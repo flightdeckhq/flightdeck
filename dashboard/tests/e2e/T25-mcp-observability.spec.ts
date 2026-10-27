@@ -436,8 +436,7 @@ test.describe("T25 — MCP observability rendering", () => {
   // the mcp-active session that emits an mcp_tool_call event with a
   // structured payload.error. The dashboard's MCPErrorIndicator
   // component renders a red AlertCircle inline immediately after the
-  // badge whenever event_type is MCP and payload.error is populated;
-  // see DECISIONS.md "MCP failure surfacing on event-feed rows".
+  // badge whenever event_type is MCP and payload.error is populated.
   //
   // Theme-agnostic: asserts on data-testid + aria-label structure,
   // not colour. Indicator MUST render on the failed row, MUST NOT

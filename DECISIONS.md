@@ -21,23 +21,19 @@ log` keeps it next to the change.
 Each entry is 10 to 15 lines:
 
 ```
-## D214 -- <the decision, as a sentence>
-
-**Date:** YYYY-MM-DD
-**Decision:** what the system does.
-**Why:** the constraint or evidence that made it the right call.
-**Rejected alternative:** what was considered and why it lost.
-```
-
-Decisions D001 to D213 are in [DECISIONS-ARCHIVE.md](DECISIONS-ARCHIVE.md),
-frozen on 2026-10-27; D-numbers cited in CHANGELOG.md, migrations and
-PR history resolve there. Numbering continues from D214. A new entry
-that supersedes an archived one says so in its **Decision** line.
-
 ## D214 -- client_type is a registry of nine values with per-type defaults
 
 **Date:** 2026-10-27
-**Decision:** `client_type` accepts `claude_code`, `flightdeck_sensor`, `claude_agent_sdk`, `codex`, `copilot`, `opencode`, `gemini_cli`, `cursor` and `otlp`, all registered now although most have no emitter yet. Each value carries a label and defaults for `context.supports_directives` and `billing_mode`. `contracts/client_types.json` is the source; ingestion, the API, the worker, the cost query, the dashboard and the two Postgres `CHECK` constraints keep literal copies, each pinned to it by a parity test. `agent_type` stays independent of `client_type`.
-**Why:** the Agent SDK interceptor, five coding-agent adapters and the OTLP receiver each need their own value, and the two hard-coded values sat in five places, so every adapter would have meant a migration and five edits. Registering the full list costs one migration (the user chose this).
-**Rejected alternative:** reusing `flightdeck_sensor` and telling sources apart by `framework` (every query and default would branch on `framework`); adding each value with its adapter (a migration and five edits per adapter); generating the copies from the JSON at build time (the Go services build from their own module directory and cannot read it; parity tests give the same guarantee).
-
+**Decision:** `client_type` accepts nine values (ARCHITECTURE, "Client
+type registry"), registered before most have an emitter, each with a
+label, an expected `agent_type` and defaults for `supports_directives`,
+`billing_mode` and tool-error redaction. `contracts/client_types.json`
+is the source; parity tests pin every copy. Supersedes D166's flags and
+D167's "not described until shipped" clause; narrows D109's Claude Code
+fallback to rows with no `client_type`.
+**Why:** each integration needs its own value, and the literal sat in a
+dozen places; one migration for all nine beats one per integration.
+**Rejected alternative:** reusing `flightdeck_sensor` with `framework`
+(every query would branch on it); a value per integration as it lands;
+a `client_types` reference table (ingestion, the worker and the
+dashboard need the defaults too, so it would be one more copy).

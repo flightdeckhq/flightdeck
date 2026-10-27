@@ -1452,7 +1452,7 @@ sessions extend the derivation with a conditional 6th input,
 |---|---|---|
 | `agent_id` | UUID | Deterministically derived from the other identity fields via `core/agent_id.py` |
 | `agent_type` | `coding` \| `production` | Sensor `init` kwarg or `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` env. Plugin always emits `coding`; a plugin session's entrypoint / attended / CI / cloud signals are context fields, not identity |
-| `client_type` | one of the nine values in the client type registry below | Each client sends its own literal (the sensor `flightdeck_sensor`, the plugin `claude_code`) |
+| `client_type` | one of the values in the client type registry below | Each client sends its own literal: the plugin `claude_code`, the sensor `flightdeck_sensor` (and `claude_agent_sdk` for a session its Agent SDK interceptor opens) |
 | `agent_name` | string | Sensor `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` env. Default `{user}@{hostname}`. Plugin uses the user's chosen flavor |
 | `user` | string | Resolved from `getpass.getuser` (sensor) or `process.env.USER` (plugin) |
 | `agent_role` (optional 6th) | string \| null | Framework-driven on sub-agent sessions. CrewAI: `Agent.role`. LangGraph: node name. Claude Code Task: hook payload `agent_type`. Null on root sessions and direct-SDK sessions |
@@ -1465,63 +1465,103 @@ absent on the wire and explicit-null are accepted.
 
 ### Client type registry
 
-`client_type` names the tool that produced an event. Its values form a
-registry: a closed list, so ingestion still rejects anything outside
-it, that holds every client Flightdeck integrates with, including the
-ones whose emitter does not ship yet, so adding an emitter never needs
-a schema change. Each value carries a display label and two defaults
-the system applies when a session does not state its own:
+`client_type` names the client that produced an event. Its values form a
+registry: a closed list, so ingestion still rejects anything outside it,
+that holds every client Flightdeck integrates with, including those
+whose emitter is still on the Roadmap, so adding an emitter never needs
+a schema change. Today the Claude Code plugin sends `claude_code` and
+the Python sensor sends `flightdeck_sensor`; the other values are
+reserved for the integrations the README Roadmap lists. Each value
+carries a display label and the defaults below:
 
-| `client_type` | Label | Emitted by | `supports_directives` default | `billing_mode` default |
-|---|---|---|---|---|
-| `claude_code` | Claude Code | the Claude Code plugin | `false` | `subscription` |
-| `flightdeck_sensor` | Flightdeck sensor | the Python sensor | `true` | `metered` |
-| `claude_agent_sdk` | Claude Agent SDK | the sensor's Claude Agent SDK interceptor (not shipped) | `true` | `metered` |
-| `codex` | Codex CLI | the Codex CLI adapter (not shipped) | `false` | `subscription` |
-| `copilot` | GitHub Copilot | the GitHub Copilot adapter (not shipped) | `false` | `subscription` |
-| `opencode` | OpenCode | the OpenCode plugin (not shipped) | `false` | `metered` |
-| `gemini_cli` | Gemini CLI | the Gemini CLI extension (not shipped) | `false` | `metered` |
-| `cursor` | Cursor | the Cursor adapter (not shipped) | `false` | `subscription` |
-| `otlp` | OpenTelemetry | the OTLP receiver (not shipped) | `false` | `metered` |
+| `client_type` | Label | Expected `agent_type` | `supports_directives` default | `billing_mode` default | Worker strips tool error text |
+|---|---|---|---|---|---|
+| `claude_code` | Claude Code | `coding` | `false` | `subscription` | yes |
+| `flightdeck_sensor` | Sensor | `production` | `true` | `metered` | no |
+| `claude_agent_sdk` | Claude Agent SDK | `production` | `true` | `metered` | no |
+| `codex` | Codex CLI | `coding` | `false` | `subscription` | yes |
+| `copilot` | GitHub Copilot | `coding` | `false` | `subscription` | yes |
+| `opencode` | OpenCode | `coding` | `false` | `metered` | yes |
+| `gemini_cli` | Gemini CLI | `coding` | `false` | `metered` | yes |
+| `cursor` | Cursor | `coding` | `false` | `subscription` | yes |
+| `otlp` | OpenTelemetry | `production` | `false` | `metered` | yes |
 
+- **Label.** What the dashboard shows in the client pill and facets.
+- **Expected `agent_type`.** What the client sends in normal use, and
+  the pairing the test fixtures and the Fleet anomaly check assert.
+  Ingestion validates `agent_type` and `client_type` each against its
+  own vocabulary and does not enforce the pairing: playground runs, for
+  one, send the sensor with `coding` (CLAUDE.md rule 40a.A).
 - **`supports_directives` default.** Whether the client can act on a
   directive (stop, degrade, a custom handler) delivered in the response
   envelope. A session's own `context.supports_directives` wins; the
-  default applies when a `session_start` omits it. A client that only
-  observes (the hook-based coding agents, the OTLP receiver) defaults to
-  `false`, and the dashboard hides its Stop controls (see
-  Observer-session class).
+  default applies when a `session_start` omits it. Clients that only
+  observe default to `false`, and the dashboard hides their Stop
+  controls (see Observer-session class).
 - **`billing_mode` default.** The mode the worker stores for an LLM call
-  that arrives without one (see Estimated cost). Clients whose usual
-  login is a seat plan (Claude Code, Codex CLI with a ChatGPT login,
-  GitHub Copilot, Cursor) default to `subscription`; clients that call a
-  provider with an API key default to `metered`. A client that can tell
+  that arrives without one (see Estimated cost). It follows how the
+  client is normally paid for: Claude Code, Codex CLI (ChatGPT login),
+  GitHub Copilot and Cursor are seat plans, so `subscription`; the
+  sensor, the Agent SDK and OpenCode call a provider with an API key,
+  and Gemini CLI's users are API-key and Vertex AI accounts (its free
+  tier moved to Antigravity CLI), so `metered`. A client that can tell
   sends `billing_mode` itself and the default never applies.
+- **Worker strips tool error text.** A failed tool call's error text is
+  content (see Prompt capture), and a hook-based client cannot be relied
+  on to withhold it. For these types the worker replaces `error.message`
+  with `<redacted>` on a session whose stored capture posture is off,
+  whatever the event says. The sensor and the Agent SDK interceptor run
+  inside the agent's own process and apply capture before sending.
 
-`agent_type` stays independent of `client_type`: every value above
-accepts both `coding` and `production`. The coding-agent clients send
-`coding`; the Claude Agent SDK interceptor sends the caller's choice,
-`production` when none is given.
+An unknown `client_type` never reaches storage (ingestion rejects it).
+A session row with a NULL `client_type` (a parent stub written before
+its own `session_start` arrives) shows no client pill and takes no
+registry default. The dashboard's client facet offers only the values
+present in the data, so reserved values do not appear until a client
+sends them.
 
-The list has one source, `contracts/client_types.json` (`id`, `label`,
-`supports_directives`, `billing_mode`). The components that check or
-display it keep their own literal copy (Go services build from their
-own module directory and cannot read a file outside it), each pinned to
-the source by a parity test: the ingestion validator, the API's filter
-validators and their Swagger text, the worker's billing default, the
-cost query's default (`api/internal/store/pricing.go`), the dashboard's
-`CLIENT_TYPE_META`, and the `CHECK` constraints on `agents.client_type`
-and `sessions.client_type` (an integration test reads them from
-`pg_constraint`). Adding a client type is one change to the source file
-and its copies, plus a migration for the two constraints.
+**OTLP sources.** The OTLP receiver stamps the registry value of the
+tool that produced the telemetry when it recognises it (Claude Code,
+Codex CLI, Gemini CLI and GitHub Copilot export OpenTelemetry under
+their own `service.name`), so their sessions keep that tool's defaults
+and `agent_id`; `otlp` is for sources no registry entry names.
+
+**Claude Agent SDK and Claude Code.** The Agent SDK runs the Claude Code
+CLI as a subprocess. The interceptor sets `FLIGHTDECK_SDK_OBSERVED=1` in
+that subprocess's environment and the plugin emits nothing when it sees
+it, so a run is reported once, as `claude_agent_sdk`. A process that
+also makes direct provider calls keeps those under its sensor session
+(`flightdeck_sensor`); the two are separate agents because
+`client_type` is part of the `agent_id` derivation.
+
+The list has one source, `contracts/client_types.json`, one object per
+value with the six fields above. Each component that checks or shows
+the list keeps its own literal copy, because the Go services build from
+their own module directory and cannot read a file outside it, and a
+parity test pins every copy to the source: the ingestion validator; the
+API's `client_type` filter validators and their Swagger text; the
+worker's billing default (`workers/internal/billing`) and its tool-error
+gate (`workers/internal/processor/event.go`); the cost query's default
+(`api/internal/store/pricing.go`); the dashboard's `CLIENT_TYPE_META`
+(label, pill, facet and directive defaults); the shared test fixtures
+(`tests/shared/fixtures.py`); and the `CHECK` constraints
+`agents_client_type_check` and `sessions_client_type_check`, which an
+integration test reads from `pg_constraint`. The parity tests run from
+the repo checkout and fail, not skip, when the source file is missing.
+
+Adding a value is a change to the source file and its copies plus a
+migration that swaps both constraints (`ADD CONSTRAINT ... NOT VALID`,
+then `VALIDATE CONSTRAINT`, so `sessions` is not locked for a full
+scan). Its down migration restores the previous list and fails while
+any row still holds a removed value; delete or relabel those rows first.
 
 `context.entrypoint` says how the client process was launched. It is an
-open string, at most 64 characters and free of control characters, not
-a vocabulary: the plugin passes `CLAUDE_CODE_ENTRYPOINT` through (`cli`
-for an interactive terminal, `sdk-cli` for `claude -p`; the SDKs set
-their own), the Claude Agent SDK interceptor sends `sdk-py`, and the
-sensor omits it. Each future adapter documents its values with its
-emitter.
+open string, not a vocabulary: the client drops a value longer than 64
+bytes or containing control characters rather than truncating it, and
+ingestion stores it as sent like any context field. The plugin passes
+`CLAUDE_CODE_ENTRYPOINT` through (`cli` for an interactive terminal,
+`sdk-cli` for `claude -p`), the Claude Agent SDK interceptor sends
+`sdk-py`, and the sensor omits it.
 
 `agent_id` is stable across process restarts: same identity tuple →
 same UUID. When `agent_role` is null or empty (after `.strip`), the
@@ -3018,7 +3058,7 @@ billing, or a team that routinely runs on extra usage) sets
 sessions are then priced like any API-key session.
 
 An event that arrives without a `billing_mode` (a client that does not
-send one) is stored with the `billing_mode` default of its session's
+send one) is stored with the `billing_mode` default of the event's
 `client_type` (see Client type registry): `subscription` for Claude
 Code, `metered` for the sensor; the worker fills it in when it writes
 the row. The cost query applies the same rule to a row whose
@@ -4259,9 +4299,10 @@ parent spawn event to its child's first event are drawn by
 Y.
 
 The left panel of each row carries the agent label strip in this
-left-to-right order: optional `ClaudeCodeLogo` (when
-`client_type === "claude-code"`) → agent name → `ClientTypePill`
-(CC for plugin, SDK for sensor) → agent_type badge (coding /
+left-to-right order: optional `ClaudeCodeLogo` (on a Claude Code row:
+`client_type` `claude_code`, or the `claude-code` flavor) → agent name →
+`ClientTypePill` (the registry label, e.g. "Claude Code", "Sensor") →
+agent_type badge (coding /
 production) → provider icon → OS icon → orchestration icon →
 `RelationshipPill` (lone / ↳ parent / ⤴ N) → optional
 `SubAgentLostDot` (when the most recent sub-agent session per
@@ -5417,7 +5458,9 @@ command's stderr is a tool result, and an `Edit` failure quotes the
 `error.message` only when both knobs are on and otherwise ships it as
 `<redacted>`, with `error_type`, `error_class` and `interrupted` intact;
 the workers service applies the session's stored capture posture to the
-same field, so a forged per-event flag cannot smuggle the text in.
+same field for every client type the registry marks as stripping tool
+error text (the hook-based clients and OTLP), so a forged per-event flag
+cannot smuggle the text in.
 
 Plugin default: ON. A developer running `claude` locally is
 observing their own conversation; an empty Prompts tab would make the

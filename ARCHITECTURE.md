@@ -7,7 +7,8 @@
 >
 > **This is a living document.** When implementation reveals that a design
 > here is wrong or has drifted from reality, update this document before
-> merging code. Record the reason in DECISIONS.md. ARCHITECTURE describes
+> merging code. Record the reason in the PR, and in DECISIONS.md when it
+> changes a contract, the schema or a trust boundary. ARCHITECTURE describes
 > what the system IS today; phase ancestry, change history, and forward-
 > looking plans live in CHANGELOG.md, PR descriptions, and README.md
 > respectively.
@@ -198,7 +199,8 @@ no single point of failure introduced into the agent's execution path.
 ```
 flightdeck/
 ├── ARCHITECTURE.md             # This file -- read before writing any code
-├── DECISIONS.md                # Why decisions were made, alternatives rejected
+├── DECISIONS.md                # Contract, schema and trust-boundary decisions and the alternatives rejected
+├── DECISIONS-ARCHIVE.md        # Frozen archive of earlier decision records
 ├── CLAUDE.md                   # Standing rules for Claude Code sessions
 ├── CONTRIBUTING.md             # Contributor guide: setup, tests, PR process
 ├── RELEASING.md                # How to cut a release: version bump, tag, verify

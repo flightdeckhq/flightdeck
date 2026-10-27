@@ -132,7 +132,7 @@
 
      Why: every step in the MCP Protection Policy work surfaced
      at least one polish gap that mocks missed and Chrome caught
-     — empty MCP SERVERS panel on a live session (D140), tab
+     — empty MCP SERVERS panel on a live session, tab
      overflow on small viewports, hardcoded amber-500 in the
      soft-launch banner, "Admin token required" without an
      actionable hint. Two-hat Chrome verification (operator

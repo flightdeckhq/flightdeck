@@ -23,8 +23,8 @@ requirement, it stops and asks rather than guessing.
 
 Every task follows the same sequence:
 
-1. **Read** -- Executor reads ARCHITECTURE.md, DECISIONS.md, and CLAUDE.md
-   in full before touching any file.
+1. **Read** -- Executor reads ARCHITECTURE.md and CLAUDE.md in full, and
+   the DECISIONS.md entries for the area, before touching any file.
 2. **Plan** -- Executor produces a written plan listing every file to create
    or modify, with a one-line rationale for each.
 3. **Review** -- Supervisor reviews the plan, requests changes or approves.
@@ -91,13 +91,15 @@ each pass focused exclusively on that role's concerns.
 
 4. **Architect** — the PR's design fit and doc alignment.
    ARCHITECTURE.md alignment (every section, not only the touched
-   ones), DECISIONS.md format compliance, CHANGELOG.md user-visible
+   ones), a DECISIONS.md entry wherever one is due (contract, schema
+   or trust-boundary changes), CHANGELOG.md user-visible
    completeness, README.md updates, schema migration design,
    API contract design (forward-compat), cross-component contract
    coherence (sensor payload ↔ ingestion validator ↔ worker
    projector ↔ API store), L1 (no temporal qualifiers / phase
    tags introduced), L2 (doc-first ordering verified via git log:
-   ARCHITECTURE / DECISIONS commits land before code commits in the
+   ARCHITECTURE commits, and DECISIONS where one is due, land before
+   code commits in the
    same PR).
 
 5. **QA Validation and Automation** — the PR's test posture and
@@ -178,7 +180,8 @@ When implementation reveals that a planned approach is wrong, impractical,
 or superseded by a better idea:
 
 1. Update ARCHITECTURE.md to reflect reality
-2. Add a DECISIONS.md entry recording the pivot and why
+2. Record the pivot and why: in DECISIONS.md when it changes a contract,
+   the schema or a trust boundary, otherwise in the PR description
 3. Write the code
 4. Tests pass
 5. Report back
@@ -191,16 +194,20 @@ no document at all.
 
 ## DECISIONS.md Discipline
 
-Every significant decision is recorded in DECISIONS.md immediately --
-before the code implementing it is written. Each entry follows the format:
+DECISIONS.md records the decisions a future contributor would otherwise
+relitigate, before the code implementing them is written: a change to a
+contract (event payload, API, wire or file format), to the database
+schema or to a trust boundary, or an alternative someone would plausibly
+propose again. Each entry is 10-15 lines:
 
-- **Decision:** What was decided
-- **Reasoning:** Why this approach was chosen
-- **Rejected alternative:** What was considered and why it was rejected
+- **Decision:** What the system does
+- **Why:** The constraint or evidence behind it
+- **Rejected alternative:** What was considered and why it lost
 
-When a decision is reversed, the reversal is recorded. Old entries are
-never deleted. Future contributors must be able to read the decision log
-and understand why the code looks the way it does.
+Every other decision is explained in the PR description and commit
+body. A reversal is a new entry that names the one it supersedes; old
+entries are not edited. Entries D001-D213 are frozen in
+DECISIONS-ARCHIVE.md.
 
 ---
 
@@ -210,8 +217,8 @@ The Supervisor maintains context across sessions through three documents:
 
 - **ARCHITECTURE.md** -- The single source of truth for what the system
   does and how it is structured
-- **DECISIONS.md** -- Why it is built this way and what alternatives
-  were rejected
+- **DECISIONS.md** -- Why the contracts, schema and trust boundaries are
+  shaped as they are, and the alternatives rejected
 - **CLAUDE.md** -- Standing rules for every Claude Code session
 
 These documents are read at the start of every session. They replace
@@ -242,7 +249,8 @@ or that introduces a decision DECISIONS.md should record, updates
 those docs in the same PR. Drift accumulates when docs lag —
 a codebase that contradicts its architecture document is worse
 than no document. The order is doc-first: update ARCHITECTURE.md
-→ record the decision in DECISIONS.md → write the code → run
+→ record the decision (DECISIONS.md when it qualifies, else the PR)
+→ write the code → run
 tests → report.
 
 ### L3 — Dead-end UX is a bug class

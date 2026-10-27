@@ -2,14 +2,14 @@
 
 ## Where architecture artifacts live
 - System design docs: top-level `ARCHITECTURE.md`, `SYSTEM.md`, `docs/architecture/`, `architecture/`, or any `*-design.md`.
-- Decision records: `DECISIONS.md` at the repo root (Flightdeck convention), or `docs/adr/` / `docs/architecture/decisions/` / `architecture/decisions/` for ADR-numbered records.
+- Decision records: `DECISIONS.md` at the repo root (Flightdeck convention; `DECISIONS-ARCHIVE.md` holds the frozen D001-D213), or `docs/adr/` / `docs/architecture/decisions/` / `architecture/decisions/` for ADR-numbered records.
 - Sequence and component diagrams: same locations, typically `.md` with mermaid or `.drawio` / `.png`.
 
 ## Hard rules
 
 - Living architecture docs describe what the system IS, not how it got there. No phase tags, no "Phase 3 added X", no "previously did Y". That history belongs in `CHANGELOG.md`, `DECISIONS.md` (or ADRs), and commit/PR bodies.
 - Every documented behavior matches running code. Drift between docs and code is a critical finding. The fix is either (a) update the doc, (b) change the code, or (c) record a decision in `DECISIONS.md` / a new ADR — never silent divergence.
-- Every significant pivot is recorded in `DECISIONS.md` (or an ADR) before code lands. What was planned, what changed, why, what was rejected.
+- A decision that changes a contract, the schema or a trust boundary, or rejects an alternative likely to be proposed again, is recorded in `DECISIONS.md` (or an ADR) before code lands: decision, why, rejected alternative, in 10-15 lines. Other pivots are explained in the PR description. A routine choice written up as a DECISIONS entry is noise, not a finding in its favour.
 - D-numbered / ADR-numbered references are NOT permitted in `ARCHITECTURE.md` (or other living architecture docs like `SYSTEM.md`, `*-design.md`). Decision-record pointers belong in `CHANGELOG.md`, `DECISIONS.md` / ADRs themselves, and PR/commit bodies. The prose in living architecture docs describes the architecture AS IT IS — a reader should not need a decision-history lookup to understand what the system does today. Any inline `D###` reference (e.g. `(D157)`, `D161 runtime-context`, `Single-tier auth (D156)`) found in a living architecture doc is a DIRTY finding; the prose should state the architectural fact directly, with the WHY in plain English where load-bearing. Phase tags are likewise not permitted.
 - Domain layer has no imports from infrastructure (db, http, framework SDKs). Application layer orchestrates, doesn't contain business rules. No circular dependencies between modules or services.
 - Public API surface is intentional, not accidental. Backward-incompatible changes get a deprecation path and a version bump; additive changes only on stable APIs.
@@ -69,7 +69,7 @@
 - Schema migrations that aren't backward-compatible during deploy windows.
 - Model identifiers / parameters hardcoded in business logic (configure them).
 - `eval`-style execution of model-emitted text without a strict allowlist or human-in-the-loop.
-- Decisions made silently — every pivot belongs in `DECISIONS.md` (or an ADR) before merge.
+- Decisions made silently — a contract, schema or trust-boundary decision belongs in `DECISIONS.md` (or an ADR) before merge, and every other pivot in the PR description.
 
 ## Project-specific notes
 
@@ -78,9 +78,9 @@ Flightdeck conventions (see `CLAUDE.md` rules 33, 41–45):
 - **Wire contract (rule 33).** The event payload schema is the contract between
   flightdeck-sensor and the ingestion API. Never change the payload schema
   without updating `ARCHITECTURE.md` first. The order is always: update
-  `ARCHITECTURE.md` → record the pivot in `DECISIONS.md` (with what was
-  planned, what changed, why, what was rejected) → write the code → tests
-  pass. Code that contradicts the documented contract is wrong, not the
+  `ARCHITECTURE.md` → record the decision in `DECISIONS.md` (a payload
+  change is a contract change: decision, why, rejected alternative, in
+  10-15 lines) → write the code → tests pass. Code that contradicts the documented contract is wrong, not the
   contract.
 - **Living docs (rules 41–45).** `ARCHITECTURE.md` describes the system as it
   stands today. No phase tags. No "was added in Phase X". No "previously did

@@ -91,9 +91,10 @@ Flightdeck conventions (see `CLAUDE.md`):
   for that session — not 200 with empty data, not 403.
 - **Analytics enums (rules 25–26).** The `group_by` and `metric` enums on
   `GET /v1/analytics` are locked lists. Adding a value requires updating
-  `ARCHITECTURE.md` first. `estimated_cost` reads
-  `api/internal/store/pricing.go` (`DECISIONS.md` D099); update the
-  pricing table when provider list prices change.
+  `ARCHITECTURE.md` first. `estimated_cost` prices calls from the
+  `model_pricing` table, which `api/internal/store/pricing_loader.go`
+  rebuilds at startup from the vendored litellm catalogue and
+  `pricing.yaml`; refresh the catalogue with `make pricing-refresh`.
 - **Swagger discipline (rule 50).** Every new endpoint in `ingestion/` or
   `api/` gets full swaggo annotations (`@Summary`, `@Description`,
   `@Tags`, `@Accept`, `@Produce`, `@Param`, `@Success`, `@Failure`,

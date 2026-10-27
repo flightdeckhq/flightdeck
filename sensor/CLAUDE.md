@@ -22,7 +22,8 @@
     content. Always verify this default has not been accidentally changed.
 
 31. **init() limit param fires WARN only.** Never upgrade a local limit to BLOCK
-    or DEGRADE regardless of what the server policy says. See DECISIONS.md D035.
+    or DEGRADE regardless of what the server policy says: a local limit is a
+    developer safety net, and enforcement belongs to the server's policy.
 
 32. **The sensor is a library wrapper, not an OS agent.** Never add background
     threads, polling loops, or daemon threads to the sensor beyond the existing

@@ -83,7 +83,7 @@ Anti-patterns:
 - Describe the current state. A new engineer should be able to read it and learn the system as it stands today, with no prior history.
 - Sections: layers, components, contracts, data flows, invariants, observability, deployment topology.
 - No phase tags, no "Phase 3 added X". That belongs in CHANGELOG and ADRs.
-- D-numbered or ADR-numbered references are acceptable when they explain why a system is shaped a particular way (durable references that point to the decision record).
+- No D-numbered or ADR-numbered references: state why the system is shaped a particular way in plain English; the decision record keeps the history.
 - Diagrams: prefer mermaid checked-in alongside the .md so they render in the browser. PNG is acceptable but provide the source.
 - Update with every PR that changes the documented surface. A code-doc drift is a methodology violation, not a backlog item.
 
@@ -145,15 +145,19 @@ Flightdeck conventions (see `CLAUDE.md`):
   Any inline `D###` reference (e.g. `(D157)`, `D161 runtime-context`,
   `Single-tier auth (D156)`) found in a living architecture doc is a
   DIRTY finding.
-- **DECISIONS.md as living log (rule 43).** Every pivot lands in
-  `DECISIONS.md` immediately: what was planned, what changed, why,
-  what was rejected. The order is always update `ARCHITECTURE.md` →
-  update `DECISIONS.md` → write the code → tests pass → report back.
-  Never merge code that contradicts the architecture docs.
+- **DECISIONS.md for decisions that would be relitigated (rule 43).**
+  A change to a contract, the schema or a trust boundary, or a rejected
+  alternative likely to be proposed again, gets a 10-15 line entry
+  (decision, why, rejected alternative) before the code. Other pivots
+  go in the PR description; flag a routine choice written up as an
+  entry. D001-D213 are frozen in `DECISIONS-ARCHIVE.md`. The order is
+  update `ARCHITECTURE.md` → record the decision → write the code →
+  tests pass → report back. Never merge code that contradicts the
+  architecture docs.
 - **No deferral bucket (rule 49).** Issues land in one of three
   states: fixed in the release they are filed in, declined with a
   documented reason (typically in the commit body or `DECISIONS.md`),
-  or on the Roadmap in `README.md` as a user-prioritizable post-v0.4.0
+  or on the Roadmap in `README.md` as a user-prioritizable
   bullet. The prior `KNOWN_ISSUES.md` / "Deferred to v0.4.0" bucket
   was retired; do not reintroduce it. `TODO(KI...)` comments in code
   are retired — use plain `TODO: <short description>` with a Roadmap

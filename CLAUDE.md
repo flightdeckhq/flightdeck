@@ -96,12 +96,12 @@ Frontend code rules (11-17) live in `dashboard/CLAUDE.md`.
     `agent_type`, `team`, `provider`, `agent_role`, `parent_session_id`. No other
     values. Do not add dimensions without updating ARCHITECTURE.md first.
     `provider` reads the sensor-stamped `events.provider` and falls back
-    to a SQL CASE over `model` for older rows (DECISIONS.md D098, D170). `agent_role` (D126) groups by the framework-supplied
+    to a SQL CASE over `model` for older rows. `agent_role` groups by the framework-supplied
     sub-agent role string; sessions with null `agent_role` bucket as `(root)`.
-    `parent_session_id` (D126 § 6.4) groups by the parent session UUID; root
+    `parent_session_id` groups by the parent session UUID; root
     sessions bucket as `(root)`. The `group_by` query param accepts **one or
-    two** dimensions comma-separated (D126 § 6.4): `?group_by=dim1` keeps the
-    pre-D126 single-axis shape; `?group_by=dim1,dim2` returns a two-key rollup
+    two** dimensions comma-separated: `?group_by=dim1` keeps the
+    single-axis shape; `?group_by=dim1,dim2` returns a two-key rollup
     where `dim1` is the primary (outer) axis and `dim2` is the secondary
     (inner) axis. Both positions accept any value from the locked list above.
 
@@ -109,12 +109,12 @@ Frontend code rules (11-17) live in `dashboard/CLAUDE.md`.
     `latency_p50`, `latency_p95`, `policy_events`, `estimated_cost`,
     `parent_token_sum`, `child_token_sum`, `child_count`,
     `parent_to_first_child_latency_ms`. Same rule applies. `estimated_cost`
-    sums metered calls only (D206) and prices them from the `model_pricing`
+    sums metered calls only and prices them from the `model_pricing`
     table, which `api/internal/store/pricing_loader.go` rebuilds at API
     startup from the vendored litellm catalogue and the `pricing.yaml`
-    overrides (D169, D208); refresh the catalogue with `make
+    overrides; refresh the catalogue with `make
     pricing-refresh` (CONTRIBUTING.md has the steps).
-    The four sub-agent-aware metrics (D126) operate over the parent / child
+    The four sub-agent-aware metrics operate over the parent / child
     relationship via recursive
     CTE on `parent_session_id`; see ARCHITECTURE.md analytics endpoint section
     for the contract and the known-performance-characteristic note.
@@ -204,15 +204,14 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
 40a.A. **Every playground script must declare a meaningful ``agent_type`` and
      ``flavor``.** Never ``"unknown"``, never empty, never inherited defaults.
      Convention:
-     - ``agent_type = "coding"`` (dev smoke matching the D114 vocabulary)
+     - ``agent_type = "coding"`` (dev smoke, from the locked agent_type vocabulary)
      - ``flavor = "playground-<script-name>"``
 
      Enforced mechanically by ``playground/_helpers.py::init_sensor``.
 
      Without this rule every playground run lands as ``flavor="unknown"`` /
-     ``agent_type="autonomous"`` -- the sensor's pre-D114 defaults -- which
-     makes the Fleet view unreadable and violates the agent_type vocabulary
-     lock.
+     ``agent_type="autonomous"`` -- outside the locked agent_type vocabulary
+     (``coding``, ``production``) -- which makes the Fleet view unreadable.
 
 40a.B. **Every playground script must enable maximum capture.**
      ``capture_prompts=True`` is the default in
@@ -304,27 +303,34 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
     temporal qualifiers do not belong in ARCHITECTURE. They belong in:
 
     - ``CHANGELOG.md`` for user-visible changes per release.
-    - ``DECISIONS.md`` for durable D-numbered decisions.
+    - ``DECISIONS.md`` for the durable decisions rule 43 describes.
     - PR descriptions and commit bodies for phase decisions, V-pass
       methodology notes, pre-existing bugs surfaced during audit,
       and phase-ancestry of individual features.
 
     D-numbers (D057, D094, D115, etc.) are NOT acceptable in
-    ARCHITECTURE.md either. Decision-record pointers belong in
-    CHANGELOG.md, DECISIONS.md itself, and PR/commit bodies — a
+    ARCHITECTURE.md either, nor in code, comments or log strings.
+    Decision-record pointers belong in CHANGELOG.md, DECISIONS.md
+    itself, and PR/commit bodies — a
     reader should not need a D-number lookup to understand what the
     system does today. Architecture prose states the fact directly
     with the WHY in plain English.
 
 42. **When any planned decision changes, update docs before merging code.**
-    The order is always: update ARCHITECTURE.md → update DECISIONS.md (record
-    the pivot and why) → write the code → tests pass → report back.
+    The order is always: update ARCHITECTURE.md → record the decision
+    (in DECISIONS.md when rule 43 says so, otherwise in the PR
+    description) → write the code → tests pass → report back.
     Never merge code that contradicts the architecture docs.
 
-43. **DECISIONS.md records every pivot immediately.** If the plan says to use
-    library X and you switch to library Y mid-implementation, stop. Add a
-    DECISIONS.md entry: what changed, what was rejected, why. Then proceed.
-    Future contributors must understand why the code looks different from the plan.
+43. **DECISIONS.md records the decisions future contributors would otherwise
+    relitigate, and only those.** Add an entry, before the code, when a
+    decision changes a contract (event payload, API, wire or file format),
+    changes the database schema, moves a trust or security boundary, or
+    rejects an alternative someone would plausibly propose again. Keep it
+    to 10-15 lines: decision, why, rejected alternative (format in the
+    file's header). Every other pivot (switching library X for Y, a plan
+    change, a review finding) is explained in the PR description and
+    commit body. Entries D001-D213 are frozen in DECISIONS-ARCHIVE.md.
 
 44. **Phase plan changes must be approved by the Supervisor.** If a task reveals
     that a planned deliverable is wrong in scope, sequencing, or approach, raise
@@ -364,8 +370,9 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
     - If it's a bug that needs fixing now: fix it in this commit or the
       next release. Don't file, don't defer.
     - If it's a legitimate architectural trade-off: document the decision
-      in DECISIONS.md (with a follow-up pointer if there's a real path to
-      revisit) and close the matter.
+      in the PR body, or in DECISIONS.md when rule 43 applies (with a
+      follow-up pointer if there's a real path to revisit), and close the
+      matter.
     - If it's a post-launch follow-up that might matter to users but has
       no concrete owner yet: add or update a Roadmap bullet in README.md.
     - If it's outside scope entirely (feature creep, hypothetical): decline

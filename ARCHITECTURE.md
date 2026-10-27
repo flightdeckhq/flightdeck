@@ -1504,7 +1504,7 @@ carries a display label and the defaults below:
   GitHub Copilot and Cursor are seat plans, so `subscription`; the
   sensor, the Agent SDK and OpenCode call a provider with an API key,
   and Gemini CLI's users are API-key and Vertex AI accounts (its free
-  tier moved to Antigravity CLI), so `metered`. A client that can tell
+  tier is served through Antigravity CLI): all `metered`. A client that can tell
   sends `billing_mode` itself and the default never applies.
 - **Worker strips tool error text.** A failed tool call's error text is
   content (see Prompt capture), and a hook-based client cannot be relied
@@ -1550,9 +1550,11 @@ integration test reads from `pg_constraint`. The parity tests run from
 the repo checkout and fail, not skip, when the source file is missing.
 
 Adding a value is a change to the source file and its copies plus a
-migration that swaps both constraints (`ADD CONSTRAINT ... NOT VALID`,
-then `VALIDATE CONSTRAINT`, so `sessions` is not locked for a full
-scan). Its down migration restores the previous list and fails while
+migration that swaps both constraints, adding the new one `NOT VALID`,
+and a second migration that runs `VALIDATE CONSTRAINT`. golang-migrate
+runs each file in one transaction, so keeping the validation in its own
+file is what lets it scan `sessions` without the swap's exclusive lock
+held. Its down migration restores the previous list and fails while
 any row still holds a removed value; delete or relabel those rows first.
 
 `context.entrypoint` says how the client process was launched. It is an

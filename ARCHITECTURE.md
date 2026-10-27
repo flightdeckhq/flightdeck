@@ -1452,7 +1452,7 @@ sessions extend the derivation with a conditional 6th input,
 |---|---|---|
 | `agent_id` | UUID | Deterministically derived from the other identity fields via `core/agent_id.py` |
 | `agent_type` | `coding` \| `production` | Sensor `init` kwarg or `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` env. Plugin always emits `coding`; a plugin session's entrypoint / attended / CI / cloud signals are context fields, not identity |
-| `client_type` | `claude_code` \| `flightdeck_sensor` | Sensor literal or plugin literal |
+| `client_type` | one of the nine values in the client type registry below | Each client sends its own literal (the sensor `flightdeck_sensor`, the plugin `claude_code`) |
 | `agent_name` | string | Sensor `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` env. Default `{user}@{hostname}`. Plugin uses the user's chosen flavor |
 | `user` | string | Resolved from `getpass.getuser` (sensor) or `process.env.USER` (plugin) |
 | `agent_role` (optional 6th) | string \| null | Framework-driven on sub-agent sessions. CrewAI: `Agent.role`. LangGraph: node name. Claude Code Task: hook payload `agent_type`. Null on root sessions and direct-SDK sessions |
@@ -1462,6 +1462,66 @@ Plus `hostname` (separate field, not part of the agent_id derivation).
 Ingestion returns 400 if any of the core 5-tuple fields are missing or
 outside their vocabulary. `agent_role` is optional; both
 absent on the wire and explicit-null are accepted.
+
+### Client type registry
+
+`client_type` names the tool that produced an event. Its values form a
+registry: a closed list, so ingestion still rejects anything outside
+it, that holds every client Flightdeck integrates with, including the
+ones whose emitter does not ship yet, so adding an emitter never needs
+a schema change. Each value carries a display label and two defaults
+the system applies when a session does not state its own:
+
+| `client_type` | Label | Emitted by | `supports_directives` default | `billing_mode` default |
+|---|---|---|---|---|
+| `claude_code` | Claude Code | the Claude Code plugin | `false` | `subscription` |
+| `flightdeck_sensor` | Flightdeck sensor | the Python sensor | `true` | `metered` |
+| `claude_agent_sdk` | Claude Agent SDK | the sensor's Claude Agent SDK interceptor (not shipped) | `true` | `metered` |
+| `codex` | Codex CLI | the Codex CLI adapter (not shipped) | `false` | `subscription` |
+| `copilot` | GitHub Copilot | the GitHub Copilot adapter (not shipped) | `false` | `subscription` |
+| `opencode` | OpenCode | the OpenCode plugin (not shipped) | `false` | `metered` |
+| `gemini_cli` | Gemini CLI | the Gemini CLI extension (not shipped) | `false` | `metered` |
+| `cursor` | Cursor | the Cursor adapter (not shipped) | `false` | `subscription` |
+| `otlp` | OpenTelemetry | the OTLP receiver (not shipped) | `false` | `metered` |
+
+- **`supports_directives` default.** Whether the client can act on a
+  directive (stop, degrade, a custom handler) delivered in the response
+  envelope. A session's own `context.supports_directives` wins; the
+  default applies when a `session_start` omits it. A client that only
+  observes (the hook-based coding agents, the OTLP receiver) defaults to
+  `false`, and the dashboard hides its Stop controls (see
+  Observer-session class).
+- **`billing_mode` default.** The mode the worker stores for an LLM call
+  that arrives without one (see Estimated cost). Clients whose usual
+  login is a seat plan (Claude Code, Codex CLI with a ChatGPT login,
+  GitHub Copilot, Cursor) default to `subscription`; clients that call a
+  provider with an API key default to `metered`. A client that can tell
+  sends `billing_mode` itself and the default never applies.
+
+`agent_type` stays independent of `client_type`: every value above
+accepts both `coding` and `production`. The coding-agent clients send
+`coding`; the Claude Agent SDK interceptor sends the caller's choice,
+`production` when none is given.
+
+The list has one source, `contracts/client_types.json` (`id`, `label`,
+`supports_directives`, `billing_mode`). The components that check or
+display it keep their own literal copy (Go services build from their
+own module directory and cannot read a file outside it), each pinned to
+the source by a parity test: the ingestion validator, the API's filter
+validators and their Swagger text, the worker's billing default, the
+cost query's default (`api/internal/store/pricing.go`), the dashboard's
+`CLIENT_TYPE_META`, and the `CHECK` constraints on `agents.client_type`
+and `sessions.client_type` (an integration test reads them from
+`pg_constraint`). Adding a client type is one change to the source file
+and its copies, plus a migration for the two constraints.
+
+`context.entrypoint` says how the client process was launched. It is an
+open string, at most 64 characters and free of control characters, not
+a vocabulary: the plugin passes `CLAUDE_CODE_ENTRYPOINT` through (`cli`
+for an interactive terminal, `sdk-cli` for `claude -p`; the SDKs set
+their own), the Claude Agent SDK interceptor sends `sdk-py`, and the
+sensor omits it. Each future adapter documents its values with its
+emitter.
 
 `agent_id` is stable across process restarts: same identity tuple →
 same UUID. When `agent_role` is null or empty (after `.strip`), the
@@ -1701,7 +1761,7 @@ The ingestion handler rejects events with 400 when:
 
 - `agent_id` is missing or not a UUID.
 - `agent_type` is outside `{coding, production}`.
-- `client_type` is outside `{claude_code, flightdeck_sensor}`.
+- `client_type` is outside the client type registry (see Identity model).
 - `session_id` does not match the UUID regex.
 - `occurred_at` is more than 48h in the past (`maxClockSkewPast`) OR
   more than 5m in the future (`maxClockSkewFuture`). The 48h past
@@ -2158,7 +2218,7 @@ the O(N) `GetSessionEvents + tail` race on paired writes.
 CREATE TABLE agents (
     agent_id        UUID PRIMARY KEY,
     agent_type      TEXT NOT NULL CHECK (agent_type IN ('coding', 'production')),
-    client_type     TEXT NOT NULL CHECK (client_type IN ('claude_code', 'flightdeck_sensor')),
+    client_type     TEXT NOT NULL CHECK (client_type IN ('claude_code', 'flightdeck_sensor', 'claude_agent_sdk', 'codex', 'copilot', 'opencode', 'gemini_cli', 'cursor', 'otlp')),
     agent_name      TEXT NOT NULL,
     user_name       TEXT NOT NULL,         -- wire field is "user"; column avoids the SQL reserved word
     hostname        TEXT NOT NULL,
@@ -2185,7 +2245,7 @@ CREATE TABLE sessions (
     agent_id             UUID REFERENCES agents(agent_id),          -- nullable: parent-stub rows carry no identity yet
     agent_name           TEXT,                      -- denorm from agents (nullable on sessions)
     agent_type           TEXT NOT NULL,             -- denorm from agents
-    client_type          TEXT CHECK (client_type IN ('claude_code', 'flightdeck_sensor')),  -- denorm from agents (nullable)
+    client_type          TEXT CHECK (client_type IN ('claude_code', 'flightdeck_sensor', 'claude_agent_sdk', 'codex', 'copilot', 'opencode', 'gemini_cli', 'cursor', 'otlp')),  -- denorm from agents (nullable)
     flavor               TEXT NOT NULL,             -- legacy label
     framework            TEXT,                      -- bare name (e.g. "langchain")
     host                 TEXT,
@@ -2958,9 +3018,10 @@ billing, or a team that routinely runs on extra usage) sets
 sessions are then priced like any API-key session.
 
 An event that arrives without a `billing_mode` (a client that does not
-send one) is stored as `subscription` when its session's `client_type`
-is `claude_code` and as `metered` otherwise; the worker fills it in when
-it writes the row. The cost query applies the same rule to a row whose
+send one) is stored with the `billing_mode` default of its session's
+`client_type` (see Client type registry): `subscription` for Claude
+Code, `metered` for the sensor; the worker fills it in when it writes
+the row. The cost query applies the same rule to a row whose
 `billing_mode` is empty, so a row the backfill (see Model ids) has not
 reached yet is counted the same way.
 
@@ -5457,12 +5518,17 @@ the process exits. Custom handlers emit `directive_result` with
 
 ### Observer-session class
 
-Plugin payloads set `context.supports_directives=false` on
-`session_start`. The dashboard hides the Stop Agent button for observer
-sessions and gates the Fleet Stop All control on at least one
-directive-capable session in the flavor. `isClaudeCodeSession` fallback
-covers rows whose payload omitted the explicit `supports_directives`
-flag.
+A session is directive-capable when its `context.supports_directives`
+is `true`, or, when its `session_start` omitted the field, when its
+`client_type`'s registry default is `true` (see Client type registry).
+Plugin payloads set `context.supports_directives=false` explicitly; the
+sensor omits it and takes its type's `true` default. A row with neither
+the flag nor a `client_type` (the column is nullable on `sessions`) is
+treated as observer-only when its flavor or framework marks it as a
+Claude Code session, so an old plugin row never regains a Stop button.
+The dashboard hides the Stop Agent button for observer sessions and
+gates the Fleet Stop All control on at least one directive-capable
+session in the flavor.
 
 ---
 

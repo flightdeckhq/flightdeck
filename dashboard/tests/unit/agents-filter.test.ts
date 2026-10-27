@@ -96,6 +96,21 @@ describe("filterAgents", () => {
     expect(result.map((a) => a.agent_id)).toEqual(["b"]);
   });
 
+  it("excludes a row with no client_type from a client_type filter", () => {
+    const filter: AgentFilterState = {
+      ...EMPTY_FILTER,
+      clientTypes: new Set([ClientType.FlightdeckSensor]),
+    };
+    const result = filterAgents(
+      [
+        mkAgent({ agent_id: "a", client_type: null }),
+        mkAgent({ agent_id: "b", client_type: ClientType.FlightdeckSensor }),
+      ],
+      filter,
+    );
+    expect(result.map((a) => a.agent_id)).toEqual(["b"]);
+  });
+
   it("ANDs across dimensions", () => {
     const filter: AgentFilterState = {
       ...EMPTY_FILTER,

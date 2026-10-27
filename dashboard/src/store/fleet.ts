@@ -538,9 +538,11 @@ export const useFleetStore = create<FleetState>((set, get) => ({
         const synthAgentType = isAgentType(update.session.agent_type)
           ? update.session.agent_type
           : "coding";
+        // An unknown or missing client_type stays null (no client
+        // pill), never a guessed value.
         const synthClientType = isClientType(update.session.client_type)
           ? update.session.client_type
-          : "flightdeck_sensor";
+          : null;
         const synth: AgentSummary = {
           agent_id: aid,
           agent_name: update.session.agent_name ?? "—",

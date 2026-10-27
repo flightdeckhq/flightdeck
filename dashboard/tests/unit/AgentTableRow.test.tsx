@@ -145,6 +145,12 @@ describe("AgentTableRow", () => {
     ).toHaveTextContent("coding");
   });
 
+  it("renders no client pill for a row with no client_type", () => {
+    renderRow(mkAgent({ agent_id: "a-2", client_type: null }));
+    expect(screen.getByTestId("agent-row-a-2")).toBeInTheDocument();
+    expect(screen.queryByTestId("agent-row-client-type-a-2")).toBeNull();
+  });
+
   it("calls onOpenDrawer with the agent on a row click", () => {
     const onOpenDrawer = vi.fn();
     const agent = mkAgent({ agent_id: "a-1" });

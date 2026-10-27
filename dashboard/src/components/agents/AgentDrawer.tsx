@@ -204,10 +204,12 @@ export function AgentDrawer({
                 >
                   {agent.agent_name}
                 </span>
-                <ClientTypePill
-                  clientType={agent.client_type}
-                  size="compact"
-                />
+                {agent.client_type && (
+                  <ClientTypePill
+                    clientType={agent.client_type}
+                    size="compact"
+                  />
+                )}
                 <span
                   style={{
                     fontFamily: "var(--font-mono)",

@@ -588,7 +588,7 @@ export interface FlavorSummary {
    *  agent-grouped data; absent for legacy consumers. */
   agent_id?: string;
   agent_name?: string;
-  client_type?: ClientType;
+  client_type?: ClientType | null;
   user?: string;
   hostname?: string;
   last_seen_at?: string;
@@ -619,7 +619,9 @@ export interface AgentSummary {
   agent_id: string;
   agent_name: string;
   agent_type: AgentType;
-  client_type: ClientType;
+  /** Null only on a row the live store synthesised from an update
+   *  whose client_type was missing or outside the registry. */
+  client_type: ClientType | null;
   user: string;
   hostname: string;
   first_seen_at: string;

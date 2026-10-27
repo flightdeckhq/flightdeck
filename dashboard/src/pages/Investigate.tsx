@@ -278,7 +278,7 @@ export function Investigate() {
     for (const a of fleetAgents) {
       m.set(a.agent_id, {
         name: a.agent_name,
-        clientType: a.client_type,
+        clientType: a.client_type ?? undefined,
         agentType: a.agent_type,
       });
     }

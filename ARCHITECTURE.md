@@ -3703,7 +3703,10 @@ rendered with its dimension's visual:
   coloured dot beside the value text, `agent_type` an
   `AgentTypeBadge`, `client_type` a `ClientTypePill`,
   `framework` a `FrameworkPill` (the pill / badge is itself the
-  chip label for the latter three).
+  chip label for the latter three). CLIENT lists, in registry
+  order, the client types some agent carries plus any already
+  selected (see Client type registry); an agent with no
+  `client_type` shows no pill and matches no CLIENT filter.
 - **HOSTNAME / USER / OS / ARCH / GIT BRANCH / GIT REPO /
   ORCHESTRATION / PYTHON / PROCESS** — nine runtime-context
   dimensions rendered via the shared `FacetIcon` (same icon

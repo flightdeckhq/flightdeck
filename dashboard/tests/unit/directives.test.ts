@@ -113,6 +113,22 @@ describe("sessionSupportsDirectives", () => {
     ).toBe(false);
   });
 
+  it("falls through to the flavor rule for a client_type outside the registry", () => {
+    // The wire value is a plain string; an unknown one takes no registry
+    // default.
+    const s = { ...mkSession("unknown", "active"), flavor: "claude-code", client_type: "windsurf" };
+    expect(sessionSupportsDirectives(s)).toBe(false);
+  });
+
+  it("lets an explicit true flag win over a claude-code flavor", () => {
+    // Only an absent flag falls back to the flavor rule.
+    const s = {
+      ...mkSession("cc-on", "active", { supports_directives: true }),
+      flavor: "claude-code",
+    };
+    expect(sessionSupportsDirectives(s)).toBe(true);
+  });
+
   it("uses the registry default, not the flavor, once client_type is known", () => {
     // A sensor session an operator named "claude-code" keeps its Stop
     // button: the flavor rule applies only to rows with no client_type.

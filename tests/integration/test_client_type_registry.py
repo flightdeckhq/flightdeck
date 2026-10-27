@@ -21,7 +21,10 @@ from .conftest import exec_sql
 REGISTRY_PATH = (
     pathlib.Path(__file__).resolve().parents[2] / "contracts" / "client_types.json"
 )
-CONSTRAINTS = ("agents_client_type_check", "sessions_client_type_check")
+CONSTRAINTS = (
+    ("agents", "agents_client_type_check"),
+    ("sessions", "sessions_client_type_check"),
+)
 
 
 def _registry_ids() -> list[str]:
@@ -30,16 +33,18 @@ def _registry_ids() -> list[str]:
     return [entry["id"] for entry in data["client_types"]]
 
 
-@pytest.mark.parametrize("constraint", CONSTRAINTS)
-def test_client_type_constraint_matches_registry(constraint: str) -> None:
+@pytest.mark.parametrize(("table", "constraint"), CONSTRAINTS)
+def test_client_type_constraint_matches_registry(table: str, constraint: str) -> None:
     row = exec_sql(
-        "SELECT convalidated, pg_get_constraintdef(oid) FROM pg_constraint WHERE conname = :'name'",
+        "SELECT convalidated, pg_get_constraintdef(oid) FROM pg_constraint "
+        "WHERE conname = :'name' AND conrelid = :'table'::regclass",
         name=constraint,
+        table=table,
     )
     assert row, f"constraint {constraint} not found"
     validated, definition = row.split("|", 1)
     assert validated == "t", f"{constraint} is not validated"
-    values = re.findall(r"'([a-z_]+)'::text", definition)
+    values = re.findall(r"'([^']*)'::text", definition)
     assert sorted(values) == sorted(_registry_ids()), (
         f"{constraint} allows {sorted(values)}, the registry lists {sorted(_registry_ids())}"
     )

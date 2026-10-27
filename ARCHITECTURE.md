@@ -1553,10 +1553,12 @@ skip, when the source file is missing.
 Adding a value is a change to the source file and its copies plus a
 migration that swaps both constraints, adding the new one `NOT VALID`,
 and a second migration that runs `VALIDATE CONSTRAINT`. golang-migrate
-runs each file in one transaction, so keeping the validation in its own
-file is what lets it scan `sessions` without the swap's exclusive lock
-held. Its down migration restores the previous list and fails while
-any row still holds a removed value; delete or relabel those rows first.
+sends each file as one query, which Postgres runs as one transaction,
+so keeping the validation in its own file is what lets it scan
+`sessions` without the swap's exclusive lock held. The validate
+migration's down re-adds the constraints `NOT VALID`; the swap
+migration's down restores the previous list and fails while any row
+still holds a removed value, so delete or relabel those rows first.
 
 `context.entrypoint` says how the client process was launched. It is an
 open string, not a vocabulary: the client drops a value longer than 64

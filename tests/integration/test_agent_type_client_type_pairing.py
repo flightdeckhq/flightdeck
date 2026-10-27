@@ -4,9 +4,11 @@
 Background: a manual run of
 ``test_ui_demo.py`` left the dev DB with an anomalous agent row
 (``agent_type=coding`` + ``client_type=flightdeck_sensor``). The
-pair is mechanically allowed by the ingestion validator but
-semantically nonsensical -- coding agents are the Claude Code
-plugin, sensor-routed events are SDK workloads. The combination
+pair is mechanically allowed by the ingestion validator but outside
+the client type registry's expected pairing (each client type's
+expected agent_type, read from contracts/client_types.json): the sensor
+is expected to send production, the hook-based coding agents coding.
+The combination
 produced a visible Fleet sidebar bug: a CODING AGENT badge next to a
 SENSOR pill on the same row, with two near-identical rows for the
 same agent_name.
@@ -29,8 +31,8 @@ import pytest
 AGENTS_LIST_NAME = "AGENTS"
 AGENT_TYPE_KEY = "agent_type"
 CLIENT_TYPE_KEY = "client_type"
-# The one agent_type / client_type pair that is legal together and
-# produced the anomaly when split across a sensor-defaulted event.
+# The coding emit site that, inheriting the sensor default
+# client_type, produced the anomaly; it must name a coding client.
 CODING_AGENT_TYPE = "coding"
 CLAUDE_CODE_CLIENT_TYPE = "claude_code"
 

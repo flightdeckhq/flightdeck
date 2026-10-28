@@ -2,6 +2,8 @@
 // LLM events (ARCHITECTURE.md, Cost estimation).
 package billing
 
+import "slices"
+
 // Billing modes. Only metered calls are counted in estimated cost.
 const (
 	Metered      = "metered"
@@ -9,14 +11,17 @@ const (
 	Local        = "local"
 )
 
-const clientTypeClaudeCode = "claude_code"
+// SubscriptionClientTypes are the client types whose billing_mode
+// default in the client type registry (contracts/client_types.json) is
+// subscription: the clients normally paid for with a seat plan. A
+// parity test pins this list to the registry.
+var SubscriptionClientTypes = []string{"claude_code", "codex", "copilot", "cursor"}
 
 // DefaultMode is the billing mode of an LLM call whose client sent none,
-// by its session's client type: a Claude Code session runs on the
-// developer's subscription unless the plugin says otherwise; every
-// other client calls a metered API.
+// by its client type's registry default: subscription for the seat-plan
+// clients, metered for every other client.
 func DefaultMode(clientType string) string {
-	if clientType == clientTypeClaudeCode {
+	if slices.Contains(SubscriptionClientTypes, clientType) {
 		return Subscription
 	}
 	return Metered

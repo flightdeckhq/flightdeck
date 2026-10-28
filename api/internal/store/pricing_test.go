@@ -219,10 +219,22 @@ func TestCostRow_FeesReportedCostAndBilling(t *testing.T) {
 	}
 }
 
-func TestCostRow_NoBillingModeOnClaudeCodeIsSubscription(t *testing.T) {
-	f := newCostFixture(t, "claude_code")
-	f.price("m", "direct", sonnetRates)
-	assertCost(t, "claude code default", f.cost(costEvent{model: "m", in: 1000, out: 100}), 0)
+// An event without a billing mode is priced by its session's client
+// type's registry default: free for a subscription type, metered
+// otherwise.
+func TestCostRow_NoBillingModeTakesTheRegistryDefault(t *testing.T) {
+	metered := 1000*3/1e6 + 100*15/1e6
+	for _, c := range readClientTypeRegistry(t) {
+		t.Run(c.ID, func(t *testing.T) {
+			f := newCostFixture(t, c.ID)
+			f.price("m", "direct", sonnetRates)
+			want := metered
+			if c.BillingMode == "subscription" {
+				want = 0
+			}
+			assertCost(t, c.ID+" default", f.cost(costEvent{model: "m", in: 1000, out: 100}), want)
+		})
+	}
 }
 
 func TestCostRow_PriceLookupFallbacks(t *testing.T) {

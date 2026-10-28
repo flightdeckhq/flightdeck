@@ -26,13 +26,19 @@ const costEventTypes = "('post_call', 'embeddings')"
 // costEventFilter restricts a query on events aliased e to them.
 const costEventFilter = "e.event_type IN " + costEventTypes
 
+// subscriptionClientTypes are the client types whose billing_mode
+// default in the client type registry (contracts/client_types.json) is
+// subscription. A parity test pins this list to the registry.
+var subscriptionClientTypes = []string{"claude_code", "codex", "copilot", "cursor"}
+
 // effectiveBillingSQL is the billing mode of an event aliased e: its
-// own column, or, for an event that carries none, subscription for a
-// Claude Code session and metered otherwise. The session lookup runs
-// only for such events (COALESCE stops at the first non-NULL argument).
-const effectiveBillingSQL = `COALESCE(e.billing_mode, CASE WHEN (
+// own column, or, for an event that carries none, its session's client
+// type's registry default: subscription for subscriptionClientTypes and
+// metered otherwise. The session lookup runs only for such events
+// (COALESCE stops at the first non-NULL argument).
+var effectiveBillingSQL = `COALESCE(e.billing_mode, CASE WHEN (
 	SELECT s_b.client_type FROM sessions s_b WHERE s_b.session_id = e.session_id
-) = 'claude_code' THEN 'subscription' ELSE 'metered' END)`
+) IN ('` + strings.Join(subscriptionClientTypes, "', '") + `') THEN 'subscription' ELSE 'metered' END)`
 
 // platformFamilySQL maps events.platform to the family model_pricing
 // rows are keyed by; every label that is not a cloud platform's prices

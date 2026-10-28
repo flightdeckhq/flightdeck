@@ -5,7 +5,9 @@ import "testing"
 func TestDefaultMode(t *testing.T) {
 	cases := map[string]string{
 		"claude_code":       Subscription,
+		"cursor":            Subscription,
 		"flightdeck_sensor": Metered,
+		"opencode":          Metered,
 		"":                  Metered,
 	}
 	for clientType, want := range cases {

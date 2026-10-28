@@ -1,6 +1,7 @@
 """The client type registry, end to end: the client_type CHECK
 constraints hold exactly its values, every value passes ingestion and is
-stored, and the API's client_type filter accepts exactly those values.
+stored, the API's client_type filter accepts exactly those values, and
+the worker applies each value's billing and tool-error defaults.
 
 ``contracts/client_types.json`` is the registry's one source. The
 ``agents_client_type_check`` and ``sessions_client_type_check``
@@ -26,9 +27,12 @@ from .conftest import (
     auth_headers,
     delete_flavor_data,
     exec_sql,
+    get_session_detail,
+    get_session_event_count,
     make_event,
     post_event,
     wait_for_session_in_fleet,
+    wait_until,
 )
 
 REGISTRY_PATH = (
@@ -106,3 +110,68 @@ def test_client_type_filter_accepts_registry_values_only(path: str) -> None:
     for entry in _registry_entries():
         assert _filter_status(path, str(entry["id"])) == 200, (path, entry["id"])
     assert _filter_status(path, "windsurf") == 400
+
+
+TOOL_ERROR_TEXT = "Exit code 2\nls: cannot access '/missing': No such file or directory"
+
+
+@pytest.mark.parametrize("entry", _registry_entries(), ids=lambda e: str(e["id"]))
+def test_worker_applies_the_registry_defaults(entry: dict[str, object]) -> None:
+    """On a session with capture off, the worker withholds a failed tool
+    call's error text exactly for the types the registry marks
+    ``strips_tool_error_text``, and stores a model call that carries no
+    ``billing_mode`` with the type's registry default."""
+    client_type = str(entry["id"])
+    flavor = f"test-client-type-defaults-{client_type}-{uuid.uuid4().hex[:6]}"
+    session_id = str(uuid.uuid4())
+    try:
+        post_event(
+            make_event(
+                session_id,
+                flavor,
+                "session_start",
+                client_type=client_type,
+                agent_type=str(entry["agent_type"]),
+                capture_prompts=False,
+            )
+        )
+        assert wait_for_session_in_fleet(session_id, timeout=10.0) is not None
+        post_event(
+            make_event(
+                session_id,
+                flavor,
+                "tool_call",
+                client_type=client_type,
+                agent_type=str(entry["agent_type"]),
+                tool_name="Bash",
+                error={"error_type": "other", "message": TOOL_ERROR_TEXT},
+            )
+        )
+        # No billing_mode: the worker fills in the registry default.
+        post_event(
+            make_event(
+                session_id,
+                flavor,
+                "post_call",
+                client_type=client_type,
+                agent_type=str(entry["agent_type"]),
+                model="claude-sonnet-4-6",
+                tokens_input=100,
+                tokens_output=10,
+            )
+        )
+        wait_until(
+            lambda: get_session_event_count(session_id) >= 3,
+            timeout=10,
+            msg=f"{client_type}: expected 3 events",
+        )
+        events = {e["event_type"]: e for e in get_session_detail(session_id)["events"]}
+
+        message = events["tool_call"]["payload"]["error"]["message"]
+        if entry["strips_tool_error_text"]:
+            assert message == "<redacted>", client_type
+        else:
+            assert message == TOOL_ERROR_TEXT, client_type
+        assert events["post_call"]["billing_mode"] == entry["billing_mode"], client_type
+    finally:
+        delete_flavor_data(flavor)

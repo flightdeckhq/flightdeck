@@ -53,10 +53,29 @@ var validAgentTypes = map[string]bool{
 	"production": true,
 }
 
-var validClientTypes = map[string]bool{
-	"claude_code":       true,
-	"flightdeck_sensor": true,
+// registryClientTypes is the client type registry (contracts/client_types.json,
+// pinned by a parity test), in its order: every client_type an event may
+// carry.
+var registryClientTypes = []string{
+	"claude_code",
+	"flightdeck_sensor",
+	"claude_agent_sdk",
+	"codex",
+	"copilot",
+	"opencode",
+	"gemini_cli",
+	"cursor",
+	"otlp",
 }
+
+// validClientTypes is registryClientTypes as a set, for lookups.
+var validClientTypes = func() map[string]bool {
+	m := make(map[string]bool, len(registryClientTypes))
+	for _, c := range registryClientTypes {
+		m[c] = true
+	}
+	return m
+}()
 
 // maxAgentRoleLen caps the length of the optional sub-agent ``agent_role``
 // field on the wire. CrewAI ``Agent.role`` labels and LangGraph node
@@ -316,8 +335,8 @@ func EventsHandler(
 		// Agent identity validation at the wire boundary.
 		// Every event payload must carry a valid agent_id (UUID
 		// canonical form), agent_type from the locked vocabulary, and
-		// client_type from the closed set {claude_code,
-		// flightdeck_sensor}. Rejecting at ingestion means a
+		// client_type from the client type registry. Rejecting at
+		// ingestion means a
 		// misbehaving third-party emitter gets an immediate 400 with
 		// a specific message rather than writing junk rows that the
 		// dashboard then has to defend against.
@@ -339,7 +358,7 @@ func EventsHandler(
 		}
 		if !validClientTypes[clientType] {
 			writeError(w, http.StatusBadRequest,
-				"client_type must be one of: claude_code, flightdeck_sensor")
+				"client_type must be one of: "+strings.Join(registryClientTypes, ", "))
 			return
 		}
 

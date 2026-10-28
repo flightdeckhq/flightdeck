@@ -26,7 +26,7 @@ type SessionsParams struct {
 	// accepted but yield empty results.
 	AgentTypes []string
 	// ClientTypes filters sessions by the denormalized client_type
-	// column on sessions (``claude_code`` | ``flightdeck_sensor``).
+	// column on sessions (an id from contracts/client_types.json).
 	// Handler enforces the CHECK-constraint vocabulary so an invalid
 	// value 400s rather than silently matching nothing.
 	ClientTypes []string

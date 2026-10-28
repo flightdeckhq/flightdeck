@@ -60,13 +60,6 @@ var validSessionSorts = map[string]bool{
 	"state": true,
 }
 
-// validSessionClientTypes mirrors the sessions.client_type CHECK
-// constraint (see migrations/000015_agent_identity_model.up.sql).
-var validSessionClientTypes = map[string]bool{
-	"claude_code":       true,
-	"flightdeck_sensor": true,
-}
-
 // validPolicyEventTypes is the closed vocabulary for the
 // ?policy_event_type=... filter. Mirrors the sensor's EventType enum
 // values (sensor/flightdeck_sensor/core/types.py). A typo lands as
@@ -125,7 +118,7 @@ var validEstimatedVias = map[string]bool{
 // @Param        flavor     query  string  false  "Filter by flavor (repeatable)"
 // @Param        agent_id   query  string  false  "Filter to a single agent (agent UUID; deep-linked from the Fleet agent table and Investigate AGENT facet)"
 // @Param        agent_type query  string  false  "Filter by agent_type (repeatable: coding, production)"
-// @Param        client_type query string  false  "Filter by client_type (repeatable: claude_code, flightdeck_sensor)"
+// @Param        client_type query string  false  "Filter by client_type (repeatable; one of: claude_code, flightdeck_sensor, claude_agent_sdk, codex, copilot, opencode, gemini_cli, cursor, otlp)"
 // @Param        framework  query  string  false  "Filter by framework name/version matching sessions.context.frameworks[] (repeatable: langgraph/1.1.6, crewai/1.14.1, ...)"
 // @Param        model      query  string  false  "Filter by model"
 // @Param        user       query  string  false  "Filter by context.user (repeatable)"
@@ -314,9 +307,9 @@ func SessionsListHandler(s store.Querier) http.HandlerFunc {
 				if v == "" {
 					continue
 				}
-				if !validSessionClientTypes[v] {
+				if !validClientTypes[v] {
 					writeError(w, http.StatusBadRequest,
-						"invalid client_type: "+v+". Allowed: claude_code, flightdeck_sensor")
+						"invalid client_type: "+v+". Allowed: "+strings.Join(registryClientTypes, ", "))
 					return
 				}
 				clientTypes = append(clientTypes, v)

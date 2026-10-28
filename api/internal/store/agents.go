@@ -18,7 +18,7 @@ type AgentListParams struct {
 	// Vocabulary filters (handler-level whitelist enforced before
 	// reaching the store; the store trusts its caller).
 	AgentType  []string // coding | production
-	ClientType []string // claude_code | flightdeck_sensor
+	ClientType []string // an id from contracts/client_types.json
 	State      []string // active | idle | stale | closed | lost
 
 	// Identity-column filters (free-form).

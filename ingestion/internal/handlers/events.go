@@ -68,6 +68,7 @@ var registryClientTypes = []string{
 	"otlp",
 }
 
+// validClientTypes is registryClientTypes as a set, for lookups.
 var validClientTypes = func() map[string]bool {
 	m := make(map[string]bool, len(registryClientTypes))
 	for _, c := range registryClientTypes {

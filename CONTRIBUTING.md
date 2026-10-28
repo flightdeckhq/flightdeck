@@ -137,8 +137,9 @@ integration end-to-end and skipping any whose API key is absent. Cost: roughly
 $0.50 per full run.
 
 **WSL with the repo on `/mnt/c`.** A virtualenv on the Windows mount is slow
-enough that framework scripts time out. Keep one on the Linux filesystem and
-point the Makefile at it:
+enough that playground scripts hit their timeouts. Keep one on the Linux
+filesystem and point the Makefile at it (the `dev` extra includes every
+framework the scripts use):
 
 ```bash
 (cd sensor && UV_PROJECT_ENVIRONMENT=$HOME/.cache/fd-sensor-venv uv sync --extra dev)

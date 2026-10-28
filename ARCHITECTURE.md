@@ -1611,10 +1611,10 @@ changes. Every field goes in verbatim, and the caller substitutes
 `unknown` for a missing one rather than leaving it empty. A non-empty
 `agent_role` (after trimming whitespace) is appended as a sixth
 segment, `/{agent_role}`. The sensor's `core/agent_id.py` and the
-plugin's `agent_id.mjs` implement it, and both assert the same vector: `coding`, `omria`, `Omri-PC`,
-`claude_code`, `omria@Omri-PC` derive
-`ee76931b-06fa-5da6-a019-5a8237efd496`. A new emitter's tests assert it
-too.
+plugin's `agent_id.mjs` implement it, and both assert the same
+vector: `coding`, `omria`, `Omri-PC`, `claude_code`, `omria@Omri-PC`
+derive `ee76931b-06fa-5da6-a019-5a8237efd496`. A new emitter's tests
+assert it too.
 
 **Rollup ↔ projection symmetry.** The same UUID5 input tuple flows
 through two paths:

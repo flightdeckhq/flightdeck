@@ -2592,14 +2592,18 @@ func TestSessionsListHandler_ClientTypeFilter_MultiValue(t *testing.T) {
 func TestSessionsListHandler_InvalidClientType(t *testing.T) {
 	s := &mockStore{}
 	handler := handlers.SessionsListHandler(store.WrapStore(s))
-	req := httptest.NewRequest("GET", "/v1/sessions?client_type=cursor", nil)
+	// A value outside the client type registry (cursor and the other
+	// reserved integrations are registry values, so they are accepted).
+	req := httptest.NewRequest("GET", "/v1/sessions?client_type=windsurf", nil)
 	w := httptest.NewRecorder()
 	handler(w, req)
 	if w.Code != http.StatusBadRequest {
 		t.Errorf("expected 400 for invalid client_type, got %d", w.Code)
 	}
-	if !strings.Contains(w.Body.String(), "claude_code") {
-		t.Errorf("error should list allowed values; got %s", w.Body.String())
+	for _, want := range []string{"claude_code", "otlp"} {
+		if !strings.Contains(w.Body.String(), want) {
+			t.Errorf("error should list the registry's values (%s); got %s", want, w.Body.String())
+		}
 	}
 }
 

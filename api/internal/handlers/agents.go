@@ -28,11 +28,29 @@ var validAgentTypes = map[string]bool{
 	"production": true,
 }
 
-// validClientTypes mirrors the agents.client_type CHECK constraint.
-var validClientTypes = map[string]bool{
-	"claude_code":       true,
-	"flightdeck_sensor": true,
+// registryClientTypes is the client type registry (contracts/client_types.json,
+// pinned by a parity test), in its order. It is the vocabulary of the
+// agents.client_type and sessions.client_type CHECK constraints and of
+// the client_type filters on /v1/agents and /v1/sessions.
+var registryClientTypes = []string{
+	"claude_code",
+	"flightdeck_sensor",
+	"claude_agent_sdk",
+	"codex",
+	"copilot",
+	"opencode",
+	"gemini_cli",
+	"cursor",
+	"otlp",
 }
+
+var validClientTypes = func() map[string]bool {
+	m := make(map[string]bool, len(registryClientTypes))
+	for _, c := range registryClientTypes {
+		m[c] = true
+	}
+	return m
+}()
 
 // validAgentStates is the rollup-state vocabulary. Mirrors the
 // sessions.state values the state reconciler computes via LATERAL.
@@ -67,7 +85,7 @@ var validAgentSorts = map[string]bool{
 // @Tags         agents
 // @Produce      json
 // @Param        agent_type      query     string  false  "Filter by agent_type (repeatable/comma: coding, production)"
-// @Param        client_type     query     string  false  "Filter by client_type (repeatable/comma: claude_code, flightdeck_sensor)"
+// @Param        client_type     query     string  false  "Filter by client_type (repeatable/comma; one of: claude_code, flightdeck_sensor, claude_agent_sdk, codex, copilot, opencode, gemini_cli, cursor, otlp)"
 // @Param        state           query     string  false  "Filter by rollup state (repeatable/comma: active, idle, stale, closed, lost)"
 // @Param        hostname        query     string  false  "Filter by hostname (repeatable/comma, exact match)"
 // @Param        user            query     string  false  "Filter by user_name (repeatable/comma, exact match)"
@@ -117,7 +135,7 @@ func AgentsListHandler(s store.Querier) http.HandlerFunc {
 		for _, v := range clientTypes {
 			if !validClientTypes[v] {
 				writeError(w, http.StatusBadRequest,
-					"invalid client_type: "+v+". Allowed: claude_code, flightdeck_sensor")
+					"invalid client_type: "+v+". Allowed: "+strings.Join(registryClientTypes, ", "))
 				return
 			}
 		}

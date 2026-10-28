@@ -316,7 +316,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Filter by client_type (repeatable/comma: claude_code, flightdeck_sensor)",
+                        "description": "Filter by client_type (repeatable/comma; one of: claude_code, flightdeck_sensor, claude_agent_sdk, codex, copilot, opencode, gemini_cli, cursor, otlp)",
                         "name": "client_type",
                         "in": "query"
                     },
@@ -2321,7 +2321,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Filter by client_type (repeatable: claude_code, flightdeck_sensor)",
+                        "description": "Filter by client_type (repeatable; one of: claude_code, flightdeck_sensor, claude_agent_sdk, codex, copilot, opencode, gemini_cli, cursor, otlp)",
                         "name": "client_type",
                         "in": "query"
                     },

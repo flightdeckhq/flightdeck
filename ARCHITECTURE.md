@@ -1461,7 +1461,7 @@ sessions extend the derivation with a conditional 6th input,
 |---|---|---|
 | `agent_id` | UUID | Deterministically derived from the other identity fields via `core/agent_id.py` |
 | `agent_type` | `coding` \| `production` | Sensor `init` kwarg or `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` env. Plugin always emits `coding`; a plugin session's entrypoint / attended / CI / cloud signals are context fields, not identity |
-| `client_type` | one of the values in the client type registry below | Each client sends its own literal: the plugin `claude_code`, the sensor `flightdeck_sensor` (and `claude_agent_sdk` for a session its Agent SDK interceptor opens) |
+| `client_type` | one of the values in the client type registry below | Each client sends its own literal: the plugin `claude_code`, the sensor `flightdeck_sensor`; `claude_agent_sdk` is reserved for the Agent SDK interceptor on the Roadmap |
 | `agent_name` | string | Sensor `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` env. Default `{user}@{hostname}`. Plugin uses the user's chosen flavor |
 | `user` | string | Resolved from `getpass.getuser` (sensor) or `process.env.USER` (plugin) |
 | `agent_role` (optional 6th) | string \| null | Framework-driven on sub-agent sessions. CrewAI: `Agent.role`. LangGraph: node name. Claude Code Task: hook payload `agent_type`. Null on root sessions and direct-SDK sessions |
@@ -1480,8 +1480,8 @@ absent on the wire and explicit-null are accepted.
 registry: a closed list, so ingestion still rejects anything outside it,
 that holds every client Flightdeck integrates with, including those
 whose emitter is still on the Roadmap, so adding an emitter never needs
-a schema change. Today the Claude Code plugin sends `claude_code` and
-the Python sensor sends `flightdeck_sensor`; the other values are
+a schema change. The Claude Code plugin sends `claude_code` and the
+Python sensor sends `flightdeck_sensor`; the other values are
 reserved for the integrations the README Roadmap lists. Each value
 carries a display label and the defaults below:
 
@@ -1515,8 +1515,8 @@ carries a display label and the defaults below:
   GitHub Copilot and Cursor are seat plans, so `subscription`; the
   sensor, the Agent SDK and OpenCode call a provider with an API key,
   and Gemini CLI's users are API-key and Vertex AI accounts (its free
-  tier is served through Antigravity CLI): all `metered`. A client that can tell
-  sends `billing_mode` itself and the default never applies.
+  tier is served through Antigravity CLI): all `metered`. A client that
+  can tell sends `billing_mode` itself and the default never applies.
 - **Worker strips tool error text.** A failed tool call's error text is
   content (see Prompt capture), and a hook-based client cannot be relied
   on to withhold it. For these types the worker replaces `error.message`
@@ -1543,9 +1543,9 @@ interceptor on the Roadmap, and its contract with the plugin is fixed
 here so that a run is reported once: the interceptor sets
 `FLIGHTDECK_SDK_OBSERVED=1` in that subprocess's environment and
 applies the MCP policy itself, and the plugin then stays silent for the
-run. Until the interceptor ships, the plugin does not read the variable,
-so its MCP policy gate keeps running in SDK-launched sessions. A process that
-also makes direct provider calls keeps those under its sensor session
+run. The plugin does not read that variable, so its MCP policy gate
+keeps running in SDK-launched sessions. A process that also makes
+direct provider calls keeps those under its sensor session
 (`flightdeck_sensor`); the two are separate agents because
 `client_type` is part of the `agent_id` derivation.
 
@@ -1608,13 +1608,13 @@ agent_id = uuid5(ee22ab58-26fc-54ef-91b4-b5c0a97f9b61,
 
 The namespace is `uuid5(NAMESPACE_DNS, "flightdeck.dev")` and never
 changes. Every field goes in verbatim, and the caller substitutes
-`unknown` for a missing one rather than leaving it empty. A non-empty `agent_role` (after
-trimming whitespace) is appended as a sixth segment, `/{agent_role}`. The
-sensor's `core/agent_id.py` and the plugin's `agent_id.mjs` implement it,
-and both assert the same vector: `coding`, `omria`, `Omri-PC`,
-`claude_code`, `omria@Omri-PC` derive
-`ee76931b-06fa-5da6-a019-5a8237efd496`. A new emitter's tests assert it
-too.
+`unknown` for a missing one rather than leaving it empty. A non-empty
+`agent_role` (after trimming whitespace) is appended as a sixth
+segment, `/{agent_role}`. The sensor's `core/agent_id.py` and the
+plugin's `agent_id.mjs` implement it, and both assert the same
+vector: `coding`, `omria`, `Omri-PC`, `claude_code`, `omria@Omri-PC`
+derive `ee76931b-06fa-5da6-a019-5a8237efd496`. A new emitter's tests
+assert it too.
 
 **Rollup ↔ projection symmetry.** The same UUID5 input tuple flows
 through two paths:

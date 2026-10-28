@@ -24,7 +24,8 @@ requirement, it stops and asks rather than guessing.
 Every task follows the same sequence:
 
 1. **Read** -- Executor reads ARCHITECTURE.md and CLAUDE.md in full, and
-   the DECISIONS.md entries for the area, before touching any file.
+   the DECISIONS.md entries for the area (and DECISIONS-ARCHIVE.md for
+   D001-D213), before touching any file.
 2. **Plan** -- Executor produces a written plan listing every file to create
    or modify, with a one-line rationale for each.
 3. **Review** -- Supervisor reviews the plan, requests changes or approves.

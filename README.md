@@ -96,7 +96,7 @@ To run the sensor from source instead of PyPI: `pip install -e sensor/` from the
 
 ## Playground
 
-Working examples for every supported framework live in [`playground/`](playground/). Each script costs cents per run and exercises the sensor against real LLM APIs.
+Working examples for every supported framework live in [`playground/`](playground/). Each script costs cents per run and exercises the sensor against real LLM APIs. On WSL with the repo under `/mnt/c`, keep the virtualenv on the Linux filesystem; [CONTRIBUTING.md](CONTRIBUTING.md#releasing) shows how.
 
 ```bash
 make playground-anthropic    # Anthropic direct
@@ -155,6 +155,8 @@ Claude Code agents attach via a separate plugin distributed through this repo's 
 The plugin defaults to `http://localhost:4000` + `tok_dev` for the local-dev path; export `FLIGHTDECK_SERVER` + `FLIGHTDECK_TOKEN` before launching `claude` to point at a different stack. See [Quickstart > Coding agents](#coding-agents-claude-code) for the full flow. Tool inputs and LLM call content are captured by default, so the Prompts tab is populated without extra setup.
 
 Sessions carry `flavor=claude-code`, `agent_type=coding`, and `client_type=claude_code`. The plugin is hook-based and cannot act on directives mid-call; the Stop Agent button is hidden for these sessions. Raw file bodies written by `Write` / `Edit` are never forwarded; tool inputs go through a sanitised whitelist.
+
+`client_type` names the client that produced a session. Flightdeck accepts nine values (`claude_code`, `flightdeck_sensor`, `claude_agent_sdk`, `codex`, `copilot`, `opencode`, `gemini_cli`, `cursor`, `otlp`), each with a display label, an expected agent type, a billing-mode default and whether the client can act on directives; see "Client type registry" in [ARCHITECTURE.md](ARCHITECTURE.md). The plugin sends `claude_code` and the sensor sends `flightdeck_sensor`; the other values are reserved for the integrations on the [Roadmap](#roadmap).
 
 ### Sub-agent observability
 
@@ -235,6 +237,8 @@ env:
 ```
 
 Agents without `AGENT_FLAVOR` appear as `{user}@{hostname}`. That is how agents deployed outside your blessed config become visible.
+
+Every session also carries a **client type**, the kind of client that produced it (the sensor sends `flightdeck_sensor`, the Claude Code plugin `claude_code`). The dashboard shows it as a pill on each agent and offers it as a filter. A stable `agent_id`, derived from the agent type, user, host, client type and agent name, ties a client's sessions to one agent.
 
 ### Orchestrator re-attachment
 
@@ -467,7 +471,6 @@ Deferred and planned work lives here so it stays visible and user demand can pri
 - Operations: add request-latency histograms to the Go services, bound the NATS stream (`MaxAge` / `MaxBytes`; the `FLIGHTDECK` stream keeps every message today) and rotate the workers' logs in the compose files, so a flood of events cannot fill the NATS store or the host disk.
 - Claude Code plugin tool failures in the dashboard: a failed tool call is stored as a `tool_call` with an `error` block and already shows in the unscoped `/v1/events` `error_type` facet and the Investigate status chip, but the session drawer's error indicator, the `tool_call` rows, the per-session `error_types[]` aggregate and the agent `errors` count do not include it yet. The per-session MCP-server facet keys plugin-bundled servers as `plugin:<plugin>:<server>` for rows stored from v0.6.0 on while older rows keep `plugin_<plugin>_<server>`.
 - Workers: validate the `session_id` shape and cap log field sizes at the NATS consumer boundary. Ingestion validates today and the NATS stream is treated as untrusted, so a direct publisher can still make the worker log oversized ids.
-- Identity model v2: an extensible `client_type` registry and entrypoint detection for headless, SDK and CI runs.
 - Claude Code plugin v2: the remaining hook events (API errors, permission prompts, compaction, model switches, teams and worktrees), native cost from the transcript, async hooks, plugin `userConfig`, and enforcement (kill switch, token budgets and MCP deny) for Claude Code sessions.
 - Claude Agent SDK interceptor for Python agents built on the SDK.
 - Sensor import cost: `import flightdeck_sensor` imports litellm, the MCP SDK and the Anthropic and OpenAI SDKs whenever they are installed, whether or not the application uses them, and importing litellm fetches its price list from GitHub. Patch these when they are first imported instead, so an application pays only for the libraries it uses.

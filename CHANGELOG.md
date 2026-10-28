@@ -4,6 +4,35 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Added
+
+- **Client types are a registry of nine values.** `client_type` now
+  accepts `claude_code`, `flightdeck_sensor`, `claude_agent_sdk`,
+  `codex`, `copilot`, `opencode`, `gemini_cli`, `cursor` and `otlp`
+  (migrations 000032 and 000033 widen the constraints on `agents` and
+  `sessions`). Ingestion and the `client_type` filters on
+  `GET /v1/agents` and `GET /v1/sessions` accept all nine. Each type
+  carries defaults: a billing mode for calls that arrive without one
+  (`subscription` for Claude Code, Codex CLI, GitHub Copilot and
+  Cursor, `metered` for the rest), whether the client can act on
+  directives, and whether the worker withholds a failed tool call's
+  error text when capture is off. Only `claude_code` and
+  `flightdeck_sensor` have an emitter today; the other values are
+  reserved for the integrations on the Roadmap. The list's one source
+  is `contracts/client_types.json`.
+- **The dashboard reads client types from the registry.** The client
+  pill, the client facet and the Stop button gating use each type's
+  label, colour and directive default. The facet lists only the types
+  present in your data, and a session with an unknown or missing
+  `client_type` shows no pill.
+
+### Changed
+
+- **The decision log is split.** D001-D213 are frozen in
+  `DECISIONS-ARCHIVE.md`; `DECISIONS.md` records only decisions that
+  change a contract, the schema or a trust boundary, or that reject an
+  alternative someone would propose again.
+
 ### Fixed
 
 - **A Claude Code model call is counted once.** The plugin remembers

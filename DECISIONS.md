@@ -21,7 +21,7 @@ log` keeps it next to the change.
 Each entry is 10 to 15 lines:
 
 ```
-## D214 -- <the decision, as a sentence>
+## D<next> -- <the decision, as a sentence>
 
 **Date:** YYYY-MM-DD
 **Decision:** what the system does.

@@ -3079,9 +3079,10 @@ An event that arrives without a `billing_mode` (a client that does not
 send one) is stored with the `billing_mode` default of the event's
 `client_type` (see Client type registry): `subscription` for Claude
 Code, Codex CLI, GitHub Copilot and Cursor, `metered` for every other
-type; the worker fills it in when it writes the row. The cost query applies the same rule to a row whose
-`billing_mode` is empty, so a row the backfill (see Model ids) has not
-reached yet is counted the same way.
+type; the worker fills it in when it writes the row. The cost query
+applies the same rule to a row whose `billing_mode` is empty, so a row
+the backfill (see Model ids) has not reached yet is counted the same
+way.
 
 #### Where a call's cost comes from
 

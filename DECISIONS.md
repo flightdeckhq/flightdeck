@@ -50,3 +50,20 @@ dozen places; one migration for all nine beats one per integration.
 (every query would branch on it); a value per integration as it lands;
 a `client_types` reference table (ingestion, the worker and the
 dashboard need the defaults too, so it would be one more copy).
+
+## D215 -- The worker, not the plugin's markers, guarantees a call is stored once
+
+**Date:** 2026-10-27
+**Decision:** the Claude Code plugin's `post_call` id is
+`uuid5(NAMESPACE_FLIGHTDECK, "flightdeck://claude-code/post_call/<message
+id>")`, and the worker drops any event whose client-supplied id is
+already stored before it adds tokens or touches a session.
+**Why:** the plugin's sent-markers live in `$TMPDIR`, which reboots
+clear, so a resumed conversation re-sent its history (a quarter of all
+Claude Code tokens on one dev box). The first copy stored keeps its
+session and billing mode.
+**Rejected alternative:** moving the markers to a durable directory
+(still per machine, so a replayed or copied transcript or a second
+machine still re-sends; the worker check covers every source); a
+`message_id` column with a unique index (the event id already carries
+the identity, and `events` is keyed on `(id, occurred_at)`).

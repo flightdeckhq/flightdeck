@@ -33,6 +33,7 @@ import {
   SESSION_END_WORKER_GRACE_MAX_MS,
   SESSION_END_WORKER_GRACE_MS,
   sessionEndWorkerGraceMs,
+  postCallEventId,
 } from "../hooks/scripts/observe_cli.mjs";
 import { deriveAgentId } from "../hooks/scripts/agent_id.mjs";
 import {
@@ -3137,5 +3138,14 @@ describe("boundedIdentity", () => {
       assert.ok(!cut.includes("\uFFFD"), `${unit}: split a code point`);
       assert.equal(cut, unit.repeat(Array.from(cut).length));
     }
+  });
+});
+
+describe("postCallEventId", () => {
+  it("is a UUID5 fixed by the message id, whatever session sends it", () => {
+    const a = postCallEventId("msg_01ABC");
+    assert.match(a, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+    assert.equal(postCallEventId("msg_01ABC"), a);
+    assert.notEqual(postCallEventId("msg_01ABD"), a);
   });
 });

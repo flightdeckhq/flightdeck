@@ -63,6 +63,7 @@ import {
   isMainModule,
   openSessionEndWorkerLog,
   parseMcpToolName,
+  postCallEventId,
   redactServerUrl,
   redactUserinfo,
   resolveMcpToolIdentity,
@@ -1024,6 +1025,9 @@ describe("SessionEnd stays inside Claude Code's 1.5 s budget", () => {
         ["post_call", "session_end"],
       );
       assert.ok(bodies.every((b) => b.session_id === flightdeckSessionId));
+      // The post_call's id comes from the model call's message id, so a
+      // re-send of the same call is recognised as a duplicate.
+      assert.equal(bodies[0].id, postCallEventId(`msg_${nativeSessionId}_w`));
       assert.equal(bodies.at(-1).end_reason, "clear");
       assert.equal(existsSync(foreignMarker), true, "worker must not clear markers");
       rmSync(foreignMarker, { force: true });

@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"regexp"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -29,6 +30,32 @@ const (
 // Writer performs all Postgres writes for the worker pipeline.
 type Writer struct {
 	pool *pgxpool.Pool
+}
+
+// eventIDPattern is a canonical UUID: only such an id can name a stored
+// event (the column is a uuid), so EventExists answers false for any
+// other string instead of failing the ::uuid cast.
+var eventIDPattern = regexp.MustCompile(
+	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`,
+)
+
+// EventExists reports whether an event with this client-supplied id is
+// already stored. A client that mints its own event id sends the same id
+// for every copy of one event (the sensor when it retries a POST, the
+// Claude Code plugin for every re-send of one model call), so a second
+// copy is a duplicate.
+func (w *Writer) EventExists(ctx context.Context, id string) (bool, error) {
+	if !eventIDPattern.MatchString(id) {
+		return false, nil
+	}
+	var exists bool
+	err := w.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM events WHERE id = $1::uuid)`, id,
+	).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("check event exists: %w", err)
+	}
+	return exists, nil
 }
 
 // querier is what the event and event-content inserts run on: the pool

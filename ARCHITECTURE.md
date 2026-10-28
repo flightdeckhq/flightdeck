@@ -1382,6 +1382,15 @@ state-revival path: the child session ages from
 PostToolUseFailure hook with `markEmittedTurn` per-messageId disk-marker dedup so mid-turn LLM
 activity surfaces in real time instead of batching at Stop.
 
+The markers are a local optimisation, not the guarantee: they live in
+`$TMPDIR`, which a reboot clears (a resumed conversation's next hook then
+re-reads its whole transcript). Each turn's `post_call` therefore
+carries an event id derived from the model call's message id
+(`uuid5(NAMESPACE_FLIGHTDECK,
+"flightdeck://claude-code/post_call/<message id>")`), so every copy of
+one call has the same id, and the worker stores it once (see
+`originating_event_id` chain).
+
 Each `post_call` carries `provider=anthropic`, the session's
 `billing_mode` and `provider_metadata.platform`, which the
 `SessionStart` hook determines once (see Cost estimation) and keeps in
@@ -2140,7 +2149,9 @@ side effects with a warn log; `stale` and `lost` sessions are revived to
 `active` with `last_seen_at` advanced; unknown `session_id`s are
 lazy-created so the event lands instead of FK-violating at `InsertEvent`.
 The event's normal side effects then proceed, and the event row is
-inserted in every case.
+inserted, unless the event carries a client-supplied id that is already
+stored: such a copy is dropped before any handler runs (see
+`originating_event_id` chain).
 
 SIGKILL bypasses all handlers. Affected sessions transition to stale
 after 2 minutes and lost after 30 minutes via the background reconciler;
@@ -5173,9 +5184,16 @@ landed).
 ### `originating_event_id` chain
 
 Sensor mints a UUID per emission via `Session._build_payload`
-(`payload.id`). Worker's `InsertEvent` uses it via
-`COALESCE(NULLIF($1, '')::uuid, gen_random_uuid)`. Idempotent
-retry semantics via `ON CONFLICT (id, occurred_at) DO NOTHING`.
+(`payload.id`); the Claude Code plugin derives each `post_call`'s id
+from the model call's message id. Worker's `InsertEvent` uses it via
+`COALESCE(NULLIF($1, '')::uuid, gen_random_uuid)`. Before any side
+effect the worker drops an event whose id is already stored
+(`dropped_events_total{reason="duplicate_event"}`), so a retried POST,
+a NATS redelivery or a re-sent model call adds no tokens and touches no
+session. The first copy stored keeps its session and billing mode. A
+copy processed while the first is still in flight passes the check and
+can still add its tokens; `ON CONFLICT (id, occurred_at) DO NOTHING`
+then keeps the second row out.
 
 `Session._current_call_event_id` tracks the most-recent
 `post_call` emission's id. Every "downstream of an LLM call"
@@ -6321,10 +6339,11 @@ The workers keep an in-process, reason-labelled counter registry
 
 - `dropped_events_total{reason}` — events the worker did not apply:
   `unmarshal_error`, `process_panic`, `max_retries_exhausted`,
-  `closed_session_skip`, `orphan_session_end`, and
+  `closed_session_skip`, `orphan_session_end`,
   `superseded_session_end` (a `session_end` published before the run of
   a still-open session began; on a closed row the same end counts as
-  `closed_session_skip`).
+  `closed_session_skip`), and `duplicate_event` (an event whose
+  client-supplied id is already stored).
 - `sessions_closed_total{reason}` — non-event close paths the
   worker performs directly (today: `orphan_timeout` via the
   reaper). The dashboard's close-reason facet still reads from

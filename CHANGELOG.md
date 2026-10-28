@@ -4,6 +4,17 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Fixed
+
+- **A Claude Code model call is counted once.** The plugin remembers
+  which transcript turns it has sent in files under `$TMPDIR`, which a
+  reboot clears, so after a restart a resumed conversation re-sent its
+  whole history under a new session. Those copies inflated token totals
+  (about a quarter of all Claude Code tokens on a long-running machine).
+  Each call's `post_call` now carries an id derived from its message id,
+  and the worker drops an event whose id it has already stored, before
+  adding any tokens.
+
 ## v0.7.0 — 2026-10-26
 
 The token and cost model release. Every LLM call now carries what it

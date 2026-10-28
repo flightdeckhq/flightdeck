@@ -1538,10 +1538,13 @@ their own `service.name`), so their sessions keep that tool's defaults
 and `agent_id`; `otlp` is for sources no registry entry names.
 
 **Claude Agent SDK and Claude Code.** The Agent SDK runs the Claude Code
-CLI as a subprocess. The interceptor sets `FLIGHTDECK_SDK_OBSERVED=1` in
-that subprocess's environment and the plugin does nothing when it sees
-it (it posts no events and its MCP policy gate does not run), so a run
-is reported once, as `claude_agent_sdk`. A process that
+CLI as a subprocess. `claude_agent_sdk` is reserved for the Agent SDK
+interceptor on the Roadmap, and its contract with the plugin is fixed
+here so that a run is reported once: the interceptor sets
+`FLIGHTDECK_SDK_OBSERVED=1` in that subprocess's environment and
+applies the MCP policy itself, and the plugin then stays silent for the
+run. Until the interceptor ships, the plugin does not read the variable,
+so its MCP policy gate keeps running in SDK-launched sessions. A process that
 also makes direct provider calls keeps those under its sensor session
 (`flightdeck_sensor`); the two are separate agents because
 `client_type` is part of the `agent_id` derivation.
@@ -1604,8 +1607,8 @@ agent_id = uuid5(ee22ab58-26fc-54ef-91b4-b5c0a97f9b61,
 ```
 
 The namespace is `uuid5(NAMESPACE_DNS, "flightdeck.dev")` and never
-changes. Every field goes in verbatim, and a missing one is replaced
-with `unknown` rather than left empty. A non-empty `agent_role` (after
+changes. Every field goes in verbatim, and the caller substitutes
+`unknown` for a missing one rather than leaving it empty. A non-empty `agent_role` (after
 trimming whitespace) is appended as a sixth segment, `/{agent_role}`. The
 sensor's `core/agent_id.py` and the plugin's `agent_id.mjs` implement it,
 and both assert the same vector: `coding`, `omria`, `Omri-PC`,

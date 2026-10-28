@@ -2646,7 +2646,21 @@ function canonicalizeForRemembered(rawEndpoint) {
 // Main entry point.
 // ---------------------------------------------------------------------
 
+/**
+ * The Claude Agent SDK runs Claude Code as a subprocess, and Flightdeck's
+ * Agent SDK interceptor marks that subprocess with
+ * ``FLIGHTDECK_SDK_OBSERVED=1``: the interceptor reports the run as a
+ * ``claude_agent_sdk`` session, so the plugin does nothing for it (no
+ * events, no MCP policy gate) and the run is not reported twice.
+ */
+export function sdkObserved(env = process.env) {
+  return env.FLIGHTDECK_SDK_OBSERVED === "1";
+}
+
 async function main() {
+  if (sdkObserved()) {
+    return;
+  }
   const cfg = resolveConfig();
   // The detached SessionEnd worker is this script re-invoked with the
   // marker flag; it skips the hand-off below and does the network work.

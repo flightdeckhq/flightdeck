@@ -34,6 +34,7 @@ import {
   SESSION_END_WORKER_GRACE_MS,
   sessionEndWorkerGraceMs,
   postCallEventId,
+  sdkObserved,
 } from "../hooks/scripts/observe_cli.mjs";
 import { deriveAgentId } from "../hooks/scripts/agent_id.mjs";
 import {
@@ -100,6 +101,7 @@ const HERMETIC_ENV = {
   CLAUDE_CODE_USE_FOUNDRY: "",
   CLOUD_ML_REGION: "",
   ANTHROPIC_BASE_URL: "",
+  FLIGHTDECK_SDK_OBSERVED: "",
 };
 
 function runScript(stdinData, env = {}) {
@@ -955,6 +957,13 @@ describe("observe_cli.mjs", () => {
 });
 
 describe("observe_cli helpers", () => {
+  it("sdkObserved is set by FLIGHTDECK_SDK_OBSERVED=1 only", () => {
+    assert.equal(sdkObserved({ FLIGHTDECK_SDK_OBSERVED: "1" }), true);
+    for (const v of [undefined, "", "0", "true", " 1"]) {
+      assert.equal(sdkObserved({ FLIGHTDECK_SDK_OBSERVED: v }), false, String(v));
+    }
+  });
+
   describe("parseBool", () => {
     it("accepts true-ish strings regardless of case", () => {
       for (const v of ["true", "TRUE", "True", "1", "yes", "YES", "on", "ON"]) {
@@ -1665,6 +1674,32 @@ describe("observe_cli end-to-end (new fields)", () => {
   after(() => {
     capture.server.close();
     clearAllPluginMarkers();
+  });
+
+  it("emits nothing for a run the Agent SDK interceptor observes", async () => {
+    clearAllPluginMarkers();
+    const before = capture.bodies().length;
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-sdk-observed",
+      FLIGHTDECK_SDK_OBSERVED: "1",
+    };
+    for (const hook of ["SessionStart", "UserPromptSubmit", "PreToolUse", "Stop", "SessionEnd"]) {
+      const result = await runScript(
+        JSON.stringify({
+          hook_event_name: hook,
+          session_id: "sess-sdk-observed",
+          source: "startup",
+          model: "claude-sonnet-4-6",
+          tool_name: "mcp__fs__read",
+        }),
+        env,
+      );
+      assert.equal(result.code, 0, hook);
+      assert.equal(result.stdout, "", `${hook} must write no hook decision`);
+    }
+    assert.equal(capture.bodies().length, before, "no event may reach the server");
   });
 
   it("SessionStart emits session_start with context", async () => {

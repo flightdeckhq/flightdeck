@@ -4,6 +4,13 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Added
+
+- **The Claude Code plugin steps aside for the Agent SDK interceptor.**
+  With `FLIGHTDECK_SDK_OBSERVED=1` in its environment the plugin posts
+  nothing and skips its MCP policy gate, so a Claude Agent SDK run that
+  Flightdeck's interceptor observes is not reported twice.
+
 ### Fixed
 
 - **A Claude Code model call is counted once.** The plugin remembers

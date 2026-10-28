@@ -83,6 +83,7 @@ plugin re-reads it at the next session start.
 | `FLIGHTDECK_CAPTURE_TOOL_INPUTS` | `true` | `false` strips the sanitised tool arguments. |
 | `FLIGHTDECK_BILLING_MODE` | detected | `metered`, `subscription` or `local`; overrides the billing mode the plugin detects from `claude auth status` and the cloud-provider variables (set `metered` when a subscription runs on extra usage). |
 | `FLIGHTDECK_QUIET` | unset | `1` silences the default-token warning. |
+| `FLIGHTDECK_SDK_OBSERVED` | unset | `1` (set by the Agent SDK interceptor) turns the plugin off for that run; the interceptor reports it instead. |
 | `CLAUDE_SESSION_ID` | unset | Forces the session id reported to Flightdeck. |
 | `CLAUDE_CODE_SESSION_ID` | set by Claude Code | Claude Code's own session id; reported as `context.claude_code_session_id` and used to key the per-session marker when a hook payload has no `session_id`. |
 

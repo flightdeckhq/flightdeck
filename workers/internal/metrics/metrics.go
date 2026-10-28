@@ -71,6 +71,10 @@ const (
 	ReasonFKViolation          DropReason = "fk_violation"
 	ReasonMaxRetriesExhausted  DropReason = "max_retries_exhausted"
 	ReasonProcessPanic         DropReason = "process_panic"
+	// ReasonDuplicateEvent: an event whose client-supplied id is
+	// already stored (a re-sent model call, a retried POST, a NATS
+	// redelivery of an applied event).
+	ReasonDuplicateEvent DropReason = "duplicate_event"
 )
 
 // CloseReason mirrors the close_reason values stamped on session_end

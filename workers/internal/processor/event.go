@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/workers/internal/consumer"
+	"github.com/flightdeckhq/flightdeck/workers/internal/metrics"
 	"github.com/flightdeckhq/flightdeck/workers/internal/writer"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -565,6 +566,7 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 			return err
 		}
 		if dup {
+			metrics.IncrDropped(metrics.ReasonDuplicateEvent)
 			slog.Debug("dropping duplicate event", "event_id", e.ID, "event_type", e.EventType, "session_id", e.SessionID)
 			return nil
 		}

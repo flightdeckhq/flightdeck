@@ -9,11 +9,9 @@ All notable changes to Flightdeck are documented here.
 - **A Claude Code model call is counted once.** The plugin remembers
   which transcript turns it has sent in files under `$TMPDIR`, which a
   reboot clears, so after a restart a resumed conversation re-sent its
-  whole history under a new session; a `claude` process started from
-  inside a session could do the same with its parent's transcript.
-  Those copies inflated token totals (about a quarter of all Claude Code
-  tokens on a long-running machine) and could carry a different billing
-  mode, so a subscription could show a cost. Each call's `post_call` now
+  whole history under a new session. Those copies inflated token totals
+  (about a quarter of all Claude Code tokens on a long-running machine).
+  Each call's `post_call` now
   carries an id derived from its message id, and the worker drops an
   event whose id it has already stored, before adding any tokens.
 

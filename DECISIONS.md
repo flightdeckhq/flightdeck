@@ -59,12 +59,11 @@ dashboard need the defaults too, so it would be one more copy).
 id>")`, and the worker drops any event whose client-supplied id is
 already stored before it adds tokens or touches a session.
 **Why:** the plugin's sent-markers live in `$TMPDIR`, which reboots
-clear, and a child `claude` process can read its parent's transcript;
-both re-sent calls (a quarter of all Claude Code tokens on one dev box),
-some with a different billing mode.
+clear, so a resumed conversation re-sent its history (a quarter of all
+Claude Code tokens on one dev box). The first copy stored keeps its
+session and billing mode.
 **Rejected alternative:** moving the markers to a durable directory
-(still per machine and per process, so a child process or a second
+(still per machine, so a replayed or copied transcript or a second
 machine still re-sends; the worker check covers every source); a
 `message_id` column with a unique index (the event id already carries
 the identity, and `events` is keyed on `(id, occurred_at)`).
-

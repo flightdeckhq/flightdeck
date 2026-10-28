@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/workers/internal/consumer"
@@ -20,13 +21,23 @@ import (
 // dashboard reader sees one marker either way.
 const RedactedToolErrorMessage = "<redacted>"
 
-// ToolErrorNeedsCaptureCheck reports whether the event carries a Claude
-// Code plugin tool failure, whose error.message is content: a tool_call
-// or mcp_tool_call from client_type claude_code with an error block.
-// Sensor llm_error / MCP error blocks are provider metadata and are not
-// gated.
+// ToolErrorStrippingClientTypes are the client types whose tool error
+// text the worker withholds on a session with capture off: every type
+// the client type registry (contracts/client_types.json) marks
+// strips_tool_error_text. They are hook-based or remote clients that
+// cannot be relied on to withhold the text themselves; the sensor and
+// the Agent SDK interceptor apply capture in the agent's own process.
+// A parity test pins this list to the registry.
+var ToolErrorStrippingClientTypes = []string{
+	"claude_code", "codex", "copilot", "opencode", "gemini_cli", "cursor", "otlp",
+}
+
+// ToolErrorNeedsCaptureCheck reports whether the event carries a tool
+// failure whose error.message is content: a tool_call or mcp_tool_call
+// with an error block from one of ToolErrorStrippingClientTypes. Sensor
+// llm_error / MCP error blocks are provider metadata and are not gated.
 func ToolErrorNeedsCaptureCheck(e consumer.EventPayload) bool {
-	if e.ClientType != "claude_code" || len(e.Error) == 0 {
+	if !slices.Contains(ToolErrorStrippingClientTypes, e.ClientType) || len(e.Error) == 0 {
 		return false
 	}
 	return e.EventType == "tool_call" || e.EventType == "mcp_tool_call"
@@ -703,11 +714,12 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 		captureOn = p.w.SessionCaptureEnabled(ctx, e.SessionID)
 		if !captureOn {
 			extra = stripExtraContent(extra)
-			// The Claude Code plugin's tool error text is content too
-			// (a command's stderr, an Edit failure quoting its
-			// old_string); the plugin withholds it when its own capture
-			// knobs are off, and the stored posture is enforced here
-			// so a forged per-event flag cannot smuggle it in.
+			// A hook-based client's tool error text is content too (a
+			// command's stderr, an Edit failure quoting its
+			// old_string); the Claude Code plugin withholds it when its
+			// own capture knobs are off, and the stored posture is
+			// enforced here so a forged per-event flag cannot smuggle
+			// it in.
 			if ToolErrorNeedsCaptureCheck(e) {
 				extra = StripToolErrorMessage(extra)
 			}

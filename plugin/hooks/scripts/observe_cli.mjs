@@ -2303,10 +2303,9 @@ function buildContent(turn) {
 /**
  * The event id of the ``post_call`` for one model call, derived from the
  * provider's message id. Every copy of the same call carries the same id
- * whoever sends it (a hook that re-reads the transcript after the sent
- * markers were lost, a child process that reads its parent's
- * transcript), and the worker stores an event id once, so a call is
- * counted once.
+ * (a hook that re-reads the transcript after a reboot cleared the sent
+ * markers sends it again), and the worker stores an event id once, so a
+ * call is counted once.
  */
 export function postCallEventId(messageId) {
   return uuid5(NAMESPACE_FLIGHTDECK, `flightdeck://claude-code/post_call/${messageId}`);

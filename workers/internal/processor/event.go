@@ -556,8 +556,8 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	normalizeModelFields(&e)
 	// An event whose client-supplied id is already stored is a copy of
 	// one the worker has processed: a re-sent model call (the plugin
-	// re-reads a transcript after losing its sent-markers, a child
-	// process re-reads its parent's) or a retried POST. Drop it before
+	// re-reads a transcript after a reboot cleared its sent-markers), a
+	// retried POST or a NATS redelivery. Drop it before
 	// any side effect, so its tokens are not added twice and its session
 	// is not touched.
 	if e.ID != "" {

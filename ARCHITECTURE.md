@@ -1385,7 +1385,8 @@ activity surfaces in real time instead of batching at Stop.
 The markers are a local optimisation, not the guarantee: they live in
 `$TMPDIR`, which a reboot clears (a resumed conversation's next hook then
 re-reads its whole transcript). Each turn's `post_call` therefore
-carries an event id derived from the model call's message id (`uuid5(NAMESPACE_FLIGHTDECK,
+carries an event id derived from the model call's message id
+(`uuid5(NAMESPACE_FLIGHTDECK,
 "flightdeck://claude-code/post_call/<message id>")`), so every copy of
 one call has the same id, and the worker stores it once (see
 `originating_event_id` chain).

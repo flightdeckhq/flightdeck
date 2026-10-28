@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/workers/internal/consumer"
+	"github.com/flightdeckhq/flightdeck/workers/internal/metrics"
 )
 
 // A client that mints its own event id sends the same id for every copy
@@ -59,8 +60,12 @@ func TestProcess_DropsAnEventWhoseIDIsAlreadyStored(t *testing.T) {
 	if err := p.Process(ctx, call(first, callID)); err != nil {
 		t.Fatalf("first copy: %v", err)
 	}
+	dropsBefore := metrics.Snapshot()[metrics.ReasonDuplicateEvent]
 	if err := p.Process(ctx, call(second, callID)); err != nil {
 		t.Fatalf("second copy: %v", err)
+	}
+	if got := metrics.Snapshot()[metrics.ReasonDuplicateEvent] - dropsBefore; got != 1 {
+		t.Errorf("duplicate_event drops = %d, want 1", got)
 	}
 
 	var rows int

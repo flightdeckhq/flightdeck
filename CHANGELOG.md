@@ -11,9 +11,9 @@ All notable changes to Flightdeck are documented here.
   reboot clears, so after a restart a resumed conversation re-sent its
   whole history under a new session. Those copies inflated token totals
   (about a quarter of all Claude Code tokens on a long-running machine).
-  Each call's `post_call` now
-  carries an id derived from its message id, and the worker drops an
-  event whose id it has already stored, before adding any tokens.
+  Each call's `post_call` now carries an id derived from its message id,
+  and the worker drops an event whose id it has already stored, before
+  adding any tokens.
 
 ## v0.7.0 — 2026-10-26
 

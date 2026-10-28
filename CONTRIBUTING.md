@@ -136,6 +136,15 @@ runs every script under [`playground/`](playground/), exercising each framework
 integration end-to-end and skipping any whose API key is absent. Cost: roughly
 $0.50 per full run.
 
+**WSL with the repo on `/mnt/c`.** A virtualenv on the Windows mount is slow
+enough that framework scripts time out. Keep one on the Linux filesystem and
+point the Makefile at it:
+
+```bash
+(cd sensor && UV_PROJECT_ENVIRONMENT=$HOME/.cache/fd-sensor-venv uv sync --extra dev)
+PYTHON=$HOME/.cache/fd-sensor-venv/bin/python make playground-all
+```
+
 ## Database Migrations
 
 Schema changes are managed by [golang-migrate](https://github.com/golang-migrate/migrate).
@@ -217,6 +226,11 @@ To add a new LLM provider to the sensor:
 5. Add the provider to the optional dependencies in `pyproject.toml`
 6. Write unit tests covering estimation, extraction, and interception
 7. Update `ARCHITECTURE.md` with the new provider
+
+To add a `client_type` value (a new kind of client, not a provider), follow
+"Client type registry" in [ARCHITECTURE.md](ARCHITECTURE.md): edit
+`contracts/client_types.json` and every literal copy it lists, and add the two
+migrations that swap and then validate the `client_type` constraints.
 
 ## Updating pricing data
 

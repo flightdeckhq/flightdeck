@@ -1553,19 +1553,22 @@ API's `client_type` filter validators and their Swagger text; the
 worker's billing default (`workers/internal/billing`) and its tool-error
 gate (`workers/internal/processor/event.go`); the cost query's default
 (`api/internal/store/pricing.go`); the dashboard's `CLIENT_TYPE_META`
-(label, pill, facet and directive defaults); the shared test fixtures
-(`tests/shared/fixtures.py`); and the `CHECK` constraints
+(label, pill, facet and directive defaults); and the `CHECK` constraints
 `agents_client_type_check` and `sessions_client_type_check`, which an
-integration test reads from `pg_constraint`. The parity tests run from
-the repo checkout and fail, not skip, when the source file is missing.
+integration test reads from `pg_constraint`. The test fixtures' pairing
+check reads each type's expected `agent_type` from the source file
+directly. The parity tests run from the repo checkout and fail, not
+skip, when the source file is missing.
 
 Adding a value is a change to the source file and its copies plus a
 migration that swaps both constraints, adding the new one `NOT VALID`,
 and a second migration that runs `VALIDATE CONSTRAINT`. golang-migrate
-runs each file in one transaction, so keeping the validation in its own
-file is what lets it scan `sessions` without the swap's exclusive lock
-held. Its down migration restores the previous list and fails while
-any row still holds a removed value; delete or relabel those rows first.
+sends each file as one query, which Postgres runs as one transaction,
+so keeping the validation in its own file is what lets it scan
+`sessions` without the swap's exclusive lock held. The validate
+migration's down re-adds the constraints `NOT VALID`; the swap
+migration's down restores the previous list and fails while any row
+still holds a removed value, so delete or relabel those rows first.
 
 `context.entrypoint` says how the client process was launched. It is an
 open string, not a vocabulary: the client drops a value longer than 64
@@ -2670,8 +2673,10 @@ always create a new numbered migration.
 | 000027 | `sessions.start_seq` and `sessions.closed_seq` nullable BIGINT: NATS stream sequence of the `session_start` that opened the current run and of the `session_end` that closed it, so the worker orders a session's start and end without holding events back |
 | 000028 | `access_tokens_notify_revoked` trigger: every deleted `access_tokens` row sends its id on the `flightdeck_access_token_revoked` NOTIFY channel, so both services drop cached validations of a revoked token at once |
 | 000029 | Token and cost model: `events.tokens_reasoning`, `provider`, `billing_mode`, `platform`, `cost_reported`, `cost_source`, `model_requested`, `model_served`; the `model_pricing` and `model_pricing_meta` tables |
-| 000031 | `model_pricing.fast_multiplier`: per-model fast-mode price multiplier from the catalogue |
 | 000030 | `events_model_backfill_idx`: partial index on events that name a model but have no `model_requested`, the rows the worker's model-id backfill rewrites |
+| 000031 | `model_pricing.fast_multiplier`: per-model fast-mode price multiplier from the catalogue |
+| 000032 | `agents_client_type_check` and `sessions_client_type_check` swapped for the client type registry's list, added `NOT VALID` |
+| 000033 | Validates the two `client_type` constraints 000032 added, in its own step so the scan of `sessions` does not hold the swap's exclusive lock |
 
 ---
 

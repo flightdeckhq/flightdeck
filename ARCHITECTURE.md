@@ -1040,7 +1040,7 @@ sub-agent execution. Each child session carries
 
 | Mechanism | parent_session_id source | agent_role source | Interceptor |
 |---|---|---|---|
-| Claude Code Task subagent | hook payload `session_id` | hook payload `agent_type` (e.g. `"Explore"`) | `plugin/hooks/scripts/observe_cli.mjs` (`SubagentStart` / `SubagentStop`) |
+| Claude Code Task subagent | hook payload `session_id` | hook payload `agent_type` (e.g. `"Explore"`) | `plugin/hooks/scripts/claude_code/subagent.mjs` (`SubagentStart` / `SubagentStop`) |
 | CrewAI agent execution | parent crew's session | `Agent.role` attribute | `sensor/.../interceptor/crewai.py` (context manager around `Agent.execute`) |
 | LangGraph node execution | parent runner's session | node name | `sensor/.../interceptor/langgraph.py` (agent-bearing nodes only — node body invokes a patched LLM client OR matches `langgraph_agent_node_pattern` regex) |
 
@@ -5489,7 +5489,7 @@ search patterns, and prompt strings on tools that accept one.
 
 Every tool_input passes through the sanitiser before emission. The
 sanitiser is a strict whitelist implemented in
-`plugin/hooks/scripts/observe_cli.mjs::sanitizeToolInput`:
+`plugin/hooks/scripts/claude_code/tools.mjs::sanitizeToolInput`:
 
 - Keys kept: `file_path`, `command`, `query`, `pattern`, `prompt`. Every
   other field is dropped at the source; structured inputs that don't map
@@ -5875,9 +5875,11 @@ agent (or its surrounding harness) can render an actionable failure
 message.
 
 **Plugin.** Enforcement is split across three Claude Code hooks.
-The plugin uses one dispatcher script
-(`plugin/hooks/scripts/observe_cli.mjs`) registered against
-multiple hook events; the script branches on `hook_event_name`.
+Every hook runs one entry script
+(`plugin/hooks/scripts/observe_cli.mjs`), which hands the event to the
+dispatcher in `claude_code/dispatch.mjs`; it branches on
+`hook_event_name`, and the MCP policy branches live in
+`claude_code/mcp_policy_dispatch.mjs`.
 
 - **`SessionStart`** — reads `.mcp.json` (the existing
   `loadMcpServerFingerprints(cwd)` helper handles

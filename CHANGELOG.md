@@ -4,6 +4,15 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Added
+
+- **Pretty and Raw views for every box in the Prompts panel.** The
+  system prompt, each message, each tool and the response each have
+  their own Pretty / Raw toggle. Pretty renders content blocks for
+  reading (text, tool calls with their inputs, parsed tool results) and
+  indents and highlights any JSON, including a string that holds JSON;
+  Raw shows the value exactly as stored.
+
 ### Changed
 
 - **The Claude Code plugin keeps its state across reboots.** Its markers

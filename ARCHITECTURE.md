@@ -473,8 +473,25 @@ flightdeck/
 │   │   │                       # PostToolUseFailure, Stop, SessionEnd, PreCompact,
 │   │   │                       # SubagentStart, SubagentStop -- every hook runs observe_cli.mjs
 │   │   └── scripts/
-│   │       ├── observe_cli.mjs           # Hook entry: reads the hook event + transcript JSONL, POSTs events;
-│       │                             # re-invoked with --session-end-worker as the detached SessionEnd worker
+│   │       ├── observe_cli.mjs           # Hook entry: reads + parses stdin, hands the event to claude_code/dispatch.mjs;
+│   │       │                             # re-invoked with --session-end-worker as the detached SessionEnd worker
+│   │       ├── core/                     # Client-agnostic hook-adapter pieces
+│   │       │   ├── config.mjs            # FLIGHTDECK_* resolution, value bounds, plugin version
+│   │       │   ├── poster.mjs            # Event POST with timeout + one-line failure logging
+│   │       │   ├── state.mjs             # Every on-disk marker and cache under $TMPDIR/flightdeck-plugin/
+│   │       │   └── events.mjs            # Hook-name -> event_type alias table a binding supplies
+│   │       ├── claude_code/              # Claude Code binding
+│   │       │   ├── dispatch.mjs          # Routes one hook event to its emission
+│   │       │   ├── events.mjs            # Claude Code hook -> event_type table (EVENT_MAP)
+│   │       │   ├── session.mjs           # Native + Flightdeck session id, marker clearing, session_start backstop
+│   │       │   ├── context.mjs           # Runtime context and Claude Code run-mode signals (entrypoint, CI, remote)
+│   │       │   ├── transcript.mjs        # Transcript JSONL reader: per-call turns, tokens, latency
+│   │       │   ├── post_call.mjs         # Session billing endpoint, cost fields, deduplicated post_call flush
+│   │       │   ├── tools.mjs             # Tool-input sanitiser, tool duration, tool error block
+│   │       │   ├── mcp.mjs               # MCP tool-name parsing, server fingerprints, mcp_tool_call emission
+│   │       │   ├── mcp_policy_dispatch.mjs  # MCP policy at SessionStart, PreToolUse decision, PostToolUse approval
+│   │       │   ├── subagent.mjs          # SubagentStart/Stop child sessions, interior-hook routing
+│   │       │   └── session_end.mjs       # SessionEnd hand-off to the detached worker, worker log
 │   │       ├── agent_id.mjs              # agent_id derivation (Node twin of sensor core/agent_id.py)
 │   │       ├── billing.mjs               # Billing mode + platform detection (`claude auth status`, provider env), usage detail fields
 │   │       ├── uuid5.mjs                 # RFC 4122 v5 UUID, no npm dependency

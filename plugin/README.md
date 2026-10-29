@@ -200,7 +200,7 @@ Confirm with `/bin/sh -c 'node --version'`. The plugin requires Node 22 or later
 
 ## How it works
 
-Fire-and-forget HTTP. Claude Code invokes each hook as a detached child process. The plugin reads the hook event from stdin, resolves session identity (see below), builds an event payload, POSTs it to `$FLIGHTDECK_SERVER/ingest/v1/events`, and exits. On failure the plugin logs one stderr line and exits 0. Claude Code never blocks on the plugin: every hook carries an explicit timeout sized for its normal worst case (10 to 30 seconds instead of Claude Code's default of up to 600), and Claude Code carries on when one runs out; later hooks re-send what it had not sent.
+Fire-and-forget HTTP. Claude Code invokes each hook as a detached child process. The plugin reads the hook event from stdin, resolves session identity (see below), builds an event payload, POSTs it to `$FLIGHTDECK_SERVER/ingest/v1/events`, and exits. On failure the plugin logs one stderr line and exits 0. Claude Code never blocks on the plugin: the hooks that only report run asynchronously, so Claude Code does not wait for them; the rest carry an explicit timeout sized for their normal worst case (10 to 30 seconds instead of Claude Code's default of up to 600), and Claude Code carries on when one runs out; later hooks re-send what it had not sent.
 
 Session identity resolution. Precedence, top wins:
 

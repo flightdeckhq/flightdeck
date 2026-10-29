@@ -9,7 +9,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { AUTH_STATUS_TIMEOUT_MS } from "../hooks/scripts/billing.mjs";
-import { MAX_AUTH_PROBES } from "../hooks/scripts/claude_code/post_call.mjs";
+import { HOOK_FLUSH_DEADLINE_MS, MAX_AUTH_PROBES } from "../hooks/scripts/claude_code/post_call.mjs";
+import { SESSION_END_WORKER_DEADLINE_MS } from "../hooks/scripts/claude_code/session_end.mjs";
 import { TIMEOUT_MS } from "../hooks/scripts/core/poster.mjs";
 import { FETCH_TIMEOUT_MS } from "../hooks/scripts/mcp_policy.mjs";
 
@@ -77,9 +78,55 @@ describe("hooks.json", () => {
     }
   });
 
+  it("runs the reporting hooks asynchronously and the deciding ones synchronously", () => {
+    const asyncHooks = ["UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "Stop", "PreCompact", "SubagentStart", "SubagentStop"];
+    for (const event of Object.keys(HOOKS)) {
+      for (const hook of HOOKS[event][0].hooks) {
+        assert.equal(hook.async === true, asyncHooks.includes(event), event);
+      }
+    }
+  });
+
+  it("the flush deadline bounds an async hook and fits a synchronous one's timeout", () => {
+    assert.ok(HOOK_FLUSH_DEADLINE_MS < timeoutOf("Stop") * 1000);
+    assert.ok(HOOK_FLUSH_DEADLINE_MS > SESSION_END_WORKER_DEADLINE_MS);
+  });
+
   it("every other tool hook still sees every tool", () => {
     for (const event of ["PostToolUse", "PostToolUseFailure"]) {
       assert.equal(HOOKS[event][0].matcher, "*", event);
     }
+  });
+});
+
+describe("flushPostCallTurns deadline", () => {
+  it("stops before the first POST once the deadline has passed, and says how many turns are left", async () => {
+    const { flushPostCallTurns } = await import("../hooks/scripts/claude_code/post_call.mjs");
+    const writes = [];
+    const realWrite = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => {
+      writes.push(String(chunk));
+      return true;
+    };
+    const savedData = process.env.CLAUDE_PLUGIN_DATA;
+    const { mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(tmpdir(), "fd-deadline-"));
+    try {
+      await flushPostCallTurns({
+        // Port 9 is never listening; reaching a POST would log a failure.
+        cfg: { server: "http://127.0.0.1:9", token: "t" },
+        sessionId: "s",
+        basePayload: {},
+        turns: [{ messageId: "msg_deadline_a" }, { messageId: "msg_deadline_b" }],
+        capturePrompts: false,
+        deadline: Date.now() - 1,
+      });
+    } finally {
+      process.stderr.write = realWrite;
+      if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
+      else process.env.CLAUDE_PLUGIN_DATA = savedData;
+    }
+    assert.deepEqual(writes, ["flightdeck: transcript flush deadline reached; 2 transcript turn(s) left unflushed.\n"]);
   });
 });

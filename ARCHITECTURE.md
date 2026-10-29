@@ -1299,9 +1299,25 @@ like every other failure of the gate (it fails open).
 `SessionEnd` has none: Claude Code gives SessionEnd hooks a shared 1.5 s
 budget, which a per-hook timeout would raise (up to 60 s) and so delay
 Claude Code's exit; the hook instead hands its network work to a
-detached worker (see `SessionEnd`). `PreToolUse` matches `^mcp__`, the MCP tools the policy
-gate decides on; no process starts for any other tool call. The other
-tool hooks match every tool.
+detached worker (see `SessionEnd`). `PreToolUse` matches `^mcp__`, the
+MCP tools the policy gate decides on; no process starts for any other
+tool call. The other tool hooks match every tool.
+
+The hooks that only report run with `async: true`: `UserPromptSubmit`,
+`PostToolUse`, `PostToolUseFailure`, `Stop`, `PreCompact`,
+`SubagentStart` and `SubagentStop`. Claude Code starts them and carries
+on without waiting, which saves the roughly 200 ms a hook process takes
+on every prompt, tool call and turn end. Three stay synchronous:
+`SessionStart` writes the MCP policy cache `PreToolUse` reads,
+`PreToolUse` returns the gate's decision, and `SessionEnd` hands off to
+its worker inside Claude Code's exit budget. Claude Code does not
+enforce `timeout` on an async hook, so the plugin bounds its one
+open-ended step itself: a hook stops flushing transcript turns after
+25 s (`HOOK_FLUSH_DEADLINE_MS`; the SessionEnd worker uses 20 s) and
+leaves the rest to a later hook. Claude Code cancels async hooks still
+pending when a session ends; the SessionEnd worker's final sweep sends
+any turn they had not, so only a `tool_call` still in flight at exit
+can be lost.
 
 ### Session identity
 

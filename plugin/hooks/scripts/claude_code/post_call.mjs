@@ -184,26 +184,33 @@ export function postCallEventId(messageId) {
   return uuid5(NAMESPACE_FLIGHTDECK, `flightdeck://claude-code/post_call/${messageId}`);
 }
 
+// A hook stops flushing transcript turns after this long and leaves the
+// rest to a later hook, which reads the same transcript. Claude Code
+// does not enforce a timeout on an async hook, so this is what bounds a
+// backlog flush against a dead server (2 s per turn otherwise); 25 s
+// also keeps a hook that runs synchronously inside its 30 s timeout.
+export const HOOK_FLUSH_DEADLINE_MS = 25000;
+
 export async function flushPostCallTurns({
   cfg,
   sessionId,
   basePayload,
   turns,
   capturePrompts,
-  deadline = null,
+  deadline = Date.now() + HOOK_FLUSH_DEADLINE_MS,
 }) {
   let seen = 0;
   for (const turn of turns) {
     seen += 1;
-    // The detached SessionEnd worker passes an overall deadline so an
-    // orphaned backlog against a dead server stops instead of paying
-    // one aborted POST per turn; the other callers run unbounded.
+    // Past the deadline an orphaned backlog against a dead server stops
+    // instead of paying one aborted POST per turn. The detached
+    // SessionEnd worker passes its own, shorter deadline.
     if (deadline !== null && Date.now() > deadline) {
       // Count only the turns no hook has emitted yet; turns Stop or
       // PostToolUse already flushed are not lost.
       const unflushed = turns.slice(seen - 1).filter((t) => !isTurnEmitted(t.messageId)).length;
       process.stderr.write(
-        `flightdeck: SessionEnd worker deadline reached; ${unflushed} transcript turn(s) left unflushed.\n`,
+        `flightdeck: transcript flush deadline reached; ${unflushed} transcript turn(s) left unflushed.\n`,
       );
       break;
     }

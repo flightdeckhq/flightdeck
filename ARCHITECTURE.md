@@ -1279,10 +1279,10 @@ user's `settings.json` (`pluginConfigs`) and the token, marked
 `~/.claude/.credentials.json`), and exports both to every hook process as
 `CLAUDE_PLUGIN_OPTION_SERVER` and `CLAUDE_PLUGIN_OPTION_TOKEN`. The
 environment wins so a wrapper script or a CI job can point one run at
-another stack without changing the saved options. Claude Code exports
-an option only after the user saves it, never a manifest default, so
-the defaults live in the plugin (`core/config.mjs`), and the manifest
-declares none. A blank value counts as unset. Credentials embedded in
+another stack without changing the saved options. The defaults live in
+the plugin (`core/config.mjs`), so the manifest declares none and an
+option the user never saved reaches the hooks unset. A blank value
+counts as unset. Credentials embedded in
 the server URL are stripped before use, and the default token prints
 a warning on every hook unless `FLIGHTDECK_QUIET=1`.
 `FLIGHTDECK_CAPTURE_PROMPTS` and `FLIGHTDECK_CAPTURE_TOOL_INPUTS` stay
@@ -1292,7 +1292,10 @@ Every event body the plugin POSTs is at most 768 KiB
 (`MAX_EVENT_BODY_BYTES`). Ingestion reads at most 1 MiB of a body and
 NATS carries an event with the same 1 MiB `max_payload`; a larger body
 is rejected (413 from the dev nginx, 400 from ingestion), and with it
-the call's token counts. A prompt, a
+the call's token counts. The size is measured as ingestion's Go encoder
+writes the event when it re-encodes a `session_start` to add the token
+id and name: `<`, `>` and `&` count six bytes each, U+2028 and U+2029
+six bytes each. A prompt, a
 tool result or a sub-agent message can exceed that, so an event over
 the limit has the strings of its captured `content` cut, every one to
 the same largest length that fits, with

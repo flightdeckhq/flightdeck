@@ -66,18 +66,39 @@ export function shortErrorFrom(err) {
 // event on with the same 1 MiB max_payload; a larger body is rejected
 // whole (413 from a proxy with nginx's default 1 MiB limit, 400 from
 // ingestion when the cut body fails to parse), its token counts with
-// it. The poster keeps every body under 768 KiB, a quarter of headroom
-// for the envelope ingestion wraps around the event before publishing.
+// it. The poster keeps every body under 768 KiB as measured by
+// encodedBytes; the remaining quarter covers the token id and name
+// ingestion adds to a session_start.
 export const MAX_EVENT_BODY_BYTES = 768 * 1024;
+
+const GO_ESCAPED_ASCII_RE = /[<>&]/g;
+const GO_ESCAPED_SEPARATORS_RE = /[\u2028\u2029]/g;
+
+/**
+ * The size of a JSON body once ingestion has re-encoded it. Ingestion
+ * re-marshals a session_start with Go's encoding/json, which writes
+ * ``<``, ``>`` and ``&`` as six-byte ``\u003c`` escapes (one byte in
+ * the plugin's JSON) and U+2028 / U+2029 as six-byte escapes (three
+ * bytes in UTF-8), so content heavy in markup or code grows on the way
+ * to NATS. Every event is measured this way; for the others it only
+ * over-counts.
+ */
+export function encodedBytes(body) {
+  const ascii = body.match(GO_ESCAPED_ASCII_RE)?.length ?? 0;
+  const separators = body.match(GO_ESCAPED_SEPARATORS_RE)?.length ?? 0;
+  return Buffer.byteLength(body, "utf8") + 5 * ascii + 3 * separators;
+}
 
 /** The text that replaces the cut end of a string in oversized content. */
 export function truncationMarker(keptBytes, totalBytes) {
   return `… [flightdeck: kept ${keptBytes} of ${totalBytes} bytes to fit the event size limit]`;
 }
 
-// Every string in ``value`` longer than ``capBytes`` of UTF-8, cut to
-// ``capBytes`` and marked. Structure, keys and the other values stay.
-function capStrings(value, capBytes) {
+/**
+ * Every string in ``value`` longer than ``capBytes`` of UTF-8, cut to
+ * ``capBytes`` and marked. Structure, keys and the other values stay.
+ */
+export function capStrings(value, capBytes) {
   if (typeof value === "string") {
     const total = Buffer.byteLength(value, "utf8");
     if (total <= capBytes) return value;
@@ -109,12 +130,21 @@ function longestStringBytes(value) {
  * to the same largest length that fits, with a marker in place of the
  * cut text, so the call and its tokens are stored with as much of the
  * content as fits. When no cut fits, the event is sent without its
- * content. An event without content is sent as it is.
+ * content. An event without content, or one that is over the limit
+ * even without it, is sent as it is.
  */
 export function serializeEvent(payload) {
   const body = JSON.stringify(payload);
-  const size = Buffer.byteLength(body, "utf8");
+  const size = encodedBytes(body);
   if (size <= MAX_EVENT_BODY_BYTES || payload.content == null) return body;
+  const bare = JSON.stringify({ ...payload, has_content: false, content: null });
+  if (encodedBytes(bare) > MAX_EVENT_BODY_BYTES) {
+    process.stderr.write(
+      `[flightdeck] WARN: ${payload.event_type} event is ${size} bytes and over the event ` +
+        "size limit without its content; it is sent as it is.\n",
+    );
+    return body;
+  }
   let lo = 0;
   let hi = longestStringBytes(payload.content);
   let best = null;
@@ -124,7 +154,7 @@ export function serializeEvent(payload) {
   while (lo <= hi) {
     const cap = Math.floor((lo + hi) / 2);
     const candidate = JSON.stringify({ ...payload, content: capStrings(payload.content, cap) });
-    if (Buffer.byteLength(candidate, "utf8") <= MAX_EVENT_BODY_BYTES) {
+    if (encodedBytes(candidate) <= MAX_EVENT_BODY_BYTES) {
       best = candidate;
       bestCap = cap;
       lo = cap + 1;
@@ -134,16 +164,16 @@ export function serializeEvent(payload) {
   }
   if (best !== null) {
     process.stderr.write(
-      `[flightdeck] WARN: ${payload.event_type} content is ${size} bytes; ` +
-        `strings over ${bestCap} bytes were cut to fit the event size limit.\n`,
+      `[flightdeck] WARN: ${payload.event_type} event is ${size} bytes; ` +
+        `content strings over ${bestCap} bytes were cut to fit the event size limit.\n`,
     );
     return best;
   }
   process.stderr.write(
-    `[flightdeck] WARN: ${payload.event_type} content is ${size} bytes and cannot be cut ` +
+    `[flightdeck] WARN: ${payload.event_type} event is ${size} bytes and its content cannot be cut ` +
       "to fit the event size limit; the event is sent without it.\n",
   );
-  return JSON.stringify({ ...payload, has_content: false, content: null });
+  return bare;
 }
 
 // Returns true when the server accepted the event (2xx), false on any

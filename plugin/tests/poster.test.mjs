@@ -5,7 +5,13 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 
-import { MAX_EVENT_BODY_BYTES, serializeEvent, truncationMarker } from "../hooks/scripts/core/poster.mjs";
+import {
+  MAX_EVENT_BODY_BYTES,
+  capStrings,
+  encodedBytes,
+  serializeEvent,
+  truncationMarker,
+} from "../hooks/scripts/core/poster.mjs";
 
 function bytes(text) {
   return Buffer.byteLength(text, "utf8");
@@ -62,7 +68,7 @@ describe("serializeEvent", () => {
     // Most of the budget goes to the content, not to an over-eager cut.
     assert.ok(Number(match[1]) > MAX_EVENT_BODY_BYTES * 0.9, `kept ${match[1]} bytes`);
     assert.equal(written.length, 1);
-    assert.match(written[0], /^\[flightdeck\] WARN: post_call content is \d+ bytes; strings over \d+ bytes were cut/);
+    assert.match(written[0], /^\[flightdeck\] WARN: post_call event is \d+ bytes; content strings over \d+ bytes were cut/);
   });
 
   it("gives every long string the same cap", () => {
@@ -83,11 +89,34 @@ describe("serializeEvent", () => {
     assert.match(text, /^(\u{1F600})+… \[flightdeck: kept \d+ of 1600000 bytes/u);
   });
 
-  it("leaves short strings alone, even ones a marker would only lengthen", () => {
-    const blocks = Array.from({ length: 4000 }, (_, i) => ({ type: "text", text: `block ${i} `.padEnd(60, "y") }));
-    const payload = postCall({ messages: [{ role: "user", content: "z".repeat(900000) }], response: blocks });
+  it("leaves a string alone when the marker would only lengthen it", () => {
+    const short = "s".repeat(70);
+    assert.equal(capStrings(short, 10), short);
+    const long = "l".repeat(200);
+    assert.equal(capStrings(long, 10), "l".repeat(10) + truncationMarker(10, 200));
+    assert.deepEqual(capStrings({ a: [short, long], n: 3, b: null }, 10), {
+      a: [short, "l".repeat(10) + truncationMarker(10, 200)],
+      n: 3,
+      b: null,
+    });
+  });
+
+  it("measures a body as ingestion's Go encoder writes it", () => {
+    assert.equal(encodedBytes('{"a":"x"}'), 9);
+    // <, > and & become six-byte \u003c escapes; U+2028 / U+2029 six-byte escapes.
+    assert.equal(encodedBytes('{"a":"<&>"}'), 8 + 3 * 6);
+    assert.equal(encodedBytes('{"a":"\u2028"}'), 8 + 6);
+    assert.equal(encodedBytes('{"a":"é"}'), Buffer.byteLength('{"a":"é"}', "utf8"));
+  });
+
+  it("keeps markup-heavy content within the limit once re-encoded", () => {
+    // 700 KiB of "<a>" is under the limit in UTF-8 and about 3.5x over it
+    // after Go escapes every bracket.
+    const markup = "<a>".repeat(240000);
+    const payload = { event_type: "session_start", session_id: "s1", has_content: true, content: { response: { body: markup } } };
     const [body] = withStderr(() => serializeEvent(payload));
-    assert.deepEqual(JSON.parse(body).content.response, blocks);
+    assert.ok(encodedBytes(body) <= MAX_EVENT_BODY_BYTES, `${encodedBytes(body)} encoded bytes`);
+    assert.match(JSON.parse(body).content.response.body, /^(<a>)+.*… \[flightdeck: kept \d+ of 720000 bytes/s);
   });
 
   it("sends the event without its content when no cut fits", () => {
@@ -99,7 +128,7 @@ describe("serializeEvent", () => {
     assert.equal(sent.content, null);
     assert.equal(sent.has_content, false);
     assert.equal(sent.tokens_input, 42);
-    assert.match(written[0], /cannot be cut to fit the event size limit; the event is sent without it/);
+    assert.match(written[0], /its content cannot be cut to fit the event size limit; the event is sent without it/);
   });
 
   it("sends an oversized event without content as it is", () => {
@@ -107,6 +136,13 @@ describe("serializeEvent", () => {
     const [body, written] = withStderr(() => serializeEvent(payload));
     assert.equal(body, JSON.stringify(payload));
     assert.deepEqual(written, []);
+  });
+
+  it("keeps the content of an event that is over the limit without it", () => {
+    const payload = { ...postCall({ messages: [{ role: "user", content: "hi" }] }), note: "q".repeat(MAX_EVENT_BODY_BYTES) };
+    const [body, written] = withStderr(() => serializeEvent(payload));
+    assert.equal(body, JSON.stringify(payload));
+    assert.match(written[0], /post_call event is \d+ bytes and over the event size limit without its content/);
   });
 
   it("stays under the 1 MiB ingestion and NATS limit with room to spare", () => {

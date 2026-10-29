@@ -455,7 +455,7 @@ describe("observe_cli.mjs", () => {
     assert.ok(kept.startsWith("xxx"));
     assert.match(kept, /\[flightdeck: kept \d+ of 2097152 bytes to fit the event size limit\]$/);
     assert.deepEqual(body.content.response, [{ type: "text", text: "done" }]);
-    assert.match(result.stderr, /post_call content is \d+ bytes; strings over \d+ bytes were cut/);
+    assert.match(result.stderr, /post_call event is \d+ bytes; content strings over \d+ bytes were cut/);
     rmSync(dirname(transcriptPath), { recursive: true, force: true });
   });
 

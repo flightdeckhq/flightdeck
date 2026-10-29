@@ -1574,8 +1574,9 @@ The flush skips it, so it never becomes a `post_call`.
 `StopFailure` replaces `Stop` when a turn ends on an API error. The
 hook flushes the turns completed before the failure, then emits an
 `llm_error` (`terminal=true`, `provider=anthropic`). Claude Code's
-`error` value is kept as `error.provider_error_code` and mapped onto
-the taxonomy (see `llm_error`):
+`error` value maps onto the taxonomy (see `llm_error`) and is
+`error.provider_error_code`, unless the transcript gives a finer kind
+(below):
 
 | Claude Code `error` | `error_type` | `is_retryable` |
 |---|---|---|
@@ -1603,6 +1604,7 @@ The failed turn is the transcript's last API-error turn answering the
 hook's `prompt_id`. Claude Code can run the hook before it writes that
 record; an earlier failure's record never stands in for it, and the
 event then goes without the turn's id, kind or status.
+
 `error.http_status` is the status leading the hook's `error_details`
 (`429 Too Many Requests`), else the transcript's `apiErrorStatus` for
 the failed turn. `error.error_message` is `StopFailure: <error>`, with

@@ -49,7 +49,7 @@ const ANTHROPIC_HOST_SUFFIX = ".anthropic.com";
 // document in well under a second; five seconds bounds a hook that
 // would otherwise wait on a wedged CLI, and the plugin falls back to the
 // environment when it is exceeded.
-const AUTH_STATUS_TIMEOUT_MS = 5000;
+export const AUTH_STATUS_TIMEOUT_MS = 5000;
 
 function truthy(value) {
   return typeof value === "string" && ["1", "true", "yes"].includes(value.trim().toLowerCase());

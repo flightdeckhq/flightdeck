@@ -8,8 +8,8 @@ All notable changes to Flightdeck are documented here.
 
 - **Claude Code plugin hooks time out in seconds, not minutes, and
   `PreToolUse` runs for MCP tools only.** Each hook sets an explicit
-  timeout sized to its slowest path (10 to 30 seconds; Claude Code's
-  default is 600), so a wedged CLI or an unreachable server cannot hold
+  timeout sized for its normal worst case (10 to 30 seconds; Claude
+  Code's default is up to 600), so a wedged CLI or an unreachable server cannot hold
   a session. `PreToolUse`, which only gates MCP tools, is registered for
   `mcp__` tools, so no hook process starts for other tool calls.
 

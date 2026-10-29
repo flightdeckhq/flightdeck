@@ -33,7 +33,7 @@ import { computeLatencyMs, isRealModel, readLatestTurn, tokensFromUsage } from "
 // keeps failing. A failure is usually transient (the CLI busy updating,
 // a slow start), so one later hook retries; past that the environment
 // fallback stands, and later hooks never wait on the CLI again.
-const MAX_AUTH_PROBES = 2;
+export const MAX_AUTH_PROBES = 2;
 
 /**
  * The session's endpoint. SessionStart (``refresh``) decides it afresh,

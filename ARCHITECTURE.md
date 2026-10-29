@@ -1266,6 +1266,43 @@ Code has moved on. The plugin payload sets
 hides the Stop Agent button and the Fleet Stop All control skips these
 sessions. This is the observer-session class.
 
+### Hook configuration
+
+`plugin/hooks/hooks.json` registers the ten hooks, each running
+`observe_cli.mjs`. Every hook but `SessionEnd` sets an explicit
+`timeout` (seconds); Claude Code's default for a command hook is 600
+(30 for `UserPromptSubmit`), so a hook stuck on a wedged CLI or an
+unreachable server could otherwise hold the session for ten minutes.
+Each value is sized for the hook's normal worst case:
+
+| Hook | Timeout (s) | Normal worst case |
+|---|---|---|
+| `SessionStart` | 30 | `claude auth status` (5 s), the `session_start` POST (2 s), the MCP policy fetch (1.5 s), git probes (1.5 s), then one POST per declared MCP server whose decision is not `allow` |
+| `UserPromptSubmit` | 15 | the `session_start` backstop (git probes and its POST) and the `pre_call` POST (2 s each) |
+| `PreToolUse` | 10 | local reads only (the policy cache and remembered decisions) |
+| `PostToolUse`, `PostToolUseFailure`, `Stop` | 30 | the transcript flush: up to two `claude auth status` runs (5 s each) for a session whose billing mode is not settled, then 2 s per unsent turn |
+| `SubagentStop` | 30 | the same flush over the subagent's transcript, then the child `session_end` |
+| `PreCompact`, `SubagentStart` | 15 | one or two POSTs |
+
+Claude Code cancels a hook that runs out of time and carries on, as for
+any non-blocking error. What the hook had not done by then is lost or
+deferred: unsent turns are sent by a later hook (each carries its
+message-derived id, so a copy is dropped by the worker), a
+`session_start` that was not accepted is retried by the next hook, and
+the policy cache is written before the policy events, so gating
+continues. Lost for good are the turn whose POST was in flight, the
+remaining `policy_mcp_warn` / `policy_mcp_block` events of a
+`SessionStart`, and a child `session_end` (the child is then closed by
+the reaper). A `PreToolUse` that times out lets the tool call through,
+like every other failure of the gate (it fails open).
+
+`SessionEnd` has none: Claude Code gives SessionEnd hooks a shared 1.5 s
+budget, which a per-hook timeout would raise (up to 60 s) and so delay
+Claude Code's exit; the hook instead hands its network work to a
+detached worker (see `SessionEnd`). `PreToolUse` matches `^mcp__`, the MCP tools the policy
+gate decides on; no process starts for any other tool call. The other
+tool hooks match every tool.
+
 ### Session identity
 
 `getSessionId` resolves in this order:

@@ -36,7 +36,7 @@ const POLICY_CACHE_PREFIX = MCP_POLICY_CACHE_PREFIX;
 // two parallel HTTP calls plus startup overhead must fit comfortably
 // under Claude Code's hook timeout. 1500ms matches the sensor's
 // 1-second per-call timeout × 1.5 buffer for tail latency.
-const FETCH_TIMEOUT_MS = 1500;
+export const FETCH_TIMEOUT_MS = 1500;
 
 function pluginTmpDir() {
   const dir = stateDir();

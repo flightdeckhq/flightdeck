@@ -1266,6 +1266,30 @@ Code has moved on. The plugin payload sets
 hides the Stop Agent button and the Fleet Stop All control skips these
 sessions. This is the observer-session class.
 
+### Hook configuration
+
+`plugin/hooks/hooks.json` registers the ten hooks, each running
+`observe_cli.mjs`. Every hook but `SessionEnd` sets an explicit
+`timeout` (seconds); Claude Code's default is 600, so a hook stuck on a
+wedged CLI or an unreachable server could otherwise hold the session for
+ten minutes. Each value covers the hook's slowest path, and Claude Code
+treats a timeout as a non-blocking error, so the session continues and
+the next hook resumes from the on-disk markers:
+
+| Hook | Timeout (s) | Slowest path |
+|---|---|---|
+| `SessionStart` | 30 | `claude auth status` (5 s), the `session_start` POST (2 s), the MCP policy fetch (1.5 s), git probes (1.5 s), one POST per non-allowed MCP server |
+| `UserPromptSubmit` | 15 | a retried `claude auth status` (5 s) and the `pre_call` POST (2 s) |
+| `PreToolUse` | 10 | local reads only (the policy cache and remembered decisions) |
+| `PostToolUse`, `PostToolUseFailure`, `Stop` | 30 | flushing a backlog of transcript turns at up to 2 s per POST |
+| `PreCompact`, `SubagentStart`, `SubagentStop` | 15 | one or two POSTs |
+
+`SessionEnd` has none: Claude Code gives SessionEnd hooks a shared 1.5 s
+budget, and the hook hands its network work to a detached worker (see
+`SessionEnd`). `PreToolUse` matches `^mcp__`, the MCP tools the policy
+gate decides on; no process starts for any other tool call. The other
+tool hooks match every tool.
+
 ### Session identity
 
 `getSessionId` resolves in this order:

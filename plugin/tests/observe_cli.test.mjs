@@ -36,6 +36,8 @@ import {
   postCallEventId,
 } from "../hooks/scripts/observe_cli.mjs";
 import { deriveAgentId } from "../hooks/scripts/agent_id.mjs";
+import { DEFAULT_SERVER, DEFAULT_TOKEN } from "../hooks/scripts/core/config.mjs";
+import { MAX_EVENT_BODY_BYTES } from "../hooks/scripts/core/poster.mjs";
 import {
   readSessionPolicyCache,
   writeSessionPolicyCache,
@@ -103,6 +105,10 @@ const HERMETIC_ENV = {
   // These tests read the markers under $TMPDIR/flightdeck-plugin, the
   // state directory when Claude Code provides no plugin data directory.
   CLAUDE_PLUGIN_DATA: "",
+  // The plugin's saved options, when the suite itself runs under a
+  // Claude Code hook with Flightdeck configured.
+  CLAUDE_PLUGIN_OPTION_SERVER: "",
+  CLAUDE_PLUGIN_OPTION_TOKEN: "",
 };
 
 function runScript(stdinData, env = {}) {
@@ -407,6 +413,49 @@ describe("observe_cli.mjs", () => {
     assert.equal(body.inference_geo, "global");
     assert.deepEqual(body.server_tool_use, { web_search_requests: 1 });
     assert.equal(body.stop_reason, "end_turn");
+    rmSync(dirname(transcriptPath), { recursive: true, force: true });
+  });
+
+  it("keeps a post_call whose captured content is over the event size limit", async () => {
+    // A 2 MiB prompt: sent whole, the body would exceed ingestion's
+    // 1 MiB limit and the call would be rejected with its tokens.
+    const prompt = "x".repeat(2 * 1024 * 1024);
+    const transcriptPath = writeTranscript([
+      { type: "user", timestamp: "2026-04-17T10:00:00.000Z", message: { role: "user", content: prompt } },
+      {
+        type: "assistant",
+        timestamp: "2026-04-17T10:00:02.500Z",
+        message: {
+          id: "msg_big_1",
+          model: "claude-opus-5-5",
+          stop_reason: "end_turn",
+          content: [{ type: "text", text: "done" }],
+          usage: { input_tokens: 600000, output_tokens: 3 },
+        },
+      },
+    ]);
+    const before = capture.bodies().length;
+    const result = await runScript(
+      JSON.stringify({ hook_event_name: "Stop", session_id: "sess-big-1", transcript_path: transcriptPath }),
+      {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        FLIGHTDECK_CAPTURE_PROMPTS: "true",
+        CLAUDE_SESSION_ID: "sess-big-1",
+        CLAUDE_CODE_USE_BEDROCK: "1",
+      },
+    );
+    assert.equal(result.code, 0);
+    const body = capture.bodies().slice(before).find((b) => b.event_type === "post_call");
+    assert.ok(body, "the post_call reached the server");
+    assert.ok(Buffer.byteLength(JSON.stringify(body), "utf8") <= MAX_EVENT_BODY_BYTES);
+    assert.equal(body.tokens_input, 600000);
+    assert.equal(body.has_content, true);
+    const kept = body.content.messages[0].content;
+    assert.ok(kept.startsWith("xxx"));
+    assert.match(kept, /\[flightdeck: kept \d+ of 2097152 bytes to fit the event size limit\]$/);
+    assert.deepEqual(body.content.response, [{ type: "text", text: "done" }]);
+    assert.match(result.stderr, /post_call event is \d+ bytes; content strings over \d+ bytes were cut/);
     rmSync(dirname(transcriptPath), { recursive: true, force: true });
   });
 
@@ -1084,6 +1133,72 @@ describe("observe_cli helpers", () => {
         !written.some((s) => s.includes("tok_dev")),
         "expected no tok_dev WARN when an explicit token is provided",
       );
+    });
+  });
+
+  describe("resolveConfig plugin options", () => {
+    function quietResolve(env) {
+      const written = [];
+      const orig = process.stderr.write.bind(process.stderr);
+      process.stderr.write = (s) => {
+        written.push(s);
+        return true;
+      };
+      try {
+        return { cfg: resolveConfig(env), written };
+      } finally {
+        process.stderr.write = orig;
+      }
+    }
+
+    it("uses the saved server and token options when the env vars are unset", () => {
+      const { cfg, written } = quietResolve({
+        CLAUDE_PLUGIN_OPTION_SERVER: "https://fd.example.com",
+        CLAUDE_PLUGIN_OPTION_TOKEN: "ftd_option",
+      });
+      assert.equal(cfg.server, "https://fd.example.com");
+      assert.equal(cfg.token, "ftd_option");
+      assert.ok(!written.some((s) => s.includes("tok_dev")), "a saved token is not the default");
+    });
+
+    it("lets FLIGHTDECK_SERVER and FLIGHTDECK_TOKEN override the options", () => {
+      const { cfg } = quietResolve({
+        FLIGHTDECK_SERVER: "https://env.example.com",
+        FLIGHTDECK_TOKEN: "ftd_env",
+        CLAUDE_PLUGIN_OPTION_SERVER: "https://fd.example.com",
+        CLAUDE_PLUGIN_OPTION_TOKEN: "ftd_option",
+      });
+      assert.equal(cfg.server, "https://env.example.com");
+      assert.equal(cfg.token, "ftd_env");
+    });
+
+    it("treats a blank env var as unset and falls through to the option", () => {
+      const { cfg } = quietResolve({
+        FLIGHTDECK_SERVER: "  ",
+        FLIGHTDECK_TOKEN: "",
+        CLAUDE_PLUGIN_OPTION_SERVER: " https://fd.example.com ",
+        CLAUDE_PLUGIN_OPTION_TOKEN: "ftd_option",
+      });
+      assert.equal(cfg.server, "https://fd.example.com");
+      assert.equal(cfg.token, "ftd_option");
+    });
+
+    it("falls back to the defaults when neither is set or the options are blank", () => {
+      const { cfg, written } = quietResolve({ CLAUDE_PLUGIN_OPTION_SERVER: "", CLAUDE_PLUGIN_OPTION_TOKEN: " " });
+      assert.equal(cfg.server, DEFAULT_SERVER);
+      assert.equal(cfg.token, DEFAULT_TOKEN);
+      assert.ok(written.some((s) => s.includes("using default token 'tok_dev'")));
+      assert.ok(written.some((s) => s.includes("Configure options")), "the warning names the token option");
+    });
+
+    it("strips credentials from a server option without logging them", () => {
+      const { cfg, written } = quietResolve({
+        CLAUDE_PLUGIN_OPTION_SERVER: "https://user:secret@fd.example.com",
+        CLAUDE_PLUGIN_OPTION_TOKEN: "ftd_option",
+      });
+      assert.equal(cfg.server, "https://fd.example.com");
+      assert.ok(written.some((s) => s.includes("carries credentials")));
+      assert.ok(!written.some((s) => s.includes("secret")));
     });
   });
 

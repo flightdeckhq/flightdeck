@@ -56,11 +56,19 @@ export function boundedVersion(value) {
  */
 export function boundedIdentity(value) {
   if (typeof value !== "string") return value;
+  return truncateUtf8(value, MAX_MCP_IDENTITY_BYTES);
+}
+
+/**
+ * ``value`` cut to at most ``maxBytes`` of UTF-8 on a code point
+ * boundary; a value already within it is returned unchanged.
+ */
+export function truncateUtf8(value, maxBytes) {
   const bytes = Buffer.from(value, "utf8");
-  if (bytes.length <= MAX_MCP_IDENTITY_BYTES) return value;
+  if (bytes.length <= maxBytes) return value;
   // Back the cut off any UTF-8 continuation byte (10xxxxxx) so it lands
   // on the first byte of a code point and never splits one.
-  let end = MAX_MCP_IDENTITY_BYTES;
+  let end = maxBytes;
   while (end > 0 && (bytes[end] & 0xc0) === 0x80) end -= 1;
   return bytes.subarray(0, end).toString("utf8");
 }
@@ -115,15 +123,39 @@ export function parseBool(value, fallback) {
   return fallback;
 }
 
+// The default server, a local ``make dev`` stack, and the seed token
+// that stack accepts when ``ENVIRONMENT=dev``.
+export const DEFAULT_SERVER = "http://localhost:4000";
+export const DEFAULT_TOKEN = "tok_dev";
+
+/** The first value that is a non-blank string, trimmed, or "". */
+function firstSet(...values) {
+  for (const value of values) {
+    const trimmed = typeof value === "string" ? value.trim() : "";
+    if (trimmed !== "") return trimmed;
+  }
+  return "";
+}
+
 /**
  * Resolve the plugin's four configuration knobs. Defaults target a
  * local ``make dev`` stack so ``claude --plugin-dir <path>`` works
  * with zero configuration for a developer who has just brought up the
- * stack. Production teams override via shell rc or a wrapper script.
+ * stack.
+ *
+ * The server and token come from, in order: the ``FLIGHTDECK_SERVER``
+ * / ``FLIGHTDECK_TOKEN`` environment variables, the plugin's
+ * ``server`` / ``token`` options (``userConfig`` in plugin.json, which
+ * Claude Code exports to every hook as ``CLAUDE_PLUGIN_OPTION_SERVER``
+ * / ``CLAUDE_PLUGIN_OPTION_TOKEN``), then the defaults. The
+ * environment wins so a wrapper script or CI job can point one run at
+ * another stack without touching the saved options. Claude Code
+ * exports an option only once the user has saved it, never the
+ * manifest's ``default``, so the plugin keeps its own defaults.
  *
  * Rationale for each default:
- *   * ``server`` points at the dev nginx (localhost:4000). Any
- *     whitespace-only env var is treated as unset so a user who sets
+ *   * ``server`` points at the dev nginx (localhost:4000). A
+ *     whitespace-only value is treated as unset so a user who sets
  *     ``FLIGHTDECK_SERVER=""`` in a script does not silently break.
  *   * ``token`` defaults to ``tok_dev``, the seed token the dev
  *     compose stack accepts when ``ENVIRONMENT=dev``. Production
@@ -144,7 +176,8 @@ export function parseBool(value, fallback) {
  *     opt out on the plugin with ``FLIGHTDECK_CAPTURE_PROMPTS=false``.
  */
 export function resolveConfig(env = process.env) {
-  const rawServer = (env.FLIGHTDECK_SERVER ?? "").trim() || "http://localhost:4000";
+  const rawServer =
+    firstSet(env.FLIGHTDECK_SERVER, env.CLAUDE_PLUGIN_OPTION_SERVER) || DEFAULT_SERVER;
   // fetch() refuses a URL that carries credentials, so a
   // "https://user:token@host" server could never work and would only
   // leak the token into every failed-POST log line. Strip the userinfo
@@ -152,26 +185,27 @@ export function resolveConfig(env = process.env) {
   const server = redactServerUrl(rawServer);
   if (server !== rawServer && env.FLIGHTDECK_QUIET !== "1") {
     process.stderr.write(
-      "[flightdeck] WARN: FLIGHTDECK_SERVER carries credentials in the URL; " +
-        "they are ignored. Authenticate with FLIGHTDECK_TOKEN.\n",
+      "[flightdeck] WARN: the server URL carries credentials; " +
+        "they are ignored. Authenticate with the token option or FLIGHTDECK_TOKEN.\n",
     );
   }
-  const explicitToken = (env.FLIGHTDECK_TOKEN ?? "").trim();
-  const token = explicitToken || "tok_dev";
+  const explicitToken = firstSet(env.FLIGHTDECK_TOKEN, env.CLAUDE_PLUGIN_OPTION_TOKEN);
+  const token = explicitToken || DEFAULT_TOKEN;
   // Warn loudly on stderr when the seed dev token is in use. Loud is
-  // the point: a production deployment that ships hooks without
-  // FLIGHTDECK_TOKEN configured would otherwise silently authenticate
-  // every POST as the development seed identity. The dev compose stack
-  // accepts tok_dev when ENVIRONMENT=dev, so the warning is harmless
-  // there; a production server that hasn't seeded tok_dev will refuse
-  // the request with 401 (which the existing unreachable-line handler
+  // the point: a production deployment that ships hooks without a
+  // token configured would otherwise silently authenticate every POST
+  // as the development seed identity. The dev compose stack accepts
+  // tok_dev when ENVIRONMENT=dev, so the warning is harmless there; a
+  // production server that hasn't seeded tok_dev will refuse the
+  // request with 401 (which the existing unreachable-line handler
   // surfaces). FLIGHTDECK_QUIET=1 suppresses the line so suites that
   // intentionally exercise the default-token path (zero-config)
   // don't pollute their captured stderr assertions.
   if (!explicitToken && env.FLIGHTDECK_QUIET !== "1") {
     process.stderr.write(
       "[flightdeck] WARN: using default token 'tok_dev'. " +
-        "Set FLIGHTDECK_TOKEN=<your-token> for production. " +
+        "Set the plugin's token option (/plugin, flightdeck, Configure options) " +
+        "or FLIGHTDECK_TOKEN=<your-token> for production. " +
         "Suppress this warning with FLIGHTDECK_QUIET=1.\n",
     );
   }

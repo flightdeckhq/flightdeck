@@ -1266,6 +1266,45 @@ Code has moved on. The plugin payload sets
 hides the Stop Agent button and the Fleet Stop All control skips these
 sessions. This is the observer-session class.
 
+### Configuration
+
+The server and the token come from, in order: the `FLIGHTDECK_SERVER`
+and `FLIGHTDECK_TOKEN` environment variables; the plugin's `server`
+and `token` options; then `http://localhost:4000` and `tok_dev`, the
+local `make dev` stack. The options are `userConfig` in
+`plugin/.claude-plugin/plugin.json`, set in `/plugin` under the
+plugin's **Configure options**. Claude Code keeps the server in the
+user's `settings.json` (`pluginConfigs`) and the token, marked
+`sensitive`, in its credential store (the macOS Keychain, otherwise
+`~/.claude/.credentials.json`), and exports both to every hook process as
+`CLAUDE_PLUGIN_OPTION_SERVER` and `CLAUDE_PLUGIN_OPTION_TOKEN`. The
+environment wins so a wrapper script or a CI job can point one run at
+another stack without changing the saved options. The defaults live in
+the plugin (`core/config.mjs`), so the manifest declares none and an
+option the user never saved reaches the hooks unset. A blank value
+counts as unset. Credentials embedded in
+the server URL are stripped before use, and the default token prints
+a warning on every hook unless `FLIGHTDECK_QUIET=1`.
+`FLIGHTDECK_CAPTURE_PROMPTS` and `FLIGHTDECK_CAPTURE_TOOL_INPUTS` stay
+environment variables (see Content Capture).
+
+Every event body the plugin POSTs is at most 768 KiB
+(`MAX_EVENT_BODY_BYTES`). Ingestion reads at most 1 MiB of a body and
+NATS carries an event with the same 1 MiB `max_payload`; a larger body
+is rejected (413 from the dev nginx, 400 from ingestion), and with it
+the call's token counts. The size is measured as ingestion's Go encoder
+writes the event when it re-encodes a `session_start` to add the token
+id and name: `<`, `>` and `&` count six bytes each, U+2028 and U+2029
+six bytes each. A prompt, a
+tool result or a sub-agent message can exceed that, so an event over
+the limit has the strings of its captured `content` cut, every one to
+the same largest length that fits, with
+`… [flightdeck: kept N of M bytes to fit the event size limit]` in
+place of the cut text. Keys, block structure and the metadata outside
+`content` are untouched. When no cut fits (the structure alone is over
+the limit), the event is sent with `has_content=false` and no content.
+Either case writes one warning line to the hook's stderr.
+
 ### Hook configuration
 
 `plugin/hooks/hooks.json` registers the ten hooks, each running
@@ -5623,6 +5662,9 @@ No sanitiser applies. Outputs can carry arbitrary prompt-like content
 whitelist cannot express "keep the parts that are safe" without mangling
 the structure or leaking the content it was trying to protect. The knob
 is all-or-nothing per session.
+
+The plugin cuts captured content that would take an event past its
+768 KiB body limit, marking each cut string (see Plugin, Configuration).
 
 When `capture_prompts=false`, every content field on every event type is
 zeroed: `has_content=false`, `content=null`. The event still ships, so

@@ -145,3 +145,25 @@ describe("flushPostCallTurns deadline", () => {
     assert.deepEqual(writes, ["flightdeck: transcript flush deadline reached; 2 transcript turn(s) left unflushed.\n"]);
   });
 });
+
+describe("plugin.json userConfig", () => {
+  const MANIFEST = JSON.parse(
+    readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", ".claude-plugin", "plugin.json"), "utf8"),
+  );
+
+  it("declares the server and a sensitive token, with no default Claude Code would not export", () => {
+    const { server, token } = MANIFEST.userConfig;
+    assert.equal(server.type, "string");
+    assert.equal(token.type, "string");
+    assert.equal(token.sensitive, true);
+    assert.equal(server.sensitive, undefined);
+    // Claude Code exports an option only once the user saves it; the
+    // defaults live in core/config.mjs.
+    assert.equal("default" in server, false);
+    assert.equal("default" in token, false);
+    for (const option of [server, token]) {
+      assert.ok(option.title && option.description, "title and description are required");
+      assert.equal(option.required, undefined, "both stay optional for a local stack");
+    }
+  });
+});

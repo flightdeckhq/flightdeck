@@ -28,6 +28,7 @@ import { clearSessionCacheFiles, ensureSessionStarted, getSessionId, sessionHasE
 import { SESSION_END_WORKER_DEADLINE_MS, spawnDetachedSessionEnd } from "./session_end.mjs";
 import { _subagentInteriorContext, emitSubagentEvent } from "./subagent.mjs";
 import { buildToolErrorBlock, captureErrorText, hookDurationMs, sanitizeToolInput } from "./tools.mjs";
+import { buildStopFailureEvent } from "./stop_failure.mjs";
 import { isRealModel, readTurns } from "./transcript.mjs";
 
 /**
@@ -393,6 +394,33 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
     // Stop fires after every assistant turn, and PreToolUse reads the
     // cache on every MCP tool call for the life of the session. It is
     // removed on SessionEnd below.
+    return;
+  }
+
+  // StopFailure: the turn ended on an API error and Claude Code fires
+  // this instead of Stop. Flush the calls that completed before the
+  // failure, then report the failure as an llm_error.
+  if (hookName === "StopFailure") {
+    await flushPostCallTurns({
+      cfg,
+      sessionId,
+      basePayload,
+      turns: getTurns(),
+      capturePrompts: cfg.capturePrompts,
+    });
+    const failedTurn = getTurns().findLast((turn) => turn.apiError) ?? null;
+    await postEvent(
+      cfg.server,
+      cfg.token,
+      sessionId,
+      buildStopFailureEvent({
+        basePayload,
+        hookEvent,
+        model: resolvePreCallModel(sessionId, hookEvent, transcriptPath),
+        failedTurn,
+        capturePrompts: cfg.capturePrompts,
+      }),
+    );
     return;
   }
 

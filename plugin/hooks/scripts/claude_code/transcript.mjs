@@ -109,6 +109,10 @@ export function readTurns(transcriptPath) {
         group = {
           messageId,
           model: isRealModel(recModel) ? recModel : null,
+          // Every record so far is Claude Code's synthetic stand-in
+          // (an API error or an interruption), not a model call.
+          synthetic: recModel === SYNTHETIC_MODEL,
+          apiError: false,
           firstTimestamp: rec.timestamp,
           lastTimestamp: rec.timestamp,
           usage: rec.message?.usage || null,
@@ -120,6 +124,8 @@ export function readTurns(transcriptPath) {
       } else if (!isRealModel(group.model) && isRealModel(recModel)) {
         group.model = recModel;
       }
+      if (recModel !== SYNTHETIC_MODEL) group.synthetic = false;
+      if (rec.isApiErrorMessage === true) group.apiError = true;
       group.lastTimestamp = rec.timestamp || group.lastTimestamp;
       if (rec.message?.usage) group.usage = rec.message.usage;
       if (typeof rec.message?.stop_reason === "string" && rec.message.stop_reason) {
@@ -140,6 +146,8 @@ export function readTurns(transcriptPath) {
       firstTimestamp: group.firstTimestamp,
       lastTimestamp: group.lastTimestamp,
       stopReason: group.stopReason || null,
+      synthetic: group.synthetic,
+      apiError: group.apiError,
       usage: group.usage || {},
       contentBlocks: group.contentBlocks,
       userTurn: group.userAtStart,

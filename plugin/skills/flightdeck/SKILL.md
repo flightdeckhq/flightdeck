@@ -32,6 +32,10 @@ reported from start to end:
   is on. Each turn also carries the session's billing mode: a Claude
   subscription login is `subscription` (not counted as spend), an API
   key or a Bedrock / Vertex AI / Foundry session is `metered`.
+- A turn that ends on an API error (rate limit, overload, authentication,
+  billing, unknown model) as an `llm_error` with the error type and Claude
+  Code's error code; the error text only while `FLIGHTDECK_CAPTURE_PROMPTS`
+  is on.
 - Context compaction and the MCP servers declared in `.mcp.json`.
 - MCP policy decisions: when a server is warned or blocked by the
   Flightdeck MCP policy for this flavor, the session emits a

@@ -216,12 +216,18 @@ export async function flushPostCallTurns({
     if (deadline !== null && Date.now() > deadline) {
       // Count only the turns no hook has emitted yet; turns Stop or
       // PostToolUse already flushed are not lost.
-      const unflushed = turns.slice(seen - 1).filter((t) => !isTurnEmitted(t.messageId)).length;
+      const unflushed = turns
+        .slice(seen - 1)
+        .filter((t) => !t.synthetic && !isTurnEmitted(t.messageId)).length;
       process.stderr.write(
         `flightdeck: transcript flush deadline reached; ${unflushed} transcript turn(s) left unflushed.\n`,
       );
       break;
     }
+    // Claude Code writes a failed or interrupted turn as a synthetic
+    // assistant record with no usage; it is not a model call. A failed
+    // one is reported by StopFailure as an llm_error.
+    if (turn.synthetic) continue;
     if (!markEmittedTurn(turn.messageId)) {
       // Claimed by another hook. Only the SessionEnd worker takes over a
       // claim, and only one whose process is gone.

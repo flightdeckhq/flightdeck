@@ -487,6 +487,7 @@ flightdeck/
 │   │       │   ├── context.mjs           # Runtime context and Claude Code run-mode signals (entrypoint, CI, remote)
 │   │       │   ├── transcript.mjs        # Transcript JSONL reader: per-call turns, tokens, latency
 │   │       │   ├── post_call.mjs         # Session billing endpoint, cost fields, deduplicated post_call flush
+│   │       │   ├── stop_failure.mjs      # StopFailure -> llm_error: Claude Code's API-error codes in the shared taxonomy
 │   │       │   ├── tools.mjs             # Tool-input sanitiser, tool duration, tool error block
 │   │       │   ├── mcp.mjs               # MCP tool-name parsing, server fingerprints, mcp_tool_call emission
 │   │       │   ├── mcp_policy_dispatch.mjs  # MCP policy at SessionStart, PreToolUse decision, PostToolUse approval
@@ -1307,7 +1308,7 @@ Either case writes one warning line to the hook's stderr.
 
 ### Hook configuration
 
-`plugin/hooks/hooks.json` registers the ten hooks, each running
+`plugin/hooks/hooks.json` registers the eleven hooks, each running
 `observe_cli.mjs`. Every hook but `SessionEnd` sets an explicit
 `timeout` (seconds); Claude Code's default for a command hook is 600
 (30 for `UserPromptSubmit`), so a hook stuck on a wedged CLI or an
@@ -1319,7 +1320,7 @@ Each value is sized for the hook's normal worst case:
 | `SessionStart` | 30 | `claude auth status` (5 s), the `session_start` POST (2 s), the MCP policy fetch (1.5 s), git probes (1.5 s), then one POST per declared MCP server whose decision is not `allow` |
 | `UserPromptSubmit` | 15 | the `session_start` backstop (git probes and its POST) and the `pre_call` POST (2 s each) |
 | `PreToolUse` | 10 | local reads only (the policy cache and remembered decisions) |
-| `PostToolUse`, `PostToolUseFailure`, `Stop` | 30 | the transcript flush: up to two `claude auth status` runs (5 s each) for a session whose billing mode is not settled, then 2 s per unsent turn |
+| `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure` | 30 | the transcript flush: up to two `claude auth status` runs (5 s each) for a session whose billing mode is not settled, then 2 s per unsent turn |
 | `SubagentStop` | 30 | the same flush over the subagent's transcript, then the child `session_end` |
 | `PreCompact`, `SubagentStart` | 15 | one or two POSTs |
 
@@ -1344,7 +1345,7 @@ tool call. The other tool hooks match every tool.
 
 The hooks that only report run with `async: true`: `UserPromptSubmit`,
 `PostToolUse` for every tool but MCP tools (matcher `^(?!mcp__)`),
-`PostToolUseFailure`, `Stop`, `PreCompact`, `SubagentStart` and
+`PostToolUseFailure`, `Stop`, `StopFailure`, `PreCompact`, `SubagentStart` and
 `SubagentStop`. Claude
 Code starts them and carries on without waiting, which saves the roughly
 200 ms a hook process takes on every prompt, tool call and turn end.
@@ -1564,6 +1565,39 @@ Model ids).
 `model_requested` is the model the transcript turn names; Claude Code
 does not expose a separate served id, so `model_served` is the same
 value.
+
+A turn whose every record carries Claude Code's `<synthetic>` model is
+not a model call: Claude Code writes one, with zero usage, for a turn
+that failed on an API error (`isApiErrorMessage`) or was interrupted.
+The flush skips it, so it never becomes a `post_call`.
+
+`StopFailure` replaces `Stop` when a turn ends on an API error. The
+hook flushes the turns completed before the failure, then emits an
+`llm_error` (`terminal=true`, `provider=anthropic`). Claude Code's
+`error` value is kept as `error.provider_error_code` and mapped onto
+the taxonomy (see `llm_error`):
+
+| Claude Code `error` | `error_type` | `is_retryable` |
+|---|---|---|
+| `rate_limit` | `rate_limit` | ✅ |
+| `overloaded` | `overloaded` | ✅ |
+| `server_error` | `api_error` | ✅ |
+| `authentication_failed`, `cloud_credential_error` | `authentication` | ❌ |
+| `oauth_org_not_allowed`, `account_on_hold` | `permission` | ❌ |
+| `billing_error` | `quota_exceeded` | ❌ |
+| `invalid_request` | `invalid_request` | ❌ |
+| `model_not_found` | `not_found` | ❌ |
+| `max_output_tokens`, `unknown`, and any value not listed | `other` | ❌ |
+
+`error.http_status` is the status leading the hook's `error_details`
+(`429 Too Many Requests`) when there is one. `error.error_message` is
+`StopFailure: <error>`, with Claude Code's rendered error text (the
+hook's `last_assistant_message`, or `error_details`) appended, cut at
+200 characters, only when `capturePrompts` is on, as the sensor keeps a
+provider's message. The event's id is
+`uuid5(NAMESPACE_FLIGHTDECK, "flightdeck://claude-code/llm_error/<message id>")`
+of the synthetic record the transcript holds for the failed turn, and
+its timestamp is that record's.
 
 `main` returns naturally instead of calling `process.exit(0)`. Two
 consecutive fetches in a single script invocation crash Node on Windows

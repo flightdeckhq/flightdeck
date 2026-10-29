@@ -25,6 +25,7 @@ const EXPECTED_TIMEOUTS = {
   PostToolUse: 30,
   PostToolUseFailure: 30,
   Stop: 30,
+  StopFailure: 30,
   SubagentStop: 30,
   PreCompact: 15,
   SubagentStart: 15,
@@ -55,7 +56,7 @@ describe("hooks.json", () => {
 
   it("the flushing hooks' timeouts cover the auth probes and a few turns", () => {
     const probes = MAX_AUTH_PROBES * AUTH_STATUS_TIMEOUT_MS;
-    for (const event of ["PostToolUse", "PostToolUseFailure", "Stop", "SubagentStop"]) {
+    for (const event of ["PostToolUse", "PostToolUseFailure", "Stop", "StopFailure", "SubagentStop"]) {
       assert.ok(timeoutOf(event) * 1000 >= probes + 5 * TIMEOUT_MS, event);
     }
   });
@@ -78,7 +79,15 @@ describe("hooks.json", () => {
   });
 
   it("runs the reporting hooks asynchronously and the deciding ones synchronously", () => {
-    const asyncHooks = ["UserPromptSubmit", "PostToolUseFailure", "Stop", "PreCompact", "SubagentStart", "SubagentStop"];
+    const asyncHooks = [
+      "UserPromptSubmit",
+      "PostToolUseFailure",
+      "Stop",
+      "StopFailure",
+      "PreCompact",
+      "SubagentStart",
+      "SubagentStop",
+    ];
     for (const event of Object.keys(HOOKS)) {
       if (event === "PostToolUse") continue;
       for (const hook of HOOKS[event][0].hooks) {

@@ -100,6 +100,9 @@ const HERMETIC_ENV = {
   CLAUDE_CODE_USE_FOUNDRY: "",
   CLOUD_ML_REGION: "",
   ANTHROPIC_BASE_URL: "",
+  // These tests read the markers under $TMPDIR/flightdeck-plugin, the
+  // state directory when Claude Code provides no plugin data directory.
+  CLAUDE_PLUGIN_DATA: "",
 };
 
 function runScript(stdinData, env = {}) {

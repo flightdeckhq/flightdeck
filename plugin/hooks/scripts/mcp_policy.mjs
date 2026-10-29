@@ -1,6 +1,6 @@
 // MCP Protection Policy plugin helper.
 //
-// Imported by observe_cli.mjs from three hook branches:
+// Imported by the Claude Code binding (claude_code/) from three hook branches:
 //
 //   * SessionStart — fetchPolicies + writeSessionPolicyCache, then
 //     classifyServer per declared MCP server to emit
@@ -20,17 +20,16 @@
 // node:path, node:os, fetch, AbortController). No npm
 // dependencies — preserves the plugin's zero-dep posture.
 
-import { chmodSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { MCP_POLICY_CACHE_PREFIX, mkdirOwnerOnly, stateDir, touchStateFile } from "./core/state.mjs";
 import { canonicalizeUrl, fingerprintShort } from "./mcp_identity.mjs";
 
-// Per-session marker file location. Mirrors the existing
-// model-cache pattern in observe_cli.mjs (`flightdeck-plugin`
-// scratch directory under tmpdir).
-const PLUGIN_TMP_DIRNAME = "flightdeck-plugin";
-const POLICY_CACHE_PREFIX = "mcp-policy-";
+// Per-session policy cache file prefix. The file lives in the plugin's
+// state directory next to the other per-session markers
+// (core/state.mjs).
+const POLICY_CACHE_PREFIX = MCP_POLICY_CACHE_PREFIX;
 
 // HTTP timeout for the SessionStart fetch (ms). The plugin runs
 // as a short-lived child process per hook invocation; budget for
@@ -40,14 +39,11 @@ const POLICY_CACHE_PREFIX = "mcp-policy-";
 const FETCH_TIMEOUT_MS = 1500;
 
 function pluginTmpDir() {
-  const dir = join(tmpdir(), PLUGIN_TMP_DIRNAME);
+  const dir = stateDir();
   try {
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    try {
-      chmodSync(dir, 0o700); // tighten a directory an earlier version created 0755
-    } catch {
-      /* best effort */
-    }
+    // Creates the directory owner-only and tightens one an earlier
+    // version created 0755 (best effort).
+    mkdirOwnerOnly(dir);
   } catch {
     /* dir exists or unwritable — caller handles via fail-open */
   }
@@ -352,6 +348,7 @@ export function readSessionPolicyCache(sessionId) {
   try {
     const raw = readFileSync(target, "utf8");
     const parsed = JSON.parse(raw);
+    touchStateFile(target);
     return {
       global: parsed.global ?? null,
       flavor: parsed.flavor ?? null,
@@ -364,7 +361,7 @@ export function readSessionPolicyCache(sessionId) {
 /**
  * Best-effort cleanup of the per-session policy cache. Called by
  * the SessionEnd hook (never by Stop, which fires after every
- * assistant turn) so $TMPDIR/flightdeck-plugin/mcp-policy-*.json
+ * assistant turn) so the state directory's mcp-policy-*.json
  * doesn't accumulate while enforcement stays armed for the whole
  * session.
  *
@@ -380,8 +377,8 @@ export function clearSessionPolicyCache(sessionId) {
   }
 }
 
-// Note: ``parseMcpToolName`` lives in observe_cli.mjs as the
+// Note: ``parseMcpToolName`` lives in claude_code/mcp.mjs as the
 // canonical Claude Code mcp__<server>__<tool> parser (returning
 // {server_name, tool_name, parsed}). This module deliberately
-// does not duplicate it — observe_cli.mjs imports both modules
-// and uses its local parser at the dispatch site.
+// does not duplicate it — claude_code/mcp_policy_dispatch.mjs imports
+// both modules and uses that parser at the dispatch site.

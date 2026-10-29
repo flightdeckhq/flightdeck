@@ -12,6 +12,8 @@ import {
   isSessionStarted,
   markerKeyFor,
   markSessionStarted,
+  clearEndedMarker,
+  readEndedMarker,
   readOrCreateSessionMarker,
   touchSessionFiles,
 } from "../core/state.mjs";
@@ -79,6 +81,16 @@ export function getSessionId(hookEvent = {}) {
     );
   }
 
+  // A hook that starts after this run's SessionEnd keeps reporting
+  // under the ended session instead of minting a new one; a SessionStart
+  // (a resume) starts the session again.
+  if (hookEvent.hook_event_name === "SessionStart") {
+    clearEndedMarker(markerKey);
+  } else {
+    const ended = readEndedMarker(markerKey);
+    if (ended) return ended;
+  }
+
   try {
     const sessionId = readOrCreateSessionMarker(markerKey);
     touchSessionFiles(markerKey, sessionId);
@@ -86,6 +98,18 @@ export function getSessionId(hookEvent = {}) {
   } catch {
     return ephemeralSessionId(cwd);
   }
+}
+
+/**
+ * True when this hook runs after its Claude Code session's SessionEnd
+ * and ``sessionId`` is that ended session: the hook must not re-send its
+ * session_start, which would reopen it.
+ */
+export function sessionHasEnded(hookEvent, sessionId) {
+  if (hookEvent.hook_event_name === "SessionStart") return false;
+  const nativeId = claudeCodeSessionId(hookEvent);
+  const markerKey = nativeId ? markerKeyFor(nativeId) : cwdMarkerKey(process.cwd());
+  return readEndedMarker(markerKey) === sessionId;
 }
 
 // On SessionEnd we invalidate both on-disk cache files so the next

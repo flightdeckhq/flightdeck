@@ -243,6 +243,7 @@ export function readOrCreateSessionMarker(markerKey) {
  */
 export function clearSessionMarkers(markerKey, sessionId = "") {
   const dir = stateDir();
+  if (sessionId) writeEndedMarker(markerKey, sessionId);
   const targets = [`session-${markerKey}.txt`, `git-${markerKey}.json`];
   if (sessionId) targets.push(`started-${sessionId}.txt`, `endpoint-${sessionId}.json`);
   for (const name of targets) {
@@ -255,6 +256,46 @@ export function clearSessionMarkers(markerKey, sessionId = "") {
         );
       }
     }
+  }
+}
+
+// ---------------------------------------------------------------------
+// Ended-session marker. SessionEnd clears the session marker, but an
+// async hook of the same run can still be starting up; without this it
+// would mint a new session id (a stray session) or re-send the ending
+// session's session_start (reopening it). SessionEnd leaves the ended
+// id behind, a later hook of the same Claude Code session reports under
+// it without the session_start backstop, and the next SessionStart
+// (a resume) removes it.
+// ---------------------------------------------------------------------
+
+/** Record that ``sessionId`` ended for ``markerKey``. Best-effort. */
+export function writeEndedMarker(markerKey, sessionId) {
+  const dir = stateDir();
+  try {
+    mkdirOwnerOnly(dir);
+    writeFileSync(join(dir, `ended-${markerKey}.txt`), sessionId);
+  } catch {
+    /* without it a late hook may start a stray session, as before */
+  }
+}
+
+/** The session id that ended for ``markerKey``, or null. */
+export function readEndedMarker(markerKey) {
+  try {
+    const id = readFileSync(join(stateDir(), `ended-${markerKey}.txt`), "utf8").trim();
+    return id || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Forget that a session ended for ``markerKey`` (a new start or resume). */
+export function clearEndedMarker(markerKey) {
+  try {
+    unlinkSync(join(stateDir(), `ended-${markerKey}.txt`));
+  } catch {
+    /* none */
   }
 }
 
@@ -364,14 +405,61 @@ export function isTurnEmitted(messageId) {
   return existsSync(join(stateDir(), `emitted-${messageId}.txt`));
 }
 
+const CLAIM_PREFIX = "claimed ";
+
+/** True when ``pid`` names a running process (EPERM: running, not ours). */
+export function processAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return Boolean(err && err.code === "EPERM");
+  }
+}
+
+/** Record that the server accepted ``messageId``'s post_call. Best-effort. */
+export function markTurnSent(messageId) {
+  try {
+    writeFileSync(join(stateDir(), `emitted-${messageId}.txt`), "");
+  } catch {
+    /* the claim stays; at worst the SessionEnd worker sends it again */
+  }
+}
+
+/**
+ * Whether the SessionEnd worker should send ``messageId`` although it is
+ * claimed: true when the claim was never confirmed sent and the process
+ * that made it is gone, as when Claude Code killed a pending async hook
+ * at the end of a print-mode run. A live claimant is still sending and
+ * is left alone, so two live processes never send one turn.
+ */
+export function reclaimOrphanedTurn(messageId) {
+  try {
+    const claim = readFileSync(join(stateDir(), `emitted-${messageId}.txt`), "utf8");
+    if (!claim.startsWith(CLAIM_PREFIX)) return false;
+    const pid = Number.parseInt(claim.slice(CLAIM_PREFIX.length), 10);
+    return Number.isInteger(pid) && pid > 0 && pid !== process.pid && !processAlive(pid);
+  } catch {
+    return false;
+  }
+}
+
 export function markEmittedTurn(messageId) {
   const dir = stateDir();
   const file = join(dir, `emitted-${messageId}.txt`);
   try {
     mkdirOwnerOnly(dir);
-    // Empty: only the file's existence matters, and an empty file costs
-    // an inode but no data block. Its mtime is what pruneStateDir reads.
-    closeSync(openSync(file, "wx"));
+    // The claim names the claiming process; markTurnSent empties the
+    // file once the server accepted the turn, so a sent turn's marker
+    // costs an inode but no data block. A claim whose process died
+    // before that (a hook killed mid-flush) is re-sent by the
+    // SessionEnd worker (reclaimOrphanedTurn).
+    const fd = openSync(file, "wx");
+    try {
+      writeFileSync(fd, `${CLAIM_PREFIX}${process.pid}`);
+    } finally {
+      closeSync(fd);
+    }
     return true;
   } catch (err) {
     if (err && err.code === "EEXIST") return false;

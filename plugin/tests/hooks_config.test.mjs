@@ -4,13 +4,12 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { AUTH_STATUS_TIMEOUT_MS } from "../hooks/scripts/billing.mjs";
-import { HOOK_FLUSH_DEADLINE_MS, MAX_AUTH_PROBES } from "../hooks/scripts/claude_code/post_call.mjs";
-import { SESSION_END_WORKER_DEADLINE_MS } from "../hooks/scripts/claude_code/session_end.mjs";
+import { HOOK_FLUSH_DEADLINE_MS, MAX_AUTH_PROBES, defaultFlushDeadline } from "../hooks/scripts/claude_code/post_call.mjs";
 import { TIMEOUT_MS } from "../hooks/scripts/core/poster.mjs";
 import { FETCH_TIMEOUT_MS } from "../hooks/scripts/mcp_policy.mjs";
 
@@ -79,23 +78,38 @@ describe("hooks.json", () => {
   });
 
   it("runs the reporting hooks asynchronously and the deciding ones synchronously", () => {
-    const asyncHooks = ["UserPromptSubmit", "PostToolUse", "PostToolUseFailure", "Stop", "PreCompact", "SubagentStart", "SubagentStop"];
+    const asyncHooks = ["UserPromptSubmit", "PostToolUseFailure", "Stop", "PreCompact", "SubagentStart"];
     for (const event of Object.keys(HOOKS)) {
+      if (event === "PostToolUse") continue;
       for (const hook of HOOKS[event][0].hooks) {
         assert.equal(hook.async === true, asyncHooks.includes(event), event);
       }
     }
   });
 
-  it("the flush deadline bounds an async hook and fits a synchronous one's timeout", () => {
-    assert.ok(HOOK_FLUSH_DEADLINE_MS < timeoutOf("Stop") * 1000);
-    assert.ok(HOOK_FLUSH_DEADLINE_MS > SESSION_END_WORKER_DEADLINE_MS);
+  it("PostToolUse is synchronous for MCP tools (it records approvals the next call reads) and async otherwise", () => {
+    const groups = HOOKS.PostToolUse;
+    assert.equal(groups.length, 2);
+    const [mcp, other] = groups;
+    assert.equal(mcp.hooks[0].async, undefined);
+    assert.equal(other.hooks[0].async, true);
+    const mcpMatch = new RegExp(mcp.matcher);
+    const otherMatch = new RegExp(other.matcher);
+    for (const tool of ["mcp__github__create_issue", "mcp__plugin_claude-mem_mcp-search__search"]) {
+      assert.ok(mcpMatch.test(tool) && !otherMatch.test(tool), tool);
+    }
+    for (const tool of ["Bash", "Read", "Edit", "Task", "Agent", "my_mcp__tool"]) {
+      assert.ok(otherMatch.test(tool) && !mcpMatch.test(tool), tool);
+    }
   });
 
-  it("every other tool hook still sees every tool", () => {
-    for (const event of ["PostToolUse", "PostToolUseFailure"]) {
-      assert.equal(HOOKS[event][0].matcher, "*", event);
-    }
+  it("a hook's flush defaults to a bounded deadline", () => {
+    assert.equal(defaultFlushDeadline(1000), 1000 + HOOK_FLUSH_DEADLINE_MS);
+    assert.ok(HOOK_FLUSH_DEADLINE_MS < timeoutOf("Stop") * 1000);
+  });
+
+  it("PostToolUseFailure still sees every tool", () => {
+    assert.equal(HOOKS.PostToolUseFailure[0].matcher, "*");
   });
 });
 
@@ -124,6 +138,7 @@ describe("flushPostCallTurns deadline", () => {
       });
     } finally {
       process.stderr.write = realWrite;
+      rmSync(process.env.CLAUDE_PLUGIN_DATA, { recursive: true, force: true });
       if (savedData === undefined) delete process.env.CLAUDE_PLUGIN_DATA;
       else process.env.CLAUDE_PLUGIN_DATA = savedData;
     }

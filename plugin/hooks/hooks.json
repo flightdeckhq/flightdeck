@@ -37,7 +37,17 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "*",
+        "matcher": "^mcp__",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs\"",
+            "timeout": 30
+          }
+        ]
+      },
+      {
+        "matcher": "^(?!mcp__)",
         "hooks": [
           {
             "type": "command",
@@ -113,8 +123,7 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs\"",
-            "timeout": 30,
-            "async": true
+            "timeout": 30
           }
         ]
       }

@@ -4,6 +4,8 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+## v0.7.1 — 2026-10-29
+
 ### Added
 
 - **Client types are a registry of nine values.** `client_type` now

@@ -1,5 +1,5 @@
 // @title       Flightdeck Query API
-// @version     0.7.0
+// @version     0.7.1
 // @description Fleet visibility, session history, and control plane for AI agent fleets
 // @host        localhost:8081
 // @BasePath    /

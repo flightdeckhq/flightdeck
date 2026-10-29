@@ -269,7 +269,7 @@ const docTemplate = `{
 
 // SwaggerInfo holds exported Swagger Info so clients can modify it
 var SwaggerInfo = &swag.Spec{
-	Version:          "0.7.0",
+	Version:          "0.7.1",
 	Title:            "Flightdeck Ingestion API",
 	Description:      "Receives sensor events and delivers directives to agents",
 	InfoInstanceName: "swagger",

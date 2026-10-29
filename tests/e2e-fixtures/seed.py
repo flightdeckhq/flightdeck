@@ -1032,10 +1032,15 @@ def _session_is_complete(
                 expected_counts.get("__streaming_post_call__", 0) + 1
             )
         elif tag == "call_fields_post_call":
-            # Identified by its stop_reason, which no base post_call
-            # carries.
+            # Identified by its stop_reason, end_turn, which no base
+            # post_call carries.
             expected_counts["__call_fields_post_call__"] = (
                 expected_counts.get("__call_fields_post_call__", 0) + 1
+            )
+        elif tag == "prompt_content_post_call":
+            # Identified by its stop_reason, tool_use.
+            expected_counts["__prompt_content_post_call__"] = (
+                expected_counts.get("__prompt_content_post_call__", 0) + 1
             )
     actual_counts: dict[str, int] = {}
     for e in events:
@@ -1053,8 +1058,11 @@ def _session_is_complete(
         if et == "post_call" and payload.get("streaming"):
             key = "__streaming_post_call__"
             actual_counts[key] = actual_counts.get(key, 0) + 1
-        if et == "post_call" and payload.get("stop_reason"):
+        if et == "post_call" and payload.get("stop_reason") == "end_turn":
             key = "__call_fields_post_call__"
+            actual_counts[key] = actual_counts.get(key, 0) + 1
+        if et == "post_call" and payload.get("stop_reason") == "tool_use":
+            key = "__prompt_content_post_call__"
             actual_counts[key] = actual_counts.get(key, 0) + 1
     for key, want in expected_counts.items():
         if actual_counts.get(key, 0) < want:

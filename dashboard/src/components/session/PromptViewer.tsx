@@ -106,20 +106,22 @@ function ViewToggle({
   mode,
   onChange,
   testId,
+  name,
 }: {
   mode: ViewMode;
   onChange: (mode: ViewMode) => void;
   testId: string;
+  name: string;
 }) {
   return (
-    <div className="flex gap-3" role="group" aria-label="View" data-testid={`${testId}-toggle`}>
+    <div className="flex gap-3" role="group" aria-label={`View for ${name}`} data-testid={`${testId}-toggle`}>
       {(["pretty", "raw"] as const).map((m) => (
         <button
           key={m}
           type="button"
           aria-pressed={mode === m}
           data-testid={`${testId}-${m}`}
-          className="text-[11px] capitalize pb-0.5"
+          className="px-1 py-0.5 text-[11px] capitalize"
           style={mode === m
             ? { color: "var(--text)", borderBottom: "1px solid var(--accent)" }
             : { color: "var(--text-muted)" }}
@@ -135,11 +137,14 @@ function ViewToggle({
 function ViewBox({
   raw,
   label,
+  name,
   testId,
   children,
 }: {
   raw: unknown;
   label?: React.ReactNode;
+  /** What the box holds, for the toggle's accessible name. */
+  name: string;
   testId: string;
   children: React.ReactNode;
 }) {
@@ -148,7 +153,7 @@ function ViewBox({
     <div data-testid={testId} data-view={mode}>
       <div className="mb-1.5 flex items-center justify-between gap-2">
         <div className="min-w-0">{label}</div>
-        <ViewToggle mode={mode} onChange={setMode} testId={testId} />
+        <ViewToggle mode={mode} onChange={setMode} testId={testId} name={name} />
       </div>
       {mode === "pretty" ? (
         children
@@ -255,10 +260,16 @@ function ContentBlocks({ blocks }: { blocks: unknown[] }) {
           return (
             <div key={i} data-testid="content-block-tool-use" className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
               <div className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>{name}</div>
-              {isPlainObject(raw.input) && Object.keys(raw.input).length > 0 && (
+              {isPlainObject(raw.input) && Object.keys(raw.input).length > 0 ? (
                 <div className="mt-2">
                   <KeyValueList data={raw.input} />
                 </div>
+              ) : raw.input != null && !isPlainObject(raw.input) ? (
+                <div className="mt-2">
+                  <BlockValue value={raw.input} />
+                </div>
+              ) : (
+                <div className="mt-1 text-xs" style={{ color: "var(--text-muted)" }}>(no input)</div>
               )}
             </div>
           );
@@ -335,7 +346,7 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
       {/* System prompt */}
       {content.system_prompt != null && (
         <Section title="System">
-          <ViewBox key={`${eventId}-system`} raw={content.system_prompt} testId="prompt-box-system" label={<RoleBadge role="system" />}>
+          <ViewBox key={`${eventId}-system`} raw={content.system_prompt} name="the system prompt" testId="prompt-box-system" label={<RoleBadge role="system" />}>
             <MessageContent content={content.system_prompt} />
           </ViewBox>
         </Section>
@@ -345,13 +356,14 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
       {messages.length > 0 && (
         <Section title="Messages" count={messages.length}>
           <div className="space-y-2">
-            {messages.map((msg: Record<string, unknown>, i: number) => {
+            {messages.map((entry: unknown, i: number) => {
+              const msg: Record<string, unknown> = isPlainObject(entry) ? entry : { content: entry };
               const role = String(msg.role ?? `message_${i}`);
               return (
                 // Key is event-id-scoped so React doesn't re-use a longer
                 // event's DOM nodes (or a box's Pretty/Raw choice) when
                 // switching to a shorter event's messages list.
-                <ViewBox key={`${eventId}-msg-${i}`} raw={msg} testId={`prompt-box-message-${i}`} label={<RoleBadge role={role} />}>
+                <ViewBox key={`${eventId}-msg-${i}`} raw={entry} name={`message ${i + 1} (${role})`} testId={`prompt-box-message-${i}`} label={<RoleBadge role={role} />}>
                   <MessageContent content={msg.content} />
                 </ViewBox>
               );
@@ -364,7 +376,8 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
       {content.tools != null && Array.isArray(content.tools) && content.tools.length > 0 && (
         <Section title="Tools" count={content.tools.length}>
           <div className="space-y-1.5">
-            {content.tools.map((tool: Record<string, unknown>, i: number) => {
+            {content.tools.map((entry: unknown, i: number) => {
+              const tool: Record<string, unknown> = isPlainObject(entry) ? entry : {};
               const name = (tool.name as string) ?? ((tool.function as Record<string, unknown>)?.name as string) ?? `tool_${i}`;
               // Plugin-captured tool_use calls carry { type, name, input }.
               // Prefer rendering the call (actual input values) when input
@@ -382,7 +395,8 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
               return (
                 <ViewBox
                   key={`${eventId}-tool-${i}`}
-                  raw={tool}
+                  raw={entry}
+                  name={`tool ${name}`}
                   testId={`prompt-box-tool-${i}`}
                   label={<span className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>{name}</span>}
                 >
@@ -421,7 +435,7 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
       {/* Response */}
       {content.response != null && (
         <Section title="Response">
-          <ViewBox key={`${eventId}-response`} raw={content.response} testId="prompt-box-response">
+          <ViewBox key={`${eventId}-response`} raw={content.response} name="the response" testId="prompt-box-response">
             <PrettyResponse response={content.response} provider={provider} />
           </ViewBox>
         </Section>
@@ -445,6 +459,10 @@ function PrettyResponse({ response, provider }: { response: unknown; provider: s
       return <div className="text-xs" style={{ color: "var(--text-muted)" }}>(no response)</div>;
     }
     return <ToolResponseBlocks blocks={response} />;
+  }
+
+  if (typeof response === "string") {
+    return <TextOrJson text={response} />;
   }
 
   if (typeof response !== "object") {
@@ -544,7 +562,7 @@ function BlockValue({ value }: { value: unknown }) {
   const parsed = typeof value === "string" ? parseJsonContainer(value) : value;
   if (parsed !== null && typeof parsed === "object") {
     return (
-      <div data-testid="pretty-json" className="rounded-md p-2" style={{ background: "var(--bg-base)" }}>
+      <div data-testid="pretty-json" className="rounded-md p-2" style={{ background: "var(--bg)" }}>
         <SyntaxJson data={parsed} />
       </div>
     );
@@ -554,7 +572,7 @@ function BlockValue({ value }: { value: unknown }) {
     <pre
       className="rounded-md p-2 font-mono text-[12px]"
       style={{
-        background: "var(--bg-base)",
+        background: "var(--bg)",
         color: "var(--text)",
         whiteSpace: "pre-wrap",
         wordBreak: "break-word",

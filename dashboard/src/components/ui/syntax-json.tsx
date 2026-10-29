@@ -32,15 +32,15 @@ export function SyntaxJson({ data }: { data: unknown }) {
     )
     .replace(
       /:\s*(&quot;(?:\\.|[^&\\])*?&quot;)/g,
-      (match, val) => match.replace(val, `<span style="color:var(--status-active)">${val}</span>`),
+      (match, val) => match.replace(val, () => `<span style="color:var(--status-active)">${val}</span>`),
     )
     .replace(
       /:\s*(\d+(?:\.\d+)?)/g,
-      (match, num) => match.replace(num, `<span style="color:var(--event-warn)">${num}</span>`),
+      (match, num) => match.replace(num, () => `<span style="color:var(--event-warn)">${num}</span>`),
     )
     .replace(
       /:\s*(true|false|null)/g,
-      (match, val) => match.replace(val, `<span style="color:var(--text-muted)">${val}</span>`),
+      (match, val) => match.replace(val, () => `<span style="color:var(--text-muted)">${val}</span>`),
     );
 
   return (

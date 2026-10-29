@@ -393,7 +393,7 @@ describe("PromptViewer Pretty / Raw per box", () => {
     expect(response).toHaveTextContent("Paris");
   });
 
-  it("a new event starts every box in Pretty again", async () => {
+  it("a new event starts every box in Pretty again (the tree remounts per event)", async () => {
     mockFetchResult = claudeCodeContent;
     const { rerender } = render(<PromptViewer eventId="e-first" />);
     await waitFor(() => expect(screen.getByTestId("prompt-box-system")).toBeInTheDocument());
@@ -401,6 +401,68 @@ describe("PromptViewer Pretty / Raw per box", () => {
     expect(screen.getByTestId("prompt-box-system")).toHaveAttribute("data-view", "raw");
     rerender(<PromptViewer eventId="e-second" />);
     await waitFor(() => expect(screen.getByTestId("prompt-box-system")).toHaveAttribute("data-view", "pretty"));
+  });
+});
+
+describe("PromptViewer edge shapes", () => {
+  it("renders a system prompt given as content blocks", async () => {
+    mockFetchResult = {
+      ...mockContent,
+      system_prompt: [{ type: "text", text: "Block one." }, { type: "text", text: "Block two." }],
+    } as unknown as typeof mockContent;
+    render(<PromptViewer eventId="e-system-blocks" />);
+    await waitFor(() => expect(screen.getByTestId("prompt-box-system")).toBeInTheDocument());
+    const box = screen.getByTestId("prompt-box-system");
+    expect(box).toHaveTextContent("Block one.");
+    expect(box).toHaveTextContent("Block two.");
+    expect(box).not.toHaveTextContent('"type"');
+  });
+
+  it("survives null messages and tools, null content and thinking blocks", async () => {
+    mockFetchResult = {
+      ...mockContent,
+      messages: [
+        null,
+        { role: "user", content: null },
+        { role: "assistant", content: [{ type: "thinking", thinking: "Weighing options." }, { type: "redacted_thinking" }] },
+      ],
+      tools: [null, { type: "tool_use", name: "Glob", input: {} }],
+    } as unknown as typeof mockContent;
+    render(<PromptViewer eventId="e-edges" />);
+    await waitFor(() => expect(screen.getByTestId("prompt-box-message-2")).toBeInTheDocument());
+    expect(screen.getByTestId("prompt-box-message-1")).toHaveTextContent("(empty)");
+    const thinking = screen.getByTestId("prompt-box-message-2");
+    expect(thinking).toHaveTextContent("Weighing options.");
+    expect(thinking).toHaveTextContent("(not shown)");
+    expect(screen.getByTestId("prompt-box-tool-1")).toHaveTextContent("Glob");
+  });
+
+  it("pretty-prints a response that is a JSON string", async () => {
+    mockFetchResult = { ...mockContent, response: '{"answer":42}' } as unknown as typeof mockContent;
+    render(<PromptViewer eventId="e-string-response" />);
+    await waitFor(() => expect(screen.getByTestId("prompt-box-response")).toBeInTheDocument());
+    expect(screen.getByTestId("prompt-box-response").querySelector('[data-testid="pretty-json"]')?.textContent).toContain(
+      '"answer": 42',
+    );
+  });
+
+  it("names each toggle group after its box", async () => {
+    render(<PromptViewer eventId="e-labels" />);
+    await waitFor(() => expect(screen.getByTestId("prompt-box-response")).toBeInTheDocument());
+    expect(screen.getByRole("group", { name: "View for the system prompt" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "View for message 1 (user)" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "View for tool web_search" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "View for the response" })).toBeInTheDocument();
+  });
+
+  it("a tool_use block with no input says so", async () => {
+    mockFetchResult = {
+      ...mockContent,
+      messages: [{ role: "assistant", content: [{ type: "tool_use", id: "t1", name: "Glob", input: {} }] }],
+    } as unknown as typeof mockContent;
+    render(<PromptViewer eventId="e-no-input" />);
+    await waitFor(() => expect(screen.getByTestId("prompt-box-message-0")).toBeInTheDocument());
+    expect(screen.getByTestId("prompt-box-message-0")).toHaveTextContent("(no input)");
   });
 });
 

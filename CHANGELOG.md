@@ -17,7 +17,7 @@ All notable changes to Flightdeck are documented here.
 
 - **The Claude Code plugin no longer makes Claude Code wait.** The hooks
   that only report (prompt submit, non-MCP tool use, tool failures, turn
-  end, compaction and subagent start) run asynchronously, which saves
+  end, compaction and subagents) run asynchronously, which saves
   about 200 ms per prompt, tool call and turn end. A hook stops flushing
   a transcript backlog after 25 s and leaves the rest to a later hook;
   the end-of-session sweep sends any turn a cancelled hook had claimed

@@ -241,9 +241,9 @@ export function readOrCreateSessionMarker(markerKey) {
  * ``sessionId`` is given, that session's started and endpoint markers.
  * Best-effort: ENOENT is fine, other errors log and continue.
  */
-export function clearSessionMarkers(markerKey, sessionId = "") {
+export function clearSessionMarkers(markerKey, sessionId = "", { recordEnded = false } = {}) {
   const dir = stateDir();
-  if (sessionId) writeEndedMarker(markerKey, sessionId);
+  if (sessionId && recordEnded) writeEndedMarker(markerKey, sessionId);
   const targets = [`session-${markerKey}.txt`, `git-${markerKey}.json`];
   if (sessionId) targets.push(`started-${sessionId}.txt`, `endpoint-${sessionId}.json`);
   for (const name of targets) {

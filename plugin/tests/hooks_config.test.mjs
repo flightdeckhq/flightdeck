@@ -78,7 +78,7 @@ describe("hooks.json", () => {
   });
 
   it("runs the reporting hooks asynchronously and the deciding ones synchronously", () => {
-    const asyncHooks = ["UserPromptSubmit", "PostToolUseFailure", "Stop", "PreCompact", "SubagentStart"];
+    const asyncHooks = ["UserPromptSubmit", "PostToolUseFailure", "Stop", "PreCompact", "SubagentStart", "SubagentStop"];
     for (const event of Object.keys(HOOKS)) {
       if (event === "PostToolUse") continue;
       for (const hook of HOOKS[event][0].hooks) {

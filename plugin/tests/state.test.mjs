@@ -212,6 +212,20 @@ describe("ended-session marker", () => {
     assert.equal(sessionHasEnded({ session_id: native, hook_event_name: "Stop" }, resumed), false);
     assert.equal(getSessionId({ session_id: native, hook_event_name: "Stop" }), resumed);
   });
+
+  it("is not written on the working-directory fallback key", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    // The hook environment's CLAUDE_CODE_SESSION_ID would be a native id.
+    const saved = process.env.CLAUDE_CODE_SESSION_ID;
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+    try {
+      clearSessionCacheFiles({}, randomUUID());
+    } finally {
+      if (saved !== undefined) process.env.CLAUDE_CODE_SESSION_ID = saved;
+    }
+    const names = existsSync(stateDir()) ? readdirSync(stateDir()) : [];
+    assert.equal(names.some((n) => n.startsWith("ended-")), false);
+  });
 });
 
 describe("sessionGitFields", () => {

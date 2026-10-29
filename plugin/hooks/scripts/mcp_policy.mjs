@@ -23,7 +23,7 @@
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { mkdirOwnerOnly, stateDir } from "./core/state.mjs";
+import { mkdirOwnerOnly, stateDir, touchStateFile } from "./core/state.mjs";
 import { canonicalizeUrl, fingerprintShort } from "./mcp_identity.mjs";
 
 // Per-session policy cache file prefix. The file lives in the plugin's
@@ -348,6 +348,7 @@ export function readSessionPolicyCache(sessionId) {
   try {
     const raw = readFileSync(target, "utf8");
     const parsed = JSON.parse(raw);
+    touchStateFile(target);
     return {
       global: parsed.global ?? null,
       flavor: parsed.flavor ?? null,
@@ -360,7 +361,7 @@ export function readSessionPolicyCache(sessionId) {
 /**
  * Best-effort cleanup of the per-session policy cache. Called by
  * the SessionEnd hook (never by Stop, which fires after every
- * assistant turn) so $TMPDIR/flightdeck-plugin/mcp-policy-*.json
+ * assistant turn) so the state directory's mcp-policy-*.json
  * doesn't accumulate while enforcement stays armed for the whole
  * session.
  *

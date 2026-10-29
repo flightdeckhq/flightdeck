@@ -5,6 +5,7 @@ import { execSync } from "node:child_process";
 import { arch, hostname as osHostname, platform, userInfo } from "node:os";
 
 import { boundedToken, boundedVersion, MAX_SIGNAL_BYTES, parseBool } from "../core/config.mjs";
+import { markerKeyFor, readGitCache, writeGitCache } from "../core/state.mjs";
 import { loadMcpServerFingerprints } from "./mcp.mjs";
 
 // Canonical UUID form, the only form the native session id is reported in.
@@ -95,6 +96,58 @@ export function collectClaudeCodeSignals(env = process.env, extras = {}) {
 // Runtime context collection (parallels sensor/core/context.py).
 // ---------------------------------------------------------------------
 
+/**
+ * The working directory's git commit, branch and repo name, from three
+ * git subprocesses. Each field is omitted when its probe fails.
+ */
+export function probeGit() {
+  const git = {};
+  const gitOpts = { timeout: 500, stdio: ["ignore", "pipe", "ignore"] };
+  try {
+    git.git_commit = execSync("git rev-parse --short HEAD", gitOpts)
+      .toString()
+      .trim();
+  } catch {
+    /* silent */
+  }
+  try {
+    git.git_branch = execSync("git branch --show-current", gitOpts)
+      .toString()
+      .trim();
+  } catch {
+    /* silent */
+  }
+  try {
+    const remote = execSync("git remote get-url origin", gitOpts)
+      .toString()
+      .trim();
+    const clean = remote.replace(/https?:\/\/[^@]+@/, "https://");
+    // Split on either separator: a Windows file-path remote
+    // (C:\\repos\\foo.git) has no forward slash at all.
+    const repo = clean.split(/[\\/]/).pop()?.replace(/\.git$/, "");
+    if (repo) git.git_repo = repo;
+  } catch {
+    /* silent */
+  }
+  return git;
+}
+
+/**
+ * The git fields for this hook: probed once per Claude Code session and
+ * working directory and then read from the state directory, so later
+ * hooks skip the three subprocesses. Without a native session id (or a
+ * working directory) the probe runs every time, as before.
+ */
+export function sessionGitFields(nativeSessionId, cwd, probe = probeGit) {
+  if (!nativeSessionId || !cwd) return probe();
+  const key = markerKeyFor(nativeSessionId);
+  const cached = readGitCache(key, cwd);
+  if (cached) return cached;
+  const git = probe();
+  writeGitCache(key, cwd, git);
+  return git;
+}
+
 export function collectContext(extras = {}) {
   const ctx = { pid: process.pid, process_name: "claude-code" };
 
@@ -129,33 +182,7 @@ export function collectContext(extras = {}) {
     /* silent */
   }
 
-  const gitOpts = { timeout: 500, stdio: ["ignore", "pipe", "ignore"] };
-  try {
-    ctx.git_commit = execSync("git rev-parse --short HEAD", gitOpts)
-      .toString()
-      .trim();
-  } catch {
-    /* silent */
-  }
-  try {
-    ctx.git_branch = execSync("git branch --show-current", gitOpts)
-      .toString()
-      .trim();
-  } catch {
-    /* silent */
-  }
-  try {
-    const remote = execSync("git remote get-url origin", gitOpts)
-      .toString()
-      .trim();
-    const clean = remote.replace(/https?:\/\/[^@]+@/, "https://");
-    // Split on either separator: a Windows file-path remote
-    // (C:\\repos\\foo.git) has no forward slash at all.
-    const repo = clean.split(/[\\/]/).pop()?.replace(/\.git$/, "");
-    if (repo) ctx.git_repo = repo;
-  } catch {
-    /* silent */
-  }
+  Object.assign(ctx, sessionGitFields(extras.claudeCodeSessionId, ctx.working_dir));
 
   if (process.env.KUBERNETES_SERVICE_HOST) {
     ctx.orchestration = "kubernetes";

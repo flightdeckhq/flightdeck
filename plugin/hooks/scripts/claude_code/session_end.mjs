@@ -81,7 +81,7 @@ export const SESSION_END_WORKER_LOG_MAX_BYTES = 256 * 1024;
  * the child to exit, so a fast server gets the events before Claude
  * Code exits; after that detached + unref lets the hook exit while the
  * child runs. stdout is dropped and stderr appends to a log under the
- * plugin tmpdir so a failed POST stays diagnosable. FLIGHTDECK_QUIET
+ * plugin state directory so a failed POST stays diagnosable. FLIGHTDECK_QUIET
  * stops the child from repeating the default-token warning the hook
  * already printed.
  */

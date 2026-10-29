@@ -14,7 +14,7 @@
 //   * Every hook is a fresh Node child process. State that must survive
 //     across invocations (session id, session-start de-dup, Stop dedup
 //     per message.id, connection-refused one-shot log) lives on disk
-//     under tmpdir()/flightdeck-plugin/.
+//     in the state directory (core/state.mjs).
 //   * Defaults let a developer run `claude --plugin-dir <path>` against
 //     a local `make dev` stack with zero env config. Production teams
 //     override via shell rc or wrapper script.

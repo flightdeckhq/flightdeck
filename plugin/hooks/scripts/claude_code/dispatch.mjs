@@ -7,7 +7,13 @@ import { hostname as osHostname } from "node:os";
 import { deriveAgentId } from "../agent_id.mjs";
 import { boundedToken, MAX_MCP_IDENTITY_BYTES, MAX_SIGNAL_BYTES } from "../core/config.mjs";
 import { postEvent } from "../core/poster.mjs";
-import { cacheSessionModel, readCachedModel } from "../core/state.mjs";
+import {
+  cacheSessionModel,
+  clearGitCache,
+  markerKeyFor,
+  pruneStateDir,
+  readCachedModel,
+} from "../core/state.mjs";
 import { clearSessionPolicyCache } from "../mcp_policy.mjs";
 import { safeCollectContext } from "./context.mjs";
 import { CLAUDE_CODE_EVENTS } from "./events.mjs";
@@ -95,7 +101,7 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   // session's marker. Without the hand-off, context collection plus
   // one slow POST already exceeded the budget and the session_end was
   // lost. The worker's stderr goes to
-  // $TMPDIR/flightdeck-plugin/session-end-worker.log.
+  // session-end-worker.log in the state directory.
   if (hookName === "SessionEnd" && !sessionEndWorker) {
     clearSessionCacheFiles(hookEvent, outerSessionId);
     clearSessionPolicyCache(outerSessionId);
@@ -125,6 +131,11 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   // ``safeCollectContext`` returns null on throw or empty
   // result, in which case the field is omitted -- the worker's
   // COALESCE upgrade treats "missing" and "empty dict" identically.
+  // A start or resume probes git afresh: the branch may have moved since
+  // the cached probe, and every later hook of the session reuses this one.
+  if (hookName === "SessionStart" && hookEvent.session_id) {
+    clearGitCache(markerKeyFor(hookEvent.session_id));
+  }
   const baseContext = safeCollectContext({
     claudeCodeSessionId: hookEvent.session_id,
   });
@@ -291,6 +302,9 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
       sessionId,
       basePayload,
     });
+    // Keep the state directory bounded; runs at most once a day, after
+    // the session's events are sent.
+    pruneStateDir();
     return;
   }
 

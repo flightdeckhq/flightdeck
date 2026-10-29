@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { closeSync, constants as fsConstants, openSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-import { mkdirOwnerOnly, stateDir } from "../core/state.mjs";
+import { mkdirOwnerOnly, stateDir, touchStateFile } from "../core/state.mjs";
 
 // Claude Code gives a SessionEnd hook 1.5 s before it stops waiting and
 // exits, against the 600 s it allows an ordinary hook. One slow POST
@@ -165,5 +165,9 @@ export function openSessionEndWorkerLog(dir) {
     // overwrite lines a concurrent worker is still appending.
     closeSync(openSync(file, O_WRONLY | O_TRUNC | noFollow, 0o600));
   }
-  return openSync(file, O_WRONLY | O_CREAT | O_APPEND | noFollow, 0o600);
+  const fd = openSync(file, O_WRONLY | O_CREAT | O_APPEND | noFollow, 0o600);
+  // Appending does not move the mtime until a line is written; refresh
+  // it so pruneStateDir never deletes the log under a running worker.
+  touchStateFile(file);
+  return fd;
 }

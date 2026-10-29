@@ -6,6 +6,7 @@ import { arch, hostname as osHostname, platform, userInfo } from "node:os";
 
 import { boundedToken, boundedVersion, MAX_SIGNAL_BYTES, parseBool } from "../core/config.mjs";
 import { markerKeyFor, readGitCache, writeGitCache } from "../core/state.mjs";
+import { SESSION_END_WORKER_FLAG } from "./session_end.mjs";
 import { loadMcpServerFingerprints } from "./mcp.mjs";
 
 // Canonical UUID form, the only form the native session id is reported in.
@@ -138,8 +139,10 @@ export function probeGit() {
  * hooks skip the three subprocesses. Without a native session id (or a
  * working directory) the probe runs every time, as before.
  */
-export function sessionGitFields(nativeSessionId, cwd, probe = probeGit) {
-  if (!nativeSessionId || !cwd) return probe();
+export function sessionGitFields(nativeSessionId, cwd, probe = probeGit, argv = process.argv) {
+  // The detached SessionEnd worker runs after the hook cleared the
+  // session's markers; it probes without writing the cache back.
+  if (!nativeSessionId || !cwd || argv.includes(SESSION_END_WORKER_FLAG)) return probe();
   const key = markerKeyFor(nativeSessionId);
   const cached = readGitCache(key, cwd);
   if (cached) return cached;

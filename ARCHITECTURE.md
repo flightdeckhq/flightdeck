@@ -1250,8 +1250,10 @@ that survives reboots and plugin updates; when it is not set (a Claude
 Code without it, a test harness), the directory is
 `$TMPDIR/flightdeck-plugin`. It is created 0700. Once a day the first
 `SessionStart` deletes every file in it that no hook has used for seven
-days; a hook refreshes the session marker and the MCP policy cache when
-it reads them, so a session open for longer keeps its id and its policy.
+days. Every hook refreshes its own session's files (marker, start and
+git markers, cached model and endpoint, MCP policy cache), so a session
+loses them only when it has run no hook for seven days; resuming it
+then starts a new Flightdeck session and fetches its MCP policy again.
 The per-turn markers are empty files, one per model call. The git
 commit, branch and repo name a hook reports are probed once per Claude
 Code session and working directory, at `SessionStart` or the first hook
@@ -1291,9 +1293,11 @@ sessions. This is the observer-session class.
 The marker file exists because every hook invocation runs as a separate
 Node child process — pid-based fallbacks would create one session row per
 tool call. `SessionEnd` deletes the marker, so `/clear` or a new `claude`
-run mints a new session id. A run that ends without `SessionEnd` (a crash,
-a reboot) leaves the marker in place, so resuming that conversation
-continues the same Flightdeck session.
+run mints a new session id. A run that ends without `SessionEnd` (a crash
+or a reboot) leaves the marker in place, so resuming that conversation
+(Claude Code keeps its session id on `--resume`, not on
+`--fork-session`) within seven days continues the same Flightdeck
+session; in the `$TMPDIR` fallback a reboot clears the marker.
 
 ### `session_start` with context
 

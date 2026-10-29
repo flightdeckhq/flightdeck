@@ -28,7 +28,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 // Name of the plugin's directory under the system temp root, the
 // fallback location.
@@ -48,14 +48,15 @@ export const PLUGIN_DATA_STATE_SUBDIR = "state";
  */
 export function stateDir(env = process.env) {
   const data = (env.CLAUDE_PLUGIN_DATA ?? "").trim();
-  if (data) return join(data, PLUGIN_DATA_STATE_SUBDIR);
+  // Claude Code always passes an absolute path. A relative one would
+  // resolve against each hook's working directory and split the state.
+  if (data && isAbsolute(data)) return join(data, PLUGIN_DATA_STATE_SUBDIR);
   return join(tmpdir(), STATE_DIR_NAME);
 }
 
 /**
  * Refresh a state file's mtime when a hook uses it, so pruneStateDir only
- * removes files no hook has touched for STATE_FILE_MAX_AGE_MS: a session
- * open for longer keeps its id and its MCP policy cache. Best-effort.
+ * removes files no hook has touched for STATE_FILE_MAX_AGE_MS. Best-effort.
  */
 export function touchStateFile(path, now = Date.now()) {
   try {
@@ -65,14 +66,39 @@ export function touchStateFile(path, now = Date.now()) {
   }
 }
 
-// A state file older than this is deleted by pruneStateDir. Seven days
-// covers resuming a conversation within the working week without
-// re-reading its markers, while keeping the directory bounded: the
-// per-turn markers grow by about one file per model call, and a busy
-// machine makes thousands of calls a day. Losing a marker is harmless
-// for correctness, because the workers drop a re-sent call by its
-// event id; it only costs the redundant POSTs.
+// A state file no hook has used for this long is deleted by
+// pruneStateDir. Every hook refreshes its session's files
+// (touchSessionFiles), so only sessions idle this long lose them. Seven
+// days covers resuming a conversation within the working week, while
+// keeping the directory bounded: the per-turn markers grow by about one
+// file per model call, and a busy machine makes thousands of calls a
+// day. A pruned per-turn marker only costs a redundant POST (the workers
+// drop a re-sent call by its event id); a session idle for longer starts
+// a new Flightdeck session and fetches its MCP policy again when it is
+// resumed.
 export const STATE_FILE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Refresh every state file of a live session: its marker, start and
+ * git markers, cached model and endpoint, and MCP policy cache, so a
+ * session that stays open keeps them all however long it runs.
+ */
+export function touchSessionFiles(markerKey, sessionId, now = Date.now()) {
+  const dir = stateDir();
+  const names = [`session-${markerKey}.txt`, `git-${markerKey}.json`];
+  if (sessionId) {
+    names.push(
+      `started-${sessionId}.txt`,
+      `model-${sessionId}.txt`,
+      `endpoint-${sessionId}.json`,
+      `${MCP_POLICY_CACHE_PREFIX}${sessionId}.json`,
+    );
+  }
+  for (const name of names) touchStateFile(join(dir, name), now);
+}
+
+// File name prefix of the per-session MCP policy cache (mcp_policy.mjs).
+export const MCP_POLICY_CACHE_PREFIX = "mcp-policy-";
 
 // pruneStateDir runs at most this often per machine. A prune lists and
 // stats every file in the directory, so it runs about once a day rather
@@ -361,12 +387,21 @@ export function markEmittedTurn(messageId) {
 // changes directory probes again.
 // ---------------------------------------------------------------------
 
+// The context fields the git probe sets.
+export const GIT_FIELDS = ["git_commit", "git_branch", "git_repo"];
+
 /** The cached git fields for ``markerKey`` in ``cwd``, or null. */
 export function readGitCache(markerKey, cwd) {
   try {
     const record = JSON.parse(readFileSync(join(stateDir(), `git-${markerKey}.json`), "utf8"));
     if (record && record.cwd === cwd && record.git && typeof record.git === "object") {
-      return record.git;
+      // Only the three git fields, and only strings: the cache must not be
+      // able to set any other context field.
+      const git = {};
+      for (const field of GIT_FIELDS) {
+        if (typeof record.git[field] === "string") git[field] = record.git[field];
+      }
+      return git;
     }
   } catch {
     /* missing or unreadable: probe again */

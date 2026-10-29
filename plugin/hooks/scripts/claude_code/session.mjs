@@ -13,6 +13,7 @@ import {
   markerKeyFor,
   markSessionStarted,
   readOrCreateSessionMarker,
+  touchSessionFiles,
 } from "../core/state.mjs";
 import { safeCollectContext } from "./context.mjs";
 
@@ -79,7 +80,9 @@ export function getSessionId(hookEvent = {}) {
   }
 
   try {
-    return readOrCreateSessionMarker(markerKey);
+    const sessionId = readOrCreateSessionMarker(markerKey);
+    touchSessionFiles(markerKey, sessionId);
+    return sessionId;
   } catch {
     return ephemeralSessionId(cwd);
   }

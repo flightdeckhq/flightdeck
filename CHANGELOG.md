@@ -4,6 +4,19 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Changed
+
+- **The Claude Code plugin keeps its state across reboots.** Its markers
+  and caches move from `$TMPDIR/flightdeck-plugin` to the persistent data
+  directory Claude Code gives each plugin
+  (`~/.claude/plugins/data/<plugin id>/state/`), so a resumed
+  conversation no longer re-sends its history after a reboot. Files no
+  hook has used for seven days are pruned once a day, the per-turn
+  markers are empty files, and git is probed once per session instead of
+  on every hook. The SessionEnd worker log moves with the rest. On a
+  Claude Code that does not set `CLAUDE_PLUGIN_DATA` the old location is
+  used.
+
 ## v0.7.1 — 2026-10-29
 
 Claude Code model calls are counted once, and `client_type` becomes a

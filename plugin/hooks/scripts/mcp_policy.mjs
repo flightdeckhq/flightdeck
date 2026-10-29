@@ -23,13 +23,13 @@
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-import { mkdirOwnerOnly, stateDir, touchStateFile } from "./core/state.mjs";
+import { MCP_POLICY_CACHE_PREFIX, mkdirOwnerOnly, stateDir, touchStateFile } from "./core/state.mjs";
 import { canonicalizeUrl, fingerprintShort } from "./mcp_identity.mjs";
 
 // Per-session policy cache file prefix. The file lives in the plugin's
 // state directory next to the other per-session markers
 // (core/state.mjs).
-const POLICY_CACHE_PREFIX = "mcp-policy-";
+const POLICY_CACHE_PREFIX = MCP_POLICY_CACHE_PREFIX;
 
 // HTTP timeout for the SessionStart fetch (ms). The plugin runs
 // as a short-lived child process per hook invocation; budget for

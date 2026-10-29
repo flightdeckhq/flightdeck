@@ -211,7 +211,7 @@ Session identity resolution. Precedence, top wins:
 5. When neither the hook event nor the environment names a session (a caller other than Claude Code), the marker is keyed on `sha256(cwd)[:16]` and the plugin prints one stderr warning.
 6. An ephemeral `sha256(time, pid, cwd)[:32]` when the state directory itself is unusable.
 
-`SessionEnd` deletes the marker, so `/clear` or a new `claude` run mints a fresh session id (delete the state directory by hand to force one earlier). A run that ends without `SessionEnd` (a crash, a reboot) leaves the marker in place, so resuming that conversation continues the same Flightdeck session.
+`SessionEnd` deletes the marker, so `/clear` or a new `claude` run mints a fresh session id (delete the state directory by hand to force one earlier). A run that ends without `SessionEnd` (a crash or a reboot) leaves the marker in place, so resuming that conversation with `--resume` within seven days continues the same Flightdeck session (a fork, or a reboot in the `$TMPDIR` fallback, starts a new one).
 
 SessionEnd and the 1.5 s budget. Claude Code gives SessionEnd hooks 1.5 seconds in total before it exits, and a plugin cannot raise that. The SessionEnd hook therefore does no network work itself: it resolves the session id, deletes the markers above, and re-launches this same script as a detached worker (`observe_cli.mjs --session-end-worker`, hook event on stdin, session id in `CLAUDE_SESSION_ID`) which flushes any remaining transcript turns and POSTs the `session_end`; the worker never touches the session markers and stops an unflushed backlog after 20 seconds. The hook waits up to 0.8 s for the worker, so a local or fast server receives the events before Claude Code exits; past that the worker keeps running on its own. Its stderr goes to the worker log described under *Troubleshooting*.
 
@@ -228,7 +228,7 @@ No background threads inside a hook. No polling. The only state the plugin persi
 
 The directory is created owner-only (0700; an existing one is tightened with a best-effort `chmod`). Values copied from the hook payload and the environment are bounded before they leave the machine, in UTF-8 bytes as ingestion counts them: the run-mode signals and `end_reason` at 64 bytes, `server_name`, `tool_name`, `tool_use_id` and the `mcp_server` fields at 256, the error message at 1000 characters; anything longer, or containing control characters, is dropped or cut rather than sent.
 
-All of these are safe to delete; the plugin recreates what it needs on the next hook. Once a day the first `SessionStart` deletes every file no hook has used for seven days (the session marker and the MCP policy cache count as used whenever a hook reads them), so the directory stays bounded.
+All of these are safe to delete; the plugin recreates what it needs on the next hook. Once a day the first `SessionStart` deletes every file no hook has used for seven days, so the directory stays bounded. Every hook refreshes its own session's files, so only a session that has run no hook for a week loses them; resuming it starts a new Flightdeck session.
 
 Windows. The script's entry check resolves both its own path and the invoked one (realpath, case-insensitive on Windows), so a forward-slash or differently cased `${CLAUDE_PLUGIN_ROOT}` expansion or a symlinked plugin directory still runs the hook.
 

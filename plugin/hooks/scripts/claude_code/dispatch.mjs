@@ -24,7 +24,7 @@ import {
   dispatchMcpPolicySessionStart,
 } from "./mcp_policy_dispatch.mjs";
 import { flushPostCallTurns, resolvePreCallModel, resolveSessionEndpoint } from "./post_call.mjs";
-import { clearSessionCacheFiles, ensureSessionStarted, getSessionId } from "./session.mjs";
+import { clearSessionCacheFiles, ensureSessionStarted, getSessionId, sessionHasEnded } from "./session.mjs";
 import { SESSION_END_WORKER_DEADLINE_MS, spawnDetachedSessionEnd } from "./session_end.mjs";
 import { _subagentInteriorContext, emitSubagentEvent } from "./subagent.mjs";
 import { buildToolErrorBlock, captureErrorText, hookDurationMs, sanitizeToolInput } from "./tools.mjs";
@@ -326,6 +326,9 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
       turns: getTurns(),
       capturePrompts: cfg.capturePrompts,
       deadline: Date.now() + SESSION_END_WORKER_DEADLINE_MS,
+      // The last process for the session: it sends the turns a killed
+      // async hook had claimed but not sent.
+      reclaimOrphaned: true,
     });
     const payload = {
       ...basePayload,
@@ -358,13 +361,16 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
 
   // Every other event type goes through the common session_start
   // backstop so an initial hook that is NOT SessionStart still produces
-  // a session row.
-  await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, {
-    model: isRealModel(hookEvent.model) ? hookEvent.model : null,
-    claudeCodeVersion: hookEvent.version || null,
-    capturePrompts: cfg.capturePrompts,
-    claudeCodeSessionId: hookEvent.session_id,
-  });
+  // a session row -- except a hook that started after this run's
+  // SessionEnd, whose session_start would reopen the ended session.
+  if (!sessionHasEnded(hookEvent, outerSessionId)) {
+    await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, {
+      model: isRealModel(hookEvent.model) ? hookEvent.model : null,
+      claudeCodeVersion: hookEvent.version || null,
+      capturePrompts: cfg.capturePrompts,
+      claudeCodeSessionId: hookEvent.session_id,
+    });
+  }
 
   // Stop: every un-emitted LLM turn in the transcript becomes a
   // post_call. Multi-turn tool-use conversations produce multiple

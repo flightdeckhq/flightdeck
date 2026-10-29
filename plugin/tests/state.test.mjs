@@ -10,6 +10,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   rmSync,
   statSync,
   utimesSync,
@@ -27,7 +28,9 @@ import {
   STATE_PRUNE_INTERVAL_MS,
   clearGitCache,
   markEmittedTurn,
+  markTurnSent,
   markerKeyFor,
+  reclaimOrphanedTurn,
   pruneStateDir,
   readGitCache,
   readOrCreateSessionMarker,
@@ -35,7 +38,7 @@ import {
   writeGitCache,
 } from "../hooks/scripts/core/state.mjs";
 import { sessionGitFields } from "../hooks/scripts/claude_code/context.mjs";
-import { getSessionId } from "../hooks/scripts/claude_code/session.mjs";
+import { clearSessionCacheFiles, getSessionId, sessionHasEnded } from "../hooks/scripts/claude_code/session.mjs";
 import { readSessionPolicyCache, writeSessionPolicyCache } from "../hooks/scripts/mcp_policy.mjs";
 
 const SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "..", "hooks", "scripts", "observe_cli.mjs");
@@ -167,13 +170,61 @@ describe("readGitCache", () => {
   });
 });
 
-describe("markEmittedTurn", () => {
-  it("writes an empty marker once", () => {
+describe("turn claims", () => {
+  it("a claim names its process until the turn is sent, then is empty", () => {
     process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
     const id = `msg_${randomUUID()}`;
+    const file = join(stateDir(), `emitted-${id}.txt`);
     assert.equal(markEmittedTurn(id), true);
-    assert.equal(markEmittedTurn(id), false);
-    assert.equal(statSync(join(stateDir(), `emitted-${id}.txt`)).size, 0);
+    assert.equal(markEmittedTurn(id), false, "claimed once");
+    assert.equal(readFileSync(file, "utf8"), `claimed ${process.pid}`);
+    markTurnSent(id);
+    assert.equal(statSync(file).size, 0);
+  });
+
+  it("only a claim whose process is gone and was never sent is reclaimed", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    mkdirSync(stateDir(), { recursive: true });
+    const write = (id, body) => writeFileSync(join(stateDir(), `emitted-${id}.txt`), body);
+    write("dead", "claimed 2147483646");
+    write("alive", `claimed ${process.ppid}`);
+    write("mine", `claimed ${process.pid}`);
+    write("sent", "");
+    write("junk", "claimed x");
+    assert.equal(reclaimOrphanedTurn("dead"), true);
+    for (const id of ["alive", "mine", "sent", "junk", "missing"]) {
+      assert.equal(reclaimOrphanedTurn(id), false, id);
+    }
+  });
+});
+
+describe("ended-session marker", () => {
+  it("a hook after SessionEnd reports under the ended session; SessionStart starts again", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const native = randomUUID();
+    const sid = getSessionId({ session_id: native, hook_event_name: "UserPromptSubmit" });
+    clearSessionCacheFiles({ session_id: native }, sid);
+    const late = { session_id: native, hook_event_name: "PostToolUse" };
+    assert.equal(getSessionId(late), sid, "no new session minted");
+    assert.equal(sessionHasEnded(late, sid), true);
+    const resumed = getSessionId({ session_id: native, hook_event_name: "SessionStart" });
+    assert.notEqual(resumed, sid, "a resume starts a new session id");
+    assert.equal(sessionHasEnded({ session_id: native, hook_event_name: "Stop" }, resumed), false);
+    assert.equal(getSessionId({ session_id: native, hook_event_name: "Stop" }), resumed);
+  });
+
+  it("is not written on the working-directory fallback key", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    // The hook environment's CLAUDE_CODE_SESSION_ID would be a native id.
+    const saved = process.env.CLAUDE_CODE_SESSION_ID;
+    delete process.env.CLAUDE_CODE_SESSION_ID;
+    try {
+      clearSessionCacheFiles({}, randomUUID());
+    } finally {
+      if (saved !== undefined) process.env.CLAUDE_CODE_SESSION_ID = saved;
+    }
+    const names = existsSync(stateDir()) ? readdirSync(stateDir()) : [];
+    assert.equal(names.some((n) => n.startsWith("ended-")), false);
   });
 });
 

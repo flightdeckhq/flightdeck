@@ -12,6 +12,8 @@ import {
   isSessionStarted,
   markerKeyFor,
   markSessionStarted,
+  clearEndedMarker,
+  readEndedMarker,
   readOrCreateSessionMarker,
   touchSessionFiles,
 } from "../core/state.mjs";
@@ -79,13 +81,45 @@ export function getSessionId(hookEvent = {}) {
     );
   }
 
+  // A hook that starts after this run's SessionEnd keeps reporting
+  // under the ended session instead of minting a new one; a SessionStart
+  // (a resume) starts the session again.
+  const isStart = hookEventName(hookEvent) === "SessionStart";
+  if (isStart) {
+    clearEndedMarker(markerKey);
+  } else {
+    const ended = readEndedMarker(markerKey);
+    if (ended) return ended;
+  }
+
   try {
     const sessionId = readOrCreateSessionMarker(markerKey);
+    // SessionEnd may have run between the check above and the marker
+    // read; the ended id wins then too.
+    const endedMeanwhile = isStart ? null : readEndedMarker(markerKey);
+    if (endedMeanwhile) return endedMeanwhile;
     touchSessionFiles(markerKey, sessionId);
     return sessionId;
   } catch {
     return ephemeralSessionId(cwd);
   }
+}
+
+// The hook's name; older callers send it as ``event``.
+function hookEventName(hookEvent) {
+  return hookEvent.hook_event_name || hookEvent.event || "";
+}
+
+/**
+ * True when this hook runs after its Claude Code session's SessionEnd
+ * and ``sessionId`` is that ended session: the hook must not re-send its
+ * session_start, which would reopen it.
+ */
+export function sessionHasEnded(hookEvent, sessionId) {
+  if (hookEventName(hookEvent) === "SessionStart") return false;
+  const nativeId = claudeCodeSessionId(hookEvent);
+  const markerKey = nativeId ? markerKeyFor(nativeId) : cwdMarkerKey(process.cwd());
+  return readEndedMarker(markerKey) === sessionId;
 }
 
 // On SessionEnd we invalidate both on-disk cache files so the next
@@ -106,7 +140,10 @@ export function clearSessionCacheFiles(hookEvent = {}, sessionId = "") {
   } else {
     markerKey = cwdMarkerKey(process.cwd());
   }
-  clearSessionMarkers(markerKey, sessionId);
+  // The ended-session marker only for a real Claude Code session: on the
+  // working-directory fallback key it would capture every later run in
+  // that directory.
+  clearSessionMarkers(markerKey, sessionId, { recordEnded: Boolean(nativeId) });
 }
 
 // ---------------------------------------------------------------------

@@ -1299,9 +1299,56 @@ like every other failure of the gate (it fails open).
 `SessionEnd` has none: Claude Code gives SessionEnd hooks a shared 1.5 s
 budget, which a per-hook timeout would raise (up to 60 s) and so delay
 Claude Code's exit; the hook instead hands its network work to a
-detached worker (see `SessionEnd`). `PreToolUse` matches `^mcp__`, the MCP tools the policy
-gate decides on; no process starts for any other tool call. The other
-tool hooks match every tool.
+detached worker (see `SessionEnd`). `PreToolUse` matches `^mcp__`, the
+MCP tools the policy gate decides on; no process starts for any other
+tool call. The other tool hooks match every tool.
+
+The hooks that only report run with `async: true`: `UserPromptSubmit`,
+`PostToolUse` for every tool but MCP tools (matcher `^(?!mcp__)`),
+`PostToolUseFailure`, `Stop`, `PreCompact`, `SubagentStart` and
+`SubagentStop`. Claude
+Code starts them and carries on without waiting, which saves the roughly
+200 ms a hook process takes on every prompt, tool call and turn end.
+These stay synchronous:
+
+- `SessionStart` writes the MCP policy cache `PreToolUse` reads;
+- `PreToolUse` returns the gate's decision;
+- `PostToolUse` for MCP tools (matcher `^mcp__`) records a remembered
+  approval the next call's `PreToolUse` reads;
+- `SessionEnd` hands off to its worker inside Claude Code's exit budget.
+
+Claude Code does not enforce `timeout` on an async hook, so the plugin
+bounds its one open-ended step itself: a hook starts no new
+transcript-turn POST after 25 s (`HOOK_FLUSH_DEADLINE_MS`; the SessionEnd
+worker uses 20 s) and leaves the rest to a later hook.
+
+Async hooks of a session can overlap with each other and with its
+`SessionEnd`, so two pieces of state guard them:
+
+- A turn's marker is claimed before its POST and names the claiming
+  process; it is emptied once the server accepts the turn. In a
+  print-mode or SDK run, Claude Code kills the async hooks still pending
+  at the end, before `SessionEnd` runs; the SessionEnd worker, the last
+  process of the session, sends every turn whose claim was never
+  confirmed and whose process is gone. A claim held by a live process is
+  left to it, so two live processes never send one turn (the worker
+  would count two concurrent copies). Interactive runs do not cancel
+  async hooks; they finish after `SessionEnd`. The liveness check is a
+  signal-0 probe of the pid: a reused pid reads as alive, and that turn
+  is then lost as it would have been without the reclaim.
+- `SessionEnd` leaves an ended-session marker with the session id. A
+  hook of the same Claude Code session that starts after it reports
+  under that id and skips the `session_start` backstop, so it neither
+  mints a stray session nor reopens the ended one; the next
+  `SessionStart` (a resume) removes the marker. Events such a hook sends
+  after the worker stored `session_end` are dropped as late, as for any
+  closed session. The marker is written only for a hook event that
+  carries Claude Code's session id, never on the working-directory
+  fallback key.
+
+The same lateness applies to a subagent: its interior hooks run async,
+so on a slow server an interior `tool_call` can reach the worker after
+the child's `session_end` (sent by `SubagentStop`) and be dropped.
 
 ### Session identity
 

@@ -15,7 +15,9 @@ import {
   cacheSessionModel,
   isTurnEmitted,
   markEmittedTurn,
+  markTurnSent,
   readCachedModel,
+  reclaimOrphanedTurn,
   readEndpointCache,
   writeEndpointCache,
 } from "../core/state.mjs";
@@ -184,30 +186,47 @@ export function postCallEventId(messageId) {
   return uuid5(NAMESPACE_FLIGHTDECK, `flightdeck://claude-code/post_call/${messageId}`);
 }
 
+// A hook starts no new transcript-turn POST after this long and leaves
+// the rest to a later hook, which reads the same transcript. Claude Code
+// does not enforce a timeout on an async hook, so this is what bounds a
+// backlog flush against a dead server (2 s per turn otherwise). It
+// gates when each POST starts, so a hook can run a few seconds past it.
+export const HOOK_FLUSH_DEADLINE_MS = 25000;
+
+/** The deadline a hook's flush uses when its caller sets none. */
+export function defaultFlushDeadline(now = Date.now()) {
+  return now + HOOK_FLUSH_DEADLINE_MS;
+}
+
 export async function flushPostCallTurns({
   cfg,
   sessionId,
   basePayload,
   turns,
   capturePrompts,
-  deadline = null,
+  deadline = defaultFlushDeadline(),
+  reclaimOrphaned = false,
 }) {
   let seen = 0;
   for (const turn of turns) {
     seen += 1;
-    // The detached SessionEnd worker passes an overall deadline so an
-    // orphaned backlog against a dead server stops instead of paying
-    // one aborted POST per turn; the other callers run unbounded.
+    // Past the deadline an orphaned backlog against a dead server stops
+    // instead of paying one aborted POST per turn. The detached
+    // SessionEnd worker passes its own, shorter deadline.
     if (deadline !== null && Date.now() > deadline) {
       // Count only the turns no hook has emitted yet; turns Stop or
       // PostToolUse already flushed are not lost.
       const unflushed = turns.slice(seen - 1).filter((t) => !isTurnEmitted(t.messageId)).length;
       process.stderr.write(
-        `flightdeck: SessionEnd worker deadline reached; ${unflushed} transcript turn(s) left unflushed.\n`,
+        `flightdeck: transcript flush deadline reached; ${unflushed} transcript turn(s) left unflushed.\n`,
       );
       break;
     }
-    if (!markEmittedTurn(turn.messageId)) continue;
+    if (!markEmittedTurn(turn.messageId)) {
+      // Claimed by another hook. Only the SessionEnd worker takes over a
+      // claim, and only one whose process is gone.
+      if (!(reclaimOrphaned && reclaimOrphanedTurn(turn.messageId))) continue;
+    }
     const tokens = tokensFromUsage(turn.usage);
     const latencyMs = computeLatencyMs(turn.userTurn, turn.lastTimestamp);
     const hasContent = capturePrompts;
@@ -220,7 +239,7 @@ export async function flushPostCallTurns({
     // upstream gates are the contract.
     const resolvedModel = turn.model || basePayload.model;
     cacheSessionModel(sessionId, resolvedModel);
-    await postEvent(cfg.server, cfg.token, sessionId, {
+    const accepted = await postEvent(cfg.server, cfg.token, sessionId, {
       ...basePayload,
       id: postCallEventId(turn.messageId),
       event_type: "post_call",
@@ -235,5 +254,6 @@ export async function flushPostCallTurns({
       has_content: hasContent,
       content,
     });
+    if (accepted) markTurnSent(turn.messageId);
   }
 }

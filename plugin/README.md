@@ -200,7 +200,7 @@ Confirm with `/bin/sh -c 'node --version'`. The plugin requires Node 22 or later
 
 ## How it works
 
-Fire-and-forget HTTP. Claude Code invokes each hook as a detached child process. The plugin reads the hook event from stdin, resolves session identity (see below), builds an event payload, POSTs it to `$FLIGHTDECK_SERVER/ingest/v1/events`, and exits. On failure the plugin logs one stderr line and exits 0. Claude Code never blocks on the plugin: every hook carries an explicit timeout sized for its normal worst case (10 to 30 seconds instead of Claude Code's default of up to 600), and Claude Code carries on when one runs out; later hooks re-send what it had not sent.
+Fire-and-forget HTTP. Claude Code invokes each hook as a detached child process. The plugin reads the hook event from stdin, resolves session identity (see below), builds an event payload, POSTs it to `$FLIGHTDECK_SERVER/ingest/v1/events`, and exits. On failure the plugin logs one stderr line and exits 0. Claude Code never blocks on the plugin: the hooks that only report run asynchronously, so Claude Code does not wait for them (the MCP policy gate, the MCP approval record, SessionStart and SessionEnd stay synchronous); the rest carry an explicit timeout sized for their normal worst case (10 to 30 seconds instead of Claude Code's default of up to 600), and Claude Code carries on when one runs out; later hooks re-send what it had not sent.
 
 Session identity resolution. Precedence, top wins:
 
@@ -223,7 +223,8 @@ No background threads inside a hook. No polling. The only state the plugin persi
 - `model-<sid>.txt`: caches the model name so `pre_call` events on older Claude Code versions can carry a non-null model.
 - `endpoint-<sid>.json`: the session's billing mode and platform, decided at `SessionStart`.
 - `git-<hash>.json`: the git commit, branch and repo name, probed once per session and working directory instead of on every hook.
-- `emitted-<messageId>.txt`: per-message dedup (an empty file) so Stop / SessionEnd and a resumed conversation don't re-emit turns that were already sent.
+- `emitted-<messageId>.txt`: per-message dedup so Stop / SessionEnd and a resumed conversation don't re-emit turns that were already sent. It names the hook process that claimed the turn until the server accepts it, then is empty; the SessionEnd worker sends a turn whose claimant died before that.
+- `ended-<hash>.txt`: the id of the session that just ended, so a hook still running after `SessionEnd` reports under it instead of starting a new session; the next `SessionStart` removes it.
 - `session-end-worker.log`: stderr of the detached SessionEnd workers (failed POSTs, the flush-deadline notice, parse failures, `hook failed` lines); owner-only, opened without following symlinks, truncated once it passes 256 KiB.
 
 The directory is created owner-only (0700; an existing one is tightened with a best-effort `chmod`). Values copied from the hook payload and the environment are bounded before they leave the machine, in UTF-8 bytes as ingestion counts them: the run-mode signals and `end_reason` at 64 bytes, `server_name`, `tool_name`, `tool_use_id` and the `mcp_server` fields at 256, the error message at 1000 characters; anything longer, or containing control characters, is dropped or cut rather than sent.

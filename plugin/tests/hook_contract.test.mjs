@@ -68,6 +68,7 @@ import {
   redactUserinfo,
   resolveMcpToolIdentity,
 } from "../hooks/scripts/observe_cli.mjs";
+import { llmErrorEventId } from "../hooks/scripts/claude_code/stop_failure.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SCRIPT = join(__dirname, "..", "hooks", "scripts", "observe_cli.mjs");
@@ -254,6 +255,12 @@ function assertIngestionContract(p) {
           ].includes(p.close_reason),
           `close_reason enum (got ${p.close_reason})`,
         );
+      }
+      break;
+    case "llm_error":
+      if ("terminal" in p) assert.equal(typeof p.terminal, "boolean", "terminal must be a boolean on llm_error");
+      if ("retry_attempt" in p) {
+        assert.ok(Number.isInteger(p.retry_attempt) && p.retry_attempt >= 1, "retry_attempt must be a positive integer");
       }
       break;
     case "pre_call":
@@ -1182,6 +1189,117 @@ describe("SessionEnd stays inside Claude Code's 1.5 s budget", () => {
     if (process.platform !== "win32") {
       assert.equal(statSync(logFile).mode & 0o777, 0o600);
       assert.equal(statSync(logDir).mode & 0o777, 0o700);
+    }
+  });
+
+  // A StopFailure as Claude Code 2.1.312 sent it for `claude -p --model
+  // claude-nonexistent-model-9`, and the synthetic assistant record the
+  // transcript gets for the failed turn (model <synthetic>, zero usage,
+  // isApiErrorMessage).
+  function stopFailureRun(own, nativeSessionId, { capture }) {
+    const transcript = writeTranscript(own, [{ id: `msg_${nativeSessionId}_ok`, text: "done" }]);
+    const failedId = randomUUID();
+    const failedAt = new Date().toISOString();
+    const promptId = randomUUID();
+    writeFileSync(
+      transcript,
+      JSON.stringify({
+        type: "user",
+        timestamp: failedAt,
+        promptId,
+        message: { role: "user", content: "Reply ok." },
+      }) +
+        "\n" +
+        JSON.stringify({
+        type: "assistant",
+        timestamp: failedAt,
+        isApiErrorMessage: true,
+        message: {
+          id: failedId,
+          model: "<synthetic>",
+          role: "assistant",
+          content: [{ type: "text", text: "There's an issue with the selected model." }],
+          usage: { input_tokens: 0, output_tokens: 0 },
+        },
+      }) + "\n",
+      { flag: "a" },
+    );
+    const input = {
+      session_id: nativeSessionId,
+      transcript_path: transcript,
+      cwd: own,
+      prompt_id: promptId,
+      effort: { level: "high" },
+      hook_event_name: "StopFailure",
+      error: "model_not_found",
+      last_assistant_message:
+        "There's an issue with the selected model (claude-nonexistent-model-9). It may not exist or you may not have access to it.",
+    };
+    const rec = bashSession.find((r) => r.input.hook_event_name === "Stop");
+    return {
+      failedId,
+      failedAt,
+      run: (port) =>
+        runScript(
+          JSON.stringify(input),
+          hookEnv(rec.env, {
+            FLIGHTDECK_SERVER: `http://127.0.0.1:${port}`,
+            FLIGHTDECK_TOKEN: "tok_test",
+            FLIGHTDECK_CAPTURE_PROMPTS: capture ? "true" : "false",
+            CLAUDE_SESSION_ID: randomUUID(),
+            TMPDIR: own,
+            TEMP: own,
+            TMP: own,
+          }),
+        ),
+    };
+  }
+
+  it("StopFailure sends the completed turn, then the failure as an llm_error, and no call for the failed turn", async () => {
+    const capture = await startCaptureServer();
+    try {
+      const own = mkdtempSync(join(scratch, "stopfail-"));
+      const { failedId, failedAt, run } = stopFailureRun(own, randomUUID(), { capture: true });
+      const result = await run(capture.port);
+      assert.equal(result.code, 0, result.stderr);
+      const bodies = capture.bodies();
+      assert.deepEqual(
+        bodies.map((b) => b.event_type),
+        ["session_start", "post_call", "llm_error"],
+      );
+      for (const body of bodies) assertIngestionContract(body);
+      const error = bodies[2];
+      assert.equal(error.id, llmErrorEventId(failedId));
+      assert.equal(error.timestamp, failedAt);
+      assert.equal(error.terminal, true);
+      assert.deepEqual(error.error, {
+        error_type: "not_found",
+        provider: "anthropic",
+        http_status: null,
+        provider_error_code: "model_not_found",
+        error_message:
+          "StopFailure: model_not_found: There's an issue with the selected model (claude-nonexistent-model-9). It may not exist or you may not have access to it.",
+        request_id: null,
+        retry_after: null,
+        is_retryable: false,
+      });
+    } finally {
+      capture.server.close();
+    }
+  });
+
+  it("with capture off the llm_error keeps its classification but not Claude Code's error text", async () => {
+    const capture = await startCaptureServer();
+    try {
+      const own = mkdtempSync(join(scratch, "stopfail-off-"));
+      const { run } = stopFailureRun(own, randomUUID(), { capture: false });
+      const result = await run(capture.port);
+      assert.equal(result.code, 0, result.stderr);
+      const error = capture.bodies().find((b) => b.event_type === "llm_error");
+      assert.equal(error.error.error_message, "StopFailure: model_not_found");
+      assert.equal(error.error.error_type, "not_found");
+    } finally {
+      capture.server.close();
     }
   });
 

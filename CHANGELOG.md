@@ -25,8 +25,18 @@ All notable changes to Flightdeck are documented here.
   the dashboard lists the server, its URL, the approval time, the mode
   and the fingerprint instead of a bare event type.
 
+- **Claude Code API errors reach the dashboard.** When a turn ends on an
+  API error (a rate limit, an overload, an authentication or billing
+  problem, an unknown model), the plugin reports it as an `llm_error`
+  with the error type, so Claude Code sessions show in the error views
+  next to sensor agents.
+
 ### Fixed
 
+- **A Claude Code API error no longer shows as a model call.** Claude
+  Code records a failed turn as a stand-in message with no tokens; the
+  plugin reported it as a zero-token `post_call` with no model. It is
+  now skipped.
 - **A Claude Code model call with very large captured content is no
   longer lost.** An event over the server's 1 MiB limit was rejected,
   and the call's token counts with it. A prompt, tool result or

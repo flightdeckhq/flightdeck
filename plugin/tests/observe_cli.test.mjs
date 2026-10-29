@@ -416,6 +416,38 @@ describe("observe_cli.mjs", () => {
     rmSync(dirname(transcriptPath), { recursive: true, force: true });
   });
 
+  it("sends no post_call for a turn Claude Code wrote for an API error", async () => {
+    const transcriptPath = writeTranscript([
+      { type: "user", timestamp: "2026-04-17T10:00:00.000Z", message: { role: "user", content: "ping" } },
+      {
+        type: "assistant",
+        timestamp: "2026-04-17T10:00:01.000Z",
+        message: { id: "msg_ok_1", model: "claude-opus-5-5", content: [{ type: "text", text: "pong" }], usage: { input_tokens: 5, output_tokens: 1 } },
+      },
+      { type: "user", timestamp: "2026-04-17T10:00:02.000Z", message: { role: "user", content: "again" } },
+      {
+        type: "assistant",
+        timestamp: "2026-04-17T10:00:03.000Z",
+        isApiErrorMessage: true,
+        message: { id: "msg_err_1", model: "<synthetic>", content: [{ type: "text", text: "API Error: Rate limit reached" }], usage: { input_tokens: 0, output_tokens: 0 } },
+      },
+    ]);
+    const before = capture.bodies().length;
+    const result = await runScript(
+      JSON.stringify({ hook_event_name: "Stop", session_id: "sess-synth-1", transcript_path: transcriptPath }),
+      {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: "sess-synth-1",
+        CLAUDE_CODE_USE_BEDROCK: "1",
+      },
+    );
+    assert.equal(result.code, 0);
+    const postCalls = capture.bodies().slice(before).filter((b) => b.event_type === "post_call");
+    assert.deepEqual(postCalls.map((b) => b.tokens_input), [5]);
+    rmSync(dirname(transcriptPath), { recursive: true, force: true });
+  });
+
   it("keeps a post_call whose captured content is over the event size limit", async () => {
     // A 2 MiB prompt: sent whole, the body would exceed ingestion's
     // 1 MiB limit and the call would be rejected with its tokens.
@@ -1525,6 +1557,40 @@ describe("observe_cli helpers", () => {
   describe("readTurns", () => {
     it("returns [] for missing transcript", () => {
       assert.deepEqual(readTurns("/tmp/does-not-exist-999.jsonl"), []);
+    });
+
+    it("flags a turn made only of synthetic records, and one Claude Code wrote for an API error", () => {
+      const assistant = (id, model, extra = {}) => ({
+        type: "assistant",
+        timestamp: "2026-04-17T10:00:01Z",
+        ...extra,
+        message: { id, model, content: [{ type: "text", text: "x" }], usage: { input_tokens: 0, output_tokens: 0 } },
+      });
+      const path = writeTranscript([
+        { type: "user", timestamp: "2026-04-17T10:00:00Z", message: { role: "user", content: "hi" } },
+        assistant("msg_real", "claude-opus-4-7"),
+        assistant("msg_err", SYNTHETIC_MODEL, { isApiErrorMessage: true, apiError: "usage_limit_reached", apiErrorStatus: 429 }),
+        assistant("msg_interrupt", SYNTHETIC_MODEL),
+        assistant("msg_mixed", SYNTHETIC_MODEL),
+        assistant("msg_mixed", "claude-opus-4-7"),
+        // A record without a model is not taken for a synthetic one.
+        assistant("msg_nomodel", undefined),
+      ]);
+      const byId = Object.fromEntries(readTurns(path).map((t) => [t.messageId, t]));
+      assert.deepEqual(
+        Object.fromEntries(Object.entries(byId).map(([id, t]) => [id, [t.synthetic, t.apiError]])),
+        {
+          msg_real: [false, false],
+          msg_err: [true, true],
+          msg_interrupt: [true, false],
+          msg_mixed: [false, false],
+          msg_nomodel: [false, false],
+        },
+      );
+      assert.equal(byId.msg_err.apiErrorKind, "usage_limit_reached");
+      assert.equal(byId.msg_err.apiErrorStatus, 429);
+      assert.equal(byId.msg_interrupt.apiErrorKind, null);
+      rmSync(dirname(path), { recursive: true, force: true });
     });
 
     it("skips Claude Code's synthetic-turn sentinel when assigning model", () => {

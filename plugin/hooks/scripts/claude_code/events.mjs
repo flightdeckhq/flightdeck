@@ -23,6 +23,7 @@ export const EVENT_MAP = {
   PostToolUse: "tool_call",
   PostToolUseFailure: "tool_call",
   Stop: "post_call",
+  StopFailure: "llm_error",
   SessionEnd: "session_end",
   PreCompact: "tool_call",
 };

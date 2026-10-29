@@ -109,6 +109,10 @@ export function readTurns(transcriptPath) {
         group = {
           messageId,
           model: isRealModel(recModel) ? recModel : null,
+          // Every record so far is Claude Code's synthetic stand-in
+          // (an API error or an interruption), not a model call.
+          synthetic: recModel === SYNTHETIC_MODEL,
+          apiError: false,
           firstTimestamp: rec.timestamp,
           lastTimestamp: rec.timestamp,
           usage: rec.message?.usage || null,
@@ -119,6 +123,15 @@ export function readTurns(transcriptPath) {
         groupOrder.push(messageId);
       } else if (!isRealModel(group.model) && isRealModel(recModel)) {
         group.model = recModel;
+      }
+      if (recModel !== SYNTHETIC_MODEL) group.synthetic = false;
+      if (rec.isApiErrorMessage === true) {
+        group.apiError = true;
+        // Claude Code's own classification of the failure, when it
+        // records one (usage_limit_reached, long_context_credits_required),
+        // and the HTTP status it got.
+        if (typeof rec.apiError === "string") group.apiErrorKind = rec.apiError;
+        if (Number.isInteger(rec.apiErrorStatus)) group.apiErrorStatus = rec.apiErrorStatus;
       }
       group.lastTimestamp = rec.timestamp || group.lastTimestamp;
       if (rec.message?.usage) group.usage = rec.message.usage;
@@ -140,6 +153,10 @@ export function readTurns(transcriptPath) {
       firstTimestamp: group.firstTimestamp,
       lastTimestamp: group.lastTimestamp,
       stopReason: group.stopReason || null,
+      synthetic: group.synthetic,
+      apiError: group.apiError,
+      apiErrorKind: group.apiErrorKind ?? null,
+      apiErrorStatus: group.apiErrorStatus ?? null,
       usage: group.usage || {},
       contentBlocks: group.contentBlocks,
       userTurn: group.userAtStart,

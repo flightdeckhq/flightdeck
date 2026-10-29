@@ -316,3 +316,41 @@ describe("getSummaryRows — MCP per-type rows", () => {
     expect(map.Error).toBe("invalid_params");
   });
 });
+
+describe("mcp_policy_user_remembered rendering", () => {
+  const payload = {
+    server_name: "github",
+    server_url_canonical: "https://api.githubcopilot.com/mcp",
+    fingerprint: "abc1234567890abc",
+    decided_at: "2026-10-29T12:00:00Z",
+    permission_mode: "bypassPermissions",
+  };
+
+  it("names the server and the permission mode in the feed line", () => {
+    const event = makeMCPEvent({ event_type: "mcp_policy_user_remembered", payload } as Partial<AgentEvent>);
+    expect(getEventDetail(event)).toBe("github approved · bypassPermissions");
+  });
+
+  it("leaves the mode out when the event carries none", () => {
+    const { permission_mode: _omit, ...withoutMode } = payload;
+    const event = makeMCPEvent({ event_type: "mcp_policy_user_remembered", payload: withoutMode } as Partial<AgentEvent>);
+    expect(getEventDetail(event)).toBe("github approved");
+  });
+
+  it("lists the server, approval time, mode and fingerprint in the summary rows", () => {
+    const event = makeMCPEvent({ event_type: "mcp_policy_user_remembered", payload } as Partial<AgentEvent>);
+    expect(getSummaryRows(event)).toEqual([
+      ["Server", "github"],
+      ["Server URL", "https://api.githubcopilot.com/mcp"],
+      ["Approved at", "2026-10-29T12:00:00Z"],
+      ["Permission mode", "bypassPermissions"],
+      ["Fingerprint", "abc1234567890abc"],
+    ]);
+  });
+
+  it("falls back to a plain label when the payload is empty", () => {
+    const event = makeMCPEvent({ event_type: "mcp_policy_user_remembered", payload: {} } as Partial<AgentEvent>);
+    expect(getEventDetail(event)).toBe("MCP server approved");
+    expect(getSummaryRows(event)).toEqual([["Event", "MCP server approved"]]);
+  });
+});

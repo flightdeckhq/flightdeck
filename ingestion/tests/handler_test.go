@@ -1046,6 +1046,33 @@ func TestEventsHandler_MCPPolicyUserRemembered_AcceptsValidPayload(t *testing.T)
 	}
 }
 
+func TestEventsHandler_MCPPolicyUserRemembered_PermissionMode(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+		want  int
+	}{
+		{"bypass mode", "bypassPermissions", http.StatusOK},
+		{"null counts as absent", nil, http.StatusOK},
+		{"at the 64-character limit", strings.Repeat("m", 64), http.StatusOK},
+		{"over the limit", strings.Repeat("m", 65), http.StatusBadRequest},
+		{"not a string", 3, http.StatusBadRequest},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := makeMCPPolicyUserRememberedPayload()
+			payload["permission_mode"] = tc.value
+			code, body := runEventValidationTest(t, payload)
+			if code != tc.want {
+				t.Errorf("expected %d, got %d body=%s", tc.want, code, body)
+			}
+			if tc.want == http.StatusBadRequest && !strings.Contains(body, "permission_mode") {
+				t.Errorf("body should mention permission_mode, got %s", body)
+			}
+		})
+	}
+}
+
 func TestEventsHandler_MCPPolicyUserRemembered_MissingFingerprintReturns400(t *testing.T) {
 	payload := makeMCPPolicyUserRememberedPayload()
 	delete(payload, "fingerprint")

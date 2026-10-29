@@ -227,6 +227,12 @@ function assertIngestionContract(p) {
           `${field} is required for mcp_policy_user_remembered`,
         );
       }
+      if ("permission_mode" in p) {
+        assert.ok(
+          typeof p.permission_mode === "string" && p.permission_mode.length <= 64,
+          "permission_mode is a string of at most 64 characters when present",
+        );
+      }
       break;
     case "session_start":
       assert.equal(

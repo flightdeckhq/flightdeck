@@ -281,8 +281,10 @@ type EventPayload struct {
 	// mcp_policy_user_remembered de-facto-approval event
 	// emitted by the Claude Code plugin's PostToolUse path. The
 	// other fields (Fingerprint, ServerURLCanonical, ServerName,
-	// Flavor) already exist above; this is the one new field.
-	DecidedAt string `json:"decided_at,omitempty"`
+	// Flavor) already exist above. PermissionMode is Claude Code's
+	// permission mode when the approved call ran (optional).
+	DecidedAt      string `json:"decided_at,omitempty"`
+	PermissionMode string `json:"permission_mode,omitempty"`
 
 	// mcp_server_attached event extra fields.
 	// ServerName / Transport / Fingerprint / ServerURLCanonical

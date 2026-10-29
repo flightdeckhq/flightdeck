@@ -929,6 +929,45 @@ describe("dispatchMcpPolicyPostToolUse", () => {
     }
   });
 
+  it("stamps the session's permission mode on the remembered event, bounded", async () => {
+    const cases = [
+      ["bypassPermissions", "bypassPermissions"],
+      [undefined, undefined],
+      ["m".repeat(65), undefined],
+      ["bad\nmode", undefined],
+    ];
+    for (const [i, [mode, expected]] of cases.entries()) {
+      const sid = `sess-post-mode-${i}`;
+      writeProjectMcpJson({ x: { command: "npx", args: ["-y", "x"] } });
+      seedPolicyCache(sid, { global: globalDoc({ mode: "allowlist" }), flavor: flavorDoc() });
+      const capture = await startCaptureServer();
+      try {
+        await dispatchMcpPolicyPostToolUse({
+          cfg: { server: `http://127.0.0.1:${capture.port}`, token: `tok-post-mode-${i}` },
+          hookEvent: {
+            hook_event_name: "PostToolUse",
+            session_id: sid,
+            tool_name: "mcp__x__call",
+            cwd: scratchProject,
+            ...(mode === undefined ? {} : { permission_mode: mode }),
+          },
+          sessionId: sid,
+          basePayload: basePayloadFixture(sid),
+          toolName: "mcp__x__call",
+        });
+        const [event] = capture.bodies().filter((e) => e.event_type === "mcp_policy_user_remembered");
+        assert.ok(event, `case ${i}: event emitted`);
+        if (expected === undefined) {
+          assert.equal("permission_mode" in event, false, `case ${i}: omitted`);
+        } else {
+          assert.equal(event.permission_mode, expected);
+        }
+      } finally {
+        capture.server.close();
+      }
+    }
+  });
+
   it("remembers a project server named with the plugin_ prefix, with and without the hint", async () => {
     for (const hint of [null, { name: "plugin_foo_bar", source: "project" }]) {
       const sid = `sess-post-plugin-prefix-${hint ? "hint" : "parse"}`;

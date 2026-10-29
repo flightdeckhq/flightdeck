@@ -359,6 +359,14 @@ export function getEventDetail(event: AgentEvent): string {
         ? `${base} (${orphanCount} entries orphaned)`
         : base;
     }
+    case "mcp_policy_user_remembered": {
+      // ``<server> approved · <permission mode>``: the operator reading
+      // the feed sees which server a user let through, and in which
+      // Claude Code mode, without opening the drawer.
+      const server = event.payload?.server_name ?? "MCP server";
+      const mode = event.payload?.permission_mode;
+      return mode ? `${server} approved · ${mode}` : `${server} approved`;
+    }
     case "directive_result": {
       const name = event.payload?.directive_name;
       const status = event.payload?.directive_status;
@@ -680,6 +688,17 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
           rows.push(["Message", err.error_message]);
         }
       }
+      return rows;
+    }
+    case "mcp_policy_user_remembered": {
+      const p = event.payload;
+      const rows: [string, string][] = [];
+      if (p?.server_name) rows.push(["Server", p.server_name]);
+      if (p?.server_url_canonical) rows.push(["Server URL", p.server_url_canonical]);
+      if (p?.decided_at) rows.push(["Approved at", p.decided_at]);
+      if (p?.permission_mode) rows.push(["Permission mode", p.permission_mode]);
+      if (p?.fingerprint) rows.push(["Fingerprint", p.fingerprint]);
+      if (rows.length === 0) return [["Event", "MCP server approved"]];
       return rows;
     }
     // MCP rows. The MCPEventDetails component renders the

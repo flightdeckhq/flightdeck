@@ -6073,7 +6073,8 @@ dispatcher in `claude_code/dispatch.mjs`; it branches on
   unknown-allowlist on this session AND no remembered decision
   exists yet for the active token: write the
   remembered-decisions file AND emit
-  `mcp_policy_user_remembered` event. Reactive yes-and-remember
+  `mcp_policy_user_remembered` event, carrying the hook's
+  `permission_mode`. Reactive yes-and-remember
  Claude Code's `ask` flow returns yes/no only with
   no built-in "remember" affordance, so the plugin treats a
   successful post-`ask` call as evidence of de-facto approval.
@@ -6229,7 +6230,7 @@ effect.
 
 ### Event taxonomy
 
-Four event types extend the sensor's `EventType` enum and the
+Five event types extend the sensor's `EventType` enum and the
 worker's `events.<type>` NATS subject routing. All ride the
 standard event pipeline; none are audit-log entries.
 
@@ -6257,6 +6258,18 @@ standard event pipeline; none are audit-log entries.
   on `(name, server_url)`; the dashboard's SessionDrawer re-fetches
   the session detail when one arrives so the MCP SERVERS panel
   populates live for in-flight sessions.
+- **`mcp_policy_user_remembered`** — emitted by the Claude Code
+  plugin when it records a remembered approval (see Plugin
+  remembered decisions). Payload: `fingerprint`,
+  `server_url_canonical`, `server_name`, `flavor`, `decided_at`
+  (all required), and `permission_mode`, the Claude Code permission
+  mode the session was in when the approved call ran (`default`,
+  `plan`, `acceptEdits`, `auto`, `dontAsk`, `bypassPermissions`;
+  passed through as sent, at most 64 characters, absent when the hook
+  carries none). The mode is audit context: Claude Code honours the
+  plugin's `ask` in every mode, `bypassPermissions` and `auto`
+  included, so the approval was answered at a prompt (by the user, or
+  by an SDK application's permission callback) whatever the mode.
 
 ### Audit
 

@@ -85,3 +85,21 @@ enough prompt crosses any limit, and the limit bounds how much one
 request makes ingestion buffer); dropping the content of an oversized
 event outright (loses the part that fits).
 
+## D217 -- A remembered MCP approval records the session's permission mode
+
+**Date:** 2026-10-29
+**Decision:** `mcp_policy_user_remembered` carries an optional
+`permission_mode`, Claude Code's mode when the approved call ran,
+passed through as sent and bounded to 64 characters; ingestion rejects
+a non-string or longer value. The plugin records the approval in every
+mode.
+**Why:** an operator reviewing approvals wants to know whether one was
+given in `bypassPermissions` or `auto`. The mode does not change what
+the approval means: Claude Code refused a call the plugin's
+`PreToolUse` answered `ask` in all of `default`, `acceptEdits`, `auto`
+and `bypassPermissions` (2.1.312, `claude -p`), so a call that then
+succeeded was approved at a prompt.
+**Rejected alternative:** not remembering approvals made in
+`bypassPermissions` or `auto`, on the theory that no one was asked
+(the probe shows someone always is).
+

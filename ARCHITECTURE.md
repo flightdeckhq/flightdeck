@@ -473,8 +473,25 @@ flightdeck/
 │   │   │                       # PostToolUseFailure, Stop, SessionEnd, PreCompact,
 │   │   │                       # SubagentStart, SubagentStop -- every hook runs observe_cli.mjs
 │   │   └── scripts/
-│   │       ├── observe_cli.mjs           # Hook entry: reads the hook event + transcript JSONL, POSTs events;
-│       │                             # re-invoked with --session-end-worker as the detached SessionEnd worker
+│   │       ├── observe_cli.mjs           # Hook entry: reads + parses stdin, hands the event to claude_code/dispatch.mjs;
+│   │       │                             # re-invoked with --session-end-worker as the detached SessionEnd worker
+│   │       ├── core/                     # Client-agnostic hook-adapter pieces
+│   │       │   ├── config.mjs            # FLIGHTDECK_* resolution, value bounds, plugin version
+│   │       │   ├── poster.mjs            # Event POST with timeout + one-line failure logging
+│   │       │   ├── state.mjs             # Every on-disk marker and cache under $TMPDIR/flightdeck-plugin/
+│   │       │   └── events.mjs            # Hook-name -> event_type alias table a binding supplies
+│   │       ├── claude_code/              # Claude Code binding
+│   │       │   ├── dispatch.mjs          # Routes one hook event to its emission
+│   │       │   ├── events.mjs            # Claude Code hook -> event_type table (EVENT_MAP)
+│   │       │   ├── session.mjs           # Native + Flightdeck session id, marker clearing, session_start backstop
+│   │       │   ├── context.mjs           # Runtime context and Claude Code run-mode signals (entrypoint, CI, remote)
+│   │       │   ├── transcript.mjs        # Transcript JSONL reader: per-call turns, tokens, latency
+│   │       │   ├── post_call.mjs         # Session billing endpoint, cost fields, deduplicated post_call flush
+│   │       │   ├── tools.mjs             # Tool-input sanitiser, tool duration, tool error block
+│   │       │   ├── mcp.mjs               # MCP tool-name parsing, server fingerprints, mcp_tool_call emission
+│   │       │   ├── mcp_policy_dispatch.mjs  # MCP policy at SessionStart, PreToolUse decision, PostToolUse approval
+│   │       │   ├── subagent.mjs          # SubagentStart/Stop child sessions, interior-hook routing
+│   │       │   └── session_end.mjs       # SessionEnd hand-off to the detached worker, worker log
 │   │       ├── agent_id.mjs              # agent_id derivation (Node twin of sensor core/agent_id.py)
 │   │       ├── billing.mjs               # Billing mode + platform detection (`claude auth status`, provider env), usage detail fields
 │   │       ├── uuid5.mjs                 # RFC 4122 v5 UUID, no npm dependency
@@ -1023,7 +1040,7 @@ sub-agent execution. Each child session carries
 
 | Mechanism | parent_session_id source | agent_role source | Interceptor |
 |---|---|---|---|
-| Claude Code Task subagent | hook payload `session_id` | hook payload `agent_type` (e.g. `"Explore"`) | `plugin/hooks/scripts/observe_cli.mjs` (`SubagentStart` / `SubagentStop`) |
+| Claude Code Task subagent | hook payload `session_id` | hook payload `agent_type` (e.g. `"Explore"`) | `plugin/hooks/scripts/claude_code/subagent.mjs` (`SubagentStart` / `SubagentStop`) |
 | CrewAI agent execution | parent crew's session | `Agent.role` attribute | `sensor/.../interceptor/crewai.py` (context manager around `Agent.execute`) |
 | LangGraph node execution | parent runner's session | node name | `sensor/.../interceptor/langgraph.py` (agent-bearing nodes only — node body invokes a patched LLM client OR matches `langgraph_agent_node_pattern` regex) |
 
@@ -5472,7 +5489,7 @@ search patterns, and prompt strings on tools that accept one.
 
 Every tool_input passes through the sanitiser before emission. The
 sanitiser is a strict whitelist implemented in
-`plugin/hooks/scripts/observe_cli.mjs::sanitizeToolInput`:
+`plugin/hooks/scripts/claude_code/tools.mjs::sanitizeToolInput`:
 
 - Keys kept: `file_path`, `command`, `query`, `pattern`, `prompt`. Every
   other field is dropped at the source; structured inputs that don't map
@@ -5858,9 +5875,11 @@ agent (or its surrounding harness) can render an actionable failure
 message.
 
 **Plugin.** Enforcement is split across three Claude Code hooks.
-The plugin uses one dispatcher script
-(`plugin/hooks/scripts/observe_cli.mjs`) registered against
-multiple hook events; the script branches on `hook_event_name`.
+Every hook runs one entry script
+(`plugin/hooks/scripts/observe_cli.mjs`), which hands the event to the
+dispatcher in `claude_code/dispatch.mjs`; it branches on
+`hook_event_name`, and the MCP policy branches live in
+`claude_code/mcp_policy_dispatch.mjs`.
 
 - **`SessionStart`** — reads `.mcp.json` (the existing
   `loadMcpServerFingerprints(cwd)` helper handles

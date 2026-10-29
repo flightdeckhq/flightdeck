@@ -92,11 +92,201 @@ function RoleBadge({ role }: { role: string }) {
   );
 }
 
+/* ---- Pretty / Raw per box ----
+ *
+ * Every box (system prompt, each message, each tool, the response)
+ * carries its own toggle. Pretty renders content blocks for reading and
+ * pretty-prints any JSON, including a string that holds JSON; Raw shows
+ * the value exactly as the provider received or returned it.
+ */
+
+type ViewMode = "pretty" | "raw";
+
+function ViewToggle({
+  mode,
+  onChange,
+  testId,
+}: {
+  mode: ViewMode;
+  onChange: (mode: ViewMode) => void;
+  testId: string;
+}) {
+  return (
+    <div className="flex gap-3" role="group" aria-label="View" data-testid={`${testId}-toggle`}>
+      {(["pretty", "raw"] as const).map((m) => (
+        <button
+          key={m}
+          type="button"
+          aria-pressed={mode === m}
+          data-testid={`${testId}-${m}`}
+          className="text-[11px] capitalize pb-0.5"
+          style={mode === m
+            ? { color: "var(--text)", borderBottom: "1px solid var(--accent)" }
+            : { color: "var(--text-muted)" }}
+          onClick={() => onChange(m)}
+        >
+          {m}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+function ViewBox({
+  raw,
+  label,
+  testId,
+  children,
+}: {
+  raw: unknown;
+  label?: React.ReactNode;
+  testId: string;
+  children: React.ReactNode;
+}) {
+  const [mode, setMode] = useState<ViewMode>("pretty");
+  return (
+    <div data-testid={testId} data-view={mode}>
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <div className="min-w-0">{label}</div>
+        <ViewToggle mode={mode} onChange={setMode} testId={testId} />
+      </div>
+      {mode === "pretty" ? (
+        children
+      ) : (
+        <div
+          data-testid={`${testId}-raw-json`}
+          className="rounded-md p-2.5"
+          style={{ background: "var(--bg-elevated)" }}
+        >
+          <SyntaxJson data={raw} />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** The parsed value of a string that holds a JSON object or array, else undefined. */
+export function parseJsonContainer(text: string): object | undefined {
+  const trimmed = text.trim();
+  if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) return undefined;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    return parsed !== null && typeof parsed === "object" ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const textBoxStyle: React.CSSProperties = {
+  background: "var(--bg-elevated)",
+  fontSize: 13,
+  lineHeight: 1.6,
+  color: "var(--text)",
+  whiteSpace: "pre-wrap",
+  wordBreak: "break-word",
+};
+
+function JsonBox({ data }: { data: unknown }) {
+  return (
+    <div data-testid="pretty-json" className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)" }}>
+      <SyntaxJson data={data} />
+    </div>
+  );
+}
+
+/** Text as written, or pretty-printed JSON when the text is a JSON object or array. */
+function TextOrJson({ text }: { text: string }) {
+  const parsed = parseJsonContainer(text);
+  if (parsed !== undefined) return <JsonBox data={parsed} />;
+  return (
+    <div className="rounded-md p-2.5" style={textBoxStyle}>
+      {text}
+    </div>
+  );
+}
+
+/** A message's (or system prompt's) content: a string, or a list of content blocks. */
+function MessageContent({ content }: { content: unknown }) {
+  if (typeof content === "string") return <TextOrJson text={content} />;
+  if (Array.isArray(content)) return <ContentBlocks blocks={content} />;
+  if (content === null || content === undefined) {
+    return <div className="text-xs" style={{ color: "var(--text-muted)" }}>(empty)</div>;
+  }
+  return <JsonBox data={content} />;
+}
+
+function BlockLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="mb-1 font-mono text-[10px] font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-muted)" }}>
+      {children}
+    </div>
+  );
+}
+
+/** Provider content blocks, each in the provider's own terms. */
+function ContentBlocks({ blocks }: { blocks: unknown[] }) {
+  if (blocks.length === 0) {
+    return <div className="text-xs" style={{ color: "var(--text-muted)" }}>(empty)</div>;
+  }
+  return (
+    <div className="space-y-2">
+      {blocks.map((raw, i) => {
+        if (typeof raw === "string") return <TextOrJson key={i} text={raw} />;
+        if (!isPlainObject(raw)) return <JsonBox key={i} data={raw} />;
+        const type = typeof raw.type === "string" ? raw.type : "";
+        if (type === "text" && typeof raw.text === "string") {
+          return <TextOrJson key={i} text={raw.text} />;
+        }
+        if (type === "thinking" || type === "redacted_thinking") {
+          const text = typeof raw.thinking === "string" ? raw.thinking : null;
+          return (
+            <div key={i} data-testid="content-block-thinking">
+              <BlockLabel>{type.replace("_", " ")}</BlockLabel>
+              {text != null ? (
+                <div className="rounded-md p-2.5" style={{ ...textBoxStyle, color: "var(--text-secondary)" }}>{text}</div>
+              ) : (
+                <div className="text-xs" style={{ color: "var(--text-muted)" }}>(not shown)</div>
+              )}
+            </div>
+          );
+        }
+        if (type === "tool_use" || type === "server_tool_use") {
+          const name = typeof raw.name === "string" ? raw.name : "tool";
+          return (
+            <div key={i} data-testid="content-block-tool-use" className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
+              <div className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>{name}</div>
+              {isPlainObject(raw.input) && Object.keys(raw.input).length > 0 && (
+                <div className="mt-2">
+                  <KeyValueList data={raw.input} />
+                </div>
+              )}
+            </div>
+          );
+        }
+        if (type === "tool_result") {
+          return (
+            <div key={i}>
+              <BlockLabel>tool result</BlockLabel>
+              <ToolResultBlock block={raw} />
+            </div>
+          );
+        }
+        if (type === "image" || type === "document") {
+          return (
+            <div key={i} className="text-xs" style={{ color: "var(--text-muted)" }}>
+              [{type}]
+            </div>
+          );
+        }
+        return <JsonBox key={i} data={raw} />;
+      })}
+    </div>
+  );
+}
+
 /* ---- Main component ---- */
 
 export function PromptViewer({ eventId }: PromptViewerProps) {
-  const [responseMode, setResponseMode] = useState<"pretty" | "raw">("pretty");
-
   // fetchEventContent resolves null when the content does not exist
   // (capture off for the session). Only this event's result is shown;
   // a failed request ends the spinner and renders nothing.
@@ -145,12 +335,9 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
       {/* System prompt */}
       {content.system_prompt != null && (
         <Section title="System">
-          <div className="mb-2">
-            <RoleBadge role="system" />
-          </div>
-          <div className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", fontSize: 13, lineHeight: 1.6, color: "var(--text)", whiteSpace: "pre-wrap" }}>
-            {content.system_prompt}
-          </div>
+          <ViewBox key={`${eventId}-system`} raw={content.system_prompt} testId="prompt-box-system" label={<RoleBadge role="system" />}>
+            <MessageContent content={content.system_prompt} />
+          </ViewBox>
         </Section>
       )}
 
@@ -160,19 +347,13 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
           <div className="space-y-2">
             {messages.map((msg: Record<string, unknown>, i: number) => {
               const role = String(msg.role ?? `message_${i}`);
-              const msgContent = typeof msg.content === "string" ? msg.content : JSON.stringify(msg.content, null, 2);
-
               return (
                 // Key is event-id-scoped so React doesn't re-use a longer
-                // event's DOM nodes when switching to a shorter event's
-                // messages list. Bare index would let React reuse the
-                // wrong message position on event-id transitions.
-                <div key={`${eventId}-msg-${i}`}>
-                  <RoleBadge role={role} />
-                  <div className="mt-1.5 rounded-md p-2.5" style={{ background: "var(--bg-elevated)", fontSize: 13, lineHeight: 1.6, color: "var(--text)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-                    {msgContent}
-                  </div>
-                </div>
+                // event's DOM nodes (or a box's Pretty/Raw choice) when
+                // switching to a shorter event's messages list.
+                <ViewBox key={`${eventId}-msg-${i}`} raw={msg} testId={`prompt-box-message-${i}`} label={<RoleBadge role={role} />}>
+                  <MessageContent content={msg.content} />
+                </ViewBox>
               );
             })}
           </div>
@@ -199,8 +380,13 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
               const props = (schema?.properties as Record<string, Record<string, unknown>>) ?? null;
 
               return (
-                <div key={`${eventId}-tool-${i}`} className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
-                  <div className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>{name}</div>
+                <ViewBox
+                  key={`${eventId}-tool-${i}`}
+                  raw={tool}
+                  testId={`prompt-box-tool-${i}`}
+                  label={<span className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>{name}</span>}
+                >
+                <div className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
                   {input != null && Object.keys(input).length > 0 && (
                     <div className="mt-2" data-testid="tool-use-input">
                       <KeyValueList data={input} />
@@ -221,7 +407,11 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
                       </div>
                     </>
                   )}
+                  {input == null && !desc && !(props && Object.keys(props).length > 0) && (
+                    <div className="text-xs" style={{ color: "var(--text-muted)" }}>(no input)</div>
+                  )}
                 </div>
+                </ViewBox>
               );
             })}
           </div>
@@ -231,35 +421,9 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
       {/* Response */}
       {content.response != null && (
         <Section title="Response">
-          {/* Pretty / Raw toggle */}
-          <div className="flex gap-3 mb-3">
-            {(["pretty", "raw"] as const).map((mode) => (
-              <button
-                key={mode}
-                type="button"
-                aria-pressed={responseMode === mode}
-                className="text-[11px] capitalize pb-0.5"
-                style={responseMode === mode
-                  ? { color: "var(--text)", borderBottom: "1px solid var(--accent)" }
-                  : { color: "var(--text-muted)" }}
-                onClick={() => setResponseMode(mode)}
-              >
-                {mode}
-              </button>
-            ))}
-          </div>
-
-          {responseMode === "pretty" ? (
+          <ViewBox key={`${eventId}-response`} raw={content.response} testId="prompt-box-response">
             <PrettyResponse response={content.response} provider={provider} />
-          ) : (
-            <SyntaxJson
-              data={
-                content.response !== null && typeof content.response === "object"
-                  ? (content.response as Record<string, unknown>)
-                  : { raw: content.response }
-              }
-            />
-          )}
+          </ViewBox>
         </Section>
       )}
     </div>
@@ -294,38 +458,49 @@ function PrettyResponse({ response, provider }: { response: unknown; provider: s
   const tokensIn = usage?.input_tokens ?? usage?.prompt_tokens;
   const tokensOut = usage?.output_tokens ?? usage?.completion_tokens;
 
-  // Extract content
-  let textBlocks: string[] = [];
+  // Extract content in the provider's own shape: Anthropic returns
+  // content blocks; OpenAI returns choices[0].message with content and
+  // tool_calls (whose arguments are a JSON string).
+  let body: React.ReactNode = null;
 
   if (provider === "anthropic") {
-    const contentArr = resp.content as Array<Record<string, unknown>> | undefined;
-    if (Array.isArray(contentArr)) {
-      textBlocks = contentArr
-        .filter((item) => item.type === "text")
-        .map((item) => String(item.text ?? ""));
+    if (Array.isArray(resp.content) && resp.content.length > 0) {
+      body = <ContentBlocks blocks={resp.content} />;
     }
   } else {
-    // OpenAI
     const choices = resp.choices as Array<Record<string, unknown>> | undefined;
-    if (Array.isArray(choices) && choices.length > 0) {
-      const firstChoice = choices[0];
-      const msg = firstChoice?.message as Record<string, unknown> | undefined;
-      if (msg?.content) {
-        textBlocks = [String(msg.content)];
-      }
+    const msg = Array.isArray(choices) ? (choices[0]?.message as Record<string, unknown> | undefined) : undefined;
+    const toolCalls = Array.isArray(msg?.tool_calls) ? (msg.tool_calls as unknown[]) : [];
+    if (msg && (msg.content || toolCalls.length > 0)) {
+      body = (
+        <div className="space-y-2">
+          {msg.content != null && msg.content !== "" && <MessageContent content={msg.content} />}
+          {toolCalls.map((call, i) => {
+            const fn = isPlainObject(call) && isPlainObject(call.function) ? call.function : null;
+            const args = fn && typeof fn.arguments === "string" ? parseJsonContainer(fn.arguments) : undefined;
+            return (
+              <div key={i} data-testid="content-block-tool-use" className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
+                <div className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>
+                  {fn && typeof fn.name === "string" ? fn.name : "tool"}
+                </div>
+                <div className="mt-2">
+                  {isPlainObject(args) ? (
+                    <KeyValueList data={args} />
+                  ) : (
+                    <BlockValue value={fn?.arguments ?? call} />
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      );
     }
   }
 
   return (
     <div>
-      {textBlocks.map((text, i) => (
-        <div key={i} className="rounded-md p-2.5 mb-2" style={{ background: "var(--bg-elevated)", fontSize: 13, lineHeight: 1.6, color: "var(--text)", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
-          {text}
-        </div>
-      ))}
-      {textBlocks.length === 0 && (
-        <pre className="text-xs text-text-muted whitespace-pre-wrap">{JSON.stringify(response, null, 2)}</pre>
-      )}
+      {body ?? <JsonBox data={response} />}
       {(tokensIn != null || tokensOut != null) && (
         <div className="mt-2 font-mono text-[11px]" style={{ color: "var(--text-muted)" }}>
           {tokensIn != null && <span>Tokens in: {tokensIn.toLocaleString()}</span>}
@@ -365,6 +540,14 @@ function InlineValue({ value }: { value: unknown }) {
 function BlockValue({ value }: { value: unknown }) {
   if (typeof value === "string" && value.length === 0) {
     return <span className="font-mono text-[12px]" style={{ color: "var(--text-muted)" }}>(empty)</span>;
+  }
+  const parsed = typeof value === "string" ? parseJsonContainer(value) : value;
+  if (parsed !== null && typeof parsed === "object") {
+    return (
+      <div data-testid="pretty-json" className="rounded-md p-2" style={{ background: "var(--bg-base)" }}>
+        <SyntaxJson data={parsed} />
+      </div>
+    );
   }
   const text = typeof value === "string" ? value : JSON.stringify(value, null, 2);
   return (
@@ -425,59 +608,10 @@ function ToolResponseBlocks({ blocks }: { blocks: unknown[] }) {
   return (
     <div className="space-y-2">
       {blocks.map((raw, i) => {
-        if (!isPlainObject(raw)) {
-          return (
-            <pre
-              key={i}
-              className="rounded-md p-2 font-mono text-[12px]"
-              style={{
-                background: "var(--bg-elevated)",
-                color: "var(--text-muted)",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-              }}
-            >
-              {String(raw)}
-            </pre>
-          );
-        }
-        const type = typeof raw.type === "string" ? raw.type : "";
-        if (type === "text") {
-          const text = typeof raw.text === "string" ? raw.text : JSON.stringify(raw.text);
-          return (
-            <div
-              key={i}
-              className="rounded-md p-2.5"
-              style={{
-                background: "var(--bg-elevated)",
-                fontSize: 13,
-                lineHeight: 1.6,
-                color: "var(--text)",
-                whiteSpace: "pre-wrap",
-                wordBreak: "break-word",
-              }}
-            >
-              {text}
-            </div>
-          );
-        }
-        if (type === "tool_result") {
+        if (isPlainObject(raw) && raw.type === "tool_result") {
           return <ToolResultBlock key={i} block={raw} />;
         }
-        return (
-          <pre
-            key={i}
-            className="rounded-md p-2 font-mono text-[12px]"
-            style={{
-              background: "var(--bg-elevated)",
-              color: "var(--text)",
-              whiteSpace: "pre-wrap",
-              wordBreak: "break-word",
-            }}
-          >
-            {JSON.stringify(raw, null, 2)}
-          </pre>
-        );
+        return <ContentBlocks key={i} blocks={[raw]} />;
       })}
     </div>
   );
@@ -497,6 +631,14 @@ function ToolResultBlock({ block }: { block: Record<string, unknown> }) {
     } catch {
       parsed = undefined;
     }
+  }
+
+  if (Array.isArray(rawContent)) {
+    return <ContentBlocks blocks={rawContent} />;
+  }
+
+  if (Array.isArray(parsed)) {
+    return <JsonBox data={parsed} />;
   }
 
   if (isPlainObject(parsed)) {

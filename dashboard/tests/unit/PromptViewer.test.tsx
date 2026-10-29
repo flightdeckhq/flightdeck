@@ -280,7 +280,139 @@ describe("PromptViewer tool_call content", () => {
       expect(screen.getByText("Response")).toBeInTheDocument(),
     );
     expect(screen.getByTestId("tool-result-parsed")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("raw"));
+    fireEvent.click(screen.getByTestId("prompt-box-response-raw"));
     expect(screen.queryByTestId("tool-result-parsed")).not.toBeInTheDocument();
+    expect(screen.getByTestId("prompt-box-response-raw-json")).toBeInTheDocument();
+  });
+});
+
+describe("PromptViewer Pretty / Raw per box", () => {
+  const toolResultJson = JSON.stringify({ stdout: "3 files", exitCode: 0 });
+  const claudeCodeContent = {
+    ...mockContent,
+    system_prompt: "You are Claude Code.",
+    messages: [
+      { role: "user", content: '{"task":"list files","depth":2}' },
+      {
+        role: "assistant",
+        content: [
+          { type: "text", text: "Listing the files." },
+          { type: "tool_use", id: "toolu_1", name: "Bash", input: { command: "ls", description: "List" } },
+        ],
+      },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: "toolu_1", content: toolResultJson }],
+      },
+    ],
+    tools: [{ name: "Bash", description: "Run a shell command", input_schema: { type: "object", properties: { command: { type: "string" } } } }],
+    response: { id: "r1", content: [{ type: "text", text: "Done." }] },
+  };
+
+  it("every box has its own Pretty / Raw toggle, defaulting to Pretty", async () => {
+    mockFetchResult = claudeCodeContent;
+    render(<PromptViewer eventId="e-boxes" />);
+    await waitFor(() => expect(screen.getByTestId("prompt-box-response")).toBeInTheDocument());
+    for (const id of ["system", "message-0", "message-1", "message-2", "tool-0", "response"]) {
+      const box = screen.getByTestId(`prompt-box-${id}`);
+      expect(box).toHaveAttribute("data-view", "pretty");
+      expect(screen.getByTestId(`prompt-box-${id}-pretty`)).toHaveAttribute("aria-pressed", "true");
+      expect(screen.getByTestId(`prompt-box-${id}-raw`)).toHaveAttribute("aria-pressed", "false");
+    }
+  });
+
+  it("Pretty renders content blocks instead of a JSON dump", async () => {
+    mockFetchResult = claudeCodeContent;
+    render(<PromptViewer eventId="e-blocks" />);
+    await waitFor(() => expect(screen.getByTestId("prompt-box-message-1")).toBeInTheDocument());
+    const assistant = screen.getByTestId("prompt-box-message-1");
+    expect(assistant).toHaveTextContent("Listing the files.");
+    expect(assistant.querySelector('[data-testid="content-block-tool-use"]')).not.toBeNull();
+    expect(assistant).toHaveTextContent("command:");
+    expect(assistant).not.toHaveTextContent('"type"');
+    const toolResult = screen.getByTestId("prompt-box-message-2");
+    expect(toolResult.querySelector('[data-testid="tool-result-parsed"]')).not.toBeNull();
+    expect(toolResult).toHaveTextContent("3 files");
+  });
+
+  it("a string that holds JSON is pretty-printed in Pretty and kept as stored in Raw", async () => {
+    mockFetchResult = claudeCodeContent;
+    render(<PromptViewer eventId="e-json-string" />);
+    await waitFor(() => expect(screen.getByTestId("prompt-box-message-0")).toBeInTheDocument());
+    const box = screen.getByTestId("prompt-box-message-0");
+    const pretty = box.querySelector('[data-testid="pretty-json"] pre');
+    expect(pretty).not.toBeNull();
+    expect(pretty?.textContent).toContain('"task": "list files"');
+    // Indented over several lines, not the one-line stored string.
+    expect(pretty?.textContent?.split("\n").length).toBeGreaterThan(3);
+    fireEvent.click(screen.getByTestId("prompt-box-message-0-raw"));
+    const raw = screen.getByTestId("prompt-box-message-0-raw-json");
+    // Raw shows the stored message: content is still the JSON string.
+    expect(raw.textContent).toContain('"content": "{\\"task\\":\\"list files\\",\\"depth\\":2}"');
+    expect(raw.textContent).toContain('"role": "user"');
+  });
+
+  it("toggling one box leaves the others in Pretty", async () => {
+    mockFetchResult = claudeCodeContent;
+    render(<PromptViewer eventId="e-independent" />);
+    await waitFor(() => expect(screen.getByTestId("prompt-box-tool-0")).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId("prompt-box-tool-0-raw"));
+    expect(screen.getByTestId("prompt-box-tool-0")).toHaveAttribute("data-view", "raw");
+    expect(screen.getByTestId("prompt-box-tool-0-raw-json").textContent).toContain('"input_schema"');
+    expect(screen.getByTestId("prompt-box-system")).toHaveAttribute("data-view", "pretty");
+    expect(screen.getByTestId("prompt-box-response")).toHaveAttribute("data-view", "pretty");
+    fireEvent.click(screen.getByTestId("prompt-box-tool-0-pretty"));
+    expect(screen.getByTestId("prompt-box-tool-0")).toHaveAttribute("data-view", "pretty");
+  });
+
+  it("an OpenAI tool call's JSON arguments render as fields", async () => {
+    mockFetchResult = {
+      ...mockContent,
+      provider: "openai",
+      model: "gpt-5.5",
+      system_prompt: null,
+      messages: [{ role: "user", content: "Weather?" }],
+      tools: null,
+      response: {
+        choices: [
+          {
+            message: {
+              role: "assistant",
+              content: null,
+              tool_calls: [{ id: "c1", type: "function", function: { name: "get_weather", arguments: '{"city":"Paris","unit":"c"}' } }],
+            },
+          },
+        ],
+      },
+    } as unknown as typeof mockContent;
+    render(<PromptViewer eventId="e-openai" />);
+    await waitFor(() => expect(screen.getByTestId("prompt-box-response")).toBeInTheDocument());
+    const response = screen.getByTestId("prompt-box-response");
+    expect(response).toHaveTextContent("get_weather");
+    expect(response).toHaveTextContent("city:");
+    expect(response).toHaveTextContent("Paris");
+  });
+
+  it("a new event starts every box in Pretty again", async () => {
+    mockFetchResult = claudeCodeContent;
+    const { rerender } = render(<PromptViewer eventId="e-first" />);
+    await waitFor(() => expect(screen.getByTestId("prompt-box-system")).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId("prompt-box-system-raw"));
+    expect(screen.getByTestId("prompt-box-system")).toHaveAttribute("data-view", "raw");
+    rerender(<PromptViewer eventId="e-second" />);
+    await waitFor(() => expect(screen.getByTestId("prompt-box-system")).toHaveAttribute("data-view", "pretty"));
+  });
+});
+
+describe("parseJsonContainer", () => {
+  it("parses objects and arrays only", async () => {
+    const { parseJsonContainer } = await import("@/components/session/PromptViewer");
+    expect(parseJsonContainer('{"a":1}')).toEqual({ a: 1 });
+    expect(parseJsonContainer("  [1, 2]\n")).toEqual([1, 2]);
+    expect(parseJsonContainer("42")).toBeUndefined();
+    expect(parseJsonContainer('"text"')).toBeUndefined();
+    expect(parseJsonContainer("{not json")).toBeUndefined();
+    expect(parseJsonContainer("plain text")).toBeUndefined();
+    expect(parseJsonContainer("null")).toBeUndefined();
   });
 });

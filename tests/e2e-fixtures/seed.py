@@ -851,6 +851,83 @@ def _post_session_events(
                 )
             )
             posted += 1
+        elif extra == "prompt_content_post_call":
+            # A captured Anthropic call shaped like a Claude Code turn:
+            # a system prompt, a user message whose text is JSON, an
+            # assistant message with text and tool_use blocks, and a
+            # tool_result whose content is a JSON string. T123 reads the
+            # Prompts panel's per-box Pretty / Raw views from it; the
+            # stop_reason "tool_use" is how the spec finds it.
+            tool_result = json.dumps({"stdout": "README.md\nsensor", "exitCode": 0})
+            post_event(
+                make_event(
+                    session_id,
+                    agent_cfg["flavor"],
+                    "post_call",
+                    timestamp=ts,
+                    tokens_input=1200,
+                    tokens_output=80,
+                    tokens_total=1280,
+                    tokens_used_session=320 + 1280,
+                    latency_ms=1900,
+                    provider="anthropic",
+                    stop_reason="tool_use",
+                    has_content=True,
+                    content={
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-4-5",
+                        "system": "You are a coding agent. Answer in JSON when asked.",
+                        "messages": [
+                            {"role": "user", "content": '{"task":"list the repo","depth":1}'},
+                            {
+                                "role": "assistant",
+                                "content": [
+                                    {"type": "text", "text": "Listing the repository."},
+                                    {
+                                        "type": "tool_use",
+                                        "id": "toolu_e2e_1",
+                                        "name": "Bash",
+                                        "input": {"command": "ls", "description": "List files"},
+                                    },
+                                ],
+                            },
+                            {
+                                "role": "user",
+                                "content": [
+                                    {
+                                        "type": "tool_result",
+                                        "tool_use_id": "toolu_e2e_1",
+                                        "content": tool_result,
+                                    }
+                                ],
+                            },
+                        ],
+                        "tools": [
+                            {
+                                "name": "Bash",
+                                "description": "Run a shell command",
+                                "input_schema": {
+                                    "type": "object",
+                                    "properties": {"command": {"type": "string"}},
+                                },
+                            }
+                        ],
+                        "response": {
+                            "id": "msg_e2e_prompt_content",
+                            "type": "message",
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": "Two entries: README.md and sensor."}],
+                            "stop_reason": "end_turn",
+                        },
+                        "session_id": session_id,
+                        "event_id": "",
+                        "captured_at": "2026-04-25T00:00:00Z",
+                    },
+                    **identity,
+                    **{**common, "model": "claude-sonnet-4-5"},
+                )
+            )
+            posted += 1
         else:
             print(
                 f"  warn: unknown phase4_extras entry {extra!r} for {session_id[:8]}; ignored",

@@ -15,14 +15,15 @@ function escapeHtml(str: string): string {
     .replace(/'/g, "&#39;");
 }
 
-export function SyntaxJson({ data }: { data: Record<string, unknown> }) {
+export function SyntaxJson({ data }: { data: unknown }) {
   // 1. JSON.stringify
   // 2. HTML-escape so any user-controlled `<`, `>`, `&` cannot break
   //    out of the <pre> via dangerouslySetInnerHTML
   // 3. Regex-wrap the *escaped* string with span tags. The regex now
   //    operates on the escaped form (`&quot;` instead of `"`), so the
   //    patterns must match the escaped quote.
-  const escaped = escapeHtml(JSON.stringify(data, null, 2));
+  // JSON.stringify returns undefined for undefined and functions.
+  const escaped = escapeHtml(JSON.stringify(data, null, 2) ?? String(data));
 
   const colored = escaped
     .replace(

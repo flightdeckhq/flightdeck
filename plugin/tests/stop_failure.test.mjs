@@ -8,6 +8,7 @@ import {
   STOP_FAILURE_ERROR_TYPES,
   STOP_FAILURE_TEXT_MAX_CHARS,
   buildStopFailureEvent,
+  failedTurnFor,
   llmErrorEventId,
 } from "../hooks/scripts/claude_code/stop_failure.mjs";
 
@@ -65,16 +66,71 @@ describe("StopFailure to llm_error", () => {
     }
   });
 
-  it("reads the HTTP status leading error_details", () => {
+  it("reads the HTTP status leading error_details, else the one the transcript recorded", () => {
     assert.equal(build({ error: "rate_limit", error_details: "429 Too Many Requests" }).error.http_status, 429);
     assert.equal(build({ error: "rate_limit", error_details: "Too Many Requests" }).error.http_status, null);
     assert.equal(build({ error: "rate_limit" }).error.http_status, null);
+    const failedTurn = { messageId: "m1", apiErrorStatus: 429 };
+    assert.equal(build({ error: "rate_limit" }, { failedTurn }).error.http_status, 429);
+    assert.equal(
+      build({ error: "rate_limit", error_details: "503 Service Unavailable" }, { failedTurn }).error.http_status,
+      503,
+    );
+    assert.equal(build({ error: "rate_limit" }, { failedTurn: { apiErrorStatus: 9000 } }).error.http_status, null);
   });
 
-  it("appends Claude Code's error text only when capture is on, cut to the limit", () => {
+  it("refines Claude Code's coarse code from the transcript's kind or its fixed message phrases", () => {
+    const cases = [
+      // Claude Code sends a full context window as invalid_request.
+      [{ error: "invalid_request", last_assistant_message: "Prompt is too long" }, null, "context_overflow"],
+      [{ error: "invalid_request", last_assistant_message: "Prompt is too long · automatic compaction failed" }, null, "context_overflow"],
+      // A used-up subscription allowance arrives as rate_limit.
+      [{ error: "rate_limit", last_assistant_message: "You've hit your session limit · resets 1pm" }, null, "quota_exceeded"],
+      [{ error: "rate_limit", last_assistant_message: "x" }, { apiErrorKind: "usage_limit_reached" }, "quota_exceeded"],
+      [{ error: "rate_limit", last_assistant_message: "API Error: Usage credits required for 1M context" }, null, "quota_exceeded"],
+      [{ error: "rate_limit", last_assistant_message: "x" }, { apiErrorKind: "long_context_credits_required" }, "quota_exceeded"],
+      // Unrelated text and unknown kinds leave the mapping alone.
+      [{ error: "invalid_request", last_assistant_message: "API Error: tool schema invalid" }, null, "invalid_request"],
+      [{ error: "rate_limit", last_assistant_message: "x" }, { apiErrorKind: "something_new" }, "rate_limit"],
+    ];
+    for (const [hookEvent, failedTurn, type] of cases) {
+      const { error } = build(hookEvent, { failedTurn, capturePrompts: false });
+      assert.equal(error.error_type, type, JSON.stringify([hookEvent, failedTurn]));
+      assert.equal(error.is_retryable, type === "rate_limit");
+    }
+    // The classification never puts the text on the wire with capture off.
+    const off = build({ error: "invalid_request", last_assistant_message: "Prompt is too long" }, { capturePrompts: false });
+    assert.equal(off.error.error_message, "StopFailure: invalid_request");
+    // The transcript's finer kind is the provider code when it has one.
+    const kind = build({ error: "rate_limit" }, { failedTurn: { apiErrorKind: "usage_limit_reached" } });
+    assert.equal(kind.error.provider_error_code, "usage_limit_reached");
+  });
+
+  it("takes the failed turn answering this hook's prompt, never an earlier failure", () => {
+    const turn = (messageId, promptId, apiError = true) => ({ messageId, apiError, userTurn: { promptId } });
+    const first = turn("fail-1", "prompt-1");
+    const ok = turn("ok-2", "prompt-2", false);
+    // Failure 2's record not written yet when the hook reads the transcript.
+    assert.equal(failedTurnFor([first, ok], { prompt_id: "prompt-2" }), null);
+    const second = turn("fail-2", "prompt-2");
+    assert.equal(failedTurnFor([first, ok, second], { prompt_id: "prompt-2" }), second);
+    assert.equal(failedTurnFor([first, ok, second], { prompt_id: "prompt-1" }), first);
+    assert.equal(failedTurnFor([first], {}), null);
+    // So two failures get two ids, and an unmatched one none.
+    const e1 = build({ error: "rate_limit", prompt_id: "prompt-1" }, { failedTurn: failedTurnFor([first], { prompt_id: "prompt-1" }) });
+    const e2 = build({ error: "rate_limit", prompt_id: "prompt-2" }, { failedTurn: failedTurnFor([first, ok], { prompt_id: "prompt-2" }) });
+    assert.equal(e1.id, llmErrorEventId("fail-1"));
+    assert.equal("id" in e2, false);
+  });
+
+  it("appends Claude Code's error text only when capture is on, on one line and cut as the sensor cuts", () => {
     const text = "API Error: " + "r".repeat(400);
     const on = build({ error: "rate_limit", last_assistant_message: text }).error.error_message;
-    assert.equal(on, `StopFailure: rate_limit: ${text.slice(0, STOP_FAILURE_TEXT_MAX_CHARS)}`);
+    assert.equal(on, `StopFailure: rate_limit: ${text.slice(0, STOP_FAILURE_TEXT_MAX_CHARS - 3)}...`);
+    assert.equal(
+      build({ error: "rate_limit", last_assistant_message: "API Error:\r\n  overloaded" }).error.error_message,
+      "StopFailure: rate_limit: API Error:   overloaded",
+    );
     const off = build({ error: "rate_limit", last_assistant_message: text }, { capturePrompts: false }).error.error_message;
     assert.equal(off, "StopFailure: rate_limit");
     // error_details stands in when there is no rendered text.

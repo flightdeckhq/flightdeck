@@ -125,7 +125,14 @@ export function readTurns(transcriptPath) {
         group.model = recModel;
       }
       if (recModel !== SYNTHETIC_MODEL) group.synthetic = false;
-      if (rec.isApiErrorMessage === true) group.apiError = true;
+      if (rec.isApiErrorMessage === true) {
+        group.apiError = true;
+        // Claude Code's own classification of the failure, when it
+        // records one (usage_limit_reached, long_context_credits_required),
+        // and the HTTP status it got.
+        if (typeof rec.apiError === "string") group.apiErrorKind = rec.apiError;
+        if (Number.isInteger(rec.apiErrorStatus)) group.apiErrorStatus = rec.apiErrorStatus;
+      }
       group.lastTimestamp = rec.timestamp || group.lastTimestamp;
       if (rec.message?.usage) group.usage = rec.message.usage;
       if (typeof rec.message?.stop_reason === "string" && rec.message.stop_reason) {
@@ -148,6 +155,8 @@ export function readTurns(transcriptPath) {
       stopReason: group.stopReason || null,
       synthetic: group.synthetic,
       apiError: group.apiError,
+      apiErrorKind: group.apiErrorKind ?? null,
+      apiErrorStatus: group.apiErrorStatus ?? null,
       usage: group.usage || {},
       contentBlocks: group.contentBlocks,
       userTurn: group.userAtStart,

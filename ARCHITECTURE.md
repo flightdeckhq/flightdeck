@@ -1589,15 +1589,30 @@ the taxonomy (see `llm_error`):
 | `model_not_found` | `not_found` | ❌ |
 | `max_output_tokens`, `unknown`, and any value not listed | `other` | ❌ |
 
+Claude Code's code is coarse, so two finer signals take precedence.
+The transcript's `apiError` on the failed turn: `usage_limit_reached`
+(a used-up subscription allowance) and `long_context_credits_required`
+are `quota_exceeded`, and that kind becomes `provider_error_code`.
+Failing that, the fixed opening of Claude Code's rendered message:
+`Prompt is too long` is `context_overflow`, `You've hit your … limit`
+and `API Error: Usage credits required` are `quota_exceeded`. The
+message is read for this test only and is not stored unless
+`capturePrompts` is on.
+
+The failed turn is the transcript's last API-error turn answering the
+hook's `prompt_id`. Claude Code can run the hook before it writes that
+record; an earlier failure's record never stands in for it, and the
+event then goes without the turn's id, kind or status.
 `error.http_status` is the status leading the hook's `error_details`
-(`429 Too Many Requests`) when there is one. `error.error_message` is
-`StopFailure: <error>`, with Claude Code's rendered error text (the
-hook's `last_assistant_message`, or `error_details`) appended, cut at
-200 characters, only when `capturePrompts` is on, as the sensor keeps a
-provider's message. The event's id is
+(`429 Too Many Requests`), else the transcript's `apiErrorStatus` for
+the failed turn. `error.error_message` is `StopFailure: <error>`, with
+Claude Code's rendered error text (the hook's `last_assistant_message`,
+or `error_details`) appended only when `capturePrompts` is on: on one
+line, and past 200 characters cut to 197 plus `...`, as the sensor
+keeps a provider's message. The event's id is
 `uuid5(NAMESPACE_FLIGHTDECK, "flightdeck://claude-code/llm_error/<message id>")`
-of the synthetic record the transcript holds for the failed turn, and
-its timestamp is that record's.
+of the failed turn's synthetic record, and its timestamp is that
+record's.
 
 `main` returns naturally instead of calling `process.exit(0)`. Two
 consecutive fetches in a single script invocation crash Node on Windows

@@ -1569,7 +1569,7 @@ describe("observe_cli helpers", () => {
       const path = writeTranscript([
         { type: "user", timestamp: "2026-04-17T10:00:00Z", message: { role: "user", content: "hi" } },
         assistant("msg_real", "claude-opus-4-7"),
-        assistant("msg_err", SYNTHETIC_MODEL, { isApiErrorMessage: true }),
+        assistant("msg_err", SYNTHETIC_MODEL, { isApiErrorMessage: true, apiError: "usage_limit_reached", apiErrorStatus: 429 }),
         assistant("msg_interrupt", SYNTHETIC_MODEL),
         assistant("msg_mixed", SYNTHETIC_MODEL),
         assistant("msg_mixed", "claude-opus-4-7"),
@@ -1587,6 +1587,9 @@ describe("observe_cli helpers", () => {
           msg_nomodel: [false, false],
         },
       );
+      assert.equal(byId.msg_err.apiErrorKind, "usage_limit_reached");
+      assert.equal(byId.msg_err.apiErrorStatus, 429);
+      assert.equal(byId.msg_interrupt.apiErrorKind, null);
       rmSync(dirname(path), { recursive: true, force: true });
     });
 

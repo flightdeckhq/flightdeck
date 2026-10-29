@@ -28,7 +28,7 @@ import { clearSessionCacheFiles, ensureSessionStarted, getSessionId, sessionHasE
 import { SESSION_END_WORKER_DEADLINE_MS, spawnDetachedSessionEnd } from "./session_end.mjs";
 import { _subagentInteriorContext, emitSubagentEvent } from "./subagent.mjs";
 import { buildToolErrorBlock, captureErrorText, hookDurationMs, sanitizeToolInput } from "./tools.mjs";
-import { buildStopFailureEvent } from "./stop_failure.mjs";
+import { buildStopFailureEvent, failedTurnFor } from "./stop_failure.mjs";
 import { isRealModel, readTurns } from "./transcript.mjs";
 
 /**
@@ -408,7 +408,7 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
       turns: getTurns(),
       capturePrompts: cfg.capturePrompts,
     });
-    const failedTurn = getTurns().findLast((turn) => turn.apiError) ?? null;
+    const failedTurn = failedTurnFor(getTurns(), hookEvent);
     await postEvent(
       cfg.server,
       cfg.token,

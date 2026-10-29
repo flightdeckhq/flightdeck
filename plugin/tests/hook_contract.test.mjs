@@ -1200,9 +1200,17 @@ describe("SessionEnd stays inside Claude Code's 1.5 s budget", () => {
     const transcript = writeTranscript(own, [{ id: `msg_${nativeSessionId}_ok`, text: "done" }]);
     const failedId = randomUUID();
     const failedAt = new Date().toISOString();
+    const promptId = randomUUID();
     writeFileSync(
       transcript,
       JSON.stringify({
+        type: "user",
+        timestamp: failedAt,
+        promptId,
+        message: { role: "user", content: "Reply ok." },
+      }) +
+        "\n" +
+        JSON.stringify({
         type: "assistant",
         timestamp: failedAt,
         isApiErrorMessage: true,
@@ -1220,7 +1228,7 @@ describe("SessionEnd stays inside Claude Code's 1.5 s budget", () => {
       session_id: nativeSessionId,
       transcript_path: transcript,
       cwd: own,
-      prompt_id: randomUUID(),
+      prompt_id: promptId,
       effort: { level: "high" },
       hook_event_name: "StopFailure",
       error: "model_not_found",

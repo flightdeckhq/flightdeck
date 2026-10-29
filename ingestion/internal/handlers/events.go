@@ -979,8 +979,8 @@ func validateEmbeddingsPayload(payload map[string]any) string {
 }
 
 // validateLLMErrorPayload enforces llm_error enrichment when the new
-// fields are present. retry_attempt + terminal are sensor-emitted;
-// plugin-side llm_errors omit them today.
+// fields are present. retry_attempt is sensor-emitted; terminal comes
+// from the sensor and from the Claude Code plugin's StopFailure path.
 func validateLLMErrorPayload(payload map[string]any) string {
 	if raw, present := payload["retry_attempt"]; present {
 		if num, ok := raw.(float64); !ok || num < 1 {

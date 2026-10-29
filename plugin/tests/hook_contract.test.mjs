@@ -229,8 +229,8 @@ function assertIngestionContract(p) {
       }
       if ("permission_mode" in p) {
         assert.ok(
-          typeof p.permission_mode === "string" && p.permission_mode.length <= 64,
-          "permission_mode is a string of at most 64 characters when present",
+          typeof p.permission_mode === "string" && Buffer.byteLength(p.permission_mode, "utf8") <= 64,
+          "permission_mode is a string of at most 64 bytes when present (ingestion counts bytes)",
         );
       }
       break;

@@ -6230,9 +6230,11 @@ effect.
 
 ### Event taxonomy
 
-Five event types extend the sensor's `EventType` enum and the
-worker's `events.<type>` NATS subject routing. All ride the
-standard event pipeline; none are audit-log entries.
+Five event types ride the worker's `events.<type>` NATS subject
+routing: the first four are members of the sensor's `EventType` enum,
+and `mcp_policy_user_remembered` comes from the Claude Code plugin
+only. All ride the standard event pipeline; none are audit-log
+entries.
 
 - **`policy_mcp_warn`** — emitted when an evaluation resolves to
   `warn`. Payload: `server_url`, `server_name`, `fingerprint`,

@@ -52,6 +52,7 @@ let scratchProject;
 let savedHome;
 let savedUserprofile;
 let savedTmp;
+let savedPluginData;
 
 before(() => {
   scratchHome = mkdtempSync(join(tmpdir(), "fdhome-test-"));
@@ -60,6 +61,8 @@ before(() => {
   savedHome = process.env.HOME;
   savedUserprofile = process.env.USERPROFILE;
   savedTmp = process.env.TMPDIR;
+  savedPluginData = process.env.CLAUDE_PLUGIN_DATA;
+  delete process.env.CLAUDE_PLUGIN_DATA;
   process.env.HOME = scratchHome;
   process.env.USERPROFILE = scratchHome;
   process.env.TMPDIR = scratchTmp;
@@ -72,6 +75,7 @@ after(() => {
   else process.env.USERPROFILE = savedUserprofile;
   if (savedTmp === undefined) delete process.env.TMPDIR;
   else process.env.TMPDIR = savedTmp;
+  if (savedPluginData !== undefined) process.env.CLAUDE_PLUGIN_DATA = savedPluginData;
   rmSync(scratchHome, { recursive: true, force: true });
   rmSync(scratchTmp, { recursive: true, force: true });
   rmSync(scratchProject, { recursive: true, force: true });

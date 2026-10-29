@@ -84,13 +84,14 @@ const RFC3339_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{
 const MAX_REQUEST_BODY_BYTES = 1 << 20;
 
 // Every hook subprocess in this file gets its own temp root. The plugin
-// keeps its session / started / emitted markers under
-// $TMPDIR/flightdeck-plugin, and node runs test files concurrently:
+// keeps its session / started / emitted markers in its state directory
+// (hookEnv points CLAUDE_PLUGIN_DATA under the temp root), and node runs
+// test files concurrently:
 // observe_cli.test.mjs wipes the shared directory in several of its
 // tests, which would delete this file's markers mid-run and turn a
 // deterministic replay into a flaky one.
 const privateTmp = mkdtempSync(join(tmpdir(), "fd-contract-"));
-const markerDir = join(privateTmp, "flightdeck-plugin");
+const markerDir = join(privateTmp, "plugin-data", "state");
 after(() => rmSync(privateTmp, { recursive: true, force: true }));
 
 // Mirror of the ingestion validator (ingestion/internal/handlers/
@@ -377,6 +378,11 @@ function hookEnv(recordEnv, overrides) {
     HOME: privateTmp,
     USERPROFILE: privateTmp,
     ...overrides,
+    // State goes where Claude Code puts it, a plugin data directory, but
+    // under this test's temp root: the recording's CLAUDE_PLUGIN_DATA
+    // names the recording machine's path.
+    CLAUDE_PLUGIN_DATA:
+      overrides?.CLAUDE_PLUGIN_DATA ?? join(overrides?.TMPDIR ?? privateTmp, "plugin-data"),
   };
 }
 
@@ -1138,7 +1144,7 @@ describe("SessionEnd stays inside Claude Code's 1.5 s budget", () => {
     const nativeSessionId = randomUUID();
     const flightdeckSessionId = randomUUID();
     const own = mkdtempSync(join(scratch, "log-"));
-    const logDir = join(own, "flightdeck-plugin");
+    const logDir = join(own, "plugin-data", "state");
     const logFile = join(logDir, "session-end-worker.log");
     // Port 1 is closed on any host; the worker's POST is refused.
     const result = await runScript(

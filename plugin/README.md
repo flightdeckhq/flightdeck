@@ -155,14 +155,14 @@ The plugin logs one line per failed POST, capped at two lines per hook invocatio
 
 The `SessionEnd` hook hands its POSTs to a detached worker process (Claude Code gives SessionEnd hooks 1.5 seconds in total). The worker's stderr is appended to the worker log:
 
-- Linux / macOS: `$TMPDIR/flightdeck-plugin/session-end-worker.log` (`/tmp/flightdeck-plugin/session-end-worker.log` when `TMPDIR` is unset)
-- Windows: `%TEMP%\flightdeck-plugin\session-end-worker.log`
+- `~/.claude/plugins/data/<plugin id>/state/session-end-worker.log`, in the plugin's state directory (see *How it works*)
+- On a Claude Code that provides no plugin data directory: `$TMPDIR/flightdeck-plugin/session-end-worker.log` (`/tmp/flightdeck-plugin/…` when `TMPDIR` is unset; `%TEMP%\flightdeck-plugin\…` on Windows)
 
 A `cannot reach <server>: <reason>` line there means the final flush or the `session_end` was refused; the session then closes through the server's stale / lost / reaper path. The log also receives the worker's flush-deadline notice, a hook-event parse failure and a `hook failed` line for an unexpected error. The directory is created owner-only (0700; an existing directory is tightened with a best-effort `chmod`), the file owner-only (0600) and opened without following symlinks; the file is truncated once it passes 256 KiB. The worker gives up an unflushed backlog after 20 seconds against a dead server, and a machine torn down right after `claude -p` returns (an ephemeral CI runner) can lose that session's final flush.
 
 ### Server was down when Claude Code started; events resume on recovery
 
-Each hook invocation is a fresh Node process with no disk-persisted mute state. When the Flightdeck stack comes back up mid-session, the next hook's POST lands automatically. The server lazy-creates the session row from that first post-recovery event so the session appears in the dashboard with tokens counted from the recovery point onward. No manual cleanup of `$TMPDIR/flightdeck-plugin` is needed.
+Each hook invocation is a fresh Node process with no disk-persisted mute state. When the Flightdeck stack comes back up mid-session, the next hook's POST lands automatically. The server lazy-creates the session row from that first post-recovery event so the session appears in the dashboard with tokens counted from the recovery point onward. No manual cleanup of the state directory is needed.
 
 Outage-window events (LLM calls that fired while the server was unreachable) are not retroactively recovered; the plugin is intentionally unbuffered so it cannot block Claude Code on a stuck queue. You lose the pre-recovery events and gain every post-recovery event.
 
@@ -206,27 +206,29 @@ Session identity resolution. Precedence, top wins:
 
 1. `CLAUDE_SESSION_ID` env var.
 2. `ANTHROPIC_CLAUDE_SESSION_ID` env var.
-3. Marker file cache at `$TMPDIR/flightdeck-plugin/session-<sha256(native session id)[:16]>.txt`, keyed on Claude Code's own per-invocation session id: the `session_id` on every hook event, or `$CLAUDE_CODE_SESSION_ID` from the hook environment when the payload has none. The first hook of an invocation writes it; every later hook in the same run reads it verbatim.
+3. Marker file cache at `<state directory>/session-<sha256(native session id)[:16]>.txt`, keyed on Claude Code's own per-invocation session id: the `session_id` on every hook event, or `$CLAUDE_CODE_SESSION_ID` from the hook environment when the payload has none. The first hook of an invocation writes it; every later hook in the same run reads it verbatim.
 4. A fresh random UUID (RFC 4122 v4), written to that marker file. Each Claude Code invocation is therefore one session row; continuity across invocations lives in `agent_id`, a stable UUID derived from agent type, `user@hostname`, client type and agent name. The native Claude Code session id travels alongside as `context.claude_code_session_id`, so a dashboard session maps back to its transcript.
 5. When neither the hook event nor the environment names a session (a caller other than Claude Code), the marker is keyed on `sha256(cwd)[:16]` and the plugin prints one stderr warning.
-6. An ephemeral `sha256(time, pid, cwd)[:32]` when `$TMPDIR` itself is unusable.
+6. An ephemeral `sha256(time, pid, cwd)[:32]` when the state directory itself is unusable.
 
-`SessionEnd` deletes the marker, so `/clear` or a new `claude` run mints a fresh session id (delete `$TMPDIR/flightdeck-plugin/` by hand to force one earlier).
+`SessionEnd` deletes the marker, so `/clear` or a new `claude` run mints a fresh session id (delete the state directory by hand to force one earlier). A run that ends without `SessionEnd` (a crash or a reboot) leaves the marker in place, so resuming that conversation with `--resume` within seven days continues the same Flightdeck session (a fork, or a reboot in the `$TMPDIR` fallback, starts a new one).
 
 SessionEnd and the 1.5 s budget. Claude Code gives SessionEnd hooks 1.5 seconds in total before it exits, and a plugin cannot raise that. The SessionEnd hook therefore does no network work itself: it resolves the session id, deletes the markers above, and re-launches this same script as a detached worker (`observe_cli.mjs --session-end-worker`, hook event on stdin, session id in `CLAUDE_SESSION_ID`) which flushes any remaining transcript turns and POSTs the `session_end`; the worker never touches the session markers and stops an unflushed backlog after 20 seconds. The hook waits up to 0.8 s for the worker, so a local or fast server receives the events before Claude Code exits; past that the worker keeps running on its own. Its stderr goes to the worker log described under *Troubleshooting*.
 
-No background threads inside a hook. No polling. The only state the plugin persists across hook invocations is a small set of markers in `$TMPDIR/flightdeck-plugin/`:
+No background threads inside a hook. No polling. The only state the plugin persists across hook invocations is a small set of markers in its state directory. That is `$CLAUDE_PLUGIN_DATA/state`, the persistent data directory Claude Code gives each plugin (`~/.claude/plugins/data/<plugin id>/`), which survives reboots and plugin updates; on a Claude Code that does not set `CLAUDE_PLUGIN_DATA` it is `$TMPDIR/flightdeck-plugin/`. It holds:
 
 - `session-<hash>.txt`: the session id for the current Claude Code invocation (a random UUID), keyed on the native Claude Code session id.
 - `mcp-policy-<sid>.json`: the MCP policy fetched at `SessionStart` and read by every `PreToolUse`; deleted at `SessionEnd`.
 - `started-<sid>.txt`: marks that session_start was attempted (so subsequent hooks don't duplicate).
 - `model-<sid>.txt`: caches the model name so `pre_call` events on older Claude Code versions can carry a non-null model.
-- `emitted-<messageId>.txt`: per-message dedup so Stop / SessionEnd don't re-emit turns that PostToolUse already flushed.
+- `endpoint-<sid>.json`: the session's billing mode and platform, decided at `SessionStart`.
+- `git-<hash>.json`: the git commit, branch and repo name, probed once per session and working directory instead of on every hook.
+- `emitted-<messageId>.txt`: per-message dedup (an empty file) so Stop / SessionEnd and a resumed conversation don't re-emit turns that were already sent.
 - `session-end-worker.log`: stderr of the detached SessionEnd workers (failed POSTs, the flush-deadline notice, parse failures, `hook failed` lines); owner-only, opened without following symlinks, truncated once it passes 256 KiB.
 
 The directory is created owner-only (0700; an existing one is tightened with a best-effort `chmod`). Values copied from the hook payload and the environment are bounded before they leave the machine, in UTF-8 bytes as ingestion counts them: the run-mode signals and `end_reason` at 64 bytes, `server_name`, `tool_name`, `tool_use_id` and the `mcp_server` fields at 256, the error message at 1000 characters; anything longer, or containing control characters, is dropped or cut rather than sent.
 
-All of these are safe to delete; the plugin recreates what it needs on the next hook.
+All of these are safe to delete; the plugin recreates what it needs on the next hook. Once a day the first `SessionStart` deletes every file no hook has used for seven days, so the directory stays bounded. Every hook refreshes its own session's files, so only a session that has run no hook for a week loses them; resuming it starts a new Flightdeck session.
 
 Windows. The script's entry check resolves both its own path and the invoked one (realpath, case-insensitive on Windows), so a forward-slash or differently cased `${CLAUDE_PLUGIN_ROOT}` expansion or a symlinked plugin directory still runs the hook.
 

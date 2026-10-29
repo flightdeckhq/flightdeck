@@ -93,8 +93,10 @@ prints one line to stderr per failed request and exits successfully, and
 the next hook tries again. The `session_end` is posted by a detached
 worker after the hook returns (Claude Code allows SessionEnd hooks 1.5
 seconds); its failed-request lines go to
-`$TMPDIR/flightdeck-plugin/session-end-worker.log` (Windows:
-`%TEMP%\flightdeck-plugin\session-end-worker.log`), an owner-only file
+`session-end-worker.log` in the plugin's state directory
+(`~/.claude/plugins/data/<plugin id>/state/`, or
+`$TMPDIR/flightdeck-plugin/` on a Claude Code without a plugin data
+directory), an owner-only file
 truncated past 256 KiB. Policy evaluation fails open: with no cached
 policy, tool calls proceed as Claude Code would normally decide, and MCP
 servers bundled with other plugins are reported but not gated.

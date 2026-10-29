@@ -13,6 +13,7 @@ import {
   markerKeyFor,
   markSessionStarted,
   readOrCreateSessionMarker,
+  touchSessionFiles,
 } from "../core/state.mjs";
 import { safeCollectContext } from "./context.mjs";
 
@@ -50,7 +51,7 @@ import { safeCollectContext } from "./context.mjs";
  *      missing hook payloads -- the supported Claude Code path
  *      always provides a session_id.
  *   6. Final ephemeral sha256(cwd)[:32] backstop when even
- *      ``$TMPDIR`` is unusable (tests + recovery path only).
+ *      state directory is unusable (tests + recovery path only).
  */
 export function getSessionId(hookEvent = {}) {
   const env =
@@ -79,7 +80,9 @@ export function getSessionId(hookEvent = {}) {
   }
 
   try {
-    return readOrCreateSessionMarker(markerKey);
+    const sessionId = readOrCreateSessionMarker(markerKey);
+    touchSessionFiles(markerKey, sessionId);
+    return sessionId;
   } catch {
     return ephemeralSessionId(cwd);
   }

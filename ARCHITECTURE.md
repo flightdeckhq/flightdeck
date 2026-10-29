@@ -478,7 +478,7 @@ flightdeck/
 │   │       ├── core/                     # Client-agnostic hook-adapter pieces
 │   │       │   ├── config.mjs            # FLIGHTDECK_* resolution, value bounds, plugin version
 │   │       │   ├── poster.mjs            # Event POST with timeout + one-line failure logging
-│   │       │   ├── state.mjs             # Every on-disk marker and cache under $TMPDIR/flightdeck-plugin/
+│   │       │   ├── state.mjs             # The state directory: every on-disk marker and cache, pruning
 │   │       │   └── events.mjs            # Hook-name -> event_type alias table a binding supplies
 │   │       ├── claude_code/              # Claude Code binding
 │   │       │   ├── dispatch.mjs          # Routes one hook event to its emission
@@ -1239,10 +1239,25 @@ child process; the plugin reads the hook event from stdin,
 resolves session identity, builds an event payload, POSTs to
 `/ingest/v1/events`, and exits. No in-process interception, no background
 threads inside a hook, no shared state across hook invocations beyond a
-small set of marker files in `$TMPDIR/flightdeck-plugin/` (session id,
-per-turn dedup, cached model). The one process that outlives a hook is
-the detached worker the `SessionEnd` hook starts (see `SessionEnd`
-below).
+small set of marker files in the plugin's state directory (session id,
+per-turn dedup, cached model, endpoint and git probes, the MCP policy
+cache). The one process that outlives a hook is the detached worker the
+`SessionEnd` hook starts (see `SessionEnd` below).
+
+The state directory is `$CLAUDE_PLUGIN_DATA/state`. Claude Code gives
+every plugin a persistent data directory (`~/.claude/plugins/data/<id>/`)
+that survives reboots and plugin updates; when it is not set (a Claude
+Code without it, a test harness), the directory is
+`$TMPDIR/flightdeck-plugin`. It is created 0700. Once a day the first
+`SessionStart` deletes every file in it that no hook has used for seven
+days. Every hook refreshes its own session's files (marker, start and
+git markers, cached model and endpoint, MCP policy cache), so a session
+loses them only when it has run no hook for seven days; resuming it
+then starts a new Flightdeck session and fetches its MCP policy again.
+The per-turn markers are empty files, one per model call. The git
+commit, branch and repo name a hook reports are probed once per Claude
+Code session and working directory, at `SessionStart` or the first hook
+after a directory change, and read from the state directory afterwards.
 
 Because the plugin is observation-only, a directive returned in the POST
 response envelope has nowhere to go: the plugin already exited and Claude
@@ -1257,7 +1272,7 @@ sessions. This is the observer-session class.
 
 1. `CLAUDE_SESSION_ID` / `ANTHROPIC_CLAUDE_SESSION_ID` env vars.
 2. A marker file at
-   `$TMPDIR/flightdeck-plugin/session-${sha256(native session id)[:16]}.txt`,
+   `<state directory>/session-${sha256(native session id)[:16]}.txt`,
    keyed on Claude Code's own per-invocation session id: the
    `session_id` Claude Code stamps on every hook event, or the
    `CLAUDE_CODE_SESSION_ID` variable it exports to hook processes when
@@ -1272,18 +1287,23 @@ sessions. This is the observer-session class.
 4. When neither the hook event nor the environment names a session (a
    caller other than Claude Code), the marker is keyed on
    `sha256(cwd)[:16]` and one stderr warning is printed.
-5. An ephemeral `sha256(time, pid, cwd)[:32]` when `$TMPDIR` is unusable.
+5. An ephemeral `sha256(time, pid, cwd)[:32]` when the state directory is
+   unusable.
 
 The marker file exists because every hook invocation runs as a separate
 Node child process — pid-based fallbacks would create one session row per
 tool call. `SessionEnd` deletes the marker, so `/clear` or a new `claude`
-run mints a new session id.
+run mints a new session id. A run that ends without `SessionEnd` (a crash
+or a reboot) leaves the marker in place, so resuming that conversation
+(Claude Code keeps its session id on `--resume`, not on
+`--fork-session`) within seven days continues the same Flightdeck
+session; in the `$TMPDIR` fallback a reboot clears the marker.
 
 ### `session_start` with context
 
 `ensureSessionStarted` uses a file-marker dedup so the `session_start`
 event is sent exactly once per session id (marker file is
-`$TMPDIR/flightdeck-plugin/started-${sessionId}.txt`). The payload carries
+`<state directory>/started-${sessionId}.txt`). The payload carries
 the `collectContext` dict.
 
 `collectContext` is the Node.js parallel of the Python sensor's
@@ -1399,9 +1419,11 @@ state-revival path: the child session ages from
 PostToolUseFailure hook with `markEmittedTurn` per-messageId disk-marker dedup so mid-turn LLM
 activity surfaces in real time instead of batching at Stop.
 
-The markers are a local optimisation, not the guarantee: they live in
-`$TMPDIR`, which a reboot clears (a resumed conversation's next hook then
-re-reads its whole transcript). Each turn's `post_call` therefore
+The markers are a local optimisation, not the guarantee: they are pruned
+after seven days, they live in `$TMPDIR` (which a reboot clears) when
+Claude Code provides no data directory, and a transcript replayed or
+copied to another machine has none (a resumed conversation's next hook
+then re-reads its whole transcript). Each turn's `post_call` therefore
 carries an event id derived from the model call's message id
 (`uuid5(NAMESPACE_FLIGHTDECK,
 "flightdeck://claude-code/post_call/<message id>")`), so every copy of
@@ -1455,7 +1477,7 @@ returns and Claude Code exits; a slower server leaves the worker running
 detached past the hook, under a 20 s flush deadline so an orphaned
 backlog against a dead server stops instead of paying one aborted POST
 per turn. The worker's stderr is appended to
-`$TMPDIR/flightdeck-plugin/session-end-worker.log` (the directory is
+`<state directory>/session-end-worker.log` (the directory is
 created 0700, the file 0600 and opened without following symlinks,
 truncated once it passes 256 KiB). The `session_end` carries
 `close_reason=normal_exit` and `end_reason`, Claude Code's own reason
@@ -5887,7 +5909,7 @@ dispatcher in `claude_code/dispatch.mjs`; it branches on
   and batch-fetches global + flavor policies in parallel via
   `Promise.all` against `GET /v1/mcp-policies/global` +
   `GET /v1/mcp-policies/{flavor}`. Cached to a per-session marker
-  file at `$TMPDIR/flightdeck-plugin/mcp-policy-<session_id>.json`
+  file at `<state directory>/mcp-policy-<session_id>.json`
   so subsequent `PreToolUse` invocations don't repeat the HTTP
   fetch on the agent hot path. The cache lives for the whole Claude
   Code invocation: `Stop` leaves it in place so later turns stay

@@ -258,3 +258,35 @@ func TestBuildEventExtra_NonMCPEvent_DoesNotProjectMCPFields(t *testing.T) {
 		t.Errorf("expected no extras for bare post_call, got %s", string(out))
 	}
 }
+
+func TestBuildEventExtra_MCPPolicyUserRemembered_PermissionMode(t *testing.T) {
+	for _, mode := range []string{"bypassPermissions", ""} {
+		e := consumer.EventPayload{
+			SessionID:          "x",
+			EventType:          "mcp_policy_user_remembered",
+			ServerName:         "x",
+			Fingerprint:        "abc1234567890abc",
+			ServerURLCanonical: "stdio://npx -y x",
+			DecidedAt:          "2026-10-29T12:00:00Z",
+			PermissionMode:     mode,
+		}
+		out, err := processor.BuildEventExtra(e)
+		if err != nil {
+			t.Fatalf("BuildEventExtra: %v", err)
+		}
+		var parsed map[string]interface{}
+		if err := json.Unmarshal(out, &parsed); err != nil {
+			t.Fatalf("parse extra: %v", err)
+		}
+		if parsed["decided_at"] != "2026-10-29T12:00:00Z" {
+			t.Errorf("decided_at: got %v", parsed["decided_at"])
+		}
+		got, present := parsed["permission_mode"]
+		if mode == "" && present {
+			t.Errorf("permission_mode must be absent when not sent, got %v", got)
+		}
+		if mode != "" && got != mode {
+			t.Errorf("permission_mode: want %s, got %v", mode, got)
+		}
+	}
+}

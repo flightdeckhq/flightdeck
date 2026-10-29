@@ -370,6 +370,33 @@ def test_mcp_policy_user_remembered_lands_with_payload(
     assert payload.get("server_name") == "x"
     assert payload.get("fingerprint") == "abc1234567890abc"
     assert payload.get("decided_at") == "2026-05-06T12:00:00Z"
+    assert "permission_mode" not in payload
+
+
+def test_mcp_policy_user_remembered_keeps_permission_mode(
+    pipeline_flavors: set[str],
+) -> None:
+    sid = str(uuid.uuid4())
+    flavor = f"test-mcp-pipeline-{uuid.uuid4().hex[:6]}"
+
+    assert _post_event(pipeline_flavors, _baseline_session_start(sid, flavor)) == 200
+    remembered = _user_remembered_event(sid, flavor)
+    remembered["permission_mode"] = "bypassPermissions"
+    assert _post_event(pipeline_flavors, remembered) == 200
+
+    event = _wait_for_event(sid, "mcp_policy_user_remembered", timeout=10.0)
+    assert event is not None, "mcp_policy_user_remembered did not land within 10s"
+    assert (event.get("payload") or {}).get("permission_mode") == "bypassPermissions"
+
+
+def test_mcp_policy_user_remembered_oversized_permission_mode_rejected(
+    pipeline_flavors: set[str],
+) -> None:
+    sid = str(uuid.uuid4())
+    flavor = f"test-mcp-pipeline-{uuid.uuid4().hex[:6]}"
+    payload = _user_remembered_event(sid, flavor)
+    payload["permission_mode"] = "m" * 65
+    assert _post_event(pipeline_flavors, payload) == 400
 
 
 def test_mcp_policy_user_remembered_missing_decided_at_rejected(

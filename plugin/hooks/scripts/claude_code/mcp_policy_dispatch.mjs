@@ -2,6 +2,7 @@
 // SessionStart fetches and caches the policy, PreToolUse answers with a
 // permission decision, PostToolUse records a de-facto approval.
 
+import { MAX_SIGNAL_BYTES, boundedToken } from "../core/config.mjs";
 import { postEvent } from "../core/poster.mjs";
 import { canonicalizeUrl as _mcpCanonicalizeUrl } from "../mcp_identity.mjs";
 import {
@@ -278,6 +279,10 @@ export async function dispatchMcpPolicyPostToolUse({
     fingerprint,
     flavor: basePayload.flavor,
     decided_at: decidedAt,
+    // The mode the session was in when the approved call ran; audit
+    // context only, since Claude Code honours the gate's "ask" in every
+    // mode. Omitted when the hook carries none.
+    permission_mode: boundedToken(hookEvent.permission_mode, MAX_SIGNAL_BYTES) ?? undefined,
   };
   await postEvent(cfg.server, cfg.token, sessionId, payload);
 }

@@ -537,6 +537,26 @@ def _post_session_events(
                 )
             )
             posted += 1
+        elif extra == "mcp_policy_user_remembered":
+            # The Claude Code plugin's remembered MCP approval, with the
+            # permission mode the session was in. T124 reads its feed
+            # line and drawer rows.
+            post_event(
+                make_event(
+                    session_id,
+                    agent_cfg["flavor"],
+                    "mcp_policy_user_remembered",
+                    timestamp=ts,
+                    fingerprint="e2e0remembered01",
+                    server_url_canonical="https://mcp.e2e.example/remembered",
+                    server_name="e2e-remembered-server",
+                    decided_at=ts,
+                    permission_mode="bypassPermissions",
+                    **identity,
+                    **common,
+                )
+            )
+            posted += 1
         elif extra.startswith("policy_"):
             # Policy enforcement events. Three variants:
             #   policy_warn      -- threshold crossed; call proceeded.
@@ -1019,6 +1039,8 @@ def _session_is_complete(
             expected_counts["__mcp_tool_call_failed__"] = (
                 expected_counts.get("__mcp_tool_call_failed__", 0) + 1
             )
+        elif tag == "mcp_policy_user_remembered":
+            expected_counts[tag] = expected_counts.get(tag, 0) + 1
         elif tag in ("policy_warn", "policy_degrade", "policy_block"):
             # Each policy_* tag maps directly to its own event_type
             # row. Counted independently so a session declaring all

@@ -97,6 +97,10 @@ const (
 	maxToolUseIDLen      = 256
 	maxMCPServerFieldLen = 256
 	maxEndReasonLen      = 64
+	// permission_mode on mcp_policy_user_remembered is one of Claude
+	// Code's permission-mode words (default, plan, acceptEdits, auto,
+	// dontAsk, bypassPermissions); 64 characters is generous.
+	maxPermissionModeLen = 64
 )
 
 // uuidRegex matches the canonical 8-4-4-4-12 hex form. Any version
@@ -796,7 +800,8 @@ func validateToolCallPayload(payload map[string]any, eventType string) string {
 // Claude Code plugin's PostToolUse de-facto-approval path.
 // Required fields cover both the operator-visibility surface
 // (fingerprint, server_url_canonical, server_name, flavor) AND
-// the audit timestamp (decided_at).
+// the audit timestamp (decided_at). The optional permission_mode is
+// a bounded string when present (null counts as absent).
 func validateMCPPolicyUserRememberedPayload(payload map[string]any) string {
 	for _, field := range []string{
 		"fingerprint", "server_url_canonical", "server_name",
@@ -807,6 +812,15 @@ func validateMCPPolicyUserRememberedPayload(payload map[string]any) string {
 			return fmt.Sprintf(
 				"%s is required for mcp_policy_user_remembered", field,
 			)
+		}
+	}
+	if raw, present := payload["permission_mode"]; present && raw != nil {
+		v, ok := raw.(string)
+		if !ok {
+			return "permission_mode must be a string when present on mcp_policy_user_remembered"
+		}
+		if len(v) > maxPermissionModeLen {
+			return fmt.Sprintf("permission_mode exceeds %d-character limit", maxPermissionModeLen)
 		}
 	}
 	return ""

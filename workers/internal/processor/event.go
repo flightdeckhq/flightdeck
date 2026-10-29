@@ -399,6 +399,9 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if e.DecidedAt != "" {
 		extra["decided_at"] = e.DecidedAt
 	}
+	if e.PermissionMode != "" {
+		extra["permission_mode"] = e.PermissionMode
+	}
 	// MCP_RESOURCE_READ content. The sensor's lean MCP payload
 	// drops the ``has_content`` flag entirely, so the existing
 	// HasContent gate (which routes LLM PromptContent into the

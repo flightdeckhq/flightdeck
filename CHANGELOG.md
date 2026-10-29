@@ -18,6 +18,13 @@ All notable changes to Flightdeck are documented here.
   `FLIGHTDECK_SERVER` and `FLIGHTDECK_TOKEN` still work and override the
   saved options.
 
+- **A remembered MCP approval shows the server and the Claude Code
+  permission mode it was given in.** When a Claude Code user approves
+  an MCP server the allowlist does not cover, the event now records
+  the session's permission mode (for example `bypassPermissions`), and
+  the dashboard lists the server, its URL, the approval time, the mode
+  and the fingerprint instead of a bare event type.
+
 ### Fixed
 
 - **A Claude Code model call with very large captured content is no

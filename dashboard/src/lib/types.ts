@@ -377,6 +377,18 @@ export interface EventPayloadFields {
   last_event_id?: string;
   policy_decision_at_attach?: PolicyDecisionBlock;
   policy_entries_orphaned?: PolicyEntriesOrphaned;
+  /**
+   * mcp_policy_user_remembered: when the Claude Code user's approval of
+   * an unknown-allowlist MCP server was recorded, and the Claude Code
+   * permission mode (``default``, ``plan``, ``acceptEdits``, ``auto``,
+   * ``dontAsk``, ``bypassPermissions``; passed through as sent) the
+   * session was in. ``fingerprint`` and ``server_url_canonical``
+   * identify the server.
+   */
+  decided_at?: string;
+  permission_mode?: string;
+  fingerprint?: string;
+  server_url_canonical?: string;
 
   // LLM family operator-actionable enrichment.
   estimated_via?: "tiktoken" | "heuristic" | "none";

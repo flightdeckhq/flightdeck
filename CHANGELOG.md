@@ -6,6 +6,27 @@ All notable changes to Flightdeck are documented here.
 
 ## v0.7.1 — 2026-10-29
 
+Claude Code model calls are counted once, and `client_type` becomes a
+registry of nine values with per-type defaults. Before this release a
+reboot made the Claude Code plugin re-send the history of every resumed
+conversation, which inflated Claude Code token totals. The registry
+reserves values for the coding agents and the OpenTelemetry receiver on
+the Roadmap, so adding those integrations needs no schema change.
+
+**Upgrade notes**
+
+- Two schema migrations (000032 and 000033) apply when the workers
+  start. They replace the `client_type` constraints on `agents` and
+  `sessions`, and 000033 validates them against existing rows in its
+  own transaction.
+- Update the Claude Code plugin (`/plugin`, then restart Claude Code).
+  The duplicate fix needs both sides: the plugin gives each model call a
+  stable event id and the workers drop an id they have already stored.
+  An older plugin sends `post_call` without an id, so each copy it
+  re-sends is still stored as a new event.
+- Duplicates stored before the upgrade stay in the database, so Claude
+  Code token totals for those days remain overstated.
+
 ### Added
 
 - **Client types are a registry of nine values.** `client_type` now

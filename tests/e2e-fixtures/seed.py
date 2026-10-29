@@ -916,7 +916,9 @@ def _post_session_events(
                             "id": "msg_e2e_prompt_content",
                             "type": "message",
                             "role": "assistant",
-                            "content": [{"type": "text", "text": "Two entries: README.md and sensor."}],
+                            "content": [
+                                {"type": "text", "text": "Two entries: README.md and sensor."}
+                            ],
                             "stop_reason": "end_turn",
                         },
                         "session_id": session_id,

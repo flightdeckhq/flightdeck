@@ -1,6 +1,6 @@
 # Flightdeck Plugin for Claude Code
 
-A Claude Code plugin that reports LLM call metadata, tool invocations, and token counts from Claude Code sessions to a Flightdeck stack. The plugin reads defaults for the local `make dev` stack; set `FLIGHTDECK_SERVER` and `FLIGHTDECK_TOKEN` to point at a different stack. Each hook invocation runs as a short-lived child process: read stdin, POST, exit.
+A Claude Code plugin that reports LLM call metadata, tool invocations, and token counts from Claude Code sessions to a Flightdeck stack. The plugin reads defaults for the local `make dev` stack; set its server and token options, or `FLIGHTDECK_SERVER` and `FLIGHTDECK_TOKEN`, to point at a different stack. Each hook invocation runs as a short-lived child process: read stdin, POST, exit.
 
 ## Quickstart
 
@@ -12,7 +12,7 @@ claude --plugin-dir /path/to/flightdeck/plugin
 
 Start using Claude Code normally. Open the dashboard. Your session appears in the Fleet view within a few seconds, tagged `flavor=claude-code`, and events stream in as you work. No env vars required for the default dev stack.
 
-Hosted Flightdeck or a non-default port? Set two vars before invoking `claude`:
+Hosted Flightdeck or a non-default port? Open `/plugin`, select **flightdeck** on the **Installed** tab, choose **Configure options**, and set the server and the token. Claude Code keeps the token in its credential store, not in `settings.json`. Or set two vars before invoking `claude`; they override the saved options:
 
 ```bash
 export FLIGHTDECK_SERVER="https://flightdeck.example.com"
@@ -65,18 +65,19 @@ Guarantees that hold regardless of the knob settings:
 - String values are truncated (`prompt` at 100 chars, everything else at 200 chars).
 - `FLIGHTDECK_CAPTURE_PROMPTS=false` zeroes every content field on every event type. The event still ships (so you see the session and token counts on the dashboard), but no prompt or response body is attached.
 - The error text of a failed tool call is content too (a command's stderr, an `Edit` failure quoting its `old_string`, a token a failed command printed): it is sent only when both knobs are on. Otherwise the `error` block keeps `error_type`, `error_class` and `interrupted`, and its `message` reads `<redacted>`. The server redacts the same field when the session was started with capture off.
-- Credentials in `FLIGHTDECK_SERVER` (`https://user:token@host`) are stripped before any request and never written to a log line; authenticate with `FLIGHTDECK_TOKEN`.
+- Credentials in the server URL (`https://user:token@host`) are stripped before any request and never written to a log line; authenticate with the token option or `FLIGHTDECK_TOKEN`.
+- An event is never sent larger than 768 KiB, below the server's 1 MiB limit. When captured content would take it past that (a very long prompt, tool result or sub-agent message), the longest strings are cut and end with `… [flightdeck: kept N of M bytes to fit the event size limit]`, so the call and its token counts are still recorded.
 - MCP servers bundled with other Claude Code plugins are reported but not gated by the MCP policy (see *MCP coverage*).
 
 ## Environment variables
 
 | Variable | Default | What it does |
 |---|---|---|
-| `FLIGHTDECK_SERVER` | `http://localhost:4000` | Base URL of your Flightdeck stack. Hooks fire `POST $FLIGHTDECK_SERVER/ingest/v1/events`. |
-| `FLIGHTDECK_TOKEN` | `tok_dev` | Bearer token used in the `Authorization` header. The dev compose accepts `tok_dev` when `ENVIRONMENT=dev`; production deployments leave that unset and require an `ftd_` token minted from the Settings page. |
+| `FLIGHTDECK_SERVER` | the `server` option, else `http://localhost:4000` | Base URL of your Flightdeck stack. Hooks fire `POST $FLIGHTDECK_SERVER/ingest/v1/events`. Overrides the `server` option. |
+| `FLIGHTDECK_TOKEN` | the `token` option, else `tok_dev` | Bearer token used in the `Authorization` header. Overrides the `token` option. The dev compose accepts `tok_dev` when `ENVIRONMENT=dev`; production deployments leave that unset and require an `ftd_` token minted from the Settings page. |
 | `FLIGHTDECK_CAPTURE_TOOL_INPUTS` | `true` | Captures a sanitised whitelist of tool input fields on each `tool_call` event. Set to `false` to strip tool inputs. |
 | `FLIGHTDECK_CAPTURE_PROMPTS` | `true` | Captures LLM prompts, assistant responses, and tool results. Set to `false` to strip all content bodies from plugin events while keeping metadata and token counts. |
-| `FLIGHTDECK_QUIET` | unset | Set to `1` to suppress the `[flightdeck] WARN:` stderr line emitted on every hook invocation when `FLIGHTDECK_TOKEN` is unset (the seed `tok_dev` default is in use). Intended for test suites that intentionally exercise the zero-config default-token path; production deployments should set `FLIGHTDECK_TOKEN` instead so the warning never fires. |
+| `FLIGHTDECK_QUIET` | unset | Set to `1` to suppress the `[flightdeck] WARN:` stderr line emitted on every hook invocation when no token is configured (the seed `tok_dev` default is in use). Intended for test suites that intentionally exercise the zero-config default-token path; production deployments should set the token option or `FLIGHTDECK_TOKEN` instead so the warning never fires. |
 | `CLAUDE_SESSION_ID` | unset | Explicit Flightdeck session id override. Wins over every other resolution step -- use this when you want to force a specific id across processes or tests. |
 | `ANTHROPIC_CLAUDE_SESSION_ID` | unset | Alternative name for `CLAUDE_SESSION_ID`, honored second. |
 | `FLIGHTDECK_SESSION_END_GRACE_MS` | `800` | How long the `SessionEnd` hook waits for its detached worker before letting it run on. A test knob, capped at 10000; the default keeps the hook inside Claude Code's 1.5 s SessionEnd budget. |
@@ -141,7 +142,7 @@ Quick health check:
 curl -s -o /dev/null -w "%{http_code}\n" "$FLIGHTDECK_SERVER/ingest/health"
 ```
 
-Expected: `200`. If you get `000`, `502`, or `504`, the ingestion endpoint isn't reachable; check `FLIGHTDECK_SERVER` and that the stack is actually running (`docker ps` should show `docker-ingestion-1` healthy). If you get `401` or `403`, the token is wrong.
+Expected: `200`. If you get `000`, `502`, or `504`, the ingestion endpoint isn't reachable; check the server option or `FLIGHTDECK_SERVER` and that the stack is actually running (`docker ps` should show `docker-ingestion-1` healthy). If you get `401` or `403`, the token is wrong.
 
 ### "cannot reach" stderr line on every Claude run
 
@@ -149,7 +150,7 @@ Expected: `200`. If you get `000`, `502`, or `504`, the ingestion endpoint isn't
 [flightdeck] cannot reach http://localhost:4000: ECONNREFUSED. events dropped for this session.
 ```
 
-The plugin logs one line per failed POST, capped at two lines per hook invocation (one for the session-start check and one for the event). Either the stack is not running, or `FLIGHTDECK_SERVER` points at the wrong host. Claude Code itself is unaffected: the plugin fails open and exits 0 so hooks remain healthy. The one exception is the `session_end`: its POST is made by the detached SessionEnd worker, whose failed-POST line goes to the worker log instead of the terminal (see below).
+The plugin logs one line per failed POST, capped at two lines per hook invocation (one for the session-start check and one for the event). Either the stack is not running, or the server (the `server` option or `FLIGHTDECK_SERVER`) points at the wrong host. Claude Code itself is unaffected: the plugin fails open and exits 0 so hooks remain healthy. The one exception is the `session_end`: its POST is made by the detached SessionEnd worker, whose failed-POST line goes to the worker log instead of the terminal (see below).
 
 ### `session_end` never arrives, or the session stays open after exit
 

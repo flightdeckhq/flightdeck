@@ -8,5 +8,18 @@
   },
   "homepage": "https://github.com/flightdeckhq/flightdeck",
   "repository": "https://github.com/flightdeckhq/flightdeck",
-  "license": "Apache-2.0"
+  "license": "Apache-2.0",
+  "userConfig": {
+    "server": {
+      "type": "string",
+      "title": "Flightdeck server",
+      "description": "Base URL of your Flightdeck stack, for example https://flightdeck.example.com. Leave empty for a local make dev stack (http://localhost:4000). FLIGHTDECK_SERVER overrides it."
+    },
+    "token": {
+      "type": "string",
+      "title": "Flightdeck token",
+      "description": "Access token the hooks send as a bearer token. Leave empty for the local dev token. FLIGHTDECK_TOKEN overrides it.",
+      "sensitive": true
+    }
+  }
 }

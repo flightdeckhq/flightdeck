@@ -43,7 +43,7 @@ production agents defaults the other way.
 
 ## Where the session shows up
 
-Open the dashboard served by `FLIGHTDECK_SERVER` (default
+Open the dashboard at the configured server (default
 `http://localhost:4000`). The session is stamped with:
 
 - flavor `claude-code`
@@ -73,12 +73,19 @@ policy fetched at session start for flavor `claude-code`:
 Operators change the policy in the dashboard under MCP policies. The
 plugin re-reads it at the next session start.
 
+## Configuration
+
+The server and token are plugin options: in `/plugin`, select
+**flightdeck** on the **Installed** tab and choose **Configure options**.
+The token is kept in Claude Code's credential store. `FLIGHTDECK_SERVER`
+and `FLIGHTDECK_TOKEN` override the saved options for one shell or run.
+
 ## Environment variables
 
 | Variable | Default | Effect |
 | --- | --- | --- |
-| `FLIGHTDECK_SERVER` | `http://localhost:4000` | Control plane base URL; events go to `/ingest`, policies come from `/api`. |
-| `FLIGHTDECK_TOKEN` | `tok_dev` | Access token. The default is the development seed token and prints a warning; set a real token outside local development. |
+| `FLIGHTDECK_SERVER` | the `server` option, else `http://localhost:4000` | Control plane base URL; events go to `/ingest`, policies come from `/api`. |
+| `FLIGHTDECK_TOKEN` | the `token` option, else `tok_dev` | Access token. The default is the development seed token and prints a warning; set a real token outside local development. |
 | `FLIGHTDECK_CAPTURE_PROMPTS` | `true` | `false` strips prompt, response and tool-result bodies while keeping metadata and token counts. |
 | `FLIGHTDECK_CAPTURE_TOOL_INPUTS` | `true` | `false` strips the sanitised tool arguments. |
 | `FLIGHTDECK_BILLING_MODE` | detected | `metered`, `subscription` or `local`; overrides the billing mode the plugin detects from `claude auth status` and the cloud-provider variables (set `metered` when a subscription runs on extra usage). |

@@ -12,6 +12,20 @@ All notable changes to Flightdeck are documented here.
   reading (text, tool calls with their inputs, parsed tool results) and
   indents and highlights any JSON, including a string that holds JSON;
   Raw shows the value exactly as stored.
+- **The Claude Code plugin's server and token are plugin options.** Set
+  them in `/plugin` (select flightdeck, then **Configure options**);
+  Claude Code keeps the token in its credential store.
+  `FLIGHTDECK_SERVER` and `FLIGHTDECK_TOKEN` still work and override the
+  saved options.
+
+### Fixed
+
+- **A Claude Code model call with very large captured content is no
+  longer lost.** An event over the server's 1 MiB limit was rejected,
+  and the call's token counts with it. A prompt, tool result or
+  sub-agent message long enough to cross it is now cut to fit, and the
+  cut text ends with `… [flightdeck: kept N of M bytes to fit the event
+  size limit]`.
 
 ### Changed
 

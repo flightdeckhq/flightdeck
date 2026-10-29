@@ -67,3 +67,21 @@ session and billing mode.
 machine still re-sends; the worker check covers every source); a
 `message_id` column with a unique index (the event id already carries
 the identity, and `events` is keyed on `(id, occurred_at)`).
+
+## D216 -- The plugin cuts captured content to fit the 1 MiB event limit
+
+**Date:** 2026-10-29
+**Decision:** The Claude Code plugin sends no event body over 768 KiB.
+An event over it has the strings of its captured `content` cut, all to
+the same largest length that fits, each ending in a visible marker;
+when no cut fits, the event is sent without content. Token counts and
+metadata are never cut.
+**Why:** Ingestion reads 1 MiB of a body and NATS carries 1 MiB per
+message, so a larger event was rejected (413 or 400) and its tokens
+lost.
+13 of 5,332 turns in one dev box's transcripts crossed it.
+**Rejected alternative:** raising the ingestion and NATS limits (a long
+enough prompt crosses any limit, and the limit bounds how much one
+request makes ingestion buffer); dropping the content of an oversized
+event outright (loses the part that fits).
+

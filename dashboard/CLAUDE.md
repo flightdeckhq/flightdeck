@@ -17,7 +17,7 @@
     neon dark and clean light render correctly. Breaking one theme is an incomplete task.
 
 15. **Never casually edit globals.css or themes.css.** These define both themes.
-    Only edit with explicit Supervisor approval.
+    Only edit with explicit maintainer approval.
 
 16. **D3 is used for math only.** In the timeline component, D3 is used exclusively
     for `d3-scale` and `d3-time` calculations. D3 must never manipulate the DOM.

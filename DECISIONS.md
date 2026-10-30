@@ -31,8 +31,9 @@ Each entry is 10 to 15 lines:
 
 Decisions D001 to D213 are in [DECISIONS-ARCHIVE.md](DECISIONS-ARCHIVE.md),
 frozen on 2026-10-27; D-numbers cited in CHANGELOG.md, migrations and
-PR history resolve there. Numbering continues from D214. A new entry
-that supersedes an archived one says so in its **Decision** line.
+PR history resolve there. Numbering continues from D214. Entries are
+never edited once merged: a reversal or an extension is a new entry that
+names the one it supersedes in its **Decision** line.
 
 ## D214 -- client_type is a registry of nine values with per-type defaults
 

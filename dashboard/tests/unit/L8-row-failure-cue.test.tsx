@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { render } from "@testing-library/react";
 import { SubAgentLostDot } from "@/components/facets/SubAgentRolePill";
 
-// Cross-cutting L8 row-failure cue suite. METHODOLOGY
+// Cross-cutting L8 row-failure cue suite. CONTRIBUTING.md
 // L8: surface row-level failures inline so an operator scanning a
 // table or a swimlane immediately spots trouble without expanding the
 // row. The same red AlertCircle pattern fires on:

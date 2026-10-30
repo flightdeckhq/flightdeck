@@ -16,7 +16,7 @@
 
 29. **Token counting carries over from tokencap.** Do not rewrite the counting logic.
     Extend it. Pre-call estimation, post-call reconciliation, delta correction -- these
-    are proven and must not be changed without Supervisor approval.
+    are proven and must not be changed without the maintainer's approval.
 
 30. **capture_prompts defaults to False.** The default init() call never captures
     content. Always verify this default has not been accidentally changed.

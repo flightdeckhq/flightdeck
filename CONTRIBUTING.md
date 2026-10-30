@@ -128,6 +128,60 @@ for the routing table and the "how to extend" walkthrough. To opt
 out of the pipeline for an emergency fix, pass `--no-hooks` to
 Claude Code, or override at the user level in `~/.claude/`.
 
+## Engineering principles
+
+Standing rules every PR follows. The numbers are cited in code and tests
+(for example the row-level failure cue, L8).
+
+- **L1 — Docs describe the present.** ARCHITECTURE.md says what the system
+  is, not how it got there: no phase tags, "was added" or "previously".
+  History lives in CHANGELOG.md, DECISIONS.md and `git log`.
+- **L2 — Docs change in the same PR as the code, first.** A PR that changes
+  behaviour ARCHITECTURE.md describes, or makes a decision DECISIONS.md
+  records (a contract, the schema, a trust boundary, or a rejected
+  alternative someone would propose again), updates them before the code.
+- **L3 — A dead end is a bug.** Anything a user can see but not act on (an
+  error without details, a list without paging, a panel that opens onto
+  nothing) is a defect, not polish.
+- **L4 — Verify end to end, against the live stack.** Trace a feature from
+  the client through ingestion, the workers and storage to the screen a user
+  touches. Mocked tests passing is not evidence it works.
+- **L5 — Every modality captures content.** Anything with a request and a
+  response payload supports content capture behind `capture_prompts` (or a
+  modality-specific flag). Check new modality work for capture parity before
+  merge; a modality without it is a gap, not a choice.
+- **L6 — Severity follows where code runs and a threat trace.** The same
+  pattern is critical in a production handler and minor in a dev seed
+  script. A P0 or P1 finding records its attack vector and impact.
+- **L7 — Patch the protocol, not each adapter.** When several frameworks
+  wrap one protocol (MCP through LangChain, LangGraph, LlamaIndex and the raw
+  SDK), patch the protocol's canonical client once; framework attribution
+  goes on the event's `framework` field.
+- **L8 — Show failures on the row.** An event type with success and failure
+  variants needs a cue visible without expanding the row (the session-row
+  error dot, the MCP error indicator).
+
+### Review rubric
+
+A PR with meaningful code is reviewed in five passes, one per concern:
+Python (sensor, playground, integration suites), Go (ingestion, workers,
+API, migrations), TypeScript and UI (dashboard, both themes, accessibility),
+architecture (doc alignment, contracts across components, L1 and L2), and
+QA (tests at every layer, E2E discipline, live verification, L3 to L8). This
+review before merge is what CLAUDE.md calls the phase audit or V-pass. The
+agents in `.claude/agents/` encode these passes; they report Critical (a P0
+or P1 here, Block) and Warnings (P2 or P3, Recommend or Defer).
+
+Findings are graded **P0** (breaks, crashes, or silently loses or corrupts
+data on a default install: a fail-open control, a silent zero-event path,
+wrong numbers persisted), **P1** (a wrong number shown, a table-stakes gap,
+or an end-of-life runtime or dependency), **P2** (valuable) or **P3**
+(hygiene), with evidence **A** (executed), **B** (source with file and
+line), **C** (dated documentation) or **D** (secondary); only A or B
+evidence supports a P0. Each finding is **Block** (fix before merge),
+**Recommend** (fix in this PR unless the maintainer agrees to defer it) or
+**Defer** (a Roadmap bullet in README.md, never an unowned follow-up).
+
 ## Releasing
 
 Before tagging a release, run `make playground-all` against a live stack with

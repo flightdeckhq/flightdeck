@@ -29,7 +29,7 @@ This file is the **Phase 5 dashboard contract**.
   require regenerating this file.
 
 - After Step 8 (dashboard implementation) begins, any contract change
-  requires explicit Supervisor approval AND a full dashboard test rerun.
+  requires explicit maintainer approval AND a full dashboard test rerun.
   Drift here silently breaks rendering.
 
 - The fixture file is authoritative. If the fixture and a test disagree,

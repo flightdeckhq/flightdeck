@@ -128,7 +128,7 @@ Flightdeck conventions (see `CLAUDE.md`):
   must work at all times. After any frontend change verify both themes
   render correctly. Breaking one theme is an incomplete task. Never
   casually edit `globals.css` or `themes.css` — those define both themes
-  and require explicit supervisor approval before editing (rule 15).
+  and require explicit maintainer approval before editing (rule 15).
 - **D3 math-only (rule 16).** In the timeline component, D3 is used
   exclusively for `d3-scale` and `d3-time` calculations. D3 must never
   manipulate the DOM. React owns the rendered tree.

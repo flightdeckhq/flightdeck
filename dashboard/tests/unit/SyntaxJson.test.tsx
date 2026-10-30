@@ -22,4 +22,17 @@ describe("SyntaxJson", () => {
     expect(render(<SyntaxJson data={"plain"} />).container.textContent).toBe('"plain"');
     expect(render(<SyntaxJson data={undefined} />).container.textContent).toBe("undefined");
   });
+
+  it("scrolls sideways by default and wraps at the container's width with wrap", () => {
+    const data = { long: "x".repeat(500) };
+    const scroll = render(<SyntaxJson data={data} />).container.querySelector("pre")!;
+    expect(scroll.className).toContain("whitespace-pre ");
+    expect(scroll.className).toContain("overflow-x-auto");
+    expect(scroll.dataset.wrap).toBeUndefined();
+    const wrapped = render(<SyntaxJson data={data} wrap />).container.querySelector("pre")!;
+    expect(wrapped.className).toContain("whitespace-pre-wrap");
+    expect(wrapped.className).not.toContain("overflow-x-auto");
+    expect(wrapped.style.overflowWrap).toBe("anywhere");
+    expect(wrapped.dataset.wrap).toBe("true");
+  });
 });

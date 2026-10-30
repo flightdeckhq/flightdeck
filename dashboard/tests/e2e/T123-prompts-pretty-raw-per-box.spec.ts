@@ -61,6 +61,29 @@ test.describe("T123 — Prompts panel Pretty / Raw per box", () => {
     await expect(drawer.getByTestId("prompt-box-message-0")).toHaveAttribute("data-view", "pretty");
     await expect(drawer.getByTestId("prompt-box-response")).toHaveAttribute("data-view", "pretty");
 
+    // Raw wraps at the box's width instead of scrolling sideways. The
+    // tool_result's escaped JSON string (the seed makes it about twice
+    // the box's width) is one long line: unwrapped it is wider than the
+    // box, wrapped it fits.
+    await drawer.getByTestId("prompt-box-message-2-raw").click();
+    const widths = await drawer.getByTestId("prompt-box-message-2-raw-json").evaluate((el) => {
+      const pre = el.querySelector("pre")!;
+      const wrapped = { scroll: pre.scrollWidth, client: pre.clientWidth };
+      const saved = pre.style.cssText;
+      pre.style.whiteSpace = "pre";
+      pre.style.overflowWrap = "normal";
+      const unwrapped = { scroll: pre.scrollWidth, client: pre.clientWidth };
+      pre.style.cssText = saved;
+      return { wrapped, unwrapped };
+    });
+    expect(widths.unwrapped.scroll, "the raw line is long enough to overflow unwrapped").toBeGreaterThan(
+      widths.unwrapped.client,
+    );
+    expect(widths.wrapped.scroll, "the raw view wraps instead of scrolling sideways").toBeLessThanOrEqual(
+      widths.wrapped.client,
+    );
+    await drawer.getByTestId("prompt-box-message-2-pretty").click();
+
     await drawer.getByTestId("prompt-box-message-1-pretty").click();
     await expect(drawer.getByTestId("prompt-box-message-1")).toHaveAttribute("data-view", "pretty");
   });

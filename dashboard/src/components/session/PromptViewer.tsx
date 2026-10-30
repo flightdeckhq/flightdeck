@@ -163,7 +163,8 @@ function ViewBox({
           className="rounded-md p-2.5"
           style={{ background: "var(--bg-elevated)" }}
         >
-          <SyntaxJson data={raw} />
+          {/* Raw wraps at the box's width rather than scrolling sideways. */}
+          <SyntaxJson data={raw} wrap />
         </div>
       )}
     </div>

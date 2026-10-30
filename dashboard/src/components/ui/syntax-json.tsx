@@ -15,7 +15,12 @@ function escapeHtml(str: string): string {
     .replace(/'/g, "&#39;");
 }
 
-export function SyntaxJson({ data }: { data: unknown }) {
+/**
+ * ``wrap`` breaks long lines at the container's width (indentation
+ * kept, a long unbroken string split anywhere) instead of scrolling
+ * sideways.
+ */
+export function SyntaxJson({ data, wrap = false }: { data: unknown; wrap?: boolean }) {
   // 1. JSON.stringify
   // 2. HTML-escape so any user-controlled `<`, `>`, `&` cannot break
   //    out of the <pre> via dangerouslySetInnerHTML
@@ -45,8 +50,13 @@ export function SyntaxJson({ data }: { data: unknown }) {
 
   return (
     <pre
-      className="overflow-x-auto whitespace-pre font-mono text-[11px] leading-relaxed"
-      style={{ color: "var(--text-secondary)" }}
+      className={
+        wrap
+          ? "whitespace-pre-wrap font-mono text-[11px] leading-relaxed"
+          : "overflow-x-auto whitespace-pre font-mono text-[11px] leading-relaxed"
+      }
+      style={{ color: "var(--text-secondary)", ...(wrap ? { overflowWrap: "anywhere" } : {}) }}
+      data-wrap={wrap ? "true" : undefined}
       dangerouslySetInnerHTML={{ __html: colored }}
     />
   );

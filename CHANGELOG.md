@@ -11,7 +11,8 @@ All notable changes to Flightdeck are documented here.
   their own Pretty / Raw toggle. Pretty renders content blocks for
   reading (text, tool calls with their inputs, parsed tool results) and
   indents and highlights any JSON, including a string that holds JSON;
-  Raw shows the value exactly as stored.
+  Raw shows the value exactly as stored, wrapped at the box's width
+  rather than scrolling sideways.
 - **The Claude Code plugin's server and token are plugin options.** Set
   them in `/plugin` (select flightdeck, then **Configure options**);
   Claude Code keeps the token in its credential store.

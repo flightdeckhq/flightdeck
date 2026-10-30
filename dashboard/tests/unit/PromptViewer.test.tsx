@@ -283,6 +283,11 @@ describe("PromptViewer tool_call content", () => {
     fireEvent.click(screen.getByTestId("prompt-box-response-raw"));
     expect(screen.queryByTestId("tool-result-parsed")).not.toBeInTheDocument();
     expect(screen.getByTestId("prompt-box-response-raw-json")).toBeInTheDocument();
+    // Raw wraps at the box's width instead of scrolling sideways.
+    expect(screen.getByTestId("prompt-box-response-raw-json").querySelector("pre")).toHaveAttribute(
+      "data-wrap",
+      "true",
+    );
   });
 });
 

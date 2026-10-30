@@ -981,10 +981,10 @@ The SDK class patches and the litellm patch deliberately do NOT intercept:
 |---|---|
 | `OpenAI.beta.chat.completions.parse` / `.stream` | Structured-output path on a separate `OpenAI.beta` `cached_property`. Not yet observed in any framework's default flow. |
 | `OpenAI.chat.completions.stream`, `OpenAI.responses.stream` | `.stream()` calls the unwrapped resource's `create` internally, so it does not pass the sensor wrapper; `create(stream=True)` on the same resources is intercepted, and so is the non-streaming `.parse()` on both. |
-| `OpenAI.chat.completions.with_raw_response.create(stream=True)`, `OpenAI.responses.with_raw_response.create(stream=True)`, `with_streaming_response` on either resource | The raw-response wrappers are intercepted for `create` and `parse`, but a streamed call through them records the pre-call estimate with no `streaming` block, and `with_streaming_response` passes through unintercepted. langchain-openai takes the chat raw-response path when `include_response_headers=True`. On the README Roadmap. |
+| `OpenAI.chat.completions.with_raw_response.create(stream=True)`, `OpenAI.responses.with_raw_response.create(stream=True)`, `with_streaming_response` on either resource | The raw-response wrappers are intercepted for `create` and `parse`, but a streamed call through them records the pre-call estimate with no `streaming` block, and `with_streaming_response` passes through unintercepted. langchain-openai takes the chat raw-response path when `include_response_headers=True`. Planned in [#173](https://github.com/flightdeckhq/flightdeck/issues/173). |
 | `OpenAI.audio.*`, `images.*`, `moderations.*`, `files.*`, `fine_tuning.*`, `completions.*` (legacy) | Utility resources unrelated to LLM inference events. |
 | `Anthropic.completions.*` | Legacy completions API; superseded by `messages` / `beta.messages`. |
-| `litellm.text_completion` / `atext_completion`, `litellm.responses` / `aresponses` | Not patched. `text_completion` calls `completion` through the name bound in `litellm.main`, which the module-attribute swap does not reach: on an OpenAI chat model the OpenAI interceptor reports the SDK call it makes, and litellm's own httpx routes are unobserved. `responses` on a provider without a native Responses API is bridged through the patched `litellm.completion` and reported once as a chat call; native routes (OpenAI) go through litellm's own httpx handler and are unobserved. Both on the README Roadmap. |
+| `litellm.text_completion` / `atext_completion`, `litellm.responses` / `aresponses` | Not patched. `text_completion` calls `completion` through the name bound in `litellm.main`, which the module-attribute swap does not reach: on an OpenAI chat model the OpenAI interceptor reports the SDK call it makes, and litellm's own httpx routes are unobserved. `responses` on a provider without a native Responses API is bridged through the patched `litellm.completion` and reported once as a chat call; native routes (OpenAI) go through litellm's own httpx handler and are unobserved. Both planned in [#170](https://github.com/flightdeckhq/flightdeck/issues/170). |
 | Anthropic `messages.batches.*`, `messages.count_tokens` | Batches are offline work with their own billing and run outside the kill switch and the token budget; `count_tokens` is the sensor's own estimator and makes no inference call. |
 | Anthropic `with_raw_response.create(stream=True)` whose response is never parsed | The event stream is metered once `parse()` hands it to the stream guard; a raw response that is never parsed has no close hook, so that call emits no `post_call`. The streaming view (`with_streaming_response`) always settles at close. |
 | Frameworks that bypass the SDK entirely (raw httpx, boto3 bedrock-runtime, vertexai) | No SDK class to patch. |
@@ -1054,8 +1054,8 @@ identity is unchanged for those paths.
 
 Sub-agent coverage tracks the LLM-interception coverage matrix above
 — a framework lands here only after Flightdeck observes its plain
-LLM calls. Microsoft Agent Framework (the successor to AutoGen) is on
-the README Roadmap; the archived AutoGen packages are not planned.
+LLM calls. Microsoft Agent Framework (the successor to AutoGen) is planned
+([#185](https://github.com/flightdeckhq/flightdeck/issues/185)); the archived AutoGen packages are not planned.
 
 Cross-agent message capture rides on the same
 `capture_prompts` gate as LLM prompt content. Each
@@ -1684,7 +1684,7 @@ sessions extend the derivation with a conditional 6th input,
 |---|---|---|
 | `agent_id` | UUID | Deterministically derived from the other identity fields via `core/agent_id.py` |
 | `agent_type` | `coding` \| `production` | Sensor `init` kwarg or `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` env. Plugin always emits `coding`; a plugin session's entrypoint / attended / CI / cloud signals are context fields, not identity |
-| `client_type` | one of the values in the client type registry below | Each client sends its own literal: the plugin `claude_code`, the sensor `flightdeck_sensor`; `claude_agent_sdk` is reserved for the Agent SDK interceptor on the Roadmap |
+| `client_type` | one of the values in the client type registry below | Each client sends its own literal: the plugin `claude_code`, the sensor `flightdeck_sensor`; `claude_agent_sdk` is reserved for the Agent SDK interceptor ([#182](https://github.com/flightdeckhq/flightdeck/issues/182)) |
 | `agent_name` | string | Sensor `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` env. Default `{user}@{hostname}`. Plugin uses the user's chosen flavor |
 | `user` | string | Resolved from `getpass.getuser` (sensor) or `process.env.USER` (plugin) |
 | `agent_role` (optional 6th) | string \| null | Framework-driven on sub-agent sessions. CrewAI: `Agent.role`. LangGraph: node name. Claude Code Task: hook payload `agent_type`. Null on root sessions and direct-SDK sessions |
@@ -1702,10 +1702,11 @@ absent on the wire and explicit-null are accepted.
 `client_type` names the client that produced an event. Its values form a
 registry: a closed list, so ingestion still rejects anything outside it,
 that holds every client Flightdeck integrates with, including those
-whose emitter is still on the Roadmap, so adding an emitter never needs
+whose emitter is still planned, so adding an emitter never needs
 a schema change. The Claude Code plugin sends `claude_code` and the
 Python sensor sends `flightdeck_sensor`; the other values are
-reserved for the integrations the README Roadmap lists. Each value
+reserved for the planned integrations ([#182](https://github.com/flightdeckhq/flightdeck/issues/182), [#184](https://github.com/flightdeckhq/flightdeck/issues/184),
+[#186](https://github.com/flightdeckhq/flightdeck/issues/186)). Each value
 carries a display label and the defaults below:
 
 | `client_type` | Label | Expected `agent_type` | `supports_directives` default | `billing_mode` default | Worker strips tool error text |
@@ -1762,7 +1763,7 @@ and `agent_id`; `otlp` is for sources no registry entry names.
 
 **Claude Agent SDK and Claude Code.** The Agent SDK runs the Claude Code
 CLI as a subprocess. `claude_agent_sdk` is reserved for the Agent SDK
-interceptor on the Roadmap, and its contract with the plugin is fixed
+interceptor ([#182](https://github.com/flightdeckhq/flightdeck/issues/182)), and its contract with the plugin is fixed
 here so that a run is reported once: the interceptor sets
 `FLIGHTDECK_SDK_OBSERVED=1` in that subprocess's environment and
 applies the MCP policy itself, and the plugin then stays silent for the
@@ -5144,7 +5145,7 @@ sensor emits one `tool_call` per output item that is a call:
 - `function_call`, `mcp_call` and `custom_tool_call` carry the tool's own
   name as `tool_name`; the input is the JSON-decoded `arguments` (for a
   custom tool, `{"input": <text>}`, as those tools take free-form text).
-  The MCP server label is not carried on the event (README Roadmap).
+  The MCP server label is not carried on the event ([#174](https://github.com/flightdeckhq/flightdeck/issues/174)).
 - Hosted tools have no per-call name, so the item type is the
   `tool_name`: `web_search_call`, `file_search_call`,
   `code_interpreter_call`, `image_generation_call`, `computer_call`,
@@ -5248,7 +5249,7 @@ adds them to the in-process session counter that drives its local budget
 checks; server-side session totals, the `tokens` metric and
 `estimated_cost` do not include them: the session totals add every event
 that carries `tokens_total` (`post_call` and `embeddings`) and the
-analytics metrics read `post_call` events (README Roadmap).
+analytics metrics read `post_call` events ([#172](https://github.com/flightdeckhq/flightdeck/issues/172)).
 
 Classification walks the exception's class name first (each SDK names
 its classes consistently; the Anthropic-specific `DeadlineExceededError`,
@@ -6697,8 +6698,8 @@ Service for scrapers. A port that cannot be bound is logged and event
 processing continues. Compose does not publish the port; nginx does not
 route to it. The worker's log lines for the same events (drops, reaper
 closes, revivals) remain the signal when the listener is off. Request
-latency histograms for the ingestion and query APIs are on the README
-Roadmap.
+latency histograms for the ingestion and query APIs are planned
+([#178](https://github.com/flightdeckhq/flightdeck/issues/178)).
 
 ### Operator endpoints
 

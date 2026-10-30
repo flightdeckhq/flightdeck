@@ -368,12 +368,13 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
 
 49. **No indefinite deferral bucket.** Issues land in one of three states:
     fixed in the release they are filed in, declined with a documented reason
-    (typically in the commit body or DECISIONS.md), or on the Roadmap in
-    `README.md` (the `## Roadmap` section) as a user-prioritizable bullet. The prior
-    `KNOWN_ISSUES.md` / `Deferred to v0.4.0` bucket was retired; it had
-    become a dumping ground where items sat for months. The Roadmap is
-    public (user-facing README) so the work is visible and user demand can
-    prioritize it.
+    (typically in the commit body or DECISIONS.md), or on the roadmap as a
+    GitHub issue labelled `roadmap`, with a milestone when it is planned for
+    a release. The prior `KNOWN_ISSUES.md` / `Deferred to v0.4.0` bucket
+    was retired; it had become a dumping ground where items sat for months.
+    Roadmap issues are public so the work is visible, and users prioritize
+    it with reactions and comments. The README links to the label and
+    carries no roadmap list of its own.
 
     When you would have filed a KI, instead:
     - If it's a bug that needs fixing now: fix it in this commit or the
@@ -383,13 +384,13 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
       follow-up pointer if there's a real path to revisit), and close the
       matter.
     - If it's a post-launch follow-up that might matter to users but has
-      no concrete owner yet: add or update a Roadmap bullet in README.md.
+      no concrete owner yet: open or update a `roadmap` issue.
     - If it's outside scope entirely (feature creep, hypothetical): decline
       in the PR or commit body with reason. No entry anywhere.
 
     `TODO(KI...)` comments in code are retired. If a comment refers to
-    deferred work, use `TODO: <short description>` with a pointer to the
-    Roadmap section when applicable. Plain `TODO` for local "come back to
+    deferred work, use `TODO: <short description>` with the roadmap issue
+    number when applicable. Plain `TODO` for local "come back to
     this after the branch merges" work is still fine.
 
 ---
@@ -432,10 +433,10 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
     The phase's intent is defined by its title and goal statement.
     A finding that clearly fits is in scope. A finding that clearly
     doesn't (e.g., unrelated feature work that warrants user
-    prioritisation) lands as a Roadmap bullet in README.md and is
+    prioritisation) lands as a `roadmap` issue and is
     addressed later. Borderline cases are resolved by the
     maintainer, not deferred unilaterally. There is no separate
-    "follow-ups" file — the Roadmap and the current PR are the
+    "follow-ups" file — the roadmap issues and the current PR are the
     only two destinations.
 
     This rule applies to Claude Code's "preserve intentionally" or

@@ -162,8 +162,8 @@ the single-count assertion and the capture round-trip).
   if framework reports surface calls that slip past the current
   coverage, file a new issue.
 - **`litellm.text_completion` / `atext_completion` and
-  `litellm.responses` / `aresponses`.** Neither is wrapped (root
-  `README.md` Roadmap), but some routes are still reported. The legacy
+  `litellm.responses` / `aresponses`.** Neither is wrapped (planned in
+  [#170](https://github.com/flightdeckhq/flightdeck/issues/170)), but some routes are still reported. The legacy
   completion API calls `completion` through the name bound in
   `litellm.main`, which the module-attribute swap does not reach; on
   an OpenAI chat model the OpenAI interceptor reports the SDK call it

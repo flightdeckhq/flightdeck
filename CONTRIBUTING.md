@@ -180,7 +180,7 @@ or an end-of-life runtime or dependency), **P2** (valuable) or **P3**
 line), **C** (dated documentation) or **D** (secondary); only A or B
 evidence supports a P0. Each finding is **Block** (fix before merge),
 **Recommend** (fix in this PR unless the maintainer agrees to defer it) or
-**Defer** (a Roadmap bullet in README.md, never an unowned follow-up).
+**Defer** (a GitHub issue labelled `roadmap`, never an unowned follow-up).
 
 ## Releasing
 

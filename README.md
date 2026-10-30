@@ -449,53 +449,16 @@ The chart is at `version` 0.7.1 with `appVersion` 0.7.1; the default `image.tag`
 - **Not a billing system.** `estimated_cost` is an approximation from public list prices. Treat as a sanity check.
 - **Not a notification platform.** No Slack, email, or PagerDuty integrations.
 - **Not multi-tenant SaaS.** Self-hosted only. One deployment, one tenant.
+- **Not an evaluation or prompt-management tool.** No LLM-as-judge scoring, eval datasets or prompt versioning.
 - **Not an LLM gateway.** No model substitution, no caching layer, no retries injected by Flightdeck. The sensor enforces budgets your agents already know about.
 
 ---
 
 ## Roadmap
 
-Deferred and planned work lives here so it stays visible and user demand can prioritise it. Items are added when a release declines or defers them and removed when they ship. The sequence below is the October 2026 update plan; status reflects `main`.
+Planned work is tracked as [GitHub issues labelled `roadmap`](https://github.com/flightdeckhq/flightdeck/issues?q=is%3Aissue+is%3Aopen+label%3Aroadmap), grouped by release milestone. React with :+1: on the ones you need; that is how they get prioritised.
 
-### Next up (v0.8.0)
-
-- Helm: replicate the `FLIGHTDECK` JetStream stream across the NATS cluster (it is created with one replica today, so losing that server stalls ingestion until it returns); needs an in-place stream update for existing installs.
-- Sensor correctness on current SDKs: the `OpenAI.beta.chat.completions.parse` structured-output path (the non-beta `parse()` on chat and Responses is intercepted), litellm `text_completion` / `responses`.
-- Streamed-call coverage: with `capture_prompts` on, `messages.create(stream=True)` and `chat.completions.create(stream=True)` store the request but not the streamed response text, because the raw event stream is never assembled into a message; `responses.create(stream=True)` stores neither, having no request `input` on any path; none of the raw streams emit `tool_call` events (the `messages.stream()` helper does both). The OpenAI `chat.completions.stream()` and `responses.stream()` helpers and `chat.completions.with_streaming_response` / `responses.with_streaming_response` are not intercepted (the non-streaming `.parse()` on both APIs is).
-- Failed-stream accounting: the provider-billed tokens a stream delivered before a mid-stream failure (`llm_error.partial_tokens_*`) count only against the sensor's local session budget; server-side session totals (which add `post_call` and `embeddings` events) and the analytics `tokens` and `estimated_cost` metrics (`post_call`) do not include them yet.
-- Raw-response streaming: `chat.completions.with_raw_response.create(stream=True)` and `responses.with_raw_response.create(stream=True)` record the pre-call estimate with no `streaming` block (langchain-openai takes the chat path with `include_response_headers=True`); the non-streaming raw-response `create` / `parse` calls on both resources are metered. The Anthropic raw and streaming views are metered.
-- Responses MCP tool calls: the `tool_call` event for an `mcp_call` output item carries the tool's name but not its `server_label`; carry the server label so the event names the MCP server the call went to.
-- Signal-handler shutdown: the SIGTERM / SIGINT handler runs `Session.end()` on the interrupted thread, which may already hold the session, policy or queue lock, so the shutdown can hang; move that shutdown work off the interrupted thread.
-- Ingestion validation of streaming fields: `streaming.final_outcome`, `streaming.abort_reason`, `error.abort_reason` and the non-negativity of `partial_chunks` / `partial_tokens_*` are stored as sent; only `tokens_input` / `tokens_output` / `tokens_total` are range-checked today.
-- Toolchain currency: npm and pip vulnerability scanning in CI (Go modules are checked by govulncheck and release images by Trivy today).
-- Operations: add request-latency histograms to the Go services, bound the NATS stream (`MaxAge` / `MaxBytes`; the `FLIGHTDECK` stream keeps every message today) and rotate the workers' logs in the compose files, so a flood of events cannot fill the NATS store or the host disk.
-- Claude Code plugin tool failures in the dashboard: a failed tool call is stored as a `tool_call` with an `error` block and already shows in the unscoped `/v1/events` `error_type` facet and the Investigate status chip, but the session drawer's error indicator, the `tool_call` rows, the per-session `error_types[]` aggregate and the agent `errors` count do not include it yet. The per-session MCP-server facet keys plugin-bundled servers as `plugin:<plugin>:<server>` for rows stored from v0.6.0 on while older rows keep `plugin_<plugin>_<server>`.
-- Workers: validate the `session_id` shape and cap log field sizes at the NATS consumer boundary. Ingestion validates today and the NATS stream is treated as untrusted, so a direct publisher can still make the worker log oversized ids.
-- Claude Code plugin v2: the remaining hook events (API errors, permission prompts, compaction, model switches, teams and worktrees), native cost from the transcript, async hooks, plugin `userConfig`, and enforcement (kill switch, token budgets and MCP deny) for Claude Code sessions.
-- Claude Agent SDK interceptor for Python agents built on the SDK.
-- Sensor import cost: `import flightdeck_sensor` imports litellm, the MCP SDK and the Anthropic and OpenAI SDKs whenever they are installed, whether or not the application uses them, and importing litellm fetches its price list from GitHub. Patch these when they are first imported instead, so an application pays only for the libraries it uses.
-
-### Planned (v0.9.0 and later)
-
-- OTLP / OpenTelemetry ingest (observer class) for Claude Code native telemetry, Codex CLI, Gemini CLI, GitHub Copilot and OTel-instrumented frameworks.
-- Google provider (`google-genai`) and Google ADK; OpenAI Agents SDK, Pydantic AI, LlamaIndex, Strands (Bedrock Converse), Microsoft Agent Framework, Agno, Haystack and smolagents sub-agent coverage; a DSPy callback adapter.
-- Coding-agent adapters, in this order: Codex CLI, GitHub Copilot, OpenCode, Gemini CLI, Cursor.
-- MCP: server-side MCP (the OpenAI Responses `mcp` tool and the Anthropic MCP connector) observation and policy, per-tool allow / deny with annotation awareness, tool-definition drift detection, and the MCP 2.x surfaces (discover, elicitation, tasks).
-- Run-drawer span and turn tree, a per-user cost dimension, PII and secret redaction before storage, OIDC login with roles and an audit log, vendor usage import (Claude Code Analytics API, Codex, Cursor, Copilot), and agent version-drift signals.
-
-### Carried over
-
-- Continuous live-API smoke runs (a scheduled playground job).
-- nginx rate limiting at the edge (a per-token limiter exists in ingestion).
-- Dashboard authentication beyond the single bearer token (lands with OIDC above).
-- MCP policy version history, dry-run preview and YAML import / export (dropped from the first MCP policy release; reinstated on demand).
-- Removal of the CrewAI MCP schema compat helper once `mcpadapt` no longer needs it.
-- Surfacing API 400 validation errors in the dashboard.
-
-### Declined
-
-- Antigravity CLI adapter (its hooks expose no telemetry or token data yet), Roo Code (shut down), Continue (repository read-only), AutoGen (archived; superseded by the Microsoft Agent Framework item above).
-- Evaluations and LLM-as-judge, prompt management, notifications, a proxy or gateway mode, and multi-tenant SaaS (see "What Flightdeck is NOT").
+Not planned: Antigravity CLI (its hooks expose no telemetry or token data yet), Roo Code (shut down), Continue (repository read-only) and AutoGen (archived; its successor, Microsoft Agent Framework, is on the roadmap).
 
 ---
 

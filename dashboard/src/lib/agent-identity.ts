@@ -17,8 +17,8 @@
 /** Every ``client_type`` value the API accepts: the client type
  *  registry, mirrored from ``contracts/client_types.json`` (a unit test
  *  pins this copy to it). Only the Claude Code plugin and the Python
- *  sensor send events today; the other values are reserved for the
- *  integrations on the README Roadmap. */
+ *  sensor send events today; the other values are reserved for planned
+ *  integrations (GitHub issues labelled ``roadmap``). */
 export const ClientType = {
   ClaudeCode: "claude_code",
   FlightdeckSensor: "flightdeck_sensor",

@@ -68,10 +68,11 @@ machine still re-sends; the worker check covers every source); a
 `message_id` column with a unique index (the event id already carries
 the identity, and `events` is keyed on `(id, occurred_at)`).
 
-## D216 -- The plugin cuts captured content to fit the 1 MiB event limit
+## D216 -- Clients cut captured content to fit the 1 MiB event limit
 
 **Date:** 2026-10-29
-**Decision:** The Claude Code plugin sends no event body over 768 KiB.
+**Decision:** The Claude Code plugin and the Python sensor send no
+event body over 768 KiB.
 An event over it has the strings of its captured `content` cut, all to
 the same largest length that fits, each ending in a visible marker;
 when no cut fits, the event is sent without content. Token counts and

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -12,6 +13,7 @@ import pytest
 
 from flightdeck_sensor.core.exceptions import DirectiveError
 from flightdeck_sensor.core.types import Directive, DirectiveAction
+from flightdeck_sensor.transport.body_limit import MAX_EVENT_BODY_BYTES
 from flightdeck_sensor.transport.client import (
     _MAX_QUEUE_SIZE,
     ControlPlaneClient,
@@ -62,6 +64,25 @@ def test_post_event_returns_attached_true_when_backend_attaches(
     directive, attached = client.post_event({"session_id": "abc", "event_type": "session_start"})
     assert directive is None
     assert attached is True
+
+
+def test_post_event_keeps_an_oversized_event_within_the_body_limit(
+    mock_control_plane: Any,
+) -> None:
+    client = ControlPlaneClient(mock_control_plane["url"], "tok")
+    payload = {
+        "session_id": "123",
+        "event_type": "post_call",
+        "tokens_input": 900_000,
+        "has_content": True,
+        "content": {"messages": [{"role": "user", "content": "x" * (2 * 1024 * 1024)}]},
+    }
+    client.post_event(payload)
+    [request] = mock_control_plane["requests"]
+    sent = request["body"]
+    assert sent["tokens_input"] == 900_000
+    assert len(json.dumps(sent)) <= MAX_EVENT_BODY_BYTES
+    assert sent["content"]["messages"][0]["content"].endswith("bytes to fit the event size limit]")
 
 
 def test_connectivity_failure_continue_returns_none() -> None:

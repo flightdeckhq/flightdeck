@@ -124,6 +124,24 @@ function longestStringBytes(value) {
   return longest;
 }
 
+function serializeCut(payload, capBytes) {
+  return JSON.stringify({ ...payload, content: capStrings(payload.content, capBytes) });
+}
+
+// Payload fields holding a sub-agent message stub that points at the
+// event's content ({has_content: true, content_bytes, captured_at}).
+const MESSAGE_STUB_FIELDS = ["incoming_message", "outgoing_message"];
+
+/** ``payload`` sent without its content: no stub still claims it. */
+function withoutContent(payload) {
+  const out = { ...payload, has_content: false, content: null };
+  for (const field of MESSAGE_STUB_FIELDS) {
+    const stub = out[field];
+    if (stub && typeof stub === "object" && stub.has_content) out[field] = { ...stub, has_content: false };
+  }
+  return out;
+}
+
 /**
  * The JSON body for one event, kept within MAX_EVENT_BODY_BYTES. An
  * event over it has the strings of its captured ``content`` cut, each
@@ -137,7 +155,7 @@ export function serializeEvent(payload) {
   const body = JSON.stringify(payload);
   const size = encodedBytes(body);
   if (size <= MAX_EVENT_BODY_BYTES || payload.content == null) return body;
-  const bare = JSON.stringify({ ...payload, has_content: false, content: null });
+  const bare = JSON.stringify(withoutContent(payload));
   if (encodedBytes(bare) > MAX_EVENT_BODY_BYTES) {
     process.stderr.write(
       `[flightdeck] WARN: ${payload.event_type} event is ${size} bytes and over the event ` +
@@ -145,15 +163,25 @@ export function serializeEvent(payload) {
     );
     return body;
   }
+  // The body only grows with the cap, so when even an empty cap does
+  // not fit, no cap does; that skips the search (each step serialises
+  // the whole event).
+  if (encodedBytes(serializeCut(payload, 0)) > MAX_EVENT_BODY_BYTES) {
+    process.stderr.write(
+      `[flightdeck] WARN: ${payload.event_type} event is ${size} bytes and its content cannot be cut ` +
+        "to fit the event size limit; the event is sent without it.\n",
+    );
+    return bare;
+  }
   let lo = 0;
-  let hi = longestStringBytes(payload.content);
+  let hi = Math.min(longestStringBytes(payload.content), MAX_EVENT_BODY_BYTES);
   let best = null;
   let bestCap = 0;
   // Binary search for the largest per-string length that fits; about
   // twenty serialisations for content of a few MiB.
   while (lo <= hi) {
     const cap = Math.floor((lo + hi) / 2);
-    const candidate = JSON.stringify({ ...payload, content: capStrings(payload.content, cap) });
+    const candidate = serializeCut(payload, cap);
     if (encodedBytes(candidate) <= MAX_EVENT_BODY_BYTES) {
       best = candidate;
       bestCap = cap;

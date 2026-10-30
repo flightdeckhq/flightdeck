@@ -19,6 +19,7 @@ from pydantic import ValidationError
 
 from flightdeck_sensor.core.exceptions import DirectiveError
 from flightdeck_sensor.core.types import Directive, DirectiveAction
+from flightdeck_sensor.transport.body_limit import serialize_event
 from flightdeck_sensor.transport.retry import with_retry
 
 if TYPE_CHECKING:
@@ -78,7 +79,7 @@ class ControlPlaneClient:
           field defaults to ``False`` for backward compatibility with
           older ingestion deployments.
         """
-        return self._post("/v1/events", payload)
+        return self._post("/v1/events", payload, data=serialize_event(payload))
 
     def sync_directives(
         self,
@@ -150,10 +151,20 @@ class ControlPlaneClient:
     # Internals
     # ------------------------------------------------------------------
 
-    def _post(self, path: str, body: dict[str, Any]) -> tuple[Directive | None, bool]:
-        """POST JSON and parse the response envelope for directive + attached."""
+    def _post(
+        self,
+        path: str,
+        body: dict[str, Any],
+        data: bytes | None = None,
+    ) -> tuple[Directive | None, bool]:
+        """POST JSON and parse the response envelope for directive + attached.
+
+        ``data`` is the already-encoded body when the caller has one
+        (an event, kept within the size limit by ``serialize_event``).
+        """
         url = f"{self._base_url}{path}"
-        data = json.dumps(body).encode()
+        if data is None:
+            data = json.dumps(body).encode()
         req = urllib.request.Request(
             url,
             data=data,

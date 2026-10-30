@@ -1987,7 +1987,9 @@ field with the parent's input to the child, and the child
 child's response back. Bodies route through the existing
 `event_content` table (no schema change) — small bodies inline,
 bodies above 8 KiB use the overflow path with a 2 MiB hard
-cap. When `capture_prompts=false` both fields are absent and
+cap, and a body that leaves the event over the 768 KiB body limit is
+cut to fit (see Content Capture). When `capture_prompts=false` both
+fields are absent and
 `has_content=false`.
 
 Capture posture is server-authoritative. The `session_start` payload
@@ -5719,8 +5721,12 @@ whitelist cannot express "keep the parts that are safe" without mangling
 the structure or leaking the content it was trying to protect. The knob
 is all-or-nothing per session.
 
-The plugin cuts captured content that would take an event past its
-768 KiB body limit, marking each cut string (see Plugin, Configuration).
+The plugin and the sensor cut captured content that would take an
+event past the 768 KiB body limit, marking each cut string (see
+Plugin, Configuration, which describes the measure and the marker; the
+sensor's `transport/body_limit.py` applies the same rule to every
+event it POSTs). Token counts and the metadata outside `content` are
+never cut.
 
 When `capture_prompts=false`, every content field on every event type is
 zeroed: `has_content=false`, `content=null`. The event still ships, so

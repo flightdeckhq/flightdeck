@@ -36,6 +36,13 @@ All notable changes to Flightdeck are documented here.
 - **The event drawer's Neighbors tab shows the events around the open
   event.** It listed the session's oldest events, so on a long session
   the open event and its real neighbours were missing.
+- **A sensor event with very large captured content is no longer
+  lost.** The sensor posted any event as it was, so a call whose
+  captured prompt, response or sub-agent message took it past the
+  server's 1 MiB limit was rejected along with its token counts. It now
+  cuts the content to fit, as the Claude Code plugin does, and the cut
+  text ends with `… [flightdeck: kept N of M bytes to fit the event
+  size limit]`.
 - **A Claude Code API error no longer shows as a model call.** Claude
   Code records a failed turn as a stand-in message with no tokens; the
   plugin reported it as a zero-token `post_call` with no model. It is

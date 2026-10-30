@@ -131,6 +131,20 @@ describe("serializeEvent", () => {
     assert.match(written[0], /its content cannot be cut to fit the event size limit; the event is sent without it/);
   });
 
+  it("clears a sub-agent message stub that points at content it drops", () => {
+    const payload = {
+      event_type: "session_start",
+      has_content: true,
+      incoming_message: { has_content: true, content_bytes: 3000000, captured_at: "t" },
+      content: { response: { body: Array.from({ length: 200000 }, (_, i) => ({ k: i })) } },
+    };
+    const [body] = withStderr(() => serializeEvent(payload));
+    const sent = JSON.parse(body);
+    assert.equal(sent.content, null);
+    assert.equal(sent.has_content, false);
+    assert.deepEqual(sent.incoming_message, { has_content: false, content_bytes: 3000000, captured_at: "t" });
+  });
+
   it("sends an oversized event without content as it is", () => {
     const payload = { event_type: "tool_call", session_id: "s1", content: null, note: "q".repeat(MAX_EVENT_BODY_BYTES) };
     const [body, written] = withStderr(() => serializeEvent(payload));

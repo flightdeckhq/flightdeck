@@ -157,8 +157,9 @@ Flightdeck conventions (see `CLAUDE.md`):
 - **No deferral bucket (rule 49).** Issues land in one of three
   states: fixed in the release they are filed in, declined with a
   documented reason (typically in the commit body or `DECISIONS.md`),
-  or on the roadmap as a GitHub issue labelled `roadmap`. The prior `KNOWN_ISSUES.md` / "Deferred to v0.4.0" bucket
-  was retired; do not reintroduce it. `TODO(KI...)` comments in code
+  or on the roadmap as a GitHub issue labelled `roadmap`. The prior
+  `KNOWN_ISSUES.md` / "Deferred to v0.4.0" bucket was retired; do not
+  reintroduce it. `TODO(KI...)` comments in code
   are retired — use plain `TODO: <short description>` with the roadmap
   issue number when applicable.
 - **No-defer discipline (rule 51).** Methodology or scope gaps that

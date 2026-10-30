@@ -181,6 +181,9 @@ line), **C** (dated documentation) or **D** (secondary); only A or B
 evidence supports a P0. Each finding is **Block** (fix before merge),
 **Recommend** (fix in this PR unless the maintainer agrees to defer it) or
 **Defer** (a GitHub issue labelled `roadmap`, never an unowned follow-up).
+A deferred finding gets its own `roadmap` issue that states the gap and
+where it lives in the code; set a milestone only when the work is planned
+for a release.
 
 ## Releasing
 

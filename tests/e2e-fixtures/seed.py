@@ -569,6 +569,36 @@ def _post_session_events(
                     )
                 )
                 posted += 1
+        elif extra in ("signal_notification", "signal_permission_denied"):
+            # A Claude Code notification and an auto-mode denial as
+            # session_signal events. T126 reads their feed lines.
+            if extra == "signal_notification":
+                signal_fields_b: dict[str, Any] = {
+                    "signal": "notification",
+                    "signal_data": {"notification_type": "idle_prompt"},
+                }
+            else:
+                signal_fields_b = {
+                    "signal": "permission_denied",
+                    "signal_data": {
+                        "tool_name": "Bash",
+                        "tool_use_id": "toolu_e2e_denied",
+                        "reason": "[Irreversible Local Destruction]",
+                        "command": "rm -rf /tmp/build",
+                    },
+                }
+            post_event(
+                make_event(
+                    session_id,
+                    agent_cfg["flavor"],
+                    "session_signal",
+                    timestamp=ts,
+                    **signal_fields_b,
+                    **identity,
+                    **{**common, "model": None},
+                )
+            )
+            posted += 1
         elif extra in ("signal_context_compacted", "signal_model_switched"):
             # The Claude Code plugin's session_signal events. T126 reads
             # the compaction's rows and captured summary, and the model
@@ -1131,7 +1161,12 @@ def _session_is_complete(
             )
         elif tag == "mcp_policy_user_remembered":
             expected_counts[tag] = expected_counts.get(tag, 0) + 1
-        elif tag in ("signal_context_compacted", "signal_model_switched"):
+        elif tag in (
+            "signal_context_compacted",
+            "signal_model_switched",
+            "signal_notification",
+            "signal_permission_denied",
+        ):
             expected_counts["session_signal"] = (
                 expected_counts.get("session_signal", 0) + 1
             )

@@ -13,13 +13,26 @@ import {
 
 const base = { session_id: "s1", agent_id: "a1", flavor: "claude-code", model: "claude-sonnet-5", has_content: false, content: null };
 
-function build(hookName, hookEvent, capturePrompts = true) {
-  return buildSignalEvent({ hookName, hookEvent: { hook_event_name: hookName, ...hookEvent }, basePayload: base, capturePrompts });
+function build(hookName, hookEvent, capturePrompts = true, captureToolInputs = true) {
+  return buildSignalEvent({
+    hookName,
+    hookEvent: { hook_event_name: hookName, ...hookEvent },
+    basePayload: base,
+    capturePrompts,
+    captureToolInputs,
+  });
 }
 
 describe("session_signal events", () => {
   it("covers PreCompact, PostCompact and PostModelSwitch", () => {
-    assert.deepEqual([...SIGNAL_HOOKS].sort(), ["PostCompact", "PostModelSwitch", "PreCompact"]);
+    assert.deepEqual([...SIGNAL_HOOKS].sort(), [
+      "Notification",
+      "PermissionDenied",
+      "PermissionRequest",
+      "PostCompact",
+      "PostModelSwitch",
+      "PreCompact",
+    ]);
   });
 
   it("keeps only the documented metadata fields, bounded", () => {
@@ -78,5 +91,64 @@ describe("session_signal events", () => {
     assert.equal(none.has_content, false);
     assert.equal(none.content, null);
     assert.equal(build("PreCompact", { trigger: "manual", custom_instructions: "  " }).has_content, false);
+  });
+
+  it("reports a notification by type, its text only under capture", () => {
+    const on = build("Notification", {
+      notification_type: "permission_prompt",
+      message: "Claude needs your permission to use Bash",
+      title: "Permission needed",
+    });
+    assert.equal(on.signal, "notification");
+    assert.deepEqual(on.signal_data, { notification_type: "permission_prompt" });
+    assert.deepEqual(on.content.response, {
+      message: "Claude needs your permission to use Bash",
+      title: "Permission needed",
+    });
+    const off = build("Notification", { notification_type: "idle_prompt", message: "Waiting" }, false);
+    assert.equal(off.has_content, false);
+    assert.equal(off.content, null);
+    assert.ok(!JSON.stringify(off).includes("Waiting"));
+  });
+
+  it("reports a permission request with the tool, its whitelisted input under tool-input capture", () => {
+    const hookEvent = {
+      tool_name: "Bash",
+      tool_input: { command: "rm -rf node_modules", description: "Remove node_modules directory" },
+      permission_suggestions: [{ type: "addRules" }],
+    };
+    const on = build("PermissionRequest", hookEvent);
+    assert.equal(on.signal, "permission_requested");
+    assert.deepEqual(on.signal_data, { tool_name: "Bash", command: "rm -rf node_modules" });
+    assert.equal(on.has_content, false);
+    const off = build("PermissionRequest", hookEvent, true, false);
+    assert.deepEqual(off.signal_data, { tool_name: "Bash" });
+  });
+
+  it("names an MCP tool's server and cuts a long tool input to the bound", () => {
+    const event = build("PermissionRequest", {
+      tool_name: "mcp__github__create_issue",
+      tool_input: { file_path: "/x/" + "p".repeat(400) },
+      mcp_server: { name: "github", source: "project" },
+    });
+    assert.equal(event.signal_data.mcp_server, "github");
+    assert.equal(Buffer.byteLength(event.signal_data.file_path, "utf8"), MAX_SIGNAL_DATA_VALUE_BYTES);
+  });
+
+  it("reports an auto-mode denial with the tool, its use id and the matched rule", () => {
+    const event = build("PermissionDenied", {
+      tool_name: "Bash",
+      tool_input: { command: "rm -rf /tmp/build" },
+      tool_use_id: "toolu_01ABC",
+      reason: "[Irreversible Local Destruction]",
+    });
+    assert.equal(event.signal, "permission_denied");
+    assert.deepEqual(event.signal_data, {
+      tool_name: "Bash",
+      tool_use_id: "toolu_01ABC",
+      reason: "[Irreversible Local Destruction]",
+      command: "rm -rf /tmp/build",
+    });
+    assert.equal(event.model, null);
   });
 });

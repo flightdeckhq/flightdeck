@@ -76,4 +76,39 @@ describe("session_signal", () => {
       ["brand_new_key", "x"],
     ]);
   });
+
+  it("names notifications and permission signals in the feed line", () => {
+    expect(getEventDetail(signal("notification", { notification_type: "idle_prompt" }))).toBe(
+      "notification · idle prompt",
+    );
+    expect(getEventDetail(signal("permission_requested", { tool_name: "Bash", command: "rm -rf node_modules" }))).toBe(
+      "permission asked · Bash",
+    );
+    expect(
+      getEventDetail(
+        signal("permission_denied", { tool_name: "Bash", reason: "[Irreversible Local Destruction]" }),
+      ),
+    ).toBe("permission denied · Bash · [Irreversible Local Destruction]");
+  });
+
+  it("labels the permission metadata", () => {
+    expect(
+      getSummaryRows(
+        signal("permission_denied", {
+          tool_name: "mcp__github__create_issue",
+          mcp_server: "github",
+          tool_use_id: "toolu_1",
+          reason: "[Data Exfiltration]",
+          command: "x",
+        }),
+      ),
+    ).toEqual([
+      ["Signal", "permission denied"],
+      ["Tool", "mcp__github__create_issue"],
+      ["MCP server", "github"],
+      ["Tool use id", "toolu_1"],
+      ["Reason", "[Data Exfiltration]"],
+      ["Command", "x"],
+    ]);
+  });
 });

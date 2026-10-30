@@ -466,7 +466,8 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
     return;
   }
 
-  // PreCompact, PostCompact, PostModelSwitch: a change in the session,
+  // PreCompact, PostCompact, PostModelSwitch, Notification,
+  // PermissionRequest, PermissionDenied: a change in the session,
   // reported as a session_signal. A model switch also becomes the model
   // later pre_call events are labelled with.
   if (SIGNAL_HOOKS.includes(hookName)) {
@@ -475,6 +476,7 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
       hookEvent,
       basePayload,
       capturePrompts: cfg.capturePrompts,
+      captureToolInputs: cfg.captureToolInputs,
     });
     if (isRealModel(payload.model)) {
       cacheSessionModel(sessionId, payload.model);

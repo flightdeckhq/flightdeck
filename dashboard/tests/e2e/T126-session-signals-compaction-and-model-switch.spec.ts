@@ -54,4 +54,30 @@ test.describe("T126 — session signals: compaction and model switch", () => {
       "model claude-sonnet-4-5 → claude-opus-4-7 · command",
     );
   });
+
+  test("a notification and an auto-mode denial name what happened in the feed line", async ({ page }) => {
+    const resp = await page.request.get(
+      `http://localhost:4000/api/v1/sessions/${RECENT_CLOSED_SESSION_ID}`,
+      { headers: { Authorization: "Bearer tok_dev" } },
+    );
+    expect(resp.ok(), "session API call must succeed").toBe(true);
+    const body = (await resp.json()) as { events?: Ev[] };
+    const signals = (body.events ?? []).filter((e) => e.event_type === "session_signal");
+    const cases: Array<[string, string]> = [
+      ["notification", "notification · idle prompt"],
+      ["permission_denied", "permission denied · Bash · [Irreversible Local Destruction]"],
+    ];
+    for (const [name, line] of cases) {
+      const event = signals.find((e) => e.payload?.signal === name);
+      expect(event, `the seed's ${name} signal must exist`).toBeDefined();
+      const at = Date.parse(event!.occurred_at);
+      const params = new URLSearchParams({
+        event_type: "session_signal",
+        from: new Date(at - 60_000).toISOString(),
+        to: new Date(at + 60_000).toISOString(),
+      });
+      await page.goto(`/events?${params.toString()}`);
+      await expect(page.locator(`[data-testid="events-row"][data-event-id="${event!.id}"]`)).toContainText(line);
+    }
+  });
 });

@@ -25,15 +25,19 @@ interface SignalContentViewerProps {
 const SIGNAL_TEXT_LABELS: Record<string, string> = {
   compact_summary: "Compaction summary",
   custom_instructions: "Compaction instructions",
+  title: "Title",
+  message: "Message",
 };
 
 /** The string fields of a signal's ``content.response``. */
 function signalTexts(content: EventContent | null): [string, string][] {
   const response = content?.response;
   if (response === null || typeof response !== "object" || Array.isArray(response)) return [];
-  return Object.entries(response as Record<string, unknown>).filter(
-    (entry): entry is [string, string] => typeof entry[1] === "string" && entry[1] !== "",
-  );
+  // A notification's title reads before its message.
+  const order = (key: string) => (key === "title" ? 0 : 1);
+  return Object.entries(response as Record<string, unknown>)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1] !== "")
+    .sort(([a], [b]) => order(a) - order(b));
 }
 
 export function SignalContentViewer({ eventId, hasContent }: SignalContentViewerProps) {
@@ -95,9 +99,9 @@ export function SignalContentViewer({ eventId, hasContent }: SignalContentViewer
   );
 }
 
-// The signal whose text the plugin always sends while capture is on, so
-// an event of it without content means capture is off.
-const ALWAYS_CAPTURED_SIGNALS = new Set(["context_compacted"]);
+// The signals whose text the plugin always sends while capture is on, so
+// an event of one without content means capture is off.
+const ALWAYS_CAPTURED_SIGNALS = new Set(["context_compacted", "notification"]);
 
 /**
  * The Prompts tab of a ``session_signal`` event, for both event

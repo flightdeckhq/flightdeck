@@ -784,6 +784,17 @@ function signalDetail(signal: string | undefined, data: SignalData): string {
       const source = typeof data?.source === "string" ? ` · ${data.source}` : "";
       return `model ${from} → ${to}${source}`;
     }
+    case "notification": {
+      const kind = typeof data?.notification_type === "string" ? data.notification_type : null;
+      return kind ? `notification · ${signalWords(kind)}` : "notification";
+    }
+    case "permission_requested":
+    case "permission_denied": {
+      const verb = signal === "permission_denied" ? "permission denied" : "permission asked";
+      const tool = typeof data?.tool_name === "string" ? ` · ${data.tool_name}` : "";
+      const reason = signal === "permission_denied" && typeof data?.reason === "string" ? ` · ${data.reason}` : "";
+      return `${verb}${tool}${reason}`;
+    }
     default:
       return signalWords(signal);
   }
@@ -802,6 +813,16 @@ const SIGNAL_DATA_LABELS: Record<string, string> = {
   cache_ttl: "Cache TTL",
   estimated_cache_write_usd: "Est. cache write",
   pricing: "Pricing",
+  notification_type: "Type",
+  tool_name: "Tool",
+  tool_use_id: "Tool use id",
+  mcp_server: "MCP server",
+  reason: "Reason",
+  file_path: "File",
+  command: "Command",
+  query: "Query",
+  pattern: "Pattern",
+  prompt: "Prompt",
 };
 
 function signalValue(key: string, value: string | number | boolean | null): string {

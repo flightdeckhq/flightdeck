@@ -1,10 +1,10 @@
 # Flightdeck
 
-> Flightdeck is a self-hosted observability and control plane for production and coding agents. Every LLM call, MCP event and tool call an agent makes streams to a per-agent timeline and a live fleet-wide feed. Operators set token budgets, MCP server allow/block rules and live directives. Apache 2.0.
+> Flightdeck is a self-hosted observability and control plane for production and coding agents. Every LLM call, MCP event and tool call an agent makes streams to a per-agent timeline and a live fleet-wide feed. Operators set token budgets, MCP server allow/block rules and live directives on production agents (the Claude Code plugin enforces the MCP rules only). Apache 2.0.
 
-Production agents add the `flightdeck-sensor` Python package (`pip install flightdeck-sensor`, then `init()` and `patch()` in the entrypoint); it intercepts the Anthropic, OpenAI and litellm SDKs and the frameworks built on them (LangChain, LangGraph, LlamaIndex, CrewAI) with no other code changes. Coding agents attach through the Claude Code plugin in the same repository (`/plugin marketplace add flightdeckhq/flightdeck`, then `/plugin install flightdeck@flightdeck-plugins`). The stack (ingestion API, workers, query API, dashboard, Postgres, NATS) runs with Docker Compose or the Helm chart.
+Production agents add the `flightdeck-sensor` Python package (`pip install flightdeck-sensor`, then `init()` and `patch()` in the entrypoint); it intercepts the Anthropic, OpenAI and litellm SDKs and the frameworks built on them (LangChain, LangGraph, LlamaIndex, CrewAI), and the official `mcp` client SDK, with no other code changes. Coding agents attach through the Claude Code plugin in the same repository (`/plugin marketplace add flightdeckhq/flightdeck`, then `/plugin install flightdeck@flightdeck-plugins`). The stack (ingestion API, workers, query API, dashboard, Postgres and NATS, behind an nginx front door) runs with Docker Compose or the Helm chart.
 
-Flightdeck is not a proxy or LLM gateway (calls go straight to the provider), not multi-tenant SaaS, and does not store prompt content unless capture is turned on (the Python sensor defaults to off).
+Flightdeck is not a proxy or LLM gateway (calls go straight to the provider), not multi-tenant SaaS, and does not store prompt content from production agents unless capture is turned on (the Python sensor defaults to `capture_prompts=False`). The Claude Code plugin captures prompts and sanitised tool inputs by default, since you are observing your own session; `FLIGHTDECK_CAPTURE_PROMPTS=false` turns that off.
 
 ## Docs
 

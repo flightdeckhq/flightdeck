@@ -1,0 +1,26 @@
+# Flightdeck
+
+> Flightdeck is a self-hosted observability and control plane for production and coding agents. Every LLM call, MCP event and tool call an agent makes streams to a per-agent timeline and a live fleet-wide feed. Operators set token budgets, MCP server allow/block rules and live directives on production agents (the Claude Code plugin enforces the MCP rules only). Apache 2.0.
+
+Production agents add the `flightdeck-sensor` Python package (`pip install flightdeck-sensor`, then `init()` and `patch()` in the entrypoint); it intercepts the Anthropic, OpenAI and litellm SDKs and the frameworks built on them (LangChain, LangGraph, LlamaIndex, CrewAI), and the official `mcp` client SDK, with no other code changes. Coding agents attach through the Claude Code plugin in the same repository (`/plugin marketplace add flightdeckhq/flightdeck`, then `/plugin install flightdeck@flightdeck-plugins`). The stack (ingestion API, workers, query API, dashboard, Postgres and NATS, behind an nginx front door) runs with Docker Compose or the Helm chart.
+
+Flightdeck is not a proxy or LLM gateway (calls go straight to the provider), not multi-tenant SaaS, and does not store prompt content from production agents unless capture is turned on (the Python sensor defaults to `capture_prompts=False`). The Claude Code plugin captures prompts and sanitised tool inputs by default, since you are observing your own session; `FLIGHTDECK_CAPTURE_PROMPTS=false` turns that off.
+
+## Docs
+
+- [README](https://github.com/flightdeckhq/flightdeck/blob/main/README.md): quickstart, features, coverage matrix, sensor reference, MCP Protection Policy, self-hosting
+- [Architecture](https://github.com/flightdeckhq/flightdeck/blob/main/ARCHITECTURE.md): components, event types and payloads, APIs, analytics, content capture
+- [Claude Code plugin](https://github.com/flightdeckhq/flightdeck/blob/main/plugin/README.md): what the plugin reports for each hook, configuration, privacy
+- [Python sensor](https://github.com/flightdeckhq/flightdeck/blob/main/sensor/README.md): the `flightdeck-sensor` package
+
+## Project
+
+- [Releases](https://github.com/flightdeckhq/flightdeck/releases): release notes and artifacts
+- [Changelog](https://github.com/flightdeckhq/flightdeck/blob/main/CHANGELOG.md)
+- [Security policy](https://github.com/flightdeckhq/flightdeck/blob/main/SECURITY.md)
+- [Contributing](https://github.com/flightdeckhq/flightdeck/blob/main/CONTRIBUTING.md)
+
+## Optional
+
+- [License (Apache 2.0)](https://github.com/flightdeckhq/flightdeck/blob/main/LICENSE)
+- [Source](https://github.com/flightdeckhq/flightdeck)

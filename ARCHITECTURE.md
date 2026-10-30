@@ -204,7 +204,6 @@ flightdeck/
 ├── CLAUDE.md                   # Standing rules for Claude Code sessions
 ├── CONTRIBUTING.md             # Contributor guide: setup, tests, PR process
 ├── RELEASING.md                # How to cut a release: version bump, tag, verify
-├── METHODOLOGY.md              # Supervisor/Executor build methodology
 ├── CHANGELOG.md                # Version history (Keep-a-Changelog)
 ├── README.md                   # User-facing documentation
 ├── SECURITY.md                 # Security policy: supported versions, reporting, capture posture

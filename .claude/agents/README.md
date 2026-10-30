@@ -79,7 +79,7 @@ Routing rules (file pattern → reviewer):
 | Test files, OR new feature without tests, OR user-visible UI change | qa-engineer       |
 | Auth / session / token / crypto / secrets / policy / middleware paths, OR `Dockerfile` / `docker-compose*.yml` / dependency manifests / CI workflows, OR diff matches security-relevant patterns (`Authorization`, `password`, `dangerouslySetInnerHTML`, `shell=True`, `verify=False`, raw SQL concatenation, …) | security-reviewer |
 
-If any required reviewer returns DIRTY, the supervisor invokes
+If any required reviewer returns DIRTY, the main session invokes
 `code-fixer` with that report and re-invokes the reviewer
 until CLEAN. Once all required reviewers are CLEAN, Claude is
 allowed to stop and the final assistant message is a clean

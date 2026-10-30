@@ -164,7 +164,7 @@ Flightdeck conventions (see `CLAUDE.md`):
   pointer when applicable.
 - **No-defer discipline (rule 51).** Methodology or scope gaps that
   surface mid-phase and fit the phase's intent land in the current
-  PR — they do not get deferred. The Supervisor authorizes deferral
+  PR — they do not get deferred. The maintainer authorizes deferral
   explicitly, or it doesn't happen.
 - **Audience layering.** `README.md` is for users (clone → run in
   five minutes). `CONTRIBUTING.md` is for contributors (dev env,

@@ -117,7 +117,7 @@
       "started_offset_sec": -300,
       "ended_offset_sec": null,
       "force_state": "lost",
-      "purpose": "T40 (L8) anchor \u2014 sub-agent that ended in lost state. seed.py emits session_start with parent_session_id + agent_role but NO matching session_end so the worker's state-revival path lands on lost. Drives the red-dot row-level failure cue across Investigate / AgentTable / Swimlane per METHODOLOGY L8.",
+      "purpose": "T40 (L8) anchor \u2014 sub-agent that ended in lost state. seed.py emits session_start with parent_session_id + agent_role but NO matching session_end so the worker's state-revival path lands on lost. Drives the red-dot row-level failure cue across Investigate / AgentTable / Swimlane per CONTRIBUTING.md L8.",
       "agent_role": "Reviewer",
       "parent_role": "fresh-active",
       "parent_agent": "e2e-test-coding-agent"

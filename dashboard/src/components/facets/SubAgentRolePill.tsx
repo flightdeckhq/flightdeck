@@ -71,7 +71,7 @@ export function SubAgentRolePill({
  * For sub-agents the failure mode is a child whose state landed in
  * ``lost`` — the SubagentStop / clean child end signal never fired
  * and the worker's state-revival path swept the row to lost. Per
- * METHODOLOGY.md L8 the dot belongs on the row,
+ * CONTRIBUTING.md L8 the dot belongs on the row,
  * not buried inside the event detail.
  *
  * Optional ``role`` and ``sessionIdSuffix`` enrich the tooltip so

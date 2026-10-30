@@ -2,7 +2,7 @@
 
 > These rules exist because something went wrong or almost went wrong without them.
 > Follow them without exception. If a rule conflicts with a task instruction, raise
-> the conflict with the Supervisor before proceeding.
+> the conflict with the maintainer before proceeding.
 >
 > Component-specific rules live in `dashboard/CLAUDE.md` (frontend + E2E
 > discipline) and `sensor/CLAUDE.md` (sensor + framework coverage). They load
@@ -18,16 +18,19 @@
 2. **Check for open TODO, FIXME, and HACK comments** in any file you are about to
    touch. List them in your plan before proposing changes.
 
-3. **Never make architectural decisions.** If a task requires a decision not covered
-   by ARCHITECTURE.md, stop and ask the Supervisor. Do not invent a solution.
+3. **Write architectural decisions down before the code.** A decision ARCHITECTURE.md
+   does not cover is recorded first (rules 42 and 43): ARCHITECTURE.md, then
+   DECISIONS.md when it qualifies, otherwise the PR description. Ask the maintainer
+   instead of deciding when the choice changes scope, removes existing behaviour or
+   content, or is a product call the docs do not settle.
 
 ---
 
 ## Planning Rules
 
-4. **Always plan before implementing.** For every task, produce a written plan
-   listing every file you will create or modify and why. Wait for explicit approval
-   before writing any code.
+4. **Always plan before implementing.** For every task, write down every file you
+   will create or modify and why (a scratch plan or the PR description). Implement
+   without waiting for approval unless a rule here asks for the maintainer's go.
 
 5. **Scope tasks tightly.** If a task touches more than 5-8 files, propose splitting
    it. Large tasks drift and produce hard-to-review changes.
@@ -70,7 +73,7 @@ Frontend code rules (11-17) live in `dashboard/CLAUDE.md`.
 20. **Preserve provider terminology.** Never normalize Anthropic's `system` +
     `messages` into OpenAI's `messages`-only format or vice versa. Store and display
     exactly what the provider received. The `PromptViewer` component handles
-    provider-specific rendering -- do not change this logic without Supervisor approval.
+    provider-specific rendering -- do not change this logic without the maintainer's approval.
 
 21. **The Prompts tab in the session drawer shows a clear disabled state** when
     capture is off for that session: "Prompt capture is not enabled for this
@@ -332,15 +335,15 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
     change, a review finding) is explained in the PR description and
     commit body. Entries D001-D213 are frozen in DECISIONS-ARCHIVE.md.
 
-44. **Phase plan changes must be approved by the Supervisor.** If a task reveals
+44. **Phase plan changes must be approved by the maintainer.** If a task reveals
     that a planned deliverable is wrong in scope, sequencing, or approach, raise
     it before changing the plan. Do not silently resequence phases or remove
-    deliverables. The Supervisor decides whether to update the plan or stay the
+    deliverables. The maintainer decides whether to update the plan or stay the
     course.
 
 45. **Acceptance criteria can be revised if they are wrong.** If a criterion
     turns out to be untestable, overconstrained, or based on a wrong assumption,
-    raise it with the Supervisor. Do not silently skip a criterion.
+    raise it with the maintainer. Do not silently skip a criterion.
 
 ---
 
@@ -425,13 +428,13 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
     doesn't (e.g., unrelated feature work that warrants user
     prioritisation) lands as a Roadmap bullet in README.md and is
     addressed later. Borderline cases are resolved by the
-    Supervisor, not deferred unilaterally. There is no separate
+    maintainer, not deferred unilaterally. There is no separate
     "follow-ups" file — the Roadmap and the current PR are the
     only two destinations.
 
     This rule applies to Claude Code's "preserve intentionally" or
     "flag for deferral" proposals — the default answer is "address
-    now", not "defer". The Supervisor authorizes deferral
+    now", not "defer". The maintainer authorizes deferral
     explicitly, or it doesn't happen.
 
     Why: Phase 4 surfaced multiple gaps mid-phase (embeddings
@@ -448,7 +451,7 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
 
 ## What Is Out of Scope
 
-Do not implement without explicit Supervisor instruction:
+Do not implement without explicit maintainer instruction:
 
 - Notification infrastructure: Slack, email, PagerDuty (v2)
 - TimescaleDB migration (v2 -- analytics page works on plain Postgres)
@@ -464,11 +467,11 @@ These rules exist because a rebase operation earlier orphaned 27 commits
 of real work and nearly lost the Analytics v2 feature. The reflog saved
 us. The rules below make that class of mistake harder.
 
-### No destructive operations without explicit Supervisor approval
+### No destructive operations without explicit maintainer approval
 
 The following are DESTRUCTIVE -- they rewrite history, drop commits, or
 make remote state unrecoverable from the branch. Never run any of these
-without the Supervisor approving the exact command in the chat:
+without the maintainer approving the exact command in the chat:
 
 - `git rebase` (interactive or `--onto`)
 - `git reset --hard`
@@ -486,10 +489,10 @@ If any of these feels necessary, stop and write a plan describing:
 
 - What you intend to run (exact command)
 - What state you expect before and after
-- How the Supervisor can verify the result is what was intended
+- How the maintainer can verify the result is what was intended
 - What the rollback path is if it goes wrong
 
-The Supervisor must explicitly respond with `go` before execution.
+The maintainer must explicitly respond with `go` before execution.
 
 ### Default safe operations
 
@@ -507,7 +510,7 @@ For normal work, stick to:
 Before beginning any task, fetch from origin, fast-forward main to
 origin/main, and create a new feature branch from there. Never start
 work on a stale branch or on a branch carried over from a previous
-task unless the Supervisor explicitly says to continue. Canonical
+task unless the maintainer explicitly says to continue. Canonical
 sequence:
 
 ```
@@ -517,7 +520,7 @@ git pull --ff-only origin main
 git checkout -b feat/<descriptive-name>
 ```
 
-If the working tree is dirty, stop and ask the Supervisor before
+If the working tree is dirty, stop and ask the maintainer before
 proceeding. Never auto-stash, auto-discard, or carry forward
 unrelated changes. If main is not fast-forwardable to origin/main
 (which would only happen with local commits on main that should
@@ -533,7 +536,7 @@ When main moves forward and the feature branch needs updates:
 
 1. `git fetch origin`
 2. `git merge --ff-only origin/main` (if possible)
-3. If not fast-forwardable, report the situation to the Supervisor with
+3. If not fast-forwardable, report the situation to the maintainer with
    `git log --oneline origin/main feat/<branch> --not --graph` and ask
    before merging, rebasing, or resolving.
 
@@ -552,4 +555,4 @@ on main. Do NOT try to "clean this up" with rebase. Either:
 - OR keep working on the feature branch, treating it as
   divergent-but-valuable, and merge main in periodically with
   `git merge --ff-only origin/main` (or a non-ff merge if ff is
-  impossible, with Supervisor approval)
+  impossible, with the maintainer's approval)

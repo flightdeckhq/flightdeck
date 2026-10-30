@@ -4,7 +4,7 @@ import { bringSwimlaneRowIntoView, waitForFleetReady } from "./_fixtures";
 // T40 — Sub-agent failure row cue (L8). A child session whose
 // state ended in lost shows the red AlertCircle indicator across
 // the Fleet AgentTable row and the Fleet swimlane left panel.
-// METHODOLOGY L8 — surface the failure on the row so an operator
+// CONTRIBUTING.md L8 — surface the failure on the row so an operator
 // scanning the list spots trouble without expanding.
 //
 // (The third surface — the session-grain

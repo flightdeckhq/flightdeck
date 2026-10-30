@@ -209,8 +209,7 @@ seeds fixtures, runs the suite, and uploads `playwright-report/`
 + `test-results/` on failure. Duration target is <5 minutes.
 
 Branch protection on `main` should require the `E2E (Playwright)`
-check before merge; the supervisor sets this post-Phase-3 because
-Claude Code lacks repo-admin.
+check before merge; a repository admin sets it.
 
 ## Debugging failures
 

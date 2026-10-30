@@ -44,5 +44,5 @@ Output exactly:
 ## Skipped (needs human)
 - <file:line> — <issue> — <why skipped>
 
-After this output the supervisor re-invokes the relevant reviewer agent(s),
+After this output the main session re-invokes the relevant reviewer agent(s),
 which will issue the CLEAN / DIRTY verdict against the fixed state.

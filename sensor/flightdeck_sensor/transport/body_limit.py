@@ -24,8 +24,8 @@ _log = logging.getLogger("flightdeck_sensor.transport.body_limit")
 #: the token id and name ingestion adds to a ``session_start``.
 MAX_EVENT_BODY_BYTES = 768 * 1024
 
-# Characters ingestion's Go encoder writes as six-byte ``<``
-# escapes when it re-encodes a session_start (one byte each here).
+# Characters ingestion's Go encoder writes as six-byte unicode escapes
+# when it re-encodes a session_start (one byte each here).
 _GO_ESCAPED = (b"<", b">", b"&")
 
 
@@ -33,9 +33,12 @@ def encoded_size(body: bytes) -> int:
     """The size of a JSON body once ingestion has re-encoded it.
 
     The sensor's ``json.dumps`` already escapes every non-ASCII
-    character, which Go writes as shorter UTF-8, so only ``<``, ``>``
-    and ``&`` grow. Every event is measured this way; for the others it
-    only over-counts.
+    character, which Go writes as shorter UTF-8, so text grows only by
+    ``<``, ``>`` and ``&``. Go also writes some floats longer than
+    Python does (``1e16`` as ``10000000000000000``), which this does not
+    count; a ``session_start``, the one event ingestion re-encodes,
+    carries text content. Every event is measured this way; for the
+    others it only over-counts.
     """
     return len(body) + 5 * sum(body.count(ch) for ch in _GO_ESCAPED)
 
@@ -48,14 +51,16 @@ def truncation_marker(kept_bytes: int, total_bytes: int) -> str:
 def _cap_strings(value: Any, cap_bytes: int) -> Any:
     """Every string in ``value`` longer than ``cap_bytes`` of UTF-8, cut and marked."""
     if isinstance(value, str):
-        raw = value.encode("utf-8")
+        # ``surrogatepass`` keeps a lone surrogate (from a
+        # ``surrogateescape`` decode) from raising; the cut drops it.
+        raw = value.encode("utf-8", "surrogatepass")
         if len(raw) <= cap_bytes:
             return value
         # ``errors="ignore"`` drops a code point the cut split.
         kept = raw[:cap_bytes].decode("utf-8", errors="ignore")
-        marked = kept + truncation_marker(len(kept.encode("utf-8")), len(raw))
+        marked = kept + truncation_marker(len(kept.encode("utf-8", "surrogatepass")), len(raw))
         # A string barely over the cap would grow by the marker; keep it.
-        return marked if len(marked.encode("utf-8")) < len(raw) else value
+        return marked if len(marked.encode("utf-8", "surrogatepass")) < len(raw) else value
     if isinstance(value, list):
         return [_cap_strings(item, cap_bytes) for item in value]
     if isinstance(value, dict):
@@ -65,9 +70,28 @@ def _cap_strings(value: Any, cap_bytes: int) -> Any:
 
 def _longest_string_bytes(value: Any) -> int:
     if isinstance(value, str):
-        return len(value.encode("utf-8"))
+        return len(value.encode("utf-8", "surrogatepass"))
     items = value if isinstance(value, list) else value.values() if isinstance(value, dict) else ()
     return max((_longest_string_bytes(item) for item in items), default=0)
+
+
+def _serialize_cut(payload: dict[str, Any], content: Any, cap: int) -> bytes:
+    return json.dumps({**payload, "content": _cap_strings(content, cap)}).encode()
+
+
+# Payload fields holding a sub-agent message stub that points at the
+# event's content (``{has_content: true, content_bytes, captured_at}``).
+_MESSAGE_STUB_FIELDS = ("incoming_message", "outgoing_message")
+
+
+def _without_content(payload: dict[str, Any]) -> dict[str, Any]:
+    """``payload`` sent without its content: no stub still claims it."""
+    out = {**payload, "has_content": False, "content": None}
+    for field in _MESSAGE_STUB_FIELDS:
+        stub = out.get(field)
+        if isinstance(stub, dict) and stub.get("has_content"):
+            out[field] = {**stub, "has_content": False}
+    return out
 
 
 def serialize_event(payload: dict[str, Any]) -> bytes:
@@ -82,7 +106,7 @@ def serialize_event(payload: dict[str, Any]) -> bytes:
     if size <= MAX_EVENT_BODY_BYTES or content is None:
         return body
     event_type = payload.get("event_type")
-    bare = json.dumps({**payload, "has_content": False, "content": None}).encode()
+    bare = json.dumps(_without_content(payload)).encode()
     if encoded_size(bare) > MAX_EVENT_BODY_BYTES:
         _log.warning(
             "%s event is %d bytes and over the event size limit without its content; sent as it is",
@@ -90,13 +114,24 @@ def serialize_event(payload: dict[str, Any]) -> bytes:
             size,
         )
         return body
-    lo, hi = 0, _longest_string_bytes(content)
+    # The body only grows with the cap, so when even an empty cap does
+    # not fit, no cap does; that skips the search (each step serialises
+    # the whole event).
+    if encoded_size(_serialize_cut(payload, content, 0)) > MAX_EVENT_BODY_BYTES:
+        _log.warning(
+            "%s event is %d bytes and its content cannot be cut to fit the event size limit; "
+            "sent without it",
+            event_type,
+            size,
+        )
+        return bare
+    lo, hi = 0, min(_longest_string_bytes(content), MAX_EVENT_BODY_BYTES)
     best: bytes | None = None
     best_cap = 0
     # Binary search for the largest per-string length that fits.
     while lo <= hi:
         cap = (lo + hi) // 2
-        candidate = json.dumps({**payload, "content": _cap_strings(content, cap)}).encode()
+        candidate = _serialize_cut(payload, content, cap)
         if encoded_size(candidate) <= MAX_EVENT_BODY_BYTES:
             best, best_cap, lo = candidate, cap, cap + 1
         else:

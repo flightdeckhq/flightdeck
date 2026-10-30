@@ -30,6 +30,9 @@ const EXPECTED_TIMEOUTS = {
   PreCompact: 15,
   PostCompact: 15,
   PostModelSwitch: 15,
+  Notification: 15,
+  PermissionRequest: 15,
+  PermissionDenied: 15,
   SubagentStart: 15,
 };
 
@@ -86,6 +89,9 @@ describe("hooks.json", () => {
       "PostToolUseFailure",
       "Stop",
       "StopFailure",
+      "Notification",
+      "PermissionRequest",
+      "PermissionDenied",
       "SubagentStart",
       "SubagentStop",
     ];

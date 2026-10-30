@@ -81,6 +81,23 @@ describe("SignalPromptsPanel", () => {
     expect(fetchEventContent).not.toHaveBeenCalled();
   });
 
+  it("shows a notification's title before its message, and says capture is off without them", async () => {
+    fetchEventContent.mockResolvedValue({
+      event_id: "x",
+      provider: "flightdeck-signal",
+      response: { message: "Claude needs your permission", title: "Permission needed" },
+    });
+    const { unmount } = render(<SignalPromptsPanel event={signalEvent("notification", true)} />);
+    await waitFor(() => expect(screen.getByTestId("signal-content-title")).toHaveTextContent("Permission needed"));
+    const sections = screen.getAllByTestId(/^signal-content-(title|message)$/).map((el) => el.dataset.testid);
+    expect(sections).toEqual(["signal-content-title", "signal-content-message"]);
+    unmount();
+    render(<SignalPromptsPanel event={signalEvent("notification", false)} />);
+    expect(screen.getByTestId("signal-prompts-empty")).toHaveTextContent(
+      "Prompt capture is not enabled for this deployment.",
+    );
+  });
+
   it("says a signal that may carry no text carries none", () => {
     for (const signal of ["model_switched", "context_compaction_started"]) {
       const { unmount } = render(<SignalPromptsPanel event={signalEvent(signal, false)} />);

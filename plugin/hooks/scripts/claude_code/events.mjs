@@ -28,6 +28,9 @@ export const EVENT_MAP = {
   PreCompact: "session_signal",
   PostCompact: "session_signal",
   PostModelSwitch: "session_signal",
+  Notification: "session_signal",
+  PermissionRequest: "session_signal",
+  PermissionDenied: "session_signal",
 };
 
 // The table the Claude Code dispatcher resolves hook names through.

@@ -39,6 +39,13 @@ All notable changes to Flightdeck are documented here.
   Claude Code's estimate of the cache it costs. Compactions are no longer
   reported as a `compact_context` tool call.
 
+- **Claude Code permission prompts, auto-mode denials and notifications
+  show on the timeline.** Each is a `session_signal`: a permission prompt
+  names the tool (and its command or file while tool-input capture is
+  on), an auto-mode denial adds the classifier's reason, and a
+  notification says what Claude Code is waiting for, such as a pending
+  permission prompt or your next message.
+
 ### Fixed
 
 - **The event drawer's Neighbors tab shows the events around the open

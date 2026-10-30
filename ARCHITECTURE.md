@@ -470,7 +470,8 @@ flightdeck/
 │   ├── hooks/
 │   │   ├── hooks.json          # SessionStart, UserPromptSubmit, PreToolUse, PostToolUse,
 │   │   │                       # PostToolUseFailure, Stop, StopFailure, SessionEnd,
-│   │   │                       # PreCompact, PostCompact, PostModelSwitch, SubagentStart,
+│   │   │                       # PreCompact, PostCompact, PostModelSwitch, Notification,
+│   │   │                       # PermissionRequest, PermissionDenied, SubagentStart,
 │   │   │                       # SubagentStop -- every hook runs observe_cli.mjs
 │   │   └── scripts/
 │   │       ├── observe_cli.mjs           # Hook entry: reads + parses stdin, hands the event to claude_code/dispatch.mjs;
@@ -488,7 +489,7 @@ flightdeck/
 │   │       │   ├── transcript.mjs        # Transcript JSONL reader: per-call turns, tokens, latency
 │   │       │   ├── post_call.mjs         # Session billing endpoint, cost fields, deduplicated post_call flush
 │   │       │   ├── stop_failure.mjs      # StopFailure -> llm_error: Claude Code's API-error codes in the shared taxonomy
-│   │       │   ├── signals.mjs           # Compaction and model-switch hooks -> session_signal
+│   │       │   ├── signals.mjs           # Compaction, model-switch, notification and permission hooks -> session_signal
 │   │       │   ├── tools.mjs             # Tool-input sanitiser, tool duration, tool error block
 │   │       │   ├── mcp.mjs               # MCP tool-name parsing, server fingerprints, mcp_tool_call emission
 │   │       │   ├── mcp_policy_dispatch.mjs  # MCP policy at SessionStart, PreToolUse decision, PostToolUse approval
@@ -1309,7 +1310,7 @@ Either case writes one warning line to the hook's stderr.
 
 ### Hook configuration
 
-`plugin/hooks/hooks.json` registers the thirteen hooks, each running
+`plugin/hooks/hooks.json` registers the sixteen hooks, each running
 `observe_cli.mjs`. Every hook but `SessionEnd` sets an explicit
 `timeout` (seconds); Claude Code's default for a command hook is 600
 (30 for `UserPromptSubmit`), so a hook stuck on a wedged CLI or an
@@ -1323,9 +1324,9 @@ Each value is sized for the hook's normal worst case:
 | `PreToolUse` | 10 | local reads only (the policy cache and remembered decisions) |
 | `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure` | 30 | the transcript flush: up to two `claude auth status` runs (5 s each) for a session whose billing mode is not settled, then 2 s per unsent turn |
 | `SubagentStop` | 30 | the same flush over the subagent's transcript, then the child `session_end` |
-| `PreCompact`, `PostCompact`, `PostModelSwitch`, `SubagentStart` | 15 | one or two POSTs |
+| `PreCompact`, `PostCompact`, `PostModelSwitch`, `Notification`, `PermissionRequest`, `PermissionDenied`, `SubagentStart` | 15 | one or two POSTs |
 
-Claude Code cancels a hook that runs out of time and carries on, as for
+Claude Code cancels a synchronous hook that runs out of time and carries on, as for
 any non-blocking error. What the hook had not done by then is lost or
 deferred: unsent turns are sent by a later hook (each carries its
 message-derived id, so a copy is dropped by the worker), a
@@ -1346,7 +1347,8 @@ tool call. The other tool hooks match every tool.
 
 The hooks that only report run with `async: true`: `UserPromptSubmit`,
 `PostToolUse` for every tool but MCP tools (matcher `^(?!mcp__)`),
-`PostToolUseFailure`, `Stop`, `StopFailure`, `SubagentStart` and
+`PostToolUseFailure`, `Stop`, `StopFailure`, `Notification`,
+`PermissionRequest`, `PermissionDenied`, `SubagentStart` and
 `SubagentStop`. Claude
 Code starts them and carries on without waiting, which saves the roughly
 200 ms a hook process takes on every prompt, tool call and turn end.
@@ -5565,6 +5567,16 @@ plugin emits it from its hooks.
 | `context_compaction_started` | `PreCompact` | `trigger` (`manual`, `auto`) | `custom_instructions` |
 | `context_compacted` | `PostCompact` | `trigger` | `compact_summary` |
 | `model_switched` | `PostModelSwitch` | `from_model`, `to_model`, `requested_model`, `source` (`command`, `picker`, `sdk`, `auto`, `resume`), `context_tokens`, `prompt_cache_warm`, `cache_ttl`, `estimated_cache_write_usd`, `pricing` | none |
+| `notification` | `Notification` | `notification_type` (`permission_prompt`, `idle_prompt`, `auth_success`, `elicitation_dialog`, `agent_needs_input`, `quota_auto_resume_fired`, and the rest Claude Code sends) | `title`, `message` |
+| `permission_requested` | `PermissionRequest` | `tool_name`, `mcp_server` for an MCP tool, and the tool's sanitised input fields | none |
+| `permission_denied` | `PermissionDenied` (auto mode) | `tool_name`, `tool_use_id`, `reason` (the classifier's rule, such as `[Data Exfiltration]`), `mcp_server` for an MCP tool, and the tool's sanitised input fields | none |
+
+The sanitised input fields are the whitelist `tool_call` events use
+(`file_path`, `command`, `query`, `pattern`, `prompt`; see Content
+Capture), with line breaks and tabs turned into spaces and each cut
+to 256 bytes, sent only while `captureToolInputs` is on and only for
+built-in tools: an MCP tool's arguments stay in its `mcp_tool_call`
+content.
 
 The worker stores the event and advances the session's `last_seen_at`.
 A `model_switched` signal carries the new model as `model`, which the

@@ -3,7 +3,8 @@
 // (ARCHITECTURE.md, session_signal): a signal name, a small metadata
 // object, and the hook's text as content only while prompt capture is on.
 
-import { boundedToken } from "../core/config.mjs";
+import { boundedToken, truncateUtf8 } from "../core/config.mjs";
+import { sanitizeToolInput } from "./tools.mjs";
 
 // Bound on a string in signal_data, matching ingestion's.
 export const MAX_SIGNAL_DATA_VALUE_BYTES = 256;
@@ -12,18 +13,20 @@ export const MAX_SIGNAL_DATA_VALUE_BYTES = 256;
 // the signal's text rather than an LLM call.
 export const SIGNAL_CONTENT_PROVIDER = "flightdeck-signal";
 
-// Each hook's signal name, the metadata it keeps, and the hook field
-// that is content.
+// Each hook's signal name, the metadata it keeps, and the hook fields
+// that are content. ``toolInput`` marks a hook about a tool call: its
+// tool's sanitised arguments join signal_data while tool-input capture
+// is on, and an MCP tool's server name joins it always.
 const SIGNALS = {
   PreCompact: {
     signal: "context_compaction_started",
     fields: ["trigger"],
-    text: "custom_instructions",
+    texts: ["custom_instructions"],
   },
   PostCompact: {
     signal: "context_compacted",
     fields: ["trigger"],
-    text: "compact_summary",
+    texts: ["compact_summary"],
   },
   PostModelSwitch: {
     signal: "model_switched",
@@ -38,7 +41,24 @@ const SIGNALS = {
       "estimated_cache_write_usd",
       "pricing",
     ],
-    text: null,
+    texts: [],
+  },
+  Notification: {
+    signal: "notification",
+    fields: ["notification_type"],
+    texts: ["message", "title"],
+  },
+  PermissionRequest: {
+    signal: "permission_requested",
+    fields: ["tool_name"],
+    texts: [],
+    toolInput: true,
+  },
+  PermissionDenied: {
+    signal: "permission_denied",
+    fields: ["tool_name", "tool_use_id", "reason"],
+    texts: [],
+    toolInput: true,
   },
 };
 
@@ -61,15 +81,38 @@ function signalValue(value) {
  * the switched-to model for model_switched and null otherwise, so only
  * a model switch moves the session's model.
  */
-export function buildSignalEvent({ hookName, hookEvent, basePayload, capturePrompts }) {
+export function buildSignalEvent({ hookName, hookEvent, basePayload, capturePrompts, captureToolInputs = false }) {
   const spec = SIGNALS[hookName];
   const signalData = {};
   for (const field of spec.fields) {
     const value = signalValue(hookEvent[field]);
     if (value !== undefined) signalData[field] = value;
   }
-  const text = spec.text ? hookEvent[spec.text] : null;
-  const hasContent = Boolean(capturePrompts && typeof text === "string" && text.trim() !== "");
+  if (spec.toolInput) {
+    const server = signalValue(hookEvent.mcp_server?.name);
+    if (typeof server === "string") signalData.mcp_server = server;
+    // A built-in tool's input goes through the same whitelist tool_call
+    // events use (file path, command, query, pattern, prompt). An MCP
+    // tool's arguments stay out: its mcp_tool_call keeps them in
+    // event_content only. Line breaks and tabs (a heredoc command)
+    // become spaces so the value is cut to the signal_data bound
+    // rather than dropped.
+    const isMcp = typeof server === "string" || String(hookEvent.tool_name ?? "").startsWith("mcp__");
+    const safe = captureToolInputs && !isMcp ? sanitizeToolInput(hookEvent.tool_input) : null;
+    for (const [key, value] of Object.entries(safe ?? {})) {
+      const oneLine = String(value).replace(/[\x00-\x1f\x7f]+/g, " ");
+      const bounded = signalValue(truncateUtf8(oneLine, MAX_SIGNAL_DATA_VALUE_BYTES));
+      if (typeof bounded === "string") signalData[key] = bounded;
+    }
+  }
+  const texts = {};
+  if (capturePrompts) {
+    for (const field of spec.texts) {
+      const text = hookEvent[field];
+      if (typeof text === "string" && text.trim() !== "") texts[field] = text;
+    }
+  }
+  const hasContent = Object.keys(texts).length > 0;
   // Bedrock application-inference-profile ARNs run past 100 bytes, so
   // the model takes the signal_data bound rather than the 64-byte one
   // for short signal words.
@@ -94,7 +137,7 @@ export function buildSignalEvent({ hookName, hookEvent, basePayload, captureProm
           system: null,
           messages: [],
           tools: null,
-          response: { [spec.text]: text },
+          response: texts,
         }
       : null,
   };

@@ -24,7 +24,8 @@ All notable changes to Flightdeck are documented here.
   an MCP server the allowlist does not cover, the event now records
   the session's permission mode (for example `bypassPermissions`), and
   the dashboard lists the server, its URL, the approval time, the mode
-  and the fingerprint instead of a bare event type.
+  and the fingerprint instead of a bare event type. Its badge reads MCP
+  SERVER APPROVED.
 
 - **Claude Code API errors reach the dashboard.** When a turn ends on an
   API error (a rate limit, an overload, an authentication or billing

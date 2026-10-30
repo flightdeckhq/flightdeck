@@ -318,6 +318,10 @@ describe("getSummaryRows — MCP per-type rows", () => {
 });
 
 describe("mcp_policy_user_remembered rendering", () => {
+  it("is badged MCP SERVER APPROVED, which names what the user did", () => {
+    expect(getBadge("mcp_policy_user_remembered").label).toBe("MCP SERVER APPROVED");
+  });
+
   const payload = {
     server_name: "github",
     server_url_canonical: "https://api.githubcopilot.com/mcp",

@@ -154,7 +154,7 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
   },
   mcp_policy_user_remembered: {
     cssVar: "var(--event-result)",
-    label: "MCP USER REMEMBERED",
+    label: "MCP SERVER APPROVED",
   },
   // MCP server attached events ride the same FYI
   // chroma family as name-changed and user-remembered (info-purple

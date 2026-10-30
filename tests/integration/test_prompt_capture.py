@@ -14,6 +14,8 @@ import uuid
 from .conftest import (
     get_session_event_count,
     API_URL,
+    INGESTION_URL,
+    TOKEN,
     auth_headers,
     exec_sql,
     make_event,
@@ -151,6 +153,58 @@ def test_capture_on_writes_row_and_serves_content() -> None:
     assert result.get("provider") == "openai", (
         f"expected provider=openai, got {result.get('provider')}"
     )
+
+
+def test_sensor_client_lands_an_oversized_call_with_its_tokens() -> None:
+    """A post_call whose captured content is over the server's 1 MiB
+    body limit, sent through the sensor's own client, lands with its
+    token counts and the content cut to fit, ending in the marker."""
+    from flightdeck_sensor.transport.client import ControlPlaneClient
+
+    sid = str(uuid.uuid4())
+    flavor = f"capture-big-{uuid.uuid4().hex[:6]}"
+    post_event(make_event(sid, flavor, "session_start"))
+    wait_until(
+        lambda: session_exists_in_fleet(sid),
+        timeout=10,
+        msg=f"session {sid} did not appear in fleet",
+    )
+    prompt = "lorem ipsum <tag> & " * 110_000  # about 2.2 MB
+    client = ControlPlaneClient(INGESTION_URL, TOKEN)
+    client.post_event(
+        make_event(
+            sid,
+            flavor,
+            "post_call",
+            tokens_input=550_000,
+            tokens_total=550_010,
+            has_content=True,
+            content={
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-5",
+                "system": None,
+                "messages": [{"role": "user", "content": prompt}],
+                "tools": None,
+                "response": {"content": [{"type": "text", "text": "ok"}]},
+            },
+        )
+    )
+    wait_until(
+        lambda: get_session_event_count(sid) >= 2,
+        timeout=10,
+        msg=f"oversized post_call did not land for session {sid}",
+    )
+    [event_id] = _get_event_ids(sid)
+    tokens = exec_sql(
+        "SELECT tokens_input FROM events WHERE id = :'eid'::uuid", eid=event_id
+    )
+    assert tokens == "550000"
+    result = _get_event_content(event_id)
+    assert result is not None
+    stored = result["messages"][0]["content"]
+    assert stored.startswith("lorem ipsum <tag> & ")
+    assert stored.endswith(f"of {len(prompt)} bytes to fit the event size limit]")
+    assert result["response"] == {"content": [{"type": "text", "text": "ok"}]}
 
 
 def test_content_the_database_rejects_lands_the_event_without_content() -> None:

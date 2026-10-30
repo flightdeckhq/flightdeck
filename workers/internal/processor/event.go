@@ -402,11 +402,15 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if e.PermissionMode != "" {
 		extra["permission_mode"] = e.PermissionMode
 	}
-	if e.Signal != "" {
-		extra["signal"] = e.Signal
-	}
-	if len(e.SignalData) > 0 && string(e.SignalData) != "null" {
-		extra["signal_data"] = e.SignalData
+	// Ingestion bounds signal_data only on session_signal, so another
+	// event type's copy is not stored.
+	if e.EventType == "session_signal" {
+		if e.Signal != "" {
+			extra["signal"] = e.Signal
+		}
+		if len(e.SignalData) > 0 && string(e.SignalData) != "null" {
+			extra["signal_data"] = e.SignalData
+		}
 	}
 	// MCP_RESOURCE_READ content. The sensor's lean MCP payload
 	// drops the ``has_content`` flag entirely, so the existing

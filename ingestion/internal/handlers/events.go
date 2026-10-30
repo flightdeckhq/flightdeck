@@ -103,13 +103,6 @@ const (
 	maxPermissionModeLen = 64
 )
 
-// uuidRegex matches the canonical 8-4-4-4-12 hex form. Any version
-// (v1/v4/v5) and any variant bits are accepted -- the identity
-// derivation produces v5 UUIDs and legacy session_ids may be v4, but
-// the schema's UUID column rejects malformed values regardless. We
-// match both here so the ingestion API returns 400 with a meaningful
-// message instead of letting a malformed UUID propagate to the worker
-// and FK-violate at INSERT time.
 // session_signal bounds. The signal name is an open vocabulary checked
 // for form only; signal_data is metadata (never content), so a few
 // dozen short scalar fields are plenty: Claude Code's richest hook
@@ -121,6 +114,13 @@ const (
 	maxSignalDataValueLen = 256
 )
 
+// uuidRegex matches the canonical 8-4-4-4-12 hex form. Any version
+// (v1/v4/v5) and any variant bits are accepted -- the identity
+// derivation produces v5 UUIDs and legacy session_ids may be v4, but
+// the schema's UUID column rejects malformed values regardless. We
+// match both here so the ingestion API returns 400 with a meaningful
+// message instead of letting a malformed UUID propagate to the worker
+// and FK-violate at INSERT time.
 var uuidRegex = regexp.MustCompile(
 	`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`,
 )

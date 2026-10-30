@@ -470,8 +470,9 @@ flightdeck/
 │   ├── .claude-plugin/plugin.json  # Plugin manifest (name, version, author)
 │   ├── hooks/
 │   │   ├── hooks.json          # SessionStart, UserPromptSubmit, PreToolUse, PostToolUse,
-│   │   │                       # PostToolUseFailure, Stop, SessionEnd, PreCompact,
-│   │   │                       # SubagentStart, SubagentStop -- every hook runs observe_cli.mjs
+│   │   │                       # PostToolUseFailure, Stop, StopFailure, SessionEnd,
+│   │   │                       # PreCompact, PostCompact, PostModelSwitch, SubagentStart,
+│   │   │                       # SubagentStop -- every hook runs observe_cli.mjs
 │   │   └── scripts/
 │   │       ├── observe_cli.mjs           # Hook entry: reads + parses stdin, hands the event to claude_code/dispatch.mjs;
 │   │       │                             # re-invoked with --session-end-worker as the detached SessionEnd worker
@@ -1360,7 +1361,10 @@ These stay synchronous:
 - `PreCompact`, `PostCompact` and `PostModelSwitch` are rare and send one
   event each, and in a print-mode run a compaction or a `/model` switch
   is often the run's last act, so Claude Code would cancel them as
-  pending async hooks at exit.
+  pending async hooks at exit. Claude Code holds the next request up to
+  five seconds for a `PostModelSwitch` hook's output; the plugin's
+  worst case is one 2 s POST, two when the `session_start` backstop also
+  posts.
 
 Claude Code does not enforce `timeout` on an async hook, so the plugin
 bounds its one open-ended step itself: a hook starts no new

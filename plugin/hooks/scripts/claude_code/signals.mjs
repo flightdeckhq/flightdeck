@@ -3,7 +3,7 @@
 // (ARCHITECTURE.md, session_signal): a signal name, a small metadata
 // object, and the hook's text as content only while prompt capture is on.
 
-import { MAX_SIGNAL_BYTES, boundedToken } from "../core/config.mjs";
+import { boundedToken } from "../core/config.mjs";
 
 // Bound on a string in signal_data, matching ingestion's.
 export const MAX_SIGNAL_DATA_VALUE_BYTES = 256;
@@ -70,7 +70,11 @@ export function buildSignalEvent({ hookName, hookEvent, basePayload, captureProm
   }
   const text = spec.text ? hookEvent[spec.text] : null;
   const hasContent = Boolean(capturePrompts && typeof text === "string" && text.trim() !== "");
-  const toModel = hookName === "PostModelSwitch" ? boundedToken(hookEvent.to_model, MAX_SIGNAL_BYTES) : null;
+  // Bedrock application-inference-profile ARNs run past 100 bytes, so
+  // the model takes the signal_data bound rather than the 64-byte one
+  // for short signal words.
+  const toModel =
+    hookName === "PostModelSwitch" ? boundedToken(hookEvent.to_model, MAX_SIGNAL_DATA_VALUE_BYTES) : null;
   return {
     ...basePayload,
     event_type: "session_signal",

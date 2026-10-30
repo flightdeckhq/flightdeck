@@ -8,7 +8,9 @@ vi.mock("@/lib/api", async (orig) => ({
   fetchEventContent,
 }));
 
-import { SignalContentViewer } from "@/components/session/SignalContentViewer";
+import { SignalContentViewer, SignalPromptsPanel } from "@/components/session/SignalContentViewer";
+import { EventRow } from "@/components/session/EventRow";
+import type { AgentEvent } from "@/lib/types";
 
 beforeEach(() => {
   fetchEventContent.mockReset();
@@ -42,5 +44,77 @@ describe("SignalContentViewer", () => {
     fetchEventContent.mockResolvedValue({ event_id: "e2", provider: "flightdeck-signal", response: { x: 3 } });
     render(<SignalContentViewer eventId="e2" hasContent />);
     await waitFor(() => expect(screen.getByTestId("signal-content-viewer")).toHaveAttribute("data-state", "empty"));
+  });
+});
+
+
+function signalEvent(signal: string, hasContent: boolean): AgentEvent {
+  return {
+    id: `evt-${signal}`,
+    session_id: "s1",
+    flavor: "claude-code",
+    event_type: "session_signal",
+    model: null,
+    tokens_input: null,
+    tokens_output: null,
+    tokens_total: null,
+    latency_ms: null,
+    tool_name: null,
+    has_content: hasContent,
+    occurred_at: "2026-10-30T10:00:00Z",
+    payload: { signal, signal_data: { trigger: "auto" } },
+  } as AgentEvent;
+}
+
+describe("SignalPromptsPanel", () => {
+  it("shows the captured text when the event has content", async () => {
+    fetchEventContent.mockResolvedValue({ event_id: "x", provider: "flightdeck-signal", response: { compact_summary: "S." } });
+    render(<SignalPromptsPanel event={signalEvent("context_compacted", true)} />);
+    await waitFor(() => expect(screen.getByTestId("signal-content-compact_summary")).toHaveTextContent("S."));
+  });
+
+  it("says capture is off for a compaction without its summary (rule 21)", () => {
+    render(<SignalPromptsPanel event={signalEvent("context_compacted", false)} />);
+    expect(screen.getByTestId("signal-prompts-empty")).toHaveTextContent(
+      "Prompt capture is not enabled for this deployment.",
+    );
+    expect(fetchEventContent).not.toHaveBeenCalled();
+  });
+
+  it("says a signal that may carry no text carries none", () => {
+    for (const signal of ["model_switched", "context_compaction_started"]) {
+      const { unmount } = render(<SignalPromptsPanel event={signalEvent(signal, false)} />);
+      expect(screen.getByTestId("signal-prompts-empty")).toHaveTextContent("This event carries no captured text.");
+      unmount();
+    }
+  });
+});
+
+describe("EventRow for a session_signal", () => {
+  it("renders the text inline and offers no View Prompts link", async () => {
+    fetchEventContent.mockResolvedValue({ event_id: "x", provider: "flightdeck-signal", response: { compact_summary: "S." } });
+    render(
+      <EventRow
+        event={signalEvent("context_compacted", true)}
+        attachments={[]}
+        isExpanded
+        onToggleExpand={() => {}}
+        onViewPrompts={() => {}}
+      />,
+    );
+    await waitFor(() => expect(screen.getByTestId("signal-content-compact_summary")).toBeInTheDocument());
+    expect(screen.queryByText("View Prompts →")).toBeNull();
+  });
+
+  it("renders no text box for a signal without content", () => {
+    render(
+      <EventRow
+        event={signalEvent("model_switched", false)}
+        attachments={[]}
+        isExpanded
+        onToggleExpand={() => {}}
+      />,
+    );
+    expect(screen.queryByTestId("signal-content-viewer")).toBeNull();
   });
 });

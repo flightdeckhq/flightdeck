@@ -1,6 +1,6 @@
 import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import { fetchEventContent } from "@/lib/api";
-import type { EventContent } from "@/lib/types";
+import type { AgentEvent, EventContent } from "@/lib/types";
 
 /**
  * The captured text of a ``session_signal`` event: a compaction
@@ -94,3 +94,37 @@ export function SignalContentViewer({ eventId, hasContent }: SignalContentViewer
     </div>
   );
 }
+
+// The signal whose text the plugin always sends while capture is on, so
+// an event of it without content means capture is off.
+const ALWAYS_CAPTURED_SIGNALS = new Set(["context_compacted"]);
+
+/**
+ * The Prompts tab of a ``session_signal`` event, for both event
+ * drawers: the captured text when there is some; otherwise the
+ * capture-disabled message for a signal whose text is always captured
+ * (rule 21), and a plain "no text" line for one that may carry none
+ * (a model switch, a ``/compact`` given no instructions).
+ */
+export function SignalPromptsPanel({ event }: { event: AgentEvent }) {
+  if (event.has_content) {
+    return (
+      <div className="p-4">
+        <SignalContentViewer eventId={event.id} hasContent />
+      </div>
+    );
+  }
+  const message = ALWAYS_CAPTURED_SIGNALS.has(event.payload?.signal ?? "")
+    ? "Prompt capture is not enabled for this deployment."
+    : "This event carries no captured text.";
+  return (
+    <div
+      data-testid="signal-prompts-empty"
+      className="px-4 py-6 text-[13px]"
+      style={{ color: "var(--text-muted)" }}
+    >
+      {message}
+    </div>
+  );
+}
+

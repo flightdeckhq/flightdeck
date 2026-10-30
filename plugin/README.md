@@ -182,7 +182,7 @@ Token counts surface on `post_call` events. The plugin flushes `post_call` on ev
 
 Most `post_call` events land via the PostToolUse flush. `Stop` and `SessionEnd` act as backstops for the final turn that had no tool follow-up. If turns are still missing:
 
-- Make sure `SessionEnd` is wired in `plugin/hooks/hooks.json` (the plugin ships with all ten hooks -- `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `SessionEnd`, `PreCompact`, `SubagentStart`, `SubagentStop` -- and a custom `hooks.json` override might have dropped some).
+- Make sure `SessionEnd` is wired in `plugin/hooks/hooks.json` (the plugin ships with thirteen hooks -- `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`, `SessionEnd`, `PreCompact`, `PostCompact`, `PostModelSwitch`, `SubagentStart`, `SubagentStop` -- and a custom `hooks.json` override might have dropped some).
 - Check that Claude Code's JSONL transcript is readable at the path the hooks pass in.
 - Confirm the session did not exit via `SIGKILL` before the last hook could run.
 

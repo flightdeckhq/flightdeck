@@ -13,6 +13,7 @@ import {
   markerKeyFor,
   pruneStateDir,
   readCachedModel,
+  recordModelSwitch,
 } from "../core/state.mjs";
 import { clearSessionPolicyCache } from "../mcp_policy.mjs";
 import { safeCollectContext } from "./context.mjs";
@@ -475,7 +476,10 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
       basePayload,
       capturePrompts: cfg.capturePrompts,
     });
-    if (isRealModel(payload.model)) cacheSessionModel(sessionId, payload.model);
+    if (isRealModel(payload.model)) {
+      cacheSessionModel(sessionId, payload.model);
+      recordModelSwitch(sessionId, payload.model, payload.timestamp);
+    }
     await postEvent(cfg.server, cfg.token, sessionId, payload);
     return;
   }

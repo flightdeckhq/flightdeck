@@ -331,3 +331,27 @@ func TestBuildEventExtra_SessionSignal(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildEventExtra_SignalFieldsOnlyOnSessionSignal(t *testing.T) {
+	out, err := processor.BuildEventExtra(consumer.EventPayload{
+		SessionID:  "x",
+		EventType:  "post_call",
+		Signal:     "context_compacted",
+		SignalData: json.RawMessage(`{"nested":{"a":[1,2,3]}}`),
+	})
+	if err != nil {
+		t.Fatalf("BuildEventExtra: %v", err)
+	}
+	var parsed map[string]interface{}
+	if len(out) > 0 {
+		if err := json.Unmarshal(out, &parsed); err != nil {
+			t.Fatalf("parse extra: %v", err)
+		}
+	}
+	for _, key := range []string{"signal", "signal_data"} {
+		if _, present := parsed[key]; present {
+			t.Errorf("%s must not be stored on a post_call, got %v", key, parsed[key])
+		}
+	}
+}
+

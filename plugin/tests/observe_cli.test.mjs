@@ -483,6 +483,35 @@ describe("observe_cli.mjs", () => {
     assert.ok(!JSON.stringify(off).includes("secret summary"));
   });
 
+  it("labels the next pre_call with the model a switch moved to, not the transcript's older one", async () => {
+    const transcriptPath = writeTranscript([
+      { type: "user", timestamp: "2026-04-17T10:00:00.000Z", message: { role: "user", content: "hi" } },
+      {
+        type: "assistant",
+        timestamp: "2026-04-17T10:00:01.000Z",
+        message: { id: "msg_switch_1", model: "claude-sonnet-5", content: [{ type: "text", text: "ok" }], usage: { input_tokens: 3, output_tokens: 1 } },
+      },
+    ]);
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-switch-1",
+    };
+    const base = { session_id: "sess-switch-1", transcript_path: transcriptPath };
+    const before = capture.bodies().length;
+    for (const hookEvent of [
+      { hook_event_name: "PostModelSwitch", from_model: "claude-sonnet-5", to_model: "claude-opus-5", source: "command" },
+      { hook_event_name: "UserPromptSubmit", prompt: "next" },
+    ]) {
+      const result = await runScript(JSON.stringify({ ...base, ...hookEvent }), env);
+      assert.equal(result.code, 0, result.stderr);
+    }
+    const bodies = capture.bodies().slice(before);
+    assert.equal(bodies.find((b) => b.event_type === "session_signal")?.model, "claude-opus-5");
+    assert.equal(bodies.find((b) => b.event_type === "pre_call")?.model, "claude-opus-5");
+    rmSync(dirname(transcriptPath), { recursive: true, force: true });
+  });
+
   it("sends no post_call for a turn Claude Code wrote for an API error", async () => {
     const transcriptPath = writeTranscript([
       { type: "user", timestamp: "2026-04-17T10:00:00.000Z", message: { role: "user", content: "ping" } },

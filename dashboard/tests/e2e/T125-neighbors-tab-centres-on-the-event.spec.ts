@@ -3,9 +3,10 @@ import { test, expect } from "@playwright/test";
 // T125 — the event drawer's neighbors tab lists the events around the
 // open event, however deep in its session that event is. The seed puts
 // 25 history_padding tool_calls ahead of the coding agent's
-// policy-active remembered MCP approval, so the approval is past the
-// first 21 events of its session (the page the tab once fetched from
-// the session's start). The tab must mark it as the anchor and list
+// policy-active remembered MCP approval, so the approval sits past its
+// session's first 21 events (four windows plus one), where a fetch
+// from the session's start would not reach it. The tab must mark it as
+// the anchor and list
 // the events just before it in time order. The drawer is deep-linked
 // by event id, read from the API. Theme-agnostic per Rule 40c.3.
 

@@ -160,8 +160,8 @@ def _shift_timestamp_ms(offset_sec: float) -> str:
 
 
 # Events the ``history_padding`` extra adds ahead of a session's later
-# extras: more than the 21 the event drawer's Neighbors tab once fetched
-# from the start of a session, so T125's anchor sits beyond that page.
+# extras, so a later extra sits past the session's first 21 events (four
+# Neighbors windows plus one) and T125's anchor is deep in its session.
 HISTORY_PADDING_EVENTS = 25
 
 

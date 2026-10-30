@@ -49,6 +49,11 @@ describe("EventNode — MCP icons + colours", () => {
       cssVar: "var(--event-mcp-prompt)",
       iconClass: "lucide-list",
     },
+    {
+      eventType: "mcp_policy_user_remembered",
+      cssVar: "var(--event-result)",
+      iconClass: "lucide-shield-check",
+    },
   ];
 
   for (const { eventType, cssVar, iconClass } of cases) {

@@ -30,6 +30,7 @@ test.describe("T124 — remembered MCP approval shows its permission mode", () =
     const drawer = page.getByTestId("event-detail-drawer");
     const summary = drawer.getByTestId("detail-summary");
     await expect(summary).toBeVisible();
+    await expect(drawer).toContainText("MCP SERVER APPROVED");
     for (const text of [
       "Server",
       "e2e-remembered-server",

@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import {
   Zap, Wrench, AlertTriangle, XCircle, ArrowDown,
   Play, Square, Check, Circle, X, Database, AlertCircle,
-  ListChecks, FileText, Folder, MessageSquare, List, Activity,
+  ListChecks, FileText, Folder, MessageSquare, List, Activity, ShieldCheck,
   type LucideProps,
 } from "lucide-react";
 
@@ -27,6 +27,9 @@ const eventTypeConfig: Record<
   // A session change (compaction, model switch) on the run lifecycle
   // chroma; the label matches the SIGNAL badge.
   session_signal: { cssVar: "var(--event-lifecycle)", Icon: Activity, label: "Signal" },
+  // A Claude Code user let an MCP server the policy does not list
+  // through; the label matches the MCP SERVER APPROVED badge.
+  mcp_policy_user_remembered: { cssVar: "var(--event-result)", Icon: ShieldCheck, label: "MCP Server Approved" },
   // ``embeddings`` reuses the cyan
   // RAG/semantic-search visual family; ``llm_error`` is the
   // danger-red ``--event-error`` token. Distinct glyphs (Database

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { X } from "lucide-react";
 import { PromptViewer } from "@/components/session/PromptViewer";
+import { SignalContentViewer } from "@/components/session/SignalContentViewer";
 import { MCPEventDetails, isMCPEvent } from "@/components/session/MCPEventDetails";
 import { SyntaxJson } from "@/components/ui/syntax-json";
 import { EnrichmentSummary } from "@/components/events/EnrichmentSummary";
@@ -248,7 +249,11 @@ export function EventDetailDrawer({ event, onClose, onSwapEvent, onViewRun }: Ev
 
           {activeTab === "prompts" && (
             <>
-              {displayed.has_content ? (
+              {displayed.event_type === "session_signal" ? (
+                <div className="p-4">
+                  <SignalContentViewer eventId={displayed.id} hasContent={displayed.has_content} />
+                </div>
+              ) : displayed.has_content ? (
                 <PromptViewer eventId={displayed.id} />
               ) : (
                 <div

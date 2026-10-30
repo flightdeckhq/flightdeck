@@ -25,7 +25,9 @@ export const EVENT_MAP = {
   Stop: "post_call",
   StopFailure: "llm_error",
   SessionEnd: "session_end",
-  PreCompact: "tool_call",
+  PreCompact: "session_signal",
+  PostCompact: "session_signal",
+  PostModelSwitch: "session_signal",
 };
 
 // The table the Claude Code dispatcher resolves hook names through.

@@ -20,6 +20,7 @@ import type { AgentEvent } from "@/lib/types";
 import { ErrorEventDetails } from "./ErrorEventDetails";
 import { PolicyEventDetails } from "./PolicyEventDetails";
 import { EmbeddingsContentViewer } from "./EmbeddingsContentViewer";
+import { SignalContentViewer } from "./SignalContentViewer";
 import { MCPEventDetails, isMCPEvent } from "./MCPEventDetails";
 
 /**
@@ -320,6 +321,9 @@ export function ExpandedEvent({
           eventId={event.id}
           hasContent={event.has_content}
         />
+      )}
+      {event.event_type === "session_signal" && (
+        <SignalContentViewer eventId={event.id} hasContent={event.has_content} />
       )}
       {isMCPEvent(event.event_type) && <MCPEventDetails event={event} />}
       <div

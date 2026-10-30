@@ -104,3 +104,21 @@ succeeded was approved at a prompt.
 `bypassPermissions` or `auto`, on the theory that no one was asked
 (the probe shows someone always is).
 
+## D218 -- Hook signals are one event type, session_signal, named by `signal`
+
+**Date:** 2026-10-30
+**Decision:** a session change that is not a model call, tool call or
+policy decision (compaction, model switch, and the notification,
+permission, worktree and config hooks to come) is a `session_signal`
+event with an open, form-checked `signal` name and a bounded,
+metadata-only `signal_data` object; its text is content, sent only
+under capture. It replaces the synthetic `tool_call` named
+`compact_context` that marked a compaction.
+**Why:** Claude Code has some twenty such hooks; one type lets each new
+one reach the dashboard with a signal name instead of changes to
+ingestion, the workers and the dashboard's type lists. A compaction is
+not a tool call, and counting it as one inflated tool-call counts.
+**Rejected alternative:** an event type per hook (each one touches every
+component); keeping `compact_context` beside the new signal (a
+compaction would show twice).
+

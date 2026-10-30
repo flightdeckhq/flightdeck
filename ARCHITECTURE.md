@@ -488,6 +488,7 @@ flightdeck/
 │   │       │   ├── transcript.mjs        # Transcript JSONL reader: per-call turns, tokens, latency
 │   │       │   ├── post_call.mjs         # Session billing endpoint, cost fields, deduplicated post_call flush
 │   │       │   ├── stop_failure.mjs      # StopFailure -> llm_error: Claude Code's API-error codes in the shared taxonomy
+│   │       │   ├── signals.mjs           # Compaction and model-switch hooks -> session_signal
 │   │       │   ├── tools.mjs             # Tool-input sanitiser, tool duration, tool error block
 │   │       │   ├── mcp.mjs               # MCP tool-name parsing, server fingerprints, mcp_tool_call emission
 │   │       │   ├── mcp_policy_dispatch.mjs  # MCP policy at SessionStart, PreToolUse decision, PostToolUse approval
@@ -1308,7 +1309,7 @@ Either case writes one warning line to the hook's stderr.
 
 ### Hook configuration
 
-`plugin/hooks/hooks.json` registers the eleven hooks, each running
+`plugin/hooks/hooks.json` registers the thirteen hooks, each running
 `observe_cli.mjs`. Every hook but `SessionEnd` sets an explicit
 `timeout` (seconds); Claude Code's default for a command hook is 600
 (30 for `UserPromptSubmit`), so a hook stuck on a wedged CLI or an
@@ -1322,7 +1323,7 @@ Each value is sized for the hook's normal worst case:
 | `PreToolUse` | 10 | local reads only (the policy cache and remembered decisions) |
 | `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure` | 30 | the transcript flush: up to two `claude auth status` runs (5 s each) for a session whose billing mode is not settled, then 2 s per unsent turn |
 | `SubagentStop` | 30 | the same flush over the subagent's transcript, then the child `session_end` |
-| `PreCompact`, `SubagentStart` | 15 | one or two POSTs |
+| `PreCompact`, `PostCompact`, `PostModelSwitch`, `SubagentStart` | 15 | one or two POSTs |
 
 Claude Code cancels a hook that runs out of time and carries on, as for
 any non-blocking error. What the hook had not done by then is lost or
@@ -1345,7 +1346,7 @@ tool call. The other tool hooks match every tool.
 
 The hooks that only report run with `async: true`: `UserPromptSubmit`,
 `PostToolUse` for every tool but MCP tools (matcher `^(?!mcp__)`),
-`PostToolUseFailure`, `Stop`, `StopFailure`, `PreCompact`, `SubagentStart` and
+`PostToolUseFailure`, `Stop`, `StopFailure`, `SubagentStart` and
 `SubagentStop`. Claude
 Code starts them and carries on without waiting, which saves the roughly
 200 ms a hook process takes on every prompt, tool call and turn end.
@@ -1355,7 +1356,11 @@ These stay synchronous:
 - `PreToolUse` returns the gate's decision;
 - `PostToolUse` for MCP tools (matcher `^mcp__`) records a remembered
   approval the next call's `PreToolUse` reads;
-- `SessionEnd` hands off to its worker inside Claude Code's exit budget.
+- `SessionEnd` hands off to its worker inside Claude Code's exit budget;
+- `PreCompact`, `PostCompact` and `PostModelSwitch` are rare and send one
+  event each, and in a print-mode run a compaction or a `/model` switch
+  is often the run's last act, so Claude Code would cancel them as
+  pending async hooks at exit.
 
 Claude Code does not enforce `timeout` on an async hook, so the plugin
 bounds its one open-ended step itself: a hook starts no new
@@ -4836,6 +4841,9 @@ event.
 `MCP_RESOURCE_LIST`, `MCP_RESOURCE_READ`, `MCP_PROMPT_LIST`,
 `MCP_PROMPT_GET`, `MCP_SERVER_NAME_CHANGED`, `MCP_SERVER_ATTACHED`.
 
+Hook-based clients add two more: `mcp_policy_user_remembered` (see
+MCP Protection Policy, Event taxonomy) and `session_signal` (below).
+
 ### `session_start`
 
 Carries the identity 5-tuple plus `flavor`, `framework`, `model`,
@@ -5528,6 +5536,38 @@ Sensor's acknowledgement / execution response. Fields:
 - `error`: plain string when `directive_status="error"`. (Distinct from
   the structured `LLM_ERROR` payload.)
 - `duration_ms`: handler execution time.
+
+### `session_signal`
+
+A change in a session that is not a model call, a tool call or a policy
+decision: a context compaction, a model switch. One event type carries
+all of them, named by `signal`, so a client that reports a new kind of
+change adds a signal name rather than an event type. The Claude Code
+plugin emits it from its hooks.
+
+- `signal` (required): a lowercase identifier, `^[a-z][a-z0-9_]{0,63}$`.
+  The vocabulary is open; ingestion checks the form only, and the
+  dashboard labels the signals it knows and shows any other by name.
+- `signal_data` (optional): an object of at most 32 keys whose values
+  are strings of at most 256 bytes, numbers, booleans or null. It
+  carries metadata only, never content.
+- A signal's text (a compaction summary, the instructions given to
+  `/compact`) is content: it is sent only while `capturePrompts` is on,
+  as `has_content=true` with `content.provider = "flightdeck-signal"`
+  and the text under `content.response` keyed by its name, and lands in
+  `event_content` like any captured content.
+
+| `signal` | Claude Code hook | `signal_data` | Content (capture on) |
+|---|---|---|---|
+| `context_compaction_started` | `PreCompact` | `trigger` (`manual`, `auto`) | `custom_instructions` |
+| `context_compacted` | `PostCompact` | `trigger` | `compact_summary` |
+| `model_switched` | `PostModelSwitch` | `from_model`, `to_model`, `requested_model`, `source` (`command`, `picker`, `sdk`, `auto`, `resume`), `context_tokens`, `prompt_cache_warm`, `cache_ttl`, `estimated_cache_write_usd`, `pricing` | none |
+
+The worker stores the event and advances the session's `last_seen_at`.
+A `model_switched` signal carries the new model as `model`, which the
+worker makes the session's model, and the plugin labels later
+`pre_call` events with it; the other signals carry no `model`. No
+signal changes a token count.
 
 ### MCP event types (`mcp_tool_list`, `mcp_tool_call`, `mcp_resource_list`, `mcp_resource_read`, `mcp_prompt_list`, `mcp_prompt_get`)
 

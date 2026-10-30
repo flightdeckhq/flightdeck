@@ -286,6 +286,11 @@ type EventPayload struct {
 	DecidedAt      string `json:"decided_at,omitempty"`
 	PermissionMode string `json:"permission_mode,omitempty"`
 
+	// session_signal: the signal's name and its metadata object
+	// (validated at ingestion: bounded scalar values, never content).
+	Signal     string          `json:"signal,omitempty"`
+	SignalData json.RawMessage `json:"signal_data,omitempty"`
+
 	// mcp_server_attached event extra fields.
 	// ServerName / Transport / Fingerprint / ServerURLCanonical
 	// already declared above; the worker also needs the full

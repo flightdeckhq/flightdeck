@@ -290,3 +290,44 @@ func TestBuildEventExtra_MCPPolicyUserRemembered_PermissionMode(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildEventExtra_SessionSignal(t *testing.T) {
+	e := consumer.EventPayload{
+		SessionID:  "x",
+		EventType:  "session_signal",
+		Signal:     "model_switched",
+		SignalData: json.RawMessage(`{"from_model":"claude-sonnet-5","to_model":"claude-opus-5","context_tokens":182340}`),
+	}
+	out, err := processor.BuildEventExtra(e)
+	if err != nil {
+		t.Fatalf("BuildEventExtra: %v", err)
+	}
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(out, &parsed); err != nil {
+		t.Fatalf("parse extra: %v", err)
+	}
+	if parsed["signal"] != "model_switched" {
+		t.Errorf("signal: got %v", parsed["signal"])
+	}
+	data, ok := parsed["signal_data"].(map[string]interface{})
+	if !ok || data["to_model"] != "claude-opus-5" || data["context_tokens"] != float64(182340) {
+		t.Errorf("signal_data: got %v", parsed["signal_data"])
+	}
+
+	// A null or absent signal_data is not stored.
+	for _, raw := range []json.RawMessage{nil, json.RawMessage(`null`)} {
+		out, err := processor.BuildEventExtra(consumer.EventPayload{
+			SessionID: "x", EventType: "session_signal", Signal: "context_compacted", SignalData: raw,
+		})
+		if err != nil {
+			t.Fatalf("BuildEventExtra: %v", err)
+		}
+		var p map[string]interface{}
+		if err := json.Unmarshal(out, &p); err != nil {
+			t.Fatalf("parse extra: %v", err)
+		}
+		if _, present := p["signal_data"]; present {
+			t.Errorf("signal_data must be absent for %q, got %v", raw, p["signal_data"])
+		}
+	}
+}

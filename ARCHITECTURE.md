@@ -1326,7 +1326,7 @@ Each value is sized for the hook's normal worst case:
 | `SubagentStop` | 30 | the same flush over the subagent's transcript, then the child `session_end` |
 | `PreCompact`, `PostCompact`, `PostModelSwitch`, `Notification`, `PermissionRequest`, `PermissionDenied`, `SubagentStart` | 15 | one or two POSTs |
 
-Claude Code cancels a hook that runs out of time and carries on, as for
+Claude Code cancels a synchronous hook that runs out of time and carries on, as for
 any non-blocking error. What the hook had not done by then is lost or
 deferred: unsent turns are sent by a later hook (each carries its
 message-derived id, so a copy is dropped by the worker), a
@@ -5573,8 +5573,10 @@ plugin emits it from its hooks.
 
 The sanitised input fields are the whitelist `tool_call` events use
 (`file_path`, `command`, `query`, `pattern`, `prompt`; see Content
-Capture), each cut to 256 bytes, and sent only while
-`captureToolInputs` is on.
+Capture), with line breaks and tabs turned into spaces and each cut
+to 256 bytes, sent only while `captureToolInputs` is on and only for
+built-in tools: an MCP tool's arguments stay in its `mcp_tool_call`
+content.
 
 The worker stores the event and advances the session's `last_seen_at`.
 A `model_switched` signal carries the new model as `model`, which the

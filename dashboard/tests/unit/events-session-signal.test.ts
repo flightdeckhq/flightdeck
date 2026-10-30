@@ -82,7 +82,7 @@ describe("session_signal", () => {
       "notification · idle prompt",
     );
     expect(getEventDetail(signal("permission_requested", { tool_name: "Bash", command: "rm -rf node_modules" }))).toBe(
-      "permission asked · Bash",
+      "permission requested · Bash",
     );
     expect(
       getEventDetail(

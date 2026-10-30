@@ -790,7 +790,7 @@ function signalDetail(signal: string | undefined, data: SignalData): string {
     }
     case "permission_requested":
     case "permission_denied": {
-      const verb = signal === "permission_denied" ? "permission denied" : "permission asked";
+      const verb = signal === "permission_denied" ? "permission denied" : "permission requested";
       const tool = typeof data?.tool_name === "string" ? ` · ${data.tool_name}` : "";
       const reason = signal === "permission_denied" && typeof data?.reason === "string" ? ` · ${data.reason}` : "";
       return `${verb}${tool}${reason}`;

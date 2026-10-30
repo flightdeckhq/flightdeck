@@ -91,11 +91,17 @@ export function buildSignalEvent({ hookName, hookEvent, basePayload, captureProm
   if (spec.toolInput) {
     const server = signalValue(hookEvent.mcp_server?.name);
     if (typeof server === "string") signalData.mcp_server = server;
-    // The same whitelist tool_call events use (file path, command,
-    // query, pattern, prompt), cut to the signal_data bound.
-    const safe = captureToolInputs ? sanitizeToolInput(hookEvent.tool_input) : null;
+    // A built-in tool's input goes through the same whitelist tool_call
+    // events use (file path, command, query, pattern, prompt). An MCP
+    // tool's arguments stay out: its mcp_tool_call keeps them in
+    // event_content only. Line breaks and tabs (a heredoc command)
+    // become spaces so the value is cut to the signal_data bound
+    // rather than dropped.
+    const isMcp = typeof server === "string" || String(hookEvent.tool_name ?? "").startsWith("mcp__");
+    const safe = captureToolInputs && !isMcp ? sanitizeToolInput(hookEvent.tool_input) : null;
     for (const [key, value] of Object.entries(safe ?? {})) {
-      const bounded = signalValue(truncateUtf8(String(value), MAX_SIGNAL_DATA_VALUE_BYTES));
+      const oneLine = String(value).replace(/[\x00-\x1f\x7f]+/g, " ");
+      const bounded = signalValue(truncateUtf8(oneLine, MAX_SIGNAL_DATA_VALUE_BYTES));
       if (typeof bounded === "string") signalData[key] = bounded;
     }
   }

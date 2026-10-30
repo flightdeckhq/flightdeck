@@ -483,6 +483,30 @@ describe("observe_cli.mjs", () => {
     assert.ok(!JSON.stringify(off).includes("secret summary"));
   });
 
+  it("passes the tool-input capture setting through to a permission signal", async () => {
+    const hookEvent = {
+      hook_event_name: "PermissionRequest",
+      session_id: "sess-perm-1",
+      tool_name: "Bash",
+      tool_input: { command: "rm -rf node_modules", description: "Remove node_modules" },
+    };
+    const sent = [];
+    for (const capture_ of ["true", "false"]) {
+      const before = capture.bodies().length;
+      const result = await runScript(JSON.stringify(hookEvent), {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        FLIGHTDECK_CAPTURE_TOOL_INPUTS: capture_,
+        CLAUDE_SESSION_ID: "sess-perm-1",
+      });
+      assert.equal(result.code, 0, result.stderr);
+      sent.push(capture.bodies().slice(before).find((b) => b.event_type === "session_signal"));
+    }
+    assert.equal(sent[0].signal, "permission_requested");
+    assert.deepEqual(sent[0].signal_data, { tool_name: "Bash", command: "rm -rf node_modules" });
+    assert.deepEqual(sent[1].signal_data, { tool_name: "Bash" });
+  });
+
   it("labels the next pre_call with the model a switch moved to, not the transcript's older one", async () => {
     const transcriptPath = writeTranscript([
       { type: "user", timestamp: "2026-04-17T10:00:00.000Z", message: { role: "user", content: "hi" } },
@@ -1926,7 +1950,7 @@ describe("observe_cli helpers", () => {
       assert.equal(EVENT_MAP.Stop, "post_call");
       assert.equal(EVENT_MAP.SessionEnd, "session_end");
       assert.equal(EVENT_MAP.StopFailure, "llm_error");
-      for (const hook of ["PreCompact", "PostCompact", "PostModelSwitch"]) {
+      for (const hook of ["PreCompact", "PostCompact", "PostModelSwitch", "Notification", "PermissionRequest", "PermissionDenied"]) {
         assert.equal(EVENT_MAP[hook], "session_signal", hook);
       }
     });

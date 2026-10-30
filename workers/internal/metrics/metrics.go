@@ -95,7 +95,7 @@ const (
 // post_call / tool_call / etc. propagates freshness to its parent's
 // row, and when the parent was stale/lost it's revived to active.
 // Operators chart the rate via sessions_revived_total{trigger=...}
-// through Handler, which no service mounts yet (README Roadmap).
+// on the workers' /metrics listener (NewServer).
 type RevivalTrigger string
 
 const (

@@ -2307,8 +2307,8 @@ def test_pattern_c_init_singleton_limitation(
 
     If this assertion ever flips -- e.g. if per-thread Sessions
     become supported -- update this test to verify the new behaviour.
-    The framework-coverage bullet of the Roadmap in README.md is the
-    home for any follow-up.
+    A GitHub issue labelled ``roadmap`` is the home for any
+    follow-up.
     """
     flavor_a = f"e2e-singleton-a-{uuid.uuid4().hex[:8]}"
     flavor_b = f"e2e-singleton-b-{uuid.uuid4().hex[:8]}"

@@ -66,8 +66,8 @@ def test_provider_has_exactly_six_members() -> None:
     value-side drift; this one catches the count-side).
 
     Sub-agent observability added two targets (CREWAI, LANGGRAPH). AutoGen
-    support is on the Roadmap and ships in a future PR alongside
-    LLM-call interception for it.
+    is archived upstream and not planned; its successor, Microsoft Agent
+    Framework, is roadmap issue #185.
     """
     assert set(Provider) == {
         Provider.ANTHROPIC,

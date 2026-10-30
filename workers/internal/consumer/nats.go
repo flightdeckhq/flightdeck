@@ -403,7 +403,6 @@ type EventPayload struct {
 //   - LangGraph node — dict (the inbound or outbound graph state).
 //   - Claude Code Task plugin — string (the Task tool “prompt“
 //     argument).
-//   - AutoGen (Roadmap) — framework-internal message object shape.
 //
 // Aliased to “json.RawMessage“ rather than declared as a richer
 // discriminated union because no consumer in the worker / API /

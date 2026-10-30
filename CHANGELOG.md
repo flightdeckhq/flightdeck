@@ -72,6 +72,9 @@ All notable changes to Flightdeck are documented here.
 
 ### Changed
 
+- **The roadmap moved from the README to GitHub issues.** Planned work is
+  tracked as issues labelled `roadmap`, with v0.8.0 and v0.9.0 milestones;
+  react with :+1: on the ones you need. The README links to the list.
 - **The Claude Code plugin no longer makes Claude Code wait.** The hooks
   that only report (prompt submit, non-MCP tool use, tool failures, turn
   end, compaction and subagents) run asynchronously, which saves

@@ -30,7 +30,7 @@ path, raw ``model_json_schema()`` calls) sees the cleaned schema.
 
 Remove this module once mcpadapt emits valid schemas. See README
 "Known framework constraints" for the operator-facing explanation
-and the README Roadmap for the removal checkbox.
+and roadmap issue #193 for the removal.
 """
 
 from __future__ import annotations

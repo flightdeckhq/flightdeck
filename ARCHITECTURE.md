@@ -4408,9 +4408,10 @@ loads `PromptViewer` / `EmbeddingsContentViewer` if
 `<SurroundingEventsList>` — ±5 events from the same session,
 clickable to swap the drawer's displayed event. It brackets the open
 event's `occurred_at` with two `GET /v1/events` calls, the events up to
-it newest first and the events from it oldest first (each a few more
-than five, for events sharing its timestamp), so the window is the
-event's own however deep it sits in a long session.
+it newest first and the events from it oldest first with no upper
+bound (each a few more than five, for events sharing its timestamp), so
+the window is the event's own however deep it sits in a long session.
+Events are ordered by `occurred_at` to the microsecond, then id.
 
 The summary grid comes from `getSummaryRows` in
 `dashboard/src/lib/events.ts`, which the session drawer's expanded

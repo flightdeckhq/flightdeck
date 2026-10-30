@@ -99,9 +99,34 @@ describe("SurroundingEventsList", () => {
     await waitFor(() => expect(screen.getByTestId("surrounding-anchor")).toBeInTheDocument());
     expect(vi.mocked(fetchBulkEvents).mock.calls.map(([params]) => params)).toEqual([
       expect.objectContaining({ to: anchor.occurred_at, session_id: "ses-1", order: "desc", limit: 8 }),
-      expect.objectContaining({ from: anchor.occurred_at, session_id: "ses-1", order: "asc", limit: 8 }),
+      // An explicit far bound: the server's clock must not cut off an
+      // event stamped by a client clock running ahead.
+      expect.objectContaining({
+        from: anchor.occurred_at,
+        to: "9999-12-31T23:59:59Z",
+        session_id: "ses-1",
+        order: "asc",
+        limit: 8,
+      }),
     ]);
-    expect(vi.mocked(fetchBulkEvents).mock.calls[1]?.[0]).not.toHaveProperty("to");
+    // Both requests are cancelled when the drawer moves on.
+    for (const call of vi.mocked(fetchBulkEvents).mock.calls) {
+      expect(call[1]).toBeInstanceOf(AbortSignal);
+    }
+  });
+
+  it("orders events by the API's microseconds, not only milliseconds", async () => {
+    // Same millisecond; ids sort the other way round from time.
+    const later = makeEvent("a-later", "2026-05-09T07:00:05.123900Z");
+    const anchor = makeEvent("z-anchor", "2026-05-09T07:00:05.1234Z");
+    const earlier = makeEvent("m-earlier", "2026-05-09T07:00:05.123Z");
+    vi.mocked(fetchBulkEvents).mockResolvedValue(page([later, anchor, earlier]));
+    render(<SurroundingEventsList event={anchor} onSelect={() => {}} window={2} />);
+    await waitFor(() => expect(screen.getByTestId("surrounding-anchor")).toBeInTheDocument());
+    const ids = screen
+      .getAllByTestId(/surrounding-(row|anchor)/)
+      .map((r) => r.getAttribute("data-event-id"));
+    expect(ids).toEqual(["m-earlier", "z-anchor", "a-later"]);
   });
 
   it("centres on an anchor deep in a long session, not on the session's oldest events", async () => {

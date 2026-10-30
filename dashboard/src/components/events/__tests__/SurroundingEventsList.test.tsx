@@ -88,6 +88,60 @@ describe("SurroundingEventsList", () => {
     );
   });
 
+  function page(events: AgentEvent[]) {
+    return { events, total: events.length, limit: 100, offset: 0, has_more: false };
+  }
+
+  it("fetches the events up to the anchor newest first and from it oldest first", async () => {
+    const anchor = makeEvent("anchor", "2026-05-09T07:00:05.123456Z");
+    vi.mocked(fetchBulkEvents).mockResolvedValue(page([anchor]));
+    render(<SurroundingEventsList event={anchor} onSelect={() => {}} window={2} />);
+    await waitFor(() => expect(screen.getByTestId("surrounding-anchor")).toBeInTheDocument());
+    expect(vi.mocked(fetchBulkEvents).mock.calls.map(([params]) => params)).toEqual([
+      expect.objectContaining({ to: anchor.occurred_at, session_id: "ses-1", order: "desc", limit: 8 }),
+      expect.objectContaining({ from: anchor.occurred_at, session_id: "ses-1", order: "asc", limit: 8 }),
+    ]);
+    expect(vi.mocked(fetchBulkEvents).mock.calls[1]?.[0]).not.toHaveProperty("to");
+  });
+
+  it("centres on an anchor deep in a long session, not on the session's oldest events", async () => {
+    // A session of 100 events; the anchor is the 90th.
+    const all = Array.from({ length: 100 }, (_, i) =>
+      makeEvent(`e${i}`, new Date(Date.UTC(2026, 4, 9, 7, 0, i)).toISOString()),
+    );
+    const anchor = all[89]!;
+    vi.mocked(fetchBulkEvents).mockImplementation(async (params) => {
+      const limit = params.limit ?? 50;
+      if (params.order === "desc") {
+        return page(all.filter((e) => e.occurred_at <= params.to!).reverse().slice(0, limit));
+      }
+      return page(all.filter((e) => e.occurred_at >= params.from).slice(0, limit));
+    });
+    render(<SurroundingEventsList event={anchor} onSelect={() => {}} window={2} />);
+    await waitFor(() => expect(screen.getByTestId("surrounding-anchor")).toBeInTheDocument());
+    const ids = screen
+      .getAllByTestId(/surrounding-(row|anchor)/)
+      .map((r) => r.getAttribute("data-event-id"));
+    expect(ids).toEqual(["e87", "e88", "e89", "e90", "e91"]);
+    expect(screen.getByTestId("surrounding-anchor")).toHaveAttribute("data-event-id", "e89");
+  });
+
+  it("shows the events nearest the anchor's time when the anchor itself is not returned", async () => {
+    const anchor = makeEvent("anchor", "2026-05-09T07:00:05Z");
+    const others = [1, 2, 3, 4, 6, 7, 8, 9].map((s) =>
+      makeEvent(`e${s}`, `2026-05-09T07:00:0${s}Z`),
+    );
+    vi.mocked(fetchBulkEvents).mockResolvedValue(page(others));
+    render(<SurroundingEventsList event={anchor} onSelect={() => {}} window={2} />);
+    await waitFor(() => {
+      expect(screen.queryByTestId("surrounding-loading")).not.toBeInTheDocument();
+    });
+    // e6 is the first event at or after the anchor's time, so the
+    // window is two on each side of it.
+    const ids = screen.getAllByTestId("surrounding-row").map((r) => r.getAttribute("data-event-id"));
+    expect(ids).toEqual(["e3", "e4", "e6", "e7", "e8"]);
+  });
+
   it("shows fallback when fetch fails", async () => {
     vi.mocked(fetchBulkEvents).mockRejectedValue(new Error("boom"));
     render(

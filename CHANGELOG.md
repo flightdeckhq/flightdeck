@@ -33,6 +33,9 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **The event drawer's Neighbors tab shows the events around the open
+  event.** It listed the session's oldest events, so on a long session
+  the open event and its real neighbours were missing.
 - **A Claude Code API error no longer shows as a model call.** Claude
   Code records a failed turn as a stand-in message with no tokens; the
   plugin reported it as a zero-token `post_call` with no model. It is

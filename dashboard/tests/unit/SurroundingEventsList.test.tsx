@@ -36,32 +36,46 @@ describe("SurroundingEventsList", () => {
     expect(screen.getByTestId("surrounding-anchor")).toBeInTheDocument();
   });
 
-  it("moving the anchor within the same session reuses the fetched events", async () => {
+  it("moving the anchor fetches that event's own window and never shows the previous one meanwhile", async () => {
     fetchBulkEvents.mockResolvedValue({ events: s1, total: 9, has_more: false });
     const { rerender } = render(
       <SurroundingEventsList event={s1[4]!} onSelect={() => {}} window={1} />,
     );
-    await waitFor(() => expect(screen.getByTestId("surrounding-anchor")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByTestId("surrounding-anchor")).toHaveAttribute("data-event-id", "e4"),
+    );
     rerender(<SurroundingEventsList event={s1[6]!} onSelect={() => {}} window={1} />);
-    expect(screen.getByTestId("surrounding-anchor")).toBeInTheDocument();
-    expect(fetchBulkEvents).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId("surrounding-loading")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.getByTestId("surrounding-anchor")).toHaveAttribute("data-event-id", "e6"),
+    );
+    // One request for each side of each anchor.
+    expect(fetchBulkEvents).toHaveBeenCalledTimes(4);
   });
 
   it("a different session fetches again and never shows the previous session's events", async () => {
     const s2 = [ev("x0", "s2", 0), ev("x1", "s2", 1)];
-    let releaseS2: (v: unknown) => void = () => {};
+    const releases: ((v: unknown) => void)[] = [];
     fetchBulkEvents
       .mockResolvedValueOnce({ events: s1, total: 9, has_more: false })
-      .mockImplementationOnce(() => new Promise((r) => (releaseS2 = r)));
+      .mockResolvedValueOnce({ events: s1, total: 9, has_more: false })
+      .mockImplementation(() => new Promise((r) => releases.push(r)));
     const { rerender } = render(
       <SurroundingEventsList event={s1[4]!} onSelect={() => {}} window={1} />,
     );
     await waitFor(() => expect(screen.getByTestId("surrounding-anchor")).toBeInTheDocument());
     rerender(<SurroundingEventsList event={s2[1]!} onSelect={() => {}} window={1} />);
     expect(screen.getByTestId("surrounding-loading")).toBeInTheDocument();
-    releaseS2({ events: s2, total: 2, has_more: false });
-    await waitFor(() => expect(screen.getByTestId("surrounding-anchor")).toBeInTheDocument());
-    expect(fetchBulkEvents).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(releases).toHaveLength(2));
+    for (const release of releases) release({ events: s2, total: 2, has_more: false });
+    await waitFor(() =>
+      expect(screen.getByTestId("surrounding-anchor")).toHaveAttribute("data-event-id", "x1"),
+    );
+    const ids = screen
+      .getAllByTestId(/surrounding-(row|anchor)/)
+      .map((row) => row.getAttribute("data-event-id"));
+    expect(ids).toEqual(["x0", "x1"]);
+    expect(fetchBulkEvents).toHaveBeenCalledTimes(4);
   });
 
   it("reports a failed fetch", async () => {

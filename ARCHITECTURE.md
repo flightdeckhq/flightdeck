@@ -4406,7 +4406,11 @@ payload via the shared `<SyntaxJson>` component. The Prompts tab
 loads `PromptViewer` / `EmbeddingsContentViewer` if
 `event.has_content`. The Neighbors tab renders
 `<SurroundingEventsList>` — ±5 events from the same session,
-clickable to swap the drawer's displayed event.
+clickable to swap the drawer's displayed event. It brackets the open
+event's `occurred_at` with two `GET /v1/events` calls, the events up to
+it newest first and the events from it oldest first (each a few more
+than five, for events sharing its timestamp), so the window is the
+event's own however deep it sits in a long session.
 
 The summary grid comes from `getSummaryRows` in
 `dashboard/src/lib/events.ts`, which the session drawer's expanded

@@ -17,6 +17,23 @@ interface SurroundingEventsListProps {
 
 const DEFAULT_WINDOW = 5;
 
+// Events sharing the anchor's timestamp sort in no fixed order on the
+// server, so each side fetches this many extra to keep the anchor and
+// its true neighbours in the result when several share a time.
+const TIE_MARGIN = 5;
+
+const EPOCH = "1970-01-01T00:00:00Z";
+
+/** ``events`` deduplicated by id, in occurred_at order (id breaks ties). */
+function mergeInTimeOrder(events: AgentEvent[]): AgentEvent[] {
+  const byId = new Map(events.map((e) => [e.id, e]));
+  return [...byId.values()].sort(
+    (a, b) =>
+      new Date(a.occurred_at).getTime() - new Date(b.occurred_at).getTime() ||
+      a.id.localeCompare(b.id),
+  );
+}
+
 /**
  * Lazy-fetches the ±N events from the same session and renders
  * them as a vertical list. Each entry is clickable and swaps the
@@ -24,32 +41,37 @@ const DEFAULT_WINDOW = 5;
  * event) is visually distinguished but not disabled — clicking it
  * is a no-op via reference equality.
  *
- * Fetch strategy: pulls a slightly oversized window of events from
- * the session via fetchBulkEvents (session_id-scoped, no time
- * window — the server returns the most recent N), filters to the
- * anchor's vicinity, and clamps to ±N. Cached per session_id while
- * the drawer is mounted on the same session — switching to a
- * different event in the same session reuses the cached events.
+ * Fetch strategy: two session-scoped fetchBulkEvents calls bracket the
+ * anchor's occurred_at, the events up to it newest first and the
+ * events from it oldest first, so the window is the anchor's own
+ * however long the session is. Both bounds are inclusive, so both
+ * pages carry the anchor; the merge deduplicates by id. Cached per
+ * anchor while the drawer is mounted.
  */
 export function SurroundingEventsList({
   event,
   onSelect,
   window: windowSize = DEFAULT_WINDOW,
 }: SurroundingEventsListProps) {
-  // Keyed on the session and window size; the anchor only selects the
-  // slice, so switching anchors within a session reuses the fetch.
-  const requestKey = `${event.session_id}|${windowSize}`;
-  const fetched = useKeyedFetch(requestKey, () =>
-    fetchBulkEvents({
-      from: "1970-01-01T00:00:00Z",
-      session_id: event.session_id,
-      limit: windowSize * 4 + 1,
-    }).then((resp) =>
-      [...resp.events].sort(
-        (a, b) => new Date(a.occurred_at).getTime() - new Date(b.occurred_at).getTime(),
-      ),
-    ),
-  );
+  const requestKey = `${event.session_id}|${event.id}|${windowSize}`;
+  const fetched = useKeyedFetch(requestKey, () => {
+    const limit = windowSize + 1 + TIE_MARGIN;
+    return Promise.all([
+      fetchBulkEvents({
+        from: EPOCH,
+        to: event.occurred_at,
+        session_id: event.session_id,
+        order: "desc",
+        limit,
+      }),
+      fetchBulkEvents({
+        from: event.occurred_at,
+        session_id: event.session_id,
+        order: "asc",
+        limit,
+      }),
+    ]).then(([before, after]) => mergeInTimeOrder([...before.events, ...after.events]));
+  });
   const error =
     fetched.error === null
       ? null
@@ -64,16 +86,18 @@ export function SurroundingEventsList({
     if (!sorted) return null;
     const idx = sorted.findIndex((e) => e.id === event.id);
     if (idx === -1) {
-      // Anchor not in the returned page (rare — happens when the
-      // session has many more events than our limit and the
-      // anchor is mid-history). Show whatever we got centered
-      // around the most recent N.
-      return sorted.slice(-(windowSize * 2 + 1));
+      // Anchor not returned (more events share its timestamp than the
+      // tie margin covers, or it was deleted). Show the events nearest
+      // its time instead.
+      const at = new Date(event.occurred_at).getTime();
+      const nearest = sorted.findIndex((e) => new Date(e.occurred_at).getTime() >= at);
+      const centre = nearest === -1 ? sorted.length - 1 : nearest;
+      return sorted.slice(Math.max(0, centre - windowSize), centre + windowSize + 1);
     }
     const lo = Math.max(0, idx - windowSize);
     const hi = Math.min(sorted.length, idx + windowSize + 1);
     return sorted.slice(lo, hi);
-  }, [sorted, event.id, windowSize]);
+  }, [sorted, event.id, event.occurred_at, windowSize]);
 
   if (error) {
     return (
@@ -126,6 +150,7 @@ export function SurroundingEventsList({
               if (!isAnchor) onSelect(e);
             }}
             data-testid={isAnchor ? "surrounding-anchor" : "surrounding-row"}
+            data-event-id={e.id}
           >
             <span
               className="font-mono text-[10px]"

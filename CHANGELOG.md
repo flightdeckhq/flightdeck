@@ -31,6 +31,13 @@ All notable changes to Flightdeck are documented here.
   with the error type, so Claude Code sessions show in the error views
   next to sensor agents.
 
+- **Claude Code compactions and model switches show on the timeline.**
+  A new `session_signal` event marks when a compaction starts and
+  finishes (with Claude Code's summary when prompt capture is on) and
+  when the session's model changes, with what asked for the switch and
+  Claude Code's estimate of the cache it costs. Compactions are no longer
+  reported as a `compact_context` tool call.
+
 ### Fixed
 
 - **The event drawer's Neighbors tab shows the events around the open

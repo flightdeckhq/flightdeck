@@ -103,6 +103,17 @@ const (
 	maxPermissionModeLen = 64
 )
 
+// session_signal bounds. The signal name is an open vocabulary checked
+// for form only; signal_data is metadata (never content), so a few
+// dozen short scalar fields are plenty: Claude Code's richest hook
+// input today (PostModelSwitch) has nine.
+var signalNameRegex = regexp.MustCompile(`^[a-z][a-z0-9_]{0,63}$`)
+
+const (
+	maxSignalDataKeys     = 32
+	maxSignalDataValueLen = 256
+)
+
 // uuidRegex matches the canonical 8-4-4-4-12 hex form. Any version
 // (v1/v4/v5) and any variant bits are accepted -- the identity
 // derivation produces v5 UUIDs and legacy session_ids may be v4, but
@@ -438,6 +449,11 @@ func EventsHandler(
 			}
 		case "mcp_policy_user_remembered":
 			if msg := validateMCPPolicyUserRememberedPayload(payload); msg != "" {
+				writeError(w, http.StatusBadRequest, msg)
+				return
+			}
+		case "session_signal":
+			if msg := validateSessionSignalPayload(payload); msg != "" {
 				writeError(w, http.StatusBadRequest, msg)
 				return
 			}
@@ -821,6 +837,40 @@ func validateMCPPolicyUserRememberedPayload(payload map[string]any) string {
 		}
 		if len(v) > maxPermissionModeLen {
 			return fmt.Sprintf("permission_mode exceeds %d-character limit", maxPermissionModeLen)
+		}
+	}
+	return ""
+}
+
+// validateSessionSignalPayload enforces session_signal's shape: a
+// lowercase signal name, and an optional signal_data object of at most
+// maxSignalDataKeys scalar values (strings bounded in bytes, numbers,
+// booleans, null). Null signal_data counts as absent.
+func validateSessionSignalPayload(payload map[string]any) string {
+	name, ok := payload["signal"].(string)
+	if !ok || !signalNameRegex.MatchString(name) {
+		return "signal is required for session_signal: a lowercase identifier of at most 64 characters"
+	}
+	raw, present := payload["signal_data"]
+	if !present || raw == nil {
+		return ""
+	}
+	data, ok := raw.(map[string]any)
+	if !ok {
+		return "signal_data must be an object when present on session_signal"
+	}
+	if len(data) > maxSignalDataKeys {
+		return fmt.Sprintf("signal_data exceeds %d keys", maxSignalDataKeys)
+	}
+	for key, value := range data {
+		switch v := value.(type) {
+		case nil, bool, float64:
+		case string:
+			if len(v) > maxSignalDataValueLen {
+				return fmt.Sprintf("signal_data.%s exceeds %d bytes", key, maxSignalDataValueLen)
+			}
+		default:
+			return fmt.Sprintf("signal_data.%s must be a string, number, boolean or null", key)
 		}
 	}
 	return ""

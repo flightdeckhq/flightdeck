@@ -569,6 +569,56 @@ def _post_session_events(
                     )
                 )
                 posted += 1
+        elif extra in ("signal_context_compacted", "signal_model_switched"):
+            # The Claude Code plugin's session_signal events. T126 reads
+            # the compaction's rows and captured summary, and the model
+            # switch's feed line.
+            # Only a model switch carries a model: the new one.
+            signal_common = {**common, "model": None}
+            if extra == "signal_context_compacted":
+                signal_fields: dict[str, Any] = {
+                    "signal": "context_compacted",
+                    "signal_data": {"trigger": "auto"},
+                    "has_content": True,
+                    "content": {
+                        "provider": "flightdeck-signal",
+                        "model": "",
+                        "system": None,
+                        "messages": [],
+                        "tools": None,
+                        "response": {
+                            "compact_summary": "E2E compaction summary: the agent fixed the parser.",
+                        },
+                    },
+                }
+            else:
+                signal_common = {**common, "model": "claude-opus-4-7"}
+                signal_fields = {
+                    "signal": "model_switched",
+                    "signal_data": {
+                        "from_model": "claude-sonnet-4-5",
+                        "to_model": "claude-opus-4-7",
+                        "requested_model": "opus",
+                        "source": "command",
+                        "context_tokens": 182340,
+                        "prompt_cache_warm": True,
+                        "cache_ttl": "5m",
+                        "estimated_cache_write_usd": 1.1396,
+                        "pricing": "catalog",
+                    },
+                }
+            post_event(
+                make_event(
+                    session_id,
+                    agent_cfg["flavor"],
+                    "session_signal",
+                    timestamp=ts,
+                    **signal_fields,
+                    **identity,
+                    **signal_common,
+                )
+            )
+            posted += 1
         elif extra == "mcp_policy_user_remembered":
             # The Claude Code plugin's remembered MCP approval, with the
             # permission mode the session was in. T124 reads its feed
@@ -1073,6 +1123,10 @@ def _session_is_complete(
             )
         elif tag == "mcp_policy_user_remembered":
             expected_counts[tag] = expected_counts.get(tag, 0) + 1
+        elif tag in ("signal_context_compacted", "signal_model_switched"):
+            expected_counts["session_signal"] = (
+                expected_counts.get("session_signal", 0) + 1
+            )
         elif tag == "history_padding":
             expected_counts["tool_call"] = (
                 expected_counts.get("tool_call", 0) + HISTORY_PADDING_EVENTS

@@ -166,6 +166,12 @@ export const eventBadgeConfig: Record<string, BadgeConfig> = {
     cssVar: "var(--event-result)",
     label: "MCP SERVER ATTACHED",
   },
+  // A change in the session (compaction, model switch) rides the run
+  // lifecycle chroma; the feed line names the signal.
+  session_signal: {
+    cssVar: "var(--event-lifecycle)",
+    label: "SIGNAL",
+  },
 };
 
 export const defaultBadge: BadgeConfig = { cssVar: "var(--event-lifecycle)", label: "EVENT" };
@@ -367,6 +373,8 @@ export function getEventDetail(event: AgentEvent): string {
       const mode = event.payload?.permission_mode;
       return mode ? `${server} approved · ${mode}` : `${server} approved`;
     }
+    case "session_signal":
+      return signalDetail(event.payload?.signal, event.payload?.signal_data);
     case "directive_result": {
       const name = event.payload?.directive_name;
       const status = event.payload?.directive_status;
@@ -690,6 +698,8 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
       }
       return rows;
     }
+    case "session_signal":
+      return signalRows(event.payload?.signal, event.payload?.signal_data);
     case "mcp_policy_user_remembered": {
       const p = event.payload;
       const rows: [string, string][] = [];
@@ -750,6 +760,67 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
   }
 }
 
+/* ---- session_signal ---- */
+
+type SignalData = Record<string, string | number | boolean | null> | undefined;
+
+/** A signal name as words: ``context_compacted`` -> ``context compacted``. */
+function signalWords(signal: string): string {
+  return signal.replace(/_/g, " ");
+}
+
+/** The feed line of a session_signal event. */
+function signalDetail(signal: string | undefined, data: SignalData): string {
+  if (!signal) return "session signal";
+  const trigger = typeof data?.trigger === "string" ? data.trigger : null;
+  switch (signal) {
+    case "context_compaction_started":
+      return trigger ? `compaction started · ${trigger}` : "compaction started";
+    case "context_compacted":
+      return trigger ? `context compacted · ${trigger}` : "context compacted";
+    case "model_switched": {
+      const from = typeof data?.from_model === "string" ? data.from_model : "?";
+      const to = typeof data?.to_model === "string" ? data.to_model : "?";
+      const source = typeof data?.source === "string" ? ` · ${data.source}` : "";
+      return `model ${from} → ${to}${source}`;
+    }
+    default:
+      return signalWords(signal);
+  }
+}
+
+// The labels and formats of the signal_data keys the dashboard knows;
+// any other key is listed under its own name.
+const SIGNAL_DATA_LABELS: Record<string, string> = {
+  trigger: "Trigger",
+  from_model: "From model",
+  to_model: "To model",
+  requested_model: "Requested",
+  source: "Source",
+  context_tokens: "Context tokens",
+  prompt_cache_warm: "Prompt cache warm",
+  cache_ttl: "Cache TTL",
+  estimated_cache_write_usd: "Est. cache write",
+  pricing: "Pricing",
+};
+
+function signalValue(key: string, value: string | number | boolean | null): string {
+  if (value === null) return "—";
+  if (typeof value === "boolean") return value ? "yes" : "no";
+  if (key === "estimated_cache_write_usd" && typeof value === "number") return `$${value.toFixed(4)}`;
+  if (typeof value === "number") return value.toLocaleString();
+  return value;
+}
+
+/** The summary rows of a session_signal event. */
+function signalRows(signal: string | undefined, data: SignalData): [string, string][] {
+  const rows: [string, string][] = [["Signal", signal ? signalWords(signal) : "session signal"]];
+  for (const [key, value] of Object.entries(data ?? {})) {
+    rows.push([SIGNAL_DATA_LABELS[key] ?? key, signalValue(key, value)]);
+  }
+  return rows;
+}
+
 /* ---- Event type filter groups ---- */
 
 export const EVENT_TYPE_GROUPS: Record<string, string[]> = {
@@ -773,7 +844,7 @@ export const EVENT_TYPE_GROUPS: Record<string, string[]> = {
     "mcp_policy_user_remembered",
   ],
   "Directives": ["directive", "directive_result"],
-  "Run": ["session_start", "session_end"],
+  "Run": ["session_start", "session_end", "session_signal"],
   // MCP filter group spans all six MCP event types. The
   // filter pill colour is the tool family's cyan (rather than the
   // resource green or prompt purple) because tool calls are the

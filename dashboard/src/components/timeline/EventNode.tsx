@@ -6,7 +6,7 @@ import { cn } from "@/lib/utils";
 import {
   Zap, Wrench, AlertTriangle, XCircle, ArrowDown,
   Play, Square, Check, Circle, X, Database, AlertCircle,
-  ListChecks, FileText, Folder, MessageSquare, List,
+  ListChecks, FileText, Folder, MessageSquare, List, Activity,
   type LucideProps,
 } from "lucide-react";
 
@@ -24,6 +24,9 @@ const eventTypeConfig: Record<
   session_end: { cssVar: "var(--event-lifecycle)", Icon: Square, label: "Run End" },
   directive_result: { cssVar: "var(--event-directive)", Icon: Check, label: "Directive Result" },
   heartbeat: { cssVar: "var(--event-lifecycle)", Icon: Circle, label: "Heartbeat" },
+  // A session change (compaction, model switch) on the run lifecycle
+  // chroma; the label matches the SIGNAL badge.
+  session_signal: { cssVar: "var(--event-lifecycle)", Icon: Activity, label: "Signal" },
   // ``embeddings`` reuses the cyan
   // RAG/semantic-search visual family; ``llm_error`` is the
   // danger-red ``--event-error`` token. Distinct glyphs (Database

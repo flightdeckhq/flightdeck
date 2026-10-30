@@ -41,7 +41,10 @@ export type EventType =
   // ClientSession.initialize so the dashboard's SessionDrawer
   // re-fetches sessions.context.mcp_servers and the MCP SERVERS
   // panel populates live for in-flight sessions.
-  | "mcp_server_attached";
+  | "mcp_server_attached"
+  // A session change that is not a call (compaction, model switch),
+  // named by ``payload.signal``.
+  | "session_signal";
 
 /** 14-entry structured LLM API error taxonomy. Mirrors
  *  ``sensor/flightdeck_sensor/core/errors.py::ErrorType``. */
@@ -387,6 +390,13 @@ export interface EventPayloadFields {
    */
   decided_at?: string;
   permission_mode?: string;
+  /**
+   * session_signal: the signal's name (context_compaction_started,
+   * context_compacted, model_switched, or any later one) and its
+   * metadata, scalar values only.
+   */
+  signal?: string;
+  signal_data?: Record<string, string | number | boolean | null>;
   fingerprint?: string;
   server_url_canonical?: string;
 

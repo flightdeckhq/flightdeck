@@ -257,6 +257,22 @@ function assertIngestionContract(p) {
         );
       }
       break;
+    case "session_signal":
+      assert.match(p.signal ?? "", /^[a-z][a-z0-9_]{0,63}$/, "signal is a lowercase identifier");
+      if (p.signal_data != null) {
+        assert.ok(typeof p.signal_data === "object" && !Array.isArray(p.signal_data), "signal_data must be an object");
+        assert.ok(Object.keys(p.signal_data).length <= 32, "signal_data exceeds 32 keys");
+        for (const [key, value] of Object.entries(p.signal_data)) {
+          assert.ok(
+            value === null || ["boolean", "number", "string"].includes(typeof value),
+            `signal_data.${key} must be a scalar`,
+          );
+          if (typeof value === "string") {
+            assert.ok(Buffer.byteLength(value, "utf8") <= 256, `signal_data.${key} exceeds 256 bytes`);
+          }
+        }
+      }
+      break;
     case "llm_error":
       if ("terminal" in p) assert.equal(typeof p.terminal, "boolean", "terminal must be a boolean on llm_error");
       if ("retry_attempt" in p) {

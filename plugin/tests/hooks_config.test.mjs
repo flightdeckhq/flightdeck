@@ -28,6 +28,8 @@ const EXPECTED_TIMEOUTS = {
   StopFailure: 30,
   SubagentStop: 30,
   PreCompact: 15,
+  PostCompact: 15,
+  PostModelSwitch: 15,
   SubagentStart: 15,
 };
 
@@ -84,7 +86,6 @@ describe("hooks.json", () => {
       "PostToolUseFailure",
       "Stop",
       "StopFailure",
-      "PreCompact",
       "SubagentStart",
       "SubagentStop",
     ];

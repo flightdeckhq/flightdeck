@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -1472,3 +1473,67 @@ func TestEventsHandler_PluginReplayBodies_AcceptedAndPublishedIntact(t *testing.
 		})
 	}
 }
+
+func makeSessionSignalPayload() map[string]any {
+	return map[string]any{
+		"session_id":  "33333333-3333-4333-8333-333333333333",
+		"agent_id":    "44444444-4444-4444-8444-444444444444",
+		"agent_type":  "coding",
+		"client_type": "claude_code",
+		"event_type":  "session_signal",
+		"signal":      "model_switched",
+		"signal_data": map[string]any{
+			"from_model":                "claude-sonnet-5",
+			"to_model":                  "claude-opus-5",
+			"requested_model":           nil,
+			"context_tokens":            182340,
+			"prompt_cache_warm":         true,
+			"estimated_cache_write_usd": 1.1396,
+		},
+	}
+}
+
+func TestEventsHandler_SessionSignal(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(map[string]any)
+		want   int
+		says   string
+	}{
+		{"valid", func(map[string]any) {}, http.StatusOK, ""},
+		{"no signal_data", func(p map[string]any) { delete(p, "signal_data") }, http.StatusOK, ""},
+		{"null signal_data", func(p map[string]any) { p["signal_data"] = nil }, http.StatusOK, ""},
+		{"an unknown but well-formed signal", func(p map[string]any) { p["signal"] = "worktree_created" }, http.StatusOK, ""},
+		{"missing signal", func(p map[string]any) { delete(p, "signal") }, http.StatusBadRequest, "signal"},
+		{"upper-case signal", func(p map[string]any) { p["signal"] = "ModelSwitched" }, http.StatusBadRequest, "signal"},
+		{"signal over 64 characters", func(p map[string]any) { p["signal"] = "a" + strings.Repeat("b", 64) }, http.StatusBadRequest, "signal"},
+		{"signal_data not an object", func(p map[string]any) { p["signal_data"] = "x" }, http.StatusBadRequest, "signal_data"},
+		{"nested value", func(p map[string]any) {
+			p["signal_data"] = map[string]any{"nested": map[string]any{"a": 1}}
+		}, http.StatusBadRequest, "signal_data.nested"},
+		{"long string value", func(p map[string]any) {
+			p["signal_data"] = map[string]any{"to_model": strings.Repeat("m", 257)}
+		}, http.StatusBadRequest, "signal_data.to_model"},
+		{"too many keys", func(p map[string]any) {
+			data := map[string]any{}
+			for i := 0; i < 33; i++ {
+				data[fmt.Sprintf("k%d", i)] = i
+			}
+			p["signal_data"] = data
+		}, http.StatusBadRequest, "32 keys"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			payload := makeSessionSignalPayload()
+			tc.mutate(payload)
+			code, body := runEventValidationTest(t, payload)
+			if code != tc.want {
+				t.Fatalf("expected %d, got %d body=%s", tc.want, code, body)
+			}
+			if tc.says != "" && !strings.Contains(body, tc.says) {
+				t.Errorf("body should mention %q, got %s", tc.says, body)
+			}
+		})
+	}
+}
+

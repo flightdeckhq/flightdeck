@@ -13,6 +13,7 @@ import {
   markerKeyFor,
   pruneStateDir,
   readCachedModel,
+  recordModelSwitch,
 } from "../core/state.mjs";
 import { clearSessionPolicyCache } from "../mcp_policy.mjs";
 import { safeCollectContext } from "./context.mjs";
@@ -26,9 +27,10 @@ import {
 import { flushPostCallTurns, resolvePreCallModel, resolveSessionEndpoint } from "./post_call.mjs";
 import { clearSessionCacheFiles, ensureSessionStarted, getSessionId, sessionHasEnded } from "./session.mjs";
 import { SESSION_END_WORKER_DEADLINE_MS, spawnDetachedSessionEnd } from "./session_end.mjs";
+import { SIGNAL_HOOKS, buildSignalEvent } from "./signals.mjs";
+import { buildStopFailureEvent, failedTurnFor } from "./stop_failure.mjs";
 import { _subagentInteriorContext, emitSubagentEvent } from "./subagent.mjs";
 import { buildToolErrorBlock, captureErrorText, hookDurationMs, sanitizeToolInput } from "./tools.mjs";
-import { buildStopFailureEvent, failedTurnFor } from "./stop_failure.mjs";
 import { isRealModel, readTurns } from "./transcript.mjs";
 
 /**
@@ -464,18 +466,20 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
     return;
   }
 
-  // PreCompact: context compaction is about to happen. Emit a synthetic
-  // tool_call so the dashboard timeline shows the compaction event.
-  if (hookName === "PreCompact") {
-    const payload = {
-      ...basePayload,
-      event_type: "tool_call",
-      tool_name: "compact_context",
-      tool_input: hookEvent.trigger ? JSON.stringify({ trigger: hookEvent.trigger }) : null,
-      is_subagent_call: false,
-      latency_ms: null,
-      timestamp: new Date().toISOString(),
-    };
+  // PreCompact, PostCompact, PostModelSwitch: a change in the session,
+  // reported as a session_signal. A model switch also becomes the model
+  // later pre_call events are labelled with.
+  if (SIGNAL_HOOKS.includes(hookName)) {
+    const payload = buildSignalEvent({
+      hookName,
+      hookEvent,
+      basePayload,
+      capturePrompts: cfg.capturePrompts,
+    });
+    if (isRealModel(payload.model)) {
+      cacheSessionModel(sessionId, payload.model);
+      recordModelSwitch(sessionId, payload.model, payload.timestamp);
+    }
     await postEvent(cfg.server, cfg.token, sessionId, payload);
     return;
   }

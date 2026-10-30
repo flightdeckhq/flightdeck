@@ -17,6 +17,7 @@ import {
   markEmittedTurn,
   markTurnSent,
   readCachedModel,
+  readModelSwitch,
   reclaimOrphanedTurn,
   readEndpointCache,
   writeEndpointCache,
@@ -122,7 +123,14 @@ export function turnTokenCostFields(turn, model, endpoint) {
  */
 export function resolvePreCallModel(sessionId, hookEvent, transcriptPath) {
   const latest = readLatestTurn(transcriptPath);
+  // A model switch newer than the latest turn wins: that turn still
+  // names the model the session switched away from.
+  const switched = readModelSwitch(sessionId);
+  const switchIsNewer =
+    switched !== null &&
+    (!latest?.lastTimestamp || Date.parse(switched.at) > Date.parse(latest.lastTimestamp));
   const candidates = [
+    switchIsNewer ? switched.model : null,
     latest?.model,
     readCachedModel(sessionId),
     hookEvent.model,

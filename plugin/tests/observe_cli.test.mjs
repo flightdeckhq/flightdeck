@@ -416,6 +416,102 @@ describe("observe_cli.mjs", () => {
     rmSync(dirname(transcriptPath), { recursive: true, force: true });
   });
 
+  it("reports compaction and model-switch hooks as session_signal events, their text only under capture", async () => {
+    const run = async (hookEvent, capture) => {
+      const before = capture.bodies().length;
+      const result = await runScript(
+        JSON.stringify({ session_id: "sess-signal-1", ...hookEvent }),
+        {
+          FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+          FLIGHTDECK_TOKEN: "tok_test",
+          FLIGHTDECK_CAPTURE_PROMPTS: capture.on ? "true" : "false",
+          CLAUDE_SESSION_ID: "sess-signal-1",
+        },
+      );
+      assert.equal(result.code, 0, result.stderr);
+      return capture.bodies().slice(before).filter((b) => b.event_type !== "session_start");
+    };
+    const on = Object.assign(capture, { on: true });
+    const [started] = await run({ hook_event_name: "PreCompact", trigger: "manual", custom_instructions: "keep the API notes" }, on);
+    assert.equal(started.event_type, "session_signal");
+    assert.equal(started.signal, "context_compaction_started");
+    assert.deepEqual(started.signal_data, { trigger: "manual" });
+    assert.equal(started.model, null);
+    assert.equal(started.tool_name, null);
+    assert.equal(started.has_content, true);
+    assert.deepEqual(started.content.response, { custom_instructions: "keep the API notes" });
+    assert.equal(started.content.provider, "flightdeck-signal");
+
+    const [compacted] = await run({ hook_event_name: "PostCompact", trigger: "auto", compact_summary: "Summary of the work so far." }, on);
+    assert.equal(compacted.signal, "context_compacted");
+    assert.deepEqual(compacted.content.response, { compact_summary: "Summary of the work so far." });
+
+    const [switched] = await run(
+      {
+        hook_event_name: "PostModelSwitch",
+        from_model: "claude-sonnet-5",
+        to_model: "claude-opus-5",
+        requested_model: "opus",
+        source: "command",
+        context_tokens: 182340,
+        prompt_cache_warm: true,
+        cache_ttl: "5m",
+        estimated_cache_write_usd: 1.1396,
+        pricing: "catalog",
+      },
+      on,
+    );
+    assert.equal(switched.signal, "model_switched");
+    assert.equal(switched.model, "claude-opus-5");
+    assert.deepEqual(switched.signal_data, {
+      from_model: "claude-sonnet-5",
+      to_model: "claude-opus-5",
+      requested_model: "opus",
+      source: "command",
+      context_tokens: 182340,
+      prompt_cache_warm: true,
+      cache_ttl: "5m",
+      estimated_cache_write_usd: 1.1396,
+      pricing: "catalog",
+    });
+    assert.equal(switched.has_content, false);
+
+    capture.on = false;
+    const [off] = await run({ hook_event_name: "PostCompact", trigger: "auto", compact_summary: "secret summary" }, capture);
+    assert.equal(off.has_content, false);
+    assert.equal(off.content, null);
+    assert.ok(!JSON.stringify(off).includes("secret summary"));
+  });
+
+  it("labels the next pre_call with the model a switch moved to, not the transcript's older one", async () => {
+    const transcriptPath = writeTranscript([
+      { type: "user", timestamp: "2026-04-17T10:00:00.000Z", message: { role: "user", content: "hi" } },
+      {
+        type: "assistant",
+        timestamp: "2026-04-17T10:00:01.000Z",
+        message: { id: "msg_switch_1", model: "claude-sonnet-5", content: [{ type: "text", text: "ok" }], usage: { input_tokens: 3, output_tokens: 1 } },
+      },
+    ]);
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-switch-1",
+    };
+    const base = { session_id: "sess-switch-1", transcript_path: transcriptPath };
+    const before = capture.bodies().length;
+    for (const hookEvent of [
+      { hook_event_name: "PostModelSwitch", from_model: "claude-sonnet-5", to_model: "claude-opus-5", source: "command" },
+      { hook_event_name: "UserPromptSubmit", prompt: "next" },
+    ]) {
+      const result = await runScript(JSON.stringify({ ...base, ...hookEvent }), env);
+      assert.equal(result.code, 0, result.stderr);
+    }
+    const bodies = capture.bodies().slice(before);
+    assert.equal(bodies.find((b) => b.event_type === "session_signal")?.model, "claude-opus-5");
+    assert.equal(bodies.find((b) => b.event_type === "pre_call")?.model, "claude-opus-5");
+    rmSync(dirname(transcriptPath), { recursive: true, force: true });
+  });
+
   it("sends no post_call for a turn Claude Code wrote for an API error", async () => {
     const transcriptPath = writeTranscript([
       { type: "user", timestamp: "2026-04-17T10:00:00.000Z", message: { role: "user", content: "ping" } },
@@ -1829,7 +1925,10 @@ describe("observe_cli helpers", () => {
       assert.equal(EVENT_MAP.PostToolUseFailure, "tool_call");
       assert.equal(EVENT_MAP.Stop, "post_call");
       assert.equal(EVENT_MAP.SessionEnd, "session_end");
-      assert.equal(EVENT_MAP.PreCompact, "tool_call");
+      assert.equal(EVENT_MAP.StopFailure, "llm_error");
+      for (const hook of ["PreCompact", "PostCompact", "PostModelSwitch"]) {
+        assert.equal(EVENT_MAP[hook], "session_signal", hook);
+      }
     });
 
     it("does NOT map PreToolUse (double-report avoidance)", () => {

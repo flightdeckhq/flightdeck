@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/dialog";
 import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
+import { SignalPromptsPanel } from "./SignalContentViewer";
 import { SubAgentsTab } from "./SubAgentsTab";
 import { EnrichmentSummary } from "@/components/events/EnrichmentSummary";
 import { SurroundingEventsList } from "@/components/events/SurroundingEventsList";
@@ -1963,9 +1964,11 @@ function EventDetailView({ event: initialEvent, session, onBack }: { event: Agen
           </div>
         )}
         {activeTab === "prompts" && (
-          event.has_content
-            ? <PromptViewer eventId={event.id} />
-            : <div className="px-4 py-6 text-[13px]" style={{ color: "var(--text-muted)" }}>Prompt capture is not enabled for this deployment.</div>
+          event.event_type === "session_signal"
+            ? <SignalPromptsPanel event={event} />
+            : event.has_content
+              ? <PromptViewer eventId={event.id} />
+              : <div className="px-4 py-6 text-[13px]" style={{ color: "var(--text-muted)" }}>Prompt capture is not enabled for this deployment.</div>
         )}
         {activeTab === "neighbors" && (
           <div className="p-3" style={{ background: "var(--bg)" }}>

@@ -20,6 +20,7 @@ import type { AgentEvent } from "@/lib/types";
 import { ErrorEventDetails } from "./ErrorEventDetails";
 import { PolicyEventDetails } from "./PolicyEventDetails";
 import { EmbeddingsContentViewer } from "./EmbeddingsContentViewer";
+import { SignalContentViewer } from "./SignalContentViewer";
 import { MCPEventDetails, isMCPEvent } from "./MCPEventDetails";
 
 /**
@@ -144,7 +145,9 @@ export function EventRow({
         <ExpandedEvent
           event={event}
           onViewPrompts={
-            event.has_content && onViewPrompts
+            // A signal's text renders inline below; the Prompts tab
+            // lists LLM calls only.
+            event.has_content && onViewPrompts && event.event_type !== "session_signal"
               ? () => onViewPrompts(event.id)
               : undefined
           }
@@ -320,6 +323,9 @@ export function ExpandedEvent({
           eventId={event.id}
           hasContent={event.has_content}
         />
+      )}
+      {event.event_type === "session_signal" && event.has_content && (
+        <SignalContentViewer eventId={event.id} hasContent />
       )}
       {isMCPEvent(event.event_type) && <MCPEventDetails event={event} />}
       <div

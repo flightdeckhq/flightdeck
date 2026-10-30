@@ -15,8 +15,11 @@ Parallel-safe: a fresh session id and a unique flavor per test.
 
 from __future__ import annotations
 
+import urllib.error
 import uuid
 from typing import Any
+
+import pytest
 
 from .conftest import (
     get_session_detail,
@@ -132,3 +135,97 @@ def test_tool_error_text_is_withheld_when_capture_is_off() -> None:
     assert error["error_type"] == "other"
     assert error["error_class"] == "PluginToolError"
     assert error["interrupted"] is False
+
+
+def test_session_signals_land_and_a_model_switch_moves_the_session_model() -> None:
+    """session_signal events land with their signal and metadata; a
+    compaction's summary reaches event_content; a model switch's model
+    becomes the session's model."""
+    sid = str(uuid.uuid4())
+    flavor = f"test-plugin-signals-{uuid.uuid4().hex[:6]}"
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "session_start",
+            client_type="claude_code",
+            sensor_version="flightdeck-plugin/test",
+            capture_prompts=True,
+            model="claude-sonnet-5",
+        )
+    )
+    wait_until(
+        lambda: session_exists_in_fleet(sid),
+        timeout=10,
+        msg=f"session {sid} did not appear",
+    )
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "session_signal",
+            client_type="claude_code",
+            model=None,
+            signal="context_compacted",
+            signal_data={"trigger": "auto"},
+            has_content=True,
+            content={
+                "provider": "flightdeck-signal",
+                "model": "",
+                "system": None,
+                "messages": [],
+                "tools": None,
+                "response": {"compact_summary": "Summary of the work."},
+            },
+        )
+    )
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "session_signal",
+            client_type="claude_code",
+            model="claude-opus-5",
+            signal="model_switched",
+            signal_data={
+                "from_model": "claude-sonnet-5",
+                "to_model": "claude-opus-5",
+                "source": "command",
+                "context_tokens": 182340,
+                "prompt_cache_warm": True,
+            },
+        )
+    )
+    wait_until(
+        lambda: get_session_event_count(sid) >= 3,
+        timeout=10,
+        msg=f"session_signal events did not land for {sid}",
+    )
+    detail = get_session_detail(sid)
+    signals = {
+        e["payload"]["signal"]: e
+        for e in detail.get("events", [])
+        if e["event_type"] == "session_signal"
+    }
+    compacted = signals["context_compacted"]
+    assert compacted["payload"]["signal_data"] == {"trigger": "auto"}
+    assert compacted["has_content"] is True
+    switched = signals["model_switched"]
+    assert switched["payload"]["signal_data"]["to_model"] == "claude-opus-5"
+    assert switched["payload"]["signal_data"]["context_tokens"] == 182340
+    assert detail["session"]["model"] == "claude-opus-5"
+
+
+def test_a_malformed_session_signal_is_rejected() -> None:
+    sid = str(uuid.uuid4())
+    flavor = f"test-plugin-signals-{uuid.uuid4().hex[:6]}"
+    bad = make_event(
+        sid,
+        flavor,
+        "session_signal",
+        client_type="claude_code",
+        signal="Not A Signal",
+    )
+    with pytest.raises(urllib.error.HTTPError) as err:
+        post_event(bad)
+    assert err.value.code == 400

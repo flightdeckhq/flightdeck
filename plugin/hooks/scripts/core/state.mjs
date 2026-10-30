@@ -90,6 +90,7 @@ export function touchSessionFiles(markerKey, sessionId, now = Date.now()) {
     names.push(
       `started-${sessionId}.txt`,
       `model-${sessionId}.txt`,
+      `model-switch-${sessionId}.json`,
       `endpoint-${sessionId}.json`,
       `${MCP_POLICY_CACHE_PREFIX}${sessionId}.json`,
     );
@@ -349,6 +350,33 @@ export function cacheSessionModel(sessionId, model) {
 export function readCachedModel(sessionId) {
   try {
     return readFileSync(modelCachePath(sessionId), "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+// The model a session switched to and when, so the next prompt is
+// labelled with it although the transcript's latest turn still names
+// the old model.
+function modelSwitchPath(sessionId) {
+  return join(stateDir(), `model-switch-${sessionId}.json`);
+}
+
+export function recordModelSwitch(sessionId, model, at = new Date().toISOString()) {
+  if (!model) return;
+  try {
+    mkdirOwnerOnly(stateDir());
+    writeFileSync(modelSwitchPath(sessionId), JSON.stringify({ model: String(model), at }));
+  } catch {
+    /* silent */
+  }
+}
+
+/** ``{model, at}`` of the session's last model switch, or null. */
+export function readModelSwitch(sessionId) {
+  try {
+    const record = JSON.parse(readFileSync(modelSwitchPath(sessionId), "utf8"));
+    return typeof record?.model === "string" && typeof record?.at === "string" ? record : null;
   } catch {
     return null;
   }

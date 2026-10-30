@@ -402,6 +402,16 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if e.PermissionMode != "" {
 		extra["permission_mode"] = e.PermissionMode
 	}
+	// Ingestion bounds signal_data only on session_signal, so another
+	// event type's copy is not stored.
+	if e.EventType == "session_signal" {
+		if e.Signal != "" {
+			extra["signal"] = e.Signal
+		}
+		if len(e.SignalData) > 0 && string(e.SignalData) != "null" {
+			extra["signal_data"] = e.SignalData
+		}
+	}
 	// MCP_RESOURCE_READ content. The sensor's lean MCP payload
 	// drops the ``has_content`` flag entirely, so the existing
 	// HasContent gate (which routes LLM PromptContent into the
@@ -632,6 +642,14 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 		}
 	case "directive_result":
 		// Insert event but do NOT evaluate policy. Just update last_seen.
+		if err := p.session.HandlePostCall(ctx, e); err != nil {
+			return err
+		}
+	case "session_signal":
+		// A session change that is not a call (compaction, model
+		// switch): it advances last_seen_at and changes no token
+		// count; a model_switched signal's model becomes the
+		// session's model.
 		if err := p.session.HandlePostCall(ctx, e); err != nil {
 			return err
 		}

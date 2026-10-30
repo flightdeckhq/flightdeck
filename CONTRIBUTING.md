@@ -148,10 +148,11 @@ Standing rules every PR follows. The numbers are cited in code and tests
   touches. Mocked tests passing is not evidence it works.
 - **L5 — Every modality captures content.** Anything with a request and a
   response payload supports content capture behind `capture_prompts` (or a
-  modality-specific flag). Shipping one without it is a documented gap.
+  modality-specific flag). Check new modality work for capture parity before
+  merge; a modality without it is a gap, not a choice.
 - **L6 — Severity follows where code runs and a threat trace.** The same
   pattern is critical in a production handler and minor in a dev seed
-  script. A high or critical finding records its attack vector and impact.
+  script. A P0 or P1 finding records its attack vector and impact.
 - **L7 — Patch the protocol, not each adapter.** When several frameworks
   wrap one protocol (MCP through LangChain, LangGraph, LlamaIndex and the raw
   SDK), patch the protocol's canonical client once; framework attribution
@@ -166,11 +167,15 @@ A PR with meaningful code is reviewed in five passes, one per concern:
 Python (sensor, playground, integration suites), Go (ingestion, workers,
 API, migrations), TypeScript and UI (dashboard, both themes, accessibility),
 architecture (doc alignment, contracts across components, L1 and L2), and
-QA (tests at every layer, E2E discipline, live verification, L3 to L8). The
-agents in `.claude/agents/` encode these passes.
+QA (tests at every layer, E2E discipline, live verification, L3 to L8). This
+review before merge is what CLAUDE.md calls the phase audit or V-pass. The
+agents in `.claude/agents/` encode these passes; they report Critical (a P0
+or P1 here, Block) and Warnings (P2 or P3, Recommend or Defer).
 
-Findings are graded **P0** (breaks or loses data on a default install),
-**P1** (a wrong number, or a table-stakes gap), **P2** (valuable) or **P3**
+Findings are graded **P0** (breaks, crashes, or silently loses or corrupts
+data on a default install: a fail-open control, a silent zero-event path,
+wrong numbers persisted), **P1** (a wrong number shown, a table-stakes gap,
+or an end-of-life runtime or dependency), **P2** (valuable) or **P3**
 (hygiene), with evidence **A** (executed), **B** (source with file and
 line), **C** (dated documentation) or **D** (secondary); only A or B
 evidence supports a P0. Each finding is **Block** (fix before merge),

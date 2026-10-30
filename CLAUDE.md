@@ -2,7 +2,8 @@
 
 > These rules exist because something went wrong or almost went wrong without them.
 > Follow them without exception. If a rule conflicts with a task instruction, raise
-> the conflict with the maintainer before proceeding.
+> the conflict with the maintainer before proceeding. "The maintainer" means the
+> person directing this session.
 >
 > Component-specific rules live in `dashboard/CLAUDE.md` (frontend + E2E
 > discipline) and `sensor/CLAUDE.md` (sensor + framework coverage). They load
@@ -14,9 +15,11 @@
 
 1. **Read ARCHITECTURE.md in full.** Not a skim. Every section. The architecture
    is the source of truth. Code that contradicts it is wrong, not the architecture.
+   Read the DECISIONS.md entries (and DECISIONS-ARCHIVE.md for D001-D213) for the
+   area you touch, so a rejected alternative is not proposed again.
 
 2. **Check for open TODO, FIXME, and HACK comments** in any file you are about to
-   touch. List them in your plan before proposing changes.
+   touch. List them in your plan.
 
 3. **Write architectural decisions down before the code.** A decision ARCHITECTURE.md
    does not cover is recorded first (rules 42 and 43): ARCHITECTURE.md, then
@@ -30,10 +33,12 @@
 
 4. **Always plan before implementing.** For every task, write down every file you
    will create or modify and why (a scratch plan or the PR description). Implement
-   without waiting for approval unless a rule here asks for the maintainer's go.
+   without waiting for approval unless a rule in this file or a component
+   CLAUDE.md requires the maintainer's approval.
 
-5. **Scope tasks tightly.** If a task touches more than 5-8 files, propose splitting
-   it. Large tasks drift and produce hard-to-review changes.
+5. **Scope tasks tightly.** If a task touches more than 5-8 files, split it into
+   separate PRs where the pieces stand alone. Large tasks drift and produce
+   hard-to-review changes.
 
 6. **State your assumptions.** If the task is ambiguous, list your assumptions in
    the plan. Do not silently assume.
@@ -73,7 +78,8 @@ Frontend code rules (11-17) live in `dashboard/CLAUDE.md`.
 20. **Preserve provider terminology.** Never normalize Anthropic's `system` +
     `messages` into OpenAI's `messages`-only format or vice versa. Store and display
     exactly what the provider received. The `PromptViewer` component handles
-    provider-specific rendering -- do not change this logic without the maintainer's approval.
+    provider-specific rendering -- do not change this logic without the
+    maintainer's approval.
 
 21. **The Prompts tab in the session drawer shows a clear disabled state** when
     capture is off for that session: "Prompt capture is not enabled for this

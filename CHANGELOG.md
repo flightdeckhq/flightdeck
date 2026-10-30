@@ -33,6 +33,9 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **The event drawer's Neighbors tab shows the events around the open
+  event.** It listed the session's oldest events, so on a long session
+  the open event and its real neighbours were missing.
 - **A sensor event with very large captured content is no longer
   lost.** The sensor posted any event as it was, so a call whose
   captured prompt, response or sub-agent message took it past the

@@ -17,6 +17,45 @@ interface SurroundingEventsListProps {
 
 const DEFAULT_WINDOW = 5;
 
+// Events sharing the anchor's timestamp sort in no fixed order on the
+// server, so each side fetches this many extra to keep the anchor and
+// its true neighbours in the result when several share a time.
+const TIE_MARGIN = 5;
+
+const EPOCH = "1970-01-01T00:00:00Z";
+
+// The upper bound of the events after the anchor. Without one the API
+// stops at the server's clock, and an event stamped by a client clock
+// running ahead (ingestion accepts up to five minutes) would be dropped,
+// or the request refused when the anchor itself is ahead.
+const FAR_FUTURE = "9999-12-31T23:59:59Z";
+
+/** The fraction of a second in an API timestamp, as nine digits. */
+function nanosOf(timestamp: string): string {
+  return (timestamp.match(/\.(\d+)/)?.[1] ?? "").padEnd(9, "0").slice(0, 9);
+}
+
+/**
+ * Orders two API timestamps the way the server does. Date keeps
+ * milliseconds only, and the API returns microseconds, so equal
+ * milliseconds fall back to the fraction digits.
+ */
+function compareOccurredAt(a: string, b: string): number {
+  const ms = new Date(a).getTime() - new Date(b).getTime();
+  if (ms !== 0) return ms;
+  const na = nanosOf(a);
+  const nb = nanosOf(b);
+  return na < nb ? -1 : na > nb ? 1 : 0;
+}
+
+/** ``events`` deduplicated by id, in occurred_at order (id breaks ties). */
+function mergeInTimeOrder(events: AgentEvent[]): AgentEvent[] {
+  const byId = new Map(events.map((e) => [e.id, e]));
+  return [...byId.values()].sort(
+    (a, b) => compareOccurredAt(a.occurred_at, b.occurred_at) || a.id.localeCompare(b.id),
+  );
+}
+
 /**
  * Lazy-fetches the ±N events from the same session and renders
  * them as a vertical list. Each entry is clickable and swaps the
@@ -24,56 +63,69 @@ const DEFAULT_WINDOW = 5;
  * event) is visually distinguished but not disabled — clicking it
  * is a no-op via reference equality.
  *
- * Fetch strategy: pulls a slightly oversized window of events from
- * the session via fetchBulkEvents (session_id-scoped, no time
- * window — the server returns the most recent N), filters to the
- * anchor's vicinity, and clamps to ±N. Cached per session_id while
- * the drawer is mounted on the same session — switching to a
- * different event in the same session reuses the cached events.
+ * Fetch strategy: two session-scoped fetchBulkEvents calls bracket the
+ * anchor's occurred_at, the events up to it newest first and the
+ * events from it oldest first, so the window is the anchor's own
+ * however long the session is. Both bounds are inclusive, so both
+ * pages carry the anchor; the merge deduplicates by id. Cached per
+ * anchor while the drawer is mounted.
  */
 export function SurroundingEventsList({
   event,
   onSelect,
   window: windowSize = DEFAULT_WINDOW,
 }: SurroundingEventsListProps) {
-  // Keyed on the session and window size; the anchor only selects the
-  // slice, so switching anchors within a session reuses the fetch.
-  const requestKey = `${event.session_id}|${windowSize}`;
-  const fetched = useKeyedFetch(requestKey, () =>
-    fetchBulkEvents({
-      from: "1970-01-01T00:00:00Z",
-      session_id: event.session_id,
-      limit: windowSize * 4 + 1,
-    }).then((resp) =>
-      [...resp.events].sort(
-        (a, b) => new Date(a.occurred_at).getTime() - new Date(b.occurred_at).getTime(),
+  const requestKey = `${event.session_id}|${event.id}|${windowSize}`;
+  const fetched = useKeyedFetch(requestKey, (signal) => {
+    const limit = windowSize + 1 + TIE_MARGIN;
+    return Promise.all([
+      fetchBulkEvents(
+        {
+          from: EPOCH,
+          to: event.occurred_at,
+          session_id: event.session_id,
+          order: "desc",
+          limit,
+        },
+        signal,
       ),
-    ),
-  );
+      fetchBulkEvents(
+        {
+          from: event.occurred_at,
+          to: FAR_FUTURE,
+          session_id: event.session_id,
+          order: "asc",
+          limit,
+        },
+        signal,
+      ),
+    ]).then(([before, after]) => mergeInTimeOrder([...before.events, ...after.events]));
+  });
   const error =
     fetched.error === null
       ? null
       : fetched.error instanceof Error
         ? fetched.error.message
         : "fetch failed";
-  // Only this session's list is shown; another session's never stands
-  // in while the new one loads.
+  // Only this anchor's list is shown; another anchor's never stands in
+  // while the new one loads.
   const sorted =
     !fetched.loading && error === null && fetched.dataKey === requestKey ? fetched.data : undefined;
   const events = useMemo<AgentEvent[] | null>(() => {
     if (!sorted) return null;
     const idx = sorted.findIndex((e) => e.id === event.id);
     if (idx === -1) {
-      // Anchor not in the returned page (rare — happens when the
-      // session has many more events than our limit and the
-      // anchor is mid-history). Show whatever we got centered
-      // around the most recent N.
-      return sorted.slice(-(windowSize * 2 + 1));
+      // Anchor not returned (more events share its timestamp than the
+      // tie margin covers, or it was deleted). Show the events nearest
+      // its time instead.
+      const nearest = sorted.findIndex((e) => compareOccurredAt(e.occurred_at, event.occurred_at) >= 0);
+      const centre = nearest === -1 ? sorted.length - 1 : nearest;
+      return sorted.slice(Math.max(0, centre - windowSize), centre + windowSize + 1);
     }
     const lo = Math.max(0, idx - windowSize);
     const hi = Math.min(sorted.length, idx + windowSize + 1);
     return sorted.slice(lo, hi);
-  }, [sorted, event.id, windowSize]);
+  }, [sorted, event.id, event.occurred_at, windowSize]);
 
   if (error) {
     return (
@@ -126,6 +178,7 @@ export function SurroundingEventsList({
               if (!isAnchor) onSelect(e);
             }}
             data-testid={isAnchor ? "surrounding-anchor" : "surrounding-row"}
+            data-event-id={e.id}
           >
             <span
               className="font-mono text-[10px]"

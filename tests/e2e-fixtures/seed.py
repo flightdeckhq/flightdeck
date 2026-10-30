@@ -31,7 +31,7 @@ import subprocess
 import sys
 import time
 import urllib.error
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 from typing import Any
 from uuid import UUID, uuid5
 
@@ -150,6 +150,19 @@ def _shift_timestamp(offset_sec: int) -> str:
     not this.
     """
     return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + offset_sec))
+
+
+def _shift_timestamp_ms(offset_sec: float) -> str:
+    """``_shift_timestamp`` with millisecond precision, for events that
+    must keep a distinct order inside one second."""
+    at = datetime.fromtimestamp(time.time() + offset_sec, UTC)
+    return at.strftime("%Y-%m-%dT%H:%M:%S.") + f"{at.microsecond // 1000:03d}Z"
+
+
+# Events the ``history_padding`` extra adds ahead of a session's later
+# extras, so a later extra sits past the session's first 21 events (four
+# Neighbors windows plus one) and T125's anchor is deep in its session.
+HISTORY_PADDING_EVENTS = 25
 
 
 def _post_session_events(
@@ -537,6 +550,25 @@ def _post_session_events(
                 )
             )
             posted += 1
+        elif extra == "history_padding":
+            # HISTORY_PADDING_EVENTS tool_calls 30 ms apart inside this
+            # extra's slot: distinct timestamps, so their order is the
+            # same on the server and in the dashboard.
+            for k in range(HISTORY_PADDING_EVENTS):
+                post_event(
+                    make_event(
+                        session_id,
+                        agent_cfg["flavor"],
+                        "tool_call",
+                        timestamp=_shift_timestamp_ms(
+                            event_started + 12 + 2 * i + k * 0.03
+                        ),
+                        tool_name="read_file",
+                        **identity,
+                        **common,
+                    )
+                )
+                posted += 1
         elif extra == "mcp_policy_user_remembered":
             # The Claude Code plugin's remembered MCP approval, with the
             # permission mode the session was in. T124 reads its feed
@@ -1041,6 +1073,10 @@ def _session_is_complete(
             )
         elif tag == "mcp_policy_user_remembered":
             expected_counts[tag] = expected_counts.get(tag, 0) + 1
+        elif tag == "history_padding":
+            expected_counts["tool_call"] = (
+                expected_counts.get("tool_call", 0) + HISTORY_PADDING_EVENTS
+            )
         elif tag in ("policy_warn", "policy_degrade", "policy_block"):
             # Each policy_* tag maps directly to its own event_type
             # row. Counted independently so a session declaring all

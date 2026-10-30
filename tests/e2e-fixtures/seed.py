@@ -910,7 +910,15 @@ def _post_session_events(
             # tool_result whose content is a JSON string. T123 reads the
             # Prompts panel's per-box Pretty / Raw views from it; the
             # stop_reason "tool_use" is how the spec finds it.
-            tool_result = json.dumps({"stdout": "README.md\nsensor", "exitCode": 0})
+            # One long line in the Raw view: T123 checks it is wider
+            # than the box unwrapped and fits wrapped.
+            tool_result = json.dumps(
+                {
+                    "stdout": "README.md\nsensor\ndashboard\nplayground\ningestion"
+                    "\nworkers\napi\ndocker\nplugin\nCHANGELOG.md",
+                    "exitCode": 0,
+                }
+            )
             post_event(
                 make_event(
                     session_id,

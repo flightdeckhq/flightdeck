@@ -58,6 +58,14 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **Claude Code sub-agents show the prompt they were given and the report
+  they returned.** Claude Code's sub-agent hooks carry neither message,
+  so the child session's incoming and outgoing messages were always
+  empty; the plugin now reads them from the files Claude Code writes for
+  each sub-agent, and parallel sub-agents each get their own prompt.
+- **A fork sub-agent no longer takes the parent's tokens.** A fork starts
+  from a copy of the parent's history, and its session claimed the
+  parent's turn that launched it; that turn now stays with the parent.
 - **The event drawer's Neighbors tab shows the events around the open
   event.** It listed the session's oldest events, so on a long session
   the open event and its real neighbours were missing.

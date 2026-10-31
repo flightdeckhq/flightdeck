@@ -2,7 +2,7 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -3078,6 +3078,74 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
     // events.payload via the worker's BuildEventExtra path.
     assert.equal(childEnd.has_content, false);
     assert.equal(childEnd.outgoing_message.body, "found 7 matches");
+  });
+
+  it("reads the prompt and report from the subagent's files when the hooks carry neither (Claude Code 2.1.316)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fd-subagent-real-"));
+    const parent = join(dir, "outer.jsonl");
+    const subDir = join(dir, "outer", "subagents");
+    mkdirSync(subDir, { recursive: true });
+    const usage = { input_tokens: 10, output_tokens: 5 };
+    const parentCall = {
+      type: "assistant",
+      timestamp: "2026-10-31T09:00:01.000Z",
+      message: {
+        id: "msg_outer_call",
+        role: "assistant",
+        model: "claude-opus-5-5",
+        usage,
+        content: [{ type: "tool_use", id: "toolu_real_1", name: "Agent", input: { subagent_type: "fork", prompt: "Repeat the first word" } }],
+      },
+    };
+    writeFileSync(parent, [{ type: "user", message: { role: "user", content: "say KIWI then fork" } }, parentCall].map((r) => JSON.stringify(r)).join("\n") + "\n");
+    const subTranscript = join(subDir, "agent-areal1.jsonl");
+    const forkOwn = {
+      type: "assistant",
+      timestamp: "2026-10-31T09:00:05.000Z",
+      message: { id: "msg_fork_own", role: "assistant", model: "claude-opus-5-5", usage, content: [{ type: "text", text: "KIWI" }] },
+    };
+    writeFileSync(
+      subTranscript,
+      [{ type: "fork-context-ref" }, parentCall, { type: "user", message: { role: "user", content: [{ type: "text", text: "<fork-boilerplate/>" }] } }, forkOwn]
+        .map((r) => JSON.stringify(r))
+        .join("\n") + "\n",
+    );
+    writeFileSync(join(subDir, "agent-areal1.meta.json"), JSON.stringify({ agentType: "fork", isFork: true, toolUseId: "toolu_real_1" }));
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-real-1",
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    };
+    const before = capture.bodies().length;
+    await runScript(
+      JSON.stringify({ hook_event_name: "SubagentStart", session_id: "sess-outer-real-1", agent_id: "areal1", agent_type: "fork", transcript_path: parent }),
+      env,
+    );
+    await runScript(
+      JSON.stringify({
+        hook_event_name: "SubagentStop",
+        session_id: "sess-outer-real-1",
+        agent_id: "areal1",
+        agent_type: "fork",
+        transcript_path: parent,
+        agent_transcript_path: subTranscript,
+        stop_hook_active: false,
+      }),
+      env,
+    );
+    const bodies = capture.bodies().slice(before);
+    const childStart = bodies.find((b) => b.event_type === "session_start" && b.parent_session_id === "sess-outer-real-1");
+    const childEnd = bodies.find((b) => b.event_type === "session_end" && b.parent_session_id === "sess-outer-real-1");
+    assert.equal(childStart.incoming_message.body, "Repeat the first word");
+    assert.equal(childEnd.outgoing_message.body, "KIWI");
+    // The fork's flush reports its own turn only; the copied Agent-call
+    // turn is the parent's.
+    const childCalls = bodies.filter((b) => b.event_type === "post_call" && b.session_id === childStart.session_id);
+    assert.equal(childCalls.length, 1);
+    assert.equal(childCalls[0].tokens_output, 5);
+    assert.ok(!bodies.some((b) => b.event_type === "post_call" && b.session_id === childStart.session_id && JSON.stringify(b).includes("msg_outer_call")));
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("capture_prompts=false drops incoming_message and outgoing_message at the boundary", async () => {

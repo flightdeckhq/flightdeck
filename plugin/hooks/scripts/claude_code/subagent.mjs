@@ -2,6 +2,7 @@
 // SubagentStop open and close, interior-hook routing onto that child,
 // and the size-routed capture of the messages between parent and child.
 
+import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 import { deriveAgentId, NAMESPACE_FLIGHTDECK } from "../agent_id.mjs";
@@ -23,11 +24,14 @@ import { readTurns } from "./transcript.mjs";
 //   * the subagent's type / role (``subagent_type`` or
 //     ``agent_type``, depending on Claude Code version; we read
 //     either as the role string)
-//   * ``tool_use_id`` — a stable correlator for THIS specific Task
-//     invocation; SubagentStop carries the same value
-//   * ``tool_input.prompt`` — the parent's input to the subagent
-//   * (SubagentStop only) ``tool_response`` — the subagent's
-//     response back to the parent
+//   * ``agent_id`` (``tool_use_id`` on older versions) — a stable
+//     correlator for THIS specific Task invocation; SubagentStop
+//     carries the same value
+//   * on older versions only, ``tool_input.prompt`` (the parent's
+//     input to the subagent) and, on SubagentStop, ``tool_response``
+//     (its response back); current versions send neither, so
+//     subagentIncomingMessage / subagentOutgoingMessage read them from
+//     the subagent's transcript and meta file
 //
 // We emit a CHILD session_start (or session_end) whose ``session_id``
 // is a deterministic uuid5 derived from
@@ -303,6 +307,156 @@ function _routeSubagentMessage(body, capturePrompts, direction) {
   };
 }
 
+// How long SubagentStart waits for Claude Code to write the subagent's
+// transcript and meta file. Claude Code writes both before the
+// asynchronous hook runs, so the wait covers a slow disk only; it stays
+// short because the child's session_start waits behind it.
+export const SUBAGENT_FILES_WAIT_MS = 1000;
+const SUBAGENT_FILES_POLL_MS = 50;
+
+/** The parsed records of a JSONL transcript; unreadable lines are skipped. */
+function readRecords(path) {
+  if (!path) return [];
+  let raw;
+  try {
+    raw = readFileSync(path, "utf8");
+  } catch {
+    return [];
+  }
+  const records = [];
+  for (const line of raw.split("\n")) {
+    if (!line) continue;
+    try {
+      records.push(JSON.parse(line));
+    } catch {
+      /* a partly written last line */
+    }
+  }
+  return records;
+}
+
+/** The meta file Claude Code writes beside a subagent's transcript. */
+export function _subagentMetaPath(subagentTranscript) {
+  return subagentTranscript.replace(/\.jsonl$/i, ".meta.json");
+}
+
+function readSubagentMeta(subagentTranscript) {
+  if (!subagentTranscript) return null;
+  try {
+    const meta = JSON.parse(readFileSync(_subagentMetaPath(subagentTranscript), "utf8"));
+    return meta && typeof meta === "object" ? meta : null;
+  } catch {
+    return null;
+  }
+}
+
+function contentBlocks(record) {
+  const content = record?.message?.content;
+  return Array.isArray(content) ? content : [];
+}
+
+/** The ``prompt`` input of the tool call ``toolUseId`` in ``records``. */
+function toolUsePrompt(records, toolUseId) {
+  for (const record of records) {
+    for (const block of contentBlocks(record)) {
+      if (block?.type === "tool_use" && block.id === toolUseId && typeof block.input?.prompt === "string") {
+        return block.input.prompt;
+      }
+    }
+  }
+  return null;
+}
+
+/** Whether a subagent is a fork, which starts from the parent's history. */
+export function isForkSubagent(role, subagentTranscript) {
+  return role === "fork" || readSubagentMeta(subagentTranscript)?.isFork === true;
+}
+
+/** The message ids of the parent transcript's assistant turns. */
+export function parentMessageIds(parentTranscript) {
+  const ids = new Set();
+  for (const record of readRecords(parentTranscript)) {
+    if (record?.type === "assistant" && typeof record.message?.id === "string") ids.add(record.message.id);
+  }
+  return ids;
+}
+
+/**
+ * The turns of a subagent's transcript that are its own. A fork's
+ * transcript repeats the parent's turn that made the Agent call under
+ * the same message id; that turn, and any other the parent's transcript
+ * holds, is the parent's to report.
+ */
+export function ownSubagentTurns(turns, { role, subagentTranscript, parentTranscript }) {
+  if (!isForkSubagent(role, subagentTranscript)) return turns;
+  const parentIds = parentMessageIds(parentTranscript);
+  return turns.filter((turn) => !parentIds.has(turn.messageId));
+}
+
+/** Wait, up to SUBAGENT_FILES_WAIT_MS, for the subagent's transcript and meta file. */
+async function waitForSubagentFiles(subagentTranscript) {
+  const deadline = Date.now() + SUBAGENT_FILES_WAIT_MS;
+  while (!(existsSync(subagentTranscript) && existsSync(_subagentMetaPath(subagentTranscript)))) {
+    if (Date.now() >= deadline) return;
+    await new Promise((resolve) => setTimeout(resolve, SUBAGENT_FILES_POLL_MS));
+  }
+}
+
+/**
+ * The prompt the parent gave a subagent: the hook's own
+ * ``tool_input.prompt`` (older Claude Code), else the ``prompt`` of the
+ * Agent tool call the meta file names, else the subagent transcript's
+ * first plain-text user message.
+ */
+export function subagentIncomingMessage({ hookEvent, subagentTranscript, parentTranscript }) {
+  const legacy = hookEvent?.tool_input?.prompt;
+  if (typeof legacy === "string") return legacy;
+  if (!subagentTranscript) return null;
+  const records = readRecords(subagentTranscript);
+  const toolUseId = readSubagentMeta(subagentTranscript)?.toolUseId;
+  if (typeof toolUseId === "string") {
+    const prompt = toolUsePrompt(records, toolUseId) ?? toolUsePrompt(readRecords(parentTranscript), toolUseId);
+    if (prompt !== null) return prompt;
+  }
+  for (const record of records) {
+    if (record?.type === "user" && typeof record.message?.content === "string") return record.message.content;
+  }
+  return null;
+}
+
+/**
+ * A subagent's report back to its parent: the hook's own
+ * ``tool_response`` (older Claude Code), else the ``message`` of its
+ * last SubagentHandback call, else the hook's
+ * ``last_assistant_message``, else its last assistant turn's text.
+ * Records the parent's transcript holds (a fork's copied history) are
+ * not the subagent's.
+ */
+export function subagentOutgoingMessage({ hookEvent, subagentTranscript, parentTranscript, role }) {
+  if (hookEvent?.tool_response != null) return hookEvent.tool_response;
+  const parentIds = isForkSubagent(role, subagentTranscript) ? parentMessageIds(parentTranscript) : new Set();
+  const own = readRecords(subagentTranscript).filter(
+    (record) => record?.type === "assistant" && !parentIds.has(record.message?.id),
+  );
+  for (let i = own.length - 1; i >= 0; i--) {
+    for (const block of contentBlocks(own[i])) {
+      if (block?.type === "tool_use" && block.name === "SubagentHandback" && typeof block.input?.message === "string") {
+        return block.input.message;
+      }
+    }
+  }
+  const last = hookEvent?.last_assistant_message;
+  if (typeof last === "string" && last.trim() !== "") return last;
+  for (let i = own.length - 1; i >= 0; i--) {
+    const text = contentBlocks(own[i])
+      .filter((block) => block?.type === "text" && typeof block.text === "string")
+      .map((block) => block.text)
+      .join("\n");
+    if (text.trim() !== "") return text;
+  }
+  return null;
+}
+
 export async function emitSubagentEvent({
   cfg,
   hookName,
@@ -374,10 +528,18 @@ export async function emitSubagentEvent({
   // MiB). _routeSubagentMessage handles capture-off + hard-cap
   // rejection inline; here we just stamp whatever it returns.
   if (hookName === "SubagentStart") {
-    const promptBody =
-      hookEvent.tool_input && typeof hookEvent.tool_input === "object"
-        ? hookEvent.tool_input.prompt ?? null
-        : null;
+    let promptBody = null;
+    if (cfg.capturePrompts) {
+      const subagentTranscript = _subagentTranscriptPath(hookEvent.transcript_path, correlator);
+      if (typeof hookEvent.tool_input?.prompt !== "string" && subagentTranscript) {
+        await waitForSubagentFiles(subagentTranscript);
+      }
+      promptBody = subagentIncomingMessage({
+        hookEvent,
+        subagentTranscript,
+        parentTranscript: hookEvent.transcript_path,
+      });
+    }
     const { stubOrInline, contentEnvelope } = _routeSubagentMessage(
       promptBody, cfg.capturePrompts, "incoming",
     );
@@ -420,7 +582,11 @@ export async function emitSubagentEvent({
           cfg,
           sessionId: childSessionId,
           basePayload: childBasePayload,
-          turns: readTurns(subagentTranscript),
+          turns: ownSubagentTurns(readTurns(subagentTranscript), {
+            role,
+            subagentTranscript,
+            parentTranscript: hookEvent.transcript_path,
+          }),
           capturePrompts: cfg.capturePrompts,
         });
       } catch (err) {
@@ -435,11 +601,15 @@ export async function emitSubagentEvent({
         );
       }
     }
-    const { stubOrInline, contentEnvelope } = _routeSubagentMessage(
-      hookEvent.tool_response ?? null,
-      cfg.capturePrompts,
-      "outgoing",
-    );
+    const report = cfg.capturePrompts
+      ? subagentOutgoingMessage({
+          hookEvent,
+          subagentTranscript,
+          parentTranscript: hookEvent.transcript_path,
+          role,
+        })
+      : null;
+    const { stubOrInline, contentEnvelope } = _routeSubagentMessage(report, cfg.capturePrompts, "outgoing");
     if (stubOrInline) payload.outgoing_message = stubOrInline;
     if (contentEnvelope) {
       payload.has_content = true;

@@ -554,6 +554,26 @@ describe("observe_cli.mjs", () => {
     );
     assert.equal(config.signal, "config_changed");
     assert.deepEqual(config.signal_data, { source: "project_settings", file_path: "/repo/.claude/settings.json" });
+
+    // Claude Code 2.1.316's payloads for an MCP form it cancelled.
+    const asked = await run(
+      {
+        hook_event_name: "Elicitation",
+        mcp_server_name: "asker",
+        message: "What name should I use?",
+        mode: "form",
+        requested_schema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
+      },
+      true,
+    );
+    assert.equal(asked.signal, "elicitation_requested");
+    assert.deepEqual(asked.signal_data, { mcp_server: "asker", mode: "form" });
+    assert.equal(asked.content.response.message, "What name should I use?");
+    assert.deepEqual(JSON.parse(asked.content.response.requested_schema).required, ["name"]);
+    const answered = await run({ hook_event_name: "ElicitationResult", mcp_server_name: "asker", mode: "form", action: "cancel" }, true);
+    assert.equal(answered.signal, "elicitation_responded");
+    assert.deepEqual(answered.signal_data, { mcp_server: "asker", mode: "form", action: "cancel" });
+    assert.equal(answered.has_content, false);
   });
 
   it("reports a working-directory change once, whether a hook's cwd or the CwdChanged hook shows it first", async () => {
@@ -2076,6 +2096,8 @@ describe("observe_cli helpers", () => {
         "TaskCompleted",
         "CwdChanged",
         "ConfigChange",
+        "Elicitation",
+        "ElicitationResult",
       ]) {
         assert.equal(EVENT_MAP[hook], "session_signal", hook);
       }

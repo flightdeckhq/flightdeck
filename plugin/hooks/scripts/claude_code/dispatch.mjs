@@ -509,8 +509,9 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
 
   // PreCompact, PostCompact, PostModelSwitch, Notification,
   // PermissionRequest, PermissionDenied, UserPromptExpansion,
-  // TaskCreated, TaskCompleted, CwdChanged, ConfigChange: a change in
-  // the session, reported as a session_signal. A model switch also
+  // TaskCreated, TaskCompleted, CwdChanged, ConfigChange, Elicitation,
+  // ElicitationResult: a change in the session, reported as a
+  // session_signal. A model switch also
   // becomes the model later pre_call events are labelled with.
   if (SIGNAL_HOOKS.includes(hookName)) {
     const payload = buildSignalEvent({

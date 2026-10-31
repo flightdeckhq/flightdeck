@@ -769,6 +769,14 @@ function signalWords(signal: string): string {
   return signal.replace(/_/g, " ");
 }
 
+// The user's answer to an MCP server's request for input, as the feed
+// line words it.
+const ELICITATION_OUTCOMES: Record<string, string> = {
+  accept: "submitted",
+  decline: "declined",
+  cancel: "cancelled",
+};
+
 /** The feed line of a session_signal event. */
 function signalDetail(signal: string | undefined, data: SignalData): string {
   if (!signal) return "session signal";
@@ -810,6 +818,14 @@ function signalDetail(signal: string | undefined, data: SignalData): string {
       return typeof data?.new_cwd === "string" ? `cwd → ${data.new_cwd}` : "cwd changed";
     case "config_changed":
       return typeof data?.source === "string" ? `settings changed · ${signalWords(data.source)}` : "settings changed";
+    case "elicitation_requested":
+    case "elicitation_responded": {
+      const server = typeof data?.mcp_server === "string" ? ` · ${data.mcp_server}` : "";
+      if (signal === "elicitation_requested") return `MCP input requested${server}`;
+      const outcome =
+        ELICITATION_OUTCOMES[typeof data?.action === "string" ? data.action : ""] ?? "answered";
+      return `MCP input ${outcome}${server}`;
+    }
     default:
       return signalWords(signal);
   }
@@ -840,6 +856,9 @@ const SIGNAL_DATA_LABELS: Record<string, string> = {
   teammate_name: "Teammate",
   old_cwd: "From directory",
   new_cwd: "To directory",
+  mode: "Mode",
+  elicitation_id: "Elicitation id",
+  action: "Response",
   file_path: "File",
   command: "Command",
   query: "Query",

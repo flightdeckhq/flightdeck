@@ -30,6 +30,9 @@ const SIGNAL_TEXT_LABELS: Record<string, string> = {
   command_args: "Arguments",
   task_subject: "Subject",
   task_description: "Description",
+  url: "URL",
+  requested_schema: "Requested fields",
+  content: "Answer",
 };
 
 /** The string fields of a signal's ``content.response``. */
@@ -105,7 +108,14 @@ export function SignalContentViewer({ eventId, hasContent }: SignalContentViewer
 
 // The signals whose text the plugin always sends while capture is on, so
 // an event of one without content means capture is off.
-const ALWAYS_CAPTURED_SIGNALS = new Set(["context_compacted", "notification", "task_created", "task_completed"]);
+const ALWAYS_CAPTURED_SIGNALS = new Set([
+  "context_compacted",
+  "notification",
+  "task_created",
+  "task_completed",
+  // Claude Code requires an elicitation request's message.
+  "elicitation_requested",
+]);
 
 /**
  * The Prompts tab of a ``session_signal`` event, for both event

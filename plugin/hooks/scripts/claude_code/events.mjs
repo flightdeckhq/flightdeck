@@ -36,6 +36,8 @@ export const EVENT_MAP = {
   TaskCompleted: "session_signal",
   CwdChanged: "session_signal",
   ConfigChange: "session_signal",
+  Elicitation: "session_signal",
+  ElicitationResult: "session_signal",
 };
 
 // The table the Claude Code dispatcher resolves hook names through.

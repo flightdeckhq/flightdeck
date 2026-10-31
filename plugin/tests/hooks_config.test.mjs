@@ -38,6 +38,8 @@ const EXPECTED_TIMEOUTS = {
   TaskCompleted: 15,
   CwdChanged: 15,
   ConfigChange: 15,
+  Elicitation: 15,
+  ElicitationResult: 15,
   SubagentStart: 15,
 };
 
@@ -102,6 +104,7 @@ describe("hooks.json", () => {
       "TaskCompleted",
       "CwdChanged",
       "ConfigChange",
+      "ElicitationResult",
       "SubagentStart",
       "SubagentStop",
     ];

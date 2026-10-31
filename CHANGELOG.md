@@ -4,6 +4,8 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+## v0.8.0 — 2026-10-31
+
 ### Added
 
 - **Pretty and Raw views for every box in the Prompts panel.** The

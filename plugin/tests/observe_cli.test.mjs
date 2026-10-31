@@ -103,6 +103,14 @@ const HERMETIC_ENV = {
   CLAUDE_CODE_USE_FOUNDRY: "",
   CLOUD_ML_REGION: "",
   ANTHROPIC_BASE_URL: "",
+  // What decides whether an ANTHROPIC_API_KEY is the session's login; a
+  // suite run from inside Claude Code would otherwise read the
+  // developer's own key and ~/.claude.json.
+  ANTHROPIC_API_KEY: "",
+  ANTHROPIC_AUTH_TOKEN: "",
+  CLAUDE_CODE_ENTRYPOINT: "",
+  CLAUDE_CODE_SIMPLE: "",
+  CLAUDE_CONFIG_DIR: "",
   // These tests read the markers under $TMPDIR/flightdeck-plugin, the
   // state directory when Claude Code provides no plugin data directory.
   CLAUDE_PLUGIN_DATA: "",

@@ -104,6 +104,7 @@ describe("envApiKeyInUse", () => {
   it("finds the config under CLAUDE_CONFIG_DIR, else the home directory", () => {
     assert.equal(claudeConfigPath({ CLAUDE_CONFIG_DIR: "/cfg" }), join("/cfg", ".claude.json"));
     assert.ok(claudeConfigPath({}).endsWith(".claude.json"));
+    assert.equal(claudeConfigPath({ CLAUDE_CONFIG_DIR: "  " }), claudeConfigPath({}));
   });
 
   it("runs `claude auth status` without a key the session does not use", () => {
@@ -135,6 +136,12 @@ describe("readAuthStatus", () => {
     }, interactive(REJECTED_KEY));
     assert.equal(seen.opts.env.ANTHROPIC_API_KEY, undefined);
     assert.equal(seen.opts.env.CLAUDE_CONFIG_DIR, configDir);
+    // A key the session uses stays, so the CLI reports the API-key login.
+    readAuthStatus((cmd, args, opts) => {
+      seen = { cmd, args, opts };
+      return "{}";
+    }, { ANTHROPIC_API_KEY: REJECTED_KEY, CLAUDE_CODE_ENTRYPOINT: "sdk-cli" });
+    assert.equal(seen.opts.env.ANTHROPIC_API_KEY, REJECTED_KEY);
     assert.equal(seen.cmd, "claude");
     assert.deepEqual(seen.args, ["auth", "status"]);
     assert.ok(seen.opts.timeout > 0);

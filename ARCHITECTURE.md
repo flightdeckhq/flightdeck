@@ -3340,16 +3340,32 @@ client's base URL is a loopback address (`localhost`, `127.0.0.0/8`,
 `::1`). A model server elsewhere on a private network is not assumed to
 be free, since a gateway or a metered proxy often sits on such an
 address; the override below covers a self-hosted server there. The Claude Code
-plugin determines the mode once at `SessionStart`: Bedrock, Vertex AI
+plugin determines the mode once at `SessionStart`, and a subagent's
+session takes the mode of the session that spawned it, since both run
+in the same Claude Code process on the same login. Bedrock, Vertex AI
 and Foundry sessions (`CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_VERTEX`,
 `CLAUDE_CODE_USE_FOUNDRY`) and API-key logins are `metered`; a
 `claude.ai` or `oauth_token` login is `subscription`. The login comes
 from `claude auth status` (`api_key`, `api_key_helper` and `third_party`
-are metered methods, and its `apiProvider` names a cloud provider);
-where that command is unavailable, a set `ANTHROPIC_API_KEY` or
-`ANTHROPIC_AUTH_TOKEN` counts as an API-key login, and anything else as
-a subscription. A command that fails is retried by one later hook before
-that fallback stands for the session. A session with
+are metered methods, and its `apiProvider` names a cloud provider).
+
+An `ANTHROPIC_API_KEY` in the environment is the login only when
+Claude Code uses it, which depends on how the session runs. A
+non-interactive run (`claude -p` and the Agent SDK, whose
+`CLAUDE_CODE_ENTRYPOINT` starts with `sdk`) and a bare one
+(`CLAUDE_CODE_SIMPLE`) use any key they find. An interactive session
+(the CLI or the VS Code extension) uses it only once the user has
+approved that key: Claude Code asks, and records the answer by the
+key's last 20 characters under `customApiKeyResponses` in
+`~/.claude.json` (`$CLAUDE_CONFIG_DIR/.claude.json` when that is set).
+`claude auth status` reports `api_key` for any key in its environment,
+so for a key the session does not use the plugin runs the command
+without it, and the command reports the login the session does run
+on, such as the user's `claude.ai` plan. Where the command is
+unavailable, a key the session uses or an `ANTHROPIC_AUTH_TOKEN` counts
+as an API-key login, and anything else as a subscription. A command
+that fails is retried by one later hook before that fallback stands
+for the session. A session with
 `FLIGHTDECK_BILLING_MODE` set does not run the command, so its platform
 comes from the provider variables alone. Both clients
 accept `FLIGHTDECK_BILLING_MODE` (`metered`, `subscription`, `local`)

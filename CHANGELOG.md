@@ -63,6 +63,13 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **Claude Code sessions on a subscription are no longer priced as API
+  usage when an `ANTHROPIC_API_KEY` is in the environment.** Claude Code
+  uses such a key in an interactive session only if you approved it, but
+  the plugin's `claude auth status` check reported it either way, so a
+  Max or Pro session (and especially its sub-agents) showed an estimated
+  cost. The plugin now follows Claude Code's rule, and a sub-agent is
+  billed as the session that spawned it.
 - **Claude Code sub-agents show the prompt they were given and the report
   they returned.** Claude Code's sub-agent hooks carry neither message,
   so the child session's incoming and outgoing messages were always

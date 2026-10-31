@@ -9,10 +9,26 @@ import { join } from "node:path";
 import { after, before, describe, it } from "node:test";
 
 import {
+  authStatusEnv,
+  claudeConfigPath,
   detectEndpoint,
+  envApiKeyInUse,
   readAuthStatus,
   usageDetailFields,
 } from "../hooks/scripts/billing.mjs";
+
+// A Claude Code config directory with one approved and one rejected
+// ANTHROPIC_API_KEY, recorded by their last 20 characters as Claude Code
+// records them, so no test reads the developer's own ~/.claude.json.
+const APPROVED_KEY = "sk-ant-api03-approved-0123456789abcdefghij";
+const REJECTED_KEY = "sk-ant-api03-rejected-9876543210zyxwvutsrq";
+const configDir = mkdtempSync(join(tmpdir(), "fd-claude-config-"));
+writeFileSync(
+  join(configDir, ".claude.json"),
+  JSON.stringify({ customApiKeyResponses: { approved: [APPROVED_KEY.slice(-20)], rejected: [REJECTED_KEY.slice(-20)] } }),
+);
+after(() => rmSync(configDir, { recursive: true, force: true }));
+const interactive = (key) => ({ ANTHROPIC_API_KEY: key, CLAUDE_CODE_ENTRYPOINT: "cli", CLAUDE_CONFIG_DIR: configDir });
 
 const API_KEY = { authMethod: "api_key", apiProvider: "firstParty" };
 const CLAUDE_AI = { authMethod: "claude.ai", apiProvider: "firstParty" };
@@ -28,7 +44,9 @@ describe("detectEndpoint", () => {
     ["Foundry env is metered", { CLAUDE_CODE_USE_FOUNDRY: "1" }, null, "metered", "foundry"],
     ["a falsy cloud flag is ignored", { CLAUDE_CODE_USE_BEDROCK: "0" }, CLAUDE_AI, "subscription", "anthropic"],
     ["the CLI's cloud provider counts", {}, { authMethod: "third_party", apiProvider: "bedrock" }, "metered", "bedrock"],
-    ["no CLI, API key set", { ANTHROPIC_API_KEY: "sk" }, null, "metered", "anthropic"],
+    ["no CLI, a print-mode run's API key", { ANTHROPIC_API_KEY: "sk", CLAUDE_CODE_ENTRYPOINT: "sdk-cli" }, null, "metered", "anthropic"],
+    ["no CLI, an approved key in an interactive session", interactive(APPROVED_KEY), null, "metered", "anthropic"],
+    ["no CLI, a rejected key in an interactive session", interactive(REJECTED_KEY), null, "subscription", "anthropic"],
     ["no CLI, auth token set", { ANTHROPIC_AUTH_TOKEN: "t" }, null, "metered", "anthropic"],
     ["no CLI, nothing set", {}, null, "subscription", "anthropic"],
     ["override wins", { FLIGHTDECK_BILLING_MODE: " Metered " }, CLAUDE_AI, "metered", "anthropic"],
@@ -61,6 +79,42 @@ describe("detectEndpoint", () => {
   });
 });
 
+describe("envApiKeyInUse", () => {
+  it("follows Claude Code: a non-interactive or bare run uses any key, an interactive session only an approved one", () => {
+    assert.equal(envApiKeyInUse({}), false);
+    assert.equal(envApiKeyInUse({ ANTHROPIC_API_KEY: "  " }), false);
+    assert.equal(envApiKeyInUse({ ANTHROPIC_API_KEY: REJECTED_KEY, CLAUDE_CODE_ENTRYPOINT: "sdk-cli" }), true);
+    assert.equal(envApiKeyInUse({ ANTHROPIC_API_KEY: REJECTED_KEY, CLAUDE_CODE_ENTRYPOINT: "sdk-py" }), true);
+    assert.equal(envApiKeyInUse({ ...interactive(REJECTED_KEY), CLAUDE_CODE_SIMPLE: "1" }), true);
+    assert.equal(envApiKeyInUse(interactive(APPROVED_KEY)), true);
+    assert.equal(envApiKeyInUse(interactive(` ${APPROVED_KEY}\n`)), true);
+    assert.equal(envApiKeyInUse(interactive(REJECTED_KEY)), false);
+    assert.equal(envApiKeyInUse({ ...interactive(APPROVED_KEY), CLAUDE_CODE_ENTRYPOINT: "claude-vscode" }), true);
+    assert.equal(envApiKeyInUse({ ...interactive(REJECTED_KEY), CLAUDE_CODE_ENTRYPOINT: "claude-vscode" }), false);
+  });
+
+  it("treats a missing or unreadable config as no approval", () => {
+    const missing = mkdtempSync(join(tmpdir(), "fd-claude-none-"));
+    assert.equal(envApiKeyInUse({ ANTHROPIC_API_KEY: APPROVED_KEY, CLAUDE_CODE_ENTRYPOINT: "cli", CLAUDE_CONFIG_DIR: missing }), false);
+    writeFileSync(join(missing, ".claude.json"), "{not json");
+    assert.equal(envApiKeyInUse({ ANTHROPIC_API_KEY: APPROVED_KEY, CLAUDE_CODE_ENTRYPOINT: "cli", CLAUDE_CONFIG_DIR: missing }), false);
+    rmSync(missing, { recursive: true, force: true });
+  });
+
+  it("finds the config under CLAUDE_CONFIG_DIR, else the home directory", () => {
+    assert.equal(claudeConfigPath({ CLAUDE_CONFIG_DIR: "/cfg" }), join("/cfg", ".claude.json"));
+    assert.ok(claudeConfigPath({}).endsWith(".claude.json"));
+  });
+
+  it("runs `claude auth status` without a key the session does not use", () => {
+    assert.equal(authStatusEnv(interactive(REJECTED_KEY)).ANTHROPIC_API_KEY, undefined);
+    assert.equal(authStatusEnv(interactive(REJECTED_KEY)).CLAUDE_CODE_ENTRYPOINT, "cli");
+    assert.equal(authStatusEnv(interactive(APPROVED_KEY)).ANTHROPIC_API_KEY, APPROVED_KEY);
+    const env = { PATH: "/bin" };
+    assert.equal(authStatusEnv(env), env);
+  });
+});
+
 describe("readAuthStatus", () => {
   it("reads authMethod and apiProvider from the CLI's JSON", () => {
     const run = () => JSON.stringify({ loggedIn: true, authMethod: "claude.ai", apiProvider: "firstParty" });
@@ -73,12 +127,14 @@ describe("readAuthStatus", () => {
     assert.equal(readAuthStatus(() => JSON.stringify({ loggedIn: false })), null);
   });
 
-  it("asks the CLI for its status with a timeout and no stdin", () => {
+  it("asks the CLI for its status with a timeout, no stdin, and no unused API key", () => {
     let seen;
     readAuthStatus((cmd, args, opts) => {
       seen = { cmd, args, opts };
       return "{}";
-    });
+    }, interactive(REJECTED_KEY));
+    assert.equal(seen.opts.env.ANTHROPIC_API_KEY, undefined);
+    assert.equal(seen.opts.env.CLAUDE_CONFIG_DIR, configDir);
     assert.equal(seen.cmd, "claude");
     assert.deepEqual(seen.args, ["auth", "status"]);
     assert.ok(seen.opts.timeout > 0);
@@ -184,7 +240,7 @@ describe("resolveSessionEndpoint and turnTokenCostFields", () => {
       return null;
     };
     const sid = "33333333-2222-4333-8444-555555555555";
-    const env = { ANTHROPIC_API_KEY: "sk" };
+    const env = { ANTHROPIC_API_KEY: "sk", CLAUDE_CODE_ENTRYPOINT: "sdk-cli" };
     observe.resolveSessionEndpoint(sid, { env, probe: failing });
     observe.resolveSessionEndpoint(sid, { env, probe: failing });
     const third = observe.resolveSessionEndpoint(sid, { env, probe: failing });

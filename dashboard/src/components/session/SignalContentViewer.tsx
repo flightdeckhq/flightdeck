@@ -113,6 +113,7 @@ const ALWAYS_CAPTURED_SIGNALS = new Set([
   "notification",
   "task_created",
   "task_completed",
+  // Claude Code requires an elicitation request's message.
   "elicitation_requested",
 ]);
 

@@ -123,12 +123,23 @@ describe("SignalPromptsPanel", () => {
     fetchEventContent.mockResolvedValue({
       event_id: "x",
       provider: "flightdeck-signal",
-      response: { message: "What name?", requested_schema: '{\n  "type": "object"\n}' },
+      response: {
+        message: "Sign in to continue",
+        url: "https://auth.example.com/approve",
+        requested_schema: '{\n  "type": "object"\n}',
+      },
     });
     const { unmount } = render(<SignalPromptsPanel event={signalEvent("elicitation_requested", true)} />);
     await waitFor(() => expect(screen.getByTestId("signal-content-requested_schema")).toHaveTextContent("Requested fields"));
-    expect(screen.getByTestId("signal-content-message")).toHaveTextContent("What name?");
+    expect(screen.getByTestId("signal-content-message")).toHaveTextContent("Sign in to continue");
+    expect(screen.getByTestId("signal-content-url")).toHaveTextContent("URL");
+    expect(screen.getByTestId("signal-content-url")).toHaveTextContent("https://auth.example.com/approve");
     unmount();
+    fetchEventContent.mockResolvedValue({ event_id: "y", provider: "flightdeck-signal", response: { content: '{"code":"4242"}' } });
+    const { unmount: answered } = render(<SignalPromptsPanel event={signalEvent("elicitation_responded", true)} />);
+    await waitFor(() => expect(screen.getByTestId("signal-content-content")).toHaveTextContent("Answer"));
+    expect(screen.getByTestId("signal-content-content")).toHaveTextContent('{"code":"4242"}');
+    answered();
     const { unmount: off } = render(<SignalPromptsPanel event={signalEvent("elicitation_requested", false)} />);
     expect(screen.getByTestId("signal-prompts-empty")).toHaveTextContent("Prompt capture is not enabled for this deployment.");
     off();

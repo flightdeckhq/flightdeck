@@ -2,7 +2,7 @@
 // SubagentStop open and close, interior-hook routing onto that child,
 // and the size-routed capture of the messages between parent and child.
 
-import { existsSync, readFileSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 import { deriveAgentId, NAMESPACE_FLIGHTDECK } from "../agent_id.mjs";
@@ -314,25 +314,49 @@ function _routeSubagentMessage(body, capturePrompts, direction) {
 export const SUBAGENT_FILES_WAIT_MS = 1000;
 const SUBAGENT_FILES_POLL_MS = 50;
 
-/** The parsed records of a JSONL transcript; unreadable lines are skipped. */
-function readRecords(path) {
+// How much of the parent transcript's end SubagentStart searches for the
+// Agent call that launched the subagent. The call is the parent's latest
+// turn when the hook runs, so the tail holds it; reading only the tail
+// keeps a long session's multi-megabyte transcript off this path.
+export const PARENT_TAIL_BYTES = 4 * 1024 * 1024;
+
+/** The lines of a JSONL file, or of its last ``maxBytes`` when given. */
+function readLines(path, maxBytes = Infinity) {
   if (!path) return [];
   let raw;
   try {
-    raw = readFileSync(path, "utf8");
+    if (maxBytes === Infinity) {
+      raw = readFileSync(path, "utf8");
+    } else {
+      const fd = openSync(path, "r");
+      try {
+        const size = fstatSync(fd).size;
+        const length = Math.min(size, maxBytes);
+        const buffer = Buffer.alloc(length);
+        readSync(fd, buffer, 0, length, size - length);
+        raw = buffer.toString("utf8");
+      } finally {
+        closeSync(fd);
+      }
+    }
   } catch {
     return [];
   }
-  const records = [];
-  for (const line of raw.split("\n")) {
-    if (!line) continue;
-    try {
-      records.push(JSON.parse(line));
-    } catch {
-      /* a partly written last line */
-    }
+  return raw.split("\n").filter((line) => line.length > 0);
+}
+
+/** A JSONL line parsed, or null for a partly written or cut line. */
+function parseLine(line) {
+  try {
+    const record = JSON.parse(line);
+    return record && typeof record === "object" ? record : null;
+  } catch {
+    return null;
   }
-  return records;
+}
+
+function readRecords(path) {
+  return readLines(path).map(parseLine).filter((record) => record !== null);
 }
 
 /** The meta file Claude Code writes beside a subagent's transcript. */
@@ -344,7 +368,7 @@ function readSubagentMeta(subagentTranscript) {
   if (!subagentTranscript) return null;
   try {
     const meta = JSON.parse(readFileSync(_subagentMetaPath(subagentTranscript), "utf8"));
-    return meta && typeof meta === "object" ? meta : null;
+    return meta && typeof meta === "object" && !Array.isArray(meta) ? meta : null;
   } catch {
     return null;
   }
@@ -355,13 +379,15 @@ function contentBlocks(record) {
   return Array.isArray(content) ? content : [];
 }
 
-/** The ``prompt`` input of the tool call ``toolUseId`` in ``records``. */
-function toolUsePrompt(records, toolUseId) {
-  for (const record of records) {
-    for (const block of contentBlocks(record)) {
-      if (block?.type === "tool_use" && block.id === toolUseId && typeof block.input?.prompt === "string") {
-        return block.input.prompt;
-      }
+function hasToolUse(record, toolUseId) {
+  return contentBlocks(record).some((block) => block?.type === "tool_use" && block.id === toolUseId);
+}
+
+/** The ``prompt`` input of the tool call ``toolUseId`` in ``record``. */
+function toolUsePrompt(record, toolUseId) {
+  for (const block of contentBlocks(record)) {
+    if (block?.type === "tool_use" && block.id === toolUseId && typeof block.input?.prompt === "string") {
+      return block.input.prompt;
     }
   }
   return null;
@@ -375,26 +401,47 @@ export function isForkSubagent(role, subagentTranscript) {
 /** The message ids of the parent transcript's assistant turns. */
 export function parentMessageIds(parentTranscript) {
   const ids = new Set();
-  for (const record of readRecords(parentTranscript)) {
+  for (const line of readLines(parentTranscript)) {
+    if (!line.includes('"assistant"')) continue;
+    const record = parseLine(line);
     if (record?.type === "assistant" && typeof record.message?.id === "string") ids.add(record.message.id);
   }
   return ids;
 }
 
 /**
+ * The message ids of a fork's copied history: every assistant record up
+ * to and including the parent's Agent call that launched it (the meta
+ * file's ``toolUseId``), which ends the copy. Without a meta file, the
+ * ids its transcript shares with the parent's.
+ */
+function copiedMessageIds(subagentRecords, subagentTranscript, parentTranscript) {
+  const toolUseId = readSubagentMeta(subagentTranscript)?.toolUseId;
+  const end = typeof toolUseId === "string" ? subagentRecords.findLastIndex((r) => hasToolUse(r, toolUseId)) : -1;
+  if (end >= 0) {
+    const ids = new Set();
+    for (const record of subagentRecords.slice(0, end + 1)) {
+      if (record.type === "assistant" && typeof record.message?.id === "string") ids.add(record.message.id);
+    }
+    return ids;
+  }
+  return parentMessageIds(parentTranscript);
+}
+
+/**
  * The turns of a subagent's transcript that are its own. A fork's
- * transcript repeats the parent's turn that made the Agent call under
- * the same message id; that turn, and any other the parent's transcript
- * holds, is the parent's to report.
+ * transcript starts with a copy of the parent's history, which repeats
+ * the parent's turns under their message ids; those are the parent's
+ * to report.
  */
 export function ownSubagentTurns(turns, { role, subagentTranscript, parentTranscript }) {
   if (!isForkSubagent(role, subagentTranscript)) return turns;
-  const parentIds = parentMessageIds(parentTranscript);
-  return turns.filter((turn) => !parentIds.has(turn.messageId));
+  const copied = copiedMessageIds(readRecords(subagentTranscript), subagentTranscript, parentTranscript);
+  return turns.filter((turn) => !copied.has(turn.messageId));
 }
 
 /** Wait, up to SUBAGENT_FILES_WAIT_MS, for the subagent's transcript and meta file. */
-async function waitForSubagentFiles(subagentTranscript) {
+export async function waitForSubagentFiles(subagentTranscript) {
   const deadline = Date.now() + SUBAGENT_FILES_WAIT_MS;
   while (!(existsSync(subagentTranscript) && existsSync(_subagentMetaPath(subagentTranscript)))) {
     if (Date.now() >= deadline) return;
@@ -402,24 +449,56 @@ async function waitForSubagentFiles(subagentTranscript) {
   }
 }
 
+/** The ``prompt`` of the Agent call ``toolUseId`` in the parent transcript's tail. */
+function parentToolUsePrompt(parentTranscript, toolUseId) {
+  const lines = readLines(parentTranscript, PARENT_TAIL_BYTES);
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes(toolUseId)) continue;
+    const prompt = toolUsePrompt(parseLine(lines[i]), toolUseId);
+    if (prompt !== null) return prompt;
+  }
+  return null;
+}
+
 /**
  * The prompt the parent gave a subagent: the hook's own
  * ``tool_input.prompt`` (older Claude Code), else the ``prompt`` of the
- * Agent tool call the meta file names, else the subagent transcript's
- * first plain-text user message.
+ * Agent tool call the meta file names, else (not for a fork, whose
+ * transcript opens with the parent's history) the subagent transcript's
+ * first user message given as a string.
  */
-export function subagentIncomingMessage({ hookEvent, subagentTranscript, parentTranscript }) {
+export function subagentIncomingMessage({ hookEvent, subagentTranscript, parentTranscript, role }) {
   const legacy = hookEvent?.tool_input?.prompt;
   if (typeof legacy === "string") return legacy;
   if (!subagentTranscript) return null;
   const records = readRecords(subagentTranscript);
   const toolUseId = readSubagentMeta(subagentTranscript)?.toolUseId;
   if (typeof toolUseId === "string") {
-    const prompt = toolUsePrompt(records, toolUseId) ?? toolUsePrompt(readRecords(parentTranscript), toolUseId);
+    for (const record of records) {
+      const prompt = toolUsePrompt(record, toolUseId);
+      if (prompt !== null) return prompt;
+    }
+    const prompt = parentToolUsePrompt(parentTranscript, toolUseId);
     if (prompt !== null) return prompt;
   }
+  if (isForkSubagent(role, subagentTranscript)) return null;
   for (const record of records) {
-    if (record?.type === "user" && typeof record.message?.content === "string") return record.message.content;
+    if (record.type === "user" && typeof record.message?.content === "string") return record.message.content;
+  }
+  return null;
+}
+
+/** The text of the last assistant message in ``records``, its blocks joined. */
+function lastAssistantText(records) {
+  for (let i = records.length - 1; i >= 0; i--) {
+    const id = records[i].message?.id;
+    const group = id ? records.filter((r) => r.message?.id === id) : [records[i]];
+    const text = group
+      .flatMap(contentBlocks)
+      .filter((block) => block?.type === "text" && typeof block.text === "string")
+      .map((block) => block.text)
+      .join("\n");
+    if (text.trim() !== "") return text;
   }
   return null;
 }
@@ -428,33 +507,27 @@ export function subagentIncomingMessage({ hookEvent, subagentTranscript, parentT
  * A subagent's report back to its parent: the hook's own
  * ``tool_response`` (older Claude Code), else the ``message`` of its
  * last SubagentHandback call, else the hook's
- * ``last_assistant_message``, else its last assistant turn's text.
- * Records the parent's transcript holds (a fork's copied history) are
- * not the subagent's.
+ * ``last_assistant_message``, else its last assistant message's text.
+ * A fork's copied history is not the subagent's.
  */
 export function subagentOutgoingMessage({ hookEvent, subagentTranscript, parentTranscript, role }) {
   if (hookEvent?.tool_response != null) return hookEvent.tool_response;
-  const parentIds = isForkSubagent(role, subagentTranscript) ? parentMessageIds(parentTranscript) : new Set();
-  const own = readRecords(subagentTranscript).filter(
-    (record) => record?.type === "assistant" && !parentIds.has(record.message?.id),
-  );
+  const records = readRecords(subagentTranscript);
+  const copied = isForkSubagent(role, subagentTranscript)
+    ? copiedMessageIds(records, subagentTranscript, parentTranscript)
+    : new Set();
+  const own = records.filter((record) => record.type === "assistant" && !copied.has(record.message?.id));
   for (let i = own.length - 1; i >= 0; i--) {
     for (const block of contentBlocks(own[i])) {
-      if (block?.type === "tool_use" && block.name === "SubagentHandback" && typeof block.input?.message === "string") {
-        return block.input.message;
+      const message = block?.input?.message;
+      if (block?.type === "tool_use" && block.name === "SubagentHandback" && typeof message === "string" && message.trim() !== "") {
+        return message;
       }
     }
   }
   const last = hookEvent?.last_assistant_message;
   if (typeof last === "string" && last.trim() !== "") return last;
-  for (let i = own.length - 1; i >= 0; i--) {
-    const text = contentBlocks(own[i])
-      .filter((block) => block?.type === "text" && typeof block.text === "string")
-      .map((block) => block.text)
-      .join("\n");
-    if (text.trim() !== "") return text;
-  }
-  return null;
+  return lastAssistantText(own);
 }
 
 export async function emitSubagentEvent({
@@ -538,6 +611,7 @@ export async function emitSubagentEvent({
         hookEvent,
         subagentTranscript,
         parentTranscript: hookEvent.transcript_path,
+        role,
       });
     }
     const { stubOrInline, contentEnvelope } = _routeSubagentMessage(

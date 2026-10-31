@@ -3111,30 +3111,43 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
         .join("\n") + "\n",
     );
     writeFileSync(join(subDir, "agent-areal1.meta.json"), JSON.stringify({ agentType: "fork", isFork: true, toolUseId: "toolu_real_1" }));
-    const env = {
-      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
-      FLIGHTDECK_TOKEN: "tok_test",
-      CLAUDE_SESSION_ID: "sess-outer-real-1",
-      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    const runPair = async (sessionId, capturePrompts) => {
+      const env = {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: sessionId,
+        FLIGHTDECK_CAPTURE_PROMPTS: capturePrompts ? "true" : "false",
+      };
+      const before = capture.bodies().length;
+      await runScript(
+        JSON.stringify({ hook_event_name: "SubagentStart", session_id: sessionId, agent_id: "areal1", agent_type: "fork", transcript_path: parent }),
+        env,
+      );
+      await runScript(
+        JSON.stringify({
+          hook_event_name: "SubagentStop",
+          session_id: sessionId,
+          agent_id: "areal1",
+          agent_type: "fork",
+          transcript_path: parent,
+          agent_transcript_path: subTranscript,
+          stop_hook_active: false,
+        }),
+        env,
+      );
+      return capture.bodies().slice(before);
     };
-    const before = capture.bodies().length;
-    await runScript(
-      JSON.stringify({ hook_event_name: "SubagentStart", session_id: "sess-outer-real-1", agent_id: "areal1", agent_type: "fork", transcript_path: parent }),
-      env,
-    );
-    await runScript(
-      JSON.stringify({
-        hook_event_name: "SubagentStop",
-        session_id: "sess-outer-real-1",
-        agent_id: "areal1",
-        agent_type: "fork",
-        transcript_path: parent,
-        agent_transcript_path: subTranscript,
-        stop_hook_active: false,
-      }),
-      env,
-    );
-    const bodies = capture.bodies().slice(before);
+    const bodies = await runPair("sess-outer-real-1", true);
+    // Capture off: neither message, and no transcript text anywhere. (Its
+    // turn flush is skipped here: the capture-on run already sent the turn.)
+    const off = await runPair("sess-outer-real-off", false);
+    assert.ok(off.some((b) => b.event_type === "session_start" && b.parent_session_id === "sess-outer-real-off"));
+    for (const body of off) {
+      assert.equal(body.incoming_message, undefined);
+      assert.equal(body.outgoing_message, undefined);
+      assert.ok(!JSON.stringify(body).includes("Repeat the first word"));
+      assert.ok(!JSON.stringify(body).includes("KIWI"));
+    }
     const childStart = bodies.find((b) => b.event_type === "session_start" && b.parent_session_id === "sess-outer-real-1");
     const childEnd = bodies.find((b) => b.event_type === "session_end" && b.parent_session_id === "sess-outer-real-1");
     assert.equal(childStart.incoming_message.body, "Repeat the first word");

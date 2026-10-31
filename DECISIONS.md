@@ -139,3 +139,20 @@ per-call figure cannot be derived from it.
 over the calls between snapshots; a session-level reported total (list
 price even on a subscription).
 
+## D220 -- The Claude Code plugin enforces when the user turns it on
+
+**Date:** 2026-10-31
+**Decision:** with the plugin option `enforcement` (or
+`FLIGHTDECK_ENFORCEMENT=1`) the plugin is directive-capable: it applies
+`shutdown` and token-budget directives through synchronous `PreToolUse`
+and `UserPromptSubmit` gates (deny with `continue: false`, block the
+prompt) and says so with `context.supports_directives=true`. Off by
+default; a `degrade` is advisory; the gate fails open and keeps a stop
+it already received.
+**Why:** stopping a coding agent mid-session and holding it to a token
+budget is the control Flightdeck offers other agents. A synchronous gate
+on every tool call costs about 0.2 s, which not every developer wants.
+**Rejected alternative:** gating every tool for every user (the latency
+for everyone); gating prompts and MCP calls only (a stop would wait for
+the next prompt); failing closed (a server outage stops every developer).
+

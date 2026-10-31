@@ -86,18 +86,32 @@ policy fetched at session start for flavor `claude-code`:
 Operators change the policy in the dashboard under MCP policies. The
 plugin re-reads it at the next session start.
 
+## Stops and token budgets
+
+Only with the plugin option **enforcement** on (or
+`FLIGHTDECK_ENFORCEMENT=1`). Then an operator's Stop, or a token policy's
+block threshold, denies the session's next tool call with
+`Stopped by Flightdeck: ...` and blocks later prompts; the session ends
+with close reason `directive_shutdown`. At a policy's warn or degrade
+threshold the user sees a message; a degrade only advises switching
+with `/model`, since a hook cannot change the model. With enforcement off
+the plugin never stops a session. If the server is unreachable, calls go
+through.
+
 ## Configuration
 
-The server and token are plugin options: in `/plugin`, select
-**flightdeck** on the **Installed** tab and choose **Configure options**.
-The token is kept in Claude Code's credential store. `FLIGHTDECK_SERVER`
-and `FLIGHTDECK_TOKEN` override the saved options for one shell or run.
+The server, token and enforcement are plugin options: in `/plugin`,
+select **flightdeck** on the **Installed** tab and choose **Configure
+options**. The token is kept in Claude Code's credential store.
+`FLIGHTDECK_SERVER`, `FLIGHTDECK_TOKEN` and `FLIGHTDECK_ENFORCEMENT`
+override the saved options for one shell or run.
 
 ## Environment variables
 
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `FLIGHTDECK_SERVER` | the `server` option, else `http://localhost:4000` | Control plane base URL; events go to `/ingest`, policies come from `/api`. |
+| `FLIGHTDECK_ENFORCEMENT` | the `enforcement` option, else off | `1` lets an operator stop the session and token policies hold it to a budget. |
 | `FLIGHTDECK_TOKEN` | the `token` option, else `tok_dev` | Access token. The default is the development seed token and prints a warning; set a real token outside local development. |
 | `FLIGHTDECK_CAPTURE_PROMPTS` | `true` | `false` strips prompt, response and tool-result bodies while keeping metadata and token counts. |
 | `FLIGHTDECK_CAPTURE_TOOL_INPUTS` | `true` | `false` strips the sanitised tool arguments. |

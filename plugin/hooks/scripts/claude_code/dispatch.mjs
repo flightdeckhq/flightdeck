@@ -6,7 +6,7 @@ import { hostname as osHostname } from "node:os";
 
 import { deriveAgentId } from "../agent_id.mjs";
 import { boundedToken, MAX_MCP_IDENTITY_BYTES, MAX_SIGNAL_BYTES } from "../core/config.mjs";
-import { postEvent } from "../core/poster.mjs";
+import { postEvent, setDirectiveSink } from "../core/poster.mjs";
 import {
   cacheSessionModel,
   clearGitCache,
@@ -18,6 +18,7 @@ import {
 } from "../core/state.mjs";
 import { clearSessionPolicyCache } from "../mcp_policy.mjs";
 import { safeCollectContext } from "./context.mjs";
+import { GATE_FLAG, finishControl, gateDecision, recordDirective, sendPendingControlEvents } from "./control.mjs";
 import { CLAUDE_CODE_EVENTS } from "./events.mjs";
 import { emitMCPToolCallEvent, resolveMcpToolIdentity } from "./mcp.mjs";
 import {
@@ -30,7 +31,13 @@ import { clearSessionCacheFiles, ensureSessionStarted, getSessionId, sessionHasE
 import { SESSION_END_WORKER_DEADLINE_MS, spawnDetachedSessionEnd } from "./session_end.mjs";
 import { SIGNAL_HOOKS, buildSignalEvent } from "./signals.mjs";
 import { buildStopFailureEvent, failedTurnFor } from "./stop_failure.mjs";
-import { _subagentInteriorContext, emitSubagentEvent, ownSubagentTurns } from "./subagent.mjs";
+import {
+  _subagentChildSessionId,
+  _subagentCorrelator,
+  _subagentInteriorContext,
+  emitSubagentEvent,
+  ownSubagentTurns,
+} from "./subagent.mjs";
 import { buildToolErrorBlock, captureErrorText, hookDurationMs, sanitizeToolInput } from "./tools.mjs";
 import { isRealModel, readTurns } from "./transcript.mjs";
 
@@ -41,8 +48,19 @@ import { isRealModel, readTurns } from "./transcript.mjs";
  * SessionEnd worker, and ``entryScript`` is the path of the script the
  * worker re-invokes.
  */
-export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorker, entryScript }) {
+export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorker, entryScript, argv = process.argv }) {
   const hookName = hookEvent.hook_event_name || hookEvent.event || "";
+  // Every response this process reads may carry a directive; with
+  // enforcement on it lands in the session's control state.
+  setDirectiveSink((sid, directive) => recordDirective(cfg.enforcement, sid, directive));
+
+  // The enforcement gates (PreToolUse for non-MCP tools, the second
+  // UserPromptSubmit): only a decision, no event.
+  if (argv.includes(GATE_FLAG)) {
+    const output = await gateDecision({ cfg, hookName, sessionIds: gateSessionIds(hookEvent) });
+    if (output) process.stdout.write(JSON.stringify(output) + "\n");
+    return;
+  }
   const eventType = CLAUDE_CODE_EVENTS.eventTypeFor(hookName);
   // SubagentStart and SubagentStop are intentionally absent from
   // EVENT_MAP because they emit CHILD session_start / session_end
@@ -71,6 +89,12 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   // concurrent Claude Code sessions on the same machine see each
   // other's approvals in real time.
   if (hookName === "PreToolUse") {
+    // A stopped session's MCP calls are denied before the MCP policy.
+    const stop = await gateDecision({ cfg, hookName, sessionIds: gateSessionIds(hookEvent), stopOnly: true });
+    if (stop) {
+      process.stdout.write(JSON.stringify(stop) + "\n");
+      return;
+    }
     const decided = dispatchMcpPolicyPreToolUse(cfg, hookEvent);
     if (decided) {
       // Decision written to stdout; nothing else to do for this
@@ -346,6 +370,9 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
       // async hook had claimed but not sent.
       reclaimOrphaned: true,
     });
+    // A session a directive stopped already ends with its own
+    // session_end (close_reason directive_shutdown).
+    if (await finishControl({ cfg, sessionId, basePayload })) return;
     const payload = {
       ...basePayload,
       event_type: "session_end",
@@ -388,6 +415,9 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
       claudeCodeSessionId: hookEvent.session_id,
     });
   }
+  // The events directives recorded for this session still owe (a
+  // directive_result, a policy event, a stopped session's session_end).
+  await sendPendingControlEvents({ cfg, sessionId, basePayload });
 
   // A change of working directory. Claude Code runs a plugin's
   // CwdChanged hook only when the user's settings register one too, so
@@ -696,3 +726,15 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   }
   await postEvent(cfg.server, cfg.token, sessionId, payload);
 }
+
+/**
+ * The sessions whose control state gates a hook: the session, and for a
+ * hook inside a subagent also the subagent's child session, so stopping
+ * either stops the subagent.
+ */
+function gateSessionIds(hookEvent) {
+  const outer = getSessionId(hookEvent);
+  const correlator = hookEvent.agent_id ? _subagentCorrelator(hookEvent) : null;
+  return correlator ? [outer, _subagentChildSessionId(outer, correlator)] : [outer];
+}
+

@@ -21,6 +21,15 @@
             "async": true
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"${FLIGHTDECK_ENFORCEMENT:-$CLAUDE_PLUGIN_OPTION_ENFORCEMENT}\" in [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn]) exec node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs\" --gate ;; esac",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -30,6 +39,16 @@
           {
             "type": "command",
             "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs\"",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "^(?!mcp__)",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "case \"${FLIGHTDECK_ENFORCEMENT:-$CLAUDE_PLUGIN_OPTION_ENFORCEMENT}\" in [Tt][Rr][Uu][Ee]|1|[Yy][Ee][Ss]|[Oo][Nn]) exec node \"${CLAUDE_PLUGIN_ROOT}/hooks/scripts/observe_cli.mjs\" --gate ;; esac",
             "timeout": 10
           }
         ]

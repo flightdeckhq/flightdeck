@@ -20,6 +20,11 @@
       "title": "Flightdeck token",
       "description": "Access token the hooks send as a bearer token. Leave empty for the local dev token. FLIGHTDECK_TOKEN overrides it.",
       "sensitive": true
+    },
+    "enforcement": {
+      "type": "boolean",
+      "title": "Enforcement",
+      "description": "Let Flightdeck stop this Claude Code session and hold it to token budgets: a stop from the dashboard or a token policy denies further tool calls and prompts. Adds about 0.2 s to each tool call. Off by default; FLIGHTDECK_ENFORCEMENT overrides it."
     }
   }
 }

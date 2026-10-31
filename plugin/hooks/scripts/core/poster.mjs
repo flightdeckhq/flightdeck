@@ -240,5 +240,60 @@ export async function postEvent(server, token, sessionId, payload) {
     logUnreachable(server, `HTTP ${response.status}`);
     return false;
   }
+  await deliverDirective(sessionId, response);
   return true;
+}
+
+// ---------------------------------------------------------------------
+// Directives. The ingestion API answers an event POST, or a heartbeat,
+// with the session's pending directive, and marks it delivered: a
+// directive the poster does not hand on is lost. The client binding
+// registers the sink that applies it.
+// ---------------------------------------------------------------------
+
+let directiveSink = null;
+
+/** Register ``sink(sessionId, directive)``, called for each directive a response carries. */
+export function setDirectiveSink(sink) {
+  directiveSink = sink;
+}
+
+async function deliverDirective(sessionId, response) {
+  let directive = null;
+  try {
+    directive = (await response.json())?.directive ?? null;
+  } catch {
+    return;
+  }
+  if (!directive || typeof directive !== "object" || !directiveSink) return;
+  try {
+    await directiveSink(sessionId, directive);
+  } catch (err) {
+    process.stderr.write(`[flightdeck] WARN: applying a directive failed: ${shortErrorFrom(err)}\n`);
+  }
+}
+
+/**
+ * POST a heartbeat for ``sessionId``, which keeps the session live and
+ * returns its pending directive to the sink. Returns whether the server
+ * accepted it; never throws.
+ */
+export async function postHeartbeat(server, token, sessionId) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  try {
+    const response = await fetch(`${server}/ingest/v1/heartbeat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ session_id: sessionId }),
+      signal: controller.signal,
+    });
+    if (!response.ok) return false;
+    await deliverDirective(sessionId, response);
+    return true;
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timeout);
+  }
 }

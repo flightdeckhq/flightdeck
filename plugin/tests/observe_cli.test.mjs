@@ -111,6 +111,8 @@ const HERMETIC_ENV = {
   CLAUDE_CODE_ENTRYPOINT: "",
   CLAUDE_CODE_SIMPLE: "",
   CLAUDE_CONFIG_DIR: "",
+  FLIGHTDECK_ENFORCEMENT: "",
+  CLAUDE_PLUGIN_OPTION_ENFORCEMENT: "",
   // These tests read the markers under $TMPDIR/flightdeck-plugin, the
   // state directory when Claude Code provides no plugin data directory.
   CLAUDE_PLUGIN_DATA: "",
@@ -120,11 +122,11 @@ const HERMETIC_ENV = {
   CLAUDE_PLUGIN_OPTION_TOKEN: "",
 };
 
-function runScript(stdinData, env = {}) {
+function runScript(stdinData, env = {}, args = []) {
   return new Promise((resolve) => {
     const child = execFile(
       process.execPath,
-      [SCRIPT],
+      [SCRIPT, ...args],
       { env: { ...process.env, ...HERMETIC_ENV, ...env }, timeout: 10000 },
       (error, stdout, stderr) => {
         resolve({
@@ -690,6 +692,70 @@ describe("observe_cli.mjs", () => {
     const next = capture.bodies().slice(later).filter((b) => b.event_type === "post_call");
     assert.deepEqual(next.map((c) => c.tokens_used_session), [380]);
     rmSync(dirname(transcriptPath), { recursive: true, force: true });
+  });
+
+  it("with enforcement on, a stop in a response denies the next tool call and its events follow", async () => {
+    // A server that answers the first event POST with a stop directive.
+    const bodies = [];
+    let served = false;
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        if (req.url.endsWith("/events")) bodies.push(JSON.parse(body));
+        const directive = !served && req.url.endsWith("/events") ? { id: "dir-1", action: "shutdown", reason: "manual stop" } : null;
+        if (directive) served = true;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok", directive }));
+      });
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const sid = "sess-enforce-1";
+      const env = { FLIGHTDECK_SERVER: `http://127.0.0.1:${server.address().port}`, FLIGHTDECK_TOKEN: "tok_test", CLAUDE_SESSION_ID: sid, FLIGHTDECK_ENFORCEMENT: "1" };
+      await runScript(JSON.stringify({ hook_event_name: "SessionStart", session_id: sid, source: "startup" }), env);
+      const start = bodies.find((b) => b.event_type === "session_start");
+      assert.equal(start.context.supports_directives, true);
+
+      const gate = await runScript(JSON.stringify({ hook_event_name: "PreToolUse", session_id: sid, tool_name: "Bash", tool_input: { command: "ls" } }), env, ["--gate"]);
+      assert.equal(gate.code, 0, gate.stderr);
+      const decision = JSON.parse(gate.stdout);
+      assert.equal(decision.continue, false);
+      assert.equal(decision.hookSpecificOutput.permissionDecision, "deny");
+      const prompt = await runScript(JSON.stringify({ hook_event_name: "UserPromptSubmit", session_id: sid, prompt: "go on" }), env, ["--gate"]);
+      assert.equal(JSON.parse(prompt.stdout).decision, "block");
+
+      // The next regular hook sends what the stop owes.
+      await runScript(JSON.stringify({ hook_event_name: "Notification", notification_type: "idle_prompt", session_id: sid }), env);
+      const owed = bodies.filter((b) => b.event_type === "directive_result" || b.event_type === "session_end");
+      assert.deepEqual(owed.map((b) => b.event_type), ["directive_result", "session_end"]);
+      assert.equal(owed[1].close_reason, "directive_shutdown");
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
+  it("with enforcement off, a directive in a response is ignored and the gate prints nothing", async () => {
+    const server = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok", directive: { id: "dir-2", action: "shutdown", reason: "manual" } }));
+      });
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const sid = "sess-enforce-off-1";
+      const env = { FLIGHTDECK_SERVER: `http://127.0.0.1:${server.address().port}`, FLIGHTDECK_TOKEN: "tok_test", CLAUDE_SESSION_ID: sid };
+      await runScript(JSON.stringify({ hook_event_name: "SessionStart", session_id: sid, source: "startup" }), env);
+      const gate = await runScript(JSON.stringify({ hook_event_name: "PreToolUse", session_id: sid, tool_name: "Bash", tool_input: {} }), env, ["--gate"]);
+      assert.equal(gate.stdout.trim(), "");
+      assert.equal(existsSync(join(stateDir({ ...process.env, CLAUDE_PLUGIN_DATA: "" }), `control-${sid}.json`)), false);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
   });
 
   it("labels the next pre_call with the model a switch moved to, not the transcript's older one", async () => {

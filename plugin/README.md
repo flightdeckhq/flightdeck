@@ -82,6 +82,7 @@ Guarantees that hold regardless of the knob settings:
 | `FLIGHTDECK_TOKEN` | the `token` option, else `tok_dev` | Bearer token used in the `Authorization` header. Overrides the `token` option. The dev compose accepts `tok_dev` when `ENVIRONMENT=dev`; production deployments leave that unset and require an `ftd_` token minted from the Settings page. |
 | `FLIGHTDECK_CAPTURE_TOOL_INPUTS` | `true` | Captures a sanitised whitelist of tool input fields on each `tool_call` event. Set to `false` to strip tool inputs. |
 | `FLIGHTDECK_CAPTURE_PROMPTS` | `true` | Captures LLM prompts, assistant responses, and tool results. Set to `false` to strip all content bodies from plugin events while keeping metadata and token counts. |
+| `FLIGHTDECK_ENFORCEMENT` | the `enforcement` option, else off | Set to `1` to let Flightdeck stop the session and hold it to token budgets (see Enforcement). Overrides the `enforcement` option. |
 | `FLIGHTDECK_QUIET` | unset | Set to `1` to suppress the `[flightdeck] WARN:` stderr line emitted on every hook invocation when no token is configured (the seed `tok_dev` default is in use). Intended for test suites that intentionally exercise the zero-config default-token path; production deployments should set the token option or `FLIGHTDECK_TOKEN` instead so the warning never fires. |
 | `CLAUDE_SESSION_ID` | unset | Explicit Flightdeck session id override. Wins over every other resolution step -- use this when you want to force a specific id across processes or tests. |
 | `ANTHROPIC_CLAUDE_SESSION_ID` | unset | Alternative name for `CLAUDE_SESSION_ID`, honored second. |
@@ -140,15 +141,16 @@ Known limits — by design, not a TODO:
 
 Enforcement. `SessionStart` fetches the global and `claude-code` flavor MCP policies from `$FLIGHTDECK_SERVER/api` and caches them for the invocation; it also emits one `policy_mcp_warn` / `policy_mcp_block` event per declared server whose decision is not `allow`. `PreToolUse` then gates every `mcp__<server>__<tool>` call through Claude Code's hook decision contract (`hookSpecificOutput.permissionDecision`): a blocked server answers `deny` with the reason `MCP policy blocked tool call to <server> (<scope>, <path>)`, a server unknown to an allowlist-mode policy answers `ask` so Claude Code shows its own permission prompt (an approval is remembered on this machine and answers `allow` next time), and allowed or warned servers get no decision so Claude Code's normal flow applies. Policy evaluation fails open: with no cached policy, calls proceed.
 
-## Observer-class limitation
+## Enforcement (opt-in)
 
-Apart from the MCP policy gate (see MCP coverage), the plugin is observation-only. It reports what Claude Code does; it cannot stop a session or change what the model does.
+By default the plugin only observes, apart from the MCP policy gate (see MCP coverage). Turn on the plugin option **Enforcement** (`/plugin`, flightdeck, Configure options) or set `FLIGHTDECK_ENFORCEMENT=1`, and the session takes directives like a sensor-instrumented agent:
 
-- No Stop Agent button on claude-code sessions in the dashboard.
-- No kill switch, no mid-call interruption.
-- No token-budget enforcement and no model degradation.
+- **Stop.** The dashboard's Stop button (and a fleet-wide stop of the `claude-code` flavor) stops the session: the next tool call is denied and ends the turn, and every later prompt is blocked before it reaches the model. The session closes with `close_reason=directive_shutdown`.
+- **Token budgets.** A token policy for the session or its flavor holds it to a budget. At the block threshold the session is stopped as above, with a `policy_block` event. At the warn threshold Claude Code shows you a message. A hook cannot change Claude Code's model, so at the degrade threshold you are told to switch with `/model` rather than switched.
 
-The plugin sets `context.supports_directives=false` on session start so the dashboard hides directive UI for these sessions rather than showing controls that silently fail. This is a deliberate trade-off: the plugin is non-intrusive by design and can never interfere with your Claude Code work. If you need kill-switch or policy-enforcement behavior on actual production agents, use the Python sensor (which sits in the LLM call path and can act on returned directives).
+How it works: with enforcement on, a synchronous gate runs before every tool call and every prompt, and the session's `session_start` carries `context.supports_directives=true`. The gate costs one hook process (about 0.2 s) per tool call; with enforcement off its shell check exits in a few milliseconds without starting Node. A stop reaches the session through the response to any of its events or the gate's heartbeat, sent when the session has been quiet for 5 seconds.
+
+Enforcement fails open: if your Flightdeck server is unreachable, tool calls and prompts go through. A stop that already arrived stays in force until the session ends.
 
 ## Troubleshooting
 
@@ -244,6 +246,7 @@ No background threads inside a hook. No polling. The only state the plugin persi
 - `endpoint-<sid>.json`: the session's billing mode and platform, decided at `SessionStart`.
 - `model-switch-<sid>.json`: the model the session last switched to and when, so the next `pre_call` is labelled with it.
 - `cwd-<sid>.txt`: the directory the session's hooks last ran in, so a hook in a different one reports `cwd_changed`.
+- `control-<sid>.json`: with enforcement on, a stop or budget notice a directive set and the events it still owes; the `SessionEnd` worker deletes it.
 - `git-<hash>.json`: the git commit, branch and repo name, probed once per session and working directory instead of on every hook.
 - `emitted-<messageId>.txt`: per-message dedup so Stop / SessionEnd and a resumed conversation don't re-emit turns that were already sent. It names the hook process that claimed the turn until the server accepts it, then is empty; the SessionEnd worker sends a turn whose claimant died before that.
 - `ended-<hash>.txt`: the id of the session that just ended, so a hook still running after `SessionEnd` reports under it instead of starting a new session; the next `SessionStart` removes it.

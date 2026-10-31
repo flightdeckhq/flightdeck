@@ -175,6 +175,15 @@ function firstSet(...values) {
  *     may carry PII and proprietary context. Users can
  *     opt out on the plugin with ``FLIGHTDECK_CAPTURE_PROMPTS=false``.
  */
+/**
+ * Whether the user turned enforcement on: FLIGHTDECK_ENFORCEMENT, else
+ * the plugin option ``enforcement`` (exported as
+ * CLAUDE_PLUGIN_OPTION_ENFORCEMENT, "true" or "false"). Off by default.
+ */
+export function enforcementEnabled(env = process.env) {
+  return parseBool(firstSet(env.FLIGHTDECK_ENFORCEMENT, env.CLAUDE_PLUGIN_OPTION_ENFORCEMENT), false);
+}
+
 export function resolveConfig(env = process.env) {
   const rawServer =
     firstSet(env.FLIGHTDECK_SERVER, env.CLAUDE_PLUGIN_OPTION_SERVER) || DEFAULT_SERVER;
@@ -214,5 +223,6 @@ export function resolveConfig(env = process.env) {
     token,
     captureToolInputs: parseBool(env.FLIGHTDECK_CAPTURE_TOOL_INPUTS, true),
     capturePrompts: parseBool(env.FLIGHTDECK_CAPTURE_PROMPTS, true),
+    enforcement: enforcementEnabled(env),
   };
 }

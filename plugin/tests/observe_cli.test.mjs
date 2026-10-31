@@ -736,6 +736,42 @@ describe("observe_cli.mjs", () => {
     }
   });
 
+  it("a stopped subagent ends once, with directive_shutdown, and SubagentStop clears its state", async () => {
+    const bodies = [];
+    let stopFor = null;
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        const event = body ? JSON.parse(body) : {};
+        if (req.url.endsWith("/events")) bodies.push(event);
+        // Stop the child the first time one of its events arrives.
+        const directive = !stopFor && event.parent_session_id ? { id: "child-stop", action: "shutdown", reason: "manual" } : null;
+        if (directive) stopFor = event.session_id;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok", directive }));
+      });
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const sid = "sess-enforce-child-1";
+      const env = { FLIGHTDECK_SERVER: `http://127.0.0.1:${server.address().port}`, FLIGHTDECK_TOKEN: "tok_test", CLAUDE_SESSION_ID: sid, FLIGHTDECK_ENFORCEMENT: "1" };
+      const child = { session_id: sid, agent_id: "achild1", agent_type: "general-purpose" };
+      await runScript(JSON.stringify({ hook_event_name: "SubagentStart", ...child }), env);
+      const gate = await runScript(JSON.stringify({ hook_event_name: "PreToolUse", ...child, tool_name: "Bash", tool_input: {} }), env, ["--gate"]);
+      assert.equal(JSON.parse(gate.stdout).continue, false);
+      await runScript(JSON.stringify({ hook_event_name: "SubagentStop", ...child, stop_hook_active: false }), env);
+      const ends = bodies.filter((b) => b.event_type === "session_end" && b.session_id === stopFor);
+      assert.equal(ends.length, 1);
+      assert.equal(ends[0].close_reason, "directive_shutdown");
+      assert.ok(bodies.some((b) => b.event_type === "directive_result" && b.session_id === stopFor));
+      assert.equal(existsSync(join(stateDir({ ...process.env, CLAUDE_PLUGIN_DATA: "" }), `control-${stopFor}.json`)), false);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
   it("with enforcement off, a directive in a response is ignored and the gate prints nothing", async () => {
     const server = createServer((req, res) => {
       req.resume();

@@ -196,3 +196,55 @@ describe("sendPendingControlEvents", () => {
     }
   });
 });
+
+describe("hostile or malformed directives", () => {
+  it("bounds and cleans the text a directive carries, and ignores one without a string action", () => {
+    recordDirective(true, "s1", { id: "h1", action: "degrade", degrade_to: "\u001b[31mmodel\u0007", reason: "r".repeat(500) });
+    const state = readControlState("s1");
+    assert.equal(state.pending[0].degrade_to, "[31mmodel");
+    assert.equal(state.pending[0].reason, "");
+    assert.doesNotMatch(state.notices[0], /[\x00-\x1f]/);
+    recordDirective(true, "s2", { id: "h2", action: 7 });
+    recordDirective(true, "s2", ["shutdown"]);
+    recordDirective(true, "s2", null);
+    assert.deepEqual(readControlState("s2"), {});
+  });
+});
+
+describe("events the server did not accept", () => {
+  it("go back to pending and are sent later, in order, none twice", async () => {
+    const bodies = [];
+    let refuseEnd = true;
+    const server = createServer((req, res) => {
+      let body = "";
+      req.on("data", (c) => (body += c));
+      req.on("end", () => {
+        const event = JSON.parse(body);
+        if (event.event_type === "session_end" && refuseEnd) {
+          refuseEnd = false;
+          res.writeHead(503);
+          res.end();
+          return;
+        }
+        bodies.push(event.event_type);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end('{"status":"ok"}');
+      });
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const cfg = { enforcement: true, server: `http://127.0.0.1:${server.address().port}`, token: "t" };
+      recordDirective(true, "s1", { id: "b", action: "shutdown", reason: "token_budget_exceeded" });
+      await sendPendingControlEvents({ cfg, sessionId: "s1", basePayload: base });
+      assert.deepEqual(bodies, ["directive_result", "policy_block"]);
+      assert.deepEqual(readControlState("s1").pending[0].sent, ["directive_result", "policy_block"]);
+      await sendPendingControlEvents({ cfg, sessionId: "s1", basePayload: base });
+      assert.deepEqual(bodies, ["directive_result", "policy_block", "session_end"]);
+      assert.deepEqual(readControlState("s1").pending, []);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+});
+

@@ -1262,12 +1262,13 @@ commit, branch and repo name a hook reports are probed once per Claude
 Code session and working directory, at `SessionStart` or the first hook
 after a directory change, and read from the state directory afterwards.
 
-Because the plugin is observation-only, a directive returned in the POST
-response envelope has nowhere to go: the plugin already exited and Claude
-Code has moved on. The plugin payload sets
-`context.supports_directives = false` on `session_start` so the dashboard
-hides the Stop Agent button and the Fleet Stop All control skips these
-sessions. This is the observer-session class.
+By default the plugin only observes: a directive returned in a POST
+response is left unread, the plugin payload sets
+`context.supports_directives = false` on `session_start`, and the
+dashboard hides the Stop Agent button and the Fleet Stop All control
+skips these sessions. This is the observer-session class. With the
+plugin's enforcement on, the session takes directives instead (see
+Enforcement).
 
 ### Configuration
 
@@ -2326,10 +2327,11 @@ a `session_end` closes an open one.
 
 ### Heartbeat and health
 
-`POST /v1/heartbeat` is reserved for transports that need to advance
-`last_seen_at` without an event payload. Currently unused by the sensor
-(post_call events provide the same signal at the cadence the sensor
-produces them).
+`POST /v1/heartbeat` advances `last_seen_at` without an event payload
+and returns the session's pending directive, as an event POST does. The
+Claude Code plugin's enforcement gate calls it to fetch a stop for a
+quiet session; the sensor does not (its post_call events give the same
+signal at the cadence it produces them).
 
 `GET /health` returns `{"status":"ok","service":"ingestion"}`.
 `GET /docs/index.html` serves the Swagger UI. The ingestion API serves no

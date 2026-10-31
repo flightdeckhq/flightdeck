@@ -50,9 +50,10 @@ import { isRealModel, readTurns } from "./transcript.mjs";
  */
 export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorker, entryScript, argv = process.argv }) {
   const hookName = hookEvent.hook_event_name || hookEvent.event || "";
-  // Every response this process reads may carry a directive; with
-  // enforcement on it lands in the session's control state.
-  setDirectiveSink((sid, directive) => recordDirective(cfg.enforcement, sid, directive));
+  // With enforcement on, a directive any response carries lands in the
+  // session's control state; with it off the poster leaves response
+  // bodies unread.
+  setDirectiveSink(cfg.enforcement ? (sid, directive) => recordDirective(true, sid, directive) : null);
 
   // The enforcement gates (PreToolUse for non-MCP tools, the second
   // UserPromptSubmit): only a decision, no event.
@@ -737,4 +738,3 @@ function gateSessionIds(hookEvent) {
   const correlator = hookEvent.agent_id ? _subagentCorrelator(hookEvent) : null;
   return correlator ? [outer, _subagentChildSessionId(outer, correlator)] : [outer];
 }
-

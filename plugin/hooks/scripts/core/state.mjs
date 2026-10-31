@@ -490,7 +490,12 @@ function sleepSync(ms) {
 /**
  * Apply ``update(state)`` to the session's control state under its lock
  * and write the result atomically. Returns the state written, or the
- * state read when the directory cannot be written.
+ * state read when the directory cannot be written (an update that
+ * removes notices then removes nothing, so a notice can show again).
+ * When the lock is still held after CONTROL_LOCK_WAIT_MS the update runs
+ * unlocked, and a concurrent update can be lost. Taking over a stale
+ * lock is not exclusive either: two hooks that both find it stale can
+ * both take it; it needs a holder dead for LOCK_DIR_STALE_MS first.
  */
 export function updateControlState(sessionId, update) {
   const path = controlPath(sessionId);
@@ -509,8 +514,17 @@ export function updateControlState(sessionId, update) {
   try {
     const next = update(readControlState(sessionId));
     const partial = `${path}.${process.pid}.tmp`;
-    writeFileSync(partial, JSON.stringify(next));
-    renameSync(partial, path);
+    try {
+      writeFileSync(partial, JSON.stringify(next));
+      renameSync(partial, path);
+    } catch (err) {
+      try {
+        unlinkSync(partial);
+      } catch {
+        /* never written */
+      }
+      throw err;
+    }
     return next;
   } catch {
     return readControlState(sessionId);

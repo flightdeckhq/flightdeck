@@ -107,6 +107,8 @@ describe("hooks.json", () => {
       assert.equal(run({ CLAUDE_PLUGIN_OPTION_ENFORCEMENT: "false" }), "");
       assert.equal(run({ CLAUDE_PLUGIN_OPTION_ENFORCEMENT: "true" }), "RUN");
       assert.equal(run({ FLIGHTDECK_ENFORCEMENT: "1" }), "RUN");
+      assert.equal(run({ FLIGHTDECK_ENFORCEMENT: "TRUE" }), "RUN");
+      assert.equal(run({ FLIGHTDECK_ENFORCEMENT: "false" }), "");
       assert.equal(run({ FLIGHTDECK_ENFORCEMENT: "0", CLAUDE_PLUGIN_OPTION_ENFORCEMENT: "true" }), "");
     }
   });

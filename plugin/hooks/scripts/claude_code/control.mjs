@@ -5,6 +5,7 @@
 // prompts of a stopped session and show the user budget notices, and the
 // next regular hook sends the events the directive owes.
 
+import { boundedToken } from "../core/config.mjs";
 import { postEvent, postHeartbeat } from "../core/poster.mjs";
 import { clearControlState, readControlState, updateControlState } from "../core/state.mjs";
 
@@ -21,6 +22,16 @@ export const GATE_POLL_IDLE_MS = 5_000;
 // applied once; the server delivers each once, so this only guards a
 // replayed response.
 const MAX_APPLIED_IDS = 50;
+
+// A directive's reason and target model reach the user's terminal and the
+// event stream; anything longer than this, or with control characters
+// removed, is not a reason or a model id.
+const MAX_DIRECTIVE_TEXT_BYTES = 128;
+
+function directiveText(value) {
+  if (typeof value !== "string") return null;
+  return boundedToken(value.replace(/[\x00-\x1f\x7f]+/g, " "), MAX_DIRECTIVE_TEXT_BYTES);
+}
 
 const STOP_ACTIONS = new Set(["shutdown", "shutdown_flavor"]);
 const BUDGET_EXCEEDED = "token_budget_exceeded";
@@ -50,7 +61,7 @@ function noticeFor(directive) {
  */
 export function recordDirective(enforcement, sessionId, directive) {
   if (!enforcement || !sessionId || typeof directive?.action !== "string") return;
-  const id = typeof directive.id === "string" ? directive.id : "";
+  const id = directiveText(directive.id) ?? "";
   updateControlState(sessionId, (state) => {
     const applied = Array.isArray(state.applied) ? state.applied : [];
     if (id && applied.includes(id)) return state;
@@ -60,15 +71,15 @@ export function recordDirective(enforcement, sessionId, directive) {
       {
         id,
         action: directive.action,
-        reason: typeof directive.reason === "string" ? directive.reason : "",
-        degrade_to: typeof directive.degrade_to === "string" ? directive.degrade_to : null,
+        reason: directiveText(directive.reason) ?? "",
+        degrade_to: directiveText(directive.degrade_to),
       },
     ];
     if (STOP_ACTIONS.has(directive.action) && !state.stopped) {
       next.stopped = { reason: next.pending.at(-1).reason, at: new Date().toISOString() };
     }
     if (directive.action === "warn" || directive.action === "degrade") {
-      next.notices = [...(Array.isArray(state.notices) ? state.notices : []), noticeFor(directive)];
+      next.notices = [...(Array.isArray(state.notices) ? state.notices : []), noticeFor(next.pending.at(-1))];
     }
     return next;
   });
@@ -160,7 +171,12 @@ export function eventsForDirective(directive, basePayload) {
   }
 }
 
-/** Send, once, the events the session's recorded directives owe. */
+/**
+ * Send, once, the events the session's recorded directives owe. A
+ * directive whose event the server did not accept goes back to
+ * ``pending``, remembering the events already sent, so a later hook sends
+ * the rest in order and none twice.
+ */
 export async function sendPendingControlEvents({ cfg, sessionId, basePayload }) {
   if (!cfg.enforcement) return;
   if (!(readControlState(sessionId).pending?.length > 0)) return;
@@ -169,10 +185,20 @@ export async function sendPendingControlEvents({ cfg, sessionId, basePayload }) 
     taken = Array.isArray(state.pending) ? state.pending : [];
     return { ...state, pending: [] };
   });
+  const unsent = [];
   for (const directive of taken) {
+    const sent = new Set(Array.isArray(directive.sent) ? directive.sent : []);
     for (const payload of eventsForDirective(directive, basePayload)) {
-      await postEvent(cfg.server, cfg.token, sessionId, payload);
+      if (sent.has(payload.event_type)) continue;
+      if (!(await postEvent(cfg.server, cfg.token, sessionId, payload))) {
+        unsent.push({ ...directive, sent: [...sent] });
+        break;
+      }
+      sent.add(payload.event_type);
     }
+  }
+  if (unsent.length > 0) {
+    updateControlState(sessionId, (state) => ({ ...state, pending: [...unsent, ...(state.pending ?? [])] }));
   }
 }
 
@@ -231,4 +257,3 @@ export async function finishControl({ cfg, sessionId, basePayload }) {
   clearControlState(sessionId);
   return stopped;
 }
-

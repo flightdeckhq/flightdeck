@@ -210,38 +210,42 @@ export function serializeEvent(payload) {
 export async function postEvent(server, token, sessionId, payload) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  let response = null;
   try {
-    response = await fetch(`${server}/ingest/v1/events`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: serializeEvent(payload),
-      signal: controller.signal,
-    });
-  } catch (err) {
-    // Network-level failure: connection refused, DNS miss, abort
-    // timeout, fetch rejection. Log and return -- the next hook
-    // invocation is a fresh process and will try again.
-    logUnreachable(server, shortErrorFrom(err));
-    return false;
+    let response = null;
+    try {
+      response = await fetch(`${server}/ingest/v1/events`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`,
+        },
+        body: serializeEvent(payload),
+        signal: controller.signal,
+      });
+    } catch (err) {
+      // Network-level failure: connection refused, DNS miss, abort
+      // timeout, fetch rejection. Log and return -- the next hook
+      // invocation is a fresh process and will try again.
+      logUnreachable(server, shortErrorFrom(err));
+      return false;
+    }
+
+    // HTTP-level failure: auth, payload validation, server error.
+    // fetch() returns normally for these so the catch above does not
+    // fire. We do NOT retry within this hook -- one attempt per POST
+    // is the whole contract. A subsequent hook will try again when
+    // Claude Code invokes a fresh plugin process.
+    if (!response.ok) {
+      logUnreachable(server, `HTTP ${response.status}`);
+      return false;
+    }
+    // The body is read under the same timeout, and only when a directive
+    // sink is registered (enforcement on).
+    await deliverDirective(sessionId, response);
+    return true;
   } finally {
     clearTimeout(timeout);
   }
-
-  // HTTP-level failure: auth, payload validation, server error.
-  // fetch() returns normally for these so the catch above does not
-  // fire. We do NOT retry within this hook -- one attempt per POST
-  // is the whole contract. A subsequent hook will try again when
-  // Claude Code invokes a fresh plugin process.
-  if (!response.ok) {
-    logUnreachable(server, `HTTP ${response.status}`);
-    return false;
-  }
-  await deliverDirective(sessionId, response);
-  return true;
 }
 
 // ---------------------------------------------------------------------
@@ -258,14 +262,24 @@ export function setDirectiveSink(sink) {
   directiveSink = sink;
 }
 
+// A response envelope is a few hundred bytes; a body larger than this is
+// not one, and is not read.
+const MAX_RESPONSE_BYTES = 64 * 1024;
+
 async function deliverDirective(sessionId, response) {
+  if (!directiveSink) return;
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) return;
   let directive = null;
   try {
-    directive = (await response.json())?.directive ?? null;
+    const text = await response.text();
+    if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) return;
+    directive = JSON.parse(text)?.directive ?? null;
   } catch {
+    // A body cut off by the timeout, or one that is not JSON.
     return;
   }
-  if (!directive || typeof directive !== "object" || !directiveSink) return;
+  if (!directive || typeof directive !== "object" || Array.isArray(directive)) return;
   try {
     await directiveSink(sessionId, directive);
   } catch (err) {

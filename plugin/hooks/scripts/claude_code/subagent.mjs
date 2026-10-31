@@ -10,6 +10,7 @@ import { PLUGIN_VERSION } from "../core/config.mjs";
 import { postEvent } from "../core/poster.mjs";
 import { claimSessionStart, isSessionStarted, markSessionStarted, releaseSessionStart } from "../core/state.mjs";
 import { uuid5 } from "../uuid5.mjs";
+import { finishControl } from "./control.mjs";
 import { flushPostCallTurns } from "./post_call.mjs";
 import { readTurns } from "./transcript.mjs";
 
@@ -693,6 +694,17 @@ export async function emitSubagentEvent({
   }
 
   if (hookName !== "SubagentStart") {
+    // A subagent a directive stopped has ended with that stop's own
+    // session_end; send what it still owes and drop its control state.
+    const childBase = {
+      ...basePayload,
+      session_id: childSessionId,
+      parent_session_id: outerSessionId,
+      agent_role: role || null,
+      agent_id: childAgentId,
+      agent_name: childAgentName,
+    };
+    if (await finishControl({ cfg, sessionId: childSessionId, basePayload: childBase })) return;
     await postEvent(cfg.server, cfg.token, childSessionId, payload);
     return;
   }

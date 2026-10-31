@@ -31,6 +31,11 @@ export const EVENT_MAP = {
   Notification: "session_signal",
   PermissionRequest: "session_signal",
   PermissionDenied: "session_signal",
+  UserPromptExpansion: "session_signal",
+  TaskCreated: "session_signal",
+  TaskCompleted: "session_signal",
+  CwdChanged: "session_signal",
+  ConfigChange: "session_signal",
 };
 
 // The table the Claude Code dispatcher resolves hook names through.

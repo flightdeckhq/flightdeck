@@ -14,6 +14,7 @@ import {
   pruneStateDir,
   readCachedModel,
   recordModelSwitch,
+  swapSessionCwd,
 } from "../core/state.mjs";
 import { clearSessionPolicyCache } from "../mcp_policy.mjs";
 import { safeCollectContext } from "./context.mjs";
@@ -282,6 +283,9 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
     const hookModel = isRealModel(hookEvent.model) ? hookEvent.model : null;
     const model = hookModel || (isRealModel(turn?.model) ? turn.model : null);
     cacheSessionModel(sessionId, model);
+    // The directory the session starts in, which a later hook's cwd is
+    // compared with to report a change.
+    swapSessionCwd(sessionId, hookEvent.cwd);
     // Decide the billing mode and platform here, afresh on every start
     // or resume, so later hooks read them from the cache.
     resolveSessionEndpoint(sessionId, { refresh: true });
@@ -366,13 +370,41 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   // backstop so an initial hook that is NOT SessionStart still produces
   // a session row -- except a hook that started after this run's
   // SessionEnd, whose session_start would reopen the ended session.
-  if (!sessionHasEnded(hookEvent, outerSessionId)) {
+  const ended = sessionHasEnded(hookEvent, outerSessionId);
+  if (!ended) {
     await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, {
       model: isRealModel(hookEvent.model) ? hookEvent.model : null,
       claudeCodeVersion: hookEvent.version || null,
       capturePrompts: cfg.capturePrompts,
       claudeCodeSessionId: hookEvent.session_id,
     });
+  }
+
+  // A change of working directory. Claude Code runs a plugin's
+  // CwdChanged hook only when the user's settings register one too, so
+  // each hook from here on compares the cwd it runs in with the last one
+  // recorded and reports a difference as cwd_changed. The CwdChanged
+  // hook, when it does run, records through the same file, so a change
+  // is reported once, by whichever hook records it first. An ended
+  // session records nothing: SessionEnd removed its file. The record is
+  // written before the POST, so a change whose POST fails is not
+  // reported again.
+  const currentCwd = hookName === "CwdChanged" ? hookEvent.new_cwd : hookEvent.cwd;
+  if (hookName === "CwdChanged" && (typeof currentCwd !== "string" || currentCwd === "")) return;
+  if (!ended) {
+    const { changed, previous } = swapSessionCwd(sessionId, currentCwd);
+    if (hookName === "CwdChanged") {
+      // A hook in the new directory already reported this change.
+      if (!changed) return;
+    } else if (changed && previous !== null) {
+      const payload = buildSignalEvent({
+        hookName: "CwdChanged",
+        hookEvent: { old_cwd: previous, new_cwd: currentCwd },
+        basePayload,
+        capturePrompts: cfg.capturePrompts,
+      });
+      await postEvent(cfg.server, cfg.token, sessionId, payload);
+    }
   }
 
   // Stop: every un-emitted LLM turn in the transcript becomes a
@@ -467,9 +499,10 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   }
 
   // PreCompact, PostCompact, PostModelSwitch, Notification,
-  // PermissionRequest, PermissionDenied: a change in the session,
-  // reported as a session_signal. A model switch also becomes the model
-  // later pre_call events are labelled with.
+  // PermissionRequest, PermissionDenied, UserPromptExpansion,
+  // TaskCreated, TaskCompleted, CwdChanged, ConfigChange: a change in
+  // the session, reported as a session_signal. A model switch also
+  // becomes the model later pre_call events are labelled with.
   if (SIGNAL_HOOKS.includes(hookName)) {
     const payload = buildSignalEvent({
       hookName,

@@ -33,6 +33,11 @@ const EXPECTED_TIMEOUTS = {
   Notification: 15,
   PermissionRequest: 15,
   PermissionDenied: 15,
+  UserPromptExpansion: 15,
+  TaskCreated: 15,
+  TaskCompleted: 15,
+  CwdChanged: 15,
+  ConfigChange: 15,
   SubagentStart: 15,
 };
 
@@ -92,6 +97,11 @@ describe("hooks.json", () => {
       "Notification",
       "PermissionRequest",
       "PermissionDenied",
+      "UserPromptExpansion",
+      "TaskCreated",
+      "TaskCompleted",
+      "CwdChanged",
+      "ConfigChange",
       "SubagentStart",
       "SubagentStop",
     ];

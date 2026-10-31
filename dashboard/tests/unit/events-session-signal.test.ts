@@ -91,6 +91,50 @@ describe("session_signal", () => {
     ).toBe("permission denied · Bash · [Irreversible Local Destruction]");
   });
 
+  it("names commands, tasks, directory and settings changes in the feed line", () => {
+    expect(getEventDetail(signal("command_expanded", { expansion_type: "slash_command", command_name: "review" }))).toBe(
+      "command · /review",
+    );
+    expect(getEventDetail(signal("command_expanded", { expansion_type: "slash_command", command_name: "/review" }))).toBe(
+      "command · /review",
+    );
+    expect(
+      getEventDetail(signal("command_expanded", { expansion_type: "mcp_prompt", command_name: "mcp__docs__summarise" })),
+    ).toBe("MCP prompt · /mcp__docs__summarise");
+    expect(getEventDetail(signal("command_expanded"))).toBe("command");
+    expect(getEventDetail(signal("task_created", { task_id: "3" }))).toBe("task created");
+    expect(getEventDetail(signal("task_completed", { task_id: "3", teammate_name: "tester" }))).toBe(
+      "task completed · tester",
+    );
+    expect(getEventDetail(signal("cwd_changed", { old_cwd: "/repo", new_cwd: "/repo/api" }))).toBe("cwd → /repo/api");
+    expect(getEventDetail(signal("cwd_changed"))).toBe("cwd changed");
+    expect(getEventDetail(signal("config_changed", { source: "project_settings" }))).toBe(
+      "settings changed · project settings",
+    );
+    expect(getEventDetail(signal("config_changed"))).toBe("settings changed");
+  });
+
+  it("labels the command, task and directory metadata", () => {
+    expect(
+      getSummaryRows(signal("command_expanded", { expansion_type: "slash_command", command_name: "review", command_source: "plugin" })),
+    ).toEqual([
+      ["Signal", "command expanded"],
+      ["Expansion", "slash_command"],
+      ["Command name", "review"],
+      ["Command source", "plugin"],
+    ]);
+    expect(getSummaryRows(signal("task_created", { task_id: "3", teammate_name: "tester" }))).toEqual([
+      ["Signal", "task created"],
+      ["Task id", "3"],
+      ["Teammate", "tester"],
+    ]);
+    expect(getSummaryRows(signal("cwd_changed", { old_cwd: "/repo", new_cwd: "/repo/api" }))).toEqual([
+      ["Signal", "cwd changed"],
+      ["From directory", "/repo"],
+      ["To directory", "/repo/api"],
+    ]);
+  });
+
   it("labels the permission metadata", () => {
     expect(
       getSummaryRows(

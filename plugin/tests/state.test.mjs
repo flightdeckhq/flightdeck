@@ -35,6 +35,7 @@ import {
   readGitCache,
   readOrCreateSessionMarker,
   stateDir,
+  swapSessionCwd,
   writeGitCache,
 } from "../hooks/scripts/core/state.mjs";
 import { sessionGitFields } from "../hooks/scripts/claude_code/context.mjs";
@@ -345,5 +346,38 @@ describe("a real SessionStart hook", () => {
     assert.ok(names.includes("last-prune.txt"), "prune ran");
     assert.equal(existsSync(stale), false, "the stale marker was pruned");
     assert.equal(existsSync(join(env.TMPDIR, STATE_DIR_NAME)), false, "nothing written under $TMPDIR");
+  });
+});
+
+describe("swapSessionCwd", () => {
+  beforeEach(() => {
+    process.env.CLAUDE_PLUGIN_DATA = join(root, `cwd-${randomUUID()}`);
+  });
+
+  it("reports a change once, against the directory recorded before", () => {
+    assert.deepEqual(swapSessionCwd("s1", "/repo"), { changed: true, previous: null });
+    assert.deepEqual(swapSessionCwd("s1", "/repo"), { changed: false, previous: "/repo" });
+    assert.deepEqual(swapSessionCwd("s1", "/repo/api"), { changed: true, previous: "/repo" });
+    assert.deepEqual(swapSessionCwd("s1", ""), { changed: false, previous: null });
+    assert.deepEqual(swapSessionCwd("s1", undefined), { changed: false, previous: null });
+    assert.equal(readFileSync(join(stateDir(), "cwd-s1.txt"), "utf8"), "/repo/api");
+  });
+
+  it("records nothing while another hook holds the lock, and takes over a stale lock", () => {
+    swapSessionCwd("s2", "/repo");
+    const lock = join(stateDir(), "cwd-s2.txt.lock");
+    mkdirSync(lock);
+    assert.deepEqual(swapSessionCwd("s2", "/repo/api"), { changed: false, previous: null });
+    assert.equal(readFileSync(join(stateDir(), "cwd-s2.txt"), "utf8"), "/repo");
+    ageFile(lock, 60_000);
+    assert.deepEqual(swapSessionCwd("s2", "/repo/api"), { changed: true, previous: "/repo" });
+    assert.equal(existsSync(lock), false);
+  });
+
+  it("is removed with the session's other markers", () => {
+    swapSessionCwd("s3", "/repo");
+    assert.ok(existsSync(join(stateDir(), "cwd-s3.txt")));
+    clearSessionCacheFiles({ session_id: "native-s3" }, "s3");
+    assert.equal(existsSync(join(stateDir(), "cwd-s3.txt")), false);
   });
 });

@@ -1,7 +1,8 @@
 // Claude Code hooks that report a change in the session rather than a
-// call (a compaction, a model switch) become session_signal events
-// (ARCHITECTURE.md, session_signal): a signal name, a small metadata
-// object, and the hook's text as content only while prompt capture is on.
+// call (a compaction, a model switch, a slash command, a task) become
+// session_signal events (ARCHITECTURE.md, session_signal): a signal
+// name, a small metadata object, and the hook's text as content only
+// while prompt capture is on.
 
 import { boundedToken, truncateUtf8 } from "../core/config.mjs";
 import { sanitizeToolInput } from "./tools.mjs";
@@ -14,9 +15,11 @@ export const MAX_SIGNAL_DATA_VALUE_BYTES = 256;
 export const SIGNAL_CONTENT_PROVIDER = "flightdeck-signal";
 
 // Each hook's signal name, the metadata it keeps, and the hook fields
-// that are content. ``toolInput`` marks a hook about a tool call: its
-// tool's sanitised arguments join signal_data while tool-input capture
-// is on, and an MCP tool's server name joins it always.
+// that are content. ``paths`` are metadata fields holding a path, which
+// are cut to the signal_data bound rather than dropped. ``toolInput``
+// marks a hook about a tool call: its tool's sanitised arguments join
+// signal_data while tool-input capture is on, and an MCP tool's server
+// name joins it always.
 const SIGNALS = {
   PreCompact: {
     signal: "context_compaction_started",
@@ -60,6 +63,35 @@ const SIGNALS = {
     texts: [],
     toolInput: true,
   },
+  // The hook's ``prompt`` stays out: the prompt the user typed is the
+  // turn's pre_call content already.
+  UserPromptExpansion: {
+    signal: "command_expanded",
+    fields: ["expansion_type", "command_name", "command_source"],
+    texts: ["command_args"],
+  },
+  TaskCreated: {
+    signal: "task_created",
+    fields: ["task_id", "teammate_name"],
+    texts: ["task_subject", "task_description"],
+  },
+  TaskCompleted: {
+    signal: "task_completed",
+    fields: ["task_id", "teammate_name"],
+    texts: ["task_subject", "task_description"],
+  },
+  CwdChanged: {
+    signal: "cwd_changed",
+    fields: [],
+    paths: ["old_cwd", "new_cwd"],
+    texts: [],
+  },
+  ConfigChange: {
+    signal: "config_changed",
+    fields: ["source"],
+    paths: ["file_path"],
+    texts: [],
+  },
 };
 
 /** The hook names reported as session_signal events. */
@@ -77,6 +109,17 @@ function signalValue(value) {
 }
 
 /**
+ * A string cut to the signal_data bound, with line breaks and tabs as
+ * spaces, or undefined when nothing printable is left.
+ */
+function cutValue(value) {
+  if (typeof value !== "string") return undefined;
+  const oneLine = value.replace(/[\x00-\x1f\x7f]+/g, " ");
+  const bounded = signalValue(truncateUtf8(oneLine, MAX_SIGNAL_DATA_VALUE_BYTES));
+  return typeof bounded === "string" ? bounded : undefined;
+}
+
+/**
  * The session_signal payload for one of the SIGNAL_HOOKS. ``model`` is
  * the switched-to model for model_switched and null otherwise, so only
  * a model switch moves the session's model.
@@ -86,6 +129,10 @@ export function buildSignalEvent({ hookName, hookEvent, basePayload, captureProm
   const signalData = {};
   for (const field of spec.fields) {
     const value = signalValue(hookEvent[field]);
+    if (value !== undefined) signalData[field] = value;
+  }
+  for (const field of spec.paths ?? []) {
+    const value = cutValue(hookEvent[field]);
     if (value !== undefined) signalData[field] = value;
   }
   if (spec.toolInput) {
@@ -100,9 +147,8 @@ export function buildSignalEvent({ hookName, hookEvent, basePayload, captureProm
     const isMcp = typeof server === "string" || String(hookEvent.tool_name ?? "").startsWith("mcp__");
     const safe = captureToolInputs && !isMcp ? sanitizeToolInput(hookEvent.tool_input) : null;
     for (const [key, value] of Object.entries(safe ?? {})) {
-      const oneLine = String(value).replace(/[\x00-\x1f\x7f]+/g, " ");
-      const bounded = signalValue(truncateUtf8(oneLine, MAX_SIGNAL_DATA_VALUE_BYTES));
-      if (typeof bounded === "string") signalData[key] = bounded;
+      const bounded = cutValue(String(value));
+      if (bounded !== undefined) signalData[key] = bounded;
     }
   }
   const texts = {};

@@ -2,7 +2,7 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -38,6 +38,7 @@ import {
 import { deriveAgentId } from "../hooks/scripts/agent_id.mjs";
 import { DEFAULT_SERVER, DEFAULT_TOKEN } from "../hooks/scripts/core/config.mjs";
 import { MAX_EVENT_BODY_BYTES } from "../hooks/scripts/core/poster.mjs";
+import { stateDir } from "../hooks/scripts/core/state.mjs";
 import {
   readSessionPolicyCache,
   writeSessionPolicyCache,
@@ -505,6 +506,119 @@ describe("observe_cli.mjs", () => {
     assert.equal(sent[0].signal, "permission_requested");
     assert.deepEqual(sent[0].signal_data, { tool_name: "Bash", command: "rm -rf node_modules" });
     assert.deepEqual(sent[1].signal_data, { tool_name: "Bash" });
+  });
+
+  it("reports slash commands, tasks, directory and settings changes as session_signal events", async () => {
+    const run = async (hookEvent, capturePrompts) => {
+      const before = capture.bodies().length;
+      const result = await runScript(JSON.stringify({ session_id: "sess-signal-2", ...hookEvent }), {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        FLIGHTDECK_CAPTURE_PROMPTS: capturePrompts ? "true" : "false",
+        CLAUDE_SESSION_ID: "sess-signal-2",
+      });
+      assert.equal(result.code, 0, result.stderr);
+      return capture.bodies().slice(before).find((b) => b.event_type === "session_signal");
+    };
+    const expansion = {
+      hook_event_name: "UserPromptExpansion",
+      expansion_type: "slash_command",
+      command_name: "review",
+      command_source: "plugin",
+      command_args: "the auth module",
+      prompt: "/review the auth module",
+    };
+    const expanded = await run(expansion, true);
+    assert.equal(expanded.signal, "command_expanded");
+    assert.deepEqual(expanded.signal_data, { expansion_type: "slash_command", command_name: "review", command_source: "plugin" });
+    assert.deepEqual(expanded.content.response, { command_args: "the auth module" });
+    const expandedOff = await run(expansion, false);
+    assert.equal(expandedOff.has_content, false);
+    assert.ok(!JSON.stringify(expandedOff).includes("auth module"));
+
+    const task = await run(
+      { hook_event_name: "TaskCompleted", task_id: "7", task_subject: "Write tests", teammate_name: "tester" },
+      true,
+    );
+    assert.equal(task.signal, "task_completed");
+    assert.deepEqual(task.signal_data, { task_id: "7", teammate_name: "tester" });
+    assert.deepEqual(task.content.response, { task_subject: "Write tests" });
+
+    const cwd = await run({ hook_event_name: "CwdChanged", old_cwd: "/repo", new_cwd: "/repo/api" }, false);
+    assert.equal(cwd.signal, "cwd_changed");
+    assert.deepEqual(cwd.signal_data, { old_cwd: "/repo", new_cwd: "/repo/api" });
+
+    const config = await run(
+      { hook_event_name: "ConfigChange", source: "project_settings", file_path: "/repo/.claude/settings.json" },
+      false,
+    );
+    assert.equal(config.signal, "config_changed");
+    assert.deepEqual(config.signal_data, { source: "project_settings", file_path: "/repo/.claude/settings.json" });
+  });
+
+  it("reports a working-directory change once, whether a hook's cwd or the CwdChanged hook shows it first", async () => {
+    const run = async (hookEvent) => {
+      const before = capture.bodies().length;
+      const result = await runScript(JSON.stringify({ session_id: "sess-cwd-1", ...hookEvent }), {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: "sess-cwd-1",
+      });
+      assert.equal(result.code, 0, result.stderr);
+      return capture.bodies().slice(before).filter((b) => b.signal === "cwd_changed");
+    };
+    assert.deepEqual(await run({ hook_event_name: "SessionStart", source: "startup", cwd: "/repo" }), []);
+    assert.deepEqual(await run({ hook_event_name: "Notification", notification_type: "idle_prompt", cwd: "/repo" }), []);
+
+    const detected = await run({ hook_event_name: "Notification", notification_type: "idle_prompt", cwd: "/repo/api" });
+    assert.equal(detected.length, 1);
+    assert.deepEqual(detected[0].signal_data, { old_cwd: "/repo", new_cwd: "/repo/api" });
+
+    // Claude Code's own hook for the change a hook already reported.
+    assert.deepEqual(
+      await run({ hook_event_name: "CwdChanged", old_cwd: "/repo", new_cwd: "/repo/api", cwd: "/repo/api" }),
+      [],
+    );
+
+    // A change no hook has seen yet is reported by the CwdChanged hook,
+    // and the next hook in that directory reports nothing more.
+    const hooked = await run({ hook_event_name: "CwdChanged", old_cwd: "/repo/api", new_cwd: "/tmp", cwd: "/tmp" });
+    assert.equal(hooked.length, 1);
+    assert.deepEqual(hooked[0].signal_data, { old_cwd: "/repo/api", new_cwd: "/tmp" });
+    assert.deepEqual(await run({ hook_event_name: "Notification", notification_type: "idle_prompt", cwd: "/tmp" }), []);
+  });
+
+  it("records no directory for a hook without one, and reports nothing for a CwdChanged hook without new_cwd", async () => {
+    const sid = "sess-cwd-missing-1";
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: sid,
+    };
+    const cwdFile = join(stateDir({ ...process.env, CLAUDE_PLUGIN_DATA: "" }), `cwd-${sid}.txt`);
+    const before = capture.bodies().length;
+    await runScript(JSON.stringify({ hook_event_name: "Notification", notification_type: "idle_prompt", session_id: sid }), env);
+    assert.equal(existsSync(cwdFile), false);
+    await runScript(JSON.stringify({ hook_event_name: "CwdChanged", session_id: sid, old_cwd: "/x", new_cwd: "" }), env);
+    assert.equal(capture.bodies().slice(before).filter((b) => b.signal === "cwd_changed").length, 0);
+  });
+
+  it("SessionEnd removes the session's directory record and a later hook does not recreate it", async () => {
+    const sid = "sess-cwd-end-1";
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: sid,
+    };
+    const cwdFile = join(stateDir({ ...process.env, CLAUDE_PLUGIN_DATA: "" }), `cwd-${sid}.txt`);
+    await runScript(JSON.stringify({ hook_event_name: "SessionStart", session_id: sid, source: "startup", cwd: "/end" }), env);
+    assert.equal(readFileSync(cwdFile, "utf8"), "/end");
+    await runScript(JSON.stringify({ hook_event_name: "SessionEnd", session_id: sid, reason: "other", cwd: "/end" }), env);
+    assert.equal(existsSync(cwdFile), false);
+    const before = capture.bodies().length;
+    await runScript(JSON.stringify({ hook_event_name: "Notification", notification_type: "idle_prompt", session_id: sid, cwd: "/elsewhere" }), env);
+    assert.equal(existsSync(cwdFile), false);
+    assert.equal(capture.bodies().slice(before).filter((b) => b.signal === "cwd_changed").length, 0);
   });
 
   it("labels the next pre_call with the model a switch moved to, not the transcript's older one", async () => {
@@ -1950,7 +2064,19 @@ describe("observe_cli helpers", () => {
       assert.equal(EVENT_MAP.Stop, "post_call");
       assert.equal(EVENT_MAP.SessionEnd, "session_end");
       assert.equal(EVENT_MAP.StopFailure, "llm_error");
-      for (const hook of ["PreCompact", "PostCompact", "PostModelSwitch", "Notification", "PermissionRequest", "PermissionDenied"]) {
+      for (const hook of [
+        "PreCompact",
+        "PostCompact",
+        "PostModelSwitch",
+        "Notification",
+        "PermissionRequest",
+        "PermissionDenied",
+        "UserPromptExpansion",
+        "TaskCreated",
+        "TaskCompleted",
+        "CwdChanged",
+        "ConfigChange",
+      ]) {
         assert.equal(EVENT_MAP[hook], "session_signal", hook);
       }
     });

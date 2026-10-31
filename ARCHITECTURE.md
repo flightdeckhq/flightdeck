@@ -489,7 +489,7 @@ flightdeck/
 │   │       │   ├── transcript.mjs        # Transcript JSONL reader: per-call turns, tokens, latency
 │   │       │   ├── post_call.mjs         # Session billing endpoint, cost fields, deduplicated post_call flush
 │   │       │   ├── stop_failure.mjs      # StopFailure -> llm_error: Claude Code's API-error codes in the shared taxonomy
-│   │       │   ├── signals.mjs           # Compaction, model-switch, notification and permission hooks -> session_signal
+│   │       │   ├── signals.mjs           # Compaction, model-switch, notification, permission, command, task, cwd and config hooks -> session_signal
 │   │       │   ├── tools.mjs             # Tool-input sanitiser, tool duration, tool error block
 │   │       │   ├── mcp.mjs               # MCP tool-name parsing, server fingerprints, mcp_tool_call emission
 │   │       │   ├── mcp_policy_dispatch.mjs  # MCP policy at SessionStart, PreToolUse decision, PostToolUse approval
@@ -1310,7 +1310,7 @@ Either case writes one warning line to the hook's stderr.
 
 ### Hook configuration
 
-`plugin/hooks/hooks.json` registers the sixteen hooks, each running
+`plugin/hooks/hooks.json` registers the twenty-one hooks, each running
 `observe_cli.mjs`. Every hook but `SessionEnd` sets an explicit
 `timeout` (seconds); Claude Code's default for a command hook is 600
 (30 for `UserPromptSubmit`), so a hook stuck on a wedged CLI or an
@@ -1324,7 +1324,7 @@ Each value is sized for the hook's normal worst case:
 | `PreToolUse` | 10 | local reads only (the policy cache and remembered decisions) |
 | `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure` | 30 | the transcript flush: up to two `claude auth status` runs (5 s each) for a session whose billing mode is not settled, then 2 s per unsent turn |
 | `SubagentStop` | 30 | the same flush over the subagent's transcript, then the child `session_end` |
-| `PreCompact`, `PostCompact`, `PostModelSwitch`, `Notification`, `PermissionRequest`, `PermissionDenied`, `SubagentStart` | 15 | one or two POSTs |
+| `PreCompact`, `PostCompact`, `PostModelSwitch`, `Notification`, `PermissionRequest`, `PermissionDenied`, `UserPromptExpansion`, `TaskCreated`, `TaskCompleted`, `CwdChanged`, `ConfigChange`, `SubagentStart` | 15 | one or two POSTs |
 
 Claude Code cancels a synchronous hook that runs out of time and carries on, as for
 any non-blocking error. What the hook had not done by then is lost or
@@ -1348,9 +1348,10 @@ tool call. The other tool hooks match every tool.
 The hooks that only report run with `async: true`: `UserPromptSubmit`,
 `PostToolUse` for every tool but MCP tools (matcher `^(?!mcp__)`),
 `PostToolUseFailure`, `Stop`, `StopFailure`, `Notification`,
-`PermissionRequest`, `PermissionDenied`, `SubagentStart` and
-`SubagentStop`. Claude
-Code starts them and carries on without waiting, which saves the roughly
+`PermissionRequest`, `PermissionDenied`, `UserPromptExpansion`,
+`TaskCreated`, `TaskCompleted`, `CwdChanged`, `ConfigChange`,
+`SubagentStart` and `SubagentStop`. Claude Code starts them and
+carries on without waiting, which saves the roughly
 200 ms a hook process takes on every prompt, tool call and turn end.
 These stay synchronous:
 
@@ -5546,7 +5547,8 @@ Sensor's acknowledgement / execution response. Fields:
 ### `session_signal`
 
 A change in a session that is not a model call, a tool call or a policy
-decision: a context compaction, a model switch. One event type carries
+decision: a context compaction, a model switch, a permission prompt, a
+slash command, a task, a directory or settings change. One event type carries
 all of them, named by `signal`, so a client that reports a new kind of
 change adds a signal name rather than an event type. The Claude Code
 plugin emits it from its hooks.
@@ -5571,13 +5573,42 @@ plugin emits it from its hooks.
 | `notification` | `Notification` | `notification_type` (`permission_prompt`, `idle_prompt`, `auth_success`, `elicitation_dialog`, `agent_needs_input`, `quota_auto_resume_fired`, and the rest Claude Code sends) | `title`, `message` |
 | `permission_requested` | `PermissionRequest` | `tool_name`, `mcp_server` for an MCP tool, and the tool's sanitised input fields | none |
 | `permission_denied` | `PermissionDenied` (auto mode) | `tool_name`, `tool_use_id`, `reason` (the classifier's rule, such as `[Data Exfiltration]`), `mcp_server` for an MCP tool, and the tool's sanitised input fields | none |
+| `command_expanded` | `UserPromptExpansion` | `expansion_type` (`slash_command`, `mcp_prompt`), `command_name`, `command_source` | `command_args` |
+| `task_created` | `TaskCreated` | `task_id`, `teammate_name` | `task_subject`, `task_description` |
+| `task_completed` | `TaskCompleted` | `task_id`, `teammate_name` | `task_subject`, `task_description` |
+| `cwd_changed` | `CwdChanged`, or the first other hook to run in a new directory | `old_cwd`, `new_cwd` | none |
+| `config_changed` | `ConfigChange` | `source` (`user_settings`, `project_settings`, `local_settings`, `policy_settings`, `skills`), `file_path` | none |
 
 The sanitised input fields are the whitelist `tool_call` events use
 (`file_path`, `command`, `query`, `pattern`, `prompt`; see Content
 Capture), with line breaks and tabs turned into spaces and each cut
 to 256 bytes, sent only while `captureToolInputs` is on and only for
 built-in tools: an MCP tool's arguments stay in its `mcp_tool_call`
-content.
+content. The directory and settings-file paths are metadata, like the
+session's `working_dir`, and are cut to 256 bytes rather than dropped.
+The expansion hook's `prompt` is not repeated in the signal: the
+turn's own events carry it (its `pre_call`, and the user message in
+its `post_call` content).
+
+Claude Code runs a plugin's `CwdChanged` hook only when the user's
+settings register a `CwdChanged` hook too, so the plugin also detects a
+change itself. It keeps the directory each session's hooks last ran in,
+set at `SessionStart`. Every hook except `SessionStart`, `SessionEnd`,
+`SubagentStart`, `SubagentStop` and `PreToolUse` compares its `cwd`
+with it, and one whose `cwd` differs reports `cwd_changed` before its
+own event; a subagent's hooks compare against the subagent session's
+own record. The compare and the write happen under a lock, so of
+several hooks running at once in the new directory exactly one reports
+the change, and the `CwdChanged` hook records through the same state,
+so a change is reported once. The record is written before the POST:
+a change whose POST fails is not reported again. A hook that started
+before a `cd` and runs after a later one has recorded the new
+directory reports a change back to its own `cwd`.
+
+The plugin registers the compaction and model-switch hooks
+synchronously and the rest asynchronously. An asynchronous hook
+cannot answer a permission prompt or block an expansion, a task or a
+settings change, so the plugin only observes them.
 
 The worker stores the event and advances the session's `last_seen_at`.
 A `model_switched` signal carries the new model as `model`, which the

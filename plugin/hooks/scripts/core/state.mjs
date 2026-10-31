@@ -22,6 +22,7 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  rmdirSync,
   statSync,
   unlinkSync,
   utimesSync,
@@ -239,14 +240,15 @@ export function readOrCreateSessionMarker(markerKey) {
 
 /**
  * Delete the session marker under ``markerKey`` and, when
- * ``sessionId`` is given, that session's started and endpoint markers.
+ * ``sessionId`` is given, that session's started, endpoint and
+ * working-directory markers.
  * Best-effort: ENOENT is fine, other errors log and continue.
  */
 export function clearSessionMarkers(markerKey, sessionId = "", { recordEnded = false } = {}) {
   const dir = stateDir();
   if (sessionId && recordEnded) writeEndedMarker(markerKey, sessionId);
   const targets = [`session-${markerKey}.txt`, `git-${markerKey}.json`];
-  if (sessionId) targets.push(`started-${sessionId}.txt`, `endpoint-${sessionId}.json`);
+  if (sessionId) targets.push(`started-${sessionId}.txt`, `endpoint-${sessionId}.json`, `cwd-${sessionId}.txt`);
   for (const name of targets) {
     try {
       unlinkSync(join(dir, name));
@@ -352,6 +354,78 @@ export function readCachedModel(sessionId) {
     return readFileSync(modelCachePath(sessionId), "utf8").trim() || null;
   } catch {
     return null;
+  }
+}
+
+// The working directory a session's hooks last ran in. Claude Code runs
+// a plugin's CwdChanged hook only when the user's settings register one
+// too, so each hook compares its cwd with this one to report a change.
+function cwdPath(sessionId) {
+  return join(stateDir(), `cwd-${sessionId}.txt`);
+}
+
+// Async hooks run concurrently (parallel tool calls), so the compare and
+// the write happen under a lock directory: mkdir either creates it or
+// fails, for exactly one of two racing hooks. A lock older than this is
+// left by a hook that died holding it; a swap is two small file
+// operations, so a live holder never comes close.
+const CWD_LOCK_STALE_MS = 5_000;
+
+function takeCwdLock(lockPath) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      mkdirSync(lockPath);
+      return true;
+    } catch (err) {
+      if (err?.code !== "EEXIST") return false;
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs < CWD_LOCK_STALE_MS) return false;
+        rmdirSync(lockPath);
+      } catch {
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
+/**
+ * Record ``cwd`` as the session's working directory. Returns
+ * ``{changed, previous}``: ``changed`` is true for exactly one hook per
+ * change, the one that recorded it, and ``previous`` is the directory
+ * recorded before (null when there was none). A missing ``cwd``, a
+ * failed lock (another hook is recording) or an unwritable state
+ * directory records nothing and reports no change.
+ */
+export function swapSessionCwd(sessionId, cwd) {
+  const none = { changed: false, previous: null };
+  if (typeof cwd !== "string" || cwd === "") return none;
+  const path = cwdPath(sessionId);
+  const lockPath = `${path}.lock`;
+  try {
+    mkdirOwnerOnly(stateDir());
+  } catch {
+    return none;
+  }
+  if (!takeCwdLock(lockPath)) return none;
+  try {
+    let previous = null;
+    try {
+      previous = readFileSync(path, "utf8") || null;
+    } catch {
+      /* none recorded yet */
+    }
+    if (cwd === previous) return { changed: false, previous };
+    writeFileSync(path, cwd);
+    return { changed: true, previous };
+  } catch {
+    return none;
+  } finally {
+    try {
+      rmdirSync(lockPath);
+    } catch {
+      /* removed as stale by another hook */
+    }
   }
 }
 

@@ -165,6 +165,40 @@ def _shift_timestamp_ms(offset_sec: float) -> str:
 HISTORY_PADDING_EVENTS = 25
 
 
+# The seeded session_signal extras that carry no captured text: the two
+# with their own branch below, then the ones whose fields are listed here.
+SIGNALS_WITHOUT_TEXT_DATA: dict[str, dict[str, Any]] = {
+    "signal_command_expanded": {
+        "signal": "command_expanded",
+        "signal_data": {
+            "expansion_type": "slash_command",
+            "command_name": "review",
+            "command_source": "plugin",
+        },
+    },
+    "signal_task_completed": {
+        "signal": "task_completed",
+        "signal_data": {"task_id": "e2e-task-1", "teammate_name": "e2e-tester"},
+    },
+    "signal_cwd_changed": {
+        "signal": "cwd_changed",
+        "signal_data": {"old_cwd": "/work/e2e", "new_cwd": "/work/e2e/api"},
+    },
+    "signal_config_changed": {
+        "signal": "config_changed",
+        "signal_data": {
+            "source": "project_settings",
+            "file_path": "/work/e2e/.claude/settings.json",
+        },
+    },
+}
+SIGNALS_WITHOUT_TEXT = (
+    "signal_notification",
+    "signal_permission_denied",
+    *SIGNALS_WITHOUT_TEXT_DATA,
+)
+
+
 def _post_session_events(
     *,
     agent_cfg: dict[str, Any],
@@ -569,11 +603,15 @@ def _post_session_events(
                     )
                 )
                 posted += 1
-        elif extra in ("signal_notification", "signal_permission_denied"):
-            # A Claude Code notification and an auto-mode denial as
-            # session_signal events. T126 reads their feed lines.
-            if extra == "signal_notification":
-                signal_fields_b: dict[str, Any] = {
+        elif extra in SIGNALS_WITHOUT_TEXT:
+            # A Claude Code notification, an auto-mode denial, a slash
+            # command, a finished task, a directory change and a settings
+            # change as session_signal events, seeded without their text.
+            # T126 reads their feed lines.
+            if extra in SIGNALS_WITHOUT_TEXT_DATA:
+                signal_fields_b: dict[str, Any] = dict(SIGNALS_WITHOUT_TEXT_DATA[extra])
+            elif extra == "signal_notification":
+                signal_fields_b = {
                     "signal": "notification",
                     "signal_data": {"notification_type": "idle_prompt"},
                 }
@@ -1161,12 +1199,7 @@ def _session_is_complete(
             )
         elif tag == "mcp_policy_user_remembered":
             expected_counts[tag] = expected_counts.get(tag, 0) + 1
-        elif tag in (
-            "signal_context_compacted",
-            "signal_model_switched",
-            "signal_notification",
-            "signal_permission_denied",
-        ):
+        elif tag in ("signal_context_compacted", "signal_model_switched") or tag in SIGNALS_WITHOUT_TEXT:
             expected_counts["session_signal"] = (
                 expected_counts.get("session_signal", 0) + 1
             )

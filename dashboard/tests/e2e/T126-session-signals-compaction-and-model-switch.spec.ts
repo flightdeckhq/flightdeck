@@ -55,7 +55,7 @@ test.describe("T126 — session signals: compaction and model switch", () => {
     );
   });
 
-  test("a notification and an auto-mode denial name what happened in the feed line", async ({ page }) => {
+  test("notifications, denials, commands, tasks, directory and settings changes name what happened in the feed line", async ({ page }) => {
     const resp = await page.request.get(
       `http://localhost:4000/api/v1/sessions/${RECENT_CLOSED_SESSION_ID}`,
       { headers: { Authorization: "Bearer tok_dev" } },
@@ -66,6 +66,10 @@ test.describe("T126 — session signals: compaction and model switch", () => {
     const cases: Array<[string, string]> = [
       ["notification", "notification · idle prompt"],
       ["permission_denied", "permission denied · Bash · [Irreversible Local Destruction]"],
+      ["command_expanded", "command · /review"],
+      ["task_completed", "task completed · e2e-tester"],
+      ["cwd_changed", "cwd → /work/e2e/api"],
+      ["config_changed", "settings changed · project settings"],
     ];
     for (const [name, line] of cases) {
       const event = signals.find((e) => e.payload?.signal === name);

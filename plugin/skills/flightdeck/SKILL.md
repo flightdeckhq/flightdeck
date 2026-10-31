@@ -39,8 +39,10 @@ reported from start to end:
 - Context compactions (started and finished, with the generated summary
   while `FLIGHTDECK_CAPTURE_PROMPTS` is on), model switches, Claude Code
   notifications (waiting on a permission prompt or on you), permission
-  prompts and auto-mode denials, as `session_signal` events; the MCP
-  servers declared in `.mcp.json`.
+  prompts and auto-mode denials, slash commands and MCP prompts (their
+  arguments while `FLIGHTDECK_CAPTURE_PROMPTS` is on), tasks created and
+  completed, working-directory and settings changes, as `session_signal`
+  events; the MCP servers declared in `.mcp.json`.
 - MCP policy decisions: when a server is warned or blocked by the
   Flightdeck MCP policy for this flavor, the session emits a
   `policy_mcp_warn` or `policy_mcp_block` event.

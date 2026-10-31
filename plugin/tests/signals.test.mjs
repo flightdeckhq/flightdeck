@@ -24,14 +24,19 @@ function build(hookName, hookEvent, capturePrompts = true, captureToolInputs = t
 }
 
 describe("session_signal events", () => {
-  it("covers PreCompact, PostCompact and PostModelSwitch", () => {
+  it("covers the compaction, model-switch, notification, permission, command, task, cwd and config hooks", () => {
     assert.deepEqual([...SIGNAL_HOOKS].sort(), [
+      "ConfigChange",
+      "CwdChanged",
       "Notification",
       "PermissionDenied",
       "PermissionRequest",
       "PostCompact",
       "PostModelSwitch",
       "PreCompact",
+      "TaskCompleted",
+      "TaskCreated",
+      "UserPromptExpansion",
     ]);
   });
 
@@ -164,5 +169,66 @@ describe("session_signal events", () => {
       command: "rm -rf /tmp/build",
     });
     assert.equal(event.model, null);
+  });
+  it("reports a slash command by name and source, its arguments only under capture, never the prompt", () => {
+    const hook = {
+      expansion_type: "mcp_prompt",
+      command_name: "mcp__docs__summarise",
+      command_source: "mcp",
+      command_args: "chapter 3",
+      prompt: "/mcp__docs__summarise chapter 3",
+    };
+    const on = build("UserPromptExpansion", hook);
+    assert.equal(on.signal, "command_expanded");
+    assert.deepEqual(on.signal_data, { expansion_type: "mcp_prompt", command_name: "mcp__docs__summarise", command_source: "mcp" });
+    assert.deepEqual(on.content.response, { command_args: "chapter 3" });
+    const off = build("UserPromptExpansion", hook, false);
+    assert.equal(off.has_content, false);
+    assert.equal(off.content, null);
+    assert.ok(!JSON.stringify(off).includes("chapter 3"));
+    const noArgs = build("UserPromptExpansion", { expansion_type: "slash_command", command_name: "compact", command_args: "" });
+    assert.equal(noArgs.has_content, false);
+  });
+
+  it("reports a task with its id and teammate, the subject and description only under capture", () => {
+    const hook = {
+      task_id: "task-12",
+      task_subject: "Migrate the auth tests",
+      task_description: "Move them to the new fixture",
+      teammate_name: "reviewer",
+      team_name: "default",
+    };
+    for (const [hookName, signal] of [
+      ["TaskCreated", "task_created"],
+      ["TaskCompleted", "task_completed"],
+    ]) {
+      const on = build(hookName, hook);
+      assert.equal(on.signal, signal);
+      assert.deepEqual(on.signal_data, { task_id: "task-12", teammate_name: "reviewer" });
+      assert.deepEqual(on.content.response, {
+        task_subject: "Migrate the auth tests",
+        task_description: "Move them to the new fixture",
+      });
+      const off = build(hookName, hook, false);
+      assert.equal(off.content, null);
+      assert.ok(!JSON.stringify(off).includes("auth tests"));
+    }
+  });
+
+  it("reports a working-directory change with both paths, cutting a long path instead of dropping it", () => {
+    const longPath = "/" + "d".repeat(MAX_SIGNAL_DATA_VALUE_BYTES + 40);
+    const event = build("CwdChanged", { old_cwd: "/repo", new_cwd: longPath }, false);
+    assert.equal(event.signal, "cwd_changed");
+    assert.equal(event.signal_data.old_cwd, "/repo");
+    assert.equal(event.signal_data.new_cwd, longPath.slice(0, MAX_SIGNAL_DATA_VALUE_BYTES));
+    assert.equal(event.has_content, false);
+  });
+
+  it("reports a settings change with its source and file", () => {
+    const event = build("ConfigChange", { source: "skills", file_path: "/home/u/.claude/skills/x/SKILL.md" }, false);
+    assert.equal(event.signal, "config_changed");
+    assert.deepEqual(event.signal_data, { source: "skills", file_path: "/home/u/.claude/skills/x/SKILL.md" });
+    const noFile = build("ConfigChange", { source: "policy_settings" }, false);
+    assert.deepEqual(noFile.signal_data, { source: "policy_settings" });
   });
 });

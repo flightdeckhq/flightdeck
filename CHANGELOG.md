@@ -6,6 +6,18 @@ All notable changes to Flightdeck are documented here.
 
 ## v0.8.0 — 2026-10-31
 
+Claude Code sessions are priced the way Claude Code bills them, and the
+plugin reports much more of what a session does. A session on a Pro or
+Max plan no longer shows an estimated cost because an
+`ANTHROPIC_API_KEY` sits unused in the environment, and a sub-agent is
+billed as the session that spawned it. The timeline now shows API
+errors, compactions, model switches, permission prompts and auto-mode
+denials, notifications, slash commands, tasks, directory and settings
+changes, and MCP servers' requests for input, and a sub-agent carries
+the prompt it was given and the report it returned. The plugin's
+server and token are plugin options, and its reporting hooks no longer
+make Claude Code wait.
+
 ### Added
 
 - **Pretty and Raw views for every box in the Prompts panel.** The

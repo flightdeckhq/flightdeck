@@ -239,14 +239,15 @@ export function readOrCreateSessionMarker(markerKey) {
 
 /**
  * Delete the session marker under ``markerKey`` and, when
- * ``sessionId`` is given, that session's started and endpoint markers.
+ * ``sessionId`` is given, that session's started, endpoint and
+ * working-directory markers.
  * Best-effort: ENOENT is fine, other errors log and continue.
  */
 export function clearSessionMarkers(markerKey, sessionId = "", { recordEnded = false } = {}) {
   const dir = stateDir();
   if (sessionId && recordEnded) writeEndedMarker(markerKey, sessionId);
   const targets = [`session-${markerKey}.txt`, `git-${markerKey}.json`];
-  if (sessionId) targets.push(`started-${sessionId}.txt`, `endpoint-${sessionId}.json`);
+  if (sessionId) targets.push(`started-${sessionId}.txt`, `endpoint-${sessionId}.json`, `cwd-${sessionId}.txt`);
   for (const name of targets) {
     try {
       unlinkSync(join(dir, name));
@@ -353,6 +354,35 @@ export function readCachedModel(sessionId) {
   } catch {
     return null;
   }
+}
+
+// The working directory a session's hooks last ran in. Claude Code runs
+// a plugin's CwdChanged hook only when the user's settings register one
+// too, so each hook compares its cwd with this one to report a change.
+function cwdPath(sessionId) {
+  return join(stateDir(), `cwd-${sessionId}.txt`);
+}
+
+/**
+ * Record ``cwd`` as the session's working directory and return the one
+ * recorded before it, or null when there was none or it is unreadable.
+ * A non-string ``cwd`` records nothing.
+ */
+export function swapSessionCwd(sessionId, cwd) {
+  let previous = null;
+  try {
+    previous = readFileSync(cwdPath(sessionId), "utf8") || null;
+  } catch {
+    /* none recorded yet */
+  }
+  if (typeof cwd !== "string" || cwd === "" || cwd === previous) return previous;
+  try {
+    mkdirOwnerOnly(stateDir());
+    writeFileSync(cwdPath(sessionId), cwd);
+  } catch {
+    /* silent */
+  }
+  return previous;
 }
 
 // The model a session switched to and when, so the next prompt is

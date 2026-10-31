@@ -795,6 +795,21 @@ function signalDetail(signal: string | undefined, data: SignalData): string {
       const reason = signal === "permission_denied" && typeof data?.reason === "string" ? ` · ${data.reason}` : "";
       return `${verb}${tool}${reason}`;
     }
+    case "command_expanded": {
+      const name = typeof data?.command_name === "string" ? data.command_name : null;
+      const label = data?.expansion_type === "mcp_prompt" ? "MCP prompt" : "command";
+      return name ? `${label} · /${name.replace(/^\//, "")}` : label;
+    }
+    case "task_created":
+    case "task_completed": {
+      const verb = signal === "task_created" ? "task created" : "task completed";
+      const teammate = typeof data?.teammate_name === "string" ? ` · ${data.teammate_name}` : "";
+      return `${verb}${teammate}`;
+    }
+    case "cwd_changed":
+      return typeof data?.new_cwd === "string" ? `cwd → ${data.new_cwd}` : "cwd changed";
+    case "config_changed":
+      return typeof data?.source === "string" ? `settings changed · ${signalWords(data.source)}` : "settings changed";
     default:
       return signalWords(signal);
   }
@@ -818,6 +833,13 @@ const SIGNAL_DATA_LABELS: Record<string, string> = {
   tool_use_id: "Tool use id",
   mcp_server: "MCP server",
   reason: "Reason",
+  expansion_type: "Expansion",
+  command_name: "Command name",
+  command_source: "Command source",
+  task_id: "Task id",
+  teammate_name: "Teammate",
+  old_cwd: "From directory",
+  new_cwd: "To directory",
   file_path: "File",
   command: "Command",
   query: "Query",

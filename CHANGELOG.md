@@ -46,6 +46,15 @@ All notable changes to Flightdeck are documented here.
   on), an auto-mode denial adds the classifier's reason, and a
   notification says what Claude Code is waiting for, such as a pending
   permission prompt or your next message.
+- **Claude Code slash commands, tasks, directory and settings changes
+  show on the timeline.** Each is a `session_signal`: a slash command or
+  MCP prompt names the command (its arguments while prompt capture is
+  on), a task created or completed carries its id and the teammate in an
+  agent team (its subject and description while prompt capture is on),
+  a directory change gives both paths, and a settings change names the
+  settings and the file. Claude Code runs a plugin's directory-change hook
+  only when your own settings register one, so the plugin also notices a
+  change from the directory each hook runs in.
 
 ### Fixed
 

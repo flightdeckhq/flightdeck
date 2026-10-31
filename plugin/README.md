@@ -103,8 +103,12 @@ Each row is what the dashboard shows for a given Claude Code hook.
 | PostCompact | `session_signal` with `signal=context_compacted` and the `trigger`; the summary Claude Code generated as content when `capturePrompts=true`. |
 | Notification | `session_signal` with `signal=notification` and the `notification_type` (`permission_prompt` when a permission prompt has waited about six seconds, `idle_prompt` when Claude has waited about a minute for you, usage-limit pauses and resumes, and the rest Claude Code sends); the title and message as content when `capturePrompts=true`. |
 | PermissionRequest | `session_signal` with `signal=permission_requested`: the tool about to ask for permission, the MCP server for an MCP tool, and, for a built-in tool, the sanitised tool input when `captureToolInputs=true`. The hook is asynchronous, so it never answers the prompt. |
-| PermissionDenied | `session_signal` with `signal=permission_denied` when auto mode refuses a tool call: the tool, its `tool_use_id`, the classifier's reason (such as `[Data Exfiltration]`) and the sanitised tool input when `captureToolInputs=true`. |
+| PermissionDenied | `session_signal` with `signal=permission_denied` when auto mode refuses a tool call: the tool, its `tool_use_id`, the classifier's reason (such as `[Data Exfiltration]`), the MCP server for an MCP tool, and, for a built-in tool, the sanitised tool input when `captureToolInputs=true`. |
 | PostModelSwitch | `session_signal` with `signal=model_switched`: the old and new model, what asked for the switch (`command`, `picker`, `sdk`, `auto` fallback, `resume`), the context size and Claude Code's cache-write cost estimate. The new model becomes the session's model. Needs Claude Code 2.1.251 or later; older versions ignore the hook. |
+| UserPromptExpansion | `session_signal` with `signal=command_expanded` when a slash command or an MCP prompt expands: the `expansion_type` (`slash_command`, `mcp_prompt`), the command's name and where it comes from; its arguments as content when `capturePrompts=true`. |
+| TaskCreated / TaskCompleted | `session_signal` with `signal=task_created` or `task_completed`: the `task_id` and, in an agent team, the `teammate_name`; the task's subject and description as content when `capturePrompts=true`. |
+| CwdChanged | `session_signal` with `signal=cwd_changed` and the old and new working directory. Claude Code runs this hook from a plugin only when your settings register a `CwdChanged` hook too, so the plugin also reports a change when any later hook runs in a different directory than the last one (once per change). |
+| ConfigChange | `session_signal` with `signal=config_changed`: which settings changed (`user_settings`, `project_settings`, `local_settings`, `policy_settings`, `skills`) and the file. |
 | SubagentStart | Child `session_start` under the sub-agent's own `session_id`, with `parent_session_id` pointing at the outer session and `agent_role` naming the sub-agent type. Hooks that fire while the sub-agent runs are emitted under the child session id. |
 | SubagentStop | Child `session_end` for that same sub-agent session, after flushing any un-emitted turns from the sub-agent's transcript. |
 
@@ -185,7 +189,7 @@ Token counts surface on `post_call` events. The plugin flushes `post_call` on ev
 
 Most `post_call` events land via the PostToolUse flush. `Stop` and `SessionEnd` act as backstops for the final turn that had no tool follow-up. If turns are still missing:
 
-- Make sure `SessionEnd` is wired in `plugin/hooks/hooks.json` (the plugin ships with sixteen hooks -- `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`, `SessionEnd`, `PreCompact`, `PostCompact`, `PostModelSwitch`, `Notification`, `PermissionRequest`, `PermissionDenied`, `SubagentStart`, `SubagentStop` -- and a custom `hooks.json` override might have dropped some).
+- Make sure `SessionEnd` is wired in `plugin/hooks/hooks.json` (the plugin ships with twenty-one hooks -- `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`, `SessionEnd`, `PreCompact`, `PostCompact`, `PostModelSwitch`, `Notification`, `PermissionRequest`, `PermissionDenied`, `UserPromptExpansion`, `TaskCreated`, `TaskCompleted`, `CwdChanged`, `ConfigChange`, `SubagentStart`, `SubagentStop` -- and a custom `hooks.json` override might have dropped some).
 - Check that Claude Code's JSONL transcript is readable at the path the hooks pass in.
 - Confirm the session did not exit via `SIGKILL` before the last hook could run.
 
@@ -229,6 +233,8 @@ No background threads inside a hook. No polling. The only state the plugin persi
 - `started-<sid>.txt`: marks that session_start was attempted (so subsequent hooks don't duplicate).
 - `model-<sid>.txt`: caches the model name so `pre_call` events on older Claude Code versions can carry a non-null model.
 - `endpoint-<sid>.json`: the session's billing mode and platform, decided at `SessionStart`.
+- `model-switch-<sid>.json`: the model the session last switched to and when, so the next `pre_call` is labelled with it.
+- `cwd-<sid>.txt`: the directory the session's hooks last ran in, so a hook in a different one reports `cwd_changed`.
 - `git-<hash>.json`: the git commit, branch and repo name, probed once per session and working directory instead of on every hook.
 - `emitted-<messageId>.txt`: per-message dedup so Stop / SessionEnd and a resumed conversation don't re-emit turns that were already sent. It names the hook process that claimed the turn until the server accepts it, then is empty; the SessionEnd worker sends a turn whose claimant died before that.
 - `ended-<hash>.txt`: the id of the session that just ended, so a hook still running after `SessionEnd` reports under it instead of starting a new session; the next `SessionStart` removes it.

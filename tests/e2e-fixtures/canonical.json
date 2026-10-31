@@ -2,7 +2,7 @@
   "_comment": "Declarative E2E fixture dataset. Every agent name starts with 'e2e-test-' so the Playwright suite can discriminate its own fixtures amid any other data in the shared dev DB. session_ids are derived deterministically in seed.py via uuid5(NAMESPACE_FLIGHTDECK, 'flightdeck-e2e/<agent_name>/<role>'), so each seed run addresses the same session rows and idempotency is a per-session HTTP GET.",
   "agent_name_prefix": "e2e-test-",
   "session_roles": {
-    "_comment": "Timeline offsets drive the UI state each fixture tests. Offsets are seconds relative to seed-time. 'aged-closed' and 'stale' require a post-seed SQL backdate because the worker stamps last_seen_at = NOW() regardless of event payload timestamp; see seed.py :: backdate_sessions. 'phase4_extras' (when present) is a list of additional event-shape strings the seeder emits on top of the base session_start / pre_call / post_call / tool_call / session_end timeline. Recognised values: 'embeddings' (no-content), 'embeddings_with_content_string' (has_content=true, single-string input), 'embeddings_with_content_list' (has_content=true, list-of-strings input), 'streaming_post_call', 'streaming_post_call_aborted', 'call_fields_post_call' (a metered post_call carrying every per-call token, serving and cost field), 'prompt_content_post_call' (a captured Anthropic call with JSON-bearing message, tool_use and tool_result blocks for the Prompts panel's Pretty / Raw views), 'llm_error_rate_limit', 'llm_error_context_overflow', 'llm_error_authentication', 'llm_error_timeout', 'policy_warn', 'policy_degrade', 'policy_block', 'mcp_policy_user_remembered' (the Claude Code plugin's remembered MCP approval, with its permission mode), 'signal_context_compacted', 'signal_model_switched', 'signal_notification' and 'signal_permission_denied' (Claude Code session_signal events: a compaction with its captured summary, a model switch, an idle-prompt notification, an auto-mode denial), 'history_padding' (25 tool_calls 30 ms apart, so a later extra sits beyond the first 21 events of its session), 'mcp_tool_list', 'mcp_tool_call', 'mcp_tool_call_failed' (mcp_tool_call with structured payload.error \u2014 MCPErrorIndicator anchor), 'mcp_resource_list', 'mcp_resource_read', 'mcp_prompt_list', 'mcp_prompt_get'.",
+    "_comment": "Timeline offsets drive the UI state each fixture tests. Offsets are seconds relative to seed-time. 'aged-closed' and 'stale' require a post-seed SQL backdate because the worker stamps last_seen_at = NOW() regardless of event payload timestamp; see seed.py :: backdate_sessions. 'phase4_extras' (when present) is a list of additional event-shape strings the seeder emits on top of the base session_start / pre_call / post_call / tool_call / session_end timeline. Recognised values: 'embeddings' (no-content), 'embeddings_with_content_string' (has_content=true, single-string input), 'embeddings_with_content_list' (has_content=true, list-of-strings input), 'streaming_post_call', 'streaming_post_call_aborted', 'call_fields_post_call' (a metered post_call carrying every per-call token, serving and cost field), 'prompt_content_post_call' (a captured Anthropic call with JSON-bearing message, tool_use and tool_result blocks for the Prompts panel's Pretty / Raw views), 'llm_error_rate_limit', 'llm_error_context_overflow', 'llm_error_authentication', 'llm_error_timeout', 'policy_warn', 'policy_degrade', 'policy_block', 'mcp_policy_user_remembered' (the Claude Code plugin's remembered MCP approval, with its permission mode), 'signal_context_compacted', 'signal_model_switched', 'signal_notification', 'signal_permission_denied', 'signal_command_expanded', 'signal_task_completed', 'signal_cwd_changed' and 'signal_config_changed' (Claude Code session_signal events: a compaction with its captured summary, a model switch, an idle-prompt notification, an auto-mode denial, a slash command, a finished teammate task, a directory change, a project settings change), 'history_padding' (25 tool_calls 30 ms apart, so a later extra sits beyond the first 21 events of its session), 'mcp_tool_list', 'mcp_tool_call', 'mcp_tool_call_failed' (mcp_tool_call with structured payload.error \u2014 MCPErrorIndicator anchor), 'mcp_resource_list', 'mcp_resource_read', 'mcp_prompt_list', 'mcp_prompt_get'.",
     "fresh-active": {
       "started_offset_sec": -30,
       "ended_offset_sec": null,
@@ -17,13 +17,17 @@
     "recent-closed": {
       "started_offset_sec": -600,
       "ended_offset_sec": -120,
-      "purpose": "T1 RECENT bucket; T5 closed-state badge; T16 carries one llm_error event so the session row's red error-indicator dot appears alongside the closed badge; T126 reads its four session_signal events (a compaction with a captured summary, a model switch, a notification, an auto-mode denial)",
+      "purpose": "T1 RECENT bucket; T5 closed-state badge; T16 carries one llm_error event so the session row's red error-indicator dot appears alongside the closed badge; T126 reads its eight session_signal events (a compaction with a captured summary, a model switch, a notification, an auto-mode denial, a slash command, a finished task, a directory change, a settings change)",
       "phase4_extras": [
         "llm_error_rate_limit",
         "signal_context_compacted",
         "signal_model_switched",
         "signal_notification",
-        "signal_permission_denied"
+        "signal_permission_denied",
+        "signal_command_expanded",
+        "signal_task_completed",
+        "signal_cwd_changed",
+        "signal_config_changed"
       ]
     },
     "aged-closed": {

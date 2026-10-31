@@ -98,8 +98,36 @@ describe("SignalPromptsPanel", () => {
     );
   });
 
+  it("shows a task's subject before its description, and says capture is off without them", async () => {
+    fetchEventContent.mockResolvedValue({
+      event_id: "x",
+      provider: "flightdeck-signal",
+      response: { task_description: "Move them to the new fixture", task_subject: "Migrate the auth tests" },
+    });
+    const { unmount } = render(<SignalPromptsPanel event={signalEvent("task_created", true)} />);
+    await waitFor(() => expect(screen.getByTestId("signal-content-task_subject")).toHaveTextContent("Subject"));
+    const sections = screen.getAllByTestId(/^signal-content-task_/).map((el) => el.dataset.testid);
+    expect(sections).toEqual(["signal-content-task_subject", "signal-content-task_description"]);
+    expect(screen.getByTestId("signal-content-task_description")).toHaveTextContent("Description");
+    unmount();
+    for (const signal of ["task_created", "task_completed"]) {
+      const { unmount: off } = render(<SignalPromptsPanel event={signalEvent(signal, false)} />);
+      expect(screen.getByTestId("signal-prompts-empty")).toHaveTextContent(
+        "Prompt capture is not enabled for this deployment.",
+      );
+      off();
+    }
+  });
+
+  it("heads a command's arguments", async () => {
+    fetchEventContent.mockResolvedValue({ event_id: "x", provider: "flightdeck-signal", response: { command_args: "the auth module" } });
+    render(<SignalPromptsPanel event={signalEvent("command_expanded", true)} />);
+    await waitFor(() => expect(screen.getByTestId("signal-content-command_args")).toHaveTextContent("Arguments"));
+    expect(screen.getByTestId("signal-content-command_args")).toHaveTextContent("the auth module");
+  });
+
   it("says a signal that may carry no text carries none", () => {
-    for (const signal of ["model_switched", "context_compaction_started"]) {
+    for (const signal of ["model_switched", "context_compaction_started", "command_expanded", "cwd_changed", "config_changed"]) {
       const { unmount } = render(<SignalPromptsPanel event={signalEvent(signal, false)} />);
       expect(screen.getByTestId("signal-prompts-empty")).toHaveTextContent("This event carries no captured text.");
       unmount();

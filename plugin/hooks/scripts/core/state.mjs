@@ -353,6 +353,16 @@ export function claimSessionStart(sessionId) {
   return false;
 }
 
+/** Whether a live hook holds ``sessionId``'s session_start claim. */
+export function isSessionStartClaimed(sessionId) {
+  try {
+    const age = Date.now() - statSync(join(stateDir(), `starting-${sessionId}.txt`)).mtimeMs;
+    return age < SESSION_START_CLAIM_STALE_MS;
+  } catch {
+    return false;
+  }
+}
+
 /** Release a claim taken by claimSessionStart. Silent on failure. */
 export function releaseSessionStart(sessionId) {
   try {

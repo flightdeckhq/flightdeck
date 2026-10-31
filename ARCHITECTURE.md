@@ -1449,10 +1449,13 @@ accepts it). Hooks of one session run concurrently (parallel tool
 calls, a subagent's `SubagentStart` beside its first interior hooks), so
 a hook sends the event only while it holds
 `starting-${sessionId}.txt`, created exclusively; another hook finding
-it held sends nothing, and a claim older than 30 seconds is taken over.
-A subagent's `SubagentStart` sends the child's `session_start` through
-the same claim and marker, so the child's interior hooks do not send a
-second one. The payload carries the `collectContext` dict.
+it held sends nothing and waits, up to 2.5 seconds, for the server to
+accept it, so that its own event follows the `session_start` and its
+capture posture; a claim older than 30 seconds is taken over. A
+subagent's `SubagentStart` sends the child's `session_start`, with the
+prompt the subagent was given, through the same claim and marker; the
+child's interior hooks give it one second to claim first, then send a
+`session_start` themselves only if it has not. The payload carries the `collectContext` dict.
 
 `collectContext` is the Node.js parallel of the Python sensor's
 `context.py`: pid, process_name, os (Windows / Darwin / Linux), arch,

@@ -397,10 +397,15 @@ describe("claimSessionStart", () => {
     assert.equal(claimSessionStart("s1"), true);
   });
 
+  it("is removed with the session's other markers", () => {
+    assert.equal(claimSessionStart("s4"), true);
+    clearSessionCacheFiles({ session_id: "native-s4" }, "s4");
+    assert.equal(existsSync(join(stateDir(), "starting-s4.txt")), false);
+  });
+
   it("takes over a claim left by a hook that died", () => {
     assert.equal(claimSessionStart("s3"), true);
     ageFile(join(stateDir(), "starting-s3.txt"), 60_000);
     assert.equal(claimSessionStart("s3"), true);
   });
 });
-

@@ -61,7 +61,7 @@ export function resolveSessionEndpoint(
   // cloud provider is read from the same CLAUDE_CODE_USE_* variables
   // Claude Code itself uses, so the CLI is not run.
   const override = BILLING_MODES.has((env.FLIGHTDECK_BILLING_MODE || "").trim().toLowerCase());
-  const status = override ? null : probe();
+  const status = override ? null : probe(undefined, env);
   // A refresh whose probe fails keeps a decision an earlier probe made,
   // rather than replace it with the environment fallback.
   if (refresh && !override && status === null && cached?.final) {
@@ -264,7 +264,9 @@ export async function flushPostCallTurns({
       latency_ms: latencyMs,
       timestamp: turn.lastTimestamp || new Date().toISOString(),
       ...tokens,
-      ...turnTokenCostFields(turn, resolvedModel, resolveSessionEndpoint(sessionId)),
+      // A subagent runs in its parent's Claude Code process on the same
+      // login, so its calls are billed as the parent session's are.
+      ...turnTokenCostFields(turn, resolvedModel, resolveSessionEndpoint(basePayload.parent_session_id || sessionId)),
       has_content: hasContent,
       content,
     });

@@ -38,7 +38,7 @@ import {
 import { deriveAgentId } from "../hooks/scripts/agent_id.mjs";
 import { DEFAULT_SERVER, DEFAULT_TOKEN } from "../hooks/scripts/core/config.mjs";
 import { MAX_EVENT_BODY_BYTES } from "../hooks/scripts/core/poster.mjs";
-import { stateDir } from "../hooks/scripts/core/state.mjs";
+import { stateDir, writeEndpointCache } from "../hooks/scripts/core/state.mjs";
 import {
   readSessionPolicyCache,
   writeSessionPolicyCache,
@@ -103,6 +103,14 @@ const HERMETIC_ENV = {
   CLAUDE_CODE_USE_FOUNDRY: "",
   CLOUD_ML_REGION: "",
   ANTHROPIC_BASE_URL: "",
+  // What decides whether an ANTHROPIC_API_KEY is the session's login; a
+  // suite run from inside Claude Code would otherwise read the
+  // developer's own key and ~/.claude.json.
+  ANTHROPIC_API_KEY: "",
+  ANTHROPIC_AUTH_TOKEN: "",
+  CLAUDE_CODE_ENTRYPOINT: "",
+  CLAUDE_CODE_SIMPLE: "",
+  CLAUDE_CONFIG_DIR: "",
   // These tests read the markers under $TMPDIR/flightdeck-plugin, the
   // state directory when Claude Code provides no plugin data directory.
   CLAUDE_PLUGIN_DATA: "",
@@ -3180,6 +3188,49 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
     assert.equal(childCalls.length, 1);
     assert.equal(childCalls[0].tokens_output, 5);
     assert.ok(!bodies.some((b) => b.event_type === "post_call" && b.session_id === childStart.session_id && JSON.stringify(b).includes("msg_outer_call")));
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("a subagent's calls take the billing mode of the session that spawned it", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "fd-subagent-billing-"));
+    const parent = join(dir, "outer.jsonl");
+    mkdirSync(join(dir, "outer", "subagents"), { recursive: true });
+    writeFileSync(parent, JSON.stringify({ type: "user", message: { role: "user", content: "go" } }) + "\n");
+    const subTranscript = join(dir, "outer", "subagents", "agent-abill1.jsonl");
+    writeFileSync(
+      subTranscript,
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-10-31T09:00:05.000Z",
+        message: { id: "msg_billing_child", role: "assistant", model: "claude-opus-5-5", usage: { input_tokens: 10, output_tokens: 5 }, content: [{ type: "text", text: "ok" }] },
+      }) + "\n",
+    );
+    // The parent session ran on a subscription. A fresh probe in this
+    // hook's environment would say metered (a print-mode run's key), so
+    // a metered child means it did not inherit.
+    writeEndpointCache("sess-outer-billing-1", { billingMode: "subscription", platform: "anthropic", inferenceScope: null, final: true, probes: 1 });
+    const before = capture.bodies().length;
+    const result = await runScript(
+      JSON.stringify({
+        hook_event_name: "SubagentStop",
+        session_id: "sess-outer-billing-1",
+        agent_id: "abill1",
+        agent_type: "general-purpose",
+        transcript_path: parent,
+        agent_transcript_path: subTranscript,
+      }),
+      {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: "sess-outer-billing-1",
+        ANTHROPIC_API_KEY: "sk-ant-api03-test",
+        CLAUDE_CODE_ENTRYPOINT: "sdk-cli",
+      },
+    );
+    assert.equal(result.code, 0, result.stderr);
+    const call = capture.bodies().slice(before).find((b) => b.event_type === "post_call" && b.parent_session_id === "sess-outer-billing-1");
+    assert.ok(call, "expected the child's post_call");
+    assert.equal(call.billing_mode, "subscription");
     rmSync(dir, { recursive: true, force: true });
   });
 

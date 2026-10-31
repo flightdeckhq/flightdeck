@@ -13,10 +13,20 @@
 //   3. The login method `claude auth status` reports: an API key
 //      (api_key, api_key_helper) or a third-party credential is metered;
 //      a claude.ai or OAuth-token login is a subscription.
-//   4. When that command is unavailable: a set ANTHROPIC_API_KEY or
-//      ANTHROPIC_AUTH_TOKEN is metered, anything else a subscription.
+//   4. When that command is unavailable: an ANTHROPIC_API_KEY the
+//      session uses, or an ANTHROPIC_AUTH_TOKEN, is metered, anything else
+//      a subscription.
+//
+// An ANTHROPIC_API_KEY in the environment is not always the session's
+// login: an interactive session uses it only once the user has approved
+// it (envApiKeyInUse). `claude auth status` reports any key it finds, so
+// a key the session does not use is left out of the command's
+// environment.
 
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 export const BILLING_MODES = new Set(["metered", "subscription", "local"]);
 
@@ -55,15 +65,61 @@ function truthy(value) {
   return typeof value === "string" && ["1", "true", "yes"].includes(value.trim().toLowerCase());
 }
 
+// Claude Code records the user's answer to "use this ANTHROPIC_API_KEY?"
+// by the key's last 20 characters.
+const API_KEY_SUFFIX_CHARS = 20;
+
+/** Claude Code's global config file, where it records that answer. */
+export function claudeConfigPath(env = process.env) {
+  const dir = (env.CLAUDE_CONFIG_DIR || "").trim();
+  return join(dir || homedir(), ".claude.json");
+}
+
+function readApprovedKeySuffixes(env) {
+  try {
+    const approved = JSON.parse(readFileSync(claudeConfigPath(env), "utf8"))?.customApiKeyResponses?.approved;
+    return Array.isArray(approved) ? approved : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Whether the session uses the ANTHROPIC_API_KEY in its environment, by
+ * Claude Code's own rule: a non-interactive run (`claude -p`, the Agent
+ * SDK: an entrypoint starting with `sdk`) or a bare one
+ * (CLAUDE_CODE_SIMPLE) uses any key it finds; an interactive session (the
+ * CLI, the VS Code extension) only a key the user approved.
+ */
+export function envApiKeyInUse(env = process.env, approvedSuffixes = readApprovedKeySuffixes) {
+  const key = (env.ANTHROPIC_API_KEY || "").trim();
+  if (!key) return false;
+  if (truthy(env.CLAUDE_CODE_SIMPLE)) return true;
+  if ((env.CLAUDE_CODE_ENTRYPOINT || "").trim().startsWith("sdk")) return true;
+  return approvedSuffixes(env).includes(key.slice(-API_KEY_SUFFIX_CHARS));
+}
+
+/**
+ * The environment to run `claude auth status` in: the hook's own, without
+ * an ANTHROPIC_API_KEY the session does not use, so the command reports
+ * the login the session runs on.
+ */
+export function authStatusEnv(env = process.env, keyInUse = envApiKeyInUse) {
+  if (!env.ANTHROPIC_API_KEY || keyInUse(env)) return env;
+  const { ANTHROPIC_API_KEY: _unused, ...rest } = env;
+  return rest;
+}
+
 /**
  * Run `claude auth status` and return `{ authMethod, apiProvider }`, or
  * null when the command is missing, fails, times out or prints something
  * that is not the expected JSON. Never throws.
  */
-export function readAuthStatus(run = execFileSync) {
+export function readAuthStatus(run = execFileSync, env = process.env) {
   try {
     const out = run("claude", ["auth", "status"], {
       encoding: "utf8",
+      env: authStatusEnv(env),
       timeout: AUTH_STATUS_TIMEOUT_MS,
       stdio: ["ignore", "pipe", "ignore"],
       // On Windows the CLI is a claude.cmd shim, which only a shell
@@ -129,7 +185,7 @@ export function detectEndpoint(env, authStatus) {
   } else if (authStatus && SUBSCRIPTION_AUTH_METHODS.has(authStatus.authMethod)) {
     billingMode = "subscription";
   } else {
-    billingMode = env.ANTHROPIC_API_KEY || env.ANTHROPIC_AUTH_TOKEN ? "metered" : "subscription";
+    billingMode = envApiKeyInUse(env) || env.ANTHROPIC_AUTH_TOKEN ? "metered" : "subscription";
   }
   const override = (env.FLIGHTDECK_BILLING_MODE || "").trim().toLowerCase();
   if (BILLING_MODES.has(override)) billingMode = override;

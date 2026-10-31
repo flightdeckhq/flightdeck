@@ -1262,12 +1262,13 @@ commit, branch and repo name a hook reports are probed once per Claude
 Code session and working directory, at `SessionStart` or the first hook
 after a directory change, and read from the state directory afterwards.
 
-Because the plugin is observation-only, a directive returned in the POST
-response envelope has nowhere to go: the plugin already exited and Claude
-Code has moved on. The plugin payload sets
-`context.supports_directives = false` on `session_start` so the dashboard
-hides the Stop Agent button and the Fleet Stop All control skips these
-sessions. This is the observer-session class.
+By default the plugin only observes: a directive returned in a POST
+response is left unread, the plugin payload sets
+`context.supports_directives = false` on `session_start`, and the
+dashboard hides the Stop Agent button and the Fleet Stop All control
+skips these sessions. This is the observer-session class. With the
+plugin's enforcement on, the session takes directives instead (see
+Enforcement).
 
 ### Configuration
 
@@ -1311,8 +1312,9 @@ Either case writes one warning line to the hook's stderr.
 ### Hook configuration
 
 `plugin/hooks/hooks.json` registers the twenty-four hooks, each running
-`observe_cli.mjs`. Every hook but `SessionEnd` sets an explicit
-`timeout` (seconds); Claude Code's default for a command hook is 600
+`observe_cli.mjs`, and on `PreToolUse` and `UserPromptSubmit` a second
+handler, the enforcement gate (see Enforcement). Every hook but
+`SessionEnd` sets an explicit `timeout` (seconds); Claude Code's default for a command hook is 600
 (30 for `UserPromptSubmit`), so a hook stuck on a wedged CLI or an
 unreachable server could otherwise hold the session for ten minutes.
 Each value is sized for the hook's normal worst case:
@@ -1321,7 +1323,8 @@ Each value is sized for the hook's normal worst case:
 |---|---|---|
 | `SessionStart` | 30 | `claude auth status` (5 s), the `session_start` POST (2 s), the MCP policy fetch (1.5 s), git probes (1.5 s), then one POST per declared MCP server whose decision is not `allow` |
 | `UserPromptSubmit` | 15 | the `session_start` backstop (git probes and its POST) and the `pre_call` POST (2 s each) |
-| `PreToolUse` | 10 | local reads only (the policy cache and remembered decisions) |
+| `PreToolUse` | 10 | local reads only (the policy cache, remembered decisions and, with enforcement on, the control state), plus a 2 s heartbeat when the session has been quiet for 5 s |
+| `UserPromptSubmit` (the enforcement gate) | 10 | the same control-state read and heartbeat |
 | `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure` | 30 | the transcript flush: up to two `claude auth status` runs (5 s each) for a session whose billing mode is not settled, then 2 s per unsent turn |
 | `SubagentStop` | 30 | the same flush over the subagent's transcript, then the child `session_end` |
 | `PreCompact`, `PostCompact`, `PostModelSwitch`, `Notification`, `PermissionRequest`, `PermissionDenied`, `UserPromptExpansion`, `TaskCreated`, `TaskCompleted`, `TeammateIdle`, `CwdChanged`, `ConfigChange`, `Elicitation`, `ElicitationResult`, `SubagentStart` | 15 | one or two POSTs |
@@ -1357,7 +1360,9 @@ carries on without waiting, which saves the roughly
 These stay synchronous:
 
 - `SessionStart` writes the MCP policy cache `PreToolUse` reads;
-- `PreToolUse` returns the gate's decision;
+- `PreToolUse` returns the gate's decision, and the enforcement gates
+  (`PreToolUse` for non-MCP tools and the second `UserPromptSubmit`,
+  both run only with enforcement on) return theirs;
 - `PostToolUse` for MCP tools (matcher `^mcp__`) records a remembered
   approval the next call's `PreToolUse` reads;
 - `SessionEnd` hands off to its worker inside Claude Code's exit budget;
@@ -1750,6 +1755,46 @@ and the plugin.
 Ingestion returns 400 if any of the core 5-tuple fields are missing or
 outside their vocabulary. `agent_role` is optional; both
 absent on the wire and explicit-null are accepted.
+
+### Enforcement
+
+The plugin enforces when the user turns it on, with the plugin option
+`enforcement` or `FLIGHTDECK_ENFORCEMENT=1`; it only observes otherwise.
+Enforcement makes the session directive-capable: its `session_start`
+sets `context.supports_directives=true`, so the dashboard offers Stop
+for it and fleet-wide stops and token-budget policies reach it.
+
+**Gating.** A synchronous hook that runs before every tool call and
+every prompt applies the session's control state. Two hooks registered
+for this run only when enforcement is on: `PreToolUse` for every tool
+but MCP tools (the MCP `PreToolUse` hook gates as well) and a second,
+synchronous `UserPromptSubmit`. Their command first checks the option in
+the shell, so with enforcement off Node is never started and the cost is
+a few milliseconds per tool call; with it on, each gated call pays one
+hook process (about 0.2 s).
+
+**Directives.** The ingestion API returns a session's pending directive
+in the response to any of its event POSTs or to `POST /v1/heartbeat`.
+The plugin reads it from every response, and the gate polls the
+heartbeat when the session has made no request for 5 seconds. With
+enforcement on, the plugin applies it to the session's control state
+(`control-<sid>.json`, beside the other markers):
+
+| Directive | Effect |
+|---|---|
+| `shutdown`, `shutdown_flavor` | The session is stopped: every later tool call is denied with `continue: false`, which ends the turn, and every prompt is blocked before it reaches the model. The plugin sends `directive_result` (`acknowledged`), then `session_end` with `close_reason=directive_shutdown`. A `shutdown` whose reason is `token_budget_exceeded` also sends `policy_block`. |
+| `warn` | The next gated hook shows Claude Code's user a message (`systemMessage`) that the session crossed the token policy's warn threshold; `policy_warn` is sent. |
+| `degrade` | A hook cannot change Claude Code's model, so a degrade is advisory: the user is told the session crossed the degrade threshold and how to switch (`/model <degrade_to>`); `policy_degrade` and an `acknowledged` `directive_result` are sent. |
+| `custom` | Not supported: `directive_result` with `directive_status=error`. |
+
+A subagent's hooks also apply the control state of the session that
+spawned it, so stopping a session stops its subagents.
+
+**Failure mode.** Enforcement fails open: when the server cannot be
+reached the gate allows the call, so an outage never stops developers.
+A stop the plugin has already received stays in force from the control
+state until the session ends. With enforcement off, a directive in a
+response is ignored.
 
 ### Client type registry
 
@@ -2282,10 +2327,11 @@ a `session_end` closes an open one.
 
 ### Heartbeat and health
 
-`POST /v1/heartbeat` is reserved for transports that need to advance
-`last_seen_at` without an event payload. Currently unused by the sensor
-(post_call events provide the same signal at the cadence the sensor
-produces them).
+`POST /v1/heartbeat` advances `last_seen_at` without an event payload
+and returns the session's pending directive, as an event POST does. The
+Claude Code plugin's enforcement gate calls it to fetch a stop for a
+quiet session; the sensor does not (its post_call events give the same
+signal at the cadence it produces them).
 
 `GET /health` returns `{"status":"ok","service":"ingestion"}`.
 `GET /docs/index.html` serves the Swagger UI. The ingestion API serves no
@@ -6012,8 +6058,9 @@ the process exits. Custom handlers emit `directive_result` with
 A session is directive-capable when its `context.supports_directives`
 is `true`, or, when its `session_start` omitted the field, when its
 `client_type`'s registry default is `true` (see Client type registry).
-Plugin payloads set `context.supports_directives=false` explicitly; the
-sensor omits it and takes its type's `true` default. A row with neither
+The Claude Code plugin sets `context.supports_directives` explicitly:
+`true` when its enforcement is on (see Plugin > Enforcement), `false`
+otherwise; the sensor omits it and takes its type's `true` default. A row with neither
 the flag nor a `client_type` (the column is nullable on `sessions`) is
 treated as observer-only when its flavor or framework marks it as a
 Claude Code session, so an old plugin row never regains a Stop button.

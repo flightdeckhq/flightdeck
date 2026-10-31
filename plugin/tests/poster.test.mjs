@@ -4,6 +4,7 @@
 
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
+import { createServer } from "node:http";
 
 import {
   MAX_EVENT_BODY_BYTES,
@@ -11,6 +12,9 @@ import {
   encodedBytes,
   serializeEvent,
   truncationMarker,
+  TIMEOUT_MS,
+  postEvent,
+  setDirectiveSink,
 } from "../hooks/scripts/core/poster.mjs";
 
 function bytes(text) {
@@ -163,3 +167,69 @@ describe("serializeEvent", () => {
     assert.ok(MAX_EVENT_BODY_BYTES <= 0.8 * 1024 * 1024);
   });
 });
+
+describe("directives in responses", () => {
+  // A server that sends headers and then never finishes the body.
+  async function stallingServer(declaredLength) {
+    const server = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "Content-Type": "application/json", ...(declaredLength ? { "Content-Length": String(declaredLength) } : {}) });
+        res.write('{"status":"ok","directive":');
+      });
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    return server;
+  }
+
+  it("leaves the body unread when no directive sink is registered", async () => {
+    setDirectiveSink(null);
+    const server = await stallingServer();
+    try {
+      const started = Date.now();
+      const ok = await postEvent(`http://127.0.0.1:${server.address().port}`, "t", "s", { event_type: "heartbeat" });
+      assert.equal(ok, true);
+      assert.ok(Date.now() - started < TIMEOUT_MS, "an unread body must not hold the hook");
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
+  it("gives up on a stalled or oversized body within the timeout, and hands a directive to the sink", async () => {
+    const seen = [];
+    setDirectiveSink((sid, d) => seen.push([sid, d.action]));
+    const stalled = await stallingServer();
+    const big = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok", directive: { action: "shutdown" }, pad: "x".repeat(70 * 1024) }));
+      });
+    });
+    const good = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok", directive: { id: "d", action: "shutdown" } }));
+      });
+    });
+    await new Promise((resolve) => big.listen(0, "127.0.0.1", resolve));
+    await new Promise((resolve) => good.listen(0, "127.0.0.1", resolve));
+    try {
+      const started = Date.now();
+      await postEvent(`http://127.0.0.1:${stalled.address().port}`, "t", "s1", { event_type: "heartbeat" });
+      assert.ok(Date.now() - started < TIMEOUT_MS + 1000);
+      await postEvent(`http://127.0.0.1:${big.address().port}`, "t", "s2", { event_type: "heartbeat" });
+      await postEvent(`http://127.0.0.1:${good.address().port}`, "t", "s3", { event_type: "heartbeat" });
+      assert.deepEqual(seen, [["s3", "shutdown"]]);
+    } finally {
+      setDirectiveSink(null);
+      for (const server of [stalled, big, good]) {
+        server.closeAllConnections();
+        server.close();
+      }
+    }
+  });
+});
+

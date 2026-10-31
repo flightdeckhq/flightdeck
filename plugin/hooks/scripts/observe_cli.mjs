@@ -46,6 +46,7 @@ import { fileURLToPath } from "node:url";
 
 import { dispatchHookEvent } from "./claude_code/dispatch.mjs";
 import { SESSION_END_WORKER_FLAG } from "./claude_code/session_end.mjs";
+import { GATE_FLAG } from "./claude_code/control.mjs";
 import { resolveConfig } from "./core/config.mjs";
 
 export {
@@ -130,7 +131,10 @@ export {
 // ---------------------------------------------------------------------
 
 async function main() {
-  const cfg = resolveConfig();
+  // An enforcement gate runs before every tool call; the default-token
+  // warning is the regular hooks' to give, not repeated by each gate.
+  const gate = process.argv.includes(GATE_FLAG);
+  const cfg = resolveConfig(gate ? { ...process.env, FLIGHTDECK_QUIET: "1" } : process.env);
   // The detached SessionEnd worker is this script re-invoked with the
   // marker flag; it skips the hand-off below and does the network work.
   const sessionEndWorker = process.argv.includes(SESSION_END_WORKER_FLAG);

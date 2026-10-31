@@ -4,7 +4,7 @@
 import { execSync } from "node:child_process";
 import { arch, hostname as osHostname, platform, userInfo } from "node:os";
 
-import { boundedToken, boundedVersion, MAX_SIGNAL_BYTES, parseBool } from "../core/config.mjs";
+import { boundedToken, boundedVersion, enforcementEnabled, MAX_SIGNAL_BYTES, parseBool } from "../core/config.mjs";
 import { markerKeyFor, readGitCache, writeGitCache } from "../core/state.mjs";
 import { SESSION_END_WORKER_FLAG } from "./session_end.mjs";
 import { loadMcpServerFingerprints } from "./mcp.mjs";
@@ -243,14 +243,12 @@ export function collectContext(extras = {}) {
     /* silent — never crash a hook on broken user config */
   }
 
-  // Mark hook-based sessions as observer-only so the dashboard hides
-  // the kill-switch UI. Claude Code hooks fire after the event has
-  // already happened and the plugin never sits in the agent's hot
-  // path, so a "Stop Agent" click would be a silent no-op. Python
-  // sensor sessions omit this field entirely and the dashboard
-  // treats "unset" as directive-capable. See dashboard/src/lib/
-  // directives.ts.
-  ctx.supports_directives = false;
+  // A Claude Code session takes directives only with enforcement on,
+  // when the plugin's PreToolUse and UserPromptSubmit gates apply them;
+  // otherwise it is observer-only and the dashboard hides its Stop
+  // button. Python sensor sessions omit this field and take their
+  // client type's default. See dashboard/src/lib/directives.ts.
+  ctx.supports_directives = enforcementEnabled();
 
   return ctx;
 }

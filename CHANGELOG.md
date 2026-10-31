@@ -6,6 +6,12 @@ All notable changes to Flightdeck are documented here.
 
 ### Added
 
+- **Claude Code sessions can be stopped and held to token budgets.** With
+  the plugin option `enforcement` on (or `FLIGHTDECK_ENFORCEMENT=1`), the
+  dashboard's Stop button and token policies reach Claude Code: a stop or
+  a budget block denies the next tool call and blocks later prompts, and
+  a warn or degrade threshold shows the developer a message. Off by
+  default; with it off the gate costs a few milliseconds per tool call.
 - **A model call shows the reasoning effort it ran at.** The event
   drawer lists Effort (Claude Code's `low` to `max`) beside the serving
   details. Claude Code calls also record their API request id and the

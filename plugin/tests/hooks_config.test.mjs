@@ -78,16 +78,38 @@ describe("hooks.json", () => {
     assert.ok(timeoutOf("UserPromptSubmit") * 1000 > GIT_PROBES_MS + 2 * TIMEOUT_MS);
   });
 
-  it("runs PreToolUse only for MCP tools", () => {
+  it("runs PreToolUse in Node for MCP tools, and for every other tool only as the enforcement gate", () => {
     const groups = HOOKS.PreToolUse;
-    assert.equal(groups.length, 1);
+    assert.equal(groups.length, 2);
     // Claude Code reads a matcher with ^ as an unanchored JavaScript regex.
-    const matcher = new RegExp(groups[0].matcher);
+    const mcp = new RegExp(groups[0].matcher);
+    const others = new RegExp(groups[1].matcher);
     for (const tool of ["mcp__github__create_issue", "mcp__plugin_claude-mem_mcp-search__search"]) {
-      assert.ok(matcher.test(tool), tool);
+      assert.ok(mcp.test(tool), tool);
+      assert.equal(others.test(tool), false, tool);
     }
     for (const tool of ["Bash", "Read", "Edit", "Task", "WebFetch", "my_mcp__tool"]) {
-      assert.equal(matcher.test(tool), false, tool);
+      assert.equal(mcp.test(tool), false, tool);
+      assert.ok(others.test(tool), tool);
+    }
+    assert.ok(groups[1].hooks[0].command.includes("--gate"));
+  });
+
+  it("starts Node for an enforcement gate only when enforcement is on", async () => {
+    const { execFileSync } = await import("node:child_process");
+    const gates = [HOOKS.PreToolUse[1].hooks[0], HOOKS.UserPromptSubmit[1].hooks[0]];
+    for (const gate of gates) {
+      assert.equal(gate.async, undefined, "a gate must be synchronous to decide");
+      // Replace the Node invocation with a marker to see whether the shell guard lets it run.
+      const command = gate.command.replace(/exec node .*--gate/, "echo RUN");
+      const run = (env) => execFileSync("sh", ["-c", command], { env: { PATH: process.env.PATH, ...env }, encoding: "utf8" }).trim();
+      assert.equal(run({}), "");
+      assert.equal(run({ CLAUDE_PLUGIN_OPTION_ENFORCEMENT: "false" }), "");
+      assert.equal(run({ CLAUDE_PLUGIN_OPTION_ENFORCEMENT: "true" }), "RUN");
+      assert.equal(run({ FLIGHTDECK_ENFORCEMENT: "1" }), "RUN");
+      assert.equal(run({ FLIGHTDECK_ENFORCEMENT: "TRUE" }), "RUN");
+      assert.equal(run({ FLIGHTDECK_ENFORCEMENT: "false" }), "");
+      assert.equal(run({ FLIGHTDECK_ENFORCEMENT: "0", CLAUDE_PLUGIN_OPTION_ENFORCEMENT: "true" }), "");
     }
   });
 

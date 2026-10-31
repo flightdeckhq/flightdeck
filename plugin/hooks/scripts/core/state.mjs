@@ -249,7 +249,12 @@ export function clearSessionMarkers(markerKey, sessionId = "", { recordEnded = f
   if (sessionId && recordEnded) writeEndedMarker(markerKey, sessionId);
   const targets = [`session-${markerKey}.txt`, `git-${markerKey}.json`];
   if (sessionId) {
-    targets.push(`started-${sessionId}.txt`, `starting-${sessionId}.txt`, `endpoint-${sessionId}.json`, `cwd-${sessionId}.txt`);
+    targets.push(
+      `started-${sessionId}.txt`,
+      `starting-${sessionId}.txt`,
+      `endpoint-${sessionId}.json`,
+      `cwd-${sessionId}.txt`,
+    );
   }
   for (const name of targets) {
     try {
@@ -420,14 +425,14 @@ function cwdPath(sessionId) {
   return join(stateDir(), `cwd-${sessionId}.txt`);
 }
 
-// Async hooks run concurrently (parallel tool calls), so the compare and
-// the write happen under a lock directory: mkdir either creates it or
-// fails, for exactly one of two racing hooks. A lock older than this is
-// left by a hook that died holding it; a swap is two small file
-// operations, so a live holder never comes close.
-const CWD_LOCK_STALE_MS = 5_000;
+// Async hooks run concurrently (parallel tool calls), so a read-modify-
+// write of a shared state file happens under a lock directory: mkdir
+// either creates it or fails, for exactly one of two racing hooks. A lock
+// older than this is left by a hook that died holding it; a holder does
+// two small file operations, so a live one never comes close.
+const LOCK_DIR_STALE_MS = 5_000;
 
-function takeCwdLock(lockPath) {
+function takeLockDir(lockPath) {
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       mkdirSync(lockPath);
@@ -435,7 +440,7 @@ function takeCwdLock(lockPath) {
     } catch (err) {
       if (err?.code !== "EEXIST") return false;
       try {
-        if (Date.now() - statSync(lockPath).mtimeMs < CWD_LOCK_STALE_MS) return false;
+        if (Date.now() - statSync(lockPath).mtimeMs < LOCK_DIR_STALE_MS) return false;
         rmdirSync(lockPath);
       } catch {
         return false;
@@ -443,6 +448,95 @@ function takeCwdLock(lockPath) {
     }
   }
   return false;
+}
+
+// The session's enforcement state (claude_code/control.mjs): a stop or a
+// budget notice a directive set, the events still owed for it, and when
+// the gate last polled. Async hooks and the gate update it at once, so
+// every change happens under a lock directory.
+function controlPath(sessionId) {
+  return join(stateDir(), `control-${sessionId}.json`);
+}
+
+/** Delete the session's control state, once its session has ended. */
+export function clearControlState(sessionId) {
+  try {
+    unlinkSync(controlPath(sessionId));
+  } catch {
+    /* none */
+  }
+}
+
+/** The session's control state, or an empty object. */
+export function readControlState(sessionId) {
+  try {
+    const state = JSON.parse(readFileSync(controlPath(sessionId), "utf8"));
+    return state && typeof state === "object" && !Array.isArray(state) ? state : {};
+  } catch {
+    return {};
+  }
+}
+
+// A peer holds the control lock for one read and one write; waiting up
+// to this long covers a slow disk. Past it the update goes ahead
+// unlocked rather than losing a stop.
+const CONTROL_LOCK_WAIT_MS = 1_000;
+const CONTROL_LOCK_POLL_MS = 20;
+
+function sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+/**
+ * Apply ``update(state)`` to the session's control state under its lock
+ * and write the result atomically. Returns the state written, or the
+ * state read when the directory cannot be written (an update that
+ * removes notices then removes nothing, so a notice can show again).
+ * When the lock is still held after CONTROL_LOCK_WAIT_MS the update runs
+ * unlocked, and a concurrent update can be lost. Taking over a stale
+ * lock is not exclusive either: two hooks that both find it stale can
+ * both take it; it needs a holder dead for LOCK_DIR_STALE_MS first.
+ */
+export function updateControlState(sessionId, update) {
+  const path = controlPath(sessionId);
+  const lockPath = `${path}.lock`;
+  try {
+    mkdirOwnerOnly(stateDir());
+  } catch {
+    return update(readControlState(sessionId));
+  }
+  const deadline = Date.now() + CONTROL_LOCK_WAIT_MS;
+  let locked = takeLockDir(lockPath);
+  while (!locked && Date.now() < deadline) {
+    sleepSync(CONTROL_LOCK_POLL_MS);
+    locked = takeLockDir(lockPath);
+  }
+  try {
+    const next = update(readControlState(sessionId));
+    const partial = `${path}.${process.pid}.tmp`;
+    try {
+      writeFileSync(partial, JSON.stringify(next));
+      renameSync(partial, path);
+    } catch (err) {
+      try {
+        unlinkSync(partial);
+      } catch {
+        /* never written */
+      }
+      throw err;
+    }
+    return next;
+  } catch {
+    return readControlState(sessionId);
+  } finally {
+    if (locked) {
+      try {
+        rmdirSync(lockPath);
+      } catch {
+        /* removed as stale by another hook */
+      }
+    }
+  }
 }
 
 /**
@@ -463,7 +557,7 @@ export function swapSessionCwd(sessionId, cwd) {
   } catch {
     return none;
   }
-  if (!takeCwdLock(lockPath)) return none;
+  if (!takeLockDir(lockPath)) return none;
   try {
     let previous = null;
     try {

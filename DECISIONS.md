@@ -128,17 +128,14 @@ compaction would show twice).
 **Date:** 2026-10-31
 **Decision:** LLM events gain an optional `effort` string (the reasoning
 effort a coding agent ran the call at, such as Claude Code's `low` to
-`max`), bounded like `service_tier`. The Claude Code plugin sends it, the
-call's `requestId` as `provider_metadata.request_id`, and the
-conversation's running token total as `tokens_used_session`. It sends no
-`cost_reported`: Flightdeck prices its calls from the pricing table.
+`max`), bounded like `service_tier`. The Claude Code plugin sends it and
+the call's `requestId` (`provider_metadata.request_id`), and no
+`cost_reported`.
 **Why:** effort drives a call's output length and so its cost, and it is
 on every Claude Code transcript turn. Claude Code's own cost appears in
 the transcript only as occasional cumulative session totals, so a
 per-call figure cannot be derived from it.
 **Rejected alternative:** spreading the cumulative `cost-state` totals
-over the calls between two snapshots (a guess presented as a reported
-cost); a session-level reported total (a new contract for a figure that
-is list-price value even on a subscription). Per-call cost arrives with
-the OTLP receiver, whose `api_request` record carries it.
+over the calls between snapshots; a session-level reported total (list
+price even on a subscription).
 

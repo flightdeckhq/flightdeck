@@ -2,7 +2,7 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -668,6 +668,23 @@ describe("observe_cli.mjs", () => {
     assert.deepEqual(calls.map((c) => c.provider_metadata.request_id), ["req_t1", "req_t3"]);
     assert.ok(calls.every((c) => c.effort === "high"));
     assert.ok(calls.every((c) => c.cost_reported === undefined));
+
+    // A later flush over the grown transcript (PostToolUse, then Stop
+    // again) continues the total from the start of the conversation.
+    appendFileSync(
+      transcriptPath,
+      JSON.stringify({ type: "assistant", timestamp: "2026-10-31T09:00:04.000Z", message: { id: "msg_t4", role: "assistant", model: "claude-opus-5-5", usage: usage(50), content: [] } }) + "\n",
+    );
+    const later = capture.bodies().length;
+    for (const hook of ["PostToolUse", "Stop"]) {
+      const r = await runScript(
+        JSON.stringify({ hook_event_name: hook, session_id: "sess-used-1", transcript_path: transcriptPath, tool_name: "Read", tool_input: {}, tool_response: {} }),
+        { FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`, FLIGHTDECK_TOKEN: "tok_test", CLAUDE_SESSION_ID: "sess-used-1", FLIGHTDECK_BILLING_MODE: "metered" },
+      );
+      assert.equal(r.code, 0, r.stderr);
+    }
+    const next = capture.bodies().slice(later).filter((b) => b.event_type === "post_call");
+    assert.deepEqual(next.map((c) => c.tokens_used_session), [380]);
     rmSync(dirname(transcriptPath), { recursive: true, force: true });
   });
 

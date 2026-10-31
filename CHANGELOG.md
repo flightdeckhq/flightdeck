@@ -15,8 +15,8 @@ errors, compactions, model switches, permission prompts and auto-mode
 denials, notifications, slash commands, tasks, directory and settings
 changes, and MCP servers' requests for input, and a sub-agent carries
 the prompt it was given and the report it returned. The plugin's
-server and token are plugin options, and its reporting hooks no longer
-make Claude Code wait.
+server and token are plugin options, and the hooks that only report
+run asynchronously, so they no longer hold up Claude Code.
 
 ### Added
 
@@ -118,9 +118,10 @@ make Claude Code wait.
 - **The roadmap moved from the README to GitHub issues.** Planned work is
   tracked as issues labelled `roadmap`, with v0.8.0 and v0.9.0 milestones;
   react with :+1: on the ones you need. The README links to the list.
-- **The Claude Code plugin no longer makes Claude Code wait.** The hooks
-  that only report (prompt submit, non-MCP tool use, tool failures, turn
-  end, compaction and subagents) run asynchronously, which saves
+- **The Claude Code plugin's reporting hooks no longer make Claude Code
+  wait.** The hooks that only report (prompt submit, non-MCP tool use,
+  tool failures, turn end, notifications, permission prompts and
+  subagents) run asynchronously, which saves
   about 200 ms per prompt, tool call and turn end. A hook stops flushing
   a transcript backlog after 25 s and leaves the rest to a later hook;
   the end-of-session sweep sends any turn a cancelled hook had claimed

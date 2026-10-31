@@ -154,7 +154,9 @@ async function pollUntil(predicate, label, deadlineMs = 15000) {
   }
 }
 
-function startCaptureServer() {
+// ``delayMs`` holds each response back, as a slow server would, after
+// recording the request in arrival order.
+function startCaptureServer({ delayMs = 0 } = {}) {
   return new Promise((resolve) => {
     const captured = [];
     const server = createServer((req, res) => {
@@ -166,8 +168,10 @@ function startCaptureServer() {
         } catch {
           captured.push(body);
         }
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end('{"ok":true}');
+        setTimeout(() => {
+          res.writeHead(200, { "Content-Type": "application/json" });
+          res.end('{"ok":true}');
+        }, delayMs);
       });
     });
     server.listen(0, "127.0.0.1", () => {
@@ -2141,6 +2145,7 @@ describe("observe_cli helpers", () => {
         "UserPromptExpansion",
         "TaskCreated",
         "TaskCompleted",
+        "TeammateIdle",
         "CwdChanged",
         "ConfigChange",
         "Elicitation",
@@ -3271,6 +3276,74 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
     assert.ok(call, "expected the child's post_call");
     assert.equal(call.billing_mode, "subscription");
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("sends one session_start per subagent, SubagentStart's, ahead of every other event of the child", async () => {
+    const slow = await startCaptureServer({ delayMs: 300 });
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${slow.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-once-1",
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    };
+    const start = { hook_event_name: "SubagentStart", session_id: "sess-outer-once-1", agent_id: "aonce1", agent_type: "general-purpose", tool_input: { prompt: "count the files" } };
+    const interior = { hook_event_name: "Notification", notification_type: "idle_prompt", session_id: "sess-outer-once-1", agent_id: "aonce1", agent_type: "general-purpose" };
+    // SubagentStart and three interior hooks at once, as parallel tool
+    // calls run, against a server slow to answer.
+    try {
+      const results = await Promise.all([start, interior, interior, interior].map((ev) => runScript(JSON.stringify(ev), env)));
+      for (const r of results) assert.equal(r.code, 0, r.stderr);
+      const child = slow.bodies().filter((b) => b.parent_session_id === "sess-outer-once-1");
+      const starts = child.filter((b) => b.event_type === "session_start");
+      assert.equal(starts.length, 1);
+      assert.equal(starts[0].incoming_message?.body, "count the files");
+      assert.equal(child[0].event_type, "session_start");
+      assert.equal(child.filter((b) => b.signal === "notification").length, 3);
+    } finally {
+      slow.server.closeAllConnections();
+      slow.server.close();
+    }
+  });
+
+  it("sends one session_start for concurrent hooks of a session, ahead of their own events", async () => {
+    const slow = await startCaptureServer({ delayMs: 300 });
+    const sid = "sess-root-once-1";
+    const env = { FLIGHTDECK_SERVER: `http://127.0.0.1:${slow.port}`, FLIGHTDECK_TOKEN: "tok_test", CLAUDE_SESSION_ID: sid };
+    const hook = { hook_event_name: "Notification", notification_type: "idle_prompt", session_id: sid };
+    try {
+      const results = await Promise.all([hook, hook, hook].map((ev) => runScript(JSON.stringify(ev), env)));
+      for (const r of results) assert.equal(r.code, 0, r.stderr);
+      const mine = slow.bodies().filter((b) => b.session_id === sid);
+      assert.equal(mine.filter((b) => b.event_type === "session_start").length, 1);
+      assert.equal(mine[0].event_type, "session_start");
+      assert.equal(mine.filter((b) => b.signal === "notification").length, 3);
+    } finally {
+      slow.server.closeAllConnections();
+      slow.server.close();
+    }
+  });
+
+  it("releases the session_start claim when the server refuses it, so a later hook retries", async () => {
+    const refusing = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        res.writeHead(500);
+        res.end();
+      });
+    });
+    await new Promise((resolve) => refusing.listen(0, "127.0.0.1", resolve));
+    const sid = "sess-claim-retry-1";
+    const result = await runScript(JSON.stringify({ hook_event_name: "Notification", notification_type: "idle_prompt", session_id: sid }), {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${refusing.address().port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: sid,
+    });
+    assert.equal(result.code, 0, result.stderr);
+    const dir = stateDir({ ...process.env, CLAUDE_PLUGIN_DATA: "" });
+    assert.equal(existsSync(join(dir, `starting-${sid}.txt`)), false);
+    assert.equal(existsSync(join(dir, `started-${sid}.txt`)), false);
+    refusing.closeAllConnections();
+    refusing.close();
   });
 
   it("capture_prompts=false drops incoming_message and outgoing_message at the boundary", async () => {

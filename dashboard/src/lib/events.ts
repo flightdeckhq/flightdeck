@@ -815,6 +815,8 @@ function signalDetail(signal: string | undefined, data: SignalData): string {
       const teammate = typeof data?.teammate_name === "string" ? ` · ${data.teammate_name}` : "";
       return `${verb}${teammate}`;
     }
+    case "teammate_idle":
+      return typeof data?.teammate_name === "string" ? `teammate idle · ${data.teammate_name}` : "teammate idle";
     case "cwd_changed":
       return typeof data?.new_cwd === "string" ? `cwd → ${data.new_cwd}` : "cwd changed";
     case "config_changed":

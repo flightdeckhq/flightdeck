@@ -34,6 +34,8 @@ import {
   pruneStateDir,
   readGitCache,
   readOrCreateSessionMarker,
+  claimSessionStart,
+  releaseSessionStart,
   stateDir,
   swapSessionCwd,
   writeGitCache,
@@ -379,5 +381,31 @@ describe("swapSessionCwd", () => {
     assert.ok(existsSync(join(stateDir(), "cwd-s3.txt")));
     clearSessionCacheFiles({ session_id: "native-s3" }, "s3");
     assert.equal(existsSync(join(stateDir(), "cwd-s3.txt")), false);
+  });
+});
+
+describe("claimSessionStart", () => {
+  beforeEach(() => {
+    process.env.CLAUDE_PLUGIN_DATA = join(root, `claim-${randomUUID()}`);
+  });
+
+  it("lets one hook at a time send a session's session_start", () => {
+    assert.equal(claimSessionStart("s1"), true);
+    assert.equal(claimSessionStart("s1"), false);
+    assert.equal(claimSessionStart("s2"), true);
+    releaseSessionStart("s1");
+    assert.equal(claimSessionStart("s1"), true);
+  });
+
+  it("is removed with the session's other markers", () => {
+    assert.equal(claimSessionStart("s4"), true);
+    clearSessionCacheFiles({ session_id: "native-s4" }, "s4");
+    assert.equal(existsSync(join(stateDir(), "starting-s4.txt")), false);
+  });
+
+  it("takes over a claim left by a hook that died", () => {
+    assert.equal(claimSessionStart("s3"), true);
+    ageFile(join(stateDir(), "starting-s3.txt"), 60_000);
+    assert.equal(claimSessionStart("s3"), true);
   });
 });

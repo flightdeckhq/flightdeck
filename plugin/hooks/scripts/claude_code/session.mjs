@@ -9,9 +9,12 @@ import {
   clearSessionMarkers,
   cwdMarkerKey,
   ephemeralSessionId,
+  claimSessionStart,
+  isSessionStartClaimed,
   isSessionStarted,
   markerKeyFor,
   markSessionStarted,
+  releaseSessionStart,
   clearEndedMarker,
   readEndedMarker,
   readOrCreateSessionMarker,
@@ -172,7 +175,44 @@ export function claudeCodeSessionId(hookEvent = {}, env = process.env) {
 // Session-start de-duplication -- once per session id per machine.
 // ---------------------------------------------------------------------
 
+// How long a hook that finds another hook sending its session's
+// session_start waits for the server to accept it, so that its own
+// event lands after the session_start, which carries the capture
+// posture the worker needs to keep the event's content. A session_start
+// POST takes at most 2 s.
+const SESSION_START_WAIT_MS = 2_500;
+// How long a subagent's interior hook leaves the subagent's own
+// SubagentStart, whose session_start carries the prompt the subagent was
+// given, to claim the child's session_start before sending one itself.
+const SUBAGENT_START_GRACE_MS = 1_000;
+const SESSION_START_POLL_MS = 50;
+
+async function waitUntil(condition, maxMs) {
+  const deadline = Date.now() + maxMs;
+  while (!condition() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, SESSION_START_POLL_MS));
+  }
+}
+
 export async function ensureSessionStarted(server, token, sessionId, basePayload, extras = {}) {
+  if (isSessionStarted(sessionId)) return;
+  if (basePayload.parent_session_id) {
+    await waitUntil(() => isSessionStarted(sessionId) || isSessionStartClaimed(sessionId), SUBAGENT_START_GRACE_MS);
+  }
+  if (!claimSessionStart(sessionId)) {
+    // Another hook is sending it: let it land before this hook's event.
+    await waitUntil(() => isSessionStarted(sessionId) || !isSessionStartClaimed(sessionId), SESSION_START_WAIT_MS);
+    return;
+  }
+  try {
+    await sendSessionStart(server, token, sessionId, basePayload, extras);
+  } finally {
+    releaseSessionStart(sessionId);
+  }
+}
+
+async function sendSessionStart(server, token, sessionId, basePayload, extras) {
+  // A hook that held the claim before this one may have sent it.
   if (isSessionStarted(sessionId)) return;
 
   const startPayload = {

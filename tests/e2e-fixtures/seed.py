@@ -191,6 +191,10 @@ SIGNALS_WITHOUT_TEXT_DATA: dict[str, dict[str, Any]] = {
             "file_path": "/work/e2e/.claude/settings.json",
         },
     },
+    "signal_teammate_idle": {
+        "signal": "teammate_idle",
+        "signal_data": {"teammate_name": "e2e-reviewer"},
+    },
     "signal_elicitation_responded": {
         "signal": "elicitation_responded",
         "signal_data": {"mcp_server": "e2e-asker", "mode": "form", "action": "decline"},

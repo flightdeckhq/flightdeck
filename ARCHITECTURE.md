@@ -489,7 +489,7 @@ flightdeck/
 │   │       │   ├── transcript.mjs        # Transcript JSONL reader: per-call turns, tokens, latency
 │   │       │   ├── post_call.mjs         # Session billing endpoint, cost fields, deduplicated post_call flush
 │   │       │   ├── stop_failure.mjs      # StopFailure -> llm_error: Claude Code's API-error codes in the shared taxonomy
-│   │       │   ├── signals.mjs           # Compaction, model-switch, notification, permission, command, task, cwd, config and elicitation hooks -> session_signal
+│   │       │   ├── signals.mjs           # Compaction, model-switch, notification, permission, command, task, teammate, cwd, config and elicitation hooks -> session_signal
 │   │       │   ├── tools.mjs             # Tool-input sanitiser, tool duration, tool error block
 │   │       │   ├── mcp.mjs               # MCP tool-name parsing, server fingerprints, mcp_tool_call emission
 │   │       │   ├── mcp_policy_dispatch.mjs  # MCP policy at SessionStart, PreToolUse decision, PostToolUse approval
@@ -1310,7 +1310,7 @@ Either case writes one warning line to the hook's stderr.
 
 ### Hook configuration
 
-`plugin/hooks/hooks.json` registers the twenty-three hooks, each running
+`plugin/hooks/hooks.json` registers the twenty-four hooks, each running
 `observe_cli.mjs`. Every hook but `SessionEnd` sets an explicit
 `timeout` (seconds); Claude Code's default for a command hook is 600
 (30 for `UserPromptSubmit`), so a hook stuck on a wedged CLI or an
@@ -1324,7 +1324,7 @@ Each value is sized for the hook's normal worst case:
 | `PreToolUse` | 10 | local reads only (the policy cache and remembered decisions) |
 | `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure` | 30 | the transcript flush: up to two `claude auth status` runs (5 s each) for a session whose billing mode is not settled, then 2 s per unsent turn |
 | `SubagentStop` | 30 | the same flush over the subagent's transcript, then the child `session_end` |
-| `PreCompact`, `PostCompact`, `PostModelSwitch`, `Notification`, `PermissionRequest`, `PermissionDenied`, `UserPromptExpansion`, `TaskCreated`, `TaskCompleted`, `CwdChanged`, `ConfigChange`, `Elicitation`, `ElicitationResult`, `SubagentStart` | 15 | one or two POSTs |
+| `PreCompact`, `PostCompact`, `PostModelSwitch`, `Notification`, `PermissionRequest`, `PermissionDenied`, `UserPromptExpansion`, `TaskCreated`, `TaskCompleted`, `TeammateIdle`, `CwdChanged`, `ConfigChange`, `Elicitation`, `ElicitationResult`, `SubagentStart` | 15 | one or two POSTs |
 
 Claude Code cancels a synchronous hook that runs out of time and carries on, as for
 any non-blocking error. What the hook had not done by then is lost or
@@ -1349,8 +1349,8 @@ The hooks that only report run with `async: true`: `UserPromptSubmit`,
 `PostToolUse` for every tool but MCP tools (matcher `^(?!mcp__)`),
 `PostToolUseFailure`, `Stop`, `StopFailure`, `Notification`,
 `PermissionRequest`, `PermissionDenied`, `UserPromptExpansion`,
-`TaskCreated`, `TaskCompleted`, `CwdChanged`, `ConfigChange`,
-`ElicitationResult`, `SubagentStart` and `SubagentStop`. Claude
+`TaskCreated`, `TaskCompleted`, `TeammateIdle`, `CwdChanged`,
+`ConfigChange`, `ElicitationResult`, `SubagentStart` and `SubagentStop`. Claude
 Code starts them and
 carries on without waiting, which saves the roughly
 200 ms a hook process takes on every prompt, tool call and turn end.
@@ -1444,8 +1444,18 @@ session; in the `$TMPDIR` fallback a reboot clears the marker.
 
 `ensureSessionStarted` uses a file-marker dedup so the `session_start`
 event is sent exactly once per session id (marker file is
-`<state directory>/started-${sessionId}.txt`). The payload carries
-the `collectContext` dict.
+`<state directory>/started-${sessionId}.txt`, written once the server
+accepts it). Hooks of one session run concurrently (parallel tool
+calls, a subagent's `SubagentStart` beside its first interior hooks), so
+a hook sends the event only while it holds
+`starting-${sessionId}.txt`, created exclusively; another hook finding
+it held sends nothing and waits, up to 2.5 seconds, for the server to
+accept it, so that its own event follows the `session_start` and its
+capture posture; a claim older than 30 seconds is taken over. A
+subagent's `SubagentStart` sends the child's `session_start`, with the
+prompt the subagent was given, through the same claim and marker; the
+child's interior hooks give it one second to claim first, then send a
+`session_start` themselves only if it has not. The payload carries the `collectContext` dict.
 
 `collectContext` is the Node.js parallel of the Python sensor's
 `context.py`: pid, process_name, os (Windows / Darwin / Linux), arch,
@@ -5638,6 +5648,7 @@ plugin emits it from its hooks.
 | `command_expanded` | `UserPromptExpansion` | `expansion_type` (`slash_command`, `mcp_prompt`), `command_name`, `command_source` | `command_args` |
 | `task_created` | `TaskCreated` | `task_id`, `teammate_name` | `task_subject`, `task_description` |
 | `task_completed` | `TaskCompleted` | `task_id`, `teammate_name` | `task_subject`, `task_description` |
+| `teammate_idle` | `TeammateIdle` (an agent-team teammate finished its turn and waits) | `teammate_name` | none |
 | `cwd_changed` | `CwdChanged`, or the first other hook to run in a new directory | `old_cwd`, `new_cwd` | none |
 | `config_changed` | `ConfigChange` | `source` (`user_settings`, `project_settings`, `local_settings`, `policy_settings`, `skills`), `file_path` | none |
 | `elicitation_requested` | `Elicitation` (an MCP server asks the user for input) | `mcp_server`, `mode` (`form`, `url`), `elicitation_id` (URL mode) | `message`, `url`, `requested_schema` (as JSON text) |

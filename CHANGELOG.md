@@ -10,6 +10,15 @@ All notable changes to Flightdeck are documented here.
   drawer lists Effort (Claude Code's `low` to `max`) beside the serving
   details. Claude Code calls also record their API request id and the
   conversation's running token total.
+- **An idle agent-team teammate shows on the Claude Code timeline** as a
+  `session_signal` naming the teammate.
+
+### Fixed
+
+- **A Claude Code sub-agent has one session start.** Its first interior
+  hooks each sent another `session_start` beside the one from
+  `SubagentStart` (two to four per sub-agent); one hook now sends it
+  while the others skip.
 
 ## v0.8.0 — 2026-10-31
 

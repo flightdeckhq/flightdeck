@@ -70,6 +70,7 @@ test.describe("T126 — session signals: compaction and model switch", () => {
       ["task_completed", "task completed · e2e-tester"],
       ["cwd_changed", "cwd → /work/e2e/api"],
       ["config_changed", "settings changed · project settings"],
+      ["teammate_idle", "teammate idle · e2e-reviewer"],
       ["elicitation_responded", "MCP input declined · e2e-asker"],
     ];
     for (const [name, line] of cases) {

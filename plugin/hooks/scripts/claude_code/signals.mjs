@@ -94,6 +94,12 @@ const SIGNALS = {
     paths: ["file_path"],
     texts: [],
   },
+  // An agent-team teammate that finished its turn and is waiting.
+  TeammateIdle: {
+    signal: "teammate_idle",
+    fields: ["teammate_name"],
+    texts: [],
+  },
   // An MCP server asking the user for input, and the user's answer. A
   // URL-mode request's URL can carry a token, so it is content.
   Elicitation: {

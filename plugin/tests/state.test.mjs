@@ -34,6 +34,8 @@ import {
   pruneStateDir,
   readGitCache,
   readOrCreateSessionMarker,
+  claimSessionStart,
+  releaseSessionStart,
   stateDir,
   swapSessionCwd,
   writeGitCache,
@@ -381,3 +383,24 @@ describe("swapSessionCwd", () => {
     assert.equal(existsSync(join(stateDir(), "cwd-s3.txt")), false);
   });
 });
+
+describe("claimSessionStart", () => {
+  beforeEach(() => {
+    process.env.CLAUDE_PLUGIN_DATA = join(root, `claim-${randomUUID()}`);
+  });
+
+  it("lets one hook at a time send a session's session_start", () => {
+    assert.equal(claimSessionStart("s1"), true);
+    assert.equal(claimSessionStart("s1"), false);
+    assert.equal(claimSessionStart("s2"), true);
+    releaseSessionStart("s1");
+    assert.equal(claimSessionStart("s1"), true);
+  });
+
+  it("takes over a claim left by a hook that died", () => {
+    assert.equal(claimSessionStart("s3"), true);
+    ageFile(join(stateDir(), "starting-s3.txt"), 60_000);
+    assert.equal(claimSessionStart("s3"), true);
+  });
+});
+

@@ -191,6 +191,10 @@ SIGNALS_WITHOUT_TEXT_DATA: dict[str, dict[str, Any]] = {
             "file_path": "/work/e2e/.claude/settings.json",
         },
     },
+    "signal_elicitation_responded": {
+        "signal": "elicitation_responded",
+        "signal_data": {"mcp_server": "e2e-asker", "mode": "form", "action": "decline"},
+    },
 }
 SIGNALS_WITHOUT_TEXT = (
     "signal_notification",
@@ -605,8 +609,9 @@ def _post_session_events(
                 posted += 1
         elif extra in SIGNALS_WITHOUT_TEXT:
             # A Claude Code notification, an auto-mode denial, a slash
-            # command, a finished task, a directory change and a settings
-            # change as session_signal events, seeded without their text.
+            # command, a finished task, a directory change, a settings
+            # change and a declined MCP form as session_signal events,
+            # seeded without their text.
             # T126 reads their feed lines.
             if extra in SIGNALS_WITHOUT_TEXT_DATA:
                 signal_fields_b: dict[str, Any] = dict(SIGNALS_WITHOUT_TEXT_DATA[extra])

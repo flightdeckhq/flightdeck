@@ -55,6 +55,11 @@ All notable changes to Flightdeck are documented here.
   settings and the file. Claude Code runs a plugin's directory-change hook
   only when your own settings register one, so the plugin also notices a
   change from the directory each hook runs in.
+- **MCP servers' requests for input show on the Claude Code timeline.**
+  When an MCP server asks you to fill in a form or open a URL, the session
+  records the request and whether you submitted, declined or cancelled
+  it; the message, the URL and what you entered only while prompt
+  capture is on. The plugin only observes: it never answers for you.
 
 ### Fixed
 

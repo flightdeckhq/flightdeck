@@ -114,6 +114,29 @@ describe("session_signal", () => {
     expect(getEventDetail(signal("config_changed"))).toBe("settings changed");
   });
 
+  it("names an MCP server's request for input and the user's response", () => {
+    expect(getEventDetail(signal("elicitation_requested", { mcp_server: "asker", mode: "form" }))).toBe(
+      "MCP input requested · asker",
+    );
+    expect(getEventDetail(signal("elicitation_responded", { mcp_server: "asker", action: "accept" }))).toBe(
+      "MCP input submitted · asker",
+    );
+    expect(getEventDetail(signal("elicitation_responded", { mcp_server: "asker", action: "decline" }))).toBe(
+      "MCP input declined · asker",
+    );
+    expect(getEventDetail(signal("elicitation_responded", { action: "cancel" }))).toBe("MCP input cancelled");
+    expect(getEventDetail(signal("elicitation_responded", { action: "other" }))).toBe("MCP input answered");
+    expect(
+      getSummaryRows(signal("elicitation_responded", { mcp_server: "asker", mode: "url", elicitation_id: "el-1", action: "accept" })),
+    ).toEqual([
+      ["Signal", "elicitation responded"],
+      ["MCP server", "asker"],
+      ["Mode", "url"],
+      ["Elicitation id", "el-1"],
+      ["Response", "accept"],
+    ]);
+  });
+
   it("labels the command, task and directory metadata", () => {
     expect(
       getSummaryRows(signal("command_expanded", { expansion_type: "slash_command", command_name: "review", command_source: "plugin" })),

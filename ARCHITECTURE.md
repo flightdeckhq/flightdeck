@@ -489,7 +489,7 @@ flightdeck/
 │   │       │   ├── transcript.mjs        # Transcript JSONL reader: per-call turns, tokens, latency
 │   │       │   ├── post_call.mjs         # Session billing endpoint, cost fields, deduplicated post_call flush
 │   │       │   ├── stop_failure.mjs      # StopFailure -> llm_error: Claude Code's API-error codes in the shared taxonomy
-│   │       │   ├── signals.mjs           # Compaction, model-switch, notification, permission, command, task, cwd and config hooks -> session_signal
+│   │       │   ├── signals.mjs           # Compaction, model-switch, notification, permission, command, task, cwd, config and elicitation hooks -> session_signal
 │   │       │   ├── tools.mjs             # Tool-input sanitiser, tool duration, tool error block
 │   │       │   ├── mcp.mjs               # MCP tool-name parsing, server fingerprints, mcp_tool_call emission
 │   │       │   ├── mcp_policy_dispatch.mjs  # MCP policy at SessionStart, PreToolUse decision, PostToolUse approval
@@ -1310,7 +1310,7 @@ Either case writes one warning line to the hook's stderr.
 
 ### Hook configuration
 
-`plugin/hooks/hooks.json` registers the twenty-one hooks, each running
+`plugin/hooks/hooks.json` registers the twenty-three hooks, each running
 `observe_cli.mjs`. Every hook but `SessionEnd` sets an explicit
 `timeout` (seconds); Claude Code's default for a command hook is 600
 (30 for `UserPromptSubmit`), so a hook stuck on a wedged CLI or an
@@ -1324,7 +1324,7 @@ Each value is sized for the hook's normal worst case:
 | `PreToolUse` | 10 | local reads only (the policy cache and remembered decisions) |
 | `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure` | 30 | the transcript flush: up to two `claude auth status` runs (5 s each) for a session whose billing mode is not settled, then 2 s per unsent turn |
 | `SubagentStop` | 30 | the same flush over the subagent's transcript, then the child `session_end` |
-| `PreCompact`, `PostCompact`, `PostModelSwitch`, `Notification`, `PermissionRequest`, `PermissionDenied`, `UserPromptExpansion`, `TaskCreated`, `TaskCompleted`, `CwdChanged`, `ConfigChange`, `SubagentStart` | 15 | one or two POSTs |
+| `PreCompact`, `PostCompact`, `PostModelSwitch`, `Notification`, `PermissionRequest`, `PermissionDenied`, `UserPromptExpansion`, `TaskCreated`, `TaskCompleted`, `CwdChanged`, `ConfigChange`, `Elicitation`, `ElicitationResult`, `SubagentStart` | 15 | one or two POSTs |
 
 Claude Code cancels a synchronous hook that runs out of time and carries on, as for
 any non-blocking error. What the hook had not done by then is lost or
@@ -1350,7 +1350,8 @@ The hooks that only report run with `async: true`: `UserPromptSubmit`,
 `PostToolUseFailure`, `Stop`, `StopFailure`, `Notification`,
 `PermissionRequest`, `PermissionDenied`, `UserPromptExpansion`,
 `TaskCreated`, `TaskCompleted`, `CwdChanged`, `ConfigChange`,
-`SubagentStart` and `SubagentStop`. Claude Code starts them and
+`ElicitationResult`, `SubagentStart` and `SubagentStop`. Claude
+Code starts them and
 carries on without waiting, which saves the roughly
 200 ms a hook process takes on every prompt, tool call and turn end.
 These stay synchronous:
@@ -1366,7 +1367,12 @@ These stay synchronous:
   pending async hooks at exit. Claude Code holds the next request up to
   five seconds for a `PostModelSwitch` hook's output; the plugin's
   worst case is one 2 s POST, two when the `session_start` backstop also
-  posts.
+  posts;
+- `Elicitation` runs before Claude Code shows an MCP server's form, so
+  its `elicitation_requested` is recorded before the asynchronous
+  `ElicitationResult` hook can report the answer (run together, the two
+  land in either order). It prints nothing, so it never answers the
+  request, and holds the form for the one POST.
 
 Claude Code does not enforce `timeout` on an async hook, so the plugin
 bounds its one open-ended step itself: a hook starts no new
@@ -5578,7 +5584,8 @@ Sensor's acknowledgement / execution response. Fields:
 
 A change in a session that is not a model call, a tool call or a policy
 decision: a context compaction, a model switch, a permission prompt, a
-slash command, a task, a directory or settings change. One event type carries
+slash command, a task, a directory or settings change, an MCP server's
+request for input. One event type carries
 all of them, named by `signal`, so a client that reports a new kind of
 change adds a signal name rather than an event type. The Claude Code
 plugin emits it from its hooks.
@@ -5608,6 +5615,8 @@ plugin emits it from its hooks.
 | `task_completed` | `TaskCompleted` | `task_id`, `teammate_name` | `task_subject`, `task_description` |
 | `cwd_changed` | `CwdChanged`, or the first other hook to run in a new directory | `old_cwd`, `new_cwd` | none |
 | `config_changed` | `ConfigChange` | `source` (`user_settings`, `project_settings`, `local_settings`, `policy_settings`, `skills`), `file_path` | none |
+| `elicitation_requested` | `Elicitation` (an MCP server asks the user for input) | `mcp_server`, `mode` (`form`, `url`), `elicitation_id` (URL mode) | `message`, `url`, `requested_schema` (as JSON text) |
+| `elicitation_responded` | `ElicitationResult` | `mcp_server`, `mode`, `elicitation_id`, `action` (`accept`, `decline`, `cancel`) | `content`, the user's answer (as JSON text) |
 
 The sanitised input fields are the whitelist `tool_call` events use
 (`file_path`, `command`, `query`, `pattern`, `prompt`; see Content
@@ -5635,10 +5644,14 @@ a change whose POST fails is not reported again. A hook that started
 before a `cd` and runs after a later one has recorded the new
 directory reports a change back to its own `cwd`.
 
-The plugin registers the compaction and model-switch hooks
-synchronously and the rest asynchronously. An asynchronous hook
+The plugin registers the compaction, model-switch and `Elicitation`
+hooks synchronously and the rest asynchronously (see Hook
+configuration). Every one of them only observes: an asynchronous hook
 cannot answer a permission prompt or block an expansion, a task or a
-settings change, so the plugin only observes them.
+settings change, and the synchronous `Elicitation` hook prints nothing,
+so it never answers or changes an MCP server's request for input. An
+elicitation's URL is content, not metadata: a URL-mode request can
+carry a token in it.
 
 The worker stores the event and advances the session's `last_seen_at`.
 A `model_switched` signal carries the new model as `model`, which the

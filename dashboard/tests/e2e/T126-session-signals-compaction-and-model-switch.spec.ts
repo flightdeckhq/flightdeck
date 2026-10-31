@@ -55,7 +55,7 @@ test.describe("T126 — session signals: compaction and model switch", () => {
     );
   });
 
-  test("notifications, denials, commands, tasks, directory and settings changes name what happened in the feed line", async ({ page }) => {
+  test("notifications, denials, commands, tasks, directory, settings changes and MCP input name what happened in the feed line", async ({ page }) => {
     const resp = await page.request.get(
       `http://localhost:4000/api/v1/sessions/${RECENT_CLOSED_SESSION_ID}`,
       { headers: { Authorization: "Bearer tok_dev" } },
@@ -70,6 +70,7 @@ test.describe("T126 — session signals: compaction and model switch", () => {
       ["task_completed", "task completed · e2e-tester"],
       ["cwd_changed", "cwd → /work/e2e/api"],
       ["config_changed", "settings changed · project settings"],
+      ["elicitation_responded", "MCP input declined · e2e-asker"],
     ];
     for (const [name, line] of cases) {
       const event = signals.find((e) => e.payload?.signal === name);

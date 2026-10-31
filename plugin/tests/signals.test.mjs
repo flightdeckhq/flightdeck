@@ -24,10 +24,12 @@ function build(hookName, hookEvent, capturePrompts = true, captureToolInputs = t
 }
 
 describe("session_signal events", () => {
-  it("covers the compaction, model-switch, notification, permission, command, task, cwd and config hooks", () => {
+  it("covers the compaction, model-switch, notification, permission, command, task, cwd, config and elicitation hooks", () => {
     assert.deepEqual([...SIGNAL_HOOKS].sort(), [
       "ConfigChange",
       "CwdChanged",
+      "Elicitation",
+      "ElicitationResult",
       "Notification",
       "PermissionDenied",
       "PermissionRequest",
@@ -230,5 +232,38 @@ describe("session_signal events", () => {
     assert.deepEqual(event.signal_data, { source: "skills", file_path: "/home/u/.claude/skills/x/SKILL.md" });
     const noFile = build("ConfigChange", { source: "policy_settings" }, false);
     assert.deepEqual(noFile.signal_data, { source: "policy_settings" });
+  });
+  it("reports an MCP server's request for input by server and mode, its message, URL and form only under capture", () => {
+    const hook = {
+      mcp_server_name: "billing",
+      mode: "url",
+      elicitation_id: "el-7",
+      message: "Sign in to continue",
+      url: "https://auth.example.com/approve?token=secret-123",
+      requested_schema: { type: "object", properties: { code: { type: "string" } } },
+    };
+    const on = build("Elicitation", hook);
+    assert.equal(on.signal, "elicitation_requested");
+    assert.deepEqual(on.signal_data, { mcp_server: "billing", mode: "url", elicitation_id: "el-7" });
+    assert.equal(on.content.response.message, "Sign in to continue");
+    assert.equal(on.content.response.url, "https://auth.example.com/approve?token=secret-123");
+    assert.deepEqual(JSON.parse(on.content.response.requested_schema), hook.requested_schema);
+    const off = build("Elicitation", hook, false);
+    assert.equal(off.content, null);
+    assert.ok(!JSON.stringify(off).includes("secret-123"));
+    assert.ok(!JSON.stringify(off).includes("Sign in"));
+  });
+
+  it("reports the user's response to an elicitation, the answer only under capture", () => {
+    const hook = { mcp_server_name: "billing", mode: "form", action: "accept", content: { code: "4242" } };
+    const on = build("ElicitationResult", hook);
+    assert.equal(on.signal, "elicitation_responded");
+    assert.deepEqual(on.signal_data, { mcp_server: "billing", mode: "form", action: "accept" });
+    assert.deepEqual(JSON.parse(on.content.response.content), { code: "4242" });
+    const off = build("ElicitationResult", hook, false);
+    assert.equal(off.has_content, false);
+    assert.ok(!JSON.stringify(off).includes("4242"));
+    const declined = build("ElicitationResult", { mcp_server_name: "billing", action: "decline" });
+    assert.equal(declined.has_content, false);
   });
 });

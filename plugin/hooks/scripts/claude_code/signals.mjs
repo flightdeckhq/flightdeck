@@ -15,7 +15,9 @@ export const MAX_SIGNAL_DATA_VALUE_BYTES = 256;
 export const SIGNAL_CONTENT_PROVIDER = "flightdeck-signal";
 
 // Each hook's signal name, the metadata it keeps, and the hook fields
-// that are content. ``paths`` are metadata fields holding a path, which
+// that are content (an object one, such as a form's schema, is sent as
+// JSON text). ``renamed`` maps a signal_data key to the hook field it
+// comes from. ``paths`` are metadata fields holding a path, which
 // are cut to the signal_data bound rather than dropped. ``toolInput``
 // marks a hook about a tool call: its tool's sanitised arguments join
 // signal_data while tool-input capture is on, and an MCP tool's server
@@ -92,6 +94,20 @@ const SIGNALS = {
     paths: ["file_path"],
     texts: [],
   },
+  // An MCP server asking the user for input, and the user's answer. A
+  // URL-mode request's URL can carry a token, so it is content.
+  Elicitation: {
+    signal: "elicitation_requested",
+    renamed: { mcp_server: "mcp_server_name" },
+    fields: ["mode", "elicitation_id"],
+    texts: ["message", "url", "requested_schema"],
+  },
+  ElicitationResult: {
+    signal: "elicitation_responded",
+    renamed: { mcp_server: "mcp_server_name" },
+    fields: ["mode", "elicitation_id", "action"],
+    texts: ["content"],
+  },
 };
 
 /** The hook names reported as session_signal events. */
@@ -127,6 +143,10 @@ function cutValue(value) {
 export function buildSignalEvent({ hookName, hookEvent, basePayload, capturePrompts, captureToolInputs = false }) {
   const spec = SIGNALS[hookName];
   const signalData = {};
+  for (const [key, field] of Object.entries(spec.renamed ?? {})) {
+    const value = signalValue(hookEvent[field]);
+    if (value !== undefined) signalData[key] = value;
+  }
   for (const field of spec.fields) {
     const value = signalValue(hookEvent[field]);
     if (value !== undefined) signalData[field] = value;
@@ -154,7 +174,8 @@ export function buildSignalEvent({ hookName, hookEvent, basePayload, captureProm
   const texts = {};
   if (capturePrompts) {
     for (const field of spec.texts) {
-      const text = hookEvent[field];
+      const value = hookEvent[field];
+      const text = value !== null && typeof value === "object" ? JSON.stringify(value, null, 2) : value;
       if (typeof text === "string" && text.trim() !== "") texts[field] = text;
     }
   }

@@ -311,6 +311,16 @@ describe("resolveSessionEndpoint and turnTokenCostFields", () => {
       stop_reason: "tool_use",
     });
   });
+
+  it("carries the turn's request id and effort, and leaves out an oversized one", () => {
+    const endpoint = { billingMode: "subscription", platform: "anthropic", inferenceScope: null };
+    const fields = observe.turnTokenCostFields({ usage: {}, requestId: "req_011Cga", effort: "xhigh" }, "claude-opus-5-5", endpoint);
+    assert.deepEqual(fields.provider_metadata, { platform: "anthropic", request_id: "req_011Cga" });
+    assert.equal(fields.effort, "xhigh");
+    const oversized = observe.turnTokenCostFields({ usage: {}, requestId: "r".repeat(300), effort: "e".repeat(300) }, "m", endpoint);
+    assert.deepEqual(oversized.provider_metadata, { platform: "anthropic" });
+    assert.equal(oversized.effort, undefined);
+  });
 });
 
 describe("readTurns stop reason", () => {
@@ -327,6 +337,26 @@ describe("readTurns stop reason", () => {
     writeFileSync(path, [rec(null), rec("tool_use"), rec(null)].join("\n") + "\n");
     const [turn] = readTurns(path);
     assert.equal(turn.stopReason, "tool_use");
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("reads the request id and effort Claude Code records on a call", async () => {
+    const { readTurns } = await import("../hooks/scripts/observe_cli.mjs");
+    const dir = mkdtempSync(join(tmpdir(), "fd-turns-"));
+    const path = join(dir, "t.jsonl");
+    const rec = (id, extra) =>
+      JSON.stringify({
+        type: "assistant",
+        timestamp: "2026-10-31T09:00:00.000Z",
+        ...extra,
+        message: { id, model: "claude-opus-5-5", content: [] },
+      });
+    writeFileSync(path, [rec("msg_a", { requestId: "req_a", effort: "high" }), rec("msg_b", {})].join("\n") + "\n");
+    const [a, b] = readTurns(path);
+    assert.equal(a.requestId, "req_a");
+    assert.equal(a.effort, "high");
+    assert.equal(b.requestId, null);
+    assert.equal(b.effort, null);
     rmSync(dir, { recursive: true, force: true });
   });
 });

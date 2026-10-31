@@ -4,6 +4,13 @@ All notable changes to Flightdeck are documented here.
 
 ## Unreleased
 
+### Added
+
+- **A model call shows the reasoning effort it ran at.** The event
+  drawer lists Effort (Claude Code's `low` to `max`) beside the serving
+  details. Claude Code calls also record their API request id and the
+  conversation's running token total.
+
 ## v0.8.0 — 2026-10-31
 
 Claude Code sessions are priced the way Claude Code bills them, and the

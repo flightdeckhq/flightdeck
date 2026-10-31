@@ -97,6 +97,7 @@ type EventPayload struct {
 	InferenceScope        string           `json:"inference_scope,omitempty"`
 	ServerToolUse         map[string]int64 `json:"server_tool_use,omitempty"`
 	StopReason            string           `json:"stop_reason,omitempty"`
+	Effort                string           `json:"effort,omitempty"`
 	TokensUsedSess        int              `json:"tokens_used_session"`
 	TokenLimitSess        *int             `json:"token_limit_session"`
 	LatencyMs             *int             `json:"latency_ms"`

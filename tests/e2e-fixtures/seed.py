@@ -1013,6 +1013,7 @@ def _post_session_events(
                     stop_reason="end_turn",
                     service_tier="standard",
                     speed="fast",
+                    effort="xhigh",
                     inference_geo="us",
                     server_tool_use={"web_search_requests": 2},
                     cost_reported=0.0412,

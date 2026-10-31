@@ -19,7 +19,7 @@ func TestBuildEventExtra_TokenCostPayloadFields(t *testing.T) {
 		"service_tier": "batch", "speed": "fast",
 		"inference_geo": "us", "inference_scope": "regional",
 		"server_tool_use": {"web_search_requests": 3},
-		"stop_reason": "end_turn",
+		"stop_reason": "end_turn", "effort": "xhigh",
 		"tokens_reasoning": 7, "provider": "anthropic", "billing_mode": "metered",
 		"model_requested": "claude-sonnet-4-5", "model_served": "claude-sonnet-4-5-20250929",
 		"cost_reported": 0.5, "cost_source": "agent"
@@ -41,6 +41,7 @@ func TestBuildEventExtra_TokenCostPayloadFields(t *testing.T) {
 		"inference_geo":            "us",
 		"inference_scope":          "regional",
 		"stop_reason":              "end_turn",
+		"effort":                   "xhigh",
 	}
 	for k, v := range want {
 		if got[k] != v {

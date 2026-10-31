@@ -1611,7 +1611,14 @@ do not run `claude auth status` again. A Vertex AI session also carries
 Model ids).
 `model_requested` is the model the transcript turn names; Claude Code
 does not expose a separate served id, so `model_served` is the same
-value.
+value. The turn's `requestId` is sent as `provider_metadata.request_id`
+and its `effort` as `effort`. `tokens_used_session` is the running total
+of `tokens_total` over the conversation's turns up to and including this
+one, as the transcript records them (a resumed conversation's earlier
+turns included); a subagent's counts only its own turns. The plugin
+sends no `cost_reported`: Claude Code's transcript holds its cost only
+as occasional cumulative session totals, so its calls are priced from
+the pricing table like any other.
 
 A turn whose every record carries Claude Code's `<synthetic>` model is
 not a model call: Claude Code writes one, with zero usage, for a turn
@@ -2094,6 +2101,7 @@ feeds is described under Cost estimation.
 | `inference_scope` | `payload` | `global` or `regional` cloud endpoint; sent by the sensor and the plugin for Vertex AI, derived by the worker from a Bedrock inference-profile prefix |
 | `server_tool_use` | `payload` | Server-side tool request counters (`web_search_requests`, `web_fetch_requests`, `code_execution_requests`) |
 | `stop_reason` | `payload` | Why generation stopped (`end_turn`, `max_tokens`, `tool_use`, `stop`, `length`, ...), verbatim from the provider |
+| `effort` | `payload` | The reasoning effort a coding agent ran the call at, as it names it (Claude Code: `low`, `medium`, `high`, `xhigh`, `max`) |
 
 `provider_metadata.request_id` (see `post_call`) completes the set. The worker copies each payload field
 above into `events.payload` under the same key.
@@ -2121,7 +2129,8 @@ The ingestion handler rejects events with 400 when:
   `tokens_cache_creation_1h` exceeds `tokens_cache_creation`, when both
   fields of the pair are present.
 - `model_requested`, `model_served`, `service_tier`, `speed`,
-  `inference_geo` or `stop_reason` is longer than 256 characters, or
+  `inference_geo`, `stop_reason` or `effort` is longer than 256
+  characters, or
   `inference_scope` is outside `{global, regional}`, or
   `provider_metadata.platform` is longer than 253 characters.
 

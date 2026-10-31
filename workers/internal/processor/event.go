@@ -298,6 +298,9 @@ func BuildEventExtra(e consumer.EventPayload) ([]byte, error) {
 	if e.StopReason != "" {
 		extra["stop_reason"] = e.StopReason
 	}
+	if e.Effort != "" {
+		extra["effort"] = e.Effort
+	}
 	if len(e.PolicyDecisionPre) > 0 {
 		var v interface{}
 		if err := json.Unmarshal(e.PolicyDecisionPre, &v); err == nil {

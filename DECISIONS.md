@@ -123,3 +123,19 @@ not a tool call, and counting it as one inflated tool-call counts.
 component); keeping `compact_context` beside the new signal (a
 compaction would show twice).
 
+## D219 -- A model call carries the effort it ran at; Claude Code's cost stays an estimate
+
+**Date:** 2026-10-31
+**Decision:** LLM events gain an optional `effort` string (the reasoning
+effort a coding agent ran the call at, such as Claude Code's `low` to
+`max`), bounded like `service_tier`. The Claude Code plugin sends it and
+the call's `requestId` (`provider_metadata.request_id`), and no
+`cost_reported`.
+**Why:** effort drives a call's output length and so its cost, and it is
+on every Claude Code transcript turn. Claude Code's own cost appears in
+the transcript only as occasional cumulative session totals, so a
+per-call figure cannot be derived from it.
+**Rejected alternative:** spreading the cumulative `cost-state` totals
+over the calls between snapshots; a session-level reported total (list
+price even on a subscription).
+

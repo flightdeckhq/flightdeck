@@ -2,7 +2,7 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -647,6 +647,45 @@ describe("observe_cli.mjs", () => {
     await runScript(JSON.stringify({ hook_event_name: "Notification", notification_type: "idle_prompt", session_id: sid, cwd: "/elsewhere" }), env);
     assert.equal(existsSync(cwdFile), false);
     assert.equal(capture.bodies().slice(before).filter((b) => b.signal === "cwd_changed").length, 0);
+  });
+
+  it("sends each call's running conversation total as tokens_used_session, with its request id and effort", async () => {
+    const usage = (n) => ({ input_tokens: n, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
+    const transcriptPath = writeTranscript([
+      { type: "user", timestamp: "2026-10-31T09:00:00.000Z", message: { role: "user", content: "go" } },
+      { type: "assistant", timestamp: "2026-10-31T09:00:01.000Z", requestId: "req_t1", effort: "high", message: { id: "msg_t1", role: "assistant", model: "claude-opus-5-5", usage: usage(100), content: [{ type: "text", text: "a" }] } },
+      { type: "assistant", timestamp: "2026-10-31T09:00:02.000Z", message: { id: "msg_t2", role: "assistant", model: "<synthetic>", usage: usage(0), content: [] } },
+      { type: "assistant", timestamp: "2026-10-31T09:00:03.000Z", requestId: "req_t3", effort: "high", message: { id: "msg_t3", role: "assistant", model: "claude-opus-5-5", usage: usage(200), content: [{ type: "text", text: "b" }] } },
+    ]);
+    const before = capture.bodies().length;
+    const result = await runScript(
+      JSON.stringify({ hook_event_name: "Stop", session_id: "sess-used-1", transcript_path: transcriptPath }),
+      { FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`, FLIGHTDECK_TOKEN: "tok_test", CLAUDE_SESSION_ID: "sess-used-1", FLIGHTDECK_BILLING_MODE: "metered" },
+    );
+    assert.equal(result.code, 0, result.stderr);
+    const calls = capture.bodies().slice(before).filter((b) => b.event_type === "post_call");
+    assert.deepEqual(calls.map((c) => c.tokens_used_session), [110, 320]);
+    assert.deepEqual(calls.map((c) => c.provider_metadata.request_id), ["req_t1", "req_t3"]);
+    assert.ok(calls.every((c) => c.effort === "high"));
+    assert.ok(calls.every((c) => c.cost_reported === undefined));
+
+    // A later flush over the grown transcript (PostToolUse, then Stop
+    // again) continues the total from the start of the conversation.
+    appendFileSync(
+      transcriptPath,
+      JSON.stringify({ type: "assistant", timestamp: "2026-10-31T09:00:04.000Z", message: { id: "msg_t4", role: "assistant", model: "claude-opus-5-5", usage: usage(50), content: [] } }) + "\n",
+    );
+    const later = capture.bodies().length;
+    for (const hook of ["PostToolUse", "Stop"]) {
+      const r = await runScript(
+        JSON.stringify({ hook_event_name: hook, session_id: "sess-used-1", transcript_path: transcriptPath, tool_name: "Read", tool_input: {}, tool_response: {} }),
+        { FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`, FLIGHTDECK_TOKEN: "tok_test", CLAUDE_SESSION_ID: "sess-used-1", FLIGHTDECK_BILLING_MODE: "metered" },
+      );
+      assert.equal(r.code, 0, r.stderr);
+    }
+    const next = capture.bodies().slice(later).filter((b) => b.event_type === "post_call");
+    assert.deepEqual(next.map((c) => c.tokens_used_session), [380]);
+    rmSync(dirname(transcriptPath), { recursive: true, force: true });
   });
 
   it("labels the next pre_call with the model a switch moved to, not the transcript's older one", async () => {

@@ -382,22 +382,29 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
 
   // A change of working directory. Claude Code runs a plugin's
   // CwdChanged hook only when the user's settings register one too, so
-  // every hook compares the cwd it runs in with the last one recorded
-  // and reports a difference as cwd_changed. The CwdChanged hook, when
-  // it does run, records through the same file, so a change is reported
-  // once whichever hook sees it first.
+  // each hook from here on compares the cwd it runs in with the last one
+  // recorded and reports a difference as cwd_changed. The CwdChanged
+  // hook, when it does run, records through the same file, so a change
+  // is reported once, by whichever hook records it first. An ended
+  // session records nothing: SessionEnd removed its file. The record is
+  // written before the POST, so a change whose POST fails is not
+  // reported again.
   const currentCwd = hookName === "CwdChanged" ? hookEvent.new_cwd : hookEvent.cwd;
-  const previousCwd = swapSessionCwd(sessionId, currentCwd);
-  if (hookName === "CwdChanged") {
-    if (previousCwd === currentCwd) return;
-  } else if (!ended && previousCwd !== null && typeof currentCwd === "string" && currentCwd !== "" && previousCwd !== currentCwd) {
-    const payload = buildSignalEvent({
-      hookName: "CwdChanged",
-      hookEvent: { old_cwd: previousCwd, new_cwd: currentCwd },
-      basePayload,
-      capturePrompts: cfg.capturePrompts,
-    });
-    await postEvent(cfg.server, cfg.token, sessionId, payload);
+  if (hookName === "CwdChanged" && (typeof currentCwd !== "string" || currentCwd === "")) return;
+  if (!ended) {
+    const { changed, previous } = swapSessionCwd(sessionId, currentCwd);
+    if (hookName === "CwdChanged") {
+      // A hook in the new directory already reported this change.
+      if (!changed) return;
+    } else if (changed && previous !== null) {
+      const payload = buildSignalEvent({
+        hookName: "CwdChanged",
+        hookEvent: { old_cwd: previous, new_cwd: currentCwd },
+        basePayload,
+        capturePrompts: cfg.capturePrompts,
+      });
+      await postEvent(cfg.server, cfg.token, sessionId, payload);
+    }
   }
 
   // Stop: every un-emitted LLM turn in the transcript becomes a

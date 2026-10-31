@@ -2,7 +2,7 @@ import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -38,6 +38,7 @@ import {
 import { deriveAgentId } from "../hooks/scripts/agent_id.mjs";
 import { DEFAULT_SERVER, DEFAULT_TOKEN } from "../hooks/scripts/core/config.mjs";
 import { MAX_EVENT_BODY_BYTES } from "../hooks/scripts/core/poster.mjs";
+import { stateDir } from "../hooks/scripts/core/state.mjs";
 import {
   readSessionPolicyCache,
   writeSessionPolicyCache,
@@ -585,6 +586,39 @@ describe("observe_cli.mjs", () => {
     assert.equal(hooked.length, 1);
     assert.deepEqual(hooked[0].signal_data, { old_cwd: "/repo/api", new_cwd: "/tmp" });
     assert.deepEqual(await run({ hook_event_name: "Notification", notification_type: "idle_prompt", cwd: "/tmp" }), []);
+  });
+
+  it("records no directory for a hook without one, and reports nothing for a CwdChanged hook without new_cwd", async () => {
+    const sid = "sess-cwd-missing-1";
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: sid,
+    };
+    const cwdFile = join(stateDir({ ...process.env, CLAUDE_PLUGIN_DATA: "" }), `cwd-${sid}.txt`);
+    const before = capture.bodies().length;
+    await runScript(JSON.stringify({ hook_event_name: "Notification", notification_type: "idle_prompt", session_id: sid }), env);
+    assert.equal(existsSync(cwdFile), false);
+    await runScript(JSON.stringify({ hook_event_name: "CwdChanged", session_id: sid, old_cwd: "/x", new_cwd: "" }), env);
+    assert.equal(capture.bodies().slice(before).filter((b) => b.signal === "cwd_changed").length, 0);
+  });
+
+  it("SessionEnd removes the session's directory record and a later hook does not recreate it", async () => {
+    const sid = "sess-cwd-end-1";
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: sid,
+    };
+    const cwdFile = join(stateDir({ ...process.env, CLAUDE_PLUGIN_DATA: "" }), `cwd-${sid}.txt`);
+    await runScript(JSON.stringify({ hook_event_name: "SessionStart", session_id: sid, source: "startup", cwd: "/end" }), env);
+    assert.equal(readFileSync(cwdFile, "utf8"), "/end");
+    await runScript(JSON.stringify({ hook_event_name: "SessionEnd", session_id: sid, reason: "other", cwd: "/end" }), env);
+    assert.equal(existsSync(cwdFile), false);
+    const before = capture.bodies().length;
+    await runScript(JSON.stringify({ hook_event_name: "Notification", notification_type: "idle_prompt", session_id: sid, cwd: "/elsewhere" }), env);
+    assert.equal(existsSync(cwdFile), false);
+    assert.equal(capture.bodies().slice(before).filter((b) => b.signal === "cwd_changed").length, 0);
   });
 
   it("labels the next pre_call with the model a switch moved to, not the transcript's older one", async () => {

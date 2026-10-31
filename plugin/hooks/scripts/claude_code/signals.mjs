@@ -1,7 +1,8 @@
 // Claude Code hooks that report a change in the session rather than a
-// call (a compaction, a model switch, a slash command, a task) become session_signal events
-// (ARCHITECTURE.md, session_signal): a signal name, a small metadata
-// object, and the hook's text as content only while prompt capture is on.
+// call (a compaction, a model switch, a slash command, a task) become
+// session_signal events (ARCHITECTURE.md, session_signal): a signal
+// name, a small metadata object, and the hook's text as content only
+// while prompt capture is on.
 
 import { boundedToken, truncateUtf8 } from "../core/config.mjs";
 import { sanitizeToolInput } from "./tools.mjs";

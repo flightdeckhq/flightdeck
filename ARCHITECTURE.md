@@ -1350,7 +1350,8 @@ The hooks that only report run with `async: true`: `UserPromptSubmit`,
 `PostToolUseFailure`, `Stop`, `StopFailure`, `Notification`,
 `PermissionRequest`, `PermissionDenied`, `UserPromptExpansion`,
 `TaskCreated`, `TaskCompleted`, `CwdChanged`, `ConfigChange`,
-`SubagentStart` and `SubagentStop`. Claude Code starts them and carries on without waiting, which saves the roughly
+`SubagentStart` and `SubagentStop`. Claude Code starts them and
+carries on without waiting, which saves the roughly
 200 ms a hook process takes on every prompt, tool call and turn end.
 These stay synchronous:
 
@@ -5575,7 +5576,7 @@ plugin emits it from its hooks.
 | `command_expanded` | `UserPromptExpansion` | `expansion_type` (`slash_command`, `mcp_prompt`), `command_name`, `command_source` | `command_args` |
 | `task_created` | `TaskCreated` | `task_id`, `teammate_name` | `task_subject`, `task_description` |
 | `task_completed` | `TaskCompleted` | `task_id`, `teammate_name` | `task_subject`, `task_description` |
-| `cwd_changed` | `CwdChanged`, or any hook that runs in a new directory | `old_cwd`, `new_cwd` | none |
+| `cwd_changed` | `CwdChanged`, or the first other hook to run in a new directory | `old_cwd`, `new_cwd` | none |
 | `config_changed` | `ConfigChange` | `source` (`user_settings`, `project_settings`, `local_settings`, `policy_settings`, `skills`), `file_path` | none |
 
 The sanitised input fields are the whitelist `tool_call` events use
@@ -5591,11 +5592,18 @@ its `post_call` content).
 
 Claude Code runs a plugin's `CwdChanged` hook only when the user's
 settings register a `CwdChanged` hook too, so the plugin also detects a
-change itself: it keeps the directory each session's hooks last ran in
-(set at `SessionStart`), and a hook whose `cwd` differs reports
-`cwd_changed` before its own event. The `CwdChanged` hook records
-through the same state, so a change is reported once, by whichever
-hook sees it first.
+change itself. It keeps the directory each session's hooks last ran in,
+set at `SessionStart`. Every hook except `SessionStart`, `SessionEnd`,
+`SubagentStart`, `SubagentStop` and `PreToolUse` compares its `cwd`
+with it, and one whose `cwd` differs reports `cwd_changed` before its
+own event; a subagent's hooks compare against the subagent session's
+own record. The compare and the write happen under a lock, so of
+several hooks running at once in the new directory exactly one reports
+the change, and the `CwdChanged` hook records through the same state,
+so a change is reported once. The record is written before the POST:
+a change whose POST fails is not reported again. A hook that started
+before a `cd` and runs after a later one has recorded the new
+directory reports a change back to its own `cwd`.
 
 The plugin registers the compaction and model-switch hooks
 synchronously and the rest asynchronously. An asynchronous hook

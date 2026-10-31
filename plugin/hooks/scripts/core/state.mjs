@@ -22,6 +22,7 @@ import {
   readdirSync,
   readFileSync,
   renameSync,
+  rmdirSync,
   statSync,
   unlinkSync,
   utimesSync,
@@ -363,26 +364,69 @@ function cwdPath(sessionId) {
   return join(stateDir(), `cwd-${sessionId}.txt`);
 }
 
+// Async hooks run concurrently (parallel tool calls), so the compare and
+// the write happen under a lock directory: mkdir either creates it or
+// fails, for exactly one of two racing hooks. A lock older than this is
+// left by a hook that died holding it; a swap is two small file
+// operations, so a live holder never comes close.
+const CWD_LOCK_STALE_MS = 5_000;
+
+function takeCwdLock(lockPath) {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      mkdirSync(lockPath);
+      return true;
+    } catch (err) {
+      if (err?.code !== "EEXIST") return false;
+      try {
+        if (Date.now() - statSync(lockPath).mtimeMs < CWD_LOCK_STALE_MS) return false;
+        rmdirSync(lockPath);
+      } catch {
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
 /**
- * Record ``cwd`` as the session's working directory and return the one
- * recorded before it, or null when there was none or it is unreadable.
- * A non-string ``cwd`` records nothing.
+ * Record ``cwd`` as the session's working directory. Returns
+ * ``{changed, previous}``: ``changed`` is true for exactly one hook per
+ * change, the one that recorded it, and ``previous`` is the directory
+ * recorded before (null when there was none). A missing ``cwd``, a
+ * failed lock (another hook is recording) or an unwritable state
+ * directory records nothing and reports no change.
  */
 export function swapSessionCwd(sessionId, cwd) {
-  let previous = null;
-  try {
-    previous = readFileSync(cwdPath(sessionId), "utf8") || null;
-  } catch {
-    /* none recorded yet */
-  }
-  if (typeof cwd !== "string" || cwd === "" || cwd === previous) return previous;
+  const none = { changed: false, previous: null };
+  if (typeof cwd !== "string" || cwd === "") return none;
+  const path = cwdPath(sessionId);
+  const lockPath = `${path}.lock`;
   try {
     mkdirOwnerOnly(stateDir());
-    writeFileSync(cwdPath(sessionId), cwd);
   } catch {
-    /* silent */
+    return none;
   }
-  return previous;
+  if (!takeCwdLock(lockPath)) return none;
+  try {
+    let previous = null;
+    try {
+      previous = readFileSync(path, "utf8") || null;
+    } catch {
+      /* none recorded yet */
+    }
+    if (cwd === previous) return { changed: false, previous };
+    writeFileSync(path, cwd);
+    return { changed: true, previous };
+  } catch {
+    return none;
+  } finally {
+    try {
+      rmdirSync(lockPath);
+    } catch {
+      /* removed as stale by another hook */
+    }
+  }
 }
 
 // The model a session switched to and when, so the next prompt is

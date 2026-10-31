@@ -30,7 +30,7 @@ import { clearSessionCacheFiles, ensureSessionStarted, getSessionId, sessionHasE
 import { SESSION_END_WORKER_DEADLINE_MS, spawnDetachedSessionEnd } from "./session_end.mjs";
 import { SIGNAL_HOOKS, buildSignalEvent } from "./signals.mjs";
 import { buildStopFailureEvent, failedTurnFor } from "./stop_failure.mjs";
-import { _subagentInteriorContext, emitSubagentEvent } from "./subagent.mjs";
+import { _subagentInteriorContext, emitSubagentEvent, ownSubagentTurns } from "./subagent.mjs";
 import { buildToolErrorBlock, captureErrorText, hookDurationMs, sanitizeToolInput } from "./tools.mjs";
 import { isRealModel, readTurns } from "./transcript.mjs";
 
@@ -238,6 +238,15 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   const getTurns = () => {
     if (cachedTurns !== null) return cachedTurns;
     cachedTurns = readTurns(transcriptPath);
+    // Inside a fork subagent the transcript starts with a copy of the
+    // parent's history; those turns are the parent's to report.
+    if (interiorCtx) {
+      cachedTurns = ownSubagentTurns(cachedTurns, {
+        role: interiorCtx.agentRole,
+        subagentTranscript: transcriptPath,
+        parentTranscript: hookEvent.transcript_path,
+      });
+    }
     return cachedTurns;
   };
   const getLatestTurn = () => {

@@ -1531,14 +1531,44 @@ Two hooks bracket every Claude Code Task subagent invocation:
 - `SubagentStart` — emitted when Claude Code spawns a Task subagent.
   The plugin emits a child `session_start` whose `parent_session_id`
   carries the outer session's id and whose `agent_role` carries the
-  hook payload's `agent_type` (e.g. `"Explore"`). When
-  `capturePrompts=true`, the Task tool's `prompt` argument is
+  hook payload's `agent_type` (e.g. `"Explore"`, `"fork"`). When
+  `capturePrompts=true`, the prompt the parent gave the subagent is
   captured as `incoming_message` on the child's `session_start`
   payload.
 - `SubagentStop` — emitted when the Task subagent returns. The
   plugin emits a child `session_end` and (when capture is on) the
-  tool's response as `outgoing_message`. `SubagentStop` is the
+  subagent's report back as `outgoing_message`. `SubagentStop` is the
   canonical end-of-life signal for the child.
+
+Neither hook carries the messages themselves, so the plugin reads them
+from the files Claude Code writes for the subagent next to the parent
+transcript: `<parent>/subagents/agent-<agent_id>.jsonl` (its
+transcript) and `agent-<agent_id>.meta.json`, whose `toolUseId` names
+the parent's `Agent` tool call. Both exist by the time the asynchronous
+`SubagentStart` hook runs; the hook waits up to one second for them.
+
+- The incoming message is the `prompt` input of that `Agent` tool call,
+  found in the subagent's transcript or in the last 4 MiB of the
+  parent's (the call is the parent's latest turn when the hook runs),
+  so parallel subagents each get their own; without a meta file it is
+  the subagent transcript's first user message given as a string, and
+  a fork has none.
+- The outgoing message is the `message` of the subagent's last
+  `SubagentHandback` call (the tool a subagent reports back through),
+  else the hook's `last_assistant_message`, else the text of the
+  subagent's last assistant turn.
+- A hook that carries `tool_input.prompt` or `tool_response` itself
+  (older Claude Code versions) uses those.
+
+A fork subagent (`agent_type` `fork`, or `isFork` in its meta file)
+starts from a copy of the parent's history, so its transcript repeats
+the parent's turns, ending with the one that made the `Agent` call,
+under their message ids. The copy ends at the record holding the meta
+file's `toolUseId`; without a meta file, the copied turns are those
+whose message ids are in the parent's transcript. The fork's flushes,
+at its interior hooks and at `SubagentStop`, emit only the turns after
+the copy, its outgoing message comes from those turns, and the parent's
+`post_call` events carry the copied turns' tokens.
 
 `PostToolUseFailure` on a Task tool emits the parent's `tool_call`
 event with the structured error block; it does NOT emit a child

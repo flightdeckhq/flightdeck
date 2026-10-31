@@ -649,6 +649,28 @@ describe("observe_cli.mjs", () => {
     assert.equal(capture.bodies().slice(before).filter((b) => b.signal === "cwd_changed").length, 0);
   });
 
+  it("sends each call's running conversation total as tokens_used_session, with its request id and effort", async () => {
+    const usage = (n) => ({ input_tokens: n, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 });
+    const transcriptPath = writeTranscript([
+      { type: "user", timestamp: "2026-10-31T09:00:00.000Z", message: { role: "user", content: "go" } },
+      { type: "assistant", timestamp: "2026-10-31T09:00:01.000Z", requestId: "req_t1", effort: "high", message: { id: "msg_t1", role: "assistant", model: "claude-opus-5-5", usage: usage(100), content: [{ type: "text", text: "a" }] } },
+      { type: "assistant", timestamp: "2026-10-31T09:00:02.000Z", message: { id: "msg_t2", role: "assistant", model: "<synthetic>", usage: usage(0), content: [] } },
+      { type: "assistant", timestamp: "2026-10-31T09:00:03.000Z", requestId: "req_t3", effort: "high", message: { id: "msg_t3", role: "assistant", model: "claude-opus-5-5", usage: usage(200), content: [{ type: "text", text: "b" }] } },
+    ]);
+    const before = capture.bodies().length;
+    const result = await runScript(
+      JSON.stringify({ hook_event_name: "Stop", session_id: "sess-used-1", transcript_path: transcriptPath }),
+      { FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`, FLIGHTDECK_TOKEN: "tok_test", CLAUDE_SESSION_ID: "sess-used-1", FLIGHTDECK_BILLING_MODE: "metered" },
+    );
+    assert.equal(result.code, 0, result.stderr);
+    const calls = capture.bodies().slice(before).filter((b) => b.event_type === "post_call");
+    assert.deepEqual(calls.map((c) => c.tokens_used_session), [110, 320]);
+    assert.deepEqual(calls.map((c) => c.provider_metadata.request_id), ["req_t1", "req_t3"]);
+    assert.ok(calls.every((c) => c.effort === "high"));
+    assert.ok(calls.every((c) => c.cost_reported === undefined));
+    rmSync(dirname(transcriptPath), { recursive: true, force: true });
+  });
+
   it("labels the next pre_call with the model a switch moved to, not the transcript's older one", async () => {
     const transcriptPath = writeTranscript([
       { type: "user", timestamp: "2026-04-17T10:00:00.000Z", message: { role: "user", content: "hi" } },

@@ -359,6 +359,8 @@ export interface EventPayloadFields {
   server_tool_use?: ServerToolUse;
   /** Why generation stopped, verbatim from the provider. */
   stop_reason?: string;
+  /** The reasoning effort a coding agent ran the call at. */
+  effort?: string;
   // Operator-actionable enrichment.
   policy_decision?: PolicyDecisionBlock;
   originating_event_id?: string;

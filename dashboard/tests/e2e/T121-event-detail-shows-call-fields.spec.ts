@@ -44,6 +44,8 @@ test.describe("T121 — event detail shows a call's per-call fields", () => {
       "anthropic/claude-sonnet-4-5",
       "Metered",
       "Service tier",
+      "Effort",
+      "xhigh",
       "Inference geo",
       "2 web searches",
       "$0.041 · computed by the client",

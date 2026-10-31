@@ -514,6 +514,7 @@ function servingRows(event: AgentEvent): [string, string][] {
   if (event.platform) rows.push(["Platform", event.platform]);
   if (p?.service_tier) rows.push(["Service tier", p.service_tier]);
   if (p?.speed) rows.push(["Speed", p.speed]);
+  if (p?.effort) rows.push(["Effort", p.effort]);
   if (p?.inference_geo) rows.push(["Inference geo", p.inference_geo]);
   if (p?.inference_scope) rows.push(["Inference scope", p.inference_scope]);
   if (event.cost_reported != null) {

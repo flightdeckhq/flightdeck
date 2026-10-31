@@ -123,3 +123,22 @@ not a tool call, and counting it as one inflated tool-call counts.
 component); keeping `compact_context` beside the new signal (a
 compaction would show twice).
 
+## D219 -- A model call carries the effort it ran at; Claude Code's cost stays an estimate
+
+**Date:** 2026-10-31
+**Decision:** LLM events gain an optional `effort` string (the reasoning
+effort a coding agent ran the call at, such as Claude Code's `low` to
+`max`), bounded like `service_tier`. The Claude Code plugin sends it, the
+call's `requestId` as `provider_metadata.request_id`, and the
+conversation's running token total as `tokens_used_session`. It sends no
+`cost_reported`: Flightdeck prices its calls from the pricing table.
+**Why:** effort drives a call's output length and so its cost, and it is
+on every Claude Code transcript turn. Claude Code's own cost appears in
+the transcript only as occasional cumulative session totals, so a
+per-call figure cannot be derived from it.
+**Rejected alternative:** spreading the cumulative `cost-state` totals
+over the calls between two snapshots (a guess presented as a reported
+cost); a session-level reported total (a new contract for a figure that
+is list-price value even on a subscription). Per-call cost arrives with
+the OTLP receiver, whose `api_request` record carries it.
+

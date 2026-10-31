@@ -35,6 +35,7 @@ func postCallWithTokenCost() map[string]any {
 		"inference_scope":          "regional",
 		"server_tool_use":          map[string]any{"web_search_requests": 2},
 		"stop_reason":              "end_turn",
+		"effort":                   "high",
 		"provider_metadata":        map[string]any{"platform": "bedrock", "request_id": "req_1"},
 	}
 }
@@ -55,7 +56,7 @@ func TestEventsHandler_TokenCostFields_NullsCountAsAbsent(t *testing.T) {
 		"model_requested", "model_served", "provider", "billing_mode",
 		"tokens_cache_creation_1h", "tokens_reasoning", "cost_reported",
 		"cost_source", "service_tier", "speed", "inference_geo",
-		"inference_scope", "server_tool_use", "stop_reason",
+		"inference_scope", "server_tool_use", "stop_reason", "effort",
 	} {
 		payload[key] = nil
 	}
@@ -88,6 +89,7 @@ func TestEventsHandler_TokenCostFields_Rejections(t *testing.T) {
 		{"oversize model_requested", func(p map[string]any) { p["model_requested"] = strings.Repeat("m", 257) }, "model_requested"},
 		{"non-string model_served", func(p map[string]any) { p["model_served"] = 42 }, "model_served"},
 		{"oversize stop_reason", func(p map[string]any) { p["stop_reason"] = strings.Repeat("s", 257) }, "stop_reason"},
+		{"oversize effort", func(p map[string]any) { p["effort"] = strings.Repeat("e", 257) }, "effort"},
 		{"server_tool_use not an object", func(p map[string]any) { p["server_tool_use"] = []any{1} }, "server_tool_use"},
 		{"negative server tool counter", func(p map[string]any) {
 			p["server_tool_use"] = map[string]any{"web_search_requests": -1}

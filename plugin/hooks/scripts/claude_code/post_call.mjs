@@ -88,14 +88,17 @@ function endpointOf(record) {
  * The token, model and cost fields of one transcript turn's post_call
  * (ARCHITECTURE.md, POST /v1/events): the vendor, the session's billing
  * mode and platform, the model id (Claude Code exposes no separate
- * served id, so requested and served are the same), and what the
- * turn's usage and stop reason report.
+ * served id, so requested and served are the same), the API request id
+ * and reasoning effort, and what the turn's usage and stop reason
+ * report.
  */
 export function turnTokenCostFields(turn, model, endpoint) {
+  const providerMetadata = { platform: endpoint.platform };
+  if (fitsDetailString(turn.requestId)) providerMetadata.request_id = turn.requestId;
   const fields = {
     provider: "anthropic",
     billing_mode: endpoint.billingMode,
-    provider_metadata: { platform: endpoint.platform },
+    provider_metadata: providerMetadata,
     ...usageDetailFields(turn.usage || {}),
   };
   if (fitsDetailString(model)) {
@@ -104,6 +107,7 @@ export function turnTokenCostFields(turn, model, endpoint) {
   }
   if (endpoint.inferenceScope) fields.inference_scope = endpoint.inferenceScope;
   if (fitsDetailString(turn.stopReason)) fields.stop_reason = turn.stopReason;
+  if (fitsDetailString(turn.effort)) fields.effort = turn.effort;
   return fields;
 }
 
@@ -216,8 +220,12 @@ export async function flushPostCallTurns({
   reclaimOrphaned = false,
 }) {
   let seen = 0;
+  // The conversation's running token total through each turn: the
+  // client-side tokens_used_session, as the sensor sends its own.
+  let usedSoFar = 0;
   for (const turn of turns) {
     seen += 1;
+    if (!turn.synthetic) usedSoFar += tokensFromUsage(turn.usage).tokens_total;
     // Past the deadline an orphaned backlog against a dead server stops
     // instead of paying one aborted POST per turn. The detached
     // SessionEnd worker passes its own, shorter deadline.
@@ -264,6 +272,7 @@ export async function flushPostCallTurns({
       latency_ms: latencyMs,
       timestamp: turn.lastTimestamp || new Date().toISOString(),
       ...tokens,
+      tokens_used_session: usedSoFar,
       // A subagent runs in its parent's Claude Code process on the same
       // login, so its calls are billed as the parent session's are.
       ...turnTokenCostFields(turn, resolvedModel, resolveSessionEndpoint(basePayload.parent_session_id || sessionId)),

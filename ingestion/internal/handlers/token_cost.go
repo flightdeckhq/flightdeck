@@ -110,7 +110,7 @@ func validateTokenCostFields(payload map[string]any) string {
 
 	for _, key := range []string{
 		"model_requested", "model_served", "service_tier", "speed",
-		"inference_geo", "stop_reason",
+		"inference_geo", "stop_reason", "effort",
 	} {
 		if v, ok := present(payload, key); ok {
 			if msg := checkString(key, v, maxTokenCostStringLen); msg != "" {

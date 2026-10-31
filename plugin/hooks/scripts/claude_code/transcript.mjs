@@ -138,6 +138,10 @@ export function readTurns(transcriptPath) {
       if (typeof rec.message?.stop_reason === "string" && rec.message.stop_reason) {
         group.stopReason = rec.message.stop_reason;
       }
+      // The API request id and the reasoning effort Claude Code ran the
+      // call at, on each of the call's records.
+      if (typeof rec.requestId === "string" && rec.requestId) group.requestId = rec.requestId;
+      if (typeof rec.effort === "string" && rec.effort) group.effort = rec.effort;
       const blocks = rec.message?.content;
       if (Array.isArray(blocks)) {
         for (const b of blocks) group.contentBlocks.push(b);
@@ -153,6 +157,8 @@ export function readTurns(transcriptPath) {
       firstTimestamp: group.firstTimestamp,
       lastTimestamp: group.lastTimestamp,
       stopReason: group.stopReason || null,
+      requestId: group.requestId || null,
+      effort: group.effort || null,
       synthetic: group.synthetic,
       apiError: group.apiError,
       apiErrorKind: group.apiErrorKind ?? null,

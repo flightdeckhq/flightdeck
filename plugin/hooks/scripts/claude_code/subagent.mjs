@@ -8,6 +8,7 @@ import { basename, dirname, join } from "node:path";
 import { deriveAgentId, NAMESPACE_FLIGHTDECK } from "../agent_id.mjs";
 import { PLUGIN_VERSION } from "../core/config.mjs";
 import { postEvent } from "../core/poster.mjs";
+import { claimSessionStart, isSessionStarted, markSessionStarted, releaseSessionStart } from "../core/state.mjs";
 import { uuid5 } from "../uuid5.mjs";
 import { flushPostCallTurns } from "./post_call.mjs";
 import { readTurns } from "./transcript.mjs";
@@ -691,5 +692,16 @@ export async function emitSubagentEvent({
     }
   }
 
-  await postEvent(cfg.server, cfg.token, childSessionId, payload);
+  if (hookName !== "SubagentStart") {
+    await postEvent(cfg.server, cfg.token, childSessionId, payload);
+    return;
+  }
+  // The child's session_start goes through the same claim and marker as
+  // any other, so the child's interior hooks do not send another one.
+  if (isSessionStarted(childSessionId) || !claimSessionStart(childSessionId)) return;
+  try {
+    if (await postEvent(cfg.server, cfg.token, childSessionId, payload)) markSessionStarted(childSessionId);
+  } finally {
+    releaseSessionStart(childSessionId);
+  }
 }

@@ -2141,6 +2141,7 @@ describe("observe_cli helpers", () => {
         "UserPromptExpansion",
         "TaskCreated",
         "TaskCompleted",
+        "TeammateIdle",
         "CwdChanged",
         "ConfigChange",
         "Elicitation",
@@ -3271,6 +3272,21 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
     assert.ok(call, "expected the child's post_call");
     assert.equal(call.billing_mode, "subscription");
     rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("sends one session_start per subagent: SubagentStart's, and none from its interior hooks", async () => {
+    const env = {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-once-1",
+    };
+    const before = capture.bodies().length;
+    await runScript(JSON.stringify({ hook_event_name: "SubagentStart", session_id: "sess-outer-once-1", agent_id: "aonce1", agent_type: "general-purpose" }), env);
+    // Three interior hooks of the subagent at once, as parallel tool calls run.
+    const interior = { hook_event_name: "Notification", notification_type: "idle_prompt", session_id: "sess-outer-once-1", agent_id: "aonce1", agent_type: "general-purpose" };
+    await Promise.all([runScript(JSON.stringify(interior), env), runScript(JSON.stringify(interior), env), runScript(JSON.stringify(interior), env)]);
+    const starts = capture.bodies().slice(before).filter((b) => b.event_type === "session_start" && b.parent_session_id === "sess-outer-once-1");
+    assert.equal(starts.length, 1);
   });
 
   it("capture_prompts=false drops incoming_message and outgoing_message at the boundary", async () => {

@@ -37,6 +37,7 @@ export const EVENT_MAP = {
   CwdChanged: "session_signal",
   ConfigChange: "session_signal",
   Elicitation: "session_signal",
+  TeammateIdle: "session_signal",
   ElicitationResult: "session_signal",
 };
 

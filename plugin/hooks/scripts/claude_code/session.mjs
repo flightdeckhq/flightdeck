@@ -9,9 +9,11 @@ import {
   clearSessionMarkers,
   cwdMarkerKey,
   ephemeralSessionId,
+  claimSessionStart,
   isSessionStarted,
   markerKeyFor,
   markSessionStarted,
+  releaseSessionStart,
   clearEndedMarker,
   readEndedMarker,
   readOrCreateSessionMarker,
@@ -173,6 +175,18 @@ export function claudeCodeSessionId(hookEvent = {}, env = process.env) {
 // ---------------------------------------------------------------------
 
 export async function ensureSessionStarted(server, token, sessionId, basePayload, extras = {}) {
+  if (isSessionStarted(sessionId)) return;
+  // Another hook of this session is sending its session_start now.
+  if (!claimSessionStart(sessionId)) return;
+  try {
+    await sendSessionStart(server, token, sessionId, basePayload, extras);
+  } finally {
+    releaseSessionStart(sessionId);
+  }
+}
+
+async function sendSessionStart(server, token, sessionId, basePayload, extras) {
+  // A hook that held the claim before this one may have sent it.
   if (isSessionStarted(sessionId)) return;
 
   const startPayload = {

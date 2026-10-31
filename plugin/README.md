@@ -112,6 +112,7 @@ Each row is what the dashboard shows for a given Claude Code hook.
 | PostModelSwitch | `session_signal` with `signal=model_switched`: the old and new model, what asked for the switch (`command`, `picker`, `sdk`, `auto` fallback, `resume`), the context size and Claude Code's cache-write cost estimate. The new model becomes the session's model. Needs Claude Code 2.1.251 or later; older versions ignore the hook. |
 | UserPromptExpansion | `session_signal` with `signal=command_expanded` when a slash command or an MCP prompt expands: the `expansion_type` (`slash_command`, `mcp_prompt`), the command's name and where it comes from; its arguments as content when `capturePrompts=true`. |
 | TaskCreated / TaskCompleted | `session_signal` with `signal=task_created` or `task_completed`: the `task_id` and, in an agent team, the `teammate_name`; the task's subject and description as content when `capturePrompts=true`. |
+| TeammateIdle | `session_signal` with `signal=teammate_idle` and the `teammate_name` when an agent-team teammate finishes its turn and waits. |
 | CwdChanged | `session_signal` with `signal=cwd_changed` and the old and new working directory. Claude Code runs this hook from a plugin only when your settings register a `CwdChanged` hook too, so the plugin also reports a change when a later hook (other than the session start and end, subagent and `PreToolUse` hooks) runs in a different directory than the last one, once per change. |
 | ConfigChange | `session_signal` with `signal=config_changed`: which settings changed (`user_settings`, `project_settings`, `local_settings`, `policy_settings`, `skills`) and the file. |
 | Elicitation | `session_signal` with `signal=elicitation_requested` when an MCP server asks you for input: the server and the `mode` (`form`, or `url` with its `elicitation_id`); the message, the URL and the requested form fields as content when `capturePrompts=true`. The hook runs before the form is shown, so the request is recorded before your answer, but it prints nothing and never answers the request. |
@@ -196,7 +197,7 @@ Token counts surface on `post_call` events. The plugin flushes `post_call` on ev
 
 Most `post_call` events land via the PostToolUse flush. `Stop` and `SessionEnd` act as backstops for the final turn that had no tool follow-up. If turns are still missing:
 
-- Make sure `SessionEnd` is wired in `plugin/hooks/hooks.json` (the plugin ships with twenty-three hooks -- `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`, `SessionEnd`, `PreCompact`, `PostCompact`, `PostModelSwitch`, `Notification`, `PermissionRequest`, `PermissionDenied`, `UserPromptExpansion`, `TaskCreated`, `TaskCompleted`, `CwdChanged`, `ConfigChange`, `Elicitation`, `ElicitationResult`, `SubagentStart`, `SubagentStop` -- and a custom `hooks.json` override might have dropped some).
+- Make sure `SessionEnd` is wired in `plugin/hooks/hooks.json` (the plugin ships with twenty-four hooks -- `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure`, `SessionEnd`, `PreCompact`, `PostCompact`, `PostModelSwitch`, `Notification`, `PermissionRequest`, `PermissionDenied`, `UserPromptExpansion`, `TaskCreated`, `TaskCompleted`, `TeammateIdle`, `CwdChanged`, `ConfigChange`, `Elicitation`, `ElicitationResult`, `SubagentStart`, `SubagentStop` -- and a custom `hooks.json` override might have dropped some).
 - Check that Claude Code's JSONL transcript is readable at the path the hooks pass in.
 - Confirm the session did not exit via `SIGKILL` before the last hook could run.
 
@@ -237,7 +238,8 @@ No background threads inside a hook. No polling. The only state the plugin persi
 
 - `session-<hash>.txt`: the session id for the current Claude Code invocation (a random UUID), keyed on the native Claude Code session id.
 - `mcp-policy-<sid>.json`: the MCP policy fetched at `SessionStart` and read by every `PreToolUse`; deleted at `SessionEnd`.
-- `started-<sid>.txt`: marks that session_start was attempted (so subsequent hooks don't duplicate).
+- `started-<sid>.txt`: marks that the server accepted the session's `session_start`, so later hooks do not send another.
+- `starting-<sid>.txt`: held by the one hook sending a session's `session_start` while concurrent hooks (parallel tool calls, a sub-agent's first hooks) skip it.
 - `model-<sid>.txt`: caches the model name so `pre_call` events on older Claude Code versions can carry a non-null model.
 - `endpoint-<sid>.json`: the session's billing mode and platform, decided at `SessionStart`.
 - `model-switch-<sid>.json`: the model the session last switched to and when, so the next `pre_call` is labelled with it.

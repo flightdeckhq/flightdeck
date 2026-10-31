@@ -106,6 +106,8 @@ describe("session_signal", () => {
     expect(getEventDetail(signal("task_completed", { task_id: "3", teammate_name: "tester" }))).toBe(
       "task completed · tester",
     );
+    expect(getEventDetail(signal("teammate_idle", { teammate_name: "reviewer" }))).toBe("teammate idle · reviewer");
+    expect(getEventDetail(signal("teammate_idle"))).toBe("teammate idle");
     expect(getEventDetail(signal("cwd_changed", { old_cwd: "/repo", new_cwd: "/repo/api" }))).toBe("cwd → /repo/api");
     expect(getEventDetail(signal("cwd_changed"))).toBe("cwd changed");
     expect(getEventDetail(signal("config_changed", { source: "project_settings" }))).toBe(

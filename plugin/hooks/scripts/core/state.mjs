@@ -248,7 +248,9 @@ export function clearSessionMarkers(markerKey, sessionId = "", { recordEnded = f
   const dir = stateDir();
   if (sessionId && recordEnded) writeEndedMarker(markerKey, sessionId);
   const targets = [`session-${markerKey}.txt`, `git-${markerKey}.json`];
-  if (sessionId) targets.push(`started-${sessionId}.txt`, `endpoint-${sessionId}.json`, `cwd-${sessionId}.txt`);
+  if (sessionId) {
+    targets.push(`started-${sessionId}.txt`, `starting-${sessionId}.txt`, `endpoint-${sessionId}.json`, `cwd-${sessionId}.txt`);
+  }
   for (const name of targets) {
     try {
       unlinkSync(join(dir, name));
@@ -313,6 +315,50 @@ export function isSessionStarted(sessionId) {
     return true;
   } catch {
     return false;
+  }
+}
+
+// A session_start claim older than this belongs to a hook that died
+// mid-send; a live one holds it for one POST (2 s at most).
+const SESSION_START_CLAIM_STALE_MS = 30_000;
+
+/**
+ * Claim the sending of ``sessionId``'s session_start, so concurrent
+ * hooks (a subagent's SubagentStart and its first interior hooks, or
+ * parallel tool calls) send one between them. False when another hook
+ * holds the claim or the state directory is unusable.
+ */
+export function claimSessionStart(sessionId) {
+  const dir = stateDir();
+  const path = join(dir, `starting-${sessionId}.txt`);
+  try {
+    mkdirOwnerOnly(dir);
+  } catch {
+    return false;
+  }
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      writeFileSync(path, String(process.pid), { flag: "wx" });
+      return true;
+    } catch (err) {
+      if (err?.code !== "EEXIST") return false;
+      try {
+        if (Date.now() - statSync(path).mtimeMs < SESSION_START_CLAIM_STALE_MS) return false;
+        unlinkSync(path);
+      } catch {
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
+/** Release a claim taken by claimSessionStart. Silent on failure. */
+export function releaseSessionStart(sessionId) {
+  try {
+    unlinkSync(join(stateDir(), `starting-${sessionId}.txt`));
+  } catch {
+    /* already released */
   }
 }
 

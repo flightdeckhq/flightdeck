@@ -38,6 +38,7 @@ describe("session_signal events", () => {
       "PreCompact",
       "TaskCompleted",
       "TaskCreated",
+      "TeammateIdle",
       "UserPromptExpansion",
     ]);
   });
@@ -265,5 +266,11 @@ describe("session_signal events", () => {
     assert.ok(!JSON.stringify(off).includes("4242"));
     const declined = build("ElicitationResult", { mcp_server_name: "billing", action: "decline" });
     assert.equal(declined.has_content, false);
+  });
+  it("reports an idle agent-team teammate by name", () => {
+    const event = build("TeammateIdle", { teammate_name: "reviewer", team_name: "default" }, false);
+    assert.equal(event.signal, "teammate_idle");
+    assert.deepEqual(event.signal_data, { teammate_name: "reviewer" });
+    assert.equal(event.has_content, false);
   });
 });

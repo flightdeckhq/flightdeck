@@ -173,3 +173,21 @@ either. The Claude Code session id joins the run to its transcript.
 SDK run is a different agent, by `client_type`); the plugin alone (dark
 under `setting_sources=[]`, and labelled a coding session).
 
+
+## D222 -- A Claude Agent SDK run is controlled through the SDK's hook callbacks
+
+**Date:** 2026-11-01
+**Decision:** the Agent SDK interceptor adds `PreToolUse` and
+`UserPromptSubmit` callbacks to the run's options, after the caller's
+hooks. They apply the run's directives (stop, warn, advisory degrade,
+as the Claude Code plugin does) and the MCP Protection Policy, so the
+run sets `supports_directives=true`. The sensor's event queue routes a
+directive to the run its event belongs to. The plugin, which D221 left
+running its MCP gate in an observed run, now does nothing in one.
+**Why:** a `PreToolUse` deny is honoured under every permission mode and
+needs no process per call; the run's session is the one the dashboard
+stops, so the run's own callbacks must answer for it.
+**Rejected alternative:** `can_use_tool` (one per run, so it would
+replace the caller's); the plugin's gates (absent under
+`setting_sources=[]`); `ClaudeSDKClient.interrupt()` for a stop (no
+handle for a `query()` run, and the deny already ends the turn).

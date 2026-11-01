@@ -32,8 +32,11 @@ func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool}
 }
 
-// LookupPending returns the oldest undelivered directive for a session.
-// Returns nil if none exist. Marks the directive as delivered atomically.
+// LookupPending returns the oldest undelivered directive for a session:
+// one addressed to the session, or one addressed to its flavor with no
+// session. A row for another session of the same flavor is never
+// returned, since that session's own lookup must take it. Returns nil
+// if none exist. Marks the directive as delivered atomically.
 func (s *Store) LookupPending(ctx context.Context, sessionID string) (*Directive, error) {
 	var d Directive
 	err := s.pool.QueryRow(ctx, `
@@ -41,9 +44,9 @@ func (s *Store) LookupPending(ctx context.Context, sessionID string) (*Directive
 		SET delivered_at = $1
 		WHERE id = (
 			SELECT id FROM directives
-			WHERE (session_id = $2::uuid OR flavor = (
+			WHERE (session_id = $2::uuid OR (session_id IS NULL AND flavor = (
 				SELECT flavor FROM sessions WHERE session_id = $2::uuid
-			))
+			)))
 			AND delivered_at IS NULL
 			ORDER BY issued_at ASC
 			LIMIT 1

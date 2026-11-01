@@ -1139,7 +1139,7 @@ the cloud provider, else the host of `ANTHROPIC_BASE_URL`, else
 
 The interceptor adds `FLIGHTDECK_SDK_OBSERVED=1` to the CLI's
 environment (the options' `env`, the caller's own entries kept), so a
-Claude Code plugin the CLI loads reports nothing for the run (see
+Claude Code plugin the CLI loads does nothing for the run (see
 "Claude Agent SDK and Claude Code" under Client type registry). A run
 started with a custom `transport` is reported too, but the options'
 `env` never reaches a transport built before them, so the interceptor
@@ -1147,11 +1147,50 @@ logs a warning that a plugin in that run may report it again. It never
 replaces a caller's `can_use_tool` or hooks, and an error while setting
 up the observation leaves the run to the SDK unobserved.
 
-Its sessions only observe: their `session_start` sets
-`context.supports_directives=false`, and the sensor acts on a directive
-only for its own session and that session's sub-agent children, so a
-directive for an SDK run is never applied to the process's sensor
-session.
+**Control.** An SDK run takes directives and the MCP Protection Policy:
+its `session_start` sets `context.supports_directives=true`, so the
+dashboard offers Stop for it and fleet-wide stops and token-budget
+policies reach it. The interceptor adds two hook callbacks to the
+options' `hooks`, after the caller's own: `PreToolUse` and
+`UserPromptSubmit`. The CLI waits for them, and a deny from either the
+caller's hooks or these wins.
+
+A directive for the run arrives in the response to any of its events,
+or to `POST /v1/heartbeat`, which the `PreToolUse` callback sends for
+the run when it has sent nothing for 5 seconds (one attempt with a
+2-second timeout; a failed poll is skipped and the gates still run). The sensor's event
+queue hands a directive to the run its event belongs to, and one for the
+process's own session (or its sub-agent children) to the sensor's
+directive handler. A run's directives are never applied to the sensor's
+session, nor the other way round. The effects are the plugin's (see
+Claude Code > Enforcement), applied by the callbacks:
+
+| Directive | Effect |
+|---|---|
+| `shutdown`, `shutdown_flavor` | The run is stopped: every later tool call is denied with `continue: false`, which ends the turn, and every prompt is blocked. The sensor sends `directive_result` (`acknowledged`), plus `policy_block` when the reason is `token_budget_exceeded`; the run's `session_end` has `close_reason=directive_shutdown`. |
+| `warn` | The next callback tells the run it crossed the token policy's warn threshold, as a `systemMessage` for whoever watches the run and as `additionalContext` for the model; `policy_warn` is sent. |
+| `degrade` | Advisory, as for Claude Code: a hook cannot change the run's model, so the notice (delivered as for `warn`) names the degrade target; `policy_degrade` and an `acknowledged` `directive_result` are sent. |
+| any other | `directive_result` with `directive_status=error`. |
+
+For an `mcp__<server>__<tool>` call the `PreToolUse` callback evaluates
+the MCP policy the sensor loaded for its flavor. The server is resolved
+as the Claude Code plugin resolves it: the hook input's `mcp_server`
+name when present, else the longest known server name whose tool-name
+form (characters outside `[A-Za-z0-9_-]` become `_`) prefixes the call.
+Known servers are the options' `mcp_servers`, then those Claude Code's
+config declares for the working directory (the nearest `.mcp.json`, and
+`~/.claude.json`'s user-wide and per-project `mcpServers`). The policy
+identity is the server's name and its `url`, or its `command` and
+`args` joined by spaces, the same identity the plugin and the sensor's
+MCP interceptor use. `warn` sends `policy_mcp_warn` and allows the call;
+`block` sends `policy_mcp_block` and denies it with the policy's reason.
+An in-process server (`type: "sdk"`) is the caller's own code, not an
+external MCP server, and is not gated; nor is a server with no
+definition the sensor can read (a plugin's), as the plugin's own gate
+does not gate a server it cannot identify.
+
+Enforcement fails open: a callback that raises allows the call, and a
+stop already received stays in force until the run ends.
 
 ### Runtime context auto-collection
 
@@ -1931,11 +1970,10 @@ CLI as a subprocess, and the sensor's Agent SDK interceptor reports each
 run as a `claude_agent_sdk` session (see Sensor > Claude Agent SDK). So
 that a run is reported once, the interceptor sets
 `FLIGHTDECK_SDK_OBSERVED=1` in that subprocess's environment, and a
-Claude Code plugin the CLI loads sends nothing for a run where it is
-set and enforces nothing (its enforcement gates and directive handling
-stay off, since directives name the sensor's session); only its MCP
-policy gate keeps running, so the policy still holds for the run's MCP
-calls. A plugin that predates the variable reports the
+Claude Code plugin the CLI loads does nothing for a run where it is
+set: it sends no events and its gates (enforcement and MCP policy) stay
+off, because the interceptor's own hook callbacks apply the run's
+directives and the MCP policy. A plugin that predates the variable reports the
 run a second time, as a `claude_code` session under the plugin's own
 session id with the Claude Code id in `context.claude_code_session_id`.
 A process that also makes direct provider
@@ -3004,9 +3042,12 @@ CREATE INDEX directives_flavor_pending_idx ON directives (flavor) WHERE delivere
 ```
 
 `LookupPending(sessionID)` does an atomic UPDATE...RETURNING that combines
-lookup and mark-delivered in a single operation: any pending directive
-for the session is returned and stamped `delivered_at = NOW` so it is
-not re-delivered on subsequent POSTs.
+lookup and mark-delivered in a single operation: the oldest pending
+directive addressed to the session, or addressed to its flavor with no
+session, is returned and stamped `delivered_at = NOW` so it is not
+re-delivered on subsequent POSTs. A row for another session of the same
+flavor is never returned, so a stop for one session cannot reach
+another (a `shutdown_flavor` fans out into one row per session).
 
 ### `custom_directives`
 

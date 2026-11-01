@@ -795,7 +795,7 @@ describe("observe_cli.mjs", () => {
     }
   });
 
-  it("sends and enforces nothing for a run the Agent SDK interceptor reports (FLIGHTDECK_SDK_OBSERVED=1)", async () => {
+  it("does nothing for a run the Agent SDK interceptor reports (FLIGHTDECK_SDK_OBSERVED=1)", async () => {
     const requests = [];
     const server = createServer((req, res) => {
       req.resume();
@@ -822,6 +822,7 @@ describe("observe_cli.mjs", () => {
         { hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: { command: "ls" }, tool_response: {} },
         { hook_event_name: "Notification", notification_type: "idle_prompt" },
         { hook_event_name: "Stop" },
+        { hook_event_name: "SessionEnd", reason: "other" },
       ]) {
         const result = await runScript(JSON.stringify({ session_id: sid, ...hook }), env);
         assert.equal(result.code, 0, result.stderr);
@@ -835,11 +836,11 @@ describe("observe_cli.mjs", () => {
         assert.equal(gated.code, 0, gated.stderr);
         assert.equal(gated.stdout.trim(), "");
       }
-      // The MCP gate still runs for the run's MCP calls, with no stop check.
+      // Nor does its MCP gate: the interceptor's callbacks apply the policy.
       const gate = await runScript(JSON.stringify({ hook_event_name: "PreToolUse", session_id: sid, tool_name: "mcp__github__list", tool_input: {} }), env);
       assert.equal(gate.code, 0, gate.stderr);
-      assert.equal(gate.stdout.includes('"continue":false'), false);
-      assert.deepEqual(requests.filter((url) => url.startsWith("/ingest")), []);
+      assert.equal(gate.stdout.trim(), "");
+      assert.deepEqual(requests, [], "no request at all: no events, heartbeats or policy fetches");
       assert.equal(existsSync(join(stateDir({ ...process.env, CLAUDE_PLUGIN_DATA: "" }), `control-${sid}.json`)), false);
     } finally {
       server.closeAllConnections();

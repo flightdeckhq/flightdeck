@@ -41,6 +41,10 @@ import {
 import { buildToolErrorBlock, captureErrorText, hookDurationMs, sanitizeToolInput } from "./tools.mjs";
 import { isRealModel, readTurns } from "./transcript.mjs";
 
+// Set by the sensor's Claude Agent SDK interceptor in the environment of
+// a CLI run it reports.
+const SDK_OBSERVED_ENV = "FLIGHTDECK_SDK_OBSERVED";
+
 /**
  * Handle one Claude Code hook event. ``input`` is the raw stdin the
  * event was parsed from (the SessionEnd hand-off passes it on to the
@@ -48,26 +52,21 @@ import { isRealModel, readTurns } from "./transcript.mjs";
  * SessionEnd worker, and ``entryScript`` is the path of the script the
  * worker re-invokes.
  */
-// Set by the sensor's Claude Agent SDK interceptor in the environment of
-// a CLI run it reports.
-const SDK_OBSERVED_ENV = "FLIGHTDECK_SDK_OBSERVED";
-
 export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorker, entryScript, argv = process.argv }) {
   const hookName = hookEvent.hook_event_name || hookEvent.event || "";
   // A run the sensor's Claude Agent SDK interceptor reports (it sets
-  // FLIGHTDECK_SDK_OBSERVED in the CLI's environment): the plugin sends
-  // nothing for it and enforces nothing, since the sensor's session is
-  // the one directives name. Only the MCP policy gate keeps running.
-  const sdkObserved = process.env[SDK_OBSERVED_ENV] === "1";
+  // FLIGHTDECK_SDK_OBSERVED in the CLI's environment): the interceptor
+  // reports the run and its hook callbacks apply the run's directives
+  // and the MCP policy, so the plugin does nothing for it.
+  if (process.env[SDK_OBSERVED_ENV] === "1") return;
   // With enforcement on, a directive any response carries lands in the
   // session's control state; with it off the poster leaves response
   // bodies unread.
-  setDirectiveSink(cfg.enforcement && !sdkObserved ? (sid, directive) => recordDirective(true, sid, directive) : null);
+  setDirectiveSink(cfg.enforcement ? (sid, directive) => recordDirective(true, sid, directive) : null);
 
   // The enforcement gates (PreToolUse for non-MCP tools, the second
   // UserPromptSubmit): only a decision, no event.
   if (argv.includes(GATE_FLAG)) {
-    if (sdkObserved) return;
     const output = await gateDecision({ cfg, hookName, sessionIds: gateSessionIds(hookEvent) });
     if (output) process.stdout.write(JSON.stringify(output) + "\n");
     return;
@@ -101,9 +100,7 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   // other's approvals in real time.
   if (hookName === "PreToolUse") {
     // A stopped session's MCP calls are denied before the MCP policy.
-    const stop = sdkObserved
-      ? null
-      : await gateDecision({ cfg, hookName, sessionIds: gateSessionIds(hookEvent), stopOnly: true });
+    const stop = await gateDecision({ cfg, hookName, sessionIds: gateSessionIds(hookEvent), stopOnly: true });
     if (stop) {
       process.stdout.write(JSON.stringify(stop) + "\n");
       return;
@@ -117,18 +114,6 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
     // Non-MCP tool call (or no policy in scope). Fall through to
     // the early-return below — PreToolUse has no entry in
     // EVENT_MAP so the standard branch is a no-op.
-    return;
-  }
-
-  // SDK-observed run: SessionStart still fetches the policy the MCP gate
-  // above reads, and SessionEnd clears it; nothing else is sent.
-  if (sdkObserved) {
-    const sid = getSessionId(hookEvent);
-    if (hookName === "SessionStart") {
-      await dispatchMcpPolicySessionStart({ cfg, hookEvent, sessionId: sid, basePayload: { flavor: "claude-code" }, emitEvents: false });
-    } else if (hookName === "SessionEnd") {
-      clearSessionPolicyCache(sid);
-    }
     return;
   }
 

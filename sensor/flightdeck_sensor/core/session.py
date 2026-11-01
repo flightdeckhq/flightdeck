@@ -70,6 +70,15 @@ _INTERCEPTOR_DEPS: tuple[str, ...] = (
 )
 
 
+def _route_sdk_directive(session_id: str, directive: Directive) -> bool:
+    """Hand a directive for another session to the Agent SDK run it
+    belongs to (the event queue's router). Imported on use: the
+    interceptor module imports this one."""
+    from flightdeck_sensor.interceptor.claude_agent_sdk import route_directive
+
+    return route_directive(session_id, directive)
+
+
 def _sensor_version() -> str:
     """flightdeck_sensor's __version__ (from package metadata).
     Returns empty string when the metadata can't be read (rare —
@@ -328,6 +337,7 @@ class Session:
             client,
             directive_handler=self._apply_directive,
             directive_session_id=config.session_id,
+            directive_router=_route_sdk_directive,
         )
 
     # ------------------------------------------------------------------

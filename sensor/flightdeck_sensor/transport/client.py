@@ -36,6 +36,12 @@ _TIMEOUT_SECS = 10
 # the agent's boot path for 10s.
 _STARTUP_TIMEOUT_SECS = 3
 
+# Heartbeat timeout: a heartbeat is a directive poll made while an agent
+# waits to run a tool, so it gets one attempt and a short bound; 2 s is
+# well above a healthy round trip and keeps a dead server from holding
+# the tool call for long (the poll then fails open).
+_HEARTBEAT_TIMEOUT_SECS = 2
+
 
 class ControlPlaneClient:
     """Fire-and-forget HTTP client for sensor → control plane communication.
@@ -80,6 +86,28 @@ class ControlPlaneClient:
           older ingestion deployments.
         """
         return self._post("/v1/events", payload, data=serialize_event(payload))
+
+    def post_heartbeat(self, session_id: str) -> Directive | None:
+        """POST ``/v1/heartbeat`` for ``session_id`` and return the
+        session's pending directive, if any. One attempt; any failure
+        returns None, whatever the unavailability policy, since a
+        heartbeat is only a poll."""
+        req = urllib.request.Request(
+            f"{self._base_url}/v1/heartbeat",
+            data=json.dumps({"session_id": session_id}).encode(),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._token}",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=_HEARTBEAT_TIMEOUT_SECS) as resp:
+                body = json.loads(resp.read().decode())
+        except Exception as exc:
+            _log.debug("heartbeat for %s failed: %s", session_id, exc)
+            return None
+        return self._parse_directive(body) if isinstance(body, dict) else None
 
     def sync_directives(
         self,
@@ -300,9 +328,14 @@ class EventQueue:
         client: ControlPlaneClient,
         directive_handler: Callable[[Directive], None] | None = None,
         directive_session_id: str | None = None,
+        directive_router: Callable[[str, Directive], bool] | None = None,
     ) -> None:
         self._client = client
         self._directive_handler = directive_handler
+        # Called with a directive for another session's event (an Agent
+        # SDK run the sensor reports): returns True when that session's
+        # reporter took it.
+        self._directive_router = directive_router
         # When set, a directive goes to the handler only when the event
         # whose response carried it belongs to this session or to one of
         # its sub-agent children: the queue also carries the events of
@@ -448,6 +481,22 @@ class EventQueue:
             return True
         return self._directive_session_id in (item.get("session_id"), item.get("parent_session_id"))
 
+    def _route_directive(self, item: object, directive: Directive) -> None:
+        """Hand a directive for another session's event to that
+        session's reporter; drop it when none takes it."""
+        session_id = item.get("session_id") if isinstance(item, dict) else None
+        taken = False
+        if self._directive_router is not None and isinstance(session_id, str):
+            try:
+                taken = self._directive_router(session_id, directive)
+            except Exception:
+                _log.debug("drain: routing a directive failed", exc_info=True)
+        if not taken:
+            _log.debug(
+                "drain: directive %s for another session's event ignored",
+                directive.action.value,
+            )
+
     def _drain_loop(self) -> None:
         """Background thread: drain queue, post events, hand off directives.
 
@@ -493,15 +542,8 @@ class EventQueue:
                         event_type,
                         exc,
                     )
-                if (
-                    directive is not None
-                    and self._directive_queue is not None
-                    and not self._directive_is_ours(item)
-                ):
-                    _log.debug(
-                        "drain: directive %s for another session's event ignored",
-                        directive.action.value,
-                    )
+                if directive is not None and not self._directive_is_ours(item):
+                    self._route_directive(item, directive)
                     directive = None
                 if directive is not None and self._directive_queue is not None:
                     try:

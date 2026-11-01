@@ -104,18 +104,18 @@ no single point of failure introduced into the agent's execution path.
 │                      │    │                              │
 │ POST /v1/events      │    │ GET /v1/fleet                │
 │ POST /v1/heartbeat   │    │ GET /v1/sessions(/:id)       │
-│ GET  /health         │    │ GET /v1/agents(/:id/summary) │
-│ GET  /docs/          │    │ GET /v1/events               │
-│                      │    │ GET /v1/events/:id/content   │
-│ Auth: validates      │    │ GET /v1/policy               │
-│   bearer token       │    │ GET/POST/PUT/DELETE          │
-│   (access_tokens)    │    │   /v1/policies               │
-│                      │    │ POST /v1/directives          │
-│ Directive: reads +   │    │ GET /v1/directives/custom    │
-│   marks delivered    │    │ POST /v1/directives/sync     │
+│ POST /v1/logs        │    │ GET /v1/agents(/:id/summary) │
+│ POST /v1/traces      │    │ GET /v1/events               │
+│ POST /v1/metrics     │    │ GET /v1/events/:id/content   │
+│ GET  /health         │    │ GET /v1/policy               │
+│ GET  /docs/          │    │ GET/POST/PUT/DELETE          │
+│                      │    │   /v1/policies               │
+│ Auth: validates      │    │ POST /v1/directives          │
+│   bearer token       │    │ GET /v1/directives/custom    │
+│   (access_tokens)    │    │ POST /v1/directives/sync     │
 │                      │    │ POST /v1/directives/register │
-│                      │    │ GET /v1/analytics            │
-│                      │    │ GET /v1/search               │
+│ Directive: reads +   │    │ GET /v1/analytics            │
+│   marks delivered    │    │ GET /v1/search               │
 │                      │    │ POST /v1/admin/*             │
 │                      │    │ WS  /v1/stream               │
 │                      │    │ GET /docs/                   │
@@ -316,6 +316,9 @@ flightdeck/
 │   │   │   ├── token_cost.go   # Validation of the token, model and cost fields
 │   │   │   ├── heartbeat.go    # POST /v1/heartbeat
 │   │   │   ├── health.go       # GET /health
+│   │   │   ├── otlp.go         # POST /v1/logs, /v1/traces, /v1/metrics: OTLP/HTTP transport, limits, export responses
+│   │   │   ├── otlp_json.go    # OTLP JSON decoding (hex trace and span ids)
+│   │   │   ├── otlp_dialect.go # OTLPDialect: decoded export request → events to publish + rejected count
 │   │   │   ├── ratelimit.go    # Per-token sliding-window rate limiter (in-memory, keyed by token hash; auth runs first)
 │   │   │   └── (Swagger UI route)
 │   │   ├── auth/token.go       # Bearer token validation against access_tokens
@@ -324,6 +327,7 @@ flightdeck/
 │   │   └── directive/store.go  # Pending directive lookup (atomic UPDATE...RETURNING)
 │   └── tests/
 │       ├── handler_test.go
+│       ├── otlp_handler_test.go # OTLP receiver: recorded fixtures replayed, every error path
 │       └── token_cost_test.go  # Token, model and cost field validation
 │
 ├── workers/                    # Go event processing workers (HTTP only for /metrics)
@@ -2480,12 +2484,28 @@ Flightdeck cannot use never fails the request. Mapped events pass the
 same validation as `POST /v1/events`; a record whose event fails it is
 counted as rejected. A failed publish to NATS is 503, which OTLP
 exporters retry; the deterministic event ids make the retry safe.
+A request whose records are all used carries no `partial_success`.
+
+A request is checked in this order: bearer token (401), the token's
+minute budget (429), media type and `Content-Encoding` (415 for anything
+but `gzip` or none), the size limits while it is read and inflated
+(413), then decoding (400). The media type may carry parameters
+(`application/json; charset=utf-8`). An error response's body is a
+`google.rpc.Status` (`code` the gRPC status code, `message` the reason)
+in the request's encoding, and in JSON when the media type is not
+supported. OTLP JSON is decoded as protojson after its hex trace and span
+ids are re-encoded, with unknown fields ignored. Each answered export is
+logged at info level with its signal, status and counts, since an
+exporter seldom reports what the receiver answered.
 
 **Rate limit.** A request is refused with 429 (`Retry-After`) before it
 is read when the token's per-minute budget is spent. Once decoded it is
 charged one unit per event it publishes, synthetic `session_start`
 events included, and at most the whole minute budget, so no request is
-refused for ever; records counted as rejected cost nothing.
+refused for ever; records counted as rejected cost nothing. The budget
+is the one `POST /v1/events` draws on, one per token. The charge is
+taken after the events are published and may take the window past its
+budget, in which case later requests wait until enough of it ages out.
 
 **Dialects.** A record is mapped by its source's dialect, detected from
 the resource's `service.name` and the instrumentation scope. Claude Code

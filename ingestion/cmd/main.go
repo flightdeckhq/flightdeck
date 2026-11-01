@@ -90,7 +90,7 @@ func main() {
 	sessAttacher := session.NewStore(pool)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
-	srv := server.New(addr, validator, publisher, dirStore, sessAttacher, cfg.RateLimitPerMinute)
+	srv := server.New(addr, validator, publisher, dirStore, sessAttacher, handlers.UnmappedDialect{}, cfg.RateLimitPerMinute)
 
 	// Start server
 	go func() {

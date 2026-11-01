@@ -52,6 +52,77 @@ const docTemplate = `{
                     }
                 },
                 "type": "object"
+            },
+            "handlers.OTLPExportLogsResponse": {
+                "properties": {
+                    "partialSuccess": {
+                        "$ref": "#/components/schemas/handlers.OTLPLogsPartialSuccess"
+                    }
+                },
+                "type": "object"
+            },
+            "handlers.OTLPExportMetricsResponse": {
+                "properties": {
+                    "partialSuccess": {
+                        "$ref": "#/components/schemas/handlers.OTLPMetricsPartialSuccess"
+                    }
+                },
+                "type": "object"
+            },
+            "handlers.OTLPExportTraceResponse": {
+                "properties": {
+                    "partialSuccess": {
+                        "$ref": "#/components/schemas/handlers.OTLPTracePartialSuccess"
+                    }
+                },
+                "type": "object"
+            },
+            "handlers.OTLPLogsPartialSuccess": {
+                "properties": {
+                    "errorMessage": {
+                        "type": "string"
+                    },
+                    "rejectedLogRecords": {
+                        "example": "3",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "handlers.OTLPMetricsPartialSuccess": {
+                "properties": {
+                    "errorMessage": {
+                        "type": "string"
+                    },
+                    "rejectedDataPoints": {
+                        "example": "8",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "handlers.OTLPStatus": {
+                "properties": {
+                    "code": {
+                        "type": "integer"
+                    },
+                    "message": {
+                        "type": "string"
+                    }
+                },
+                "type": "object"
+            },
+            "handlers.OTLPTracePartialSuccess": {
+                "properties": {
+                    "errorMessage": {
+                        "type": "string"
+                    },
+                    "rejectedSpans": {
+                        "example": "2",
+                        "type": "string"
+                    }
+                },
+                "type": "object"
             }
         }
     },
@@ -255,6 +326,546 @@ const docTemplate = `{
                 "summary": "Agent heartbeat",
                 "tags": [
                     "heartbeat"
+                ]
+            }
+        },
+        "/v1/logs": {
+            "post": {
+                "description": "OTLP/HTTP logs receiver. Accepts an ExportLogsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportLogsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the log records Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent, and is charged one unit per event it publishes.",
+                "parameters": [
+                    {
+                        "description": "Bearer token",
+                        "in": "header",
+                        "name": "Authorization",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "gzip, or absent for an uncompressed body",
+                        "in": "header",
+                        "name": "Content-Encoding",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object"
+                            }
+                        },
+                        "application/x-protobuf": {
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        "text/plain": {
+                            "schema": {
+                                "title": "request",
+                                "type": "object"
+                            }
+                        }
+                    },
+                    "description": "OTLP ExportLogsServiceRequest",
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPExportLogsResponse"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPExportLogsResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "body does not decode"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "missing or invalid bearer token"
+                    },
+                    "413": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "body over 4 MiB, or over 16 MiB decompressed"
+                    },
+                    "415": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "media type or content encoding not supported"
+                    },
+                    "429": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "rate limit exceeded; see Retry-After",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "seconds until the token's minute budget has room",
+                                "schema": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "token validation failed"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "publishing the mapped events failed; retry"
+                    }
+                },
+                "summary": "Export OTLP logs",
+                "tags": [
+                    "otlp"
+                ]
+            }
+        },
+        "/v1/metrics": {
+            "post": {
+                "description": "OTLP/HTTP metrics receiver. Accepts an ExportMetricsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportMetricsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the data points Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent, and is charged one unit per event it publishes.",
+                "parameters": [
+                    {
+                        "description": "Bearer token",
+                        "in": "header",
+                        "name": "Authorization",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "gzip, or absent for an uncompressed body",
+                        "in": "header",
+                        "name": "Content-Encoding",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object"
+                            }
+                        },
+                        "application/x-protobuf": {
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        "text/plain": {
+                            "schema": {
+                                "title": "request",
+                                "type": "object"
+                            }
+                        }
+                    },
+                    "description": "OTLP ExportMetricsServiceRequest",
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPExportMetricsResponse"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPExportMetricsResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "body does not decode"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "missing or invalid bearer token"
+                    },
+                    "413": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "body over 4 MiB, or over 16 MiB decompressed"
+                    },
+                    "415": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "media type or content encoding not supported"
+                    },
+                    "429": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "rate limit exceeded; see Retry-After",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "seconds until the token's minute budget has room",
+                                "schema": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "token validation failed"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "publishing the mapped events failed; retry"
+                    }
+                },
+                "summary": "Export OTLP metrics",
+                "tags": [
+                    "otlp"
+                ]
+            }
+        },
+        "/v1/traces": {
+            "post": {
+                "description": "OTLP/HTTP traces receiver. Accepts an ExportTraceServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportTraceServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the spans Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent, and is charged one unit per event it publishes.",
+                "parameters": [
+                    {
+                        "description": "Bearer token",
+                        "in": "header",
+                        "name": "Authorization",
+                        "required": true,
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    {
+                        "description": "gzip, or absent for an uncompressed body",
+                        "in": "header",
+                        "name": "Content-Encoding",
+                        "schema": {
+                            "type": "string"
+                        }
+                    }
+                ],
+                "requestBody": {
+                    "content": {
+                        "application/json": {
+                            "schema": {
+                                "type": "object"
+                            }
+                        },
+                        "application/x-protobuf": {
+                            "schema": {
+                                "type": "string"
+                            }
+                        },
+                        "text/plain": {
+                            "schema": {
+                                "title": "request",
+                                "type": "object"
+                            }
+                        }
+                    },
+                    "description": "OTLP ExportTraceServiceRequest",
+                    "required": true
+                },
+                "responses": {
+                    "200": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPExportTraceResponse"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPExportTraceResponse"
+                                }
+                            }
+                        },
+                        "description": "OK"
+                    },
+                    "400": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "body does not decode"
+                    },
+                    "401": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "missing or invalid bearer token"
+                    },
+                    "413": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "body over 4 MiB, or over 16 MiB decompressed"
+                    },
+                    "415": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "media type or content encoding not supported"
+                    },
+                    "429": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "rate limit exceeded; see Retry-After",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "seconds until the token's minute budget has room",
+                                "schema": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
+                    },
+                    "500": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "token validation failed"
+                    },
+                    "503": {
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            },
+                            "application/x-protobuf": {
+                                "schema": {
+                                    "$ref": "#/components/schemas/handlers.OTLPStatus"
+                                }
+                            }
+                        },
+                        "description": "publishing the mapped events failed; retry"
+                    }
+                },
+                "summary": "Export OTLP traces",
+                "tags": [
+                    "otlp"
                 ]
             }
         }

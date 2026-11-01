@@ -1216,10 +1216,7 @@ func seedSessionWithContext(
 
 func TestListAgents_LatestSessionContextProjected(t *testing.T) {
 	s, cleanup := newTestStore(t)
-	// t.Cleanup, not defer: the seed helpers' row deletes are t.Cleanup
-	// hooks, which run after deferred calls, so a deferred pool close
-	// would leave their rows behind.
-	t.Cleanup(cleanup)
+	defer cleanup()
 
 	// Seed one agent with TWO sessions where the LATER session
 	// carries a different os / branch / repo / orchestration /
@@ -1282,10 +1279,7 @@ func TestListAgents_LatestSessionContextProjected(t *testing.T) {
 
 func TestListAgents_LatestSessionContextNullsWhenAbsent(t *testing.T) {
 	s, cleanup := newTestStore(t)
-	// t.Cleanup, not defer: the seed helpers' row deletes are t.Cleanup
-	// hooks, which run after deferred calls, so a deferred pool close
-	// would leave their rows behind.
-	t.Cleanup(cleanup)
+	defer cleanup()
 
 	// An agent with no sessions at all: every runtime-context
 	// field must come back nil (no LATERAL row → null projection).
@@ -1339,10 +1333,7 @@ func TestListAgents_LatestSessionContextNullsWhenAbsent(t *testing.T) {
 
 func TestGetAgentFleet_LatestSessionContextProjected(t *testing.T) {
 	s, cleanup := newTestStore(t)
-	// t.Cleanup, not defer: the seed helpers' row deletes are t.Cleanup
-	// hooks, which run after deferred calls, so a deferred pool close
-	// would leave their rows behind.
-	t.Cleanup(cleanup)
+	defer cleanup()
 
 	// Parity with the ListAgents test above on the GetAgentFleet
 	// query path (the /v1/fleet endpoint that the /agents page
@@ -1396,10 +1387,7 @@ func TestGetAgentFleet_LatestSessionContextProjected(t *testing.T) {
 
 func TestGetAgentByID_LatestSessionContextProjected(t *testing.T) {
 	s, cleanup := newTestStore(t)
-	// t.Cleanup, not defer: the seed helpers' row deletes are t.Cleanup
-	// hooks, which run after deferred calls, so a deferred pool close
-	// would leave their rows behind.
-	t.Cleanup(cleanup)
+	defer cleanup()
 
 	agentName := "test-latest-context-byid-" + randomUUID(t)[:8]
 	agentID := seedAgentForList(t, s, agentName, agentListOpts{

@@ -852,6 +852,12 @@ definitions:
     type: object
   store.SearchResultSession:
     properties:
+      client_type:
+        description: |-
+          ClientType is the session's client_type ("" on a parent-stub
+          row that has none), so the palette names the client beside the
+          session's source.
+        type: string
       context:
         additionalProperties: true
         type: object

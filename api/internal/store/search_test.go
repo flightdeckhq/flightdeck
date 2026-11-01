@@ -483,6 +483,33 @@ func TestSearch_AgentResultCarriesClientTypeAndState(t *testing.T) {
 	}
 }
 
+// A session hit carries its client_type, so the palette names the
+// client beside the session's source.
+func TestSearch_SessionCarriesClientType(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	suffix := randomUUID(t)[:8]
+	flavor := "search-sess-ctype-" + suffix
+	agentID := seedSearchAgent(t, s, "a-"+suffix, "h-"+suffix, "u-"+suffix)
+	sessionID := seedSearchSessionWithEvents(t, s, agentID, flavor, nil)
+
+	results, err := s.Search(ctx, flavor)
+	if err != nil {
+		t.Fatalf("Search(%q): %v", flavor, err)
+	}
+	for _, sr := range results.Sessions {
+		if sr.SessionID == sessionID {
+			if sr.ClientType != "flightdeck_sensor" {
+				t.Errorf("ClientType: want flightdeck_sensor, got %q", sr.ClientType)
+			}
+			return
+		}
+	}
+	t.Fatalf("Search(%q): session %s not in results", flavor, sessionID)
+}
+
 // An agent hit carries its latest session's context.telemetry, so the
 // palette can label an agent reported over OpenTelemetry; an agent
 // whose latest session names none carries nil.

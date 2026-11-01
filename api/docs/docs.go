@@ -3776,6 +3776,10 @@ const docTemplate = `{
         "store.SearchResultSession": {
             "type": "object",
             "properties": {
+                "client_type": {
+                    "description": "ClientType is the session's client_type (\"\" on a parent-stub\nrow that has none), so the palette names the client beside the\nsession's source.",
+                    "type": "string"
+                },
                 "context": {
                     "type": "object",
                     "additionalProperties": true

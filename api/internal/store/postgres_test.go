@@ -22,7 +22,8 @@ func dbURLForTest() string {
 }
 
 // newTestStore opens a pool against the dev Postgres or skips the test
-// if no DSN is available. The caller MUST defer the returned cleanup.
+// if no DSN is available. The pool is closed when the test ends; the
+// returned cleanup is a no-op kept for existing callers.
 func newTestStore(t *testing.T) (*Store, func()) {
 	t.Helper()
 	dsn := dbURLForTest()
@@ -37,7 +38,13 @@ func newTestStore(t *testing.T) (*Store, func()) {
 		pool.Close()
 		t.Skipf("postgres ping failed, skipping DB test: %v", err)
 	}
-	return New(pool), func() { pool.Close() }
+	// The pool closes through t.Cleanup, not the returned func: test
+	// helpers register their row deletes with t.Cleanup too, and those
+	// run before this one (cleanups run last-registered first), while a
+	// deferred close would run before every t.Cleanup and leave the rows
+	// behind. The returned func is kept for the callers that defer it.
+	t.Cleanup(pool.Close)
+	return New(pool), func() {}
 }
 
 // FIX 2 -- the previous query stringified array-typed JSONB context

@@ -171,7 +171,8 @@ func (s *Store) ListAgents(
 			subagent.agent_role,
 			subagent.topology,
 			latest.os, latest.arch, latest.git_branch, latest.git_repo,
-			latest.orchestration, latest.python_version, latest.process_name
+			latest.orchestration, latest.python_version, latest.process_name,
+			latest.telemetry
 		FROM agents a` + rollupSQL + `
 		LEFT JOIN LATERAL (` + agentRollupSQL + `) subagent ON TRUE
 		LEFT JOIN LATERAL (` + agentLatestContextSQL + `) latest ON TRUE` + whereSQL + `
@@ -196,6 +197,7 @@ func (s *Store) ListAgents(
 			&a.AgentRole, &topology,
 			&a.OS, &a.Arch, &a.GitBranch, &a.GitRepo,
 			&a.Orchestration, &a.PythonVersion, &a.ProcessName,
+			&a.Telemetry,
 		); err != nil {
 			return nil, fmt.Errorf("scan agent: %w", err)
 		}
@@ -243,7 +245,8 @@ func (s *Store) GetAgentByID(
 			subagent.agent_role,
 			subagent.topology,
 			latest.os, latest.arch, latest.git_branch, latest.git_repo,
-			latest.orchestration, latest.python_version, latest.process_name
+			latest.orchestration, latest.python_version, latest.process_name,
+			latest.telemetry
 		FROM agents a
 		LEFT JOIN LATERAL (` + agentStateRollupSQL + `) rollup ON TRUE
 		LEFT JOIN LATERAL (` + agentRollupSQL + `) subagent ON TRUE
@@ -261,6 +264,7 @@ func (s *Store) GetAgentByID(
 		&a.AgentRole, &topology,
 		&a.OS, &a.Arch, &a.GitBranch, &a.GitRepo,
 		&a.Orchestration, &a.PythonVersion, &a.ProcessName,
+		&a.Telemetry,
 	)
 	if err != nil {
 		// pgx returns ErrNoRows as a sentinel; check via errors.Is

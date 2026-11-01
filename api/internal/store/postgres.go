@@ -307,7 +307,7 @@ type AgentSummary struct {
 	// started_at DESC LIMIT 1; the per-agent overhead is bounded by
 	// the page size. `Hostname` and `UserName` above remain the
 	// authoritative single-valued slices for those two dims (sourced
-	// from agents-table columns); these seven are the JSONB-only
+	// from agents-table columns); these are the JSONB-only
 	// slices the operator slices the roster by.
 	OS            *string `json:"os,omitempty"`
 	Arch          *string `json:"arch,omitempty"`
@@ -316,6 +316,11 @@ type AgentSummary struct {
 	Orchestration *string `json:"orchestration,omitempty"`
 	PythonVersion *string `json:"python_version,omitempty"`
 	ProcessName   *string `json:"process_name,omitempty"`
+	// Telemetry is the latest session's `context.telemetry`: "otlp"
+	// when its events were reported over OpenTelemetry, null for a
+	// session a hook plugin or the sensor reports. The dashboard
+	// labels the agent's source from it.
+	Telemetry *string `json:"telemetry,omitempty"`
 	// RecentSessions carries the agent's most-recent sessions
 	// (newest first, by started_at). Populated by /v1/fleet so the
 	// swimlane row renders event circles regardless of whether the
@@ -419,7 +424,8 @@ func (s *Store) GetAgentFleet(
 			subagent.agent_role,
 			subagent.topology,
 			latest.os, latest.arch, latest.git_branch, latest.git_repo,
-			latest.orchestration, latest.python_version, latest.process_name
+			latest.orchestration, latest.python_version, latest.process_name,
+			latest.telemetry
 		FROM agents a
 		LEFT JOIN LATERAL (
 			SELECT CASE
@@ -472,6 +478,7 @@ func (s *Store) GetAgentFleet(
 			&a.AgentRole, &topology,
 			&a.OS, &a.Arch, &a.GitBranch, &a.GitRepo,
 			&a.Orchestration, &a.PythonVersion, &a.ProcessName,
+			&a.Telemetry,
 		); err != nil {
 			return nil, 0, fmt.Errorf("scan agent: %w", err)
 		}
@@ -661,10 +668,10 @@ const agentRollupSQL = `
 `
 
 // agentLatestContextSQL is the LATERAL subquery that projects the
-// seven runtime-context fields from an agent's MOST RECENT
+// runtime-context fields from an agent's MOST RECENT
 // session's `sessions.context` JSONB. Shared by GetAgentFleet,
-// ListAgents, and GetAgentByID so all three projections stay
-// byte-identical on the new columns.
+// ListAgents, GetAgentByID and the agents arm of Search (which reads
+// only `telemetry`) so the projections stay byte-identical.
 //
 // One subquery per agent — bounded by the page size. Each scan
 // rides the composite index on `sessions(agent_id, started_at
@@ -675,7 +682,7 @@ const agentRollupSQL = `
 //
 // IMPORTANT: this fragment references `a.agent_id` from the outer
 // query — every caller MUST alias the outer `agents` table as `a`
-// (`FROM agents a` / `... agents a ...`). Adding a fourth call
+// (`FROM agents a` / `... agents a ...`). Adding a call
 // site with a different alias produces a runtime planner error,
 // not a compile-time failure. Matches the existing convention
 // used by `agentRollupSQL` above.
@@ -691,7 +698,8 @@ const agentLatestContextSQL = `
 		s.context->>'git_repo'       AS git_repo,
 		s.context->>'orchestration'  AS orchestration,
 		s.context->>'python_version' AS python_version,
-		s.context->>'process_name'   AS process_name
+		s.context->>'process_name'   AS process_name,
+		s.context->>'telemetry'      AS telemetry
 	FROM sessions s
 	WHERE s.agent_id = a.agent_id
 	ORDER BY s.started_at DESC

@@ -265,252 +265,12 @@ func EventsHandler(
 			return
 		}
 
-		// Validate required fields
-		sessionID, _ := payload["session_id"].(string)
-		eventType, _ := payload["event_type"].(string)
-		if sessionID == "" || eventType == "" {
-			writeError(w, http.StatusBadRequest, "session_id and event_type are required")
-			return
-		}
-
-		// Reject non-UUID session_ids at the wire boundary. Otherwise
-		// a malformed session_id propagates to the worker and falls
-		// over at Postgres's ``::uuid`` cast (SQLSTATE 22P02) with a
-		// cryptic redelivery loop. The regex mirrors the agent_id
-		// check below; enforcing at the same layer keeps both UUID
-		// fields symmetric.
-		if !uuidRegex.MatchString(sessionID) {
-			writeError(w, http.StatusBadRequest, "session_id must be a canonical UUID")
-			return
-		}
-
-		// Reject events whose ``timestamp`` falls outside the
-		// [NOW()-maxClockSkewPast, NOW()+maxClockSkewFuture] window.
-		// See the constants' comment above for motivation. Timestamp
-		// is RFC 3339; if the field is missing or not a string we do
-		// NOT reject -- the worker's Processor.Process substitutes
-		// NOW() and proceeds, so older sensors that pre-date timestamp
-		// injection keep working.
-		if tsRaw, ok := payload["timestamp"].(string); ok && tsRaw != "" {
-			ts, terr := time.Parse(time.RFC3339, tsRaw)
-			if terr != nil {
-				writeError(w, http.StatusBadRequest,
-					"timestamp must be RFC 3339 format")
-				return
-			}
-			now := time.Now().UTC()
-			// Don't reveal the exact validation window in the
-			// client-facing message: strings like "more than 24h in
-			// the past" would leak the policy bounds to anyone who
-			// could submit an event. Log the precise reason
-			// server-side; surface a generic clock-skew error.
-			if ts.Before(now.Add(-maxClockSkewPast)) {
-				slog.Warn("event timestamp clock-skew (past)",
-					"timestamp", tsRaw,
-					"now", now.Format(time.RFC3339),
-					"max_past", maxClockSkewPast.String(),
-					"session_id", sessionID,
-				)
-				writeError(w, http.StatusBadRequest,
-					"timestamp out of allowed clock-skew window; check sensor host clock")
-				return
-			}
-			if ts.After(now.Add(maxClockSkewFuture)) {
-				slog.Warn("event timestamp clock-skew (future)",
-					"timestamp", tsRaw,
-					"now", now.Format(time.RFC3339),
-					"max_future", maxClockSkewFuture.String(),
-					"session_id", sessionID,
-				)
-				writeError(w, http.StatusBadRequest,
-					"timestamp out of allowed clock-skew window; check sensor host clock")
-				return
-			}
-		}
-
-		// Reject negative token counts. JSON-decoded
-		// numbers land as float64 in the map[string]any payload; we
-		// inspect only the three fields that carry real LLM usage.
-		// Missing values are fine (many events don't carry usage);
-		// only an explicit negative trips the reject path.
-		for _, key := range []string{"tokens_input", "tokens_output", "tokens_total"} {
-			if v, ok := payload[key]; ok && v != nil {
-				if n, isNum := v.(float64); isNum && n < 0 {
-					writeError(w, http.StatusBadRequest,
-						fmt.Sprintf("%s must be >= 0", key))
-					return
-				}
-			}
-		}
-		if msg := validateTokenCostFields(payload); msg != "" {
+		if msg := validateEventPayload(payload, time.Now().UTC()); msg != "" {
 			writeError(w, http.StatusBadRequest, msg)
 			return
 		}
-
-		// Agent identity validation at the wire boundary.
-		// Every event payload must carry a valid agent_id (UUID
-		// canonical form), agent_type from the locked vocabulary, and
-		// client_type from the client type registry. Rejecting at
-		// ingestion means a
-		// misbehaving third-party emitter gets an immediate 400 with
-		// a specific message rather than writing junk rows that the
-		// dashboard then has to defend against.
-		agentID, _ := payload["agent_id"].(string)
-		agentType, _ := payload["agent_type"].(string)
-		clientType, _ := payload["client_type"].(string)
-		if agentID == "" {
-			writeError(w, http.StatusBadRequest, "agent_id is required")
-			return
-		}
-		if !uuidRegex.MatchString(agentID) {
-			writeError(w, http.StatusBadRequest, "agent_id must be a canonical UUID")
-			return
-		}
-		if !validAgentTypes[agentType] {
-			writeError(w, http.StatusBadRequest,
-				"agent_type must be one of: coding, production")
-			return
-		}
-		if !validClientTypes[clientType] {
-			writeError(w, http.StatusBadRequest,
-				"client_type must be one of: "+strings.Join(registryClientTypes, ", "))
-			return
-		}
-
-		// Sub-agent identity validation. parent_session_id
-		// (when present) must be canonical UUID; agent_role
-		// (when present) must be a non-empty string within a
-		// reasonable length cap. Both fields are optional on every
-		// event type; the worker's UpsertSession writes them to
-		// sessions.parent_session_id / sessions.agent_role on
-		// session_start, and BuildEventExtra projects them inline
-		// into events.payload on every event type so the dashboard
-		// reads them without a sessions-table join.
-		//
-		// The 256-char agent_role cap matches the design-doc
-		// reasonable-length boundary. CrewAI Agent.role labels and
-		// LangGraph node names are typically a few words; we cap
-		// well above the typical case so a misbehaving emitter
-		// can't dump unbounded blobs into the column.
-		if rawParent, ok := payload["parent_session_id"]; ok && rawParent != nil {
-			parentID, isStr := rawParent.(string)
-			if !isStr {
-				writeError(w, http.StatusBadRequest,
-					"parent_session_id must be a string when present")
-				return
-			}
-			if parentID != "" && !uuidRegex.MatchString(parentID) {
-				writeError(w, http.StatusBadRequest,
-					"parent_session_id must be a canonical UUID")
-				return
-			}
-		}
-		if rawRole, ok := payload["agent_role"]; ok && rawRole != nil {
-			role, isStr := rawRole.(string)
-			if !isStr {
-				writeError(w, http.StatusBadRequest,
-					"agent_role must be a string when present")
-				return
-			}
-			if len(role) > maxAgentRoleLen {
-				writeError(w, http.StatusBadRequest,
-					fmt.Sprintf(
-						"agent_role exceeds %d-character limit",
-						maxAgentRoleLen,
-					))
-				return
-			}
-		}
-
-		// MCP Protection Policy event payload validation.
-		// Reject the three new event types at the wire boundary
-		// (Rule 36) when their required fields are missing rather
-		// than letting the worker's pgx insert succeed with a
-		// malformed payload that the dashboard then has to defend
-		// against.
-		switch eventType {
-		case "policy_warn", "policy_degrade", "policy_block":
-			// The shared policy_decision block is required on every
-			// token-budget policy event. No compatibility fallback:
-			// sensor + plugin + ingestion + workers ship together.
-			if msg := validateTokenBudgetPolicyPayload(payload, eventType); msg != "" {
-				writeError(w, http.StatusBadRequest, msg)
-				return
-			}
-		case "policy_mcp_warn", "policy_mcp_block":
-			if msg := validateMCPPolicyDecisionPayload(payload, eventType); msg != "" {
-				writeError(w, http.StatusBadRequest, msg)
-				return
-			}
-		case "mcp_server_name_changed":
-			if msg := validateMCPServerNameChangedPayload(payload); msg != "" {
-				writeError(w, http.StatusBadRequest, msg)
-				return
-			}
-		case "mcp_policy_user_remembered":
-			if msg := validateMCPPolicyUserRememberedPayload(payload); msg != "" {
-				writeError(w, http.StatusBadRequest, msg)
-				return
-			}
-		case "session_signal":
-			if msg := validateSessionSignalPayload(payload); msg != "" {
-				writeError(w, http.StatusBadRequest, msg)
-				return
-			}
-		case "mcp_server_attached":
-			if msg := validateMCPServerAttachedPayload(payload); msg != "" {
-				writeError(w, http.StatusBadRequest, msg)
-				return
-			}
-		case "session_start":
-			// Require sensor_version on every session_start so the
-			// dashboard's "did this run under the buggy build" triage
-			// workflow always has the field to read. No compatibility
-			// fallback for emitters that omit it.
-			if msg := validateSessionStartPayload(payload); msg != "" {
-				writeError(w, http.StatusBadRequest, msg)
-				return
-			}
-		case "session_end":
-			// close_reason is optional from the sensor (worker fills
-			// the orphan-detector + sigkill paths). When present,
-			// validate against the enum so a malformed value can't
-			// poison dashboard renderers downstream.
-			if msg := validateSessionEndPayload(payload); msg != "" {
-				writeError(w, http.StatusBadRequest, msg)
-				return
-			}
-		case "tool_call", "mcp_tool_call":
-			// The Claude Code plugin's tool_use_id and mcp_server are
-			// optional; when present they must have the documented
-			// shape so the worker's projection and the dashboard never
-			// meet a number or an array where an id or an object is
-			// expected.
-			if msg := validateToolCallPayload(payload, eventType); msg != "" {
-				writeError(w, http.StatusBadRequest, msg)
-				return
-			}
-		case "pre_call":
-			if msg := validatePreCallPayload(payload); msg != "" {
-				writeError(w, http.StatusBadRequest, msg)
-				return
-			}
-		case "post_call":
-			if msg := validatePostCallPayload(payload); msg != "" {
-				writeError(w, http.StatusBadRequest, msg)
-				return
-			}
-		case "embeddings":
-			if msg := validateEmbeddingsPayload(payload); msg != "" {
-				writeError(w, http.StatusBadRequest, msg)
-				return
-			}
-		case "llm_error":
-			if msg := validateLLMErrorPayload(payload); msg != "" {
-				writeError(w, http.StatusBadRequest, msg)
-				return
-			}
-		}
+		sessionID, _ := payload["session_id"].(string)
+		eventType, _ := payload["event_type"].(string)
 
 		// On session_start, attach the resolved token id/name so the
 		// worker's UpsertSession can persist them onto the new session
@@ -603,6 +363,223 @@ func EventsHandler(
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	}
+}
+
+// validateEventPayload applies the POST /v1/events contract to one decoded
+// event (Rule 36): required identity fields, the timestamp's clock-skew
+// window measured from now, token and cost fields, and each event type's
+// own fields. The OTLP receiver validates every event it maps with it,
+// so an OTLP event and a posted one meet the same contract. It returns
+// the client-facing message, or "" when the event is valid.
+func validateEventPayload(payload map[string]any, now time.Time) string {
+	// Validate required fields
+	sessionID, _ := payload["session_id"].(string)
+	eventType, _ := payload["event_type"].(string)
+	if sessionID == "" || eventType == "" {
+		return "session_id and event_type are required"
+	}
+
+	// Reject non-UUID session_ids at the wire boundary. Otherwise
+	// a malformed session_id propagates to the worker and falls
+	// over at Postgres's ``::uuid`` cast (SQLSTATE 22P02) with a
+	// cryptic redelivery loop. The regex mirrors the agent_id
+	// check below; enforcing at the same layer keeps both UUID
+	// fields symmetric.
+	if !uuidRegex.MatchString(sessionID) {
+		return "session_id must be a canonical UUID"
+	}
+
+	// Reject events whose ``timestamp`` falls outside the
+	// [NOW()-maxClockSkewPast, NOW()+maxClockSkewFuture] window.
+	// See the constants' comment above for motivation. Timestamp
+	// is RFC 3339; if the field is missing or not a string we do
+	// NOT reject -- the worker's Processor.Process substitutes
+	// NOW() and proceeds, so older sensors that pre-date timestamp
+	// injection keep working.
+	if tsRaw, ok := payload["timestamp"].(string); ok && tsRaw != "" {
+		ts, terr := time.Parse(time.RFC3339, tsRaw)
+		if terr != nil {
+			return "timestamp must be RFC 3339 format"
+		}
+		// Don't reveal the exact validation window in the
+		// client-facing message: strings like "more than 24h in
+		// the past" would leak the policy bounds to anyone who
+		// could submit an event. Log the precise reason
+		// server-side; surface a generic clock-skew error.
+		if ts.Before(now.Add(-maxClockSkewPast)) {
+			slog.Warn("event timestamp clock-skew (past)",
+				"timestamp", tsRaw,
+				"now", now.Format(time.RFC3339),
+				"max_past", maxClockSkewPast.String(),
+				"session_id", sessionID,
+			)
+			return "timestamp out of allowed clock-skew window; check sensor host clock"
+		}
+		if ts.After(now.Add(maxClockSkewFuture)) {
+			slog.Warn("event timestamp clock-skew (future)",
+				"timestamp", tsRaw,
+				"now", now.Format(time.RFC3339),
+				"max_future", maxClockSkewFuture.String(),
+				"session_id", sessionID,
+			)
+			return "timestamp out of allowed clock-skew window; check sensor host clock"
+		}
+	}
+
+	// Reject negative token counts. JSON-decoded
+	// numbers land as float64 in the map[string]any payload; we
+	// inspect only the three fields that carry real LLM usage.
+	// Missing values are fine (many events don't carry usage);
+	// only an explicit negative trips the reject path.
+	for _, key := range []string{"tokens_input", "tokens_output", "tokens_total"} {
+		if v, ok := payload[key]; ok && v != nil {
+			if n, isNum := v.(float64); isNum && n < 0 {
+				return fmt.Sprintf("%s must be >= 0", key)
+			}
+		}
+	}
+	if msg := validateTokenCostFields(payload); msg != "" {
+		return msg
+	}
+
+	// Agent identity validation at the wire boundary.
+	// Every event payload must carry a valid agent_id (UUID
+	// canonical form), agent_type from the locked vocabulary, and
+	// client_type from the client type registry. Rejecting at
+	// ingestion means a
+	// misbehaving third-party emitter gets an immediate 400 with
+	// a specific message rather than writing junk rows that the
+	// dashboard then has to defend against.
+	agentID, _ := payload["agent_id"].(string)
+	agentType, _ := payload["agent_type"].(string)
+	clientType, _ := payload["client_type"].(string)
+	if agentID == "" {
+		return "agent_id is required"
+	}
+	if !uuidRegex.MatchString(agentID) {
+		return "agent_id must be a canonical UUID"
+	}
+	if !validAgentTypes[agentType] {
+		return "agent_type must be one of: coding, production"
+	}
+	if !validClientTypes[clientType] {
+		return "client_type must be one of: " + strings.Join(registryClientTypes, ", ")
+	}
+
+	// Sub-agent identity validation. parent_session_id
+	// (when present) must be canonical UUID; agent_role
+	// (when present) must be a non-empty string within a
+	// reasonable length cap. Both fields are optional on every
+	// event type; the worker's UpsertSession writes them to
+	// sessions.parent_session_id / sessions.agent_role on
+	// session_start, and BuildEventExtra projects them inline
+	// into events.payload on every event type so the dashboard
+	// reads them without a sessions-table join.
+	//
+	// The 256-char agent_role cap matches the design-doc
+	// reasonable-length boundary. CrewAI Agent.role labels and
+	// LangGraph node names are typically a few words; we cap
+	// well above the typical case so a misbehaving emitter
+	// can't dump unbounded blobs into the column.
+	if rawParent, ok := payload["parent_session_id"]; ok && rawParent != nil {
+		parentID, isStr := rawParent.(string)
+		if !isStr {
+			return "parent_session_id must be a string when present"
+		}
+		if parentID != "" && !uuidRegex.MatchString(parentID) {
+			return "parent_session_id must be a canonical UUID"
+		}
+	}
+	if rawRole, ok := payload["agent_role"]; ok && rawRole != nil {
+		role, isStr := rawRole.(string)
+		if !isStr {
+			return "agent_role must be a string when present"
+		}
+		if len(role) > maxAgentRoleLen {
+			return fmt.Sprintf(
+				"agent_role exceeds %d-character limit",
+				maxAgentRoleLen,
+			)
+		}
+	}
+
+	// MCP Protection Policy event payload validation.
+	// Reject the three new event types at the wire boundary
+	// (Rule 36) when their required fields are missing rather
+	// than letting the worker's pgx insert succeed with a
+	// malformed payload that the dashboard then has to defend
+	// against.
+	switch eventType {
+	case "policy_warn", "policy_degrade", "policy_block":
+		// The shared policy_decision block is required on every
+		// token-budget policy event. No compatibility fallback:
+		// sensor + plugin + ingestion + workers ship together.
+		if msg := validateTokenBudgetPolicyPayload(payload, eventType); msg != "" {
+			return msg
+		}
+	case "policy_mcp_warn", "policy_mcp_block":
+		if msg := validateMCPPolicyDecisionPayload(payload, eventType); msg != "" {
+			return msg
+		}
+	case "mcp_server_name_changed":
+		if msg := validateMCPServerNameChangedPayload(payload); msg != "" {
+			return msg
+		}
+	case "mcp_policy_user_remembered":
+		if msg := validateMCPPolicyUserRememberedPayload(payload); msg != "" {
+			return msg
+		}
+	case "session_signal":
+		if msg := validateSessionSignalPayload(payload); msg != "" {
+			return msg
+		}
+	case "mcp_server_attached":
+		if msg := validateMCPServerAttachedPayload(payload); msg != "" {
+			return msg
+		}
+	case "session_start":
+		// Require sensor_version on every session_start so the
+		// dashboard's "did this run under the buggy build" triage
+		// workflow always has the field to read. No compatibility
+		// fallback for emitters that omit it.
+		if msg := validateSessionStartPayload(payload); msg != "" {
+			return msg
+		}
+	case "session_end":
+		// close_reason is optional from the sensor (worker fills
+		// the orphan-detector + sigkill paths). When present,
+		// validate against the enum so a malformed value can't
+		// poison dashboard renderers downstream.
+		if msg := validateSessionEndPayload(payload); msg != "" {
+			return msg
+		}
+	case "tool_call", "mcp_tool_call":
+		// The Claude Code plugin's tool_use_id and mcp_server are
+		// optional; when present they must have the documented
+		// shape so the worker's projection and the dashboard never
+		// meet a number or an array where an id or an object is
+		// expected.
+		if msg := validateToolCallPayload(payload, eventType); msg != "" {
+			return msg
+		}
+	case "pre_call":
+		if msg := validatePreCallPayload(payload); msg != "" {
+			return msg
+		}
+	case "post_call":
+		if msg := validatePostCallPayload(payload); msg != "" {
+			return msg
+		}
+	case "embeddings":
+		if msg := validateEmbeddingsPayload(payload); msg != "" {
+			return msg
+		}
+	case "llm_error":
+		if msg := validateLLMErrorPayload(payload); msg != "" {
+			return msg
+		}
+	}
+	return ""
 }
 
 func buildResponse(ctx context.Context, dirStore DirectiveLookup, sessionID string) map[string]any {

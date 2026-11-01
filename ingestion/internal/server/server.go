@@ -58,9 +58,9 @@ func New(
 	// exporter whose endpoint is https://<host>/ingest reaches them
 	// through the edge proxy. They share the events route's limiter:
 	// one budget per token, however it sends.
-	mux.Handle("POST /v1/logs", handlers.OTLPLogsHandler(validator, publisher, otlpDialect, limiter))
-	mux.Handle("POST /v1/traces", handlers.OTLPTracesHandler(validator, publisher, otlpDialect, limiter))
-	mux.Handle("POST /v1/metrics", handlers.OTLPMetricsHandler(validator, publisher, otlpDialect, limiter))
+	mux.Handle("POST /v1/logs", handlers.OTLPLogsHandler(validator, publisher, sessAttacher, otlpDialect, limiter))
+	mux.Handle("POST /v1/traces", handlers.OTLPTracesHandler(validator, publisher, sessAttacher, otlpDialect, limiter))
+	mux.Handle("POST /v1/metrics", handlers.OTLPMetricsHandler(validator, publisher, sessAttacher, otlpDialect, limiter))
 
 	// Swagger UI. Same workaround as the api server: the dynamic
 	// ``doc.json`` endpoint is broken under the swag/v2 v2.0.0-rc5 +

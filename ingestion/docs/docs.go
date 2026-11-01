@@ -500,10 +500,10 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "no decode slot free (see Retry-After), or publishing the mapped events failed; retry",
+                        "description": "no decode slot free or a session read failed (see Retry-After), or publishing the mapped events failed; retry",
                         "headers": {
                             "Retry-After": {
-                                "description": "seconds to wait when no decode slot was free",
+                                "description": "seconds to wait when no decode slot was free or a session read failed",
                                 "schema": {
                                     "type": "integer"
                                 }

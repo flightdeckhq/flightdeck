@@ -216,7 +216,9 @@ export function StreamingPill({ event }: { event: AgentEvent }) {
   if (!stream) return null;
   const aborted = stream.final_outcome === "aborted";
   const ic = stream.inter_chunk_ms;
-  const titleParts: string[] = [`chunks=${stream.chunk_count}`];
+  const titleParts: string[] = [];
+  if (stream.ttft_ms != null) titleParts.push(`ttft=${stream.ttft_ms}ms`);
+  if (stream.chunk_count != null) titleParts.push(`chunks=${stream.chunk_count}`);
   if (ic) {
     titleParts.push(`p50=${ic.p50}ms`);
     titleParts.push(`p95=${ic.p95}ms`);

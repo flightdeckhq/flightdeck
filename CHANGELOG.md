@@ -6,6 +6,19 @@ All notable changes to Flightdeck are documented here.
 
 ### Added
 
+- **Claude Code reports to Flightdeck over OpenTelemetry.** Point Claude
+  Code's telemetry at the ingestion API (`CLAUDE_CODE_ENABLE_TELEMETRY=1`,
+  `OTEL_LOGS_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT=https://<host>/ingest`,
+  `OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer <token>"`) and runs no
+  hook sees, such as `claude --bare`, CI and cloud sessions, show up as
+  `claude_code` sessions: prompts, model calls with tokens, TTFT and
+  Claude Code's own cost, tool calls (MCP ones by server and tool), denied
+  tools, API errors and sub-agents as child sessions. They observe only,
+  with no Stop button. Billing defaults to subscription
+  (`flightdeck.billing_mode` overrides it) and content stays off unless
+  the exporter sets `OTEL_RESOURCE_ATTRIBUTES=flightdeck.capture_prompts=true`.
+  A session the plugin or the Agent SDK already reports is not reported a
+  second time.
 - **Claude Code sessions can be stopped and held to token budgets.** With
   the plugin option `enforcement` on (or `FLIGHTDECK_ENFORCEMENT=1`), the
   dashboard's Stop button and token policies reach Claude Code: a stop or
@@ -76,6 +89,14 @@ All notable changes to Flightdeck are documented here.
   uid 1000, but the dashboard image's nginx runs as its own user (uid
   101) and could not create its cache directory, so the pod
   crash-looped. The dashboard pod now runs as uid 101.
+
+### Changed
+
+- **The plugin trims a sub-agent's role the way the sensor does.** A role
+  that starts or ends with U+001C to U+001F or U+0085 now has those
+  trimmed, and U+FEFF is kept, so the sensor, the plugin and OTLP ingest
+  derive the same agent id. Only roles with those characters at an edge
+  get a different id than before.
 
 ## v0.8.0 — 2026-10-31
 

@@ -1,0 +1,164 @@
+{
+  "about": "Identity derivation vectors, generated from the Python sensor (flightdeck_sensor.core.agent_id) by contracts/generate_identity_vectors.py. The sensor, the Go ingestion port and the Claude Code plugin each assert every id, and that their role trim removes exactly role_trim_code_points (what Python's str.strip() removes).",
+  "namespace_flightdeck": "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61",
+  "uuid5": [
+    {
+      "namespace": "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61",
+      "name": "flightdeck://otlp/claude-code/session/898e9d82-4172-4be8-88e7-1df336742e10",
+      "uuid": "0abbcf79-d405-503d-b681-90030849b1b2"
+    },
+    {
+      "namespace": "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61",
+      "name": "flightdeck://otlp/claude-code/session/898e9d82-4172-4be8-88e7-1df336742e10/aad3b518eff5ab279",
+      "uuid": "7c3cb87c-8d90-5d65-bbf1-45273870d706"
+    },
+    {
+      "namespace": "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61",
+      "name": "flightdeck://otlp/claude-code/event/898e9d82-4172-4be8-88e7-1df336742e10/api_request/14/1793534465960000000",
+      "uuid": "4d8f9bfe-fbfb-52f7-b7dd-db5235986c92"
+    },
+    {
+      "namespace": "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61",
+      "name": "flightdeck:subagent://11111111-2222-4333-8444-555555555555/toolu_01",
+      "uuid": "ea33f311-6ef5-5e26-b388-5162c3bfd74b"
+    },
+    {
+      "namespace": "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61",
+      "name": "",
+      "uuid": "b820936b-c356-5f2f-9a45-782aec06e846"
+    },
+    {
+      "namespace": "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61",
+      "name": "flightdeck://unicode/na\u00efve-\u00fc-\u65e5\u672c",
+      "uuid": "ea545d05-d789-527b-b4a1-f5fdcab945de"
+    },
+    {
+      "namespace": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+      "name": "flightdeck.dev",
+      "uuid": "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61"
+    }
+  ],
+  "agent_id": [
+    {
+      "agent_type": "coding",
+      "user": "omria",
+      "hostname": "Omri-PC",
+      "client_type": "claude_code",
+      "agent_name": "omria@Omri-PC",
+      "agent_role": null,
+      "agent_id": "ee76931b-06fa-5da6-a019-5a8237efd496"
+    },
+    {
+      "agent_type": "coding",
+      "user": "user@example.com",
+      "hostname": "unknown",
+      "client_type": "claude_code",
+      "agent_name": "user@example.com@unknown",
+      "agent_role": null,
+      "agent_id": "24bde993-6e8b-57fe-aad3-b52db0ed03d4"
+    },
+    {
+      "agent_type": "coding",
+      "user": "user@example.com",
+      "hostname": "unknown",
+      "client_type": "claude_code",
+      "agent_name": "user@example.com@unknown",
+      "agent_role": "general-purpose",
+      "agent_id": "4e7eb63e-1519-55ce-ba94-1cc6623523bc"
+    },
+    {
+      "agent_type": "coding",
+      "user": "alice",
+      "hostname": "build-01",
+      "client_type": "claude_code",
+      "agent_name": "alice@build-01",
+      "agent_role": "  Explore  ",
+      "agent_id": "cfed90f3-8f38-5df0-9160-03c39a147c00"
+    },
+    {
+      "agent_type": "production",
+      "user": "svc",
+      "hostname": "pod-7",
+      "client_type": "flightdeck_sensor",
+      "agent_name": "svc@pod-7",
+      "agent_role": "   ",
+      "agent_id": "bc869c75-7377-59e3-a103-047d99f25338"
+    },
+    {
+      "agent_type": "coding",
+      "user": "unknown",
+      "hostname": "unknown",
+      "client_type": "claude_code",
+      "agent_name": "unknown@unknown",
+      "agent_role": "",
+      "agent_id": "aeac9bbc-deac-50a3-a878-23d20f9a79f4"
+    },
+    {
+      "agent_type": "coding",
+      "user": "alice",
+      "hostname": "build-01",
+      "client_type": "claude_code",
+      "agent_name": "alice@build-01",
+      "agent_role": "\u001cExplore\u001f",
+      "agent_id": "cfed90f3-8f38-5df0-9160-03c39a147c00"
+    },
+    {
+      "agent_type": "coding",
+      "user": "alice",
+      "hostname": "build-01",
+      "client_type": "claude_code",
+      "agent_name": "alice@build-01",
+      "agent_role": "\u0085Explore\u3000",
+      "agent_id": "cfed90f3-8f38-5df0-9160-03c39a147c00"
+    },
+    {
+      "agent_type": "coding",
+      "user": "alice",
+      "hostname": "build-01",
+      "client_type": "claude_code",
+      "agent_name": "alice@build-01",
+      "agent_role": "\ufeffExplore\ufeff",
+      "agent_id": "63f822c8-4822-5313-9bd2-ff619b020ad8"
+    },
+    {
+      "agent_type": "coding",
+      "user": "alice",
+      "hostname": "build-01",
+      "client_type": "claude_code",
+      "agent_name": "alice@build-01",
+      "agent_role": "\u001d\u001e",
+      "agent_id": "bc3d3a45-1ef2-5006-abda-2e929a21ffad"
+    }
+  ],
+  "role_trim_code_points": [
+    9,
+    10,
+    11,
+    12,
+    13,
+    28,
+    29,
+    30,
+    31,
+    32,
+    133,
+    160,
+    5760,
+    8192,
+    8193,
+    8194,
+    8195,
+    8196,
+    8197,
+    8198,
+    8199,
+    8200,
+    8201,
+    8202,
+    8232,
+    8233,
+    8239,
+    8287,
+    12288
+  ]
+}

@@ -235,9 +235,9 @@ func (p *failingPublisher) Publish(string, []byte) (uint64, error) {
 // otlpTestMux routes the three OTLP paths as the server does.
 func otlpTestMux(v handlers.TokenValidator, p handlers.EventPublisher, d handlers.OTLPDialect, l *handlers.RateLimiter) *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.Handle("POST /v1/logs", handlers.OTLPLogsHandler(v, p, d, l))
-	mux.Handle("POST /v1/traces", handlers.OTLPTracesHandler(v, p, d, l))
-	mux.Handle("POST /v1/metrics", handlers.OTLPMetricsHandler(v, p, d, l))
+	mux.Handle("POST /v1/logs", handlers.OTLPLogsHandler(v, p, nil, d, l))
+	mux.Handle("POST /v1/traces", handlers.OTLPTracesHandler(v, p, nil, d, l))
+	mux.Handle("POST /v1/metrics", handlers.OTLPMetricsHandler(v, p, nil, d, l))
 	return mux
 }
 

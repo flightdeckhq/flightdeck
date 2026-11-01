@@ -14,10 +14,12 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"math"
+	"regexp"
 	"sync"
 	"time"
 
@@ -105,6 +107,73 @@ func (s *Store) Attach(ctx context.Context, sessionID string) (bool, string, err
 	}
 	return true, priorState, nil
 }
+
+// OTLPSession is what the OTLP receiver needs to know about a Claude
+// Code session before it publishes the session's events.
+type OTLPSession struct {
+	// State is the session row's state, or "" when there is no row.
+	State string
+	// AgentRole is the row's agent_role (a sub-agent's role), or "" when
+	// there is no row or no role.
+	AgentRole string
+	// RootStored reports that the row of the run's root session (the
+	// session itself, for a root) exists, so the run is already reported
+	// over OTLP.
+	RootStored bool
+	// ReportedElsewhere reports that another Flightdeck client reports
+	// the same Claude Code session: a claude_code or claude_agent_sdk row
+	// that is not an OTLP session and carries the Claude Code session id
+	// in context.claude_code_session_id (the plugin), or a
+	// claude_agent_sdk row whose session_id is the Claude Code session id
+	// (the Agent SDK interceptor reports a run under that id).
+	ReportedElsewhere bool
+}
+
+// LookupOTLPSession reads, in one round trip, the state and agent_role
+// of the session row sessionID, whether the run's root session
+// rootSessionID is stored,
+// and whether another client reports the Claude Code session
+// claudeCodeSessionID. The plugin's rows are found by a containment
+// query on sessions.context, which the sessions_context_gin index
+// serves; the Agent SDK's by primary key, and only when the Claude Code
+// id is a canonical UUID (Claude Code's always are).
+func (s *Store) LookupOTLPSession(ctx context.Context, sessionID, rootSessionID, claudeCodeSessionID string) (OTLPSession, error) {
+	doc, err := json.Marshal(map[string]string{"claude_code_session_id": claudeCodeSessionID})
+	if err != nil {
+		return OTLPSession{}, fmt.Errorf("encode claude_code_session_id: %w", err)
+	}
+	var sdkSessionID *string
+	if canonicalUUID.MatchString(claudeCodeSessionID) {
+		sdkSessionID = &claudeCodeSessionID
+	}
+	var out OTLPSession
+	err = s.pool.QueryRow(ctx, `
+		SELECT
+		  COALESCE(own.state, ''),
+		  COALESCE(own.agent_role, ''),
+		  EXISTS (SELECT 1 FROM sessions WHERE session_id = $2::uuid),
+		  EXISTS (
+		    SELECT 1 FROM sessions
+		    WHERE context @> $3::jsonb
+		      AND client_type IN ('claude_code', 'claude_agent_sdk')
+		      AND NOT context @> '{"telemetry": "otlp"}'::jsonb
+		  )
+		  OR EXISTS (
+		    SELECT 1 FROM sessions
+		    WHERE session_id = $4::uuid AND client_type = 'claude_agent_sdk'
+		  )
+		FROM (SELECT 1) AS one
+		LEFT JOIN sessions AS own ON own.session_id = $1::uuid
+	`, sessionID, rootSessionID, string(doc), sdkSessionID).Scan(&out.State, &out.AgentRole, &out.RootStored, &out.ReportedElsewhere)
+	if err != nil {
+		return OTLPSession{}, fmt.Errorf("look up OTLP session %s: %w", sessionID, err)
+	}
+	return out, nil
+}
+
+// canonicalUUID matches the canonical 8-4-4-4-12 hex form, which the
+// ::uuid cast accepts.
+var canonicalUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // RecordStart stamps the stream sequence of a re-attaching session_start
 // on its session row (sessions.start_seq), keeping the greater of the

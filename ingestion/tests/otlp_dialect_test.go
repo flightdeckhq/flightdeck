@@ -2,6 +2,8 @@ package handlers_test
 
 import (
 	"context"
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/handlers"
@@ -84,5 +86,55 @@ func TestUnmappedDialectSingularAndEmpty(t *testing.T) {
 	empty := handlers.UnmappedDialect{}.MapTraces(context.Background(), &coltrace.ExportTraceServiceRequest{})
 	if empty.Rejected != 0 || empty.Message != "" || len(empty.Events) != 0 {
 		t.Errorf("empty request mapped to %+v", empty)
+	}
+}
+
+func logsFromSources(names ...string) *collogs.ExportLogsServiceRequest {
+	req := &collogs.ExportLogsServiceRequest{}
+	for _, name := range names {
+		req.ResourceLogs = append(req.ResourceLogs, &logspb.ResourceLogs{
+			Resource:  resourceNamed(name),
+			ScopeLogs: []*logspb.ScopeLogs{{LogRecords: make([]*logspb.LogRecord, 1)}},
+		})
+	}
+	return req
+}
+
+// The message names the first five sources and counts the rest.
+func TestUnmappedDialectCapsEchoedSources(t *testing.T) {
+	names := []string{"s01", "s02", "s03", "s04", "s05", "s06", "s07"}
+	m := handlers.UnmappedDialect{}.MapLogs(context.Background(), logsFromSources(names...))
+	want := `7 log records not used: sources "s01", "s02", "s03", "s04", "s05" and 2 more are not mapped`
+	if m.Message != want {
+		t.Errorf("message = %q, want %q", m.Message, want)
+	}
+}
+
+// A long service.name is cut to 128 bytes without splitting a rune.
+func TestUnmappedDialectTruncatesSourceNames(t *testing.T) {
+	long := strings.Repeat("a", 127) + "é" + strings.Repeat("b", 500)
+	m := handlers.UnmappedDialect{}.MapLogs(context.Background(), logsFromSources(long))
+	want := `1 log record not used: source "` + strings.Repeat("a", 127) + `" is not mapped`
+	if m.Message != want {
+		t.Errorf("message = %q, want %q", m.Message, want)
+	}
+}
+
+// A request of many distinct sources keeps a bounded set and a bounded
+// message, and says it saw more than it tracked.
+func TestUnmappedDialectBoundsTrackedSources(t *testing.T) {
+	names := make([]string, 10_000)
+	for i := range names {
+		names[i] = fmt.Sprintf("source-%05d", i)
+	}
+	m := handlers.UnmappedDialect{}.MapLogs(context.Background(), logsFromSources(names...))
+	if m.Rejected != 10_000 {
+		t.Errorf("rejected = %d", m.Rejected)
+	}
+	if !strings.Contains(m.Message, " and at least 60 more are not mapped") {
+		t.Errorf("message = %q", m.Message)
+	}
+	if len(m.Message) > 256 {
+		t.Errorf("message is %d bytes", len(m.Message))
 	}
 }

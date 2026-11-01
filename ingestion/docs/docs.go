@@ -331,7 +331,7 @@ const docTemplate = `{
         },
         "/v1/logs": {
             "post": {
-                "description": "OTLP/HTTP logs receiver. Accepts an ExportLogsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportLogsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the log records Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent, and is charged one unit per event it publishes.",
+                "description": "OTLP/HTTP logs receiver. Accepts an ExportLogsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportLogsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the log records Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events are charged one unit each before they are published (429 when they do not fit in what is left, 413 when they exceed the whole budget). Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).",
                 "parameters": [
                     {
                         "description": "Bearer token",
@@ -432,7 +432,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "body over 4 MiB, or over 16 MiB decompressed"
+                        "description": "body over 4 MiB, over 16 MiB decompressed, past the decode memory limit, or mapping to more events than the token's minute budget"
                     },
                     "415": {
                         "content": {
@@ -462,7 +462,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "rate limit exceeded; see Retry-After",
+                        "description": "token's minute budget spent, or too little of it left for the request's events; see Retry-After",
                         "headers": {
                             "Retry-After": {
                                 "description": "seconds until the token's minute budget has room",
@@ -500,7 +500,15 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "publishing the mapped events failed; retry"
+                        "description": "no decode slot free (see Retry-After), or publishing the mapped events failed; retry",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "seconds to wait when no decode slot was free",
+                                "schema": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
                     }
                 },
                 "summary": "Export OTLP logs",
@@ -511,7 +519,7 @@ const docTemplate = `{
         },
         "/v1/metrics": {
             "post": {
-                "description": "OTLP/HTTP metrics receiver. Accepts an ExportMetricsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportMetricsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the data points Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent, and is charged one unit per event it publishes.",
+                "description": "OTLP/HTTP metrics receiver. Accepts an ExportMetricsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportMetricsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the data points Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events are charged one unit each before they are published (429 when they do not fit in what is left, 413 when they exceed the whole budget). Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).",
                 "parameters": [
                     {
                         "description": "Bearer token",
@@ -612,7 +620,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "body over 4 MiB, or over 16 MiB decompressed"
+                        "description": "body over 4 MiB, over 16 MiB decompressed, past the decode memory limit, or mapping to more events than the token's minute budget"
                     },
                     "415": {
                         "content": {
@@ -642,7 +650,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "rate limit exceeded; see Retry-After",
+                        "description": "token's minute budget spent, or too little of it left for the request's events; see Retry-After",
                         "headers": {
                             "Retry-After": {
                                 "description": "seconds until the token's minute budget has room",
@@ -680,7 +688,15 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "publishing the mapped events failed; retry"
+                        "description": "no decode slot free (see Retry-After), or publishing the mapped events failed; retry",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "seconds to wait when no decode slot was free",
+                                "schema": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
                     }
                 },
                 "summary": "Export OTLP metrics",
@@ -691,7 +707,7 @@ const docTemplate = `{
         },
         "/v1/traces": {
             "post": {
-                "description": "OTLP/HTTP traces receiver. Accepts an ExportTraceServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportTraceServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the spans Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent, and is charged one unit per event it publishes.",
+                "description": "OTLP/HTTP traces receiver. Accepts an ExportTraceServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportTraceServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the spans Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events are charged one unit each before they are published (429 when they do not fit in what is left, 413 when they exceed the whole budget). Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).",
                 "parameters": [
                     {
                         "description": "Bearer token",
@@ -792,7 +808,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "body over 4 MiB, or over 16 MiB decompressed"
+                        "description": "body over 4 MiB, over 16 MiB decompressed, past the decode memory limit, or mapping to more events than the token's minute budget"
                     },
                     "415": {
                         "content": {
@@ -822,7 +838,7 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "rate limit exceeded; see Retry-After",
+                        "description": "token's minute budget spent, or too little of it left for the request's events; see Retry-After",
                         "headers": {
                             "Retry-After": {
                                 "description": "seconds until the token's minute budget has room",
@@ -860,7 +876,15 @@ const docTemplate = `{
                                 }
                             }
                         },
-                        "description": "publishing the mapped events failed; retry"
+                        "description": "no decode slot free (see Retry-After), or publishing the mapped events failed; retry",
+                        "headers": {
+                            "Retry-After": {
+                                "description": "seconds to wait when no decode slot was free",
+                                "schema": {
+                                    "type": "integer"
+                                }
+                            }
+                        }
                     }
                 },
                 "summary": "Export OTLP traces",

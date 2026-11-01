@@ -67,41 +67,22 @@ func (rl *RateLimiter) Allow(rawToken string) (bool, int) {
 	return rl.AllowN(rawToken, 1)
 }
 
-// AllowN admits a request when the token's window has at least one
-// unit left and then charges it n units, at most the whole minute
-// budget. Returns (allowed, secondsUntilReset); a refused request is
-// charged nothing. n <= 0 checks the window without charging it, which
-// is how a route that is charged per published event gates a request
-// before reading its body.
-//
-// A charge may take the window past its budget: the request that does
-// so is admitted, and later ones are refused until enough units age
-// out. Capping the charge at the budget is what keeps a request larger
-// than the budget from being refused for ever.
-func (rl *RateLimiter) AllowN(rawToken string, n int) (bool, int) {
-	tw := rl.window(rawToken)
-	now := time.Now()
-
-	tw.mu.Lock()
-	defer tw.mu.Unlock()
-
-	tw.trim(now)
-	if len(tw.timestamps) >= rl.max {
-		return false, rl.retryAfter(tw, now)
-	}
-	rl.charge(tw, now, n)
-	return true, 0
+// Limit is the per-token budget: the units one window may hold.
+func (rl *RateLimiter) Limit() int {
+	return rl.max
 }
 
-// ChargeN charges the token n units, at most the whole minute budget,
-// whatever its window holds. It is for work already admitted by AllowN
-// and already done, such as events published after the request's
-// gate: charging it unconditionally keeps concurrent requests that all
-// passed the gate from going uncharged.
-func (rl *RateLimiter) ChargeN(rawToken string, n int) {
-	if n <= 0 {
-		return
-	}
+// AllowN charges the token n units when all n fit in what is left of
+// its window, and otherwise charges nothing and refuses. Returns
+// (allowed, secondsUntilReset), where the seconds are how long until
+// enough units age out for n to fit. n <= 0 charges nothing and admits
+// while the window has a unit left, which is how a route charged per
+// published event gates a request before reading its body.
+//
+// A charge larger than the whole budget never fits; a caller that can
+// be asked for one checks Limit first and refuses it outright.
+func (rl *RateLimiter) AllowN(rawToken string, n int) (bool, int) {
+	need := max(n, 1)
 	tw := rl.window(rawToken)
 	now := time.Now()
 
@@ -109,7 +90,13 @@ func (rl *RateLimiter) ChargeN(rawToken string, n int) {
 	defer tw.mu.Unlock()
 
 	tw.trim(now)
-	rl.charge(tw, now, n)
+	if len(tw.timestamps)+need > rl.max {
+		return false, rl.retryAfter(tw, now, need)
+	}
+	for range max(n, 0) {
+		tw.timestamps = append(tw.timestamps, now)
+	}
+	return true, 0
 }
 
 // window returns the token's sliding window, creating it on first use.
@@ -149,21 +136,17 @@ func (tw *tokenWindow) trim(now time.Time) {
 	tw.timestamps = tw.timestamps[start:]
 }
 
-// charge appends n units at now, at most the whole budget. The caller
-// holds tw.mu.
-func (rl *RateLimiter) charge(tw *tokenWindow, now time.Time, n int) {
-	n = min(n, rl.max)
-	for range n {
-		tw.timestamps = append(tw.timestamps, now)
+// retryAfter is the number of seconds until need units fit in the
+// window: until the units that keep them from fitting age out. A need
+// larger than the budget never fits, and is answered with the whole
+// window. The caller holds tw.mu and has trimmed the window.
+func (rl *RateLimiter) retryAfter(tw *tokenWindow, now time.Time, need int) int {
+	if need > rl.max {
+		return int(rateLimitWindow.Seconds())
 	}
-}
-
-// retryAfter is the number of seconds until the window has a unit
-// left: until the unit that brings it back under the budget ages out.
-// A window charged past its budget needs more than its oldest unit to
-// expire. The caller holds tw.mu and has trimmed the window.
-func (rl *RateLimiter) retryAfter(tw *tokenWindow, now time.Time) int {
-	freeing := tw.timestamps[len(tw.timestamps)-rl.max]
+	// The oldest len+need-max units must leave; the last of them sets
+	// the wait.
+	freeing := tw.timestamps[len(tw.timestamps)+need-rl.max-1]
 	secs := int(freeing.Add(rateLimitWindow).Sub(now).Seconds()) + 1
 	return max(secs, 1)
 }

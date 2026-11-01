@@ -317,7 +317,8 @@ flightdeck/
 │   │   │   ├── heartbeat.go    # POST /v1/heartbeat
 │   │   │   ├── health.go       # GET /health
 │   │   │   ├── otlp.go         # POST /v1/logs, /v1/traces, /v1/metrics: OTLP/HTTP transport, limits, export responses
-│   │   │   ├── otlp_json.go    # OTLP JSON decoding (hex trace and span ids)
+│   │   │   ├── otlp_decode.go  # OTLP limits: exact gzip inflate, decode-cost estimate, decode slots
+│   │   │   ├── otlp_json.go    # OTLP JSON decoding (streaming in-place hex id rewrite)
 │   │   │   ├── otlp_dialect.go # OTLPDialect: decoded export request → events to publish + rejected count
 │   │   │   ├── ratelimit.go    # Per-token sliding-window rate limiter (in-memory, keyed by token hash; auth runs first)
 │   │   │   └── (Swagger UI route)
@@ -2474,38 +2475,67 @@ ingestion route takes; an exporter sends it with
 
 **Limits and responses.** A request body over 4 MiB, or one that
 decompresses past 16 MiB, is refused with 413 before it is parsed (the
-edge proxy must allow 4 MiB on `/ingest/`). A body that does not decode
-is 400; any other media type is 415. A body that decodes is answered 200
+edge proxy must allow 4 MiB on `/ingest/`). A gzip body is inflated
+into a buffer sized from its size trailer: a trailer declaring more than
+16 MiB is a 413 before anything is inflated, and a stream that inflates
+to anything but what its trailer declares is not valid gzip (400).
+Decoding can take far more memory than the body (a two-byte protobuf
+message decodes to a few hundred bytes), so before decoding, a single
+allocation-free pass over the body estimates what decoding will
+allocate: the body plus a fixed cost per message and per scalar
+element, the costs measured over the OTLP message types and rounded
+up. A request whose estimate passes 48 MiB is refused with 413; real
+exports estimate well under that (a full 512-record batch of Claude
+Code log records at about 20 MiB). A request nested more than 128
+objects, arrays or messages deep is 400. Inflating, decoding and mapping
+run under a global limit of concurrent decodes, sized so that the
+worst admitted requests together stay within 256 MiB (half the Helm
+chart's default 512 MiB ingestion memory limit, which gives 3 at once;
+decoding is CPU-bound and a pod runs on at most one CPU, so more would
+not add throughput). A request that finds none free within 2 seconds is
+answered 503 with `Retry-After: 1`, which OTLP exporters honour. A body
+that does not decode is 400; any other media type is 415. A body that
+decodes is answered 200
 with the OTLP export response, in the request's encoding, even when some
 of its records are not used: `partial_success` counts the records
 Flightdeck did not map (`rejected_log_records`, `rejected_spans` or
 `rejected_data_points`) with a message naming why, and one record
-Flightdeck cannot use never fails the request. Mapped events pass the
-same validation as `POST /v1/events`; a record whose event fails it is
-counted as rejected. A failed publish to NATS is 503, which OTLP
+Flightdeck cannot use never fails the request. The message names at most
+five sources, each cut to 128 bytes, and counts the rest. Mapped events
+pass the same validation as `POST /v1/events`; a record whose event fails
+it is counted as rejected. A failed publish to NATS is 503, which OTLP
 exporters retry; the deterministic event ids make the retry safe.
 A request whose records are all used carries no `partial_success`.
 
 A request is checked in this order: bearer token (401), the token's
 minute budget (429), media type and `Content-Encoding` (415 for anything
-but `gzip` or none), the size limits while it is read and inflated
-(413), then decoding (400). The media type may carry parameters
-(`application/json; charset=utf-8`). An error response's body is a
-`google.rpc.Status` (`code` the gRPC status code, `message` the reason)
-in the request's encoding, and in JSON when the media type is not
-supported. OTLP JSON is decoded as protojson after its hex trace and span
-ids are re-encoded, with unknown fields ignored. Every export, answered
-or refused, is logged at info level with its signal, status and counts
-or reason, since an exporter seldom reports what the receiver answered.
+but `gzip` or none), the size as sent (413), then, holding a decode slot
+(503), the inflated size and the decode estimate (413) and decoding
+(400), then the charge for its events (413 or 429, below). The media
+type may carry parameters (`application/json; charset=utf-8`). An
+error response's body is a `google.rpc.Status` (`code` the gRPC status
+code, `message` the reason) in the request's encoding, and in JSON when
+the media type is not supported. OTLP JSON is decoded as protojson after
+a streaming pass rewrites its hex trace and span ids as base64 in place;
+an id must be empty, 8 bytes or 16 bytes (16 or 32 hex characters), and
+unknown fields are ignored. Every export, answered or refused, is logged
+with its signal, status and counts or reason, since an exporter seldom
+reports what the receiver answered: at info level, except a missing or
+invalid token (401), which is logged at debug so a flood of
+unauthenticated requests cannot flood the log.
 
 **Rate limit.** A request is refused with 429 (`Retry-After`) before it
-is read when the token's per-minute budget is spent. Once decoded it is
-charged one unit per event it publishes, synthetic `session_start`
-events included, and at most the whole minute budget, so no request is
-refused for ever; records counted as rejected cost nothing. The budget
-is the one `POST /v1/events` draws on, one per token. The charge is
-taken after the events are published and may take the window past its
-budget, in which case later requests wait until enough of it ages out.
+is read when the token's per-minute budget is spent. Once its records
+are mapped, and before anything is published, it is charged one unit per
+event it will publish, synthetic `session_start` events included:
+records counted as rejected cost nothing. A request whose events do not
+fit in what is left of the budget is refused with 429 and a
+`Retry-After` of when enough of the window will have aged out for them
+to fit; one whose events exceed the whole per-minute budget can never
+fit and is refused with 413. A refused request is charged nothing and
+publishes nothing; a charged request whose publish then fails (503) is
+not refunded. The budget is the one `POST /v1/events` draws on, one per
+token.
 
 **Dialects.** A record is mapped by its source's dialect, detected from
 the resource's `service.name` and the instrumentation scope. Claude Code

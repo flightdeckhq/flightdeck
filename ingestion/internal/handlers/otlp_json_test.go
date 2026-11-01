@@ -3,6 +3,7 @@ package handlers
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 
@@ -131,18 +132,66 @@ func TestUnmarshalOTLPJSONEmptyID(t *testing.T) {
 // Bodies that are not OTLP JSON are errors.
 func TestUnmarshalOTLPJSONRejects(t *testing.T) {
 	cases := map[string]string{
-		"not JSON":        `{"resourceLogs":`,
-		"trailing data":   `{} {}`,
-		"id not hex":      `{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"traceId":"zz"}]}]}]}`,
-		"id odd length":   `{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"spanId":"abc"}]}]}]}`,
-		"wrong type":      `{"resourceLogs":{"not":"a list"}}`,
-		"top-level array": `[]`,
+		"not JSON":          `{"resourceLogs":`,
+		"trailing data":     `{} {}`,
+		"id not hex":        `{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"traceId":"zzzzzzzzzzzzzzzz"}]}]}]}`,
+		"id odd length":     `{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"spanId":"abc"}]}]}]}`,
+		"id of 4 bytes":     `{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"spanId":"01020304"}]}]}]}`,
+		"id escaped":        `{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"spanId":"\u00304014c8fdbc13cb2"}]}]}]}`,
+		"wrong type":        `{"resourceLogs":{"not":"a list"}}`,
+		"top-level array":   `[]`,
+		"unbalanced":        `{"resourceLogs":[}`,
+		"unterminated":      `{"resourceLogs":[{}`,
+		"unterminated text": `{"resourceLogs":"`,
+		"too deep":          `{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"body":` + strings.Repeat(`{"arrayValue":{"values":[`, 50) + strings.Repeat(`]}}`, 50) + `}]}]}]}`,
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {
-			if err := unmarshalOTLPJSON([]byte(body), &collogs.ExportLogsServiceRequest{}); err == nil {
-				t.Errorf("accepted %s", body)
+			err := unmarshalOTLPJSON([]byte(body), &collogs.ExportLogsServiceRequest{})
+			if err == nil {
+				t.Fatalf("accepted %s", body)
+			}
+			if !errors.Is(err, errOTLPInvalidJSON) {
+				t.Errorf("error %v is not an invalid-JSON error", err)
 			}
 		})
+	}
+}
+
+// The rewrite compacts whitespace outside strings, leaves strings
+// that hold structural characters, escapes or id-like text untouched,
+// and re-encodes only id values.
+func TestRewriteOTLPJSONIDsExact(t *testing.T) {
+	in := `{ "resourceLogs" : [ { "scopeLogs": [ { "logRecords": [ {
+		"spanId" : "` + testSpanIDHex + `",
+		"traceId": "",
+		"body": {"stringValue": "a \"{traceId\": [x]} \\ b"},
+		"attributes": [{"key": "spanId", "value": {"stringValue": "` + testSpanIDHex + `"}}],
+		"severityNumber" : 9 , "flags": 1
+	} ] } ] } ] }`
+	want := `{"resourceLogs":[{"scopeLogs":[{"logRecords":[{` +
+		`"spanId":"QBTI/bwTyyw=",` +
+		`"traceId":"",` +
+		`"body":{"stringValue":"a \"{traceId\": [x]} \\ b"},` +
+		`"attributes":[{"key":"spanId","value":{"stringValue":"` + testSpanIDHex + `"}}],` +
+		`"severityNumber":9,"flags":1` +
+		`}]}]}]}`
+	got, _, err := rewriteOTLPJSONIDs([]byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != want {
+		t.Errorf("rewrite\n got %s\nwant %s", got, want)
+	}
+}
+
+// A body whose decode would pass the cap is refused as too large, not
+// as invalid.
+func TestUnmarshalOTLPJSONTooLarge(t *testing.T) {
+	n := maxOTLPDecodeHeapBytes/otlpHeapPerMessage + 1
+	body := `{"resourceLogs":[` + strings.TrimSuffix(strings.Repeat("{},", n), ",") + `]}`
+	err := unmarshalOTLPJSON([]byte(body), &collogs.ExportLogsServiceRequest{})
+	if !errors.Is(err, errOTLPDecodeTooLarge) {
+		t.Fatalf("err = %v, want errOTLPDecodeTooLarge", err)
 	}
 }

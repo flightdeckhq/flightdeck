@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	collogs "go.opentelemetry.io/proto/slim/otlp/collector/logs/v1"
 	colmetrics "go.opentelemetry.io/proto/slim/otlp/collector/metrics/v1"
@@ -50,7 +51,7 @@ type UnmappedDialect struct{}
 // MapLogs counts every log record as rejected.
 func (UnmappedDialect) MapLogs(_ context.Context, req *collogs.ExportLogsServiceRequest) OTLPMapping {
 	var n int64
-	sources := sourceSet{}
+	sources := newSourceSet()
 	for _, rl := range req.GetResourceLogs() {
 		var inResource int64
 		for _, sl := range rl.GetScopeLogs() {
@@ -67,7 +68,7 @@ func (UnmappedDialect) MapLogs(_ context.Context, req *collogs.ExportLogsService
 // MapTraces counts every span as rejected.
 func (UnmappedDialect) MapTraces(_ context.Context, req *coltrace.ExportTraceServiceRequest) OTLPMapping {
 	var n int64
-	sources := sourceSet{}
+	sources := newSourceSet()
 	for _, rs := range req.GetResourceSpans() {
 		var inResource int64
 		for _, ss := range rs.GetScopeSpans() {
@@ -84,7 +85,7 @@ func (UnmappedDialect) MapTraces(_ context.Context, req *coltrace.ExportTraceSer
 // MapMetrics counts every data point as rejected.
 func (UnmappedDialect) MapMetrics(_ context.Context, req *colmetrics.ExportMetricsServiceRequest) OTLPMapping {
 	var n int64
-	sources := sourceSet{}
+	sources := newSourceSet()
 	for _, rm := range req.GetResourceMetrics() {
 		var inResource int64
 		for _, sm := range rm.GetScopeMetrics() {
@@ -121,21 +122,78 @@ func countDataPoints(m *metricspb.Metric) int64 {
 // unknownOTLPSource names a resource that carries no service.name.
 const unknownOTLPSource = "unknown_service"
 
+// Bounds on the sources a partial_success message names. A request
+// may carry any number of resources with names of any length, and the
+// message is echoed to the exporter and into its logs: it names the
+// first maxEchoedOTLPSources sources, each cut to
+// maxEchoedOTLPSourceBytes, and counts the rest. The set tracks at
+// most maxTrackedOTLPSources distinct names, so a request of a million
+// resources costs a bounded map.
+const (
+	maxEchoedOTLPSources     = 5
+	maxEchoedOTLPSourceBytes = 128
+	maxTrackedOTLPSources    = 64
+)
+
 // sourceSet collects the service.name of the resources records came
 // from, for the partial_success message.
-type sourceSet map[string]struct{}
-
-func (s sourceSet) add(res *resourcepb.Resource) {
-	s[serviceName(res.GetAttributes())] = struct{}{}
+type sourceSet struct {
+	names    map[string]struct{}
+	overflow bool // more distinct names than were tracked
 }
 
-func (s sourceSet) String() string {
-	names := make([]string, 0, len(s))
-	for name := range s {
-		names = append(names, fmt.Sprintf("%q", name))
+func newSourceSet() *sourceSet {
+	return &sourceSet{names: map[string]struct{}{}}
+}
+
+func (s *sourceSet) add(res *resourcepb.Resource) {
+	name := truncateUTF8(serviceName(res.GetAttributes()), maxEchoedOTLPSourceBytes)
+	if _, ok := s.names[name]; ok {
+		return
+	}
+	if len(s.names) == maxTrackedOTLPSources {
+		s.overflow = true
+		return
+	}
+	s.names[name] = struct{}{}
+}
+
+func (s *sourceSet) len() int { return len(s.names) }
+
+// String names the first sources in sorted order, then counts the
+// rest: `"a", "b", "c", "d", "e" and 7 more` ("at least" once more
+// names arrived than were tracked).
+func (s *sourceSet) String() string {
+	names := make([]string, 0, len(s.names))
+	for name := range s.names {
+		names = append(names, name)
 	}
 	sort.Strings(names)
-	return strings.Join(names, ", ")
+	shown := names[:min(len(names), maxEchoedOTLPSources)]
+	quoted := make([]string, len(shown))
+	for i, name := range shown {
+		quoted[i] = fmt.Sprintf("%q", name)
+	}
+	out := strings.Join(quoted, ", ")
+	rest := len(names) - len(shown)
+	switch {
+	case s.overflow:
+		out += fmt.Sprintf(" and at least %d more", rest+1)
+	case rest > 0:
+		out += fmt.Sprintf(" and %d more", rest)
+	}
+	return out
+}
+
+// truncateUTF8 cuts s to at most n bytes without splitting a rune.
+func truncateUTF8(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n]
 }
 
 // serviceName is a resource's service.name attribute, the key a
@@ -153,7 +211,7 @@ func serviceName(attrs []*commonpb.KeyValue) string {
 
 // unmapped counts n records of one kind as rejected, with a message
 // such as `3 log records not used: source "claude-code" is not mapped`.
-func unmapped(n int64, record string, sources sourceSet) OTLPMapping {
+func unmapped(n int64, record string, sources *sourceSet) OTLPMapping {
 	if n == 0 {
 		return OTLPMapping{}
 	}
@@ -161,7 +219,7 @@ func unmapped(n int64, record string, sources sourceSet) OTLPMapping {
 		record += "s"
 	}
 	subject := "source " + sources.String() + " is"
-	if len(sources) > 1 {
+	if sources.len() > 1 {
 		subject = "sources " + sources.String() + " are"
 	}
 	return OTLPMapping{

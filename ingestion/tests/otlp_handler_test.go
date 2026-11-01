@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,7 +25,6 @@ import (
 	collogs "go.opentelemetry.io/proto/slim/otlp/collector/logs/v1"
 	colmetrics "go.opentelemetry.io/proto/slim/otlp/collector/metrics/v1"
 	coltrace "go.opentelemetry.io/proto/slim/otlp/collector/trace/v1"
-	metricspb "go.opentelemetry.io/proto/slim/otlp/metrics/v1"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
@@ -77,106 +77,72 @@ func loadOTLPManifests(t *testing.T) map[string]otlpManifest {
 	return out
 }
 
-// countOTLPRecords is the number of records a request carries, in the
+// otlpFixtureRecords pins each recorded request's record count, in the
 // unit its signal's partial_success counts (log records, spans, data
-// points), counted from the decoded request independently of the
-// receiver: protobuf through the collector types, JSON by walking the
-// generic tree.
-func countOTLPRecords(t *testing.T, path, contentType string, body []byte) int64 {
-	t.Helper()
-	if contentType == "application/x-protobuf" {
-		var n int64
-		switch path {
-		case "/v1/logs":
-			req := &collogs.ExportLogsServiceRequest{}
-			mustProto(t, body, req)
-			for _, rl := range req.GetResourceLogs() {
-				for _, sl := range rl.GetScopeLogs() {
-					n += int64(len(sl.GetLogRecords()))
-				}
-			}
-		case "/v1/traces":
-			req := &coltrace.ExportTraceServiceRequest{}
-			mustProto(t, body, req)
-			for _, rs := range req.GetResourceSpans() {
-				for _, ss := range rs.GetScopeSpans() {
-					n += int64(len(ss.GetSpans()))
-				}
-			}
-		case "/v1/metrics":
-			req := &colmetrics.ExportMetricsServiceRequest{}
-			mustProto(t, body, req)
-			for _, rm := range req.GetResourceMetrics() {
-				for _, sm := range rm.GetScopeMetrics() {
-					for _, m := range sm.GetMetrics() {
-						n += protoDataPoints(m)
-					}
-				}
-			}
-		}
-		return n
-	}
+// points). The counts were taken from the fixtures by the integration
+// suite's own protobuf wire walker and JSON walk, independently of the
+// receiver, and are literals here so a counting mistake shared by the
+// receiver and a test helper cannot pass.
+var otlpFixtureRecords = map[string]int64{
+	"api-error-json/001-traces.json":     2,
+	"api-error-json/002-logs.json":       2,
+	"api-error-json/003-metrics.json":    2,
+	"bash-json-prompts/001-metrics.json": 1,
+	"bash-json-prompts/002-logs.json":    1,
+	"bash-json-prompts/003-logs.json":    2,
+	"bash-json-prompts/004-metrics.json": 5,
+	"bash-json-prompts/005-traces.json":  3,
+	"bash-json-prompts/006-metrics.json": 5,
+	"bash-json-prompts/007-traces.json":  4,
+	"bash-json-prompts/008-logs.json":    3,
+	"bash-json-prompts/009-traces.json":  2,
+	"bash-json-prompts/010-metrics.json": 6,
+	"bash-json-prompts/011-logs.json":    2,
+	"bash-protobuf-gzip/001-metrics.pb":  1,
+	"bash-protobuf-gzip/002-logs.pb":     1,
+	"bash-protobuf-gzip/003-logs.pb":     1,
+	"bash-protobuf-gzip/004-metrics.pb":  5,
+	"bash-protobuf-gzip/005-traces.pb":   6,
+	"bash-protobuf-gzip/006-logs.pb":     3,
+	"bash-protobuf-gzip/007-traces.pb":   2,
+	"bash-protobuf-gzip/008-metrics.pb":  6,
+	"bash-protobuf-gzip/009-logs.pb":     2,
+	"mcp-json/001-metrics.json":          1,
+	"mcp-json/002-logs.json":             1,
+	"mcp-json/003-logs.json":             1,
+	"mcp-json/004-metrics.json":          5,
+	"mcp-json/005-traces.json":           4,
+	"mcp-json/006-logs.json":             3,
+	"mcp-json/007-metrics.json":          5,
+	"mcp-json/008-traces.json":           4,
+	"mcp-json/009-logs.json":             3,
+	"mcp-json/010-traces.json":           2,
+	"mcp-json/011-logs.json":             3,
+	"mcp-json/012-metrics.json":          6,
+	"subagent-json/001-metrics.json":     1,
+	"subagent-json/002-logs.json":        1,
+	"subagent-json/003-logs.json":        3,
+	"subagent-json/004-metrics.json":     5,
+	"subagent-json/005-traces.json":      4,
+	"subagent-json/006-metrics.json":     5,
+	"subagent-json/007-traces.json":      4,
+	"subagent-json/008-logs.json":        3,
+	"subagent-json/009-metrics.json":     11,
+	"subagent-json/010-traces.json":      3,
+	"subagent-json/011-logs.json":        6,
+	"subagent-json/012-traces.json":      2,
+	"subagent-json/013-metrics.json":     6,
+	"subagent-json/014-logs.json":        2,
+}
 
-	var tree map[string]any
-	if err := json.Unmarshal(body, &tree); err != nil {
-		t.Fatalf("fixture is not JSON: %v", err)
-	}
-	list := func(v any, key string) []any {
-		m, _ := v.(map[string]any)
-		l, _ := m[key].([]any)
-		return l
-	}
-	var n int64
-	switch path {
-	case "/v1/logs":
-		for _, rl := range list(tree, "resourceLogs") {
-			for _, sl := range list(rl, "scopeLogs") {
-				n += int64(len(list(sl, "logRecords")))
-			}
-		}
-	case "/v1/traces":
-		for _, rs := range list(tree, "resourceSpans") {
-			for _, ss := range list(rs, "scopeSpans") {
-				n += int64(len(list(ss, "spans")))
-			}
-		}
-	case "/v1/metrics":
-		for _, rm := range list(tree, "resourceMetrics") {
-			for _, sm := range list(rm, "scopeMetrics") {
-				for _, m := range list(sm, "metrics") {
-					for _, kind := range []string{"gauge", "sum", "histogram", "exponentialHistogram", "summary"} {
-						if data, ok := m.(map[string]any)[kind]; ok {
-							n += int64(len(list(data, "dataPoints")))
-						}
-					}
-				}
-			}
-		}
+// otlpRecords is the pinned record count of a fixture request.
+func otlpRecords(t *testing.T, scenario, file string) int64 {
+	t.Helper()
+	n, ok := otlpFixtureRecords[scenario+"/"+file]
+	if !ok {
+		t.Fatalf("no pinned record count for %s/%s; add it to otlpFixtureRecords", scenario, file)
 	}
 	return n
-}
-
-func protoDataPoints(m *metricspb.Metric) int64 {
-	switch {
-	case m.GetGauge() != nil:
-		return int64(len(m.GetGauge().GetDataPoints()))
-	case m.GetSum() != nil:
-		return int64(len(m.GetSum().GetDataPoints()))
-	case m.GetHistogram() != nil:
-		return int64(len(m.GetHistogram().GetDataPoints()))
-	case m.GetExponentialHistogram() != nil:
-		return int64(len(m.GetExponentialHistogram().GetDataPoints()))
-	case m.GetSummary() != nil:
-		return int64(len(m.GetSummary().GetDataPoints()))
-	}
-	return 0
-}
-
-func mustProto(t *testing.T, body []byte, msg proto.Message) {
-	t.Helper()
-	if err := proto.Unmarshal(body, msg); err != nil {
-		t.Fatalf("fixture is not protobuf: %v", err)
-	}
 }
 
 func gzipBytes(t *testing.T, b []byte) []byte {
@@ -303,10 +269,7 @@ func TestOTLPFixturesAnswered200AllRejected(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				want := countOTLPRecords(t, r.Path, r.ContentType, raw)
-				if want == 0 {
-					t.Fatalf("fixture %s carries no records", r.File)
-				}
+				want := otlpRecords(t, name, r.File)
 				body, encoding := raw, ""
 				if r.SentEncoding == "gzip" {
 					body, encoding = gzipBytes(t, raw), "gzip"
@@ -335,8 +298,8 @@ func TestOTLPFixturesAnswered200AllRejected(t *testing.T) {
 			replayed++
 		}
 	}
-	if replayed < 5 {
-		t.Fatalf("replayed %d fixture requests, want every scenario", replayed)
+	if replayed != len(otlpFixtureRecords) {
+		t.Fatalf("replayed %d fixture requests, %d have pinned counts", replayed, len(otlpFixtureRecords))
 	}
 	if len(pub.published) != 0 {
 		t.Errorf("published %d events with no dialect mapped", len(pub.published))
@@ -442,6 +405,16 @@ func TestOTLPErrorPaths(t *testing.T) {
 	}
 	bomb := gzipBytes(t, make([]byte, otlpTestDecompressedCap+1))
 	tooBig := make([]byte, otlpTestCompressedCap+1)
+	// A valid stream with bytes cut from its middle: the header and
+	// size trailer are intact, the deflate data is not.
+	whole := gzipBytes(t, validLogs)
+	corruptGzip := append(append([]byte{}, whole[:len(whole)/2]...), whole[len(whole)-8:]...)
+	// A stream whose trailer declares 2 bytes and inflates to more.
+	lyingGzip := gzipBytes(t, []byte(`{"resourceLogs":[]}`))
+	binary.LittleEndian.PutUint32(lyingGzip[len(lyingGzip)-4:], 2)
+	// A small stream whose trailer declares more than 16 MiB.
+	bigTrailerGzip := gzipBytes(t, []byte("{}"))
+	binary.LittleEndian.PutUint32(bigTrailerGzip[len(bigTrailerGzip)-4:], otlpTestDecompressedCap+1)
 
 	cases := []struct {
 		name        string
@@ -462,7 +435,9 @@ func TestOTLPErrorPaths(t *testing.T) {
 		{"JSON of the wrong shape", "/v1/logs", "application/json", "", "", []byte(`{"resourceLogs":"x"}`), nil, http.StatusBadRequest, 3},
 		{"JSON id not hex", "/v1/traces", "application/json", "", "", []byte(`{"resourceSpans":[{"scopeSpans":[{"spans":[{"traceId":"xyz"}]}]}]}`), nil, http.StatusBadRequest, 3},
 		{"gzip header but not gzip", "/v1/logs", "application/x-protobuf", "gzip", "", validLogs, nil, http.StatusBadRequest, 3},
-		{"truncated gzip", "/v1/logs", "application/x-protobuf", "gzip", "", gzipBytes(t, validLogs)[:20], nil, http.StatusBadRequest, 3},
+		{"gzip with a corrupt middle", "/v1/logs", "application/x-protobuf", "gzip", "", corruptGzip, nil, http.StatusBadRequest, 3},
+		{"gzip inflating past its trailer", "/v1/logs", "application/json", "gzip", "", lyingGzip, nil, http.StatusBadRequest, 3},
+		{"gzip trailer over 16 MiB", "/v1/logs", "application/json", "gzip", "", bigTrailerGzip, nil, http.StatusRequestEntityTooLarge, 8},
 		{"over 4 MiB as sent", "/v1/logs", "application/x-protobuf", "", "", tooBig, nil, http.StatusRequestEntityTooLarge, 8},
 		{"over 16 MiB decompressed", "/v1/metrics", "application/json", "gzip", "", bomb, nil, http.StatusRequestEntityTooLarge, 8},
 		{"text/plain", "/v1/logs", "text/plain", "", "", []byte("{}"), nil, http.StatusUnsupportedMediaType, 3},
@@ -637,9 +612,9 @@ func stubEvents(n int) []handlers.OTLPEvent {
 	return events
 }
 
-// The events a dialect maps are published in order to their event
-// type's subject, the response counts the dialect's rejections, and the
-// token is charged one unit per published event.
+// The events a dialect maps are charged and then published in order to
+// their event type's subject, and the response counts the dialect's
+// rejections.
 func TestOTLPPublishesMappedEventsAndCharges(t *testing.T) {
 	limiter := handlers.NewRateLimiter(3)
 	defer limiter.Close()
@@ -663,7 +638,8 @@ func TestOTLPPublishesMappedEventsAndCharges(t *testing.T) {
 		t.Errorf("rejected = %d, want 2", ps.rejected)
 	}
 
-	// Three events spent the budget of three.
+	// Three events spent the budget of three: the next request is
+	// refused before it is read.
 	w = httptest.NewRecorder()
 	mux.ServeHTTP(w, otlpRequest("/v1/logs", "application/json", "", []byte("{}")))
 	if w.Code != http.StatusTooManyRequests {
@@ -671,25 +647,57 @@ func TestOTLPPublishesMappedEventsAndCharges(t *testing.T) {
 	}
 }
 
-// A request that maps more events than the budget is admitted and
-// charged the whole budget, not refused for ever.
-func TestOTLPChargeCappedAtBudget(t *testing.T) {
-	limiter := handlers.NewRateLimiter(2)
+// A request whose events do not fit in what is left of the budget is
+// refused with 429 and Retry-After, publishes nothing and is charged
+// nothing.
+func TestOTLPEventsNotFittingRefused429(t *testing.T) {
+	limiter := handlers.NewRateLimiter(5)
+	defer limiter.Close()
+	limiter.AllowN("tok", 3)
+	pub := &mockPublisher{}
+	mux := otlpTestMux(&mockValidator{valid: true}, pub, stubDialect{events: stubEvents(3)}, limiter)
+
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, otlpRequest("/v1/logs", "application/x-protobuf", "", nil))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, want 429", w.Code)
+	}
+	if retry, err := strconv.Atoi(w.Header().Get("Retry-After")); err != nil || retry < 1 || retry > 61 {
+		t.Errorf("Retry-After = %q", w.Header().Get("Retry-After"))
+	}
+	if code, _ := decodeStatus(t, "application/x-protobuf", w.Body.Bytes()); code != 8 {
+		t.Errorf("Status.code = %d, want RESOURCE_EXHAUSTED", code)
+	}
+	if len(pub.published) != 0 {
+		t.Errorf("published %d events of a refused request", len(pub.published))
+	}
+	if allowed, _ := limiter.AllowN("tok", 2); !allowed {
+		t.Error("the refused request was charged")
+	}
+}
+
+// A request that maps more events than the whole minute budget can
+// never fit: 413, nothing published, nothing charged.
+func TestOTLPEventsOverBudgetRefused413(t *testing.T) {
+	limiter := handlers.NewRateLimiter(4)
 	defer limiter.Close()
 	pub := &mockPublisher{}
 	mux := otlpTestMux(&mockValidator{valid: true}, pub, stubDialect{events: stubEvents(5)}, limiter)
 
 	w := httptest.NewRecorder()
-	mux.ServeHTTP(w, otlpRequest("/v1/traces", "application/x-protobuf", "", nil))
-	if w.Code != http.StatusOK {
-		t.Fatalf("status = %d", w.Code)
+	mux.ServeHTTP(w, otlpRequest("/v1/traces", "application/json", "", []byte("{}")))
+	if w.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("status = %d, want 413", w.Code)
 	}
-	if len(pub.published) != 5 {
-		t.Errorf("published %d events, want 5", len(pub.published))
+	code, msg := decodeStatus(t, "application/json", w.Body.Bytes())
+	if code != 8 || !strings.Contains(msg, "5 events") {
+		t.Errorf("Status = %d %q", code, msg)
 	}
-	_, retry := limiter.AllowN("tok", 0)
-	if retry > 61 {
-		t.Errorf("Retry-After = %d: the charge was not capped at the budget", retry)
+	if len(pub.published) != 0 {
+		t.Errorf("published %d events", len(pub.published))
+	}
+	if allowed, _ := limiter.AllowN("tok", 4); !allowed {
+		t.Error("the refused request was charged")
 	}
 }
 
@@ -721,22 +729,27 @@ func TestOTLPPublishFailure503(t *testing.T) {
 	}
 }
 
-// A failed publish stops at the first failure and charges only what
-// was published.
-func TestOTLPPublishFailureChargesPublished(t *testing.T) {
+// The charge is taken before publishing and is not refunded when the
+// publish fails: a token cannot retry a failing export past its budget.
+func TestOTLPPublishFailureStillCharged(t *testing.T) {
 	limiter := handlers.NewRateLimiter(10)
 	defer limiter.Close()
 	pub := &failingPublisher{}
 	mux := otlpTestMux(&mockValidator{valid: true}, pub, stubDialect{events: stubEvents(4)}, limiter)
-	for range 20 {
+	for i := range 2 {
 		w := httptest.NewRecorder()
 		mux.ServeHTTP(w, otlpRequest("/v1/logs", "application/json", "", []byte("{}")))
 		if w.Code != http.StatusServiceUnavailable {
-			t.Fatalf("status = %d, want 503", w.Code)
+			t.Fatalf("request %d: status = %d, want 503", i+1, w.Code)
 		}
 	}
-	if pub.calls != 20 {
-		t.Errorf("publish attempts = %d, want one per request", pub.calls)
+	w := httptest.NewRecorder()
+	mux.ServeHTTP(w, otlpRequest("/v1/logs", "application/json", "", []byte("{}")))
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("third request: status = %d, want 429 (8 of 10 units charged)", w.Code)
+	}
+	if pub.calls != 2 {
+		t.Errorf("publish attempts = %d, want one per admitted request", pub.calls)
 	}
 }
 
@@ -754,7 +767,7 @@ func TestOTLPServerRoutesLowerCaseHeaders(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := gzipBytes(t, raw)
-	want := countOTLPRecords(t, "/v1/logs", "application/x-protobuf", raw)
+	want := otlpRecords(t, "bash-protobuf-gzip", "002-logs.pb")
 
 	conn, err := net.DialTimeout("tcp", ts.Listener.Addr().String(), 5*time.Second)
 	if err != nil {

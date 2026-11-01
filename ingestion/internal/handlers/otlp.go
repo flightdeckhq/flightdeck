@@ -1,11 +1,9 @@
 package handlers
 
 import (
-	"bytes"
-	"compress/gzip"
 	"context"
 	"encoding/json"
-	"io"
+	"fmt"
 	"log/slog"
 	"mime"
 	"net/http"
@@ -19,20 +17,6 @@ import (
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/encoding/protowire"
 	"google.golang.org/protobuf/proto"
-)
-
-// OTLP request size limits. maxOTLPCompressedBytes is the body as sent:
-// four times the 1 MiB /v1/events cap, since one export batches many
-// records (512 per request by default in the OpenTelemetry SDKs), each
-// possibly carrying prompt text, while still bounding what one request
-// makes the receiver buffer. maxOTLPDecompressedBytes bounds the body
-// after gzip: OTLP payloads compress several times over, so a 4 MiB
-// gzip body may legitimately inflate past 4 MiB, and 16 MiB stops a
-// decompression bomb long before it exhausts memory. The edge proxy
-// must allow maxOTLPCompressedBytes on /ingest/.
-const (
-	maxOTLPCompressedBytes   = 4 << 20
-	maxOTLPDecompressedBytes = 16 << 20
 )
 
 // OTLP/HTTP media types.
@@ -177,7 +161,7 @@ type OTLPMetricsPartialSuccess struct {
 // OTLPLogsHandler handles POST /v1/logs.
 //
 // @Summary      Export OTLP logs
-// @Description  OTLP/HTTP logs receiver. Accepts an ExportLogsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportLogsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the log records Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent, and is charged one unit per event it publishes.
+// @Description  OTLP/HTTP logs receiver. Accepts an ExportLogsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportLogsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the log records Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events are charged one unit each before they are published (429 when they do not fit in what is left, 413 when they exceed the whole budget). Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).
 // @Tags         otlp
 // @Accept       json,application/x-protobuf
 // @Produce      json,application/x-protobuf
@@ -187,12 +171,13 @@ type OTLPMetricsPartialSuccess struct {
 // @Success      200  {object}  OTLPExportLogsResponse
 // @Failure      400  {object}  OTLPStatus  "body does not decode"
 // @Failure      401  {object}  OTLPStatus  "missing or invalid bearer token"
-// @Failure      413  {object}  OTLPStatus  "body over 4 MiB, or over 16 MiB decompressed"
+// @Failure      413  {object}  OTLPStatus  "body over 4 MiB, over 16 MiB decompressed, past the decode memory limit, or mapping to more events than the token's minute budget"
 // @Failure      415  {object}  OTLPStatus  "media type or content encoding not supported"
-// @Failure      429  {object}  OTLPStatus  "rate limit exceeded; see Retry-After"
+// @Failure      429  {object}  OTLPStatus  "token's minute budget spent, or too little of it left for the request's events; see Retry-After"
 // @Failure      500  {object}  OTLPStatus  "token validation failed"
 // @Header       429  {integer}  Retry-After  "seconds until the token's minute budget has room"
-// @Failure      503  {object}  OTLPStatus  "publishing the mapped events failed; retry"
+// @Failure      503  {object}  OTLPStatus  "no decode slot free (see Retry-After), or publishing the mapped events failed; retry"
+// @Header       503  {integer}  Retry-After  "seconds to wait when no decode slot was free"
 // @Router       /v1/logs [post]
 func OTLPLogsHandler(validator TokenValidator, publisher EventPublisher, dialect OTLPDialect, limiter *RateLimiter) http.HandlerFunc {
 	return otlpHandler(otlpLogsSignal, validator, publisher, dialect, limiter)
@@ -201,7 +186,7 @@ func OTLPLogsHandler(validator TokenValidator, publisher EventPublisher, dialect
 // OTLPTracesHandler handles POST /v1/traces.
 //
 // @Summary      Export OTLP traces
-// @Description  OTLP/HTTP traces receiver. Accepts an ExportTraceServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportTraceServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the spans Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent, and is charged one unit per event it publishes.
+// @Description  OTLP/HTTP traces receiver. Accepts an ExportTraceServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportTraceServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the spans Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events are charged one unit each before they are published (429 when they do not fit in what is left, 413 when they exceed the whole budget). Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).
 // @Tags         otlp
 // @Accept       json,application/x-protobuf
 // @Produce      json,application/x-protobuf
@@ -211,12 +196,13 @@ func OTLPLogsHandler(validator TokenValidator, publisher EventPublisher, dialect
 // @Success      200  {object}  OTLPExportTraceResponse
 // @Failure      400  {object}  OTLPStatus  "body does not decode"
 // @Failure      401  {object}  OTLPStatus  "missing or invalid bearer token"
-// @Failure      413  {object}  OTLPStatus  "body over 4 MiB, or over 16 MiB decompressed"
+// @Failure      413  {object}  OTLPStatus  "body over 4 MiB, over 16 MiB decompressed, past the decode memory limit, or mapping to more events than the token's minute budget"
 // @Failure      415  {object}  OTLPStatus  "media type or content encoding not supported"
-// @Failure      429  {object}  OTLPStatus  "rate limit exceeded; see Retry-After"
+// @Failure      429  {object}  OTLPStatus  "token's minute budget spent, or too little of it left for the request's events; see Retry-After"
 // @Failure      500  {object}  OTLPStatus  "token validation failed"
 // @Header       429  {integer}  Retry-After  "seconds until the token's minute budget has room"
-// @Failure      503  {object}  OTLPStatus  "publishing the mapped events failed; retry"
+// @Failure      503  {object}  OTLPStatus  "no decode slot free (see Retry-After), or publishing the mapped events failed; retry"
+// @Header       503  {integer}  Retry-After  "seconds to wait when no decode slot was free"
 // @Router       /v1/traces [post]
 func OTLPTracesHandler(validator TokenValidator, publisher EventPublisher, dialect OTLPDialect, limiter *RateLimiter) http.HandlerFunc {
 	return otlpHandler(otlpTracesSignal, validator, publisher, dialect, limiter)
@@ -225,7 +211,7 @@ func OTLPTracesHandler(validator TokenValidator, publisher EventPublisher, diale
 // OTLPMetricsHandler handles POST /v1/metrics.
 //
 // @Summary      Export OTLP metrics
-// @Description  OTLP/HTTP metrics receiver. Accepts an ExportMetricsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportMetricsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the data points Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent, and is charged one unit per event it publishes.
+// @Description  OTLP/HTTP metrics receiver. Accepts an ExportMetricsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportMetricsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the data points Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events are charged one unit each before they are published (429 when they do not fit in what is left, 413 when they exceed the whole budget). Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).
 // @Tags         otlp
 // @Accept       json,application/x-protobuf
 // @Produce      json,application/x-protobuf
@@ -235,12 +221,13 @@ func OTLPTracesHandler(validator TokenValidator, publisher EventPublisher, diale
 // @Success      200  {object}  OTLPExportMetricsResponse
 // @Failure      400  {object}  OTLPStatus  "body does not decode"
 // @Failure      401  {object}  OTLPStatus  "missing or invalid bearer token"
-// @Failure      413  {object}  OTLPStatus  "body over 4 MiB, or over 16 MiB decompressed"
+// @Failure      413  {object}  OTLPStatus  "body over 4 MiB, over 16 MiB decompressed, past the decode memory limit, or mapping to more events than the token's minute budget"
 // @Failure      415  {object}  OTLPStatus  "media type or content encoding not supported"
-// @Failure      429  {object}  OTLPStatus  "rate limit exceeded; see Retry-After"
+// @Failure      429  {object}  OTLPStatus  "token's minute budget spent, or too little of it left for the request's events; see Retry-After"
 // @Failure      500  {object}  OTLPStatus  "token validation failed"
 // @Header       429  {integer}  Retry-After  "seconds until the token's minute budget has room"
-// @Failure      503  {object}  OTLPStatus  "publishing the mapped events failed; retry"
+// @Failure      503  {object}  OTLPStatus  "no decode slot free (see Retry-After), or publishing the mapped events failed; retry"
+// @Header       503  {integer}  Retry-After  "seconds to wait when no decode slot was free"
 // @Router       /v1/metrics [post]
 func OTLPMetricsHandler(validator TokenValidator, publisher EventPublisher, dialect OTLPDialect, limiter *RateLimiter) http.HandlerFunc {
 	return otlpHandler(otlpMetricsSignal, validator, publisher, dialect, limiter)
@@ -249,10 +236,15 @@ func OTLPMetricsHandler(validator TokenValidator, publisher EventPublisher, dial
 // otlpHandler is the OTLP/HTTP receiver for one signal. The order of
 // its checks: bearer token (401), the token's minute budget (429, with
 // nothing read or charged), media type and content encoding (415), the
-// size limits while reading (413), decoding (400). A body that decodes
-// is answered 200 with partial_success counting the records the
-// dialect did not use; a failed publish of the events it did map is
-// 503, which OTLP exporters retry.
+// size limit as sent (413). The body is then inflated, decoded and
+// mapped while the request holds a decode slot (503 with Retry-After
+// when none comes free): 413 past the inflated or decode limits, 400
+// when it does not decode. The events the dialect maps are charged
+// before they are published: 413 when they exceed the token's whole
+// minute budget, 429 when they do not fit in what is left of it. A
+// failed publish is 503, which OTLP exporters retry. Otherwise the
+// answer is 200 with partial_success counting the records the dialect
+// did not use.
 func otlpHandler(
 	sig otlpSignal,
 	validator TokenValidator,
@@ -265,7 +257,13 @@ func otlpHandler(
 		enc, mediaOK := otlpRequestEncoding(r)
 		fail := func(status int, code int32, msg string) {
 			writeOTLPStatus(w, enc, status, code, msg)
-			slog.Info("otlp export refused",
+			// An unauthenticated request is logged at debug so a flood
+			// of them cannot flood the log.
+			level := slog.LevelInfo
+			if status == http.StatusUnauthorized {
+				level = slog.LevelDebug
+			}
+			slog.Log(ctx, level, "otlp export refused",
 				"signal", sig.name, "status", status, "reason", msg)
 		}
 
@@ -311,34 +309,41 @@ func otlpHandler(
 			return
 		}
 
-		body, status, msg := readOTLPBody(r, gzipped)
+		raw, status, msg := readOTLPBody(r)
 		if status != 0 {
-			code := grpcCodeInvalidArgument
-			if status == http.StatusRequestEntityTooLarge {
-				code = grpcCodeResourceExhausted
+			fail(status, grpcCodeForStatus(status), msg)
+			return
+		}
+
+		if !otlpDecodes.acquire(ctx) {
+			w.Header().Set("Retry-After", strconv.Itoa(otlpDecodeRetryAfterSeconds))
+			fail(http.StatusServiceUnavailable, grpcCodeUnavailable,
+				"receiver busy; retry the export")
+			return
+		}
+		mapping, status, msg := decodeAndMapOTLP(ctx, sig, dialect, enc, gzipped, raw)
+		otlpDecodes.release()
+		if status != 0 {
+			fail(status, grpcCodeForStatus(status), msg)
+			return
+		}
+
+		// Charge the events before publishing them. Records counted as
+		// rejected cost nothing.
+		if n := len(mapping.Events); n > 0 && limiter != nil {
+			if n > limiter.Limit() {
+				fail(http.StatusRequestEntityTooLarge, grpcCodeResourceExhausted,
+					fmt.Sprintf("request maps to %d events, more than the token's budget of %d a minute", n, limiter.Limit()))
+				return
 			}
-			fail(status, code, msg)
-			return
+			if allowed, retryAfter := limiter.AllowN(token, n); !allowed {
+				w.Header().Set("Retry-After", strconv.Itoa(retryAfter))
+				fail(http.StatusTooManyRequests, grpcCodeResourceExhausted, "rate limit exceeded")
+				return
+			}
 		}
-
-		req := sig.newRequest()
-		if enc == otlpEncodingProtobuf {
-			err = proto.Unmarshal(body, req)
-		} else {
-			err = unmarshalOTLPJSON(body, req)
-		}
-		if err != nil {
-			fail(http.StatusBadRequest, grpcCodeInvalidArgument,
-				"request body is not a valid OTLP "+sig.name+" export request")
-			return
-		}
-
-		mapping := sig.mapRequest(ctx, dialect, req)
 
 		published, err := publishOTLPEvents(publisher, mapping.Events)
-		if limiter != nil {
-			limiter.ChargeN(token, published)
-		}
 		if err != nil {
 			slog.Error("otlp publish failed",
 				"signal", sig.name, "published", published,
@@ -353,6 +358,45 @@ func otlpHandler(
 			"signal", sig.name, "status", http.StatusOK,
 			"published", published, "rejected", mapping.Rejected)
 	}
+}
+
+// decodeAndMapOTLP inflates, decodes and maps one request body; the
+// caller holds a decode slot. It returns the mapping, or a non-zero
+// HTTP status and a message.
+func decodeAndMapOTLP(
+	ctx context.Context,
+	sig otlpSignal,
+	dialect OTLPDialect,
+	enc otlpEncoding,
+	gzipped bool,
+	body []byte,
+) (OTLPMapping, int, string) {
+	if gzipped {
+		var (
+			status int
+			msg    string
+		)
+		if body, status, msg = inflateOTLPBody(body); status != 0 {
+			return OTLPMapping{}, status, msg
+		}
+	}
+	req := sig.newRequest()
+	if status, msg := decodeOTLPRequest(enc, body, req); status != 0 {
+		if msg == "" {
+			msg = "request body is not a valid OTLP " + sig.name + " export request"
+		}
+		return OTLPMapping{}, status, msg
+	}
+	return sig.mapRequest(ctx, dialect, req), 0, ""
+}
+
+// grpcCodeForStatus is the gRPC code an OTLP error response carries
+// for the HTTP status of a body the receiver refused.
+func grpcCodeForStatus(status int) int32 {
+	if status == http.StatusRequestEntityTooLarge {
+		return grpcCodeResourceExhausted
+	}
+	return grpcCodeInvalidArgument
 }
 
 // errOTLPPublishGivenUp reports a publish the publisher gave up on: it
@@ -411,41 +455,6 @@ func otlpContentEncoding(r *http.Request) (gzipped, ok bool) {
 		return true, true
 	}
 	return false, false
-}
-
-// readOTLPBody reads the request body within the size limits and
-// decompresses it when gzipped. It returns the body, or a non-zero
-// HTTP status and a message: 413 past either limit, 400 for a body
-// that cannot be read or does not decompress. The decompressed limit
-// is enforced while decompressing, so a bomb is never inflated past it.
-func readOTLPBody(r *http.Request, gzipped bool) ([]byte, int, string) {
-	if r.ContentLength > maxOTLPCompressedBytes {
-		return nil, http.StatusRequestEntityTooLarge, "request body exceeds 4 MiB"
-	}
-	raw, err := io.ReadAll(io.LimitReader(r.Body, maxOTLPCompressedBytes+1))
-	if err != nil {
-		return nil, http.StatusBadRequest, "unable to read request body"
-	}
-	if len(raw) > maxOTLPCompressedBytes {
-		return nil, http.StatusRequestEntityTooLarge, "request body exceeds 4 MiB"
-	}
-	if !gzipped {
-		return raw, 0, ""
-	}
-
-	zr, err := gzip.NewReader(bytes.NewReader(raw))
-	if err != nil {
-		return nil, http.StatusBadRequest, "request body is not valid gzip"
-	}
-	defer func() { _ = zr.Close() }()
-	body, err := io.ReadAll(io.LimitReader(zr, maxOTLPDecompressedBytes+1))
-	if err != nil {
-		return nil, http.StatusBadRequest, "request body is not valid gzip"
-	}
-	if len(body) > maxOTLPDecompressedBytes {
-		return nil, http.StatusRequestEntityTooLarge, "request body exceeds 16 MiB decompressed"
-	}
-	return body, 0, ""
 }
 
 // writeOTLPMessage writes an OTLP response message in enc.

@@ -7,7 +7,7 @@ import (
 )
 
 // AllowN with n=0 checks the window and charges nothing, however often
-// it is called.
+// it is called, and refuses once the window is spent.
 func TestRateLimitAllowNZeroChargesNothing(t *testing.T) {
 	limiter := handlers.NewRateLimiter(3)
 	defer limiter.Close()
@@ -22,13 +22,17 @@ func TestRateLimitAllowNZeroChargesNothing(t *testing.T) {
 			t.Fatalf("request %d refused: the checks were charged", i+1)
 		}
 	}
-	if allowed, _ := limiter.Allow("tok"); allowed {
-		t.Fatal("fourth request admitted past a budget of 3")
+	allowed, retryAfter := limiter.AllowN("tok", 0)
+	if allowed {
+		t.Fatal("check admitted on a spent window")
+	}
+	if retryAfter < 1 || retryAfter > 61 {
+		t.Errorf("Retry-After = %d, want 1..61", retryAfter)
 	}
 }
 
-// AllowN charges n units: a charge that fills the budget leaves the
-// next request refused.
+// AllowN charges n units, and a charge that exactly fills the budget
+// is admitted.
 func TestRateLimitAllowNChargesN(t *testing.T) {
 	limiter := handlers.NewRateLimiter(10)
 	defer limiter.Close()
@@ -37,91 +41,51 @@ func TestRateLimitAllowNChargesN(t *testing.T) {
 		t.Fatal("first charge refused")
 	}
 	if allowed, _ := limiter.AllowN("tok", 3); !allowed {
-		t.Fatal("charge up to the budget refused")
+		t.Fatal("charge exactly filling the budget refused")
 	}
-	allowed, retryAfter := limiter.AllowN("tok", 0)
-	if allowed {
+	if allowed, _ := limiter.AllowN("tok", 0); allowed {
 		t.Fatal("check admitted on a spent window")
-	}
-	if retryAfter < 1 {
-		t.Errorf("Retry-After = %d, want >= 1", retryAfter)
 	}
 }
 
-// A charge larger than what is left is admitted while a unit is left,
-// and the window then refuses until it ages out: no request is refused
-// for ever because it is larger than what remains.
-func TestRateLimitAllowNOverdrawsOnce(t *testing.T) {
+// A charge larger than what is left is refused and charges nothing:
+// the units that are left stay usable.
+func TestRateLimitAllowNRefusesWhatDoesNotFit(t *testing.T) {
 	limiter := handlers.NewRateLimiter(10)
 	defer limiter.Close()
 
-	limiter.AllowN("tok", 9)
-	if allowed, _ := limiter.AllowN("tok", 5); !allowed {
-		t.Fatal("charge refused while one unit was left")
+	limiter.AllowN("tok", 8)
+	for range 5 {
+		allowed, retryAfter := limiter.AllowN("tok", 3)
+		if allowed {
+			t.Fatal("charge of 3 admitted with 2 units left")
+		}
+		if retryAfter < 1 || retryAfter > 61 {
+			t.Errorf("Retry-After = %d, want 1..61", retryAfter)
+		}
 	}
-	if allowed, _ := limiter.Allow("tok"); allowed {
-		t.Fatal("request admitted on an overdrawn window")
+	if allowed, _ := limiter.AllowN("tok", 2); !allowed {
+		t.Fatal("charge of 2 refused with 2 units left: a refused charge was recorded")
 	}
 }
 
-// A charge is capped at the minute budget, so a request larger than
-// the budget does not lock the token out for longer than one window.
-func TestRateLimitAllowNCappedAtBudget(t *testing.T) {
+// A charge larger than the whole budget never fits.
+func TestRateLimitAllowNLargerThanBudget(t *testing.T) {
 	limiter := handlers.NewRateLimiter(5)
 	defer limiter.Close()
 
-	if allowed, _ := limiter.AllowN("tok", 1_000_000); !allowed {
-		t.Fatal("charge larger than the budget refused on an unused window")
-	}
-	allowed, retryAfter := limiter.Allow("tok")
+	allowed, retryAfter := limiter.AllowN("tok", 6)
 	if allowed {
-		t.Fatal("request admitted after a full-budget charge")
+		t.Fatal("charge larger than the budget admitted on an unused window")
 	}
-	// Capped at the budget, the window frees up within one minute.
-	if retryAfter < 1 || retryAfter > 61 {
-		t.Errorf("Retry-After = %d, want 1..61", retryAfter)
+	if retryAfter != 60 {
+		t.Errorf("Retry-After = %d, want the whole window", retryAfter)
 	}
-}
-
-// A refused AllowN charges nothing: the units it would have taken do
-// not extend the lockout.
-func TestRateLimitAllowNRefusedChargesNothing(t *testing.T) {
-	limiter := handlers.NewRateLimiter(2)
-	defer limiter.Close()
-
-	limiter.AllowN("tok", 2)
-	for range 5 {
-		if allowed, _ := limiter.AllowN("tok", 100); allowed {
-			t.Fatal("charge admitted on a spent window")
-		}
+	if limiter.Limit() != 5 {
+		t.Errorf("Limit() = %d, want 5", limiter.Limit())
 	}
-	_, retryAfter := limiter.AllowN("tok", 0)
-	if retryAfter > 61 {
-		t.Errorf("Retry-After = %d: refused charges were recorded", retryAfter)
-	}
-}
-
-// ChargeN charges whatever the window holds, capped at the budget, and
-// charges nothing for n <= 0.
-func TestRateLimitChargeN(t *testing.T) {
-	limiter := handlers.NewRateLimiter(4)
-	defer limiter.Close()
-
-	limiter.ChargeN("tok", 0)
-	limiter.ChargeN("tok", -3)
-	if allowed, _ := limiter.AllowN("tok", 0); !allowed {
-		t.Fatal("non-positive ChargeN charged the window")
-	}
-
-	limiter.ChargeN("tok", 4)
-	if allowed, _ := limiter.AllowN("tok", 0); allowed {
-		t.Fatal("window not spent after a full-budget ChargeN")
-	}
-	// Charging a spent window still records the units (capped), so
-	// concurrent requests that passed the gate are all charged.
-	limiter.ChargeN("tok", 1_000)
-	if allowed, _ := limiter.Allow("tok"); allowed {
-		t.Fatal("request admitted after charging a spent window")
+	if allowed, _ := limiter.AllowN("tok", 5); !allowed {
+		t.Fatal("the refused charge was recorded")
 	}
 }
 
@@ -131,7 +95,7 @@ func TestRateLimitAllowNPerToken(t *testing.T) {
 	defer limiter.Close()
 
 	limiter.AllowN("tok-a", 1)
-	if allowed, _ := limiter.AllowN("tok-b", 0); !allowed {
+	if allowed, _ := limiter.AllowN("tok-b", 1); !allowed {
 		t.Fatal("tok-b refused after tok-a spent its budget")
 	}
 }

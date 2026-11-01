@@ -1,0 +1,5 @@
+{
+  "name": "fd-hook-recorder",
+  "version": "0.0.0",
+  "description": "Test tool: records Claude Code hook payloads (plugin/tests/tools/hook-recorder)."
+}

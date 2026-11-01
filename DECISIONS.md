@@ -242,6 +242,22 @@ own form, and regex paths are not portable `pathType: Prefix`. Moving
 the routes to `/ingest/v1/...` only would break every client of the
 bare paths.
 
+## D226 -- The compose nginx forwards /api and /ingest paths unchanged
+
+**Date:** 2026-11-01
+**Decision:** supersedes D225's compose clause: the compose nginx (dev
+and prod configs) and the vite dev proxy forward `/api/...` and
+`/ingest/...` as sent, as the Helm chart's Ingress does, and the
+services strip their prefix.
+**Why:** a redirect a service builds from the request as received
+(http-swagger reads `RequestURI`) loses a prefix the proxy stripped, so
+`/api/docs/` landed on `/docs/index.html`, the dashboard. Forwarding the
+path unchanged also sends the services the same path under every
+deployment.
+**Rejected alternative:** keep stripping in nginx and special-case the
+Swagger redirect (one proxy-specific rule per redirecting handler, and
+compose would still differ from the chart).
+
 ## D227 -- A provider-hosted MCP call's tool_call names its server as server_name
 
 **Date:** 2026-11-01

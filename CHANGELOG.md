@@ -64,6 +64,10 @@ All notable changes to Flightdeck are documented here.
   served `/v1/...`, so every sensor, plugin and dashboard call behind it
   got 404. Both services now also accept their own prefix, under any
   ingress controller.
+- **Swagger UI opens from `/api/docs/` and `/ingest/docs/` on the compose
+  stack.** nginx stripped the prefix, so Swagger UI's redirect pointed at
+  `/docs/index.html`, which is the dashboard. nginx now forwards the path
+  as sent, as the Helm chart's Ingress does.
 - **A Claude Code sub-agent has one session start.** Its first interior
   hooks each sent another `session_start` beside the one from
   `SubagentStart` (two to four per sub-agent); one hook now sends it

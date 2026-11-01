@@ -26,6 +26,11 @@ All notable changes to Flightdeck are documented here.
   loaded into the run stays silent so the run is counted once; plugin
   releases before this one report it a second time as a `claude_code`
   session.
+- **Claude Agent SDK runs can be stopped and are held to the MCP
+  policy.** The dashboard's Stop button, fleet-wide stops and token
+  budgets reach an SDK run: a stop denies its next tool call and blocks
+  later prompts, and budget warnings reach the run as a message. Its MCP
+  tool calls are checked against the flavor's MCP Protection Policy.
 
 ### Fixed
 

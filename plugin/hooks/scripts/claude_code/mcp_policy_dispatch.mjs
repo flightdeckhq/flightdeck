@@ -54,9 +54,6 @@ export async function dispatchMcpPolicySessionStart({
   hookEvent,
   sessionId,
   basePayload,
-  // False refreshes the policy cache the PreToolUse gate reads without
-  // reporting anything (a run the Agent SDK interceptor reports).
-  emitEvents = true,
 }) {
   const cwd = hookEvent.cwd || process.cwd();
   const fingerprints = loadMcpServerFingerprints(cwd);
@@ -81,7 +78,6 @@ export async function dispatchMcpPolicySessionStart({
     || `${cfg.server.replace(/\/ingest$/, "")}/api`;
   const policies = await fetchPolicies(apiUrl, cfg.token, flavor);
   writeSessionPolicyCache(sessionId, policies);
-  if (!emitEvents) return;
 
   // Emit policy_mcp_warn / policy_mcp_block for non-allow
   // decisions per declared server. Allow decisions stay silent —

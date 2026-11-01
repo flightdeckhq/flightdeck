@@ -85,6 +85,26 @@ def test_post_event_keeps_an_oversized_event_within_the_body_limit(
     assert sent["content"]["messages"][0]["content"].endswith("bytes to fit the event size limit]")
 
 
+def test_post_heartbeat_returns_the_sessions_directive(mock_control_plane: Any) -> None:
+    mock_control_plane["set_response"](
+        {
+            "status": "ok",
+            "directive": {"action": "shutdown", "reason": "manual", "grace_period_ms": 0},
+        }
+    )
+    client = ControlPlaneClient(mock_control_plane["url"], "tok")
+    directive = client.post_heartbeat("sdk-run")
+    assert directive is not None
+    assert directive.action == DirectiveAction.SHUTDOWN
+    [request] = mock_control_plane["requests"]
+    assert request["body"] == {"session_id": "sdk-run"}
+
+
+def test_post_heartbeat_fails_open_whatever_the_unavailability_policy() -> None:
+    client = ControlPlaneClient("http://127.0.0.1:1", "tok", unavailable_policy="halt")
+    assert client.post_heartbeat("sdk-run") is None
+
+
 def test_connectivity_failure_continue_returns_none() -> None:
     client = ControlPlaneClient("http://127.0.0.1:1", "tok", unavailable_policy="continue")
     directive, attached = client.post_event({"session_id": "x", "event_type": "post_call"})
@@ -251,6 +271,57 @@ class TestEventQueue:
             )
             assert last.wait(5.0)
             assert handled == ["own", "child", "own-last"]
+        finally:
+            eq.close()
+
+    def test_another_sessions_directive_goes_to_the_router(self) -> None:
+        """A directive for an Agent SDK run's event goes to the router
+        (the run's reporter), never to the sensor's own handler."""
+        mock_client = MagicMock(spec=ControlPlaneClient)
+        mock_client.post_event.side_effect = lambda item: (
+            Directive(
+                action=DirectiveAction.SHUTDOWN, reason=item["session_id"], grace_period_ms=0
+            ),
+            False,
+        )
+        handled: list[str] = []
+        routed: list[tuple[str, str]] = []
+
+        def router(session_id: str, d: Directive) -> bool:
+            routed.append((session_id, d.reason))
+            return session_id == "sdk-run"
+
+        eq = EventQueue(
+            mock_client,
+            directive_handler=lambda d: handled.append(d.reason),
+            directive_session_id="own",
+            directive_router=router,
+        )
+        try:
+            eq.enqueue({"session_id": "sdk-run", "event_type": "post_call"})
+            eq.enqueue({"session_id": "unknown-run", "event_type": "post_call"})
+            eq.flush(timeout=5.0)
+            assert routed == [("sdk-run", "sdk-run"), ("unknown-run", "unknown-run")]
+            assert handled == []
+        finally:
+            eq.close()
+
+    def test_a_failing_router_does_not_stop_the_drain(self) -> None:
+        mock_client = MagicMock(spec=ControlPlaneClient)
+        mock_client.post_event.return_value = (
+            Directive(action=DirectiveAction.SHUTDOWN, reason="x", grace_period_ms=0),
+            False,
+        )
+
+        def router(session_id: str, d: Directive) -> bool:
+            raise RuntimeError("router broke")
+
+        eq = EventQueue(mock_client, directive_session_id="own", directive_router=router)
+        try:
+            eq.enqueue({"session_id": "sdk-run", "event_type": "post_call"})
+            eq.enqueue({"session_id": "sdk-run", "event_type": "post_call"})
+            eq.flush(timeout=5.0)
+            assert mock_client.post_event.call_count == 2
         finally:
             eq.close()
 

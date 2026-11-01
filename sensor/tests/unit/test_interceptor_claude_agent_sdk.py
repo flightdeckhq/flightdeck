@@ -128,6 +128,11 @@ def patched(monkeypatch: pytest.MonkeyPatch) -> Any:
         for message in seen["messages"]:
             if isinstance(message, Exception):
                 raise message
+            if callable(message):
+                # A step of the run between messages: the CLI calling
+                # the options' hook callbacks.
+                await message(options)
+                continue
             yield message
 
     monkeypatch.setattr(sdk_mod._internal_client, "process_query", fake_process_query)
@@ -173,7 +178,7 @@ def test_a_query_run_is_its_own_claude_agent_sdk_session(
         assert event["client_type"] == "claude_agent_sdk"
         assert event["agent_id"] == agent_id
     start = queue.events[0]
-    assert start["context"]["supports_directives"] is False
+    assert start["context"]["supports_directives"] is True
     assert start["context"]["claude_code_version"] == "2.1.316"
     assert start["context"]["mcp_servers"] == ["github"]
     assert start["capture_prompts"] is True
@@ -631,3 +636,262 @@ def test_a_tool_result_mid_message_does_not_cut_the_message(
     call = queue.events[1]
     assert call["tokens_output"] == 45, "the message's final usage"
     assert [b["id"] for b in call["content"]["response"]["content"]] == ["t1", "t2"]
+
+
+# -- control ---------------------------------------------------------------
+
+
+def _hook(options: Any, event: str) -> Any:
+    """The interceptor's callback for ``event``: the last matcher's."""
+    return options.hooks[event][-1].hooks[0]
+
+
+def _directive(action: str, reason: str = "manual", **payload: Any) -> Any:
+    from flightdeck_sensor.core.types import Directive, DirectiveAction
+
+    return Directive(
+        action=DirectiveAction(action), reason=reason, grace_period_ms=0, payload=payload
+    )
+
+
+def _bash() -> dict[str, Any]:
+    return {"hook_event_name": "PreToolUse", "tool_name": "Bash", "tool_input": {"command": "ls"}}
+
+
+def test_the_callbacks_follow_the_callers_hooks_and_leave_them_unchanged(
+    patched: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk, seen = patched
+    session, _ = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    seen["messages"] = _messages(sdk)
+
+    async def callers_hook(input_data: Any, tool_use_id: Any, context: Any) -> dict[str, Any]:
+        return {}
+
+    caller_matcher = sdk.HookMatcher(matcher="Bash", hooks=[callers_hook])
+    caller_hooks = {"PreToolUse": [caller_matcher]}
+    _run_query(sdk, options=sdk.ClaudeAgentOptions(hooks=caller_hooks))
+    hooks = seen["options"].hooks
+    assert hooks["PreToolUse"][0] is caller_matcher
+    assert len(hooks["PreToolUse"]) == 2
+    assert len(hooks["UserPromptSubmit"]) == 1
+    assert caller_hooks == {"PreToolUse": [caller_matcher]}, "the caller's dict is not changed"
+
+
+def test_a_stop_denies_tools_blocks_prompts_and_ends_the_session_as_a_shutdown(
+    patched: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk, seen = patched
+    session, queue = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    outputs: dict[str, Any] = {}
+
+    async def step(options: Any) -> None:
+        outputs["before"] = await _hook(options, "PreToolUse")(_bash(), "toolu_x", None)
+        assert sdk_mod.route_directive(SDK_SESSION, _directive("shutdown", "token_budget_exceeded"))
+        # A second stop is not applied twice.
+        assert sdk_mod.route_directive(SDK_SESSION, _directive("shutdown"))
+        outputs["tool"] = await _hook(options, "PreToolUse")(_bash(), "toolu_y", None)
+        outputs["prompt"] = await _hook(options, "UserPromptSubmit")(
+            {"prompt": "go on"}, None, None
+        )
+
+    seen["messages"] = [*_messages(sdk)[:2], step, *_messages(sdk)[2:]]
+    _run_query(sdk)
+    assert outputs["before"] == {}
+    tool = outputs["tool"]
+    assert tool["continue_"] is False
+    assert tool["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert "token budget" in tool["stopReason"]
+    assert outputs["prompt"]["decision"] == "block"
+    kinds = [e["event_type"] for e in queue.events]
+    assert kinds.count("directive_result") == 1
+    assert kinds.count("policy_block") == 1
+    result = next(e for e in queue.events if e["event_type"] == "directive_result")
+    assert result["session_id"] == SDK_SESSION
+    assert result["directive_status"] == "acknowledged"
+    end = queue.events[-1]
+    assert end["event_type"] == "session_end"
+    assert end["close_reason"] == "directive_shutdown"
+    assert sdk_mod.route_directive(SDK_SESSION, _directive("shutdown")) is False, (
+        "an ended run takes no directive"
+    )
+
+
+def test_warn_and_degrade_tell_the_run_once_and_send_their_events(
+    patched: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk, seen = patched
+    session, queue = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    outputs: list[Any] = []
+
+    async def step(options: Any) -> None:
+        sdk_mod.route_directive(SDK_SESSION, _directive("warn", "token_budget_warning"))
+        sdk_mod.route_directive(
+            SDK_SESSION,
+            _directive("degrade", "token_budget_degrade", degrade_to="claude-haiku-4-5"),
+        )
+        outputs.append(await _hook(options, "PreToolUse")(_bash(), "t1", None))
+        outputs.append(await _hook(options, "UserPromptSubmit")({"prompt": "hi"}, None, None))
+
+    seen["messages"] = [*_messages(sdk)[:4], step, *_messages(sdk)[4:]]
+    _run_query(sdk)
+    message = outputs[0]["systemMessage"]
+    assert "warning threshold" in message
+    assert "claude-haiku-4-5" in message
+    assert "permissionDecision" not in str(outputs[0])
+    assert outputs[1] == {}, "a notice is shown once"
+    by_type = {e["event_type"]: e for e in queue.events}
+    assert by_type["policy_warn"]["policy_decision"]["decision"] == "warn"
+    degrade = by_type["policy_degrade"]
+    assert degrade["to_model"] == "claude-haiku-4-5"
+    assert degrade["from_model"] == "claude-opus-5-5"
+    assert by_type["directive_result"]["result"]["advisory"] is True
+    assert queue.events[-1]["close_reason"] == "normal_exit"
+
+
+def test_an_unsupported_directive_is_answered_with_an_error(
+    patched: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk, seen = patched
+    session, queue = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+
+    async def step(options: Any) -> None:
+        sdk_mod.route_directive(SDK_SESSION, _directive("custom"))
+
+    seen["messages"] = [_messages(sdk)[0], step, *_messages(sdk)[1:]]
+    _run_query(sdk)
+    result = next(e for e in queue.events if e["event_type"] == "directive_result")
+    assert result["directive_status"] == "error"
+    assert queue.events[-1]["close_reason"] == "normal_exit"
+
+
+def test_an_idle_run_polls_for_a_directive_before_a_tool_runs(
+    patched: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk, seen = patched
+    session, _ = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    session.client.post_heartbeat.return_value = _directive("shutdown")  # type: ignore[attr-defined]
+    outputs: list[Any] = []
+
+    async def busy(options: Any) -> None:
+        outputs.append(await _hook(options, "PreToolUse")(_bash(), "t1", None))
+
+    async def idle(options: Any) -> None:
+        monkeypatch.setattr(sdk_mod, "_POLL_IDLE_SECS", 0.0)
+        outputs.append(await _hook(options, "PreToolUse")(_bash(), "t2", None))
+
+    seen["messages"] = [_messages(sdk)[0], busy, idle, *_messages(sdk)[1:]]
+    _run_query(sdk)
+    assert outputs[0] == {}, "a run that just sent an event does not poll"
+    assert outputs[1]["continue_"] is False
+    session.client.post_heartbeat.assert_called_once_with(SDK_SESSION)  # type: ignore[attr-defined]
+
+
+def _decision(decision: str) -> Any:
+    from flightdeck_sensor.core.mcp_policy import MCPPolicyDecision
+
+    return MCPPolicyDecision(
+        decision=decision,  # type: ignore[arg-type]
+        decision_path="flavor_entry",
+        policy_id="pol-1",
+        scope="flavor:playground-sdk",
+        fingerprint="abcd1234abcd1234",
+    )
+
+
+@pytest.mark.parametrize(
+    ("decision", "denied", "event"),
+    [
+        ("block", True, "policy_mcp_block"),
+        ("warn", False, "policy_mcp_warn"),
+        ("allow", False, None),
+    ],
+)
+def test_an_mcp_call_is_held_to_the_mcp_policy(
+    patched: Any, monkeypatch: pytest.MonkeyPatch, decision: str, denied: bool, event: str | None
+) -> None:
+    sdk, seen = patched
+    session, queue = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    asked: list[tuple[str, str]] = []
+
+    def evaluate(server_url: str, server_name: str) -> Any:
+        asked.append((server_url, server_name))
+        return _decision(decision)
+
+    monkeypatch.setattr(session.mcp_policy, "evaluate", evaluate)
+    outputs: list[Any] = []
+
+    async def step(options: Any) -> None:
+        call = {
+            "hook_event_name": "PreToolUse",
+            "tool_name": "mcp__git-hub__create_issue",
+            "tool_input": {},
+        }
+        outputs.append(await _hook(options, "PreToolUse")(call, "t1", None))
+
+    servers = {"git-hub": {"type": "stdio", "command": "npx", "args": ["-y", "server-github"]}}
+    seen["messages"] = [_messages(sdk)[0], step, *_messages(sdk)[1:]]
+    _run_query(sdk, options=sdk.ClaudeAgentOptions(mcp_servers=servers))
+    assert asked == [("npx -y server-github", "git-hub")]
+    specific = outputs[0].get("hookSpecificOutput", {})
+    assert (specific.get("permissionDecision") == "deny") is denied
+    events = [e for e in queue.events if e["event_type"].startswith("policy_mcp")]
+    if event is None:
+        assert events == []
+    else:
+        assert [e["event_type"] for e in events] == [event]
+        assert events[0]["session_id"] == SDK_SESSION
+        assert events[0]["server_url"] == "npx -y server-github"
+        assert events[0]["tool_name"] == "create_issue"
+        assert events[0]["policy_decision"]["decision"] == decision
+
+
+def test_an_in_process_sdk_server_is_not_gated_and_an_unlisted_one_gets_the_mode_default(
+    patched: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk, seen = patched
+    session, _ = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    asked: list[tuple[str, str]] = []
+
+    def evaluate(server_url: str, server_name: str) -> Any:
+        asked.append((server_url, server_name))
+        return _decision("allow")
+
+    monkeypatch.setattr(session.mcp_policy, "evaluate", evaluate)
+
+    async def step(options: Any) -> None:
+        for tool in ("mcp__tools__add", "mcp__elsewhere__fetch"):
+            await _hook(options, "PreToolUse")({"tool_name": tool, "tool_input": {}}, "t", None)
+
+    servers = {"tools": {"type": "sdk", "name": "tools", "instance": object()}}
+    seen["messages"] = [_messages(sdk)[0], step, *_messages(sdk)[1:]]
+    _run_query(sdk, options=sdk.ClaudeAgentOptions(mcp_servers=servers))
+    assert asked == [("", "elsewhere")]
+
+
+def test_a_callback_that_fails_allows_the_call(
+    patched: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk, seen = patched
+    session, _ = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+
+    def evaluate(server_url: str, server_name: str) -> Any:
+        raise RuntimeError("policy cache broke")
+
+    monkeypatch.setattr(session.mcp_policy, "evaluate", evaluate)
+    outputs: list[Any] = []
+
+    async def step(options: Any) -> None:
+        outputs.append(await _hook(options, "PreToolUse")({"tool_name": "mcp__x__y"}, "t", None))
+
+    seen["messages"] = [_messages(sdk)[0], step, *_messages(sdk)[1:]]
+    _run_query(sdk)
+    assert outputs == [{}]

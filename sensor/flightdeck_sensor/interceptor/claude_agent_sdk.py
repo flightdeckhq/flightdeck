@@ -12,23 +12,30 @@ SDK's message stream (ARCHITECTURE.md, Sensor > Claude Agent SDK):
   reports, under a ``claude_agent_sdk`` agent;
 * ``init`` -> ``session_start``; each assistant message (by message id)
   -> ``post_call`` plus one ``tool_call`` per ``tool_use`` block; the
-  ``ResultMessage`` of a ``query()`` run, or the client's disconnect,
-  -> ``session_end``.
+  end of the run (the ``query()`` stream, or the client's disconnect)
+  -> ``session_end``;
+* ``PreToolUse`` and ``UserPromptSubmit`` callbacks, added after the
+  caller's hooks, apply the run's directives (stop, warn, advisory
+  degrade) and the MCP Protection Policy.
 
 It adds ``FLIGHTDECK_SDK_OBSERVED=1`` to the CLI's environment so a
-Claude Code plugin the CLI loads stays silent for the run, and never
+Claude Code plugin the CLI loads does nothing for the run, and never
 replaces the caller's hooks or ``can_use_tool``.
 
 Failure-mode posture is fail-open (sensor rule 28): an error while
-reporting is logged at debug level and never reaches the caller's
-iteration.
+reporting or in a callback is logged at debug level, never reaches the
+caller's iteration, and allows the tool call.
 """
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import logging
 import os
+import re
+import threading
+import time
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -69,6 +76,55 @@ _CLOUD_ENV_VARS = (
     ("CLAUDE_CODE_USE_FOUNDRY", "foundry"),
 )
 _BILLING_MODES = frozenset({"metered", "subscription", "local"})
+
+# How long a run may go without sending anything before its PreToolUse
+# callback polls for a directive. The Claude Code plugin's gate uses the
+# same 5 s: a stop lands within one tool call of being issued, and a
+# busy run, whose events already carry directives, never polls.
+_POLL_IDLE_SECS = 5.0
+_STOP_ACTIONS = frozenset({"shutdown", "shutdown_flavor"})
+_BUDGET_EXCEEDED = "token_budget_exceeded"
+_WARN_NOTICE = "Flightdeck: this run crossed its token budget's warning threshold."
+# Characters Claude Code replaces with "_" in an MCP server's name when
+# it builds the server's tool names (mcp__<server>__<tool>).
+_TOOL_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
+
+
+def _stop_message(reason: str) -> str:
+    why = (
+        "this run reached its token budget"
+        if reason == _BUDGET_EXCEEDED
+        else "an operator stopped this run"
+    )
+    return f"Stopped by Flightdeck: {why}."
+
+
+def _degrade_notice(degrade_to: Any) -> str:
+    to = f" ({degrade_to})" if isinstance(degrade_to, str) and degrade_to else ""
+    return (
+        "Flightdeck: this run crossed its token budget's degrade threshold. "
+        f"A hook cannot change the run's model; use a smaller one{to} to make "
+        "the budget last."
+    )
+
+
+# The runs being reported, by Flightdeck session id, so a directive the
+# event queue receives for one reaches it.
+_runs: dict[str, SdkRun] = {}
+_runs_lock = threading.Lock()
+
+
+def route_directive(session_id: str, directive: Any) -> bool:
+    """Apply ``directive`` to the run reported as ``session_id``;
+    False when no such run is in progress."""
+    with _runs_lock:
+        run = _runs.get(session_id)
+    if run is None:
+        return False
+    run.apply_directive(directive)
+    return True
+
+
 # The model Claude Code names on an assistant message it wrote itself
 # (an API error or an interrupt) rather than one the model returned.
 _SYNTHETIC_MODEL = "<synthetic>"
@@ -221,10 +277,30 @@ class SdkRun:
     ends one turn only; a run can have several.
     """
 
-    def __init__(self, session: Session, *, env: Mapping[str, str]) -> None:
+    def __init__(
+        self,
+        session: Session,
+        *,
+        env: Mapping[str, str],
+        mcp_servers: Any = None,
+    ) -> None:
         self._session = session
         self._env = env
         self._platform = _platform(env)[0]
+        # The options' MCP servers by the name Claude Code puts in their
+        # tool names; a file path (not a dict) leaves this empty.
+        self._mcp_servers: dict[str, Any] = (
+            {_TOOL_NAME_UNSAFE.sub("_", str(k)): v for k, v in mcp_servers.items()}
+            if isinstance(mcp_servers, dict)
+            else {}
+        )
+        # Control state, written by the event queue's drain thread and
+        # read by the hook callbacks on the SDK's event loop.
+        self._lock = threading.Lock()
+        self._stopped: str | None = None
+        self._notices: list[str] = []
+        self._model: str | None = None
+        self._last_request = time.monotonic()
         cfg = session.config
         self._agent_id = str(
             derive_agent_id(
@@ -283,9 +359,14 @@ class SdkRun:
             if self.session_id is None or self._ended:
                 return
             self._ended = True
+            with _runs_lock:
+                if _runs.get(self.session_id) is self:
+                    del _runs[self.session_id]
             result = self._last_result
             payload = self._payload("session_end")
-            payload["close_reason"] = "normal_exit"
+            payload["close_reason"] = (
+                "directive_shutdown" if self._stopped is not None else "normal_exit"
+            )
             if result is not None and getattr(result, "is_error", False):
                 payload["state"] = "error"
                 errors = getattr(result, "errors", None)
@@ -313,6 +394,11 @@ class SdkRun:
         self.session_id = session_id
         self._ended = False
         self._tokens_used = 0
+        with self._lock:
+            self._stopped = None
+            self._notices = []
+        with _runs_lock:
+            _runs[session_id] = self
         self._last_result = None
         self._reported.clear()
         self._billing_mode = billing_mode(self._env, data.get("apiKeySource"))
@@ -329,7 +415,7 @@ class SdkRun:
             "mcp_servers": [s.get("name") for s in servers if isinstance(s, dict)]
             if isinstance(servers, list)
             else [],
-            "supports_directives": False,
+            "supports_directives": True,
         }
         payload = self._payload("session_start")
         payload["sensor_version"] = _sensor_version()
@@ -379,6 +465,8 @@ class SdkRun:
         tokens = _usage_tokens(pending["usage"])
         self._tokens_used += tokens["tokens_total"]
         model = pending["model"] if isinstance(pending["model"], str) else None
+        if model:
+            self._model = model
         payload = self._payload("post_call")
         payload.update(tokens)
         payload.update(
@@ -468,7 +556,220 @@ class SdkRun:
     def _post(self, payload: dict[str, Any]) -> None:
         if self._ended and payload["event_type"] != "session_end":
             return
+        self._last_request = time.monotonic()
         self._session.event_queue.enqueue(payload)
+
+    # -- control -----------------------------------------------------
+
+    def apply_directive(self, directive: Any) -> None:
+        """Apply a directive delivered for this run and send the events
+        it owes. Called from the event queue's drain thread."""
+        try:
+            action = getattr(directive.action, "value", str(directive.action))
+            reason = str(getattr(directive, "reason", "") or "")
+            degrade_to = (getattr(directive, "payload", None) or {}).get("degrade_to")
+            with self._lock:
+                if action in _STOP_ACTIONS:
+                    if self._stopped is not None:
+                        return
+                    self._stopped = reason or "directive received"
+                elif action == "warn":
+                    self._notices.append(_WARN_NOTICE)
+                elif action == "degrade":
+                    self._notices.append(_degrade_notice(degrade_to))
+            for payload in self._directive_events(action, reason, degrade_to):
+                self._post(payload)
+        except Exception:
+            _log.debug("claude_agent_sdk: applying a directive failed", exc_info=True)
+
+    def _control_event(self, event_type: str, **fields: Any) -> dict[str, Any]:
+        payload = self._payload(event_type)
+        payload.update(fields)
+        return payload
+
+    @staticmethod
+    def _server_decision(decision: str, reason: str) -> dict[str, Any]:
+        return {"policy_id": "server", "scope": "server", "decision": decision, "reason": reason}
+
+    def _directive_events(self, action: str, reason: str, degrade_to: Any) -> list[dict[str, Any]]:
+        """The events a directive owes, as the Claude Code plugin sends
+        them; the run's session_end comes when the run ends."""
+
+        def ack(result: dict[str, Any]) -> dict[str, Any]:
+            return self._control_event(
+                "directive_result",
+                directive_name=action,
+                directive_action=action,
+                directive_status="acknowledged",
+                result=result,
+            )
+
+        if action in _STOP_ACTIONS:
+            out = [
+                ack({"message": "Agent SDK run stopped", "reason": reason or "directive received"})
+            ]
+            if reason == _BUDGET_EXCEEDED:
+                out.append(
+                    self._control_event(
+                        "policy_block",
+                        source="server",
+                        reason=reason,
+                        policy_decision=self._server_decision(
+                            "block",
+                            "Token budget exceeded (server policy); Flightdeck's hook "
+                            "callbacks deny the run's further tool calls and prompts",
+                        ),
+                    )
+                )
+            return out
+        if action == "warn":
+            return [
+                self._control_event(
+                    "policy_warn",
+                    source="server",
+                    reason=reason,
+                    policy_decision=self._server_decision(
+                        "warn",
+                        "Token usage crossed the warn threshold (server policy); the run was told",
+                    ),
+                )
+            ]
+        if action == "degrade":
+            return [
+                self._control_event(
+                    "policy_degrade",
+                    source="server",
+                    from_model=self._model,
+                    to_model=degrade_to,
+                    policy_decision=self._server_decision(
+                        "degrade",
+                        "Token usage crossed the degrade threshold (server policy); advisory, "
+                        "since a hook cannot change the run's model",
+                    ),
+                ),
+                ack(
+                    {
+                        "message": "advisory: the run's model cannot be changed from a hook",
+                        "advisory": True,
+                        "to_model": degrade_to,
+                    }
+                ),
+            ]
+        return [
+            self._control_event(
+                "directive_result",
+                directive_name=action,
+                directive_action=action,
+                directive_status="error",
+                error=f"{action} directives are not supported for Claude Agent SDK runs",
+            )
+        ]
+
+    def _take_notices(self) -> dict[str, Any]:
+        with self._lock:
+            notices, self._notices = self._notices, []
+        return {"systemMessage": "\n".join(notices)} if notices else {}
+
+    async def _poll_if_idle(self) -> None:
+        if self.session_id is None or self._stopped is not None:
+            return
+        if time.monotonic() - self._last_request < _POLL_IDLE_SECS:
+            return
+        self._last_request = time.monotonic()
+        directive = await asyncio.to_thread(self._session.client.post_heartbeat, self.session_id)
+        if directive is not None:
+            self.apply_directive(directive)
+
+    async def pre_tool_use(self, input_data: Any, tool_use_id: Any, context: Any) -> dict[str, Any]:
+        """PreToolUse callback: a stopped run's tool call is denied and
+        ends the turn; an MCP tool call is held to the MCP policy."""
+        try:
+            await self._poll_if_idle()
+            stopped = self._stopped
+            if stopped is not None:
+                message = _stop_message(stopped)
+                return {
+                    "continue_": False,
+                    "stopReason": message,
+                    "hookSpecificOutput": {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": message,
+                    },
+                }
+            output = self._take_notices()
+            tool_name = input_data.get("tool_name") if isinstance(input_data, dict) else None
+            if isinstance(tool_name, str) and tool_name.startswith("mcp__"):
+                denial = self._mcp_gate(tool_name)
+                if denial is not None:
+                    output["hookSpecificOutput"] = {
+                        "hookEventName": "PreToolUse",
+                        "permissionDecision": "deny",
+                        "permissionDecisionReason": denial,
+                    }
+            return output
+        except Exception:
+            _log.debug("claude_agent_sdk: PreToolUse callback failed; allowing", exc_info=True)
+            return {}
+
+    async def user_prompt_submit(
+        self, input_data: Any, tool_use_id: Any, context: Any
+    ) -> dict[str, Any]:
+        """UserPromptSubmit callback: a stopped run's prompt is blocked."""
+        try:
+            stopped = self._stopped
+            if stopped is not None:
+                return {"decision": "block", "reason": _stop_message(stopped)}
+            return self._take_notices()
+        except Exception:
+            _log.debug("claude_agent_sdk: UserPromptSubmit callback failed", exc_info=True)
+            return {}
+
+    def _mcp_gate(self, tool_name: str) -> str | None:
+        """Evaluate the MCP policy for an ``mcp__<server>__<tool>``
+        call; the denial reason when it is blocked."""
+        from flightdeck_sensor.interceptor.mcp import (
+            _build_mcp_policy_reason,
+            _build_policy_event_extras,
+        )
+
+        server_name, _, tool = tool_name[len("mcp__") :].partition("__")
+        spec = self._mcp_servers.get(server_name)
+        spec = spec if isinstance(spec, dict) else {}
+        if spec.get("type") == "sdk":
+            return None
+        server_url, transport = _server_identity(spec)
+        decision = self._session.mcp_policy.evaluate(server_url=server_url, server_name=server_name)
+        if decision.decision == "allow":
+            return None
+        extras = _build_policy_event_extras(
+            decision=decision,
+            server_url=server_url,
+            server_name=server_name,
+            transport=transport,
+            tool_name=tool or tool_name,
+        )
+        blocked = decision.decision == "block"
+        self._post(
+            self._control_event("policy_mcp_block" if blocked else "policy_mcp_warn", **extras)
+        )
+        return _build_mcp_policy_reason(decision, server_name) if blocked else None
+
+
+def _server_identity(spec: dict[str, Any]) -> tuple[str, str | None]:
+    """An MCP server's policy URL and transport from its options entry:
+    its ``url``, or its command and arguments joined by spaces, as the
+    Claude Code plugin reads them from Claude Code's settings."""
+    url = spec.get("url")
+    if isinstance(url, str) and url:
+        kind = spec.get("type")
+        return url, kind if isinstance(kind, str) else "http"
+    command = spec.get("command")
+    if isinstance(command, str) and command:
+        args = spec.get("args")
+        parts = [command, *(str(a) for a in args)] if isinstance(args, list) else [command]
+        return " ".join(parts), "stdio"
+    return "", None
 
 
 # ----------------------------------------------------------------------
@@ -528,6 +829,22 @@ def _patch_query_path() -> None:
     _internal_client.process_query = process_query
 
 
+def _with_hooks(options: Any, run: SdkRun) -> Any:
+    """``options`` with the run's PreToolUse and UserPromptSubmit
+    callbacks after the caller's own hooks; the caller's dict and lists
+    are copied, never changed."""
+    hooks: dict[str, list[Any]] = {
+        event: list(matchers) for event, matchers in (getattr(options, "hooks", None) or {}).items()
+    }
+    hooks.setdefault("PreToolUse", []).append(
+        _sdk.HookMatcher(matcher=None, hooks=[run.pre_tool_use])
+    )
+    hooks.setdefault("UserPromptSubmit", []).append(
+        _sdk.HookMatcher(matcher=None, hooks=[run.user_prompt_submit])
+    )
+    return dataclasses.replace(options, hooks=hooks)
+
+
 def _observe(options: Any, transport: Any) -> tuple[SdkRun | None, Any]:
     """A run to report and the options to start it with, or ``(None,
     options)`` when there is no sensor session or setting up fails."""
@@ -536,7 +853,12 @@ def _observe(options: Any, transport: Any) -> tuple[SdkRun | None, Any]:
         return None, options
     try:
         observed = observed_options(options)
-        run = SdkRun(session, env=run_env(observed))
+        run = SdkRun(
+            session,
+            env=run_env(observed),
+            mcp_servers=getattr(observed, "mcp_servers", None),
+        )
+        observed = _with_hooks(observed, run)
     except Exception:
         _log.debug("claude_agent_sdk: run not observed", exc_info=True)
         return None, options

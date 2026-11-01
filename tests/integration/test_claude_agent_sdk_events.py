@@ -31,6 +31,7 @@ from .conftest import (
     TOKEN,
     auth_headers,
     delete_flavor_data,
+    post_directive,
     wait_until,
 )
 from .test_sensor_e2e import (
@@ -130,7 +131,14 @@ def fake_cli(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
         self: Any, prompt: Any, options: Any, transport: Any = None
     ) -> Any:
         seen["options"] = options
-        for message in _messages(seen["session"]):
+        messages = _messages(seen["session"])
+        for message in messages[:2]:
+            yield message
+        # Between two messages the CLI may call the options' hook
+        # callbacks; a test sets ``step`` to play that part.
+        if "step" in seen:
+            await seen["step"](options)
+        for message in messages[2:]:
             yield message
 
     sdk_mod.unpatch_claude_agent_sdk()
@@ -219,7 +227,7 @@ def test_an_sdk_run_lands_as_its_own_claude_agent_sdk_session(
     session = rows[0]
     assert session["client_type"] == "claude_agent_sdk"
     assert session["state"] == "closed"
-    assert session["context"]["supports_directives"] is False
+    assert session["context"]["supports_directives"] is True
     assert session["context"]["claude_code_version"] == "2.1.316"
 
 
@@ -244,3 +252,62 @@ def test_capture_off_stores_no_sdk_content(
         assert PROMPT not in repr(event)
     call = next(e for e in events if e["event_type"] == "post_call")
     assert _content_status(str(call["id"])) == 404
+
+
+@pytest.mark.usefixtures("sensor_reset")
+def test_a_stop_from_the_api_reaches_the_runs_tool_gate(
+    fake_cli: dict[str, Any], unique_flavor: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A shutdown issued for the SDK run's session reaches the run's
+    PreToolUse callback through a real heartbeat, denies the tool call,
+    and the session closes as a directive shutdown."""
+    sdk_session = fake_cli["session"]
+    outputs: list[Any] = []
+
+    async def step(options: Any) -> None:
+        wait_until(
+            lambda: bool(
+                _psql_json(
+                    "SELECT COALESCE(json_agg(session_id), '[]'::json) FROM sessions "
+                    "WHERE session_id = :'sid'",
+                    sid=sdk_session,
+                )
+            ),
+            timeout=15,
+            msg=f"SDK session {sdk_session} never landed",
+        )
+        post_directive("shutdown", session_id=sdk_session, reason="manual stop")
+        # Poll at once rather than after the run has been idle.
+        monkeypatch.setattr(sdk_mod, "_POLL_IDLE_SECS", 0.0)
+        gate = options.hooks["PreToolUse"][-1].hooks[0]
+        outputs.append(
+            await gate(
+                {"tool_name": "Bash", "tool_input": {"command": "ls"}}, "t1", None
+            )
+        )
+
+    fake_cli["step"] = step
+    _run(capture_prompts=True)
+
+    assert outputs[0]["continue_"] is False
+    assert outputs[0]["hookSpecificOutput"]["permissionDecision"] == "deny"
+    wait_until(
+        lambda: (
+            "session_end"
+            in [e["event_type"] for e in _sdk_events(unique_flavor, sdk_session)]
+        ),
+        timeout=15,
+        msg=f"no session_end for SDK session {sdk_session}",
+    )
+    events = _sdk_events(unique_flavor, sdk_session)
+    result = next(e for e in events if e["event_type"] == "directive_result")
+    assert result["payload"]["directive_status"] == "acknowledged"
+    end = next(e for e in events if e["event_type"] == "session_end")
+    assert end["payload"]["close_reason"] == "directive_shutdown"
+    rows = _psql_json(
+        "SELECT COALESCE(json_agg(row_to_json(s)), '[]'::json) FROM sessions s "
+        "WHERE session_id = :'sid'",
+        sid=sdk_session,
+    )
+    assert rows[0]["context"]["supports_directives"] is True
+    assert rows[0]["state"] == "closed"

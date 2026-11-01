@@ -137,6 +137,16 @@ describe("recorded Claude Code 2.1.316 hooks replayed through the plugin", () =>
       posted.filter((b) => b.event_type === "tool_call").map((b) => b.tool_name),
       ["Bash"],
     );
+    // The transcript-derived expectation shares the plugin's token rule
+    // (input counts cache reads and writes); these literal counts, read
+    // off the recorded transcript, pin the rule itself.
+    assert.deepEqual(
+      posted.filter((b) => b.event_type === "post_call").map((b) => [b.tokens_input, b.tokens_output]),
+      [
+        [22073, 203],
+        [25162, 62],
+      ],
+    );
     const start = posted[0];
     assert.equal(start.context.entrypoint, "sdk-cli");
     assert.equal(start.context.claude_code_session_id, permissionSession[0].input.session_id);

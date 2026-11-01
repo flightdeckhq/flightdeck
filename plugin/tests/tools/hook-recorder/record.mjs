@@ -1,7 +1,7 @@
 // Hook recorder for the plugin's contract fixtures: appends each hook's
 // stdin payload, with the Claude Code variables the plugin reads, as one
 // JSON line to $FD_HOOK_RECORD. Prints nothing, so it never changes what
-// the session does. See record.sh.
+// the session does. See record-scenarios.mjs.
 //
 // Only the variables below are kept: anything else Claude Code exports
 // to a hook (credentials among them) never reaches a fixture.

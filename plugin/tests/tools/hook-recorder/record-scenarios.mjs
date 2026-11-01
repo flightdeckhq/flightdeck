@@ -134,8 +134,7 @@ function scrubber(projectDir) {
   return (text) => pairs.reduce((acc, [from, to]) => acc.split(from).join(to), text);
 }
 
-function runScenario(scenario, recordFile) {
-  const dir = mkdtempSync(join(tmpdir(), "fd-record-"));
+function runScenario(scenario, recordFile, dir) {
   scenario.setup?.(dir);
   const args = typeof scenario.args === "function" ? scenario.args(dir) : scenario.args;
   const env = { ...process.env, FD_HOOK_RECORD: recordFile };
@@ -150,7 +149,6 @@ function runScenario(scenario, recordFile) {
   if (run.status !== 0) {
     throw new Error(`scenario "${scenario.name}" failed (${run.status}): ${run.stderr || run.stdout}`);
   }
-  return dir;
 }
 
 function main() {
@@ -160,8 +158,22 @@ function main() {
   mkdirSync(join(outDir, "transcripts"), { recursive: true });
   const lines = [];
   for (const scenario of SCENARIOS) {
-    const recordFile = join(mkdtempSync(join(tmpdir(), "fd-record-out-")), "hooks.jsonl");
-    const dir = runScenario(scenario, recordFile);
+    const outTmp = mkdtempSync(join(tmpdir(), "fd-record-out-"));
+    try {
+      recordScenario(scenario, join(outTmp, "hooks.jsonl"), outDir, lines);
+    } finally {
+      // The raw records are not scrubbed; only the fixture is kept.
+      rmSync(outTmp, { recursive: true, force: true });
+    }
+  }
+  writeFileSync(join(outDir, "hooks.jsonl"), lines.join("\n") + "\n");
+  console.log(`wrote ${outDir}`);
+}
+
+function recordScenario(scenario, recordFile, outDir, lines) {
+  const dir = mkdtempSync(join(tmpdir(), "fd-record-"));
+  try {
+    runScenario(scenario, recordFile, dir);
     const scrub = scrubber(dir);
     const records = readFileSync(recordFile, "utf8").trim().split("\n").filter(Boolean);
     const transcripts = new Set();
@@ -185,11 +197,10 @@ function main() {
         }
       }
     }
-    rmSync(dir, { recursive: true, force: true });
     console.log(`recorded: ${scenario.name} (${records.length} hooks)`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
-  writeFileSync(join(outDir, "hooks.jsonl"), lines.join("\n") + "\n");
-  console.log(`wrote ${outDir}`);
 }
 
 function* walk(dir) {

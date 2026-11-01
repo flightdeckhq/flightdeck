@@ -34,10 +34,23 @@ const SESSION_END_DEADLINE_MS = 30_000;
  * answering the plugin's POSTs lives in this process. */
 function runClaude(args, options) {
   return new Promise((resolve) => {
-    const child = spawn("claude", args, { ...options, stdio: ["ignore", "pipe", "pipe"] });
+    // stdout is not read, so it is not piped: a full pipe would stall
+    // the run. detached puts claude and its hook processes in one group,
+    // so the timeout kills them all.
+    const child = spawn("claude", args, { ...options, stdio: ["ignore", "ignore", "pipe"], detached: true });
     let stderr = "";
     child.stderr.on("data", (chunk) => (stderr += chunk));
-    const timer = setTimeout(() => child.kill("SIGKILL"), RUN_TIMEOUT_MS);
+    const timer = setTimeout(() => {
+      try {
+        process.kill(-child.pid, "SIGKILL");
+      } catch {
+        child.kill("SIGKILL");
+      }
+    }, RUN_TIMEOUT_MS);
+    child.on("error", (err) => {
+      clearTimeout(timer);
+      resolve({ status: null, stderr: String(err) });
+    });
     child.on("close", (status) => {
       clearTimeout(timer);
       resolve({ status, stderr });

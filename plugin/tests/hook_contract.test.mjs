@@ -22,7 +22,7 @@
 
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync,
@@ -35,14 +35,12 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import nodePath from "node:path";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  CI_PROVIDER_ENV,
   MAX_MCP_IDENTITY_BYTES,
   MAX_SIGNAL_BYTES,
   REDACTED_ERROR_MESSAGE,

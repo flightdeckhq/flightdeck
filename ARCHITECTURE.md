@@ -2444,6 +2444,86 @@ quiet session; the sensor does not (its post_call events give the same
 signal at the cadence it produces them).
 
 `GET /health` returns `{"status":"ok","service":"ingestion"}`.
+
+### OTLP ingest
+
+Agents that export OpenTelemetry send it to the ingestion API, which
+turns what it understands into Flightdeck events. This reaches runs no
+hook or SDK patch sees: `claude --bare`, Claude Code in CI and cloud
+sessions, and any Claude Code whose telemetry is pointed at Flightdeck.
+OTLP sessions are observer-class (`client_type=otlp`,
+`context.supports_directives=false`): the dashboard shows them and
+offers no Stop.
+
+**Routes.** `POST /v1/logs`, `POST /v1/traces` and `POST /v1/metrics`,
+the OTLP/HTTP paths, so an exporter pointed at `https://<host>/ingest`
+reaches them through the edge proxy. Each accepts the OTLP protobuf
+encoding (`application/x-protobuf`) and the OTLP JSON encoding
+(`application/json`), either optionally gzip-compressed
+(`Content-Encoding: gzip`). Authentication is the bearer token every
+ingestion route takes; an exporter sends it with
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer ftd_..."`.
+
+**Limits and responses.** A request body over 4 MiB, or one that
+decompresses past 16 MiB, is refused with 413 before it is parsed. A
+body that does not decode is 400; any other media type is 415. A body
+that decodes is answered 200 with the OTLP export response, in the
+request's encoding, even when some of its records are not used:
+`partial_success` counts the records Flightdeck did not map
+(`rejected_log_records`, `rejected_spans` or `rejected_data_points`)
+with a message naming why. One record Flightdeck cannot use never fails
+the request. The per-token rate limit charges an OTLP request one unit
+per log record, span or data point it carries, not one per request; a
+request that would exceed the token's remaining minute budget is
+answered 429 with `Retry-After`.
+
+**Dialects.** A record is mapped by its source's dialect, detected from
+the resource's `service.name` and the instrumentation scope. Claude Code
+(`service.name=claude-code`, scopes under `com.anthropic.claude_code`)
+is the dialect mapped. Records of other sources are accepted and counted
+as rejected. Claude Code's log records carry everything its events need,
+so its spans and metrics are accepted and counted as rejected too.
+
+| Claude Code log record | Event |
+|---|---|
+| the first record of a session not seen recently | a synthetic `session_start` (identity and capture below), published before the record's own event |
+| `claude_code.user_prompt` | `pre_call`, carrying the prompt as content when the session captures prompts |
+| `claude_code.api_request` | `post_call`: `model`, input tokens (cache reads and writes included), output tokens, the cache split (5 minutes / 1 hour), `latency_ms` (from `duration_ms`), `ttft_ms`, `cost_usd` as the agent-reported cost, `request_id` and `query_source` |
+| `claude_code.api_error` | `llm_error`, classified from its status code and message |
+| `claude_code.tool_result` | `tool_call`, or `mcp_tool_call` for an `mcp__<server>__<tool>` tool; `success=false` carries the error block, its text only when the session captures prompts |
+| any other record | counted as rejected |
+
+An event's id is a UUID5 of the record's `session.id`, event name,
+`event.sequence` and timestamp, so an exporter retrying a request stores
+nothing twice.
+
+**Identity.** The Flightdeck session id is a UUID5 of the Claude Code
+`session.id`, not the id itself: the Agent SDK interceptor reports a run
+under its Claude Code session id, and the two must not collide. A Claude
+Code session another Flightdeck client already reports is not reported
+again: when a session row with that id in `context.claude_code_session_id`
+(the plugin) or as its `session_id` (an Agent SDK run) exists with
+another `client_type`, the session's OTLP records are counted as
+rejected. The session's `agent_type` is `coding`; its flavor is
+`claude-code` unless the resource sets `flightdeck.flavor`; its user is
+the record's `user.email`, else `user.account_id`; its host is the
+resource's `host.name` (Claude Code sends none; operators set one with
+`OTEL_RESOURCE_ATTRIBUTES`); its agent id is derived from those as for
+every client.
+
+**Capture.** OTLP content is off unless the exporter declares it: a
+session captures prompts when its resource carries
+`flightdeck.capture_prompts=true`, and there is content to keep only when
+the source also sends it (Claude Code's `OTEL_LOG_USER_PROMPTS=1`). The
+synthetic `session_start` carries that posture, and the worker's capture
+gate applies it as for any session.
+
+**Lifecycle.** OTLP sources do not report a session's end. An OTLP
+session ages through `idle`, `stale` and `lost` like any session that
+stops sending, and the orphan-timeout reaper closes it
+(`close_reason=orphan_timeout`). The ingestion API sends a synthetic
+`session_start` for a session it has not seen in the last 10 minutes,
+so a session that resumes after being closed is re-attached.
 `GET /docs/index.html` serves the Swagger UI. The ingestion API serves no
 metrics endpoint.
 

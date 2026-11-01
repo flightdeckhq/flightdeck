@@ -207,3 +207,19 @@ sequence rules had patched each such ordering as it surfaced.
 **Rejected alternative:** redelivering a content event until its
 session's posture is known (a delayed event lands after session_end
 and is skipped with its tokens); more retries and stub rows per race.
+
+## D224 -- OTLP ingest maps Claude Code's log records; content is opt-in
+
+**Date:** 2026-11-01
+**Decision:** the ingestion API accepts OTLP/HTTP logs, traces and
+metrics (protobuf and JSON, gzip) and maps the Claude Code dialect's log
+records to observer-class `otlp` sessions; other dialects, spans and
+metrics are accepted and counted as rejected. A Claude Code session the
+plugin or the Agent SDK already reports is not reported again. Content
+is kept only when the exporter's resource sets
+`flightdeck.capture_prompts=true`. Sessions close through the
+orphan-timeout path.
+**Why:** OTLP reaches runs no hook or SDK patch sees; Claude Code's logs
+carry tokens, cost and TTFT per call, the spans repeat them.
+**Rejected alternative:** mapping spans first (no cost); a new
+`close_reason` for idle OTLP sessions (aging already closes them).

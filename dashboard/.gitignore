@@ -1,5 +1,6 @@
 test-results/
 playwright-report/
+blob-report/
 
 # TypeScript incremental-build cache. Local build artifact written
 # by ``tsc --incremental`` (which ``npm run typecheck`` + ``npm run

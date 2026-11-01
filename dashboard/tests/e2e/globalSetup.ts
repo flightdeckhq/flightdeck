@@ -28,14 +28,15 @@ import { fileURLToPath } from "node:url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-// `make dev` returns before the dashboard's Vite server is listening
-// (its container installs dependencies first), and until it is, nginx
+// `make dev` returns before the dashboard is listening (its container
+// installs dependencies first, and on CI builds the production bundle
+// it serves), and until it is, nginx
 // answers every page with 502 Bad Gateway. Specs that started inside
 // that window failed on a 502 page. Wait for the dashboard to serve its
 // index through the edge proxy before seeding and before any spec runs.
 //
-// A cold container on a CI runner (npm install, then Vite's dependency
-// pre-bundling) has been seen to take about a minute; three minutes
+// A cold container (npm install, then Vite's dependency pre-bundling,
+// or on CI the bundle build) has been seen to take about a minute; three minutes
 // leaves room for a slow runner without hiding a dashboard that never
 // comes up.
 const DASHBOARD_READY_TIMEOUT_MS = 180_000;
@@ -58,7 +59,7 @@ async function waitForDashboard(baseURL: string): Promise<void> {
   }
   throw new Error(
     `globalSetup: the dashboard at ${baseURL} did not serve within ` +
-      `${DASHBOARD_READY_TIMEOUT_MS / 1000}s (last: ${last}). Is the dev stack up (make dev)?`,
+      `${DASHBOARD_READY_TIMEOUT_MS / 1000}s (last: ${last}). Is the dev stack up (make dev, or the E2E compose override)?`,
   );
 }
 

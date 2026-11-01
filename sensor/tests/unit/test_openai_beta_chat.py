@@ -12,6 +12,7 @@ the sensor.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 from typing import TYPE_CHECKING, Any
@@ -21,6 +22,7 @@ import openai
 import pydantic
 import pytest
 import respx
+from openai.resources.chat.completions import Completions
 from openai.types.chat import ParsedChatCompletion
 
 import flightdeck_sensor
@@ -29,6 +31,7 @@ from flightdeck_sensor.interceptor import openai as openai_interceptor
 from flightdeck_sensor.interceptor.openai import (
     SensorBeta,
     SensorChat,
+    SensorCompletions,
     SensorOpenAI,
     patch_openai_classes,
     unpatch_openai_classes,
@@ -256,3 +259,63 @@ def test_wrapped_and_patched_client_beta_chat_is_wrapped_once(
     chat = wrapped.beta.chat
     assert isinstance(chat, SensorChat)
     assert not isinstance(chat._real, SensorChat)
+
+
+# ----- a stream helper that builds its request through the client ------------
+
+
+class _ClientBuiltStreamCompletions(Completions):
+    """A ``stream`` helper shaped like openai 1.40 to 1.91's beta chat
+    helper: its request goes through ``self._client.chat.completions
+    .create(stream=True)``, not ``self.create``."""
+
+    def stream(self, **kwargs: Any) -> Any:  # type: ignore[override]
+        return contextlib.nullcontext(self._client.chat.completions.create(stream=True, **kwargs))
+
+
+def _client_built_stream(session: Session, client: Any) -> SensorCompletions:
+    return SensorCompletions(
+        _ClientBuiltStreamCompletions(client),
+        session,
+        openai_interceptor._provider_for(client, session),
+    )
+
+
+@pytest.mark.parametrize("class_patched", [False, True], ids=["wrap-only", "class-patched"])
+def test_a_helper_building_its_request_through_the_client_is_metered_once(
+    monkeypatch: pytest.MonkeyPatch, class_patched: bool
+) -> None:
+    session = _activate(monkeypatch, False)
+    if class_patched:
+        patch_openai_classes(quiet=True)
+    try:
+        with respx.mock(base_url=OPENAI_URL) as router:
+            route = router.post("/chat/completions").mock(
+                return_value=_sse(_chat_frames(tool=False), done=True)
+            )
+            completions = _client_built_stream(session, _client(False))
+            with completions.stream(model="gpt-4o-mini", messages=MESSAGES) as stream:
+                chunks = list(stream)
+    finally:
+        if class_patched:
+            unpatch_openai_classes()
+    assert len(chunks) == 3  # the injected usage chunk stays hidden
+    assert route.call_count == 1
+    assert json.loads(route.calls.last.request.content)["stream_options"] == {"include_usage": True}
+    (post_call,) = _events_of(session, "post_call")
+    assert post_call["tokens_output"] == 4
+    assert post_call["streaming"]["final_outcome"] == "completed"
+
+
+def test_a_helper_building_its_request_through_the_client_passes_through_under_the_mark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _activate(monkeypatch, False)
+    client = _client(False)
+    request = openai_interceptor._HelperRequest(_client_built_stream(session, client))
+    with base.outer_intercept():
+        chat = request._client.chat
+    assert chat is client.chat  # the real client's own resource
+    assert not isinstance(chat.completions, SensorCompletions)
+    # Outside the mark the same helper client meters the request.
+    assert not isinstance(request._client.chat, type(client.chat))

@@ -415,8 +415,13 @@ class _HelperRequest:
     / ``ResponseStream``). Run with this object as ``self``, that call
     reaches the sensor proxy's ``create``, so the request takes the
     stream guard and the helper reads its raw events through the guard;
-    the caller gets the SDK's own manager and event stream. Every other
-    attribute (``retrieve`` for resuming a stored response) is the
+    the caller gets the SDK's own manager and event stream. A helper that
+    builds its request through the client instead (openai 1.40 to 1.91's
+    ``beta.chat.completions.stream()`` calls
+    ``self._client.chat.completions.create``) gets a client whose
+    ``chat.completions`` is this object, so on a ``wrap()``-built client,
+    whose own ``chat`` is not patched, its request is metered too. Every
+    other attribute (``retrieve`` for resuming a stored response) is the
     proxy's. The guards the helper opened are kept so the manager's exit
     can settle them."""
 
@@ -425,7 +430,11 @@ class _HelperRequest:
         self.guards: list[Any] = []
 
     def create(self, **kwargs: Any) -> Any:
-        result = self._proxy.create(**_given(kwargs))
+        return self.send(self._proxy, kwargs)
+
+    def send(self, proxy: Any, kwargs: dict[str, Any]) -> Any:
+        """``proxy.create(**kwargs)``, keeping the guard it opens."""
+        result = proxy.create(**_given(kwargs))
         if inspect.iscoroutine(result):
 
             async def _opened() -> Any:
@@ -438,7 +447,50 @@ class _HelperRequest:
         return result
 
     def __getattr__(self, name: str) -> Any:
-        return getattr(self._proxy, name)
+        value = getattr(self._proxy, name)
+        if name == _SDK_CLIENT_ATTR:
+            return _HelperClient(self, value)
+        return value
+
+
+# The attribute an SDK resource holds its client under (``self._client``).
+_SDK_CLIENT_ATTR = "_client"
+
+
+class _HelperClient:
+    """``self._client`` for an SDK ``.stream()`` helper run by the sensor
+    (see :class:`_HelperRequest`). Its ``chat.completions.create`` is the
+    client's own chat ``create`` metered by the sensor: the class patch's
+    proxy when the client is patched, else a :class:`SensorCompletions`
+    over the client's resource with the helper proxy's session and
+    provider (a ``wrap()``-built client). The request is sent through the
+    helper's request, so the manager's exit settles its guard. Under an
+    outer interceptor's mark, or for a proxy that is not a chat proxy, it
+    is the real client's ``chat``; everything else is the real client's."""
+
+    def __init__(self, request: _HelperRequest, client: Any) -> None:
+        self._request = request
+        self._real = client
+
+    @property
+    def chat(self) -> Any:
+        proxy = self._request._proxy
+        if base.outer_intercept_active() or not isinstance(proxy, SensorCompletions):
+            return self._real.chat
+        completions = self._real.chat.completions
+        if not isinstance(completions, SensorCompletions):
+            completions = SensorCompletions(
+                completions, proxy._session, proxy._provider, is_async=proxy._is_async
+            )
+        request = self._request
+
+        def _create(**kwargs: Any) -> Any:
+            return request.send(completions, kwargs)
+
+        return types.SimpleNamespace(completions=types.SimpleNamespace(create=_create))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
 
 
 class _HelperStreamManager:

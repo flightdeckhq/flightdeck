@@ -26,13 +26,17 @@ import { Button } from "@/components/ui/button";
 import { SessionStateBar } from "./SessionStateBar";
 import { createDirective } from "@/lib/api";
 import { SHUTDOWN_GRACE_PERIOD_MS, SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/constants";
-import { flavorHasDirectiveCapableSession } from "@/lib/directives";
+import {
+  flavorHasDirectiveCapableSession,
+  sessionSupportsDirectives,
+} from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { AgentType, ClientType } from "@/lib/agent-identity";
 import { DirectiveCard } from "@/components/directives/DirectiveCard";
 import { FacetIcon } from "@/components/facets/FacetIcon";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
+import { TelemetrySourcePill } from "@/components/facets/TelemetrySourcePill";
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import { useFleetStore } from "@/store/fleet";
 import { OctagonX, X, Zap } from "lucide-react";
@@ -770,7 +774,11 @@ function FlavorItem({
     (s) => s.state === "active" || s.state === "idle",
   );
   const hasLive = liveSessions.length > 0;
-  const hasDirectives = directives.length > 0;
+  // Custom directives are offered only when some session of the flavor
+  // can act on one: an all-observer flavor (Claude Code over the plugin
+  // or OpenTelemetry) has no channel a directive could reach.
+  const hasDirectives =
+    directives.length > 0 && flavor.sessions.some(sessionSupportsDirectives);
   // Hide the Stop All button when every live session of this flavor is
   // observer-only (Claude Code and every future hook-based plugin).
   // A mixed flavor keeps the button because the shutdown_flavor
@@ -875,6 +883,13 @@ function FlavorItem({
             clientType={flavor.client_type}
             size="compact"
             testId="flavor-client-type-pill"
+          />
+        )}
+        {sidebarWidth >= FLEET_PILL_HIDE_MIN_WIDTH && (
+          <TelemetrySourcePill
+            telemetry={flavor.telemetry}
+            clientType={flavor.client_type}
+            testId="flavor-telemetry-source-pill"
           />
         )}
         <span className="text-[11px] font-mono" style={{ color: "var(--text-muted)" }}>

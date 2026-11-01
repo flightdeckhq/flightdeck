@@ -304,3 +304,19 @@ exporter's retry is safe.
 `subscription` (hides the mistake, can mis-bill a metered fleet);
 publishing despite a failed read (rows with no capture posture or
 context, and possible duplicates of plugin sessions).
+
+## D230 -- The dashboard names a session's source from `context.telemetry`; agent rows carry the latest session's
+
+**Date:** 2026-11-01
+**Decision:** a session reported over OTLP (`context.telemetry=otlp`)
+shows an `OTEL` pill beside its client pill and "via OpenTelemetry" in
+its run drawer; the plugin's reads "via plugin". `GET /v1/fleet`,
+`GET /v1/agents` and the agent hits of `GET /v1/search` add `telemetry`,
+the latest session's value, to the runtime-context projection.
+**Why:** an OTLP session observes only, so its source decides what the
+operator can do; agent rows carry no session context to read it from.
+**Rejected alternative:** a `client_type` per source (D224 kept
+`claude_code` for its defaults); reading it from loaded sessions'
+context (the fleet's per-agent sessions omit context, so rows outside
+the paginated window would lose the pill); a pill on every source
+(noise on the default plugin and sensor rows).

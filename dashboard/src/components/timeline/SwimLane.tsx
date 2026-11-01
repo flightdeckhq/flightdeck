@@ -10,6 +10,7 @@ import {
 	type ClientType as ClientTypeT,
 } from "@/lib/agent-identity";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
+import { TelemetrySourcePill } from "@/components/facets/TelemetrySourcePill";
 import { SubAgentLostDot } from "@/components/facets/SubAgentRolePill";
 import { RelationshipPill } from "@/components/facets/RelationshipPill";
 import {
@@ -64,6 +65,10 @@ interface SwimLaneProps {
 	agentName?: string;
 	/** Client_type, surfaced as a small pill beside the label. */
 	clientType?: ClientTypeT;
+	/** The agent's ``telemetry`` (its latest session's
+	 *  ``context.telemetry``); ``"otlp"`` adds the OTel source pill
+	 *  after the client pill. */
+	telemetry?: string;
 	/** Agent_type — coding / production — surfaced as a muted badge
 	 *  next to the pill. */
 	agentType?: string;
@@ -139,6 +144,7 @@ function SwimLaneComponent({
 	flavor,
 	agentName,
 	clientType,
+	telemetry,
 	agentType,
 	sessions,
 	scale,
@@ -342,6 +348,11 @@ function SwimLaneComponent({
 						testId="swimlane-client-type-pill"
 					/>
 				)}
+				<TelemetrySourcePill
+					telemetry={telemetry}
+					clientType={clientType}
+					testId="swimlane-telemetry-source-pill"
+				/>
 				{agentType && (
 					<span
 						className="shrink-0 font-mono text-[10px] uppercase tracking-wide"
@@ -515,6 +526,7 @@ export const SwimLane = memo(SwimLaneComponent, (prev, next) => {
 	if (prev.flavor !== next.flavor) return false;
 	if (prev.agentName !== next.agentName) return false;
 	if (prev.clientType !== next.clientType) return false;
+	if (prev.telemetry !== next.telemetry) return false;
 	if (prev.agentType !== next.agentType) return false;
 	if (prev.topology !== next.topology) return false;
 	if (prev.sessions !== next.sessions) return false;

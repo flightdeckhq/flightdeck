@@ -237,6 +237,14 @@ function recentSessionToSession(r: RecentSession): Session {
   };
 }
 
+/** A session's ``context.telemetry`` when it is a string, else null:
+ *  the value an agent row built from a live update carries as its
+ *  ``telemetry``. */
+function contextTelemetry(session: Session): string | null {
+  const t = session.context?.telemetry;
+  return typeof t === "string" ? t : null;
+}
+
 function buildFlavors(
   agents: AgentSummary[],
   recentSessions: SessionListItem[],
@@ -305,6 +313,7 @@ function buildFlavors(
         user: a.user,
         hostname: a.hostname,
         last_seen_at: a.last_seen_at,
+        telemetry: a.telemetry ?? null,
       };
     });
 }
@@ -556,6 +565,7 @@ export const useFleetStore = create<FleetState>((set, get) => ({
           total_tokens: 0,
           state: "active",
           topology: update.session.parent_session_id ? "child" : "lone",
+          telemetry: contextTelemetry(update.session),
           recent_sessions: [
             sessionToRecentSession(update.session, parentAgentID),
           ],
@@ -670,6 +680,7 @@ function applySessionUpdate(
         agent_name: session.agent_name ?? undefined,
         client_type: session.client_type ?? undefined,
         last_seen_at: session.last_seen_at,
+        telemetry: contextTelemetry(session),
       },
     ];
   }

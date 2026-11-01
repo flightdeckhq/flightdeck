@@ -619,6 +619,10 @@ export interface FlavorSummary {
   user?: string;
   hostname?: string;
   last_seen_at?: string;
+  /** The agent's ``telemetry`` (its latest session's
+   *  ``context.telemetry``); ``"otlp"`` for an agent reported over
+   *  OpenTelemetry. */
+  telemetry?: string | null;
 }
 
 /**
@@ -684,6 +688,11 @@ export interface AgentSummary {
   orchestration?: string | null;
   python_version?: string | null;
   process_name?: string | null;
+  /** The latest session's ``context.telemetry``: ``"otlp"`` when the
+   *  agent's latest run was reported over OpenTelemetry, absent for a
+   *  run a hook plugin or the sensor reports. Drives the OTel source
+   *  pill. */
+  telemetry?: string | null;
   /**
    * Most-recent sessions for this agent (newest first by
    * started_at). Populated by /v1/fleet so the swimlane row renders
@@ -1033,6 +1042,8 @@ export interface SearchResultAgent {
   client_type: string;
   state: SessionState | "";
   last_seen: string;
+  /** The agent's latest session's ``context.telemetry``. */
+  telemetry?: string | null;
 }
 
 /** Search result: session summary (extended with fields for Investigate table).

@@ -130,6 +130,9 @@ export interface RecentAgent {
   client_type: string;
   state: SessionState | "";
   last_seen_at: string;
+  /** The latest session's ``context.telemetry`` (``"otlp"`` for an
+   *  agent reported over OpenTelemetry). */
+  telemetry?: string | null;
 }
 
 interface RecentAgentsResponse {

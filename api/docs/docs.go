@@ -2925,7 +2925,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "os": {
-                    "description": "Runtime-context slice from the agent's MOST RECENT session's\n` + "`" + `sessions.context` + "`" + ` JSONB. An agent that ran across\nmultiple hosts / branches surfaces its latest session's values\nhere — facets are single-valued per agent. Each field is null\nwhen the latest session's context is absent or the JSONB key\nis missing. Sourced via one LATERAL JOIN per agent ordered by\nstarted_at DESC LIMIT 1; the per-agent overhead is bounded by\nthe page size. ` + "`" + `Hostname` + "`" + ` and ` + "`" + `UserName` + "`" + ` above remain the\nauthoritative single-valued slices for those two dims (sourced\nfrom agents-table columns); these seven are the JSONB-only\nslices the operator slices the roster by.",
+                    "description": "Runtime-context slice from the agent's MOST RECENT session's\n` + "`" + `sessions.context` + "`" + ` JSONB. An agent that ran across\nmultiple hosts / branches surfaces its latest session's values\nhere — facets are single-valued per agent. Each field is null\nwhen the latest session's context is absent or the JSONB key\nis missing. Sourced via one LATERAL JOIN per agent ordered by\nstarted_at DESC LIMIT 1; the per-agent overhead is bounded by\nthe page size. ` + "`" + `Hostname` + "`" + ` and ` + "`" + `UserName` + "`" + ` above remain the\nauthoritative single-valued slices for those two dims (sourced\nfrom agents-table columns); these are the JSONB-only\nslices the operator slices the roster by.",
                     "type": "string"
                 },
                 "process_name": {
@@ -2943,6 +2943,10 @@ const docTemplate = `{
                 },
                 "state": {
                     "description": "State rollup: \"active\" when any session under this agent is\ncurrently active; otherwise the most-recent session's state.\nEmpty string when the agent has no sessions yet (freshly\nupserted agent row awaiting its first session linkage).",
+                    "type": "string"
+                },
+                "telemetry": {
+                    "description": "Telemetry is the latest session's ` + "`" + `context.telemetry` + "`" + `: \"otlp\"\nwhen its events were reported over OpenTelemetry, null for a\nsession a hook plugin or the sensor reports. The dashboard\nlabels the agent's source from it.",
                     "type": "string"
                 },
                 "topology": {
@@ -3738,6 +3742,10 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "state": {
+                    "type": "string"
+                },
+                "telemetry": {
+                    "description": "Telemetry is the agent's latest session's ` + "`" + `context.telemetry` + "`" + `\n(\"otlp\" for a session reported over OpenTelemetry), as on\nAgentSummary, so the palette labels the agent's source.",
                     "type": "string"
                 }
             }

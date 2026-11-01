@@ -218,7 +218,7 @@ definitions:
           started_at DESC LIMIT 1; the per-agent overhead is bounded by
           the page size. `Hostname` and `UserName` above remain the
           authoritative single-valued slices for those two dims (sourced
-          from agents-table columns); these seven are the JSONB-only
+          from agents-table columns); these are the JSONB-only
           slices the operator slices the roster by.
         type: string
       process_name:
@@ -244,6 +244,13 @@ definitions:
           currently active; otherwise the most-recent session's state.
           Empty string when the agent has no sessions yet (freshly
           upserted agent row awaiting its first session linkage).
+        type: string
+      telemetry:
+        description: |-
+          Telemetry is the latest session's `context.telemetry`: "otlp"
+          when its events were reported over OpenTelemetry, null for a
+          session a hook plugin or the sensor reports. The dashboard
+          labels the agent's source from it.
         type: string
       topology:
         description: |-
@@ -820,6 +827,12 @@ definitions:
       last_seen:
         type: string
       state:
+        type: string
+      telemetry:
+        description: |-
+          Telemetry is the agent's latest session's `context.telemetry`
+          ("otlp" for a session reported over OpenTelemetry), as on
+          AgentSummary, so the palette labels the agent's source.
         type: string
     type: object
   store.SearchResultEvent:

@@ -151,6 +151,17 @@ describe("AgentTableRow", () => {
     expect(screen.queryByTestId("agent-row-client-type-a-2")).toBeNull();
   });
 
+  it("adds the OTel pill after the client pill for an agent reported over OpenTelemetry", () => {
+    renderRow(mkAgent({ agent_id: "a-3", client_type: "claude_code", telemetry: "otlp" }));
+    expect(screen.getByTestId("agent-row-client-type-a-3")).toHaveTextContent("Claude Code");
+    expect(screen.getByTestId("agent-row-telemetry-source-a-3")).toHaveTextContent("OTel");
+  });
+
+  it("renders no OTel pill for a plugin-reported agent", () => {
+    renderRow(mkAgent({ agent_id: "a-4", client_type: "claude_code" }));
+    expect(screen.queryByTestId("agent-row-telemetry-source-a-4")).toBeNull();
+  });
+
   it("calls onOpenDrawer with the agent on a row click", () => {
     const onOpenDrawer = vi.fn();
     const agent = mkAgent({ agent_id: "a-1" });

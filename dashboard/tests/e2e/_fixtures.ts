@@ -123,6 +123,29 @@ export const ANCIENT_AGENT = {
   sessionRoles: ["ancient-only"],
 } as const;
 
+/** The Claude Code session reported over OpenTelemetry. Seeded by
+ *  tests/e2e-fixtures/otlp_seed.py as one OTLP log export to
+ *  ``POST /v1/logs``; the ids are ingestion's uuid5 derivation from
+ *  the Claude Code ``session.id`` ``e2e-otlp-observer`` (and the
+ *  sub-agent's ``agent_id`` ``e2eotlpchild01``). The root is pinned
+ *  ``active`` on every seed run; the child is closed by its
+ *  ``subagent_completed``. */
+export const OTLP_AGENT = {
+  name: "e2e-test-otlp@e2e-otlp-host",
+  childName: "e2e-test-otlp@e2e-otlp-host/general-purpose",
+  flavor: "e2e-otlp-claude-code",
+  rootSessionId: "deeedb28-e808-5aca-9706-f3b038b36058",
+  childSessionId: "7458fc5a-bb89-5a06-9644-413ca42f5907",
+  claudeCodeVersion: "2.1.316",
+  model: "claude-haiku-4-5-20251001",
+  /** The root's api_request: Claude Code's own cost and TTFT. */
+  rootCallCostUsd: 0.0173255,
+  rootCallTtftMs: 935,
+  rootCallRequestId: "req_e2e_otlp_root_1",
+  mcpServer: "e2e-otlp-mcp",
+  deniedTool: "Bash",
+} as const;
+
 export const ALL_FIXTURE_AGENTS = [
   CODING_AGENT,
   SENSOR_AGENT,

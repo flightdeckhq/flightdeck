@@ -6,6 +6,7 @@ import { Highlight } from "@/components/search/Highlight";
 import { StateChip } from "@/components/search/StateChip";
 import { EventTypePill } from "@/components/facets/EventTypePill";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
+import { TelemetrySourcePill } from "@/components/facets/TelemetrySourcePill";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import type {
@@ -165,6 +166,11 @@ function AgentRow({ item, query }: { item: SearchResultAgent; query: string }) {
     <>
       {typedClient === ClientType.ClaudeCode && <ClaudeCodeLogo size={12} />}
       {typedClient && <ClientTypePill clientType={typedClient} size="compact" />}
+      <TelemetrySourcePill
+        telemetry={item.telemetry}
+        clientType={item.client_type}
+        testId="search-agent-telemetry-source"
+      />
       <StateChip state={item.state} />
       <Highlight
         text={item.agent_name}
@@ -191,6 +197,10 @@ function SessionRow({
         className="font-mono font-medium text-text"
       />
       <Highlight text={item.flavor} query={query} className="text-text-muted" />
+      <TelemetrySourcePill
+        telemetry={item.context?.telemetry}
+        testId="search-session-telemetry-source"
+      />
       <StateChip state={item.state} />
       {item.model && (
         <span className="flex items-center gap-1 text-text-muted">

@@ -177,7 +177,7 @@ type OTLPMetricsPartialSuccess struct {
 // @Failure      429  {object}  OTLPStatus  "token's minute budget spent, or too little of it left for the request's events; see Retry-After"
 // @Failure      500  {object}  OTLPStatus  "token validation failed"
 // @Header       429  {integer}  Retry-After  "seconds until the token's minute budget has room"
-// @Failure      503  {object}  OTLPStatus  "no decode slot free (see Retry-After), or publishing the mapped events failed; retry"
+// @Failure      503  {object}  OTLPStatus  "no decode slot free (see Retry-After), a session read failed, or publishing the mapped events failed; retry"
 // @Header       503  {integer}  Retry-After  "seconds to wait when no decode slot was free"
 // @Router       /v1/logs [post]
 func OTLPLogsHandler(validator TokenValidator, publisher EventPublisher, attacher SessionAttacher, dialect OTLPDialect, limiter *RateLimiter) http.HandlerFunc {

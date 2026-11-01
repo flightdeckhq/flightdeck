@@ -2507,10 +2507,18 @@ of its records are not used: `partial_success` counts the records
 Flightdeck did not map (`rejected_log_records`, `rejected_spans` or
 `rejected_data_points`) with a message naming why, and one record
 Flightdeck cannot use never fails the request. The message names at most
-five sources, each cut to 128 bytes, and counts the rest. Mapped events
-pass the same validation as `POST /v1/events`; a record whose event fails
-it is counted as rejected. A failed publish to NATS is 503, which OTLP
-exporters retry; the deterministic event ids make the retry safe.
+five sources, each cut to 128 bytes, and counts the rest. For log records
+it names reasons, the most frequent first, each with its count
+(`3 log records not used: "claude_code.assistant_response" is not mapped
+(2); "claude_code.tool_decision" other than a reject is not mapped (1)`),
+out of at most 64 distinct reasons a request tracks; the rest are counted
+as `N for other reasons`. Mapped events
+pass the same validation as `POST /v1/events` (one function serves both);
+a record whose event fails it is counted as rejected, the validation
+message in its reason. A failed publish to NATS is 503, which OTLP
+exporters retry; the deterministic event ids make the retry safe. So is a
+failed session read (below): the request publishes nothing, is charged
+nothing, and is answered 503.
 A request whose records are all used carries no `partial_success`.
 
 A request is checked in this order: bearer token (401), the token's
@@ -2559,9 +2567,9 @@ counts as no content.
 |---|---|
 | `claude_code.user_prompt` | `pre_call` |
 | `claude_code.api_request` | `post_call`: `model`, `model_requested` and `model_served`, `provider=anthropic`, `tokens_input` (`input_tokens` + `cache_read_tokens` + `cache_creation_tokens`), `tokens_output`, `tokens_cache_read`, `tokens_cache_creation`, `tokens_cache_creation_1h` (`cache_creation_1h_tokens`), `latency_ms` (`duration_ms`), a `streaming` block holding only `ttft_ms` and `final_outcome=completed` (Claude Code reports neither chunk counts nor gaps, and the dashboard renders a block without them), `cost_usd` as `cost_reported` with `cost_source=agent`, `provider_metadata.request_id` and `provider_metadata.query_source` |
-| `claude_code.api_error` | `llm_error`: `error.http_status` (`status_code`), `error.request_id`, `retry_attempt` (`attempt`), `provider=anthropic`, classified from the status code and message; `terminal` is not set, since Claude Code reports each failed attempt |
-| `claude_code.tool_result` | `tool_call` with `tool_name`, `tool_use_id`, `duration_ms` and, when `success=false`, the error block. A record with `tool_name=mcp_tool` is an `mcp_tool_call` whose `server_name` and `tool_name` are its `tool_parameters.mcp_server_name` and `mcp_tool_name` (present only when the exporter sets Claude Code's `OTEL_LOG_TOOL_DETAILS=1`; without them it stays a `tool_call` named `mcp_tool`) |
-| `claude_code.tool_decision` with `decision=reject` | `session_signal` `permission_denied`, as the plugin reports a denied tool; its `signal_data` is `tool_name`, `tool_use_id`, `reason` (the record's `source`, such as `config`) and, for an MCP tool, `mcp_server`, and never the tool's input |
+| `claude_code.api_error` | `llm_error`: `model`, `error.http_status` (`status_code`), `error.request_id`, `retry_attempt` (`attempt`), `provider=anthropic`, classified from the status code and message as the sensor classifies Anthropic's errors (400 `invalid_request`, or `context_overflow` / `quota_exceeded` when the text says so; 401 `authentication`, 402 `quota_exceeded`, 403 `permission`, 404 `not_found`, 408 and 504 `timeout`, 413 `request_too_large`, 429 `rate_limit` or `quota_exceeded`, 529 `overloaded`, other 5xx `api_error`); `error.error_message` is `Claude Code API error (HTTP <status>)`, with the record's text cut to 200 characters appended only when capture is on; `terminal` is not set, since Claude Code reports each failed attempt |
+| `claude_code.tool_result` | `tool_call` with `tool_name`, `tool_use_id`, `duration_ms` (also as `latency_ms`, as the plugin sends it) and, when `success=false`, the error block `{error_type: other, error_class: ClaudeCodeToolError, message}`, whose message is `<redacted>` while capture is off. A record with `tool_name=mcp_tool` is an `mcp_tool_call` whose `server_name` and `tool_name` are its `tool_parameters.mcp_server_name` and `mcp_tool_name` (present only when the exporter sets Claude Code's `OTEL_LOG_TOOL_DETAILS=1`; without them it stays a `tool_call` named `mcp_tool`). Nothing else of `tool_parameters` is read: for other tools it holds their input |
+| `claude_code.tool_decision` with `decision=reject` | `session_signal` `permission_denied`, as the plugin reports a denied tool; its `signal_data` is `tool_name`, `tool_use_id`, `reason` (the record's `source`, such as `config`) and, for an MCP tool, `mcp_server` (with `tool_name` the MCP tool's name), and never the tool's input |
 | `claude_code.subagent_completed` | the sub-agent's `session_end` (`close_reason=normal_exit`) |
 | any other record | counted as rejected; `claude_code.assistant_response` among them, since it can only be joined to its `post_call` by state kept across requests |
 
@@ -2578,7 +2586,11 @@ belong to a child session, `uuid5(NAMESPACE_FLIGHTDECK,
 "flightdeck://otlp/claude-code/session/<session.id>/<agent_id>")`, with
 `parent_session_id` the parent's id and `agent_role` the record's
 `agent.name`, else the `<type>` of a `query_source` of the form
-`agent:builtin:<type>`, else none. The Agent tool's own `tool_result` stays a `tool_call` on
+`agent:builtin:<type>`, else none. A sub-agent's tool records carry
+neither, so they take the role another record of the same sub-agent in
+the request names, else the one the replica cached for it; its
+`agent_name` is `{user}@{host}/{role}` and its agent id adds the role to
+the parent's identity, as the plugin derives a sub-agent's. The Agent tool's own `tool_result` stays a `tool_call` on
 the parent.
 
 On the first mapped record of a session a replica has not cached,
@@ -2591,7 +2603,15 @@ otherwise it publishes none. The cache is per replica and only saves the
 read: an entry expires 10 minutes after it is cached, well inside the
 reaper's timeout, and publishing a session's `session_end` removes it,
 so a record for a session closed since is read again and re-attaches
-it. The synthetic `session_start` sets `sensor_version` to the
+it. What a request learned is cached only once all its events are
+published, so a request refused or failed on publish starts its sessions
+again when the exporter retries it. The cache holds at most 50,000
+sessions per replica; when full it drops expired entries, and a session
+it still cannot hold is read on every export. A sub-agent's records
+resolve the run's root first: a root whose row is missing or closed is
+started before the child, so the child's parent row carries the
+session's context and capture posture rather than being a stub. A read
+that fails fails the request (503). The synthetic `session_start` sets `sensor_version` to the
 resource's `service.version`, `capture_prompts` to the session's
 posture (below), and `context` to `claude_code_session_id`
 (`session.id`), `claude_code_version`, `os`, `arch`, `terminal_type`,
@@ -2614,10 +2634,15 @@ email address, unlike the plugin's OS user, so it is personal data in
 `agents.user_name`); the host is the resource's `host.name`, else
 `unknown` (Claude Code sends none; operators set one with
 `OTEL_RESOURCE_ATTRIBUTES`); `agent_name` is `{user}@{host}`; the agent id
-is derived from them as for every client. Each `post_call` carries
+is derived from them as for every client, by a Go port of the derivation
+that `contracts/identity_vectors.json` (generated from the sensor) pins
+together with the plugin's; `framework` is `claude-code`, as the plugin
+sends it. Each `post_call` carries
 `billing_mode`: the resource's `flightdeck.billing_mode` when set
 (`metered`, `subscription`, `local`), else `subscription`, Claude Code's
-own default. Its `cost_reported` therefore counts toward
+own default; any other value fails validation, so the session's
+`post_call` records are counted as rejected with the reason named. Its
+`cost_reported` therefore counts toward
 `estimated_cost` only on a session the operator declares metered.
 
 **Capture.** OTLP content is off unless the exporter declares it: a
@@ -2627,8 +2652,13 @@ prompt text, response text, `tool_input`, MCP arguments or results, or
 error text: only names, ids, counts, durations and success. With capture
 on, the prompt goes on the `pre_call` as a `PromptContent`
 (`provider=anthropic`, the prompt as one user message, the shape the
-plugin's `pre_call` uses), `tool_input` goes on the `tool_call` as the
-record carries it, and error text on its error block; content is cut to
+plugin's `pre_call` uses; Claude Code names no model on a prompt, so
+the `pre_call` has none), `tool_input` goes on the `tool_call` or
+`mcp_tool_call` as the record carries it (the JSON document it encodes,
+else the string), in the `event_content.tool_input` column through the
+tool-capture envelope the sensor and plugin use (`provider` `anthropic`,
+or `mcp` with `model` the server name), and error text on its error
+block; content is cut to
 fit the 768 KiB event body limit as the plugin cuts it. Claude Code sends
 the prompt only when `OTEL_LOG_USER_PROMPTS=1` and tool inputs only when
 `OTEL_LOG_TOOL_DETAILS=1`.

@@ -1,0 +1,78 @@
+{
+ "scenario": "mcp-json",
+ "about": "an MCP tool call to the in-tree reference server",
+ "requests": [
+  {
+   "file": "001-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "002-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "003-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "004-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "005-traces.json",
+   "path": "/v1/traces",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "006-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "007-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "008-traces.json",
+   "path": "/v1/traces",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "009-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "010-traces.json",
+   "path": "/v1/traces",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "011-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "012-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  }
+ ]
+}

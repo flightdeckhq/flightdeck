@@ -1,0 +1,60 @@
+{
+ "scenario": "bash-protobuf-gzip",
+ "about": "the same calls over http/protobuf with gzip, prompts not logged",
+ "requests": [
+  {
+   "file": "001-metrics.pb",
+   "path": "/v1/metrics",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": "gzip"
+  },
+  {
+   "file": "002-logs.pb",
+   "path": "/v1/logs",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": "gzip"
+  },
+  {
+   "file": "003-logs.pb",
+   "path": "/v1/logs",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": "gzip"
+  },
+  {
+   "file": "004-metrics.pb",
+   "path": "/v1/metrics",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": "gzip"
+  },
+  {
+   "file": "005-traces.pb",
+   "path": "/v1/traces",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": "gzip"
+  },
+  {
+   "file": "006-logs.pb",
+   "path": "/v1/logs",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": "gzip"
+  },
+  {
+   "file": "007-traces.pb",
+   "path": "/v1/traces",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": "gzip"
+  },
+  {
+   "file": "008-metrics.pb",
+   "path": "/v1/metrics",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": "gzip"
+  },
+  {
+   "file": "009-logs.pb",
+   "path": "/v1/logs",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": "gzip"
+  }
+ ]
+}

@@ -1,0 +1,24 @@
+{
+ "scenario": "api-error-json",
+ "about": "a request for a model that does not exist",
+ "requests": [
+  {
+   "file": "001-traces.json",
+   "path": "/v1/traces",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "002-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "003-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  }
+ ]
+}

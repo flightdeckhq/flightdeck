@@ -5389,6 +5389,11 @@ When `stream=true` on the underlying request, the payload also carries:
 }
 ```
 
+A `post_call` reported over OTLP carries a `streaming` block with only
+`ttft_ms` and `final_outcome` (`completed`): Claude Code reports no chunk
+counts or inter-chunk timings, so `chunk_count`, `inter_chunk_ms` and
+`abort_reason` are absent and readers treat them as optional.
+
 `final_outcome` is `"completed"` when the response was read in full: the
 stream reached its end, the caller stopped at the event that ends the
 response (Anthropic's `message_stop` or the `message_delta` carrying

@@ -50,8 +50,8 @@
      },
      "logRecords": [
       {
-       "timeUnixNano": "1793533416121000000",
-       "observedTimeUnixNano": "1793533416121000000",
+       "timeUnixNano": "1793534477113000000",
+       "observedTimeUnixNano": "1793534477113000000",
        "body": {
         "stringValue": "claude_code.user_prompt"
        },
@@ -65,7 +65,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -107,7 +107,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:36.121Z"
+          "stringValue": "2026-11-01T12:01:17.113Z"
          }
         },
         {
@@ -119,7 +119,7 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "ddb98d27-847b-4b92-9ccc-7b59fba51cd0"
+          "stringValue": "d63bbb94-e71f-46c9-9fb3-013b0799116c"
          }
         },
         {
@@ -143,14 +143,14 @@
         {
          "key": "message.uuid",
          "value": {
-          "stringValue": "d47852f1-d72c-4696-8d14-3657882293fd"
+          "stringValue": "7b8671c0-c677-4eeb-8f3c-72a2e29e5f76"
          }
         }
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "2c78c2544bebb9280c4e001339ed1911",
-       "spanId": "19cce37b059c024e"
+       "traceId": "1f28bfcab735d23882cea66aa6a0608e",
+       "spanId": "d5f0cd64477b44c2"
       }
      ]
     }

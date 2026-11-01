@@ -50,8 +50,8 @@
      },
      "logRecords": [
       {
-       "timeUnixNano": "1793533408942000000",
-       "observedTimeUnixNano": "1793533408942000000",
+       "timeUnixNano": "1793534469936000000",
+       "observedTimeUnixNano": "1793534469936000000",
        "body": {
         "stringValue": "claude_code.api_request"
        },
@@ -65,7 +65,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+          "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
          }
         },
         {
@@ -107,7 +107,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:28.942Z"
+          "stringValue": "2026-11-01T12:01:09.936Z"
          }
         },
         {
@@ -119,7 +119,7 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "702ff642-0e2a-41ad-af93-64f46f491593"
+          "stringValue": "57c9d585-a288-4c6a-adb3-a303122e7931"
          }
         },
         {
@@ -137,19 +137,19 @@
         {
          "key": "output_tokens",
          "value": {
-          "intValue": 149
+          "intValue": 106
          }
         },
         {
          "key": "cache_read_tokens",
          "value": {
-          "intValue": 25338
+          "intValue": 25341
          }
         },
         {
          "key": "cache_creation_tokens",
          "value": {
-          "intValue": 564
+          "intValue": 734
          }
         },
         {
@@ -161,43 +161,43 @@
         {
          "key": "cache_creation_1h_tokens",
          "value": {
-          "intValue": 564
+          "intValue": 734
          }
         },
         {
          "key": "cost_usd",
          "value": {
-          "doubleValue": 0.0044168
+          "doubleValue": 0.0045421
          }
         },
         {
          "key": "cost_usd_micros",
          "value": {
-          "intValue": 4417
+          "intValue": 4542
          }
         },
         {
          "key": "duration_ms",
          "value": {
-          "intValue": 1903
+          "intValue": 1670
          }
         },
         {
          "key": "ttft_ms",
          "value": {
-          "intValue": 677
+          "intValue": 738
          }
         },
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9bnrPhoHFAB2t1JBmx"
+          "stringValue": "req_011CgcAx234vRy3YrehNzKQr"
          }
         },
         {
          "key": "client_request_id",
          "value": {
-          "stringValue": "74340e4b-7d81-4e52-9023-88df317c76d0"
+          "stringValue": "9bc07049-f3ad-4738-b43b-3704352722e2"
          }
         },
         {
@@ -215,12 +215,12 @@
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "9980d938fe2ef88e0298a1b8bd622761",
-       "spanId": "c9e4b70fcadcf5e2"
+       "traceId": "79c77ec27295db88d6eb25951ff13f47",
+       "spanId": "51337df4b35fc29f"
       },
       {
-       "timeUnixNano": "1793533408942000000",
-       "observedTimeUnixNano": "1793533408942000000",
+       "timeUnixNano": "1793534469937000000",
+       "observedTimeUnixNano": "1793534469937000000",
        "body": {
         "stringValue": "claude_code.assistant_response"
        },
@@ -234,7 +234,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+          "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
          }
         },
         {
@@ -276,7 +276,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:28.942Z"
+          "stringValue": "2026-11-01T12:01:09.937Z"
          }
         },
         {
@@ -288,7 +288,7 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "702ff642-0e2a-41ad-af93-64f46f491593"
+          "stringValue": "57c9d585-a288-4c6a-adb3-a303122e7931"
          }
         },
         {
@@ -306,13 +306,13 @@
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9bnrPhoHFAB2t1JBmx"
+          "stringValue": "req_011CgcAx234vRy3YrehNzKQr"
          }
         },
         {
          "key": "message.uuid",
          "value": {
-          "stringValue": "16c5705b-6986-4d48-8f54-672f5ee27cdf"
+          "stringValue": "1c6db883-9772-4b4b-aef3-aeb0b46fa6b1"
          }
         },
         {
@@ -330,8 +330,8 @@
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "9980d938fe2ef88e0298a1b8bd622761",
-       "spanId": "c9e4b70fcadcf5e2"
+       "traceId": "79c77ec27295db88d6eb25951ff13f47",
+       "spanId": "51337df4b35fc29f"
       }
      ]
     }

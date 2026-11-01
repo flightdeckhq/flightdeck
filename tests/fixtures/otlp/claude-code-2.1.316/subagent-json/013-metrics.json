@@ -68,7 +68,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
+             "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
             }
            },
            {
@@ -114,9 +114,9 @@
             }
            }
           ],
-          "startTimeUnixNano": "1793533383019000000",
-          "timeUnixNano": "1793533383767000000",
-          "asDouble": 0.0174625
+          "startTimeUnixNano": "1793534469935000000",
+          "timeUnixNano": "1793534469947000000",
+          "asDouble": 0.0045421
          }
         ]
        }
@@ -140,7 +140,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
+             "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
             }
            },
            {
@@ -192,8 +192,8 @@
             }
            }
           ],
-          "startTimeUnixNano": "1793533383019000000",
-          "timeUnixNano": "1793533383767000000",
+          "startTimeUnixNano": "1793534469935000000",
+          "timeUnixNano": "1793534469947000000",
           "asDouble": 10
          },
          {
@@ -207,7 +207,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
+             "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
             }
            },
            {
@@ -259,9 +259,9 @@
             }
            }
           ],
-          "startTimeUnixNano": "1793533383019000000",
-          "timeUnixNano": "1793533383767000000",
-          "asDouble": 209
+          "startTimeUnixNano": "1793534469935000000",
+          "timeUnixNano": "1793534469947000000",
+          "asDouble": 106
          },
          {
           "attributes": [
@@ -274,7 +274,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
+             "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
             }
            },
            {
@@ -326,9 +326,9 @@
             }
            }
           ],
-          "startTimeUnixNano": "1793533383019000000",
-          "timeUnixNano": "1793533383767000000",
-          "asDouble": 14595
+          "startTimeUnixNano": "1793534469935000000",
+          "timeUnixNano": "1793534469947000000",
+          "asDouble": 25341
          },
          {
           "attributes": [
@@ -341,7 +341,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
+             "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
             }
            },
            {
@@ -393,9 +393,75 @@
             }
            }
           ],
-          "startTimeUnixNano": "1793533383019000000",
-          "timeUnixNano": "1793533383767000000",
-          "asDouble": 7474
+          "startTimeUnixNano": "1793534469935000000",
+          "timeUnixNano": "1793534469947000000",
+          "asDouble": 734
+         }
+        ]
+       }
+      },
+      {
+       "name": "claude_code.active_time.total",
+       "description": "Total active time in seconds",
+       "unit": "s",
+       "sum": {
+        "aggregationTemporality": 1,
+        "isMonotonic": true,
+        "dataPoints": [
+         {
+          "attributes": [
+           {
+            "key": "user.id",
+            "value": {
+             "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+           },
+           {
+            "key": "session.id",
+            "value": {
+             "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
+            }
+           },
+           {
+            "key": "organization.id",
+            "value": {
+             "stringValue": "00000000-0000-4000-8000-000000000002"
+            }
+           },
+           {
+            "key": "user.email",
+            "value": {
+             "stringValue": "user@example.com"
+            }
+           },
+           {
+            "key": "user.account_uuid",
+            "value": {
+             "stringValue": "00000000-0000-4000-8000-000000000001"
+            }
+           },
+           {
+            "key": "user.account_id",
+            "value": {
+             "stringValue": "user_000000000000000000000001"
+            }
+           },
+           {
+            "key": "terminal.type",
+            "value": {
+             "stringValue": "wsl-Ubuntu"
+            }
+           },
+           {
+            "key": "type",
+            "value": {
+             "stringValue": "cli"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793534469941000000",
+          "timeUnixNano": "1793534469947000000",
+          "asDouble": 1.689
          }
         ]
        }

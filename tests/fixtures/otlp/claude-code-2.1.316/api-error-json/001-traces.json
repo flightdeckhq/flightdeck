@@ -50,13 +50,13 @@
      },
      "spans": [
       {
-       "traceId": "83a60dce2d00859db3aa87bc58fd07f4",
-       "spanId": "9ceec1b1e28a8135",
-       "parentSpanId": "ff83c83169bc45d5",
+       "traceId": "3a1da53343c18318ef31fe713e273e2a",
+       "spanId": "4014c8fdbc13cb2c",
+       "parentSpanId": "c8827ac3966266c0",
        "name": "claude_code.llm_request",
        "kind": 1,
-       "startTimeUnixNano": "1793533426760000000",
-       "endTimeUnixNano": "1793533427299644375",
+       "startTimeUnixNano": "1793534488464000000",
+       "endTimeUnixNano": "1793534489046623695",
        "attributes": [
         {
          "key": "user.id",
@@ -67,7 +67,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "2e8720e1-870b-42a8-aa04-d674c29bedc9"
+          "stringValue": "74b3400c-b2ef-42b3-aa60-cdfd3efde2a6"
          }
         },
         {
@@ -145,7 +145,7 @@
         {
          "key": "gen_ai.conversation.id",
          "value": {
-          "stringValue": "2e8720e1-870b-42a8-aa04-d674c29bedc9"
+          "stringValue": "74b3400c-b2ef-42b3-aa60-cdfd3efde2a6"
          }
         },
         {
@@ -157,7 +157,7 @@
         {
          "key": "duration_ms",
          "value": {
-          "intValue": 539
+          "intValue": 582
          }
         },
         {
@@ -193,13 +193,13 @@
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9dG8VNtQXpJzANy98J"
+          "stringValue": "req_011CgcAyXzQBV5zW2zi4E1GU"
          }
         },
         {
          "key": "gen_ai.response.id",
          "value": {
-          "stringValue": "req_011Cgc9dG8VNtQXpJzANy98J"
+          "stringValue": "req_011CgcAyXzQBV5zW2zi4E1GU"
          }
         },
         {
@@ -222,12 +222,12 @@
           {
            "key": "client_request_id",
            "value": {
-            "stringValue": "2ac87880-5a8a-49a0-8af1-c95cd35ff009"
+            "stringValue": "63ec2a52-afa7-4f2b-ae2b-88991f65c2c3"
            }
           }
          ],
          "name": "gen_ai.request.attempt",
-         "timeUnixNano": "1793533426765343369",
+         "timeUnixNano": "1793534488470069444",
          "droppedAttributesCount": 0
         },
         {
@@ -241,12 +241,12 @@
           {
            "key": "client_request_id",
            "value": {
-            "stringValue": "59a0a587-a966-4c14-b081-42dbf20dc5f1"
+            "stringValue": "5b615e93-d82a-4aa8-a14a-2972cc371f21"
            }
           }
          ],
          "name": "gen_ai.request.attempt",
-         "timeUnixNano": "1793533427047712298",
+         "timeUnixNano": "1793534488736189549",
          "droppedAttributesCount": 0
         }
        ],
@@ -260,12 +260,12 @@
        "flags": 257
       },
       {
-       "traceId": "83a60dce2d00859db3aa87bc58fd07f4",
-       "spanId": "ff83c83169bc45d5",
+       "traceId": "3a1da53343c18318ef31fe713e273e2a",
+       "spanId": "c8827ac3966266c0",
        "name": "claude_code.interaction",
        "kind": 1,
-       "startTimeUnixNano": "1793533426430000000",
-       "endTimeUnixNano": "1793533427308603585",
+       "startTimeUnixNano": "1793534488345000000",
+       "endTimeUnixNano": "1793534489054083968",
        "attributes": [
         {
          "key": "user.id",
@@ -276,7 +276,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "2e8720e1-870b-42a8-aa04-d674c29bedc9"
+          "stringValue": "74b3400c-b2ef-42b3-aa60-cdfd3efde2a6"
          }
         },
         {
@@ -330,7 +330,7 @@
         {
          "key": "gen_ai.conversation.id",
          "value": {
-          "stringValue": "2e8720e1-870b-42a8-aa04-d674c29bedc9"
+          "stringValue": "74b3400c-b2ef-42b3-aa60-cdfd3efde2a6"
          }
         },
         {
@@ -366,7 +366,7 @@
         {
          "key": "interaction.duration_ms",
          "value": {
-          "intValue": 879
+          "intValue": 709
          }
         }
        ],

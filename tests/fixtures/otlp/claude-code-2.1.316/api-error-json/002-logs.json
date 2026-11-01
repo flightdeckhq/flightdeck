@@ -50,8 +50,8 @@
      },
      "logRecords": [
       {
-       "timeUnixNano": "1793533426730000000",
-       "observedTimeUnixNano": "1793533426730000000",
+       "timeUnixNano": "1793534488421000000",
+       "observedTimeUnixNano": "1793534488421000000",
        "body": {
         "stringValue": "claude_code.user_prompt"
        },
@@ -65,7 +65,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "2e8720e1-870b-42a8-aa04-d674c29bedc9"
+          "stringValue": "74b3400c-b2ef-42b3-aa60-cdfd3efde2a6"
          }
         },
         {
@@ -107,7 +107,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:46.730Z"
+          "stringValue": "2026-11-01T12:01:28.421Z"
          }
         },
         {
@@ -119,7 +119,7 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "da561726-52bd-4fed-ad63-3033d903ef2f"
+          "stringValue": "3d5d4815-9d4e-49d0-a857-edd2a7889e1e"
          }
         },
         {
@@ -143,18 +143,18 @@
         {
          "key": "message.uuid",
          "value": {
-          "stringValue": "3a25030c-0850-4504-a058-15f573174c61"
+          "stringValue": "e20e39e4-4ae1-465d-bb30-e2192d4b4e8c"
          }
         }
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "83a60dce2d00859db3aa87bc58fd07f4",
-       "spanId": "ff83c83169bc45d5"
+       "traceId": "3a1da53343c18318ef31fe713e273e2a",
+       "spanId": "c8827ac3966266c0"
       },
       {
-       "timeUnixNano": "1793533427300000000",
-       "observedTimeUnixNano": "1793533427300000000",
+       "timeUnixNano": "1793534489046000000",
+       "observedTimeUnixNano": "1793534489046000000",
        "body": {
         "stringValue": "claude_code.api_error"
        },
@@ -168,7 +168,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "2e8720e1-870b-42a8-aa04-d674c29bedc9"
+          "stringValue": "74b3400c-b2ef-42b3-aa60-cdfd3efde2a6"
          }
         },
         {
@@ -210,19 +210,19 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:47.299Z"
+          "stringValue": "2026-11-01T12:01:29.046Z"
          }
         },
         {
          "key": "event.sequence",
          "value": {
-          "intValue": 8
+          "intValue": 9
          }
         },
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "da561726-52bd-4fed-ad63-3033d903ef2f"
+          "stringValue": "3d5d4815-9d4e-49d0-a857-edd2a7889e1e"
          }
         },
         {
@@ -246,7 +246,7 @@
         {
          "key": "duration_ms",
          "value": {
-          "intValue": 535
+          "intValue": 577
          }
         },
         {
@@ -258,7 +258,7 @@
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9dG8VNtQXpJzANy98J"
+          "stringValue": "req_011CgcAyXzQBV5zW2zi4E1GU"
          }
         },
         {
@@ -282,8 +282,8 @@
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "83a60dce2d00859db3aa87bc58fd07f4",
-       "spanId": "ff83c83169bc45d5"
+       "traceId": "3a1da53343c18318ef31fe713e273e2a",
+       "spanId": "c8827ac3966266c0"
       }
      ]
     }

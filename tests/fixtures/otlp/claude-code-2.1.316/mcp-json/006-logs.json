@@ -50,8 +50,8 @@
      },
      "logRecords": [
       {
-       "timeUnixNano": "1793533418765000000",
-       "observedTimeUnixNano": "1793533418765000000",
+       "timeUnixNano": "1793534479321000000",
+       "observedTimeUnixNano": "1793534479321000000",
        "body": {
         "stringValue": "claude_code.tool_decision"
        },
@@ -65,7 +65,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -107,7 +107,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:38.765Z"
+          "stringValue": "2026-11-01T12:01:19.321Z"
          }
         },
         {
@@ -119,7 +119,7 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "ddb98d27-847b-4b92-9ccc-7b59fba51cd0"
+          "stringValue": "d63bbb94-e71f-46c9-9fb3-013b0799116c"
          }
         },
         {
@@ -143,7 +143,7 @@
         {
          "key": "tool_use_id",
          "value": {
-          "stringValue": "toolu_01NcitwshQ4nYjbaVgRWE11w"
+          "stringValue": "toolu_018Ywy29bWQy5CzpX8ZjbMsb"
          }
         },
         {
@@ -161,18 +161,18 @@
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9cTfFTBwVQa3Srsjdj"
+          "stringValue": "req_011CgcAxgBFghp9sF5Hmvyu9"
          }
         }
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "2c78c2544bebb9280c4e001339ed1911",
-       "spanId": "4a6ca74ffd69bebf"
+       "traceId": "1f28bfcab735d23882cea66aa6a0608e",
+       "spanId": "69655aaf7cdaebf5"
       },
       {
-       "timeUnixNano": "1793533418768000000",
-       "observedTimeUnixNano": "1793533418768000000",
+       "timeUnixNano": "1793534479323000000",
+       "observedTimeUnixNano": "1793534479323000000",
        "body": {
         "stringValue": "claude_code.tool_result"
        },
@@ -186,7 +186,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -228,7 +228,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:38.768Z"
+          "stringValue": "2026-11-01T12:01:19.323Z"
          }
         },
         {
@@ -240,7 +240,7 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "ddb98d27-847b-4b92-9ccc-7b59fba51cd0"
+          "stringValue": "d63bbb94-e71f-46c9-9fb3-013b0799116c"
          }
         },
         {
@@ -252,7 +252,7 @@
         {
          "key": "tool_use_id",
          "value": {
-          "stringValue": "toolu_01NcitwshQ4nYjbaVgRWE11w"
+          "stringValue": "toolu_018Ywy29bWQy5CzpX8ZjbMsb"
          }
         },
         {
@@ -288,18 +288,18 @@
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9cTfFTBwVQa3Srsjdj"
+          "stringValue": "req_011CgcAxgBFghp9sF5Hmvyu9"
          }
         }
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "2c78c2544bebb9280c4e001339ed1911",
-       "spanId": "19cce37b059c024e"
+       "traceId": "1f28bfcab735d23882cea66aa6a0608e",
+       "spanId": "d5f0cd64477b44c2"
       },
       {
-       "timeUnixNano": "1793533418777000000",
-       "observedTimeUnixNano": "1793533418777000000",
+       "timeUnixNano": "1793534479342000000",
+       "observedTimeUnixNano": "1793534479342000000",
        "body": {
         "stringValue": "claude_code.api_request"
        },
@@ -313,7 +313,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -355,7 +355,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:38.777Z"
+          "stringValue": "2026-11-01T12:01:19.342Z"
          }
         },
         {
@@ -367,7 +367,7 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "ddb98d27-847b-4b92-9ccc-7b59fba51cd0"
+          "stringValue": "d63bbb94-e71f-46c9-9fb3-013b0799116c"
          }
         },
         {
@@ -385,7 +385,7 @@
         {
          "key": "output_tokens",
          "value": {
-          "intValue": 221
+          "intValue": 195
          }
         },
         {
@@ -397,7 +397,7 @@
         {
          "key": "cache_creation_tokens",
          "value": {
-          "intValue": 10246
+          "intValue": 10250
          }
         },
         {
@@ -409,43 +409,43 @@
         {
          "key": "cache_creation_1h_tokens",
          "value": {
-          "intValue": 10246
+          "intValue": 10250
          }
         },
         {
          "key": "cost_usd",
          "value": {
-          "doubleValue": 0.0230665
+          "doubleValue": 0.0229445
          }
         },
         {
          "key": "cost_usd_micros",
          "value": {
-          "intValue": 23067
+          "intValue": 22945
          }
         },
         {
          "key": "duration_ms",
          "value": {
-          "intValue": 2621
+          "intValue": 2192
          }
         },
         {
          "key": "ttft_ms",
          "value": {
-          "intValue": 885
+          "intValue": 798
          }
         },
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9cTfFTBwVQa3Srsjdj"
+          "stringValue": "req_011CgcAxgBFghp9sF5Hmvyu9"
          }
         },
         {
          "key": "client_request_id",
          "value": {
-          "stringValue": "d973264f-2c04-44af-9781-441ad3fa4178"
+          "stringValue": "b7a63610-363c-4fa6-941a-c402d8edce22"
          }
         },
         {
@@ -463,8 +463,8 @@
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "2c78c2544bebb9280c4e001339ed1911",
-       "spanId": "19cce37b059c024e"
+       "traceId": "1f28bfcab735d23882cea66aa6a0608e",
+       "spanId": "d5f0cd64477b44c2"
       }
      ]
     }

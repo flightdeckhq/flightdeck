@@ -68,7 +68,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "2e8720e1-870b-42a8-aa04-d674c29bedc9"
+             "stringValue": "74b3400c-b2ef-42b3-aa60-cdfd3efde2a6"
             }
            },
            {
@@ -108,8 +108,8 @@
             }
            }
           ],
-          "startTimeUnixNano": "1793533426404000000",
-          "timeUnixNano": "1793533427312000000",
+          "startTimeUnixNano": "1793534488322000000",
+          "timeUnixNano": "1793534489058000000",
           "asDouble": 1
          }
         ]
@@ -134,7 +134,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "2e8720e1-870b-42a8-aa04-d674c29bedc9"
+             "stringValue": "74b3400c-b2ef-42b3-aa60-cdfd3efde2a6"
             }
            },
            {
@@ -174,9 +174,9 @@
             }
            }
           ],
-          "startTimeUnixNano": "1793533427308000000",
-          "timeUnixNano": "1793533427312000000",
-          "asDouble": 0.878
+          "startTimeUnixNano": "1793534489054000000",
+          "timeUnixNano": "1793534489058000000",
+          "asDouble": 0.708
          }
         ]
        }

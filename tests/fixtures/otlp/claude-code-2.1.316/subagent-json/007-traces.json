@@ -50,13 +50,13 @@
      },
      "spans": [
       {
-       "traceId": "69afb783fc0441e9c34e1973be26dc14",
-       "spanId": "08d83ceecc253820",
-       "parentSpanId": "65ca112b02638059",
+       "traceId": "acbc601e70d2c52e95804406ae29295b",
+       "spanId": "766e78a575952417",
+       "parentSpanId": "aa4b7ceba9f9a48d",
        "name": "claude_code.tool.blocked_on_user",
        "kind": 1,
-       "startTimeUnixNano": "1793533405165000000",
-       "endTimeUnixNano": "1793533405167773133",
+       "startTimeUnixNano": "1793534465950000000",
+       "endTimeUnixNano": "1793534465952913093",
        "attributes": [
         {
          "key": "user.id",
@@ -67,7 +67,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+          "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
          }
         },
         {
@@ -115,7 +115,7 @@
         {
          "key": "gen_ai.conversation.id",
          "value": {
-          "stringValue": "a1168d4afa38aa51f"
+          "stringValue": "aad3b518eff5ab279"
          }
         },
         {
@@ -148,13 +148,13 @@
        "flags": 257
       },
       {
-       "traceId": "69afb783fc0441e9c34e1973be26dc14",
-       "spanId": "36332a33f15c4648",
-       "parentSpanId": "b2c87eb5f44b0dff",
+       "traceId": "acbc601e70d2c52e95804406ae29295b",
+       "spanId": "111ca5942e3781e9",
+       "parentSpanId": "cae62d39f7658d86",
        "name": "claude_code.llm_request",
        "kind": 1,
-       "startTimeUnixNano": "1793533403811000000",
-       "endTimeUnixNano": "1793533405173757755",
+       "startTimeUnixNano": "1793534463990000000",
+       "endTimeUnixNano": "1793534465959616177",
        "attributes": [
         {
          "key": "user.id",
@@ -165,7 +165,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+          "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
          }
         },
         {
@@ -243,7 +243,7 @@
         {
          "key": "gen_ai.conversation.id",
          "value": {
-          "stringValue": "a1168d4afa38aa51f"
+          "stringValue": "aad3b518eff5ab279"
          }
         },
         {
@@ -255,13 +255,13 @@
         {
          "key": "agent_id",
          "value": {
-          "stringValue": "a1168d4afa38aa51f"
+          "stringValue": "aad3b518eff5ab279"
          }
         },
         {
          "key": "duration_ms",
          "value": {
-          "intValue": 1363
+          "intValue": 1969
          }
         },
         {
@@ -273,7 +273,7 @@
         {
          "key": "output_tokens",
          "value": {
-          "intValue": 119
+          "intValue": 124
          }
         },
         {
@@ -303,31 +303,31 @@
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9bZ4fzxDMNzxKr4nct"
+          "stringValue": "req_011CgcAwhiVbs5DPZPUfW4FW"
          }
         },
         {
          "key": "gen_ai.response.id",
          "value": {
-          "stringValue": "req_011Cgc9bZ4fzxDMNzxKr4nct"
+          "stringValue": "req_011CgcAwhiVbs5DPZPUfW4FW"
          }
         },
         {
          "key": "client_request_id",
          "value": {
-          "stringValue": "715f1231-44f2-47f8-9cb3-8585c565d28a"
+          "stringValue": "98bee8fc-5fc6-4b62-8bbd-932b0a3bf91f"
          }
         },
         {
          "key": "ttft_ms",
          "value": {
-          "intValue": 669
+          "intValue": 1272
          }
         },
         {
          "key": "first_content_ms",
          "value": {
-          "intValue": 669
+          "intValue": 1272
          }
         },
         {
@@ -362,12 +362,12 @@
           {
            "key": "client_request_id",
            "value": {
-            "stringValue": "715f1231-44f2-47f8-9cb3-8585c565d28a"
+            "stringValue": "98bee8fc-5fc6-4b62-8bbd-932b0a3bf91f"
            }
           }
          ],
          "name": "gen_ai.request.attempt",
-         "timeUnixNano": "1793533403814310569",
+         "timeUnixNano": "1793534463992691220",
          "droppedAttributesCount": 0
         }
        ],
@@ -385,8 +385,8 @@
            }
           }
          ],
-         "spanId": "f52dcd8b711bf53b",
-         "traceId": "4ea2fc8cf671d6727014793fa5092f14",
+         "spanId": "d5c15d491c9c058d",
+         "traceId": "33d4fa91278b7828eb86caecedc02009",
          "droppedAttributesCount": 0,
          "flags": 769
         }
@@ -395,13 +395,13 @@
        "flags": 257
       },
       {
-       "traceId": "69afb783fc0441e9c34e1973be26dc14",
-       "spanId": "4e3a3b8092747891",
-       "parentSpanId": "65ca112b02638059",
+       "traceId": "acbc601e70d2c52e95804406ae29295b",
+       "spanId": "b1b915202fde8e2b",
+       "parentSpanId": "aa4b7ceba9f9a48d",
        "name": "claude_code.tool.execution",
        "kind": 1,
-       "startTimeUnixNano": "1793533405168000000",
-       "endTimeUnixNano": "1793533405574068435",
+       "startTimeUnixNano": "1793534465953000000",
+       "endTimeUnixNano": "1793534466344834815",
        "attributes": [
         {
          "key": "user.id",
@@ -412,7 +412,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+          "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
          }
         },
         {
@@ -460,25 +460,25 @@
         {
          "key": "gen_ai.conversation.id",
          "value": {
-          "stringValue": "a1168d4afa38aa51f"
+          "stringValue": "aad3b518eff5ab279"
          }
         },
         {
          "key": "tool_use_id",
          "value": {
-          "stringValue": "toolu_01MhXRDtEFLrCtAChx5bPnyy"
+          "stringValue": "toolu_01KW25NTi8rYCks6ho7jTcjB"
          }
         },
         {
          "key": "gen_ai.tool.call.id",
          "value": {
-          "stringValue": "toolu_01MhXRDtEFLrCtAChx5bPnyy"
+          "stringValue": "toolu_01KW25NTi8rYCks6ho7jTcjB"
          }
         },
         {
          "key": "duration_ms",
          "value": {
-          "intValue": 406
+          "intValue": 392
          }
         },
         {
@@ -499,13 +499,13 @@
        "flags": 257
       },
       {
-       "traceId": "69afb783fc0441e9c34e1973be26dc14",
-       "spanId": "65ca112b02638059",
-       "parentSpanId": "b2c87eb5f44b0dff",
+       "traceId": "acbc601e70d2c52e95804406ae29295b",
+       "spanId": "aa4b7ceba9f9a48d",
+       "parentSpanId": "cae62d39f7658d86",
        "name": "claude_code.tool",
        "kind": 1,
-       "startTimeUnixNano": "1793533405165000000",
-       "endTimeUnixNano": "1793533405574088275",
+       "startTimeUnixNano": "1793534465950000000",
+       "endTimeUnixNano": "1793534466345024458",
        "attributes": [
         {
          "key": "user.id",
@@ -516,7 +516,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+          "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
          }
         },
         {
@@ -588,7 +588,7 @@
         {
          "key": "gen_ai.conversation.id",
          "value": {
-          "stringValue": "a1168d4afa38aa51f"
+          "stringValue": "aad3b518eff5ab279"
          }
         },
         {
@@ -612,387 +612,25 @@
         {
          "key": "agent_id",
          "value": {
-          "stringValue": "a1168d4afa38aa51f"
+          "stringValue": "aad3b518eff5ab279"
          }
         },
         {
          "key": "tool_use_id",
          "value": {
-          "stringValue": "toolu_01MhXRDtEFLrCtAChx5bPnyy"
+          "stringValue": "toolu_01KW25NTi8rYCks6ho7jTcjB"
          }
         },
         {
          "key": "gen_ai.tool.call.id",
          "value": {
-          "stringValue": "toolu_01MhXRDtEFLrCtAChx5bPnyy"
+          "stringValue": "toolu_01KW25NTi8rYCks6ho7jTcjB"
          }
         },
         {
          "key": "duration_ms",
          "value": {
-          "intValue": 409
-         }
-        }
-       ],
-       "droppedAttributesCount": 0,
-       "events": [],
-       "droppedEventsCount": 0,
-       "status": {
-        "code": 0
-       },
-       "links": [],
-       "droppedLinksCount": 0,
-       "flags": 257
-      },
-      {
-       "traceId": "69afb783fc0441e9c34e1973be26dc14",
-       "spanId": "424e5b04650837d7",
-       "parentSpanId": "954b5ca0ae7f517f",
-       "name": "claude_code.llm_request",
-       "kind": 1,
-       "startTimeUnixNano": "1793533403828000000",
-       "endTimeUnixNano": "1793533405987882149",
-       "attributes": [
-        {
-         "key": "user.id",
-         "value": {
-          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
-         }
-        },
-        {
-         "key": "session.id",
-         "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
-         }
-        },
-        {
-         "key": "organization.id",
-         "value": {
-          "stringValue": "00000000-0000-4000-8000-000000000002"
-         }
-        },
-        {
-         "key": "user.email",
-         "value": {
-          "stringValue": "user@example.com"
-         }
-        },
-        {
-         "key": "user.account_uuid",
-         "value": {
-          "stringValue": "00000000-0000-4000-8000-000000000001"
-         }
-        },
-        {
-         "key": "user.account_id",
-         "value": {
-          "stringValue": "user_000000000000000000000001"
-         }
-        },
-        {
-         "key": "terminal.type",
-         "value": {
-          "stringValue": "wsl-Ubuntu"
-         }
-        },
-        {
-         "key": "gen_ai.provider.name",
-         "value": {
-          "stringValue": "anthropic"
-         }
-        },
-        {
-         "key": "span.type",
-         "value": {
-          "stringValue": "llm_request"
-         }
-        },
-        {
-         "key": "model",
-         "value": {
-          "stringValue": "claude-haiku-4-5"
-         }
-        },
-        {
-         "key": "gen_ai.system",
-         "value": {
-          "stringValue": "anthropic"
-         }
-        },
-        {
-         "key": "gen_ai.request.model",
-         "value": {
-          "stringValue": "claude-haiku-4-5"
-         }
-        },
-        {
-         "key": "llm_request.context",
-         "value": {
-          "stringValue": "interaction"
-         }
-        },
-        {
-         "key": "speed",
-         "value": {
-          "stringValue": "normal"
-         }
-        },
-        {
-         "key": "gen_ai.conversation.id",
-         "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
-         }
-        },
-        {
-         "key": "query_source_safe",
-         "value": {
-          "stringValue": "sdk"
-         }
-        },
-        {
-         "key": "duration_ms",
-         "value": {
-          "intValue": 2160
-         }
-        },
-        {
-         "key": "input_tokens",
-         "value": {
-          "intValue": 8
-         }
-        },
-        {
-         "key": "output_tokens",
-         "value": {
-          "intValue": 121
-         }
-        },
-        {
-         "key": "cache_read_tokens",
-         "value": {
-          "intValue": 22078
-         }
-        },
-        {
-         "key": "cache_creation_tokens",
-         "value": {
-          "intValue": 3260
-         }
-        },
-        {
-         "key": "success",
-         "value": {
-          "boolValue": true
-         }
-        },
-        {
-         "key": "attempt",
-         "value": {
-          "intValue": 1
-         }
-        },
-        {
-         "key": "request_id",
-         "value": {
-          "stringValue": "req_011Cgc9bZDbwu8dx8sAnEbJU"
-         }
-        },
-        {
-         "key": "gen_ai.response.id",
-         "value": {
-          "stringValue": "req_011Cgc9bZDbwu8dx8sAnEbJU"
-         }
-        },
-        {
-         "key": "client_request_id",
-         "value": {
-          "stringValue": "757f408f-c12f-480e-b4ab-057010cc3efe"
-         }
-        },
-        {
-         "key": "ttft_ms",
-         "value": {
-          "intValue": 730
-         }
-        },
-        {
-         "key": "first_content_ms",
-         "value": {
-          "intValue": 730
-         }
-        },
-        {
-         "key": "stop_reason",
-         "value": {
-          "stringValue": "end_turn"
-         }
-        },
-        {
-         "key": "gen_ai.response.finish_reasons",
-         "value": {
-          "arrayValue": {
-           "values": [
-            {
-             "stringValue": "end_turn"
-            }
-           ]
-          }
-         }
-        }
-       ],
-       "droppedAttributesCount": 0,
-       "events": [
-        {
-         "attributes": [
-          {
-           "key": "attempt",
-           "value": {
-            "intValue": 1
-           }
-          },
-          {
-           "key": "client_request_id",
-           "value": {
-            "stringValue": "757f408f-c12f-480e-b4ab-057010cc3efe"
-           }
-          }
-         ],
-         "name": "gen_ai.request.attempt",
-         "timeUnixNano": "1793533403831883891",
-         "droppedAttributesCount": 0
-        }
-       ],
-       "droppedEventsCount": 0,
-       "status": {
-        "code": 0
-       },
-       "links": [
-        {
-         "attributes": [
-          {
-           "key": "link.type",
-           "value": {
-            "stringValue": "parent_of"
-           }
-          }
-         ],
-         "spanId": "f602e5159236c1eb",
-         "traceId": "7b9a517ecd0e67aae3bf4a3f56355514",
-         "droppedAttributesCount": 0,
-         "flags": 769
-        }
-       ],
-       "droppedLinksCount": 0,
-       "flags": 257
-      },
-      {
-       "traceId": "69afb783fc0441e9c34e1973be26dc14",
-       "spanId": "954b5ca0ae7f517f",
-       "name": "claude_code.interaction",
-       "kind": 1,
-       "startTimeUnixNano": "1793533401590000000",
-       "endTimeUnixNano": "1793533405993066974",
-       "attributes": [
-        {
-         "key": "user.id",
-         "value": {
-          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
-         }
-        },
-        {
-         "key": "session.id",
-         "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
-         }
-        },
-        {
-         "key": "organization.id",
-         "value": {
-          "stringValue": "00000000-0000-4000-8000-000000000002"
-         }
-        },
-        {
-         "key": "user.email",
-         "value": {
-          "stringValue": "user@example.com"
-         }
-        },
-        {
-         "key": "user.account_uuid",
-         "value": {
-          "stringValue": "00000000-0000-4000-8000-000000000001"
-         }
-        },
-        {
-         "key": "user.account_id",
-         "value": {
-          "stringValue": "user_000000000000000000000001"
-         }
-        },
-        {
-         "key": "terminal.type",
-         "value": {
-          "stringValue": "wsl-Ubuntu"
-         }
-        },
-        {
-         "key": "gen_ai.provider.name",
-         "value": {
-          "stringValue": "anthropic"
-         }
-        },
-        {
-         "key": "span.type",
-         "value": {
-          "stringValue": "interaction"
-         }
-        },
-        {
-         "key": "gen_ai.operation.name",
-         "value": {
-          "stringValue": "invoke_agent"
-         }
-        },
-        {
-         "key": "gen_ai.conversation.id",
-         "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
-         }
-        },
-        {
-         "key": "user_prompt",
-         "value": {
-          "stringValue": "Use the Agent tool to start a general-purpose sub-agent whose only job is to run `echo from-child` with the Bash tool and report the output. Then reply with one word."
-         }
-        },
-        {
-         "key": "user_prompt_length",
-         "value": {
-          "intValue": 166
-         }
-        },
-        {
-         "key": "interaction.sequence",
-         "value": {
-          "intValue": 1
-         }
-        },
-        {
-         "key": "parent.source",
-         "value": {
-          "stringValue": "none"
-         }
-        },
-        {
-         "key": "queued_sends",
-         "value": {
-          "intValue": 0
-         }
-        },
-        {
-         "key": "interaction.duration_ms",
-         "value": {
-          "intValue": 4403
+          "intValue": 395
          }
         }
        ],

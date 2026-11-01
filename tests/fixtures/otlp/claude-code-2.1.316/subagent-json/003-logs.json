@@ -50,8 +50,8 @@
      },
      "logRecords": [
       {
-       "timeUnixNano": "1793533403774000000",
-       "observedTimeUnixNano": "1793533403774000000",
+       "timeUnixNano": "1793534463955000000",
+       "observedTimeUnixNano": "1793534463955000000",
        "body": {
         "stringValue": "claude_code.tool_decision"
        },
@@ -65,7 +65,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+          "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
          }
         },
         {
@@ -107,7 +107,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:23.774Z"
+          "stringValue": "2026-11-01T12:01:03.955Z"
          }
         },
         {
@@ -119,7 +119,7 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "7aaf1a6f-c439-4ea5-b85d-5ac0c0115dca"
+          "stringValue": "155562bd-4ba9-4a64-a098-f953b9dd5e96"
          }
         },
         {
@@ -143,7 +143,7 @@
         {
          "key": "tool_use_id",
          "value": {
-          "stringValue": "toolu_01RyQtGBdKvzEiTw7kzj8u2b"
+          "stringValue": "toolu_01LejtTByXmaRiz8HyNouWvL"
          }
         },
         {
@@ -161,18 +161,18 @@
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9bQAsuM19WtzMBmyBZ"
+          "stringValue": "req_011CgcAwYMgBNbTUSQefrkHE"
          }
         }
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "69afb783fc0441e9c34e1973be26dc14",
-       "spanId": "129d8af9c0eaa000"
+       "traceId": "acbc601e70d2c52e95804406ae29295b",
+       "spanId": "de6d32a604b8b99c"
       },
       {
-       "timeUnixNano": "1793533403783000000",
-       "observedTimeUnixNano": "1793533403783000000",
+       "timeUnixNano": "1793534463964000000",
+       "observedTimeUnixNano": "1793534463964000000",
        "body": {
         "stringValue": "claude_code.tool_result"
        },
@@ -186,7 +186,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+          "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
          }
         },
         {
@@ -228,7 +228,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:23.783Z"
+          "stringValue": "2026-11-01T12:01:03.964Z"
          }
         },
         {
@@ -240,7 +240,7 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "7aaf1a6f-c439-4ea5-b85d-5ac0c0115dca"
+          "stringValue": "155562bd-4ba9-4a64-a098-f953b9dd5e96"
          }
         },
         {
@@ -252,7 +252,7 @@
         {
          "key": "tool_use_id",
          "value": {
-          "stringValue": "toolu_01RyQtGBdKvzEiTw7kzj8u2b"
+          "stringValue": "toolu_01LejtTByXmaRiz8HyNouWvL"
          }
         },
         {
@@ -264,13 +264,13 @@
         {
          "key": "duration_ms",
          "value": {
-          "stringValue": "9"
+          "stringValue": "8"
          }
         },
         {
          "key": "tool_input",
          "value": {
-          "stringValue": "{\"description\":\"Run echo command and report output\",\"prompt\":\"Run the command `echo from-child` using the Bash tool and report what it outputs.\"}"
+          "stringValue": "{\"description\":\"Run echo command and report output\",\"prompt\":\"Run the command `echo from-child` using the Bash tool and report the output back.\"}"
          }
         },
         {
@@ -288,18 +288,18 @@
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9bQAsuM19WtzMBmyBZ"
+          "stringValue": "req_011CgcAwYMgBNbTUSQefrkHE"
          }
         }
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "69afb783fc0441e9c34e1973be26dc14",
-       "spanId": "954b5ca0ae7f517f"
+       "traceId": "acbc601e70d2c52e95804406ae29295b",
+       "spanId": "6acdfed3aa5618df"
       },
       {
-       "timeUnixNano": "1793533403799000000",
-       "observedTimeUnixNano": "1793533403799000000",
+       "timeUnixNano": "1793534463978000000",
+       "observedTimeUnixNano": "1793534463978000000",
        "body": {
         "stringValue": "claude_code.api_request"
        },
@@ -313,7 +313,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+          "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
          }
         },
         {
@@ -355,7 +355,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:23.799Z"
+          "stringValue": "2026-11-01T12:01:03.978Z"
          }
         },
         {
@@ -367,7 +367,7 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "7aaf1a6f-c439-4ea5-b85d-5ac0c0115dca"
+          "stringValue": "155562bd-4ba9-4a64-a098-f953b9dd5e96"
          }
         },
         {
@@ -385,7 +385,7 @@
         {
          "key": "output_tokens",
          "value": {
-          "intValue": 172
+          "intValue": 178
          }
         },
         {
@@ -415,37 +415,37 @@
         {
          "key": "cost_usd",
          "value": {
-          "doubleValue": 0.0172955
+          "doubleValue": 0.0173255
          }
         },
         {
          "key": "cost_usd_micros",
          "value": {
-          "intValue": 17296
+          "intValue": 17326
          }
         },
         {
          "key": "duration_ms",
          "value": {
-          "intValue": 2071
+          "intValue": 2194
          }
         },
         {
          "key": "ttft_ms",
          "value": {
-          "intValue": 819
+          "intValue": 935
          }
         },
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9bQAsuM19WtzMBmyBZ"
+          "stringValue": "req_011CgcAwYMgBNbTUSQefrkHE"
          }
         },
         {
          "key": "client_request_id",
          "value": {
-          "stringValue": "42da9ed3-5244-43e7-acbb-7012abf3ee27"
+          "stringValue": "41a3cbda-7fca-4abb-9387-e76f5a28b4e3"
          }
         },
         {
@@ -463,8 +463,8 @@
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "69afb783fc0441e9c34e1973be26dc14",
-       "spanId": "954b5ca0ae7f517f"
+       "traceId": "acbc601e70d2c52e95804406ae29295b",
+       "spanId": "6acdfed3aa5618df"
       }
      ]
     }

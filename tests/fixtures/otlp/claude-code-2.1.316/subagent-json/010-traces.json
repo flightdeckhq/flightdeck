@@ -50,13 +50,13 @@
      },
      "spans": [
       {
-       "traceId": "9980d938fe2ef88e0298a1b8bd622761",
-       "spanId": "b0c0d759a9ebf0c9",
-       "parentSpanId": "c9e4b70fcadcf5e2",
+       "traceId": "acbc601e70d2c52e95804406ae29295b",
+       "spanId": "e75b79d00f649ee5",
+       "parentSpanId": "cae62d39f7658d86",
        "name": "claude_code.llm_request",
        "kind": 1,
-       "startTimeUnixNano": "1793533407037000000",
-       "endTimeUnixNano": "1793533408941897391",
+       "startTimeUnixNano": "1793534466359000000",
+       "endTimeUnixNano": "1793534467625827539",
        "attributes": [
         {
          "key": "user.id",
@@ -67,7 +67,254 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+          "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000002"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "user@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000001"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_000000000000000000000001"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "wsl-Ubuntu"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "anthropic"
+         }
+        },
+        {
+         "key": "span.type",
+         "value": {
+          "stringValue": "llm_request"
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "claude-haiku-4-5"
+         }
+        },
+        {
+         "key": "gen_ai.system",
+         "value": {
+          "stringValue": "anthropic"
+         }
+        },
+        {
+         "key": "gen_ai.request.model",
+         "value": {
+          "stringValue": "claude-haiku-4-5"
+         }
+        },
+        {
+         "key": "llm_request.context",
+         "value": {
+          "stringValue": "tool"
+         }
+        },
+        {
+         "key": "speed",
+         "value": {
+          "stringValue": "normal"
+         }
+        },
+        {
+         "key": "gen_ai.conversation.id",
+         "value": {
+          "stringValue": "aad3b518eff5ab279"
+         }
+        },
+        {
+         "key": "query_source_safe",
+         "value": {
+          "stringValue": "agent.builtin.general-purpose"
+         }
+        },
+        {
+         "key": "agent_id",
+         "value": {
+          "stringValue": "aad3b518eff5ab279"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "intValue": 1267
+         }
+        },
+        {
+         "key": "input_tokens",
+         "value": {
+          "intValue": 8
+         }
+        },
+        {
+         "key": "output_tokens",
+         "value": {
+          "intValue": 51
+         }
+        },
+        {
+         "key": "cache_read_tokens",
+         "value": {
+          "intValue": 13974
+         }
+        },
+        {
+         "key": "cache_creation_tokens",
+         "value": {
+          "intValue": 1266
+         }
+        },
+        {
+         "key": "success",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "attempt",
+         "value": {
+          "intValue": 1
+         }
+        },
+        {
+         "key": "request_id",
+         "value": {
+          "stringValue": "req_011CgcAwstg7oiuiqanqammn"
+         }
+        },
+        {
+         "key": "gen_ai.response.id",
+         "value": {
+          "stringValue": "req_011CgcAwstg7oiuiqanqammn"
+         }
+        },
+        {
+         "key": "client_request_id",
+         "value": {
+          "stringValue": "00ccf5be-36d2-4af5-aa93-75465670fefb"
+         }
+        },
+        {
+         "key": "ttft_ms",
+         "value": {
+          "intValue": 683
+         }
+        },
+        {
+         "key": "first_content_ms",
+         "value": {
+          "intValue": 683
+         }
+        },
+        {
+         "key": "stop_reason",
+         "value": {
+          "stringValue": "end_turn"
+         }
+        },
+        {
+         "key": "gen_ai.response.finish_reasons",
+         "value": {
+          "arrayValue": {
+           "values": [
+            {
+             "stringValue": "end_turn"
+            }
+           ]
+          }
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "events": [
+        {
+         "attributes": [
+          {
+           "key": "attempt",
+           "value": {
+            "intValue": 1
+           }
+          },
+          {
+           "key": "client_request_id",
+           "value": {
+            "stringValue": "00ccf5be-36d2-4af5-aa93-75465670fefb"
+           }
+          }
+         ],
+         "name": "gen_ai.request.attempt",
+         "timeUnixNano": "1793534466361729366",
+         "droppedAttributesCount": 0
+        }
+       ],
+       "droppedEventsCount": 0,
+       "status": {
+        "code": 0
+       },
+       "links": [
+        {
+         "attributes": [
+          {
+           "key": "link.type",
+           "value": {
+            "stringValue": "parent_of"
+           }
+          }
+         ],
+         "spanId": "dfc902db243168a7",
+         "traceId": "8aa8de8b53d93cde4fef2b898ec64a58",
+         "droppedAttributesCount": 0,
+         "flags": 769
+        }
+       ],
+       "droppedLinksCount": 0,
+       "flags": 257
+      },
+      {
+       "traceId": "acbc601e70d2c52e95804406ae29295b",
+       "spanId": "51999ee2e73f9177",
+       "parentSpanId": "6acdfed3aa5618df",
+       "name": "claude_code.llm_request",
+       "kind": 1,
+       "startTimeUnixNano": "1793534464006000000",
+       "endTimeUnixNano": "1793534468245644706",
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
          }
         },
         {
@@ -145,7 +392,7 @@
         {
          "key": "gen_ai.conversation.id",
          "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+          "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
          }
         },
         {
@@ -157,31 +404,31 @@
         {
          "key": "duration_ms",
          "value": {
-          "intValue": 1905
+          "intValue": 4240
          }
         },
         {
          "key": "input_tokens",
          "value": {
-          "intValue": 10
+          "intValue": 8
          }
         },
         {
          "key": "output_tokens",
          "value": {
-          "intValue": 149
+          "intValue": 301
          }
         },
         {
          "key": "cache_read_tokens",
          "value": {
-          "intValue": 25338
+          "intValue": 22078
          }
         },
         {
          "key": "cache_creation_tokens",
          "value": {
-          "intValue": 564
+          "intValue": 3263
          }
         },
         {
@@ -199,31 +446,31 @@
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9bnrPhoHFAB2t1JBmx"
+          "stringValue": "req_011CgcAwhrBqt1kYfMehDwte"
          }
         },
         {
          "key": "gen_ai.response.id",
          "value": {
-          "stringValue": "req_011Cgc9bnrPhoHFAB2t1JBmx"
+          "stringValue": "req_011CgcAwhrBqt1kYfMehDwte"
          }
         },
         {
          "key": "client_request_id",
          "value": {
-          "stringValue": "74340e4b-7d81-4e52-9023-88df317c76d0"
+          "stringValue": "f5d2877f-e95e-4e92-ab18-5d1d26eee801"
          }
         },
         {
          "key": "ttft_ms",
          "value": {
-          "intValue": 677
+          "intValue": 735
          }
         },
         {
          "key": "first_content_ms",
          "value": {
-          "intValue": 677
+          "intValue": 735
          }
         },
         {
@@ -258,12 +505,12 @@
           {
            "key": "client_request_id",
            "value": {
-            "stringValue": "74340e4b-7d81-4e52-9023-88df317c76d0"
+            "stringValue": "f5d2877f-e95e-4e92-ab18-5d1d26eee801"
            }
           }
          ],
          "name": "gen_ai.request.attempt",
-         "timeUnixNano": "1793533407039499615",
+         "timeUnixNano": "1793534464009419221",
          "droppedAttributesCount": 0
         }
        ],
@@ -281,8 +528,8 @@
            }
           }
          ],
-         "spanId": "83e5b8cca490d96b",
-         "traceId": "38c7c22e9d220486883b16b347f5bb3b",
+         "spanId": "19b8825b2640859f",
+         "traceId": "cf150ea64d589b0ecd424cbb896fd922",
          "droppedAttributesCount": 0,
          "flags": 769
         }
@@ -291,12 +538,12 @@
        "flags": 257
       },
       {
-       "traceId": "9980d938fe2ef88e0298a1b8bd622761",
-       "spanId": "c9e4b70fcadcf5e2",
+       "traceId": "acbc601e70d2c52e95804406ae29295b",
+       "spanId": "6acdfed3aa5618df",
        "name": "claude_code.interaction",
        "kind": 1,
-       "startTimeUnixNano": "1793533407023000000",
-       "endTimeUnixNano": "1793533408946336793",
+       "startTimeUnixNano": "1793534461537000000",
+       "endTimeUnixNano": "1793534468251543855",
        "attributes": [
         {
          "key": "user.id",
@@ -307,7 +554,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+          "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
          }
         },
         {
@@ -361,25 +608,25 @@
         {
          "key": "gen_ai.conversation.id",
          "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+          "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
          }
         },
         {
          "key": "user_prompt",
          "value": {
-          "stringValue": "<task-notification>\n<task-id>a1168d4afa38aa51f</task-id>\n<tool-use-id>toolu_01RyQtGBdKvzEiTw7kzj8u2b</tool-use-id>\n<output-file>/tmp/claude-1000/-home-user-project/0adb9497-45ba-4b61-885b-9cda7b22b409/tasks/a1168d4afa38aa51f.output</output-file>\n<status>completed</status>\n<summary>Agent \"Run echo command and report output\" finished</summary>\n<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>\n<result>The command `echo from-child` outputs:\n\n```\nfrom-child\n```</result>\n<usage><subagent_tokens>15370</subagent_tokens><tool_uses>1</tool_uses><duration_ms>3243</duration_ms></usage>\n</task-notification>"
+          "stringValue": "Use the Agent tool to start a general-purpose sub-agent whose only job is to run `echo from-child` with the Bash tool and report the output. Then reply with one word."
          }
         },
         {
          "key": "user_prompt_length",
          "value": {
-          "intValue": 771
+          "intValue": 166
          }
         },
         {
          "key": "interaction.sequence",
          "value": {
-          "intValue": 2
+          "intValue": 1
          }
         },
         {
@@ -397,7 +644,7 @@
         {
          "key": "interaction.duration_ms",
          "value": {
-          "intValue": 1923
+          "intValue": 6714
          }
         }
        ],

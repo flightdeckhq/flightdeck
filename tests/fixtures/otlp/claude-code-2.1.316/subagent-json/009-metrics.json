@@ -68,7 +68,74 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+             "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
+            }
+           },
+           {
+            "key": "organization.id",
+            "value": {
+             "stringValue": "00000000-0000-4000-8000-000000000002"
+            }
+           },
+           {
+            "key": "user.email",
+            "value": {
+             "stringValue": "user@example.com"
+            }
+           },
+           {
+            "key": "user.account_uuid",
+            "value": {
+             "stringValue": "00000000-0000-4000-8000-000000000001"
+            }
+           },
+           {
+            "key": "user.account_id",
+            "value": {
+             "stringValue": "user_000000000000000000000001"
+            }
+           },
+           {
+            "key": "terminal.type",
+            "value": {
+             "stringValue": "wsl-Ubuntu"
+            }
+           },
+           {
+            "key": "model",
+            "value": {
+             "stringValue": "claude-haiku-4-5"
+            }
+           },
+           {
+            "key": "query_source",
+            "value": {
+             "stringValue": "subagent"
+            }
+           },
+           {
+            "key": "agent.name",
+            "value": {
+             "stringValue": "general-purpose"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793534467623000000",
+          "timeUnixNano": "1793534468515000000",
+          "asDouble": 0.0032429
+         },
+         {
+          "attributes": [
+           {
+            "key": "user.id",
+            "value": {
+             "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+           },
+           {
+            "key": "session.id",
+            "value": {
+             "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
             }
            },
            {
@@ -114,9 +181,9 @@
             }
            }
           ],
-          "startTimeUnixNano": "1793533405985000000",
-          "timeUnixNano": "1793533406565000000",
-          "asDouble": 0.0093408
+          "startTimeUnixNano": "1793534468243000000",
+          "timeUnixNano": "1793534468515000000",
+          "asDouble": 0.0102468
          }
         ]
        }
@@ -140,7 +207,299 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+             "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
+            }
+           },
+           {
+            "key": "organization.id",
+            "value": {
+             "stringValue": "00000000-0000-4000-8000-000000000002"
+            }
+           },
+           {
+            "key": "user.email",
+            "value": {
+             "stringValue": "user@example.com"
+            }
+           },
+           {
+            "key": "user.account_uuid",
+            "value": {
+             "stringValue": "00000000-0000-4000-8000-000000000001"
+            }
+           },
+           {
+            "key": "user.account_id",
+            "value": {
+             "stringValue": "user_000000000000000000000001"
+            }
+           },
+           {
+            "key": "terminal.type",
+            "value": {
+             "stringValue": "wsl-Ubuntu"
+            }
+           },
+           {
+            "key": "model",
+            "value": {
+             "stringValue": "claude-haiku-4-5"
+            }
+           },
+           {
+            "key": "query_source",
+            "value": {
+             "stringValue": "subagent"
+            }
+           },
+           {
+            "key": "agent.name",
+            "value": {
+             "stringValue": "general-purpose"
+            }
+           },
+           {
+            "key": "type",
+            "value": {
+             "stringValue": "input"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793534467623000000",
+          "timeUnixNano": "1793534468515000000",
+          "asDouble": 8
+         },
+         {
+          "attributes": [
+           {
+            "key": "user.id",
+            "value": {
+             "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+           },
+           {
+            "key": "session.id",
+            "value": {
+             "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
+            }
+           },
+           {
+            "key": "organization.id",
+            "value": {
+             "stringValue": "00000000-0000-4000-8000-000000000002"
+            }
+           },
+           {
+            "key": "user.email",
+            "value": {
+             "stringValue": "user@example.com"
+            }
+           },
+           {
+            "key": "user.account_uuid",
+            "value": {
+             "stringValue": "00000000-0000-4000-8000-000000000001"
+            }
+           },
+           {
+            "key": "user.account_id",
+            "value": {
+             "stringValue": "user_000000000000000000000001"
+            }
+           },
+           {
+            "key": "terminal.type",
+            "value": {
+             "stringValue": "wsl-Ubuntu"
+            }
+           },
+           {
+            "key": "model",
+            "value": {
+             "stringValue": "claude-haiku-4-5"
+            }
+           },
+           {
+            "key": "query_source",
+            "value": {
+             "stringValue": "subagent"
+            }
+           },
+           {
+            "key": "agent.name",
+            "value": {
+             "stringValue": "general-purpose"
+            }
+           },
+           {
+            "key": "type",
+            "value": {
+             "stringValue": "output"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793534467623000000",
+          "timeUnixNano": "1793534468515000000",
+          "asDouble": 51
+         },
+         {
+          "attributes": [
+           {
+            "key": "user.id",
+            "value": {
+             "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+           },
+           {
+            "key": "session.id",
+            "value": {
+             "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
+            }
+           },
+           {
+            "key": "organization.id",
+            "value": {
+             "stringValue": "00000000-0000-4000-8000-000000000002"
+            }
+           },
+           {
+            "key": "user.email",
+            "value": {
+             "stringValue": "user@example.com"
+            }
+           },
+           {
+            "key": "user.account_uuid",
+            "value": {
+             "stringValue": "00000000-0000-4000-8000-000000000001"
+            }
+           },
+           {
+            "key": "user.account_id",
+            "value": {
+             "stringValue": "user_000000000000000000000001"
+            }
+           },
+           {
+            "key": "terminal.type",
+            "value": {
+             "stringValue": "wsl-Ubuntu"
+            }
+           },
+           {
+            "key": "model",
+            "value": {
+             "stringValue": "claude-haiku-4-5"
+            }
+           },
+           {
+            "key": "query_source",
+            "value": {
+             "stringValue": "subagent"
+            }
+           },
+           {
+            "key": "agent.name",
+            "value": {
+             "stringValue": "general-purpose"
+            }
+           },
+           {
+            "key": "type",
+            "value": {
+             "stringValue": "cacheRead"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793534467623000000",
+          "timeUnixNano": "1793534468515000000",
+          "asDouble": 13974
+         },
+         {
+          "attributes": [
+           {
+            "key": "user.id",
+            "value": {
+             "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+           },
+           {
+            "key": "session.id",
+            "value": {
+             "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
+            }
+           },
+           {
+            "key": "organization.id",
+            "value": {
+             "stringValue": "00000000-0000-4000-8000-000000000002"
+            }
+           },
+           {
+            "key": "user.email",
+            "value": {
+             "stringValue": "user@example.com"
+            }
+           },
+           {
+            "key": "user.account_uuid",
+            "value": {
+             "stringValue": "00000000-0000-4000-8000-000000000001"
+            }
+           },
+           {
+            "key": "user.account_id",
+            "value": {
+             "stringValue": "user_000000000000000000000001"
+            }
+           },
+           {
+            "key": "terminal.type",
+            "value": {
+             "stringValue": "wsl-Ubuntu"
+            }
+           },
+           {
+            "key": "model",
+            "value": {
+             "stringValue": "claude-haiku-4-5"
+            }
+           },
+           {
+            "key": "query_source",
+            "value": {
+             "stringValue": "subagent"
+            }
+           },
+           {
+            "key": "agent.name",
+            "value": {
+             "stringValue": "general-purpose"
+            }
+           },
+           {
+            "key": "type",
+            "value": {
+             "stringValue": "cacheCreation"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793534467623000000",
+          "timeUnixNano": "1793534468515000000",
+          "asDouble": 1266
+         },
+         {
+          "attributes": [
+           {
+            "key": "user.id",
+            "value": {
+             "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+            }
+           },
+           {
+            "key": "session.id",
+            "value": {
+             "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
             }
            },
            {
@@ -192,8 +551,8 @@
             }
            }
           ],
-          "startTimeUnixNano": "1793533405985000000",
-          "timeUnixNano": "1793533406565000000",
+          "startTimeUnixNano": "1793534468243000000",
+          "timeUnixNano": "1793534468515000000",
           "asDouble": 8
          },
          {
@@ -207,7 +566,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+             "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
             }
            },
            {
@@ -259,9 +618,9 @@
             }
            }
           ],
-          "startTimeUnixNano": "1793533405985000000",
-          "timeUnixNano": "1793533406565000000",
-          "asDouble": 121
+          "startTimeUnixNano": "1793534468243000000",
+          "timeUnixNano": "1793534468515000000",
+          "asDouble": 301
          },
          {
           "attributes": [
@@ -274,7 +633,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+             "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
             }
            },
            {
@@ -326,8 +685,8 @@
             }
            }
           ],
-          "startTimeUnixNano": "1793533405985000000",
-          "timeUnixNano": "1793533406565000000",
+          "startTimeUnixNano": "1793534468243000000",
+          "timeUnixNano": "1793534468515000000",
           "asDouble": 22078
          },
          {
@@ -341,7 +700,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+             "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
             }
            },
            {
@@ -393,9 +752,9 @@
             }
            }
           ],
-          "startTimeUnixNano": "1793533405985000000",
-          "timeUnixNano": "1793533406565000000",
-          "asDouble": 3260
+          "startTimeUnixNano": "1793534468243000000",
+          "timeUnixNano": "1793534468515000000",
+          "asDouble": 3263
          }
         ]
        }
@@ -419,7 +778,7 @@
            {
             "key": "session.id",
             "value": {
-             "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+             "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
             }
            },
            {
@@ -459,9 +818,9 @@
             }
            }
           ],
-          "startTimeUnixNano": "1793533405993000000",
-          "timeUnixNano": "1793533406565000000",
-          "asDouble": 4.403
+          "startTimeUnixNano": "1793534468251000000",
+          "timeUnixNano": "1793534468515000000",
+          "asDouble": 6.714
          }
         ]
        }

@@ -50,8 +50,8 @@
      },
      "logRecords": [
       {
-       "timeUnixNano": "1793533419971000000",
-       "observedTimeUnixNano": "1793533419971000000",
+       "timeUnixNano": "1793534480564000000",
+       "observedTimeUnixNano": "1793534480564000000",
        "body": {
         "stringValue": "claude_code.tool_decision"
        },
@@ -65,7 +65,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -107,7 +107,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:39.971Z"
+          "stringValue": "2026-11-01T12:01:20.564Z"
          }
         },
         {
@@ -119,7 +119,7 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "ddb98d27-847b-4b92-9ccc-7b59fba51cd0"
+          "stringValue": "d63bbb94-e71f-46c9-9fb3-013b0799116c"
          }
         },
         {
@@ -143,7 +143,7 @@
         {
          "key": "tool_use_id",
          "value": {
-          "stringValue": "toolu_01Gw9JTkAH8ZYbhu31CtTpzR"
+          "stringValue": "toolu_01Ta6qNaMK7UaAmRshfsjLLJ"
          }
         },
         {
@@ -167,18 +167,18 @@
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9cerhVHZnk8VUKa9hx"
+          "stringValue": "req_011CgcAxqc37hjiMd4zf4mFS"
          }
         }
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "2c78c2544bebb9280c4e001339ed1911",
-       "spanId": "c72c14052206c0c1"
+       "traceId": "1f28bfcab735d23882cea66aa6a0608e",
+       "spanId": "b4289b498116cbab"
       },
       {
-       "timeUnixNano": "1793533419990000000",
-       "observedTimeUnixNano": "1793533419990000000",
+       "timeUnixNano": "1793534480572000000",
+       "observedTimeUnixNano": "1793534480572000000",
        "body": {
         "stringValue": "claude_code.tool_result"
        },
@@ -192,7 +192,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -234,7 +234,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:39.990Z"
+          "stringValue": "2026-11-01T12:01:20.572Z"
          }
         },
         {
@@ -246,7 +246,7 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "ddb98d27-847b-4b92-9ccc-7b59fba51cd0"
+          "stringValue": "d63bbb94-e71f-46c9-9fb3-013b0799116c"
          }
         },
         {
@@ -258,7 +258,7 @@
         {
          "key": "tool_use_id",
          "value": {
-          "stringValue": "toolu_01Gw9JTkAH8ZYbhu31CtTpzR"
+          "stringValue": "toolu_01Ta6qNaMK7UaAmRshfsjLLJ"
          }
         },
         {
@@ -270,7 +270,7 @@
         {
          "key": "duration_ms",
          "value": {
-          "stringValue": "17"
+          "stringValue": "7"
          }
         },
         {
@@ -306,18 +306,18 @@
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9cerhVHZnk8VUKa9hx"
+          "stringValue": "req_011CgcAxqc37hjiMd4zf4mFS"
          }
         }
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "2c78c2544bebb9280c4e001339ed1911",
-       "spanId": "19cce37b059c024e"
+       "traceId": "1f28bfcab735d23882cea66aa6a0608e",
+       "spanId": "d5f0cd64477b44c2"
       },
       {
-       "timeUnixNano": "1793533419995000000",
-       "observedTimeUnixNano": "1793533419995000000",
+       "timeUnixNano": "1793534480578000000",
+       "observedTimeUnixNano": "1793534480578000000",
        "body": {
         "stringValue": "claude_code.api_request"
        },
@@ -331,7 +331,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -373,7 +373,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:39.995Z"
+          "stringValue": "2026-11-01T12:01:20.578Z"
          }
         },
         {
@@ -385,7 +385,7 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "ddb98d27-847b-4b92-9ccc-7b59fba51cd0"
+          "stringValue": "d63bbb94-e71f-46c9-9fb3-013b0799116c"
          }
         },
         {
@@ -403,19 +403,19 @@
         {
          "key": "output_tokens",
          "value": {
-          "intValue": 92
+          "intValue": 94
          }
         },
         {
          "key": "cache_read_tokens",
          "value": {
-          "intValue": 24841
+          "intValue": 24845
          }
         },
         {
          "key": "cache_creation_tokens",
          "value": {
-          "intValue": 393
+          "intValue": 367
          }
         },
         {
@@ -427,43 +427,43 @@
         {
          "key": "cache_creation_1h_tokens",
          "value": {
-          "intValue": 393
+          "intValue": 367
          }
         },
         {
          "key": "cost_usd",
          "value": {
-          "doubleValue": 0.0037400999999999997
+          "doubleValue": 0.0036985
          }
         },
         {
          "key": "cost_usd_micros",
          "value": {
-          "intValue": 3740
+          "intValue": 3699
          }
         },
         {
          "key": "duration_ms",
          "value": {
-          "intValue": 1203
+          "intValue": 1221
          }
         },
         {
          "key": "ttft_ms",
          "value": {
-          "intValue": 697
+          "intValue": 716
          }
         },
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9cerhVHZnk8VUKa9hx"
+          "stringValue": "req_011CgcAxqc37hjiMd4zf4mFS"
          }
         },
         {
          "key": "client_request_id",
          "value": {
-          "stringValue": "5d0e458c-bd54-49c9-93e9-eb18ca89108d"
+          "stringValue": "59804a54-b26f-4f60-b025-8cac2143544c"
          }
         },
         {
@@ -481,8 +481,8 @@
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "2c78c2544bebb9280c4e001339ed1911",
-       "spanId": "19cce37b059c024e"
+       "traceId": "1f28bfcab735d23882cea66aa6a0608e",
+       "spanId": "d5f0cd64477b44c2"
       }
      ]
     }

@@ -57,37 +57,31 @@
    "sent_encoding": null
   },
   {
-   "file": "010-metrics.json",
-   "path": "/v1/metrics",
-   "content_type": "application/json",
-   "sent_encoding": null
-  },
-  {
-   "file": "011-traces.json",
+   "file": "010-traces.json",
    "path": "/v1/traces",
    "content_type": "application/json",
    "sent_encoding": null
   },
   {
-   "file": "012-logs.json",
+   "file": "011-logs.json",
    "path": "/v1/logs",
    "content_type": "application/json",
    "sent_encoding": null
   },
   {
-   "file": "013-traces.json",
+   "file": "012-traces.json",
    "path": "/v1/traces",
    "content_type": "application/json",
    "sent_encoding": null
   },
   {
-   "file": "014-metrics.json",
+   "file": "013-metrics.json",
    "path": "/v1/metrics",
    "content_type": "application/json",
    "sent_encoding": null
   },
   {
-   "file": "015-logs.json",
+   "file": "014-logs.json",
    "path": "/v1/logs",
    "content_type": "application/json",
    "sent_encoding": null

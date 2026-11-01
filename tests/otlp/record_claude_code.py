@@ -66,18 +66,14 @@ SCENARIO_TIMEOUT_SECS = 240
 QUIET_SECS = 4.0
 QUIET_DEADLINE_SECS = 30.0
 
-DROPPED_EVENTS = {
-    "claude_code.managed_settings_resolved",
-    "claude_code.plugin_loaded",
-}
-IDENTITY = {
-    "user.email": "user@example.com",
-    "user.account_uuid": "00000000-0000-4000-8000-000000000001",
-    "user.account_id": "user_000000000000000000000001",
-    "user.id": "0" * 64,
-    "organization.id": "00000000-0000-4000-8000-000000000002",
-}
-RESOURCE_SCRUB = {"os.version": "6.6.0", "wsl.version": "2", "host.name": "host"}
+# The checker owns the placeholders, so what the recorder writes and what
+# the test accepts cannot drift apart.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fixture_checks import (
+    DROPPED_EVENTS,
+    PLACEHOLDERS,
+    directory_problems,
+)
 
 SIGNALS = {
     "/v1/logs": ("logs", ExportLogsServiceRequest),
@@ -223,6 +219,7 @@ def _scrub_text(text: str, work: Path) -> str:
     pairs = sorted(
         [
             (re.sub(r"[^A-Za-z0-9]", "-", str(work)), "-home-user-project"),
+            (re.sub(r"[^A-Za-z0-9]", "-", str(Path.home())), "-home-user"),
             (str(work), FAKE_PROJECT),
             (str(REPO), f"{FAKE_HOME}/flightdeck"),
             (str(Path.home()), FAKE_HOME),
@@ -236,106 +233,124 @@ def _scrub_text(text: str, work: Path) -> str:
     return text
 
 
-# -- JSON requests -----------------------------------------------------------
-
-
-def _json_value(v: dict[str, Any]) -> Any:
-    return next(iter(v.values())) if isinstance(v, dict) and v else None
-
-
-def _clean_json_attrs(attrs: list[dict[str, Any]], replace: dict[str, str]) -> None:
-    for a in attrs:
-        if a.get("key") in replace and isinstance(a.get("value"), dict):
-            a["value"] = {"stringValue": replace[a["key"]]}
-
-
-def _keep_json_record(r: dict[str, Any]) -> bool:
-    name = _json_value(r.get("body", {}))
-    attrs = {a["key"]: _json_value(a.get("value", {})) for a in r.get("attributes", [])}
+def _dropped(name: Any, attrs: dict[str, Any]) -> bool:
+    """A log record that describes the recording machine and maps to
+    nothing: managed settings, bundled plugins, claude.ai connectors."""
     if name in DROPPED_EVENTS:
-        return False
-    return not (
+        return True
+    return (
         name == "claude_code.mcp_server_connection"
         and attrs.get("server_scope") == "claudeai"
     )
 
 
-def _clean_json(signal: str, doc: dict[str, Any]) -> dict[str, Any]:
-    top = {
-        "logs": "resourceLogs",
-        "traces": "resourceSpans",
-        "metrics": "resourceMetrics",
-    }[signal]
-    inner = {
-        "logs": ("scopeLogs", "logRecords"),
-        "traces": ("scopeSpans", "spans"),
-        "metrics": ("scopeMetrics", "metrics"),
+# -- JSON requests -----------------------------------------------------------
+
+
+def _json_value(v: Any) -> Any:
+    return next(iter(v.values())) if isinstance(v, dict) and v else None
+
+
+def _clean_json_tree(node: Any, work: Path) -> Any:
+    """Every identity KeyValue to its placeholder and every string
+    scrubbed, at any depth (attributes of records, resources, scopes,
+    span events and links, exemplars, kvlist and array values)."""
+    if isinstance(node, dict):
+        key = node.get("key")
+        if (
+            isinstance(key, str)
+            and key in PLACEHOLDERS
+            and isinstance(node.get("value"), dict)
+        ):
+            return {**node, "value": {"stringValue": PLACEHOLDERS[key]}}
+        return {k: _clean_json_tree(v, work) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_clean_json_tree(v, work) for v in node]
+    if isinstance(node, str):
+        return _scrub_text(node, work)
+    return node
+
+
+def _clean_json(signal: str, doc: dict[str, Any], work: Path) -> dict[str, Any]:
+    top, scopes, items = {
+        "logs": ("resourceLogs", "scopeLogs", "logRecords"),
+        "traces": ("resourceSpans", "scopeSpans", "spans"),
+        "metrics": ("resourceMetrics", "scopeMetrics", "metrics"),
     }[signal]
     for res in doc.get(top, []):
-        _clean_json_attrs(
-            res.get("resource", {}).get("attributes", []),
-            {**IDENTITY, **RESOURCE_SCRUB},
-        )
-        for scope in res.get(inner[0], []):
-            items = scope.get(inner[1], [])
+        for scope in res.get(scopes, []):
             if signal == "logs":
-                items[:] = [r for r in items if _keep_json_record(r)]
-            for item in items:
-                _clean_json_attrs(item.get("attributes", []), IDENTITY)
-                if signal == "metrics":
-                    for kind in ("sum", "gauge", "histogram"):
-                        for point in (item.get(kind) or {}).get("dataPoints", []):
-                            _clean_json_attrs(point.get("attributes", []), IDENTITY)
-        res[inner[0]] = [s for s in res.get(inner[0], []) if s.get(inner[1])]
-    doc[top] = [r for r in doc.get(top, []) if r.get(inner[0])]
-    return doc
+                scope[items] = [
+                    r
+                    for r in scope.get(items, [])
+                    if not _dropped(
+                        _json_value(r.get("body")),
+                        {
+                            a["key"]: _json_value(a.get("value"))
+                            for a in r.get("attributes", [])
+                        },
+                    )
+                ]
+        res[scopes] = [s for s in res.get(scopes, []) if s.get(items)]
+    doc[top] = [r for r in doc.get(top, []) if r.get(scopes)]
+    cleaned: dict[str, Any] = _clean_json_tree(doc, work)
+    return cleaned
 
 
 # -- protobuf requests -------------------------------------------------------
 
 
-def _clean_pb_attrs(attrs: Any, replace: dict[str, str]) -> None:
-    for a in attrs:
-        if a.key in replace:
-            a.value.Clear()
-            a.value.string_value = replace[a.key]
+def _clean_pb_tree(msg: Any, work: Path) -> None:
+    """Every identity KeyValue to its placeholder and every string field
+    and string AnyValue scrubbed, at any depth."""
+    from google.protobuf.descriptor import FieldDescriptor
+
+    if (
+        msg.DESCRIPTOR.full_name == "opentelemetry.proto.common.v1.KeyValue"
+        and msg.key in PLACEHOLDERS
+    ):
+        msg.value.Clear()
+        msg.value.string_value = PLACEHOLDERS[msg.key]
+        return
+    for field, value in msg.ListFields():
+        repeated = field.label == FieldDescriptor.LABEL_REPEATED
+        if field.type == FieldDescriptor.TYPE_STRING:
+            if repeated:
+                for i, item in enumerate(value):
+                    value[i] = _scrub_text(item, work)
+            else:
+                setattr(msg, field.name, _scrub_text(value, work))
+        elif field.type == FieldDescriptor.TYPE_MESSAGE:
+            for item in value if repeated else [value]:
+                _clean_pb_tree(item, work)
 
 
-def _keep_pb_record(r: Any) -> bool:
-    name = r.body.string_value
-    attrs = {a.key: a.value.string_value for a in r.attributes}
-    if name in DROPPED_EVENTS:
-        return False
-    return not (
-        name == "claude_code.mcp_server_connection"
-        and attrs.get("server_scope") == "claudeai"
-    )
-
-
-def _clean_pb(signal: str, msg: Any) -> Any:
-    top, inner = {
-        "logs": ("resource_logs", "scope_logs"),
-        "traces": ("resource_spans", "scope_spans"),
-        "metrics": ("resource_metrics", "scope_metrics"),
+def _clean_pb(signal: str, msg: Any, work: Path) -> Any:
+    top, scopes, items = {
+        "logs": ("resource_logs", "scope_logs", "log_records"),
+        "traces": ("resource_spans", "scope_spans", "spans"),
+        "metrics": ("resource_metrics", "scope_metrics", "metrics"),
     }[signal]
     for res in getattr(msg, top):
-        _clean_pb_attrs(res.resource.attributes, {**IDENTITY, **RESOURCE_SCRUB})
-        for scope in getattr(res, inner):
+        for scope in getattr(res, scopes):
             if signal == "logs":
-                kept = [r for r in scope.log_records if _keep_pb_record(r)]
+                kept = [
+                    r
+                    for r in scope.log_records
+                    if not _dropped(
+                        r.body.string_value,
+                        {a.key: a.value.string_value for a in r.attributes},
+                    )
+                ]
                 del scope.log_records[:]
                 scope.log_records.extend(kept)
-                for r in scope.log_records:
-                    _clean_pb_attrs(r.attributes, IDENTITY)
-            elif signal == "traces":
-                for sp in scope.spans:
-                    _clean_pb_attrs(sp.attributes, IDENTITY)
-            else:
-                for m in scope.metrics:
-                    for kind in ("sum", "gauge", "histogram"):
-                        if m.HasField(kind):
-                            for point in getattr(m, kind).data_points:
-                                _clean_pb_attrs(point.attributes, IDENTITY)
+        kept_scopes = [s for s in getattr(res, scopes) if len(getattr(s, items))]
+        del getattr(res, scopes)[:]
+        getattr(res, scopes).extend(kept_scopes)
+    kept_res = [r for r in getattr(msg, top) if len(getattr(r, scopes))]
+    del getattr(msg, top)[:]
+    getattr(msg, top).extend(kept_res)
+    _clean_pb_tree(msg, work)
     return msg
 
 
@@ -406,24 +421,21 @@ def _record(scenario: dict[str, Any], out_dir: Path) -> int:
             "about": scenario["about"],
             "requests": [],
         }
-        for i, req in enumerate(rec.requests, start=1):
+        for req in rec.requests:
             signal, proto = SIGNALS[req["path"]]
             if req["content_type"] == "application/json":
-                doc = _clean_json(signal, json.loads(req["body"]))
-                name = f"{i:03d}-{signal}.json"
-                (out_dir / name).write_text(
-                    _scrub_text(json.dumps(doc, indent=1), work) + "\n"
-                )
+                doc = _clean_json(signal, json.loads(req["body"]), work)
+                if not any(doc.values()):
+                    continue  # every record described the machine
+                name = f"{len(manifest['requests']) + 1:03d}-{signal}.json"
+                (out_dir / name).write_text(json.dumps(doc, indent=1) + "\n")
             else:
                 msg = proto()
                 msg.ParseFromString(req["body"])
-                _clean_pb(signal, msg)
-                # Paths are scrubbed on the decoded text values, then the
-                # message is encoded again (a byte-level replace would
-                # break length prefixes).
-                for field_text in _string_fields(msg):
-                    field_text(lambda s: _scrub_text(s, work))
-                name = f"{i:03d}-{signal}.pb"
+                _clean_pb(signal, msg, work)
+                if not msg.ByteSize():
+                    continue  # every record described the machine
+                name = f"{len(manifest['requests']) + 1:03d}-{signal}.pb"
                 (out_dir / name).write_bytes(msg.SerializeToString())
             manifest["requests"].append(
                 {
@@ -434,34 +446,16 @@ def _record(scenario: dict[str, Any], out_dir: Path) -> int:
                 }
             )
         (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
-        return len(rec.requests)
+        leaks = directory_problems(out_dir)
+        if leaks:
+            shutil.rmtree(out_dir)
+            raise SystemExit(
+                f"scenario {scenario['name']} not written; its output fails the fixture checks: {leaks}"
+            )
+        return len(manifest["requests"])
     finally:
         rec.shutdown()
         shutil.rmtree(work, ignore_errors=True)
-
-
-def _string_fields(msg: Any) -> list[Any]:
-    """Setters for every string ``AnyValue`` in ``msg``: each takes a
-    function from the old text to the new one."""
-    from opentelemetry.proto.common.v1.common_pb2 import AnyValue
-
-    found: list[Any] = []
-
-    def walk(m: Any) -> None:
-        if isinstance(m, AnyValue) and m.WhichOneof("value") == "string_value":
-            found.append(lambda f, m=m: setattr(m, "string_value", f(m.string_value)))
-            return
-        for field, value in m.ListFields():
-            if field.message_type is None:
-                continue
-            if field.label == field.LABEL_REPEATED:
-                for item in value:
-                    walk(item)
-            else:
-                walk(value)
-
-    walk(msg)
-    return found
 
 
 def main() -> None:

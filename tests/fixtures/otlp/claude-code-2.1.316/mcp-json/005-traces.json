@@ -50,13 +50,13 @@
      },
      "spans": [
       {
-       "traceId": "2c78c2544bebb9280c4e001339ed1911",
-       "spanId": "4a6ca74ffd69bebf",
-       "parentSpanId": "c283fc5dbe1324e8",
+       "traceId": "1f28bfcab735d23882cea66aa6a0608e",
+       "spanId": "69655aaf7cdaebf5",
+       "parentSpanId": "dc0e84fcc54de828",
        "name": "claude_code.tool.blocked_on_user",
        "kind": 1,
-       "startTimeUnixNano": "1793533418764000000",
-       "endTimeUnixNano": "1793533418765701520",
+       "startTimeUnixNano": "1793534479319000000",
+       "endTimeUnixNano": "1793534479320658251",
        "attributes": [
         {
          "key": "user.id",
@@ -67,7 +67,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -115,7 +115,7 @@
         {
          "key": "gen_ai.conversation.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -148,13 +148,13 @@
        "flags": 257
       },
       {
-       "traceId": "2c78c2544bebb9280c4e001339ed1911",
-       "spanId": "0ce313e56c41c5f2",
-       "parentSpanId": "c283fc5dbe1324e8",
+       "traceId": "1f28bfcab735d23882cea66aa6a0608e",
+       "spanId": "ad05c39226553c9c",
+       "parentSpanId": "dc0e84fcc54de828",
        "name": "claude_code.tool.execution",
        "kind": 1,
-       "startTimeUnixNano": "1793533418766000000",
-       "endTimeUnixNano": "1793533418767757974",
+       "startTimeUnixNano": "1793534479321000000",
+       "endTimeUnixNano": "1793534479322612558",
        "attributes": [
         {
          "key": "user.id",
@@ -165,7 +165,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -213,19 +213,19 @@
         {
          "key": "gen_ai.conversation.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
          "key": "tool_use_id",
          "value": {
-          "stringValue": "toolu_01NcitwshQ4nYjbaVgRWE11w"
+          "stringValue": "toolu_018Ywy29bWQy5CzpX8ZjbMsb"
          }
         },
         {
          "key": "gen_ai.tool.call.id",
          "value": {
-          "stringValue": "toolu_01NcitwshQ4nYjbaVgRWE11w"
+          "stringValue": "toolu_018Ywy29bWQy5CzpX8ZjbMsb"
          }
         },
         {
@@ -252,13 +252,13 @@
        "flags": 257
       },
       {
-       "traceId": "2c78c2544bebb9280c4e001339ed1911",
-       "spanId": "c283fc5dbe1324e8",
-       "parentSpanId": "19cce37b059c024e",
+       "traceId": "1f28bfcab735d23882cea66aa6a0608e",
+       "spanId": "dc0e84fcc54de828",
+       "parentSpanId": "d5f0cd64477b44c2",
        "name": "claude_code.tool",
        "kind": 1,
-       "startTimeUnixNano": "1793533418764000000",
-       "endTimeUnixNano": "1793533418767759642",
+       "startTimeUnixNano": "1793534479319000000",
+       "endTimeUnixNano": "1793534479322563269",
        "attributes": [
         {
          "key": "user.id",
@@ -269,7 +269,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -341,19 +341,19 @@
         {
          "key": "gen_ai.conversation.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
          "key": "tool_use_id",
          "value": {
-          "stringValue": "toolu_01NcitwshQ4nYjbaVgRWE11w"
+          "stringValue": "toolu_018Ywy29bWQy5CzpX8ZjbMsb"
          }
         },
         {
          "key": "gen_ai.tool.call.id",
          "value": {
-          "stringValue": "toolu_01NcitwshQ4nYjbaVgRWE11w"
+          "stringValue": "toolu_018Ywy29bWQy5CzpX8ZjbMsb"
          }
         },
         {
@@ -374,13 +374,13 @@
        "flags": 257
       },
       {
-       "traceId": "2c78c2544bebb9280c4e001339ed1911",
-       "spanId": "7f9a4c595d2c9c89",
-       "parentSpanId": "19cce37b059c024e",
+       "traceId": "1f28bfcab735d23882cea66aa6a0608e",
+       "spanId": "9c7d890fa2e787cc",
+       "parentSpanId": "d5f0cd64477b44c2",
        "name": "claude_code.llm_request",
        "kind": 1,
-       "startTimeUnixNano": "1793533416152000000",
-       "endTimeUnixNano": "1793533418777342034",
+       "startTimeUnixNano": "1793534477146000000",
+       "endTimeUnixNano": "1793534479342084075",
        "attributes": [
         {
          "key": "user.id",
@@ -391,7 +391,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -469,7 +469,7 @@
         {
          "key": "gen_ai.conversation.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -481,7 +481,7 @@
         {
          "key": "duration_ms",
          "value": {
-          "intValue": 2625
+          "intValue": 2196
          }
         },
         {
@@ -493,7 +493,7 @@
         {
          "key": "output_tokens",
          "value": {
-          "intValue": 221
+          "intValue": 195
          }
         },
         {
@@ -505,7 +505,7 @@
         {
          "key": "cache_creation_tokens",
          "value": {
-          "intValue": 10246
+          "intValue": 10250
          }
         },
         {
@@ -523,31 +523,31 @@
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9cTfFTBwVQa3Srsjdj"
+          "stringValue": "req_011CgcAxgBFghp9sF5Hmvyu9"
          }
         },
         {
          "key": "gen_ai.response.id",
          "value": {
-          "stringValue": "req_011Cgc9cTfFTBwVQa3Srsjdj"
+          "stringValue": "req_011CgcAxgBFghp9sF5Hmvyu9"
          }
         },
         {
          "key": "client_request_id",
          "value": {
-          "stringValue": "d973264f-2c04-44af-9781-441ad3fa4178"
+          "stringValue": "b7a63610-363c-4fa6-941a-c402d8edce22"
          }
         },
         {
          "key": "ttft_ms",
          "value": {
-          "intValue": 885
+          "intValue": 798
          }
         },
         {
          "key": "first_content_ms",
          "value": {
-          "intValue": 886
+          "intValue": 799
          }
         },
         {
@@ -582,12 +582,12 @@
           {
            "key": "client_request_id",
            "value": {
-            "stringValue": "d973264f-2c04-44af-9781-441ad3fa4178"
+            "stringValue": "b7a63610-363c-4fa6-941a-c402d8edce22"
            }
           }
          ],
          "name": "gen_ai.request.attempt",
-         "timeUnixNano": "1793533416158296174",
+         "timeUnixNano": "1793534477152447631",
          "droppedAttributesCount": 0
         }
        ],
@@ -605,8 +605,8 @@
            }
           }
          ],
-         "spanId": "4dda36b0e6012662",
-         "traceId": "46a96205920fd58b038c7e2bd103c47d",
+         "spanId": "0b0ab1470effb9d4",
+         "traceId": "96fbe3563f8915460f0d75070fa31f1e",
          "droppedAttributesCount": 0,
          "flags": 769
         }

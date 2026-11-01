@@ -50,8 +50,8 @@
      },
      "logRecords": [
       {
-       "timeUnixNano": "1793533421295000000",
-       "observedTimeUnixNano": "1793533421295000000",
+       "timeUnixNano": "1793534483207000000",
+       "observedTimeUnixNano": "1793534483207000000",
        "body": {
         "stringValue": "claude_code.api_request"
        },
@@ -65,7 +65,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -107,7 +107,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:41.295Z"
+          "stringValue": "2026-11-01T12:01:23.207Z"
          }
         },
         {
@@ -119,7 +119,7 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "ddb98d27-847b-4b92-9ccc-7b59fba51cd0"
+          "stringValue": "d63bbb94-e71f-46c9-9fb3-013b0799116c"
          }
         },
         {
@@ -137,19 +137,19 @@
         {
          "key": "output_tokens",
          "value": {
-          "intValue": 68
+          "intValue": 96
          }
         },
         {
          "key": "cache_read_tokens",
          "value": {
-          "intValue": 25234
+          "intValue": 25212
          }
         },
         {
          "key": "cache_creation_tokens",
          "value": {
-          "intValue": 146
+          "intValue": 148
          }
         },
         {
@@ -161,43 +161,43 @@
         {
          "key": "cache_creation_1h_tokens",
          "value": {
-          "intValue": 146
+          "intValue": 148
          }
         },
         {
          "key": "cost_usd",
          "value": {
-          "doubleValue": 0.0031634000000000007
+          "doubleValue": 0.0033052
          }
         },
         {
          "key": "cost_usd_micros",
          "value": {
-          "intValue": 3163
+          "intValue": 3305
          }
         },
         {
          "key": "duration_ms",
          "value": {
-          "intValue": 1289
+          "intValue": 2616
          }
         },
         {
          "key": "ttft_ms",
          "value": {
-          "intValue": 703
+          "intValue": 1639
          }
         },
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9ck2kSYndPLuZFi8tX"
+          "stringValue": "req_011CgcAxwDNwvo3LKSrHX7NJ"
          }
         },
         {
          "key": "client_request_id",
          "value": {
-          "stringValue": "85552451-fb47-4469-b539-5cda2bf2577b"
+          "stringValue": "0587a3c9-c8d6-468a-b0e7-9e8637c6d482"
          }
         },
         {
@@ -227,12 +227,12 @@
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "2c78c2544bebb9280c4e001339ed1911",
-       "spanId": "19cce37b059c024e"
+       "traceId": "1f28bfcab735d23882cea66aa6a0608e",
+       "spanId": "d5f0cd64477b44c2"
       },
       {
-       "timeUnixNano": "1793533421296000000",
-       "observedTimeUnixNano": "1793533421296000000",
+       "timeUnixNano": "1793534483208000000",
+       "observedTimeUnixNano": "1793534483208000000",
        "body": {
         "stringValue": "claude_code.assistant_response"
        },
@@ -246,7 +246,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -288,7 +288,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:41.296Z"
+          "stringValue": "2026-11-01T12:01:23.208Z"
          }
         },
         {
@@ -300,31 +300,31 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "ddb98d27-847b-4b92-9ccc-7b59fba51cd0"
+          "stringValue": "d63bbb94-e71f-46c9-9fb3-013b0799116c"
          }
         },
         {
          "key": "response_length",
          "value": {
-          "intValue": 3
+          "intValue": 5
          }
         },
         {
          "key": "response",
          "value": {
-          "stringValue": "Hi."
+          "stringValue": "Done."
          }
         },
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9ck2kSYndPLuZFi8tX"
+          "stringValue": "req_011CgcAxwDNwvo3LKSrHX7NJ"
          }
         },
         {
          "key": "message.uuid",
          "value": {
-          "stringValue": "6bdaf616-fc74-48d3-87be-088009ec16a1"
+          "stringValue": "d4e9fd82-b45b-4867-8dab-fa8daffc5539"
          }
         },
         {
@@ -342,12 +342,12 @@
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "2c78c2544bebb9280c4e001339ed1911",
-       "spanId": "19cce37b059c024e"
+       "traceId": "1f28bfcab735d23882cea66aa6a0608e",
+       "spanId": "d5f0cd64477b44c2"
       },
       {
-       "timeUnixNano": "1793533421412000000",
-       "observedTimeUnixNano": "1793533421412000000",
+       "timeUnixNano": "1793534483324000000",
+       "observedTimeUnixNano": "1793534483324000000",
        "body": {
         "stringValue": "claude_code.mcp_server_connection"
        },
@@ -361,7 +361,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -403,7 +403,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:41.412Z"
+          "stringValue": "2026-11-01T12:01:23.324Z"
          }
         },
         {
@@ -415,7 +415,7 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "ddb98d27-847b-4b92-9ccc-7b59fba51cd0"
+          "stringValue": "d63bbb94-e71f-46c9-9fb3-013b0799116c"
          }
         },
         {
@@ -439,7 +439,7 @@
         {
          "key": "duration_ms",
          "value": {
-          "stringValue": "6991"
+          "stringValue": "7937"
          }
         },
         {

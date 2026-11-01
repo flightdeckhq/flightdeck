@@ -50,8 +50,8 @@
      },
      "logRecords": [
       {
-       "timeUnixNano": "1793533386014000000",
-       "observedTimeUnixNano": "1793533386014000000",
+       "timeUnixNano": "1793534446621000000",
+       "observedTimeUnixNano": "1793534446621000000",
        "body": {
         "stringValue": "claude_code.api_request"
        },
@@ -65,7 +65,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
+          "stringValue": "64d4ab20-8afe-4f09-9a67-de1954585c05"
          }
         },
         {
@@ -107,19 +107,19 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:06.014Z"
+          "stringValue": "2026-11-01T12:00:46.621Z"
          }
         },
         {
          "key": "event.sequence",
          "value": {
-          "intValue": 14
+          "intValue": 15
          }
         },
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "94082c82-697d-4d2a-b676-51bf124b84dd"
+          "stringValue": "420be0f9-55ff-4cbf-afd4-d7204ba70ecd"
          }
         },
         {
@@ -137,19 +137,19 @@
         {
          "key": "output_tokens",
          "value": {
-          "intValue": 108
+          "intValue": 78
          }
         },
         {
          "key": "cache_read_tokens",
          "value": {
-          "intValue": 22069
+          "intValue": 23937
          }
         },
         {
          "key": "cache_creation_tokens",
          "value": {
-          "intValue": 3099
+          "intValue": 1507
          }
         },
         {
@@ -161,43 +161,43 @@
         {
          "key": "cache_creation_1h_tokens",
          "value": {
-          "intValue": 3099
+          "intValue": 1507
          }
         },
         {
          "key": "cost_usd",
          "value": {
-          "doubleValue": 0.0089529
+          "doubleValue": 0.0058057000000000004
          }
         },
         {
          "key": "cost_usd_micros",
          "value": {
-          "intValue": 8953
+          "intValue": 5806
          }
         },
         {
          "key": "duration_ms",
          "value": {
-          "intValue": 2579
+          "intValue": 1862
          }
         },
         {
          "key": "ttft_ms",
          "value": {
-          "intValue": 1203
+          "intValue": 956
          }
         },
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9a3xBaj8M1uisjQRtv"
+          "stringValue": "req_011CgcAvHMkPEvpfGsJZ49PA"
          }
         },
         {
          "key": "client_request_id",
          "value": {
-          "stringValue": "8ca41a13-4f5a-4457-b014-ae9b6f46475d"
+          "stringValue": "b32a471a-7235-4d6d-a068-fee9ee03225a"
          }
         },
         {
@@ -215,12 +215,12 @@
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "64e64f7fb8fc7cee14d5db0faf854d11",
-       "spanId": "134cdd346e9d9067"
+       "traceId": "a1e69fb30d8f2d585395a6ac728bb8d0",
+       "spanId": "e304e6455eb76b70"
       },
       {
-       "timeUnixNano": "1793533386015000000",
-       "observedTimeUnixNano": "1793533386015000000",
+       "timeUnixNano": "1793534446621000000",
+       "observedTimeUnixNano": "1793534446621000000",
        "body": {
         "stringValue": "claude_code.assistant_response"
        },
@@ -234,7 +234,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
+          "stringValue": "64d4ab20-8afe-4f09-9a67-de1954585c05"
          }
         },
         {
@@ -276,19 +276,19 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:06.015Z"
+          "stringValue": "2026-11-01T12:00:46.621Z"
          }
         },
         {
          "key": "event.sequence",
          "value": {
-          "intValue": 15
+          "intValue": 16
          }
         },
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "94082c82-697d-4d2a-b676-51bf124b84dd"
+          "stringValue": "420be0f9-55ff-4cbf-afd4-d7204ba70ecd"
          }
         },
         {
@@ -306,13 +306,13 @@
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9a3xBaj8M1uisjQRtv"
+          "stringValue": "req_011CgcAvHMkPEvpfGsJZ49PA"
          }
         },
         {
          "key": "message.uuid",
          "value": {
-          "stringValue": "2c4a2332-e051-4d00-9afa-9141b66c4410"
+          "stringValue": "2d41abd7-3fe6-48e5-a7ae-123942edfdde"
          }
         },
         {
@@ -330,8 +330,8 @@
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "64e64f7fb8fc7cee14d5db0faf854d11",
-       "spanId": "134cdd346e9d9067"
+       "traceId": "a1e69fb30d8f2d585395a6ac728bb8d0",
+       "spanId": "e304e6455eb76b70"
       }
      ]
     }

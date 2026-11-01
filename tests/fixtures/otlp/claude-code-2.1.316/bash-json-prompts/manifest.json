@@ -21,20 +21,20 @@
    "sent_encoding": null
   },
   {
-   "file": "004-traces.json",
-   "path": "/v1/traces",
-   "content_type": "application/json",
-   "sent_encoding": null
-  },
-  {
-   "file": "005-metrics.json",
+   "file": "004-metrics.json",
    "path": "/v1/metrics",
    "content_type": "application/json",
    "sent_encoding": null
   },
   {
-   "file": "006-logs.json",
-   "path": "/v1/logs",
+   "file": "005-traces.json",
+   "path": "/v1/traces",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "006-metrics.json",
+   "path": "/v1/metrics",
    "content_type": "application/json",
    "sent_encoding": null
   },
@@ -45,13 +45,25 @@
    "sent_encoding": null
   },
   {
-   "file": "008-metrics.json",
+   "file": "008-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "009-traces.json",
+   "path": "/v1/traces",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "010-metrics.json",
    "path": "/v1/metrics",
    "content_type": "application/json",
    "sent_encoding": null
   },
   {
-   "file": "009-logs.json",
+   "file": "011-logs.json",
    "path": "/v1/logs",
    "content_type": "application/json",
    "sent_encoding": null

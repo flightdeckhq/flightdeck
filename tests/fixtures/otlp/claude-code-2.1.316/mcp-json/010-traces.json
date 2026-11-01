@@ -50,13 +50,13 @@
      },
      "spans": [
       {
-       "traceId": "2c78c2544bebb9280c4e001339ed1911",
-       "spanId": "cfecf2f68cbf0be2",
-       "parentSpanId": "19cce37b059c024e",
+       "traceId": "1f28bfcab735d23882cea66aa6a0608e",
+       "spanId": "d24ce3f748a92315",
+       "parentSpanId": "d5f0cd64477b44c2",
        "name": "claude_code.llm_request",
        "kind": 1,
-       "startTimeUnixNano": "1793533420004000000",
-       "endTimeUnixNano": "1793533421295859108",
+       "startTimeUnixNano": "1793534480589000000",
+       "endTimeUnixNano": "1793534483208253305",
        "attributes": [
         {
          "key": "user.id",
@@ -67,7 +67,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -145,7 +145,7 @@
         {
          "key": "gen_ai.conversation.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -157,7 +157,7 @@
         {
          "key": "duration_ms",
          "value": {
-          "intValue": 1292
+          "intValue": 2619
          }
         },
         {
@@ -169,19 +169,19 @@
         {
          "key": "output_tokens",
          "value": {
-          "intValue": 68
+          "intValue": 96
          }
         },
         {
          "key": "cache_read_tokens",
          "value": {
-          "intValue": 25234
+          "intValue": 25212
          }
         },
         {
          "key": "cache_creation_tokens",
          "value": {
-          "intValue": 146
+          "intValue": 148
          }
         },
         {
@@ -199,31 +199,31 @@
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9ck2kSYndPLuZFi8tX"
+          "stringValue": "req_011CgcAxwDNwvo3LKSrHX7NJ"
          }
         },
         {
          "key": "gen_ai.response.id",
          "value": {
-          "stringValue": "req_011Cgc9ck2kSYndPLuZFi8tX"
+          "stringValue": "req_011CgcAxwDNwvo3LKSrHX7NJ"
          }
         },
         {
          "key": "client_request_id",
          "value": {
-          "stringValue": "85552451-fb47-4469-b539-5cda2bf2577b"
+          "stringValue": "0587a3c9-c8d6-468a-b0e7-9e8637c6d482"
          }
         },
         {
          "key": "ttft_ms",
          "value": {
-          "intValue": 703
+          "intValue": 1639
          }
         },
         {
          "key": "first_content_ms",
          "value": {
-          "intValue": 703
+          "intValue": 1639
          }
         },
         {
@@ -258,12 +258,12 @@
           {
            "key": "client_request_id",
            "value": {
-            "stringValue": "85552451-fb47-4469-b539-5cda2bf2577b"
+            "stringValue": "0587a3c9-c8d6-468a-b0e7-9e8637c6d482"
            }
           }
          ],
          "name": "gen_ai.request.attempt",
-         "timeUnixNano": "1793533420007732908",
+         "timeUnixNano": "1793534480592824298",
          "droppedAttributesCount": 0
         }
        ],
@@ -281,8 +281,8 @@
            }
           }
          ],
-         "spanId": "e0a8930adea14529",
-         "traceId": "53396c277c1a66210330b0672bfe9803",
+         "spanId": "ee21fc299601a37b",
+         "traceId": "6ce1754ce96604e9294470184b259dc3",
          "droppedAttributesCount": 0,
          "flags": 769
         }
@@ -291,12 +291,12 @@
        "flags": 257
       },
       {
-       "traceId": "2c78c2544bebb9280c4e001339ed1911",
-       "spanId": "19cce37b059c024e",
+       "traceId": "1f28bfcab735d23882cea66aa6a0608e",
+       "spanId": "d5f0cd64477b44c2",
        "name": "claude_code.interaction",
        "kind": 1,
-       "startTimeUnixNano": "1793533416091000000",
-       "endTimeUnixNano": "1793533421302714496",
+       "startTimeUnixNano": "1793534477091000000",
+       "endTimeUnixNano": "1793534483214279436",
        "attributes": [
         {
          "key": "user.id",
@@ -307,7 +307,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -361,7 +361,7 @@
         {
          "key": "gen_ai.conversation.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -397,7 +397,7 @@
         {
          "key": "interaction.duration_ms",
          "value": {
-          "intValue": 5212
+          "intValue": 6123
          }
         }
        ],

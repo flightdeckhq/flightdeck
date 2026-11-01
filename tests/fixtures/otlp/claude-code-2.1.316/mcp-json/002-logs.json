@@ -50,8 +50,8 @@
      },
      "logRecords": [
       {
-       "timeUnixNano": "1793533414421000000",
-       "observedTimeUnixNano": "1793533414421000000",
+       "timeUnixNano": "1793534475388000000",
+       "observedTimeUnixNano": "1793534475388000000",
        "body": {
         "stringValue": "claude_code.mcp_server_connection"
        },
@@ -65,7 +65,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+          "stringValue": "2a4d95e5-3ddf-40bc-bf57-d4872f5962d8"
          }
         },
         {
@@ -107,7 +107,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:34.421Z"
+          "stringValue": "2026-11-01T12:01:15.388Z"
          }
         },
         {
@@ -137,7 +137,7 @@
         {
          "key": "duration_ms",
          "value": {
-          "stringValue": "522"
+          "stringValue": "498"
          }
         },
         {

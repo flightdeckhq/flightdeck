@@ -50,8 +50,8 @@
      },
      "logRecords": [
       {
-       "timeUnixNano": "1793533405167000000",
-       "observedTimeUnixNano": "1793533405167000000",
+       "timeUnixNano": "1793534465953000000",
+       "observedTimeUnixNano": "1793534465953000000",
        "body": {
         "stringValue": "claude_code.tool_decision"
        },
@@ -65,7 +65,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+          "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
          }
         },
         {
@@ -107,7 +107,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:25.167Z"
+          "stringValue": "2026-11-01T12:01:05.953Z"
          }
         },
         {
@@ -119,7 +119,7 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "7aaf1a6f-c439-4ea5-b85d-5ac0c0115dca"
+          "stringValue": "155562bd-4ba9-4a64-a098-f953b9dd5e96"
          }
         },
         {
@@ -143,7 +143,7 @@
         {
          "key": "tool_use_id",
          "value": {
-          "stringValue": "toolu_01MhXRDtEFLrCtAChx5bPnyy"
+          "stringValue": "toolu_01KW25NTi8rYCks6ho7jTcjB"
          }
         },
         {
@@ -167,24 +167,24 @@
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9bZ4fzxDMNzxKr4nct"
+          "stringValue": "req_011CgcAwhiVbs5DPZPUfW4FW"
          }
         },
         {
          "key": "agent_id",
          "value": {
-          "stringValue": "a1168d4afa38aa51f"
+          "stringValue": "aad3b518eff5ab279"
          }
         }
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "69afb783fc0441e9c34e1973be26dc14",
-       "spanId": "08d83ceecc253820"
+       "traceId": "acbc601e70d2c52e95804406ae29295b",
+       "spanId": "766e78a575952417"
       },
       {
-       "timeUnixNano": "1793533405174000000",
-       "observedTimeUnixNano": "1793533405174000000",
+       "timeUnixNano": "1793534465960000000",
+       "observedTimeUnixNano": "1793534465960000000",
        "body": {
         "stringValue": "claude_code.api_request"
        },
@@ -198,7 +198,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+          "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
          }
         },
         {
@@ -240,7 +240,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:25.174Z"
+          "stringValue": "2026-11-01T12:01:05.960Z"
          }
         },
         {
@@ -252,7 +252,7 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "7aaf1a6f-c439-4ea5-b85d-5ac0c0115dca"
+          "stringValue": "155562bd-4ba9-4a64-a098-f953b9dd5e96"
          }
         },
         {
@@ -270,7 +270,7 @@
         {
          "key": "output_tokens",
          "value": {
-          "intValue": 119
+          "intValue": 124
          }
         },
         {
@@ -300,37 +300,37 @@
         {
          "key": "cost_usd",
          "value": {
-          "doubleValue": 0.018072500000000002
+          "doubleValue": 0.0180975
          }
         },
         {
          "key": "cost_usd_micros",
          "value": {
-          "intValue": 18073
+          "intValue": 18098
          }
         },
         {
          "key": "duration_ms",
          "value": {
-          "intValue": 1361
+          "intValue": 1968
          }
         },
         {
          "key": "ttft_ms",
          "value": {
-          "intValue": 669
+          "intValue": 1272
          }
         },
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9bZ4fzxDMNzxKr4nct"
+          "stringValue": "req_011CgcAwhiVbs5DPZPUfW4FW"
          }
         },
         {
          "key": "client_request_id",
          "value": {
-          "stringValue": "715f1231-44f2-47f8-9cb3-8585c565d28a"
+          "stringValue": "98bee8fc-5fc6-4b62-8bbd-932b0a3bf91f"
          }
         },
         {
@@ -354,18 +354,18 @@
         {
          "key": "agent_id",
          "value": {
-          "stringValue": "a1168d4afa38aa51f"
+          "stringValue": "aad3b518eff5ab279"
          }
         }
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "69afb783fc0441e9c34e1973be26dc14",
-       "spanId": "b2c87eb5f44b0dff"
+       "traceId": "acbc601e70d2c52e95804406ae29295b",
+       "spanId": "cae62d39f7658d86"
       },
       {
-       "timeUnixNano": "1793533405574000000",
-       "observedTimeUnixNano": "1793533405574000000",
+       "timeUnixNano": "1793534466345000000",
+       "observedTimeUnixNano": "1793534466345000000",
        "body": {
         "stringValue": "claude_code.tool_result"
        },
@@ -379,7 +379,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+          "stringValue": "898e9d82-4172-4be8-88e7-1df336742e10"
          }
         },
         {
@@ -421,7 +421,7 @@
         {
          "key": "event.timestamp",
          "value": {
-          "stringValue": "2026-11-01T11:43:25.574Z"
+          "stringValue": "2026-11-01T12:01:06.345Z"
          }
         },
         {
@@ -433,7 +433,7 @@
         {
          "key": "prompt.id",
          "value": {
-          "stringValue": "7aaf1a6f-c439-4ea5-b85d-5ac0c0115dca"
+          "stringValue": "155562bd-4ba9-4a64-a098-f953b9dd5e96"
          }
         },
         {
@@ -445,7 +445,7 @@
         {
          "key": "tool_use_id",
          "value": {
-          "stringValue": "toolu_01MhXRDtEFLrCtAChx5bPnyy"
+          "stringValue": "toolu_01KW25NTi8rYCks6ho7jTcjB"
          }
         },
         {
@@ -457,7 +457,7 @@
         {
          "key": "duration_ms",
          "value": {
-          "stringValue": "405"
+          "stringValue": "392"
          }
         },
         {
@@ -487,304 +487,20 @@
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9bZ4fzxDMNzxKr4nct"
+          "stringValue": "req_011CgcAwhiVbs5DPZPUfW4FW"
          }
         },
         {
          "key": "agent_id",
          "value": {
-          "stringValue": "a1168d4afa38aa51f"
+          "stringValue": "aad3b518eff5ab279"
          }
         }
        ],
        "droppedAttributesCount": 0,
        "flags": 1,
-       "traceId": "69afb783fc0441e9c34e1973be26dc14",
-       "spanId": "b2c87eb5f44b0dff"
-      },
-      {
-       "timeUnixNano": "1793533405987000000",
-       "observedTimeUnixNano": "1793533405987000000",
-       "body": {
-        "stringValue": "claude_code.api_request"
-       },
-       "attributes": [
-        {
-         "key": "user.id",
-         "value": {
-          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
-         }
-        },
-        {
-         "key": "session.id",
-         "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
-         }
-        },
-        {
-         "key": "organization.id",
-         "value": {
-          "stringValue": "00000000-0000-4000-8000-000000000002"
-         }
-        },
-        {
-         "key": "user.email",
-         "value": {
-          "stringValue": "user@example.com"
-         }
-        },
-        {
-         "key": "user.account_uuid",
-         "value": {
-          "stringValue": "00000000-0000-4000-8000-000000000001"
-         }
-        },
-        {
-         "key": "user.account_id",
-         "value": {
-          "stringValue": "user_000000000000000000000001"
-         }
-        },
-        {
-         "key": "terminal.type",
-         "value": {
-          "stringValue": "wsl-Ubuntu"
-         }
-        },
-        {
-         "key": "event.name",
-         "value": {
-          "stringValue": "api_request"
-         }
-        },
-        {
-         "key": "event.timestamp",
-         "value": {
-          "stringValue": "2026-11-01T11:43:25.987Z"
-         }
-        },
-        {
-         "key": "event.sequence",
-         "value": {
-          "intValue": 16
-         }
-        },
-        {
-         "key": "prompt.id",
-         "value": {
-          "stringValue": "7aaf1a6f-c439-4ea5-b85d-5ac0c0115dca"
-         }
-        },
-        {
-         "key": "model",
-         "value": {
-          "stringValue": "claude-haiku-4-5-20251001"
-         }
-        },
-        {
-         "key": "input_tokens",
-         "value": {
-          "intValue": 8
-         }
-        },
-        {
-         "key": "output_tokens",
-         "value": {
-          "intValue": 121
-         }
-        },
-        {
-         "key": "cache_read_tokens",
-         "value": {
-          "intValue": 22078
-         }
-        },
-        {
-         "key": "cache_creation_tokens",
-         "value": {
-          "intValue": 3260
-         }
-        },
-        {
-         "key": "cache_creation_5m_tokens",
-         "value": {
-          "intValue": 0
-         }
-        },
-        {
-         "key": "cache_creation_1h_tokens",
-         "value": {
-          "intValue": 3260
-         }
-        },
-        {
-         "key": "cost_usd",
-         "value": {
-          "doubleValue": 0.0093408
-         }
-        },
-        {
-         "key": "cost_usd_micros",
-         "value": {
-          "intValue": 9341
-         }
-        },
-        {
-         "key": "duration_ms",
-         "value": {
-          "intValue": 2158
-         }
-        },
-        {
-         "key": "ttft_ms",
-         "value": {
-          "intValue": 730
-         }
-        },
-        {
-         "key": "request_id",
-         "value": {
-          "stringValue": "req_011Cgc9bZDbwu8dx8sAnEbJU"
-         }
-        },
-        {
-         "key": "client_request_id",
-         "value": {
-          "stringValue": "757f408f-c12f-480e-b4ab-057010cc3efe"
-         }
-        },
-        {
-         "key": "speed",
-         "value": {
-          "stringValue": "normal"
-         }
-        },
-        {
-         "key": "query_source",
-         "value": {
-          "stringValue": "sdk"
-         }
-        }
-       ],
-       "droppedAttributesCount": 0,
-       "flags": 1,
-       "traceId": "69afb783fc0441e9c34e1973be26dc14",
-       "spanId": "954b5ca0ae7f517f"
-      },
-      {
-       "timeUnixNano": "1793533405987000000",
-       "observedTimeUnixNano": "1793533405987000000",
-       "body": {
-        "stringValue": "claude_code.assistant_response"
-       },
-       "attributes": [
-        {
-         "key": "user.id",
-         "value": {
-          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
-         }
-        },
-        {
-         "key": "session.id",
-         "value": {
-          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
-         }
-        },
-        {
-         "key": "organization.id",
-         "value": {
-          "stringValue": "00000000-0000-4000-8000-000000000002"
-         }
-        },
-        {
-         "key": "user.email",
-         "value": {
-          "stringValue": "user@example.com"
-         }
-        },
-        {
-         "key": "user.account_uuid",
-         "value": {
-          "stringValue": "00000000-0000-4000-8000-000000000001"
-         }
-        },
-        {
-         "key": "user.account_id",
-         "value": {
-          "stringValue": "user_000000000000000000000001"
-         }
-        },
-        {
-         "key": "terminal.type",
-         "value": {
-          "stringValue": "wsl-Ubuntu"
-         }
-        },
-        {
-         "key": "event.name",
-         "value": {
-          "stringValue": "assistant_response"
-         }
-        },
-        {
-         "key": "event.timestamp",
-         "value": {
-          "stringValue": "2026-11-01T11:43:25.987Z"
-         }
-        },
-        {
-         "key": "event.sequence",
-         "value": {
-          "intValue": 17
-         }
-        },
-        {
-         "key": "prompt.id",
-         "value": {
-          "stringValue": "7aaf1a6f-c439-4ea5-b85d-5ac0c0115dca"
-         }
-        },
-        {
-         "key": "response_length",
-         "value": {
-          "intValue": 43
-         }
-        },
-        {
-         "key": "response",
-         "value": {
-          "stringValue": "Waiting for the agent to complete its task."
-         }
-        },
-        {
-         "key": "request_id",
-         "value": {
-          "stringValue": "req_011Cgc9bZDbwu8dx8sAnEbJU"
-         }
-        },
-        {
-         "key": "message.uuid",
-         "value": {
-          "stringValue": "cfe1fbe6-429d-446a-8aca-5325dbd8dd1c"
-         }
-        },
-        {
-         "key": "model",
-         "value": {
-          "stringValue": "claude-haiku-4-5-20251001"
-         }
-        },
-        {
-         "key": "query_source",
-         "value": {
-          "stringValue": "sdk"
-         }
-        }
-       ],
-       "droppedAttributesCount": 0,
-       "flags": 1,
-       "traceId": "69afb783fc0441e9c34e1973be26dc14",
-       "spanId": "954b5ca0ae7f517f"
+       "traceId": "acbc601e70d2c52e95804406ae29295b",
+       "spanId": "cae62d39f7658d86"
       }
      ]
     }

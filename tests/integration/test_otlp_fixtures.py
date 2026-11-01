@@ -1,90 +1,56 @@
 """The recorded OTLP fixtures stay scrubbed.
 
-tests/otlp/record_claude_code.py replaces Claude Code's identity
-attributes with placeholders and drops the records that describe the
-recording machine. This test keeps a re-recording, or a hand edit, from
-committing a real account's identifiers or connector names: every
-identity attribute in a JSON fixture holds its placeholder, no dropped
-record type is present, and no file (protobuf included) holds an email
-address other than the placeholder.
+tests/otlp/record_claude_code.py replaces Claude Code's identity and
+machine attributes with placeholders and drops the records that describe
+the recording machine, and refuses to write a scenario that fails
+tests/otlp/fixture_checks.py. This test runs the same checks over the
+committed fixtures, protobuf files included, so a hand edit or a
+recorder change cannot commit a real account's identifiers, the user's
+connector names, an email address or a machine path.
 """
 
 from __future__ import annotations
 
-import json
-import re
 from pathlib import Path
-from typing import Any
+
+from ..otlp.fixture_checks import directory_problems, problems
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "otlp"
-PLACEHOLDERS = {
-    "user.email": "user@example.com",
-    "user.account_uuid": "00000000-0000-4000-8000-000000000001",
-    "user.account_id": "user_000000000000000000000001",
-    "user.id": "0" * 64,
-    "organization.id": "00000000-0000-4000-8000-000000000002",
-}
-DROPPED_EVENTS = {"claude_code.managed_settings_resolved", "claude_code.plugin_loaded"}
-EMAIL = re.compile(rb"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 
 
-def _value(v: dict[str, Any]) -> Any:
-    return next(iter(v.values())) if isinstance(v, dict) and v else None
-
-
-def _attribute_lists(doc: Any) -> list[list[dict[str, Any]]]:
-    out: list[list[dict[str, Any]]] = []
-    if isinstance(doc, dict):
-        if isinstance(doc.get("attributes"), list):
-            out.append(doc["attributes"])
-        for v in doc.values():
-            out.extend(_attribute_lists(v))
-    elif isinstance(doc, list):
-        for v in doc:
-            out.extend(_attribute_lists(v))
-    return out
-
-
-def _log_records(doc: dict[str, Any]) -> list[dict[str, Any]]:
-    return [
-        r
-        for rl in doc.get("resourceLogs", [])
-        for sl in rl.get("scopeLogs", [])
-        for r in sl.get("logRecords", [])
-    ]
+def _scenarios() -> list[Path]:
+    return sorted(p.parent for p in FIXTURES.glob("*/*/manifest.json"))
 
 
 def test_the_fixtures_exist() -> None:
-    manifests = list(FIXTURES.glob("*/*/manifest.json"))
-    assert manifests, f"no OTLP fixtures under {FIXTURES}"
-    for manifest in manifests:
-        for request in json.loads(manifest.read_text())["requests"]:
-            assert (manifest.parent / request["file"]).is_file(), request["file"]
+    assert _scenarios(), f"no OTLP fixtures under {FIXTURES}"
 
 
-def test_identity_attributes_hold_their_placeholders() -> None:
-    for path in FIXTURES.glob("*/*/*.json"):
-        if path.name == "manifest.json":
-            continue
-        doc = json.loads(path.read_text())
-        for attrs in _attribute_lists(doc):
-            for a in attrs:
-                if a["key"] in PLACEHOLDERS:
-                    assert _value(a["value"]) == PLACEHOLDERS[a["key"]], (
-                        f"{path.name}: {a['key']}"
-                    )
-        for r in _log_records(doc):
-            name = _value(r.get("body", {}))
-            assert name not in DROPPED_EVENTS, f"{path.name}: {name}"
-            scope = {a["key"]: _value(a["value"]) for a in r.get("attributes", [])}.get(
-                "server_scope"
-            )
-            assert scope != "claudeai", f"{path.name}: a claude.ai connector record"
+def test_every_fixture_passes_the_privacy_checks() -> None:
+    found = [p for scenario in _scenarios() for p in directory_problems(scenario)]
+    assert found == []
 
 
-def test_no_file_holds_a_real_email_address() -> None:
-    for path in FIXTURES.glob("*/*/*"):
-        for match in EMAIL.findall(path.read_bytes()):
-            # In a protobuf file the next field's tag byte can follow the
-            # address and read as more of its domain.
-            assert match.startswith(b"user@example.com"), f"{path.name}: {match!r}"
+def test_the_checks_catch_a_planted_leak(tmp_path: Path) -> None:
+    """The checks themselves: a real-looking identity value, a connector
+    record and a machine path are each reported, in JSON and protobuf."""
+    leaky = tmp_path / "001-logs.json"
+    leaky.write_text(
+        '{"resourceLogs":[{"scopeLogs":[{"logRecords":[{"attributes":['
+        '{"key":"user.email","value":{"stringValue":"someone@corp.example.org"}},'
+        '{"key":"server_scope","value":{"stringValue":"claudeai"}},'
+        '{"key":"cwd","value":{"stringValue":"/home/alice/repo"}}]}]}]}]}'
+    )
+    found = problems(leaky)
+    assert any("user.email" in p for p in found), found
+    assert any("claude.ai connector" in p for p in found), found
+    assert any("/home/alice" in p for p in found), found
+
+    def field(number: int, payload: bytes) -> bytes:
+        return bytes([number << 3 | 2, len(payload)]) + payload
+
+    any_value = field(1, b"00000000-1111-2222-3333-444444444444")
+    key_value = field(1, b"organization.id") + field(2, any_value)
+    pb = tmp_path / "002-logs.pb"
+    pb.write_bytes(field(1, field(2, field(2, field(6, key_value)))))
+    assert any("organization.id" in p for p in problems(pb)), problems(pb)

@@ -50,13 +50,13 @@
      },
      "spans": [
       {
-       "traceId": "64e64f7fb8fc7cee14d5db0faf854d11",
-       "spanId": "55e646205e054ef6",
-       "parentSpanId": "6b3fabe1cdabdda7",
+       "traceId": "a1e69fb30d8f2d585395a6ac728bb8d0",
+       "spanId": "319528cfd7d70818",
+       "parentSpanId": "639d7634bbb7bd3f",
        "name": "claude_code.tool.blocked_on_user",
        "kind": 1,
-       "startTimeUnixNano": "1793533382759000000",
-       "endTimeUnixNano": "1793533382764384120",
+       "startTimeUnixNano": "1793534442377000000",
+       "endTimeUnixNano": "1793534442382462037",
        "attributes": [
         {
          "key": "user.id",
@@ -67,7 +67,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
+          "stringValue": "64d4ab20-8afe-4f09-9a67-de1954585c05"
          }
         },
         {
@@ -115,7 +115,7 @@
         {
          "key": "gen_ai.conversation.id",
          "value": {
-          "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
+          "stringValue": "64d4ab20-8afe-4f09-9a67-de1954585c05"
          }
         },
         {
@@ -148,13 +148,13 @@
        "flags": 257
       },
       {
-       "traceId": "64e64f7fb8fc7cee14d5db0faf854d11",
-       "spanId": "6b3fabe1cdabdda7",
-       "parentSpanId": "134cdd346e9d9067",
+       "traceId": "a1e69fb30d8f2d585395a6ac728bb8d0",
+       "spanId": "639d7634bbb7bd3f",
+       "parentSpanId": "e304e6455eb76b70",
        "name": "claude_code.tool",
        "kind": 1,
-       "startTimeUnixNano": "1793533382759000000",
-       "endTimeUnixNano": "1793533382764550807",
+       "startTimeUnixNano": "1793534442377000000",
+       "endTimeUnixNano": "1793534442382639837",
        "attributes": [
         {
          "key": "user.id",
@@ -165,7 +165,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
+          "stringValue": "64d4ab20-8afe-4f09-9a67-de1954585c05"
          }
         },
         {
@@ -237,7 +237,7 @@
         {
          "key": "gen_ai.conversation.id",
          "value": {
-          "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
+          "stringValue": "64d4ab20-8afe-4f09-9a67-de1954585c05"
          }
         },
         {
@@ -261,13 +261,13 @@
         {
          "key": "tool_use_id",
          "value": {
-          "stringValue": "toolu_01QbfurxFaTGkrk1eCCzssCj"
+          "stringValue": "toolu_01DqD6qjRf6HQyG4vf8mLrgJ"
          }
         },
         {
          "key": "gen_ai.tool.call.id",
          "value": {
-          "stringValue": "toolu_01QbfurxFaTGkrk1eCCzssCj"
+          "stringValue": "toolu_01DqD6qjRf6HQyG4vf8mLrgJ"
          }
         },
         {
@@ -288,111 +288,13 @@
        "flags": 257
       },
       {
-       "traceId": "64e64f7fb8fc7cee14d5db0faf854d11",
-       "spanId": "826e3f7ee9367151",
-       "parentSpanId": "f67710b02eb9ced4",
-       "name": "claude_code.tool.blocked_on_user",
-       "kind": 1,
-       "startTimeUnixNano": "1793533383005000000",
-       "endTimeUnixNano": "1793533383006587871",
-       "attributes": [
-        {
-         "key": "user.id",
-         "value": {
-          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
-         }
-        },
-        {
-         "key": "session.id",
-         "value": {
-          "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
-         }
-        },
-        {
-         "key": "organization.id",
-         "value": {
-          "stringValue": "00000000-0000-4000-8000-000000000002"
-         }
-        },
-        {
-         "key": "user.email",
-         "value": {
-          "stringValue": "user@example.com"
-         }
-        },
-        {
-         "key": "user.account_uuid",
-         "value": {
-          "stringValue": "00000000-0000-4000-8000-000000000001"
-         }
-        },
-        {
-         "key": "user.account_id",
-         "value": {
-          "stringValue": "user_000000000000000000000001"
-         }
-        },
-        {
-         "key": "terminal.type",
-         "value": {
-          "stringValue": "wsl-Ubuntu"
-         }
-        },
-        {
-         "key": "gen_ai.provider.name",
-         "value": {
-          "stringValue": "anthropic"
-         }
-        },
-        {
-         "key": "span.type",
-         "value": {
-          "stringValue": "tool.blocked_on_user"
-         }
-        },
-        {
-         "key": "gen_ai.conversation.id",
-         "value": {
-          "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
-         }
-        },
-        {
-         "key": "duration_ms",
-         "value": {
-          "intValue": 2
-         }
-        },
-        {
-         "key": "decision",
-         "value": {
-          "stringValue": "accept"
-         }
-        },
-        {
-         "key": "source",
-         "value": {
-          "stringValue": "config"
-         }
-        }
-       ],
-       "droppedAttributesCount": 0,
-       "events": [],
-       "droppedEventsCount": 0,
-       "status": {
-        "code": 0
-       },
-       "links": [],
-       "droppedLinksCount": 0,
-       "flags": 257
-      },
-      {
-       "traceId": "64e64f7fb8fc7cee14d5db0faf854d11",
-       "spanId": "fd41924fddb8d6a5",
-       "parentSpanId": "134cdd346e9d9067",
+       "traceId": "a1e69fb30d8f2d585395a6ac728bb8d0",
+       "spanId": "f456a5701ed7a5c2",
+       "parentSpanId": "e304e6455eb76b70",
        "name": "claude_code.llm_request",
        "kind": 1,
-       "startTimeUnixNano": "1793533380908000000",
-       "endTimeUnixNano": "1793533383023540027",
+       "startTimeUnixNano": "1793534440446000000",
+       "endTimeUnixNano": "1793534442388224384",
        "attributes": [
         {
          "key": "user.id",
@@ -403,7 +305,7 @@
         {
          "key": "session.id",
          "value": {
-          "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
+          "stringValue": "64d4ab20-8afe-4f09-9a67-de1954585c05"
          }
         },
         {
@@ -481,7 +383,7 @@
         {
          "key": "gen_ai.conversation.id",
          "value": {
-          "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
+          "stringValue": "64d4ab20-8afe-4f09-9a67-de1954585c05"
          }
         },
         {
@@ -493,7 +395,7 @@
         {
          "key": "duration_ms",
          "value": {
-          "intValue": 2115
+          "intValue": 1942
          }
         },
         {
@@ -505,7 +407,7 @@
         {
          "key": "output_tokens",
          "value": {
-          "intValue": 209
+          "intValue": 155
          }
         },
         {
@@ -535,31 +437,31 @@
         {
          "key": "request_id",
          "value": {
-          "stringValue": "req_011Cgc9ZsCXCpZjANs9Qhf9K"
+          "stringValue": "req_011CgcAuy88rXygZkQWnsu4j"
          }
         },
         {
          "key": "gen_ai.response.id",
          "value": {
-          "stringValue": "req_011Cgc9ZsCXCpZjANs9Qhf9K"
+          "stringValue": "req_011CgcAuy88rXygZkQWnsu4j"
          }
         },
         {
          "key": "client_request_id",
          "value": {
-          "stringValue": "e7c54665-c215-4fce-ac27-b33f3de8f83c"
+          "stringValue": "14515a26-f37c-47c1-b17e-5f256b583f74"
          }
         },
         {
          "key": "ttft_ms",
          "value": {
-          "intValue": 913
+          "intValue": 1062
          }
         },
         {
          "key": "first_content_ms",
          "value": {
-          "intValue": 913
+          "intValue": 1062
          }
         },
         {
@@ -594,12 +496,12 @@
           {
            "key": "client_request_id",
            "value": {
-            "stringValue": "e7c54665-c215-4fce-ac27-b33f3de8f83c"
+            "stringValue": "14515a26-f37c-47c1-b17e-5f256b583f74"
            }
           }
          ],
          "name": "gen_ai.request.attempt",
-         "timeUnixNano": "1793533380915697876",
+         "timeUnixNano": "1793534440454617953",
          "droppedAttributesCount": 0
         }
        ],
@@ -617,256 +519,12 @@
            }
           }
          ],
-         "spanId": "c3cb681410134016",
-         "traceId": "2cbcdf50a4366e429e0635af8435ce87",
+         "spanId": "1b2293a071b32dc9",
+         "traceId": "ec5fe1dfec836e0648cbeb85e1e9ae72",
          "droppedAttributesCount": 0,
          "flags": 769
         }
        ],
-       "droppedLinksCount": 0,
-       "flags": 257
-      },
-      {
-       "traceId": "64e64f7fb8fc7cee14d5db0faf854d11",
-       "spanId": "2712b495f31bbba0",
-       "parentSpanId": "f67710b02eb9ced4",
-       "name": "claude_code.tool.execution",
-       "kind": 1,
-       "startTimeUnixNano": "1793533383007000000",
-       "endTimeUnixNano": "1793533383414856741",
-       "attributes": [
-        {
-         "key": "user.id",
-         "value": {
-          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
-         }
-        },
-        {
-         "key": "session.id",
-         "value": {
-          "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
-         }
-        },
-        {
-         "key": "organization.id",
-         "value": {
-          "stringValue": "00000000-0000-4000-8000-000000000002"
-         }
-        },
-        {
-         "key": "user.email",
-         "value": {
-          "stringValue": "user@example.com"
-         }
-        },
-        {
-         "key": "user.account_uuid",
-         "value": {
-          "stringValue": "00000000-0000-4000-8000-000000000001"
-         }
-        },
-        {
-         "key": "user.account_id",
-         "value": {
-          "stringValue": "user_000000000000000000000001"
-         }
-        },
-        {
-         "key": "terminal.type",
-         "value": {
-          "stringValue": "wsl-Ubuntu"
-         }
-        },
-        {
-         "key": "gen_ai.provider.name",
-         "value": {
-          "stringValue": "anthropic"
-         }
-        },
-        {
-         "key": "span.type",
-         "value": {
-          "stringValue": "tool.execution"
-         }
-        },
-        {
-         "key": "gen_ai.conversation.id",
-         "value": {
-          "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
-         }
-        },
-        {
-         "key": "tool_use_id",
-         "value": {
-          "stringValue": "toolu_01V9ei4AENbGAKGYjhrvXPTL"
-         }
-        },
-        {
-         "key": "gen_ai.tool.call.id",
-         "value": {
-          "stringValue": "toolu_01V9ei4AENbGAKGYjhrvXPTL"
-         }
-        },
-        {
-         "key": "duration_ms",
-         "value": {
-          "intValue": 408
-         }
-        },
-        {
-         "key": "success",
-         "value": {
-          "boolValue": true
-         }
-        }
-       ],
-       "droppedAttributesCount": 0,
-       "events": [],
-       "droppedEventsCount": 0,
-       "status": {
-        "code": 0
-       },
-       "links": [],
-       "droppedLinksCount": 0,
-       "flags": 257
-      },
-      {
-       "traceId": "64e64f7fb8fc7cee14d5db0faf854d11",
-       "spanId": "f67710b02eb9ced4",
-       "parentSpanId": "134cdd346e9d9067",
-       "name": "claude_code.tool",
-       "kind": 1,
-       "startTimeUnixNano": "1793533383005000000",
-       "endTimeUnixNano": "1793533383414708464",
-       "attributes": [
-        {
-         "key": "user.id",
-         "value": {
-          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
-         }
-        },
-        {
-         "key": "session.id",
-         "value": {
-          "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
-         }
-        },
-        {
-         "key": "organization.id",
-         "value": {
-          "stringValue": "00000000-0000-4000-8000-000000000002"
-         }
-        },
-        {
-         "key": "user.email",
-         "value": {
-          "stringValue": "user@example.com"
-         }
-        },
-        {
-         "key": "user.account_uuid",
-         "value": {
-          "stringValue": "00000000-0000-4000-8000-000000000001"
-         }
-        },
-        {
-         "key": "user.account_id",
-         "value": {
-          "stringValue": "user_000000000000000000000001"
-         }
-        },
-        {
-         "key": "terminal.type",
-         "value": {
-          "stringValue": "wsl-Ubuntu"
-         }
-        },
-        {
-         "key": "gen_ai.provider.name",
-         "value": {
-          "stringValue": "anthropic"
-         }
-        },
-        {
-         "key": "span.type",
-         "value": {
-          "stringValue": "tool"
-         }
-        },
-        {
-         "key": "tool_name",
-         "value": {
-          "stringValue": "Bash"
-         }
-        },
-        {
-         "key": "tool_name_safe",
-         "value": {
-          "stringValue": "Bash"
-         }
-        },
-        {
-         "key": "gen_ai.operation.name",
-         "value": {
-          "stringValue": "execute_tool"
-         }
-        },
-        {
-         "key": "gen_ai.tool.name",
-         "value": {
-          "stringValue": "Bash"
-         }
-        },
-        {
-         "key": "gen_ai.conversation.id",
-         "value": {
-          "stringValue": "e441b6c9-ec9b-4ce4-b6bf-c29c7e01d4a4"
-         }
-        },
-        {
-         "key": "full_command",
-         "value": {
-          "stringValue": "echo recorded"
-         }
-        },
-        {
-         "key": "bash_command_class",
-         "value": {
-          "stringValue": "shell_builtin"
-         }
-        },
-        {
-         "key": "bash_argv0",
-         "value": {
-          "stringValue": "echo"
-         }
-        },
-        {
-         "key": "tool_use_id",
-         "value": {
-          "stringValue": "toolu_01V9ei4AENbGAKGYjhrvXPTL"
-         }
-        },
-        {
-         "key": "gen_ai.tool.call.id",
-         "value": {
-          "stringValue": "toolu_01V9ei4AENbGAKGYjhrvXPTL"
-         }
-        },
-        {
-         "key": "duration_ms",
-         "value": {
-          "intValue": 410
-         }
-        }
-       ],
-       "droppedAttributesCount": 0,
-       "events": [],
-       "droppedEventsCount": 0,
-       "status": {
-        "code": 0
-       },
-       "links": [],
        "droppedLinksCount": 0,
        "flags": 257
       }

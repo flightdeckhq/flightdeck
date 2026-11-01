@@ -15,14 +15,14 @@
    "sent_encoding": "gzip"
   },
   {
-   "file": "003-metrics.pb",
-   "path": "/v1/metrics",
+   "file": "003-logs.pb",
+   "path": "/v1/logs",
    "content_type": "application/x-protobuf",
    "sent_encoding": "gzip"
   },
   {
-   "file": "004-logs.pb",
-   "path": "/v1/logs",
+   "file": "004-metrics.pb",
+   "path": "/v1/metrics",
    "content_type": "application/x-protobuf",
    "sent_encoding": "gzip"
   },
@@ -33,8 +33,8 @@
    "sent_encoding": "gzip"
   },
   {
-   "file": "006-metrics.pb",
-   "path": "/v1/metrics",
+   "file": "006-logs.pb",
+   "path": "/v1/logs",
    "content_type": "application/x-protobuf",
    "sent_encoding": "gzip"
   },
@@ -45,25 +45,13 @@
    "sent_encoding": "gzip"
   },
   {
-   "file": "008-logs.pb",
-   "path": "/v1/logs",
-   "content_type": "application/x-protobuf",
-   "sent_encoding": "gzip"
-  },
-  {
-   "file": "009-traces.pb",
-   "path": "/v1/traces",
-   "content_type": "application/x-protobuf",
-   "sent_encoding": "gzip"
-  },
-  {
-   "file": "010-metrics.pb",
+   "file": "008-metrics.pb",
    "path": "/v1/metrics",
    "content_type": "application/x-protobuf",
    "sent_encoding": "gzip"
   },
   {
-   "file": "011-logs.pb",
+   "file": "009-logs.pb",
    "path": "/v1/logs",
    "content_type": "application/x-protobuf",
    "sent_encoding": "gzip"

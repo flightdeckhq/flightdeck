@@ -305,14 +305,15 @@ exporter's retry is safe.
 publishing despite a failed read (rows with no capture posture or
 context, and possible duplicates of plugin sessions).
 
-## D230 -- The dashboard names a session's source from `context.telemetry`; agent rows carry the latest session's
+## D230 -- The dashboard names a session's source from `context.telemetry`; agent rows carry their latest session's telemetry
 
 **Date:** 2026-11-01
 **Decision:** a session reported over OTLP (`context.telemetry=otlp`)
 shows an `OTEL` pill beside its client pill and "via OpenTelemetry" in
 its run drawer; the plugin's reads "via plugin". `GET /v1/fleet`,
 `GET /v1/agents` and the agent hits of `GET /v1/search` add `telemetry`,
-the latest session's value, to the runtime-context projection.
+the latest session's value, to the runtime-context projection; search
+session hits add `client_type`.
 **Why:** an OTLP session observes only, so its source decides what the
 operator can do; agent rows carry no session context to read it from.
 **Rejected alternative:** a `client_type` per source (D224 kept
@@ -320,3 +321,19 @@ operator can do; agent rows carry no session context to read it from.
 context (the fleet's per-agent sessions omit context, so rows outside
 the paginated window would lose the pill); a pill on every source
 (noise on the default plugin and sensor rows).
+
+## D231 -- Custom directives are offered only to client types that run custom handlers
+
+**Date:** 2026-11-01
+**Decision:** the client type registry gains `runs_custom_directives`
+(`true` for `flightdeck_sensor` only). The dashboard offers custom
+directives (the run drawer's Directives tab, the Fleet trigger) on a
+session that supports directives and whose type runs them; Stop stays
+gated on `supports_directives` alone.
+**Why:** the enforcement-on Claude Code plugin and the Agent SDK
+interceptor take stop and budget directives but answer a custom one
+with an error result, so offering one was a dead end.
+**Rejected alternative:** gating on `supports_directives` (offers the
+dead end); a `client_type` string compare in the dashboard (a new
+client that runs handlers would need a code change, not a registry
+row).

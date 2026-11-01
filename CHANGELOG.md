@@ -59,10 +59,21 @@ All notable changes to Flightdeck are documented here.
   call or error without a model (Claude Code's prompt record over
   OpenTelemetry has none) shows a dash in its feed line and its Model
   row.
-- **Observer sessions offer no custom directives.** The run drawer's
-  Directives tab and the Fleet sidebar's directive trigger appeared for
-  an observe-only session whose flavor matched a sensor's registered
-  directives; they now need a session that can act on one.
+- **Custom directives are offered only where they run.** The run
+  drawer's Directives tab appeared for any session whose flavor had
+  registered directives, including an observe-only session and an
+  enforcement-on Claude Code plugin session or Agent SDK run, which
+  answer a custom directive with an error. It now needs a session whose
+  client type runs custom handlers (a new `runs_custom_directives`
+  field in the client type registry; only the sensor today).
+- **The Fleet sidebar's directive trigger and Stop All work again.**
+  Since sidebar rows became one per agent, the directive trigger looked
+  directives up by the agent's id and never showed, and Stop All sent a
+  flavor-wide stop keyed by that id, which the API answered with "no
+  active sessions found for flavor". The trigger now lists the
+  directives registered under the flavors the agent's sessions run as,
+  and Stop All sends a stop to each live session of the agent that can
+  act on one.
 - **Streamed OpenAI and Anthropic calls store their response and report
   their tool calls.** With `capture_prompts` on, `create(stream=True)`
   stored the request but not the streamed text, and a `responses.create`

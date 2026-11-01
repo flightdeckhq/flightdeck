@@ -1409,7 +1409,10 @@ By default the plugin only observes: a directive returned in a POST
 response is left unread, the plugin payload sets
 `context.supports_directives = false` on `session_start`, and the
 dashboard hides the Stop Agent button and the Fleet Stop All control
-skips these sessions. This is the observer-session class. With the
+skips these sessions. This is the observer-session class. With
+enforcement on the session takes Stop and token budgets, but the
+dashboard still offers it no custom directives: the plugin answers one
+with an error. With the
 plugin's enforcement on, the session takes directives instead (see
 Enforcement).
 
@@ -1953,17 +1956,17 @@ reserved for the planned integrations ([#182](https://github.com/flightdeckhq/fl
 [#186](https://github.com/flightdeckhq/flightdeck/issues/186)). Each value
 carries a display label and the defaults below:
 
-| `client_type` | Label | Expected `agent_type` | `supports_directives` default | `billing_mode` default | Worker strips tool error text |
-|---|---|---|---|---|---|
-| `claude_code` | Claude Code | `coding` | `false` | `subscription` | yes |
-| `flightdeck_sensor` | Sensor | `production` | `true` | `metered` | no |
-| `claude_agent_sdk` | Claude Agent SDK | `production` | `true` | `metered` | no |
-| `codex` | Codex CLI | `coding` | `false` | `subscription` | yes |
-| `copilot` | GitHub Copilot | `coding` | `false` | `subscription` | yes |
-| `opencode` | OpenCode | `coding` | `false` | `metered` | yes |
-| `gemini_cli` | Gemini CLI | `coding` | `false` | `metered` | yes |
-| `cursor` | Cursor | `coding` | `false` | `subscription` | yes |
-| `otlp` | OpenTelemetry | `production` | `false` | `metered` | yes |
+| `client_type` | Label | Expected `agent_type` | `supports_directives` default | Runs custom directives | `billing_mode` default | Worker strips tool error text |
+|---|---|---|---|---|---|---|
+| `claude_code` | Claude Code | `coding` | `false` | no | `subscription` | yes |
+| `flightdeck_sensor` | Sensor | `production` | `true` | yes | `metered` | no |
+| `claude_agent_sdk` | Claude Agent SDK | `production` | `true` | no | `metered` | no |
+| `codex` | Codex CLI | `coding` | `false` | no | `subscription` | yes |
+| `copilot` | GitHub Copilot | `coding` | `false` | no | `subscription` | yes |
+| `opencode` | OpenCode | `coding` | `false` | no | `metered` | yes |
+| `gemini_cli` | Gemini CLI | `coding` | `false` | no | `metered` | yes |
+| `cursor` | Cursor | `coding` | `false` | no | `subscription` | yes |
+| `otlp` | OpenTelemetry | `production` | `false` | no | `metered` | yes |
 
 - **Label.** What the dashboard shows in the client pill and facets.
 - **Expected `agent_type`.** What the client sends in normal use, and
@@ -1977,6 +1980,14 @@ carries a display label and the defaults below:
   default applies when a `session_start` omits it. Clients that only
   observe default to `false`, and the dashboard hides their Stop
   controls (see Observer-session class).
+- **Runs custom directives** (`runs_custom_directives`). Whether the
+  client runs custom directive handlers (the sensor's `@directive`
+  functions). A client can act on stop and budget directives without
+  them: the Claude Code plugin (enforcement on) and the Agent SDK
+  interceptor answer a custom directive with an error
+  `directive_result`. The dashboard offers custom directives only on a
+  session that supports directives and whose type runs them (see
+  Observer-session class); only the dashboard reads this field.
 - **`billing_mode` default.** The mode the worker stores for an LLM call
   that arrives without one (see Estimated cost). It follows how the
   client is normally paid for: Claude Code, Codex CLI (ChatGPT login),
@@ -2022,7 +2033,7 @@ two are separate agents because `client_type` is part of the `agent_id`
 derivation.
 
 The list has one source, `contracts/client_types.json`, one object per
-value with the six fields above. Each component that checks or shows
+value with the seven fields above. Each component that checks or shows
 the list keeps its own literal copy, because the Go services build from
 their own module directory and cannot read a file outside it, and a
 parity test pins every copy to the source: the ingestion validator; the
@@ -4158,6 +4169,8 @@ Matched columns per entity:
 - **Sessions** — `session_id`, `flavor`, `host`, `model`, plus
   `context->>'hostname'`, `context->>'os'`, `context->>'git_branch'`,
   `context->>'python_version'`, and `(context->'frameworks')::text`.
+  Each session result carries its `context` and `client_type`, so the
+  palette names the client beside the session's source.
 - **Events** — `event_type`, `tool_name`, `model`, plus a curated
   English-term-to-event_types map (`search.go::curatedEventTypeTerms`):
   `llm` → pre_call / post_call / llm_error; `tool` → tool_call /
@@ -4825,6 +4838,11 @@ session's, which the agent rows carry as `telemetry` (see
 - **Controls.** An OTLP session takes no directives (see
   Observer-session class): no Stop Agent, no Stop All, no
   custom-directive triggers.
+- **Accessible name.** The pill's screen-reader text and the drawer
+  label's both carry what the tooltip says, "observe only, no
+  directives reach it", since a tooltip is not announced. A source
+  with no client name, or the generic `otlp` type, reads "Reported via
+  OpenTelemetry".
 
 ### Fleet view
 
@@ -4965,8 +4983,10 @@ source, see Session source), metadata bar, and a
 collapsible RUNTIME panel (only renders when `session.context` is
 non-empty; combines git / kubernetes / compose / frameworks fields).
 Tabs: Timeline, Prompts, Directives (conditional). The Directives tab
-only appears when `flavorDirectives.length > 0` (filtered from the fleet
-store's `customDirectives` slice by the session's flavor).
+only appears when the session runs custom directives (a sensor session
+that supports directives, see Observer-session class) and
+`flavorDirectives.length > 0` (filtered from the fleet store's
+`customDirectives` slice by the session's flavor).
 
 Operator-facing prose calls a session a **run**; the drawer is the
 run drawer. It opens from five entry points: (1) an event circle on
@@ -5286,11 +5306,21 @@ with 2+ values (single-value facets are skipped); click-to-toggle with
 `onContextFilter`; clear-all `X` in the header when filters are
 active.
 
-Per-flavor `Directives` icon button appears alongside the `Stop All`
-icon button when a flavor has registered custom directives. Both
+Each sidebar row is an agent, keyed by its `agent_id`, while a sensor
+registers custom directives under the flavor string its sessions carry.
+The row's `Directives` icon button therefore lists the directives
+registered under any flavor its sessions run as, and appears when that
+list is non-empty and at least one of its sessions runs custom
+directives (see Observer-session class). Each `DirectiveCard` fans out
+to the active sessions of the directive's own flavor. The `Stop All`
+button appears when at least one live (active or idle) session of the
+agent supports directives, and sends one `shutdown` per such session;
+a flavor-wide `shutdown_flavor` keyed by the row would match no
+session and would reach other agents' runs that share the flavor. Both
 buttons are icon-only (Zap and OctagonX from lucide-react) so they
-don't push the flavor name to truncate at the 240px sidebar width.
-Clicking opens a Dialog with one `DirectiveCard` per directive.
+don't push the agent name to truncate at the 240px sidebar width.
+Clicking the first opens a Dialog with one `DirectiveCard` per
+directive.
 
 DIRECTIVE ACTIVITY section shows the 5 most recent `directive` and
 `directive_result` events with a colored status dot (green for
@@ -6598,12 +6628,18 @@ otherwise; the sensor omits it and takes its type's `true` default. A row with n
 the flag nor a `client_type` (the column is nullable on `sessions`) is
 treated as observer-only when its flavor or framework marks it as a
 Claude Code session, so an old plugin row never regains a Stop button.
-The dashboard hides the Stop Agent button and the run drawer's
-Directives tab for observer sessions, gates the Fleet Stop All control
-on at least one directive-capable live session in the flavor, and the
-Fleet sidebar's custom-directive trigger on at least one
-directive-capable session. A Claude Code session reported over OTLP is
-an observer session: its `context.supports_directives` is `false`.
+The dashboard hides the Stop Agent button for observer sessions and
+gates the Fleet Stop All control on at least one directive-capable live
+session of the agent. Custom directives need more: a session runs them
+when it is directive-capable and its `client_type` runs custom
+directives (the registry's `runs_custom_directives`, only the sensor
+today; a row with no `client_type` falls back as above). The run
+drawer's Directives tab and the Fleet sidebar's directive trigger
+appear only for such sessions, so neither an observer session nor an
+enforcement-on Claude Code plugin session or Agent SDK run, which
+answer a custom directive with an error, is offered one. A Claude Code
+session reported over OTLP is an observer session: its
+`context.supports_directives` is `false`.
 
 ---
 

@@ -7067,6 +7067,17 @@ Postgres. The bundled Postgres StatefulSet is fine for small
 deployments; production should provide an external HA Postgres via
 `postgres.externalUrl`.
 
+**Public path prefixes.** Clients reach ingestion under `/ingest` and
+the query API under `/api` on one origin, and each service also accepts
+its own prefix: `/ingest/v1/events` and `/v1/events` reach the same
+ingestion handler, `/api/v1/fleet` and `/v1/fleet` the same API one
+(Swagger UI included). The compose nginx strips the prefix before
+proxying; the Helm chart's Ingress forwards the path unchanged, because
+rewriting it is specific to each ingress controller, and the services
+strip it themselves. Only the prefix followed by `/` or the end of the
+path is stripped, so `/ingestx/...` is a 404. Neither service has a
+route of its own under its prefix.
+
 The Docker Compose and Helm targets are feature-equivalent (Key
 Constraint #4).
 

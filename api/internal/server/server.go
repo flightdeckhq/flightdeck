@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	apidocs "github.com/flightdeckhq/flightdeck/api/docs"
@@ -16,6 +17,10 @@ import (
 	"github.com/flightdeckhq/flightdeck/api/internal/ws"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
 )
+
+// publicPathPrefix is the path the query API is published at behind the
+// edge proxy or Ingress (see withPublicPrefix).
+const publicPathPrefix = "/api"
 
 const (
 	serverReadTimeout = 15 * time.Second
@@ -203,7 +208,7 @@ func newServer(addr string, s store.Querier, hub *ws.Hub, validator *auth.Valida
 
 	return &http.Server{
 		Addr:        addr,
-		Handler:     withCORS(withLogging(withRecovery(mux)), corsOrigin),
+		Handler:     withPublicPrefix(withCORS(withLogging(withRecovery(mux)), corsOrigin), publicPathPrefix),
 		ReadTimeout: serverReadTimeout,
 		IdleTimeout: serverIdleTimeout,
 	}
@@ -247,5 +252,37 @@ func withCORS(next http.Handler, origin string) http.Handler {
 			return
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// withPublicPrefix serves the routes registered on next both at their
+// own paths and under prefix, the path the service is published at
+// (/ingest/v1/events reaches the same handler as /v1/events). The
+// compose nginx strips the prefix before proxying; a Kubernetes Ingress
+// forwards the path unchanged, and rewriting it there is specific to
+// each ingress controller, so the service accepts both forms itself.
+// Only the prefix followed by "/" or the end of the path is stripped:
+// /ingestfoo is left alone and 404s.
+func withPublicPrefix(next http.Handler, prefix string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rest, ok := strings.CutPrefix(r.URL.Path, prefix)
+		if !ok || (rest != "" && rest[0] != '/') {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if rest == "" {
+			rest = "/"
+		}
+		r2 := new(http.Request)
+		*r2 = *r
+		u := *r.URL
+		u.Path = rest
+		if rawRest, rawOK := strings.CutPrefix(r.URL.RawPath, prefix); rawOK {
+			u.RawPath = rawRest
+		} else {
+			u.RawPath = ""
+		}
+		r2.URL = &u
+		next.ServeHTTP(w, r2)
 	})
 }

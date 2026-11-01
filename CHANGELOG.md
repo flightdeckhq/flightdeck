@@ -34,6 +34,11 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **The Helm chart's Ingress reaches ingestion and the API.** It
+  forwarded `/ingest/...` and `/api/...` unchanged to services that only
+  served `/v1/...`, so every sensor, plugin and dashboard call behind it
+  got 404. Both services now also accept their own prefix, under any
+  ingress controller.
 - **A Claude Code sub-agent has one session start.** Its first interior
   hooks each sent another `session_start` beside the one from
   `SubagentStart` (two to four per sub-agent); one hook now sends it

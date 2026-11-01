@@ -4,12 +4,17 @@ package server
 import (
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	ingestiondocs "github.com/flightdeckhq/flightdeck/ingestion/docs"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/handlers"
 	httpSwagger "github.com/swaggo/http-swagger/v2"
 )
+
+// publicPathPrefix is the path the ingestion is published at behind the
+// edge proxy or Ingress (see withPublicPrefix).
+const publicPathPrefix = "/ingest"
 
 const (
 	serverReadTimeout  = 10 * time.Second
@@ -69,7 +74,7 @@ func New(
 
 	return &http.Server{
 		Addr:         addr,
-		Handler:      withLogging(withRecovery(mux)),
+		Handler:      withPublicPrefix(withLogging(withRecovery(mux)), publicPathPrefix),
 		ReadTimeout:  serverReadTimeout,
 		WriteTimeout: serverWriteTimeout,
 		IdleTimeout:  serverIdleTimeout,
@@ -93,5 +98,37 @@ func withLogging(next http.Handler) http.Handler {
 		start := time.Now()
 		next.ServeHTTP(w, r)
 		slog.Debug("request", "method", r.Method, "path", r.URL.Path, "duration", time.Since(start))
+	})
+}
+
+// withPublicPrefix serves the routes registered on next both at their
+// own paths and under prefix, the path the service is published at
+// (/ingest/v1/events reaches the same handler as /v1/events). The
+// compose nginx strips the prefix before proxying; a Kubernetes Ingress
+// forwards the path unchanged, and rewriting it there is specific to
+// each ingress controller, so the service accepts both forms itself.
+// Only the prefix followed by "/" or the end of the path is stripped:
+// /ingestfoo is left alone and 404s.
+func withPublicPrefix(next http.Handler, prefix string) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rest, ok := strings.CutPrefix(r.URL.Path, prefix)
+		if !ok || (rest != "" && rest[0] != '/') {
+			next.ServeHTTP(w, r)
+			return
+		}
+		if rest == "" {
+			rest = "/"
+		}
+		r2 := new(http.Request)
+		*r2 = *r
+		u := *r.URL
+		u.Path = rest
+		if rawRest, rawOK := strings.CutPrefix(r.URL.RawPath, prefix); rawOK {
+			u.RawPath = rawRest
+		} else {
+			u.RawPath = ""
+		}
+		r2.URL = &u
+		next.ServeHTTP(w, r2)
 	})
 }

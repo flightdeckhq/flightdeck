@@ -223,3 +223,21 @@ exporter's resource attributes override both.
 policy (none exists, capture stays client-declared); `client_type=otlp`
 for Claude Code (loses its defaults); OTLP as enrichment of plugin
 sessions; a new `close_reason` (aging already closes them).
+
+## D225 -- Ingestion and the query API accept their public path prefix
+
+**Date:** 2026-11-01
+**Decision:** ingestion serves its routes both bare and under `/ingest`,
+the query API both bare and under `/api`. The Helm chart's Ingress
+forwards `/ingest/...` and `/api/...` unchanged; the compose nginx keeps
+stripping the prefix.
+**Why:** the chart's Ingress had no rewrite, so every ingest and API call
+behind it reached a service that only serves `/v1/...` and got 404. The
+chart's `ingress.className` is the operator's choice, and the services
+are the one place that works under every controller.
+**Rejected alternative:** a rewrite annotation in the chart
+(`nginx.ingress.kubernetes.io/rewrite-target` with a capture group): it
+is ingress-nginx only, Traefik and the cloud controllers each need their
+own form, and regex paths are not portable `pathType: Prefix`. Moving
+the routes to `/ingest/v1/...` only would break every client of the
+bare paths.

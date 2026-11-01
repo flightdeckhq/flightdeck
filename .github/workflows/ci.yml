@@ -34,8 +34,9 @@ permissions:
 
 # Cap blast radius from rapid-fire pushes on the same branch: cancel
 # any in-flight run when a newer commit lands. Two pushes in quick
-# succession should not boot two parallel Compose stacks (integration
-# + e2e jobs each spin up a full dev stack).
+# succession should not boot two sets of parallel Compose stacks (the
+# integration jobs and each of the four E2E shards spin up a full dev
+# stack).
 concurrency:
   # Namespace by workflow name so a future workflow that picks the
   # same ref-keyed group doesn't accidentally cancel CI runs. Low-cost
@@ -778,10 +779,10 @@ jobs:
       - name: Dump stack logs on failure
         if: failure()
         run: |
-          docker compose -f docker/docker-compose.yml \
-            -f docker/docker-compose.dev.yml logs --tail=300 || true
-          docker compose -f docker/docker-compose.yml \
-            -f docker/docker-compose.dev.yml ps || true
+          docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml \
+            -f docker/docker-compose.e2e.yml logs --tail=300 || true
+          docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml \
+            -f docker/docker-compose.e2e.yml ps || true
 
       - name: Tear down stack
         if: always()

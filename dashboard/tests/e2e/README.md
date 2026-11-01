@@ -202,11 +202,25 @@ structural position, never by computed colour value.
 
 ## CI integration
 
-The `.github/workflows/ci.yml` job `e2e` runs in parallel with the
-`integration` job. It checks out the repo, installs sensor + dashboard
-deps, installs Chromium via Playwright, boots the dev stack,
-seeds fixtures, runs the suite, and uploads `playwright-report/`
-+ `test-results/` on failure. Duration target is <5 minutes.
+The suite runs in `.github/workflows/ci.yml` as four shards
+(`e2e-shard`, `npx playwright test --shard=N/4`, both theme projects),
+in parallel with the `integration` job. Each shard runs on its own
+runner: it installs sensor + dashboard deps and Chromium, boots its own
+stack with the dashboard serving its production bundle
+(`docker/docker-compose.e2e.yml` layered on the dev compose files,
+instead of the Vite dev server), seeds fixtures, runs its share of the
+tests, uploads a blob report, and uploads `test-results/` on failure.
+The `E2E (Playwright)` job then merges the four blob reports into one
+HTML report (the `playwright-report` artifact) and fails unless every
+shard passed. A shard takes about 7 minutes.
+
+To run the suite locally against the bundle rather than the dev server,
+boot the stack with the same override:
+
+```bash
+docker compose -f docker/docker-compose.yml -f docker/docker-compose.dev.yml \
+  -f docker/docker-compose.e2e.yml up --build -d
+```
 
 Branch protection on `main` should require the `E2E (Playwright)`
 check before merge; a repository admin sets it.

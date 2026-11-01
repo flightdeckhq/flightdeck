@@ -1,0 +1,96 @@
+{
+ "scenario": "subagent-json",
+ "about": "a general-purpose sub-agent that runs a Bash call",
+ "requests": [
+  {
+   "file": "001-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "002-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "003-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "004-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "005-traces.json",
+   "path": "/v1/traces",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "006-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "007-traces.json",
+   "path": "/v1/traces",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "008-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "009-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "010-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "011-traces.json",
+   "path": "/v1/traces",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "012-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "013-traces.json",
+   "path": "/v1/traces",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "014-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "015-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  }
+ ]
+}

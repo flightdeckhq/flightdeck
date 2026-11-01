@@ -1,0 +1,622 @@
+{
+ "resourceSpans": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "host.arch",
+      "value": {
+       "stringValue": "amd64"
+      }
+     },
+     {
+      "key": "os.type",
+      "value": {
+       "stringValue": "linux"
+      }
+     },
+     {
+      "key": "os.version",
+      "value": {
+       "stringValue": "6.6.0"
+      }
+     },
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "claude-code"
+      }
+     },
+     {
+      "key": "service.version",
+      "value": {
+       "stringValue": "2.1.316"
+      }
+     },
+     {
+      "key": "wsl.version",
+      "value": {
+       "stringValue": "2"
+      }
+     }
+    ],
+    "droppedAttributesCount": 0
+   },
+   "scopeSpans": [
+    {
+     "scope": {
+      "name": "com.anthropic.claude_code.tracing",
+      "version": "1.0.0"
+     },
+     "spans": [
+      {
+       "traceId": "2c78c2544bebb9280c4e001339ed1911",
+       "spanId": "4a6ca74ffd69bebf",
+       "parentSpanId": "c283fc5dbe1324e8",
+       "name": "claude_code.tool.blocked_on_user",
+       "kind": 1,
+       "startTimeUnixNano": "1793533418764000000",
+       "endTimeUnixNano": "1793533418765701520",
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000002"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "user@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000001"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_000000000000000000000001"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "wsl-Ubuntu"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "anthropic"
+         }
+        },
+        {
+         "key": "span.type",
+         "value": {
+          "stringValue": "tool.blocked_on_user"
+         }
+        },
+        {
+         "key": "gen_ai.conversation.id",
+         "value": {
+          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "intValue": 2
+         }
+        },
+        {
+         "key": "decision",
+         "value": {
+          "stringValue": "accept"
+         }
+        },
+        {
+         "key": "source",
+         "value": {
+          "stringValue": "config"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "events": [],
+       "droppedEventsCount": 0,
+       "status": {
+        "code": 0
+       },
+       "links": [],
+       "droppedLinksCount": 0,
+       "flags": 257
+      },
+      {
+       "traceId": "2c78c2544bebb9280c4e001339ed1911",
+       "spanId": "0ce313e56c41c5f2",
+       "parentSpanId": "c283fc5dbe1324e8",
+       "name": "claude_code.tool.execution",
+       "kind": 1,
+       "startTimeUnixNano": "1793533418766000000",
+       "endTimeUnixNano": "1793533418767757974",
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000002"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "user@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000001"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_000000000000000000000001"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "wsl-Ubuntu"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "anthropic"
+         }
+        },
+        {
+         "key": "span.type",
+         "value": {
+          "stringValue": "tool.execution"
+         }
+        },
+        {
+         "key": "gen_ai.conversation.id",
+         "value": {
+          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+         }
+        },
+        {
+         "key": "tool_use_id",
+         "value": {
+          "stringValue": "toolu_01NcitwshQ4nYjbaVgRWE11w"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.id",
+         "value": {
+          "stringValue": "toolu_01NcitwshQ4nYjbaVgRWE11w"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "intValue": 2
+         }
+        },
+        {
+         "key": "success",
+         "value": {
+          "boolValue": true
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "events": [],
+       "droppedEventsCount": 0,
+       "status": {
+        "code": 0
+       },
+       "links": [],
+       "droppedLinksCount": 0,
+       "flags": 257
+      },
+      {
+       "traceId": "2c78c2544bebb9280c4e001339ed1911",
+       "spanId": "c283fc5dbe1324e8",
+       "parentSpanId": "19cce37b059c024e",
+       "name": "claude_code.tool",
+       "kind": 1,
+       "startTimeUnixNano": "1793533418764000000",
+       "endTimeUnixNano": "1793533418767759642",
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000002"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "user@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000001"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_000000000000000000000001"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "wsl-Ubuntu"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "anthropic"
+         }
+        },
+        {
+         "key": "span.type",
+         "value": {
+          "stringValue": "tool"
+         }
+        },
+        {
+         "key": "tool_name",
+         "value": {
+          "stringValue": "ToolSearch"
+         }
+        },
+        {
+         "key": "tool_name_safe",
+         "value": {
+          "stringValue": "ToolSearch"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "execute_tool"
+         }
+        },
+        {
+         "key": "gen_ai.tool.name",
+         "value": {
+          "stringValue": "ToolSearch"
+         }
+        },
+        {
+         "key": "gen_ai.conversation.id",
+         "value": {
+          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+         }
+        },
+        {
+         "key": "tool_use_id",
+         "value": {
+          "stringValue": "toolu_01NcitwshQ4nYjbaVgRWE11w"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.id",
+         "value": {
+          "stringValue": "toolu_01NcitwshQ4nYjbaVgRWE11w"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "intValue": 4
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "events": [],
+       "droppedEventsCount": 0,
+       "status": {
+        "code": 0
+       },
+       "links": [],
+       "droppedLinksCount": 0,
+       "flags": 257
+      },
+      {
+       "traceId": "2c78c2544bebb9280c4e001339ed1911",
+       "spanId": "7f9a4c595d2c9c89",
+       "parentSpanId": "19cce37b059c024e",
+       "name": "claude_code.llm_request",
+       "kind": 1,
+       "startTimeUnixNano": "1793533416152000000",
+       "endTimeUnixNano": "1793533418777342034",
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000002"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "user@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000001"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_000000000000000000000001"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "wsl-Ubuntu"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "anthropic"
+         }
+        },
+        {
+         "key": "span.type",
+         "value": {
+          "stringValue": "llm_request"
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "claude-haiku-4-5"
+         }
+        },
+        {
+         "key": "gen_ai.system",
+         "value": {
+          "stringValue": "anthropic"
+         }
+        },
+        {
+         "key": "gen_ai.request.model",
+         "value": {
+          "stringValue": "claude-haiku-4-5"
+         }
+        },
+        {
+         "key": "llm_request.context",
+         "value": {
+          "stringValue": "interaction"
+         }
+        },
+        {
+         "key": "speed",
+         "value": {
+          "stringValue": "normal"
+         }
+        },
+        {
+         "key": "gen_ai.conversation.id",
+         "value": {
+          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+         }
+        },
+        {
+         "key": "query_source_safe",
+         "value": {
+          "stringValue": "sdk"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "intValue": 2625
+         }
+        },
+        {
+         "key": "input_tokens",
+         "value": {
+          "intValue": 10
+         }
+        },
+        {
+         "key": "output_tokens",
+         "value": {
+          "intValue": 221
+         }
+        },
+        {
+         "key": "cache_read_tokens",
+         "value": {
+          "intValue": 14595
+         }
+        },
+        {
+         "key": "cache_creation_tokens",
+         "value": {
+          "intValue": 10246
+         }
+        },
+        {
+         "key": "success",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "attempt",
+         "value": {
+          "intValue": 1
+         }
+        },
+        {
+         "key": "request_id",
+         "value": {
+          "stringValue": "req_011Cgc9cTfFTBwVQa3Srsjdj"
+         }
+        },
+        {
+         "key": "gen_ai.response.id",
+         "value": {
+          "stringValue": "req_011Cgc9cTfFTBwVQa3Srsjdj"
+         }
+        },
+        {
+         "key": "client_request_id",
+         "value": {
+          "stringValue": "d973264f-2c04-44af-9781-441ad3fa4178"
+         }
+        },
+        {
+         "key": "ttft_ms",
+         "value": {
+          "intValue": 885
+         }
+        },
+        {
+         "key": "first_content_ms",
+         "value": {
+          "intValue": 886
+         }
+        },
+        {
+         "key": "stop_reason",
+         "value": {
+          "stringValue": "tool_use"
+         }
+        },
+        {
+         "key": "gen_ai.response.finish_reasons",
+         "value": {
+          "arrayValue": {
+           "values": [
+            {
+             "stringValue": "tool_use"
+            }
+           ]
+          }
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "events": [
+        {
+         "attributes": [
+          {
+           "key": "attempt",
+           "value": {
+            "intValue": 1
+           }
+          },
+          {
+           "key": "client_request_id",
+           "value": {
+            "stringValue": "d973264f-2c04-44af-9781-441ad3fa4178"
+           }
+          }
+         ],
+         "name": "gen_ai.request.attempt",
+         "timeUnixNano": "1793533416158296174",
+         "droppedAttributesCount": 0
+        }
+       ],
+       "droppedEventsCount": 0,
+       "status": {
+        "code": 0
+       },
+       "links": [
+        {
+         "attributes": [
+          {
+           "key": "link.type",
+           "value": {
+            "stringValue": "parent_of"
+           }
+          }
+         ],
+         "spanId": "4dda36b0e6012662",
+         "traceId": "46a96205920fd58b038c7e2bd103c47d",
+         "droppedAttributesCount": 0,
+         "flags": 769
+        }
+       ],
+       "droppedLinksCount": 0,
+       "flags": 257
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

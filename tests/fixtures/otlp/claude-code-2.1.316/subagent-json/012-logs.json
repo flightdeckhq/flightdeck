@@ -1,0 +1,607 @@
+{
+ "resourceLogs": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "host.arch",
+      "value": {
+       "stringValue": "amd64"
+      }
+     },
+     {
+      "key": "os.type",
+      "value": {
+       "stringValue": "linux"
+      }
+     },
+     {
+      "key": "os.version",
+      "value": {
+       "stringValue": "6.6.0"
+      }
+     },
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "claude-code"
+      }
+     },
+     {
+      "key": "service.version",
+      "value": {
+       "stringValue": "2.1.316"
+      }
+     },
+     {
+      "key": "wsl.version",
+      "value": {
+       "stringValue": "2"
+      }
+     }
+    ],
+    "droppedAttributesCount": 0
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "com.anthropic.claude_code.events",
+      "version": "2.1.316"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1793533406987000000",
+       "observedTimeUnixNano": "1793533406987000000",
+       "body": {
+        "stringValue": "claude_code.api_request"
+       },
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000002"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "user@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000001"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_000000000000000000000001"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "wsl-Ubuntu"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "api_request"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-11-01T11:43:26.987Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 18
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "7aaf1a6f-c439-4ea5-b85d-5ac0c0115dca"
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "claude-haiku-4-5-20251001"
+         }
+        },
+        {
+         "key": "input_tokens",
+         "value": {
+          "intValue": 8
+         }
+        },
+        {
+         "key": "output_tokens",
+         "value": {
+          "intValue": 52
+         }
+        },
+        {
+         "key": "cache_read_tokens",
+         "value": {
+          "intValue": 13974
+         }
+        },
+        {
+         "key": "cache_creation_tokens",
+         "value": {
+          "intValue": 1261
+         }
+        },
+        {
+         "key": "cache_creation_5m_tokens",
+         "value": {
+          "intValue": 1261
+         }
+        },
+        {
+         "key": "cache_creation_1h_tokens",
+         "value": {
+          "intValue": 0
+         }
+        },
+        {
+         "key": "cost_usd",
+         "value": {
+          "doubleValue": 0.00324165
+         }
+        },
+        {
+         "key": "cost_usd_micros",
+         "value": {
+          "intValue": 3242
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "intValue": 1399
+         }
+        },
+        {
+         "key": "ttft_ms",
+         "value": {
+          "intValue": 762
+         }
+        },
+        {
+         "key": "request_id",
+         "value": {
+          "stringValue": "req_011Cgc9bggKZ8gUjUuzDtPgv"
+         }
+        },
+        {
+         "key": "client_request_id",
+         "value": {
+          "stringValue": "1e35687f-b355-413e-a1dc-44a791f641f5"
+         }
+        },
+        {
+         "key": "speed",
+         "value": {
+          "stringValue": "normal"
+         }
+        },
+        {
+         "key": "query_source",
+         "value": {
+          "stringValue": "agent:builtin:general-purpose"
+         }
+        },
+        {
+         "key": "agent.name",
+         "value": {
+          "stringValue": "general-purpose"
+         }
+        },
+        {
+         "key": "agent_id",
+         "value": {
+          "stringValue": "a1168d4afa38aa51f"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 1,
+       "traceId": "69afb783fc0441e9c34e1973be26dc14",
+       "spanId": "b2c87eb5f44b0dff"
+      },
+      {
+       "timeUnixNano": "1793533406987000000",
+       "observedTimeUnixNano": "1793533406987000000",
+       "body": {
+        "stringValue": "claude_code.assistant_response"
+       },
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000002"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "user@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000001"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_000000000000000000000001"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "wsl-Ubuntu"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "assistant_response"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-11-01T11:43:26.987Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 19
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "7aaf1a6f-c439-4ea5-b85d-5ac0c0115dca"
+         }
+        },
+        {
+         "key": "response_length",
+         "value": {
+          "intValue": 58
+         }
+        },
+        {
+         "key": "response",
+         "value": {
+          "stringValue": "The command `echo from-child` outputs:\n\n```\nfrom-child\n```"
+         }
+        },
+        {
+         "key": "request_id",
+         "value": {
+          "stringValue": "req_011Cgc9bggKZ8gUjUuzDtPgv"
+         }
+        },
+        {
+         "key": "message.uuid",
+         "value": {
+          "stringValue": "eae26c61-3cfb-4b8d-8fec-005ca7a6e9ce"
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "claude-haiku-4-5-20251001"
+         }
+        },
+        {
+         "key": "query_source",
+         "value": {
+          "stringValue": "agent:builtin:general-purpose"
+         }
+        },
+        {
+         "key": "agent_id",
+         "value": {
+          "stringValue": "a1168d4afa38aa51f"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 1,
+       "traceId": "69afb783fc0441e9c34e1973be26dc14",
+       "spanId": "b2c87eb5f44b0dff"
+      },
+      {
+       "timeUnixNano": "1793533406991000000",
+       "observedTimeUnixNano": "1793533406991000000",
+       "body": {
+        "stringValue": "claude_code.subagent_completed"
+       },
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000002"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "user@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000001"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_000000000000000000000001"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "wsl-Ubuntu"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "subagent_completed"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-11-01T11:43:26.991Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 20
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "7aaf1a6f-c439-4ea5-b85d-5ac0c0115dca"
+         }
+        },
+        {
+         "key": "agent_type",
+         "value": {
+          "stringValue": "general-purpose"
+         }
+        },
+        {
+         "key": "agent.source",
+         "value": {
+          "stringValue": "built-in"
+         }
+        },
+        {
+         "key": "is_built_in",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "is_async",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "total_tokens",
+         "value": {
+          "intValue": 15295
+         }
+        },
+        {
+         "key": "total_tool_uses",
+         "value": {
+          "intValue": 1
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "intValue": 3216
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "claude-haiku-4-5"
+         }
+        },
+        {
+         "key": "final_model",
+         "value": {
+          "stringValue": "claude-haiku-4-5"
+         }
+        },
+        {
+         "key": "model_swapped",
+         "value": {
+          "boolValue": false
+         }
+        },
+        {
+         "key": "agent_id",
+         "value": {
+          "stringValue": "a1168d4afa38aa51f"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 1,
+       "traceId": "69afb783fc0441e9c34e1973be26dc14",
+       "spanId": "b2c87eb5f44b0dff"
+      },
+      {
+       "timeUnixNano": "1793533407025000000",
+       "observedTimeUnixNano": "1793533407025000000",
+       "body": {
+        "stringValue": "claude_code.user_prompt"
+       },
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "0adb9497-45ba-4b61-885b-9cda7b22b409"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000002"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "user@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000001"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_000000000000000000000001"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "wsl-Ubuntu"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "user_prompt"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-11-01T11:43:27.025Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 21
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "702ff642-0e2a-41ad-af93-64f46f491593"
+         }
+        },
+        {
+         "key": "prompt_length",
+         "value": {
+          "stringValue": "771"
+         }
+        },
+        {
+         "key": "prompt",
+         "value": {
+          "stringValue": "<task-notification>\n<task-id>a1168d4afa38aa51f</task-id>\n<tool-use-id>toolu_01RyQtGBdKvzEiTw7kzj8u2b</tool-use-id>\n<output-file>/tmp/claude-1000/-home-user-project/0adb9497-45ba-4b61-885b-9cda7b22b409/tasks/a1168d4afa38aa51f.output</output-file>\n<status>completed</status>\n<summary>Agent \"Run echo command and report output\" finished</summary>\n<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>\n<result>The command `echo from-child` outputs:\n\n```\nfrom-child\n```</result>\n<usage><subagent_tokens>15370</subagent_tokens><tool_uses>1</tool_uses><duration_ms>3243</duration_ms></usage>\n</task-notification>"
+         }
+        },
+        {
+         "key": "prompt_text",
+         "value": {
+          "stringValue": "<task-notification>\n<task-id>a1168d4afa38aa51f</task-id>\n<tool-use-id>toolu_01RyQtGBdKvzEiTw7kzj8u2b</tool-use-id>\n<output-file>/tmp/claude-1000/-home-user-project/0adb9497-45ba-4b61-885b-9cda7b22b409/tasks/a1168d4afa38aa51f.output</output-file>\n<status>completed</status>\n<summary>Agent \"Run echo command and report output\" finished</summary>\n<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>\n<result>The command `echo from-child` outputs:\n\n```\nfrom-child\n```</result>\n<usage><subagent_tokens>15370</subagent_tokens><tool_uses>1</tool_uses><duration_ms>3243</duration_ms></usage>\n</task-notification>"
+         }
+        },
+        {
+         "key": "message.uuid",
+         "value": {
+          "stringValue": "ce15c662-94ee-42b6-9ef4-4930deab4556"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 1,
+       "traceId": "9980d938fe2ef88e0298a1b8bd622761",
+       "spanId": "c9e4b70fcadcf5e2"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

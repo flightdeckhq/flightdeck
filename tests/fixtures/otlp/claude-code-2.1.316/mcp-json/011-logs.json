@@ -1,0 +1,465 @@
+{
+ "resourceLogs": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "host.arch",
+      "value": {
+       "stringValue": "amd64"
+      }
+     },
+     {
+      "key": "os.type",
+      "value": {
+       "stringValue": "linux"
+      }
+     },
+     {
+      "key": "os.version",
+      "value": {
+       "stringValue": "6.6.0"
+      }
+     },
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "claude-code"
+      }
+     },
+     {
+      "key": "service.version",
+      "value": {
+       "stringValue": "2.1.316"
+      }
+     },
+     {
+      "key": "wsl.version",
+      "value": {
+       "stringValue": "2"
+      }
+     }
+    ],
+    "droppedAttributesCount": 0
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "com.anthropic.claude_code.events",
+      "version": "2.1.316"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1793533421295000000",
+       "observedTimeUnixNano": "1793533421295000000",
+       "body": {
+        "stringValue": "claude_code.api_request"
+       },
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000002"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "user@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000001"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_000000000000000000000001"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "wsl-Ubuntu"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "api_request"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-11-01T11:43:41.295Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 17
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "ddb98d27-847b-4b92-9ccc-7b59fba51cd0"
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "claude-haiku-4-5-20251001"
+         }
+        },
+        {
+         "key": "input_tokens",
+         "value": {
+          "intValue": 8
+         }
+        },
+        {
+         "key": "output_tokens",
+         "value": {
+          "intValue": 68
+         }
+        },
+        {
+         "key": "cache_read_tokens",
+         "value": {
+          "intValue": 25234
+         }
+        },
+        {
+         "key": "cache_creation_tokens",
+         "value": {
+          "intValue": 146
+         }
+        },
+        {
+         "key": "cache_creation_5m_tokens",
+         "value": {
+          "intValue": 0
+         }
+        },
+        {
+         "key": "cache_creation_1h_tokens",
+         "value": {
+          "intValue": 146
+         }
+        },
+        {
+         "key": "cost_usd",
+         "value": {
+          "doubleValue": 0.0031634000000000007
+         }
+        },
+        {
+         "key": "cost_usd_micros",
+         "value": {
+          "intValue": 3163
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "intValue": 1289
+         }
+        },
+        {
+         "key": "ttft_ms",
+         "value": {
+          "intValue": 703
+         }
+        },
+        {
+         "key": "request_id",
+         "value": {
+          "stringValue": "req_011Cgc9ck2kSYndPLuZFi8tX"
+         }
+        },
+        {
+         "key": "client_request_id",
+         "value": {
+          "stringValue": "85552451-fb47-4469-b539-5cda2bf2577b"
+         }
+        },
+        {
+         "key": "speed",
+         "value": {
+          "stringValue": "normal"
+         }
+        },
+        {
+         "key": "query_source",
+         "value": {
+          "stringValue": "sdk"
+         }
+        },
+        {
+         "key": "mcp_server.name",
+         "value": {
+          "stringValue": "flightdeck-mcp-reference"
+         }
+        },
+        {
+         "key": "mcp_tool.name",
+         "value": {
+          "stringValue": "echo"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 1,
+       "traceId": "2c78c2544bebb9280c4e001339ed1911",
+       "spanId": "19cce37b059c024e"
+      },
+      {
+       "timeUnixNano": "1793533421296000000",
+       "observedTimeUnixNano": "1793533421296000000",
+       "body": {
+        "stringValue": "claude_code.assistant_response"
+       },
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000002"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "user@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000001"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_000000000000000000000001"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "wsl-Ubuntu"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "assistant_response"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-11-01T11:43:41.296Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 18
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "ddb98d27-847b-4b92-9ccc-7b59fba51cd0"
+         }
+        },
+        {
+         "key": "response_length",
+         "value": {
+          "intValue": 3
+         }
+        },
+        {
+         "key": "response",
+         "value": {
+          "stringValue": "Hi."
+         }
+        },
+        {
+         "key": "request_id",
+         "value": {
+          "stringValue": "req_011Cgc9ck2kSYndPLuZFi8tX"
+         }
+        },
+        {
+         "key": "message.uuid",
+         "value": {
+          "stringValue": "6bdaf616-fc74-48d3-87be-088009ec16a1"
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "claude-haiku-4-5-20251001"
+         }
+        },
+        {
+         "key": "query_source",
+         "value": {
+          "stringValue": "sdk"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 1,
+       "traceId": "2c78c2544bebb9280c4e001339ed1911",
+       "spanId": "19cce37b059c024e"
+      },
+      {
+       "timeUnixNano": "1793533421412000000",
+       "observedTimeUnixNano": "1793533421412000000",
+       "body": {
+        "stringValue": "claude_code.mcp_server_connection"
+       },
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "d4b41bbc-0052-4280-8fbe-f13cd954efe3"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000002"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "user@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000001"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_000000000000000000000001"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "wsl-Ubuntu"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "mcp_server_connection"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-11-01T11:43:41.412Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 24
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "ddb98d27-847b-4b92-9ccc-7b59fba51cd0"
+         }
+        },
+        {
+         "key": "status",
+         "value": {
+          "stringValue": "disconnected"
+         }
+        },
+        {
+         "key": "transport_type",
+         "value": {
+          "stringValue": "stdio"
+         }
+        },
+        {
+         "key": "server_scope",
+         "value": {
+          "stringValue": "dynamic"
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "stringValue": "6991"
+         }
+        },
+        {
+         "key": "is_plugin",
+         "value": {
+          "boolValue": false
+         }
+        },
+        {
+         "key": "server_name",
+         "value": {
+          "stringValue": "flightdeck-mcp-reference"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

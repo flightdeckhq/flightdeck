@@ -61,6 +61,11 @@ from tests.shared.fixtures import (  # noqa: E402
 # to a different namespace".
 NAMESPACE_FLIGHTDECK = UUID("ee22ab58-26fc-54ef-91b4-b5c0a97f9b61")
 
+# The OTLP fixture lives beside this script; running it as a script puts
+# its directory first on sys.path.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from otlp_seed import seed_otlp_fixture  # noqa: E402
+
 CANONICAL_PATH = pathlib.Path(__file__).resolve().parent / "canonical.json"
 
 # Minimum events per seeded session. Used by ``session_is_complete`` as
@@ -2128,6 +2133,11 @@ def seed(mode: str = "full") -> None:
                 force_state=forced_state,
             )
             backdated += 1
+
+    # The Claude Code session reported over OTLP goes in through the
+    # OTLP receiver (otlp_seed.py), not POST /v1/events; it is
+    # re-pinned active in both modes, like the fresh-class roles above.
+    seed_otlp_fixture(INGESTION_URL, API_URL, auth_headers(), mode=mode)
 
     print(f"[seed] done — seeded={seeded} skipped={skipped} backdated={backdated}")
 

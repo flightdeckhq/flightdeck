@@ -211,15 +211,15 @@ and is skipped with its tokens); more retries and stub rows per race.
 ## D224 -- OTLP ingest maps Claude Code's log records; content is opt-in
 
 **Date:** 2026-11-01
-**Decision:** the ingestion API accepts OTLP/HTTP logs, traces and
-metrics (protobuf and JSON, gzip) and maps the Claude Code dialect's log
-records to observer-class `otlp` sessions; other dialects, spans and
-metrics are accepted and counted as rejected. A Claude Code session the
-plugin or the Agent SDK already reports is not reported again. Content
-is kept only when the exporter's resource sets
-`flightdeck.capture_prompts=true`. Sessions close through the
-orphan-timeout path.
-**Why:** OTLP reaches runs no hook or SDK patch sees; Claude Code's logs
-carry tokens, cost and TTFT per call, the spans repeat them.
-**Rejected alternative:** mapping spans first (no cost); a new
-`close_reason` for idle OTLP sessions (aging already closes them).
+**Decision:** ingestion accepts OTLP/HTTP (protobuf and JSON, gzip) and
+maps the Claude Code dialect's log records to observe-only `claude_code`
+sessions keyed by UUID5 of `session.id`, sub-agents as child sessions
+ended by `subagent_completed`. Other dialects, spans and metrics are
+counted as rejected; a session the plugin or the Agent SDK reports is not
+reported again. Billing defaults to `subscription`, content to off; the
+exporter's resource attributes override both.
+**Why:** OTLP reaches runs no hook or SDK patch sees, with cost and TTFT.
+**Rejected alternative:** spans first (no cost); a server-side capture
+policy (none exists, capture stays client-declared); `client_type=otlp`
+for Claude Code (loses its defaults); OTLP as enrichment of plugin
+sessions; a new `close_reason` (aging already closes them).

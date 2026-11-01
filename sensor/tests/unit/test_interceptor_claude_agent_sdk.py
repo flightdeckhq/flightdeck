@@ -815,7 +815,12 @@ def _decision(decision: str) -> Any:
     ],
 )
 def test_an_mcp_call_is_held_to_the_mcp_policy(
-    patched: Any, monkeypatch: pytest.MonkeyPatch, decision: str, denied: bool, event: str | None
+    patched: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    isolated_home: Any,
+    decision: str,
+    denied: bool,
+    event: str | None,
 ) -> None:
     sdk, seen = patched
     session, queue = _session()
@@ -1011,22 +1016,51 @@ def test_a_failed_poll_still_runs_the_gates(patched: Any, monkeypatch: pytest.Mo
     assert outputs[0]["continue_"] is False
 
 
-def test_a_callback_that_fails_allows_the_call(
-    patched: Any, monkeypatch: pytest.MonkeyPatch
+def test_a_callback_that_fails_allows_the_call_and_keeps_its_notices(
+    patched: Any, monkeypatch: pytest.MonkeyPatch, isolated_home: Any
 ) -> None:
     sdk, seen = patched
     session, _ = _session()
     monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    evaluated: list[str] = []
 
     def evaluate(server_url: str, server_name: str) -> Any:
+        evaluated.append(server_name)
         raise RuntimeError("policy cache broke")
 
     monkeypatch.setattr(session.mcp_policy, "evaluate", evaluate)
     outputs: list[Any] = []
 
     async def step(options: Any) -> None:
+        sdk_mod.route_directive(SDK_SESSION, _directive("warn", "token_budget_warning"))
         outputs.append(await _hook(options, "PreToolUse")({"tool_name": "mcp__x__y"}, "t", None))
+        outputs.append(await _hook(options, "PreToolUse")(_bash(), "t", None))
 
     seen["messages"] = [_messages(sdk)[0], step, *_messages(sdk)[1:]]
+    _run_query(sdk, options=sdk.ClaudeAgentOptions(mcp_servers={"x": {"command": "srv"}}))
+    assert evaluated == ["x"], "the failing path is the one exercised"
+    assert outputs[0] == {}, "the call is allowed"
+    assert "warning threshold" in outputs[1]["systemMessage"], (
+        "the notice waits for the next callback"
+    )
+
+
+def test_claude_codes_config_is_read_once_per_working_directory(
+    patched: Any, monkeypatch: pytest.MonkeyPatch, isolated_home: Any
+) -> None:
+    sdk, seen = patched
+    _, work = isolated_home
+    session, _ = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    _recording_policy(session, monkeypatch)
+    reads: list[str] = []
+    real = sdk_mod._configured_mcp_servers
+
+    def counting(cwd: str) -> dict[str, Any]:
+        reads.append(cwd)
+        return real(cwd)
+
+    monkeypatch.setattr(sdk_mod, "_configured_mcp_servers", counting)
+    _gate_tools(sdk, seen, [{"tool_name": "mcp__a__t", "cwd": str(work)}] * 3)
     _run_query(sdk)
-    assert outputs == [{}]
+    assert reads == [str(work)]

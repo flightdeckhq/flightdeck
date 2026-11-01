@@ -341,6 +341,10 @@ class SdkRun:
         self._mcp_servers: dict[str, Any] = (
             {str(k): v for k, v in mcp_servers.items()} if isinstance(mcp_servers, dict) else {}
         )
+        # Claude Code's config files, read once per working directory:
+        # ~/.claude.json can be large, and a hook callback runs on the
+        # SDK's event loop.
+        self._configured: dict[str, dict[str, Any]] = {}
         # Control state, written by the event queue's drain thread and
         # read by the hook callbacks on the SDK's event loop.
         self._lock = threading.Lock()
@@ -766,17 +770,18 @@ class SdkRun:
                         "permissionDecisionReason": message,
                     },
                 }
-            output = self._take_notices("PreToolUse")
             data = input_data if isinstance(input_data, dict) else {}
             tool_name = data.get("tool_name")
+            denial = None
             if isinstance(tool_name, str) and tool_name.startswith(_MCP_TOOL_PREFIX):
                 denial = self._mcp_gate(tool_name, data)
-                if denial is not None:
-                    specific = output.setdefault(
-                        "hookSpecificOutput", {"hookEventName": "PreToolUse"}
-                    )
-                    specific["permissionDecision"] = "deny"
-                    specific["permissionDecisionReason"] = denial
+            # Taken after the gate, so a gate that raises leaves the
+            # notices for the next callback.
+            output = self._take_notices("PreToolUse")
+            if denial is not None:
+                specific = output.setdefault("hookSpecificOutput", {"hookEventName": "PreToolUse"})
+                specific["permissionDecision"] = "deny"
+                specific["permissionDecisionReason"] = denial
             return output
         except Exception:
             _log.debug("claude_agent_sdk: PreToolUse callback failed; allowing", exc_info=True)
@@ -808,7 +813,9 @@ class SdkRun:
         known = dict(self._mcp_servers)
         raw_cwd = data.get("cwd")
         cwd = raw_cwd if isinstance(raw_cwd, str) and raw_cwd else os.getcwd()
-        for declared, spec in _configured_mcp_servers(cwd).items():
+        if cwd not in self._configured:
+            self._configured[cwd] = _configured_mcp_servers(cwd)
+        for declared, spec in self._configured[cwd].items():
             known.setdefault(declared, spec)
         by_key = {_flatten(declared): declared for declared in known}
         hint = data.get("mcp_server")

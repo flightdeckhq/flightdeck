@@ -367,6 +367,33 @@ func TestOTLPDecodeGateFull503(t *testing.T) {
 }
 
 // A gate's wait ends with the request's context.
+type panicDialect struct{ UnmappedDialect }
+
+func (panicDialect) MapLogs(context.Context, *collogs.ExportLogsServiceRequest) OTLPMapping {
+	panic("dialect failure")
+}
+
+// A panic while holding the slot propagates (for the server's
+// recovery to answer) and leaves the slot free.
+func TestDecodeInSlotReleasesOnPanic(t *testing.T) {
+	saved := otlpDecodes
+	otlpDecodes = newOTLPDecodeGate(1, 10*time.Millisecond)
+	defer func() { otlpDecodes = saved }()
+
+	h := OTLPLogsHandler(allowAll{}, nopPublisher{}, panicDialect{}, nil)
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("the dialect's panic did not propagate")
+			}
+		}()
+		postOTLP(h, otlpMediaJSON, false, []byte("{}"))
+	}()
+	if n := len(otlpDecodes.slots); n != 0 {
+		t.Fatalf("%d slot(s) held after the panic", n)
+	}
+}
+
 func TestOTLPDecodeGateHonoursContext(t *testing.T) {
 	g := newOTLPDecodeGate(1, time.Hour)
 	g.acquire(context.Background())

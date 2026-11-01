@@ -315,14 +315,13 @@ func otlpHandler(
 			return
 		}
 
-		if !otlpDecodes.acquire(ctx) {
+		mapping, acquired, status, msg := decodeInSlot(ctx, sig, dialect, enc, gzipped, raw)
+		if !acquired {
 			w.Header().Set("Retry-After", strconv.Itoa(otlpDecodeRetryAfterSeconds))
 			fail(http.StatusServiceUnavailable, grpcCodeUnavailable,
 				"receiver busy; retry the export")
 			return
 		}
-		mapping, status, msg := decodeAndMapOTLP(ctx, sig, dialect, enc, gzipped, raw)
-		otlpDecodes.release()
 		if status != 0 {
 			fail(status, grpcCodeForStatus(status), msg)
 			return
@@ -358,6 +357,28 @@ func otlpHandler(
 			"signal", sig.name, "status", http.StatusOK,
 			"published", published, "rejected", mapping.Rejected)
 	}
+}
+
+// decodeInSlot runs decodeAndMapOTLP holding a decode slot, and
+// reports acquired=false, having done nothing, when no slot came free.
+// The slot is released by a deferred call, so a panic while decoding or
+// mapping (which the server's recovery turns into a 500) cannot leak it
+// and leave the receiver answering 503.
+func decodeInSlot(
+	ctx context.Context,
+	sig otlpSignal,
+	dialect OTLPDialect,
+	enc otlpEncoding,
+	gzipped bool,
+	body []byte,
+) (mapping OTLPMapping, acquired bool, status int, msg string) {
+	gate := otlpDecodes
+	if !gate.acquire(ctx) {
+		return OTLPMapping{}, false, 0, ""
+	}
+	defer gate.release()
+	mapping, status, msg = decodeAndMapOTLP(ctx, sig, dialect, enc, gzipped, body)
+	return mapping, true, status, msg
 }
 
 // decodeAndMapOTLP inflates, decodes and maps one request body; the

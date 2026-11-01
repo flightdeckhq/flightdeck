@@ -59,10 +59,15 @@ const (
 const maxOTLPNestingDepth = 128
 
 // Decode concurrency. Each request inflates, decodes and maps its body
-// while holding one of otlpDecodeSlots, so what OTLP decoding holds in
-// memory at once is bounded by otlpDecodeMemoryBudget whatever the
-// traffic. A slot is sized for the worst request admitted: its body as
-// sent, inflated, and decoded at the estimate cap. The budget is half
+// while holding one of otlpDecodeSlots, so what inflating, decoding and
+// mapping hold in memory at once is bounded by otlpDecodeMemoryBudget
+// whatever the traffic. A slot is sized for the worst request admitted:
+// its body as sent, inflated, and decoded at the estimate cap. The body
+// as sent (up to maxOTLPCompressedBytes) is read before the slot is
+// taken, so requests still being read or waiting for a slot are outside
+// the budget: they are bounded only by the server's read timeout and
+// the number of connections, as /v1/events bodies are. Taking the slot
+// before reading would let slow uploads hold every slot. The budget is half
 // the Helm chart's default 512 MiB ingestion memory limit, leaving the
 // rest for /v1/events and the runtime; it gives 3 slots, which is no
 // constraint on throughput because decoding is CPU-bound and an

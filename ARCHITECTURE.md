@@ -2492,7 +2492,13 @@ run under a global limit of concurrent decodes, sized so that the
 worst admitted requests together stay within 256 MiB (half the Helm
 chart's default 512 MiB ingestion memory limit, which gives 3 at once;
 decoding is CPU-bound and a pod runs on at most one CPU, so more would
-not add throughput). A request that finds none free within 2 seconds is
+not add throughput). The budget covers inflating, decoding and mapping
+only: the body as sent (up to 4 MiB) is read before a slot is taken, so
+requests being read or waiting for a slot are outside it, bounded like
+`POST /v1/events` bodies by the server's read timeout and the number of
+connections (taking the slot first would let slow uploads hold every
+slot). A slot is given back however its request ends, a panic
+included. A request that finds none free within 2 seconds is
 answered 503 with `Retry-After: 1`, which OTLP exporters honour. A body
 that does not decode is 400; any other media type is 415. A body that
 decodes is answered 200
@@ -2533,8 +2539,9 @@ fit in what is left of the budget is refused with 429 and a
 `Retry-After` of when enough of the window will have aged out for them
 to fit; one whose events exceed the whole per-minute budget can never
 fit and is refused with 413. A refused request is charged nothing and
-publishes nothing; a charged request whose publish then fails (503) is
-not refunded. The budget is the one `POST /v1/events` draws on, one per
+publishes nothing. The charge is taken before publishing and a request
+whose publish then fails (503) is not refunded, so an exporter that
+retries it is charged again for the same events. The budget is the one `POST /v1/events` draws on, one per
 token.
 
 **Dialects.** A record is mapped by its source's dialect, detected from

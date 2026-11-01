@@ -19,7 +19,6 @@ import (
 	dbmigrate "github.com/flightdeckhq/flightdeck/workers/internal/migrate"
 	"github.com/flightdeckhq/flightdeck/workers/internal/processor"
 	"github.com/flightdeckhq/flightdeck/workers/internal/writer"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/nats-io/nats.go"
 )
 
@@ -41,7 +40,7 @@ func main() {
 	}
 
 	// Postgres
-	pool, err := pgxpool.New(context.Background(), cfg.PostgresURL)
+	pool, err := writer.NewPool(context.Background(), cfg.PostgresURL)
 	if err != nil {
 		slog.Error("postgres connection failed", "err", err)
 		os.Exit(1)

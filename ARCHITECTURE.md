@@ -2489,7 +2489,12 @@ that is waiting in a lane, or being processed, in progress
 (`AckWait` is 30 seconds); its ack wait restarts without spending a
 delivery. Processing one message has a ten-second deadline: a message
 stuck on the database (a row lock held elsewhere) fails at the deadline,
-is redelivered with the delayed NAK below, and its lane moves on.
+is redelivered with the delayed NAK below, and its lane moves on. The
+worker's connections set `lock_timeout` to eight seconds, under that
+deadline, so Postgres itself abandons the wait rather than keeping a
+backend blocked after the client has given up. A lock held through all
+three deliveries (about 35 seconds) ends the message as
+`max_retries_exhausted`.
 
 Events can still reach the worker out of order: a client's concurrent
 processes (the Claude Code plugin's hooks) can publish a session's events

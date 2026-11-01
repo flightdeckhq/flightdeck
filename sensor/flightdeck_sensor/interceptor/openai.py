@@ -1,6 +1,7 @@
-"""OpenAI client proxy: intercepts chat.completions.create() / parse(),
-responses.create() / parse(), embeddings.create(), and the
-``with_raw_response`` counterparts of the chat and Responses calls.
+"""OpenAI client proxy: intercepts chat.completions.create() / parse() /
+stream(), responses.create() / parse() / stream(), embeddings.create(),
+and the ``with_raw_response`` and ``with_streaming_response`` views of
+those resources.
 
 Two intercept paths exist for OpenAI clients (mirroring the Anthropic
 interceptor):
@@ -44,28 +45,44 @@ Interception hierarchy for per-instance wrapping::
     SensorOpenAI (wraps openai.OpenAI or AsyncOpenAI)
       ├── @property chat      →  SensorChat
       │   ├── @property completions  →  SensorCompletions
-      │   │   ├── create()           →  call(), call_async(), or call_stream()
+      │   │   ├── create()           →  call(), call_async(), or call_stream();
+      │   │   │                             through a view whose body is unread,
+      │   │   │                             raw_views.send_deferred()
       │   │   ├── parse()            →  call() or call_async()
+      │   │   ├── stream()           →  the SDK's own helper, its request sent
+      │   │   │                         through create() above
       │   │   ├── with_raw_response  →  _SensorRawResponseWrapper
-      │   │   │   ├── create() / parse()  →  call() or call_async()
+      │   │   │   ├── create() / parse()  →  call() or call_async();
+      │   │   │   │                          stream=True deferred to parse()
       │   │   │   └── __getattr__    →  pass-through
+      │   │   ├── with_streaming_response → the SDK's view over this proxy
       │   │   └── __getattr__        →  pass-through
       │   └── __getattr__    →  pass-through
       ├── @property responses →  SensorResponses (same shape: create(),
-      │                          parse(), with_raw_response)
+      │                          parse(), stream(), with_raw_response,
+      │                          with_streaming_response)
       ├── with_options()     →  new SensorOpenAI
-      ├── with_raw_response  →  new SensorOpenAI
-      ├── with_streaming_response → new SensorOpenAI
+      ├── with_raw_response  →  the SDK's client view over this proxy
+      ├── with_streaming_response → the SDK's client view over this proxy
       └── __getattr__        →  pass-through
 
 When ``stream=True``, injects ``stream_options={"include_usage": True}``
 into kwargs so OpenAI returns token usage in the final streaming chunk.
+
+The SDK's raw and streaming views (``with_raw_response`` /
+``with_streaming_response``, on a resource or on the client) mark their
+requests with the ``X-Stainless-Raw-Response`` header. A view call whose
+body is unread when the caller gets the response -- every streaming-view
+call, and a raw-view call with ``stream=True`` -- is metered when the
+caller parses it (see :mod:`flightdeck_sensor.interceptor.raw_views`); a
+parsed event stream goes to the stream guard.
 """
 
 from __future__ import annotations
 
 import contextlib
 import copy
+import inspect
 import json
 import logging
 import time
@@ -73,7 +90,8 @@ import types
 from typing import TYPE_CHECKING, Any
 
 from flightdeck_sensor.core.errors import classify_stop_reason
-from flightdeck_sensor.interceptor import base
+from flightdeck_sensor.core.types import EventType
+from flightdeck_sensor.interceptor import base, raw_views
 from flightdeck_sensor.interceptor.platform import PLATFORM_OPENAI, endpoint_of
 from flightdeck_sensor.providers.openai import OpenAIProvider
 
@@ -349,6 +367,124 @@ def _parse_via_raw(
     )
 
 
+def _is_sdk_stream(obj: Any) -> bool:
+    """Whether a parsed view response is the SDK's event stream."""
+    if _openai_module is None:
+        return False
+    return isinstance(obj, (_openai_module.Stream, _openai_module.AsyncStream))
+
+
+def _given(kwargs: dict[str, Any]) -> dict[str, Any]:
+    """``kwargs`` without the SDK's not-given sentinels. The SDK's
+    ``.stream()`` helpers pass every parameter of ``create`` explicitly,
+    the unset ones as ``NOT_GIVEN`` / ``omit``; the request is the same
+    without them, and the sensor must not meet them as request values
+    (they are not JSON)."""
+    sentinels = tuple(
+        cls
+        for cls in (
+            getattr(_openai_module, "NotGiven", None),
+            getattr(_openai_module, "Omit", None),
+        )
+        if isinstance(cls, type)
+    )
+    if not sentinels:
+        return kwargs
+    return {key: value for key, value in kwargs.items() if not isinstance(value, sentinels)}
+
+
+class _HelperRequest:
+    """``self`` for the SDK's own ``.stream()`` helper. The helper builds
+    its request by calling ``self.create(..., stream=True)`` and wraps the
+    raw stream it gets back in its event stream (``ChatCompletionStream``
+    / ``ResponseStream``). Run with this object as ``self``, that call
+    reaches the sensor proxy's ``create``, so the request takes the
+    stream guard and the helper reads its raw events through the guard;
+    the caller gets the SDK's own manager and event stream. Every other
+    attribute (``retrieve`` for resuming a stored response) is the
+    proxy's. The guards the helper opened are kept so the manager's exit
+    can settle them."""
+
+    def __init__(self, proxy: Any) -> None:
+        self._proxy = proxy
+        self.guards: list[Any] = []
+
+    def create(self, **kwargs: Any) -> Any:
+        result = self._proxy.create(**_given(kwargs))
+        if inspect.iscoroutine(result):
+
+            async def _opened() -> Any:
+                guard = await result
+                self.guards.append(guard)
+                return guard
+
+            return _opened()
+        self.guards.append(result)
+        return result
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._proxy, name)
+
+
+class _HelperStreamManager:
+    """The SDK's ``.stream()`` manager, whose exit also settles the stream
+    guard the helper read through. The SDK's exit closes the HTTP
+    response, which the guard does not see; leaving it to the guard's
+    finalizer would delay the post_call of a stream the caller left early
+    until the next intercepted call. The guard's exit takes the same
+    exception the caller's block raised, so a provider failure, an early
+    exit and a full read are reported as on every other stream."""
+
+    def __init__(self, manager: Any, request: _HelperRequest) -> None:
+        self._manager = manager
+        self._request = request
+
+    def __enter__(self) -> Any:
+        return self._manager.__enter__()
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
+        try:
+            return self._manager.__exit__(exc_type, exc_val, exc_tb)
+        finally:
+            for guard in self._request.guards:
+                guard.__exit__(exc_type, exc_val, exc_tb)
+
+    async def __aenter__(self) -> Any:
+        return await self._manager.__aenter__()
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
+        try:
+            return await self._manager.__aexit__(exc_type, exc_val, exc_tb)
+        finally:
+            for guard in self._request.guards:
+                await guard.__aexit__(exc_type, exc_val, exc_tb)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._manager, name)
+
+
+def _helper_stream(proxy: Any, real: Any, kwargs: dict[str, Any]) -> Any:
+    """``real.stream(**kwargs)`` with its request sent through ``proxy``
+    (see :class:`_HelperRequest`). A resource whose class has no
+    ``stream`` helper is called as it is."""
+    helper = getattr(type(real), "stream", None)
+    if not callable(helper):
+        return real.stream(**kwargs)
+    request = _HelperRequest(proxy)
+    return _HelperStreamManager(helper(request, **kwargs), request)
+
+
+def _stream_options_for(kwargs: dict[str, Any]) -> tuple[dict[str, Any], Any]:
+    """A chat request with ``stream=True`` gets ``stream_options
+    .include_usage`` (see :func:`_inject_stream_options`) and the guard
+    hides the usage chunk from a caller who did not ask for it. Returns
+    the kwargs to send and the guard's ``hide_chunk``."""
+    if not kwargs.get("stream"):
+        return kwargs, None
+    call_kwargs, caller_asked_for_usage = _inject_stream_options(kwargs)
+    return call_kwargs, (None if caller_asked_for_usage else _is_usage_only_chunk)
+
+
 class SensorCompletions:
     """Proxy for ``chat.completions`` -- intercepts ``create()``."""
 
@@ -376,11 +512,23 @@ class SensorCompletions:
         guarded wrappers that measure TTFT, chunk count, and abort
         reasons.
         """
+        if raw_views.body_unread(kwargs):
+            # A streaming-view call, or a raw-view call with stream=True:
+            # metered when the caller parses the response.
+            call_kwargs, hide_chunk = _stream_options_for(kwargs)
+            return raw_views.send_deferred(
+                self._real.create,
+                call_kwargs,
+                self._session,
+                self._provider,
+                is_async=self._is_async,
+                is_stream=_is_sdk_stream,
+                hide_chunk=hide_chunk,
+            )
         if kwargs.get("stream"):
-            call_kwargs, caller_asked_for_usage = _inject_stream_options(kwargs)
             # A caller who did not ask for usage gets the stream exactly as
             # it would be without the sensor; the guard keeps the usage.
-            hide_chunk = None if caller_asked_for_usage else _is_usage_only_chunk
+            call_kwargs, hide_chunk = _stream_options_for(kwargs)
             if self._is_async:
                 # Native ``AsyncOpenAI.chat.completions.create(stream=
                 # True)`` returns a coroutine that resolves to an
@@ -426,13 +574,24 @@ class SensorCompletions:
         ``post_call`` followed by the ``llm_error``; see
         :func:`_call_parse`.
         """
-        return _parse_via_raw(
-            self._real,
-            kwargs,
-            self._session,
-            self._provider,
-            is_async=self._is_async,
+        return _view_aware_parse(
+            self._real, kwargs, self._session, self._provider, is_async=self._is_async
         )
+
+    def stream(self, **kwargs: Any) -> Any:
+        """Intercept chat.completions.stream(): the SDK's own helper,
+        whose request goes through :meth:`create` with ``stream=True`` and
+        so takes the stream guard. The caller gets the SDK's manager and
+        ``ChatCompletionStream`` (its events, ``get_final_completion()``
+        and ``current_completion_snapshot`` unchanged)."""
+        return _helper_stream(self, self._real, kwargs)
+
+    @property
+    def with_streaming_response(self) -> Any:
+        """The SDK's streaming view built over this proxy: its ``create``
+        and ``parse`` reach this proxy with the view's header and are
+        metered when the caller parses the response."""
+        return type(self._real.with_streaming_response)(self)
 
     @property
     def with_raw_response(self) -> _SensorRawResponseWrapper:
@@ -462,10 +621,37 @@ class SensorCompletions:
             self._session,
             self._provider,
             is_async=self._is_async,
+            chat=True,
         )
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._real, name)
+
+
+def _view_aware_parse(
+    real: Any,
+    kwargs: dict[str, Any],
+    session: Session,
+    provider: OpenAIProvider,
+    *,
+    is_async: bool,
+) -> Any:
+    """``parse()`` on a chat-completions or Responses resource. Through
+    the streaming view (whose body is unread) it is metered when the
+    caller parses the response; through a client-level raw view the
+    caller gets the raw response, metered as the resource's own
+    ``with_raw_response.parse()`` is; otherwise see
+    :func:`_parse_via_raw`."""
+    mode = raw_views.raw_response_mode(kwargs)
+    if mode == raw_views.RAW_MODE_STREAM:
+        return raw_views.send_deferred(
+            real.parse, kwargs, session, provider, is_async=is_async, is_stream=_is_sdk_stream
+        )
+    if mode in raw_views.RAW_MODES_READ:
+        return _call_parse(
+            real.parse, kwargs, session, provider, is_async=is_async, return_raw=True
+        )
+    return _parse_via_raw(real, kwargs, session, provider, is_async=is_async)
 
 
 class _SensorRawResponseWrapper:
@@ -495,15 +681,37 @@ class _SensorRawResponseWrapper:
         provider: OpenAIProvider,
         *,
         is_async: bool = False,
+        chat: bool = False,
     ) -> None:
         self._real = real_wrapper
         self._session = session
         self._provider = provider
         self._is_async = is_async
+        # Chat streams need stream_options.include_usage to carry usage;
+        # Responses streams carry it on their terminal event.
+        self._chat = chat
 
     def create(self, **kwargs: Any) -> Any:
-        """Intercept the raw-response create closure with the sensor pipeline."""
+        """Intercept the raw-response create closure with the sensor pipeline.
+
+        With ``stream=True`` the body is the event stream, unread when the
+        caller gets the raw response: the call is metered when the caller
+        parses it, and the parsed stream takes the stream guard (see
+        :mod:`flightdeck_sensor.interceptor.raw_views`). langchain-openai
+        takes this path with ``include_response_headers=True``.
+        """
         real_fn = self._real.create
+        if kwargs.get("stream"):
+            call_kwargs, hide_chunk = _stream_options_for(kwargs) if self._chat else (kwargs, None)
+            return raw_views.send_deferred(
+                real_fn,
+                call_kwargs,
+                self._session,
+                self._provider,
+                is_async=self._is_async,
+                is_stream=_is_sdk_stream,
+                hide_chunk=hide_chunk,
+            )
         if self._is_async:
             return base.call_async(real_fn, kwargs, self._session, self._provider)
         return base.call(real_fn, kwargs, self._session, self._provider)
@@ -571,8 +779,9 @@ class SensorResponses:
 
     OpenAI's Responses API (March 2025 and recommended for all new
     projects) lives at ``OpenAI.responses``, a direct sibling of
-    ``OpenAI.chat``. ``create(stream=True)`` calls take the stream guard;
-    the ``responses.stream()`` helper passes through unintercepted.
+    ``OpenAI.chat``. ``create(stream=True)`` calls take the stream guard, and so
+    does the ``responses.stream()`` helper, whose request goes through
+    ``create``.
 
     Token usage extraction is handled by :class:`OpenAIProvider` which
     falls back to ``usage.input_tokens`` / ``usage.output_tokens``
@@ -605,6 +814,15 @@ class SensorResponses:
         is needed on this API.
         """
         real_fn = self._real.create
+        if raw_views.body_unread(kwargs):
+            return raw_views.send_deferred(
+                real_fn,
+                kwargs,
+                self._session,
+                self._provider,
+                is_async=self._is_async,
+                is_stream=_is_sdk_stream,
+            )
         if kwargs.get("stream"):
             if self._is_async:
 
@@ -628,13 +846,23 @@ class SensorResponses:
         caller's ``text_format`` schema lands as a ``post_call`` followed
         by the ``llm_error``; see :func:`_call_parse`.
         """
-        return _parse_via_raw(
-            self._real,
-            kwargs,
-            self._session,
-            self._provider,
-            is_async=self._is_async,
+        return _view_aware_parse(
+            self._real, kwargs, self._session, self._provider, is_async=self._is_async
         )
+
+    def stream(self, **kwargs: Any) -> Any:
+        """Intercept responses.stream(): the SDK's own helper, whose
+        request for a new response goes through :meth:`create` with
+        ``stream=True`` and so takes the stream guard. Resuming a stored
+        response (``stream(response_id=...)``) re-reads one that was
+        already generated and passes through to the SDK's ``retrieve``."""
+        return _helper_stream(self, self._real, kwargs)
+
+    @property
+    def with_streaming_response(self) -> Any:
+        """The SDK's streaming view built over this proxy (see
+        :attr:`SensorCompletions.with_streaming_response`)."""
+        return type(self._real.with_streaming_response)(self)
 
     @property
     def with_raw_response(self) -> _SensorRawResponseWrapper:
@@ -653,8 +881,8 @@ class SensorResponses:
         )
 
     def __getattr__(self, name: str) -> Any:
-        # Pass through: stream, retrieve, delete, cancel, connect,
-        # compact, input_items, input_tokens, with_streaming_response.
+        # Pass through: retrieve, delete, cancel, connect, compact,
+        # input_items, input_tokens.
         return getattr(self._real, name)
 
 
@@ -701,8 +929,17 @@ class SensorEmbeddings:
         # it: hand the call to the SDK untouched (see base.outer_intercept).
         if base.outer_intercept_active():
             return real_fn(**kwargs)
-        from flightdeck_sensor.core.types import EventType
-
+        if raw_views.body_unread(kwargs):
+            # The streaming view: metered when the caller parses it.
+            return raw_views.send_deferred(
+                real_fn,
+                kwargs,
+                self._session,
+                self._provider,
+                is_async=self._is_async,
+                is_stream=_is_sdk_stream,
+                event_type=EventType.EMBEDDINGS,
+            )
         if self._is_async:
             return base.call_async(
                 real_fn,
@@ -719,8 +956,20 @@ class SensorEmbeddings:
             event_type=EventType.EMBEDDINGS,
         )
 
+    @property
+    def with_streaming_response(self) -> Any:
+        """The SDK's streaming view built over this proxy (see
+        :attr:`SensorCompletions.with_streaming_response`)."""
+        return type(self._real.with_streaming_response)(self)
+
+    @property
+    def with_raw_response(self) -> Any:
+        """The SDK's raw view built over this proxy; its ``create`` reaches
+        this proxy with the view's header and is metered like a plain
+        call."""
+        return type(self._real.with_raw_response)(self)
+
     def __getattr__(self, name: str) -> Any:
-        # Pass through: with_raw_response, with_streaming_response.
         return getattr(self._real, name)
 
 
@@ -779,22 +1028,18 @@ class SensorOpenAI:
         return SensorOpenAI(new_client, self._session, self._provider)
 
     @property
-    def with_raw_response(self) -> SensorOpenAI:
-        """Return a new SensorOpenAI wrapping the raw response client."""
-        return SensorOpenAI(
-            self._client.with_raw_response,
-            self._session,
-            self._provider,
-        )
+    def with_raw_response(self) -> Any:
+        """The SDK's raw client view built over this proxy, so
+        ``client.with_raw_response.chat.completions.create`` reaches the
+        sensor's resource proxies with the view's header, as on a
+        class-patched client."""
+        return type(self._client.with_raw_response)(self)
 
     @property
-    def with_streaming_response(self) -> SensorOpenAI:
-        """Return a new SensorOpenAI wrapping the streaming response client."""
-        return SensorOpenAI(
-            self._client.with_streaming_response,
-            self._session,
-            self._provider,
-        )
+    def with_streaming_response(self) -> Any:
+        """The SDK's streaming client view built over this proxy (see
+        :attr:`with_raw_response`)."""
+        return type(self._client.with_streaming_response)(self)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._client, name)

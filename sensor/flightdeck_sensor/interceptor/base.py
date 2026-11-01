@@ -64,7 +64,7 @@ if TYPE_CHECKING:
     from types import TracebackType
 
     from flightdeck_sensor.core.session import Session
-    from flightdeck_sensor.providers.protocol import Provider
+    from flightdeck_sensor.providers.protocol import Provider, StreamAccumulator
 
 _log = logging.getLogger("flightdeck_sensor.interceptor.base")
 
@@ -402,6 +402,12 @@ BILLING_LOCAL = "local"
 # instead.
 _MAX_DETAIL_BYTES = 256
 
+# The cut applied to a tool_call's ``server_name``, in characters: the
+# same bound the Claude Code plugin applies to ``tool_name`` and
+# ``server_name``, so an MCP server label has one limit wherever it is
+# reported from.
+_MAX_SERVER_NAME_CHARS = 256
+
 # Set on an exception once an intercept has reported it, so a stream's
 # with-exit does not report the same failure of a nested call again.
 _REPORTED_ATTR = "_flightdeck_reported"
@@ -542,6 +548,10 @@ class _GuardCore:
         self._details: CallDetails | None = None
         self._hooks_failed: set[str] = set()
         self._open_error: BaseException | None = None
+        # Assembles a raw event stream into the message a non-streamed
+        # call returns (see Provider.stream_accumulator); None for a
+        # helper stream, which assembles its own.
+        self._accumulator: StreamAccumulator | None = None
         drain_deferred_settles(session)
 
     def _hook_failed(self, hook: str) -> None:
@@ -551,6 +561,37 @@ class _GuardCore:
         if hook not in self._hooks_failed:
             self._hooks_failed.add(hook)
             _log.debug("Provider %s hook raised; stream metering degraded", hook, exc_info=True)
+
+    def _attach_accumulator(self) -> None:
+        """Ask the provider for an accumulator once the SDK stream is
+        open; without one the guard meters as before and stores no
+        assembled response."""
+        try:
+            self._accumulator = self._provider.stream_accumulator(self._stream, self._kwargs)
+        except Exception:
+            self._hook_failed("stream_accumulator")
+            self._accumulator = None
+
+    def _accumulate(self, chunk: Any) -> None:
+        """Fold one chunk into the assembled message. A failure drops the
+        accumulator for the rest of the stream: a message missing a chunk
+        would be stored as if it were the response."""
+        if self._accumulator is None:
+            return
+        try:
+            self._accumulator.add(chunk)
+        except Exception:
+            self._hook_failed("stream_accumulator")
+            self._accumulator = None
+
+    def _assembled(self) -> Any | None:
+        if self._accumulator is None:
+            return None
+        try:
+            return self._accumulator.message()
+        except Exception:
+            self._hook_failed("stream_accumulator")
+            return None
 
     def _register_open(self) -> None:
         guards = getattr(self._session, "open_stream_guards", None)
@@ -666,6 +707,7 @@ class _GuardCore:
                     self._inter_chunk_ms.append(gap_ms)
             self._last_chunk_t = now
             self._chunk_count += 1
+        self._accumulate(chunk)
         try:
             found = self._provider.usage_from_stream_chunk(chunk)
         except Exception:
@@ -770,10 +812,21 @@ class _GuardCore:
         """Emit the post_call once. ``message`` is the helper's assembled
         final message when one is available; it then stands in for the
         stream as the response so content capture and tool-call
-        extraction see the full response."""
+        extraction see the full response. A raw stream's accumulator
+        supplies that message instead: the complete one when the stream
+        completed, else the partial one, which only content capture
+        stores (a half-streamed tool call is not a call the model made,
+        and the usage, model and stop reason come from the events)."""
         if self._finalized or not self._entered:
             return
         self._finalized = True
+        content_response: Any = None
+        if message is None:
+            assembled = self._assembled()
+            if completed:
+                message = assembled
+            else:
+                content_response = assembled
         # A settle may run long after the caller stopped reading (close(),
         # collection, session end, a stop at the terminal event), so only a
         # stream the guard read to its end, or a helper the caller read to
@@ -806,6 +859,7 @@ class _GuardCore:
                 usage_override=self._usage,
                 stop_reason=self._stop_reason,
                 details_override=self._details,
+                content_response=content_response,
             )
         except Exception as emit_exc:
             # No exc_info: the provider exception is the active context and
@@ -847,6 +901,7 @@ class GuardedStream(_GuardCore):
             else:
                 self._stream = self._ctx
             self._register_open()
+            self._attach_accumulator()
             self._opened_t = time.monotonic()
         except BaseException as exc:
             self._open_error = exc
@@ -1066,6 +1121,7 @@ class GuardedAsyncStream(_GuardCore):
             else:
                 self._stream = self._ctx
             self._register_open()
+            self._attach_accumulator()
             self._opened_t = time.monotonic()
         except BaseException as exc:
             self._open_error = exc
@@ -1434,6 +1490,7 @@ def _post_call(
     usage_override: TokenUsage | None = None,
     stop_reason: str | None = None,
     details_override: CallDetails | None = None,
+    content_response: Any = None,
 ) -> None:
     """Extract actual usage, reconcile with estimate, post event.
 
@@ -1454,6 +1511,10 @@ def _post_call(
     ``details_override`` carries the call details a stream guard folded
     from the streamed events; the response's own details (a helper
     stream's final message) are laid over them.
+
+    ``content_response`` is what content capture stores in place of
+    ``response`` (a raw stream's partially assembled message when the
+    caller left early); every other read still uses ``response``.
     """
     # ``usage_override`` carries the counts a stream guard read from the
     # provider's in-stream usage events; stream objects themselves expose
@@ -1496,7 +1557,11 @@ def _post_call(
     content_dict: dict[str, Any] | None = None
     has_content = False
     if session.config.capture_prompts and call_kwargs is not None:
-        pc = provider.extract_content(call_kwargs, response, event_type=event_type)
+        pc = provider.extract_content(
+            call_kwargs,
+            content_response if content_response is not None else response,
+            event_type=event_type,
+        )
         if pc is not None:
             pc.session_id = session.config.session_id
             has_content = True
@@ -1650,6 +1715,11 @@ def _post_call(
                 model=resp_model,
                 tool_name=inv.name,
             )
+            # A provider-hosted MCP call names the server it went to;
+            # carried under the field every MCP event uses for it.
+            # Metadata, like the tool name, so it ships with capture off.
+            if inv.server_name:
+                tool_payload["server_name"] = inv.server_name[:_MAX_SERVER_NAME_CHARS]
             if session.config.capture_prompts and inv.tool_input is not None:
                 # Build the event_content envelope. tool_output
                 # populates retroactively when the next assistant

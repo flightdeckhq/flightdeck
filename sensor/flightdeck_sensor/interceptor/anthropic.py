@@ -91,18 +91,13 @@ Interception hierarchy for per-instance wrapping::
 
 from __future__ import annotations
 
-import collections
-import contextlib
 import functools
 import inspect
 import logging
-import time
 import types
-import weakref
 from typing import TYPE_CHECKING, Any
 
-from flightdeck_sensor.core.exceptions import BudgetExceededError, DirectiveError
-from flightdeck_sensor.interceptor import base
+from flightdeck_sensor.interceptor import base, raw_views
 from flightdeck_sensor.interceptor.platform import (
     PLATFORM_ANTHROPIC,
     PLATFORM_VERTEX,
@@ -224,20 +219,6 @@ if _ANTHROPIC_AVAILABLE:
         )
 
 
-# The header the SDK's with_raw_response / with_streaming_response views
-# add to every request they make: "true" asks for the raw response with
-# the body read, "stream" for the raw response with the body unread.
-# Spelled out here rather than imported from anthropic._constants so an
-# SDK that moves the constant degrades to "not a raw call" instead of
-# disabling the whole interceptor; the layout canary test pins the two
-# spellings to each other.
-_RAW_RESPONSE_HEADER = "X-Stainless-Raw-Response"
-_RAW_MODE_STREAM = "stream"
-# The raw view's value: "true" up to the 0.x SDKs, "raw" from 2.x. Both
-# read the body before the caller gets the response; only "stream"
-# leaves it unread.
-_RAW_MODES_READ = frozenset({"true", "raw"})
-
 # Sentinel attribute on a patched resource class, holding the original
 # methods so unpatch can restore them and SensorMessages can bypass the
 # patched ones.
@@ -272,18 +253,6 @@ def _is_async_client(client: Any) -> bool:
     return isinstance(client, _OrigAsyncAPIClient)
 
 
-def _raw_response_mode(kwargs: dict[str, Any]) -> str | None:
-    """``"true"`` / ``"stream"`` when the call comes through the SDK's
-    raw or streaming view, else ``None``."""
-    headers = kwargs.get("extra_headers")
-    if not isinstance(headers, dict):
-        return None
-    for name, value in headers.items():
-        if isinstance(name, str) and name.lower() == _RAW_RESPONSE_HEADER.lower():
-            return value if isinstance(value, str) else None
-    return None
-
-
 def _provider_for(client: Any, session: Session) -> AnthropicProvider:
     endpoint = endpoint_of(client, PLATFORM_ANTHROPIC)
     return AnthropicProvider(
@@ -307,255 +276,14 @@ def _vertex_scope(client: Any, platform: str) -> str | None:
 
 
 # ----------------------------------------------------------------------
-# Deferred metering for the streaming view
+# Raw and streaming views (see interceptor/raw_views.py)
 # ----------------------------------------------------------------------
-
-
-class _ParsedRawResponse:
-    """What the guard core sees once a deferred response has been parsed:
-    the parsed message for usage, model, content and tool calls, plus the
-    HTTP headers of the raw response for ``provider_metadata``. ``parsed``
-    is ``None`` when the caller never parsed the body, in which case
-    usage falls back to the pre-call estimate and no response content is
-    stored."""
-
-    def __init__(self, parsed: Any, headers: Any) -> None:
-        self._parsed = parsed
-        self.headers = headers
-
-    def parse(self) -> Any:
-        return self._parsed
-
-    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
-        dump = getattr(self._parsed, "model_dump", None)
-        if callable(dump):
-            result = dump(**kwargs)
-            return result if isinstance(result, dict) else {}
-        return {}
-
-    def __getattr__(self, name: str) -> Any:
-        if name.startswith("_"):
-            raise AttributeError(name)
-        return getattr(self._parsed, name)
-
-
-class _DeferredCall:
-    """One call made through the streaming view: the pre-call check has
-    run and the request has been sent, the post_call is owed until the
-    caller parses the body or closes the response.
-
-    A call whose response is abandoned without either is still reported:
-    the response's finalizer queues the settle on the session (never
-    settling inline, since a finalizer can run inside any of the
-    sensor's critical sections) and the next intercepted call, or the
-    session's end, runs it; a call whose response is still referenced
-    when the session ends is settled then. Both are the stream guards'
-    mechanisms, so the call registers itself with the session the way a
-    guard does (``_session``, ``_entered``, ``_finalized``,
-    ``_settle_now``)."""
-
-    _entered = True
-
-    def __init__(
-        self,
-        session: Session,
-        provider: AnthropicProvider,
-        call_kwargs: dict[str, Any],
-        estimated: int,
-        estimated_via: str,
-        t0: float,
-    ) -> None:
-        self._session = session
-        self._provider = provider
-        self._call_kwargs = call_kwargs
-        self._estimated = estimated
-        self._estimated_via = estimated_via
-        self._t0 = t0
-        self._settled = False
-        self._headers: Any = None
-
-    @property
-    def _finalized(self) -> bool:
-        return self._settled
-
-    def register(self, headers: Any) -> None:
-        """Keep the response headers for a settle without a body and join
-        the session's open guards so the session's end settles the call."""
-        self._headers = headers
-        guards = getattr(self._session, "open_stream_guards", None)
-        lock = getattr(self._session, "open_stream_guards_lock", None)
-        if isinstance(guards, weakref.WeakSet) and lock is not None:
-            with lock:
-                guards.add(self)
-
-    def _settle_now(self) -> None:
-        self.settle(None, self._headers)
-
-    def abandon(self) -> None:
-        """Queue the settle for the next intercept or the session's end;
-        called from the response proxy's finalizer, so nothing is
-        settled here."""
-        if self._settled:
-            return
-        queue = getattr(self._session, "queued_stream_settles", None)
-        if isinstance(queue, collections.deque):
-            queue.append(lambda: self.settle(None, self._headers))
-
-    def settle(self, parsed: Any, headers: Any) -> None:
-        """Emit the post_call once, with whatever the caller parsed."""
-        if self._settled:
-            return
-        self._settled = True
-        latency_ms = int((time.monotonic() - self._t0) * 1000)
-        try:
-            base._post_call(
-                self._session,
-                self._provider,
-                _ParsedRawResponse(parsed, headers),
-                self._estimated,
-                latency_ms,
-                self._call_kwargs,
-                estimated_via=self._estimated_via,
-            )
-        except Exception as emit_exc:
-            _log.warning("Failed to post deferred post_call (%s)", type(emit_exc).__name__)
-
-    def guard_stream(self, stream: Any) -> Any:
-        """Hand a parsed SDK event stream (``create(stream=True)`` through
-        a raw view) to the stream guard, which meters it as the caller
-        iterates and emits the post_call when it settles. The guard's
-        latency runs from ``parse()``, where it opens, not from the
-        request; the pre-call check already ran at the request. The
-        stream's own kind picks the guard: an async client's raw view
-        parses synchronously but yields an ``AsyncStream``."""
-        if self._settled:
-            return stream
-        self._settled = True
-        if _anthropic_module is not None and isinstance(stream, _anthropic_module.AsyncStream):
-            return base.GuardedAsyncStream(
-                lambda **_kw: stream,
-                self._call_kwargs,
-                self._session,
-                self._provider,
-                self._estimated,
-                self._estimated_via,
-            )
-        return base.GuardedStream(
-            lambda **_kw: stream,
-            self._call_kwargs,
-            self._session,
-            self._provider,
-            self._estimated,
-            self._estimated_via,
-        ).open()
 
 
 def _is_sdk_stream(obj: Any) -> bool:
     if _anthropic_module is None:
         return False
     return isinstance(obj, (_anthropic_module.Stream, _anthropic_module.AsyncStream))
-
-
-def _body_already_read(response: Any) -> bool:
-    """Whether the raw HTTP body has been consumed, so parsing it now
-    reads nothing further from the network."""
-    try:
-        return bool(response.http_response.is_stream_consumed)
-    except Exception:
-        return False
-
-
-class _DeferredResponse:
-    """Stands in for the SDK's ``APIResponse`` on the sync
-    ``with_streaming_response`` view. The body is unread when the caller
-    receives it, so the sensor meters at the caller's ``parse()`` and
-    never reads the body itself. ``close()`` (which the SDK's response
-    context manager calls on exit) settles a response the caller read
-    some other way -- parsing it then only when the body has already
-    been consumed, so nothing is read from the network -- and reports
-    the estimate for a body never read. When the parsed value is an SDK
-    event stream (``create(stream=True)`` through the view) the stream
-    guard takes over and meters the events as they are iterated. Every
-    other attribute is proxied to the SDK response."""
-
-    def __init__(self, response: Any, call: _DeferredCall) -> None:
-        self._response = response
-        self._call = call
-        call.register(response.headers)
-
-    def parse(self, *args: Any, **kwargs: Any) -> Any:
-        parsed = self._response.parse(*args, **kwargs)
-        if _is_sdk_stream(parsed):
-            return self._call.guard_stream(parsed)
-        self._call.settle(parsed, self._response.headers)
-        return parsed
-
-    def close(self) -> None:
-        parsed = None
-        if _body_already_read(self._response):
-            with contextlib.suppress(Exception):
-                parsed = self._response.parse()
-        self._call.settle(parsed, self._response.headers)
-        self._response.close()
-
-    def __del__(self) -> None:
-        # Abandoned without parse() or close(): queue the settle (see
-        # _DeferredCall.abandon); the SDK response goes with this proxy.
-        # Everything is suppressed: a finalizer can run at interpreter
-        # shutdown or inside another thread's collection.
-        with contextlib.suppress(BaseException):
-            self._call.abandon()
-
-    def __getattr__(self, name: str) -> Any:
-        if name.startswith("_"):
-            raise AttributeError(name)
-        return getattr(self._response, name)
-
-
-def _deferred_proxy(response: Any, call: _DeferredCall) -> Any:
-    """The proxy matching the response's own ``parse()``: a coroutine on
-    the async client's streaming view (``AsyncAPIResponse``), a
-    plain method on every raw view (``LegacyAPIResponse``), the
-    async client's included."""
-    if inspect.iscoroutinefunction(getattr(response, "parse", None)):
-        return _DeferredAsyncResponse(response, call)
-    return _DeferredResponse(response, call)
-
-
-class _DeferredAsyncResponse:
-    """Async counterpart of :class:`_DeferredResponse`: the SDK's
-    ``AsyncAPIResponse.parse()`` is a coroutine, so metering happens
-    when the caller's ``await response.parse()`` resolves."""
-
-    def __init__(self, response: Any, call: _DeferredCall) -> None:
-        self._response = response
-        self._call = call
-        call.register(response.headers)
-
-    async def parse(self, *args: Any, **kwargs: Any) -> Any:
-        parsed = await self._response.parse(*args, **kwargs)
-        if _is_sdk_stream(parsed):
-            return self._call.guard_stream(parsed)
-        self._call.settle(parsed, self._response.headers)
-        return parsed
-
-    async def close(self) -> None:
-        parsed = None
-        if _body_already_read(self._response):
-            with contextlib.suppress(Exception):
-                parsed = await self._response.parse()
-        self._call.settle(parsed, self._response.headers)
-        await self._response.close()
-
-    def __del__(self) -> None:
-        # See _DeferredResponse.__del__.
-        with contextlib.suppress(BaseException):
-            self._call.abandon()
-
-    def __getattr__(self, name: str) -> Any:
-        if name.startswith("_"):
-            raise AttributeError(name)
-        return getattr(self._response, name)
 
 
 # ----------------------------------------------------------------------
@@ -615,43 +343,17 @@ class SensorMessages:
 
     def _deferred(self, real_fn: Any, kwargs: dict[str, Any]) -> Any:
         """Send the request now, meter when the caller parses the response
-        (see :class:`_DeferredResponse`). Pre-call policy runs before
-        the request, as on every other path; a failing request emits
-        ``llm_error`` and re-raises."""
-        estimated, estimated_via = self._provider.estimate_tokens(kwargs)
-        call_kwargs = base._pre_call(
-            self._session, self._provider, kwargs, estimated, estimated_via
+        (see :class:`raw_views.DeferredResponse`). Pre-call policy runs
+        before the request, as on every other path; a failing request
+        emits ``llm_error`` and re-raises."""
+        return raw_views.send_deferred(
+            real_fn,
+            kwargs,
+            self._session,
+            self._provider,
+            is_async=self._is_async,
+            is_stream=_is_sdk_stream,
         )
-        t0 = time.monotonic()
-        if self._is_async:
-
-            async def _async_deferred() -> Any:
-                try:
-                    response = await real_fn(**call_kwargs)
-                except (BudgetExceededError, DirectiveError):
-                    raise
-                except BaseException as exc:
-                    latency_ms = int((time.monotonic() - t0) * 1000)
-                    base._emit_error(self._session, self._provider, exc, latency_ms, call_kwargs)
-                    raise
-                call = _DeferredCall(
-                    self._session, self._provider, call_kwargs, estimated, estimated_via, t0
-                )
-                return _deferred_proxy(response, call)
-
-            return _async_deferred()
-        try:
-            response = real_fn(**call_kwargs)
-        except (BudgetExceededError, DirectiveError):
-            raise
-        except BaseException as exc:
-            latency_ms = int((time.monotonic() - t0) * 1000)
-            base._emit_error(self._session, self._provider, exc, latency_ms, call_kwargs)
-            raise
-        call = _DeferredCall(
-            self._session, self._provider, call_kwargs, estimated, estimated_via, t0
-        )
-        return _deferred_proxy(response, call)
 
     def _async_raw_read(self, real_fn: Any, kwargs: dict[str, Any]) -> Any:
         """A call through an async client's raw view, metered like a plain
@@ -679,8 +381,8 @@ class SensorMessages:
                 # The caller's own parse() raises this, as it would without
                 # the sensor; the call itself succeeded and is metered with
                 # the estimate, as on the 0.x raw view.
-                return _ParsedRawResponse(None, headers)
-            return _ParsedRawResponse(parsed, headers)
+                return raw_views.ParsedRawResponse(None, headers)
+            return raw_views.ParsedRawResponse(parsed, headers)
 
         async def _call() -> Any:
             result = await base.call_async(_read, kwargs, self._session, self._provider)
@@ -709,10 +411,9 @@ class SensorMessages:
         # it: hand the call to the SDK untouched (see base.outer_intercept).
         if base.outer_intercept_active():
             return real_fn(**kwargs)
-        raw_mode = _raw_response_mode(kwargs)
-        if raw_mode == _RAW_MODE_STREAM or (raw_mode in _RAW_MODES_READ and kwargs.get("stream")):
+        if raw_views.body_unread(kwargs):
             return self._deferred(real_fn, kwargs)
-        if raw_mode in _RAW_MODES_READ and self._is_async:
+        if raw_views.raw_response_mode(kwargs) in raw_views.RAW_MODES_READ and self._is_async:
             return self._async_raw_read(real_fn, kwargs)
         if kwargs.get("stream"):
             # Opened eagerly: the unguarded SDK sends the request inside
@@ -759,10 +460,10 @@ class SensorMessages:
         # it: hand the call to the SDK untouched (see base.outer_intercept).
         if base.outer_intercept_active():
             return real_fn(**kwargs)
-        raw_mode = _raw_response_mode(kwargs)
-        if raw_mode == _RAW_MODE_STREAM:
+        raw_mode = raw_views.raw_response_mode(kwargs)
+        if raw_mode == raw_views.RAW_MODE_STREAM:
             return self._deferred(real_fn, kwargs)
-        if raw_mode in _RAW_MODES_READ and self._is_async:
+        if raw_mode in raw_views.RAW_MODES_READ and self._is_async:
             return self._async_raw_read(real_fn, kwargs)
         if self._is_async:
             return base.call_async(real_fn, kwargs, self._session, self._provider)

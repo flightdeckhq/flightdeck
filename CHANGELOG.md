@@ -34,6 +34,31 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **Streamed OpenAI and Anthropic calls store their response and report
+  their tool calls.** With `capture_prompts` on, `create(stream=True)`
+  stored the request but not the streamed text, and a `responses.create`
+  call stored neither (its `input` was never captured); no raw stream
+  emitted `tool_call` events. The sensor now assembles a raw stream with
+  the SDK's own accumulator: a stream read to the end stores the response
+  and emits its tool calls as a non-streamed call does, and a stream left
+  early stores what had arrived. A Responses call stores its
+  `instructions` and `input` ([#171](https://github.com/flightdeckhq/flightdeck/issues/171)).
+- **OpenAI's `.stream()` helpers and streaming views are metered.**
+  `chat.completions.stream()`, `responses.stream()` and
+  `with_streaming_response` on either resource (and on the client) went
+  through unintercepted; they now report like `create(stream=True)`, and
+  the caller still gets the SDK's own stream objects
+  ([#171](https://github.com/flightdeckhq/flightdeck/issues/171)).
+- **Raw-response streaming calls are metered from the stream.**
+  `with_raw_response.create(stream=True)` on chat completions and
+  Responses recorded only the pre-call estimate; the stream the caller
+  parses from the response is now metered as it is read, with its
+  `streaming` block. langchain-openai takes this path with
+  `include_response_headers=True` ([#173](https://github.com/flightdeckhq/flightdeck/issues/173)).
+- **A Responses MCP tool call names its server.** The `tool_call` event
+  for an `mcp_call` output item carries the item's `server_label` as
+  `server_name`, so the Events view's MCP server filter finds it
+  ([#174](https://github.com/flightdeckhq/flightdeck/issues/174)).
 - **The Helm chart's Ingress reaches ingestion and the API.** It
   forwarded `/ingest/...` and `/api/...` unchanged to services that only
   served `/v1/...`, so every sensor, plugin and dashboard call behind it

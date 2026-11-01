@@ -74,3 +74,28 @@ func TestAPIAuthAppliesUnderPublicPrefix(t *testing.T) {
 		}
 	}
 }
+
+// Swagger UI's redirects (the mux's /docs to /docs/, then http-swagger's
+// to index.html, which it builds from the path as sent) end on the UI
+// page under both forms, with the prefix appearing once.
+func TestAPISwaggerUIRedirectsUnderPublicPrefix(t *testing.T) {
+	srv := NewForTesting(":0", nil, nil, "*")
+	ts := httptest.NewServer(srv.Handler)
+	defer ts.Close()
+
+	for start, want := range map[string]string{
+		"/docs":      "/docs/index.html",
+		"/api/docs":  "/api/docs/index.html",
+		"/api/docs/": "/api/docs/index.html",
+	} {
+		resp, err := ts.Client().Get(ts.URL + start)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusOK || resp.Request.URL.Path != want {
+			t.Errorf("GET %s ended at %s with %d, want %s with 200",
+				start, resp.Request.URL.Path, resp.StatusCode, want)
+		}
+	}
+}

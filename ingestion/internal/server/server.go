@@ -107,17 +107,17 @@ func withLogging(next http.Handler) http.Handler {
 
 // withPublicPrefix serves the routes registered on next both at their
 // own paths and under prefix, the path the service is published at
-// (/ingest/v1/events reaches the same handler as /v1/events). The compose nginx strips the prefix before proxying; a
-// Kubernetes Ingress forwards the path unchanged, and rewriting it there
-// is specific to each ingress controller, so the service accepts both
-// forms itself.
+// (/ingest/v1/events reaches the same handler as /v1/events). The
+// compose nginx strips the prefix before proxying; a Kubernetes Ingress
+// forwards the path unchanged, and rewriting it there is specific to
+// each ingress controller, so the service accepts both forms itself.
 //
 // The prefix must be the whole first segment of the escaped path, so
-// /ingestfoo and a prefix followed by an encoded slash are left alone and
-// 404; an escaped spelling of the prefix itself is accepted, as nginx
-// would. A redirect the mux answers for a prefixed request (a missing
-// trailing slash, an unclean path) keeps the prefix in its Location so
-// the client stays on this service.
+// /ingestfoo and a prefix followed by an encoded slash are left alone
+// and 404; an escaped spelling of the prefix itself is accepted, as
+// nginx would. A redirect the mux answers for a prefixed request (a
+// missing trailing slash, an unclean path) keeps the prefix in its
+// Location so the client stays on this service.
 func withPublicPrefix(next http.Handler, prefix string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rest, ok := stripPathPrefix(r.URL, prefix)
@@ -169,7 +169,13 @@ type prefixRedirectWriter struct {
 func (w *prefixRedirectWriter) WriteHeader(code int) {
 	if code >= 300 && code < 400 {
 		h := w.Header()
-		if loc := h.Get("Location"); strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, "//") {
+		loc := h.Get("Location")
+		// A Location that already starts with the prefix was built from
+		// the request as sent (http-swagger reads RequestURI) and is
+		// left alone: neither service has a route of its own under its
+		// prefix, so it cannot be a bare path that needs one.
+		alreadyPrefixed := loc == w.prefix || strings.HasPrefix(loc, w.prefix+"/")
+		if strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, "//") && !alreadyPrefixed {
 			h.Set("Location", w.prefix+loc)
 		}
 	}

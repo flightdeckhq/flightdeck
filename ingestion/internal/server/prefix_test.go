@@ -55,11 +55,18 @@ func TestWithPublicPrefixRedirectKeepsPrefix(t *testing.T) {
 	p := publicPathPrefix
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /docs/", func(http.ResponseWriter, *http.Request) {})
+	// A handler that builds its Location from the request as sent, as
+	// http-swagger does, already carries the prefix.
+	mux.HandleFunc("GET /self/", func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, r.RequestURI+"index.html", http.StatusMovedPermanently)
+	})
 	h := withPublicPrefix(mux, p)
 	for target, want := range map[string]string{
 		p + "/docs":    p + "/docs/",
 		"/docs":        "/docs/",
 		p + "//docs/x": p + "/docs/x",
+		p + "/self/":   p + "/self/index.html",
+		"/self/":       "/self/index.html",
 	} {
 		rec := httptest.NewRecorder()
 		h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, target, nil))

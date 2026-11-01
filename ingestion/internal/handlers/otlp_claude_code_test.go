@@ -306,6 +306,11 @@ func TestClaudeCodeBashScenario(t *testing.T) {
 	if !reflect.DeepEqual(start["context"], wantCtx) {
 		t.Errorf("session_start context %v, want %v", start["context"], wantCtx)
 	}
+	startAt, _ := time.Parse(time.RFC3339Nano, start["timestamp"].(string))
+	firstAt, _ := time.Parse(time.RFC3339Nano, events[1].P["timestamp"].(string))
+	if !startAt.Equal(firstAt.Add(-time.Microsecond)) {
+		t.Errorf("session_start at %v, first record at %v: want one microsecond before", startAt, firstAt)
+	}
 	firstID := events[1].P["id"].(string)
 	if start["id"] != identity.UUID5(identity.NamespaceFlightdeck, "flightdeck://otlp/claude-code/start/"+sid+"/"+firstID) {
 		t.Errorf("session_start id %v does not derive from the session and its first record", start["id"])

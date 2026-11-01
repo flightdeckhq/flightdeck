@@ -2611,7 +2611,9 @@ it still cannot hold is read on every export. A sub-agent's records
 resolve the run's root first: a root whose row is missing or closed is
 started before the child, so the child's parent row carries the
 session's context and capture posture rather than being a stub. A read
-that fails fails the request (503). The synthetic `session_start` sets `sensor_version` to the
+that fails fails the request (503). The synthetic `session_start` is
+dated one microsecond before the record it precedes, so it sorts first at
+the database's microsecond precision, and sets `sensor_version` to the
 resource's `service.version`, `capture_prompts` to the session's
 posture (below), and `context` to `claude_code_session_id`
 (`session.id`), `claude_code_version`, `os`, `arch`, `terminal_type`,

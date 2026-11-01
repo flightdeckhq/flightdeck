@@ -69,6 +69,13 @@ const (
 	otlpTruncationTemplate = "… [flightdeck: kept %d of %d bytes to fit the event size limit]"
 )
 
+// otlpSessionStartLead is how far a synthetic session_start is dated
+// before the record it precedes. Postgres stores timestamps to the
+// microsecond, so a start dated the same as its record would tie with it
+// and could be listed after it; one microsecond orders it first without
+// moving it noticeably.
+const otlpSessionStartLead = time.Microsecond
+
 // ClaudeCodeDialect maps Claude Code's OTLP log records to Flightdeck
 // events. Records of other sources, and Claude Code's spans and metrics,
 // are counted as rejected.
@@ -356,6 +363,7 @@ func (d *ClaudeCodeDialect) appendStart(events []OTLPEvent, s *ccSession, rec *c
 	p := d.basePayload(rec, s, "session_start")
 	p["id"] = identity.UUID5(identity.NamespaceFlightdeck,
 		"flightdeck://otlp/claude-code/start/"+s.id+"/"+rec.eventID)
+	p["timestamp"] = rec.ts.Add(-otlpSessionStartLead).Format(time.RFC3339Nano)
 	p["sensor_version"] = rec.res.version
 	p["capture_prompts"] = rec.res.capture
 	ctx := map[string]any{

@@ -522,12 +522,17 @@ type Processor interface {
 	StreamReady(ctx context.Context, lastSeq uint64) error
 }
 
-// Consumer subscribes to NATS JetStream and dispatches events
-// to a Processor using a goroutine pool.
+// Consumer subscribes to NATS JetStream and hands events to a Processor
+// on a pool of lanes: one goroutine per lane, a session's events always
+// on the same lane, so each session's events are processed in order.
 type Consumer struct {
 	nc        *nats.Conn
 	poolSize  int
 	processor Processor
+	// Test seams; zero values mean the defaults.
+	processTimeout    time.Duration
+	keepaliveInterval time.Duration
+	inProgress        func(*nats.Msg) error
 }
 
 // New creates a Consumer.
@@ -565,34 +570,119 @@ func (c *Consumer) Start(ctx context.Context) error {
 			"stream", streamName, "err", err)
 	}
 
-	sub, err := js.PullSubscribe(subjectAll, durableName, nats.MaxDeliver(maxDeliver))
+	if err := ensureConsumer(js); err != nil {
+		return err
+	}
+	sub, err := js.PullSubscribe(subjectAll, durableName, nats.Bind(streamName, durableName))
 	if err != nil {
 		return fmt.Errorf("pull subscribe: %w", err)
 	}
 
-	var wg sync.WaitGroup
-	for i := range c.poolSize {
-		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
-			c.worker(ctx, sub, workerID)
-		}(i)
-	}
+	return c.run(ctx, func() ([]*nats.Msg, error) {
+		return sub.Fetch(fetchBatch, nats.MaxWait(nats.DefaultTimeout))
+	})
+}
 
-	<-ctx.Done()
-	wg.Wait()
+// ensureConsumer creates the durable consumer with the settings the
+// lanes rely on, or brings an existing one to them. A subscription that
+// asked for them would be refused for a consumer created with others
+// (one an older worker created), so the consumer is reconciled first
+// and the subscription binds to it.
+func ensureConsumer(js nats.JetStreamContext) error {
+	info, err := js.ConsumerInfo(streamName, durableName)
+	if errors.Is(err, nats.ErrConsumerNotFound) {
+		_, err = js.AddConsumer(streamName, &nats.ConsumerConfig{
+			Durable:       durableName,
+			FilterSubject: subjectAll,
+			AckPolicy:     nats.AckExplicitPolicy,
+			MaxDeliver:    maxDeliver,
+			AckWait:       ackWait,
+			MaxAckPending: maxAckPending,
+		})
+		if err != nil {
+			return fmt.Errorf("add consumer %s: %w", durableName, err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("consumer info %s: %w", durableName, err)
+	}
+	cfg := info.Config
+	if cfg.MaxDeliver == maxDeliver && cfg.AckWait == ackWait && cfg.MaxAckPending == maxAckPending {
+		return nil
+	}
+	cfg.MaxDeliver = maxDeliver
+	cfg.AckWait = ackWait
+	cfg.MaxAckPending = maxAckPending
+	if _, err := js.UpdateConsumer(streamName, &cfg); err != nil {
+		return fmt.Errorf("update consumer %s: %w", durableName, err)
+	}
+	slog.Info("consumer settings updated", "consumer", durableName,
+		"ack_wait", ackWait, "max_ack_pending", maxAckPending)
 	return nil
 }
 
-func (c *Consumer) worker(ctx context.Context, sub *nats.Subscription, id int) {
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
+// run processes fetched messages until ctx is cancelled: fetch is
+// called by one goroutine, and each message goes to its session's lane,
+// whose goroutine processes it after the session's earlier messages.
+func (c *Consumer) run(ctx context.Context, fetch func() ([]*nats.Msg, error)) error {
+	lanes := make([]*lane, c.poolSize)
+	var wg sync.WaitGroup
+	for i := range lanes {
+		lanes[i] = newLane()
+		wg.Add(1)
+		go func(id int, l *lane) {
+			defer wg.Done()
+			for {
+				e, ok := l.next()
+				if !ok {
+					return
+				}
+				// A message left in the lane at shutdown is not
+				// processed: unacknowledged, it is redelivered when the
+				// ack wait expires.
+				if ctx.Err() == nil {
+					pctx, cancel := context.WithTimeout(ctx, c.processDeadline())
+					c.handle(pctx, e.msg, e.event, id)
+					cancel()
+				}
+				l.finish()
+			}
+		}(i, lanes[i])
+	}
+	keepaliveDone := make(chan struct{})
+	go func() {
+		defer close(keepaliveDone)
+		c.keepalive(ctx, lanes)
+	}()
 
-		msgs, err := sub.Fetch(1, nats.MaxWait(nats.DefaultTimeout))
+	c.dispatch(ctx, fetch, lanes)
+	for _, l := range lanes {
+		l.close()
+	}
+	wg.Wait()
+	<-keepaliveDone
+	return nil
+}
+
+// fetchBatch is how many messages one fetch asks for. A fetch returns
+// what is available at once (no_wait), so a larger batch costs nothing
+// when the stream is quiet and saves round trips under load.
+const fetchBatch = 64
+
+// fetchErrorBackoff is the pause after a fetch fails for a reason other
+// than an empty stream (a disconnect), so a persistent failure logs once
+// a second rather than in a tight loop.
+const fetchErrorBackoff = time.Second
+
+// dispatch fetches messages and hands each to its session's lane until
+// ctx is cancelled. A message that does not decode is terminated here.
+func (c *Consumer) dispatch(ctx context.Context, fetch func() ([]*nats.Msg, error), lanes []*lane) {
+	for {
+		if ctx.Err() != nil {
+			return
+		}
+		msgs, err := fetch()
 		if err != nil {
 			// errors.Is unwraps wrapped sentinels;
 			// direct `==` would miss a future caller that wraps the
@@ -600,91 +690,100 @@ func (c *Consumer) worker(ctx context.Context, sub *nats.Subscription, id int) {
 			if errors.Is(err, nats.ErrTimeout) || errors.Is(err, context.Canceled) {
 				continue
 			}
-			slog.Error("fetch error", "worker", id, "err", err)
+			slog.Error("fetch error", "err", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(fetchErrorBackoff):
+			}
 			continue
 		}
-
+		now := time.Now()
 		for _, msg := range msgs {
 			var event EventPayload
 			if err := json.Unmarshal(msg.Data, &event); err != nil {
 				metrics.IncrDropped(metrics.ReasonUnmarshalError)
-				slog.Error("unmarshal error", "worker", id, "err", err)
+				slog.Error("unmarshal error", "err", err)
 				_ = msg.Term()
 				continue
 			}
-
-			// Delivery metadata: the stream position orders a session's
-			// events and the delivery count tells the processor when the
-			// retry budget is spent. Both are missing only for a message
-			// that did not come through JetStream, which this consumer
-			// never receives; treat that as a final delivery so nothing
-			// can retry forever.
-			meta, mErr := msg.Metadata()
-			deliveries := deliveryNumber(meta, mErr)
-			if mErr == nil {
-				event.StreamSeq = meta.Sequence.Stream
-			}
-			event.FinalDelivery = deliveries >= maxDeliver
-
-			// Process inside a recover barrier: a panic on one hostile
-			// or malformed message (a message on the bus is an
-			// untrusted trust boundary) must not crash the whole
-			// worker pool -- an unrecovered panic in any goroutine is
-			// process-fatal in Go. On panic we log, convert to an
-			// error, and Nak the single message so the loop continues.
-			procErr := func() (err error) {
-				defer func() {
-					if r := recover(); r != nil {
-						metrics.IncrDropped(metrics.ReasonProcessPanic)
-						slog.Error("recovered panic processing message",
-							"worker", id, "event_type", event.EventType, "panic", r)
-						err = fmt.Errorf("panic: %v", r)
-					}
-				}()
-				return c.processor.Process(ctx, event)
-			}()
-			outcome, delay := decideDelivery(procErr, deliveries)
-			retryRequested := errors.Is(procErr, ErrRetryLater)
-			if procErr != nil && !retryRequested {
-				slog.Error("process error",
-					"worker", id, "event_type", event.EventType,
-					"session_id", event.SessionID, "err", procErr)
-			}
-			switch outcome {
-			case outcomeRetry:
-				if retryRequested {
-					// Expected while a sibling goroutine is still
-					// writing the row this event needs; not a
-					// processing error.
-					slog.Info("event redelivery scheduled",
-						"worker", id, "event_type", event.EventType,
-						"session_id", event.SessionID,
-						"delivery", deliveries, "delay", delay)
-				}
-				// A delayed NAK gives a transient database error time
-				// to clear where an immediate one spends the budget in
-				// milliseconds; a NAK that fails to reach the server is
-				// recovered by the consumer's ack wait: the message is
-				// redelivered once it expires, only later.
-				_ = msg.NakWithDelay(delay)
-			case outcomeTerm:
-				// No budget left: NATS would not redeliver, and a
-				// delayed NAK would only hold an ack-pending slot for
-				// the length of the delay. Count the message as
-				// retries-exhausted, distinct from per-attempt errors,
-				// and terminate it; a Term that fails to reach the
-				// server leaves it ack-pending until the ack wait
-				// expires, with nothing redelivered either way.
-				metrics.IncrDropped(metrics.ReasonMaxRetriesExhausted)
-				if retryRequested {
-					slog.Warn("retry requested on the final delivery; dropping",
-						"worker", id, "event_type", event.EventType,
-						"session_id", event.SessionID)
-				}
-				_ = msg.Term()
-			default:
-				_ = msg.Ack()
-			}
+			lanes[laneFor(event.SessionID, len(lanes))].push(&laneEntry{msg: msg, event: event, since: now})
 		}
+	}
+}
+
+// handle processes one message on lane id and answers NATS for it.
+func (c *Consumer) handle(ctx context.Context, msg *nats.Msg, event EventPayload, id int) {
+	// Delivery metadata: the stream position orders a session's
+	// events and the delivery count tells the processor when the
+	// retry budget is spent. Both are missing only for a message
+	// that did not come through JetStream, which this consumer
+	// never receives; treat that as a final delivery so nothing
+	// can retry forever.
+	meta, mErr := msg.Metadata()
+	deliveries := deliveryNumber(meta, mErr)
+	if mErr == nil {
+		event.StreamSeq = meta.Sequence.Stream
+	}
+	event.FinalDelivery = deliveries >= maxDeliver
+
+	// Process inside a recover barrier: a panic on one hostile
+	// or malformed message (a message on the bus is an
+	// untrusted trust boundary) must not crash the whole
+	// worker pool -- an unrecovered panic in any goroutine is
+	// process-fatal in Go. On panic we log, convert to an
+	// error, and Nak the single message so the loop continues.
+	procErr := func() (err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				metrics.IncrDropped(metrics.ReasonProcessPanic)
+				slog.Error("recovered panic processing message",
+					"worker", id, "event_type", event.EventType, "panic", r)
+				err = fmt.Errorf("panic: %v", r)
+			}
+		}()
+		return c.processor.Process(ctx, event)
+	}()
+	outcome, delay := decideDelivery(procErr, deliveries)
+	retryRequested := errors.Is(procErr, ErrRetryLater)
+	if procErr != nil && !retryRequested {
+		slog.Error("process error",
+			"worker", id, "event_type", event.EventType,
+			"session_id", event.SessionID, "err", procErr)
+	}
+	switch outcome {
+	case outcomeRetry:
+		if retryRequested {
+			// Expected while the row this event needs has not
+			// been written yet (the event reached the worker
+			// before its session_start); not a processing error.
+			slog.Info("event redelivery scheduled",
+				"worker", id, "event_type", event.EventType,
+				"session_id", event.SessionID,
+				"delivery", deliveries, "delay", delay)
+		}
+		// A delayed NAK gives a transient database error time
+		// to clear where an immediate one spends the budget in
+		// milliseconds; a NAK that fails to reach the server is
+		// recovered by the consumer's ack wait: the message is
+		// redelivered once it expires, only later.
+		_ = msg.NakWithDelay(delay)
+	case outcomeTerm:
+		// No budget left: NATS would not redeliver, and a
+		// delayed NAK would only hold an ack-pending slot for
+		// the length of the delay. Count the message as
+		// retries-exhausted, distinct from per-attempt errors,
+		// and terminate it; a Term that fails to reach the
+		// server leaves it ack-pending until the ack wait
+		// expires, with nothing redelivered either way.
+		metrics.IncrDropped(metrics.ReasonMaxRetriesExhausted)
+		if retryRequested {
+			slog.Warn("retry requested on the final delivery; dropping",
+				"worker", id, "event_type", event.EventType,
+				"session_id", event.SessionID)
+		}
+		_ = msg.Term()
+	default:
+		_ = msg.Ack()
 	}
 }

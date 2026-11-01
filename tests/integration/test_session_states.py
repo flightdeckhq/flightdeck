@@ -748,6 +748,11 @@ def test_order_independence_pc_then_ss_matches_ss_then_pc() -> None:
 WORKER_RETRY_WINDOW_SECS = 3.0
 STATE_TIMEOUT_SECS = PROCESSING_SLACK_SECS
 RETRY_WINDOW_TIMEOUT_SECS = WORKER_RETRY_WINDOW_SECS + PROCESSING_SLACK_SECS
+# The worker gives up on a message whose processing passes ten seconds
+# (a row lock it waits on) and asks for its redelivery; a poll that waits
+# out a held event allows that deadline on top of the retry window.
+WORKER_PROCESS_DEADLINE_SECS = 10.0
+HELD_START_TIMEOUT_SECS = WORKER_PROCESS_DEADLINE_SECS + RETRY_WINDOW_TIMEOUT_SECS
 # Several times FLIGHTDECK_WORKER_POOL_SIZE (10), so many sessions are in
 # flight across goroutines at once while the burst itself (three POSTs
 # per session) still takes about two seconds.
@@ -1006,10 +1011,13 @@ def test_reattachment_with_the_previous_end_queued_keeps_its_first_calls() -> No
 
 def test_reattachment_processed_after_both_runs_ended_stays_closed() -> None:
     """Force the worst order: the previous run's end and the new run's
-    end are both processed while the re-attaching session_start is held
-    back (the agents row it must upsert first is locked). The later end
-    must leave its mark on the closed row, so the start, once released,
-    cannot revive a session whose new run has already ended.
+    end are both processed before the re-attaching session_start. The
+    start is held back (the agents row it must upsert first is locked)
+    until the worker's processing deadline gives up on it and asks for a
+    redelivery; the session's lane then moves on to the new run's end.
+    The later end must leave its mark on the closed row, so the start,
+    redelivered once the lock is released, cannot revive a session whose
+    new run has already ended.
     """
     sid = str(uuid.uuid4())
     flavor = f"test-reattach-held-{uuid.uuid4().hex[:6]}"
@@ -1023,20 +1031,19 @@ def test_reattachment_processed_after_both_runs_ended_stays_closed() -> None:
         post_event(make_event(sid, flavor, "session_end", agent_name=HELD_AGENT_NAME))
         post_event(make_event(sid, flavor, "session_start", agent_name=HELD_AGENT_NAME))
         post_event(make_event(sid, flavor, "session_end", agent_name=HELD_AGENT_NAME))
-        _wait_for_rows(flavor, "session_end", 2, RETRY_WINDOW_TIMEOUT_SECS)
+        _wait_for_rows(flavor, "session_end", 2, HELD_START_TIMEOUT_SECS)
         assert _count_rows(flavor, "session_start") == 1, "the start was not held back"
         assert get_session_detail(sid)["session"]["state"] == "closed"
 
-    _wait_for_rows(flavor, "session_start", 2, RETRY_WINDOW_TIMEOUT_SECS)
+    _wait_for_rows(flavor, "session_start", 2, HELD_START_TIMEOUT_SECS)
     assert get_session_detail(sid)["session"]["state"] == "closed"
 
 
 def test_reattachment_that_ends_at_once_with_the_previous_end_queued_closes() -> None:
     """The previous run's end, the re-attaching start and the new run's end
-    are all queued together. Whichever order the pool processes them in,
-    the session must end closed: in particular, when both ends are
-    processed before the start, the later end must leave its mark so the
-    start cannot revive a session whose new run has already ended.
+    are all queued together and processed in that order: the session
+    must end closed. (Both ends processed before the start is covered by
+    the held-start test above.)
     """
     sid = str(uuid.uuid4())
     flavor = f"test-reattach-both-{uuid.uuid4().hex[:6]}"
@@ -1054,10 +1061,9 @@ def test_reattachment_that_ends_at_once_with_the_previous_end_queued_closes() ->
 @pytest.mark.exclusive
 def test_backlog_of_reattachments_drains_to_the_right_states() -> None:
     """Queue every re-attachment shape behind a paused worker, then let
-    the pool drain the backlog concurrently. Whatever order the
-    goroutines pick, a session whose latest event is a session_end must
-    end closed and one whose latest event is a session_start must end
-    active with its call's tokens.
+    the lanes drain the backlog together. A session whose latest event is
+    a session_end must end closed and one whose latest event is a
+    session_start must end active with its call's tokens.
     """
     flavor = f"test-backlog-{uuid.uuid4().hex[:6]}"
     ending = [str(uuid.uuid4()) for _ in range(BACKLOG_SESSIONS)]

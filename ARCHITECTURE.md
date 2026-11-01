@@ -332,7 +332,8 @@ flightdeck/
 │   ├── cmd/main.go             # Entry, applies migrations, NATS consumer pool, graceful shutdown
 │   ├── internal/
 │   │   ├── config/config.go
-│   │   ├── consumer/nats.go    # JetStream consumer goroutine pool, ack handling
+│   │   ├── consumer/nats.go    # JetStream consumer: fetch loop, ack handling
+│   │   ├── consumer/lanes.go   # Per-session lanes, keepalive, processing deadline
 │   │   ├── migrate/migrate.go  # golang-migrate runner: applies docker/postgres/migrations at boot
 │   │   ├── metrics/metrics.go  # Atomic, reason-labelled dropped / closed / revived counters + Snapshot + Prometheus-text Handler + NewServer (the /metrics listener)
 │   │   ├── modelid/canonical.go  # Model-id canonicalisation and provider derivation (pure; test-vector table)
@@ -2302,9 +2303,9 @@ A `session_end` for a `session_id` Flightdeck has never seen (an orphan
 `session_end`) is **not** rejected at ingestion — the event is accepted and
 published, and the worker decides what to do with it.
 
-The worker pool handles a session's events concurrently, so a `session_end`
-can be picked up while the same session's `session_start` is still being
-written. A `session_end` whose `sessions` row is missing is therefore not
+A `session_end` can reach the worker before its session's `session_start`
+(a client published them out of order, or the start is a redelivery; see
+NATS consumer). A `session_end` whose `sessions` row is missing is therefore not
 dropped on sight: the worker asks NATS to redeliver it after one second,
 and once more after two, holding no goroutine in the meantime. A row that
 has appeared by then is closed, provided its current run began before the
@@ -2419,9 +2420,9 @@ apart: every `session_start` records its NATS stream sequence in
   calls the worker handles before the start's own revive are stored
   without rolling their tokens up, and the `session_start`, published
   after that end, revives the row.
-- A `session_start` can be processed after its own `session_end`, because
-  the worker pool handles a session's events concurrently. It was
-  published before the end that closed the row, so the row stays closed.
+- A `session_start` can be processed after its own `session_end`, when it
+  reaches the worker out of order (see NATS consumer). It was published
+  before the end that closed the row, so the row stays closed.
 
 In the other direction, a `session_end` published before the row's
 current run began (`start_seq`) is recorded as an event but closes
@@ -2458,9 +2459,9 @@ NOTIFY events.
 
 ### NATS consumer
 
-`workers/internal/consumer/nats.go::Consumer` connects to NATS and starts
-`WorkerPoolSize` goroutines pulling from one durable consumer, each
-fetching one message at a time. A message has three outcomes: ACK when
+`workers/internal/consumer/nats.go::Consumer` connects to NATS and pulls
+from one durable consumer with one fetching goroutine, which hands each
+message to one of `WorkerPoolSize` lanes (below). A message has three outcomes: ACK when
 the processor returns nil (including the orphan `session_end` path, which
 inserts nothing); a delayed NAK when the processor cannot act yet or
 fails and the delivery budget is not spent; and Term for a payload that
@@ -2471,9 +2472,35 @@ stream (the worker counts a message that fails its last delivery as
 `max_retries_exhausted`). Each delivery hands the processor the message's
 stream sequence and whether it is the last delivery the budget allows.
 
-Nothing orders a session's events across goroutines: two events of one
-session published a few milliseconds apart are processed concurrently.
-Correctness under that rests on the session-row rules below — lazy
+The consumer processes a session's events in stream order. The fetching
+goroutine asks for up to 64 messages at a time and appends each to the
+queue of one of `FLIGHTDECK_WORKER_POOL_SIZE` lanes, chosen by a hash of
+its `session_id`; each lane's goroutine processes its queue one message
+at a time, in the order fetched. Different sessions run concurrently
+across lanes; two events of one session never do, so a `session_start`
+is written before the `pre_call` published after it is looked at.
+
+Appending never waits, so a slow session holds back only the sessions
+that share its lane. The queues are bounded by the consumer's
+`MaxAckPending` (1000): the server stops delivering when that many
+messages are unacknowledged. A queued message is already delivered and
+unacknowledged, so every ten seconds the consumer reports each message
+that is waiting in a lane, or being processed, in progress
+(`AckWait` is 30 seconds); its ack wait restarts without spending a
+delivery. Processing one message has a ten-second deadline: a message
+stuck on the database (a row lock held elsewhere) fails at the deadline,
+is redelivered with the delayed NAK below, and its lane moves on. The
+worker's connections set `lock_timeout` to eight seconds, under that
+deadline, so Postgres itself abandons the wait rather than keeping a
+backend blocked after the client has given up. A lock held through all
+three deliveries (about 35 seconds) ends the message as
+`max_retries_exhausted`.
+
+Events can still reach the worker out of order: a client's concurrent
+processes (the Claude Code plugin's hooks) can publish a session's events
+in a different order than they happened, and a message the worker asked
+to be redelivered comes back after the session's later events.
+Correctness under that rests on the session-row rules below: lazy
 creation on any event but `session_end`, the parent stub, the delayed
 redelivery of a `session_end` that arrives before its row, the stream
 sequence comparison between a session's start and end, and the
@@ -2570,8 +2597,9 @@ log, while the event row itself is still stored. One side effect is
 kept: a call event published before the `session_end` (its stream
 sequence below the row's `closed_seq`) still adds its tokens to the
 session and the agent, because a sensor sends a run's last `post_call`
-and its `session_end` back to back and the worker pool can apply the
-end first. The session stays closed and `last_seen_at` does not move. Revival on `stale` /
+and its `session_end` back to back and the call can reach the worker
+after the end (a redelivered call, or a client that published them out
+of order). The session stays closed and `last_seen_at` does not move. Revival on `stale` /
 `lost` is a correctness fix; reviving a `closed` session would contradict
 the user's explicit end signal. The one exception is a re-attachment: a
 `session_start` revives a closed row unless its own `session_end` was

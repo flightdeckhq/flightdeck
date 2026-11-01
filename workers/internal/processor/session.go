@@ -466,7 +466,8 @@ func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.Event
 // session. The guard skips its session side effects, but a call
 // published before the session_end still belongs in the session's and
 // the agent's token totals (its event row is stored either way); only
-// the order the worker pool applied the two events differs. A call
+// the order the two reached the worker differs (a redelivered call, or a
+// client that published them out of order). A call
 // published after the end is left out, as before.
 func (sp *SessionProcessor) addTokensBeforeEnd(ctx context.Context, e consumer.EventPayload) error {
 	if e.TokensTotal == nil || *e.TokensTotal <= 0 {
@@ -592,11 +593,11 @@ func nilIfEmpty(s string) any {
 // an event without closing anything (superseded_session_end). Unknown
 // sequences (zero) stand the ordering rule down.
 //
-// The worker pool handles a session's events concurrently, so the row
-// can be missing because its session_start is still being written on
-// another goroutine. A missing row therefore asks the consumer for a
-// delayed redelivery (consumer.ErrRetryLater) instead of holding this
-// goroutine; only on the final delivery is it an orphan session_end:
+// The row can be missing because the session_end reached the worker
+// before its session_start (a client published them out of order, or
+// the start is being redelivered). A missing row therefore asks the
+// consumer for a delayed redelivery (consumer.ErrRetryLater) instead of
+// holding the lane; only on the final delivery is it an orphan session_end:
 // WARN, counter, and ErrEventDropped, which Process turns into a clean
 // ACK with no event row. Letting the insert run would fail the sessions
 // foreign key and spend the retry budget on an opaque "process error".

@@ -4,6 +4,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/flightdeckhq/flightdeck/api/internal/auth"
 )
 
 // The query API answers its routes both bare (behind the compose nginx,
@@ -41,5 +43,34 @@ func TestAPIServesRoutesUnderPublicPrefix(t *testing.T) {
 	}
 	if got := get("/apix/health"); got != http.StatusNotFound {
 		t.Errorf("GET /apix/health: status %d, want 404", got)
+	}
+}
+
+// The bearer-token gate applies under the prefix exactly as on the bare
+// path: a request with no token is refused 401 on both forms, and the
+// open routes stay open.
+func TestAPIAuthAppliesUnderPublicPrefix(t *testing.T) {
+	// A request with no token is refused before the validator looks the
+	// token up, so no pool is needed.
+	srv := New(":0", nil, nil, auth.NewValidator(nil), "*")
+	ts := httptest.NewServer(srv.Handler)
+	defer ts.Close()
+
+	for path, want := range map[string]int{
+		"/v1/fleet":      http.StatusUnauthorized,
+		"/api/v1/fleet":  http.StatusUnauthorized,
+		"/v1/events":     http.StatusUnauthorized,
+		"/api/v1/events": http.StatusUnauthorized,
+		"/health":        http.StatusOK,
+		"/api/health":    http.StatusOK,
+	} {
+		resp, err := ts.Client().Get(ts.URL + path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != want {
+			t.Errorf("GET %s: status %d, want %d", path, resp.StatusCode, want)
+		}
 	}
 }

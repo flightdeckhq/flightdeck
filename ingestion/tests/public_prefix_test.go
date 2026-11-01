@@ -55,3 +55,28 @@ func TestIngestionServesRoutesUnderPublicPrefix(t *testing.T) {
 		}
 	}
 }
+
+// Token validation applies under the prefix exactly as on the bare path.
+func TestIngestionAuthAppliesUnderPublicPrefix(t *testing.T) {
+	srv := server.New(":0", &mockValidator{valid: false}, &mockPublisher{}, &mockDirStore{}, nil,
+		&panickingDialect{}, handlers.DefaultRateLimitPerMinute)
+	ts := httptest.NewServer(srv.Handler)
+	defer ts.Close()
+
+	for _, path := range []string{"/v1/events", "/ingest/v1/events", "/v1/logs", "/ingest/v1/logs"} {
+		req, err := http.NewRequest(http.MethodPost, ts.URL+path, strings.NewReader("{}"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer bad")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := ts.Client().Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Errorf("POST %s with a bad token: status %d, want 401", path, resp.StatusCode)
+		}
+	}
+}

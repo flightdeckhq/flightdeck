@@ -7074,9 +7074,12 @@ ingestion handler, `/api/v1/fleet` and `/v1/fleet` the same API one
 (Swagger UI included). The compose nginx strips the prefix before
 proxying; the Helm chart's Ingress forwards the path unchanged, because
 rewriting it is specific to each ingress controller, and the services
-strip it themselves. Only the prefix followed by `/` or the end of the
-path is stripped, so `/ingestx/...` is a 404. Neither service has a
-route of its own under its prefix.
+strip it themselves. The prefix is stripped only when it is the whole
+first segment of the path as sent, so `/ingestx/...` and `/ingest%2F...`
+are a 404, and the rest of the path keeps its escaping. A redirect a
+service answers for a prefixed request (`/api/docs` to `/api/docs/`)
+keeps the prefix. Neither service has a route of its own under its
+prefix.
 
 The Docker Compose and Helm targets are feature-equivalent (Key
 Constraint #4).

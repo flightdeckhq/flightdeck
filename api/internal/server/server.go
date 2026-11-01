@@ -2,8 +2,11 @@
 package server
 
 import (
+	"bufio"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -257,32 +260,91 @@ func withCORS(next http.Handler, origin string) http.Handler {
 
 // withPublicPrefix serves the routes registered on next both at their
 // own paths and under prefix, the path the service is published at
-// (/ingest/v1/events reaches the same handler as /v1/events). The
-// compose nginx strips the prefix before proxying; a Kubernetes Ingress
-// forwards the path unchanged, and rewriting it there is specific to
-// each ingress controller, so the service accepts both forms itself.
-// Only the prefix followed by "/" or the end of the path is stripped:
-// /ingestfoo is left alone and 404s.
+// (/api/v1/fleet reaches the same handler as /v1/fleet). The compose nginx strips the prefix before proxying; a
+// Kubernetes Ingress forwards the path unchanged, and rewriting it there
+// is specific to each ingress controller, so the service accepts both
+// forms itself.
+//
+// The prefix must be the whole first segment of the escaped path, so
+// /apifoo and a prefix followed by an encoded slash are left alone and
+// 404; an escaped spelling of the prefix itself is accepted, as nginx
+// would. A redirect the mux answers for a prefixed request (a missing
+// trailing slash, an unclean path) keeps the prefix in its Location so
+// the client stays on this service.
 func withPublicPrefix(next http.Handler, prefix string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rest, ok := strings.CutPrefix(r.URL.Path, prefix)
-		if !ok || (rest != "" && rest[0] != '/') {
+		rest, ok := stripPathPrefix(r.URL, prefix)
+		if !ok {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if rest == "" {
-			rest = "/"
-		}
 		r2 := new(http.Request)
 		*r2 = *r
-		u := *r.URL
-		u.Path = rest
-		if rawRest, rawOK := strings.CutPrefix(r.URL.RawPath, prefix); rawOK {
-			u.RawPath = rawRest
-		} else {
-			u.RawPath = ""
-		}
-		r2.URL = &u
-		next.ServeHTTP(w, r2)
+		r2.URL = rest
+		next.ServeHTTP(&prefixRedirectWriter{ResponseWriter: w, prefix: prefix}, r2)
 	})
+}
+
+// stripPathPrefix returns a copy of u without prefix when prefix is the
+// whole first segment of u's escaped path, keeping the rest's escaping
+// (an encoded slash further down stays encoded).
+func stripPathPrefix(u *url.URL, prefix string) (*url.URL, bool) {
+	escaped := u.EscapedPath()
+	if !strings.HasPrefix(escaped, "/") {
+		return nil, false
+	}
+	first, restEscaped := escaped, "/"
+	if i := strings.IndexByte(escaped[1:], '/'); i >= 0 {
+		first, restEscaped = escaped[:i+1], escaped[i+1:]
+	}
+	if decoded, err := url.PathUnescape(first); err != nil || decoded != prefix {
+		return nil, false
+	}
+	restPath, err := url.PathUnescape(restEscaped)
+	if err != nil {
+		return nil, false
+	}
+	out := *u
+	out.Path, out.RawPath = restPath, ""
+	if out.EscapedPath() != restEscaped {
+		out.RawPath = restEscaped
+	}
+	return &out, true
+}
+
+// prefixRedirectWriter puts the public prefix back on the path-only
+// Location of a redirect answered for a prefixed request.
+type prefixRedirectWriter struct {
+	http.ResponseWriter
+	prefix string
+}
+
+func (w *prefixRedirectWriter) WriteHeader(code int) {
+	if code >= 300 && code < 400 {
+		h := w.Header()
+		if loc := h.Get("Location"); strings.HasPrefix(loc, "/") && !strings.HasPrefix(loc, "//") {
+			h.Set("Location", w.prefix+loc)
+		}
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+// Unwrap lets http.ResponseController reach the underlying writer.
+func (w *prefixRedirectWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
+
+// Flush passes through to the underlying writer when it can flush.
+func (w *prefixRedirectWriter) Flush() {
+	if f, ok := w.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// Hijack passes through to the underlying writer, which the WebSocket
+// upgrade needs.
+func (w *prefixRedirectWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	h, ok := w.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, errors.New("response writer does not support hijacking")
+	}
+	return h.Hijack()
 }

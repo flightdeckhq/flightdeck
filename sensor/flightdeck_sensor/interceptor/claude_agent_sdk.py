@@ -29,8 +29,8 @@ caller's iteration, and allows the tool call.
 
 from __future__ import annotations
 
-import asyncio
 import dataclasses
+import json
 import logging
 import os
 import re
@@ -38,6 +38,7 @@ import threading
 import time
 import uuid
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
@@ -88,6 +89,54 @@ _WARN_NOTICE = "Flightdeck: this run crossed its token budget's warning threshol
 # Characters Claude Code replaces with "_" in an MCP server's name when
 # it builds the server's tool names (mcp__<server>__<tool>).
 _TOOL_NAME_UNSAFE = re.compile(r"[^A-Za-z0-9_-]")
+_MCP_TOOL_PREFIX = "mcp__"
+# Bound on an MCP server name taken from a hook's input, as the Claude
+# Code plugin bounds it: longer than any real server key.
+_MAX_MCP_NAME_CHARS = 256
+# How far up from the working directory a project .mcp.json is looked
+# for, as the plugin does: deeper than any real checkout.
+_MCP_JSON_WALK_LIMIT = 32
+
+
+def _flatten(name: str) -> str:
+    return _TOOL_NAME_UNSAFE.sub("_", name)
+
+
+def _configured_mcp_servers(cwd: str) -> dict[str, Any]:
+    """The MCP servers Claude Code's own config declares for ``cwd``,
+    read the way the Claude Code plugin reads them: the nearest
+    ``.mcp.json`` up from ``cwd``, then ``~/.claude.json``'s user-wide
+    and per-project ``mcpServers``. The first declaration of a name
+    wins; an unreadable file contributes nothing."""
+    servers: dict[str, Any] = {}
+
+    def add(block: Any) -> None:
+        if isinstance(block, dict):
+            for name, spec in block.items():
+                servers.setdefault(str(name), spec)
+
+    def read(path: Path) -> Any:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+
+    directory = Path(cwd)
+    for _ in range(_MCP_JSON_WALK_LIMIT):
+        found = read(directory / ".mcp.json")
+        if isinstance(found, dict):
+            add(found.get("mcpServers"))
+            break
+        if directory.parent == directory:
+            break
+        directory = directory.parent
+    user = read(Path.home() / ".claude.json")
+    if isinstance(user, dict):
+        add(user.get("mcpServers"))
+        projects = user.get("projects")
+        if isinstance(projects, dict) and isinstance(projects.get(cwd), dict):
+            add(projects[cwd].get("mcpServers"))
+    return servers
 
 
 def _stop_message(reason: str) -> str:
@@ -287,12 +336,10 @@ class SdkRun:
         self._session = session
         self._env = env
         self._platform = _platform(env)[0]
-        # The options' MCP servers by the name Claude Code puts in their
-        # tool names; a file path (not a dict) leaves this empty.
+        # The options' MCP servers by name; a file path (not a dict)
+        # leaves this empty, and the CLI's config files are read instead.
         self._mcp_servers: dict[str, Any] = (
-            {_TOOL_NAME_UNSAFE.sub("_", str(k)): v for k, v in mcp_servers.items()}
-            if isinstance(mcp_servers, dict)
-            else {}
+            {str(k): v for k, v in mcp_servers.items()} if isinstance(mcp_servers, dict) else {}
         )
         # Control state, written by the event queue's drain thread and
         # read by the hook callbacks on the SDK's event loop.
@@ -665,18 +712,37 @@ class SdkRun:
             )
         ]
 
-    def _take_notices(self) -> dict[str, Any]:
+    def _take_notices(self, hook_event: str) -> dict[str, Any]:
+        """Pending budget notices as hook output: a ``systemMessage``
+        for whoever watches the run and ``additionalContext`` for the
+        model, which is all a headless run has."""
         with self._lock:
             notices, self._notices = self._notices, []
-        return {"systemMessage": "\n".join(notices)} if notices else {}
+        if not notices:
+            return {}
+        text = "\n".join(notices)
+        return {
+            "systemMessage": text,
+            "hookSpecificOutput": {"hookEventName": hook_event, "additionalContext": text},
+        }
 
     async def _poll_if_idle(self) -> None:
+        """Poll for a directive when the run has sent nothing for a
+        while. A failed poll is logged and leaves the gates to run."""
         if self.session_id is None or self._stopped is not None:
             return
         if time.monotonic() - self._last_request < _POLL_IDLE_SECS:
             return
         self._last_request = time.monotonic()
-        directive = await asyncio.to_thread(self._session.client.post_heartbeat, self.session_id)
+        try:
+            import anyio.to_thread
+
+            directive = await anyio.to_thread.run_sync(
+                self._session.client.post_heartbeat, self.session_id
+            )
+        except Exception:
+            _log.debug("claude_agent_sdk: directive poll failed", exc_info=True)
+            return
         if directive is not None:
             self.apply_directive(directive)
 
@@ -685,6 +751,9 @@ class SdkRun:
         ends the turn; an MCP tool call is held to the MCP policy."""
         try:
             await self._poll_if_idle()
+        except Exception:
+            _log.debug("claude_agent_sdk: directive poll failed", exc_info=True)
+        try:
             stopped = self._stopped
             if stopped is not None:
                 message = _stop_message(stopped)
@@ -697,16 +766,17 @@ class SdkRun:
                         "permissionDecisionReason": message,
                     },
                 }
-            output = self._take_notices()
-            tool_name = input_data.get("tool_name") if isinstance(input_data, dict) else None
-            if isinstance(tool_name, str) and tool_name.startswith("mcp__"):
-                denial = self._mcp_gate(tool_name)
+            output = self._take_notices("PreToolUse")
+            data = input_data if isinstance(input_data, dict) else {}
+            tool_name = data.get("tool_name")
+            if isinstance(tool_name, str) and tool_name.startswith(_MCP_TOOL_PREFIX):
+                denial = self._mcp_gate(tool_name, data)
                 if denial is not None:
-                    output["hookSpecificOutput"] = {
-                        "hookEventName": "PreToolUse",
-                        "permissionDecision": "deny",
-                        "permissionDecisionReason": denial,
-                    }
+                    specific = output.setdefault(
+                        "hookSpecificOutput", {"hookEventName": "PreToolUse"}
+                    )
+                    specific["permissionDecision"] = "deny"
+                    specific["permissionDecisionReason"] = denial
             return output
         except Exception:
             _log.debug("claude_agent_sdk: PreToolUse callback failed; allowing", exc_info=True)
@@ -720,25 +790,67 @@ class SdkRun:
             stopped = self._stopped
             if stopped is not None:
                 return {"decision": "block", "reason": _stop_message(stopped)}
-            return self._take_notices()
+            return self._take_notices("UserPromptSubmit")
         except Exception:
             _log.debug("claude_agent_sdk: UserPromptSubmit callback failed", exc_info=True)
             return {}
 
-    def _mcp_gate(self, tool_name: str) -> str | None:
+    def _resolve_mcp_server(
+        self, tool_name: str, data: dict[str, Any]
+    ) -> tuple[str, str, Any] | None:
+        """The server an MCP tool call goes to, as ``(name, tool,
+        spec)``, from the options' servers and then the CLI's config
+        files; None when no definition is found. The server is the one
+        the hook input's ``mcp_server`` names when present, else the
+        longest known name whose tool-name form prefixes the call, as
+        the Claude Code plugin resolves it."""
+        rest = tool_name[len(_MCP_TOOL_PREFIX) :]
+        known = dict(self._mcp_servers)
+        raw_cwd = data.get("cwd")
+        cwd = raw_cwd if isinstance(raw_cwd, str) and raw_cwd else os.getcwd()
+        for declared, spec in _configured_mcp_servers(cwd).items():
+            known.setdefault(declared, spec)
+        by_key = {_flatten(declared): declared for declared in known}
+        hint = data.get("mcp_server")
+        hint_name = hint.get("name") if isinstance(hint, dict) else None
+        name: str | None
+        if isinstance(hint_name, str) and 0 < len(hint_name) <= _MAX_MCP_NAME_CHARS:
+            key = _flatten(hint_name)
+            name = hint_name if hint_name in known else by_key.get(key)
+        else:
+            key = max(
+                (k for k in by_key if rest.startswith(f"{k}__") and len(rest) > len(k) + 2),
+                key=len,
+                default="",
+            )
+            name = by_key.get(key)
+        if name is None:
+            return None
+        tool = rest[len(key) + 2 :] if rest.startswith(f"{key}__") else rest
+        return name, tool, known[name]
+
+    def _mcp_gate(self, tool_name: str, data: dict[str, Any]) -> str | None:
         """Evaluate the MCP policy for an ``mcp__<server>__<tool>``
-        call; the denial reason when it is blocked."""
+        call; the denial reason when it is blocked. A server with no
+        definition the sensor can read (a plugin's, for one) and an
+        in-process SDK server are not gated, as the plugin's gate does
+        not gate a server it cannot identify."""
         from flightdeck_sensor.interceptor.mcp import (
             _build_mcp_policy_reason,
             _build_policy_event_extras,
         )
 
-        server_name, _, tool = tool_name[len("mcp__") :].partition("__")
-        spec = self._mcp_servers.get(server_name)
+        resolved = self._resolve_mcp_server(tool_name, data)
+        if resolved is None:
+            _log.debug("claude_agent_sdk: no definition for %s; not gated", tool_name)
+            return None
+        server_name, tool, spec = resolved
         spec = spec if isinstance(spec, dict) else {}
         if spec.get("type") == "sdk":
             return None
         server_url, transport = _server_identity(spec)
+        if not server_url:
+            return None
         decision = self._session.mcp_policy.evaluate(server_url=server_url, server_name=server_name)
         if decision.decision == "allow":
             return None

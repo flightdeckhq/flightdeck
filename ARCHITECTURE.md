@@ -1158,7 +1158,7 @@ caller's hooks or these wins.
 A directive for the run arrives in the response to any of its events,
 or to `POST /v1/heartbeat`, which the `PreToolUse` callback sends for
 the run when it has sent nothing for 5 seconds (one attempt with a
-2-second timeout; a failed poll allows the call). The sensor's event
+2-second timeout; a failed poll is skipped and the gates still run). The sensor's event
 queue hands a directive to the run its event belongs to, and one for the
 process's own session (or its sub-agent children) to the sensor's
 directive handler. A run's directives are never applied to the sensor's
@@ -1168,20 +1168,26 @@ Claude Code > Enforcement), applied by the callbacks:
 | Directive | Effect |
 |---|---|
 | `shutdown`, `shutdown_flavor` | The run is stopped: every later tool call is denied with `continue: false`, which ends the turn, and every prompt is blocked. The sensor sends `directive_result` (`acknowledged`), plus `policy_block` when the reason is `token_budget_exceeded`; the run's `session_end` has `close_reason=directive_shutdown`. |
-| `warn` | The next callback shows the run a `systemMessage` that it crossed the token policy's warn threshold; `policy_warn` is sent. |
-| `degrade` | Advisory, as for Claude Code: a hook cannot change the run's model, so the `systemMessage` names the degrade target; `policy_degrade` and an `acknowledged` `directive_result` are sent. |
+| `warn` | The next callback tells the run it crossed the token policy's warn threshold, as a `systemMessage` for whoever watches the run and as `additionalContext` for the model; `policy_warn` is sent. |
+| `degrade` | Advisory, as for Claude Code: a hook cannot change the run's model, so the notice (delivered as for `warn`) names the degrade target; `policy_degrade` and an `acknowledged` `directive_result` are sent. |
 | any other | `directive_result` with `directive_status=error`. |
 
 For an `mcp__<server>__<tool>` call the `PreToolUse` callback evaluates
-the MCP policy the sensor loaded for its flavor against the server's
-entry in the options' `mcp_servers`: its `url`, or its `command` and
+the MCP policy the sensor loaded for its flavor. The server is resolved
+as the Claude Code plugin resolves it: the hook input's `mcp_server`
+name when present, else the longest known server name whose tool-name
+form (characters outside `[A-Za-z0-9_-]` become `_`) prefixes the call.
+Known servers are the options' `mcp_servers`, then those Claude Code's
+config declares for the working directory (the nearest `.mcp.json`, and
+`~/.claude.json`'s user-wide and per-project `mcpServers`). The policy
+identity is the server's name and its `url`, or its `command` and
 `args` joined by spaces, the same identity the plugin and the sensor's
 MCP interceptor use. `warn` sends `policy_mcp_warn` and allows the call;
 `block` sends `policy_mcp_block` and denies it with the policy's reason.
 An in-process server (`type: "sdk"`) is the caller's own code, not an
-external MCP server, and is not gated. A server the options do not list
-(a `mcp_servers` given as a file path, or one Claude Code found itself)
-is evaluated with an empty URL, which gives the policy's mode default.
+external MCP server, and is not gated; nor is a server with no
+definition the sensor can read (a plugin's), as the plugin's own gate
+does not gate a server it cannot identify.
 
 Enforcement fails open: a callback that raises allows the call, and a
 stop already received stays in force until the run ends.
@@ -3034,9 +3040,12 @@ CREATE INDEX directives_flavor_pending_idx ON directives (flavor) WHERE delivere
 ```
 
 `LookupPending(sessionID)` does an atomic UPDATE...RETURNING that combines
-lookup and mark-delivered in a single operation: any pending directive
-for the session is returned and stamped `delivered_at = NOW` so it is
-not re-delivered on subsequent POSTs.
+lookup and mark-delivered in a single operation: the oldest pending
+directive addressed to the session, or addressed to its flavor with no
+session, is returned and stamped `delivered_at = NOW` so it is not
+re-delivered on subsequent POSTs. A row for another session of the same
+flavor is never returned, so a stop for one session cannot reach
+another (a `shutdown_flavor` fans out into one row per session).
 
 ### `custom_directives`
 

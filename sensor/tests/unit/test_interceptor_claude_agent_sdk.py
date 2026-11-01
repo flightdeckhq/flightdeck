@@ -10,6 +10,7 @@ fail-open posture are checked without a CLI.
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -739,6 +740,7 @@ def test_warn_and_degrade_tell_the_run_once_and_send_their_events(
     seen["messages"] = [*_messages(sdk)[:4], step, *_messages(sdk)[4:]]
     _run_query(sdk)
     message = outputs[0]["systemMessage"]
+    assert outputs[0]["hookSpecificOutput"]["additionalContext"] == message, "the model sees it too"
     assert "warning threshold" in message
     assert "claude-haiku-4-5" in message
     assert "permissionDecision" not in str(outputs[0])
@@ -852,28 +854,161 @@ def test_an_mcp_call_is_held_to_the_mcp_policy(
         assert events[0]["policy_decision"]["decision"] == decision
 
 
-def test_an_in_process_sdk_server_is_not_gated_and_an_unlisted_one_gets_the_mode_default(
-    patched: Any, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    sdk, seen = patched
-    session, _ = _session()
-    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+def _recording_policy(
+    session: Any, monkeypatch: pytest.MonkeyPatch, decision: str = "allow"
+) -> list[tuple[str, str]]:
     asked: list[tuple[str, str]] = []
 
     def evaluate(server_url: str, server_name: str) -> Any:
         asked.append((server_url, server_name))
-        return _decision("allow")
+        return _decision(decision)
 
     monkeypatch.setattr(session.mcp_policy, "evaluate", evaluate)
+    return asked
+
+
+def _gate_tools(
+    sdk: Any, seen: dict[str, Any], calls: list[dict[str, Any]], outputs: list[Any] | None = None
+) -> None:
+    async def step(options: Any) -> None:
+        for call in calls:
+            out = await _hook(options, "PreToolUse")(
+                {"hook_event_name": "PreToolUse", "tool_input": {}, **call}, "t", None
+            )
+            if outputs is not None:
+                outputs.append(out)
+
+    seen["messages"] = [_messages(sdk)[0], step, *_messages(sdk)[1:]]
+
+
+@pytest.fixture()
+def isolated_home(tmp_path: Any, monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A home and working directory with no Claude Code config of the
+    test machine's own."""
+    home = tmp_path / "home"
+    home.mkdir()
+    work = tmp_path / "work" / "repo"
+    work.mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("USERPROFILE", str(home))
+    return home, work
+
+
+def test_an_in_process_server_and_an_unknown_one_are_not_gated(
+    patched: Any, monkeypatch: pytest.MonkeyPatch, isolated_home: Any
+) -> None:
+    sdk, seen = patched
+    _, work = isolated_home
+    session, queue = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    asked = _recording_policy(session, monkeypatch, "block")
+    outputs: list[Any] = []
+    _gate_tools(
+        sdk,
+        seen,
+        [
+            {"tool_name": "mcp__tools__add", "cwd": str(work)},
+            {"tool_name": "mcp__elsewhere__fetch", "cwd": str(work)},
+        ],
+        outputs,
+    )
+    servers = {"tools": {"type": "sdk", "name": "tools", "instance": object()}}
+    _run_query(sdk, options=sdk.ClaudeAgentOptions(mcp_servers=servers))
+    assert asked == [], "neither server is evaluated"
+    assert outputs == [{}, {}]
+    assert not [e for e in queue.events if e["event_type"].startswith("policy_mcp")], (
+        "no MCP policy event without a server URL (ingestion rejects one)"
+    )
+
+
+def test_servers_from_claude_codes_config_files_are_gated(
+    patched: Any, monkeypatch: pytest.MonkeyPatch, isolated_home: Any
+) -> None:
+    sdk, seen = patched
+    home, work = isolated_home
+    (work.parent / ".mcp.json").write_text(
+        json.dumps({"mcpServers": {"project-db": {"command": "uvx", "args": ["db-mcp"]}}})
+    )
+    (home / ".claude.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {"web": {"type": "http", "url": "https://mcp.example.com/mcp"}},
+                "projects": {
+                    str(work): {"mcpServers": {"local-fs": {"command": "npx", "args": ["fs"]}}}
+                },
+            }
+        )
+    )
+    session, _ = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    asked = _recording_policy(session, monkeypatch)
+    _gate_tools(
+        sdk,
+        seen,
+        [
+            {"tool_name": "mcp__project-db__query", "cwd": str(work)},
+            {"tool_name": "mcp__web__search", "cwd": str(work)},
+            {"tool_name": "mcp__local-fs__read", "cwd": str(work)},
+        ],
+    )
+    _run_query(sdk)
+    assert asked == [
+        ("uvx db-mcp", "project-db"),
+        ("https://mcp.example.com/mcp", "web"),
+        ("npx fs", "local-fs"),
+    ]
+
+
+def test_server_names_resolve_as_the_plugin_resolves_them(
+    patched: Any, monkeypatch: pytest.MonkeyPatch, isolated_home: Any
+) -> None:
+    """The hook input's mcp_server name wins; otherwise the longest
+    known name whose tool-name form prefixes the call, which handles a
+    name containing "__" or characters Claude Code flattens."""
+    sdk, seen = patched
+    _, work = isolated_home
+    session, queue = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    asked = _recording_policy(session, monkeypatch, "warn")
+    servers = {
+        "a": {"command": "a-server"},
+        "a__b": {"command": "ab-server"},
+        "git.hub": {"command": "gh-server"},
+    }
+    _gate_tools(
+        sdk,
+        seen,
+        [
+            {"tool_name": "mcp__a__b__run", "cwd": str(work)},
+            {"tool_name": "mcp__git_hub__issue", "cwd": str(work)},
+            {
+                "tool_name": "mcp__a__b__run",
+                "cwd": str(work),
+                "mcp_server": {"name": "a", "source": "user"},
+            },
+        ],
+    )
+    _run_query(sdk, options=sdk.ClaudeAgentOptions(mcp_servers=servers))
+    assert asked == [("ab-server", "a__b"), ("gh-server", "git.hub"), ("a-server", "a")]
+    tools = [e["tool_name"] for e in queue.events if e["event_type"] == "policy_mcp_warn"]
+    assert tools == ["run", "issue", "b__run"]
+
+
+def test_a_failed_poll_still_runs_the_gates(patched: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    sdk, seen = patched
+    session, _ = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    session.client.post_heartbeat.side_effect = RuntimeError("no worker thread")  # type: ignore[attr-defined]
+    outputs: list[Any] = []
 
     async def step(options: Any) -> None:
-        for tool in ("mcp__tools__add", "mcp__elsewhere__fetch"):
-            await _hook(options, "PreToolUse")({"tool_name": tool, "tool_input": {}}, "t", None)
+        assert sdk_mod.route_directive(SDK_SESSION, _directive("shutdown"))
+        monkeypatch.setattr(sdk_mod, "_POLL_IDLE_SECS", 0.0)
+        outputs.append(await _hook(options, "PreToolUse")(_bash(), "t", None))
 
-    servers = {"tools": {"type": "sdk", "name": "tools", "instance": object()}}
     seen["messages"] = [_messages(sdk)[0], step, *_messages(sdk)[1:]]
-    _run_query(sdk, options=sdk.ClaudeAgentOptions(mcp_servers=servers))
-    assert asked == [("", "elsewhere")]
+    _run_query(sdk)
+    assert outputs[0]["continue_"] is False
 
 
 def test_a_callback_that_fails_allows_the_call(

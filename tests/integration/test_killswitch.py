@@ -11,6 +11,7 @@ import uuid
 
 from .conftest import (
     directive_has_delivered_at,
+    exec_sql,
     make_event,
     post_directive,
     post_event,
@@ -92,6 +93,41 @@ def test_fleet_wide_kill() -> None:
     )
     assert envelope_b.get("directive") is not None, (
         f"session B ({sid_b}) did not receive directive: {envelope_b}"
+    )
+
+
+def test_a_sessions_directive_never_reaches_another_session_of_its_flavor() -> None:
+    """A shutdown addressed to session A is delivered to A only, even
+    when another session of the same flavor asks first and the row
+    names the flavor too."""
+    sid_a = str(uuid.uuid4())
+    sid_b = str(uuid.uuid4())
+    flavor = f"killswitch-scoped-{uuid.uuid4().hex[:6]}"
+
+    post_event(make_event(sid_a, flavor, "session_start"))
+    post_event(make_event(sid_b, flavor, "session_start"))
+    wait_until(
+        lambda: session_exists_in_fleet(sid_a) and session_exists_in_fleet(sid_b),
+        timeout=10,
+        msg=f"sessions {sid_a} and {sid_b} did not appear in fleet",
+    )
+
+    # The worker's token-budget shutdown names the session and its
+    # flavor (workers/internal/processor/policy.go).
+    exec_sql(
+        "INSERT INTO directives (session_id, flavor, action, reason, issued_by) "
+        "VALUES (:'sid'::uuid, :'flavor', 'shutdown', 'test_scoped', 'policy_evaluator')",
+        sid=sid_a,
+        flavor=flavor,
+    )
+
+    envelope_b = post_event(make_event(sid_b, flavor, "post_call", tokens_total=10))
+    assert envelope_b.get("directive") is None, (
+        f"session B ({sid_b}) took session A's directive: {envelope_b}"
+    )
+    envelope_a = post_event(make_event(sid_a, flavor, "post_call", tokens_total=10))
+    assert (envelope_a.get("directive") or {}).get("reason") == "test_scoped", (
+        f"session A ({sid_a}) did not receive its directive: {envelope_a}"
     )
 
 

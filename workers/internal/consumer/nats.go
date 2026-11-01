@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"hash/fnv"
 	"log/slog"
 	"sync"
 	"time"
@@ -530,6 +529,10 @@ type Consumer struct {
 	nc        *nats.Conn
 	poolSize  int
 	processor Processor
+	// Test seams; zero values mean the defaults.
+	processTimeout    time.Duration
+	keepaliveInterval time.Duration
+	inProgress        func(*nats.Msg) error
 }
 
 // New creates a Consumer.
@@ -567,7 +570,10 @@ func (c *Consumer) Start(ctx context.Context) error {
 			"stream", streamName, "err", err)
 	}
 
-	sub, err := js.PullSubscribe(subjectAll, durableName, nats.MaxDeliver(maxDeliver))
+	if err := ensureConsumer(js); err != nil {
+		return err
+	}
+	sub, err := js.PullSubscribe(subjectAll, durableName, nats.Bind(streamName, durableName))
 	if err != nil {
 		return fmt.Errorf("pull subscribe: %w", err)
 	}
@@ -577,67 +583,101 @@ func (c *Consumer) Start(ctx context.Context) error {
 	})
 }
 
+// ensureConsumer creates the durable consumer with the settings the
+// lanes rely on, or brings an existing one to them. A subscription that
+// asked for them would be refused for a consumer created with others
+// (one an older worker created), so the consumer is reconciled first
+// and the subscription binds to it.
+func ensureConsumer(js nats.JetStreamContext) error {
+	info, err := js.ConsumerInfo(streamName, durableName)
+	if errors.Is(err, nats.ErrConsumerNotFound) {
+		_, err = js.AddConsumer(streamName, &nats.ConsumerConfig{
+			Durable:       durableName,
+			FilterSubject: subjectAll,
+			AckPolicy:     nats.AckExplicitPolicy,
+			MaxDeliver:    maxDeliver,
+			AckWait:       ackWait,
+			MaxAckPending: maxAckPending,
+		})
+		if err != nil {
+			return fmt.Errorf("add consumer %s: %w", durableName, err)
+		}
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("consumer info %s: %w", durableName, err)
+	}
+	cfg := info.Config
+	if cfg.MaxDeliver == maxDeliver && cfg.AckWait == ackWait && cfg.MaxAckPending == maxAckPending {
+		return nil
+	}
+	cfg.MaxDeliver = maxDeliver
+	cfg.AckWait = ackWait
+	cfg.MaxAckPending = maxAckPending
+	if _, err := js.UpdateConsumer(streamName, &cfg); err != nil {
+		return fmt.Errorf("update consumer %s: %w", durableName, err)
+	}
+	slog.Info("consumer settings updated", "consumer", durableName,
+		"ack_wait", ackWait, "max_ack_pending", maxAckPending)
+	return nil
+}
+
 // run processes fetched messages until ctx is cancelled: fetch is
 // called by one goroutine, and each message goes to its session's lane,
 // whose goroutine processes it after the session's earlier messages.
 func (c *Consumer) run(ctx context.Context, fetch func() ([]*nats.Msg, error)) error {
-	lanes := make([]chan lanedMessage, c.poolSize)
+	lanes := make([]*lane, c.poolSize)
 	var wg sync.WaitGroup
 	for i := range lanes {
-		lanes[i] = make(chan lanedMessage, laneBuffer)
+		lanes[i] = newLane()
 		wg.Add(1)
-		go func(id int, lane <-chan lanedMessage) {
+		go func(id int, l *lane) {
 			defer wg.Done()
-			for m := range lane {
+			for {
+				e, ok := l.next()
+				if !ok {
+					return
+				}
 				// A message left in the lane at shutdown is not
 				// processed: unacknowledged, it is redelivered when the
 				// ack wait expires.
-				if ctx.Err() != nil {
-					continue
+				if ctx.Err() == nil {
+					pctx, cancel := context.WithTimeout(ctx, c.processDeadline())
+					c.handle(pctx, e.msg, e.event, id)
+					cancel()
 				}
-				c.handle(ctx, m.msg, m.event, id)
+				l.finish()
 			}
 		}(i, lanes[i])
 	}
+	keepaliveDone := make(chan struct{})
+	go func() {
+		defer close(keepaliveDone)
+		c.keepalive(ctx, lanes)
+	}()
 
 	c.dispatch(ctx, fetch, lanes)
-	for _, lane := range lanes {
-		close(lane)
+	for _, l := range lanes {
+		l.close()
 	}
 	wg.Wait()
+	<-keepaliveDone
 	return nil
 }
 
 // fetchBatch is how many messages one fetch asks for. A fetch returns
 // what is available at once (no_wait), so a larger batch costs nothing
-// when the stream is quiet and saves round trips under load; 64 keeps a
-// batch to a few lanes' worth of work.
+// when the stream is quiet and saves round trips under load.
 const fetchBatch = 64
 
-// laneBuffer is how many fetched messages a lane holds before the fetch
-// loop waits for it. A lane is one session hash bucket, so this bounds
-// how far one slow session's backlog runs ahead; 256 is several fetch
-// batches, enough that a short stall on one lane does not hold the
-// others.
-const laneBuffer = 256
-
-// lanedMessage is a fetched message and its decoded payload.
-type lanedMessage struct {
-	msg   *nats.Msg
-	event EventPayload
-}
-
-// laneFor is the lane a session's messages go to: the same lane for
-// every message of the session, so they are processed in stream order.
-func laneFor(sessionID string, lanes int) int {
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(sessionID))
-	return int(h.Sum32() % uint32(lanes))
-}
+// fetchErrorBackoff is the pause after a fetch fails for a reason other
+// than an empty stream (a disconnect), so a persistent failure logs once
+// a second rather than in a tight loop.
+const fetchErrorBackoff = time.Second
 
 // dispatch fetches messages and hands each to its session's lane until
 // ctx is cancelled. A message that does not decode is terminated here.
-func (c *Consumer) dispatch(ctx context.Context, fetch func() ([]*nats.Msg, error), lanes []chan lanedMessage) {
+func (c *Consumer) dispatch(ctx context.Context, fetch func() ([]*nats.Msg, error), lanes []*lane) {
 	for {
 		if ctx.Err() != nil {
 			return
@@ -651,8 +691,14 @@ func (c *Consumer) dispatch(ctx context.Context, fetch func() ([]*nats.Msg, erro
 				continue
 			}
 			slog.Error("fetch error", "err", err)
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(fetchErrorBackoff):
+			}
 			continue
 		}
+		now := time.Now()
 		for _, msg := range msgs {
 			var event EventPayload
 			if err := json.Unmarshal(msg.Data, &event); err != nil {
@@ -661,11 +707,7 @@ func (c *Consumer) dispatch(ctx context.Context, fetch func() ([]*nats.Msg, erro
 				_ = msg.Term()
 				continue
 			}
-			select {
-			case lanes[laneFor(event.SessionID, len(lanes))] <- lanedMessage{msg: msg, event: event}:
-			case <-ctx.Done():
-				return
-			}
+			lanes[laneFor(event.SessionID, len(lanes))].push(&laneEntry{msg: msg, event: event, since: now})
 		}
 	}
 }

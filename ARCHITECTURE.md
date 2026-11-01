@@ -332,7 +332,8 @@ flightdeck/
 │   ├── cmd/main.go             # Entry, applies migrations, NATS consumer pool, graceful shutdown
 │   ├── internal/
 │   │   ├── config/config.go
-│   │   ├── consumer/nats.go    # JetStream consumer goroutine pool, ack handling
+│   │   ├── consumer/nats.go    # JetStream consumer: fetch loop, ack handling
+│   │   ├── consumer/lanes.go   # Per-session lanes, keepalive, processing deadline
 │   │   ├── migrate/migrate.go  # golang-migrate runner: applies docker/postgres/migrations at boot
 │   │   ├── metrics/metrics.go  # Atomic, reason-labelled dropped / closed / revived counters + Snapshot + Prometheus-text Handler + NewServer (the /metrics listener)
 │   │   ├── modelid/canonical.go  # Model-id canonicalisation and provider derivation (pure; test-vector table)
@@ -2458,9 +2459,9 @@ NOTIFY events.
 
 ### NATS consumer
 
-`workers/internal/consumer/nats.go::Consumer` connects to NATS and starts
-`WorkerPoolSize` goroutines pulling from one durable consumer, each
-fetching one message at a time. A message has three outcomes: ACK when
+`workers/internal/consumer/nats.go::Consumer` connects to NATS and pulls
+from one durable consumer with one fetching goroutine, which hands each
+message to one of `WorkerPoolSize` lanes (below). A message has three outcomes: ACK when
 the processor returns nil (including the orphan `session_end` path, which
 inserts nothing); a delayed NAK when the processor cannot act yet or
 fails and the delivery budget is not spent; and Term for a payload that
@@ -2471,16 +2472,24 @@ stream (the worker counts a message that fails its last delivery as
 `max_retries_exhausted`). Each delivery hands the processor the message's
 stream sequence and whether it is the last delivery the budget allows.
 
-The consumer processes a session's events in stream order. One goroutine
-fetches messages in batches and hands each to one of
-`FLIGHTDECK_WORKER_POOL_SIZE` lanes, chosen by a hash of its
-`session_id`; each lane's goroutine processes its messages one at a
-time, in the order they were fetched. Different sessions run
-concurrently across lanes; two events of one session never do, so a
-`session_start` is written before the `pre_call` published after it is
-looked at. A lane whose buffer is full holds the fetch loop until it
-drains, so a session stuck on a slow write slows the other lanes rather
-than letting its own backlog grow without bound.
+The consumer processes a session's events in stream order. The fetching
+goroutine asks for up to 64 messages at a time and appends each to the
+queue of one of `FLIGHTDECK_WORKER_POOL_SIZE` lanes, chosen by a hash of
+its `session_id`; each lane's goroutine processes its queue one message
+at a time, in the order fetched. Different sessions run concurrently
+across lanes; two events of one session never do, so a `session_start`
+is written before the `pre_call` published after it is looked at.
+
+Appending never waits, so a slow session holds back only the sessions
+that share its lane. The queues are bounded by the consumer's
+`MaxAckPending` (1000): the server stops delivering when that many
+messages are unacknowledged. A queued message is already delivered and
+unacknowledged, so every ten seconds the consumer reports each message
+that is waiting in a lane, or being processed, in progress
+(`AckWait` is 30 seconds); its ack wait restarts without spending a
+delivery. Processing one message has a ten-second deadline: a message
+stuck on the database (a row lock held elsewhere) fails at the deadline,
+is redelivered with the delayed NAK below, and its lane moves on.
 
 Events can still reach the worker out of order: a client's concurrent
 processes (the Claude Code plugin's hooks) can publish a session's events

@@ -195,15 +195,15 @@ handle for a `query()` run, and the deny already ends the turn).
 ## D223 -- The worker processes a session's events in stream order
 
 **Date:** 2026-11-01
-**Decision:** the NATS consumer fetches with one goroutine and routes
-each message to one of the pool's lanes by a hash of its session_id;
-a lane processes its messages one at a time. A session's events are
+**Decision:** the NATS consumer fetches with one goroutine and queues
+each message on one of the pool's lanes by a hash of its session_id;
+a lane processes its queue one at a time, under a processing deadline,
+while queued messages are kept in progress. A session's events are
 handled in stream order, sessions run in parallel across lanes.
 **Why:** each goroutine fetched on its own, so a session's pre_call
-could be processed before its session_start: the session row was
-created without its capture posture and the call's content dropped
-(an intermittent CI failure). The redelivery and sequence rules only
-patched each such ordering as it surfaced.
+could run before its session_start: the row was created without its
+capture posture and the call's content dropped. Redelivery and
+sequence rules had patched each such ordering as it surfaced.
 **Rejected alternative:** redelivering a content event until its
 session's posture is known (a delayed event lands after session_end
 and is skipped with its tokens); more retries and stub rows per race.

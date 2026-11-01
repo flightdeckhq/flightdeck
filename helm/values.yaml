@@ -131,6 +131,18 @@ dashboard:
   service:
     type: ClusterIP
     port: 3000
+  # Overrides podSecurityContext for the dashboard pod. Its nginx runs as
+  # the image's own nginx user (uid and gid 101), which owns the cache and
+  # pid paths nginx writes at startup; under the chart-wide uid 1000 nginx
+  # cannot create /var/cache/nginx/client_temp and the pod crash-loops.
+  # CI checks that the image's user is still 101. To run the dashboard
+  # under the chart-wide podSecurityContext instead (e.g. on a platform
+  # that assigns its own uid), set this to null: an empty map is merged
+  # into these defaults and changes nothing.
+  podSecurityContext:
+    runAsUser: 101
+    runAsGroup: 101
+    fsGroup: 101
   podAnnotations: {}
   nodeSelector: {}
   tolerations: []

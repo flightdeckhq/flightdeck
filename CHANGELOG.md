@@ -38,6 +38,10 @@ All notable changes to Flightdeck are documented here.
   hooks each sent another `session_start` beside the one from
   `SubagentStart` (two to four per sub-agent); one hook now sends it
   while the others skip.
+- **The Helm chart's dashboard pod starts.** The chart ran every pod as
+  uid 1000, but the dashboard image's nginx runs as its own user (uid
+  101) and could not create its cache directory, so the pod
+  crash-looped. The dashboard pod now runs as uid 101.
 
 ## v0.8.0 — 2026-10-31
 

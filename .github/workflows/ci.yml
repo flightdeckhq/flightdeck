@@ -543,17 +543,19 @@ jobs:
             exit 1
           fi
 
-      - name: Assert dashboard image runs as non-root
+      - name: Assert dashboard image runs as the nginx user, uid 101
         # USER nginx in the Dockerfile drops the master process from
-        # root (uid 0) to nginx (uid 101). Verifying via ``id`` is
-        # the simplest contract the assertion can carry — the
-        # specific UID isn't load-bearing, only that it's NOT 0.
+        # root (uid 0) to nginx (uid 101), which owns the paths nginx
+        # writes at startup. The Helm chart runs the dashboard pod as
+        # uid 101 (dashboard.podSecurityContext) to match, so a base
+        # image whose nginx user has another uid must fail here rather
+        # than crash-loop under the chart.
         run: |
           set -e
           uid=$(docker exec dashboard-smoke id -u)
           echo "Container UID: $uid"
-          if [ "$uid" = "0" ]; then
-            echo "FAIL: dashboard image must not run as root"
+          if [ "$uid" != "101" ]; then
+            echo "FAIL: dashboard image must run as uid 101 (the chart's dashboard.podSecurityContext)"
             exit 1
           fi
 
@@ -970,6 +972,35 @@ jobs:
             echo "Expected 2 NetworkPolicy resources, got $count"
             exit 1
           fi
+
+      - name: helm template runs the dashboard as uid 101 and the rest as 1000
+        # The dashboard image's nginx user is uid 101 (asserted by the
+        # Dashboard job); the Go services run under the chart-wide 1000.
+        run: |
+          set -e
+          render() {
+            helm template flightdeck helm/ \
+              --set postgres.password=ci-test-password \
+              --set api.env=development \
+              --show-only "templates/$1/deployment.yaml" "${@:2}"
+          }
+          out=$(render dashboard)
+          for f in runAsUser runAsGroup fsGroup; do
+            grep -qE "^ +$f: 101$" <<<"$out" \
+              || { echo "FAIL: dashboard pod must have $f 101"; exit 1; }
+          done
+          for c in api ingestion workers; do
+            render "$c" | grep -qE '^ +runAsUser: 1000$' \
+              || { echo "FAIL: $c pod must run as uid 1000"; exit 1; }
+          done
+          # Either context set to null still renders: the dashboard then
+          # takes whichever one is left.
+          render dashboard --set dashboard.podSecurityContext=null \
+            | grep -qE '^ +runAsUser: 1000$' \
+            || { echo "FAIL: dashboard.podSecurityContext=null must fall back to the chart-wide context"; exit 1; }
+          render dashboard --set podSecurityContext=null \
+            | grep -qE '^ +runAsUser: 101$' \
+            || { echo "FAIL: podSecurityContext=null must still render the dashboard's own context"; exit 1; }
 
       - name: helm template in development mode renders with defaults
         run: |

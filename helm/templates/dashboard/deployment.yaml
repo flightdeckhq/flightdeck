@@ -27,7 +27,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       securityContext:
-        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+        {{- toYaml (mergeOverwrite (deepCopy (.Values.podSecurityContext | default dict)) (.Values.dashboard.podSecurityContext | default dict)) | nindent 8 }}
       containers:
         - name: dashboard
           image: {{ include "flightdeck.image" (dict "root" . "component" .Values.dashboard) }}

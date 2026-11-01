@@ -4,7 +4,7 @@
 
 - **Go** 1.27+
 - **Python** 3.11 to 3.14 (local development uses 3.12)
-- **uv** 0.12+ (optional locally: installs the exact versions CI uses from `sensor/uv.lock`)
+- **uv** 0.12+ (installs the exact versions CI uses from `sensor/uv.lock`; the dependency vulnerability scan needs it)
 - **Node.js** 24+ (the Claude Code plugin itself runs on Node 22+)
 - **Docker** and Docker Compose
 - **golangci-lint** v2.13+ (for Go linting; earlier releases cannot type-check Go 1.27; CI pins v2.14.0)
@@ -103,6 +103,59 @@ This runs:
 - `mypy --strict` and `ruff check` on the sensor
 - `golangci-lint run ./...` on ingestion, workers, and api
 - `npm run typecheck` and `npm run lint` on the dashboard
+
+## Dependency vulnerability scans
+
+CI scans every dependency set for known vulnerabilities:
+
+| Dependencies | Tool | CI job |
+|---|---|---|
+| Go modules (ingestion, workers, api) | `govulncheck` | Go (ingestion, workers, api) |
+| npm (`dashboard/`, `plugin/`) and pip (`sensor/`) | `npm audit`, `pip-audit` via `scripts/vuln_scan.py` | Dependency vulnerability scan (npm, pip) |
+| Release images | Trivy | Scan Docker images (release workflow) |
+
+Run the npm and pip scan locally with:
+
+```bash
+make vuln-scan   # python3 scripts/vuln_scan.py
+```
+
+It needs `npm`, `uv` and network access, and installs nothing: it audits
+`dashboard/package-lock.json` and the requirements it exports from
+`sensor/uv.lock`, with pip-audit run through `uvx` at the version the script
+pins. The scan fails on:
+
+- a **high or critical** advisory in a dashboard **production** dependency
+  (`npm audit --omit=dev`);
+- **any** advisory in the sensor's **core runtime** dependencies (`uv export
+  --no-dev`, no extras). pip-audit reports no severity, so every advisory
+  counts;
+- a package under `plugin/` that declares dependencies without a
+  `package-lock.json`. The plugin has no dependencies today.
+
+Dashboard dev dependencies, and the sensor's extras and dev tooling, are listed
+in the job log without failing the job: they run in development and CI, and the
+sensor's provider and framework extras are resolved by each user's own
+installer. Bump them when a fix is available.
+
+### Excusing an advisory
+
+Fix a blocking finding by bumping the dependency. When no fixed release exists,
+or the fix needs a breaking upgrade that has to wait, add an entry to
+`.github/vuln-ignore.toml`:
+
+```toml
+[[ignore]]
+id = "GHSA-xxxx-xxxx-xxxx"   # the ID the scan prints; for pip, any alias works
+ecosystem = "npm"            # "npm" or "pypi"
+package = "example-package"
+reason = "No fixed release yet; the vulnerable parser only reads our own build config. Drop when 2.3.1 ships."
+```
+
+Every key is required, and the reason must say why the advisory cannot be fixed
+now and what lets the entry go. The entry ships in a pull request like any other
+change, so it gets reviewed. The scan prints a note for an entry that no longer
+matches anything; delete it then.
 
 ## Pull Request Process
 

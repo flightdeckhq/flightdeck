@@ -31,6 +31,14 @@ All notable changes to Flightdeck are documented here.
   budgets reach an SDK run: a stop denies its next tool call and blocks
   later prompts, and budget warnings reach the run as a message. Its MCP
   tool calls are checked against the flavor's MCP Protection Policy.
+- **CI scans the npm and pip dependencies for known vulnerabilities**,
+  alongside `govulncheck` for Go and Trivy for the release images. The
+  new `Dependency vulnerability scan (npm, pip)` job fails on a high or
+  critical advisory in a dashboard production dependency and on any
+  advisory in the sensor's core runtime dependencies. Dev dependencies
+  and the sensor's extras are reported without failing. Excused
+  advisories live in `.github/vuln-ignore.toml`, each with a reason.
+  Run it locally with `make vuln-scan`.
 
 ### Fixed
 

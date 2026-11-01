@@ -31,19 +31,22 @@ paths share the helpers in this module, so they cannot drift.
 
 **Every litellm call is reported once.** Every underlying litellm call
 this module makes runs under ``base.outer_intercept()`` (see
-:func:`_as_outer_call`), and every interceptor the call reaches while it
-is in flight hands it through untouched: the SDK interceptors (litellm's
-OpenAI chat route constructs ``openai.OpenAI`` and calls
-``chat.completions.create`` on it) and this module's own wrappers.
-litellm makes such inner calls itself: ``text_completion`` builds a chat
-request and calls ``completion``; ``responses`` on a provider without a
-native Responses API (Anthropic) bridges through the package-level
-``litellm.completion`` / ``acompletion``. So the wrapper of the entry
+:func:`_as_outer_call`). The SDK interceptors hand a call made under
+the mark through untouched (litellm's OpenAI chat route constructs
+``openai.OpenAI`` and calls ``chat.completions.create`` on it), and so
+do this module's own wrappers when litellm's responses/completion
+bridge re-issues the call through them (:data:`_BRIDGE_MODULES`):
+``responses`` on a provider without a native Responses API (Anthropic)
+bridges through ``litellm.completion`` / ``acompletion``, and
+``completion`` on a Responses-only model through ``litellm.responses``.
+``text_completion`` calls ``completion`` through the name bound in
+``litellm.main``, which is not patched. So the wrapper of the entry
 point the caller used is the single reporter: one ``pre_call``, one
 policy check and one ``post_call`` (or ``llm_error``) per litellm call,
 carrying the shape that entry point returns (a ``TextCompletionResponse``
 for ``text_completion``, the Responses API shape for ``responses`` on
-every route).
+every route). Any other litellm call made while one is in flight is a
+call of its own and is reported.
 
 **Streaming.** ``stream=True`` returns the sensor's stream guard
 (:class:`base.GuardedStream` from the sync entry points,
@@ -65,7 +68,8 @@ its end, or when the guard is collected after a loop left early.
 **Scope of the mark.** It covers the whole litellm call, so an SDK
 call made from inside it -- by a litellm callback, guardrail or custom
 provider, or by a task created inside the call, which inherits the
-mark -- is neither policed nor metered.
+mark -- is neither policed nor metered. A litellm call made from inside
+it is (only the bridge's re-issue of the same call passes through).
 
 **Coverage caveat.** The patch covers direct callers of the patched
 entry points -- the vast majority of litellm integrations. Frameworks
@@ -82,6 +86,7 @@ import copy
 import functools
 import inspect
 import logging
+import sys
 from typing import TYPE_CHECKING, Any
 
 from flightdeck_sensor.core.types import EventType
@@ -94,6 +99,7 @@ from flightdeck_sensor.providers.litellm import (
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
+    from types import FrameType
 
     from flightdeck_sensor.core.session import Session
 
@@ -183,11 +189,25 @@ def _as_outer_async_call(
     return _call
 
 
+def _positional_names(fn: Callable[..., Any]) -> tuple[str, ...]:
+    """The names of ``fn``'s parameters that can be passed positionally,
+    in order; empty when its signature cannot be read. Read once per
+    entry point, when it is patched."""
+    try:
+        return tuple(
+            p.name
+            for p in inspect.signature(fn).parameters.values()
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        )
+    except (TypeError, ValueError):
+        return ()
+
+
 def _named_arguments(
-    signature_of: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]
+    names: tuple[str, ...], args: tuple[Any, ...], kwargs: dict[str, Any]
 ) -> dict[str, Any] | None:
-    """``args`` bound to the names of ``signature_of``'s leading
-    positional parameters and merged into ``kwargs``, so a caller's
+    """``args`` bound to ``names`` (the entry point's positional parameter
+    names) and merged into ``kwargs``, so a caller's
     ``litellm.completion("gpt-4o", messages)`` reaches the sensor with
     named arguments, the only form the intercept reads. ``None`` when the
     arguments cannot be bound (too many positional arguments, or one also
@@ -195,17 +215,40 @@ def _named_arguments(
     which raises exactly what litellm raises without the sensor."""
     if not args:
         return kwargs
-    try:
-        names = [
-            p.name
-            for p in inspect.signature(signature_of).parameters.values()
-            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
-        ]
-    except (TypeError, ValueError):
-        return None
     if len(args) > len(names) or any(name in kwargs for name in names[: len(args)]):
         return None
     return {**dict(zip(names, args, strict=False)), **kwargs}
+
+
+# litellm modules that re-issue the caller's own call through another of
+# its patched entry points, in another API shape: ``responses`` on a
+# provider without a native Responses API bridges through
+# ``litellm.completion`` / ``acompletion``, and ``completion`` on a
+# Responses-only model bridges through ``litellm.responses`` /
+# ``aresponses``. A call such a module makes while the outer litellm call
+# is in flight is that same call, which the outer wrapper reports, so it
+# passes through. Every other nested litellm call (from a callback,
+# guardrail or custom provider, or one litellm makes itself: an agentic
+# follow-up, a semantic-cache embedding, an LLM judge) is a call of its
+# own and is reported. A litellm release that moves a bridge shows as a
+# double count of that bridge, which the bridge tests catch, never as a
+# missed call.
+_BRIDGE_MODULES = frozenset(
+    {
+        "litellm.responses.litellm_completion_transformation.handler",
+        "litellm.completion_extras.litellm_responses_transformation.handler",
+    }
+)
+
+
+def _is_bridge_hop(caller: FrameType | None) -> bool:
+    """Whether a patched entry point was called by litellm's bridge while
+    an outer litellm call is in flight (see :data:`_BRIDGE_MODULES`).
+    ``caller`` is the frame that called it; for an async entry point,
+    the frame that awaited it."""
+    if caller is None or not base.outer_intercept_active():
+        return False
+    return caller.f_globals.get("__name__") in _BRIDGE_MODULES
 
 
 def _inject_stream_options(kwargs: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -603,21 +646,22 @@ _PATCHED_ENTRY_POINTS: tuple[
 
 def _patched_sync(
     orig: Any,
-    signature_of: Any,
+    names: tuple[str, ...],
     intercept: Callable[..., Any],
     provider_cls: type[LitellmProvider],
 ) -> Callable[..., Any]:
-    """The module attribute that replaces a sync entry point. litellm's
-    own call passes through untouched with no active session, or while
-    an outer litellm call is in flight (litellm calling its own entry
-    point, which the outer wrapper already reports)."""
+    """The module attribute that replaces a sync entry point. The call
+    passes through to litellm untouched with no active session, or when
+    litellm's bridge re-issues the outer call through it (see
+    :func:`_is_bridge_hop`). ``names`` are the entry point's positional
+    parameter names."""
 
     @functools.wraps(orig)
     def _patched(*args: Any, **kwargs: Any) -> Any:
         session = _current_session()
-        if session is None or base.outer_intercept_active():
+        if session is None or _is_bridge_hop(sys._getframe(1)):
             return orig(*args, **kwargs)
-        named = _named_arguments(signature_of, args, kwargs)
+        named = _named_arguments(names, args, kwargs)
         if named is None:
             return orig(*args, **kwargs)
         provider = provider_cls(capture_prompts=session.config.capture_prompts)
@@ -628,19 +672,19 @@ def _patched_sync(
 
 def _patched_async(
     orig: Any,
-    signature_of: Any,
+    names: tuple[str, ...],
     intercept: Callable[..., Any],
     provider_cls: type[LitellmProvider],
 ) -> Callable[..., Any]:
-    """Async form of :func:`_patched_sync`; the mark is read when the
-    call is awaited, in the task that awaits it."""
+    """Async form of :func:`_patched_sync`; the mark and the caller are
+    read when the call is awaited, in the task and frame that await it."""
 
     @functools.wraps(orig)
     async def _patched(*args: Any, **kwargs: Any) -> Any:
         session = _current_session()
-        if session is None or base.outer_intercept_active():
+        if session is None or _is_bridge_hop(sys._getframe(1)):
             return await orig(*args, **kwargs)
-        named = _named_arguments(signature_of, args, kwargs)
+        named = _named_arguments(names, args, kwargs)
         if named is None:
             return await orig(*args, **kwargs)
         provider = provider_cls(capture_prompts=session.config.capture_prompts)
@@ -684,12 +728,12 @@ def patch_litellm_functions(quiet: bool = False) -> None:
         orig = originals[attr]
         if orig is None:
             continue
-        signature_of = originals.get(signature_attr) or orig
+        names = _positional_names(originals.get(signature_attr) or orig)
         build = _patched_async if is_async else _patched_sync
         # Stash the original on the module so unpatch can restore it even
         # if the module was reloaded between patch and unpatch.
         setattr(_litellm_module, f"_flightdeck_orig_{attr}", orig)
-        setattr(_litellm_module, attr, build(orig, signature_of, intercept, provider_cls))
+        setattr(_litellm_module, attr, build(orig, names, intercept, provider_cls))
         patched.append(f"litellm.{attr}")
     _litellm_module._flightdeck_patched = True
 

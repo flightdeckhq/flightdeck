@@ -112,6 +112,15 @@ _KEY_PARTIAL_TOKENS_OUTPUT = "partial_tokens_output"
 # test_sdk_call_from_a_litellm_pre_call_hook_runs_under_the_mark_and_emits_nothing
 # in tests/unit/test_interceptor_litellm.py.
 #
+# litellm's own patched entry points read the mark too, more narrowly:
+# a litellm call made while another is in flight passes through only
+# when litellm's responses <-> completion bridge makes it (the same
+# call re-issued in another API shape, which the outer wrapper already
+# reports). Any other nested litellm call -- from a callback, guardrail
+# or custom provider, or one litellm makes itself (an agentic follow-up,
+# a semantic-cache embedding) -- is a call of its own and is policed and
+# metered (see ``_BRIDGE_MODULES`` in litellm.py).
+#
 # Opting in:
 # * Outer side: wrap the function handed to call / call_async /
 #   call_stream / call_stream_async so it runs under

@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import types
 import warnings
 from typing import TYPE_CHECKING, Any
 
@@ -29,8 +30,10 @@ from flightdeck_sensor.interceptor import base
 from flightdeck_sensor.interceptor import litellm as litellm_interceptor
 from flightdeck_sensor.interceptor.litellm import (
     SensorLitellm,
+    _is_bridge_hop,
     _is_text_usage_only_chunk,
     _named_arguments,
+    _positional_names,
     patch_litellm_functions,
     unpatch_litellm_functions,
 )
@@ -385,14 +388,17 @@ def test_named_arguments_bind_positionals_and_refuse_what_litellm_would_reject()
     def entry(model: str, messages: list[Any] | None = None, **kwargs: Any) -> None:
         return None
 
-    assert _named_arguments(entry, (), {"model": "m"}) == {"model": "m"}
-    assert _named_arguments(entry, ("m", MSG), {"stream": True}) == {
+    names = _positional_names(entry)
+    assert names == ("model", "messages")
+    assert _named_arguments(names, (), {"model": "m"}) == {"model": "m"}
+    assert _named_arguments(names, ("m", MSG), {"stream": True}) == {
         "model": "m",
         "messages": MSG,
         "stream": True,
     }
-    assert _named_arguments(entry, ("m",), {"model": "other"}) is None  # given twice
-    assert _named_arguments(entry, ("m", MSG, "extra"), {}) is None  # too many
+    assert _named_arguments(names, ("m",), {"model": "other"}) is None  # given twice
+    assert _named_arguments(names, ("m", MSG, "extra"), {}) is None  # too many
+    assert _positional_names(len) == ("obj",)  # a builtin's signature is read too
 
 
 def test_a_call_litellm_itself_rejects_raises_as_without_the_sensor(session: Session) -> None:
@@ -574,17 +580,135 @@ def test_responses_capture_off_stores_nothing(session: Session, stream: bool) ->
     _assert_nothing_captured(session)
 
 
-# ----- the mark covers litellm's own entry points -----------------------------
+# ----- nested litellm calls: only the bridge passes through --------------------
 
 
-def test_a_litellm_call_under_the_mark_passes_through(session: Session) -> None:
+def test_a_nested_litellm_call_from_a_callback_is_policed_and_reported(
+    session: Session,
+) -> None:
+    """A callback that calls ``litellm.completion`` while a litellm call is
+    in flight makes a call of its own: it gets its own pre_call (policy
+    check) and post_call, and the outer call is still reported once."""
+    from litellm.integrations.custom_logger import CustomLogger
+
+    hook_transport = _Transport()
+    nested: list[Any] = []
+
+    class _Hook(CustomLogger):
+        def log_pre_api_call(self, model: Any, messages: Any, kwargs: Any) -> None:
+            if nested:  # once: the nested call runs this hook too
+                return
+            nested.append(None)
+            nested[0] = litellm.completion(
+                model="gpt-4o-mini", messages=MSG, client=_sdk_client(hook_transport)
+            )
+
+    transport = _Transport()
+    previous = litellm.callbacks
+    litellm.callbacks = [_Hook()]
+    try:
+        litellm.completion(model="gpt-4o-mini", messages=MSG, client=_sdk_client(transport))
+    finally:
+        litellm.callbacks = previous
+    assert len(nested) == 1
+    assert len(hook_transport.requests) == 1
+    assert len(transport.requests) == 1
+    assert len(_events_of(session, "pre_call")) == 2
+    assert len(_post_calls(session)) == 2
+
+
+def test_a_litellm_call_made_under_a_bare_mark_is_reported(session: Session) -> None:
+    """The mark alone does not silence a litellm entry point: only a call
+    from litellm's bridge does."""
     transport = _Transport()
     with base.outer_intercept():
         litellm.completion(model="gpt-4o-mini", messages=MSG, client=_sdk_client(transport))
-        litellm.text_completion(model="gpt-4o-mini", prompt="hi", client=_sdk_client(transport))
-    assert len(transport.requests) == 2
-    assert _events_of(session, "pre_call") == []
-    assert _post_calls(session) == []
+    assert len(_post_calls(session)) == 1
+
+
+def test_only_the_bridge_modules_are_a_bridge_hop() -> None:
+    def frame_in(module: str) -> Any:
+        return types.SimpleNamespace(f_globals={"__name__": module})
+
+    bridge = "litellm.responses.litellm_completion_transformation.handler"
+    assert not _is_bridge_hop(frame_in(bridge))  # no outer call in flight
+    with base.outer_intercept():
+        assert _is_bridge_hop(frame_in(bridge))
+        assert _is_bridge_hop(
+            frame_in("litellm.completion_extras.litellm_responses_transformation.handler")
+        )
+        assert not _is_bridge_hop(frame_in("litellm.litellm_core_utils.fallback_utils"))
+        assert not _is_bridge_hop(frame_in("my_app.callbacks"))
+        assert not _is_bridge_hop(None)
+
+
+@requires_litellm_responses
+def test_completion_bridged_through_responses_is_reported_once(session: Session) -> None:
+    """A Responses-only model (``openai/responses/...``) makes
+    ``completion`` bridge through ``litellm.responses``, which passes the
+    call through: one pre_call and one post_call, with the Responses
+    usage, reported by the completion wrapper. (litellm's async bridge
+    does not forward ``client``, so only the sync form can be driven over
+    the mocked handler; the async frame check is covered below and by
+    the aresponses-to-acompletion bridge test.)"""
+    routes = _HttpRoutes()
+    response = litellm.completion(
+        model="openai/responses/gpt-4o-mini",
+        messages=MSG,
+        api_key="k",
+        client=_handler(routes),
+    )
+    assert response.choices[0].message.content == "hello"
+    assert routes.paths == ["/v1/responses"]
+    assert len(_events_of(session, "pre_call")) == 1
+    (pc,) = _post_calls(session)
+    assert (pc["tokens_input"], pc["tokens_output"]) == (
+        RESPONSES_INPUT_TOKENS,
+        RESPONSES_OUTPUT_TOKENS,
+    )
+
+
+def _caller_in(module: str) -> dict[str, Any]:
+    """A namespace whose functions run with ``module`` as their module
+    name, as litellm's bridge code does, calling the patched entry
+    points through the package attribute."""
+    namespace: dict[str, Any] = {"__name__": module, "litellm": litellm}
+    exec(  # noqa: S102 -- a fixed snippet, to give the frames a module name
+        "def hop(**kw):\n"
+        "    return litellm.completion(**kw)\n"
+        "async def ahop(**kw):\n"
+        "    return await litellm.acompletion(**kw)\n",
+        namespace,
+    )
+    return namespace
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+@pytest.mark.parametrize(
+    ("module", "reported"),
+    [
+        ("litellm.responses.litellm_completion_transformation.handler", 0),
+        ("litellm.litellm_core_utils.fallback_utils", 1),
+    ],
+    ids=["bridge", "other-litellm-module"],
+)
+def test_under_an_outer_call_only_a_bridge_caller_passes_through(
+    session: Session, is_async: bool, module: str, reported: int
+) -> None:
+    namespace = _caller_in(module)
+    transport = _Transport()
+    with base.outer_intercept():
+        if is_async:
+            asyncio.run(
+                namespace["ahop"](
+                    model="gpt-4o-mini", messages=MSG, client=_async_sdk_client(transport)
+                )
+            )
+        else:
+            namespace["hop"](model="gpt-4o-mini", messages=MSG, client=_sdk_client(transport))
+    assert len(transport.requests) == 1
+    assert len(_events_of(session, "pre_call")) == reported
+    assert len(_post_calls(session)) == reported
 
 
 # ----- patch / unpatch / per-callsite wrapper ---------------------------------

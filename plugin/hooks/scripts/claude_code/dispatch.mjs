@@ -48,6 +48,10 @@ import { isRealModel, readTurns } from "./transcript.mjs";
  * SessionEnd worker, and ``entryScript`` is the path of the script the
  * worker re-invokes.
  */
+// Set by the sensor's Claude Agent SDK interceptor in the environment of
+// a CLI run it reports.
+const SDK_OBSERVED_ENV = "FLIGHTDECK_SDK_OBSERVED";
+
 export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorker, entryScript, argv = process.argv }) {
   const hookName = hookEvent.hook_event_name || hookEvent.event || "";
   // With enforcement on, a directive any response carries lands in the
@@ -105,6 +109,20 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
     // Non-MCP tool call (or no policy in scope). Fall through to
     // the early-return below — PreToolUse has no entry in
     // EVENT_MAP so the standard branch is a no-op.
+    return;
+  }
+
+  // A run the sensor's Claude Agent SDK interceptor reports (it sets
+  // FLIGHTDECK_SDK_OBSERVED in the CLI's environment): the plugin sends
+  // nothing for it. Only the MCP policy gate above keeps running, so
+  // SessionStart still fetches the policy it reads.
+  if (process.env[SDK_OBSERVED_ENV] === "1") {
+    const sid = getSessionId(hookEvent);
+    if (hookName === "SessionStart") {
+      await dispatchMcpPolicySessionStart({ cfg, hookEvent, sessionId: sid, basePayload: { flavor: "claude-code" }, emitEvents: false });
+    } else if (hookName === "SessionEnd") {
+      clearSessionPolicyCache(sid);
+    }
     return;
   }
 

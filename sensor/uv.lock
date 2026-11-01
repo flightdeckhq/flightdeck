@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.11, <3.15"
 resolution-markers = [
     "python_full_version >= '3.14' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors'",
@@ -12,10 +12,10 @@ resolution-markers = [
     "python_full_version == '3.12.*' and sys_platform == 'win32' and extra == 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version == '3.12.*' and sys_platform != 'win32' and extra == 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
-    "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')",
     "python_full_version < '3.12' and sys_platform == 'win32' and extra == 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version < '3.12' and sys_platform != 'win32' and extra == 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
-    "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
 ]
 conflicts = [[
     { package = "flightdeck-sensor", extra = "dev" },
@@ -23,11 +23,11 @@ conflicts = [[
 ]]
 
 [options]
-exclude-newer = "0001-01-01T00:00:00Z" # This has no effect and is included for backwards compatibility when using relative exclude-newer values.
+exclude-newer = "2026-10-17T19:33:55.008493923Z"
 exclude-newer-span = "P14D"
 
 [options.exclude-newer-package]
-anthropic = { timestamp = "0001-01-01T00:00:00Z", span = "P1D" }
+anthropic = { timestamp = "2026-10-30T19:33:55.008515038Z", span = "P1D" }
 
 [[package]]
 name = "aiofiles"
@@ -58,7 +58,7 @@ dependencies = [
     { name = "frozenlist" },
     { name = "multidict" },
     { name = "propcache" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
     { name = "yarl" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/93/2f/6a91adaa2dc26877d6ed2f54c0370c8910f019db7d77c5c6a194611e93ea/aiohttp-3.14.4.tar.gz", hash = "sha256:831fc5bd39ec2517851e348f613ddb5447a47cf4b71cb09845af7ad7ed45d8f9", size = 8077839, upload-time = "2026-10-05T17:43:48.309Z" }
@@ -172,7 +172,7 @@ version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "frozenlist" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/61/62/06741b579156360248d1ec624842ad0edf697050bbaf7c3e46394e106ad1/aiosignal-1.4.0.tar.gz", hash = "sha256:f47eecd9468083c2029cc99945502cb7708b082c232f9aca65da147157b251c7", size = 25007, upload-time = "2025-07-03T22:54:43.528Z" }
 wheels = [
@@ -256,17 +256,17 @@ source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten') or (python_full_version < '3.12' and sys_platform == 'emscripten')",
 ]
 dependencies = [
-    { name = "anyio", marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "docstring-parser", marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "httpx2", marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "jiter", version = "0.17.0", source = { registry = "https://pypi.org/simple" }, marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "opentelemetry-api", marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "pydantic", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "sniffio", marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "typing-extensions", marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
+    { name = "anyio", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "docstring-parser", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "httpx2", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "jiter", version = "0.17.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "opentelemetry-api", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "pydantic", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "sniffio", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "typing-extensions", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/96/6d/b94f1ea6287bed4d76e1110fba99fc33d39af857e4191820485c1e3cb0da/anthropic-2.1.0.tar.gz", hash = "sha256:7533cc9035ef056159ec44f54e309de7b7d5ae329ff8f7df9da9ba05188d3c25", size = 1766577, upload-time = "2026-10-21T22:00:56.769Z" }
 wheels = [
@@ -528,7 +528,7 @@ name = "cffi"
 version = "2.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pycparser", marker = "implementation_name != 'PyPy'" },
+    { name = "pycparser", marker = "implementation_name != 'PyPy' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9e/ef/008a1939e372c06329a3fce4279c02f328488f3526744906eeec3da7ad5f/cffi-2.1.1.tar.gz", hash = "sha256:dd31f52ea1086513bb9df30f8fcee9b8918323ae067a3d5b78bc826a000712be", size = 530807, upload-time = "2026-08-03T21:21:18.939Z" }
 wheels = [
@@ -726,7 +726,7 @@ dependencies = [
     { name = "kubernetes", marker = "python_full_version < '3.14'" },
     { name = "mmh3", marker = "python_full_version < '3.14'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (python_full_version < '3.12' and extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version >= '3.14' and extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
     { name = "onnxruntime", marker = "python_full_version < '3.14'" },
     { name = "opentelemetry-api", marker = "python_full_version < '3.14'" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", marker = "python_full_version < '3.14'" },
@@ -753,6 +753,26 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/38/4e/937bc4d2e6f8ab9664ec79931fbbd69efff47e513ec2924b071e4b0ff774/chromadb-1.5.9-cp39-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:9192d111bd662241625867962333d99369a00769a50f8b2f58cb388731274d7e", size = 22680924, upload-time = "2026-05-05T05:54:36.25Z" },
     { url = "https://files.pythonhosted.org/packages/e6/ec/0c42039e80b9acc534f67b73b7a42471948042859b3a64867b50a4a77fa3/chromadb-1.5.9-cp39-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:cc09b3df76e5a5cb386aed2715a2eea152e3949f9e1ba93c7119505377749929", size = 23316203, upload-time = "2026-05-05T05:54:41.157Z" },
     { url = "https://files.pythonhosted.org/packages/eb/ce/0f7be6e5d0feafa2cda54b12e6542afeea7dea89d2d411e14da90f8abb96/chromadb-1.5.9-cp39-abi3-win_amd64.whl", hash = "sha256:4fd0b560e56761b7f3cb4d5c6205fd5f20814484b4a3e4e9af9038c2b428fc6c", size = 23542454, upload-time = "2026-05-05T05:54:54.942Z" },
+]
+
+[[package]]
+name = "claude-agent-sdk"
+version = "0.2.168"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+    { name = "jsonschema" },
+    { name = "mcp", version = "1.28.1", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-17-flightdeck-sensor-dev'" },
+    { name = "mcp", version = "2.3.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "sniffio" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9a/ee/31e159daf956f0c5503eac67d02743da692c0999fef046cdde3cc52702b9/claude_agent_sdk-0.2.168.tar.gz", hash = "sha256:80388054a09c137d76fc29caa6e46bc90d2ae2ef09fac5ee1c38fc36d2762fda", size = 371591, upload-time = "2026-10-15T20:20:43.683Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/15/31/9a205fc0b7ae1b66d5964774bb534ab378047c9bf87578f443bd1fb2205e/claude_agent_sdk-0.2.168-py3-none-macosx_11_0_arm64.whl", hash = "sha256:2ef1e7fc442c5abdc1e698027bf1b5faa8ea2130134a14364e2ae3c53bf31fdd", size = 104355641, upload-time = "2026-10-15T20:20:48.105Z" },
+    { url = "https://files.pythonhosted.org/packages/9f/ba/12bbe92d5e9145c7aaa94aa349a0859b77a9b58ccc40ae9e69cf7f078e5b/claude_agent_sdk-0.2.168-py3-none-macosx_11_0_x86_64.whl", hash = "sha256:653fc7bbe56630e6ddd9601a7cfe50586667e74102da3fb90571456c63655a62", size = 109438860, upload-time = "2026-10-15T20:20:52.274Z" },
+    { url = "https://files.pythonhosted.org/packages/ad/5a/26e587846f14f67f3353f96811b86931263a9c7e264d17a691d9577e4da5/claude_agent_sdk-0.2.168-py3-none-manylinux_2_17_aarch64.whl", hash = "sha256:77ae66b10edfd07b6ea3dec2af106ad47a9d616f8eb52d4f9b385e1b00bb2a27", size = 114030032, upload-time = "2026-10-15T20:20:56.813Z" },
+    { url = "https://files.pythonhosted.org/packages/00/03/09d347dcddbbab4becd41fef3a811967eddf24135b2d62dac9e321c81537/claude_agent_sdk-0.2.168-py3-none-manylinux_2_17_x86_64.whl", hash = "sha256:be197be92549909ec62a2cee04c27f4b0a38c80f723735538a3efc352507f81d", size = 114443626, upload-time = "2026-10-15T20:21:01.794Z" },
+    { url = "https://files.pythonhosted.org/packages/48/93/520a18ab853b688afcc31d504344e541a7dc68bc2b515ea8a5fef1c868a1/claude_agent_sdk-0.2.168-py3-none-win_amd64.whl", hash = "sha256:ed1814b0dd1c113bdaf3e51e6a67aa5b96b8f5c5839a43aeb6ae1e6ed23a5b35", size = 117292475, upload-time = "2026-10-15T20:21:07.053Z" },
 ]
 
 [[package]]
@@ -968,7 +988,7 @@ name = "cryptography"
 version = "50.0.2"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "cffi", marker = "platform_python_implementation != 'PyPy'" },
+    { name = "cffi", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9d/af/182eb91b0df3fe75c4d9f26fe70684569566745f6ba7e5c9c73a862c5252/cryptography-50.0.2.tar.gz", hash = "sha256:7b46165bb56eb4704e2eaaf86f3c940d19154535d9b0ca7d6d590b04060e00d5", size = 880623, upload-time = "2026-09-30T15:30:04.884Z" }
 wheels = [
@@ -1223,7 +1243,7 @@ resolution-markers = [
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version < '3.12' and sys_platform == 'win32' and extra == 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version < '3.12' and sys_platform != 'win32' and extra == 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
-    "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0f/59/e19834834cb01a32febfbb0f8a23a9088088f5d45991824ff2bc3b5e8acb/filelock-3.32.7.tar.gz", hash = "sha256:37b8a3d9811b0f9aef7e5ec5c71bb320de52df51e6ca9bcd6f5ad81187660da7", size = 225154, upload-time = "2026-09-16T00:24:20.907Z" }
 wheels = [
@@ -1237,7 +1257,7 @@ source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten') or (python_full_version < '3.12' and sys_platform == 'emscripten')",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/53/e4/34efcb869715cf299e47d1ac7b2624d2bcb6f2d3dffc2f0abe8417f65ab2/filelock-4.0.12.tar.gz", hash = "sha256:cf42711a7ac791818b299fab0332a088c65aeeefa36290de98db92c434303b0c", size = 253880, upload-time = "2026-10-05T13:17:43.677Z" }
 wheels = [
@@ -1267,16 +1287,20 @@ version = "0.8.0"
 source = { editable = "." }
 dependencies = [
     { name = "pydantic", version = "2.12.5", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
-    { name = "pydantic", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14' or extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
+    { name = "pydantic", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14' or extra != 'extra-17-flightdeck-sensor-dev' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
 ]
 
 [package.optional-dependencies]
 anthropic = [
     { name = "anthropic", version = "1.17.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-17-flightdeck-sensor-dev'" },
-    { name = "anthropic", version = "2.1.0", source = { registry = "https://pypi.org/simple" }, marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
+    { name = "anthropic", version = "2.1.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+]
+claude-agent-sdk = [
+    { name = "claude-agent-sdk" },
 ]
 dev = [
     { name = "anthropic", version = "1.17.0", source = { registry = "https://pypi.org/simple" } },
+    { name = "claude-agent-sdk" },
     { name = "crewai", marker = "python_full_version < '3.14'" },
     { name = "httpx" },
     { name = "langchain" },
@@ -1306,7 +1330,7 @@ litellm = [
 ]
 mcp = [
     { name = "mcp", version = "1.28.1", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-17-flightdeck-sensor-dev'" },
-    { name = "mcp", version = "2.3.0", source = { registry = "https://pypi.org/simple" }, marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
+    { name = "mcp", version = "2.3.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
 ]
 openai = [
     { name = "openai", version = "2.54.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
@@ -1335,6 +1359,8 @@ sdk-majors = [
 requires-dist = [
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.86" },
     { name = "anthropic", marker = "extra == 'dev'", specifier = ">=0.86" },
+    { name = "claude-agent-sdk", marker = "extra == 'claude-agent-sdk'", specifier = ">=0.2.168,<0.3" },
+    { name = "claude-agent-sdk", marker = "extra == 'dev'", specifier = ">=0.2.168,<0.3" },
     { name = "crewai", marker = "python_full_version < '3.14' and extra == 'dev'", specifier = ">=1.14" },
     { name = "httpx", marker = "extra == 'dev'", specifier = ">=0.25" },
     { name = "langchain", marker = "extra == 'dev'", specifier = ">=1,<2" },
@@ -1369,7 +1395,7 @@ requires-dist = [
     { name = "tiktoken", marker = "extra == 'openai'", specifier = ">=0.5" },
     { name = "tiktoken", marker = "extra == 'test'", specifier = ">=0.5" },
 ]
-provides-extras = ["anthropic", "openai", "litellm", "mcp", "test", "dev"]
+provides-extras = ["anthropic", "openai", "litellm", "mcp", "claude-agent-sdk", "test", "dev"]
 
 [package.metadata.requires-dev]
 sdk-majors = [
@@ -1791,8 +1817,8 @@ name = "httpcore2"
 version = "2.13.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "h11" },
-    { name = "truststore" },
+    { name = "h11", marker = "python_full_version < '3.12' or python_full_version >= '3.14' or sys_platform != 'emscripten' or extra == 'extra-17-flightdeck-sensor-dev'" },
+    { name = "truststore", marker = "python_full_version < '3.12' or python_full_version >= '3.14' or sys_platform != 'emscripten' or extra == 'extra-17-flightdeck-sensor-dev'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/cb/f3/1db7aa2bc2524062192bb0e0323969492d1883152a232fe36eea65f4e35c/httpcore2-2.13.1.tar.gz", hash = "sha256:e0aa977abe17e69a3b820a24542a6fa88702676d83880b8d194dcd18408e5103", size = 68071, upload-time = "2026-09-23T07:47:22.372Z" }
 wheels = [
@@ -1876,12 +1902,12 @@ name = "httpx2"
 version = "2.13.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "anyio", marker = "sys_platform != 'emscripten'" },
-    { name = "httpcore2", marker = "sys_platform != 'emscripten'" },
-    { name = "httpx2-jsfetch", marker = "python_full_version >= '3.12' and sys_platform == 'emscripten'" },
+    { name = "anyio", marker = "sys_platform != 'emscripten' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "httpcore2", marker = "sys_platform != 'emscripten' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "httpx2-jsfetch", marker = "(python_full_version >= '3.12' and sys_platform == 'emscripten') or (python_full_version < '3.12' and extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (sys_platform != 'emscripten' and extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
     { name = "idna" },
-    { name = "truststore", marker = "sys_platform != 'emscripten'" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "truststore", marker = "sys_platform != 'emscripten' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/d5/44/474bef2a0e9d90f1715d32cb98b0738695ca17ba324095fb2497ed7fbd59/httpx2-2.13.1.tar.gz", hash = "sha256:e48744a19e3af5ee48313d0ce5fe941d5422fae5705ea922a4aabf94d7800dfa", size = 100405, upload-time = "2026-09-23T07:47:23.052Z" }
 wheels = [
@@ -1912,13 +1938,13 @@ resolution-markers = [
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version < '3.12' and sys_platform == 'win32' and extra == 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version < '3.12' and sys_platform != 'win32' and extra == 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
-    "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
 ]
 dependencies = [
     { name = "click", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
     { name = "filelock", version = "3.32.7", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
     { name = "fsspec", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "hf-xet", marker = "(platform_machine == 'AMD64' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (platform_machine == 'aarch64' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (platform_machine == 'amd64' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (platform_machine == 'arm64' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (platform_machine == 'x86_64' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "hf-xet", marker = "(platform_machine == 'AMD64' and extra == 'extra-17-flightdeck-sensor-dev') or (platform_machine == 'AMD64' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (platform_machine == 'aarch64' and extra == 'extra-17-flightdeck-sensor-dev') or (platform_machine == 'aarch64' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (platform_machine == 'amd64' and extra == 'extra-17-flightdeck-sensor-dev') or (platform_machine == 'amd64' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (platform_machine == 'arm64' and extra == 'extra-17-flightdeck-sensor-dev') or (platform_machine == 'arm64' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (platform_machine == 'x86_64' and extra == 'extra-17-flightdeck-sensor-dev') or (platform_machine == 'x86_64' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
     { name = "httpx", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
     { name = "packaging", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
     { name = "pyyaml", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
@@ -1937,7 +1963,7 @@ source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten') or (python_full_version < '3.12' and sys_platform == 'emscripten')",
 ]
 dependencies = [
     { name = "click", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors'" },
@@ -1988,7 +2014,7 @@ resolution-markers = [
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version < '3.12' and sys_platform == 'win32' and extra == 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version < '3.12' and sys_platform != 'win32' and extra == 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
-    "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
 ]
 dependencies = [
     { name = "zipp", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
@@ -2005,7 +2031,7 @@ source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten') or (python_full_version < '3.12' and sys_platform == 'emscripten')",
 ]
 dependencies = [
     { name = "zipp", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors'" },
@@ -2176,8 +2202,8 @@ resolution-markers = [
     "python_full_version >= '3.14' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
-    "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')",
-    "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9c/1f/8176d92e001f86505424b41664032ae26a882bc9ca41a32c803f373f9195/jiter-0.17.0.tar.gz", hash = "sha256:03e432f226a453851079fb84cd17c6da9991eab723e28d716f14ae3d906e0c12", size = 229037, upload-time = "2026-09-12T15:14:14.253Z" }
 wheels = [
@@ -2413,7 +2439,7 @@ dependencies = [
     { name = "deprecation", marker = "python_full_version < '3.14'" },
     { name = "lance-namespace", marker = "python_full_version < '3.14'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (python_full_version < '3.12' and extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version >= '3.14' and extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
     { name = "overrides", marker = "python_full_version < '3.12'" },
     { name = "packaging", marker = "python_full_version < '3.14'" },
     { name = "pyarrow", marker = "python_full_version < '3.14'" },
@@ -2718,7 +2744,7 @@ source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten') or (python_full_version < '3.12' and sys_platform == 'emscripten')",
 ]
 dependencies = [
     { name = "aiohttp", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors'" },
@@ -2754,7 +2780,7 @@ resolution-markers = [
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version < '3.12' and sys_platform == 'win32' and extra == 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version < '3.12' and sys_platform != 'win32' and extra == 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
-    "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
 ]
 dependencies = [
     { name = "aiohttp", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
@@ -2770,7 +2796,7 @@ dependencies = [
     { name = "openai", version = "2.54.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
     { name = "packaging", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
     { name = "pydantic", version = "2.12.5", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
-    { name = "pydantic", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.14' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "pydantic", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')" },
     { name = "pydantic-settings", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
     { name = "python-dotenv", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
     { name = "pyyaml", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
@@ -3072,22 +3098,22 @@ source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten') or (python_full_version < '3.12' and sys_platform == 'emscripten')",
 ]
 dependencies = [
-    { name = "anyio", marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "httpx2", marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "jsonschema", marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "mcp-types", marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "opentelemetry-api", marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "pydantic", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "pyjwt", extra = ["crypto"], marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "python-multipart", marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
+    { name = "anyio", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "httpx2", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "jsonschema", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "mcp-types", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "opentelemetry-api", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "pydantic", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "pyjwt", extra = ["crypto"], marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "python-multipart", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
     { name = "pywin32", marker = "(sys_platform == 'win32' and extra != 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
-    { name = "sse-starlette", marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "starlette", marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "typing-extensions", marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "typing-inspection", marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
+    { name = "sse-starlette", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "starlette", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "typing-extensions", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "typing-inspection", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
     { name = "uvicorn", marker = "(sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9d/8d/e0d339616f4810e9051d4aba6887afab289ab1f81875fe908b606cdfd0e3/mcp-2.3.0.tar.gz", hash = "sha256:8b147a50441cf059dc88c684e0aeed3687f0aa0f39c6cde7b90330effd2b34d8", size = 4171955, upload-time = "2026-10-02T22:06:56.091Z" }
@@ -3100,8 +3126,8 @@ name = "mcp-types"
 version = "2.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "pydantic", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "typing-extensions", marker = "extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
+    { name = "pydantic", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
+    { name = "typing-extensions", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors' or extra != 'extra-17-flightdeck-sensor-dev'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9e/2d/7c251e34207f6c51000312fc8839111ac45cfe02023f90b44e7f1051dd8e/mcp_types-2.3.0.tar.gz", hash = "sha256:d1e46549edb35ee19a94940fcee6d1addd7e589ab7ea92dda83f5d84781fc362", size = 65898, upload-time = "2026-10-02T22:06:57.863Z" }
 wheels = [
@@ -3142,7 +3168,7 @@ resolution-markers = [
 dependencies = [
     { name = "jsonref", marker = "python_full_version >= '3.12'" },
     { name = "mcp", version = "1.28.1", source = { registry = "https://pypi.org/simple" }, extra = ["ws"], marker = "(python_full_version >= '3.12' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
-    { name = "pydantic", version = "2.12.5", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "pydantic", version = "2.12.5", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (python_full_version < '3.12' and extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version >= '3.14' and extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
     { name = "pydantic", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
     { name = "python-dotenv", marker = "python_full_version >= '3.12'" },
 ]
@@ -3401,7 +3427,7 @@ version = "2.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "ast-serialize" },
-    { name = "librt", marker = "platform_python_implementation != 'PyPy'" },
+    { name = "librt", marker = "platform_python_implementation != 'PyPy' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
     { name = "mypy-extensions" },
     { name = "pathspec" },
     { name = "typing-extensions" },
@@ -3665,7 +3691,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "flatbuffers", marker = "python_full_version < '3.14'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.12' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
-    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "numpy", version = "2.5.3", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.12' and python_full_version < '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (python_full_version < '3.12' and extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version >= '3.14' and extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
     { name = "packaging", marker = "python_full_version < '3.14'" },
     { name = "protobuf", marker = "python_full_version < '3.14'" },
 ]
@@ -3711,16 +3737,16 @@ resolution-markers = [
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version < '3.12' and sys_platform == 'win32' and extra == 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version < '3.12' and sys_platform != 'win32' and extra == 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
-    "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
 ]
 dependencies = [
     { name = "anyio", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
     { name = "distro", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
     { name = "httpx", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
     { name = "jiter", version = "0.14.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
-    { name = "jiter", version = "0.17.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.14' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "jiter", version = "0.17.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')" },
     { name = "pydantic", version = "2.12.5", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
-    { name = "pydantic", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.14' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "pydantic", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')" },
     { name = "sniffio", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
     { name = "tqdm", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
     { name = "typing-extensions", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
@@ -3737,7 +3763,7 @@ source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.14'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten'",
-    "python_full_version < '3.12' or (python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten') or (python_full_version < '3.12' and sys_platform == 'emscripten')",
 ]
 dependencies = [
     { name = "anyio", marker = "extra == 'group-17-flightdeck-sensor-sdk-majors'" },
@@ -4541,14 +4567,14 @@ resolution-markers = [
     "python_full_version >= '3.14' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
-    "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')",
-    "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
 ]
 dependencies = [
-    { name = "annotated-types", marker = "python_full_version >= '3.14' or extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "pydantic-core", version = "2.50.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14' or extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "typing-extensions", marker = "python_full_version >= '3.14' or extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
-    { name = "typing-inspection", marker = "python_full_version >= '3.14' or extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
+    { name = "annotated-types", marker = "python_full_version >= '3.14' or extra != 'extra-17-flightdeck-sensor-dev' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "pydantic-core", version = "2.50.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14' or extra != 'extra-17-flightdeck-sensor-dev' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "typing-extensions", marker = "python_full_version >= '3.14' or extra != 'extra-17-flightdeck-sensor-dev' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "typing-inspection", marker = "python_full_version >= '3.14' or extra != 'extra-17-flightdeck-sensor-dev' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/6b/fb/6e44b63b26efea1cec48c26d8362313310202ef5ed6e7a52f1669e64e2cd/pydantic-2.14.0.tar.gz", hash = "sha256:8a51a7aaddd60f55566d1f07bdd87b92b463903f39a8f26b71a06314cd1548ae", size = 898613, upload-time = "2026-10-08T14:34:48.341Z" }
 wheels = [
@@ -4671,11 +4697,11 @@ resolution-markers = [
     "python_full_version >= '3.14' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
-    "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')",
-    "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
 ]
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version >= '3.14' or extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
+    { name = "typing-extensions", marker = "python_full_version >= '3.14' or extra != 'extra-17-flightdeck-sensor-dev' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/e6/6d/196e8c819e0e934f35a1a33b3530396feadb0af4ca38fe9f995249e55794/pydantic_core-2.50.0.tar.gz", hash = "sha256:84d2d38f7d163c4dec292f379e9de1960c661795442aca6c90d706436cb3749e", size = 513355, upload-time = "2026-10-08T14:30:58.245Z" }
 wheels = [
@@ -4779,7 +4805,7 @@ version = "2.15.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pydantic", version = "2.12.5", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
-    { name = "pydantic", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.14' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
+    { name = "pydantic", version = "2.14.0", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version >= '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')" },
     { name = "python-dotenv", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
     { name = "typing-inspection", marker = "extra == 'extra-17-flightdeck-sensor-dev' or extra != 'group-17-flightdeck-sensor-sdk-majors'" },
 ]
@@ -4864,7 +4890,7 @@ name = "pytest"
 version = "9.1.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
     { name = "iniconfig" },
     { name = "packaging" },
     { name = "pluggy" },
@@ -4881,7 +4907,7 @@ version = "1.4.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "pytest" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/43/7c/d36d04db312ecf4298932ef77e6e4a9e8ad017906e24e34f0b0c361a2473/pytest_asyncio-1.4.0.tar.gz", hash = "sha256:c6c0d2259945122819f171a32ecea2c349ead889ee28176caaf492143424be42", size = 58514, upload-time = "2026-05-26T09:56:04.083Z" }
 wheels = [
@@ -5026,7 +5052,7 @@ source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
     { name = "rpds-py" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/22/f5/df4e9027acead3ecc63e50fe1e36aca1523e1719559c499951bb4b53188f/referencing-0.37.0.tar.gz", hash = "sha256:44aefc3142c5b842538163acb373e24cce6632bd54bdb01b21ad5863489f50d8", size = 78036, upload-time = "2025-10-13T15:30:48.871Z" }
 wheels = [
@@ -5156,8 +5182,8 @@ resolution-markers = [
     "python_full_version >= '3.14' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors'",
     "python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors'",
-    "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')",
-    "(python_full_version >= '3.12' and python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')",
+    "(python_full_version < '3.14' and sys_platform != 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors') or (python_full_version < '3.12' and sys_platform == 'emscripten' and extra != 'extra-17-flightdeck-sensor-dev' and extra != 'group-17-flightdeck-sensor-sdk-majors')",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/fc/f2/af1da9d3ceed77bfcdce40427d49ba0be94e4fe84245e3bfef68c10e75b6/regex-2026.9.29.tar.gz", hash = "sha256:8b5fcc4771732191b2b7d1dd68d8f0353f47f8d90b6150f6dce58bf1112442cb", size = 419199, upload-time = "2026-09-29T00:49:58.298Z" }
 wheels = [
@@ -5573,7 +5599,7 @@ version = "1.7.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
-    { name = "typing-extensions", marker = "python_full_version < '3.13'" },
+    { name = "typing-extensions", marker = "python_full_version < '3.13' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/7b/2b/3850dc6bf7ef71b088962eba31dafc6cffd2f96e577ebb0bb316df96da3e/starlette-1.7.0.tar.gz", hash = "sha256:c79f74ea63cff761804fbbfb182f1e0b440c2d07b164d24700c5a1bab5d6ff5d", size = 2736246, upload-time = "2026-09-23T07:30:26.35Z" }
 wheels = [
@@ -5612,7 +5638,7 @@ version = "0.14.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "regex", version = "2026.1.15", source = { registry = "https://pypi.org/simple" }, marker = "(python_full_version < '3.14' and extra == 'extra-17-flightdeck-sensor-dev') or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
-    { name = "regex", version = "2026.9.29", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14' or extra != 'extra-17-flightdeck-sensor-dev' or extra == 'group-17-flightdeck-sensor-sdk-majors'" },
+    { name = "regex", version = "2026.9.29", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.14' or extra != 'extra-17-flightdeck-sensor-dev' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
     { name = "requests" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/66/62/167a842aa0429d45f5e797354fd4343a96f6043d67d0513c675c7b8d36e6/tiktoken-0.14.0.tar.gz", hash = "sha256:231dec90efcdccf1b565a1416107736f1e09b1a08fe736ef9d6363e626d03874", size = 38898, upload-time = "2026-08-17T19:49:49.514Z" }
@@ -5721,7 +5747,7 @@ name = "tqdm"
 version = "4.70.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "colorama", marker = "sys_platform == 'win32' or (extra == 'extra-17-flightdeck-sensor-dev' and extra == 'group-17-flightdeck-sensor-sdk-majors')" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0d/ea/b2a5bd54b28a324dae8211928b2d730b6547500342c7e6c6dea08bd0a485/tqdm-4.70.1.tar.gz", hash = "sha256:cefd0eca11b2a37a3aee776544d4f4ae913f02688135b5556b8788dfa474afc4", size = 171846, upload-time = "2026-09-11T07:25:16.601Z" }
 wheels = [

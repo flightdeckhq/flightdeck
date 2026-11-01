@@ -327,6 +327,7 @@ class Session:
         self.event_queue: EventQueue = event_queue or LocalEventQueue(
             client,
             directive_handler=self._apply_directive,
+            directive_session_id=config.session_id,
         )
 
     # ------------------------------------------------------------------

@@ -41,6 +41,10 @@ from flightdeck_sensor.interceptor.anthropic import (
 from flightdeck_sensor.interceptor.anthropic import (
     is_patched as _anthropic_is_patched,
 )
+from flightdeck_sensor.interceptor.claude_agent_sdk import (
+    patch_claude_agent_sdk,
+    unpatch_claude_agent_sdk,
+)
 from flightdeck_sensor.interceptor.crewai import (
     patch_crewai_classes,
     unpatch_crewai_classes,
@@ -680,7 +684,10 @@ def patch(
             Crew member's turn lands as a child session) and
             ``LANGGRAPH`` (wraps the callable registered via
             ``StateGraph.add_node`` so each agent-bearing node run
-            lands as a child session). Silent no-op when a target's
+            lands as a child session) and ``CLAUDE_AGENT_SDK`` (wraps
+            the SDK's ``query()`` path and ``ClaudeSDKClient`` so each
+            Agent SDK run lands as its own ``claude_agent_sdk``
+            session). Silent no-op when a target's
             SDK is not installed; raw strings outside the canonical
             set are silently ignored to preserve backward compat.
 
@@ -721,6 +728,8 @@ def patch(
             patch_crewai_classes(quiet=quiet)
         if Provider.LANGGRAPH.value in targets:
             patch_langgraph_classes(quiet=quiet)
+        if Provider.CLAUDE_AGENT_SDK.value in targets:
+            patch_claude_agent_sdk(quiet=quiet)
 
 
 def unpatch() -> None:
@@ -745,6 +754,7 @@ def unpatch() -> None:
         unpatch_mcp_classes()
         unpatch_crewai_classes()
         unpatch_langgraph_classes()
+        unpatch_claude_agent_sdk()
 
 
 def get_status() -> StatusResponse:

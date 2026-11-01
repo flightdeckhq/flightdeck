@@ -218,6 +218,42 @@ class TestEventQueue:
         finally:
             eq.close()
 
+    def test_directives_reach_the_handler_only_for_the_session_and_its_children(self) -> None:
+        """The queue also carries the events of Agent SDK runs, separate
+        agents' sessions: a directive in the response to one of those is
+        not this session's to apply."""
+        mock_client = MagicMock(spec=ControlPlaneClient)
+        mock_client.post_event.side_effect = lambda item: (
+            Directive(
+                action=DirectiveAction.SHUTDOWN, reason=item["session_id"], grace_period_ms=0
+            ),
+            False,
+        )
+        handled: list[str] = []
+        last = threading.Event()
+
+        def handler(d: Directive) -> None:
+            handled.append(d.reason)
+            if d.reason == "own-last":
+                last.set()
+
+        eq = EventQueue(mock_client, directive_handler=handler, directive_session_id="own")
+        try:
+            eq.enqueue({"session_id": "sdk-run", "event_type": "post_call"})
+            eq.enqueue({"session_id": "own", "event_type": "post_call"})
+            eq.enqueue(
+                {"session_id": "child", "parent_session_id": "own", "event_type": "session_start"}
+            )
+            # The directive queue is FIFO with one consumer: once the
+            # last directive is handled, every earlier one has been.
+            eq.enqueue(
+                {"session_id": "own-last", "parent_session_id": "own", "event_type": "post_call"}
+            )
+            assert last.wait(5.0)
+            assert handled == ["own", "child", "own-last"]
+        finally:
+            eq.close()
+
     def test_flush_completes_even_when_post_raises(self) -> None:
         """A failing POST must still call task_done() so flush() can
         return rather than blocking until the timeout. This is the

@@ -156,3 +156,20 @@ on every tool call costs about 0.2 s, which not every developer wants.
 for everyone); gating prompts and MCP calls only (a stop would wait for
 the next prompt); failing closed (a server outage stops every developer).
 
+## D221 -- A Claude Agent SDK run is its own session, keyed by its Claude Code session id
+
+**Date:** 2026-10-31
+**Decision:** the sensor's Agent SDK interceptor reports each `query()`
+call or `ClaudeSDKClient` connection as a session whose id is the
+Claude Code session id from the SDK's `init` message, under a
+`claude_agent_sdk` agent, from the SDK's message stream. It sets
+`FLIGHTDECK_SDK_OBSERVED=1` for the CLI, and the Claude Code plugin then
+sends nothing but its MCP gate. The sensor applies a directive only to
+its own session and that session's sub-agent children.
+**Why:** the CLI calls the model itself, so no provider patch sees the
+run; under `setting_sources=[]`, the production setting, no plugin loads
+either. The Claude Code session id joins the run to its transcript.
+**Rejected alternative:** a child session of the sensor's session (an
+SDK run is a different agent, by `client_type`); the plugin alone (dark
+under `setting_sources=[]`, and labelled a coding session).
+

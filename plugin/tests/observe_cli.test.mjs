@@ -112,6 +112,7 @@ const HERMETIC_ENV = {
   CLAUDE_CODE_SIMPLE: "",
   CLAUDE_CONFIG_DIR: "",
   FLIGHTDECK_ENFORCEMENT: "",
+  FLIGHTDECK_SDK_OBSERVED: "",
   CLAUDE_PLUGIN_OPTION_ENFORCEMENT: "",
   // These tests read the markers under $TMPDIR/flightdeck-plugin, the
   // state directory when Claude Code provides no plugin data directory.
@@ -788,6 +789,40 @@ describe("observe_cli.mjs", () => {
       const gate = await runScript(JSON.stringify({ hook_event_name: "PreToolUse", session_id: sid, tool_name: "Bash", tool_input: {} }), env, ["--gate"]);
       assert.equal(gate.stdout.trim(), "");
       assert.equal(existsSync(join(stateDir({ ...process.env, CLAUDE_PLUGIN_DATA: "" }), `control-${sid}.json`)), false);
+    } finally {
+      server.closeAllConnections();
+      server.close();
+    }
+  });
+
+  it("sends nothing for a run the Agent SDK interceptor reports (FLIGHTDECK_SDK_OBSERVED=1)", async () => {
+    const requests = [];
+    const server = createServer((req, res) => {
+      req.resume();
+      req.on("end", () => {
+        requests.push(req.url);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end('{"status":"ok"}');
+      });
+    });
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const sid = "sess-sdk-observed-1";
+      const env = { FLIGHTDECK_SERVER: `http://127.0.0.1:${server.address().port}`, FLIGHTDECK_TOKEN: "tok_test", CLAUDE_SESSION_ID: sid, FLIGHTDECK_SDK_OBSERVED: "1" };
+      for (const hook of [
+        { hook_event_name: "SessionStart", source: "startup" },
+        { hook_event_name: "UserPromptSubmit", prompt: "hi" },
+        { hook_event_name: "PostToolUse", tool_name: "Bash", tool_input: { command: "ls" }, tool_response: {} },
+        { hook_event_name: "Notification", notification_type: "idle_prompt" },
+        { hook_event_name: "Stop" },
+      ]) {
+        const result = await runScript(JSON.stringify({ session_id: sid, ...hook }), env);
+        assert.equal(result.code, 0, result.stderr);
+      }
+      // The MCP gate still runs for the run's MCP calls.
+      const gate = await runScript(JSON.stringify({ hook_event_name: "PreToolUse", session_id: sid, tool_name: "mcp__github__list", tool_input: {} }), env);
+      assert.equal(gate.code, 0, gate.stderr);
+      assert.deepEqual(requests.filter((url) => url.startsWith("/ingest")), []);
     } finally {
       server.closeAllConnections();
       server.close();

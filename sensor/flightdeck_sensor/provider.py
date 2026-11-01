@@ -43,6 +43,9 @@ class Provider(StrEnum):
       agent-bearing predicate is default-on per node, narrowable
       via the optional regex override
       ``init(langgraph_agent_node_pattern=…)``.
+    * ``Provider.CLAUDE_AGENT_SDK`` — wrap around
+      ``claude_agent_sdk.query`` and ``ClaudeSDKClient``, reporting each
+      Agent SDK run as its own session from the SDK's message stream.
 
     Each member's ``.value`` is the canonical string name. The string
     name is what ``patch()`` matches against internally, so passing
@@ -55,3 +58,4 @@ class Provider(StrEnum):
     MCP = "mcp"
     CREWAI = "crewai"
     LANGGRAPH = "langgraph"
+    CLAUDE_AGENT_SDK = "claude_agent_sdk"

@@ -299,9 +299,16 @@ class EventQueue:
         self,
         client: ControlPlaneClient,
         directive_handler: Callable[[Directive], None] | None = None,
+        directive_session_id: str | None = None,
     ) -> None:
         self._client = client
         self._directive_handler = directive_handler
+        # When set, a directive goes to the handler only when the event
+        # whose response carried it belongs to this session or to one of
+        # its sub-agent children: the queue also carries the events of
+        # sessions the sensor reports for other agents (Agent SDK runs),
+        # whose directives are not this session's to act on.
+        self._directive_session_id = directive_session_id
         self._queue: queue.Queue[dict[str, Any] | object] = queue.Queue(
             maxsize=_MAX_QUEUE_SIZE,
         )
@@ -433,6 +440,14 @@ class EventQueue:
     # Internals
     # ------------------------------------------------------------------
 
+    def _directive_is_ours(self, item: object) -> bool:
+        """Whether a directive in the response to ``item`` is for this
+        queue's session: always when no session is set; otherwise when the
+        event is the session's own or one of its sub-agent children's."""
+        if self._directive_session_id is None or not isinstance(item, dict):
+            return True
+        return self._directive_session_id in (item.get("session_id"), item.get("parent_session_id"))
+
     def _drain_loop(self) -> None:
         """Background thread: drain queue, post events, hand off directives.
 
@@ -478,6 +493,16 @@ class EventQueue:
                         event_type,
                         exc,
                     )
+                if (
+                    directive is not None
+                    and self._directive_queue is not None
+                    and not self._directive_is_ours(item)
+                ):
+                    _log.debug(
+                        "drain: directive %s for another session's event ignored",
+                        directive.action.value,
+                    )
+                    directive = None
                 if directive is not None and self._directive_queue is not None:
                     try:
                         self._directive_queue.put_nowait(directive)

@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-all
+.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-all
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -89,6 +89,9 @@ playground-anthropic-platforms: ## Rule 40d playground: Anthropic raw and stream
 
 playground-claude-agent-sdk: ## Rule 40d playground: Claude Agent SDK query() and ClaudeSDKClient runs as claude_agent_sdk sessions, plugin silent. Requires the SDK and a Claude login or API key.
 	$(PYTHON) playground/28_claude_agent_sdk.py
+
+playground-stream-capture: ## Rule 40d playground: every Anthropic and OpenAI streaming path (raw streams, OpenAI .stream() helpers, raw and streaming views, hosted MCP) stores its response and reports its tool calls. Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
+	$(PYTHON) playground/29_stream_capture.py
 
 playground-openai: ## Rule 40d playground: OpenAI SDK. Requires OPENAI_API_KEY.
 	$(PYTHON) playground/02_direct_openai.py

@@ -1552,7 +1552,9 @@ that Claude Code was launched from inside another Claude Code session,
 `ci_provider` a CI run. `agent_type` stays `coding` for every plugin
 session because the ingestion vocabulary is `coding` / `production`;
 these fields are the signals that tell an interactive session from a
-headless, SDK, CI or cloud run.
+headless, SDK, CI or cloud run. A `claude --bare` run executes no hooks,
+not even those of a plugin passed with `--plugin-dir`, so the plugin
+cannot observe it.
 
 ### Tool input sanitisation
 

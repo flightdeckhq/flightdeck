@@ -152,6 +152,67 @@ How it works: with enforcement on, a synchronous gate runs before every tool cal
 
 Enforcement fails open: if your Flightdeck server is unreachable, tool calls and prompts go through. A stop that already arrived stays in force until the session ends.
 
+## Headless runs, CI and the GitHub Action
+
+The plugin observes `claude -p` the same way it observes an interactive
+session; only the way it is loaded and pointed at your stack changes.
+
+**Scripts (`claude -p`).** Load the plugin once per machine, or per run:
+
+```bash
+claude plugin marketplace add flightdeckhq/flightdeck
+claude plugin install flightdeck@flightdeck-plugins
+# or, without installing:
+claude -p "..." --plugin-dir /path/to/flightdeck/plugin
+```
+
+Point it at your stack with `FLIGHTDECK_SERVER` and `FLIGHTDECK_TOKEN`
+in the environment, or in a settings `env` block, which Claude Code
+passes to the plugin's hooks:
+
+```bash
+claude -p "..." --settings '{"env": {"FLIGHTDECK_SERVER": "https://flightdeck.example.com", "FLIGHTDECK_TOKEN": "ftd_..."}}'
+```
+
+These sessions carry `context.entrypoint=sdk-cli`, and on a CI runner
+`context.ci` / `ci_provider`; they keep `flavor=claude-code` and
+`agent_type=coding`. A `claude -p` run uses an `ANTHROPIC_API_KEY` in its
+environment whenever one is set, so its calls are billed as `metered`.
+
+**`--bare`.** `claude --bare` runs no hooks at all, including those of a
+plugin loaded with `--plugin-dir` (checked on Claude Code 2.1.316), so
+the plugin reports nothing for a bare run. Leave `--bare` off a run you
+want in Flightdeck. OpenTelemetry ingest, which needs no hooks, is on the
+roadmap ([#184](https://github.com/flightdeckhq/flightdeck/issues/184)).
+
+**GitHub Action.** [`anthropics/claude-code-action`](https://github.com/anthropics/claude-code-action)
+installs plugins from a marketplace with its `plugins` and
+`plugin_marketplaces` inputs, and takes Claude Code settings in
+`settings`:
+
+```yaml
+- uses: anthropics/claude-code-action@v1
+  with:
+    anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+    plugin_marketplaces: https://github.com/flightdeckhq/flightdeck.git
+    plugins: flightdeck@flightdeck-plugins
+    settings: |
+      {"env": {"FLIGHTDECK_SERVER": "https://flightdeck.example.com",
+               "FLIGHTDECK_TOKEN": "${{ secrets.FLIGHTDECK_TOKEN }}"}}
+```
+
+The runner must reach the stack, so this needs a Flightdeck deployment
+reachable from GitHub's runners (or a self-hosted runner next to it), not
+a `make dev` stack on a laptop. A runner torn down right after the run
+can lose the session's final flush (see Troubleshooting).
+
+**Python agents on the Claude Agent SDK** are reported by the sensor, not
+the plugin: install `flightdeck-sensor[claude-agent-sdk]` and call
+`flightdeck_sensor.patch()`. The sensor reports each run as a
+`claude_agent_sdk` session, and the plugin sends nothing for a run the
+sensor reports, even when the run loads it. See the
+[sensor README](../sensor/README.md#framework-support).
+
 ## Troubleshooting
 
 ### "I don't see my session at all"

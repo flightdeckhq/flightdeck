@@ -18,6 +18,14 @@ All notable changes to Flightdeck are documented here.
   conversation's running token total.
 - **An idle agent-team teammate shows on the Claude Code timeline** as a
   `session_signal` naming the teammate.
+- **Claude Agent SDK runs are observed.** After `flightdeck_sensor.patch()`,
+  each `query()` call or `ClaudeSDKClient` connection lands as its own
+  `claude_agent_sdk` session with its model calls, token counts (cache
+  split included), tool calls and billing mode. Install with
+  `pip install flightdeck-sensor[claude-agent-sdk]`. A Claude Code plugin
+  loaded into the run stays silent so the run is counted once; plugin
+  releases before this one report it a second time as a `claude_code`
+  session.
 
 ### Fixed
 

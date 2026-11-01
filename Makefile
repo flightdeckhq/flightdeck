@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-all
+.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-all
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -86,6 +86,9 @@ playground-anthropic: ## Rule 40d playground: Anthropic SDK. Requires ANTHROPIC_
 
 playground-anthropic-platforms: ## Rule 40d playground: Anthropic raw and streaming views, parse, and Bedrock/Vertex/Foundry sections that self-skip without credentials. Requires ANTHROPIC_API_KEY.
 	$(PYTHON) playground/27_anthropic_platforms.py
+
+playground-claude-agent-sdk: ## Rule 40d playground: Claude Agent SDK query() and ClaudeSDKClient runs as claude_agent_sdk sessions, plugin silent. Requires the SDK and a Claude login or API key.
+	$(PYTHON) playground/28_claude_agent_sdk.py
 
 playground-openai: ## Rule 40d playground: OpenAI SDK. Requires OPENAI_API_KEY.
 	$(PYTHON) playground/02_direct_openai.py

@@ -1089,6 +1089,70 @@ swimlane row left panel on Fleet —
 mirroring the existing `error_types` (`llm_error`) and
 `mcp_error_types` indicators.
 
+### Claude Agent SDK
+
+`patch()` (`Provider.CLAUDE_AGENT_SDK`) wraps the Python Claude Agent
+SDK's `query()` and `ClaudeSDKClient`. The SDK runs the Claude Code CLI
+as a subprocess that calls the model itself, so the anthropic patch sees
+none of its calls; the interceptor reports them from the SDK's message
+stream instead. The `query()` wrap sits on the SDK's internal
+`InternalClient.process_query`, which every `query()` call goes through,
+so a caller that imported `query` before `patch()` ran is still
+observed; the SDK version is pinned below 0.3 for that reason.
+
+Each `query()` call, and each `ClaudeSDKClient` connection, is one
+Flightdeck session. Its id is the Claude Code session id the SDK's
+`init` message reports, and it belongs to a separate agent:
+`client_type=claude_agent_sdk`, with the sensor's `agent_type`,
+`agent_name`, `user`, `hostname` and flavor (the agent id differs from
+the sensor session's because `client_type` is part of its derivation).
+From the stream:
+
+| SDK message | Event |
+|---|---|
+| `SystemMessage` with subtype `init` | `session_start`: `context` carries the Claude Code version, the model, the permission mode, the working directory, the API key source and the configured MCP servers' names |
+| `AssistantMessage` | one `post_call` per message id: the model, token counts from its `usage` (the cache split included), `stop_reason`, the billing mode, `provider_metadata.platform`, and its content under `capture_prompts` (the turn's prompt as the first call's messages, the message's blocks as the response); plus one `tool_call` per `tool_use` block, its input under `capture_prompts`. Claude Code's own `<synthetic>` messages (an API error, an interrupt) are not model calls and are skipped |
+| end of the run | `session_end` (`close_reason=normal_exit`, or `state=error` with the error of the run's last `ResultMessage` when it failed) |
+
+A `ResultMessage` ends one turn; a run can have several (a prompt
+stream, or a background task waking the run). The session ends when
+the run does: the `query()` stream is exhausted or closed, or the
+`ClaudeSDKClient` disconnects.
+
+The CLI streams an assistant message as one `AssistantMessage` per
+content block under one message id. A subagent's messages (those with a
+`parent_tool_use_id`) count toward the run's session and can interleave
+with the run's own, so blocks are collected per chain (the run's own,
+and each `parent_tool_use_id`): a message is reported when its chain
+moves to another message id, at a result, or at the end of the run, and
+each message id once. A tool result does not complete a message, since
+the CLI runs tools while the message is still streaming.
+
+The billing mode follows the plugin's precedence, over the CLI's
+environment (the process's, overlaid by the options' `env`): an explicit
+`FLIGHTDECK_BILLING_MODE`; `metered` on a cloud provider
+(`CLAUDE_CODE_USE_BEDROCK`, `_VERTEX` or `_FOUNDRY`) or with
+`ANTHROPIC_AUTH_TOKEN`; `subscription` when the init message's API key
+source is `none` (a Claude login); `metered` otherwise. The platform is
+the cloud provider, else the host of `ANTHROPIC_BASE_URL`, else
+`anthropic`.
+
+The interceptor adds `FLIGHTDECK_SDK_OBSERVED=1` to the CLI's
+environment (the options' `env`, the caller's own entries kept), so a
+Claude Code plugin the CLI loads reports nothing for the run (see
+"Claude Agent SDK and Claude Code" under Client type registry). A run
+started with a custom `transport` is reported too, but the options'
+`env` never reaches a transport built before them, so the interceptor
+logs a warning that a plugin in that run may report it again. It never
+replaces a caller's `can_use_tool` or hooks, and an error while setting
+up the observation leaves the run to the SDK unobserved.
+
+Its sessions only observe: their `session_start` sets
+`context.supports_directives=false`, and the sensor acts on a directive
+only for its own session and that session's sub-agent children, so a
+directive for an SDK run is never applied to the process's sensor
+session.
+
 ### Runtime context auto-collection
 
 `sensor/flightdeck_sensor/core/context.py` runs a pluggable collector chain
@@ -1861,16 +1925,21 @@ their own `service.name`), so their sessions keep that tool's defaults
 and `agent_id`; `otlp` is for sources no registry entry names.
 
 **Claude Agent SDK and Claude Code.** The Agent SDK runs the Claude Code
-CLI as a subprocess. `claude_agent_sdk` is reserved for the Agent SDK
-interceptor ([#182](https://github.com/flightdeckhq/flightdeck/issues/182)), and its contract with the plugin is fixed
-here so that a run is reported once: the interceptor sets
-`FLIGHTDECK_SDK_OBSERVED=1` in that subprocess's environment and
-applies the MCP policy itself, and the plugin then stays silent for the
-run. The plugin does not read that variable, so its MCP policy gate
-keeps running in SDK-launched sessions. A process that also makes
-direct provider calls keeps those under its sensor session
-(`flightdeck_sensor`); the two are separate agents because
-`client_type` is part of the `agent_id` derivation.
+CLI as a subprocess, and the sensor's Agent SDK interceptor reports each
+run as a `claude_agent_sdk` session (see Sensor > Claude Agent SDK). So
+that a run is reported once, the interceptor sets
+`FLIGHTDECK_SDK_OBSERVED=1` in that subprocess's environment, and a
+Claude Code plugin the CLI loads sends nothing for a run where it is
+set and enforces nothing (its enforcement gates and directive handling
+stay off, since directives name the sensor's session); only its MCP
+policy gate keeps running, so the policy still holds for the run's MCP
+calls. A plugin that predates the variable reports the
+run a second time, as a `claude_code` session under the plugin's own
+session id with the Claude Code id in `context.claude_code_session_id`.
+A process that also makes direct provider
+calls keeps those under its sensor session (`flightdeck_sensor`); the
+two are separate agents because `client_type` is part of the `agent_id`
+derivation.
 
 The list has one source, `contracts/client_types.json`, one object per
 value with the six fields above. Each component that checks or shows

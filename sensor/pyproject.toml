@@ -59,6 +59,10 @@ litellm = ["litellm>=1.83.0"]
 # imports the error class under either name and captures the server
 # fingerprint from 2.x's ``adopt`` handshake.
 mcp = ["mcp>=1.28,<3"]
+# Claude Agent SDK. The interceptor wraps ``claude_agent_sdk.query`` and
+# ``ClaudeSDKClient`` and reads the SDK's message types; 0.2.168 is the
+# release it was built and tested against, and 0.3 may change them.
+claude-agent-sdk = ["claude-agent-sdk>=0.2.168,<0.3"]
 # Test tooling without the frameworks. The CI lane that runs the unit
 # suite against the newest SDK majors installs this, because the
 # framework packages in ``dev`` pin the SDKs below their current majors.
@@ -125,6 +129,8 @@ dev = [
     # langchain-mcp-adapters stays on the mcp 1.x line the sensor
     # supports; ``langchain[mcp]`` (fastmcp 4) needs mcp 2.x.
     "langchain-mcp-adapters>=0.3,<0.4",
+    # Drives the Claude Agent SDK interceptor tests.
+    "claude-agent-sdk>=0.2.168,<0.3",
     "langgraph>=1,<2",
     "llama-index-tools-mcp>=0.1",
     "mcpadapt>=0.0.6",

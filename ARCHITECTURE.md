@@ -2494,9 +2494,9 @@ but `gzip` or none), the size limits while it is read and inflated
 `google.rpc.Status` (`code` the gRPC status code, `message` the reason)
 in the request's encoding, and in JSON when the media type is not
 supported. OTLP JSON is decoded as protojson after its hex trace and span
-ids are re-encoded, with unknown fields ignored. Each answered export is
-logged at info level with its signal, status and counts, since an
-exporter seldom reports what the receiver answered.
+ids are re-encoded, with unknown fields ignored. Every export, answered
+or refused, is logged at info level with its signal, status and counts
+or reason, since an exporter seldom reports what the receiver answered.
 
 **Rate limit.** A request is refused with 429 (`Retry-After`) before it
 is read when the token's per-minute budget is spent. Once decoded it is

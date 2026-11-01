@@ -268,11 +268,50 @@ def _pin_root_active() -> None:
         )
 
 
+# Custom directives the fixture registers the way a sensor registers its
+# directive handlers (POST /v1/directives/register, keyed by
+# fingerprint, so a re-run updates the same rows). One goes under the
+# OTLP session's flavor, which the dashboard must not offer on that
+# observer session; one under the sensor fixture's flavor (canonical.json
+# e2e-research-agent), the positive control it must offer.
+SENSOR_FIXTURE_FLAVOR = "e2e-research-agent"
+FIXTURE_DIRECTIVES = (
+    (OTLP_FLAVOR, "e2e-otlp-flavor-directive", "e2e_otlp_rotate"),
+    (SENSOR_FIXTURE_FLAVOR, "e2e-sensor-flavor-directive", "e2e_sensor_rotate"),
+)
+
+
+def _register_directives(api_url: str, headers: dict[str, str]) -> None:
+    for flavor, fingerprint, name in FIXTURE_DIRECTIVES:
+        body = {
+            "flavor": flavor,
+            "directives": [
+                {
+                    "fingerprint": fingerprint,
+                    "name": name,
+                    "description": "E2E fixture directive",
+                    "flavor": flavor,
+                    "parameters": [],
+                }
+            ],
+        }
+        req = urllib.request.Request(
+            f"{api_url}/v1/directives/register",
+            data=json.dumps(body).encode(),
+            headers={**headers, "Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            resp.read()
+
+
 def seed_otlp_fixture(
     ingestion_url: str, api_url: str, headers: dict[str, str], mode: str = "full"
 ) -> None:
-    """Send the OTLP export when the root is not seeded yet (full mode
-    only), then pin the root active."""
+    """Register the fixture directives and send the OTLP export when the
+    root is not seeded yet (full mode only), then pin the root active."""
+    if mode == "full":
+        _register_directives(api_url, headers)
     if mode == "full" and _root_event_count(api_url, headers) < OTLP_ROOT_MIN_EVENTS:
         body = json.dumps(_export(time.time_ns())).encode()
         req = urllib.request.Request(

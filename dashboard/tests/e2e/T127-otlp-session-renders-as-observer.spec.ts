@@ -21,6 +21,14 @@ const AUTH = { Authorization: "Bearer tok_dev" };
 const SENSOR_FRESH_ACTIVE_SESSION_ID = "8db1adf1-7a9e-559c-92e5-52b21fc6a42c";
 const OTEL_TITLE = "Claude Code via OpenTelemetry: observe only, no directives reach it";
 
+async function sessionAgentId(page: Page, sessionId: string): Promise<string> {
+  const resp = await page.request.get(`http://localhost:4000/api/v1/sessions/${sessionId}`, {
+    headers: AUTH,
+  });
+  expect(resp.ok(), `session ${sessionId} must exist`).toBe(true);
+  return ((await resp.json()) as { session: { agent_id: string } }).session.agent_id;
+}
+
 async function otlpAgentId(page: Page): Promise<string> {
   const resp = await page.request.get(
     `http://localhost:4000/api/v1/sessions/${OTLP_AGENT.rootSessionId}`,
@@ -54,8 +62,26 @@ test.describe("T127 — OTLP session renders as an observer", () => {
     await expect(sidebarRow).toBeVisible();
     await expect(sidebarRow.getByTestId("flavor-telemetry-source-pill")).toHaveText(/otel/i);
     // The root is active, so a directive-capable agent would offer
-    // Stop All here; an all-observer one does not.
+    // Stop All here; an all-observer one does not. A custom directive
+    // is registered under the OTLP session's flavor (otlp_seed.py), so
+    // the trigger's absence is the observer gate, not an empty list.
     await expect(page.getByTestId(`flavor-stop-all-button-${agentId}`)).toHaveCount(0);
+    await expect(page.getByTestId(`flavor-directives-button-${agentId}`)).toHaveCount(0);
+  });
+
+  test("a sensor agent's Fleet row offers the directives registered under its sessions' flavor", async ({
+    page,
+  }) => {
+    // Positive control for the observer gate above: the row is keyed
+    // by agent_id, the directive by the sensor's flavor string, and
+    // the trigger must still resolve one through the other.
+    const sensorId = await sessionAgentId(page, SENSOR_FRESH_ACTIVE_SESSION_ID);
+    await page.goto("/");
+    await waitForFleetReady(page);
+    const button = page.getByTestId(`flavor-directives-button-${sensorId}`);
+    await expect(button).toBeVisible();
+    await button.click();
+    await expect(page.getByRole("dialog")).toContainText("e2e_sensor_rotate");
   });
 
   test("a plugin-reported Claude Code agent carries no OTel pill", async ({ page }) => {
@@ -89,18 +115,22 @@ test.describe("T127 — OTLP session renders as an observer", () => {
     await expect(badge).toBeVisible();
     await expect(badge).toContainText(`v${OTLP_AGENT.claudeCodeVersion}`);
     const source = page.getByTestId("session-source-label");
-    await expect(source).toHaveText("via OpenTelemetry");
+    await expect(source).toContainText("via OpenTelemetry");
     await expect(source).toHaveAttribute("data-telemetry", "otlp");
     // The drawer has rendered its body (the badge above), so a Stop
-    // control, if any, would be mounted by now.
+    // control or a Directives tab, if any, would be mounted by now. The
+    // seed registers a custom directive under this run's flavor, so the
+    // tab's absence is the observer gate, not an empty directive list.
     await expect(page.getByTestId("session-drawer-stop-agent")).toHaveCount(0);
     await expect(page.getByTestId("drawer-tab-directives")).toHaveCount(0);
 
     // Control: the sensor agent's fresh-active run (the seed and its
-    // keep-alive pin it active) renders the Stop control the OTLP run
-    // lacks, so the absence above is not a missing selector.
+    // keep-alive pin it active; its flavor has a registered directive)
+    // renders the Stop control and the Directives tab the OTLP run
+    // lacks, so the absences above are not missing selectors.
     await page.goto(`/events?run=${SENSOR_FRESH_ACTIVE_SESSION_ID}`);
     await expect(page.getByTestId("session-drawer-stop-agent")).toBeVisible();
+    await expect(page.getByTestId("drawer-tab-directives")).toBeVisible();
   });
 
   test("the search palette's agent hit carries the OTel pill", async ({ page }) => {
@@ -109,11 +139,12 @@ test.describe("T127 — OTLP session renders as an observer", () => {
     const dialog = page.getByRole("dialog");
     await expect(dialog).toBeVisible();
     await dialog.getByRole("textbox", { name: "Search" }).fill("e2e-test-otlp@");
+    // The root agent exactly, not its "/general-purpose" sub-agent.
     const hit = dialog
       .getByRole("option")
-      .filter({ hasText: OTLP_AGENT.name })
       .filter({ has: page.getByTestId("search-agent-telemetry-source") })
-      .first();
+      .filter({ hasText: new RegExp(`${OTLP_AGENT.name}(?!/)`) });
+    await expect(hit).toHaveCount(1);
     await expect(hit).toBeVisible();
     await expect(hit.getByTestId("search-agent-telemetry-source")).toHaveText(/otel/i);
   });

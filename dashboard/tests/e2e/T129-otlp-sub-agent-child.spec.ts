@@ -41,7 +41,7 @@ test.describe("T129 — OTLP sub-agent child session", () => {
     ).toBe("normal_exit");
 
     const drawer = await openRun(page, OTLP_AGENT.childSessionId);
-    await expect(drawer.getByTestId("session-source-label")).toHaveText("via OpenTelemetry");
+    await expect(drawer.getByTestId("session-source-label")).toContainText("via OpenTelemetry");
     await expect(drawer.getByText("closed", { exact: true }).first()).toBeVisible();
     await expect(drawer.getByTestId("session-drawer-stop-agent")).toHaveCount(0);
 

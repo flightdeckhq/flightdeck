@@ -20,6 +20,7 @@ import contextvars
 import copy
 import inspect
 import logging
+import sys
 import time
 import types
 import weakref
@@ -402,6 +403,12 @@ BILLING_LOCAL = "local"
 # instead.
 _MAX_DETAIL_BYTES = 256
 
+# Stream hooks that fold the response's own content (the SDK
+# accumulators build exception messages from raw tool-call arguments), so
+# a failure is logged by class name only, never with its message or
+# traceback, whatever the capture setting.
+_CONTENT_HOOKS = frozenset({"stream_accumulator"})
+
 # The cut applied to a tool_call's ``server_name``, in characters: the
 # same bound the Claude Code plugin applies to ``tool_name`` and
 # ``server_name``, so an MCP server label has one limit wherever it is
@@ -560,7 +567,20 @@ class _GuardCore:
         give) and says so once per hook and stream rather than per chunk."""
         if hook not in self._hooks_failed:
             self._hooks_failed.add(hook)
+            if hook in _CONTENT_HOOKS:
+                # Class name only: the exception text can echo content.
+                _log.debug(
+                    "Provider %s hook raised (%s); stream metering degraded",
+                    hook,
+                    type(sys.exc_info()[1]).__name__,
+                )
+                return
             _log.debug("Provider %s hook raised; stream metering degraded", hook, exc_info=True)
+
+    def use_accumulator(self, accumulator: StreamAccumulator | None) -> None:
+        """Replace the accumulator the provider gave the guard; an OpenAI
+        ``.stream()`` helper hands over its own assembly this way."""
+        self._accumulator = accumulator
 
     def _attach_accumulator(self) -> None:
         """Ask the provider for an accumulator once the SDK stream is

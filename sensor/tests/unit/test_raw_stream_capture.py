@@ -1165,3 +1165,176 @@ def test_raw_view_header_spelling_matches_the_openai_sdk() -> None:
     from openai import _constants
 
     assert _constants.RAW_RESPONSE_HEADER == raw_views.RAW_RESPONSE_HEADER
+
+
+# ----- review fixes: view close, repeated parse, 1.x state, logs, helpers ----
+
+
+@pytest.mark.parametrize("capture", [True, False])
+def test_streaming_view_stream_left_early_is_reported_at_the_view_exit(capture: bool) -> None:
+    session = _session(capture)
+    completions = _completions(session, capture)
+    with respx.mock(base_url=OPENAI_URL) as router:
+        router.post("/chat/completions").mock(return_value=_sse(_chat_frames(), done=True))
+        with completions.with_streaming_response.create(
+            stream=True, model="gpt-4o-mini", messages=MESSAGES
+        ) as r:
+            s = r.parse()
+            for _ in s:
+                break
+        (post_call,) = _events_of(session, "post_call")
+    assert post_call["streaming"]["final_outcome"] == "aborted"
+    assert post_call["streaming"]["chunk_count"] == 1
+    assert _events_of(session, "tool_call") == []
+    if capture:
+        assert post_call["content"]["response"]["choices"][0]["message"]["content"] == "Hi"
+    else:
+        _assert_nothing_captured(session)
+
+
+def test_async_streaming_view_stream_left_early_is_reported_at_the_view_exit() -> None:
+    session = _session(True)
+    completions = _completions(session, True, is_async=True)
+
+    async def _read() -> None:
+        async with completions.with_streaming_response.create(
+            stream=True, model="gpt-4o-mini", messages=MESSAGES
+        ) as r:
+            s = await r.parse()
+            async for _ in s:
+                break
+
+    with respx.mock(base_url=OPENAI_URL) as router:
+        router.post("/chat/completions").mock(return_value=_sse(_chat_frames(), done=True))
+        _run(_read())
+        (post_call,) = _events_of(session, "post_call")
+    assert post_call["streaming"]["final_outcome"] == "aborted"
+    assert post_call["content"]["response"]["choices"][0]["message"]["content"] == "Hi"
+
+
+def test_streaming_view_read_to_the_end_reports_once_at_exit() -> None:
+    session = _session(False)
+    with respx.mock(base_url=OPENAI_URL) as router:
+        router.post("/chat/completions").mock(return_value=_sse(_chat_frames(), done=True))
+        with _completions(session, False).with_streaming_response.create(
+            stream=True, model="gpt-4o-mini", messages=MESSAGES
+        ) as r:
+            list(r.parse())
+    (post_call,) = _events_of(session, "post_call")
+    assert post_call["streaming"]["final_outcome"] == "completed"
+
+
+@pytest.mark.parametrize("view", ["with_raw_response", "with_streaming_response"])
+def test_a_second_parse_returns_the_same_guard(view: str) -> None:
+    session = _session(False)
+    completions = _completions(session, False)
+    with respx.mock(base_url=OPENAI_URL) as router:
+        router.post("/chat/completions").mock(return_value=_sse(_chat_frames(), done=True))
+        if view == "with_raw_response":
+            raw = completions.with_raw_response.create(
+                stream=True, model="gpt-4o-mini", messages=MESSAGES
+            )
+            first, second = raw.parse(), raw.parse()
+            chunks = list(second)
+        else:
+            with completions.with_streaming_response.create(
+                stream=True, model="gpt-4o-mini", messages=MESSAGES
+            ) as r:
+                first, second = r.parse(), r.parse()
+                chunks = list(second)
+    assert first is second
+    assert isinstance(second, base.GuardedStream)
+    assert all(c.choices for c in chunks)  # the injected usage chunk stays hidden
+    (post_call,) = _events_of(session, "post_call")
+    assert post_call["streaming"]["chunk_count"] == len(chunks)
+    assert post_call["tokens_output"] == 4
+
+
+def test_chat_stream_state_is_built_with_the_arguments_openai_1x_requires(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """openai 1.x requires ``input_tools`` and ``response_format`` and
+    exports the state only from its ``_completions`` module."""
+    import openai.lib.streaming.chat as chat_pkg
+    from openai.lib.streaming.chat import _completions as chat_module
+
+    from flightdeck_sensor.providers import openai as openai_provider
+
+    seen: dict[str, Any] = {}
+    real_state: Any = chat_module.ChatCompletionStreamState
+
+    class _Strict(real_state):  # type: ignore[misc,valid-type]
+        def __init__(self, *, input_tools: Any, response_format: Any) -> None:
+            seen.update(input_tools=input_tools, response_format=response_format)
+            super().__init__(input_tools=input_tools, response_format=response_format)
+
+    monkeypatch.delattr(chat_pkg, "ChatCompletionStreamState")
+    monkeypatch.setattr(chat_module, "ChatCompletionStreamState", _Strict)
+    state = openai_provider._chat_stream_state()
+    assert isinstance(state, _Strict)
+    assert seen == {"input_tools": openai.NOT_GIVEN, "response_format": openai.NOT_GIVEN}
+
+
+def test_an_accumulator_failure_logs_the_class_name_only(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    class _Leaky:
+        def add(self, chunk: Any) -> None:
+            raise ValueError(f"bad arguments {TOOL_MARKER}")
+
+        def message(self) -> Any:
+            return None
+
+    monkeypatch.setattr(AnthropicProvider, "stream_accumulator", lambda *_a: _Leaky())
+    session = _session(False)
+    with (
+        caplog.at_level("DEBUG", logger="flightdeck_sensor"),
+        respx.mock(base_url=ANTHROPIC_URL) as router,
+    ):
+        router.post("/v1/messages").mock(return_value=_sse(_anthropic_frames()))
+        for _ in _anthropic_messages(False, session).create(stream=True, **_ANTHROPIC_KW):
+            pass
+    assert "stream_accumulator hook raised (ValueError)" in caplog.text
+    assert TOOL_MARKER not in caplog.text
+    assert all(r.exc_info is None for r in caplog.records if "stream_accumulator" in r.message)
+
+
+def test_chat_stream_helper_is_assembled_once_by_the_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from flightdeck_sensor.providers import openai as openai_provider
+
+    built: list[int] = []
+    real = openai_provider._chat_stream_state
+
+    def _counting() -> Any:
+        built.append(1)
+        return real()
+
+    monkeypatch.setattr(openai_provider, "_chat_stream_state", _counting)
+    session = _session(True)
+    with respx.mock(base_url=OPENAI_URL) as router:
+        router.post("/chat/completions").mock(return_value=_sse(_chat_frames(), done=True))
+        with _completions(session, True).stream(
+            model="gpt-4o-mini", messages=MESSAGES, tools=[WEATHER_TOOL]
+        ) as stream:
+            stream.until_done()
+    # The SDK's helper keeps its own state; the sensor built none.
+    assert built == []
+    (post_call,) = _events_of(session, "post_call")
+    assert post_call["content"]["response"]["choices"][0]["message"]["content"] == "Hi there"
+    assert len(_events_of(session, "tool_call")) == 1
+
+
+def test_responses_stream_helper_left_early_stores_the_helpers_snapshot() -> None:
+    session = _session(True)
+    with respx.mock(base_url=OPENAI_URL) as router:
+        router.post("/responses").mock(return_value=_sse(_responses_frames()))
+        with _responses(session, True).stream(**_RESPONSES_KW) as stream:
+            for event in stream:
+                if event.type == "response.output_text.delta":
+                    break
+    (post_call,) = _events_of(session, "post_call")
+    assert post_call["streaming"]["final_outcome"] == "aborted"
+    assert post_call["content"]["response"]["output"][0]["content"][0]["text"] == "Hi there"
+    assert _events_of(session, "tool_call") == []

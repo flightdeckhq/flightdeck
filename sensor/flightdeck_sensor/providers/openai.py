@@ -129,6 +129,38 @@ _RESPONSES_MCP_SERVER_FIELD = "server_label"
 # accessor; only the SDK's own helper reads it). Pinned by a unit test so
 # an SDK rename shows up as a failing test, not as silently absent content.
 _RESPONSE_STATE_SNAPSHOT_ATTR = "_ResponseStreamState__current_snapshot"
+# The header the SDK's ``chat.completions.stream()`` helper adds to the
+# request it sends. Such a stream is assembled by the helper itself, which
+# the interceptor hands to the guard (see :func:`helper_stream_accumulator`).
+_HELPER_METHOD_HEADER = "x-stainless-helper-method"
+
+
+def _sdk_unset() -> Any:
+    """The SDK's "not given" sentinel for a stream state's optional
+    arguments. ``NOT_GIVEN`` is the one every release line recognises:
+    1.x checks only for it, later releases for it or ``omit``."""
+    import openai
+
+    return openai.NOT_GIVEN
+
+
+def _chat_stream_state() -> Any:
+    """A fresh ``ChatCompletionStreamState`` with no tools or response
+    format to parse. Exported from ``openai.lib.streaming.chat`` on
+    current SDKs, only from its ``_completions`` module on older 1.x
+    releases, which also require both arguments."""
+    try:
+        from openai.lib.streaming.chat import ChatCompletionStreamState
+    except ImportError:
+        from openai.lib.streaming.chat._completions import ChatCompletionStreamState
+    return ChatCompletionStreamState(input_tools=_sdk_unset(), response_format=_sdk_unset())
+
+
+def _is_helper_request(request_kwargs: dict[str, Any]) -> bool:
+    headers = request_kwargs.get("extra_headers")
+    if not isinstance(headers, dict):
+        return False
+    return any(isinstance(k, str) and k.lower() == _HELPER_METHOD_HEADER for k in headers)
 
 
 class _ChatStreamAccumulator:
@@ -141,9 +173,7 @@ class _ChatStreamAccumulator:
     ``content_filter`` finish that the post_call still has to report."""
 
     def __init__(self) -> None:
-        from openai.lib.streaming.chat import ChatCompletionStreamState
-
-        self._state: Any = ChatCompletionStreamState()
+        self._state: Any = _chat_stream_state()
         self._started = False
 
     def add(self, chunk: Any) -> None:
@@ -166,14 +196,9 @@ class _ResponsesStreamAccumulator:
         self._final: Any = None
         self._state: Any = None
         if partial:
-            import openai
             from openai.lib.streaming.responses import ResponseStreamState
 
-            # The SDK's "not given" sentinel: ``omit`` on current SDKs,
-            # ``NOT_GIVEN`` on older ones; neither tools nor a text format
-            # are parsed here.
-            unset: Any = getattr(openai, "omit", openai.NOT_GIVEN)
-            self._state = ResponseStreamState(input_tools=unset, text_format=unset)
+            self._state = ResponseStreamState(input_tools=_sdk_unset(), text_format=_sdk_unset())
 
     def add(self, event: Any) -> None:
         if self._final is not None:
@@ -201,6 +226,44 @@ class _ResponsesStreamAccumulator:
         # renames the attribute leaves an early exit with no partial
         # response stored, never a wrong one.
         return getattr(self._state, _RESPONSE_STATE_SNAPSHOT_ATTR, None)
+
+
+class _HelperStreamAccumulator:
+    """The assembly of a stream an OpenAI ``.stream()`` helper reads
+    through the guard. The helper already keeps the SDK's stream state
+    for the same events, so the guard reads the helper's instead of
+    assembling a second time: a chat helper's
+    ``current_completion_snapshot``, a Responses helper's terminal
+    ``Response`` (kept here as the event passes, which costs one
+    attribute check per event) or, before it, the snapshot its state
+    folded. Every read reads no further from the stream."""
+
+    def __init__(self, helper: Any) -> None:
+        self._helper = helper
+        self._responses = _ResponsesStreamAccumulator(partial=False)
+
+    def add(self, chunk: Any) -> None:
+        if isinstance(getattr(chunk, "type", None), str):
+            self._responses.add(chunk)
+
+    def message(self) -> Any | None:
+        final = self._responses.message()
+        if final is not None:
+            return final
+        try:
+            # A chat helper's snapshot asserts before its first chunk.
+            snapshot = getattr(self._helper, "current_completion_snapshot", None)
+        except Exception:
+            snapshot = None
+        if snapshot is not None:
+            return snapshot
+        return getattr(getattr(self._helper, "_state", None), _RESPONSE_STATE_SNAPSHOT_ATTR, None)
+
+
+def helper_stream_accumulator(helper: Any) -> StreamAccumulator:
+    """The accumulator for a stream an OpenAI ``.stream()`` helper reads
+    through the guard (see :class:`_HelperStreamAccumulator`)."""
+    return _HelperStreamAccumulator(helper)
 
 
 def _raw_stream_classes() -> tuple[type, ...]:
@@ -724,11 +787,16 @@ class OpenAIProvider:
         ``functions``) and so may stream tool calls. The SDK's chat state
         re-serialises the message on every chunk, the price its own
         ``.stream()`` helper pays, so it is not paid for a stream whose
-        assembly nothing reads. A Responses stream is assembled always:
-        its terminal event already carries the whole response."""
+        assembly nothing reads, nor a second time for a stream the chat
+        helper reads (its request carries the helper's header; the
+        interceptor gives the guard :func:`helper_stream_accumulator`). A
+        Responses stream is assembled always: its terminal event already
+        carries the whole response."""
         try:
             classes = _raw_stream_classes()
             if not classes or not isinstance(stream, classes):
+                return None
+            if _is_helper_request(request_kwargs):
                 return None
             if "messages" in request_kwargs:
                 offers_tools = bool(request_kwargs.get("tools") or request_kwargs.get("functions"))

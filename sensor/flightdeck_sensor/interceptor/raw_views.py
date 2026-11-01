@@ -150,10 +150,42 @@ class DeferredCall:
         self._event_type = event_type
         self._settled = False
         self._headers: Any = None
+        # The stream guard a parsed event stream went to: every later
+        # parse() hands it back, and the view's close() settles it.
+        self._guard: Any = None
 
     @property
     def _finalized(self) -> bool:
         return self._settled
+
+    @property
+    def guard(self) -> Any:
+        return self._guard
+
+    def finish_guard(self) -> None:
+        """Settle the stream guard as the view closes: a caller who left
+        the stream early is reported now, not when the guard is
+        collected. A guard already settled (the stream was read to its
+        end) only closes its SDK stream. An async guard reached from a
+        synchronous close settles without closing, since closing needs
+        an await; the view has closed the HTTP response already."""
+        guard = self._guard
+        if guard is None:
+            return
+        if isinstance(guard, base.GuardedStream):
+            guard.__exit__(None, None, None)
+        else:
+            guard._settle_now()
+
+    async def finish_guard_async(self) -> None:
+        """Async counterpart of :meth:`finish_guard`."""
+        guard = self._guard
+        if guard is None:
+            return
+        if isinstance(guard, base.GuardedAsyncStream):
+            await guard.__aexit__(None, None, None)
+        else:
+            guard.__exit__(None, None, None)
 
     def is_stream(self, parsed: Any) -> bool:
         """Whether a parsed value is the SDK's event stream."""
@@ -212,12 +244,18 @@ class DeferredCall:
         latency runs from ``parse()``, where it opens, not from the
         request; the pre-call check already ran at the request. The
         stream's own kind picks the guard: an async client's raw view
-        parses synchronously but yields an ``AsyncStream``."""
+        parses synchronously but yields an ``AsyncStream``. A later
+        ``parse()`` gets the same guard: the SDK caches the parsed stream,
+        and handing that back unguarded would let its chunks (and, on an
+        OpenAI chat stream, the injected usage chunk) bypass the guard."""
+        if self._guard is not None:
+            return self._guard
         if self._settled:
             return stream
         self._settled = True
+        guard: Any
         if _is_async_stream(stream):
-            return base.GuardedAsyncStream(
+            guard = base.GuardedAsyncStream(
                 lambda **_kw: stream,
                 self._call_kwargs,
                 self._session,
@@ -226,15 +264,18 @@ class DeferredCall:
                 self._estimated_via,
                 hide_chunk=self._hide_chunk,
             )
-        return base.GuardedStream(
-            lambda **_kw: stream,
-            self._call_kwargs,
-            self._session,
-            self._provider,
-            self._estimated,
-            self._estimated_via,
-            hide_chunk=self._hide_chunk,
-        ).open()
+        else:
+            guard = base.GuardedStream(
+                lambda **_kw: stream,
+                self._call_kwargs,
+                self._session,
+                self._provider,
+                self._estimated,
+                self._estimated_via,
+                hide_chunk=self._hide_chunk,
+            ).open()
+        self._guard = guard
+        return guard
 
 
 def _body_already_read(response: Any) -> bool:
@@ -256,8 +297,11 @@ class DeferredResponse:
     already been consumed, so nothing is read from the network -- and
     reports the estimate for a body never read. When the parsed value is
     an SDK event stream (``create(stream=True)`` through a view) the
-    stream guard takes over and meters the events as they are iterated.
-    Every other attribute is proxied to the SDK response."""
+    stream guard takes over and meters the events as they are iterated;
+    ``close()`` then settles that guard, so a stream left early inside
+    the view's ``with`` block is reported as the block exits, and a later
+    ``parse()`` returns the same guard. Every other attribute is proxied
+    to the SDK response."""
 
     def __init__(self, response: Any, call: DeferredCall) -> None:
         self._response = response
@@ -272,12 +316,14 @@ class DeferredResponse:
         return parsed
 
     def close(self) -> None:
-        parsed = None
-        if _body_already_read(self._response):
-            with contextlib.suppress(Exception):
-                parsed = self._response.parse()
-        self._call.settle(parsed, self._response.headers)
+        if self._call.guard is None:
+            parsed = None
+            if _body_already_read(self._response):
+                with contextlib.suppress(Exception):
+                    parsed = self._response.parse()
+            self._call.settle(parsed, self._response.headers)
         self._response.close()
+        self._call.finish_guard()
 
     def __del__(self) -> None:
         # Abandoned without parse() or close(): queue the settle (see
@@ -311,12 +357,14 @@ class DeferredAsyncResponse:
         return parsed
 
     async def close(self) -> None:
-        parsed = None
-        if _body_already_read(self._response):
-            with contextlib.suppress(Exception):
-                parsed = await self._response.parse()
-        self._call.settle(parsed, self._response.headers)
+        if self._call.guard is None:
+            parsed = None
+            if _body_already_read(self._response):
+                with contextlib.suppress(Exception):
+                    parsed = await self._response.parse()
+            self._call.settle(parsed, self._response.headers)
         await self._response.close()
+        await self._call.finish_guard_async()
 
     def __del__(self) -> None:
         # See DeferredResponse.__del__.

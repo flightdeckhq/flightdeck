@@ -93,7 +93,7 @@ from flightdeck_sensor.core.errors import classify_stop_reason
 from flightdeck_sensor.core.types import EventType
 from flightdeck_sensor.interceptor import base, raw_views
 from flightdeck_sensor.interceptor.platform import PLATFORM_OPENAI, endpoint_of
-from flightdeck_sensor.providers.openai import OpenAIProvider
+from flightdeck_sensor.providers.openai import OpenAIProvider, helper_stream_accumulator
 
 if TYPE_CHECKING:
     from flightdeck_sensor.core.session import Session
@@ -439,8 +439,17 @@ class _HelperStreamManager:
         self._manager = manager
         self._request = request
 
+    def _adopt(self, helper: Any) -> Any:
+        """Point the guard at the helper's own assembly: the helper keeps
+        the SDK's stream state for the events it reads through the guard,
+        so the guard does not assemble them a second time. Done before
+        the helper reads its first event."""
+        for guard in self._request.guards:
+            guard.use_accumulator(helper_stream_accumulator(helper))
+        return helper
+
     def __enter__(self) -> Any:
-        return self._manager.__enter__()
+        return self._adopt(self._manager.__enter__())
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
         try:
@@ -450,7 +459,7 @@ class _HelperStreamManager:
                 guard.__exit__(exc_type, exc_val, exc_tb)
 
     async def __aenter__(self) -> Any:
-        return await self._manager.__aenter__()
+        return self._adopt(await self._manager.__aenter__())
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> Any:
         try:

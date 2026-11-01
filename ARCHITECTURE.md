@@ -876,8 +876,14 @@ different levels:
   runs the SDK's own helper with the sensor's resource proxy as `self`:
   the request takes the stream guard, the helper reads its raw events
   through the guard, and the caller gets the SDK's own manager and
-  `ChatCompletionStream` / `ResponseStream`. The manager's exit also
-  settles the guard, so a helper left early reports at once. The
+  `ChatCompletionStream` / `ResponseStream`. The helper keeps the SDK's
+  stream state for the events it reads, so the guard takes the helper's
+  assembly (a chat helper's `current_completion_snapshot`, a Responses
+  helper's terminal `Response` or the snapshot its state folded) rather
+  than assembling the stream a second time; the chat helper's request
+  carries its `X-Stainless-Helper-Method` header, and the provider builds
+  no accumulator for it. The manager's exit also settles the guard, so a
+  helper left early reports at once. The
   helpers' unset parameters (`NOT_GIVEN` / `omit`) are dropped before the
   request reaches the sensor; the request is the same without them.
   `responses.stream(response_id=...)` re-reads a stored response through
@@ -896,7 +902,12 @@ different levels:
   it, by the same proxy the Anthropic views use
   (`interceptor/raw_views.py`): a parsed event stream goes to the stream
   guard, with `stream_options.include_usage` added to a chat request as
-  on `create(stream=True)`. langchain-openai takes the chat raw-view path
+  on `create(stream=True)`. A later `parse()` of the same response gets
+  the same guard (the SDK caches the parsed stream, and handing that back
+  would let its chunks bypass the guard), and the view's `close()` -- the
+  streaming view's context-manager exit -- settles the guard, so a stream
+  left early inside the view's `with` block is reported as the block
+  exits. langchain-openai takes the chat raw-view path
   with `include_response_headers=True`. `parse()` is the structured-output
   path: it never streams, and its `ParsedChatCompletion` /
   `ParsedResponse` carries the usual `usage`. `responses` is OpenAI's
@@ -5622,7 +5633,9 @@ settle:
 
 An accumulator that raises is dropped for the rest of the stream (a
 message missing an event would be stored as if it were the response),
-and the call is metered as before. A chat stream is assembled only when
+and the call is metered as before; the failure is logged by exception
+class only, since the SDK accumulators build their messages from the
+streamed tool-call arguments. A chat stream is assembled only when
 something reads the result -- capture on, or a request that offers the
 model `tools` (or the legacy `functions`): the SDK's chat state
 re-serialises the message on every chunk, the price its own `.stream()`

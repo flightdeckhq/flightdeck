@@ -1,7 +1,8 @@
 """OpenAI client proxy: intercepts chat.completions.create() / parse() /
-stream(), responses.create() / parse() / stream(), embeddings.create(),
-and the ``with_raw_response`` and ``with_streaming_response`` views of
-those resources.
+stream() (on ``client.chat`` and on ``client.beta.chat``),
+responses.create() / parse() / stream(), embeddings.create(), and the
+``with_raw_response`` and ``with_streaming_response`` views of those
+resources.
 
 Two intercept paths exist for OpenAI clients (mirroring the Anthropic
 interceptor):
@@ -120,6 +121,20 @@ except ImportError:
     _OrigOpenAI = None
     _OrigAsyncOpenAI = None
     _OPENAI_AVAILABLE = False
+
+# ``client.beta`` is the SDK's ``Beta`` / ``AsyncBeta`` resource. Its own
+# ``chat`` cached_property hands out a separate ``Chat`` resource, which
+# the client's ``chat`` descriptor never sees, so it is patched on its
+# own. From openai 1.92 it is the same ``Chat`` class as ``client.chat``;
+# from 1.40 to 1.91 it is a beta ``Chat`` whose ``completions`` carry only
+# ``parse`` and ``stream``. An SDK without the module, or whose ``Beta``
+# has no ``chat``, is left alone.
+try:
+    from openai.resources.beta import AsyncBeta as _OrigAsyncBeta
+    from openai.resources.beta import Beta as _OrigBeta
+except ImportError:
+    _OrigBeta = None  # type: ignore[assignment,misc]
+    _OrigAsyncBeta = None  # type: ignore[assignment,misc]
 
 
 def _provider_for(client: Any, session: Session) -> OpenAIProvider:
@@ -982,6 +997,38 @@ class SensorEmbeddings:
         return getattr(self._real, name)
 
 
+class SensorBeta:
+    """Proxy for ``client.beta`` on a ``wrap()``-built client --
+    intercepts ``.chat`` (``beta.chat.completions.parse()`` /
+    ``.stream()``); every other beta resource passes through."""
+
+    def __init__(
+        self,
+        real_beta: Any,
+        session: Session,
+        provider: OpenAIProvider,
+        *,
+        is_async: bool = False,
+    ) -> None:
+        self._real = real_beta
+        self._session = session
+        self._provider = provider
+        self._is_async = is_async
+
+    @property
+    def chat(self) -> Any:
+        """A :class:`SensorChat` over the beta ``chat`` resource; the
+        resource itself when the class patch already wrapped it, so a
+        client that is both wrapped and patched is metered once."""
+        real_chat = self._real.chat
+        if isinstance(real_chat, SensorChat):
+            return real_chat
+        return SensorChat(real_chat, self._session, self._provider, is_async=self._is_async)
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._real, name)
+
+
 class SensorOpenAI:
     """Proxy for ``openai.OpenAI`` or ``openai.AsyncOpenAI``.
 
@@ -1026,6 +1073,16 @@ class SensorOpenAI:
         """Return a :class:`SensorEmbeddings` proxy that intercepts create()."""
         return SensorEmbeddings(
             self._client.embeddings,
+            self._session,
+            self._provider,
+            is_async=self._is_async,
+        )
+
+    @property
+    def beta(self) -> SensorBeta:
+        """Return a :class:`SensorBeta` proxy that intercepts ``beta.chat``."""
+        return SensorBeta(
+            self._client.beta,
             self._session,
             self._provider,
             is_async=self._is_async,
@@ -1123,6 +1180,10 @@ class _OpenAIChatDescriptor:
     def __set_name__(self, owner: type, name: str) -> None:
         self._attr_name = name
 
+    def _client_of(self, instance: Any) -> Any:
+        """The client whose endpoint the provider is attributed to."""
+        return instance
+
     def __get__(self, instance: Any, owner: type | None = None) -> Any:
         if instance is None:
             return self
@@ -1133,7 +1194,7 @@ class _OpenAIChatDescriptor:
         if session is None:
             return raw
 
-        provider = _provider_for(instance, session)
+        provider = _provider_for(self._client_of(instance), session)
         wrapped = SensorChat(
             raw,
             session,
@@ -1145,6 +1206,17 @@ class _OpenAIChatDescriptor:
             instance.__dict__[self._attr_name] = wrapped
 
         return wrapped
+
+
+class _OpenAIBetaChatDescriptor(_OpenAIChatDescriptor):
+    """Replacement for the ``chat`` cached_property on the SDK's ``Beta``
+    / ``AsyncBeta`` resource (``client.beta.chat``), so
+    ``client.beta.chat.completions.parse()`` and ``.stream()`` are
+    intercepted as ``client.chat.completions`` is. The instance is the
+    beta resource; the provider is attributed to the client it holds."""
+
+    def _client_of(self, instance: Any) -> Any:
+        return getattr(instance, "_client", instance)
 
 
 class _OpenAIResponsesDescriptor:
@@ -1258,6 +1330,13 @@ _OPENAI_PATCH_RESOURCES: tuple[tuple[str, str, type], ...] = (
     ("embeddings", "_flightdeck_patched_embeddings", _OpenAIEmbeddingsDescriptor),
 )
 
+# The ``chat`` resource on ``Beta`` / ``AsyncBeta`` (``client.beta.chat``)
+# and the sentinel holding its original cached_property. Patched on the
+# beta resource classes rather than the client classes, so it sits
+# outside the client table above.
+BETA_CHAT_ATTR = "chat"
+_BETA_CHAT_SENTINEL = "_flightdeck_patched_beta_chat"
+
 
 def patch_openai_classes(quiet: bool = False) -> None:
     """Class-level patch for ``openai.OpenAI`` and ``AsyncOpenAI``.
@@ -1274,7 +1353,9 @@ def patch_openai_classes(quiet: bool = False) -> None:
     4. Replace ``cls.<resource>`` with a fresh descriptor instance.
 
     The three resources patched are ``chat``, ``responses`` and
-    ``embeddings``. See :data:`_OPENAI_PATCH_RESOURCES`.
+    ``embeddings``. See :data:`_OPENAI_PATCH_RESOURCES`. The ``chat``
+    resource of ``client.beta`` is patched on the SDK's ``Beta`` /
+    ``AsyncBeta`` classes the same way, where the SDK has it.
 
     If ``openai`` is not installed this is a silent no-op.
     """
@@ -1300,6 +1381,17 @@ def patch_openai_classes(quiet: bool = False) -> None:
             is_async=True,
             quiet=quiet,
         )
+    for beta_cls, is_async in ((_OrigBeta, False), (_OrigAsyncBeta, True)):
+        # Only where the installed SDK's beta resource has a ``chat``.
+        if beta_cls is not None and BETA_CHAT_ATTR in beta_cls.__dict__:
+            _patch_one_resource(
+                beta_cls,
+                attr_name=BETA_CHAT_ATTR,
+                sentinel_attr=_BETA_CHAT_SENTINEL,
+                descriptor_cls=_OpenAIBetaChatDescriptor,
+                is_async=is_async,
+                quiet=quiet,
+            )
 
 
 def _patch_one_resource(
@@ -1368,6 +1460,11 @@ def unpatch_openai_classes() -> None:
             attr_name=attr_name,
             sentinel_attr=sentinel_attr,
         )
+    for beta_cls in (_OrigBeta, _OrigAsyncBeta):
+        if beta_cls is not None:
+            _unpatch_one_resource(
+                beta_cls, attr_name=BETA_CHAT_ATTR, sentinel_attr=_BETA_CHAT_SENTINEL
+            )
 
 
 def _unpatch_one_resource(

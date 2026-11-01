@@ -286,3 +286,21 @@ API's own parameter name and already a JSONB column (embeddings), and
 **Rejected alternative:** rewriting `instructions` and `input` into a
 chat `messages` array (normalising one provider's shape into another's,
 which content capture never does); a new column (no reader needs one).
+
+## D229 -- OTLP ingest refuses rather than guesses on a bad billing mode or a failed session read
+
+**Date:** 2026-11-01
+**Decision:** extends D224. A `flightdeck.billing_mode` outside
+`metered`, `subscription` and `local` fails validation for the
+session's model calls, named in `partial_success`. A session read that
+fails or passes its deadline answers the whole request 503 with
+`Retry-After`, publishing and charging nothing.
+**Why:** the billing mode decides whether Claude Code's reported cost
+counts toward `estimated_cost`, so a typo must be visible. Without the
+read the receiver cannot know whether to start the session or whether
+the plugin already reports it; event ids are deterministic, so the
+exporter's retry is safe.
+**Rejected alternative:** defaulting a bad billing mode to
+`subscription` (hides the mistake, can mis-bill a metered fleet);
+publishing despite a failed read (rows with no capture posture or
+context, and possible duplicates of plugin sessions).

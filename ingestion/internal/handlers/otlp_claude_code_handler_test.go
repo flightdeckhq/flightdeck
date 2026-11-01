@@ -131,6 +131,9 @@ func TestOTLPHandlerLookupFailureIs503(t *testing.T) {
 	if w.Code != http.StatusServiceUnavailable || !strings.Contains(w.Body.String(), "session lookup failed") {
 		t.Fatalf("%d %s", w.Code, w.Body)
 	}
+	if got := w.Header().Get("Retry-After"); got == "" {
+		t.Error("a 503 for a failed session read carries no Retry-After")
+	}
 	if len(pub.bodies) != 0 {
 		t.Errorf("published %d events", len(pub.bodies))
 	}

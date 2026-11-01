@@ -90,6 +90,14 @@ All notable changes to Flightdeck are documented here.
   101) and could not create its cache directory, so the pod
   crash-looped. The dashboard pod now runs as uid 101.
 
+### Changed
+
+- **The plugin trims a sub-agent's role the way the sensor does.** A role
+  that starts or ends with U+001C to U+001F or U+0085 now has those
+  trimmed, and U+FEFF is kept, so the sensor, the plugin and OTLP ingest
+  derive the same agent id. Only roles with those characters at an edge
+  get a different id than before.
+
 ## v0.8.0 — 2026-10-31
 
 Claude Code sessions are priced the way Claude Code bills them, and the

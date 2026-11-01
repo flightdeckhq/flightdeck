@@ -2564,9 +2564,12 @@ own: at most 64 sessions a replica has not cached are read per request
 only a request with invented session ids, or a collector merging many
 processes' first exports, comes near it), and the records of sessions
 past them are counted as rejected (`its session is past the 64 new
-sessions one request may name`) and read by a later export. All of a
+sessions one request may name`). Exporters do not resend records
+counted in `partial_success`, so those records are dropped; the
+session's later records are read once a request has room. All of a
 request's reads share a 2-second deadline, the same wait the receiver
-allows for a decode slot; a request past it is answered 503. No read
+allows for a decode slot; a request past it, or one whose read fails,
+is answered 503 with `Retry-After`. No read
 happens for a request whose records cannot fit the token's budget
 (Rate limit).
 

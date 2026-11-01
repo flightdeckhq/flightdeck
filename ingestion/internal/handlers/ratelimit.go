@@ -61,55 +61,111 @@ func NewRateLimiter(max int) *RateLimiter {
 	return rl
 }
 
-// Allow returns true if the token has not exceeded the rate limit.
-// Returns (allowed, secondsUntilReset).
+// Allow returns true if the token has not exceeded the rate limit,
+// charging one unit. Returns (allowed, secondsUntilReset).
+func (rl *RateLimiter) Allow(rawToken string) (bool, int) {
+	return rl.AllowN(rawToken, 1)
+}
+
+// AllowN admits a request when the token's window has at least one
+// unit left and then charges it n units, at most the whole minute
+// budget. Returns (allowed, secondsUntilReset); a refused request is
+// charged nothing. n <= 0 checks the window without charging it, which
+// is how a route that is charged per published event gates a request
+// before reading its body.
+//
+// A charge may take the window past its budget: the request that does
+// so is admitted, and later ones are refused until enough units age
+// out. Capping the charge at the budget is what keeps a request larger
+// than the budget from being refused for ever.
+func (rl *RateLimiter) AllowN(rawToken string, n int) (bool, int) {
+	tw := rl.window(rawToken)
+	now := time.Now()
+
+	tw.mu.Lock()
+	defer tw.mu.Unlock()
+
+	tw.trim(now)
+	if len(tw.timestamps) >= rl.max {
+		return false, rl.retryAfter(tw, now)
+	}
+	rl.charge(tw, now, n)
+	return true, 0
+}
+
+// ChargeN charges the token n units, at most the whole minute budget,
+// whatever its window holds. It is for work already admitted by AllowN
+// and already done, such as events published after the request's
+// gate: charging it unconditionally keeps concurrent requests that all
+// passed the gate from going uncharged.
+func (rl *RateLimiter) ChargeN(rawToken string, n int) {
+	if n <= 0 {
+		return
+	}
+	tw := rl.window(rawToken)
+	now := time.Now()
+
+	tw.mu.Lock()
+	defer tw.mu.Unlock()
+
+	tw.trim(now)
+	rl.charge(tw, now, n)
+}
+
+// window returns the token's sliding window, creating it on first use.
 //
 // The raw bearer token is hashed before it is used as a map key so the
 // plaintext secret is never held in the limiter's in-memory state (a
 // heap dump cannot recover it), mirroring the auth validator's cache.
-func (rl *RateLimiter) Allow(rawToken string) (bool, int) {
+func (rl *RateLimiter) window(rawToken string) *tokenWindow {
 	sum := sha256.Sum256([]byte(rawToken))
 	tokenHash := hex.EncodeToString(sum[:])
 
 	rl.mu.RLock()
 	tw, ok := rl.windows[tokenHash]
 	rl.mu.RUnlock()
-
-	if !ok {
-		rl.mu.Lock()
-		tw, ok = rl.windows[tokenHash]
-		if !ok {
-			tw = &tokenWindow{}
-			rl.windows[tokenHash] = tw
-		}
-		rl.mu.Unlock()
+	if ok {
+		return tw
 	}
 
-	now := time.Now()
+	rl.mu.Lock()
+	defer rl.mu.Unlock()
+	tw, ok = rl.windows[tokenHash]
+	if !ok {
+		tw = &tokenWindow{}
+		rl.windows[tokenHash] = tw
+	}
+	return tw
+}
+
+// trim drops the timestamps that have left the window. The caller
+// holds tw.mu.
+func (tw *tokenWindow) trim(now time.Time) {
 	cutoff := now.Add(-rateLimitWindow)
-
-	tw.mu.Lock()
-	defer tw.mu.Unlock()
-
-	// Trim timestamps outside the window
 	start := 0
 	for start < len(tw.timestamps) && tw.timestamps[start].Before(cutoff) {
 		start++
 	}
 	tw.timestamps = tw.timestamps[start:]
+}
 
-	if len(tw.timestamps) >= rl.max {
-		// Calculate seconds until the oldest timestamp exits the window
-		resetAt := tw.timestamps[0].Add(rateLimitWindow)
-		retryAfter := int(time.Until(resetAt).Seconds()) + 1
-		if retryAfter < 1 {
-			retryAfter = 1
-		}
-		return false, retryAfter
+// charge appends n units at now, at most the whole budget. The caller
+// holds tw.mu.
+func (rl *RateLimiter) charge(tw *tokenWindow, now time.Time, n int) {
+	n = min(n, rl.max)
+	for range n {
+		tw.timestamps = append(tw.timestamps, now)
 	}
+}
 
-	tw.timestamps = append(tw.timestamps, now)
-	return true, 0
+// retryAfter is the number of seconds until the window has a unit
+// left: until the unit that brings it back under the budget ages out.
+// A window charged past its budget needs more than its oldest unit to
+// expire. The caller holds tw.mu and has trimmed the window.
+func (rl *RateLimiter) retryAfter(tw *tokenWindow, now time.Time) int {
+	freeing := tw.timestamps[len(tw.timestamps)-rl.max]
+	secs := int(freeing.Add(rateLimitWindow).Sub(now).Seconds()) + 1
+	return max(secs, 1)
 }
 
 func (rl *RateLimiter) cleanupLoop() {

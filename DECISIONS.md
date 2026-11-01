@@ -241,3 +241,32 @@ is ingress-nginx only, Traefik and the cloud controllers each need their
 own form, and regex paths are not portable `pathType: Prefix`. Moving
 the routes to `/ingest/v1/...` only would break every client of the
 bare paths.
+
+## D227 -- A provider-hosted MCP call's tool_call names its server as server_name
+
+**Date:** 2026-11-01
+**Decision:** the sensor's `tool_call` for an OpenAI Responses `mcp_call`
+item carries the item's `server_label` as top-level `server_name`, cut
+at 256 characters. The event stays a `tool_call`; `server_name` is
+metadata and ships with capture off.
+**Why:** `server_name` is how every MCP event, the plugin and OTLP name
+an MCP server, and the worker projects it and the Events filter reads it
+for any event type, so the call is found by server with no new column.
+**Rejected alternative:** a `server_label` field (a second name for the
+same thing, read by nothing); emitting `mcp_tool_call` (OpenAI's servers
+made the call, not the agent's MCP client: no transport, fingerprint or
+MCP policy decision applies).
+
+## D228 -- An OpenAI Responses request is stored as instructions and input
+
+**Date:** 2026-11-01
+**Decision:** under `capture_prompts`, a Responses call's content stores
+`instructions` in `system` and `input` verbatim in `input` (a string or
+the input item list, SDK objects dumped as the JSON the SDK sends);
+`messages` stays empty.
+**Why:** nothing of the Responses request was stored. `input` is the
+API's own parameter name and already a JSONB column (embeddings), and
+`instructions` is the top-level system text Anthropic's `system` holds.
+**Rejected alternative:** rewriting `instructions` and `input` into a
+chat `messages` array (normalising one provider's shape into another's,
+which content capture never does); a new column (no reader needs one).

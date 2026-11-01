@@ -64,14 +64,17 @@ export default defineConfig({
   // 30 s per test default; specs that need more (slow seed races,
   // large-data renders) override via test.setTimeout() inline.
   timeout: 30_000,
-  // Dual reporter. "list" for human-readable local output; "html"
-  // produces the artifact the E2E CI job uploads on failure. Keep
-  // open:'never' so Playwright doesn't try to spawn a browser when
-  // the CI runner finishes.
-  reporter: [
-    ["list"],
-    ["html", { outputFolder: "playwright-report", open: "never" }],
-  ],
+  // "list" for human-readable output. Locally "html" writes the report
+  // (open:'never' so Playwright doesn't try to spawn a browser). On CI
+  // the suite runs in shards, one job each, so every shard writes a
+  // "blob" report instead and the E2E job merges them into one HTML
+  // report.
+  reporter: process.env.CI
+    ? [["list"], ["blob"]]
+    : [
+        ["list"],
+        ["html", { outputFolder: "playwright-report", open: "never" }],
+      ],
   // Global setup seeds the canonical E2E fixtures via
   // tests/e2e-fixtures/seed.py before any project starts. The script
   // seeds canonical sessions on first run and re-emits live-window

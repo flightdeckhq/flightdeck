@@ -153,7 +153,7 @@ Claude Code agents attach via a separate plugin distributed through this repo's 
 /plugin install flightdeck@flightdeck-plugins
 ```
 
-The plugin defaults to `http://localhost:4000` + `tok_dev` for the local-dev path; export `FLIGHTDECK_SERVER` + `FLIGHTDECK_TOKEN` before launching `claude` to point at a different stack. See [Quickstart > Coding agents](#coding-agents-claude-code) for the full flow. Tool inputs and LLM call content are captured by default, so the Prompts tab is populated without extra setup.
+The plugin defaults to `http://localhost:4000` + `tok_dev` for the local-dev path; export `FLIGHTDECK_SERVER` + `FLIGHTDECK_TOKEN` before launching `claude` to point at a different stack. For `claude -p` scripts, CI and the GitHub Action, see [plugin/README.md](plugin/README.md#headless-runs-ci-and-the-github-action). See [Quickstart > Coding agents](#coding-agents-claude-code) for the full flow. Tool inputs and LLM call content are captured by default, so the Prompts tab is populated without extra setup.
 
 Sessions carry `flavor=claude-code`, `agent_type=coding`, and `client_type=claude_code`. By default the plugin only observes and the Stop Agent button is hidden for these sessions; with its `enforcement` option on, a stop or a token budget denies the session's next tool call and blocks its prompts (see [plugin/README.md](plugin/README.md#enforcement-opt-in)). Raw file bodies written by `Write` / `Edit` are never forwarded; tool inputs go through a sanitised whitelist.
 

@@ -2541,8 +2541,8 @@ to fit; one whose events exceed the whole per-minute budget can never
 fit and is refused with 413. A refused request is charged nothing and
 publishes nothing. The charge is taken before publishing and a request
 whose publish then fails (503) is not refunded, so an exporter that
-retries it is charged again for the same events. The budget is the one `POST /v1/events` draws on, one per
-token.
+retries it is charged again for the same events. The budget is the one
+`POST /v1/events` draws on, one per token.
 
 **Dialects.** A record is mapped by its source's dialect, detected from
 the resource's `service.name` and the instrumentation scope. Claude Code

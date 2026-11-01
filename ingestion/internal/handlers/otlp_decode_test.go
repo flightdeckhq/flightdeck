@@ -366,7 +366,6 @@ func TestOTLPDecodeGateFull503(t *testing.T) {
 	}
 }
 
-// A gate's wait ends with the request's context.
 type panicDialect struct{ UnmappedDialect }
 
 func (panicDialect) MapLogs(context.Context, *collogs.ExportLogsServiceRequest) OTLPMapping {
@@ -394,6 +393,7 @@ func TestDecodeInSlotReleasesOnPanic(t *testing.T) {
 	}
 }
 
+// A gate's wait ends with the request's context.
 func TestOTLPDecodeGateHonoursContext(t *testing.T) {
 	g := newOTLPDecodeGate(1, time.Hour)
 	g.acquire(context.Background())

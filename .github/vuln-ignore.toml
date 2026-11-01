@@ -1,0 +1,22 @@
+# Advisories the dependency vulnerability scan (scripts/vuln_scan.py)
+# excuses. Each entry is one advisory in one package, with the reason it
+# cannot be fixed yet; review the list whenever a dependency is bumped.
+# The scan prints a note for an entry that no longer matches anything, so
+# remove the entry once the dependency is past the fixed version.
+#
+# Keys, all required:
+#   id         the advisory ID the scan prints: a GHSA ID for npm; for pip
+#              the ID or any alias pip-audit prints (PYSEC, GHSA or CVE)
+#   ecosystem  "npm" or "pypi"
+#   package    the affected package name
+#   reason     why it cannot be fixed now, and what would let it go
+#
+# Example:
+#
+# [[ignore]]
+# id = "GHSA-xxxx-xxxx-xxxx"
+# ecosystem = "npm"
+# package = "example-package"
+# reason = "No fixed release yet; the vulnerable parser only reads our own build config. Drop when 2.3.1 ships."
+#
+# No advisory is excused today.

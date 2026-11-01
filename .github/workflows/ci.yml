@@ -594,6 +594,38 @@ jobs:
       - name: Plugin unit tests (Node 24)
         run: make test-plugin
 
+  # Known-vulnerability scan of the npm (dashboard, plugin) and pip
+  # (sensor) dependencies; the Go job's govulncheck covers the Go
+  # modules and the release workflow's Trivy scan covers the images.
+  # scripts/vuln_scan.py audits the lockfiles directly, so the job
+  # installs nothing: npm audit reads dashboard/package-lock.json, and
+  # pip-audit (an exact release run through uvx) reads the requirements
+  # exported from sensor/uv.lock. It fails on a high or critical
+  # advisory in a dashboard production dependency and on any advisory
+  # in the sensor's core runtime dependencies; dev dependencies and the
+  # sensor's extras are reported in the log without failing. Excused
+  # advisories, each with a reason, live in .github/vuln-ignore.toml.
+  dependency-scan:
+    name: Dependency vulnerability scan (npm, pip)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7.1.0
+        with:
+          node-version: "24"
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          version: "0.12.24"
+
+      - name: Scanner unit tests
+        run: python3 -m unittest scripts/test_vuln_scan.py
+
+      - name: Scan npm and pip dependencies
+        run: python3 scripts/vuln_scan.py
+
   integration:
     # The suite runs on Postgres 16 (the default image) and on Postgres
     # 18, the current major. The 16 entry keeps the job's established

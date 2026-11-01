@@ -305,15 +305,14 @@ caller sent; content capture stores the caller's request); a new
 ## D231 -- Each litellm call is reported by the entry point the caller used
 
 **Date:** 2026-11-01
-**Decision:** every patched litellm entry point (`completion`,
-`text_completion`, `responses`, `embedding` and their async forms) runs
-under the outer-call mark and passes a call through untouched when the
-mark is already set, so litellm calling its own entry points (or the
-OpenAI SDK) underneath is reported once, in the caller's entry point's
-shape.
-**Why:** `text_completion` calls `completion`; `responses` bridges
-through `litellm.completion` on providers without a native Responses API.
-**Rejected alternative:** patching `litellm.main.completion` so the
-`completion` wrapper reports `text_completion` (every `acompletion`
-calls it too and would enter the sensor twice, and the call would be
-reported in the chat shape, not the one the caller got back).
+**Decision:** every patched litellm entry point runs under the
+outer-call mark; a nested litellm call passes through only when the
+mark is set and its caller is litellm's responses/completion bridge
+module (matched on the calling frame's module name), so a bridged call
+is reported once, in the caller's entry point's shape.
+**Why:** the bridges re-issue the same call; every other nested litellm
+call (callbacks, custom providers, agentic follow-ups, semantic-cache
+embeddings) is billed on its own and must be policed.
+**Rejected alternative:** passing every nested litellm call through under
+the mark (silences those billed calls and their policy check); patching
+`litellm.main.completion` (every `acompletion` would enter twice).

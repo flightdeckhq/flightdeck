@@ -858,10 +858,13 @@ different levels:
   iterates is still settled -- at the view's close, the stream's
   collection or the session's end -- as an aborted stream with no
   chunks, on the pre-call estimate. A `create(stream=True)` response
-  settled without its stream being read through the guard (closed,
-  dropped or still open at the session's end before `parse()`, or with
-  its body read some other way) is reported the same way, with that
-  zero-chunk `streaming` block. A streaming-view response dropped without `parse()`
+  whose body was never consumed (closed, dropped or still open at the
+  session's end before `parse()`) is reported the same way, with that
+  zero-chunk `streaming` block. One whose body the caller consumed some
+  other way (`iter_lines()`, `read()`, the raw `http_response`) reports
+  the pre-call estimate with no `streaming` block: the transport cannot
+  tell a full read from a partial one, so neither outcome is claimed.
+  A streaming-view response dropped without `parse()`
   or `close()` is reported with the pre-call estimate the way an
   abandoned stream is: its finalizer queues the settle (never settling
   inline) and the next intercepted call, or the session's end, runs it;
@@ -886,7 +889,11 @@ different levels:
   request through `client.chat.completions.create`, which the client
   patch meters). An SDK without the beta module, or whose `Beta` has no
   `chat`, is left alone. A `wrap()`-built client's `beta` is a proxy
-  whose `chat` is wrapped the same way, unless the class patch already
+  whose `chat` is wrapped the same way (the 1.40 to 1.91 `stream`
+  helper, which builds its request through
+  `self._client.chat.completions.create`, is handed a client whose chat
+  `create` the sensor meters, so it is metered on a wrapped client too),
+  unless the class patch already
   wrapped it. The intercepted call paths are `chat.completions.create()`,
   `.parse()` and `.stream()`, `responses.create()`, `.parse()` and
   `.stream()`, `embeddings.create()`, and the raw and streaming views of
@@ -1001,29 +1008,39 @@ verbatim in the content's `input` (the request has no `messages`), and a
 While serving a call litellm makes calls the sensor also intercepts: its
 OpenAI route constructs `openai.OpenAI` and calls `chat.completions`;
 `text_completion` builds a chat request and calls `completion` (through
-the name bound in `litellm.main`); `responses` on a provider without a
-native Responses API (Anthropic) bridges through the package-level
-`litellm.completion` / `acompletion`, the patched wrapper. The
-interceptors coordinate through an outer-call mark in
+the name bound in `litellm.main`, which is not patched); `responses` on a
+provider without a native Responses API (Anthropic) bridges through the
+package-level `litellm.completion` / `acompletion`, and `completion` on a
+Responses-only model (`openai/responses/...`) bridges through the
+package-level `litellm.responses` / `aresponses` -- both patched
+wrappers. The interceptors coordinate through an outer-call mark in
 `interceptor/base.py`: each litellm wrapper runs the underlying litellm
-call inside `outer_intercept()`, and an SDK interceptor or litellm wrapper
-that finds `outer_intercept_active()` true hands the call through
-untouched (no `pre_call`, policy check, stream guard or `post_call`), so a
-litellm call lands as one `pre_call`, one policy check and one
-`post_call`, reported by the wrapper of the entry point the caller used,
-in that entry point's shape. The mark is a per-call flag held in a context variable:
+call inside `outer_intercept()`. An SDK interceptor that finds
+`outer_intercept_active()` true hands the call through untouched (no
+`pre_call`, policy check, stream guard or `post_call`). A litellm wrapper
+does so only when the mark is active and its caller is one of the two
+bridge modules (`_BRIDGE_MODULES` in `interceptor/litellm.py`, matched
+on the calling frame's module name; for an async entry point, the frame
+that awaits it): the bridge re-issues the caller's own call in another
+API shape, which the outer wrapper reports. So a litellm call lands as
+one `pre_call`, one policy check and one `post_call`, reported by the
+wrapper of the entry point the caller used, in that entry point's shape.
+Any other litellm call made while one is in flight -- from a callback,
+guardrail or custom provider, or one litellm makes itself (an agentic
+follow-up, a semantic-cache embedding, an LLM judge) -- is a call of its
+own and is policed and metered. A litellm release that moves a bridge
+shows as a double count of that bridge, which the bridge tests catch,
+never as a missed call. The mark is a per-call flag held in a context variable:
 another thread, or a task created before the call, never sees it, so an SDK
 call they make at the same time is still reported; a task created inside
 the call inherits a copy of the context and reads the mark active while the
 call is in flight and inactive once it has ended, because the flag is
 cleared when the call ends; litellm's executor hop for sync-only providers
 copies the context, so the mark follows it. The mark covers the whole
-litellm call, which is a stated limitation: an SDK or litellm call made
-from inside it while it is in flight -- by a litellm callback, guardrail or
-custom provider, or by a task created inside the call -- is neither
-policed nor metered. Every patched litellm entry point checks the mark
-when it is called (an async one when it is awaited). The OpenAI
-interceptor checks the mark where
+litellm call, which is a stated limitation: an SDK call made from inside
+it while it is in flight -- by a litellm callback, guardrail or custom
+provider, or by a task created inside the call -- is neither policed nor
+metered. The OpenAI interceptor checks the mark where
 `client.chat.completions` is resolved (which covers `create` and
 `with_raw_response.create`, streaming or not) and at `embeddings.create`,
 and the Anthropic patch in its patched resource methods (`create`,
@@ -1075,7 +1092,7 @@ The SDK class patches and the litellm patch deliberately do NOT intercept:
 | `OpenAI.audio.*`, `images.*`, `moderations.*`, `files.*`, `fine_tuning.*`, `completions.*` (legacy) | Utility resources unrelated to LLM inference events. |
 | `Anthropic.completions.*` | Legacy completions API; superseded by `messages` / `beta.messages`. |
 | Anthropic `messages.batches.*`, `messages.count_tokens` | Batches are offline work with their own billing and run outside the kill switch and the token budget; `count_tokens` is the sensor's own estimator and makes no inference call. |
-| A raw-view `create(stream=True)` (Anthropic or OpenAI) whose response is never parsed | The event stream is metered once `parse()` hands it to the stream guard. A raw response is not a context manager and has no close hook, so a call whose response is never parsed is reported, as an aborted stream with no chunks on the pre-call estimate, only when the response is collected or the session ends. The streaming view (`with_streaming_response`) always settles at close. |
+| A raw-view `create(stream=True)` (Anthropic or OpenAI) whose response is never parsed | The event stream is metered once `parse()` hands it to the stream guard. A raw response is not a context manager and has no close hook, so a call whose response is never parsed is reported on the pre-call estimate (as an aborted stream with no chunks when its body was never read) only when the response is collected or the session ends. The streaming view (`with_streaming_response`) always settles at close. |
 | Frameworks that bypass the SDK entirely (raw httpx, boto3 bedrock-runtime, vertexai) | No SDK class to patch. |
 
 Extending the patch surface to a new resource is one descriptor + one entry

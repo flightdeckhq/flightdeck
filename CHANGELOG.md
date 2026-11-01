@@ -67,7 +67,8 @@ All notable changes to Flightdeck are documented here.
   routes (Anthropic, the native Responses API) not at all. Each call now
   lands as one `post_call` with the usage of the shape that entry point
   returns, also where litellm serves it through the OpenAI SDK or bridges
-  it through its own `completion`
+  it between `responses` and `completion`; a litellm call a callback or
+  custom provider makes during another is still reported on its own
   ([#170](https://github.com/flightdeckhq/flightdeck/issues/170)).
 - **litellm calls made with positional arguments work under the patch.**
   `litellm.completion("gpt-4o", messages)` raised `TypeError` once
@@ -79,8 +80,8 @@ All notable changes to Flightdeck are documented here.
   and never iterated, emitted no `post_call`. It is now reported as an
   aborted stream with no chunks, on the pre-call estimate, when the view
   closes (or the stream is collected, or the session ends). A
-  `stream=True` view call closed or dropped before `parse()` is reported
-  the same way, with its `streaming` block
+  `stream=True` view call closed or dropped before `parse()`, its body
+  never read, is reported the same way, with its `streaming` block
   ([#224](https://github.com/flightdeckhq/flightdeck/issues/224)).
 - **A Responses MCP tool call names its server.** The `tool_call` event
   for an `mcp_call` output item carries the item's `server_label` as

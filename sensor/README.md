@@ -171,9 +171,11 @@ covers `text_completion` and `responses` on each route kind).
   considered when the litellm interceptor was scoped and deferred —
   if framework reports surface calls that slip past the current
   coverage, file a new issue.
-- **SDK and litellm calls made from inside a litellm call.** The
-  litellm wrapper marks the call it serves so the SDK interceptors and
-  the other litellm wrappers pass it through; the mark covers the whole
-  call, so an SDK or litellm call made while it is in flight by a
-  litellm callback, guardrail or custom provider, or by a task created
-  inside the call, is neither policed nor metered.
+- **SDK calls made from inside a litellm call.** The litellm wrapper
+  marks the call it serves so the SDK interceptors pass it through; the
+  mark covers the whole call, so an SDK call made while it is in flight
+  by a litellm callback, guardrail or custom provider, or by a task
+  created inside the call, is neither policed nor metered. A litellm
+  call made from inside it is a call of its own and is reported; only
+  litellm's responses/completion bridge, which re-issues the same call
+  in another API shape, passes through.

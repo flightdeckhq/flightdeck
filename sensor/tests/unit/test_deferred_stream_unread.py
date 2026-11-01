@@ -199,6 +199,100 @@ def test_streaming_view_stream_read_to_the_end_is_not_reported_again_at_close(
     assert post_call["tokens_output"] == 4
 
 
+# ----- the body read some other way -------------------------------------------
+
+
+def _assert_estimate_without_streaming(session: Session) -> None:
+    """Exactly one post_call, on the pre-call estimate, claiming neither a
+    completed nor an aborted stream: the body was consumed outside the
+    guard, and the transport cannot tell a full read from a partial one."""
+    (post_call,) = _events_of(session, "post_call")
+    assert "streaming" not in post_call
+    assert post_call["tokens_input"] == OpenAIProvider().estimate_tokens(_CHAT_KW)[0]
+    assert post_call["tokens_output"] == 0
+    assert _events_of(session, "llm_error") == []
+
+
+def _read_sync(response: Any, how: str) -> int:
+    if how == "iter_lines":
+        return sum(1 for _ in response.iter_lines())
+    if how == "read":
+        return len(response.read())
+    return len(response.http_response.read())
+
+
+async def _read_async(response: Any, how: str) -> int:
+    if how == "iter_lines":
+        return len([line async for line in response.iter_lines()])
+    if how == "read":
+        return len(await response.read())
+    return len(await response.http_response.aread())
+
+
+@pytest.mark.parametrize("how", ["iter_lines", "read", "http_response"])
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_streaming_view_body_read_by_the_caller_reports_the_estimate_without_streaming(
+    how: str, is_async: bool
+) -> None:
+    session = _session(False)
+    completions = _completions(session, False, is_async=is_async)
+    with respx.mock(base_url=OPENAI_URL) as router:
+        router.post("/chat/completions").mock(
+            return_value=_sse(_chat_frames(tool=False), done=True)
+        )
+        if is_async:
+
+            async def _read() -> int:
+                async with completions.with_streaming_response.create(
+                    stream=True, **_CHAT_KW
+                ) as response:
+                    return await _read_async(response, how)
+
+            read = _run(_read())
+        else:
+            with completions.with_streaming_response.create(stream=True, **_CHAT_KW) as response:
+                read = _read_sync(response, how)
+    assert read > 0  # the caller really read the body
+    _assert_estimate_without_streaming(session)
+    _assert_nothing_captured(session)
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_raw_view_body_read_through_http_response_reports_the_estimate_without_streaming(
+    is_async: bool,
+) -> None:
+    session = _session(False)
+    with respx.mock(base_url=OPENAI_URL) as router:
+        router.post("/chat/completions").mock(return_value=_sse(_chat_frames(), done=True))
+        completions = _completions(session, False, is_async=is_async)
+        if is_async:
+
+            async def _create_and_read() -> Any:
+                raw = await completions.with_raw_response.create(stream=True, **_CHAT_KW)
+                await raw.http_response.aread()
+                return raw
+
+            raw = _run(_create_and_read())
+        else:
+            raw = completions.with_raw_response.create(stream=True, **_CHAT_KW)
+            raw.http_response.read()
+        assert isinstance(raw, raw_views.DeferredResponse)
+        base.settle_open_guards(session)
+    _assert_estimate_without_streaming(session)
+
+
+def test_raw_view_body_read_then_dropped_reports_the_estimate_without_streaming() -> None:
+    session = _session(False)
+    with respx.mock(base_url=OPENAI_URL) as router:
+        router.post("/chat/completions").mock(return_value=_sse(_chat_frames(), done=True))
+        raw = _completions(session, False).with_raw_response.create(stream=True, **_CHAT_KW)
+        raw.http_response.read()
+        del raw
+        gc.collect()
+        base.drain_deferred_settles(session)
+    _assert_estimate_without_streaming(session)
+
+
 # ----- async raw view: parsed, never iterated -------------------------------
 
 

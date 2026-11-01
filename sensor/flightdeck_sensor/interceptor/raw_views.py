@@ -150,6 +150,9 @@ class DeferredCall:
         self._event_type = event_type
         self._settled = False
         self._headers: Any = None
+        # The SDK response, held weakly: whether its body was consumed is
+        # read at settle time (see settle()).
+        self._response_ref: Callable[[], Any] = lambda: None
         # The stream guard a parsed event stream went to: every later
         # parse() hands it back, and the view's close() settles it.
         self._guard: Any = None
@@ -194,15 +197,25 @@ class DeferredCall:
         except Exception:
             return False
 
-    def register(self, headers: Any) -> None:
-        """Keep the response headers for a settle without a body and join
-        the session's open guards so the session's end settles the call."""
-        self._headers = headers
+    def register(self, response: Any) -> None:
+        """Keep the response headers for a settle without a body, and a
+        weak reference to the response so a later settle can tell whether
+        its body was read some other way; join the session's open guards
+        so the session's end settles the call."""
+        self._headers = response.headers
+        try:
+            self._response_ref = weakref.ref(response)
+        except TypeError:  # a response type without weak references
+            self._response_ref = lambda: response
         guards = getattr(self._session, "open_stream_guards", None)
         lock = getattr(self._session, "open_stream_guards_lock", None)
         if isinstance(guards, weakref.WeakSet) and lock is not None:
             with lock:
                 guards.add(self)
+
+    def _body_consumed(self) -> bool:
+        response = self._response_ref()
+        return response is not None and _body_already_read(response)
 
     def _settle_now(self) -> None:
         self.settle(None, self._headers)
@@ -210,29 +223,39 @@ class DeferredCall:
     def abandon(self) -> None:
         """Queue the settle for the next intercept or the session's end;
         called from the response proxy's finalizer, so nothing is
-        settled here."""
+        settled here. Whether the body was consumed is read now, while
+        the response still exists, so the queued settle holds no
+        reference to it."""
         if self._settled:
             return
+        consumed = self._body_consumed()
         queue = getattr(self._session, "queued_stream_settles", None)
         if isinstance(queue, collections.deque):
-            queue.append(lambda: self.settle(None, self._headers))
+            queue.append(lambda: self.settle(None, self._headers, body_consumed=consumed))
 
-    def settle(self, parsed: Any, headers: Any) -> None:
+    def settle(self, parsed: Any, headers: Any, *, body_consumed: bool | None = None) -> None:
         """Emit the post_call once, with whatever the caller parsed.
 
         A streamed request (``stream=True``) that settles here was never
-        read through the stream guard: the response was closed, dropped
-        or still open at the session's end before ``parse()``, or its
-        body was read some other way, so the event stream the SDK parses
-        from it now has nothing left to give. It is reported as an
-        aborted stream with no chunks, on the pre-call estimate."""
+        read through the stream guard. When its body was never consumed
+        either (the response was closed, dropped or still open at the
+        session's end before ``parse()``), it is reported as an aborted
+        stream with no chunks, on the pre-call estimate. When the caller
+        consumed the body some other way (``iter_lines()``, ``read()``,
+        the raw ``http_response``), the transport cannot tell a full read
+        from a partial one, so no ``streaming`` block is claimed and the
+        estimate stands. ``body_consumed`` is read from the response when
+        the caller does not pass it."""
         if self._settled:
             return
         self._settled = True
+        if body_consumed is None:
+            body_consumed = self._body_consumed()
         streaming: dict[str, Any] | None = None
         if self._call_kwargs.get("stream"):
             parsed = None if self.is_stream(parsed) else parsed
-            streaming = base._build_streaming_summary(self._t0, None, 0, [], False)
+            if not body_consumed:
+                streaming = base._build_streaming_summary(self._t0, None, 0, [], False)
         latency_ms = int((time.monotonic() - self._t0) * 1000)
         try:
             base._post_call(
@@ -323,7 +346,7 @@ class DeferredResponse:
     def __init__(self, response: Any, call: DeferredCall) -> None:
         self._response = response
         self._call = call
-        call.register(response.headers)
+        call.register(response)
 
     def parse(self, *args: Any, **kwargs: Any) -> Any:
         parsed = self._response.parse(*args, **kwargs)
@@ -335,10 +358,11 @@ class DeferredResponse:
     def close(self) -> None:
         if self._call.guard is None:
             parsed = None
-            if _body_already_read(self._response):
+            consumed = _body_already_read(self._response)
+            if consumed:
                 with contextlib.suppress(Exception):
                     parsed = self._response.parse()
-            self._call.settle(parsed, self._response.headers)
+            self._call.settle(parsed, self._response.headers, body_consumed=consumed)
         self._response.close()
         self._call.finish_guard()
 
@@ -364,7 +388,7 @@ class DeferredAsyncResponse:
     def __init__(self, response: Any, call: DeferredCall) -> None:
         self._response = response
         self._call = call
-        call.register(response.headers)
+        call.register(response)
 
     async def parse(self, *args: Any, **kwargs: Any) -> Any:
         parsed = await self._response.parse(*args, **kwargs)
@@ -376,10 +400,11 @@ class DeferredAsyncResponse:
     async def close(self) -> None:
         if self._call.guard is None:
             parsed = None
-            if _body_already_read(self._response):
+            consumed = _body_already_read(self._response)
+            if consumed:
                 with contextlib.suppress(Exception):
                     parsed = await self._response.parse()
-            self._call.settle(parsed, self._response.headers)
+            self._call.settle(parsed, self._response.headers, body_consumed=consumed)
         await self._response.close()
         await self._call.finish_guard_async()
 

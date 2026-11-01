@@ -240,7 +240,9 @@ ingress:
   host: flightdeck.local
   tls: []
   # Paths are routed to the three public services. The Ingress controller
-  # must support the pathType used here.
+  # must support the pathType used here. Paths are forwarded unchanged and
+  # need no rewrite annotation: ingestion serves its routes under /ingest
+  # and the API under /api as well as bare.
   paths:
     - path: /ingest
       pathType: Prefix

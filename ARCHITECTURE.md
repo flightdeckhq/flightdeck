@@ -1124,8 +1124,9 @@ content block under one message id. A subagent's messages (those with a
 `parent_tool_use_id`) count toward the run's session and can interleave
 with the run's own, so blocks are collected per chain (the run's own,
 and each `parent_tool_use_id`): a message is reported when its chain
-moves to another message or a tool result, at a result, or at the end
-of the run, and each message id once.
+moves to another message id, at a result, or at the end of the run, and
+each message id once. A tool result does not complete a message, since
+the CLI runs tools while the message is still streaming.
 
 The billing mode follows the plugin's precedence, over the CLI's
 environment (the process's, overlaid by the options' `env`): an explicit

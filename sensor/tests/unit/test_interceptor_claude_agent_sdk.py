@@ -449,7 +449,9 @@ def test_interleaved_sub_agent_messages_are_each_counted_once(
     ]
     _run_query(sdk)
     calls = [e for e in queue.events if e["event_type"] == "post_call"]
-    assert [c["content"]["response"]["id"] for c in calls] == ["child", "parent", "child-2"]
+    assert [c["content"]["response"]["id"] for c in calls] == ["child", "parent", "child-2"], (
+        "a chain's message is reported when the chain moves to another id"
+    )
     texts = {
         c["content"]["response"]["id"]: [b["text"] for b in c["content"]["response"]["content"]]
         for c in calls
@@ -593,3 +595,39 @@ def test_options_the_interceptor_cannot_copy_run_unobserved(
     assert asyncio.run(go()) == 5
     assert seen["options"] is options
     assert queue.events == []
+
+
+def test_a_tool_result_mid_message_does_not_cut_the_message(
+    patched: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The CLI runs a tool while the message that asked for it is still
+    streaming, so a tool result can arrive between two of its blocks."""
+    sdk, seen = patched
+    session, queue = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+
+    def tool_block(tool_id: str, output_tokens: int) -> Any:
+        return sdk.AssistantMessage(
+            content=[sdk.ToolUseBlock(id=tool_id, name="Read", input={"file_path": tool_id})],
+            model="claude-opus-5-5",
+            message_id="msg_parallel",
+            usage={"input_tokens": 10, "output_tokens": output_tokens},
+        )
+
+    def tool_result(tool_id: str) -> Any:
+        return sdk.UserMessage(content=[sdk.ToolResultBlock(tool_use_id=tool_id, content="ok")])
+
+    seen["messages"] = [
+        _messages(sdk)[0],
+        tool_block("t1", 20),
+        tool_result("t1"),
+        tool_block("t2", 45),
+        tool_result("t2"),
+        _result(sdk),
+    ]
+    _run_query(sdk)
+    kinds = [e["event_type"] for e in queue.events]
+    assert kinds == ["session_start", "post_call", "tool_call", "tool_call", "session_end"]
+    call = queue.events[1]
+    assert call["tokens_output"] == 45, "the message's final usage"
+    assert [b["id"] for b in call["content"]["response"]["content"]] == ["t1", "t2"]

@@ -246,7 +246,10 @@ class SdkRun:
         # own (key None) and each sub-agent's (its parent_tool_use_id).
         # A message is streamed as one AssistantMessage per content block
         # under one message id, and chains can interleave, so a message
-        # is complete when its chain moves on, at a result, or at the end.
+        # is complete when its chain moves to another message id, at a
+        # result, or at the end. A tool result does not complete it: the
+        # CLI runs tools while the message is still streaming, so a
+        # result can arrive between two of its blocks.
         self._pending: dict[str | None, dict[str, Any]] = {}
         # Message ids already reported, so a message is counted once.
         self._reported: set[str] = set()
@@ -269,10 +272,6 @@ class SdkRun:
             self._start(getattr(message, "data", None) or {})
         elif kind == "AssistantMessage":
             self._assistant(message)
-        elif kind == "UserMessage":
-            # A tool result or a new prompt in a chain: the chain's
-            # assistant message before it is complete.
-            self._flush_chain(getattr(message, "parent_tool_use_id", None))
         elif kind == "ResultMessage":
             self._flush_all()
             self._last_result = message

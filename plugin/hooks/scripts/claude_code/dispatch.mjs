@@ -54,14 +54,20 @@ const SDK_OBSERVED_ENV = "FLIGHTDECK_SDK_OBSERVED";
 
 export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorker, entryScript, argv = process.argv }) {
   const hookName = hookEvent.hook_event_name || hookEvent.event || "";
+  // A run the sensor's Claude Agent SDK interceptor reports (it sets
+  // FLIGHTDECK_SDK_OBSERVED in the CLI's environment): the plugin sends
+  // nothing for it and enforces nothing, since the sensor's session is
+  // the one directives name. Only the MCP policy gate keeps running.
+  const sdkObserved = process.env[SDK_OBSERVED_ENV] === "1";
   // With enforcement on, a directive any response carries lands in the
   // session's control state; with it off the poster leaves response
   // bodies unread.
-  setDirectiveSink(cfg.enforcement ? (sid, directive) => recordDirective(true, sid, directive) : null);
+  setDirectiveSink(cfg.enforcement && !sdkObserved ? (sid, directive) => recordDirective(true, sid, directive) : null);
 
   // The enforcement gates (PreToolUse for non-MCP tools, the second
   // UserPromptSubmit): only a decision, no event.
   if (argv.includes(GATE_FLAG)) {
+    if (sdkObserved) return;
     const output = await gateDecision({ cfg, hookName, sessionIds: gateSessionIds(hookEvent) });
     if (output) process.stdout.write(JSON.stringify(output) + "\n");
     return;
@@ -95,7 +101,9 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   // other's approvals in real time.
   if (hookName === "PreToolUse") {
     // A stopped session's MCP calls are denied before the MCP policy.
-    const stop = await gateDecision({ cfg, hookName, sessionIds: gateSessionIds(hookEvent), stopOnly: true });
+    const stop = sdkObserved
+      ? null
+      : await gateDecision({ cfg, hookName, sessionIds: gateSessionIds(hookEvent), stopOnly: true });
     if (stop) {
       process.stdout.write(JSON.stringify(stop) + "\n");
       return;
@@ -112,11 +120,9 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
     return;
   }
 
-  // A run the sensor's Claude Agent SDK interceptor reports (it sets
-  // FLIGHTDECK_SDK_OBSERVED in the CLI's environment): the plugin sends
-  // nothing for it. Only the MCP policy gate above keeps running, so
-  // SessionStart still fetches the policy it reads.
-  if (process.env[SDK_OBSERVED_ENV] === "1") {
+  // SDK-observed run: SessionStart still fetches the policy the MCP gate
+  // above reads, and SessionEnd clears it; nothing else is sent.
+  if (sdkObserved) {
     const sid = getSessionId(hookEvent);
     if (hookName === "SessionStart") {
       await dispatchMcpPolicySessionStart({ cfg, hookEvent, sessionId: sid, basePayload: { flavor: "claude-code" }, emitEvents: false });

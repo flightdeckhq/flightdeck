@@ -58,7 +58,9 @@ def _session(*, capture_prompts: bool = True) -> tuple[Session, _Queue]:
     return Session(config=config, client=client, event_queue=queue), queue  # type: ignore[arg-type]
 
 
-def _messages(sdk: Any, *, api_key_source: str = "user", is_error: bool = False) -> list[Any]:
+def _messages(
+    sdk: Any, *, api_key_source: str = "user", is_error: bool = False, turn: int = 1
+) -> list[Any]:
     usage = {
         "input_tokens": 10,
         "cache_read_input_tokens": 100,
@@ -83,20 +85,20 @@ def _messages(sdk: Any, *, api_key_source: str = "user", is_error: bool = False)
         sdk.AssistantMessage(
             content=[sdk.TextBlock(text="Listing.")],
             model="claude-opus-5-5",
-            message_id="msg_1",
+            message_id=f"msg_{turn}_1",
             usage=usage,
         ),
         sdk.AssistantMessage(
             content=[sdk.ToolUseBlock(id="toolu_1", name="Bash", input={"command": "ls"})],
             model="claude-opus-5-5",
-            message_id="msg_1",
+            message_id=f"msg_{turn}_1",
             usage=usage,
             stop_reason="tool_use",
         ),
         sdk.AssistantMessage(
             content=[sdk.TextBlock(text="Done.")],
             model="claude-opus-5-5",
-            message_id="msg_2",
+            message_id=f"msg_{turn}_2",
             usage=usage,
             stop_reason="end_turn",
         ),
@@ -298,7 +300,7 @@ def test_a_client_session_spans_turns_and_ends_at_disconnect(
     sdk, _ = patched
     session, queue = _session()
     monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
-    turns = [_messages(sdk), _messages(sdk)[1:]]
+    turns = [_messages(sdk), _messages(sdk, turn=2)[1:]]
 
     async def fake_receive(self: Any) -> Any:
         for message in turns.pop(0):
@@ -375,3 +377,219 @@ def test_without_the_internal_path_the_client_is_still_reported(
         sdk_mod.unpatch_claude_agent_sdk()
     assert sdk.ClaudeSDKClient.__init__ is original_init
     assert "process_query" not in sdk_mod._originals
+
+
+def _assistant(
+    sdk: Any,
+    message_id: str,
+    text: str,
+    *,
+    chain: str | None = None,
+    model: str = "claude-opus-5-5",
+) -> Any:
+    usage = {"input_tokens": 10, "output_tokens": 5}
+    return sdk.AssistantMessage(
+        content=[sdk.TextBlock(text=text)],
+        model=model,
+        message_id=message_id,
+        usage=usage,
+        parent_tool_use_id=chain,
+    )
+
+
+def _result(sdk: Any, *, is_error: bool = False) -> Any:
+    return sdk.ResultMessage(
+        subtype="error_during_execution" if is_error else "success",
+        duration_ms=1,
+        duration_api_ms=1,
+        is_error=is_error,
+        num_turns=1,
+        session_id=SDK_SESSION,
+        errors=["boom"] if is_error else None,
+    )
+
+
+def test_a_query_with_several_results_ends_once_after_the_last(
+    patched: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk, seen = patched
+    session, queue = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    init = _messages(sdk)[0]
+    seen["messages"] = [
+        init,
+        _assistant(sdk, "m1", "first turn"),
+        _result(sdk),
+        # A background task wakes the run for another turn.
+        _assistant(sdk, "m2", "second turn"),
+        _result(sdk, is_error=True),
+    ]
+    _run_query(sdk)
+    kinds = [e["event_type"] for e in queue.events]
+    assert kinds == ["session_start", "post_call", "post_call", "session_end"]
+    assert queue.events[-1]["state"] == "error", "the session ends in the last result's state"
+    assert queue.events[2]["tokens_used_session"] == 30
+
+
+def test_interleaved_sub_agent_messages_are_each_counted_once(
+    patched: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk, seen = patched
+    session, queue = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    seen["messages"] = [
+        _messages(sdk)[0],
+        _assistant(sdk, "parent", "a1"),
+        _assistant(sdk, "child", "b1", chain="toolu_task"),
+        _assistant(sdk, "parent", "a2"),
+        _assistant(sdk, "child", "b2", chain="toolu_task"),
+        sdk.UserMessage(content="tool result", parent_tool_use_id="toolu_task"),
+        _assistant(sdk, "child-2", "b3", chain="toolu_task"),
+        _result(sdk),
+    ]
+    _run_query(sdk)
+    calls = [e for e in queue.events if e["event_type"] == "post_call"]
+    assert [c["content"]["response"]["id"] for c in calls] == ["child", "parent", "child-2"]
+    texts = {
+        c["content"]["response"]["id"]: [b["text"] for b in c["content"]["response"]["content"]]
+        for c in calls
+    }
+    assert texts == {"parent": ["a1", "a2"], "child": ["b1", "b2"], "child-2": ["b3"]}
+    assert calls[-1]["tokens_used_session"] == 45, "three messages of 15 tokens, none twice"
+
+
+def test_a_synthetic_assistant_message_is_not_a_model_call(
+    patched: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk, seen = patched
+    session, queue = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    seen["messages"] = [
+        _messages(sdk)[0],
+        _assistant(sdk, "real", "hello"),
+        _assistant(sdk, "synthetic", "API Error: overloaded", model="<synthetic>"),
+        _result(sdk),
+    ]
+    _run_query(sdk)
+    calls = [e for e in queue.events if e["event_type"] == "post_call"]
+    assert [c["model"] for c in calls] == ["claude-opus-5-5"]
+
+
+@pytest.mark.parametrize(
+    ("env", "source", "mode", "platform"),
+    [
+        ({}, "none", "subscription", "anthropic"),
+        ({}, "user", "metered", "anthropic"),
+        ({}, "ANTHROPIC_API_KEY", "metered", "anthropic"),
+        ({"CLAUDE_CODE_USE_BEDROCK": "1"}, "none", "metered", "bedrock"),
+        ({"CLAUDE_CODE_USE_VERTEX": "true"}, "none", "metered", "vertex"),
+        ({"CLAUDE_CODE_USE_FOUNDRY": "1"}, "none", "metered", "foundry"),
+        ({"ANTHROPIC_AUTH_TOKEN": "gw"}, "none", "metered", "anthropic"),
+        ({"ANTHROPIC_BASE_URL": "http://127.0.0.1:8080"}, "none", "subscription", "localhost"),
+        ({"ANTHROPIC_BASE_URL": "https://gw.example.com/v1"}, "user", "metered", "gw.example.com"),
+        (
+            {"FLIGHTDECK_BILLING_MODE": "local", "CLAUDE_CODE_USE_BEDROCK": "1"},
+            "none",
+            "local",
+            "bedrock",
+        ),
+        ({"FLIGHTDECK_BILLING_MODE": "bogus"}, "none", "subscription", "anthropic"),
+    ],
+)
+def test_billing_mode_and_platform_follow_the_plugin(
+    env: dict[str, str], source: str, mode: str, platform: str
+) -> None:
+    assert sdk_mod.billing_mode(env, source) == mode
+    assert sdk_mod._platform(env)[0] == platform
+
+
+def test_the_options_env_decides_billing_and_platform(
+    patched: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk, seen = patched
+    for name in (
+        "CLAUDE_CODE_USE_BEDROCK",
+        "ANTHROPIC_AUTH_TOKEN",
+        "FLIGHTDECK_BILLING_MODE",
+        "ANTHROPIC_BASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    session, queue = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    seen["messages"] = _messages(sdk, api_key_source="none")
+    _run_query(sdk, options=sdk.ClaudeAgentOptions(env={"CLAUDE_CODE_USE_BEDROCK": "1"}))
+    call = queue.events[1]
+    assert call["billing_mode"] == "metered"
+    assert call["provider_metadata"] == {"platform": "bedrock"}
+
+
+def test_a_connect_prompt_is_captured(patched: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+    sdk, _ = patched
+    session, queue = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    turn = _messages(sdk)
+
+    async def fake_connect(self: Any, prompt: Any = None) -> None:
+        return None
+
+    async def fake_receive(self: Any) -> Any:
+        for message in turn:
+            yield message
+
+    async def fake_disconnect(self: Any) -> None:
+        return None
+
+    sdk_mod.unpatch_claude_agent_sdk()
+    monkeypatch.setattr(sdk.ClaudeSDKClient, "connect", fake_connect)
+    monkeypatch.setattr(sdk.ClaudeSDKClient, "receive_messages", fake_receive)
+    monkeypatch.setattr(sdk.ClaudeSDKClient, "disconnect", fake_disconnect)
+    sdk_mod.patch_claude_agent_sdk(quiet=True)
+
+    async def go() -> None:
+        client = sdk.ClaudeSDKClient()
+        await client.connect("opening prompt")
+        _ = [m async for m in client.receive_messages()]
+        await client.disconnect()
+
+    asyncio.run(go())
+    first_call = next(e for e in queue.events if e["event_type"] == "post_call")
+    assert first_call["content"]["messages"] == [{"role": "user", "content": "opening prompt"}]
+
+
+def test_a_custom_transport_is_reported_with_a_warning(
+    patched: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    sdk, seen = patched
+    session, queue = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    seen["messages"] = _messages(sdk)
+
+    async def go() -> None:
+        _ = [m async for m in sdk.query(prompt="hi", transport=object())]
+
+    with caplog.at_level("WARNING", logger="flightdeck_sensor.interceptor.claude_agent_sdk"):
+        asyncio.run(go())
+    assert "custom transport" in caplog.text
+    assert queue.events[0]["event_type"] == "session_start"
+
+
+def test_options_the_interceptor_cannot_copy_run_unobserved(
+    patched: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sdk, seen = patched
+    session, queue = _session()
+    monkeypatch.setattr(sdk_mod, "_current_session", lambda: session)
+    seen["messages"] = _messages(sdk)
+
+    class NotADataclass:
+        env: dict[str, str] = {}
+
+    options = NotADataclass()
+
+    async def go() -> int:
+        internal = sdk_mod._internal_client()
+        return len([m async for m in internal.process_query("hi", options)])
+
+    assert asyncio.run(go()) == 5
+    assert seen["options"] is options
+    assert queue.events == []

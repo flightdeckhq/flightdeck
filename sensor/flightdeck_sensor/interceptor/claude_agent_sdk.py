@@ -28,15 +28,24 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import os
 import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from flightdeck_sensor.core.agent_id import derive_agent_id
 from flightdeck_sensor.core.session import _sensor_version
+from flightdeck_sensor.interceptor.platform import (
+    PLATFORM_ANTHROPIC,
+    PLATFORM_INVALID_HOST,
+    PLATFORM_LOCALHOST,
+    is_loopback_host,
+    platform_for_host,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncIterator
+    from collections.abc import AsyncIterator, Mapping
 
     from flightdeck_sensor.core.session import Session
 
@@ -49,9 +58,20 @@ CLIENT_TYPE = "claude_agent_sdk"
 # for a run this interceptor reports.
 SDK_OBSERVED_ENV = "FLIGHTDECK_SDK_OBSERVED"
 
-# The API key source an ``init`` message reports for a Claude login
-# rather than an API key.
-_SUBSCRIPTION_KEY_SOURCE = "none"
+# The API key source an ``init`` message reports when the CLI holds no
+# API key: a Claude login, a bearer token or a cloud provider.
+_NO_API_KEY_SOURCE = "none"
+# Environment variables that point the CLI at a cloud provider, which
+# bills per token, with the platform label each one means.
+_CLOUD_ENV_VARS = (
+    ("CLAUDE_CODE_USE_BEDROCK", "bedrock"),
+    ("CLAUDE_CODE_USE_VERTEX", "vertex"),
+    ("CLAUDE_CODE_USE_FOUNDRY", "foundry"),
+)
+_BILLING_MODES = frozenset({"metered", "subscription", "local"})
+# The model Claude Code names on an assistant message it wrote itself
+# (an API error or an interrupt) rather than one the model returned.
+_SYNTHETIC_MODEL = "<synthetic>"
 
 # ----------------------------------------------------------------------
 # Lazy SDK import, so ``import flightdeck_sensor`` does not load the SDK.
@@ -149,17 +169,62 @@ def _usage_tokens(usage: Any) -> dict[str, Any]:
     return fields
 
 
+def _truthy(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes"}
+
+
+def run_env(options: Any) -> dict[str, str]:
+    """The environment the CLI runs with: the process's, overlaid by
+    the options' ``env`` (the SDK merges them the same way)."""
+    env = dict(os.environ)
+    extra = getattr(options, "env", None)
+    if isinstance(extra, dict):
+        env.update({str(k): str(v) for k, v in extra.items()})
+    return env
+
+
+def _platform(env: Mapping[str, str]) -> tuple[str, bool]:
+    """The platform the CLI calls, and whether it is a cloud provider."""
+    for name, label in _CLOUD_ENV_VARS:
+        if _truthy(env.get(name)):
+            return label, True
+    base_url = (env.get("ANTHROPIC_BASE_URL") or "").strip()
+    if not base_url:
+        return PLATFORM_ANTHROPIC, False
+    try:
+        host = (urlsplit(base_url).hostname or "").rstrip(".")
+    except ValueError:
+        return PLATFORM_INVALID_HOST, False
+    if is_loopback_host(host):
+        return PLATFORM_LOCALHOST, False
+    return platform_for_host(host), False
+
+
+def billing_mode(env: Mapping[str, str], api_key_source: Any) -> str:
+    """The run's billing mode, by the plugin's precedence: an explicit
+    ``FLIGHTDECK_BILLING_MODE``; metered on a cloud provider or with a
+    bearer token (``ANTHROPIC_AUTH_TOKEN``); a subscription when the CLI
+    holds no API key (a Claude login); metered otherwise."""
+    override = (env.get("FLIGHTDECK_BILLING_MODE") or "").strip().lower()
+    if override in _BILLING_MODES:
+        return override
+    if _platform(env)[1] or (env.get("ANTHROPIC_AUTH_TOKEN") or "").strip():
+        return "metered"
+    return "subscription" if api_key_source == _NO_API_KEY_SOURCE else "metered"
+
+
 class SdkRun:
     """The Flightdeck session of one SDK run, fed the run's messages.
 
-    ``end_on_result`` is True for ``query()``, whose ResultMessage ends
-    the run, and False for ``ClaudeSDKClient``, where it ends a turn and
-    the session ends at disconnect.
+    The session ends when the run does: the ``query()`` stream is
+    exhausted or closed, or the client disconnects. A ``ResultMessage``
+    ends one turn only; a run can have several.
     """
 
-    def __init__(self, session: Session, *, end_on_result: bool) -> None:
+    def __init__(self, session: Session, *, env: Mapping[str, str]) -> None:
         self._session = session
-        self._end_on_result = end_on_result
+        self._env = env
+        self._platform = _platform(env)[0]
         cfg = session.config
         self._agent_id = str(
             derive_agent_id(
@@ -176,9 +241,15 @@ class SdkRun:
         self._framework = f"claude-agent-sdk/{getattr(_sdk, '__version__', '')}".rstrip("/")
         self._prompt: str | None = None
         self._tokens_used = 0
-        # The assistant message being collected: its id, model, blocks,
-        # last usage and stop reason.
-        self._pending: dict[str, Any] | None = None
+        self._last_result: Any = None
+        # The assistant message being collected in each chain: the run's
+        # own (key None) and each sub-agent's (its parent_tool_use_id).
+        # A message is streamed as one AssistantMessage per content block
+        # under one message id, and chains can interleave, so a message
+        # is complete when its chain moves on, at a result, or at the end.
+        self._pending: dict[str | None, dict[str, Any]] = {}
+        # Message ids already reported, so a message is counted once.
+        self._reported: set[str] = set()
 
     # -- feeding -----------------------------------------------------
 
@@ -198,18 +269,22 @@ class SdkRun:
             self._start(getattr(message, "data", None) or {})
         elif kind == "AssistantMessage":
             self._assistant(message)
+        elif kind == "UserMessage":
+            # A tool result or a new prompt in a chain: the chain's
+            # assistant message before it is complete.
+            self._flush_chain(getattr(message, "parent_tool_use_id", None))
         elif kind == "ResultMessage":
-            self._flush_pending()
-            if self._end_on_result:
-                self.end(result=message)
+            self._flush_all()
+            self._last_result = message
 
-    def end(self, result: Any = None) -> None:
-        """End the run's session, once."""
+    def end(self) -> None:
+        """End the run's session, once; its state is the last result's."""
         try:
-            self._flush_pending()
+            self._flush_all()
             if self.session_id is None or self._ended:
                 return
             self._ended = True
+            result = self._last_result
             payload = self._payload("session_end")
             payload["close_reason"] = "normal_exit"
             if result is not None and getattr(result, "is_error", False):
@@ -239,8 +314,9 @@ class SdkRun:
         self.session_id = session_id
         self._ended = False
         self._tokens_used = 0
-        if data.get("apiKeySource") == _SUBSCRIPTION_KEY_SOURCE:
-            self._billing_mode = "subscription"
+        self._last_result = None
+        self._reported.clear()
+        self._billing_mode = billing_mode(self._env, data.get("apiKeySource"))
         servers = data.get("mcp_servers")
         context: dict[str, Any] = {
             # The process's runtime context (os, user, git, ...), as a
@@ -265,17 +341,23 @@ class SdkRun:
 
     def _assistant(self, message: Any) -> None:
         message_id = getattr(message, "message_id", None) or getattr(message, "uuid", None)
-        if self._pending is not None and self._pending["id"] != message_id:
-            self._flush_pending()
-        if self._pending is None:
-            self._pending = {
+        if isinstance(message_id, str) and message_id in self._reported:
+            _log.debug("claude_agent_sdk: message %s already reported", message_id)
+            return
+        chain = getattr(message, "parent_tool_use_id", None)
+        pending = self._pending.get(chain)
+        if pending is not None and pending["id"] != message_id:
+            self._flush_chain(chain)
+            pending = None
+        if pending is None:
+            pending = {
                 "id": message_id,
                 "model": None,
                 "blocks": [],
                 "usage": None,
                 "stop_reason": None,
             }
-        pending = self._pending
+            self._pending[chain] = pending
         pending["model"] = getattr(message, "model", None) or pending["model"]
         pending["blocks"].extend(getattr(message, "content", None) or [])
         if getattr(message, "usage", None):
@@ -283,9 +365,17 @@ class SdkRun:
         if getattr(message, "stop_reason", None):
             pending["stop_reason"] = message.stop_reason
 
-    def _flush_pending(self) -> None:
-        pending, self._pending = self._pending, None
-        if pending is None or self.session_id is None:
+    def _flush_all(self) -> None:
+        for chain in list(self._pending):
+            self._flush_chain(chain)
+
+    def _flush_chain(self, chain: str | None) -> None:
+        pending = self._pending.pop(chain, None)
+        if pending is None or self.session_id is None or self._ended:
+            return
+        if isinstance(pending["id"], str):
+            self._reported.add(pending["id"])
+        if pending["model"] == _SYNTHETIC_MODEL:
             return
         tokens = _usage_tokens(pending["usage"])
         self._tokens_used += tokens["tokens_total"]
@@ -299,6 +389,7 @@ class SdkRun:
                 "model_served": model,
                 "provider": "anthropic",
                 "billing_mode": self._billing_mode,
+                "provider_metadata": {"platform": self._platform},
             }
         )
         if isinstance(pending["stop_reason"], str):
@@ -376,6 +467,8 @@ class SdkRun:
         }
 
     def _post(self, payload: dict[str, Any]) -> None:
+        if self._ended and payload["event_type"] != "session_end":
+            return
         self._session.event_queue.enqueue(payload)
 
 
@@ -421,11 +514,9 @@ def _patch_query_path() -> None:
     async def process_query(
         self: Any, prompt: Any, options: Any, transport: Any = None
     ) -> AsyncIterator[Any]:
-        session = _current_session()
-        run = SdkRun(session, end_on_result=True) if session is not None else None
+        run, options = _observe(options, transport)
         if run is not None:
             run.set_prompt(prompt)
-            options = observed_options(options)
         try:
             async for message in original_process_query(self, prompt, options, transport):
                 if run is not None:
@@ -438,20 +529,52 @@ def _patch_query_path() -> None:
     _internal_client.process_query = process_query
 
 
+def _observe(options: Any, transport: Any) -> tuple[SdkRun | None, Any]:
+    """A run to report and the options to start it with, or ``(None,
+    options)`` when there is no sensor session or setting up fails."""
+    session = _current_session()
+    if session is None:
+        return None, options
+    try:
+        observed = observed_options(options)
+        run = SdkRun(session, env=run_env(observed))
+    except Exception:
+        _log.debug("claude_agent_sdk: run not observed", exc_info=True)
+        return None, options
+    if transport is not None:
+        # A custom transport is built before the options reach it, so
+        # the variable that keeps a plugin silent never reaches the CLI.
+        _log.warning(
+            "claude_agent_sdk: a run with a custom transport is reported, but a "
+            "Claude Code plugin in it may report it again; set %s=1 in the "
+            "transport's environment to prevent that.",
+            SDK_OBSERVED_ENV,
+        )
+    return run, observed
+
+
+_CLIENT_METHODS = ("__init__", "connect", "query", "receive_messages", "disconnect")
+
+
 def _patch_client(client_cls: Any) -> None:
-    for name in ("__init__", "query", "receive_messages", "disconnect"):
+    for name in _CLIENT_METHODS:
         _originals[f"client.{name}"] = getattr(client_cls, name)
     original_init = _originals["client.__init__"]
+    original_connect = _originals["client.connect"]
     original_client_query = _originals["client.query"]
     original_receive = _originals["client.receive_messages"]
     original_disconnect = _originals["client.disconnect"]
 
     def client_init(self: Any, options: Any = None, transport: Any = None) -> None:
-        session = _current_session()
-        if session is not None:
-            options = observed_options(options)
+        run, options = _observe(options, transport)
         original_init(self, options, transport)
-        self._flightdeck_run = SdkRun(session, end_on_result=False) if session is not None else None
+        self._flightdeck_run = run
+
+    async def connect(self: Any, prompt: Any = None) -> None:
+        run = getattr(self, "_flightdeck_run", None)
+        if run is not None:
+            run.set_prompt(prompt)
+        await original_connect(self, prompt)
 
     async def client_query(self: Any, prompt: Any, session_id: str = "default") -> None:
         run = getattr(self, "_flightdeck_run", None)
@@ -473,6 +596,7 @@ def _patch_client(client_cls: Any) -> None:
         await original_disconnect(self)
 
     client_cls.__init__ = client_init
+    client_cls.connect = connect
     client_cls.query = client_query
     client_cls.receive_messages = receive_messages
     client_cls.disconnect = disconnect
@@ -485,7 +609,7 @@ def unpatch_claude_agent_sdk() -> None:
     client_cls = _sdk.ClaudeSDKClient
     if "process_query" in _originals:
         _internal_client.process_query = _originals.pop("process_query")
-    for name in ("__init__", "query", "receive_messages", "disconnect"):
+    for name in _CLIENT_METHODS:
         setattr(client_cls, name, _originals.pop(f"client.{name}"))
     if hasattr(client_cls, _PATCHED_SENTINEL):
         delattr(client_cls, _PATCHED_SENTINEL)

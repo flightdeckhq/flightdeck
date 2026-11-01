@@ -1111,20 +1111,40 @@ From the stream:
 | SDK message | Event |
 |---|---|
 | `SystemMessage` with subtype `init` | `session_start`: `context` carries the Claude Code version, the model, the permission mode, the working directory, the API key source and the configured MCP servers' names |
-| `AssistantMessage` | one `post_call` per message id: the model, token counts from its `usage` (the cache split included), `stop_reason`, the billing mode, and its content under `capture_prompts` (the run's prompt as the first call's messages, the message's blocks as the response); plus one `tool_call` per `tool_use` block, its input under `capture_prompts` |
-| `ResultMessage` | `session_end` (`close_reason=normal_exit`, or `state=error` with the result's error for a failed run) |
+| `AssistantMessage` | one `post_call` per message id: the model, token counts from its `usage` (the cache split included), `stop_reason`, the billing mode, `provider_metadata.platform`, and its content under `capture_prompts` (the turn's prompt as the first call's messages, the message's blocks as the response); plus one `tool_call` per `tool_use` block, its input under `capture_prompts`. Claude Code's own `<synthetic>` messages (an API error, an interrupt) are not model calls and are skipped |
+| end of the run | `session_end` (`close_reason=normal_exit`, or `state=error` with the error of the run's last `ResultMessage` when it failed) |
 
-A run whose stream ends without a result (cancelled, or the CLI exited)
-also ends with a `session_end`. The billing mode is `metered` unless the
-init message's API key source is `none` (a Claude login), in which case
-it is `subscription`. A subagent's messages (those with a
-`parent_tool_use_id`) count toward the run's session.
+A `ResultMessage` ends one turn; a run can have several (a prompt
+stream, or a background task waking the run). The session ends when
+the run does: the `query()` stream is exhausted or closed, or the
+`ClaudeSDKClient` disconnects.
+
+The CLI streams an assistant message as one `AssistantMessage` per
+content block under one message id. A subagent's messages (those with a
+`parent_tool_use_id`) count toward the run's session and can interleave
+with the run's own, so blocks are collected per chain (the run's own,
+and each `parent_tool_use_id`): a message is reported when its chain
+moves to another message or a tool result, at a result, or at the end
+of the run, and each message id once.
+
+The billing mode follows the plugin's precedence, over the CLI's
+environment (the process's, overlaid by the options' `env`): an explicit
+`FLIGHTDECK_BILLING_MODE`; `metered` on a cloud provider
+(`CLAUDE_CODE_USE_BEDROCK`, `_VERTEX` or `_FOUNDRY`) or with
+`ANTHROPIC_AUTH_TOKEN`; `subscription` when the init message's API key
+source is `none` (a Claude login); `metered` otherwise. The platform is
+the cloud provider, else the host of `ANTHROPIC_BASE_URL`, else
+`anthropic`.
 
 The interceptor adds `FLIGHTDECK_SDK_OBSERVED=1` to the CLI's
 environment (the options' `env`, the caller's own entries kept), so a
 Claude Code plugin the CLI loads reports nothing for the run (see
-"Claude Agent SDK and Claude Code" under Client type registry). It never replaces a caller's
-`can_use_tool` or hooks.
+"Claude Agent SDK and Claude Code" under Client type registry). A run
+started with a custom `transport` is reported too, but the options'
+`env` never reaches a transport built before them, so the interceptor
+logs a warning that a plugin in that run may report it again. It never
+replaces a caller's `can_use_tool` or hooks, and an error while setting
+up the observation leaves the run to the SDK unobserved.
 
 Its sessions only observe: their `session_start` sets
 `context.supports_directives=false`, and the sensor acts on a directive
@@ -1909,8 +1929,10 @@ run as a `claude_agent_sdk` session (see Sensor > Claude Agent SDK). So
 that a run is reported once, the interceptor sets
 `FLIGHTDECK_SDK_OBSERVED=1` in that subprocess's environment, and a
 Claude Code plugin the CLI loads sends nothing for a run where it is
-set; only its MCP policy gate keeps running, so the policy still holds
-for the run's MCP calls. A plugin that predates the variable reports the
+set and enforces nothing (its enforcement gates and directive handling
+stay off, since directives name the sensor's session); only its MCP
+policy gate keeps running, so the policy still holds for the run's MCP
+calls. A plugin that predates the variable reports the
 run a second time, as a `claude_code` session under the plugin's own
 session id with the Claude Code id in `context.claude_code_session_id`.
 A process that also makes direct provider

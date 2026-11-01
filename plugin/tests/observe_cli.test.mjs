@@ -795,20 +795,27 @@ describe("observe_cli.mjs", () => {
     }
   });
 
-  it("sends nothing for a run the Agent SDK interceptor reports (FLIGHTDECK_SDK_OBSERVED=1)", async () => {
+  it("sends and enforces nothing for a run the Agent SDK interceptor reports (FLIGHTDECK_SDK_OBSERVED=1)", async () => {
     const requests = [];
     const server = createServer((req, res) => {
       req.resume();
       req.on("end", () => {
         requests.push(req.url);
         res.writeHead(200, { "Content-Type": "application/json" });
-        res.end('{"status":"ok"}');
+        // Every response would stop the session if the plugin read it.
+        res.end(JSON.stringify({ status: "ok", directive: { id: "dir-sdk", action: "shutdown", reason: "manual" } }));
       });
     });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     try {
       const sid = "sess-sdk-observed-1";
-      const env = { FLIGHTDECK_SERVER: `http://127.0.0.1:${server.address().port}`, FLIGHTDECK_TOKEN: "tok_test", CLAUDE_SESSION_ID: sid, FLIGHTDECK_SDK_OBSERVED: "1" };
+      const env = {
+        FLIGHTDECK_SERVER: `http://127.0.0.1:${server.address().port}`,
+        FLIGHTDECK_TOKEN: "tok_test",
+        CLAUDE_SESSION_ID: sid,
+        FLIGHTDECK_SDK_OBSERVED: "1",
+        FLIGHTDECK_ENFORCEMENT: "1",
+      };
       for (const hook of [
         { hook_event_name: "SessionStart", source: "startup" },
         { hook_event_name: "UserPromptSubmit", prompt: "hi" },
@@ -819,10 +826,21 @@ describe("observe_cli.mjs", () => {
         const result = await runScript(JSON.stringify({ session_id: sid, ...hook }), env);
         assert.equal(result.code, 0, result.stderr);
       }
-      // The MCP gate still runs for the run's MCP calls.
+      // The enforcement gates decide nothing and poll nothing.
+      for (const hook of [
+        { hook_event_name: "PreToolUse", tool_name: "Bash", tool_input: { command: "ls" } },
+        { hook_event_name: "UserPromptSubmit", prompt: "go on" },
+      ]) {
+        const gated = await runScript(JSON.stringify({ session_id: sid, ...hook }), env, ["--gate"]);
+        assert.equal(gated.code, 0, gated.stderr);
+        assert.equal(gated.stdout.trim(), "");
+      }
+      // The MCP gate still runs for the run's MCP calls, with no stop check.
       const gate = await runScript(JSON.stringify({ hook_event_name: "PreToolUse", session_id: sid, tool_name: "mcp__github__list", tool_input: {} }), env);
       assert.equal(gate.code, 0, gate.stderr);
+      assert.equal(gate.stdout.includes('"continue":false'), false);
       assert.deepEqual(requests.filter((url) => url.startsWith("/ingest")), []);
+      assert.equal(existsSync(join(stateDir({ ...process.env, CLAUDE_PLUGIN_DATA: "" }), `control-${sid}.json`)), false);
     } finally {
       server.closeAllConnections();
       server.close();

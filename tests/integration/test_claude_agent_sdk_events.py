@@ -204,6 +204,7 @@ def test_an_sdk_run_lands_as_its_own_claude_agent_sdk_session(
     assert tool["tool_name"] == "Bash"
     # A logged-in Claude subscription is not metered.
     assert first_call["billing_mode"] == "subscription"
+    assert first_call["platform"] == "anthropic"
     assert tool["payload"]["originating_event_id"] == str(first_call["id"])
     assert first_call["has_content"] is True
     assert _content_status(str(first_call["id"])) == 200

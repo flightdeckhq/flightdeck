@@ -215,3 +215,64 @@ export const AGENT_TYPE_COLOR: Record<AgentType, ClientTypeColor> = {
     border: "color-mix(in srgb, var(--text-secondary) 32%, transparent)",
   },
 };
+
+/**
+ * How a session's events reached Flightdeck, read from its
+ * ``context.telemetry`` (and, for an agent, from its latest session's,
+ * which the agent rows carry as ``telemetry``). Ingestion stamps
+ * ``otlp`` on every session it builds from an OpenTelemetry export; a
+ * session a hook plugin or the sensor reports carries none. A Claude
+ * Code session therefore reads as "Claude Code via OpenTelemetry" or
+ * "Claude Code via plugin". The value names the transport, not the
+ * client: an OTLP-reported Claude Code session keeps ``client_type``
+ * ``claude_code`` and that type's defaults.
+ */
+export const TELEMETRY_OTLP = "otlp";
+
+/** Display name of the OpenTelemetry source in labels and tooltips. */
+export const OTLP_SOURCE_LABEL = "OpenTelemetry";
+
+/** Text of the source pill (CSS-uppercased to ``OTEL``). */
+export const OTLP_SOURCE_PILL_TEXT = "OTel";
+
+/** True when a ``telemetry`` value (a session's ``context.telemetry``
+ *  or an agent row's ``telemetry``) marks an OpenTelemetry source. */
+export function isOtlpTelemetry(value: unknown): boolean {
+  return value === TELEMETRY_OTLP;
+}
+
+/** True when the session was reported over OpenTelemetry. */
+export function isOtlpSession(session: {
+  context?: Record<string, unknown> | null;
+}): boolean {
+  return isOtlpTelemetry(session.context?.telemetry);
+}
+
+/**
+ * The client and the way it reports, as one phrase:
+ * ``Claude Code via OpenTelemetry`` for an OTLP-reported session,
+ * ``Claude Code via plugin`` for the Claude Code plugin, and the bare
+ * registry label for every other client (the sensor and the Agent SDK
+ * interceptor have one way to report). Null when the client type is
+ * outside the registry and the source is not OTLP.
+ */
+export function clientSourceLabel(
+  clientType: string | null | undefined,
+  telemetry: unknown,
+): string | null {
+  const label = isClientType(clientType)
+    ? CLIENT_TYPE_META[clientType].label
+    : null;
+  if (isOtlpTelemetry(telemetry)) {
+    return label
+      ? `${label} via ${OTLP_SOURCE_LABEL}`
+      : `via ${OTLP_SOURCE_LABEL}`;
+  }
+  if (clientType === ClientType.ClaudeCode) return `${label} via plugin`;
+  return label;
+}
+
+/** The OTel source pill's colour: the muted treatment the reserved
+ *  client types use, so the pill reads as a qualifier of the client
+ *  pill beside it rather than as a second brand. */
+export const TELEMETRY_SOURCE_COLOR: ClientTypeColor = RESERVED_CLIENT_COLOR;

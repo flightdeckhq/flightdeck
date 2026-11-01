@@ -441,6 +441,68 @@ describe("SessionDrawer", () => {
     expect(screen.queryByText("Shutdown pending")).not.toBeInTheDocument();
   });
 
+  // A Claude Code session reported over OpenTelemetry: what ingestion
+  // stores on the synthetic session_start (client_type claude_code,
+  // context.telemetry=otlp, supports_directives=false, the exporter's
+  // service.version as claude_code_version), under a custom flavor.
+  const otlpSession = {
+    state: "active",
+    has_pending_directive: false,
+    client_type: "claude_code",
+    flavor: "test-agent",
+    context: {
+      telemetry: "otlp",
+      supports_directives: false,
+      claude_code_session_id: "cc-1",
+      claude_code_version: "2.1.316",
+    },
+  };
+
+  it("an OTLP session is observer class: no Stop Agent, no Directives tab", () => {
+    mockSessionOverride = otlpSession;
+    // A sensor registered a directive under the same flavor; the
+    // OTLP session still offers no way to trigger it.
+    mockCustomDirectives = [
+      {
+        id: "cd-otlp",
+        fingerprint: "fp-otlp",
+        name: "rotate-model",
+        description: "",
+        flavor: "test-agent",
+        parameters: [],
+        registered_at: "2026-04-07T10:00:00Z",
+        last_seen_at: "2026-04-07T12:00:00Z",
+      },
+    ];
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.queryByTestId("session-drawer-stop-agent")).not.toBeInTheDocument();
+    expect(screen.queryByText("Stop Agent")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("drawer-tab-directives")).not.toBeInTheDocument();
+  });
+
+  it("an OTLP session's header names Claude Code via OpenTelemetry and its version", () => {
+    mockSessionOverride = otlpSession;
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const badge = screen.getByTestId("claude-code-badge");
+    expect(badge).toHaveTextContent("Claude Code");
+    expect(badge).toHaveTextContent("v2.1.316");
+    const source = screen.getByTestId("session-source-label");
+    expect(source).toHaveTextContent("via OpenTelemetry");
+    expect(source.getAttribute("data-telemetry")).toBe("otlp");
+  });
+
+  it("a plugin session's header names Claude Code via plugin", () => {
+    mockSessionOverride = {
+      client_type: "claude_code",
+      flavor: "claude-code",
+      context: { supports_directives: false, frameworks: ["claude-code/2.1.0"] },
+    };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const source = screen.getByTestId("session-source-label");
+    expect(source).toHaveTextContent("via plugin");
+    expect(source.getAttribute("data-telemetry")).toBe("plugin");
+  });
+
   it("shows enabled Stop Agent button for active session", () => {
     mockSessionOverride = { state: "active", has_pending_directive: false };
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);

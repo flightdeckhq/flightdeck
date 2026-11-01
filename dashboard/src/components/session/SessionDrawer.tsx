@@ -7,7 +7,13 @@ import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import { invalidateSessionCache, useSession } from "@/hooks/useSession";
 import { useFleetStore } from "@/store/fleet";
 import { SHUTDOWN_GRACE_PERIOD_MS, SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/constants";
-import { CLIENT_TYPE_LABEL, ClientType } from "@/lib/agent-identity";
+import {
+  CLIENT_TYPE_LABEL,
+  ClientType,
+  isOtlpSession,
+  OTLP_SOURCE_LABEL,
+  TELEMETRY_OTLP,
+} from "@/lib/agent-identity";
 import { DirectiveCard } from "@/components/directives/DirectiveCard";
 import { Button } from "@/components/ui/button";
 import {
@@ -355,12 +361,18 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
 
   // Filter the fleet-wide custom directive list down to ones
   // registered for this session's flavor. The Directives tab button
-  // and its content are gated on this being non-empty.
-  const sessionFlavor = data?.session.flavor;
+  // and its content are gated on this being non-empty. An observer
+  // session (no channel a directive could reach, e.g. a Claude Code
+  // session reported by the plugin or over OpenTelemetry) gets none,
+  // even when a sensor registered directives under the same flavor.
+  const drawerSession = data?.session;
+  const sessionFlavor = drawerSession?.flavor;
+  const sessionTakesDirectives =
+    !!drawerSession && sessionSupportsDirectives(drawerSession);
   const flavorDirectives = useMemo(() => {
-    if (!sessionFlavor) return [];
+    if (!sessionFlavor || !sessionTakesDirectives) return [];
     return customDirectives.filter((d) => d.flavor === sessionFlavor);
-  }, [customDirectives, sessionFlavor]);
+  }, [customDirectives, sessionFlavor, sessionTakesDirectives]);
 
   // Gate the Sub-agents tab. The tab surfaces when EITHER
   // this session is a sub-agent (has parent_session_id) OR it has
@@ -675,7 +687,11 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                   ) : (
                     <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
                       <DialogTrigger asChild>
-                        <Button size="sm" className="bg-(--danger) text-white hover:bg-(--danger)/90">
+                        <Button
+                          size="sm"
+                          data-testid="session-drawer-stop-agent"
+                          className="bg-(--danger) text-white hover:bg-(--danger)/90"
+                        >
                           Stop Agent
                         </Button>
                       </DialogTrigger>
@@ -799,6 +815,27 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                       </span>
                     ) : null;
                   })()}
+                  {/* How the session reports: "via OpenTelemetry"
+                      (an exporter, observe only) or "via plugin".
+                      Spelled out here, where there is room; the
+                      compact rows carry the OTel pill instead. */}
+                  <span
+                    data-testid="session-source-label"
+                    data-telemetry={
+                      isOtlpSession(data.session) ? TELEMETRY_OTLP : "plugin"
+                    }
+                    className="text-[11px]"
+                    style={{ color: "var(--text-muted)" }}
+                    title={
+                      isOtlpSession(data.session)
+                        ? "Reported by Claude Code's OpenTelemetry exporter: observe only, no directives reach it"
+                        : "Reported by the Flightdeck Claude Code plugin"
+                    }
+                  >
+                    {isOtlpSession(data.session)
+                      ? `via ${OTLP_SOURCE_LABEL}`
+                      : "via plugin"}
+                  </span>
                   <DrawerRelationshipPill
                     parentSessionId={data.session.parent_session_id ?? null}
                     parentAgentLabel={parentAgentLabel}

@@ -118,18 +118,22 @@ export function providerLabel(dimension: string): string {
 // ---------------------------------------------------------------------
 
 /**
- * True when a session originated from the Claude Code plugin. Detects
- * via ``flavor="claude-code"`` (the plugin's default; can in theory be
- * overridden by the operator via ``AGENT_FLAVOR``) OR via any entry in
+ * True when a session is a Claude Code session, reported by the plugin
+ * or over OpenTelemetry. Detects via ``client_type="claude_code"``,
+ * via ``flavor="claude-code"`` (the default of both sources; the
+ * operator can override it with ``AGENT_FLAVOR`` or the
+ * ``flightdeck.flavor`` resource attribute) OR via any entry in
  * ``context.frameworks`` starting with ``"claude-code"`` (the plugin
  * always stamps one of those). The OR makes the helper resilient to a
- * fleet where somebody renamed the flavor but the framework tag still
- * reveals the origin.
+ * fleet where somebody renamed the flavor, and to a parent-stub row
+ * that carries no ``client_type`` yet.
  */
 export function isClaudeCodeSession(session: {
   flavor?: string;
+  client_type?: string | null;
   context?: Record<string, unknown>;
 }): boolean {
+  if (session.client_type === "claude_code") return true;
   if (session.flavor === "claude-code") return true;
   const frameworks = session.context?.frameworks;
   if (Array.isArray(frameworks)) {
@@ -142,7 +146,9 @@ export function isClaudeCodeSession(session: {
 
 /**
  * Return the Claude Code client version string when the session carries
- * a ``claude-code/<version>`` entry in ``context.frameworks``, or null
+ * a ``claude-code/<version>`` entry in ``context.frameworks`` (the
+ * plugin) or a ``context.claude_code_version`` (an OpenTelemetry
+ * session, from the exporter's ``service.version``), or null
  * otherwise. The plugin reads the version from the transcript JSONL's
  * ``message.version`` field; older Claude Code releases or transcripts
  * missing the field leave the helper with a bare ``"claude-code"``
@@ -151,6 +157,8 @@ export function isClaudeCodeSession(session: {
 export function getClaudeCodeVersion(session: {
   context?: Record<string, unknown>;
 }): string | null {
+  const otlpVersion = session.context?.claude_code_version;
+  if (typeof otlpVersion === "string" && otlpVersion) return otlpVersion;
   const frameworks = session.context?.frameworks;
   if (!Array.isArray(frameworks)) return null;
   for (const fw of frameworks) {

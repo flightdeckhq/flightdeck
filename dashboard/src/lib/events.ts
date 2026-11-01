@@ -244,10 +244,26 @@ export function isAttachmentStartEvent(
 
 /* ---- Event detail text ---- */
 
+/** What a missing value reads as in a detail line or a summary row. */
+const NO_VALUE = "—";
+
+/** The model segment a detail line leads with: the model when the
+ *  event names one, else nothing. An event that names no model (Claude
+ *  Code's prompt record over OpenTelemetry carries none) shows no model
+ *  rather than a made-up "unknown". */
+function modelParts(event: AgentEvent): string[] {
+  return event.model ? [event.model] : [];
+}
+
+/** Joins detail segments, or a dash when there are none. */
+function joinDetail(parts: string[]): string {
+  return parts.length > 0 ? parts.join(" · ") : NO_VALUE;
+}
+
 export function getEventDetail(event: AgentEvent): string {
   switch (event.event_type) {
     case "post_call": {
-      const parts = [event.model ?? "unknown"];
+      const parts = modelParts(event);
       // Streaming post_calls surface TTFT inline
       // ahead of the token + total-latency segments so an operator
       // scanning the timeline sees first-token latency on the same
@@ -278,25 +294,25 @@ export function getEventDetail(event: AgentEvent): string {
       ) {
         parts.push(`rate-limit ${pm.ratelimit_remaining_tokens.toLocaleString()} left`);
       }
-      return parts.join(" · ");
+      return joinDetail(parts);
     }
     case "pre_call": {
-      const parts = [event.model ?? "unknown"];
+      const parts = modelParts(event);
       const via = event.payload?.estimated_via;
       if (via && via !== "tiktoken") parts.push(`est:${via}`);
       const pdp = event.payload?.policy_decision_pre;
       if (pdp) parts.push(`policy:${pdp.decision}`);
-      return parts.join(" · ");
+      return joinDetail(parts);
     }
     case "embeddings": {
-      const parts = [event.model ?? "unknown"];
+      const parts = modelParts(event);
       const dims = event.payload?.output_dimensions;
       if (dims) parts.push(`${dims.dimension}-d × ${dims.count} vec`);
       if (event.tokens_input != null) parts.push(`${event.tokens_input.toLocaleString()} tok in`);
       if (event.latency_ms != null) parts.push(`${event.latency_ms}ms`);
       const via = event.payload?.estimated_via;
       if (via && via !== "tiktoken") parts.push(`est:${via}`);
-      return parts.join(" · ");
+      return joinDetail(parts);
     }
     case "llm_error": {
       const err = event.payload?.error;
@@ -530,7 +546,7 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
   switch (event.event_type) {
     case "post_call": {
       const rows: [string, string][] = [
-        ["Model", event.model ?? "unknown"],
+        ["Model", event.model || NO_VALUE],
         ["Tokens input", event.tokens_input?.toLocaleString() ?? "—"],
         ["Tokens output", event.tokens_output?.toLocaleString() ?? "—"],
         ["Total tokens", event.tokens_total?.toLocaleString() ?? "—"],
@@ -570,7 +586,7 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
       return rows;
     }
     case "pre_call":
-      return [["Model", event.model ?? "unknown"]];
+      return [["Model", event.model || NO_VALUE]];
     case "tool_call":
       return [["Tool", event.tool_name ?? "unknown"]];
     case "policy_warn":
@@ -672,7 +688,7 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
       // so the expanded row doesn't render an empty "tokens output"
       // cell that would mislead a reader.
       return [
-        ["Model", event.model ?? "unknown"],
+        ["Model", event.model || NO_VALUE],
         ["Tokens input", event.tokens_input?.toLocaleString() ?? "—"],
         ["Latency", event.latency_ms != null ? `${event.latency_ms.toLocaleString()}ms` : "—"],
         ...servingRows(event),
@@ -688,7 +704,7 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
       // so this list stays scannable.
       const err = event.payload?.error;
       const rows: [string, string][] = [
-        ["Model", event.model ?? "unknown"],
+        ["Model", event.model || NO_VALUE],
       ];
       if (err && typeof err !== "string") {
         rows.push(["Error type", err.error_type]);

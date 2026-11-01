@@ -994,7 +994,10 @@ def test_raw_response_stream_never_parsed_is_reported_at_session_end() -> None:
         assert isinstance(raw, raw_views.DeferredResponse)
         base.settle_open_guards(session)
     (post_call,) = _events_of(session, "post_call")
-    assert "streaming" not in post_call  # nothing was read; the estimate stands
+    # Nothing was read: an aborted stream with no chunks, on the estimate.
+    assert post_call["streaming"]["chunk_count"] == 0
+    assert post_call["streaming"]["final_outcome"] == "aborted"
+    assert post_call["tokens_output"] == 0
 
 
 # ----- with_streaming_response -----------------------------------------------

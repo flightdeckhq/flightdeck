@@ -1153,6 +1153,25 @@ class GuardedAsyncStream(_GuardCore):
         await self._enter_stream()
         return self
 
+    def adopt(self, stream: Any) -> GuardedAsyncStream:
+        """Enter the guard over an SDK stream that is already open (a view
+        response's parsed event stream), which needs no ``await``: the
+        request was sent before the guard existed. An entered guard is
+        settled by its exit, ``close()``, collection or the session's
+        end, so a stream the caller never iterates is still reported,
+        as an aborted stream with no chunks. The stream is the guard's
+        own (no context manager around it), so closing the guard closes
+        the stream."""
+        if self._entered:
+            return self
+        self._entered = True
+        self._t0 = time.monotonic()
+        self._stream = stream
+        self._register_open()
+        self._attach_accumulator()
+        self._opened_t = time.monotonic()
+        return self
+
     async def __aenter__(self) -> GuardedAsyncStream:
         await self._enter_stream()
         return self

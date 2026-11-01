@@ -218,10 +218,21 @@ class DeferredCall:
             queue.append(lambda: self.settle(None, self._headers))
 
     def settle(self, parsed: Any, headers: Any) -> None:
-        """Emit the post_call once, with whatever the caller parsed."""
+        """Emit the post_call once, with whatever the caller parsed.
+
+        A streamed request (``stream=True``) that settles here was never
+        read through the stream guard: the response was closed, dropped
+        or still open at the session's end before ``parse()``, or its
+        body was read some other way, so the event stream the SDK parses
+        from it now has nothing left to give. It is reported as an
+        aborted stream with no chunks, on the pre-call estimate."""
         if self._settled:
             return
         self._settled = True
+        streaming: dict[str, Any] | None = None
+        if self._call_kwargs.get("stream"):
+            parsed = None if self.is_stream(parsed) else parsed
+            streaming = base._build_streaming_summary(self._t0, None, 0, [], False)
         latency_ms = int((time.monotonic() - self._t0) * 1000)
         try:
             base._post_call(
@@ -232,6 +243,7 @@ class DeferredCall:
                 latency_ms,
                 self._call_kwargs,
                 event_type=self._event_type,
+                streaming=streaming,
                 estimated_via=self._estimated_via,
             )
         except Exception as emit_exc:
@@ -242,7 +254,9 @@ class DeferredCall:
         a view) to the stream guard, which meters it as the caller
         iterates and emits the post_call when it settles. The guard's
         latency runs from ``parse()``, where it opens, not from the
-        request; the pre-call check already ran at the request. The
+        request; the pre-call check already ran at the request. The guard
+        is entered here, so a stream the caller closes or drops without
+        reading is reported as an aborted stream with no chunks. The
         stream's own kind picks the guard: an async client's raw view
         parses synchronously but yields an ``AsyncStream``. A later
         ``parse()`` gets the same guard: the SDK caches the parsed stream,
@@ -255,6 +269,9 @@ class DeferredCall:
         self._settled = True
         guard: Any
         if _is_async_stream(stream):
+            # Entered at once, like the sync guard below: a guard entered
+            # only at the first ``async for`` would never settle for a
+            # caller who closes the view, or drops the stream, unread.
             guard = base.GuardedAsyncStream(
                 lambda **_kw: stream,
                 self._call_kwargs,
@@ -263,7 +280,7 @@ class DeferredCall:
                 self._estimated,
                 self._estimated_via,
                 hide_chunk=self._hide_chunk,
-            )
+            ).adopt(stream)
         else:
             guard = base.GuardedStream(
                 lambda **_kw: stream,

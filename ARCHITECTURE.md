@@ -2047,12 +2047,14 @@ agent_id = uuid5(ee22ab58-26fc-54ef-91b4-b5c0a97f9b61,
 The namespace is `uuid5(NAMESPACE_DNS, "flightdeck.dev")` and never
 changes. Every field goes in verbatim, and the caller substitutes
 `unknown` for a missing one rather than leaving it empty. A non-empty
-`agent_role` (after trimming whitespace) is appended as a sixth
-segment, `/{agent_role}`. The sensor's `core/agent_id.py` and the
-plugin's `agent_id.mjs` implement it, and both assert the same
-vector: `coding`, `omria`, `Omri-PC`, `claude_code`, `omria@Omri-PC`
-derive `ee76931b-06fa-5da6-a019-5a8237efd496`. A new emitter's tests
-assert it too.
+`agent_role` (after trimming what Python's `str.strip()` removes: the
+Unicode White_Space characters and U+001C..U+001F) is appended as a sixth
+segment, `/{agent_role}`. The sensor's `core/agent_id.py`, the
+plugin's `agent_id.mjs` and ingestion's `internal/identity` implement it,
+and each asserts the same vector: `coding`, `omria`, `Omri-PC`,
+`claude_code`, `omria@Omri-PC` derive
+`ee76931b-06fa-5da6-a019-5a8237efd496`, and every vector in
+`contracts/identity_vectors.json`. A new emitter's tests assert them too.
 
 **Rollup ↔ projection symmetry.** The same UUID5 input tuple flows
 through two paths:
@@ -2521,11 +2523,26 @@ failed session read (below): the request publishes nothing, is charged
 nothing, and is answered 503.
 A request whose records are all used carries no `partial_success`.
 
+Mapping a log request can read the session table (Sessions, below),
+which the decode slot does not bound, so the reads are bounded on their
+own: at most 64 sessions a replica has not cached are read per request
+(Claude Code exports one session and its sub-agents per process, so
+only a request with invented session ids, or a collector merging many
+processes' first exports, comes near it), and the records of sessions
+past them are counted as rejected (`its session is past the 64 new
+sessions one request may name`) and read by a later export. All of a
+request's reads share a 2-second deadline, the same wait the receiver
+allows for a decode slot; a request past it is answered 503. No read
+happens for a request whose records cannot fit the token's budget
+(Rate limit).
+
 A request is checked in this order: bearer token (401), the token's
 minute budget (429), media type and `Content-Encoding` (415 for anything
 but `gzip` or none), the size as sent (413), then, holding a decode slot
 (503), the inflated size and the decode estimate (413) and decoding
-(400), then the charge for its events (413 or 429, below). The media
+(400), the budget check before any session read (413 or 429, below), a
+failed or late session read (503), then the charge for its events (413
+or 429, below). The media
 type may carry parameters (`application/json; charset=utf-8`). An
 error response's body is a `google.rpc.Status` (`code` the gRPC status
 code, `message` the reason) in the request's encoding, and in JSON when
@@ -2546,7 +2563,11 @@ records counted as rejected cost nothing. A request whose events do not
 fit in what is left of the budget is refused with 429 and a
 `Retry-After` of when enough of the window will have aged out for them
 to fit; one whose events exceed the whole per-minute budget can never
-fit and is refused with 413. A refused request is charged nothing and
+fit and is refused with 413. The same two refusals are first checked,
+charging nothing, before the dialect reads any session, against the
+most events the request's records can map to (one per record, every
+session another client reports included): a request that cannot fit
+costs no database work. A refused request is charged nothing and
 publishes nothing. The charge is taken before publishing and a request
 whose publish then fails (503) is not refunded, so an exporter that
 retries it is charged again for the same events. The budget is the one
@@ -2588,26 +2609,32 @@ belong to a child session, `uuid5(NAMESPACE_FLIGHTDECK,
 `agent.name`, else the `<type>` of a `query_source` of the form
 `agent:builtin:<type>`, else none. A sub-agent's tool records carry
 neither, so they take the role another record of the same sub-agent in
-the request names, else the one the replica cached for it; its
+the request names, else the one stored on the child's row (read with the
+session, below) or, when the replica has the session cached, the one it
+cached; its
 `agent_name` is `{user}@{host}/{role}` and its agent id adds the role to
 the parent's identity, as the plugin derives a sub-agent's. The Agent tool's own `tool_result` stays a `tool_call` on
 the parent.
 
 On the first mapped record of a session a replica has not cached,
-ingestion reads the session row. When the row is missing or `closed`, it
-publishes a synthetic `session_start` (id `uuid5(NAMESPACE_FLIGHTDECK,
+ingestion reads the session row. When the row is missing, or is a root
+session's and `closed`, it publishes a synthetic `session_start` (id
+`uuid5(NAMESPACE_FLIGHTDECK,
 "flightdeck://otlp/claude-code/start/<Flightdeck session id>/<event id
 of the record>")`) through the same attachment check and token stamping as
 `POST /v1/events`, so a closed session that resumes is re-attached;
-otherwise it publishes none. The cache is per replica and only saves the
+otherwise it publishes none. A closed sub-agent has finished (its
+`subagent_completed` closed it) and is never restarted: a record of it
+that arrives late is published without a start, and the worker drops it
+as it drops any event for a closed session. The cache is per replica and only saves the
 read: an entry expires 10 minutes after it is cached, well inside the
 reaper's timeout, and publishing a session's `session_end` removes it,
 so a record for a session closed since is read again and re-attaches
 it. What a request learned is cached only once all its events are
 published, so a request refused or failed on publish starts its sessions
 again when the exporter retries it. The cache holds at most 50,000
-sessions per replica; when full it drops expired entries, and a session
-it still cannot hold is read on every export. A sub-agent's records
+sessions per replica; when full it drops expired entries, at most once a
+second, and a session it still cannot hold is read on every export. A sub-agent's records
 resolve the run's root first: a root whose row is missing or closed is
 started before the child, so the child's parent row carries the
 session's context and capture posture rather than being a stub. A read
@@ -2636,9 +2663,13 @@ email address, unlike the plugin's OS user, so it is personal data in
 `agents.user_name`); the host is the resource's `host.name`, else
 `unknown` (Claude Code sends none; operators set one with
 `OTEL_RESOURCE_ATTRIBUTES`); `agent_name` is `{user}@{host}`; the agent id
-is derived from them as for every client, by a Go port of the derivation
-that `contracts/identity_vectors.json` (generated from the sensor) pins
-together with the plugin's; `framework` is `claude-code`, as the plugin
+is derived from them as for every client, by a Go port of the derivation.
+`contracts/identity_vectors.json`, generated from the sensor by
+`contracts/generate_identity_vectors.py`, holds vectors the sensor, the
+plugin and the Go port each assert, the role trim included: a role is
+trimmed of exactly what Python's `str.strip()` removes, which each
+implementation names explicitly rather than relying on its language's
+own trim; `framework` is `claude-code`, as the plugin
 sends it. Each `post_call` carries
 `billing_mode`: the resource's `flightdeck.billing_mode` when set
 (`metered`, `subscription`, `local`), else `subscription`, Claude Code's

@@ -25,6 +25,27 @@ type identityVectors struct {
 		AgentRole  *string `json:"agent_role"`
 		Want       string  `json:"agent_id"`
 	} `json:"agent_id"`
+	RoleTrim []rune `json:"role_trim_code_points"`
+}
+
+// TrimRole removes exactly the characters the sensor's str.strip()
+// removes, over every code point.
+func TestTrimRoleIsStrStrip(t *testing.T) {
+	want := map[rune]bool{}
+	for _, r := range loadVectors(t).RoleTrim {
+		want[r] = true
+	}
+	if len(want) == 0 {
+		t.Fatal("no role_trim_code_points in the vectors")
+	}
+	for r := rune(0); r <= 0x10FFFF; r++ {
+		if r >= 0xD800 && r <= 0xDFFF {
+			continue
+		}
+		if got := TrimRole("a"+string(r)) == "a"; got != want[r] {
+			t.Errorf("U+%04X trimmed=%v, str.strip() trims=%v", r, got, want[r])
+		}
+	}
 }
 
 func loadVectors(t *testing.T) identityVectors {

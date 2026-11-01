@@ -41,7 +41,7 @@ export const NAMESPACE_FLIGHTDECK =
  * determine -- empty strings would collide distinct identities.
  *
  * Sub-agent extension — when ``agent_role`` is supplied with a non-
- * empty value (after String.prototype.trim()) it joins as a 6th
+ * empty value (after trimRole()) it joins as a 6th
  * path segment:
  *
  *     flightdeck://{agent_type}/{user}@{hostname}/{client_type}/{agent_name}/{agent_role}
@@ -65,10 +65,24 @@ export function deriveAgentId({
     `flightdeck://${agent_type}/${user}@${hostname}` +
     `/${client_type}/${agent_name}`;
   if (agent_role != null) {
-    const trimmed = String(agent_role).trim();
+    const trimmed = trimRole(String(agent_role));
     if (trimmed) {
       path = `${path}/${trimmed}`;
     }
   }
   return uuid5(NAMESPACE_FLIGHTDECK, path);
+}
+
+// The characters Python's str.strip() removes, which is how the sensor
+// trims a role and so the definition the plugin and the Go ingestion
+// port follow: the Unicode White_Space set plus the ASCII separators
+// U+001C..U+001F. String.prototype.trim() would keep the separators
+// and U+0085 and drop U+FEFF, so the set is named explicitly.
+const ROLE_SPACE =
+  "\\t\\n\\v\\f\\r\\x1c-\\x20\\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000";
+const ROLE_TRIM_RE = new RegExp(`^[${ROLE_SPACE}]+|[${ROLE_SPACE}]+$`, "g");
+
+/** A role trimmed as the sensor's str.strip() trims it. */
+export function trimRole(role) {
+  return role.replace(ROLE_TRIM_RE, "");
 }

@@ -81,27 +81,36 @@ func ccLogRequests(t *testing.T, scenario string) []*collogs.ExportLogsServiceRe
 type fakeSessionStore struct {
 	mu        sync.Mutex
 	rows      map[string]string // Flightdeck session id -> state
+	roles     map[string]string // Flightdeck session id -> agent_role
 	elsewhere map[string]bool
 	err       error
+	block     bool // every read waits for its context to end
 	calls     []string
 }
 
 func newFakeStore() *fakeSessionStore {
-	return &fakeSessionStore{rows: map[string]string{}, elsewhere: map[string]bool{}}
+	return &fakeSessionStore{rows: map[string]string{}, roles: map[string]string{}, elsewhere: map[string]bool{}}
 }
 
-func (f *fakeSessionStore) LookupOTLPSession(_ context.Context, id, root, cc string) (session.OTLPSession, error) {
+func (f *fakeSessionStore) LookupOTLPSession(ctx context.Context, id, root, cc string) (session.OTLPSession, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.calls = append(f.calls, id)
-	if f.err != nil {
-		return session.OTLPSession{}, f.err
-	}
-	return session.OTLPSession{
+	block, err := f.block, f.err
+	out := session.OTLPSession{
 		State:             f.rows[id],
+		AgentRole:         f.roles[id],
 		RootStored:        f.rows[root] != "",
 		ReportedElsewhere: f.elsewhere[cc],
-	}, nil
+	}
+	f.mu.Unlock()
+	if block {
+		<-ctx.Done()
+		return session.OTLPSession{}, ctx.Err()
+	}
+	if err != nil {
+		return session.OTLPSession{}, err
+	}
+	return out, nil
 }
 
 func (f *fakeSessionStore) lookups() int {

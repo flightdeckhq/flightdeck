@@ -10,8 +10,9 @@ import (
 
 // ClaudeCodeSessionStore is the session read the Claude Code dialect
 // makes before it publishes a session's first events: the session row's
-// state, whether the run's root is stored, and whether another client
-// already reports the Claude Code session (session.Store implements it).
+// state and role, whether the run's root is stored, and whether another
+// client already reports the Claude Code session (session.Store
+// implements it).
 type ClaudeCodeSessionStore interface {
 	LookupOTLPSession(ctx context.Context, sessionID, rootSessionID, claudeCodeSessionID string) (session.OTLPSession, error)
 }
@@ -34,23 +35,52 @@ const otlpSessionCacheTTL = 10 * time.Minute
 // new sessions are read on every export instead of cached.
 const otlpSessionCacheMaxEntries = 50_000
 
+// otlpSessionCacheSweepInterval is the least time between two sweeps of
+// a full cache. A sweep walks all otlpSessionCacheMaxEntries entries
+// under the cache's lock (a millisecond or two); a cache full of live
+// entries would otherwise be swept on every new session. Once a second
+// keeps that to a negligible share of one core, and expired entries
+// still leave a full cache within a second of expiring.
+const otlpSessionCacheSweepInterval = time.Second
+
+// maxOTLPSessionReadsPerRequest bounds the session reads one export
+// request may cause. Claude Code exports per process, so a batch names
+// one session and the sub-agents it ran (a handful even under heavy
+// fan-out); a collector merging many processes into one request names
+// more, but a session costs a read only on its first export or once per
+// otlpSessionCacheTTL. 64 is far above both, and bounds the database
+// work a request whose session ids are invented can cause while it holds
+// a decode slot. Records of sessions past it are counted as rejected; a
+// later export reads them.
+const maxOTLPSessionReadsPerRequest = 64
+
+// otlpSessionLookupTimeout bounds all the session reads of one request
+// together. A read is one indexed round trip, about a millisecond, so
+// even maxOTLPSessionReadsPerRequest of them fit with room to spare;
+// two seconds is the same wait the receiver allows for a decode slot,
+// so a slow database cannot hold a slot longer than a request already
+// waits for one. A request past it is answered 503 and retried.
+const otlpSessionLookupTimeout = 2 * time.Second
+
 // otlpSessionEntry is what a replica remembers about a session.
 type otlpSessionEntry struct {
 	expires time.Time
 	// deduped: another client reports the Claude Code session, so its
 	// records are not used.
 	deduped bool
-	// role is a sub-agent's role, once a record named it; later records
-	// of the sub-agent that do not (its tool results) take it from here.
+	// role is a sub-agent's role, once a record named it or its row
+	// stored it; later records of the sub-agent that do not name it (its
+	// tool results) take it from here.
 	role string
 }
 
 // otlpSessionCache is the per-replica cache of session reads. It only
 // saves reads: losing it (a restart, another replica) costs a read.
 type otlpSessionCache struct {
-	mu      sync.Mutex
-	entries map[string]otlpSessionEntry
-	now     func() time.Time
+	mu        sync.Mutex
+	entries   map[string]otlpSessionEntry
+	lastSweep time.Time
+	now       func() time.Time
 }
 
 func newOTLPSessionCache(now func() time.Time) *otlpSessionCache {
@@ -86,6 +116,10 @@ func (c *otlpSessionCache) put(sessionID string, deduped bool, role string) {
 		return
 	}
 	if len(c.entries) >= otlpSessionCacheMaxEntries {
+		if now.Sub(c.lastSweep) < otlpSessionCacheSweepInterval {
+			return
+		}
+		c.lastSweep = now
 		for id, e := range c.entries {
 			if !now.Before(e.expires) {
 				delete(c.entries, id)
@@ -119,40 +153,70 @@ type ccSession struct {
 	rootID string // the run's root session id (id itself for a root)
 	child  bool
 	cached bool // known from the replica cache; nothing was read
-	// needsStart: the row is missing or closed, so the session's first
-	// event in this request is preceded by a synthetic session_start.
+	// capped: the request had used its reads before this session's, so
+	// its records are not used (and nothing about it is cached).
+	capped bool
+	// needsStart: the session's first event in this request is preceded
+	// by a synthetic session_start. A root needs one when its row is
+	// missing or closed (a resumed session re-attaches); a sub-agent only
+	// when its row is missing, since a closed one has finished and a late
+	// record must not reopen it.
 	needsStart   bool
 	startEmitted bool
 	deduped      bool
 	role         string
 }
 
-// resolveSession finds what the dialect needs to know about a session:
-// from the replica cache, else by reading the store. A sub-agent of a
-// run another client reports is deduped with it without a read of its
-// own.
-func (d *ClaudeCodeDialect) resolveSession(ctx context.Context, sessions map[string]*ccSession, rec *ccRecord) (*ccSession, error) {
-	if s, ok := sessions[rec.sessionID]; ok {
+// ccResolver resolves the sessions of one request, within its read cap
+// and under its lookup deadline.
+type ccResolver struct {
+	d        *ClaudeCodeDialect
+	ctx      context.Context
+	sessions map[string]*ccSession
+	reads    int
+}
+
+// resolve finds what the dialect needs to know about a session: from the
+// replica cache, else by reading the store. A sub-agent of a run another
+// client reports is deduped with it without a read of its own. A session
+// past the request's read cap comes back capped; a failed read (the
+// deadline included) is an error that fails the request.
+func (r *ccResolver) resolve(rec *ccRecord) (*ccSession, error) {
+	if s, ok := r.sessions[rec.sessionID]; ok {
 		return s, nil
 	}
 	s := &ccSession{id: rec.sessionID, rootID: rec.rootID, child: rec.agentID != ""}
-	sessions[s.id] = s
-	if e, ok := d.cache.get(s.id); ok {
+	r.sessions[s.id] = s
+	if e, ok := r.d.cache.get(s.id); ok {
 		s.cached, s.deduped, s.role = true, e.deduped, e.role
 		return s, nil
 	}
 	if s.child {
-		if root := sessions[s.rootID]; root != nil && root.deduped {
-			s.deduped = true
+		if root := r.sessions[s.rootID]; root != nil && (root.deduped || root.capped) {
+			s.deduped, s.capped = root.deduped, root.capped
 			return s, nil
 		}
 	}
-	got, err := d.store.LookupOTLPSession(ctx, s.id, s.rootID, rec.claudeCodeSessionID)
+	if r.reads >= maxOTLPSessionReadsPerRequest {
+		s.capped = true
+		return s, nil
+	}
+	r.reads++
+	got, err := r.d.store.LookupOTLPSession(r.ctx, s.id, s.rootID, rec.claudeCodeSessionID)
 	if err != nil {
-		delete(sessions, s.id)
+		delete(r.sessions, s.id)
 		return nil, err
 	}
 	s.deduped = !got.RootStored && got.ReportedElsewhere
-	s.needsStart = !s.deduped && (got.State == "" || got.State == "closed")
+	switch {
+	case s.deduped:
+	case got.State == "":
+		s.needsStart = true
+	case got.State == "closed" && !s.child:
+		s.needsStart = true
+	}
+	if s.child {
+		s.role = got.AgentRole
+	}
 	return s, nil
 }

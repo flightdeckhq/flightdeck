@@ -239,10 +239,17 @@ func parseCCRecord(res *ccResource, lr *logspb.LogRecord, now time.Time) (*ccRec
 
 // MapLogs maps Claude Code's log records to events. Each session's
 // first record in a request is preceded by a synthetic session_start
-// when its row is missing or closed; a session another client reports
-// is not used. Every event passes POST /v1/events validation or is
-// counted as rejected. A failed session read fails the whole request
-// (Err), which the receiver answers with 503 so the exporter retries.
+// when its row is missing (or, for a root, closed); a session another
+// client reports is not used. Every event passes POST /v1/events
+// validation or is counted as rejected.
+//
+// A request whose records cannot fit the token's budget is refused
+// (Refused) before any session is read. The reads are capped per
+// request (maxOTLPSessionReadsPerRequest; records of sessions past the
+// cap are counted as rejected) and share one deadline
+// (otlpSessionLookupTimeout). A failed or late read fails the whole
+// request (Err), which the receiver answers with 503 so the exporter
+// retries.
 func (d *ClaudeCodeDialect) MapLogs(ctx context.Context, req *collogs.ExportLogsServiceRequest) OTLPMapping {
 	now := d.now()
 	rejected := newRejectionSet()
@@ -276,6 +283,14 @@ func (d *ClaudeCodeDialect) MapLogs(ctx context.Context, req *collogs.ExportLogs
 		}
 	}
 
+	// The request's events must fit the token's budget before any session
+	// is read: each record maps to at most one event, so a request whose
+	// records alone cannot fit is refused (413 or 429) having read
+	// nothing. Synthetic starts are charged with the rest once mapped.
+	if refusal := otlpBudgetCheck(ctx, len(records)); refusal != nil {
+		return OTLPMapping{Refused: refusal}
+	}
+
 	// A sub-agent's role, from any of its records in the request that
 	// names it: its tool results and decisions do not.
 	roles := map[string]string{}
@@ -285,7 +300,9 @@ func (d *ClaudeCodeDialect) MapLogs(ctx context.Context, req *collogs.ExportLogs
 		}
 	}
 
-	sessions := map[string]*ccSession{}
+	lookupCtx, cancel := context.WithTimeout(ctx, otlpSessionLookupTimeout)
+	defer cancel()
+	resolver := &ccResolver{d: d, ctx: lookupCtx, sessions: map[string]*ccSession{}}
 	var events []OTLPEvent
 	var ended []string
 	for _, rec := range records {
@@ -296,20 +313,24 @@ func (d *ClaudeCodeDialect) MapLogs(ctx context.Context, req *collogs.ExportLogs
 			// stub the worker made for it.
 			rootRec := *rec
 			rootRec.agentID, rootRec.sessionID, rootRec.role = "", rec.rootID, ""
-			root, err := d.resolveSession(ctx, sessions, &rootRec)
+			root, err := resolver.resolve(&rootRec)
 			if err != nil {
 				return d.lookupFailed(err)
 			}
-			if !root.deduped {
+			if !root.deduped && !root.capped {
 				events = d.appendStart(events, root, &rootRec)
 			}
 		}
-		s, err := d.resolveSession(ctx, sessions, rec)
+		s, err := resolver.resolve(rec)
 		if err != nil {
 			return d.lookupFailed(err)
 		}
 		if s.deduped {
 			rejected.add("its Claude Code session is reported by another Flightdeck client", 1)
+			continue
+		}
+		if s.capped {
+			rejected.add(fmt.Sprintf("its session is past the %d new sessions one request may name", maxOTLPSessionReadsPerRequest), 1)
 			continue
 		}
 		if s.child {
@@ -331,9 +352,12 @@ func (d *ClaudeCodeDialect) MapLogs(ctx context.Context, req *collogs.ExportLogs
 	}
 
 	mapping := OTLPMapping{Events: events, Rejected: rejected.total, Message: rejected.message("log record")}
-	if len(sessions) > 0 {
+	if sessions := resolver.sessions; len(sessions) > 0 {
 		mapping.Published = func() {
 			for _, s := range sessions {
+				if s.capped {
+					continue
+				}
 				if !s.cached || s.role != "" {
 					d.cache.put(s.id, s.deduped, s.role)
 				}
@@ -639,7 +663,10 @@ func (d *ClaudeCodeDialect) toolCall(rec *ccRecord, s *ccSession) (map[string]an
 		}
 	}
 	if rec.res.capture {
-		if input, ok := a.content("tool_input"); ok {
+		// A tool input that decodes to JSON null carries nothing, so the
+		// event claims no content rather than a content row whose input
+		// is empty.
+		if input, ok := a.content("tool_input"); ok && asJSONValue(input) != nil {
 			provider, model := claudeCodeProvider, ""
 			if isMCP {
 				provider, model = "mcp", server
@@ -708,11 +735,18 @@ var (
 	otlpContextPhrases = []string{"prompt is too long", "context window", "context length"}
 )
 
+// otlpErrorHintMaxBytes is how much of an API error's text is searched
+// for the phrases that refine its type, the sensor's own bound: the
+// phrases open every known message, which is normally a few hundred
+// bytes, and the cap bounds the work on a pathological multi-megabyte
+// one (the text is cut before it is lower-cased, so no copy is larger).
+const otlpErrorHintMaxBytes = 2048
+
 // classifyClaudeCodeAPIError files an API error under the llm_error
 // taxonomy from its HTTP status (0 when Claude Code sent none) and its
 // text, as the sensor classifies Anthropic's errors.
 func classifyClaudeCodeAPIError(status int64, text string) string {
-	lower := strings.ToLower(truncateUTF8(text, 2048))
+	lower := strings.ToLower(truncateUTF8(text, otlpErrorHintMaxBytes))
 	mentions := func(phrases []string) bool {
 		for _, p := range phrases {
 			if strings.Contains(lower, p) {

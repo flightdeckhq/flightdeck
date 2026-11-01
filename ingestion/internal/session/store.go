@@ -113,6 +113,9 @@ func (s *Store) Attach(ctx context.Context, sessionID string) (bool, string, err
 type OTLPSession struct {
 	// State is the session row's state, or "" when there is no row.
 	State string
+	// AgentRole is the row's agent_role (a sub-agent's role), or "" when
+	// there is no row or no role.
+	AgentRole string
 	// RootStored reports that the row of the run's root session (the
 	// session itself, for a root) exists, so the run is already reported
 	// over OTLP.
@@ -126,8 +129,9 @@ type OTLPSession struct {
 	ReportedElsewhere bool
 }
 
-// LookupOTLPSession reads, in one round trip, the state of the session
-// row sessionID, whether the run's root session rootSessionID is stored,
+// LookupOTLPSession reads, in one round trip, the state and agent_role
+// of the session row sessionID, whether the run's root session
+// rootSessionID is stored,
 // and whether another client reports the Claude Code session
 // claudeCodeSessionID. The plugin's rows are found by a containment
 // query on sessions.context, which the sessions_context_gin index
@@ -145,7 +149,8 @@ func (s *Store) LookupOTLPSession(ctx context.Context, sessionID, rootSessionID,
 	var out OTLPSession
 	err = s.pool.QueryRow(ctx, `
 		SELECT
-		  COALESCE((SELECT state FROM sessions WHERE session_id = $1::uuid), ''),
+		  COALESCE(own.state, ''),
+		  COALESCE(own.agent_role, ''),
 		  EXISTS (SELECT 1 FROM sessions WHERE session_id = $2::uuid),
 		  EXISTS (
 		    SELECT 1 FROM sessions
@@ -157,7 +162,9 @@ func (s *Store) LookupOTLPSession(ctx context.Context, sessionID, rootSessionID,
 		    SELECT 1 FROM sessions
 		    WHERE session_id = $4::uuid AND client_type = 'claude_agent_sdk'
 		  )
-	`, sessionID, rootSessionID, string(doc), sdkSessionID).Scan(&out.State, &out.RootStored, &out.ReportedElsewhere)
+		FROM (SELECT 1) AS one
+		LEFT JOIN sessions AS own ON own.session_id = $1::uuid
+	`, sessionID, rootSessionID, string(doc), sdkSessionID).Scan(&out.State, &out.AgentRole, &out.RootStored, &out.ReportedElsewhere)
 	if err != nil {
 		return OTLPSession{}, fmt.Errorf("look up OTLP session %s: %w", sessionID, err)
 	}

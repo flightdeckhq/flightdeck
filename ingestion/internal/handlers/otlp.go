@@ -317,7 +317,11 @@ func otlpHandler(
 			return
 		}
 
-		mapping, acquired, status, msg := decodeInSlot(ctx, sig, dialect, enc, gzipped, raw)
+		mapCtx := ctx
+		if limiter != nil {
+			mapCtx = withOTLPBudget(ctx, otlpBudget(limiter, token))
+		}
+		mapping, acquired, status, msg := decodeInSlot(mapCtx, sig, dialect, enc, gzipped, raw)
 		if !acquired {
 			w.Header().Set("Retry-After", strconv.Itoa(otlpDecodeRetryAfterSeconds))
 			fail(http.StatusServiceUnavailable, grpcCodeUnavailable,
@@ -326,6 +330,13 @@ func otlpHandler(
 		}
 		if status != 0 {
 			fail(status, grpcCodeForStatus(status), msg)
+			return
+		}
+		if r := mapping.Refused; r != nil {
+			if r.RetryAfter > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(r.RetryAfter))
+			}
+			fail(r.Status, grpcCodeResourceExhausted, r.Message)
 			return
 		}
 		if mapping.Err != nil {
@@ -367,6 +378,26 @@ func otlpHandler(
 		slog.Info("otlp export",
 			"signal", sig.name, "status", http.StatusOK,
 			"published", published, "rejected", mapping.Rejected)
+	}
+}
+
+// otlpBudget is the budget check a dialect runs before its costly work
+// (session reads): events that exceed the token's whole budget are 413,
+// events that do not fit in what is left of it 429 with Retry-After.
+// It charges nothing; the mapped events are charged once known.
+func otlpBudget(limiter *RateLimiter, token string) func(events int) *OTLPRefusal {
+	return func(events int) *OTLPRefusal {
+		if events > limiter.Limit() {
+			return &OTLPRefusal{
+				Status: http.StatusRequestEntityTooLarge,
+				Message: fmt.Sprintf("request maps to up to %d events, more than the token's budget of %d a minute",
+					events, limiter.Limit()),
+			}
+		}
+		if fits, retryAfter := limiter.Fits(token, events); !fits {
+			return &OTLPRefusal{Status: http.StatusTooManyRequests, RetryAfter: retryAfter, Message: "rate limit exceeded"}
+		}
+		return nil
 	}
 }
 

@@ -1,5 +1,5 @@
 {
-  "about": "Identity derivation vectors, generated from the Python sensor (flightdeck_sensor.core.agent_id). The Go ingestion port and the Claude Code plugin each assert they reproduce every id.",
+  "about": "Identity derivation vectors, generated from the Python sensor (flightdeck_sensor.core.agent_id) by contracts/generate_identity_vectors.py. The sensor, the Go ingestion port and the Claude Code plugin each assert every id, and that their role trim removes exactly role_trim_code_points (what Python's str.strip() removes).",
   "namespace_flightdeck": "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61",
   "uuid5": [
     {
@@ -29,7 +29,7 @@
     },
     {
       "namespace": "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61",
-      "name": "flightdeck://unicode/naïve-ü-日本",
+      "name": "flightdeck://unicode/na\u00efve-\u00fc-\u65e5\u672c",
       "uuid": "ea545d05-d789-527b-b4a1-f5fdcab945de"
     },
     {
@@ -39,6 +39,15 @@
     }
   ],
   "agent_id": [
+    {
+      "agent_type": "coding",
+      "user": "omria",
+      "hostname": "Omri-PC",
+      "client_type": "claude_code",
+      "agent_name": "omria@Omri-PC",
+      "agent_role": null,
+      "agent_id": "ee76931b-06fa-5da6-a019-5a8237efd496"
+    },
     {
       "agent_type": "coding",
       "user": "user@example.com",
@@ -83,6 +92,73 @@
       "agent_name": "unknown@unknown",
       "agent_role": "",
       "agent_id": "aeac9bbc-deac-50a3-a878-23d20f9a79f4"
+    },
+    {
+      "agent_type": "coding",
+      "user": "alice",
+      "hostname": "build-01",
+      "client_type": "claude_code",
+      "agent_name": "alice@build-01",
+      "agent_role": "\u001cExplore\u001f",
+      "agent_id": "cfed90f3-8f38-5df0-9160-03c39a147c00"
+    },
+    {
+      "agent_type": "coding",
+      "user": "alice",
+      "hostname": "build-01",
+      "client_type": "claude_code",
+      "agent_name": "alice@build-01",
+      "agent_role": "\u0085Explore\u3000",
+      "agent_id": "cfed90f3-8f38-5df0-9160-03c39a147c00"
+    },
+    {
+      "agent_type": "coding",
+      "user": "alice",
+      "hostname": "build-01",
+      "client_type": "claude_code",
+      "agent_name": "alice@build-01",
+      "agent_role": "\ufeffExplore\ufeff",
+      "agent_id": "63f822c8-4822-5313-9bd2-ff619b020ad8"
+    },
+    {
+      "agent_type": "coding",
+      "user": "alice",
+      "hostname": "build-01",
+      "client_type": "claude_code",
+      "agent_name": "alice@build-01",
+      "agent_role": "\u001d\u001e",
+      "agent_id": "bc3d3a45-1ef2-5006-abda-2e929a21ffad"
     }
+  ],
+  "role_trim_code_points": [
+    9,
+    10,
+    11,
+    12,
+    13,
+    28,
+    29,
+    30,
+    31,
+    32,
+    133,
+    160,
+    5760,
+    8192,
+    8193,
+    8194,
+    8195,
+    8196,
+    8197,
+    8198,
+    8199,
+    8200,
+    8201,
+    8202,
+    8232,
+    8233,
+    8239,
+    8287,
+    12288
   ]
 }

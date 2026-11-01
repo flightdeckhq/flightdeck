@@ -33,15 +33,49 @@ type OTLPEvent struct {
 //
 // Err reports that the dialect could not decide what to publish (a
 // session read failed); the receiver answers 503 and the exporter
-// retries. Published, when set, is called once every event has been
-// published, so a dialect commits what it learned (its session cache)
-// only for a request whose events reached the bus.
+// retries. Refused reports that the dialect stopped, before doing any
+// costly work, because the request cannot fit the token's budget
+// (otlpBudgetCheck); the receiver answers with its status. Published,
+// when set, is called once every event has been published, so a dialect
+// commits what it learned (its session cache) only for a request whose
+// events reached the bus.
 type OTLPMapping struct {
 	Events    []OTLPEvent
 	Rejected  int64
 	Message   string
 	Err       error
+	Refused   *OTLPRefusal
 	Published func()
+}
+
+// OTLPRefusal is a request the receiver refuses: its HTTP status, the
+// Retry-After seconds (0 for none) and the reason.
+type OTLPRefusal struct {
+	Status     int
+	RetryAfter int
+	Message    string
+}
+
+// otlpBudgetKey carries the receiver's budget check in a request's
+// context.
+type otlpBudgetKey struct{}
+
+// withOTLPBudget attaches the receiver's budget check: given the most
+// events a request can map to, it refuses the request when they cannot
+// fit the token's budget, and charges nothing either way.
+func withOTLPBudget(ctx context.Context, check func(events int) *OTLPRefusal) context.Context {
+	return context.WithValue(ctx, otlpBudgetKey{}, check)
+}
+
+// otlpBudgetCheck runs the receiver's budget check for a request that
+// maps to at most events events; nil admits it (and is the answer when
+// no check is attached, as in a dialect's own tests).
+func otlpBudgetCheck(ctx context.Context, events int) *OTLPRefusal {
+	check, _ := ctx.Value(otlpBudgetKey{}).(func(int) *OTLPRefusal)
+	if check == nil {
+		return nil
+	}
+	return check(events)
 }
 
 // OTLPDialect maps decoded OTLP export requests to Flightdeck events.

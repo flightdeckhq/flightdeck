@@ -982,14 +982,25 @@ jobs:
             helm template flightdeck helm/ \
               --set postgres.password=ci-test-password \
               --set api.env=development \
-              --show-only "templates/$1/deployment.yaml"
+              --show-only "templates/$1/deployment.yaml" "${@:2}"
           }
-          render dashboard | grep -q 'runAsUser: 101' \
-            || { echo "FAIL: dashboard pod must run as uid 101"; exit 1; }
+          out=$(render dashboard)
+          for f in runAsUser runAsGroup fsGroup; do
+            grep -qE "^ +$f: 101$" <<<"$out" \
+              || { echo "FAIL: dashboard pod must have $f 101"; exit 1; }
+          done
           for c in api ingestion workers; do
-            render "$c" | grep -q 'runAsUser: 1000' \
+            render "$c" | grep -qE '^ +runAsUser: 1000$' \
               || { echo "FAIL: $c pod must run as uid 1000"; exit 1; }
           done
+          # Either context set to null still renders: the dashboard then
+          # takes whichever one is left.
+          render dashboard --set dashboard.podSecurityContext=null \
+            | grep -qE '^ +runAsUser: 1000$' \
+            || { echo "FAIL: dashboard.podSecurityContext=null must fall back to the chart-wide context"; exit 1; }
+          render dashboard --set podSecurityContext=null \
+            | grep -qE '^ +runAsUser: 101$' \
+            || { echo "FAIL: podSecurityContext=null must still render the dashboard's own context"; exit 1; }
 
       - name: helm template in development mode renders with defaults
         run: |

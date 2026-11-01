@@ -92,6 +92,9 @@ ingress:
   host: flightdeck.example.com
   annotations:
     cert-manager.io/cluster-issuer: letsencrypt
+    # ingress-nginx refuses bodies over 1m by default; the OTLP receiver
+    # under /ingest accepts requests up to 4 MiB.
+    nginx.ingress.kubernetes.io/proxy-body-size: "4m"
   tls:
     - secretName: flightdeck-tls
       hosts:

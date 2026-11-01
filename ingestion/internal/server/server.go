@@ -19,8 +19,11 @@ const (
 
 // New creates the HTTP server with all routes registered.
 //
+// otlpDialect maps decoded OTLP export requests to events for the
+// POST /v1/logs, /v1/traces and /v1/metrics receivers.
+//
 // rateLimitPerMinute is the per-token sliding window cap applied to
-// POST /v1/events and POST /v1/heartbeat. Pass
+// POST /v1/events and the OTLP routes. Pass
 // handlers.DefaultRateLimitPerMinute for production semantics, or a
 // higher value (typically from FLIGHTDECK_RATE_LIMIT_PER_MINUTE in
 // dev compose) when running the integration suite. A non-positive
@@ -32,6 +35,7 @@ func New(
 	publisher handlers.EventPublisher,
 	dirStore handlers.DirectiveLookup,
 	sessAttacher handlers.SessionAttacher,
+	otlpDialect handlers.OTLPDialect,
 	rateLimitPerMinute int,
 ) *http.Server {
 	mux := http.NewServeMux()
@@ -40,6 +44,14 @@ func New(
 	mux.Handle("POST /v1/events", handlers.EventsHandler(validator, publisher, dirStore, sessAttacher, limiter))
 	mux.Handle("POST /v1/heartbeat", handlers.HeartbeatHandler(validator, publisher, dirStore))
 	mux.Handle("GET /health", handlers.HealthHandler())
+
+	// OTLP/HTTP receiver. The paths are the OTLP defaults, so an
+	// exporter whose endpoint is https://<host>/ingest reaches them
+	// through the edge proxy. They share the events route's limiter:
+	// one budget per token, however it sends.
+	mux.Handle("POST /v1/logs", handlers.OTLPLogsHandler(validator, publisher, otlpDialect, limiter))
+	mux.Handle("POST /v1/traces", handlers.OTLPTracesHandler(validator, publisher, otlpDialect, limiter))
+	mux.Handle("POST /v1/metrics", handlers.OTLPMetricsHandler(validator, publisher, otlpDialect, limiter))
 
 	// Swagger UI. Same workaround as the api server: the dynamic
 	// ``doc.json`` endpoint is broken under the swag/v2 v2.0.0-rc5 +

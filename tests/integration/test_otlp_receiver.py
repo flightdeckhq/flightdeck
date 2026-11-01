@@ -209,3 +209,18 @@ def test_edge_proxy_admits_the_request_cap() -> None:
 
     status, _headers, _body = _post("/v1/logs", padded + b" " * (1 << 20), JSON)
     assert status == 413
+
+
+def test_wide_body_refused_before_decoding() -> None:
+    """Nearly 16 MiB of empty objects, gzipped to a few KiB, would decode
+    into gigabytes: the receiver estimates the cost first and answers
+    413 with a Status naming the memory limit."""
+    count = (16 << 20) // 3 - 20
+    wide = b'{"resourceLogs":[' + b",".join([b"{}"] * count) + b"]}"
+    status, _headers, body = _post(
+        "/v1/logs", gzip.compress(wide), JSON, encoding="gzip"
+    )
+    assert status == 413, body
+    status_body = json.loads(body)
+    assert status_body["code"] == 8  # RESOURCE_EXHAUSTED
+    assert "memory limit" in status_body["message"]

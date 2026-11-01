@@ -2445,7 +2445,143 @@ signal at the cadence it produces them).
 
 `GET /health` returns `{"status":"ok","service":"ingestion"}`.
 `GET /docs/index.html` serves the Swagger UI. The ingestion API serves no
-metrics endpoint.
+Prometheus `/metrics` endpoint.
+
+### OTLP ingest
+
+Agents that export OpenTelemetry send it to the ingestion API, which
+turns what it understands into Flightdeck events. This reaches runs no
+hook or SDK patch sees: `claude --bare`, Claude Code in CI and cloud
+sessions, and any Claude Code whose telemetry is pointed at Flightdeck.
+The sessions it creates observe only (`context.supports_directives=false`,
+`context.telemetry=otlp`): the dashboard shows them and offers no Stop.
+They carry the `client_type` of the tool that produced the telemetry
+(see Client type registry > OTLP sources), so a Claude Code session
+reported over OTLP is a `claude_code` session with that type's defaults.
+
+**Routes.** `POST /v1/logs`, `POST /v1/traces` and `POST /v1/metrics`,
+the OTLP/HTTP paths, so an exporter pointed at `https://<host>/ingest`
+reaches them through the edge proxy. Each accepts the OTLP protobuf
+encoding (`application/x-protobuf`) and the OTLP JSON encoding
+(`application/json`), either optionally gzip-compressed
+(`Content-Encoding: gzip`). Authentication is the bearer token every
+ingestion route takes; an exporter sends it with
+`OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer ftd_..."`.
+
+**Limits and responses.** A request body over 4 MiB, or one that
+decompresses past 16 MiB, is refused with 413 before it is parsed (the
+edge proxy must allow 4 MiB on `/ingest/`). A body that does not decode
+is 400; any other media type is 415. A body that decodes is answered 200
+with the OTLP export response, in the request's encoding, even when some
+of its records are not used: `partial_success` counts the records
+Flightdeck did not map (`rejected_log_records`, `rejected_spans` or
+`rejected_data_points`) with a message naming why, and one record
+Flightdeck cannot use never fails the request. Mapped events pass the
+same validation as `POST /v1/events`; a record whose event fails it is
+counted as rejected. A failed publish to NATS is 503, which OTLP
+exporters retry; the deterministic event ids make the retry safe.
+
+**Rate limit.** A request is refused with 429 (`Retry-After`) before it
+is read when the token's per-minute budget is spent. Once decoded it is
+charged one unit per event it publishes, synthetic `session_start`
+events included, and at most the whole minute budget, so no request is
+refused for ever; records counted as rejected cost nothing.
+
+**Dialects.** A record is mapped by its source's dialect, detected from
+the resource's `service.name` and the instrumentation scope. Claude Code
+(`service.name=claude-code`, scopes under `com.anthropic.claude_code`)
+is the dialect mapped. Records of other sources are accepted and counted
+as rejected. Claude Code's log records carry everything its events need,
+so its spans and metrics are accepted and counted as rejected too.
+Attribute values are read whatever their OTLP type: Claude Code sends
+numbers and booleans as strings (`"409"`, `"true"`), and the literal
+`<REDACTED>` it sends for a prompt or response it was told not to log
+counts as no content.
+
+| Claude Code log record | Event |
+|---|---|
+| `claude_code.user_prompt` | `pre_call` |
+| `claude_code.api_request` | `post_call`: `model`, `model_requested` and `model_served`, `provider=anthropic`, `tokens_input` (`input_tokens` + `cache_read_tokens` + `cache_creation_tokens`), `tokens_output`, `tokens_cache_read`, `tokens_cache_creation`, `tokens_cache_creation_1h` (`cache_creation_1h_tokens`), `latency_ms` (`duration_ms`), a `streaming` block holding only `ttft_ms` and `final_outcome=completed` (Claude Code reports neither chunk counts nor gaps, and the dashboard renders a block without them), `cost_usd` as `cost_reported` with `cost_source=agent`, `provider_metadata.request_id` and `provider_metadata.query_source` |
+| `claude_code.api_error` | `llm_error`: `error.http_status` (`status_code`), `error.request_id`, `retry_attempt` (`attempt`), `provider=anthropic`, classified from the status code and message; `terminal` is not set, since Claude Code reports each failed attempt |
+| `claude_code.tool_result` | `tool_call` with `tool_name`, `tool_use_id`, `duration_ms` and, when `success=false`, the error block. A record with `tool_name=mcp_tool` is an `mcp_tool_call` whose `server_name` and `tool_name` are its `tool_parameters.mcp_server_name` and `mcp_tool_name` (present only when the exporter sets Claude Code's `OTEL_LOG_TOOL_DETAILS=1`; without them it stays a `tool_call` named `mcp_tool`) |
+| `claude_code.tool_decision` with `decision=reject` | `session_signal` `permission_denied`, as the plugin reports a denied tool; its `signal_data` is `tool_name`, `tool_use_id`, `reason` (the record's `source`, such as `config`) and, for an MCP tool, `mcp_server`, and never the tool's input |
+| `claude_code.subagent_completed` | the sub-agent's `session_end` (`close_reason=normal_exit`) |
+| any other record | counted as rejected; `claude_code.assistant_response` among them, since it can only be joined to its `post_call` by state kept across requests |
+
+An event's id is `uuid5(NAMESPACE_FLIGHTDECK,
+"flightdeck://otlp/claude-code/event/<session.id>/<event.name>/<event.sequence>/<time_unix_nano>")`,
+so an exporter retrying a request stores nothing twice.
+
+**Sessions.** The Flightdeck session id is `uuid5(NAMESPACE_FLIGHTDECK,
+"flightdeck://otlp/claude-code/session/<session.id>")`, never the Claude
+Code `session.id` itself: the Agent SDK interceptor reports a run under
+its Claude Code session id, and the two must not collide. A sub-agent's
+records share the parent's `session.id` and carry its `agent_id`: they
+belong to a child session, `uuid5(NAMESPACE_FLIGHTDECK,
+"flightdeck://otlp/claude-code/session/<session.id>/<agent_id>")`, with
+`parent_session_id` the parent's id and `agent_role` the record's
+`agent.name`, else the `<type>` of a `query_source` of the form
+`agent:builtin:<type>`, else none. The Agent tool's own `tool_result` stays a `tool_call` on
+the parent.
+
+On the first mapped record of a session a replica has not cached,
+ingestion reads the session row. When the row is missing or `closed`, it
+publishes a synthetic `session_start` (id `uuid5(NAMESPACE_FLIGHTDECK,
+"flightdeck://otlp/claude-code/start/<Flightdeck session id>/<event id
+of the record>")`) through the same attachment check and token stamping as
+`POST /v1/events`, so a closed session that resumes is re-attached;
+otherwise it publishes none. The cache is per replica and only saves the
+read: an entry expires 10 minutes after it is cached, well inside the
+reaper's timeout, and publishing a session's `session_end` removes it,
+so a record for a session closed since is read again and re-attaches
+it. The synthetic `session_start` sets `sensor_version` to the
+resource's `service.version`, `capture_prompts` to the session's
+posture (below), and `context` to `claude_code_session_id`
+(`session.id`), `claude_code_version`, `os`, `arch`, `terminal_type`,
+`telemetry=otlp` and `supports_directives=false`.
+
+A Claude Code session another Flightdeck client already reports is not
+reported again: when a `claude_code` or `claude_agent_sdk` session row
+carries the `session.id` (the plugin's `context.claude_code_session_id`,
+or an Agent SDK run's `session_id`) and is not an OTLP session, the
+session's OTLP records are counted as rejected. The check is part of the
+same first read, a containment query (`context @> {"claude_code_session_id": …}`)
+that the GIN index on `sessions.context` serves, and is not repeated once
+a session is stored: a session the plugin starts reporting after its
+first OTLP records were stored is reported by both.
+
+**Identity and billing.** `agent_type` is `coding`; the flavor is
+`claude-code` unless the resource sets `flightdeck.flavor`; the user is
+the record's `user.email`, else `user.account_id`, else `unknown` (an
+email address, unlike the plugin's OS user, so it is personal data in
+`agents.user_name`); the host is the resource's `host.name`, else
+`unknown` (Claude Code sends none; operators set one with
+`OTEL_RESOURCE_ATTRIBUTES`); `agent_name` is `{user}@{host}`; the agent id
+is derived from them as for every client. Each `post_call` carries
+`billing_mode`: the resource's `flightdeck.billing_mode` when set
+(`metered`, `subscription`, `local`), else `subscription`, Claude Code's
+own default. Its `cost_reported` therefore counts toward
+`estimated_cost` only on a session the operator declares metered.
+
+**Capture.** OTLP content is off unless the exporter declares it: a
+session captures prompts when its resource carries
+`flightdeck.capture_prompts=true`. With capture off, ingestion sends no
+prompt text, response text, `tool_input`, MCP arguments or results, or
+error text: only names, ids, counts, durations and success. With capture
+on, the prompt goes on the `pre_call` as a `PromptContent`
+(`provider=anthropic`, the prompt as one user message, the shape the
+plugin's `pre_call` uses), `tool_input` goes on the `tool_call` as the
+record carries it, and error text on its error block; content is cut to
+fit the 768 KiB event body limit as the plugin cuts it. Claude Code sends
+the prompt only when `OTEL_LOG_USER_PROMPTS=1` and tool inputs only when
+`OTEL_LOG_TOOL_DETAILS=1`.
+
+**Lifecycle.** A Claude Code session reported over OTLP has no end event
+of its own (a sub-agent's ends with `subagent_completed`). It goes
+`stale` after 2 minutes without a record and `lost` after 30, and the
+orphan-timeout reaper closes it after `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`
+(24 hours by default, `close_reason=orphan_timeout`); a record that
+arrives after that re-attaches it through the synthetic `session_start`.
 
 ---
 
@@ -5214,9 +5350,12 @@ Operator-actionable enrichment additionally carries:
   scanner sees the attribution without fetching the sibling pre_call.
 - `provider_metadata`: `{platform, ratelimit_remaining_tokens,
   ratelimit_remaining_requests, ratelimit_limit_tokens,
-  processing_ms, request_id, model_info}`. Best-effort per provider
+  processing_ms, request_id, model_info, query_source}`. Best-effort per provider
   (raw-response paths surface more headers; parsed-response paths
   may surface none). Field names are normalised across providers.
+  `query_source` is the Claude Code call site a call came from (for
+  example `sdk` or `agent:builtin:general-purpose`), set only on calls
+  reported over OTLP (see Ingestion API > OTLP ingest).
   `platform` is set on every Anthropic and OpenAI `post_call` and names
   the endpoint the client talked to. An OpenAI call reports `openai`, or
   `azure` for Azure OpenAI hosts; an Anthropic call reports `anthropic`, `bedrock`, `bedrock-mantle`, `aws`,
@@ -5249,6 +5388,11 @@ When `stream=true` on the underlying request, the payload also carries:
   "abort_reason": null
 }
 ```
+
+A `post_call` reported over OTLP carries a `streaming` block with only
+`ttft_ms` and `final_outcome` (`completed`): Claude Code reports no chunk
+counts or inter-chunk timings, so `chunk_count`, `inter_chunk_ms` and
+`abort_reason` are absent and readers treat them as optional.
 
 `final_outcome` is `"completed"` when the response was read in full: the
 stream reached its end, the caller stopped at the event that ends the

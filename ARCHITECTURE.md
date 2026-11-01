@@ -92,8 +92,8 @@ no single point of failure introduced into the agent's execution path.
 ┌──────────────────────────────────────────────────────────┐
 │                    nginx :4000                           │
 │                                                          │
-│  /ingest/*  → ingestion:8080  (strips prefix)            │
-│  /api/*     → api:8081        (strips prefix)            │
+│  /ingest/*  → ingestion:8080  (path as sent)             │
+│  /api/*     → api:8081        (path as sent)             │
 │  /          → dashboard:3000                             │
 │  /api/v1/stream  → api:8081   (WebSocket upgrade)        │
 └───────┬──────────────────────────────┬───────────────────┘
@@ -765,8 +765,8 @@ class Provider(Protocol):
 @dataclass
 class PromptContent:
     """Raw content extracted from a single LLM call or embeddings request."""
-    system: str | None              # Anthropic system param; None for OpenAI
-    messages: list[dict]            # Full messages array verbatim
+    system: str | None              # Anthropic system; OpenAI Responses instructions
+    messages: list[dict]            # Full messages array verbatim (empty for Responses)
     tools: list[dict] | None        # Tool definitions if provided
     response: dict                  # Full response as dict
     provider: str                   # "anthropic" or "openai"
@@ -774,7 +774,7 @@ class PromptContent:
     session_id: str
     event_id: str
     captured_at: str                # ISO 8601 UTC
-    input: str | list[str] | None = None               # Embeddings input (None for chat)
+    input: str | list | None = None                    # Embeddings or Responses input (None for chat)
     embedding_output: list[list[float]] | None = None  # Embedding vectors when captured
 ```
 
@@ -866,18 +866,53 @@ different levels:
   `AsyncOpenAI.chat`, `OpenAI.responses`, `AsyncOpenAI.responses`,
   `OpenAI.embeddings`, `AsyncOpenAI.embeddings` on the client classes,
   replaced with sensor descriptors that wrap the resource on first
-  access. The intercepted call paths are `chat.completions.create()` and
-  `.parse()`, `responses.create()` and `.parse()`, `embeddings.create()`,
-  and the `with_raw_response` counterparts of the chat and Responses calls
-  (`with_raw_response.create()` / `.parse()`, which return the SDK's
-  `LegacyAPIResponse` with its headers). `create(stream=True)` on chat and
-  Responses is metered from the stream. Not covered: the `.stream()`
-  helpers on those resources (they call the unwrapped resource's `create`
-  internally) and `with_streaming_response` on either resource. `parse()`
-  is the structured-output path: it never streams, and its
-  `ParsedChatCompletion` / `ParsedResponse` carries the usual `usage`.
-  `responses` is OpenAI's recommended API for new projects;
-  `embeddings` is common in RAG-heavy pipelines.
+  access. The intercepted call paths are `chat.completions.create()`,
+  `.parse()` and `.stream()`, `responses.create()`, `.parse()` and
+  `.stream()`, `embeddings.create()`, and the raw and streaming views of
+  those resources (`with_raw_response` / `with_streaming_response`, on
+  the resource or on the client). `create(stream=True)` on chat and
+  Responses is metered from the stream. The `.stream()` helpers build
+  their request by calling `self.create(..., stream=True)`, so the sensor
+  runs the SDK's own helper with the sensor's resource proxy as `self`:
+  the request takes the stream guard, the helper reads its raw events
+  through the guard, and the caller gets the SDK's own manager and
+  `ChatCompletionStream` / `ResponseStream`. The helper keeps the SDK's
+  stream state for the events it reads, so the guard takes the helper's
+  assembly (a chat helper's `current_completion_snapshot`, a Responses
+  helper's terminal `Response` or the snapshot its state folded) rather
+  than assembling the stream a second time; the chat helper's request
+  carries its `X-Stainless-Helper-Method` header, and the provider builds
+  no accumulator for it. The manager's exit also settles the guard, so a
+  helper left early reports at once. The
+  helpers' unset parameters (`NOT_GIVEN` / `omit`) are dropped before the
+  request reaches the sensor; the request is the same without them.
+  `responses.stream(response_id=...)` re-reads a stored response through
+  `retrieve` and is not a new call, so it passes through. The views mark
+  their requests with `X-Stainless-Raw-Response` (`true`, `stream`); the
+  sensor reads the header in the resource proxies, so a view on the
+  resource, on a class-patched client and on a `wrap()`-built client
+  (whose `with_raw_response` / `with_streaming_response` are the SDK's own
+  client views built over the sensor proxy) are metered the same way. A
+  raw-view call returns the SDK's `LegacyAPIResponse` with its headers and
+  its body read, and is metered like a plain call; a raw-view
+  `parse()` through the client view hands back the raw response, as the
+  resource's own `with_raw_response.parse()` does. A view call whose body
+  is unread when the caller gets it (every streaming-view call, and a
+  raw-view call with `stream=True`) is metered when the caller parses
+  it, by the same proxy the Anthropic views use
+  (`interceptor/raw_views.py`): a parsed event stream goes to the stream
+  guard, with `stream_options.include_usage` added to a chat request as
+  on `create(stream=True)`. A later `parse()` of the same response gets
+  the same guard (the SDK caches the parsed stream, and handing that back
+  would let its chunks bypass the guard), and the view's `close()` -- the
+  streaming view's context-manager exit -- settles the guard, so a stream
+  left early inside the view's `with` block is reported as the block
+  exits. langchain-openai takes the chat raw-view path
+  with `include_response_headers=True`. `parse()` is the structured-output
+  path: it never streams, and its `ParsedChatCompletion` /
+  `ParsedResponse` carries the usual `usage`. `responses` is OpenAI's
+  recommended API for new projects; `embeddings` is common in RAG-heavy
+  pipelines.
 
 Three descriptor types on the OpenAI side (`_OpenAIChatDescriptor`,
 `_OpenAIResponsesDescriptor`, `_OpenAIEmbeddingsDescriptor`), driven by an
@@ -986,13 +1021,12 @@ The SDK class patches and the litellm patch deliberately do NOT intercept:
 | Code path | Why not |
 |---|---|
 | `OpenAI.beta.chat.completions.parse` / `.stream` | Structured-output path on a separate `OpenAI.beta` `cached_property`. Not yet observed in any framework's default flow. |
-| `OpenAI.chat.completions.stream`, `OpenAI.responses.stream` | `.stream()` calls the unwrapped resource's `create` internally, so it does not pass the sensor wrapper; `create(stream=True)` on the same resources is intercepted, and so is the non-streaming `.parse()` on both. |
-| `OpenAI.chat.completions.with_raw_response.create(stream=True)`, `OpenAI.responses.with_raw_response.create(stream=True)`, `with_streaming_response` on either resource | The raw-response wrappers are intercepted for `create` and `parse`, but a streamed call through them records the pre-call estimate with no `streaming` block, and `with_streaming_response` passes through unintercepted. langchain-openai takes the chat raw-response path when `include_response_headers=True`. Planned in [#173](https://github.com/flightdeckhq/flightdeck/issues/173). |
+| `OpenAI.responses.stream(response_id=...)` | Resumes reading a response that was already generated, through `retrieve`; it is not a new call. |
 | `OpenAI.audio.*`, `images.*`, `moderations.*`, `files.*`, `fine_tuning.*`, `completions.*` (legacy) | Utility resources unrelated to LLM inference events. |
 | `Anthropic.completions.*` | Legacy completions API; superseded by `messages` / `beta.messages`. |
 | `litellm.text_completion` / `atext_completion`, `litellm.responses` / `aresponses` | Not patched. `text_completion` calls `completion` through the name bound in `litellm.main`, which the module-attribute swap does not reach: on an OpenAI chat model the OpenAI interceptor reports the SDK call it makes, and litellm's own httpx routes are unobserved. `responses` on a provider without a native Responses API is bridged through the patched `litellm.completion` and reported once as a chat call; native routes (OpenAI) go through litellm's own httpx handler and are unobserved. Both planned in [#170](https://github.com/flightdeckhq/flightdeck/issues/170). |
 | Anthropic `messages.batches.*`, `messages.count_tokens` | Batches are offline work with their own billing and run outside the kill switch and the token budget; `count_tokens` is the sensor's own estimator and makes no inference call. |
-| Anthropic `with_raw_response.create(stream=True)` whose response is never parsed | The event stream is metered once `parse()` hands it to the stream guard; a raw response that is never parsed has no close hook, so that call emits no `post_call`. The streaming view (`with_streaming_response`) always settles at close. |
+| A raw-view `create(stream=True)` (Anthropic or OpenAI) whose response is never parsed | The event stream is metered once `parse()` hands it to the stream guard. A raw response is not a context manager and has no close hook, so a call whose response is never parsed reports the pre-call estimate, with no `streaming` block, when the response is collected or the session ends. The streaming view (`with_streaming_response`) always settles at close. |
 | Frameworks that bypass the SDK entirely (raw httpx, boto3 bedrock-runtime, vertexai) | No SDK class to patch. |
 
 Extending the patch surface to a new resource is one descriptor + one entry
@@ -3204,7 +3238,7 @@ CREATE TABLE event_content (
     messages    JSONB,
     tools       JSONB,
     response    JSONB NOT NULL,
-    "input" JSONB, -- embeddings input (string or list of strings)
+    "input" JSONB, -- embeddings input, or an OpenAI Responses request's input
     tool_input  JSONB,                 -- tool args / prompt arguments
     tool_output JSONB,                 -- tool results / rendered prompts
     embedding_output JSONB,            -- embeddings vectors (capture_prompts gate)
@@ -3222,11 +3256,11 @@ never carries content inline.
 
 | Column | LLM `pre_call`/`post_call` | `embeddings` | `mcp_tool_call` | `mcp_prompt_get` | LLM `tool_call` | `mcp_resource_read` |
 |---|---|---|---|---|---|---|
-| `messages` | chat history | `[]` | `[]` | `[]` | `[]` | `[]` |
-| `system` | Anthropic system | NULL | NULL | NULL | NULL | NULL |
+| `messages` | chat history (`[]` for Responses) | `[]` | `[]` | `[]` | `[]` | `[]` |
+| `system` | Anthropic `system`, Responses `instructions` | NULL | NULL | NULL | NULL | NULL |
 | `tools` | tool schema | NULL | NULL | NULL | NULL | NULL |
 | `response` | model response | `{}` | `{}` | `{}` | `{}` | resource body (overflow) |
-| `input` | NULL | embeddings input | NULL | NULL | NULL | NULL |
+| `input` | Responses `input` (NULL for chat) | embeddings input | NULL | NULL | NULL | NULL |
 | `tool_input` | NULL | NULL | tool args | prompt args | tool input | NULL |
 | `tool_output` | NULL | NULL | tool result | rendered messages | tool output (post-hoc) | NULL |
 | `embedding_output` | NULL | output vectors | NULL | NULL | NULL | NULL |
@@ -5599,8 +5633,10 @@ records what the settle needs, drops the SDK stream (whose connection
 then closes at collection, as it would without the sensor) and queues the
 settle; the next LLM call the sensor intercepts, or the session's end,
 runs it. `messages.stream()`, `messages.create(stream=True)`,
-`chat.completions.create(stream=True)` and `responses.create(stream=True)`
-all take this path, with or without a `with` block
+`chat.completions.create(stream=True)`, `responses.create(stream=True)`,
+OpenAI's `chat.completions.stream()` and `responses.stream()` helpers and
+an event stream parsed from a raw or streaming view all take this path,
+with or without a `with` block
 (`for chunk in client.chat.completions.create(..., stream=True)`) and with
 `async for`. `create(stream=True)` sends the request inside the call, as the
 unguarded SDK does, so provider errors surface there; `messages.stream()`
@@ -5628,31 +5664,66 @@ Helper streams yield the SDK's derived events (text deltas and the like)
 alongside the raw ones, so `chunk_count` is higher for `messages.stream()`
 than for `create(stream=True)` on the same response.
 
-With `capture_prompts` on, only the `messages.stream()` helper stores a
-response: when its message is complete the assembled final message is the
-response, and when the caller leaves early the helper's accumulated
-snapshot is stored as it stands, without reading further (a stream
-reported from collection stores no partial content: the finalizer drops
-the stream before the settle runs). Raw event
-streams (`create(stream=True)` on any provider) are never assembled into a
-message, so they store the request (for `responses.create`, nothing of its
-`input`) but no response text, and emit no `tool_call`. OpenAI's
-`.stream()` helpers are listed under "Patch surface — out of scope";
+A streamed call stores the same response and emits the same `tool_call`
+events as a non-streamed one. The Anthropic `messages.stream()` helper
+assembles its own message: when it is complete the assembled final
+message is the response, and when the caller leaves early the helper's
+accumulated snapshot is stored as it stands, without reading further (a
+helper reported from collection stores no partial content: the finalizer
+drops the stream before the settle runs). A raw event stream
+(`create(stream=True)`, and the stream an OpenAI `.stream()` helper or a
+view reads through the guard) is assembled by the guard with the SDK's
+own accumulator, the one the SDK's helpers run on the same events:
+Anthropic's `accumulate_event` (its beta form for `beta.messages`),
+OpenAI's `ChatCompletionStreamState` for chat, and for Responses the
+`Response` the terminal event carries, with `ResponseStreamState` folding
+the deltas before it. The guard feeds the accumulator every event it
+reads, the usage chunk it hides from the caller included, and at the
+settle:
+
+- a stream read to its end hands over the assembled message, which is
+  the response: content capture stores it and the `tool_call` events
+  come from it (a streamed `tool_use` block's input is parsed from its
+  JSON deltas, a chat tool call's arguments are concatenated);
+- a stream the caller left early stores the partial message under
+  capture and emits no `tool_call`: a half-streamed call is not a call
+  the model made. Usage, model and stop reason come from the events as
+  before. A raw stream reported from collection keeps its accumulator
+  (parsed events only, not the connection), so it stores the partial
+  message too;
+- a stream that fails emits the `llm_error` with partial tokens and no
+  content, as before.
+
+An accumulator that raises is dropped for the rest of the stream (a
+message missing an event would be stored as if it were the response),
+and the call is metered as before; the failure is logged by exception
+class only, since the SDK accumulators build their messages from the
+streamed tool-call arguments. A chat stream is assembled only when
+something reads the result -- capture on, or a request that offers the
+model `tools` (or the legacy `functions`): the SDK's chat state
+re-serialises the message on every chunk, the price its own `.stream()`
+helper pays, and a stream that can carry no tool call with capture off
+does not pay it. A Responses stream is always assembled (its terminal
+event carries the whole response), and folds deltas only under capture;
+an event the fold cannot take (a delta for an item the stream never
+announced) ends the partial snapshot, not the assembly.
 `.parse()` never streams and is metered like `create()`, with the
 `Parsed*` result stored as the response when capture is on.
 
 ### `tool_call`
 
 Tool-use events. For Anthropic and OpenAI tool-use messages, the sensor
-emits one `tool_call` per tool invocation in the response; for streamed
-calls this holds for the Anthropic `messages.stream()` helper (its assembled
-final message is the response) while raw event streams emit none, because
-the sensor does not assemble their content blocks. Carries
+emits one `tool_call` per tool invocation in the response, streamed or
+not: a stream read to its end is assembled into the message a
+non-streamed call returns (see Streaming metering), and a stream the
+caller left early emits none. Carries
 `tool_name`, optionally `tool_input` (when `captureToolInputs=true` for
 the plugin or `capture_prompts=true` for the sensor), `tool_result` (when
 the next assistant turn shows the tool's output and capture is on).
 
-On the wire a sensor `tool_call` carries `tool_name` and `model`; under
+On the wire a sensor `tool_call` carries `tool_name` and `model`, and
+`server_name` for a call the provider made to an MCP server on the
+agent's behalf (an OpenAI Responses `mcp_call`, see below); under
 capture its input travels in the `event_content` envelope as
 `tool_input`, served by `GET /v1/events/:id/content`. The id a provider
 gives a call (a chat tool call's `id`, a Responses function call's
@@ -5667,7 +5738,13 @@ sensor emits one `tool_call` per output item that is a call:
 - `function_call`, `mcp_call` and `custom_tool_call` carry the tool's own
   name as `tool_name`; the input is the JSON-decoded `arguments` (for a
   custom tool, `{"input": <text>}`, as those tools take free-form text).
-  The MCP server label is not carried on the event ([#174](https://github.com/flightdeckhq/flightdeck/issues/174)).
+  An `mcp_call` also carries its `server_label` as `server_name`, the
+  field every MCP event and the plugin's MCP tool events name the server
+  with, cut at 256 characters as the plugin cuts it. It is metadata,
+  like the tool name, and ships with capture off; the event stays a
+  `tool_call` because the provider, not the agent's MCP client, made the
+  call, so it has no transport, fingerprint or MCP policy decision. The
+  Events view's MCP server filter matches it by `payload.server_name`.
 - Hosted tools have no per-call name, so the item type is the
   `tool_name`: `web_search_call`, `file_search_call`,
   `code_interpreter_call`, `image_generation_call`, `computer_call`,
@@ -6326,10 +6403,14 @@ captures tool use via the LLM message array when `capture_prompts=true`.
 
 Governs LLM prompt / response content, embedding inputs, and tool_result
 bodies: the user's prompt text, assistant response text, thinking blocks,
-embedding inputs, and the output of each tool the LLM invoked. Streamed
-responses are stored only when the stream is assembled into a message (the
-Anthropic `messages.stream()` helper); raw event streams store the request
-only (see "Streaming metering" under `post_call`).
+embedding inputs, and the output of each tool the LLM invoked. A
+streamed response is stored as a non-streamed one is, assembled from the
+stream; a stream the caller left early stores what had arrived (see
+"Streaming metering" under `post_call`). An OpenAI Responses request is
+stored as its own parameters: `instructions` in `system` and `input`
+verbatim in `input` (a string, or the list of input items, SDK objects
+among them dumped as the JSON the SDK sends); `messages` stays empty, as
+the Responses API has no messages parameter.
 
 No sanitiser applies. Outputs can carry arbitrary prompt-like content
 (model-generated text, tool-fetched web pages, search results) and a
@@ -7134,15 +7215,17 @@ deployments; production should provide an external HA Postgres via
 the query API under `/api` on one origin, and each service also accepts
 its own prefix: `/ingest/v1/events` and `/v1/events` reach the same
 ingestion handler, `/api/v1/fleet` and `/v1/fleet` the same API one
-(Swagger UI included). The compose nginx strips the prefix before
-proxying; the Helm chart's Ingress forwards the path unchanged, because
-rewriting it is specific to each ingress controller, and the services
-strip it themselves. The prefix is stripped only when it is the whole
-first segment of the path as sent, so `/ingestx/...` and `/ingest%2F...`
-are a 404, and the rest of the path keeps its escaping. A redirect a
-service answers for a prefixed request (`/api/docs` to `/api/docs/`)
-keeps the prefix. Neither service has a route of its own under its
-prefix.
+(Swagger UI included). The services strip the prefix themselves and
+every edge forwards the path unchanged: the Helm chart's Ingress because
+a rewrite is specific to each ingress controller, the compose nginx and
+the vite dev proxy so that a redirect a service builds from the request
+as received (Swagger UI's) keeps the prefix, and the services see the
+same path under every deployment. The prefix is stripped only when it is
+the whole first segment of the path as sent, so `/ingestx/...` and
+`/ingest%2F...` are a 404, and the rest of the path keeps its escaping.
+A redirect a service answers for a prefixed request (`/api/docs` to
+`/api/docs/`) keeps the prefix. Neither service has a route of its own
+under its prefix.
 
 The Docker Compose and Helm targets are feature-equivalent (Key
 Constraint #4).

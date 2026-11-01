@@ -7,12 +7,17 @@ implementation with no dependency on tokencap.
 from __future__ import annotations
 
 import contextlib
+import inspect
 import logging
 from datetime import UTC
 from typing import Any
 
 from flightdeck_sensor.core.types import CallDetails, TokenUsage
-from flightdeck_sensor.providers.protocol import PromptContent, ToolInvocation
+from flightdeck_sensor.providers.protocol import (
+    PromptContent,
+    StreamAccumulator,
+    ToolInvocation,
+)
 
 _log = logging.getLogger("flightdeck_sensor.providers.anthropic")
 
@@ -35,6 +40,76 @@ _EVENT_MESSAGE_DELTA = "message_delta"
 _EVENT_MESSAGE_STOP = "message_stop"
 _EVENT_CONTENT_BLOCK_DELTA = "content_block_delta"
 _DELTA_TEXT = "text_delta"
+
+# The beta Messages API's event classes live under this package; their
+# stream is assembled with the SDK's beta accumulator, whose content-block
+# union carries the beta-only block types.
+_BETA_TYPES_PACKAGE = "anthropic.types.beta"
+
+
+class _MessageStreamAccumulator:
+    """Assembles a raw Messages event stream (``create(stream=True)``)
+    with the SDK's own ``accumulate_event``, the function its
+    ``messages.stream()`` helper runs on the same events, so the result
+    is the helper's ``ParsedMessage`` snapshot: text, thinking and
+    ``tool_use`` blocks (inputs parsed from their JSON deltas), stop
+    reason and cumulative usage. The beta accumulator serves beta event
+    streams. The keyword arguments the function takes differ across SDK
+    releases (``json_bufs``, the beta ``request_headers``), so they are
+    read from its signature once."""
+
+    def __init__(self, request_headers: Any) -> None:
+        self._request_headers = request_headers
+        self._snapshot: Any = None
+        self._json_bufs: dict[int, bytes] = {}
+        self._accumulate: Any = None
+        self._params: frozenset[str] = frozenset()
+
+    def _bind(self, chunk: Any) -> None:
+        accumulate: Any
+        if type(chunk).__module__.startswith(_BETA_TYPES_PACKAGE):
+            from anthropic.lib.streaming._beta_messages import accumulate_event as accumulate
+        else:
+            from anthropic.lib.streaming._messages import accumulate_event as accumulate
+        self._accumulate = accumulate
+        self._params = frozenset(inspect.signature(accumulate).parameters)
+
+    def add(self, chunk: Any) -> None:
+        # The helper skips whatever precedes message_start, which opens
+        # the snapshot; a raw stream starts with it.
+        if self._snapshot is None and getattr(chunk, "type", None) != _EVENT_MESSAGE_START:
+            return
+        if self._accumulate is None:
+            self._bind(chunk)
+        kwargs: dict[str, Any] = {"event": chunk, "current_snapshot": self._snapshot}
+        if "json_bufs" in self._params:
+            kwargs["json_bufs"] = self._json_bufs
+        if "request_headers" in self._params:
+            kwargs["request_headers"] = self._request_headers
+        self._snapshot = self._accumulate(**kwargs)
+
+    def message(self) -> Any | None:
+        return self._snapshot
+
+
+def _raw_stream_classes() -> tuple[type, ...]:
+    """The SDK's raw event-stream classes (``Stream`` / ``AsyncStream``),
+    empty when the SDK is not importable."""
+    try:
+        import anthropic
+
+        return (anthropic.Stream, anthropic.AsyncStream)
+    except Exception:
+        return ()
+
+
+def _request_headers_of(stream: Any) -> Any:
+    """The headers the stream's request was sent with (the beta
+    accumulator reads ``anthropic-beta`` from them), or ``None``."""
+    try:
+        return stream.response.request.headers
+    except Exception:
+        return None
 
 
 class AnthropicProvider:
@@ -318,6 +393,19 @@ class AnthropicProvider:
             return self._snapshot(stream)
         except Exception:
             return None
+
+    def stream_accumulator(
+        self, stream: Any, request_kwargs: dict[str, Any]
+    ) -> StreamAccumulator | None:
+        """A :class:`_MessageStreamAccumulator` for a raw event stream;
+        ``None`` for the ``messages.stream()`` helper, which keeps its own
+        snapshot. The accumulator runs with capture on or off: it is how
+        a streamed ``tool_use`` block becomes a ``tool_call`` event, and
+        folding an event into the snapshot is a string append."""
+        classes = _raw_stream_classes()
+        if not classes or not isinstance(stream, classes):
+            return None
+        return _MessageStreamAccumulator(_request_headers_of(stream))
 
     def text_from_stream_chunk(self, chunk: Any) -> str | None:
         """Text of a ``content_block_delta`` / ``text_delta`` event, else

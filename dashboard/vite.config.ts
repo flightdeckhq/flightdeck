@@ -47,15 +47,11 @@ export default defineConfig({
         "./src/components/fleet/LiveFeed.tsx",
       ],
     },
+    // The paths are forwarded as sent, as the compose nginx does: the
+    // services serve their routes under /api and /ingest themselves.
     proxy: {
-      "/api": {
-        target: "http://localhost:8081",
-        rewrite: (p) => p.replace(/^\/api/, ""),
-      },
-      "/ingest": {
-        target: "http://localhost:8080",
-        rewrite: (p) => p.replace(/^\/ingest/, ""),
-      },
+      "/api": { target: "http://localhost:8081" },
+      "/ingest": { target: "http://localhost:8080" },
     },
   },
 });

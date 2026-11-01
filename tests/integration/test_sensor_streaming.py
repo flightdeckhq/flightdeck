@@ -719,3 +719,357 @@ def test_langchain_openai_stream_is_metered(
         post_call = _teardown_and_expect_one(flavor, "post_call")
         assert (post_call["tokens_input"], post_call["tokens_output"]) == (9, 4)
         assert post_call["payload"]["streaming"]["final_outcome"] == "completed"
+
+
+# ----- raw streams store their response and report their tool calls ------
+
+TOOL_MARKER = "integ-city-5d1e"
+PROMPT_MARKER = "integ-prompt-a90c"
+INSTRUCTIONS_MARKER = "integ-instructions-7b3f"
+
+
+def _teardown_and_collect(
+    flavor: str, counts: dict[str, int]
+) -> dict[str, list[dict[str, Any]]]:
+    """Tear the sensor down, wait until session_end and ``counts[type]``
+    rows of each event type have landed, and return those rows by type."""
+    flightdeck_sensor.teardown()
+
+    def _by_type() -> dict[str, list[dict[str, Any]]]:
+        out: dict[str, list[dict[str, Any]]] = {}
+        for event in _query_events_for_flavor(flavor):
+            out.setdefault(event["event_type"], []).append(event)
+        return out
+
+    def _landed() -> bool:
+        rows = _by_type()
+        return "session_end" in rows and all(
+            len(rows.get(kind, [])) >= n for kind, n in counts.items()
+        )
+
+    wait_until(_landed, timeout=15, msg=f"events {counts} never landed for {flavor}")
+    rows = _by_type()
+    for kind, n in counts.items():
+        assert len(rows[kind]) == n, f"expected {n} {kind}, got {len(rows[kind])}"
+    return rows
+
+
+def _anthropic_tool_events() -> list[tuple[str, dict[str, Any]]]:
+    events = _anthropic_events()
+    tool = [
+        (
+            "content_block_start",
+            {
+                "type": "content_block_start",
+                "index": 1,
+                "content_block": {
+                    "type": "tool_use",
+                    "id": "toolu_i1",
+                    "name": "get_weather",
+                    "input": {},
+                },
+            },
+        ),
+        (
+            "content_block_delta",
+            {
+                "type": "content_block_delta",
+                "index": 1,
+                "delta": {
+                    "type": "input_json_delta",
+                    "partial_json": '{"city": "' + TOOL_MARKER + '"}',
+                },
+            },
+        ),
+        ("content_block_stop", {"type": "content_block_stop", "index": 1}),
+    ]
+    # Before message_delta / message_stop.
+    return events[:-2] + tool + events[-2:]
+
+
+def _openai_chat_tool_sse() -> httpx.Response:
+    def chunk(
+        delta: dict[str, Any] | None, finish: str | None = None, **extra: Any
+    ) -> str:
+        body = {
+            "id": "chatcmpl-t1",
+            "object": "chat.completion.chunk",
+            "created": 1,
+            "model": "gpt-4o",
+            "choices": []
+            if delta is None
+            else [{"index": 0, "delta": delta, "finish_reason": finish}],
+            **extra,
+        }
+        return f"data: {json.dumps(body)}\n\n"
+
+    body = (
+        chunk({"role": "assistant", "content": "Hi there"})
+        + chunk(
+            {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call_i1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"city": "' + TOOL_MARKER + '"}',
+                        },
+                    }
+                ]
+            }
+        )
+        + chunk({}, "tool_calls")
+        + chunk(
+            None,
+            usage={"prompt_tokens": 9, "completion_tokens": 4, "total_tokens": 13},
+        )
+        + "data: [DONE]\n\n"
+    )
+    return httpx.Response(
+        200, headers={"content-type": "text/event-stream"}, content=body.encode()
+    )
+
+
+_MCP_ITEM = {
+    "id": "mcp_i1",
+    "type": "mcp_call",
+    "name": "list_issues",
+    "server_label": "github",
+    "arguments": '{"repo": "' + TOOL_MARKER + '"}',
+    "output": "[]",
+    "status": "completed",
+}
+
+
+def _openai_responses_mcp_sse() -> httpx.Response:
+    response = _openai_responses_sse()
+    frames = [line for line in response.content.decode().split("\n\n") if line.strip()]
+    completed = json.loads(frames[-1].split("data: ", 1)[1])
+    completed["response"]["output"].append(_MCP_ITEM)
+    frames[-1] = f"event: response.completed\ndata: {json.dumps(completed)}"
+    return httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        content=("\n\n".join(frames) + "\n\n").encode(),
+    )
+
+
+@pytest.mark.parametrize("capture", [True, False], ids=["capture-on", "capture-off"])
+def test_anthropic_raw_stream_content_and_tool_call_round_trip(
+    sensor_reset: None,
+    unique_flavor: str,
+    capture: bool,
+) -> None:
+    flavor = unique_flavor
+    with respx.mock(assert_all_called=False, assert_all_mocked=True) as rmock:
+        rmock.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=_sse(_anthropic_tool_events())
+        )
+        flightdeck_sensor.init(
+            server=INGESTION_URL, token=TOKEN, capture_prompts=capture
+        )
+        client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
+        for _ in client.messages.create(
+            model="claude-sonnet-4-6",
+            messages=[{"role": "user", "content": PROMPT_MARKER}],
+            max_tokens=50,
+            stream=True,
+        ):
+            pass
+        rows = _teardown_and_collect(flavor, {"post_call": 1, "tool_call": 1})
+
+    post_call, tool_call = rows["post_call"][0], rows["tool_call"][0]
+    assert (post_call["tokens_input"], post_call["tokens_output"]) == (11, 5)
+    assert post_call["payload"]["streaming"]["final_outcome"] == "completed"
+    assert tool_call["tool_name"] == "get_weather"
+    post_status, post_body = _content_status(post_call["id"])
+    tool_status, tool_body = _content_status(tool_call["id"])
+    if not capture:
+        assert (post_status, tool_status) == (404, 404)
+        return
+    assert post_status == 200
+    content = json.loads(post_body)
+    assert content["response"]["content"][0]["text"] == "Hello there"
+    assert content["response"]["content"][1]["input"] == {"city": TOOL_MARKER}
+    assert PROMPT_MARKER in post_body
+    assert tool_status == 200
+    assert json.loads(tool_body)["tool_input"] == {"city": TOOL_MARKER}
+
+
+@pytest.mark.parametrize("capture", [True, False], ids=["capture-on", "capture-off"])
+def test_openai_chat_raw_stream_content_and_tool_call_round_trip(
+    sensor_reset: None,
+    unique_flavor: str,
+    capture: bool,
+) -> None:
+    flavor = unique_flavor
+    with respx.mock(assert_all_called=False, assert_all_mocked=True) as rmock:
+        rmock.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=_openai_chat_tool_sse()
+        )
+        flightdeck_sensor.init(
+            server=INGESTION_URL, token=TOKEN, capture_prompts=capture
+        )
+        client = flightdeck_sensor.wrap(openai.OpenAI(api_key="test-key"))
+        with client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": PROMPT_MARKER}],
+            tools=[{"type": "function", "function": {"name": "get_weather"}}],
+            stream=True,
+        ) as stream:
+            for _ in stream:
+                pass
+        rows = _teardown_and_collect(flavor, {"post_call": 1, "tool_call": 1})
+
+    post_call, tool_call = rows["post_call"][0], rows["tool_call"][0]
+    assert (post_call["tokens_input"], post_call["tokens_output"]) == (9, 4)
+    post_status, post_body = _content_status(post_call["id"])
+    tool_status, tool_body = _content_status(tool_call["id"])
+    if not capture:
+        assert (post_status, tool_status) == (404, 404)
+        return
+    assert post_status == 200
+    message = json.loads(post_body)["response"]["choices"][0]["message"]
+    assert message["content"] == "Hi there"
+    assert message["tool_calls"][0]["function"]["name"] == "get_weather"
+    assert tool_status == 200
+    assert json.loads(tool_body)["tool_input"] == {"city": TOOL_MARKER}
+
+
+@pytest.mark.parametrize("capture", [True, False], ids=["capture-on", "capture-off"])
+def test_openai_responses_raw_stream_round_trip_names_the_mcp_server(
+    sensor_reset: None,
+    unique_flavor: str,
+    capture: bool,
+) -> None:
+    flavor = unique_flavor
+    with respx.mock(assert_all_called=False, assert_all_mocked=True) as rmock:
+        rmock.post("https://api.openai.com/v1/responses").mock(
+            return_value=_openai_responses_mcp_sse()
+        )
+        flightdeck_sensor.init(
+            server=INGESTION_URL, token=TOKEN, capture_prompts=capture
+        )
+        client = flightdeck_sensor.wrap(openai.OpenAI(api_key="test-key"))
+        for _ in client.responses.create(
+            model="gpt-4o",
+            instructions=INSTRUCTIONS_MARKER,
+            input=PROMPT_MARKER,
+            stream=True,
+        ):
+            pass
+        rows = _teardown_and_collect(flavor, {"post_call": 1, "tool_call": 1})
+
+    post_call, tool_call = rows["post_call"][0], rows["tool_call"][0]
+    assert (post_call["tokens_input"], post_call["tokens_output"]) == (7, 3)
+    assert tool_call["tool_name"] == "list_issues"
+    assert tool_call["payload"]["server_name"] == "github"
+    post_status, post_body = _content_status(post_call["id"])
+    if not capture:
+        assert post_status == 404
+        assert _content_status(tool_call["id"])[0] == 404
+        return
+    assert post_status == 200
+    content = json.loads(post_body)
+    assert content["input"] == PROMPT_MARKER
+    assert content["system_prompt"] == INSTRUCTIONS_MARKER
+    assert content["response"]["output"][0]["content"][0]["text"] == "Hi there"
+
+
+def test_openai_chat_stream_helper_is_metered(
+    sensor_reset: None,
+    unique_flavor: str,
+) -> None:
+    flavor = unique_flavor
+    with respx.mock(assert_all_called=False, assert_all_mocked=True) as rmock:
+        rmock.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=_openai_chat_sse()
+        )
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN, capture_prompts=True)
+        client = flightdeck_sensor.wrap(openai.OpenAI(api_key="test-key"))
+        with client.chat.completions.stream(
+            model="gpt-4o", messages=[{"role": "user", "content": "Hello"}]
+        ) as stream:
+            final = stream.get_final_completion()
+        assert final.choices[0].message.content == "Hi there"
+
+        post_call = _teardown_and_expect_one(flavor, "post_call")
+    assert (post_call["tokens_input"], post_call["tokens_output"]) == (9, 4)
+    assert post_call["payload"]["streaming"]["final_outcome"] == "completed"
+    status, body = _content_status(post_call["id"])
+    assert status == 200
+    assert "Hi there" in body
+
+
+def test_openai_raw_response_stream_is_metered_from_the_stream(
+    sensor_reset: None,
+    unique_flavor: str,
+) -> None:
+    flavor = unique_flavor
+    with respx.mock(assert_all_called=False, assert_all_mocked=True) as rmock:
+        rmock.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=_openai_chat_sse()
+        )
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        client = flightdeck_sensor.wrap(openai.OpenAI(api_key="test-key"))
+        raw = client.chat.completions.with_raw_response.create(
+            model="gpt-4o", messages=[{"role": "user", "content": "Hello"}], stream=True
+        )
+        with raw.parse() as stream:
+            chunks = list(stream)
+        assert len(chunks) == 3
+
+        post_call = _teardown_and_expect_one(flavor, "post_call")
+    assert (post_call["tokens_input"], post_call["tokens_output"]) == (9, 4)
+    assert post_call["payload"]["streaming"]["chunk_count"] == 3
+    assert post_call["payload"]["streaming"]["final_outcome"] == "completed"
+
+
+def test_openai_streaming_view_stream_is_metered(
+    sensor_reset: None,
+    unique_flavor: str,
+) -> None:
+    flavor = unique_flavor
+    with respx.mock(assert_all_called=False, assert_all_mocked=True) as rmock:
+        rmock.post("https://api.openai.com/v1/responses").mock(
+            return_value=_openai_responses_sse()
+        )
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        flightdeck_sensor.patch(quiet=True)
+        client = openai.OpenAI(api_key="test-key")
+        with client.responses.with_streaming_response.create(
+            model="gpt-4o", input="Hello", stream=True
+        ) as response:
+            kinds = [event.type for event in response.parse()]
+        assert kinds[-1] == "response.completed"
+
+        post_call = _teardown_and_expect_one(flavor, "post_call")
+    assert (post_call["tokens_input"], post_call["tokens_output"]) == (7, 3)
+    assert post_call["payload"]["streaming"]["final_outcome"] == "completed"
+
+
+def test_langchain_openai_stream_with_response_headers_is_metered(
+    sensor_reset: None,
+    unique_flavor: str,
+) -> None:
+    """``include_response_headers=True`` streams through
+    ``with_raw_response.create(stream=True)``."""
+    langchain_openai = pytest.importorskip("langchain_openai")
+    flavor = unique_flavor
+    with respx.mock(assert_all_called=False, assert_all_mocked=True) as rmock:
+        rmock.post("https://api.openai.com/v1/chat/completions").mock(
+            return_value=_openai_chat_sse()
+        )
+        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        flightdeck_sensor.patch(quiet=True)
+        llm = langchain_openai.ChatOpenAI(
+            model="gpt-4o", api_key="test-key", include_response_headers=True
+        )
+        chunks = list(llm.stream("Hello"))
+        assert any(c.response_metadata.get("headers") for c in chunks)
+
+        post_call = _teardown_and_expect_one(flavor, "post_call")
+    assert (post_call["tokens_input"], post_call["tokens_output"]) == (9, 4)
+    assert post_call["payload"]["streaming"]["final_outcome"] == "completed"

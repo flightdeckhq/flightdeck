@@ -933,7 +933,7 @@ describe("observe_cli.mjs", () => {
       );
       req.on("error", reject);
       req.flushHeaders();
-      req.write(bytes.subarray(0, split), () => setTimeout(() => req.end(bytes.subarray(split)), 50));
+      req.write(bytes.subarray(0, split), () => req.end(bytes.subarray(split)));
     });
     assert.deepEqual(capture.bodies().slice(before), [{ event_type: "probe", marker: "a…b" }]);
   });
@@ -3883,6 +3883,32 @@ describe("observe_cli SubagentStart / SubagentStop", () => {
     // payload.content is null on the inline path (no
     // event_content row will be written by the worker).
     assert.equal(childStart.content, null);
+  });
+
+  it("a hook input larger than one pipe chunk keeps its multi-byte characters", async () => {
+    // 120 KB of a 3-byte character: stdin arrives in pipe chunks, and a
+    // chunk boundary that is not a multiple of 3 bytes splits one.
+    const body = "…".repeat(40_000);
+    const input = JSON.stringify({
+      hook_event_name: "SubagentStart",
+      session_id: "sess-outer-utf8",
+      subagent_type: "Explore",
+      tool_use_id: "tu-utf8",
+      tool_input: { prompt: body },
+    });
+    const before = capture.bodies().length;
+    await runScript(input, {
+      FLIGHTDECK_SERVER: `http://127.0.0.1:${capture.port}`,
+      FLIGHTDECK_TOKEN: "tok_test",
+      CLAUDE_SESSION_ID: "sess-outer-utf8",
+      FLIGHTDECK_CAPTURE_PROMPTS: "true",
+    });
+    const childStart = capture
+      .bodies()
+      .slice(before)
+      .find((b) => b.event_type === "session_start" && b.parent_session_id != null);
+    assert.ok(childStart);
+    assert.equal(childStart.content.response.body, body);
   });
 
   it("overflow path: prompt just over 8 KiB rides through event_content", async () => {

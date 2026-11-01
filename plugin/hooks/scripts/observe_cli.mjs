@@ -140,6 +140,9 @@ async function main() {
   const sessionEndWorker = process.argv.includes(SESSION_END_WORKER_FLAG);
 
   let input = "";
+  // Decode stdin as one stream: decoding each pipe chunk on its own
+  // splits a multi-byte character that straddles two chunks.
+  process.stdin.setEncoding("utf8");
   for await (const chunk of process.stdin) {
     input += chunk;
   }

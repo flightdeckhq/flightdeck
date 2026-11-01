@@ -229,8 +229,7 @@ sessions; a new `close_reason` (aging already closes them).
 **Date:** 2026-11-01
 **Decision:** ingestion serves its routes both bare and under `/ingest`,
 the query API both bare and under `/api`. The Helm chart's Ingress
-forwards `/ingest/...` and `/api/...` unchanged; the compose nginx keeps
-stripping the prefix.
+and the compose nginx forward `/ingest/...` and `/api/...` unchanged.
 **Why:** the chart's Ingress had no rewrite, so every ingest and API call
 behind it reached a service that only serves `/v1/...` and got 404. The
 chart's `ingress.className` is the operator's choice, and the services

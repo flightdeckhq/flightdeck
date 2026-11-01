@@ -92,8 +92,8 @@ no single point of failure introduced into the agent's execution path.
 ┌──────────────────────────────────────────────────────────┐
 │                    nginx :4000                           │
 │                                                          │
-│  /ingest/*  → ingestion:8080  (strips prefix)            │
-│  /api/*     → api:8081        (strips prefix)            │
+│  /ingest/*  → ingestion:8080  (path as sent)             │
+│  /api/*     → api:8081        (path as sent)             │
 │  /          → dashboard:3000                             │
 │  /api/v1/stream  → api:8081   (WebSocket upgrade)        │
 └───────┬──────────────────────────────┬───────────────────┘
@@ -7071,10 +7071,11 @@ deployments; production should provide an external HA Postgres via
 the query API under `/api` on one origin, and each service also accepts
 its own prefix: `/ingest/v1/events` and `/v1/events` reach the same
 ingestion handler, `/api/v1/fleet` and `/v1/fleet` the same API one
-(Swagger UI included). The compose nginx strips the prefix before
-proxying; the Helm chart's Ingress forwards the path unchanged, because
-rewriting it is specific to each ingress controller, and the services
-strip it themselves. The prefix is stripped only when it is the whole
+(Swagger UI included). The compose nginx and the Helm chart's Ingress
+both forward the path unchanged, because rewriting it is specific to
+each ingress controller, and the services strip it themselves; a
+redirect a service builds from the request as sent (Swagger UI's) then
+keeps the prefix under both. The prefix is stripped only when it is the whole
 first segment of the path as sent, so `/ingestx/...` and `/ingest%2F...`
 are a 404, and the rest of the path keeps its escaping. A redirect a
 service answers for a prefixed request (`/api/docs` to `/api/docs/`)

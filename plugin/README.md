@@ -330,7 +330,20 @@ cd plugin
 node --test tests/*.test.mjs
 ```
 
-Or via the top-level Makefile: `make test-plugin`. The suite covers the uuid5 helper (Python-canonical vectors), the session-identity resolution chain, the end-to-end hook flow against an in-process capture server, and a replay of hook payloads recorded from a real Claude Code session (`tests/fixtures/claude-code-2.1.306-hooks.jsonl`) in which every emitted event is checked against the ingestion validator's rules -- a stub server accepts anything, so without that check a payload the real API rejects with 400 would pass the suite while the plugin fails open and drops it.
+Or via the top-level Makefile: `make test-plugin`. The suite covers the uuid5 helper (Python-canonical vectors), the session-identity resolution chain, the end-to-end hook flow against an in-process capture server, and replays of hook payloads recorded from real Claude Code sessions in which every emitted event is checked against the ingestion validator's rules -- a stub server accepts anything, so without that check a payload the real API rejects with 400 would pass the suite while the plugin fails open and drops it. The newest recording (`tests/fixtures/claude-code-2.1.316/`) also carries the sessions' transcripts, so the replay checks each model call's tokens against the transcript: a Bash call that needs permission, an MCP tool call, a sub-agent and a slash command.
+
+**Recording a new Claude Code version.** `tests/tools/hook-recorder/` is a plugin that writes every hook payload it receives to a file, and `record-scenarios.mjs` runs the scenarios above through a real `claude -p` with only that plugin loaded, then writes `tests/fixtures/claude-code-<version>/` with machine paths scrubbed (only the Claude Code variables the plugin reads are kept from each hook's environment). It makes real model calls, so run it by hand:
+
+```bash
+env -u ANTHROPIC_API_KEY FD_RECORD_PYTHON=/path/to/python-with-mcp \
+  node plugin/tests/tools/hook-recorder/record-scenarios.mjs
+```
+
+**Live suite.** `tests/live_claude.test.mjs` loads the plugin into a real `claude -p` run against a capture server that applies the ingestion validator's rules, and checks the session, its model calls (with tokens) and its tool call. It is skipped unless asked for, since it calls the model:
+
+```bash
+FLIGHTDECK_LIVE_CLAUDE=1 node --test plugin/tests/live_claude.test.mjs
+```
 
 ## Updating
 

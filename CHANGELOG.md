@@ -55,6 +55,33 @@ All notable changes to Flightdeck are documented here.
   parses from the response is now metered as it is read, with its
   `streaming` block. langchain-openai takes this path with
   `include_response_headers=True` ([#173](https://github.com/flightdeckhq/flightdeck/issues/173)).
+- **`client.beta.chat.completions.parse()` and `.stream()` are metered.**
+  The structured-output path on the OpenAI SDK's beta resource went
+  through unintercepted; it now reports like `chat.completions.parse()`,
+  on every SDK release that has it
+  ([#170](https://github.com/flightdeckhq/flightdeck/issues/170)).
+- **litellm's `text_completion` and `responses` are metered, once per
+  call.** `text_completion` / `atext_completion` and `responses` /
+  `aresponses`, streaming included, were not wrapped: some routes were
+  reported as a chat call by another interceptor and litellm's own httpx
+  routes (Anthropic, the native Responses API) not at all. Each call now
+  lands as one `post_call` with the usage of the shape that entry point
+  returns, also where litellm serves it through the OpenAI SDK or bridges
+  it through its own `completion`
+  ([#170](https://github.com/flightdeckhq/flightdeck/issues/170)).
+- **litellm calls made with positional arguments work under the patch.**
+  `litellm.completion("gpt-4o", messages)` raised `TypeError` once
+  `flightdeck_sensor.patch()` had run; every patched litellm entry point
+  now takes its arguments as litellm does.
+- **A streamed view call whose stream is never read is reported.** An
+  async `with_streaming_response.create(stream=True)` whose stream was
+  parsed but not iterated, or an async client's raw-view stream parsed
+  and never iterated, emitted no `post_call`. It is now reported as an
+  aborted stream with no chunks, on the pre-call estimate, when the view
+  closes (or the stream is collected, or the session ends). A
+  `stream=True` view call closed or dropped before `parse()` is reported
+  the same way, with its `streaming` block
+  ([#224](https://github.com/flightdeckhq/flightdeck/issues/224)).
 - **A Responses MCP tool call names its server.** The `tool_call` event
   for an `mcp_call` output item carries the item's `server_label` as
   `server_name`, so the Events view's MCP server filter finds it

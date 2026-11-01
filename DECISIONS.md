@@ -286,3 +286,34 @@ API's own parameter name and already a JSONB column (embeddings), and
 **Rejected alternative:** rewriting `instructions` and `input` into a
 chat `messages` array (normalising one provider's shape into another's,
 which content capture never does); a new column (no reader needs one).
+
+## D230 -- A litellm text_completion stores its prompt verbatim in input
+
+**Date:** 2026-11-01
+**Decision:** under `capture_prompts`, a `litellm.text_completion` /
+`atext_completion` call's content stores the request's `prompt` (a
+string, a list of strings or token ids) verbatim in `input`; `messages`
+and `system` stay empty. A `litellm.responses` call is stored as D228
+stores an OpenAI Responses call.
+**Why:** the legacy completion API has no `messages`; `input` is the
+existing slot for a request's single non-chat input, stored as sent.
+**Rejected alternative:** a synthesized `[{"role": "user", "content":
+prompt}]` in `messages` (what litellm sends underneath, but not what the
+caller sent; content capture stores the caller's request); a new
+`prompt` field (a contract change no reader needs).
+
+## D231 -- Each litellm call is reported by the entry point the caller used
+
+**Date:** 2026-11-01
+**Decision:** every patched litellm entry point (`completion`,
+`text_completion`, `responses`, `embedding` and their async forms) runs
+under the outer-call mark and passes a call through untouched when the
+mark is already set, so litellm calling its own entry points (or the
+OpenAI SDK) underneath is reported once, in the caller's entry point's
+shape.
+**Why:** `text_completion` calls `completion`; `responses` bridges
+through `litellm.completion` on providers without a native Responses API.
+**Rejected alternative:** patching `litellm.main.completion` so the
+`completion` wrapper reports `text_completion` (every `acompletion`
+calls it too and would enter the sensor twice, and the call would be
+reported in the chat shape, not the one the caller got back).

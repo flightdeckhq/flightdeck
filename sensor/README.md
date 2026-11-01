@@ -96,7 +96,7 @@ types, described in the table.
 | Framework | Interceptor | Entry points |
 | --- | --- | --- |
 | Anthropic SDK — every client class (`Anthropic`, `AnthropicBedrock`, `AnthropicVertex`, `AnthropicFoundry`, `AnthropicAWS`, `AnthropicBedrockMantle`, `AnthropicGoogleCloud` and their async forms), direct or via a framework that constructs one internally (LangChain, LlamaIndex, CrewAI native) | `patch_anthropic_classes` | `messages.create` (including `stream=True`), `.stream`, `.parse`, async + sync, beta resources, the raw view (`with_raw_response`) and the streaming view (`with_streaming_response`, metered at `parse()`); streamed calls are metered from the in-stream usage events, and a raw stream (`create(stream=True)`) is assembled with the SDK's own accumulator, so it stores its response under `capture_prompts` and emits its `tool_call` events like a non-streamed call; every `post_call` carries `provider_metadata.platform` (`anthropic`, `bedrock`, `bedrock-mantle`, `aws`, `vertex`, `google-cloud`, `foundry`, or a gateway's host) |
-| OpenAI SDK (direct or via a framework that constructs `OpenAI()` internally — LangChain, LlamaIndex, CrewAI native) | `patch_openai_classes` | `OpenAI.chat.completions.create` / `.parse` / `.stream`, `.responses.create` / `.parse` / `.stream`, `.embeddings.create`, async + sync, and the raw and streaming views of each (`with_raw_response` / `with_streaming_response`, on the resource or the client; a streamed view call is metered when its response is parsed); streamed calls are metered from the chat usage chunk and `response.completed` and assembled with the SDK's own stream state, so they store their response under `capture_prompts` and emit their `tool_call` events; a Responses call stores its `instructions` and `input`, and an `mcp_call` names its server as `server_name` |
+| OpenAI SDK (direct or via a framework that constructs `OpenAI()` internally — LangChain, LlamaIndex, CrewAI native) | `patch_openai_classes` | `OpenAI.chat.completions.create` / `.parse` / `.stream` (and `OpenAI.beta.chat.completions.parse` / `.stream`), `.responses.create` / `.parse` / `.stream`, `.embeddings.create`, async + sync, and the raw and streaming views of each (`with_raw_response` / `with_streaming_response`, on the resource or the client; a streamed view call is metered when its response is parsed, and one whose stream is never read is reported as an aborted stream with no chunks); streamed calls are metered from the chat usage chunk and `response.completed` and assembled with the SDK's own stream state, so they store their response under `capture_prompts` and emit their `tool_call` events; a Responses call stores its `instructions` and `input`, and an `mcp_call` names its server as `server_name` |
 | litellm (router that aggregates many providers behind one function surface) | `patch_litellm_functions` | `litellm.completion`, `litellm.acompletion`, `litellm.embedding`, `litellm.aembedding` |
 | MCP (official Python `mcp` SDK, reached transitively by `langchain-mcp-adapters`, `llama-index-tools-mcp` and `mcpadapt`) | `patch_mcp_classes` | `mcp.client.session.ClientSession.initialize` on mcp 1.x / `.adopt` on mcp 2.x (server fingerprint capture, every 2.x handshake path), `.list_tools`, `.call_tool`, `.list_resources`, `.read_resource`, `.list_prompts`, `.get_prompt` (one `mcp_*` event type each), plus the stdio / SSE / streamable-HTTP / websocket transport client factories and mcp 2.x's `Client._build_session` for transport attribution. `call_tool` also enforces the MCP Protection Policy. Supported SDK range: `mcp>=1.20,<3`. |
 | CrewAI (sub-agent sessions) | `patch_crewai_classes` | `crewai.Agent.execute_task` / `.aexecute_task` — each Crew member's turn lands as a child session (`session_start` / `session_end`) with `parent_session_id`, `agent_role` taken from `Agent.role`, and incoming / outgoing message capture gated on `capture_prompts` |
@@ -137,8 +137,8 @@ builds).
 
 ### What the litellm interceptor catches, and what it doesn't
 
-**Catches.** Direct callers of `litellm.completion(**kwargs)` and
-`litellm.acompletion(**kwargs)` — the vast majority of litellm
+**Catches.** Direct callers of `litellm.completion` and
+`litellm.acompletion` — the vast majority of litellm
 integrations, including the default chat-completion surface exposed
 by user code, Router, and frameworks that route through the public
 API (CrewAI non-native flavors, langchain-community's litellm
@@ -147,12 +147,21 @@ the sensor's stream guard around litellm's `CustomStreamWrapper`,
 iterated the same way (`for` / `async for`), metered from the token
 counts litellm reports in its trailing usage chunk; that chunk is
 kept from a caller who did not ask for `stream_options.include_usage`.
-A call litellm serves through the OpenAI SDK (which the sensor also
-patches) is counted once, by the litellm wrapper. Embedding calls
-through `litellm.embedding(**kwargs)` and `litellm.aembedding(**kwargs)`
-are wrapped the same way, so embedding-model token usage lands too
-(`12_litellm.py` in the playground exercises sync and async streaming,
-the single-count assertion and the capture round-trip).
+`litellm.text_completion` / `atext_completion` and
+`litellm.responses` / `aresponses` are wrapped the same way, streaming
+included (a Responses stream is metered from its terminal event), on
+every route: one served through the OpenAI SDK, litellm's own httpx
+routes (Anthropic, the native Responses API), and a Responses call
+litellm bridges through `completion` for a provider without a native
+Responses API. Each litellm call is counted once, by the wrapper of
+the entry point the caller used, also where litellm calls the OpenAI
+SDK or its own `completion` underneath. Embedding calls through
+`litellm.embedding` and `litellm.aembedding` are wrapped the same way,
+so embedding-model token usage lands too. Arguments may be passed
+positionally or by name, as litellm takes them (`12_litellm.py` in the
+playground exercises sync and async streaming, the single-count
+assertion and the capture round-trip; `30_parse_and_litellm_routes.py`
+covers `text_completion` and `responses` on each route kind).
 
 **Does NOT catch.**
 - **Lower-level litellm entry points.** Some integrations reach
@@ -162,19 +171,9 @@ the single-count assertion and the capture round-trip).
   considered when the litellm interceptor was scoped and deferred —
   if framework reports surface calls that slip past the current
   coverage, file a new issue.
-- **`litellm.text_completion` / `atext_completion` and
-  `litellm.responses` / `aresponses`.** Neither is wrapped (planned in
-  [#170](https://github.com/flightdeckhq/flightdeck/issues/170)), but some routes are still reported. The legacy
-  completion API calls `completion` through the name bound in
-  `litellm.main`, which the module-attribute swap does not reach; on
-  an OpenAI chat model the OpenAI interceptor reports the SDK call it
-  makes, and litellm's own httpx routes are unobserved. The Responses
-  API on a provider without a native Responses API (for example
-  Anthropic) is bridged through the patched `litellm.completion` and reported
-  once as a chat call; native routes (OpenAI) go through litellm's own
-  httpx handler and are unobserved.
-- **SDK calls made from inside a litellm call.** The litellm wrapper
-  marks the call it serves so the SDK interceptors pass it through;
-  the mark covers the whole call, so an SDK call made while it is in
-  flight by a litellm callback, guardrail or custom provider, or by a
-  task created inside the call, is neither policed nor metered.
+- **SDK and litellm calls made from inside a litellm call.** The
+  litellm wrapper marks the call it serves so the SDK interceptors and
+  the other litellm wrappers pass it through; the mark covers the whole
+  call, so an SDK or litellm call made while it is in flight by a
+  litellm callback, guardrail or custom provider, or by a task created
+  inside the call, is neither policed nor metered.

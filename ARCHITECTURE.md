@@ -2501,10 +2501,10 @@ counts as no content.
 | Claude Code log record | Event |
 |---|---|
 | `claude_code.user_prompt` | `pre_call` |
-| `claude_code.api_request` | `post_call`: `model`, `model_requested` and `model_served`, `provider=anthropic`, `tokens_input` (`input_tokens` + `cache_read_tokens` + `cache_creation_tokens`), `tokens_output`, `tokens_cache_read`, `tokens_cache_creation`, `tokens_cache_creation_1h` (`cache_creation_1h_tokens`), `latency_ms` (`duration_ms`), `streaming.ttft_ms` (`ttft_ms`), `cost_usd` as `cost_reported` with `cost_source=agent`, `provider_metadata.request_id` and `provider_metadata.query_source` |
+| `claude_code.api_request` | `post_call`: `model`, `model_requested` and `model_served`, `provider=anthropic`, `tokens_input` (`input_tokens` + `cache_read_tokens` + `cache_creation_tokens`), `tokens_output`, `tokens_cache_read`, `tokens_cache_creation`, `tokens_cache_creation_1h` (`cache_creation_1h_tokens`), `latency_ms` (`duration_ms`), a `streaming` block holding only `ttft_ms` and `final_outcome=completed` (Claude Code reports neither chunk counts nor gaps, and the dashboard renders a block without them), `cost_usd` as `cost_reported` with `cost_source=agent`, `provider_metadata.request_id` and `provider_metadata.query_source` |
 | `claude_code.api_error` | `llm_error`: `error.http_status` (`status_code`), `error.request_id`, `retry_attempt` (`attempt`), `provider=anthropic`, classified from the status code and message; `terminal` is not set, since Claude Code reports each failed attempt |
 | `claude_code.tool_result` | `tool_call` with `tool_name`, `tool_use_id`, `duration_ms` and, when `success=false`, the error block. A record with `tool_name=mcp_tool` is an `mcp_tool_call` whose `server_name` and `tool_name` are its `tool_parameters.mcp_server_name` and `mcp_tool_name` (present only when the exporter sets Claude Code's `OTEL_LOG_TOOL_DETAILS=1`; without them it stays a `tool_call` named `mcp_tool`) |
-| `claude_code.tool_decision` with `decision=reject` | `session_signal` `permission_denied`, as the plugin reports a denied tool |
+| `claude_code.tool_decision` with `decision=reject` | `session_signal` `permission_denied`, as the plugin reports a denied tool; its `signal_data` is `tool_name`, `tool_use_id`, `reason` (the record's `source`, such as `config`) and, for an MCP tool, `mcp_server`, and never the tool's input |
 | `claude_code.subagent_completed` | the sub-agent's `session_end` (`close_reason=normal_exit`) |
 | any other record | counted as rejected; `claude_code.assistant_response` among them, since it can only be joined to its `post_call` by state kept across requests |
 
@@ -2520,17 +2520,21 @@ records share the parent's `session.id` and carry its `agent_id`: they
 belong to a child session, `uuid5(NAMESPACE_FLIGHTDECK,
 "flightdeck://otlp/claude-code/session/<session.id>/<agent_id>")`, with
 `parent_session_id` the parent's id and `agent_role` the record's
-`agent.name`. The Agent tool's own `tool_result` stays a `tool_call` on
+`agent.name`, else the `<type>` of a `query_source` of the form
+`agent:builtin:<type>`, else none. The Agent tool's own `tool_result` stays a `tool_call` on
 the parent.
 
-On the first record of a session a replica has not cached, ingestion
-reads the session row. When the row is missing or `closed`, it
+On the first mapped record of a session a replica has not cached,
+ingestion reads the session row. When the row is missing or `closed`, it
 publishes a synthetic `session_start` (id `uuid5(NAMESPACE_FLIGHTDECK,
-"flightdeck://otlp/claude-code/start/<session>/<event id of the
-record>")`) through the same attachment check and token stamping as
+"flightdeck://otlp/claude-code/start/<Flightdeck session id>/<event id
+of the record>")`) through the same attachment check and token stamping as
 `POST /v1/events`, so a closed session that resumes is re-attached;
 otherwise it publishes none. The cache is per replica and only saves the
-read. The synthetic `session_start` sets `sensor_version` to the
+read: an entry expires 10 minutes after it is cached, well inside the
+reaper's timeout, and publishing a session's `session_end` removes it,
+so a record for a session closed since is read again and re-attaches
+it. The synthetic `session_start` sets `sensor_version` to the
 resource's `service.version`, `capture_prompts` to the session's
 posture (below), and `context` to `claude_code_session_id`
 (`session.id`), `claude_code_version`, `os`, `arch`, `terminal_type`,
@@ -2578,7 +2582,6 @@ of its own (a sub-agent's ends with `subagent_completed`). It goes
 orphan-timeout reaper closes it after `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`
 (24 hours by default, `close_reason=orphan_timeout`); a record that
 arrives after that re-attaches it through the synthetic `session_start`.
-
 
 ---
 
@@ -5347,9 +5350,12 @@ Operator-actionable enrichment additionally carries:
   scanner sees the attribution without fetching the sibling pre_call.
 - `provider_metadata`: `{platform, ratelimit_remaining_tokens,
   ratelimit_remaining_requests, ratelimit_limit_tokens,
-  processing_ms, request_id, model_info}`. Best-effort per provider
+  processing_ms, request_id, model_info, query_source}`. Best-effort per provider
   (raw-response paths surface more headers; parsed-response paths
   may surface none). Field names are normalised across providers.
+  `query_source` is the Claude Code call site a call came from (for
+  example `sdk` or `agent:builtin:general-purpose`), set only on calls
+  reported over OTLP (see Ingestion API > OTLP ingest).
   `platform` is set on every Anthropic and OpenAI `post_call` and names
   the endpoint the client talked to. An OpenAI call reports `openai`, or
   `azure` for Azure OpenAI hosts; an Anthropic call reports `anthropic`, `bedrock`, `bedrock-mantle`, `aws`,

@@ -260,10 +260,11 @@ func withCORS(next http.Handler, origin string) http.Handler {
 
 // withPublicPrefix serves the routes registered on next both at their
 // own paths and under prefix, the path the service is published at
-// (/api/v1/fleet reaches the same handler as /v1/fleet). The compose
-// nginx and a Kubernetes Ingress both forward the path unchanged, since
-// rewriting it is specific to each proxy and ingress controller, so the
-// service accepts both forms itself.
+// (/api/v1/fleet reaches the same handler as /v1/fleet). Every edge
+// forwards the path unchanged: a Kubernetes Ingress because rewriting
+// it is specific to each ingress controller, the compose nginx so that
+// a redirect built from the request as received keeps the prefix. The
+// service therefore strips the prefix itself.
 //
 // The prefix must be the whole first segment of the escaped path, so
 // /apifoo and a prefix followed by an encoded slash are left alone and

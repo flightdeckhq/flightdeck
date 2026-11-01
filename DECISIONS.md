@@ -229,7 +229,8 @@ sessions; a new `close_reason` (aging already closes them).
 **Date:** 2026-11-01
 **Decision:** ingestion serves its routes both bare and under `/ingest`,
 the query API both bare and under `/api`. The Helm chart's Ingress
-and the compose nginx forward `/ingest/...` and `/api/...` unchanged.
+forwards `/ingest/...` and `/api/...` unchanged; the compose nginx keeps
+stripping the prefix.
 **Why:** the chart's Ingress had no rewrite, so every ingest and API call
 behind it reached a service that only serves `/v1/...` and got 404. The
 chart's `ingress.className` is the operator's choice, and the services
@@ -240,3 +241,19 @@ is ingress-nginx only, Traefik and the cloud controllers each need their
 own form, and regex paths are not portable `pathType: Prefix`. Moving
 the routes to `/ingest/v1/...` only would break every client of the
 bare paths.
+
+## D226 -- The compose nginx forwards /api and /ingest paths unchanged
+
+**Date:** 2026-11-01
+**Decision:** supersedes D225's compose clause: the compose nginx (dev
+and prod configs) and the vite dev proxy forward `/api/...` and
+`/ingest/...` as sent, as the Helm chart's Ingress does, and the
+services strip their prefix.
+**Why:** a redirect a service builds from the request as received
+(http-swagger reads `RequestURI`) loses a prefix the proxy stripped, so
+`/api/docs/` landed on `/docs/index.html`, the dashboard. Forwarding the
+path unchanged also sends the services the same path under every
+deployment.
+**Rejected alternative:** keep stripping in nginx and special-case the
+Swagger redirect (one proxy-specific rule per redirecting handler, and
+compose would still differ from the chart).

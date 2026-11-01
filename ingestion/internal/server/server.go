@@ -107,10 +107,11 @@ func withLogging(next http.Handler) http.Handler {
 
 // withPublicPrefix serves the routes registered on next both at their
 // own paths and under prefix, the path the service is published at
-// (/ingest/v1/events reaches the same handler as /v1/events). The
-// compose nginx and a Kubernetes Ingress both forward the path
-// unchanged, since rewriting it is specific to each proxy and ingress
-// controller, so the service accepts both forms itself.
+// (/ingest/v1/events reaches the same handler as /v1/events). Every
+// edge forwards the path unchanged: a Kubernetes Ingress because
+// rewriting it is specific to each ingress controller, the compose
+// nginx so that a redirect built from the request as received keeps the
+// prefix. The service therefore strips the prefix itself.
 //
 // The prefix must be the whole first segment of the escaped path, so
 // /ingestfoo and a prefix followed by an encoded slash are left alone

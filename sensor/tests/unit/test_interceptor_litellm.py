@@ -475,19 +475,19 @@ async def test_sensor_litellm_wrapper_streams_async_through_the_guard() -> None:
 # ----- text_completion and responses: not patched, partly reported ------
 
 
-def test_text_completion_on_an_openai_chat_model_is_reported_by_the_openai_interceptor(
+def test_text_completion_on_an_openai_chat_model_is_reported_once_by_the_litellm_wrapper(
     session: Session,
 ) -> None:
-    """text_completion calls ``completion`` through the name bound in
-    ``litellm.main``, which the package-attribute patch does not reach,
-    so no mark is set when litellm makes the SDK call: the OpenAI
-    interceptor reports it, once."""
+    """text_completion builds a chat request that litellm serves through
+    the OpenAI SDK. The text_completion wrapper sets the mark, so the
+    OpenAI interceptor passes the SDK call through and the call is
+    reported once, by the wrapper."""
     transport = _Transport()
     client = _sdk_client(transport)
     response = litellm.text_completion(model="gpt-4o-mini", prompt="hi", client=client)
     assert response.usage.prompt_tokens == SDK_PROMPT_TOKENS
     assert [r.url.path for r in transport.requests] == ["/v1/chat/completions"]
-    assert transport.marks == [False]  # the litellm wrapper was not on the path
+    assert transport.marks == [True]  # the litellm wrapper was on the path
     assert len(_events_of(session, "pre_call")) == 1
     (pc,) = _post_calls(session)
     assert pc["model"] == "gpt-4o-mini"
@@ -589,8 +589,9 @@ def test_responses_bridged_through_completion_is_reported_once_as_a_chat_call(
     session: Session,
 ) -> None:
     """A provider without a native Responses API (Anthropic) is bridged
-    through the package-level ``litellm.completion`` -- the patched
-    wrapper -- so the call is reported once, as a chat call."""
+    through the package-level ``litellm.completion``, whose patched
+    wrapper passes the call through under the responses wrapper's mark,
+    so the call is reported once, by the responses wrapper."""
     transport = _LitellmHttpTransport()
     response = litellm.responses(
         model="anthropic/claude-3-5-haiku-20241022",
@@ -622,10 +623,10 @@ async def test_aresponses_bridged_through_acompletion_is_reported_once(session: 
 
 
 @requires_litellm_responses
-def test_responses_on_a_native_route_is_unobserved(session: Session) -> None:
+def test_responses_on_a_native_route_is_reported_once(session: Session) -> None:
     """On a provider with a native Responses API (OpenAI) litellm uses
-    its own httpx handler: neither the litellm wrapper nor an SDK
-    interceptor is on the path, so nothing is reported."""
+    its own httpx handler, which no SDK interceptor sees; the responses
+    wrapper reports the call, from the Responses usage shape."""
     transport = _LitellmHttpTransport()
     response = litellm.responses(
         model="gpt-4o-mini",
@@ -635,8 +636,9 @@ def test_responses_on_a_native_route_is_unobserved(session: Session) -> None:
     )
     assert response.usage.input_tokens == 9
     assert transport.paths == ["/v1/responses"]
-    assert _events_of(session, "pre_call") == []
-    assert _post_calls(session) == []
+    assert len(_events_of(session, "pre_call")) == 1
+    (pc,) = _post_calls(session)
+    assert (pc["tokens_input"], pc["tokens_output"]) == (9, 2)
 
 
 # ----- the mark's scope, policy and errors on the SDK route ----------------

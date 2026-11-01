@@ -271,7 +271,9 @@ class PromptContent:
     ``EmbeddingsContentViewer``. An OpenAI Responses call puts its
     ``input`` here too (a string or a list of input items), with its
     ``instructions`` in ``system``; ``messages`` stays empty because the
-    Responses API has no messages parameter.
+    Responses API has no messages parameter. ``litellm.responses`` is
+    stored the same way, and ``litellm.text_completion``, whose request
+    has no ``messages`` either, puts its ``prompt`` here verbatim.
     """
 
     system: str | None

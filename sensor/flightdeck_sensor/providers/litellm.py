@@ -539,3 +539,403 @@ def _litellm_details(obj: Any) -> CallDetails | None:
         cost_source="agent" if reported is not None else None,
     )
     return None if details == CallDetails() else details
+
+
+# ----------------------------------------------------------------------
+# litellm.text_completion / litellm.responses
+# ----------------------------------------------------------------------
+
+
+def _field(obj: Any, name: str) -> Any:
+    """``obj.name`` or ``obj[name]``: litellm hands back pydantic objects
+    and plain dicts for the same Responses items."""
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def _as_json(value: Any) -> Any:
+    """``value`` when it is plain JSON data, else its ``str``; a request
+    parameter is stored verbatim and must still encode."""
+    import json as _json
+
+    try:
+        _json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _dump(response: Any) -> dict[str, Any]:
+    """A response object as the dict content capture stores; empty for
+    anything that is not a response (a stream wrapper's own state, which
+    holds the request and litellm's internals, is never dumped).
+    pydantic's serializer warnings are silenced: litellm's bridged
+    Responses object holds its ``usage`` as a plain dict, which pydantic
+    reports on the caller's console, and the caller never asked for the
+    dump."""
+    if isinstance(response, dict):
+        return response
+    dump = getattr(response, "model_dump", None)
+    if callable(dump):
+        try:
+            dumped = dump(warnings=False)
+        except TypeError:  # a model_dump that takes no ``warnings``
+            dumped = dump()
+        if isinstance(dumped, dict):
+            return dumped
+    return {}
+
+
+def _prompt_text(prompt: Any) -> str:
+    """The text of a ``text_completion`` prompt for the estimator: a
+    string, a list of strings joined, or token ids (one character per id,
+    so the char heuristic does not price them at zero)."""
+    if isinstance(prompt, str):
+        return prompt
+    if isinstance(prompt, list):
+        return "\n".join(
+            p if isinstance(p, str) else " " * len(p) if isinstance(p, list) else " "
+            for p in prompt
+        )
+    return "" if prompt is None else str(prompt)
+
+
+def _usage_total(usage: Any) -> int:
+    """``prompt_tokens + completion_tokens`` of a litellm ``Usage``, zero
+    for anything that is not one."""
+    prompt = _count(_field(usage, "prompt_tokens")) or 0
+    completion = _count(_field(usage, "completion_tokens")) or 0
+    return prompt + completion
+
+
+class _TextCompletionAccumulator:
+    """Assembles a streamed ``text_completion`` (``TextCompletionResponse``
+    chunks carrying ``choices[0].text``) into the response a non-streamed
+    call returns, for content capture."""
+
+    def __init__(self) -> None:
+        self._pieces: list[str] = []
+        self._id: Any = None
+        self._model: Any = None
+        self._finish_reason: str | None = None
+
+    def add(self, chunk: Any) -> None:
+        self._id = self._id or _field(chunk, "id")
+        self._model = self._model or _field(chunk, "model")
+        for choice in _field(chunk, "choices") or []:
+            text = _field(choice, "text")
+            if isinstance(text, str):
+                self._pieces.append(text)
+            reason = _field(choice, "finish_reason")
+            if isinstance(reason, str):
+                self._finish_reason = reason
+
+    def message(self) -> Any | None:
+        if not self._pieces and self._finish_reason is None:
+            return None
+        return {
+            "id": self._id if isinstance(self._id, str) else None,
+            "object": "text_completion",
+            "model": self._model if isinstance(self._model, str) else None,
+            "choices": [
+                {"index": 0, "text": "".join(self._pieces), "finish_reason": self._finish_reason}
+            ],
+        }
+
+
+class LitellmTextCompletionProvider(LitellmProvider):
+    """Adapter for ``litellm.text_completion`` / ``atext_completion``.
+
+    The request carries ``prompt`` (a string, a list of strings, or token
+    ids) instead of ``messages``; the response is a
+    ``TextCompletionResponse`` whose usage is litellm's chat ``Usage`` and
+    whose ``choices[0]`` carries ``text`` and ``finish_reason``. A
+    streamed call yields ``TextCompletionResponse`` chunks, every one of
+    them with a ``Usage`` (zeros unless the chunk is litellm's trailing
+    usage chunk), so the end of the stream is the chunk whose usage is
+    not zero.
+    """
+
+    def estimate_tokens(self, request_kwargs: dict[str, Any]) -> tuple[int, str]:
+        """Count the prompt as one user message (litellm sends it as one)."""
+        try:
+            text = _prompt_text(request_kwargs.get("prompt"))
+            return super().estimate_tokens(
+                {
+                    "model": request_kwargs.get("model", ""),
+                    "messages": [{"role": "user", "content": text}],
+                }
+            )
+        except Exception:
+            return 0, "none"
+
+    def usage_from_stream_chunk(self, chunk: Any) -> TokenUsage | None:
+        """The trailing chunk's usage; the zero ``Usage`` every other
+        chunk carries is no usage."""
+        try:
+            if _usage_total(getattr(chunk, "usage", None)) == 0:
+                return None
+            return super().usage_from_stream_chunk(chunk)
+        except Exception:
+            return None
+
+    def chunk_completes_stream(self, chunk: Any) -> bool:
+        """The chunk carrying a usage that is not zero, the last one."""
+        try:
+            return _usage_total(getattr(chunk, "usage", None)) > 0
+        except Exception:
+            return False
+
+    def stream_accumulator(
+        self, stream: Any, request_kwargs: dict[str, Any]
+    ) -> StreamAccumulator | None:
+        """Only content capture reads the assembled text."""
+        return _TextCompletionAccumulator() if self._capture_prompts else None
+
+    def extract_content(
+        self,
+        request_kwargs: dict[str, Any],
+        response: Any,
+        event_type: Any = None,
+    ) -> PromptContent | None:
+        """The ``prompt`` verbatim in ``input`` (the request has no
+        ``messages``) and the response. ``None`` when capture is off."""
+        if not self._capture_prompts:
+            return None
+        try:
+            from datetime import datetime
+
+            return PromptContent(
+                system=None,
+                messages=[],
+                tools=None,
+                response=_dump(response),
+                provider="litellm",
+                model=request_kwargs.get("model", ""),
+                session_id="",
+                event_id="",
+                captured_at=datetime.now(UTC).isoformat(),
+                input=_as_json(request_kwargs.get("prompt")),
+            )
+        except Exception:
+            _log.debug("extract_content failed", exc_info=True)
+            return None
+
+
+# Responses API events after which no further output arrives, and the one
+# that names why a response stopped early.
+_RESPONSES_TERMINAL_EVENTS = frozenset(
+    {"response.completed", "response.incomplete", "response.failed"}
+)
+_RESPONSES_INCOMPLETE_EVENT = "response.incomplete"
+_RESPONSES_STATUS_INCOMPLETE = "incomplete"
+# The Responses output item a function call the model issued arrives as.
+_RESPONSES_FUNCTION_CALL = "function_call"
+
+
+def _responses_messages(request_kwargs: dict[str, Any]) -> list[Any]:
+    """Chat-shaped messages from a Responses request's ``instructions``
+    and ``input`` (a string or a list of input items), for the estimator
+    only."""
+    out: list[Any] = []
+    instructions = request_kwargs.get("instructions")
+    if isinstance(instructions, str) and instructions:
+        out.append({"role": "system", "content": instructions})
+    inp = request_kwargs.get("input")
+    if isinstance(inp, str):
+        out.append({"role": "user", "content": inp})
+    elif isinstance(inp, list | tuple):
+        for item in inp:
+            content = _field(item, "content")
+            out.append(
+                {"role": "user", "content": content if isinstance(content, str) else str(item)}
+            )
+    return out
+
+
+class _ResponsesAccumulator:
+    """Keeps the whole response a streamed Responses call's terminal event
+    carries (``response.completed`` / ``.incomplete`` / ``.failed``);
+    nothing is assembled before it."""
+
+    def __init__(self) -> None:
+        self._final: Any = None
+
+    def add(self, event: Any) -> None:
+        if self._final is None and _field(event, "type") in _RESPONSES_TERMINAL_EVENTS:
+            self._final = _field(event, "response")
+
+    def message(self) -> Any | None:
+        return self._final
+
+
+class LitellmResponsesProvider(LitellmProvider):
+    """Adapter for ``litellm.responses`` / ``aresponses``.
+
+    litellm returns the Responses API shape on every route, a native one
+    (OpenAI) and one it bridges through chat completions (Anthropic):
+    ``usage.input_tokens`` / ``output_tokens`` with
+    ``input_tokens_details.cached_tokens`` and
+    ``output_tokens_details.reasoning_tokens``, tool calls as
+    ``function_call`` items in ``output``, ``status`` /
+    ``incomplete_details`` for a response cut short. A streamed call
+    yields Responses events; the terminal one carries the whole response
+    and its usage.
+    """
+
+    def estimate_tokens(self, request_kwargs: dict[str, Any]) -> tuple[int, str]:
+        """Count ``instructions`` and ``input`` as chat messages."""
+        try:
+            return super().estimate_tokens(
+                {
+                    "model": request_kwargs.get("model", ""),
+                    "messages": _responses_messages(request_kwargs),
+                    "tools": request_kwargs.get("tools", []),
+                }
+            )
+        except Exception:
+            return 0, "none"
+
+    def extract_usage(self, response: Any) -> TokenUsage:
+        """``input_tokens`` / ``output_tokens`` (``input_tokens`` already
+        includes the cached tokens, as ``prompt_tokens`` does); the chat
+        shape when a route hands that back instead. Never raises."""
+        try:
+            usage = _field(response, "usage")
+            input_tokens = _count(_field(usage, "input_tokens"))
+            output_tokens = _count(_field(usage, "output_tokens"))
+            if input_tokens is None and output_tokens is None:
+                return super().extract_usage(response)
+            return TokenUsage(
+                input_tokens=input_tokens or 0,
+                output_tokens=output_tokens or 0,
+                cache_read_tokens=_count(
+                    _field(_field(usage, "input_tokens_details"), "cached_tokens")
+                )
+                or 0,
+                reasoning_tokens=_count(
+                    _field(_field(usage, "output_tokens_details"), "reasoning_tokens")
+                ),
+            )
+        except Exception:
+            return TokenUsage(input_tokens=0, output_tokens=0)
+
+    def usage_from_stream_chunk(self, chunk: Any) -> TokenUsage | None:
+        """The usage of the response a terminal event carries."""
+        try:
+            response = _field(chunk, "response")
+            if response is None or _field(response, "usage") is None:
+                return None
+            result = self.extract_usage(response)
+            return result if result.total > 0 else None
+        except Exception:
+            return None
+
+    def call_details_from_stream_chunk(self, chunk: Any) -> CallDetails | None:
+        """Responses events carry the model on ``event.response``."""
+        try:
+            response = _field(chunk, "response")
+            return _litellm_details(response) if response is not None else None
+        except Exception:
+            return None
+
+    def chunk_completes_stream(self, chunk: Any) -> bool:
+        """A terminal Responses event."""
+        try:
+            return _field(chunk, "type") in _RESPONSES_TERMINAL_EVENTS
+        except Exception:
+            return False
+
+    def stream_accumulator(
+        self, stream: Any, request_kwargs: dict[str, Any]
+    ) -> StreamAccumulator | None:
+        """The terminal event's response, kept always: the tool calls are
+        read from it, and holding it costs one reference."""
+        return _ResponsesAccumulator()
+
+    def response_stop_reason(self, response: Any) -> str | None:
+        """``incomplete_details.reason`` of a response whose ``status`` is
+        ``incomplete``; ``None`` for a completed one."""
+        try:
+            if _field(response, "status") != _RESPONSES_STATUS_INCOMPLETE:
+                return None
+            reason = _field(_field(response, "incomplete_details"), "reason")
+            return reason if isinstance(reason, str) else None
+        except Exception:
+            return None
+
+    def stop_reason_from_stream_chunk(self, chunk: Any) -> str | None:
+        """The reason a ``response.incomplete`` event names."""
+        try:
+            if _field(chunk, "type") != _RESPONSES_INCOMPLETE_EVENT:
+                return None
+            return self.response_stop_reason(_field(chunk, "response"))
+        except Exception:
+            return None
+
+    def extract_tool_invocations(self, response: Any) -> list[ToolInvocation]:
+        """The ``function_call`` items in ``output``. Never raises."""
+        try:
+            import json as _json
+
+            invocations: list[ToolInvocation] = []
+            for item in _field(response, "output") or []:
+                if _field(item, "type") != _RESPONSES_FUNCTION_CALL:
+                    continue
+                name = _field(item, "name")
+                if not isinstance(name, str) or not name:
+                    continue
+                args_raw = _field(item, "arguments")
+                parsed_input: dict[str, Any] = {}
+                if isinstance(args_raw, dict):
+                    parsed_input = args_raw
+                elif isinstance(args_raw, str) and args_raw:
+                    with contextlib.suppress(Exception):
+                        decoded = _json.loads(args_raw)
+                        if isinstance(decoded, dict):
+                            parsed_input = decoded
+                call_id = _field(item, "call_id") or _field(item, "id")
+                invocations.append(
+                    ToolInvocation(
+                        name=name,
+                        tool_input=parsed_input,
+                        tool_id=str(call_id) if call_id else None,
+                    )
+                )
+            return invocations
+        except Exception:
+            _log.debug("extract_tool_invocations failed", exc_info=True)
+            return []
+
+    def extract_content(
+        self,
+        request_kwargs: dict[str, Any],
+        response: Any,
+        event_type: Any = None,
+    ) -> PromptContent | None:
+        """``instructions`` in ``system`` and ``input`` verbatim in
+        ``input`` (the Responses API has no ``messages``), as the OpenAI
+        adapter stores a Responses call. ``None`` when capture is off."""
+        if not self._capture_prompts:
+            return None
+        try:
+            from datetime import datetime
+
+            instructions = request_kwargs.get("instructions")
+            tools = request_kwargs.get("tools")
+            return PromptContent(
+                system=instructions if isinstance(instructions, str) else None,
+                messages=[],
+                tools=_as_json(tools) if isinstance(tools, list) else None,
+                response=_dump(response),
+                provider="litellm",
+                model=request_kwargs.get("model", ""),
+                session_id="",
+                event_id="",
+                captured_at=datetime.now(UTC).isoformat(),
+                input=_as_json(request_kwargs.get("input")),
+            )
+        except Exception:
+            _log.debug("extract_content failed", exc_info=True)
+            return None

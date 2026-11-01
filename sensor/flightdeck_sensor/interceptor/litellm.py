@@ -1,12 +1,14 @@
 """litellm proxy: intercepts ``litellm.completion()`` / ``acompletion()``,
-streaming included, and ``litellm.embedding()`` / ``aembedding()``.
+``litellm.text_completion()`` / ``atext_completion()``,
+``litellm.responses()`` / ``aresponses()`` (streaming included) and
+``litellm.embedding()`` / ``aembedding()``.
 
 Why this module exists. litellm routes calls to many underlying providers
 via module-level entry points. Its Anthropic route uses raw
 ``httpx.Client.post()`` instead of constructing ``anthropic.Anthropic``,
-so the sensor's SDK interceptors never get a chance to see the call.
-This module closes the gap by patching the litellm functions
-directly.
+and its native Responses API route uses its own httpx handler too, so the
+sensor's SDK interceptors never get a chance to see those calls. This
+module closes the gap by patching the litellm functions directly.
 
 Patching shape diverges from the Anthropic/OpenAI interceptors
 intentionally: litellm's public surface is module-level functions,
@@ -17,55 +19,48 @@ attributes for later :func:`unpatch_litellm_functions` restoration.
 The pre-call / post-call plumbing still flows through
 ``interceptor/base.call`` / ``call_async`` / ``call_stream`` /
 ``call_stream_async`` so every interceptor emits the same event schema.
+A wrapper takes the entry point's arguments as litellm does, positional
+ones included.
 
 Patching ``litellm`` in place is the recommended integration path (call
-:func:`flightdeck_sensor.patch` and every ``litellm.completion`` call
-anywhere in the process is intercepted). :class:`SensorLitellm`
-exists for programmatic per-callsite wrapping -- a narrow use case
-where a user wants to observe one specific call without mutating the
-litellm module globals. Both paths share the helpers in this module,
-so they cannot drift.
+:func:`flightdeck_sensor.patch` and every litellm call anywhere in the
+process is intercepted). :class:`SensorLitellm` exists for programmatic
+per-callsite wrapping -- a narrow use case where a user wants to observe
+one specific call without mutating the litellm module globals. Both
+paths share the helpers in this module, so they cannot drift.
 
-**A call served through the OpenAI SDK is reported once.** litellm's
-OpenAI route constructs ``openai.OpenAI`` and calls
-``chat.completions.create`` on it, which the sensor's OpenAI interceptor
-also intercepts. Every underlying litellm call this module makes runs
-under ``base.outer_intercept()`` (see :func:`_as_outer_call`), and the
-SDK interceptors hand a call made under that mark to the SDK untouched,
-so the litellm wrapper is the single reporter: one ``pre_call``, one
-policy check and one ``post_call`` (or ``llm_error``) per litellm call.
+**Every litellm call is reported once.** Every underlying litellm call
+this module makes runs under ``base.outer_intercept()`` (see
+:func:`_as_outer_call`), and every interceptor the call reaches while it
+is in flight hands it through untouched: the SDK interceptors (litellm's
+OpenAI chat route constructs ``openai.OpenAI`` and calls
+``chat.completions.create`` on it) and this module's own wrappers.
+litellm makes such inner calls itself: ``text_completion`` builds a chat
+request and calls ``completion``; ``responses`` on a provider without a
+native Responses API (Anthropic) bridges through the package-level
+``litellm.completion`` / ``acompletion``. So the wrapper of the entry
+point the caller used is the single reporter: one ``pre_call``, one
+policy check and one ``post_call`` (or ``llm_error``) per litellm call,
+carrying the shape that entry point returns (a ``TextCompletionResponse``
+for ``text_completion``, the Responses API shape for ``responses`` on
+every route).
 
 **Streaming.** ``stream=True`` returns the sensor's stream guard
-(:class:`base.GuardedStream` from ``completion``,
-:class:`base.GuardedAsyncStream` from ``acompletion``) around litellm's
-``CustomStreamWrapper``. The guard iterates like the wrapper (``for
-chunk in ...`` / ``async for chunk in ...``) and proxies its attributes.
-The sensor asks litellm for ``stream_options={"include_usage": True}``,
-which makes litellm append one chunk carrying the provider's ``usage``
-after the ``finish_reason`` chunk; the guard meters that chunk and hides
-it from a caller who did not ask for usage, so their loop sees exactly
-the chunks it would see without the sensor. litellm's wrapper is not a
-context manager and has no ``close()``, so the guard is used as a plain
-iterator; the ``post_call`` is emitted when the stream is read to its
-end, or when the guard is collected after a loop left early.
-
-**Not patched, partly reported.** ``litellm.text_completion`` /
-``atext_completion`` build a chat request and call ``completion``
-through the name bound in ``litellm.main``, which the package-attribute
-swap does not reach, so this wrapper never sees them (patching
-``litellm.main.completion`` as well would make every ``acompletion``,
-which calls ``completion`` the same way, enter the sensor twice per
-call). On an OpenAI chat model the call goes through the OpenAI SDK
-with no mark set, so the OpenAI interceptor reports it as a chat call;
-a route litellm serves with its own httpx handler (Anthropic) is
-unobserved. ``litellm.responses`` / ``aresponses`` on a provider
-without a native Responses API (for example Anthropic) are bridged through
-the package-level ``litellm.completion`` / ``acompletion`` -- this
-wrapper -- and reported once as a chat call; on a native route
-(OpenAI) they go through litellm's own httpx handler and return the
-Responses API shape (``usage.input_tokens`` / ``output_tokens``,
-``input=`` instead of ``messages=``), which needs its own provider
-adapter before it can be metered, so they are unobserved.
+(:class:`base.GuardedStream` from the sync entry points,
+:class:`base.GuardedAsyncStream` from the async ones) around litellm's
+own stream (``CustomStreamWrapper``, ``TextCompletionStreamWrapper``, a
+Responses streaming iterator). The guard iterates like the wrapper
+(``for chunk in ...`` / ``async for chunk in ...``) and proxies its
+attributes. For ``completion`` and ``text_completion`` the sensor asks
+litellm for ``stream_options={"include_usage": True}``, which makes
+litellm append one chunk carrying the provider's ``usage`` after the
+``finish_reason`` chunk; the guard meters that chunk and hides it from a
+caller who did not ask for usage, so their loop sees exactly the chunks
+it would see without the sensor. A Responses stream carries its usage on
+its terminal event and needs no option. litellm's stream wrappers are
+not context managers and have no ``close()``, so the guard is used as a
+plain iterator; the ``post_call`` is emitted when the stream is read to
+its end, or when the guard is collected after a loop left early.
 
 **Scope of the mark.** It covers the whole litellm call, so an SDK
 call made from inside it -- by a litellm callback, guardrail or custom
@@ -84,12 +79,18 @@ and will be filed separately if framework reports surface it.
 from __future__ import annotations
 
 import copy
+import functools
+import inspect
 import logging
 from typing import TYPE_CHECKING, Any
 
 from flightdeck_sensor.core.types import EventType
 from flightdeck_sensor.interceptor import base
-from flightdeck_sensor.providers.litellm import LitellmProvider
+from flightdeck_sensor.providers.litellm import (
+    LitellmProvider,
+    LitellmResponsesProvider,
+    LitellmTextCompletionProvider,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Coroutine
@@ -108,13 +109,14 @@ try:
 
     _OrigCompletion: Any = _litellm_module.completion
     _OrigAcompletion: Any = _litellm_module.acompletion
-    # Embedding / aembedding are the two entry points for
-    # embedding-model calls. We capture them for the same reasons we
-    # capture completion -- tokens charged are real, and embeddings
-    # dominate RAG workflows. ``getattr`` with a fallback keeps the
-    # import resilient against an older litellm that predates aembedding.
+    # ``getattr`` with a fallback keeps the import resilient against a
+    # litellm that lacks one of the other entry points.
     _OrigEmbedding: Any = getattr(_litellm_module, "embedding", None)
     _OrigAembedding: Any = getattr(_litellm_module, "aembedding", None)
+    _OrigTextCompletion: Any = getattr(_litellm_module, "text_completion", None)
+    _OrigAtextCompletion: Any = getattr(_litellm_module, "atext_completion", None)
+    _OrigResponses: Any = getattr(_litellm_module, "responses", None)
+    _OrigAresponses: Any = getattr(_litellm_module, "aresponses", None)
     _LITELLM_AVAILABLE = True
 except ImportError:
     _litellm_module = None  # type: ignore[assignment]
@@ -122,6 +124,10 @@ except ImportError:
     _OrigAcompletion = None
     _OrigEmbedding = None
     _OrigAembedding = None
+    _OrigTextCompletion = None
+    _OrigAtextCompletion = None
+    _OrigResponses = None
+    _OrigAresponses = None
     _LITELLM_AVAILABLE = False
 
 
@@ -148,10 +154,11 @@ def _current_session() -> Session | None:
 
 
 def _as_outer_call(fn: Callable[..., Any]) -> Callable[..., Any]:
-    """``fn`` run under :func:`base.outer_intercept`, so an SDK
-    interceptor litellm reaches while serving the call (its OpenAI route
-    calls ``openai.OpenAI().chat.completions.create``) passes the call
-    through instead of reporting it a second time."""
+    """``fn`` run under :func:`base.outer_intercept`, so an interceptor
+    litellm reaches while serving the call (its OpenAI route calls
+    ``openai.OpenAI().chat.completions.create``; its Responses bridge
+    calls ``litellm.completion``) passes the call through instead of
+    reporting it a second time."""
 
     def _call(**kwargs: Any) -> Any:
         with base.outer_intercept():
@@ -165,14 +172,40 @@ def _as_outer_async_call(
 ) -> Callable[..., Coroutine[Any, Any, Any]]:
     """Async form of :func:`_as_outer_call`. The mark is set inside the
     coroutine, so it lives in the task that awaits litellm -- where
-    litellm's SDK call runs, or its executor hop for sync-only
-    providers, which copies the context."""
+    litellm's SDK call runs, or its executor hop for sync-only providers
+    and for ``atext_completion`` / ``aresponses``, which copies the
+    context."""
 
     async def _call(**kwargs: Any) -> Any:
         with base.outer_intercept():
             return await fn(**kwargs)
 
     return _call
+
+
+def _named_arguments(
+    signature_of: Callable[..., Any], args: tuple[Any, ...], kwargs: dict[str, Any]
+) -> dict[str, Any] | None:
+    """``args`` bound to the names of ``signature_of``'s leading
+    positional parameters and merged into ``kwargs``, so a caller's
+    ``litellm.completion("gpt-4o", messages)`` reaches the sensor with
+    named arguments, the only form the intercept reads. ``None`` when the
+    arguments cannot be bound (too many positional arguments, or one also
+    passed by name); the caller then hands them to litellm untouched,
+    which raises exactly what litellm raises without the sensor."""
+    if not args:
+        return kwargs
+    try:
+        names = [
+            p.name
+            for p in inspect.signature(signature_of).parameters.values()
+            if p.kind in (p.POSITIONAL_ONLY, p.POSITIONAL_OR_KEYWORD)
+        ]
+    except (TypeError, ValueError):
+        return None
+    if len(args) > len(names) or any(name in kwargs for name in names[: len(args)]):
+        return None
+    return {**dict(zip(names, args, strict=False)), **kwargs}
 
 
 def _inject_stream_options(kwargs: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -221,6 +254,29 @@ def _is_usage_only_chunk(chunk: Any) -> bool:
     return True
 
 
+def _has_usage(usage: Any) -> bool:
+    """Whether a litellm ``Usage`` counts any tokens."""
+    total = 0
+    for name in ("prompt_tokens", "completion_tokens"):
+        value = getattr(usage, name, None)
+        if isinstance(value, int) and not isinstance(value, bool):
+            total += value
+    return total > 0
+
+
+def _is_text_usage_only_chunk(chunk: Any) -> bool:
+    """litellm's trailing usage chunk on a ``text_completion`` stream: a
+    ``TextCompletionResponse`` whose usage counts tokens (every chunk
+    carries a ``Usage``, zeros on all but this one) and whose choice
+    carries no text and no finish reason."""
+    if not _has_usage(getattr(chunk, "usage", None)):
+        return False
+    for choice in getattr(chunk, "choices", None) or []:
+        if getattr(choice, "finish_reason", None) or getattr(choice, "text", None):
+            return False
+    return True
+
+
 def _intercept_completion(
     orig: Any,
     kwargs: dict[str, Any],
@@ -229,19 +285,7 @@ def _intercept_completion(
 ) -> Any:
     """``litellm.completion`` through the sensor: a stream guard for
     ``stream=True``, the plain call intercept otherwise."""
-    if kwargs.get("stream"):
-        call_kwargs, caller_asked = _inject_stream_options(kwargs)
-        hide_chunk = None if caller_asked else _is_usage_only_chunk
-        # Opened eagerly: litellm sends the request inside completion(),
-        # so provider errors surface at the call, as without the sensor.
-        return base.call_stream(
-            _as_outer_call(orig),
-            call_kwargs,
-            session,
-            provider,
-            hide_chunk=hide_chunk,
-        ).open()
-    return base.call(_as_outer_call(orig), kwargs, session, provider)
+    return _intercept_sync(orig, kwargs, session, provider, _is_usage_only_chunk)
 
 
 async def _intercept_acompletion(
@@ -253,9 +297,87 @@ async def _intercept_acompletion(
     """``litellm.acompletion`` through the sensor; ``stream=True``
     resolves to the async stream guard, matching ``await
     litellm.acompletion(..., stream=True)`` on the unpatched module."""
+    return await _intercept_async(orig, kwargs, session, provider, _is_usage_only_chunk)
+
+
+def _intercept_text_completion(
+    orig: Any,
+    kwargs: dict[str, Any],
+    session: Session,
+    provider: LitellmProvider,
+) -> Any:
+    """``litellm.text_completion`` through the sensor (see
+    :func:`_intercept_completion`); the usage chunk of a stream is a
+    ``TextCompletionResponse``."""
+    return _intercept_sync(orig, kwargs, session, provider, _is_text_usage_only_chunk)
+
+
+async def _intercept_atext_completion(
+    orig: Any,
+    kwargs: dict[str, Any],
+    session: Session,
+    provider: LitellmProvider,
+) -> Any:
+    """``litellm.atext_completion`` through the sensor."""
+    return await _intercept_async(orig, kwargs, session, provider, _is_text_usage_only_chunk)
+
+
+def _intercept_responses(
+    orig: Any,
+    kwargs: dict[str, Any],
+    session: Session,
+    provider: LitellmProvider,
+) -> Any:
+    """``litellm.responses`` through the sensor. A Responses stream
+    carries its usage on its terminal event, so nothing is added to the
+    request and nothing is hidden from the caller."""
+    return _intercept_sync(orig, kwargs, session, provider, None)
+
+
+async def _intercept_aresponses(
+    orig: Any,
+    kwargs: dict[str, Any],
+    session: Session,
+    provider: LitellmProvider,
+) -> Any:
+    """``litellm.aresponses`` through the sensor."""
+    return await _intercept_async(orig, kwargs, session, provider, None)
+
+
+def _intercept_sync(
+    orig: Any,
+    kwargs: dict[str, Any],
+    session: Session,
+    provider: LitellmProvider,
+    usage_chunk: Callable[[Any], bool] | None,
+) -> Any:
+    """A sync entry point through the sensor: a stream guard for
+    ``stream=True`` (with the usage option added when ``usage_chunk``
+    names the chunk it produces), the plain call intercept otherwise."""
     if kwargs.get("stream"):
-        call_kwargs, caller_asked = _inject_stream_options(kwargs)
-        hide_chunk = None if caller_asked else _is_usage_only_chunk
+        call_kwargs, hide_chunk = _stream_request(kwargs, usage_chunk)
+        # Opened eagerly: litellm sends the request inside the call, so
+        # provider errors surface at the call, as without the sensor.
+        return base.call_stream(
+            _as_outer_call(orig),
+            call_kwargs,
+            session,
+            provider,
+            hide_chunk=hide_chunk,
+        ).open()
+    return base.call(_as_outer_call(orig), kwargs, session, provider)
+
+
+async def _intercept_async(
+    orig: Any,
+    kwargs: dict[str, Any],
+    session: Session,
+    provider: LitellmProvider,
+    usage_chunk: Callable[[Any], bool] | None,
+) -> Any:
+    """Async form of :func:`_intercept_sync`."""
+    if kwargs.get("stream"):
+        call_kwargs, hide_chunk = _stream_request(kwargs, usage_chunk)
         guard = base.call_stream_async(
             _as_outer_async_call(orig),
             call_kwargs,
@@ -265,6 +387,18 @@ async def _intercept_acompletion(
         )
         return await guard.open()
     return await base.call_async(_as_outer_async_call(orig), kwargs, session, provider)
+
+
+def _stream_request(
+    kwargs: dict[str, Any], usage_chunk: Callable[[Any], bool] | None
+) -> tuple[dict[str, Any], Callable[[Any], bool] | None]:
+    """The kwargs a streamed call is sent with and the guard's
+    ``hide_chunk``: with ``usage_chunk``, the usage option is added and
+    the chunk it produces hidden unless the caller asked for it."""
+    if usage_chunk is None:
+        return kwargs, None
+    call_kwargs, caller_asked = _inject_stream_options(kwargs)
+    return call_kwargs, (None if caller_asked else usage_chunk)
 
 
 def _intercept_embedding(
@@ -307,23 +441,31 @@ async def _intercept_aembedding(
 # ----------------------------------------------------------------------
 
 
+def _require(fn: Any, name: str) -> Any:
+    """The captured litellm entry point, or a clear error when the
+    installed litellm has none."""
+    if fn is None:
+        raise RuntimeError(
+            f"litellm.{name} is not available on the installed version; upgrade litellm."
+        )
+    return fn
+
+
 class SensorLitellm:
     """Per-callsite wrapper for litellm's completion surface.
 
     Rarely used directly. The recommended integration path is
     :func:`flightdeck_sensor.patch` which installs
-    :func:`patch_litellm_functions` and intercepts every
-    ``litellm.completion`` call process-wide. ``SensorLitellm`` exists
-    for programmatic wrapping when a caller wants to observe a single
-    call without mutating the litellm module globals -- e.g. tests,
-    or an embedded script that intentionally keeps the rest of the
-    process using raw litellm.
+    :func:`patch_litellm_functions` and intercepts every litellm call
+    process-wide. ``SensorLitellm`` exists for programmatic wrapping when
+    a caller wants to observe a single call without mutating the litellm
+    module globals -- e.g. tests, or an embedded script that
+    intentionally keeps the rest of the process using raw litellm.
 
-    Holds captured references to the unpatched litellm functions and
-    a bound :class:`Session` / :class:`LitellmProvider`. Delegates
-    through the module's shared intercept helpers so every intercept
-    path (in-place patch, per-callsite wrap) emits the same event
-    schema, streaming included.
+    Holds captured references to the unpatched litellm functions and a
+    bound :class:`Session`. Delegates through the module's shared
+    intercept helpers so every intercept path (in-place patch,
+    per-callsite wrap) emits the same event schema, streaming included.
     """
 
     def __init__(
@@ -340,6 +482,12 @@ class SensorLitellm:
             capture_prompts=session.config.capture_prompts,
         )
 
+    def _shaped(self, provider_cls: type[LitellmProvider]) -> LitellmProvider:
+        """The adapter for an entry point whose request and response
+        shapes differ from ``completion``'s, with this wrapper's capture
+        setting."""
+        return provider_cls(capture_prompts=self._session.config.capture_prompts)
+
     def completion(self, **kwargs: Any) -> Any:
         """Intercept ``litellm.completion(**kwargs)``; ``stream=True``
         returns a :class:`base.GuardedStream` over litellm's stream."""
@@ -355,6 +503,42 @@ class SensorLitellm:
             self._provider,
         )
 
+    def text_completion(self, **kwargs: Any) -> Any:
+        """Intercept ``litellm.text_completion(**kwargs)``."""
+        return _intercept_text_completion(
+            _require(_OrigTextCompletion, "text_completion"),
+            kwargs,
+            self._session,
+            self._shaped(LitellmTextCompletionProvider),
+        )
+
+    async def atext_completion(self, **kwargs: Any) -> Any:
+        """Intercept ``litellm.atext_completion(**kwargs)``."""
+        return await _intercept_atext_completion(
+            _require(_OrigAtextCompletion, "atext_completion"),
+            kwargs,
+            self._session,
+            self._shaped(LitellmTextCompletionProvider),
+        )
+
+    def responses(self, **kwargs: Any) -> Any:
+        """Intercept ``litellm.responses(**kwargs)``."""
+        return _intercept_responses(
+            _require(_OrigResponses, "responses"),
+            kwargs,
+            self._session,
+            self._shaped(LitellmResponsesProvider),
+        )
+
+    async def aresponses(self, **kwargs: Any) -> Any:
+        """Intercept ``litellm.aresponses(**kwargs)``."""
+        return await _intercept_aresponses(
+            _require(_OrigAresponses, "aresponses"),
+            kwargs,
+            self._session,
+            self._shaped(LitellmResponsesProvider),
+        )
+
     # Embeddings parallel to completion. Same delegation pattern;
     # event_type is EMBEDDINGS so the dashboard can render them distinctly.
     def embedding(self, **kwargs: Any) -> Any:
@@ -364,22 +548,14 @@ class SensorLitellm:
         promotion lets the dashboard and analytics distinguish them from
         chat completions.
         """
-        if _OrigEmbedding is None:
-            raise RuntimeError(
-                "litellm.embedding is not available on the installed version; "
-                "upgrade litellm or use a different embedding client."
-            )
-        return _intercept_embedding(_OrigEmbedding, kwargs, self._session, self._provider)
+        return _intercept_embedding(
+            _require(_OrigEmbedding, "embedding"), kwargs, self._session, self._provider
+        )
 
     async def aembedding(self, **kwargs: Any) -> Any:
         """Intercept ``litellm.aembedding(**kwargs)``."""
-        if _OrigAembedding is None:
-            raise RuntimeError(
-                "litellm.aembedding is not available on the installed version; "
-                "upgrade litellm or use a different embedding client."
-            )
         return await _intercept_aembedding(
-            _OrigAembedding,
+            _require(_OrigAembedding, "aembedding"),
             kwargs,
             self._session,
             self._provider,
@@ -390,21 +566,95 @@ class SensorLitellm:
 # In-place (module-level) patch / unpatch
 # ----------------------------------------------------------------------
 #
-# Sentinel attributes:
+# Each patched entry point: (module attribute, the entry point whose
+# signature names its positional arguments, intercept helper, adapter,
+# async). The async ``atext_completion`` and ``aembedding`` take
+# ``*args, **kwargs`` and forward them to their sync counterparts, whose
+# signatures name them. Sentinel attributes on the module:
 #   _flightdeck_patched            -- boolean marker, idempotency gate
-#   _flightdeck_orig_completion    -- captured sync function
-#   _flightdeck_orig_acompletion   -- captured async function
-#   _flightdeck_orig_embedding     -- captured sync embedding function
-#   _flightdeck_orig_aembedding    -- captured async embedding function
+#   _flightdeck_orig_<attribute>   -- the captured original of each entry
+#                                     point patched
+
+_PATCHED_ENTRY_POINTS: tuple[
+    tuple[str, str, Callable[..., Any], type[LitellmProvider], bool], ...
+] = (
+    ("completion", "completion", _intercept_completion, LitellmProvider, False),
+    ("acompletion", "acompletion", _intercept_acompletion, LitellmProvider, True),
+    (
+        "text_completion",
+        "text_completion",
+        _intercept_text_completion,
+        LitellmTextCompletionProvider,
+        False,
+    ),
+    (
+        "atext_completion",
+        "text_completion",
+        _intercept_atext_completion,
+        LitellmTextCompletionProvider,
+        True,
+    ),
+    ("responses", "responses", _intercept_responses, LitellmResponsesProvider, False),
+    ("aresponses", "aresponses", _intercept_aresponses, LitellmResponsesProvider, True),
+    ("embedding", "embedding", _intercept_embedding, LitellmProvider, False),
+    ("aembedding", "embedding", _intercept_aembedding, LitellmProvider, True),
+)
 
 
-def _provider_for(session: Session) -> LitellmProvider:
-    return LitellmProvider(capture_prompts=session.config.capture_prompts)
+def _patched_sync(
+    orig: Any,
+    signature_of: Any,
+    intercept: Callable[..., Any],
+    provider_cls: type[LitellmProvider],
+) -> Callable[..., Any]:
+    """The module attribute that replaces a sync entry point. litellm's
+    own call passes through untouched with no active session, or while
+    an outer litellm call is in flight (litellm calling its own entry
+    point, which the outer wrapper already reports)."""
+
+    @functools.wraps(orig)
+    def _patched(*args: Any, **kwargs: Any) -> Any:
+        session = _current_session()
+        if session is None or base.outer_intercept_active():
+            return orig(*args, **kwargs)
+        named = _named_arguments(signature_of, args, kwargs)
+        if named is None:
+            return orig(*args, **kwargs)
+        provider = provider_cls(capture_prompts=session.config.capture_prompts)
+        return intercept(orig, named, session, provider)
+
+    return _patched
+
+
+def _patched_async(
+    orig: Any,
+    signature_of: Any,
+    intercept: Callable[..., Any],
+    provider_cls: type[LitellmProvider],
+) -> Callable[..., Any]:
+    """Async form of :func:`_patched_sync`; the mark is read when the
+    call is awaited, in the task that awaits it."""
+
+    @functools.wraps(orig)
+    async def _patched(*args: Any, **kwargs: Any) -> Any:
+        session = _current_session()
+        if session is None or base.outer_intercept_active():
+            return await orig(*args, **kwargs)
+        named = _named_arguments(signature_of, args, kwargs)
+        if named is None:
+            return await orig(*args, **kwargs)
+        provider = provider_cls(capture_prompts=session.config.capture_prompts)
+        return await intercept(orig, named, session, provider)
+
+    return _patched
 
 
 def patch_litellm_functions(quiet: bool = False) -> None:
-    """Swap ``litellm.completion`` / ``acompletion`` / ``embedding`` /
-    ``aembedding`` with wrappers that route through the sensor.
+    """Swap litellm's ``completion`` / ``acompletion`` /
+    ``text_completion`` / ``atext_completion`` / ``responses`` /
+    ``aresponses`` / ``embedding`` / ``aembedding`` with wrappers that
+    route through the sensor. An entry point the installed litellm lacks
+    is skipped.
 
     Idempotent: a second call is a no-op. If litellm is not installed
     this is a silent no-op.
@@ -424,74 +674,33 @@ def patch_litellm_functions(quiet: bool = False) -> None:
             _log.debug("litellm already patched, skipping")
         return
 
-    orig_completion = _litellm_module.completion
-    orig_acompletion = _litellm_module.acompletion
-    # Also capture and patch the embedding surface when
-    # available. getattr + None fallback keeps this backwards-compatible
-    # with any litellm version that might lack one of the entry points.
-    orig_embedding = getattr(_litellm_module, "embedding", None)
-    orig_aembedding = getattr(_litellm_module, "aembedding", None)
-
-    # Stash originals on the module so unpatch can restore them even
-    # if the module was reloaded between patch and unpatch.
-    _litellm_module._flightdeck_orig_completion = orig_completion
-    _litellm_module._flightdeck_orig_acompletion = orig_acompletion
-    _litellm_module._flightdeck_orig_embedding = orig_embedding
-    _litellm_module._flightdeck_orig_aembedding = orig_aembedding
-
-    def _patched_completion(**kwargs: Any) -> Any:
-        session = _current_session()
-        if session is None:
-            return orig_completion(**kwargs)
-        return _intercept_completion(orig_completion, kwargs, session, _provider_for(session))
-
-    async def _patched_acompletion(**kwargs: Any) -> Any:
-        session = _current_session()
-        if session is None:
-            return await orig_acompletion(**kwargs)
-        return await _intercept_acompletion(
-            orig_acompletion, kwargs, session, _provider_for(session)
-        )
-
-    def _patched_embedding(**kwargs: Any) -> Any:
-        session = _current_session()
-        if session is None or orig_embedding is None:
-            return orig_embedding(**kwargs) if orig_embedding else None
-        return _intercept_embedding(orig_embedding, kwargs, session, _provider_for(session))
-
-    async def _patched_aembedding(**kwargs: Any) -> Any:
-        session = _current_session()
-        if session is None or orig_aembedding is None:
-            return await orig_aembedding(**kwargs) if orig_aembedding else None
-        return await _intercept_aembedding(orig_aembedding, kwargs, session, _provider_for(session))
-
-    _litellm_module.completion = _patched_completion
-    _litellm_module.acompletion = _patched_acompletion
-    # ``litellm.embedding`` is declared as an ``@overload`` function in
-    # litellm's type stubs; mypy rejects the plain-function assignment
-    # here even though the runtime replacement is fully compatible.
-    # Silence the specific mismatch rather than widen the patched
-    # function's signature to Any, which would hide real type bugs in
-    # the wrapper itself.
-    if orig_embedding is not None:
-        _litellm_module.embedding = _patched_embedding  # type: ignore[assignment]
-    if orig_aembedding is not None:
-        _litellm_module.aembedding = _patched_aembedding
+    # Capture every original before replacing any, so an entry point's
+    # signature source is always litellm's own function.
+    originals = {
+        attr: getattr(_litellm_module, attr, None) for attr, *_rest in _PATCHED_ENTRY_POINTS
+    }
+    patched: list[str] = []
+    for attr, signature_attr, intercept, provider_cls, is_async in _PATCHED_ENTRY_POINTS:
+        orig = originals[attr]
+        if orig is None:
+            continue
+        signature_of = originals.get(signature_attr) or orig
+        build = _patched_async if is_async else _patched_sync
+        # Stash the original on the module so unpatch can restore it even
+        # if the module was reloaded between patch and unpatch.
+        setattr(_litellm_module, f"_flightdeck_orig_{attr}", orig)
+        setattr(_litellm_module, attr, build(orig, signature_of, intercept, provider_cls))
+        patched.append(f"litellm.{attr}")
     _litellm_module._flightdeck_patched = True
 
     if not quiet:
-        parts = ["litellm.completion", "litellm.acompletion"]
-        if orig_embedding is not None:
-            parts.append("litellm.embedding")
-        if orig_aembedding is not None:
-            parts.append("litellm.aembedding")
-        _log.info("%s patched", " and ".join(parts))
+        _log.info("%s patched", ", ".join(patched))
 
 
 def unpatch_litellm_functions(quiet: bool = False) -> None:
-    """Restore the original ``litellm.completion`` / ``acompletion`` /
-    ``embedding`` / ``aembedding`` module attributes. Idempotent. Silent
-    no-op when litellm is not installed or was never patched.
+    """Restore the original litellm entry points patched by
+    :func:`patch_litellm_functions`. Idempotent. Silent no-op when
+    litellm is not installed or was never patched.
     """
     if not _LITELLM_AVAILABLE:
         return
@@ -501,44 +710,14 @@ def unpatch_litellm_functions(quiet: bool = False) -> None:
             _log.debug("litellm not patched, skipping unpatch")
         return
 
-    orig_completion = getattr(
-        _litellm_module,
-        "_flightdeck_orig_completion",
-        None,
-    )
-    orig_acompletion = getattr(
-        _litellm_module,
-        "_flightdeck_orig_acompletion",
-        None,
-    )
-    orig_embedding = getattr(
-        _litellm_module,
-        "_flightdeck_orig_embedding",
-        None,
-    )
-    orig_aembedding = getattr(
-        _litellm_module,
-        "_flightdeck_orig_aembedding",
-        None,
-    )
-    if orig_completion is not None:
-        _litellm_module.completion = orig_completion
-    if orig_acompletion is not None:
-        _litellm_module.acompletion = orig_acompletion
-    if orig_embedding is not None:
-        _litellm_module.embedding = orig_embedding
-    if orig_aembedding is not None:
-        _litellm_module.aembedding = orig_aembedding
-
-    for attr in (
-        "_flightdeck_orig_completion",
-        "_flightdeck_orig_acompletion",
-        "_flightdeck_orig_embedding",
-        "_flightdeck_orig_aembedding",
-        "_flightdeck_patched",
-    ):
-        if hasattr(_litellm_module, attr):
-            delattr(_litellm_module, attr)
+    for attr, *_rest in _PATCHED_ENTRY_POINTS:
+        sentinel = f"_flightdeck_orig_{attr}"
+        orig = getattr(_litellm_module, sentinel, None)
+        if orig is not None:
+            setattr(_litellm_module, attr, orig)
+        if hasattr(_litellm_module, sentinel):
+            delattr(_litellm_module, sentinel)
+    delattr(_litellm_module, "_flightdeck_patched")
 
     if not quiet:
-        _log.info("litellm.completion/acompletion/embedding/aembedding unpatched")
+        _log.info("litellm entry points unpatched")

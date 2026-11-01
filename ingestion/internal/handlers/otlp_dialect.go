@@ -16,10 +16,13 @@ import (
 )
 
 // OTLPEvent is one Flightdeck event a dialect maps from OTLP records,
-// ready to publish: its event_type picks the NATS subject and Payload
-// is the event's JSON body.
+// ready to publish: its event_type picks the NATS subject, SessionID is
+// the session it belongs to and Payload is the event's JSON body. The
+// receiver publishes a session_start as POST /v1/events does: stamped
+// with the token that sent it, after the session-attachment check.
 type OTLPEvent struct {
 	EventType string
+	SessionID string
 	Payload   []byte
 }
 
@@ -27,10 +30,18 @@ type OTLPEvent struct {
 // the events to publish, how many of the request's records it did not
 // use (log records, spans or data points, by signal), and a message
 // naming why, which goes into the response's partial_success.
+//
+// Err reports that the dialect could not decide what to publish (a
+// session read failed); the receiver answers 503 and the exporter
+// retries. Published, when set, is called once every event has been
+// published, so a dialect commits what it learned (its session cache)
+// only for a request whose events reached the bus.
 type OTLPMapping struct {
-	Events   []OTLPEvent
-	Rejected int64
-	Message  string
+	Events    []OTLPEvent
+	Rejected  int64
+	Message   string
+	Err       error
+	Published func()
 }
 
 // OTLPDialect maps decoded OTLP export requests to Flightdeck events.

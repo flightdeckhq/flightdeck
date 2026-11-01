@@ -1,0 +1,88 @@
+{
+  "about": "Identity derivation vectors, generated from the Python sensor (flightdeck_sensor.core.agent_id). The Go ingestion port and the Claude Code plugin each assert they reproduce every id.",
+  "namespace_flightdeck": "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61",
+  "uuid5": [
+    {
+      "namespace": "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61",
+      "name": "flightdeck://otlp/claude-code/session/898e9d82-4172-4be8-88e7-1df336742e10",
+      "uuid": "0abbcf79-d405-503d-b681-90030849b1b2"
+    },
+    {
+      "namespace": "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61",
+      "name": "flightdeck://otlp/claude-code/session/898e9d82-4172-4be8-88e7-1df336742e10/aad3b518eff5ab279",
+      "uuid": "7c3cb87c-8d90-5d65-bbf1-45273870d706"
+    },
+    {
+      "namespace": "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61",
+      "name": "flightdeck://otlp/claude-code/event/898e9d82-4172-4be8-88e7-1df336742e10/api_request/14/1793534465960000000",
+      "uuid": "4d8f9bfe-fbfb-52f7-b7dd-db5235986c92"
+    },
+    {
+      "namespace": "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61",
+      "name": "flightdeck:subagent://11111111-2222-4333-8444-555555555555/toolu_01",
+      "uuid": "ea33f311-6ef5-5e26-b388-5162c3bfd74b"
+    },
+    {
+      "namespace": "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61",
+      "name": "",
+      "uuid": "b820936b-c356-5f2f-9a45-782aec06e846"
+    },
+    {
+      "namespace": "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61",
+      "name": "flightdeck://unicode/naïve-ü-日本",
+      "uuid": "ea545d05-d789-527b-b4a1-f5fdcab945de"
+    },
+    {
+      "namespace": "6ba7b810-9dad-11d1-80b4-00c04fd430c8",
+      "name": "flightdeck.dev",
+      "uuid": "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61"
+    }
+  ],
+  "agent_id": [
+    {
+      "agent_type": "coding",
+      "user": "user@example.com",
+      "hostname": "unknown",
+      "client_type": "claude_code",
+      "agent_name": "user@example.com@unknown",
+      "agent_role": null,
+      "agent_id": "24bde993-6e8b-57fe-aad3-b52db0ed03d4"
+    },
+    {
+      "agent_type": "coding",
+      "user": "user@example.com",
+      "hostname": "unknown",
+      "client_type": "claude_code",
+      "agent_name": "user@example.com@unknown",
+      "agent_role": "general-purpose",
+      "agent_id": "4e7eb63e-1519-55ce-ba94-1cc6623523bc"
+    },
+    {
+      "agent_type": "coding",
+      "user": "alice",
+      "hostname": "build-01",
+      "client_type": "claude_code",
+      "agent_name": "alice@build-01",
+      "agent_role": "  Explore  ",
+      "agent_id": "cfed90f3-8f38-5df0-9160-03c39a147c00"
+    },
+    {
+      "agent_type": "production",
+      "user": "svc",
+      "hostname": "pod-7",
+      "client_type": "flightdeck_sensor",
+      "agent_name": "svc@pod-7",
+      "agent_role": "   ",
+      "agent_id": "bc869c75-7377-59e3-a103-047d99f25338"
+    },
+    {
+      "agent_type": "coding",
+      "user": "unknown",
+      "hostname": "unknown",
+      "client_type": "claude_code",
+      "agent_name": "unknown@unknown",
+      "agent_role": "",
+      "agent_id": "aeac9bbc-deac-50a3-a878-23d20f9a79f4"
+    }
+  ]
+}

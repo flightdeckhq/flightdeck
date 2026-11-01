@@ -3,25 +3,33 @@
 Every request under tests/fixtures/otlp/claude-code-2.1.316 is replayed
 through the edge proxy as Claude Code sent it (protobuf gzipped, or OTLP
 JSON), and the answer must be a 200 export response in the request's
-encoding whose partial_success counts every record: no source is mapped
-to events yet, so each record is accepted and counted as rejected. The
-record count is taken from the fixture itself, independently of the
-receiver.
+encoding whose partial_success counts the records Flightdeck does not
+use. Claude Code's spans and metrics are never used, so every one is
+counted. Its log records are mapped to events, so a log export is
+replayed under a fresh session id, at the current time and under a test
+flavor (tests/otlp/replay.py) and only the records the contract does not
+map are counted. The counts are taken from the fixture itself,
+independently of the receiver; test_otlp_claude_code.py checks what the
+mapped records become.
 """
 
 from __future__ import annotations
 
 import gzip
 import json
+import time
 import urllib.error
 import urllib.request
+import uuid
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from ..otlp.fixture_checks import _fields
-from .conftest import INGESTION_URL, TOKEN
+from ..otlp.replay import is_mapped, latest_time_ns, record_attributes, rewrite_logs
+from .conftest import INGESTION_URL, TOKEN, delete_flavor_data
 
 FIXTURES = (
     Path(__file__).resolve().parents[1] / "fixtures" / "otlp" / "claude-code-2.1.316"
@@ -49,12 +57,42 @@ _METRIC_DATA_JSON = ("gauge", "sum", "histogram", "exponentialHistogram", "summa
 _COMPRESSED_CAP = 4 << 20
 
 
-def _requests() -> list[tuple[str, dict[str, Any]]]:
+def _requests(*, logs: bool) -> list[tuple[str, dict[str, Any]]]:
+    """The recorded requests of one kind: the log exports, or the span
+    and metric exports."""
     out = []
     for manifest in sorted(FIXTURES.glob("*/manifest.json")):
         doc = json.loads(manifest.read_text())
-        out.extend((manifest.parent.name, r) for r in doc["requests"])
+        out.extend(
+            (manifest.parent.name, r)
+            for r in doc["requests"]
+            if (r["path"] == "/v1/logs") == logs
+        )
     return out
+
+
+@pytest.fixture
+def flavor() -> Iterator[str]:
+    name = f"otlp-rx-{uuid.uuid4().hex[:10]}"
+    yield name
+    delete_flavor_data(name)
+
+
+def _replayable(content_type: str, raw: bytes, flavor: str) -> bytes:
+    """A recorded log export under a fresh session id, at the current
+    time, under the test's flavor."""
+    shift = time.time_ns() - latest_time_ns([(content_type, raw)]) - 1_000_000_000
+    return rewrite_logs(
+        content_type,
+        raw,
+        session_id=str(uuid.uuid4()),
+        shift_ns=shift,
+        resource_attrs={"flightdeck.flavor": flavor},
+    )
+
+
+def _unmapped(content_type: str, raw: bytes) -> int:
+    return sum(1 for a in record_attributes(content_type, raw) if not is_mapped(a))
 
 
 def _sub(buf: bytes, number: int) -> list[bytes]:
@@ -138,10 +176,10 @@ def _partial_success(path: str, content_type: str, body: bytes) -> tuple[int, st
 
 @pytest.mark.parametrize(
     ("scenario", "request_"),
-    _requests(),
-    ids=[f"{s}/{r['file']}" for s, r in _requests()],
+    _requests(logs=False),
+    ids=[f"{s}/{r['file']}" for s, r in _requests(logs=False)],
 )
-def test_recorded_export_is_answered_with_every_record_rejected(
+def test_recorded_spans_and_metrics_are_answered_all_rejected(
     scenario: str, request_: dict[str, Any]
 ) -> None:
     raw = (FIXTURES / scenario / request_["file"]).read_bytes()
@@ -167,22 +205,53 @@ def test_recorded_export_is_answered_with_every_record_rejected(
     assert '"claude-code" is not mapped' in message, message
 
 
+@pytest.mark.parametrize(
+    ("scenario", "request_"),
+    _requests(logs=True),
+    ids=[f"{s}/{r['file']}" for s, r in _requests(logs=True)],
+)
+def test_recorded_log_export_counts_the_records_not_mapped(
+    scenario: str, request_: dict[str, Any], flavor: str
+) -> None:
+    raw = (FIXTURES / scenario / request_["file"]).read_bytes()
+    content_type = request_["content_type"]
+    body = _replayable(content_type, raw, flavor)
+    gzipped = request_.get("sent_encoding") == "gzip"
+    status, headers, resp = _post(
+        "/v1/logs",
+        gzip.compress(body) if gzipped else body,
+        content_type,
+        encoding="gzip" if gzipped else None,
+    )
+
+    assert status == 200, resp
+    assert headers.get("Content-Type") == content_type
+    rejected, message = _partial_success("/v1/logs", content_type, resp)
+    assert rejected == _unmapped(content_type, raw), message
+
+
 @pytest.mark.parametrize("content_type", [PROTOBUF, JSON])
-def test_same_logs_in_both_encodings_and_compressions(content_type: str) -> None:
+def test_same_logs_in_both_encodings_and_compressions(
+    content_type: str, flavor: str
+) -> None:
     """One log export, sent as protobuf and as JSON, each plain and
     gzipped: the encoding and the compression are independent."""
     if content_type == PROTOBUF:
         raw = (FIXTURES / "bash-protobuf-gzip" / "006-logs.pb").read_bytes()
-        records = _count_protobuf("/v1/logs", raw)
     else:
         raw = (FIXTURES / "bash-json-prompts" / "008-logs.json").read_bytes()
-        records = _count_json("/v1/logs", json.loads(raw))
-    for body, encoding in ((raw, None), (gzip.compress(raw), "gzip")):
+    unmapped = _unmapped(content_type, raw)
+    assert unmapped < len(record_attributes(content_type, raw))
+    for gz in (False, True):
+        body = _replayable(content_type, raw, flavor)
         status, _headers, resp = _post(
-            "/v1/logs", body, content_type, encoding=encoding
+            "/v1/logs",
+            gzip.compress(body) if gz else body,
+            content_type,
+            encoding="gzip" if gz else None,
         )
         assert status == 200, resp
-        assert _partial_success("/v1/logs", content_type, resp)[0] == records
+        assert _partial_success("/v1/logs", content_type, resp)[0] == unmapped
 
 
 def test_refusals_carry_a_status_in_the_request_encoding() -> None:

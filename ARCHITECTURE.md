@@ -7076,12 +7076,12 @@ every edge forwards the path unchanged: the Helm chart's Ingress because
 a rewrite is specific to each ingress controller, the compose nginx and
 the vite dev proxy so that a redirect a service builds from the request
 as received (Swagger UI's) keeps the prefix, and the services see the
-same path under every deployment. The prefix is stripped only when it is the whole
-first segment of the path as sent, so `/ingestx/...` and `/ingest%2F...`
-are a 404, and the rest of the path keeps its escaping. A redirect a
-service answers for a prefixed request (`/api/docs` to `/api/docs/`)
-keeps the prefix. Neither service has a route of its own under its
-prefix.
+same path under every deployment. The prefix is stripped only when it is
+the whole first segment of the path as sent, so `/ingestx/...` and
+`/ingest%2F...` are a 404, and the rest of the path keeps its escaping.
+A redirect a service answers for a prefixed request (`/api/docs` to
+`/api/docs/`) keeps the prefix. Neither service has a route of its own
+under its prefix.
 
 The Docker Compose and Helm targets are feature-equivalent (Key
 Constraint #4).

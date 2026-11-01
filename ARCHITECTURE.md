@@ -92,8 +92,8 @@ no single point of failure introduced into the agent's execution path.
 ┌──────────────────────────────────────────────────────────┐
 │                    nginx :4000                           │
 │                                                          │
-│  /ingest/*  → ingestion:8080  (strips prefix)            │
-│  /api/*     → api:8081        (strips prefix)            │
+│  /ingest/*  → ingestion:8080  (path as sent)             │
+│  /api/*     → api:8081        (path as sent)             │
 │  /          → dashboard:3000                             │
 │  /api/v1/stream  → api:8081   (WebSocket upgrade)        │
 └───────┬──────────────────────────────┬───────────────────┘
@@ -7071,15 +7071,17 @@ deployments; production should provide an external HA Postgres via
 the query API under `/api` on one origin, and each service also accepts
 its own prefix: `/ingest/v1/events` and `/v1/events` reach the same
 ingestion handler, `/api/v1/fleet` and `/v1/fleet` the same API one
-(Swagger UI included). The compose nginx strips the prefix before
-proxying; the Helm chart's Ingress forwards the path unchanged, because
-rewriting it is specific to each ingress controller, and the services
-strip it themselves. The prefix is stripped only when it is the whole
-first segment of the path as sent, so `/ingestx/...` and `/ingest%2F...`
-are a 404, and the rest of the path keeps its escaping. A redirect a
-service answers for a prefixed request (`/api/docs` to `/api/docs/`)
-keeps the prefix. Neither service has a route of its own under its
-prefix.
+(Swagger UI included). The services strip the prefix themselves and
+every edge forwards the path unchanged: the Helm chart's Ingress because
+a rewrite is specific to each ingress controller, the compose nginx and
+the vite dev proxy so that a redirect a service builds from the request
+as received (Swagger UI's) keeps the prefix, and the services see the
+same path under every deployment. The prefix is stripped only when it is
+the whole first segment of the path as sent, so `/ingestx/...` and
+`/ingest%2F...` are a 404, and the rest of the path keeps its escaping.
+A redirect a service answers for a prefixed request (`/api/docs` to
+`/api/docs/`) keeps the prefix. Neither service has a route of its own
+under its prefix.
 
 The Docker Compose and Helm targets are feature-equivalent (Key
 Constraint #4).

@@ -17,6 +17,7 @@ interface RegistryEntry {
   agent_type: string;
   supports_directives: boolean;
   billing_mode: string;
+  runs_custom_directives: boolean;
   strips_tool_error_text: boolean;
 }
 const registry = (
@@ -39,6 +40,7 @@ describe("client type registry", () => {
         agentType: e.agent_type,
         supportsDirectives: e.supports_directives,
         billingMode: e.billing_mode,
+        runsCustomDirectives: e.runs_custom_directives,
         stripsToolErrorText: e.strips_tool_error_text,
       });
     }

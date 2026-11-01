@@ -15,7 +15,7 @@ vi.mock("@/lib/api", () => ({
 let mockCustomDirectives: CustomDirective[] = [];
 vi.mock("@/store/fleet", () => ({
   useFleetStore: (selector: (state: unknown) => unknown) =>
-    selector({ customDirectives: mockCustomDirectives }),
+    selector({ customDirectives: mockCustomDirectives, markShuttingDown: () => {} }),
 }));
 
 import { createDirective } from "@/lib/api";
@@ -52,6 +52,58 @@ describe("FleetPanel", () => {
   beforeEach(() => {
     mockCustomDirectives = [];
     localStorage.clear();
+    vi.mocked(createDirective).mockClear();
+  });
+
+  // A sidebar row is an agent: ``flavor`` carries its agent_id, while
+  // a sensor registers directives under its sessions' flavor string.
+  const AGENT_ID = "0b6f2e0e-1111-5222-8333-944455556666";
+  const sensorDirective: CustomDirective = {
+    id: "cd-sensor",
+    fingerprint: "fp-sensor",
+    name: "rotate-model",
+    description: "",
+    flavor: "research-agent",
+    parameters: [],
+    registered_at: "2026-11-01T10:00:00Z",
+    last_seen_at: "2026-11-01T10:00:00Z",
+  };
+  function agentRow(context?: Record<string, unknown>, clientType = "flightdeck_sensor"): FlavorSummary[] {
+    return [
+      {
+        ...mockFlavors[0],
+        flavor: AGENT_ID,
+        agent_id: AGENT_ID,
+        agent_name: "sensor@host",
+        client_type: clientType as FlavorSummary["client_type"],
+        sessions: mockFlavors[0].sessions.map((s) => ({
+          ...s,
+          client_type: clientType as FlavorSummary["client_type"],
+          context,
+        })),
+      },
+    ];
+  }
+
+  it("offers a sensor agent the directives registered under its sessions' flavor", () => {
+    mockCustomDirectives = [sensorDirective];
+    render(<FleetPanel flavors={agentRow()} />);
+    expect(screen.getByTestId(`flavor-directives-button-${AGENT_ID}`)).toBeInTheDocument();
+  });
+
+  it("offers no directives to an observer agent or a plugin agent whose flavor has some", () => {
+    mockCustomDirectives = [sensorDirective];
+    const { unmount } = render(
+      <FleetPanel
+        flavors={agentRow({ telemetry: "otlp", supports_directives: false }, "claude_code")}
+      />,
+    );
+    expect(screen.queryByTestId(`flavor-directives-button-${AGENT_ID}`)).toBeNull();
+    unmount();
+    // Enforcement on: Stop works, custom directives do not.
+    render(<FleetPanel flavors={agentRow({ supports_directives: true }, "claude_code")} />);
+    expect(screen.queryByTestId(`flavor-directives-button-${AGENT_ID}`)).toBeNull();
+    expect(screen.getByTestId(`flavor-stop-all-button-${AGENT_ID}`)).toBeInTheDocument();
   });
 
   it("Custom Directives sidebar section is gone", () => {
@@ -268,7 +320,7 @@ describe("FleetPanel", () => {
     expect(
       screen.getByText("Stop all runs of research-agent?"),
     ).toBeInTheDocument();
-    expect(screen.getByText(/2 active or idle agents/)).toBeInTheDocument();
+    expect(screen.getByText(/All 2 active or idle runs of this agent/)).toBeInTheDocument();
   });
 
   it("calls createDirective with correct payload on confirm", async () => {
@@ -280,14 +332,23 @@ describe("FleetPanel", () => {
     // outer trigger is icon-only so the only "Stop All" text node
     // is the confirm button inside the dialog.
     fireEvent.click(screen.getByText("Stop All"));
+    // One shutdown per live session of the agent: a row is keyed by
+    // agent_id, which no session's flavor matches, so a flavor-wide
+    // shutdown_flavor would reach nothing.
     await waitFor(() => {
+      expect(createDirective).toHaveBeenCalledTimes(2);
+    });
+    for (const sid of ["s1", "s2"]) {
       expect(createDirective).toHaveBeenCalledWith({
-        action: "shutdown_flavor",
-        flavor: "research-agent",
+        action: "shutdown",
+        session_id: sid,
         reason: "manual_fleet_kill",
         grace_period_ms: 5000,
       });
-    });
+    }
+    expect(createDirective).not.toHaveBeenCalledWith(
+      expect.objectContaining({ action: "shutdown_flavor" }),
+    );
   });
 
   it("hides Stop All for a flavor where every live session is observer-only", () => {

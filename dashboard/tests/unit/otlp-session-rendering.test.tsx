@@ -62,7 +62,11 @@ describe("OTLP source label", () => {
     );
     expect(clientSourceLabel("claude_code", undefined)).toBe("Claude Code via plugin");
     expect(clientSourceLabel("flightdeck_sensor", null)).toBe("Sensor");
-    expect(clientSourceLabel(null, "otlp")).toBe("via OpenTelemetry");
+    // No client name, or the generic otlp type that is itself
+    // OpenTelemetry: the source alone, never "OpenTelemetry via
+    // OpenTelemetry".
+    expect(clientSourceLabel(null, "otlp")).toBe("Reported via OpenTelemetry");
+    expect(clientSourceLabel("otlp", "otlp")).toBe("Reported via OpenTelemetry");
     expect(clientSourceLabel("not-a-client", null)).toBeNull();
   });
 
@@ -72,6 +76,12 @@ describe("OTLP source label", () => {
     );
     const pill = screen.getByTestId("pill");
     expect(pill).toHaveTextContent("OTel");
+    // The accessible name carries the meaning the tooltip shows.
+    expect(
+      screen.getByText("Claude Code via OpenTelemetry: observe only, no directives reach it", {
+        selector: ".sr-only",
+      }),
+    ).toBeInTheDocument();
     expect(pill.getAttribute("data-telemetry")).toBe("otlp");
     expect(pill.getAttribute("title")).toBe(
       "Claude Code via OpenTelemetry: observe only, no directives reach it",

@@ -199,6 +199,7 @@ function SessionRow({
       <Highlight text={item.flavor} query={query} className="text-text-muted" />
       <TelemetrySourcePill
         telemetry={item.context?.telemetry}
+        clientType={item.client_type}
         testId="search-session-telemetry-source"
       />
       <StateChip state={item.state} />

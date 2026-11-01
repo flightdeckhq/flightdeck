@@ -897,6 +897,30 @@ describe("SessionDrawer", () => {
     expect(screen.getByTestId("drawer-tab-directives")).toBeInTheDocument();
   });
 
+  it("Directives tab is hidden for a client that runs no custom handlers, while Stop stays", () => {
+    // An enforcement-on Claude Code plugin session takes Stop but
+    // answers a custom directive with an error; so does an Agent SDK
+    // run. Directives registered under the flavor are not offered.
+    mockCustomDirectives = [fakeDirective];
+    for (const override of [
+      { client_type: "claude_code", context: { supports_directives: true } },
+      { client_type: "claude_agent_sdk" },
+    ]) {
+      mockSessionOverride = { state: "active", ...override };
+      const { unmount } = render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+      expect(screen.queryByTestId("drawer-tab-directives")).not.toBeInTheDocument();
+      expect(screen.getByTestId("session-drawer-stop-agent")).toBeInTheDocument();
+      unmount();
+    }
+  });
+
+  it("Directives tab is shown for a sensor session whose flavor has a directive", () => {
+    mockCustomDirectives = [fakeDirective];
+    mockSessionOverride = { client_type: "flightdeck_sensor" };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.getByTestId("drawer-tab-directives")).toBeInTheDocument();
+  });
+
   it("Directives tab is hidden when the flavor has no registered directives", () => {
     mockCustomDirectives = []; // explicit reset
     render(<SessionDrawer sessionId="s1" onClose={() => {}} />);

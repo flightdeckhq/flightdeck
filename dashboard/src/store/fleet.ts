@@ -110,14 +110,6 @@ interface FleetState {
   applyUpdate: (update: FleetUpdate) => void;
   selectSession: (id: string | null) => void;
   markShuttingDown: (sessionId: string) => void;
-  /**
-   * Kept for FleetPanel's per-flavor Stop-All button. A
-   * "flavor" value is usually an agent_id; the helper walks the
-   * sessions under that flavor and marks each active/idle one as
-   * shutting down client-side so the UI reacts before the next
-   * WebSocket update lands.
-   */
-  markFlavorShuttingDown: (flavor: string) => void;
 }
 
 function listItemToSession(li: SessionListItem): Session {
@@ -516,6 +508,12 @@ export const useFleetStore = create<FleetState>((set, get) => ({
                   update.session.state === "idle"
                     ? ("active" as SessionState)
                     : a.state,
+                // A new run is the agent's latest session, so its
+                // context names the agent's source from now on.
+                telemetry:
+                  isStart && update.session.context
+                    ? contextTelemetry(update.session)
+                    : a.telemetry,
                 recent_sessions: isStart
                   ? [
                       sessionToRecentSession(update.session, parentAgentID),
@@ -645,18 +643,6 @@ export const useFleetStore = create<FleetState>((set, get) => ({
     set({ shuttingDown: next });
   },
 
-  markFlavorShuttingDown: (flavor) => {
-    const next = new Set(get().shuttingDown);
-    for (const f of get().flavors) {
-      if (f.flavor !== flavor) continue;
-      for (const s of f.sessions) {
-        if (s.state === "active" || s.state === "idle") {
-          next.add(s.session_id);
-        }
-      }
-    }
-    set({ shuttingDown: next });
-  },
 }));
 
 function applySessionUpdate(
@@ -706,6 +692,20 @@ function applySessionUpdate(
       agent_name: f.agent_name ?? session.agent_name ?? undefined,
       client_type: f.client_type ?? session.client_type ?? undefined,
       last_seen_at: session.last_seen_at || f.last_seen_at,
+      telemetry: newestTelemetry(sessions, f.telemetry ?? null),
     };
   });
+}
+
+/** The agent row's ``telemetry`` after a live update: the newest
+ *  session's ``context.telemetry`` when that session carries its
+ *  context, else the row's current value (a session built from the
+ *  fleet's ``recent_sessions`` has no context and says nothing about
+ *  the source). */
+function newestTelemetry(sessions: Session[], current: string | null): string | null {
+  let newest: Session | null = null;
+  for (const s of sessions) {
+    if (!newest || Date.parse(s.started_at) > Date.parse(newest.started_at)) newest = s;
+  }
+  return newest?.context ? contextTelemetry(newest) : current;
 }

@@ -11,6 +11,8 @@ import {
   CLIENT_TYPE_LABEL,
   ClientType,
   isOtlpSession,
+  OBSERVE_ONLY_NOTE,
+  OTLP_SOURCE_DESCRIPTION,
   OTLP_SOURCE_LABEL,
   TELEMETRY_OTLP,
 } from "@/lib/agent-identity";
@@ -35,7 +37,10 @@ import {
   MCPServerDecisionText,
   type MCPServerDecision,
 } from "@/components/policy/MCPServerDecisionText";
-import { sessionSupportsDirectives } from "@/lib/directives";
+import {
+  sessionRunsCustomDirectives,
+  sessionSupportsDirectives,
+} from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { RelationshipPill } from "@/components/facets/RelationshipPill";
@@ -361,14 +366,16 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
 
   // Filter the fleet-wide custom directive list down to ones
   // registered for this session's flavor. The Directives tab button
-  // and its content are gated on this being non-empty. An observer
-  // session (no channel a directive could reach, e.g. a Claude Code
-  // session reported by the plugin or over OpenTelemetry) gets none,
-  // even when a sensor registered directives under the same flavor.
+  // and its content are gated on this being non-empty. A session that
+  // runs no custom handlers gets none, even when a sensor registered
+  // directives under the same flavor: an observer session (Claude Code
+  // over OpenTelemetry) has no channel a directive could reach, and the
+  // Claude Code plugin and the Agent SDK answer a custom directive with
+  // an error. See dashboard/src/lib/directives.ts.
   const drawerSession = data?.session;
   const sessionFlavor = drawerSession?.flavor;
   const sessionTakesDirectives =
-    !!drawerSession && sessionSupportsDirectives(drawerSession);
+    !!drawerSession && sessionRunsCustomDirectives(drawerSession);
   const flavorDirectives = useMemo(() => {
     if (!sessionFlavor || !sessionTakesDirectives) return [];
     return customDirectives.filter((d) => d.flavor === sessionFlavor);
@@ -828,13 +835,18 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                     style={{ color: "var(--text-muted)" }}
                     title={
                       isOtlpSession(data.session)
-                        ? "Reported by Claude Code's OpenTelemetry exporter: observe only, no directives reach it"
+                        ? OTLP_SOURCE_DESCRIPTION
                         : "Reported by the Flightdeck Claude Code plugin"
                     }
                   >
                     {isOtlpSession(data.session)
                       ? `via ${OTLP_SOURCE_LABEL}`
                       : "via plugin"}
+                    {isOtlpSession(data.session) && (
+                      <span className="sr-only">
+                        {`: ${OBSERVE_ONLY_NOTE}`}
+                      </span>
+                    )}
                   </span>
                   <DrawerRelationshipPill
                     parentSessionId={data.session.parent_session_id ?? null}
@@ -914,7 +926,10 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
 
               {/* Tab bar -- "Directives" tab only renders when the
                   session's flavor has at least one registered
-                  custom directive. "Sub-agents" tab only renders when
+                  custom directive AND the session runs custom
+                  handlers (sessionRunsCustomDirectives: a sensor
+                  session; never an observer, a plugin or an Agent
+                  SDK run). "Sub-agents" tab only renders when
                   the session is a sub-agent (has parent_session_id)
                   or has spawned children — the "no placeholder
                   UI" floor (Rule 17): the tab is gated on its

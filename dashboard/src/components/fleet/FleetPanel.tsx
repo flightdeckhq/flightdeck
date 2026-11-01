@@ -28,7 +28,8 @@ import { createDirective } from "@/lib/api";
 import { SHUTDOWN_GRACE_PERIOD_MS, SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/constants";
 import {
   flavorHasDirectiveCapableSession,
-  sessionSupportsDirectives,
+  sessionRunsCustomDirectives,
+  stoppableSessions,
 } from "@/lib/directives";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
@@ -305,7 +306,7 @@ export function FleetPanel({
             flavor={f}
             isActive={activeFlavorFilter === f.flavor}
             onFlavorClick={onFlavorClick}
-            directives={customDirectivesByFlavor[f.flavor] ?? []}
+            directives={directivesForAgent(f, customDirectivesByFlavor)}
             sidebarWidth={sidebarWidth}
           />
         ))}
@@ -727,6 +728,29 @@ function SidebarRow({
  *  default 240 px sidebar width. */
 const SIDEBAR_NAME_MIN_PX = 64;
 
+/**
+ * The custom directives registered under any flavor the agent's
+ * sessions run as. A sidebar row is an agent (its ``flavor`` field
+ * carries the agent_id), while a sensor registers its directives under
+ * the flavor string its sessions carry, so the lookup goes through the
+ * sessions' flavors; one agent can run under more than one.
+ */
+export function directivesForAgent(
+  agent: FlavorSummary,
+  byFlavor: Record<string, CustomDirective[]>,
+): CustomDirective[] {
+  const seen = new Set<string>();
+  const out: CustomDirective[] = [];
+  for (const flavor of new Set(agent.sessions.map((s) => s.flavor))) {
+    for (const d of byFlavor[flavor] ?? []) {
+      if (seen.has(d.id)) continue;
+      seen.add(d.id);
+      out.push(d);
+    }
+  }
+  return out;
+}
+
 function FlavorItem({
   flavor,
   isActive,
@@ -760,7 +784,7 @@ function FlavorItem({
   const [error, setError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [directivesDialogOpen, setDirectivesDialogOpen] = useState(false);
-  const markFlavorShuttingDown = useFleetStore((s) => s.markFlavorShuttingDown);
+  const markShuttingDown = useFleetStore((s) => s.markShuttingDown);
 
   // "Live" sessions = active OR idle. Idle agents are still
   // killable -- they'll receive the shutdown directive on their next
@@ -774,33 +798,43 @@ function FlavorItem({
     (s) => s.state === "active" || s.state === "idle",
   );
   const hasLive = liveSessions.length > 0;
-  // Custom directives are offered only when some session of the flavor
-  // can act on one: an all-observer flavor (Claude Code over the plugin
-  // or OpenTelemetry) has no channel a directive could reach.
+  // Custom directives are offered only when some session of the agent
+  // runs custom handlers (the sensor): an observer session (Claude Code
+  // over OpenTelemetry) has no channel a directive could reach, and the
+  // Claude Code plugin and the Agent SDK answer a custom one with an
+  // error. See dashboard/src/lib/directives.ts.
   const hasDirectives =
-    directives.length > 0 && flavor.sessions.some(sessionSupportsDirectives);
-  // Hide the Stop All button when every live session of this flavor is
+    directives.length > 0 && flavor.sessions.some(sessionRunsCustomDirectives);
+  // Hide the Stop All button when every live session of this agent is
   // observer-only (Claude Code and every future hook-based plugin).
-  // A mixed flavor keeps the button because the shutdown_flavor
-  // directive will still reach whichever sessions poll for directives.
-  // See dashboard/src/lib/directives.ts.
+  // A mixed agent keeps the button because the stop still reaches
+  // whichever sessions poll for directives.
   const canStopFlavor = flavorHasDirectiveCapableSession(flavor.sessions);
 
   async function handleStopAll() {
     setLoading(true);
     setError(null);
     try {
-      await createDirective({
-        action: "shutdown_flavor",
-        flavor: flavor.flavor,
-        reason: "manual_fleet_kill",
-        grace_period_ms: SHUTDOWN_GRACE_PERIOD_MS,
-      });
-      // Mark every active/idle session of this flavor as shutting
-      // down so the SessionDrawer (or any other per-session view)
-      // shows the pulsing indicator immediately, before the
-      // WebSocket update reflects the directive server-side.
-      markFlavorShuttingDown(flavor.flavor);
+      // One shutdown per live session that can act on it. A row is an
+      // agent, keyed by agent_id, not by the sessions' flavor string,
+      // so a flavor-wide shutdown_flavor would match no session (and
+      // would also stop other agents' runs that share the flavor).
+      const targets = stoppableSessions(flavor.sessions);
+      await Promise.all(
+        targets.map((s) =>
+          createDirective({
+            action: "shutdown",
+            session_id: s.session_id,
+            reason: "manual_fleet_kill",
+            grace_period_ms: SHUTDOWN_GRACE_PERIOD_MS,
+          }),
+        ),
+      );
+      // Mark each stopped session as shutting down so the
+      // SessionDrawer (or any other per-session view) shows the
+      // pulsing indicator immediately, before the WebSocket update
+      // reflects the directive server-side.
+      for (const s of targets) markShuttingDown(s.session_id);
       setSent(true);
       setDialogOpen(false);
       setTimeout(() => setSent(false), SUCCESS_MESSAGE_DISPLAY_MS);
@@ -942,16 +976,13 @@ function FlavorItem({
               Trigger directives on {flavor.flavor}
             </DialogTitle>
             <p className="text-sm text-text-muted">
-              Each directive fans out to every active session of this
-              agent. Parameters apply to all sessions uniformly.
+              Each directive fans out to every active session of the
+              flavor it is registered under. Parameters apply to all
+              sessions uniformly.
             </p>
             <div className="max-h-[60vh] overflow-y-auto pt-2">
               {directives.map((d) => (
-                <DirectiveCard
-                  key={d.id}
-                  directive={d}
-                  flavor={flavor.flavor}
-                />
+                <DirectiveCard key={d.id} directive={d} />
               ))}
             </div>
             <div className="flex justify-end pt-2">
@@ -987,8 +1018,9 @@ function FlavorItem({
               Stop all runs of {flavor.flavor}?
             </DialogTitle>
             <p className="text-sm text-text-muted">
-              All {liveSessions.length} active or idle agents of this type
-              will receive a shutdown directive on their next LLM call.
+              All {stoppableSessions(flavor.sessions).length} active or
+              idle runs of this agent will receive a shutdown directive on
+              their next LLM call.
             </p>
             <div className="flex justify-end gap-2 pt-4">
               <DialogClose asChild>

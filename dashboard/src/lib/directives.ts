@@ -36,16 +36,47 @@ export function sessionSupportsDirectives(session: {
 }
 
 /**
+ * True when the session runs custom directive handlers: it can act on
+ * a directive at all (``sessionSupportsDirectives``) AND its client
+ * type runs custom handlers (the registry's ``runsCustomDirectives``,
+ * only the sensor today). A Claude Code plugin session with
+ * enforcement on, or an Agent SDK run, takes stop and budget
+ * directives but answers a custom one with an error, so offering it
+ * one would be a dead end. A row with no ``client_type`` falls back as
+ * ``sessionSupportsDirectives`` does: such rows predate the registry
+ * and are sensor rows unless their flavor or framework marks Claude
+ * Code.
+ */
+export function sessionRunsCustomDirectives(session: {
+  flavor?: string;
+  client_type?: string | null;
+  context?: Record<string, unknown>;
+}): boolean {
+  if (!sessionSupportsDirectives(session)) return false;
+  if (isClientType(session.client_type)) {
+    return CLIENT_TYPE_META[session.client_type].runsCustomDirectives;
+  }
+  return !isClaudeCodeSession(session);
+}
+
+/** The "live" (active or idle) sessions a directive can still reach. */
+function liveSessions(sessions: Session[]): Session[] {
+  return sessions.filter((s) => s.state === "active" || s.state === "idle");
+}
+
+/**
  * True when at least one "live" (active or idle) session in the flavor
  * supports directives. Used by the Fleet sidebar to decide whether to
- * render the Stop All button. A mixed flavor -- some sensor sessions,
- * some Claude Code sessions -- keeps the button because the directive
- * will still affect the sensor sessions; the Claude Code sessions
- * silently ignore it.
+ * render the Stop All button. A mixed agent -- some sensor sessions,
+ * some Claude Code sessions -- keeps the button because the stop still
+ * reaches the sensor sessions.
  */
 export function flavorHasDirectiveCapableSession(sessions: Session[]): boolean {
-  const live = sessions.filter(
-    (s) => s.state === "active" || s.state === "idle",
-  );
-  return live.some(sessionSupportsDirectives);
+  return liveSessions(sessions).some(sessionSupportsDirectives);
+}
+
+/** The live sessions Stop All sends a shutdown to: those that can act
+ *  on one. */
+export function stoppableSessions(sessions: Session[]): Session[] {
+  return liveSessions(sessions).filter(sessionSupportsDirectives);
 }

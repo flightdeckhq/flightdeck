@@ -2,7 +2,9 @@ import { describe, it, expect } from "vitest";
 import type { Session } from "@/lib/types";
 import {
   flavorHasDirectiveCapableSession,
+  sessionRunsCustomDirectives,
   sessionSupportsDirectives,
+  stoppableSessions,
 } from "@/lib/directives";
 
 function mkSession(
@@ -176,5 +178,58 @@ describe("flavorHasDirectiveCapableSession", () => {
     // not keep the button visible.
     const sessions = [mkSession("a", "closed")];
     expect(flavorHasDirectiveCapableSession(sessions)).toBe(false);
+  });
+});
+
+describe("sessionRunsCustomDirectives", () => {
+  it("is true for a sensor session and for a pre-registry row outside Claude Code", () => {
+    expect(
+      sessionRunsCustomDirectives({ client_type: "flightdeck_sensor", flavor: "research-agent" }),
+    ).toBe(true);
+    expect(sessionRunsCustomDirectives({ flavor: "research-agent" })).toBe(true);
+  });
+
+  it("is false for a client that takes stop directives but runs no custom handlers", () => {
+    // An enforcement-on plugin session and an Agent SDK run take Stop
+    // and budgets but answer a custom directive with an error.
+    const plugin = {
+      client_type: "claude_code",
+      flavor: "claude-code",
+      context: { supports_directives: true },
+    };
+    expect(sessionSupportsDirectives(plugin)).toBe(true);
+    expect(sessionRunsCustomDirectives(plugin)).toBe(false);
+    expect(sessionRunsCustomDirectives({ client_type: "claude_agent_sdk", flavor: "sdk" })).toBe(
+      false,
+    );
+  });
+
+  it("is false for an observer session and for a sensor session that opted out", () => {
+    expect(
+      sessionRunsCustomDirectives({
+        client_type: "claude_code",
+        flavor: "ci",
+        context: { telemetry: "otlp", supports_directives: false },
+      }),
+    ).toBe(false);
+    expect(
+      sessionRunsCustomDirectives({
+        client_type: "flightdeck_sensor",
+        flavor: "x",
+        context: { supports_directives: false },
+      }),
+    ).toBe(false);
+  });
+});
+
+describe("stoppableSessions", () => {
+  it("keeps the live sessions that can act on a directive", () => {
+    const sessions = [
+      mkSession("live", "active"),
+      mkSession("idle", "idle"),
+      mkSession("closed", "closed"),
+      mkSession("observer", "active", { supports_directives: false }),
+    ];
+    expect(stoppableSessions(sessions).map((s) => s.session_id)).toEqual(["live", "idle"]);
   });
 });

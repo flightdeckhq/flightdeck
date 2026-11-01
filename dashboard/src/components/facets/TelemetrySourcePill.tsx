@@ -1,6 +1,7 @@
 import {
   clientSourceLabel,
   isOtlpTelemetry,
+  OBSERVE_ONLY_NOTE,
   OTLP_SOURCE_PILL_TEXT,
   TELEMETRY_SOURCE_COLOR,
 } from "@/lib/agent-identity";
@@ -31,7 +32,7 @@ export function TelemetrySourcePill({
 }) {
   if (!isOtlpTelemetry(telemetry)) return null;
   const colors = TELEMETRY_SOURCE_COLOR;
-  const label = clientSourceLabel(clientType, telemetry);
+  const description = `${clientSourceLabel(clientType, telemetry)}: ${OBSERVE_ONLY_NOTE}`;
   return (
     <span
       data-testid={testId}
@@ -48,9 +49,12 @@ export function TelemetrySourcePill({
         whiteSpace: "nowrap",
         flexShrink: 0,
       }}
-      title={`${label}: observe only, no directives reach it`}
+      title={description}
     >
-      {OTLP_SOURCE_PILL_TEXT}
+      {/* Visible text is the short pill label; screen readers get the
+          full phrase in its place, since a tooltip is not announced. */}
+      <span aria-hidden="true">{OTLP_SOURCE_PILL_TEXT}</span>
+      <span className="sr-only">{description}</span>
     </span>
   );
 }

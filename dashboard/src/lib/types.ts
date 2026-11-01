@@ -1060,6 +1060,8 @@ export interface SearchResultSession {
   tokens_used: number;
   token_limit: number | null;
   context: Record<string, unknown>;
+  /** The session's client_type; ``""`` on a parent-stub row. */
+  client_type?: string;
 }
 
 /** Search result: event summary. */

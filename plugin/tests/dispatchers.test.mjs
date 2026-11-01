@@ -112,6 +112,8 @@ function startCaptureServer() {
     const captured = [];
     const server = createServer((req, res) => {
       let body = "";
+      // Decode as one stream: per-chunk decoding splits multi-byte characters.
+      req.setEncoding("utf8");
       req.on("data", (c) => {
         body += c;
       });

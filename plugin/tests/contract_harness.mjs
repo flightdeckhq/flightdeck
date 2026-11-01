@@ -355,6 +355,8 @@ export function startCaptureServer() {
     const captured = [];
     const server = createServer((req, res) => {
       let body = "";
+      // Decode as one stream: per-chunk decoding splits multi-byte characters.
+      req.setEncoding("utf8");
       req.on("data", (c) => (body += c));
       req.on("end", () => {
         if (!isIngestPost(req)) {
@@ -396,6 +398,8 @@ export function startGatedServer() {
     };
     const server = createServer((req, res) => {
       let body = "";
+      // Decode as one stream: per-chunk decoding splits multi-byte characters.
+      req.setEncoding("utf8");
       req.on("data", (c) => (body += c));
       req.on("end", () => {
         if (!isIngestPost(req)) {

@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
-import { createServer } from "node:http";
+import { createServer, request } from "node:http";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -164,6 +164,8 @@ function startCaptureServer({ delayMs = 0 } = {}) {
     const captured = [];
     const server = createServer((req, res) => {
       let body = "";
+      // Decode as one stream: per-chunk decoding splits multi-byte characters.
+      req.setEncoding("utf8");
       req.on("data", (c) => (body += c));
       req.on("end", () => {
         try {
@@ -701,6 +703,8 @@ describe("observe_cli.mjs", () => {
     let served = false;
     const server = createServer((req, res) => {
       let body = "";
+      // Decode as one stream: per-chunk decoding splits multi-byte characters.
+      req.setEncoding("utf8");
       req.on("data", (c) => (body += c));
       req.on("end", () => {
         if (req.url.endsWith("/events")) bodies.push(JSON.parse(body));
@@ -742,6 +746,8 @@ describe("observe_cli.mjs", () => {
     let stopFor = null;
     const server = createServer((req, res) => {
       let body = "";
+      // Decode as one stream: per-chunk decoding splits multi-byte characters.
+      req.setEncoding("utf8");
       req.on("data", (c) => (body += c));
       req.on("end", () => {
         const event = body ? JSON.parse(body) : {};
@@ -907,6 +913,29 @@ describe("observe_cli.mjs", () => {
     const postCalls = capture.bodies().slice(before).filter((b) => b.event_type === "post_call");
     assert.deepEqual(postCalls.map((b) => b.tokens_input), [5]);
     rmSync(dirname(transcriptPath), { recursive: true, force: true });
+  });
+
+  it("the capture server keeps a multi-byte character that spans two chunks", async () => {
+    // The size assertion below re-serialises the captured body; a body
+    // decoded chunk by chunk turned a split "…" into two replacement
+    // characters, 3 bytes larger, and failed it now and then.
+    const text = JSON.stringify({ event_type: "probe", marker: "a…b" });
+    const bytes = Buffer.from(text, "utf8");
+    const split = bytes.indexOf(Buffer.from("…", "utf8")) + 1;
+    const before = capture.bodies().length;
+    await new Promise((resolve, reject) => {
+      const req = request(
+        { host: "127.0.0.1", port: capture.port, method: "POST", path: "/ingest/v1/events" },
+        (res) => {
+          res.resume();
+          res.on("end", resolve);
+        },
+      );
+      req.on("error", reject);
+      req.flushHeaders();
+      req.write(bytes.subarray(0, split), () => setTimeout(() => req.end(bytes.subarray(split)), 50));
+    });
+    assert.deepEqual(capture.bodies().slice(before), [{ event_type: "probe", marker: "a…b" }]);
   });
 
   it("keeps a post_call whose captured content is over the event size limit", async () => {

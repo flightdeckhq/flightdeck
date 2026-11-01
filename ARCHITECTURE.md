@@ -2302,9 +2302,9 @@ A `session_end` for a `session_id` Flightdeck has never seen (an orphan
 `session_end`) is **not** rejected at ingestion — the event is accepted and
 published, and the worker decides what to do with it.
 
-The worker pool handles a session's events concurrently, so a `session_end`
-can be picked up while the same session's `session_start` is still being
-written. A `session_end` whose `sessions` row is missing is therefore not
+A `session_end` can reach the worker before its session's `session_start`
+(a client published them out of order, or the start is a redelivery; see
+NATS consumer). A `session_end` whose `sessions` row is missing is therefore not
 dropped on sight: the worker asks NATS to redeliver it after one second,
 and once more after two, holding no goroutine in the meantime. A row that
 has appeared by then is closed, provided its current run began before the
@@ -2419,9 +2419,9 @@ apart: every `session_start` records its NATS stream sequence in
   calls the worker handles before the start's own revive are stored
   without rolling their tokens up, and the `session_start`, published
   after that end, revives the row.
-- A `session_start` can be processed after its own `session_end`, because
-  the worker pool handles a session's events concurrently. It was
-  published before the end that closed the row, so the row stays closed.
+- A `session_start` can be processed after its own `session_end`, when it
+  reaches the worker out of order (see NATS consumer). It was published
+  before the end that closed the row, so the row stays closed.
 
 In the other direction, a `session_end` published before the row's
 current run began (`start_seq`) is recorded as an event but closes
@@ -2471,9 +2471,22 @@ stream (the worker counts a message that fails its last delivery as
 `max_retries_exhausted`). Each delivery hands the processor the message's
 stream sequence and whether it is the last delivery the budget allows.
 
-Nothing orders a session's events across goroutines: two events of one
-session published a few milliseconds apart are processed concurrently.
-Correctness under that rests on the session-row rules below — lazy
+The consumer processes a session's events in stream order. One goroutine
+fetches messages in batches and hands each to one of
+`FLIGHTDECK_WORKER_POOL_SIZE` lanes, chosen by a hash of its
+`session_id`; each lane's goroutine processes its messages one at a
+time, in the order they were fetched. Different sessions run
+concurrently across lanes; two events of one session never do, so a
+`session_start` is written before the `pre_call` published after it is
+looked at. A lane whose buffer is full holds the fetch loop until it
+drains, so a session stuck on a slow write slows the other lanes rather
+than letting its own backlog grow without bound.
+
+Events can still reach the worker out of order: a client's concurrent
+processes (the Claude Code plugin's hooks) can publish a session's events
+in a different order than they happened, and a message the worker asked
+to be redelivered comes back after the session's later events.
+Correctness under that rests on the session-row rules below: lazy
 creation on any event but `session_end`, the parent stub, the delayed
 redelivery of a `session_end` that arrives before its row, the stream
 sequence comparison between a session's start and end, and the
@@ -2570,8 +2583,9 @@ log, while the event row itself is still stored. One side effect is
 kept: a call event published before the `session_end` (its stream
 sequence below the row's `closed_seq`) still adds its tokens to the
 session and the agent, because a sensor sends a run's last `post_call`
-and its `session_end` back to back and the worker pool can apply the
-end first. The session stays closed and `last_seen_at` does not move. Revival on `stale` /
+and its `session_end` back to back and the call can reach the worker
+after the end (a redelivered call, or a client that published them out
+of order). The session stays closed and `last_seen_at` does not move. Revival on `stale` /
 `lost` is a correctness fix; reviving a `closed` session would contradict
 the user's explicit end signal. The one exception is a re-attachment: a
 `session_start` revives a closed row unless its own `session_end` was

@@ -11,6 +11,8 @@ import urllib.error
 import urllib.request
 import uuid
 
+import pytest
+
 from .conftest import (
     get_session_event_count,
     API_URL,
@@ -22,6 +24,7 @@ from .conftest import (
     post_event,
     session_exists_in_fleet,
     wait_until,
+    worker_paused,
 )
 
 
@@ -288,3 +291,60 @@ def test_has_content_without_a_content_blob_is_stored_as_no_content() -> None:
     )
     assert has_content == "f", f"event claims content it never sent: has_content={has_content!r}"
     assert _get_event_content(event_ids[0]) is None
+
+
+# Enough sessions that the worker's lanes drain a backlog of starts and
+# capture-on calls together many times over.
+BACKLOG_SESSIONS = 60
+BACKLOG_TIMEOUT_SECS = 30.0
+
+
+@pytest.mark.exclusive
+def test_a_backlog_of_capture_on_sessions_keeps_every_calls_content() -> None:
+    """Queue each session's session_start (capture on) and a post_call
+    with content behind a paused worker, then let it drain the backlog.
+    A session's events are processed in order, so each post_call finds
+    its session's capture posture and keeps its content; a pool that
+    processed them concurrently dropped some calls' content as if
+    capture were off.
+    """
+    flavor = f"capture-backlog-{uuid.uuid4().hex[:6]}"
+    sids = [str(uuid.uuid4()) for _ in range(BACKLOG_SESSIONS)]
+    content = {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-6",
+        "system": None,
+        "messages": [{"role": "user", "content": "backlog"}],
+        "tools": None,
+        "response": {"content": [{"type": "text", "text": "ok"}]},
+    }
+    with worker_paused():
+        for sid in sids:
+            post_event(make_event(sid, flavor, "session_start"))
+            post_event(
+                make_event(sid, flavor, "post_call", tokens_total=5, has_content=True, content=content)
+            )
+
+    def stored() -> int:
+        return int(
+            exec_sql(
+                "SELECT COUNT(*) FROM events WHERE flavor = :'flavor' AND event_type = 'post_call'",
+                flavor=flavor,
+            )
+            or "0"
+        )
+
+    wait_until(
+        lambda: stored() == len(sids),
+        timeout=BACKLOG_TIMEOUT_SECS,
+        msg=f"not every post_call of {flavor} was stored",
+    )
+    with_content = int(
+        exec_sql(
+            "SELECT COUNT(*) FROM events e JOIN event_content c ON c.event_id = e.id "
+            "WHERE e.flavor = :'flavor' AND e.event_type = 'post_call' AND e.has_content",
+            flavor=flavor,
+        )
+        or "0"
+    )
+    assert with_content == len(sids), f"{len(sids) - with_content} of {len(sids)} calls lost their content"

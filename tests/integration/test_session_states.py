@@ -1004,12 +1004,13 @@ def test_reattachment_with_the_previous_end_queued_keeps_its_first_calls() -> No
     wait_for_state(sid, "closed", timeout=STATE_TIMEOUT_SECS)
 
 
-def test_reattachment_processed_after_both_runs_ended_stays_closed() -> None:
-    """Force the worst order: the previous run's end and the new run's
-    end are both processed while the re-attaching session_start is held
-    back (the agents row it must upsert first is locked). The later end
-    must leave its mark on the closed row, so the start, once released,
-    cannot revive a session whose new run has already ended.
+def test_a_held_reattachment_holds_the_sessions_later_end_behind_it() -> None:
+    """A session's events are processed in order: while the re-attaching
+    session_start is held back (the agents row it must upsert first is
+    locked), the new run's end waits behind it rather than overtaking it.
+    (The row reads active meanwhile: ingestion stamped the re-attachment
+    when the start was posted.) Once the lock is released both land and
+    the session ends closed.
     """
     sid = str(uuid.uuid4())
     flavor = f"test-reattach-held-{uuid.uuid4().hex[:6]}"
@@ -1023,11 +1024,12 @@ def test_reattachment_processed_after_both_runs_ended_stays_closed() -> None:
         post_event(make_event(sid, flavor, "session_end", agent_name=HELD_AGENT_NAME))
         post_event(make_event(sid, flavor, "session_start", agent_name=HELD_AGENT_NAME))
         post_event(make_event(sid, flavor, "session_end", agent_name=HELD_AGENT_NAME))
-        _wait_for_rows(flavor, "session_end", 2, RETRY_WINDOW_TIMEOUT_SECS)
+        _wait_for_rows(flavor, "session_end", 1, RETRY_WINDOW_TIMEOUT_SECS)
         assert _count_rows(flavor, "session_start") == 1, "the start was not held back"
-        assert get_session_detail(sid)["session"]["state"] == "closed"
+        assert _count_rows(flavor, "session_end") == 1, "the later end overtook the held start"
 
     _wait_for_rows(flavor, "session_start", 2, RETRY_WINDOW_TIMEOUT_SECS)
+    _wait_for_rows(flavor, "session_end", 2, RETRY_WINDOW_TIMEOUT_SECS)
     assert get_session_detail(sid)["session"]["state"] == "closed"
 
 

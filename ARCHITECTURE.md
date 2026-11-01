@@ -2495,7 +2495,8 @@ turns what it understands into Flightdeck events. This reaches runs no
 hook or SDK patch sees: `claude --bare`, Claude Code in CI and cloud
 sessions, and any Claude Code whose telemetry is pointed at Flightdeck.
 The sessions it creates observe only (`context.supports_directives=false`,
-`context.telemetry=otlp`): the dashboard shows them and offers no Stop.
+`context.telemetry=otlp`): the dashboard shows them, names their source
+(see Dashboard > Session source) and offers no Stop.
 They carry the `client_type` of the tool that produced the telemetry
 (see Client type registry > OTLP sources), so a Claude Code session
 reported over OTLP is a `claude_code` session with that type's defaults.
@@ -2662,8 +2663,9 @@ of the record>")`) through the same attachment check and token stamping as
 `POST /v1/events`, so a closed session that resumes is re-attached;
 otherwise it publishes none. A closed sub-agent has finished (its
 `subagent_completed` closed it) and is never restarted: a record of it
-that arrives late is published without a start, and the worker drops it
-as it drops any event for a closed session. The cache is per replica and only saves the
+that arrives late is published without a start, and the worker stores
+its event but skips its session side effects, as for any event on a
+closed session (see Session state machine): the child stays closed. The cache is per replica and only saves the
 read: an entry expires 10 minutes after it is cached, well inside the
 reaper's timeout, and publishing a session's `session_end` removes it,
 so a record for a session closed since is read again and re-attaches
@@ -4150,7 +4152,9 @@ Matched columns per entity:
   LATERAL-derived `state` (via the shared `agentStateRollupSQL`),
   so the palette's AgentRow renders the same identity primitives
   as `/agents` (ClaudeCodeLogo, ClientTypePill, state chip) and
-  the two surfaces agree on every agent's rolled-up state.
+  the two surfaces agree on every agent's rolled-up state. It
+  carries the latest session's `telemetry` as the agent rows do,
+  for the source pill (see Dashboard > Session source).
 - **Sessions** — `session_id`, `flavor`, `host`, `model`, plus
   `context->>'hostname'`, `context->>'os'`, `context->>'git_branch'`,
   `context->>'python_version'`, and `(context->'frameworks')::text`.
@@ -4314,12 +4318,14 @@ The wire shape uses `omitempty`; consumers treat the field as
 optional and apply the paginated-only path when it is absent.
 
 ### `AgentSummary` runtime-context projection
-Each `AgentSummary` row carries seven nullable JSONB-derived
+Each `AgentSummary` row carries eight nullable JSONB-derived
 fields sourced from the agent's MOST RECENT session's
 `sessions.context`: `os`, `arch`, `git_branch`, `git_repo`,
-`orchestration`, `python_version`, `process_name`. `hostname`
+`orchestration`, `python_version`, `process_name` and `telemetry`
+(`otlp` when that session was reported over OpenTelemetry; the
+dashboard's source pill reads it, see Dashboard > Session source). `hostname`
 and `user` already live as direct columns on the `agents`
-table (denormalised at agent-upsert time); the seven
+table (denormalised at agent-upsert time); the eight
 fields ride a single shared `LEFT JOIN LATERAL` per agent
 (`agentLatestContextSQL` in `api/internal/store/postgres.go`)
 that runs `SELECT context->>'<key>' ... WHERE agent_id =
@@ -4328,7 +4334,8 @@ a.agent_id ORDER BY started_at DESC LIMIT 1`.
 The lateral attaches to all three agent-row projection paths —
 `GetAgentFleet`, `ListAgents`, `GetAgentByID` — so `/v1/fleet`
 and `/v1/agents` carry an identical agent-row shape on the
-new columns. `/v1/agents/:id/summary` returns
+new columns. The agents arm of `GET /v1/search` joins the same
+lateral for `telemetry` alone, so a search hit names its source too. `/v1/agents/:id/summary` returns
 `AgentSummaryResponse` (totals + per-bucket series) rather
 than `AgentSummary`, so it does NOT surface the projection;
 `GetAgentByID` is called by the summary handler only as a 404
@@ -4452,7 +4459,8 @@ or modal-open does not refetch).
 Columns, left to right:
 
 1. **Identity** — agent name (monospace), `ClientTypePill`
-   (CC / SDK), `agent_type` badge (coding / production),
+   (CC / SDK) and, for an agent reported over OpenTelemetry, the `OTEL`
+   source pill (see Session source), `agent_type` badge (coding / production),
    provider / OS / orchestration icons derived from the agent's
    most-recent session context.
 2. **Topology** — `TopologyCell` pill (lone / ↳ child /
@@ -4787,6 +4795,37 @@ visual peek at one agent's swimlane; the drawer (row click)
 is the drill-down into the agent's events, runs, and
 sub-agent linkage.
 
+### Session source
+
+A client can report the same agent more than one way, and an operator
+needs to know which, because it decides what Flightdeck can do with
+the session: Claude Code through the plugin, or through its own
+OpenTelemetry exporter (see OTLP ingest), which observes only. The
+source is read from the session's `context.telemetry`, never from the
+client type (an OTLP-reported Claude Code session is a `claude_code`
+session with that type's defaults), and for an agent from its latest
+session's, which the agent rows carry as `telemetry` (see
+`AgentSummary` runtime-context projection).
+
+- **Compact rows.** An `OTEL` pill (`TelemetrySourcePill`, the muted
+  pill treatment) follows the `ClientTypePill` on the Fleet swimlane
+  label strip and sidebar row, the `/agents` identity cell, the agent
+  drawer's identity row and the search palette's agent and session
+  hits (and its recent-agents list). Its tooltip reads "Claude Code via
+  OpenTelemetry: observe only, no directives reach it". The plugin, the
+  sensor and the Agent SDK interceptor get no pill: they are each
+  client's default way of reporting, and a pill on every one of their
+  rows would be noise.
+- **Run drawer.** The Claude Code header bar spells the source out
+  after the version: `via OpenTelemetry` or `via plugin`. The version
+  comes from the plugin's `claude-code/<version>` framework entry or an
+  OTLP session's `context.claude_code_version`; the bar shows for any
+  session whose `client_type` is `claude_code`, so an OTLP session
+  under a custom `flightdeck.flavor` keeps it.
+- **Controls.** An OTLP session takes no directives (see
+  Observer-session class): no Stop Agent, no Stop All, no
+  custom-directive triggers.
+
 ### Fleet view
 
 `dashboard/src/pages/Fleet.tsx` composes the FleetPanel sidebar (240px),
@@ -4920,7 +4959,9 @@ full detail" inside the drawer. `onClearDirectEvent` is called by the
 Back button so the parent knows the prop-fed event was dismissed. Mode is
 rendered directly from `activeDetailEvent` truthiness.
 
-The drawer header carries session ID + state badge, metadata bar, and a
+The drawer header carries session ID + state badge, a Claude Code bar
+for `claude_code` sessions (logo, label, `coding` badge, version and
+source, see Session source), metadata bar, and a
 collapsible RUNTIME panel (only renders when `session.context` is
 non-empty; combines git / kubernetes / compose / frameworks fields).
 Tabs: Timeline, Prompts, Directives (conditional). The Directives tab
@@ -4989,7 +5030,12 @@ platform, service tier, speed, inference geo and scope, and
 `cost_reported` with its `cost_source`. An `embeddings` call lists
 its model, input tokens and latency, then the same serving fields. A
 field the client did not report (or a count of zero) has no row, so
-a call from a client that reports none keeps its base rows.
+a call from a client that reports none keeps its base rows. An event
+that names no model (Claude Code's prompt record over OpenTelemetry
+carries none) shows `—` in its Model row and leaves the model out of
+its feed line, a line with nothing else reading `—`; no surface shows
+a model it was not told. A streaming block that holds only `ttft_ms`
+and `final_outcome` lists TTFT and Stream outcome and no chunk rows.
 
 The same `<EnrichmentSummary>` and `<SurroundingEventsList>`
 components are also embedded in the in-page `EventDetailView` that
@@ -6552,9 +6598,12 @@ otherwise; the sensor omits it and takes its type's `true` default. A row with n
 the flag nor a `client_type` (the column is nullable on `sessions`) is
 treated as observer-only when its flavor or framework marks it as a
 Claude Code session, so an old plugin row never regains a Stop button.
-The dashboard hides the Stop Agent button for observer sessions and
-gates the Fleet Stop All control on at least one directive-capable
-session in the flavor.
+The dashboard hides the Stop Agent button and the run drawer's
+Directives tab for observer sessions, gates the Fleet Stop All control
+on at least one directive-capable live session in the flavor, and the
+Fleet sidebar's custom-directive trigger on at least one
+directive-capable session. A Claude Code session reported over OTLP is
+an observer session: its `context.supports_directives` is `false`.
 
 ---
 

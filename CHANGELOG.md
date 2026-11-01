@@ -19,6 +19,14 @@ All notable changes to Flightdeck are documented here.
   the exporter sets `OTEL_RESOURCE_ATTRIBUTES=flightdeck.capture_prompts=true`.
   A session the plugin or the Agent SDK already reports is not reported a
   second time.
+- **The dashboard shows where a Claude Code session comes from.** A
+  session reported over OpenTelemetry carries an `OTEL` pill beside its
+  `CLAUDE CODE` pill on the Fleet rows, the Agents table, the agent
+  drawer and the search palette, and its run drawer reads "Claude Code
+  … via OpenTelemetry" (or "via plugin") with the Claude Code version.
+  Such a session offers no Stop and no custom-directive triggers. The
+  agent rows of `GET /v1/fleet`, `GET /v1/agents` and the agent hits of
+  `GET /v1/search` carry the latest session's `telemetry`.
 - **Claude Code sessions can be stopped and held to token budgets.** With
   the plugin option `enforcement` on (or `FLIGHTDECK_ENFORCEMENT=1`), the
   dashboard's Stop button and token policies reach Claude Code: a stop or
@@ -47,6 +55,14 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **An event that names no model no longer reads "unknown".** A prompt,
+  call or error without a model (Claude Code's prompt record over
+  OpenTelemetry has none) shows a dash in its feed line and its Model
+  row.
+- **Observer sessions offer no custom directives.** The run drawer's
+  Directives tab and the Fleet sidebar's directive trigger appeared for
+  an observe-only session whose flavor matched a sensor's registered
+  directives; they now need a session that can act on one.
 - **Streamed OpenAI and Anthropic calls store their response and report
   their tool calls.** With `capture_prompts` on, `create(stream=True)`
   stored the request but not the streamed text, and a `responses.create`

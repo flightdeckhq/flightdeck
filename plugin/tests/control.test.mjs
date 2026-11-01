@@ -166,6 +166,8 @@ describe("sendPendingControlEvents", () => {
     const bodies = [];
     const server = createServer((req, res) => {
       let body = "";
+      // Decode as one stream: per-chunk decoding splits multi-byte characters.
+      req.setEncoding("utf8");
       req.on("data", (c) => (body += c));
       req.on("end", () => {
         bodies.push(JSON.parse(body));
@@ -217,6 +219,8 @@ describe("events the server did not accept", () => {
     let refuseEnd = true;
     const server = createServer((req, res) => {
       let body = "";
+      // Decode as one stream: per-chunk decoding splits multi-byte characters.
+      req.setEncoding("utf8");
       req.on("data", (c) => (body += c));
       req.on("end", () => {
         const event = JSON.parse(body);

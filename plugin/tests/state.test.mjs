@@ -265,6 +265,8 @@ describe("a real SessionStart hook", () => {
   before(async () => {
     server = createServer((req, res) => {
       let body = "";
+      // Decode as one stream: per-chunk decoding splits multi-byte characters.
+      req.setEncoding("utf8");
       req.on("data", (c) => (body += c));
       req.on("end", () => {
         if (req.method === "POST") {

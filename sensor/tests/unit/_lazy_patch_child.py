@@ -14,6 +14,8 @@ the capture server, ends the session and prints one JSON report line:
 - ``patched``: whether <sdk>'s patch sentinel is in place after its import;
 - ``network``: hosts other than loopback the process tried to resolve or
   connect to (every such attempt is refused);
+- ``network_at_patch``: those it tried before <sdk> was used (through
+  the imports, ``init()`` and ``patch()``);
 - ``price_fetch_at_patch``: whether anything tried to reach litellm's
   price list before <sdk> was imported.
 
@@ -162,6 +164,7 @@ def main() -> None:
     flightdeck_sensor.init(server=server, token="tok", quiet=True, agent_type="coding")
     flightdeck_sensor.patch(quiet=True)
     loaded_after_patch = _loaded()
+    network_at_patch = list(network)
     price_fetch_at_patch = LITELLM_PRICE_LIST_HOST in network
 
     patched = False
@@ -179,6 +182,7 @@ def main() -> None:
         "session_id": session_id,
         "patched": patched,
         "network": network,
+        "network_at_patch": network_at_patch,
         "price_fetch_at_patch": price_fetch_at_patch,
     }
     print(json.dumps(report), flush=True)

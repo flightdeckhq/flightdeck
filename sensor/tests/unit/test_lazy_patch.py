@@ -43,6 +43,13 @@ THREAD_WAIT_SECS = 10.0
 # Time given to patch() on another thread to reach an import in progress
 # before the test lets that import finish.
 PATCH_HEAD_START_SECS = 0.2
+# The host tiktoken downloads an encoding from the first time the sensor
+# estimates an OpenAI call's tokens, unless its cache, shared by every
+# process on the machine, already holds it (whether another test filled
+# it first depends on the order the tests run in). A fetch the call makes,
+# not an import; the child refuses it like any other, and the estimate
+# falls back to a heuristic.
+TIKTOKEN_ENCODINGS_HOST = "openaipublic.blob.core.windows.net"
 
 
 def _installed(module: str) -> bool:
@@ -123,7 +130,10 @@ def test_an_sdk_is_patched_and_metered_whichever_is_imported_first(sdk: str, ord
     else:
         assert sdk in report["loaded_after_patch"]
     assert report["patched"] is True
-    assert report["network"] == []
+    # Nothing left the machine through the imports, init() and patch(),
+    # nor through the call but for tiktoken's encodings.
+    assert report["network_at_patch"] == []
+    assert [h for h in report["network"] if h != TIKTOKEN_ENCODINGS_HOST] == []
     _assert_metered(sdk, report["session_id"], events)
 
 

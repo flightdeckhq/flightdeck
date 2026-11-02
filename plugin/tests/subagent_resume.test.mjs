@@ -40,81 +40,14 @@ import {
 } from "../hooks/scripts/claude_code/subagent.mjs";
 import { SESSION_END_WORKER_FLAG } from "../hooks/scripts/claude_code/session_end.mjs";
 import { markerKeyFor } from "../hooks/scripts/core/state.mjs";
-import { assertIngestionContract, hookEnv, isIngestPost, pollUntil, privateTmp, runScript } from "./contract_harness.mjs";
-
-/**
- * A capture server that answers chosen requests otherwise than 200:
- * ``fail(predicate, {status, times, body})`` answers the next ``times``
- * matching POSTs (Infinity for all of them) with ``status`` and ``body``
- * (ingestion's JSON error by default); ``delay(predicate, ms)`` answers a
- * matching POST ``ms`` late, as a slow server would; ``hold(predicate)``
- * keeps matching POSTs unanswered until ``release()``. Every other POST is
- * answered 200. ``accepted()`` holds the bodies answered 200, in the order
- * they were answered; ``attempts()`` every body, in arrival order.
- */
-function startFaultyServer() {
-  const accepted = [];
-  const attempts = [];
-  const faults = [];
-  const delays = [];
-  const holds = [];
-  const held = [];
-  const accept = (parsed, res) => {
-    accepted.push(parsed);
-    res.writeHead(200, { "Content-Type": "application/json" });
-    res.end('{"status":"ok","attached":false}');
-  };
-  const server = createServer((req, res) => {
-    let body = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk) => (body += chunk));
-    req.on("end", () => {
-      if (!isIngestPost(req)) {
-        res.writeHead(404, { "Content-Type": "application/json" });
-        res.end("{}");
-        return;
-      }
-      const parsed = JSON.parse(body);
-      attempts.push(parsed);
-      const fault = faults.find((f) => f.times > 0 && f.predicate(parsed));
-      if (fault) {
-        fault.times -= 1;
-        res.writeHead(fault.status, { "Content-Type": fault.contentType });
-        res.end(fault.body);
-        return;
-      }
-      if (holds.some((predicate) => predicate(parsed))) {
-        held.push(() => accept(parsed, res));
-        return;
-      }
-      const slow = delays.find((d) => d.predicate(parsed));
-      if (slow) {
-        setTimeout(() => accept(parsed, res), slow.ms);
-        return;
-      }
-      accept(parsed, res);
-    });
-  });
-  return new Promise((resolve) => {
-    server.listen(0, "127.0.0.1", () =>
-      resolve({
-        server,
-        port: server.address().port,
-        accepted: () => accepted,
-        attempts: () => attempts,
-        fail: (predicate, { status = 502, times = 1, body = '{"error":"injected"}', contentType = "application/json" } = {}) =>
-          faults.push({ predicate, status, times, body, contentType }),
-        delay: (predicate, ms) => delays.push({ predicate, ms }),
-        hold: (predicate) => holds.push(predicate),
-        heldCount: () => held.length,
-        release: () => {
-          holds.length = 0;
-          while (held.length > 0) held.shift()();
-        },
-      }),
-    );
-  });
-}
+import {
+  assertIngestionContract,
+  hookEnv,
+  pollUntil,
+  privateTmp,
+  runScript,
+  startFaultyServer,
+} from "./contract_harness.mjs";
 
 const now = () => new Date().toISOString();
 

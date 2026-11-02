@@ -122,7 +122,11 @@ function writeTranscript(dir, turns) {
       }),
     );
   });
-  const path = join(dir, "transcript.jsonl");
+  // A file of its own per call, even in a shared directory: a SessionEnd
+  // test that fails before its detached worker has read the transcript
+  // leaves that worker running, and at a shared path it would read the
+  // next test's transcript and hold that test's turn claims.
+  const path = join(dir, `transcript-${randomUUID()}.jsonl`);
   writeFileSync(path, lines.join("\n") + "\n");
   return path;
 }

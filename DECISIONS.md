@@ -414,6 +414,22 @@ a failed send that was never retried; a re-read after lost markers filed
 pre-0.7.1 plugins' random-id re-sends would count twice); a child keyed
 on Claude Code's session id (contradicts D190); a child per resume.
 
+## D237 -- A Claude Code tool event's id comes from its tool_use_id; a failed one is rebuilt from the transcript
+
+**Date:** 2026-11-02
+**Decision:** extends D236. The plugin's `tool_call` and `mcp_tool_call`
+carry `uuid5(NAMESPACE_FLIGHTDECK, "flightdeck://claude-code/tool_call/<tool_use_id>")`.
+A hook records the event as owed before its POST, with only what it
+alone knows; after a failed POST a later flush of its session rebuilds
+it from that and the transcript, and the worker stores it once (D215).
+**Why:** a tool event was sent once with a server-made id, so a failed
+POST lost it for good (5 in the forensic conversation) and a re-send
+would have stored it twice.
+**Rejected alternative:** keeping the hook's payload on disk (puts tool
+output in the state directory, which holds no content); rebuilding
+every transcript tool use (reports uses no hook reports, such as denied
+permissions, and races the hook for the first copy).
+
 ## D238 -- A record dated after a closed OTLP sub-agent's end resumes it
 
 **Date:** 2026-11-02

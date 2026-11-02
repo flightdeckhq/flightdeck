@@ -19,6 +19,7 @@ import {
   isSubagentEnded,
   markSessionStarted,
   markSubagentEnded,
+  owedToolCallHeld,
   oweSubagentEnd,
   readOwedSubagentEnds,
   releaseOwedSubagentEnd,
@@ -28,6 +29,7 @@ import {
 import { uuid5 } from "../uuid5.mjs";
 import { finishControl } from "./control.mjs";
 import { defaultFlushDeadline, flushPostCallTurns, readTurnsBounded, refusedForGood } from "./post_call.mjs";
+import { sendOwedToolCalls } from "./tool_events.mjs";
 import { readTurns } from "./transcript.mjs";
 
 // ---------------------------------------------------------------------
@@ -734,7 +736,9 @@ async function startSubagent({ cfg, hookEvent, outerSessionId, childBase, role, 
 // previous execution's SubagentStop, or a hook retrying its end) to
 // finish with the end that execution owes, so that the resume's
 // session_start follows that end: the end's POST (TIMEOUT_MS, 2 s in
-// core/poster.mjs) and a margin for the hook's own start-up.
+// core/poster.mjs) and a margin for the hook's own start-up. The
+// SessionEnd worker waits as long for a live hook still sending a
+// subagent's tool event before its last try at that subagent's end.
 export const SUBAGENT_OWED_END_WAIT_MS = 3000;
 
 /**
@@ -802,9 +806,11 @@ async function stopSubagent({ cfg, hookEvent, outerSessionId, childBase, role, c
     return { failed: false };
   }
   const outcome = await finishSubagentExecution({ cfg, childBase, entry, bounds, hookEvent });
-  if (outcome === "failed") {
+  // Failed, or pending behind a tool event a live hook is still sending:
+  // the end stays owed for a later flush. Only a failure stops the flush.
+  if (outcome === "failed" || outcome === "pending") {
     releaseOwedSubagentEnd(outerSessionId, childSessionId);
-    return { failed: true };
+    return { failed: outcome === "failed" };
   }
   dropOwedSubagentEnd(outerSessionId, childSessionId);
   return { failed: false };
@@ -933,8 +939,11 @@ export function subagentResumedAfterFinalTurn({ subagentTranscript, parentTransc
  * the marker for a later session (``laterMint``) and the flush deadline.
  * Returns "sent" (the end was accepted, refused for good, or carried by a
  * directive's stop), "failed" (a POST failed or the flush ran out of
- * time: the end is still owed) or "superseded" (the subagent was resumed
- * meanwhile, and an end now would close the resumed child).
+ * time: the end is still owed), "pending" (a tool event of the execution
+ * is still owed, being sent by a live hook or past the deadline: the end
+ * waits for a later flush, so that it follows that event, and the caller
+ * goes on) or "superseded" (the subagent was resumed meanwhile, and an
+ * end now would close the resumed child).
  */
 export async function finishSubagentExecution({ cfg, childBase, entry, bounds = {}, hookEvent = null }) {
   const { notBefore = null, laterMint = null, deadline = defaultFlushDeadline() } = bounds;
@@ -976,6 +985,18 @@ export async function finishSubagentExecution({ cfg, childBase, entry, bounds = 
       );
     }
   }
+  // The tool events the execution still owes, after the turns that
+  // decided on them and before the end; this is their last chance
+  // unless the subagent is resumed.
+  const tools = await sendOwedToolCalls({
+    cfg,
+    sessionId: childSessionId,
+    basePayload: childBase,
+    lastChance: true,
+    deadline,
+  });
+  if (tools.failed) return "failed";
+  if (!tools.complete) return "pending";
   // Built first (it reads the transcript), so that the resume check below
   // is the last step before the POST.
   const payload = subagentEndPayload({ cfg, childBase, entry, hookEvent });
@@ -1021,9 +1042,12 @@ function subagentEndPayload({ cfg, childBase, entry, hookEvent }) {
 
 /**
  * Send the subagent ends ``outerSessionId`` still owes, each after the
- * turns its execution had not sent. ``basePayload`` is the outer
- * session's. An entry a live process holds is left to it. Returns
- * ``{failed}``: true once a POST failed, which stops the pass.
+ * turns and tool events its execution had not sent. ``basePayload`` is
+ * the outer session's. An entry a live process holds is left to it.
+ * Returns ``{failed, pending}``: ``failed`` is true once a POST failed,
+ * which stops the pass; ``pending`` lists the children whose end waits
+ * for a tool event a live hook is still sending, released for a later
+ * flush while the pass goes on with the other ends.
  */
 export async function sendOwedSubagentEnds({
   cfg,
@@ -1036,6 +1060,7 @@ export async function sendOwedSubagentEnds({
   laterMint = null,
   deadline = defaultFlushDeadline(),
 }) {
+  const pending = [];
   for (const childSessionId of Object.keys(readOwedSubagentEnds(outerSessionId))) {
     const entry = takeOwedSubagentEnd(outerSessionId, childSessionId);
     if (!entry) continue;
@@ -1070,11 +1095,16 @@ export async function sendOwedSubagentEnds({
     });
     if (outcome === "failed") {
       releaseOwedSubagentEnd(outerSessionId, childSessionId);
-      return { failed: true };
+      return { failed: true, pending };
+    }
+    if (outcome === "pending") {
+      releaseOwedSubagentEnd(outerSessionId, childSessionId);
+      pending.push(childSessionId);
+      continue;
     }
     dropOwedSubagentEnd(outerSessionId, childSessionId);
   }
-  return { failed: false };
+  return { failed: false, pending };
 }
 
 /**
@@ -1082,11 +1112,12 @@ export async function sendOwedSubagentEnds({
  * last chance to be reported under their own child sessions: the ends
  * still owed, then the unsent turns of every subagent transcript written
  * since the session was minted (a subagent the user stopped, or one
- * killed with the session, has no SubagentStop to send them). Only for a
- * session with a mint time: without that bound the pass could send an
- * earlier session's turns under this session's children. ``laterMint``
- * looks for a later session a resume has minted meanwhile, whose turns
- * the pass leaves to it.
+ * killed with the session, has no SubagentStop to send them), then once
+ * more any end left waiting for a tool event a live hook was still
+ * sending. Only for a session with a mint time: without that bound the
+ * pass could send an earlier session's turns under this session's
+ * children. ``laterMint`` looks for a later session a resume has minted
+ * meanwhile, whose turns the pass leaves to it.
  */
 export async function finishSubagentsAtSessionEnd({
   cfg,
@@ -1102,13 +1133,15 @@ export async function finishSubagentsAtSessionEnd({
 }) {
   if (notBefore == null) return;
   const identity = { basePayload, outerSessionId, agentName, identityUser, identityHostname };
-  if ((await sendOwedSubagentEnds({ cfg, ...identity, notBefore, laterMint, deadline })).failed) return;
+  const owedEnds = { cfg, ...identity, notBefore, laterMint, deadline };
+  const ends = await sendOwedSubagentEnds(owedEnds);
+  if (ends.failed) return;
   const dir = subagentTranscriptsDir(parentTranscript);
   let names = [];
   try {
     if (dir) names = readdirSync(dir);
   } catch {
-    return; // no subagents
+    names = []; // no subagents
   }
   for (const name of names) {
     const match = /^agent-(.+)\.jsonl$/.exec(name);
@@ -1142,6 +1175,25 @@ export async function finishSubagentsAtSessionEnd({
       reclaimOrphaned: true,
     });
     if (!flushed.complete) return;
+    const tools = await sendOwedToolCalls({
+      cfg,
+      sessionId: childBase.session_id,
+      basePayload: childBase,
+      lastChance: true,
+      deadline,
+    });
+    if (tools.failed) return;
+  }
+  // An end left waiting for a tool event a live hook was still sending
+  // gets its last try once those hooks are done, waiting for them at most
+  // SUBAGENT_OWED_END_WAIT_MS so that the end still follows the event. A
+  // hook still sending after that leaves the end unsent.
+  if (ends.pending.length > 0) {
+    const waitUntil = Math.min(Date.now() + SUBAGENT_OWED_END_WAIT_MS, deadline ?? Infinity);
+    while (ends.pending.some((child) => owedToolCallHeld(child)) && Date.now() < waitUntil) {
+      await new Promise((resolve) => setTimeout(resolve, SUBAGENT_RESUME_POLL_MS));
+    }
+    await sendOwedSubagentEnds(owedEnds);
   }
 }
 

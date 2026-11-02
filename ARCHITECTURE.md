@@ -2768,7 +2768,7 @@ The ingestion handler rejects events with 400 when:
   more than 5m in the future (`maxClockSkewFuture`). The 48h past
   bound accommodates retry-after-long-outage windows.
 - `tokens_input`, `tokens_output` or `tokens_total` is negative (cache
-  counts and a failed stream's `partial_tokens_*` are not range-checked).
+  counts are not range-checked).
 - `tokens_reasoning`, `tokens_cache_creation_1h` or `cost_reported` is
   negative or not a finite number.
 - `billing_mode` is outside `{metered, subscription, local}`, `provider`
@@ -2783,6 +2783,30 @@ The ingestion handler rejects events with 400 when:
   characters, or
   `inference_scope` is outside `{global, regional}`, or
   `provider_metadata.platform` is longer than 253 characters.
+- `streaming` is not an object, its `final_outcome` or `abort_reason` is
+  not a string, its `chunk_count` is not a non-negative integer, or its
+  `ttft_ms` or an `inter_chunk_ms` value (`p50`, `p95`, `max`, in an
+  object) is not a non-negative number.
+- On `llm_error`, `error` is not an object, its `abort_reason` is not a
+  string, or its `partial_chunks`, `partial_tokens_input` or
+  `partial_tokens_output` is not a non-negative integer (up to 2^53, the
+  bound on the other token counts).
+
+A JSON null counts as absent for each of these. A stream outcome or
+abort reason outside its vocabulary is not rejected:
+`streaming.final_outcome` (`completed`, `aborted`), `streaming.abort_reason`
+and an `llm_error`'s `error.abort_reason` (`client_aborted`,
+`error_before_stream`, `error_mid_stream`, `timeout`) are diagnostics a
+sensor newer than the server can extend, and refusing the event would
+also drop the tokens it carries. Ingestion stores such a value as
+`other`, the catch-all of both vocabularies (the fallback the `llm_error`
+taxonomy's `error_type` uses), and re-encodes only an event it changed.
+It counts the replacements in the process and logs them at most once a
+second, with the field, the running count and the value when it is a
+lowercase identifier of at most 64 characters (any other value is logged
+by its length, so a client cannot write arbitrary text into the log). A
+negative count is refused, as a negative `tokens_*` is: it comes from a
+broken client, not a newer one.
 
 A `session_end` for a `session_id` Flightdeck has never seen (an orphan
 `session_end`) is **not** rejected at ingestion — the event is accepted and
@@ -6171,7 +6195,8 @@ streaming view (`with_raw_response.create(stream=True)`) is timed from
 the `parse()` call, where the guard opens, not from the request. A stream
 that fails emits `llm_error` instead (`abort_reason` `error_before_stream`,
 `error_mid_stream` or `timeout`). The streaming sub-object is omitted
-entirely for non-streaming calls.
+entirely for non-streaming calls. Ingestion stores a `final_outcome` or
+`abort_reason` outside these values as `other` (see Validation rules).
 
 #### Streaming metering
 
@@ -6455,7 +6480,9 @@ helper the caller read through `get_final_message()`, which leaves
 `partial_chunks=0`) emits `error_type=stream_error` with `abort_reason`
 `error_mid_stream` (or `timeout`), `partial_chunks` (chunks read before
 the failure) and, when the stream had delivered usage,
-`partial_tokens_input` / `partial_tokens_output`. The provider bills those tokens, so the sensor
+`partial_tokens_input` / `partial_tokens_output`. Ingestion stores an
+`abort_reason` outside these values as `other` and refuses a `partial_*`
+count that is not a non-negative integer (see Validation rules). The provider bills those tokens, so the sensor
 adds them to the in-process session counter that drives its local budget
 checks; server-side session totals, the `tokens` metric and
 `estimated_cost` do not include them: the session totals add every event

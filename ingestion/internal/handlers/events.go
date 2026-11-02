@@ -272,26 +272,35 @@ func EventsHandler(
 		sessionID, _ := payload["session_id"].(string)
 		eventType, _ := payload["event_type"].(string)
 
+		// A stream outcome or abort reason outside its vocabulary is
+		// stored as the catch-all rather than refused (see
+		// normalizeStreamingValues), so the event's tokens still count.
+		reencode := normalizeStreamingValues(payload)
+
 		// On session_start, attach the resolved token id/name so the
 		// worker's UpsertSession can persist them onto the new session
 		// row. Subsequent events carry no token fields -- a
 		// session belongs to whichever token opened it. We re-encode
-		// the payload only in the session_start branch to avoid paying
-		// the marshal cost on the hot post_call/heartbeat path.
+		// the payload only when this branch or the normalisation above
+		// changed it, to avoid paying the marshal cost on the hot
+		// post_call/heartbeat path.
 		if eventType == "session_start" && result.ID != "" {
 			payload["token_id"] = result.ID
 			payload["token_name"] = result.Name
+			reencode = true
+		}
+		if reencode {
 			rebuilt, mErr := json.Marshal(payload)
 			if mErr != nil {
-				// A silent fallback would drop token_id/token_name from
-				// the worker's UpsertSession, leaving the session row
-				// without its owning token. The map was just
+				// A silent fallback would publish the event as it
+				// arrived, dropping token_id/token_name (the session
+				// row would lose its owning token) or keeping a
+				// value outside its vocabulary. The map was just
 				// successfully unmarshaled from `body` so re-marshal
 				// can only fail on pathological inputs (NaN/Inf
-				// floats). Surface as 500 rather than silently
-				// dropping audit fields.
-				slog.Error("re-marshal session_start payload with token",
-					"session_id", sessionID, "err", mErr,
+				// floats). Surface as 500 rather than publishing it.
+				slog.Error("re-marshal event payload",
+					"session_id", sessionID, "event_type", eventType, "err", mErr,
 				)
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
@@ -439,6 +448,9 @@ func validateEventPayload(payload map[string]any, now time.Time) string {
 		}
 	}
 	if msg := validateTokenCostFields(payload); msg != "" {
+		return msg
+	}
+	if msg := validateStreamingFields(payload, eventType); msg != "" {
 		return msg
 	}
 

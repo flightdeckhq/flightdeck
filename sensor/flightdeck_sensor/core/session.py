@@ -16,6 +16,7 @@ import os
 import signal
 import socket
 import threading
+import time
 import urllib.request
 import uuid
 import weakref
@@ -41,7 +42,9 @@ from flightdeck_sensor.core.types import (
 )
 
 if TYPE_CHECKING:
-    from flightdeck_sensor.transport.client import ControlPlaneClient, EventQueue
+    from collections.abc import Callable
+
+    from flightdeck_sensor.transport.client import ControlPlaneClient, DrainShutdown, EventQueue
 
 _log = logging.getLogger("flightdeck_sensor.core.session")
 
@@ -160,6 +163,19 @@ _PREFLIGHT_TIMEOUT_SECS = 1
 # directive queue but NOT event throughput.
 _CUSTOM_DIRECTIVE_HANDLER_TIMEOUT_SECS = 5
 
+# How long a SIGTERM / SIGINT handler waits for the drain thread to send
+# session_end before it passes the signal on. A reachable control plane
+# takes the queued events and session_end in a fraction of this; past it,
+# the drain thread is most likely held up by a lock the signal
+# interrupted, which is released only once the handler returns.
+_SIGNAL_SHUTDOWN_WAIT_SECS = 2.0
+
+# How often that handler re-checks whether an end() running on another
+# thread has finished. It polls, like every wait in the handler, so that
+# nothing it does can block on a lock; 10 ms is well under the time
+# end()'s HTTP POSTs take.
+_SIGNAL_WAIT_POLL_SECS = 0.01
+
 # Per-(provider, request_id) retry-counter LRU bound. Eviction-on-overflow
 # keeps memory flat for long-lived sessions making millions of calls; the
 # counter only answers a short-window question ("did this retry chain give
@@ -219,6 +235,31 @@ def _json_default(value: Any) -> Any:
     return str(value)
 
 
+def _pass_signal_on(signum: int, frame: Any, prev: Any) -> None:
+    """Do with a signal what the handler the sensor replaced does: call
+    it (Python's SIGINT handler raises KeyboardInterrupt), or, for the
+    default action, restore it and raise the signal again, so the process
+    ends the way it would have without the sensor."""
+    if callable(prev):
+        prev(signum, frame)
+    elif prev == signal.SIG_DFL:
+        signal.signal(signum, signal.SIG_DFL)
+        signal.raise_signal(signum)
+
+
+def _wait_until(done: Callable[[], bool], timeout: float) -> bool:
+    """Poll ``done`` until it is true or ``timeout`` seconds pass; return
+    its last value. For a signal handler, which must not block on a lock
+    or an event the frame it interrupted may hold."""
+    deadline = time.monotonic() + timeout
+    while not done():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(_SIGNAL_WAIT_POLL_SECS, remaining))
+    return True
+
+
 class Session:
     """Manages the lifecycle of a single sensor session."""
 
@@ -269,6 +310,18 @@ class Session:
 
         self._shutdown_requested: bool = False
         self._shutdown_reason: str = ""
+
+        # Ending the session. Whoever acquires _end_claim (never released;
+        # acquired without waiting, so a signal handler can try it) ends
+        # it: end(), on its caller's thread, or a SIGTERM / SIGINT handler,
+        # through the event queue's drain thread (_signal_shutdown).
+        # _ended is set once session_end has been sent or has failed, and
+        # _ending_thread names the thread end() runs on, so a signal that
+        # interrupts that very end() does not wait for it.
+        self._end_claim = threading.Lock()
+        self._ended = threading.Event()
+        self._ending_thread: int | None = None
+        self._signal_shutdown: DrainShutdown | None = None
 
         # Prefer the already-resolved hostname from config (which
         # honors FLIGHTDECK_HOSTNAME for k8s pod grouping); fall
@@ -372,30 +425,71 @@ class Session:
     def end(self) -> None:
         """Fire SESSION_END and clean up.
 
-        Safe to call multiple times -- second call is a no-op.
+        Safe to call multiple times -- second call is a no-op. When a
+        SIGTERM / SIGINT handler has already started ending the session on
+        the drain thread, this waits for that to finish (up to the drain
+        thread's shutdown budget), so a process exiting right after the
+        signal -- at exit, or through ``teardown()`` -- still sends
+        session_end first.
         """
-        if self._state == SessionState.CLOSED:
+        if not self._end_claim.acquire(blocking=False):
+            shutdown = self._signal_shutdown
+            if shutdown is not None:
+                shutdown.wait()
             return
+        self._ending_thread = threading.get_ident()
         self._state = SessionState.CLOSED
-        # Streams still open on this session settle now and their events
-        # are flushed before session_end goes out, so the workers see the
-        # post_call on an open session and roll its tokens up; a guard
-        # collected later could no longer report at all.
-        from flightdeck_sensor.interceptor import base as _base
-
         try:
-            _base.drain_deferred_settles(self)
-            _base.settle_open_guards(self)
-            self.event_queue.flush()
-        except Exception:
-            _log.debug("Settling open streams at session end failed", exc_info=True)
-        self._post_event(EventType.SESSION_END)
+            # Streams still open on this session settle now and their events
+            # are flushed before session_end goes out, so the workers see the
+            # post_call on an open session and roll its tokens up; a guard
+            # collected later could no longer report at all.
+            self._settle_open_streams()
+            try:
+                self.event_queue.flush()
+            except Exception:
+                _log.debug("Flushing settled streams at session end failed", exc_info=True)
+            self._post_event(EventType.SESSION_END)
+        finally:
+            self._ended.set()
         self.event_queue.flush()
         self.event_queue.close()
         self.client.close()
         if not self.config.quiet:
             _log.info(
                 "Flightdeck session ended: session=%s tokens=%d",
+                self.config.session_id,
+                self._tokens_used,
+            )
+
+    def _settle_open_streams(self) -> None:
+        """Settle the streams still open on this session, queuing their
+        post_call events. Never raises."""
+        from flightdeck_sensor.interceptor import base as _base
+
+        try:
+            _base.drain_deferred_settles(self)
+            _base.settle_open_guards(self)
+        except Exception:
+            _log.debug("Settling open streams at session end failed", exc_info=True)
+
+    def _end_on_drain_thread(self) -> None:
+        """The end of the session for a SIGTERM / SIGINT handler, run by
+        the event queue's drain thread once it has posted the events
+        queued before the signal: settles the open streams, posts the
+        events that queues, then posts session_end itself, so session_end
+        is the last event sent. The response's directive is not acted on:
+        the session has ended."""
+        self._settle_open_streams()
+        self.event_queue.post_queued()
+        try:
+            self.client.post_event(self._build_payload(EventType.SESSION_END))
+        finally:
+            self._ended.set()
+        self.client.close()
+        if not self.config.quiet:
+            _log.info(
+                "Flightdeck session ended on signal: session=%s tokens=%d",
                 self.config.session_id,
                 self._tokens_used,
             )
@@ -1621,12 +1715,62 @@ class Session:
                 self._register_signal(signal.SIGINT)
 
     def _register_signal(self, sig: signal.Signals) -> None:
-        """Install a signal handler that calls end() and re-raises."""
+        """Install a handler for ``sig`` that ends the session and then
+        passes the signal on to the handler it replaces.
+
+        An ignored signal is left ignored (the application asked for the
+        process to carry on, so the session carries on too), and so is a
+        handler installed outside Python, which Python cannot pass a
+        signal on to.
+        """
         prev = signal.getsignal(sig)
+        if prev is None or prev == signal.SIG_IGN:
+            return
 
         def _handler(signum: int, frame: Any) -> None:
-            self.end()
-            if callable(prev):
-                prev(signum, frame)
+            self._on_signal(signum, frame, prev)
 
         signal.signal(sig, _handler)
+
+    def _on_signal(self, signum: int, frame: Any, prev: Any) -> None:
+        """End the session for a SIGTERM / SIGINT, then pass the signal on.
+
+        Python runs this on the main thread, on top of whatever the
+        signal interrupted -- possibly inside the session's, the policy's
+        or the event queue's lock, none of them re-entrant. So nothing here
+        takes or waits for a lock: the shutdown runs on the event queue's
+        drain thread and this handler polls for it, for up to
+        ``_SIGNAL_SHUTDOWN_WAIT_SECS``, before passing the signal on to the
+        handler it replaced. When that handler is the default action,
+        which would end the process at once, and session_end is not out
+        yet, the handler returns instead -- releasing any lock the drain
+        thread is waiting for -- and the drain thread delivers the signal
+        again once session_end is out.
+
+        A second signal, while that shutdown runs or after it, is passed
+        on at once, so it forces the exit. A signal that interrupts end()
+        itself (at exit, or ``teardown()``) is passed on at once too; one
+        that arrives while end() runs on another thread waits for it.
+        """
+        if self._signal_shutdown is not None:
+            _pass_signal_on(signum, frame, prev)
+            return
+        if not self._end_claim.acquire(blocking=False):
+            ending = self._ending_thread
+            if ending is not None and ending != threading.get_ident():
+                _wait_until(self._ended.is_set, _SIGNAL_SHUTDOWN_WAIT_SECS)
+            _pass_signal_on(signum, frame, prev)
+            return
+        self._state = SessionState.CLOSED
+        shutdown = self.event_queue.shutdown_on_drain_thread(self._end_on_drain_thread)
+        if shutdown is None:
+            # No drain thread to send session_end; the worker closes the
+            # session once it stops hearing from it.
+            _pass_signal_on(signum, frame, prev)
+            return
+        self._signal_shutdown = shutdown
+        if shutdown.wait(_SIGNAL_SHUTDOWN_WAIT_SECS) or prev != signal.SIG_DFL:
+            _pass_signal_on(signum, frame, prev)
+            return
+        if shutdown.redeliver_when_finished(signum):
+            _pass_signal_on(signum, frame, prev)

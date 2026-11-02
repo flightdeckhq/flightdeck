@@ -9,8 +9,11 @@ from __future__ import annotations
 import contextlib
 import json
 import logging
+import os
 import queue
+import signal
 import threading
+import time
 import urllib.request
 from typing import TYPE_CHECKING, Any
 from urllib.error import HTTPError, URLError
@@ -288,6 +291,146 @@ class ControlPlaneClient:
 _MAX_QUEUE_SIZE = 1000
 _MAX_DIRECTIVE_QUEUE_SIZE = 1000
 _SENTINEL = object()
+# Put on the event queue only to wake the drain thread for a shutdown
+# request; carries nothing to post.
+_WAKE = object()
+
+# How long the drain thread waits for an event before it looks for a
+# shutdown request again. It is woken for one at once when the queue's
+# lock is free; this bounds how late it notices one it could not be woken
+# for (the signal interrupted a thread holding that lock).
+_DRAIN_WAIT_SECS = 1.0
+
+# How long flush() waits for the queue to drain, and the budget a
+# shutdown on the drain thread has for posting the events still queued
+# before it posts session_end: ample for a reachable control plane to take
+# a backlog, short enough that an unreachable one does not hold the
+# process's exit.
+_FLUSH_TIMEOUT_SECS = 3.0
+
+# How long a shutdown on the drain thread takes at most while the control
+# plane answers within the request timeout: the budget for queued events
+# plus one request for session_end. What end() waits, by default, for a
+# shutdown a signal started.
+SHUTDOWN_TIMEOUT_SECS = _FLUSH_TIMEOUT_SECS + _TIMEOUT_SECS
+
+# How long close() waits for each queue thread to exit.
+_THREAD_EXIT_TIMEOUT_SECS = 5.0
+
+# How often a wait for a shutdown on the drain thread checks whether it
+# has finished and, until the drain thread has been woken, tries the
+# wake-up again (it goes on the queue only while the queue's lock is
+# free). Polling also keeps the signal handler that waits from ever
+# blocking on a lock; 10 ms is well under the time the shutdown's HTTP
+# POSTs take.
+_SHUTDOWN_POLL_SECS = 0.01
+
+
+class _EventStore(queue.Queue[Any]):
+    """The event queue's store: a ``queue.Queue`` that can also take an
+    item without ever waiting for its lock."""
+
+    def offer(self, item: object) -> bool:
+        """Put ``item`` unless that means waiting for the queue's lock;
+        return whether it was put. For a signal handler, which may have
+        interrupted this thread inside a queue call that holds the lock
+        (a ``threading.Lock``, not re-entrant). Ignores ``maxsize``: the
+        item is a control marker, not an event."""
+        if not self.mutex.acquire(blocking=False):
+            return False
+        try:
+            self._put(item)
+            self.unfinished_tasks += 1
+            self.not_empty.notify()
+        finally:
+            self.mutex.release()
+        return True
+
+
+def _redeliver(signum: int) -> None:
+    """Deliver ``signum`` to the main thread, where Python runs signal
+    handlers; to the process where threads cannot be signalled (Windows,
+    where only the default action, ending the process, is left to do)."""
+    pthread_kill = getattr(signal, "pthread_kill", None)
+    main_ident = threading.main_thread().ident
+    if pthread_kill is not None and main_ident is not None:
+        try:
+            pthread_kill(main_ident, signum)
+            return
+        except OSError:
+            pass
+    os.kill(os.getpid(), signum)
+
+
+class DrainShutdown:
+    """A shutdown handed to the drain thread by
+    :meth:`EventQueue.shutdown_on_drain_thread`.
+
+    Nothing a signal handler calls here waits for a lock (the wake-up
+    takes the queue's lock only when it is free), so the handler can use
+    it whatever the thread it interrupted holds.
+    """
+
+    def __init__(
+        self,
+        final_step: Callable[[], None],
+        wake: Callable[[], bool],
+        drain_thread: threading.Thread,
+    ) -> None:
+        self.final_step = final_step
+        self._wake = wake
+        self._woken = False
+        self._drain_thread = drain_thread
+        # Set by the drain thread only and read through is_set(): a wait
+        # polls it (see _SHUTDOWN_POLL_SECS).
+        self._finished = threading.Event()
+        self._redeliver: int | None = None
+
+    @property
+    def finished(self) -> bool:
+        """Whether the drain thread has finished the shutdown."""
+        return self._finished.is_set()
+
+    def wake(self) -> None:
+        """Wake the drain thread for the shutdown, once; a try that would
+        have waited for the queue's lock is repeated on the next call."""
+        if not self._woken:
+            self._woken = self._wake()
+
+    def wait(self, timeout: float = SHUTDOWN_TIMEOUT_SECS) -> bool:
+        """Wait up to ``timeout`` seconds for the shutdown to finish,
+        waking the drain thread meanwhile; return whether it finished.
+        On the drain thread itself it returns at once: that thread is the
+        one that finishes it."""
+        if threading.current_thread() is self._drain_thread:
+            return self._finished.is_set()
+        deadline = time.monotonic() + timeout
+        while not self._finished.is_set():
+            self.wake()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(_SHUTDOWN_POLL_SECS, remaining))
+        return True
+
+    def redeliver_when_finished(self, signum: int) -> bool:
+        """Have the drain thread deliver ``signum`` to the main thread once
+        the shutdown has finished. Returns True when it has finished
+        already: the caller then acts on the signal itself, and a delivery
+        the drain thread made in the same instant ends in that same
+        action."""
+        self._redeliver = signum
+        return self._finished.is_set()
+
+    def finish(self) -> None:
+        """Called by the drain thread when the shutdown is done."""
+        self._finished.set()
+        signum = self._redeliver
+        if signum is not None:
+            try:
+                _redeliver(signum)
+            except Exception:
+                _log.warning("shutdown: could not deliver signal %d again", signum, exc_info=True)
 
 
 class EventQueue:
@@ -321,6 +464,11 @@ class EventQueue:
     its thread are not created. Returned directives are silently
     discarded. This matches the unit-test fixtures that construct an
     ``EventQueue`` directly without a ``Session``.
+
+    A signal handler ends the session through the drain thread
+    (:meth:`shutdown_on_drain_thread`) rather than on the thread the
+    signal interrupted, which may hold the queue's, the session's or the
+    policy's lock.
     """
 
     def __init__(
@@ -342,9 +490,12 @@ class EventQueue:
         # sessions the sensor reports for other agents (Agent SDK runs),
         # whose directives are not this session's to act on.
         self._directive_session_id = directive_session_id
-        self._queue: queue.Queue[dict[str, Any] | object] = queue.Queue(
-            maxsize=_MAX_QUEUE_SIZE,
-        )
+        self._queue = _EventStore(maxsize=_MAX_QUEUE_SIZE)
+        # Set, with a plain attribute write, by shutdown_on_drain_thread;
+        # the drain loop checks it before each wait for an event.
+        self._shutdown: DrainShutdown | None = None
+        # When the shutdown stops posting queued events (see post_queued).
+        self._shutdown_deadline = 0.0
         self._drain_thread = threading.Thread(
             target=self._drain_loop,
             daemon=True,
@@ -401,7 +552,7 @@ class EventQueue:
                 _MAX_QUEUE_SIZE,
             )
 
-    def flush(self, timeout: float = 3.0) -> None:
+    def flush(self, timeout: float = _FLUSH_TIMEOUT_SECS) -> None:
         """Block until every currently-queued event has been processed.
 
         Waits on the EVENT queue only -- the directive queue is
@@ -451,23 +602,89 @@ class EventQueue:
         agent calls teardown() (handlers run with no timeout on the
         directive thread).
         """
-        self._queue.put(_SENTINEL)
-        self._drain_thread.join(timeout=5)
+        if self._drain_thread.is_alive():
+            # Skipped once the drain thread has exited (a shutdown on it
+            # ran): nothing would consume the sentinel, and a full queue
+            # would block this put for good.
+            self._queue.put(_SENTINEL)
+        self._drain_thread.join(timeout=_THREAD_EXIT_TIMEOUT_SECS)
         if self._drain_thread.is_alive():
             _log.error(
-                "close: drain thread did not exit within 5s; "
-                "process teardown will kill it as a daemon"
+                "close: drain thread did not exit within %.0fs; "
+                "process teardown will kill it as a daemon",
+                _THREAD_EXIT_TIMEOUT_SECS,
             )
         if self._directive_queue is not None and self._directive_thread is not None:
             self._directive_queue.put(_SENTINEL)
-            self._directive_thread.join(timeout=5)
+            self._directive_thread.join(timeout=_THREAD_EXIT_TIMEOUT_SECS)
             if self._directive_thread.is_alive():
                 _log.error(
                     "close: directive handler thread did not exit "
-                    "within 5s -- a custom handler is likely still "
+                    "within %.0fs -- a custom handler is likely still "
                     "running. The thread will be killed by process "
-                    "teardown."
+                    "teardown.",
+                    _THREAD_EXIT_TIMEOUT_SECS,
                 )
+
+    def shutdown_on_drain_thread(self, final_step: Callable[[], None]) -> DrainShutdown | None:
+        """Have the drain thread end the queue: post the events already
+        queued, run ``final_step`` (which may call :meth:`post_queued`
+        for events it queues), stop the directive thread and exit. The
+        caller waits on the returned handle; None means no drain thread
+        is running to do it.
+
+        Takes no lock that a frame below the caller could hold, so a
+        signal handler can call it: the request is a plain attribute the
+        drain loop reads, and the wake-up is put on the queue only when
+        its lock is free (the handle retries it, and the drain loop
+        notices the request within ``_DRAIN_WAIT_SECS`` regardless).
+        Directives that arrive from then on are dropped: the session they
+        would act on is ending.
+        """
+        if not self._drain_thread.is_alive():
+            return None
+        shutdown = self._shutdown
+        if shutdown is None:
+            shutdown = DrainShutdown(
+                final_step, lambda: self._queue.offer(_WAKE), self._drain_thread
+            )
+            self._shutdown = shutdown
+        shutdown.wake()
+        return shutdown
+
+    def post_queued(self) -> None:
+        """Post the events queued so far, in order, during a shutdown on
+        the drain thread; anything else calling it is a no-op.
+
+        Bounded by the shutdown's ``_FLUSH_TIMEOUT_SECS`` budget: an event
+        still queued when it runs out is dropped (and counted in a
+        warning) rather than posted, so an unreachable control plane
+        cannot hold the process's exit, and session_end, posted after
+        this, stays the session's last event.
+        """
+        if threading.current_thread() is not self._drain_thread or self._shutdown is None:
+            return
+        dropped = 0
+        while True:
+            try:
+                item = self._queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                if item is _SENTINEL or item is _WAKE:
+                    continue
+                if time.monotonic() >= self._shutdown_deadline:
+                    dropped += 1
+                    continue
+                self._post(item)
+            finally:
+                self._queue.task_done()
+        if dropped:
+            _log.warning(
+                "shutdown: %d queued events were not sent within %.1fs and are dropped",
+                dropped,
+                _FLUSH_TIMEOUT_SECS,
+            )
 
     # ------------------------------------------------------------------
     # Internals
@@ -513,58 +730,95 @@ class EventQueue:
         Calls ``task_done()`` after every item -- success, failure,
         and the sentinel -- so ``Queue.join()`` (used by ``flush()``)
         always reflects the true number of unprocessed events.
+
+        Before each wait for an event it looks for a shutdown request
+        (see :meth:`shutdown_on_drain_thread`) and, finding one, runs it
+        and exits.
         """
         while True:
+            shutdown = self._shutdown
+            if shutdown is not None:
+                self._run_shutdown(shutdown)
+                return
             try:
-                item = self._queue.get(timeout=1.0)
+                item = self._queue.get(timeout=_DRAIN_WAIT_SECS)
             except queue.Empty:
                 continue
             try:
                 if item is _SENTINEL:
                     return
-                directive: Directive | None = None
-                try:
-                    # The drain thread processes async events only
-                    # (not the synchronous session_start POST issued
-                    # by Session._post_event). The ``attached`` flag
-                    # therefore only ever arrives on the drain path
-                    # if the backend protocol is extended, and the
-                    # async path has no session handle to log it on.
-                    # Discard here; Session._post_event is the sole
-                    # consumer of the attach confirmation.
-                    directive, _ = self._client.post_event(item)  # type: ignore[arg-type]
-                except Exception as exc:
-                    event_type = "unknown"
-                    if isinstance(item, dict):
-                        event_type = str(item.get("event_type", "unknown"))
-                    _log.warning(
-                        "drain: failed to post %s event: %s",
-                        event_type,
-                        exc,
-                    )
-                if directive is not None and not self._directive_is_ours(item):
-                    self._route_directive(item, directive)
-                    directive = None
-                if directive is not None and self._directive_queue is not None:
-                    try:
-                        self._directive_queue.put_nowait(directive)
-                    except queue.Full:
-                        # Pathological case: a hung handler is blocking
-                        # the directive thread for so long that 1000
-                        # directives have backed up. Log loudly and
-                        # drop the new directive -- the alternative is
-                        # to drop the oldest, which could lose a
-                        # shutdown directive that has been waiting in
-                        # line for the handler to clear. Either choice
-                        # implies the agent is in serious trouble.
-                        _log.error(
-                            "drain: directive queue full (%d), "
-                            "dropping incoming directive: action=%s",
-                            _MAX_DIRECTIVE_QUEUE_SIZE,
-                            directive.action.value,
-                        )
+                if item is not _WAKE:
+                    self._post(item)
             finally:
                 self._queue.task_done()
+
+    def _post(self, item: object) -> None:
+        """Post one event and hand any directive in the response on."""
+        directive: Directive | None = None
+        try:
+            # The drain thread processes async events only
+            # (not the synchronous session_start POST issued
+            # by Session._post_event). The ``attached`` flag
+            # therefore only ever arrives on the drain path
+            # if the backend protocol is extended, and the
+            # async path has no session handle to log it on.
+            # Discard here; Session._post_event is the sole
+            # consumer of the attach confirmation.
+            directive, _ = self._client.post_event(item)  # type: ignore[arg-type]
+        except Exception as exc:
+            event_type = "unknown"
+            if isinstance(item, dict):
+                event_type = str(item.get("event_type", "unknown"))
+            _log.warning(
+                "drain: failed to post %s event: %s",
+                event_type,
+                exc,
+            )
+        if directive is not None and self._shutdown is not None:
+            _log.debug(
+                "drain: directive %s dropped, the session is ending",
+                directive.action.value,
+            )
+            return
+        if directive is not None and not self._directive_is_ours(item):
+            self._route_directive(item, directive)
+            directive = None
+        if directive is not None and self._directive_queue is not None:
+            try:
+                self._directive_queue.put_nowait(directive)
+            except queue.Full:
+                # Pathological case: a hung handler is blocking
+                # the directive thread for so long that 1000
+                # directives have backed up. Log loudly and
+                # drop the new directive -- the alternative is
+                # to drop the oldest, which could lose a
+                # shutdown directive that has been waiting in
+                # line for the handler to clear. Either choice
+                # implies the agent is in serious trouble.
+                _log.error(
+                    "drain: directive queue full (%d), dropping incoming directive: action=%s",
+                    _MAX_DIRECTIVE_QUEUE_SIZE,
+                    directive.action.value,
+                )
+
+    def _run_shutdown(self, shutdown: DrainShutdown) -> None:
+        """Run a shutdown on the drain thread: post the events queued
+        before it, run its final step, stop the directive thread, then
+        mark it finished (which also delivers a signal its caller asked to
+        have delivered again)."""
+        self._shutdown_deadline = time.monotonic() + _FLUSH_TIMEOUT_SECS
+        try:
+            self.post_queued()
+            shutdown.final_step()
+        except Exception:
+            _log.warning("shutdown on the drain thread failed", exc_info=True)
+        finally:
+            if self._directive_queue is not None:
+                # No join: a custom handler still running must not hold
+                # the shutdown up, and the thread is a daemon.
+                with contextlib.suppress(queue.Full):
+                    self._directive_queue.put_nowait(_SENTINEL)
+            shutdown.finish()
 
     def _directive_loop(self) -> None:
         """Background thread: drain the directive queue.

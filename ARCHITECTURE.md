@@ -2142,7 +2142,7 @@ sessions extend the derivation with a conditional 6th input,
 |---|---|---|
 | `agent_id` | UUID | Deterministically derived from the other identity fields via `core/agent_id.py` |
 | `agent_type` | `coding` \| `production` | Sensor `init` kwarg or `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` env. Plugin always emits `coding`; a plugin session's entrypoint / attended / CI / cloud signals are context fields, not identity |
-| `client_type` | one of the values in the client type registry below | Each client sends its own literal: the plugin `claude_code`, the sensor `flightdeck_sensor`; `claude_agent_sdk` is reserved for the Agent SDK interceptor ([#182](https://github.com/flightdeckhq/flightdeck/issues/182)) |
+| `client_type` | one of the values in the client type registry below | Each client sends its own literal: the plugin `claude_code`, the sensor `flightdeck_sensor` and its Claude Agent SDK interceptor `claude_agent_sdk`; the OTLP receiver stamps `claude_code` on Claude Code's own telemetry (see Client type registry > OTLP sources) |
 | `agent_name` | string | Sensor `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` env. Default `{user}@{hostname}`. Plugin uses the user's chosen flavor |
 | `user` | string | Resolved from `getpass.getuser` (sensor) or `process.env.USER` (plugin) |
 | `agent_role` (optional 6th) | string \| null | Framework-driven on sub-agent sessions. CrewAI: `Agent.role`. LangGraph: node name. Claude Code Task: hook payload `agent_type`. Null on root sessions and direct-SDK sessions |

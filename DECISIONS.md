@@ -335,3 +335,22 @@ their own. The degrade target is the only model the policy allows; a
 provider's own server-side routing (OpenRouter `models`) is not dropped.
 **Rejected alternative:** a broad pass-through (hides billed calls);
 reporting each fallback attempt (the loop swallows a policy block).
+
+## D236 -- A Claude Code turn is retried and sent only under its own session; a resumed sub-agent re-attaches its child
+
+**Date:** 2026-11-02
+**Decision:** extends D215 and narrows its whole-transcript recovery. A
+turn whose POST fails is sent again by the next hook, a sub-agent's
+turns and `session_end` included; a flush sends only the turns that ran
+after `SessionStart` minted its session, so a turn unsent when its
+session ends is dropped, never filed under a later one. A sub-agent's
+child is `uuid5(outer session, agent_id)`, one per coordinator session;
+a `SubagentStart` after its `SubagentStop` (a `SendMessage` resume or a
+task-notification wake) re-attaches it.
+**Why:** one claimed-first send lost 26 calls (7.63M tokens) of one
+conversation, a re-read after lost markers filed 5 under a later
+coordinator's child, and a resumed child stayed closed, uncounted.
+**Rejected alternative:** late delivery to the old run (changes D212's
+closed-session rule; random-id re-sends by plugins before 0.7.1 would
+count twice); a child keyed on Claude Code's session id (contradicts
+D190); a new child per resume.

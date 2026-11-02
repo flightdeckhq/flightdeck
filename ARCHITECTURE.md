@@ -1187,7 +1187,7 @@ sub-agent execution. Each child session carries
 
 | Mechanism | parent_session_id source | agent_role source | Interceptor |
 |---|---|---|---|
-| Claude Code Task subagent | hook payload `session_id` | hook payload `agent_type` (e.g. `"Explore"`) | `plugin/hooks/scripts/claude_code/subagent.mjs` (`SubagentStart` / `SubagentStop`) |
+| Claude Code Task subagent | the outer Flightdeck session id, which the hook payload's `session_id` resolves to (see Plugin, Session identity) | hook payload `agent_type` (e.g. `"Explore"`) | `plugin/hooks/scripts/claude_code/subagent.mjs` (`SubagentStart` / `SubagentStop`) |
 | CrewAI agent execution | parent crew's session | `Agent.role` attribute | `sensor/.../interceptor/crewai.py` (context manager around `Agent.execute`) |
 | LangGraph node execution | parent runner's session | node name | `sensor/.../interceptor/langgraph.py` (agent-bearing nodes only — node body invokes a patched LLM client OR matches `langgraph_agent_node_pattern` regex) |
 
@@ -1584,20 +1584,22 @@ Each value is sized for the hook's normal worst case:
 | `PreToolUse` | 10 | local reads only (the policy cache, remembered decisions and, with enforcement on, the control state), plus a 2 s heartbeat when the session has been quiet for 5 s |
 | `UserPromptSubmit` (the enforcement gate) | 10 | the same control-state read and heartbeat |
 | `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure` | 30 | the transcript flush: up to two `claude auth status` runs (5 s each) for a session whose billing mode is not settled, then 2 s per unsent turn |
-| `SubagentStop` | 30 | the same flush over the subagent's transcript, then the child `session_end` |
+| `SubagentStop` | 30 | up to 2 s for the subagent's final turn to reach its transcript, the same flush over that transcript, then the child `session_end` |
 | `PreCompact`, `PostCompact`, `PostModelSwitch`, `Notification`, `PermissionRequest`, `PermissionDenied`, `UserPromptExpansion`, `TaskCreated`, `TaskCompleted`, `TeammateIdle`, `CwdChanged`, `ConfigChange`, `Elicitation`, `ElicitationResult`, `SubagentStart` | 15 | one or two POSTs |
 
 Claude Code cancels a synchronous hook that runs out of time and carries on, as for
-any non-blocking error. What the hook had not done by then is lost or
-deferred: unsent turns are sent by a later hook (each carries its
-message-derived id, so a copy is dropped by the worker), a
-`session_start` that was not accepted is retried by the next hook, and
-the policy cache is written before the policy events, so gating
-continues. Lost for good are the turn whose POST was in flight, the
-remaining `policy_mcp_warn` / `policy_mcp_block` events of a
-`SessionStart`, and a child `session_end` (the child is then closed by
-the reaper). A `PreToolUse` that times out lets the tool call through,
-like every other failure of the gate (it fails open).
+any non-blocking error. What the hook had not done by then is deferred
+or lost: unsent turns are sent by a later hook (each carries its
+message-derived id, so a copy is dropped by the worker); the turn whose
+POST was in flight keeps the cancelled process's claim, which a
+subagent's `SubagentStop` or the `SessionEnd` worker takes over (see
+below); a `session_start` that was not accepted is retried by the next
+hook; a subagent's `session_end` stays owed until a later hook sends it
+(see Subagent hooks); and the policy cache is written before the policy
+events, so gating continues. Lost for good are the remaining
+`policy_mcp_warn` / `policy_mcp_block` events of a `SessionStart`. A
+`PreToolUse` that times out lets the tool call through, like every
+other failure of the gate (it fails open).
 
 `SessionEnd` has none: Claude Code gives SessionEnd hooks a shared 1.5 s
 budget, which a per-hook timeout would raise (up to 60 s) and so delay
@@ -1646,29 +1648,41 @@ Async hooks of a session can overlap with each other and with its
 `SessionEnd`, so two pieces of state guard them:
 
 - A turn's marker is claimed before its POST and names the claiming
-  process; it is emptied once the server accepts the turn. In a
-  print-mode or SDK run, Claude Code kills the async hooks still pending
-  at the end, before `SessionEnd` runs; the SessionEnd worker, the last
-  process of the session, sends every turn whose claim was never
-  confirmed and whose process is gone. A claim held by a live process is
-  left to it, so two live processes never send one turn (the worker
-  would count two concurrent copies). Interactive runs do not cancel
-  async hooks; they finish after `SessionEnd`. The liveness check is a
-  signal-0 probe of the pid: a reused pid reads as alive, and that turn
-  is then lost as it would have been without the reclaim.
+  process; it is emptied once the server accepts the turn. When the POST
+  fails (no answer, a timeout, or an error status other than 400 and
+  413), the claim is released and the flush stops there, so the next
+  hook sends that turn and the ones after it; during an outage each hook
+  pays one failed POST. A turn the server refuses as invalid (400, or
+  413 for its size) would be refused again, so its marker records the
+  refusal and the flush goes on to the next turn. In a print-mode or SDK
+  run, Claude Code kills the async hooks still pending at the end,
+  before `SessionEnd` runs, and their claims stay behind: a subagent's
+  `SubagentStop` and the SessionEnd worker, the last processes to read a
+  transcript, take over every claim that was never confirmed and whose
+  process is gone, and send the turn. A takeover rewrites the claim
+  under a lock, so two processes never take over one turn, and a claim
+  held by a live process is left to it, so two live processes never send
+  one turn (the worker would count two concurrent copies). Interactive
+  runs do not cancel async hooks; they finish after `SessionEnd`. The
+  liveness check is a signal-0 probe of the pid: a reused pid reads as
+  alive, and that turn is then lost as it would have been without the
+  takeover.
 - `SessionEnd` leaves an ended-session marker with the session id. A
   hook of the same Claude Code session that starts after it reports
   under that id and skips the `session_start` backstop, so it neither
   mints a stray session nor reopens the ended one; the next
-  `SessionStart` (a resume) removes the marker. Events such a hook sends
-  after the worker stored `session_end` are dropped as late, as for any
-  closed session. The marker is written only for a hook event that
-  carries Claude Code's session id, never on the working-directory
-  fallback key.
+  `SessionStart` (a resume) removes the marker. The worker stores the
+  events such a hook sends after the `session_end`, but, as for any
+  closed session, skips their side effects: a call published after the
+  end adds no tokens (see Terminal-state handling). The marker is
+  written only for a hook event that carries Claude Code's session id,
+  never on the working-directory fallback key.
 
 The same lateness applies to a subagent: its interior hooks run async,
 so on a slow server an interior `tool_call` can reach the worker after
-the child's `session_end` (sent by `SubagentStop`) and be dropped.
+the child's `session_end` (sent by `SubagentStop`) and be stored without
+side effects. Such a late hook never sends the child's `session_start`
+again (see Subagent hooks), so it cannot reopen the child.
 
 ### Session identity
 
@@ -1696,12 +1710,26 @@ the child's `session_end` (sent by `SubagentStop`) and be dropped.
 
 The marker file exists because every hook invocation runs as a separate
 Node child process — pid-based fallbacks would create one session row per
-tool call. `SessionEnd` deletes the marker, so `/clear` or a new `claude`
-run mints a new session id. A run that ends without `SessionEnd` (a crash
-or a reboot) leaves the marker in place, so resuming that conversation
-(Claude Code keeps its session id on `--resume`, not on
-`--fork-session`) within seven days continues the same Flightdeck
-session; in the `$TMPDIR` fallback a reboot clears the marker.
+tool call. `SessionEnd` deletes the marker, so `/clear`, a `--resume`
+or a new `claude` run mints a new session id. A run that ends without
+`SessionEnd` (a crash or a reboot) leaves the marker in place, so
+resuming that conversation (Claude Code keeps its session id on
+`--resume`, not on `--fork-session`) within seven days continues the
+same Flightdeck session; in the `$TMPDIR` fallback a reboot clears the
+marker.
+
+A session that `SessionStart` mints also records when: the time is
+written to `minted-${sessionId}.txt` before the marker itself, so any
+hook that reads the marker finds it. It is keyed on the Flightdeck
+session id rather than on the marker, so the SessionEnd worker and a
+hook that runs after `SessionEnd`, which no longer have the marker,
+still find it, and it is not deleted at `SessionEnd`; the seven-day prune
+removes it. Every transcript flush of the session sends only the turns
+that ran after that time (see Subagent hooks). A session minted by any
+other hook records no time, since its conversation was already
+running when the marker was written (as when the marker was pruned),
+and neither does a marker an earlier plugin release wrote; such a
+session's flushes send every unsent turn of the transcript.
 
 ### `session_start` with context
 
@@ -1807,19 +1835,33 @@ policy gate cannot fingerprint them; the gate fails open for them.
 
 ### Subagent hooks
 
-Two hooks bracket every Claude Code Task subagent invocation:
+Two hooks bracket every execution of a Claude Code subagent:
 
-- `SubagentStart` — emitted when Claude Code spawns a Task subagent.
-  The plugin emits a child `session_start` whose `parent_session_id`
-  carries the outer session's id and whose `agent_role` carries the
-  hook payload's `agent_type` (e.g. `"Explore"`, `"fork"`). When
-  `capturePrompts=true`, the prompt the parent gave the subagent is
-  captured as `incoming_message` on the child's `session_start`
-  payload.
-- `SubagentStop` — emitted when the Task subagent returns. The
-  plugin emits a child `session_end` and (when capture is on) the
-  subagent's report back as `outgoing_message`. `SubagentStop` is the
-  canonical end-of-life signal for the child.
+- `SubagentStart` — fired when Claude Code spawns a subagent, and again
+  each time a stopped subagent runs once more: when the parent resumes
+  it with `SendMessage`, or when a background task it started finishes
+  and wakes it (a task notification). The plugin emits a child
+  `session_start` whose `parent_session_id` carries the outer session's
+  id and whose `agent_role` carries the hook payload's `agent_type`
+  (e.g. `"Explore"`, `"fork"`). When `capturePrompts=true`, the prompt
+  the parent gave the subagent is captured as `incoming_message` on the
+  child's `session_start` payload.
+- `SubagentStop` — fired when the subagent returns. The plugin sends
+  the subagent's unsent turns, then a child `session_end` and (when
+  capture is on) the subagent's report back as `outgoing_message`.
+  `SubagentStop` is the canonical end-of-life signal for each execution
+  of the child.
+
+The child session id is `uuid5(NAMESPACE_FLIGHTDECK,
+"flightdeck:subagent://<outer session id>/<agent_id>")`. The outer
+session id is the Flightdeck session the hook's `session_id` resolves
+to (see Session identity), not Claude Code's own session id, and
+`agent_id` is the id Claude Code gives the subagent on every hook of
+every one of its executions (`tool_use_id` on versions without it). A
+subagent therefore keeps one child row for as long as its parent's
+Flightdeck session lasts, however often it is resumed; once the
+parent's session changes (a `--resume` after an exit), a later
+execution of the same subagent is a new child of the new session.
 
 Neither hook carries the messages themselves, so the plugin reads them
 from the files Claude Code writes for the subagent next to the parent
@@ -1851,6 +1893,57 @@ at its interior hooks and at `SubagentStop`, emit only the turns after
 the copy, its outgoing message comes from those turns, and the parent's
 `post_call` events carry the copied turns' tokens.
 
+**Resumes.** `SubagentStop` leaves an ended marker for the child,
+`subagent-ended-<child id>.txt`. A `SubagentStart` that finds it is a
+resume or a wake: it removes the marker and sends a new `session_start`
+for the same child id, which ingestion re-attaches to the closed row
+(see Session attachment flow). The child is active again, the calls of
+the resumed execution count toward its `tokens_used`, and the session
+drawer marks the start with the attachment badge. Each execution thus
+has one `session_start` and one `session_end`. The resume's
+`session_start` carries the same `incoming_message` as the spawn's: no
+hook carries the message that resumed the subagent. A hook of the
+child that runs while the marker is in place, an async hook of an
+execution that has ended, never sends a `session_start`, so it cannot
+reopen the child; it first waits up to one second for a resume's
+`SubagentStart` to remove the marker, so that the first hooks of a
+resumed execution still follow its start.
+
+**Delivery.** `SubagentStop` sends the child's `session_end` only once
+the subagent's turns are sent, so the end follows every call of the
+execution. Claude Code runs the hook before it has written the
+subagent's final turn to the transcript (in a print-mode run the turn
+was still missing a tenth of a second after its own timestamp), so the
+hook first waits, up to two seconds, until the transcript's last
+assistant message reads as the hook's `last_assistant_message`; a hook
+without that field does not wait. Until it is accepted the end is
+owed: `SubagentStop` records it in `subagent-ends-<outer session
+id>.json` before its first POST, with the time it ran (the end's
+timestamp) and the process working on it. When a POST fails, the next
+hook of the session that flushes a transcript (`PostToolUse`,
+`PostToolUseFailure`, `Stop`, `StopFailure` or `SubagentStop`) sends
+the remaining turns and the end, and the `SessionEnd` worker does so
+last; as with a turn's claim, an entry whose process is alive is left
+to it. An end still owed when its
+subagent is resumed is sent before the resume's `session_start`, and
+dropped if that fails, so that it cannot close the resumed child.
+
+**Never misfiled.** A transcript turn is sent only under the Flightdeck
+session that was current when it ran. A flush in a session with a
+recorded mint time (see Session identity) skips every turn that ran
+before it, for the root and its subagents alike, and writes to the
+hook's stderr how many of them it has no record of sending. So a subagent resumed
+after its parent's session changed sends only its new turns, under its
+new child, and a turn still unsent when its session ends is never sent:
+it is dropped rather than filed under a later session that did not
+exist when it ran. Its last chance is the `SessionEnd` worker: after
+the root's `session_end` it flushes every subagent transcript written
+since the mint (the `agent-<agent_id>.jsonl` files under
+`<parent>/subagents/`, nested subagents included, each subagent's role
+read from its meta file's `agentType`), taking over orphaned claims, and
+sends the ends still owed. A session without a mint time skips that
+pass.
+
 `PostToolUseFailure` on a Task tool emits the parent's `tool_call`
 event with the structured error block; it does NOT emit a child
 `session_end` (disambiguation). Subagent crashes that never
@@ -1868,13 +1961,17 @@ activity surfaces in real time instead of batching at Stop.
 The markers are a local optimisation, not the guarantee: they are pruned
 after seven days, they live in `$TMPDIR` (which a reboot clears) when
 Claude Code provides no data directory, and a transcript replayed or
-copied to another machine has none (a resumed conversation's next hook
-then re-reads its whole transcript). Each turn's `post_call` therefore
-carries an event id derived from the model call's message id
-(`uuid5(NAMESPACE_FLIGHTDECK,
+copied to another machine has none. Two rules keep a lost marker from
+counting a call twice or in the wrong session. A flush sends only the
+turns that ran after its session was minted (see Subagent hooks), so
+a resumed conversation does not send its history again under the new
+session; a session without a recorded mint time re-reads its whole
+transcript. And each turn's `post_call` carries an event id derived
+from the model call's message id (`uuid5(NAMESPACE_FLIGHTDECK,
 "flightdeck://claude-code/post_call/<message id>")`), so every copy of
 one call has the same id, and the worker stores it once (see
-`originating_event_id` chain).
+`originating_event_id` chain). A flush stops at its first failed POST,
+and the next flush sends that turn again (see Hook configuration).
 
 Each `post_call` carries `provider=anthropic`, the session's
 `billing_mode` and `provider_metadata.platform`, which the
@@ -1969,10 +2066,13 @@ hook script as a detached worker process (`observe_cli.mjs
 --session-end-worker`, hook event on stdin, the resolved session id in
 `CLAUDE_SESSION_ID`). The worker flushes any transcript turns that
 `Stop` or `PostToolUse` had not yet emitted as `post_call` events and
-POSTs the `session_end`; it never touches the session, `session_start`
-or policy markers, which a new session may own by then, and only adds
-per-message `emitted-` markers. Because the hook itself never waits on
-the network it finishes inside the budget whatever the server does; the
+POSTs the `session_end`; then, in a session with a recorded mint time,
+it sends its subagents' remaining turns and owed `session_end`s (see
+Subagent hooks). It never touches the session, `session_start` or
+policy markers, which a new session may own by then, and writes only
+the per-message `emitted-` markers and the owed subagent ends. Because
+the hook itself never waits on the network it finishes inside the
+budget whatever the server does; the
 test suite asserts it returns under `SESSION_END_HOOK_BUDGET_MS` with
 every request still unanswered. It waits up to 0.8 s for the worker to
 exit, so a local or fast server receives the events before the hook
@@ -2292,8 +2392,9 @@ the full pseudocode.
 When the sensor (or plugin) restarts and emits a `session_start` for a
 `session_id` that already exists in `sessions`, the ingestion API attaches
 the new execution to the prior row instead of creating a duplicate.
-The response envelope sets `attached: true`. The session drawer renders a
-"New execution attached · {timestamp}" separator per recorded attachment.
+The response envelope sets `attached: true`. The session drawer and the
+timeline mark each re-attaching `session_start` (see Session attachment
+flow).
 
 ### `agents` rollup
 
@@ -2548,10 +2649,14 @@ control plane honours end-to-end:
 3. **Response envelope — `attached: true` when the row pre-existed.**
 4. **Sensor — INFO log on the first attached response.** Per-process
    guard so subsequent envelopes do not duplicate the log.
-5. **Dashboard — run separator per recorded attachment.**
+5. **Dashboard — an attachment badge per recorded attachment.**
    `GET /v1/sessions/:id` returns an `attachments: []time` array. The
-   session drawer walks the array in order and draws a horizontal rule
-   labeled "New execution attached · {timestamp}" for each entry.
+   session drawer shows the `session_start` within two seconds of an
+   entry with an ATTACH badge in place of its event-type pill (tooltip
+   "Agent re-attached with the same session ID"), and the timeline
+   draws that start's node in the warning colour (tooltip "Run
+   attached"); the session's first `session_start` has no entry and
+   keeps its own look.
 
 The race between step 2 (synchronous) and the worker's
 `HandleSessionStart` (asynchronous, via NATS) is bounded: the ingestion
@@ -2777,8 +2882,9 @@ of the record>")`) through the same attachment check and token stamping as
 `POST /v1/events`, so a closed session that resumes is re-attached;
 otherwise it publishes none. A closed sub-agent has finished (its
 `subagent_completed` closed it) and is never restarted: a record of it
-that arrives late is published without a start, and the worker drops it
-as it drops any event for a closed session. The cache is per replica and only saves the
+that arrives late is published without a start, and the worker stores it
+without its session side effects, as it does any event for a closed
+session (see Terminal-state handling). The cache is per replica and only saves the
 read: an entry expires 10 minutes after it is cached, well inside the
 reaper's timeout, and publishing a session's `session_end` removes it,
 so a record for a session closed since is read again and re-attaches
@@ -6191,7 +6297,11 @@ call-window-independent types (`session_start`, `session_end`,
 `mcp_server_attached`, `mcp_server_name_changed`,
 `directive_result`) skip the chain stamp.
 
-Plugin parity: `crypto.randomUUID` per emission.
+The Claude Code plugin sets an id on two event types only, each derived
+from its transcript: `post_call` (from the model call's message id) and
+`llm_error` (from the failed turn's message id, when the transcript
+holds that turn). Its other events carry no id, so the worker generates
+one, and it stamps no `originating_event_id`.
 
 ### `policy_warn`
 

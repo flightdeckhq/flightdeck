@@ -1045,9 +1045,12 @@ loop has already returned its stream object. Under a DEGRADE policy the
 pre-call check swaps `model` to the degrade target and drops the call's
 `fallbacks` and `context_window_fallback_dict` (the litellm adapters'
 `model_alternative_params`; the second is the bigger model litellm's
-call wrapper retries on a context-window error), so no attempt runs a
-model the policy did not choose and a failure of the degraded attempt is
-the call's `llm_error`; a Router runs each deployment attempt through
+call wrapper retries on a context-window error), on every litellm entry
+point: `completion` honours both, and `text_completion` and a
+`responses` call litellm bridges through `completion` (a provider
+without a native Responses API) hand the caller's arguments on to it.
+So no attempt runs a model the policy did not choose and a failure of
+the degraded attempt is the call's `llm_error`; a Router runs each deployment attempt through
 the patched entry points as a call of its own, so each attempt is
 degraded. Any
 other litellm call made while one is in flight -- from a callback,

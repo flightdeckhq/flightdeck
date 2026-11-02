@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { fetchRecentAgents, type RecentAgent } from "@/lib/api";
 import { ClientType, isClientType } from "@/lib/agent-identity";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
+import { TelemetrySourcePill } from "@/components/facets/TelemetrySourcePill";
 import { StateChip } from "@/components/search/StateChip";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 
@@ -76,6 +77,11 @@ export function RecentAgents({ onSelect }: RecentAgentsProps) {
             {typedClient && (
               <ClientTypePill clientType={typedClient} size="compact" />
             )}
+            <TelemetrySourcePill
+              telemetry={agent.telemetry}
+              clientType={agent.client_type}
+              testId="recent-agent-telemetry-source"
+            />
             <StateChip state={agent.state} />
             <span className="font-medium text-text">{agent.agent_name}</span>
           </button>

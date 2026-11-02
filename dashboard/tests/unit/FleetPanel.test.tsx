@@ -3,9 +3,14 @@ import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { FleetPanel } from "@/components/fleet/FleetPanel";
 import type { AgentEvent, CustomDirective, FeedEvent, FlavorSummary } from "@/lib/types";
 
+// POST /v1/directives answers with the last row and how many rows the
+// request created (X-Directive-Count): for an agent-wide stop, how many
+// runs it reached, which the page cannot know on its own.
 vi.mock("@/lib/api", () => ({
-  createDirective: vi.fn(() => Promise.resolve({ id: "dir-1" })),
-  triggerCustomDirective: vi.fn(() => Promise.resolve()),
+  createDirective: vi.fn(() => Promise.resolve({ directive: { id: "dir-1" }, count: 3 })),
+  triggerCustomDirective: vi.fn(() =>
+    Promise.resolve({ directive: { id: "dir-2" }, count: 2 }),
+  ),
 }));
 
 // Mock the fleet store so FleetPanel's new `customDirectives`
@@ -13,16 +18,20 @@ vi.mock("@/lib/api", () => ({
 // fetch. Tests that need a non-empty directive list mutate
 // mockCustomDirectives before rendering.
 let mockCustomDirectives: CustomDirective[] = [];
+const mockMarkShuttingDown = vi.fn();
 vi.mock("@/store/fleet", () => ({
   useFleetStore: (selector: (state: unknown) => unknown) =>
-    selector({ customDirectives: mockCustomDirectives }),
+    selector({ customDirectives: mockCustomDirectives, markShuttingDown: mockMarkShuttingDown }),
 }));
 
-import { createDirective } from "@/lib/api";
+import { createDirective, triggerCustomDirective } from "@/lib/api";
 
+// A row's ``flavor`` carries its agent_id (buildFlavors), so the
+// fixtures set the two equal.
 const mockFlavors: FlavorSummary[] = [
   {
     flavor: "research-agent",
+    agent_id: "research-agent",
     agent_type: "production",
     session_count: 3,
     active_count: 2,
@@ -38,6 +47,7 @@ const mockFlavors: FlavorSummary[] = [
 const inactiveFlavors: FlavorSummary[] = [
   {
     flavor: "batch-agent",
+    agent_id: "batch-agent",
     agent_type: "batch",
     session_count: 1,
     active_count: 0,
@@ -52,6 +62,60 @@ describe("FleetPanel", () => {
   beforeEach(() => {
     mockCustomDirectives = [];
     localStorage.clear();
+    vi.mocked(createDirective).mockClear();
+    vi.mocked(triggerCustomDirective).mockClear();
+    mockMarkShuttingDown.mockClear();
+  });
+
+  // A sidebar row is an agent: ``flavor`` carries its agent_id, while
+  // a sensor registers directives under its sessions' flavor string.
+  const AGENT_ID = "0b6f2e0e-1111-5222-8333-944455556666";
+  const sensorDirective: CustomDirective = {
+    id: "cd-sensor",
+    fingerprint: "fp-sensor",
+    name: "rotate-model",
+    description: "",
+    flavor: "research-agent",
+    parameters: [],
+    registered_at: "2026-11-01T10:00:00Z",
+    last_seen_at: "2026-11-01T10:00:00Z",
+  };
+  function agentRow(context?: Record<string, unknown>, clientType = "flightdeck_sensor"): FlavorSummary[] {
+    return [
+      {
+        ...mockFlavors[0],
+        flavor: AGENT_ID,
+        agent_id: AGENT_ID,
+        agent_name: "sensor@host",
+        client_type: clientType as FlavorSummary["client_type"],
+        sessions: mockFlavors[0].sessions.map((s) => ({
+          ...s,
+          client_type: clientType as FlavorSummary["client_type"],
+          context,
+        })),
+      },
+    ];
+  }
+
+  it("offers a sensor agent the directives registered under its sessions' flavor", () => {
+    mockCustomDirectives = [sensorDirective];
+    render(<FleetPanel flavors={agentRow()} />);
+    expect(screen.getByTestId(`flavor-directives-button-${AGENT_ID}`)).toBeInTheDocument();
+  });
+
+  it("offers no directives to an observer agent or a plugin agent whose flavor has some", () => {
+    mockCustomDirectives = [sensorDirective];
+    const { unmount } = render(
+      <FleetPanel
+        flavors={agentRow({ telemetry: "otlp", supports_directives: false }, "claude_code")}
+      />,
+    );
+    expect(screen.queryByTestId(`flavor-directives-button-${AGENT_ID}`)).toBeNull();
+    unmount();
+    // Enforcement on: Stop works, custom directives do not.
+    render(<FleetPanel flavors={agentRow({ supports_directives: true }, "claude_code")} />);
+    expect(screen.queryByTestId(`flavor-directives-button-${AGENT_ID}`)).toBeNull();
+    expect(screen.getByTestId(`flavor-stop-all-button-${AGENT_ID}`)).toBeInTheDocument();
   });
 
   it("Custom Directives sidebar section is gone", () => {
@@ -268,10 +332,15 @@ describe("FleetPanel", () => {
     expect(
       screen.getByText("Stop all runs of research-agent?"),
     ).toBeInTheDocument();
-    expect(screen.getByText(/2 active or idle agents/)).toBeInTheDocument();
+    // The page holds only some of an agent's runs, so the dialog
+    // promises no count.
+    expect(
+      screen.getByText(/Every active or idle run of this agent that can take a stop/),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/All \d+ active/)).toBeNull();
   });
 
-  it("calls createDirective with correct payload on confirm", async () => {
+  it("Stop All sends one stop addressed to the agent and names the API's count", async () => {
     render(<FleetPanel flavors={mockFlavors} />);
     fireEvent.click(
       screen.getByTestId("flavor-stop-all-button-research-agent"),
@@ -280,14 +349,133 @@ describe("FleetPanel", () => {
     // outer trigger is icon-only so the only "Stop All" text node
     // is the confirm button inside the dialog.
     fireEvent.click(screen.getByText("Stop All"));
+    // One request for the agent: the API stops every live run of it
+    // that can take a stop, including runs this page has not loaded,
+    // and none of another agent's runs that share the flavor. Neither
+    // a per-session stop for the runs the page holds nor a flavor-wide
+    // shutdown_flavor does that.
     await waitFor(() => {
-      expect(createDirective).toHaveBeenCalledWith({
-        action: "shutdown_flavor",
-        flavor: "research-agent",
-        reason: "manual_fleet_kill",
-        grace_period_ms: 5000,
-      });
+      expect(createDirective).toHaveBeenCalledTimes(1);
     });
+    expect(createDirective).toHaveBeenCalledWith({
+      action: "shutdown",
+      agent_id: "research-agent",
+      reason: "manual_fleet_kill",
+      grace_period_ms: 5000,
+    });
+    // The API reached three runs; the page holds two live ones.
+    expect(await screen.findByRole("status")).toHaveTextContent("Stop sent to 3 runs");
+    expect(screen.queryByTestId("flavor-stop-all-button-research-agent")).toBeNull();
+    // The live runs the page holds show as shutting down at once.
+    expect(mockMarkShuttingDown.mock.calls.map((c) => c[0])).toEqual(["s1", "s2"]);
+  });
+
+  it("Stop All without a count names none", async () => {
+    vi.mocked(createDirective).mockResolvedValueOnce({
+      directive: { id: "dir-1" } as never,
+      count: null,
+    });
+    render(<FleetPanel flavors={mockFlavors} />);
+    fireEvent.click(screen.getByTestId("flavor-stop-all-button-research-agent"));
+    fireEvent.click(screen.getByText("Stop All"));
+    expect(await screen.findByRole("status")).toHaveTextContent(/^Stop sent$/);
+  });
+
+  it("a failed Stop All shows the API's reason and marks nothing", async () => {
+    vi.mocked(createDirective).mockRejectedValueOnce(
+      new Error("no live session of this agent can take this directive"),
+    );
+    render(<FleetPanel flavors={mockFlavors} />);
+    fireEvent.click(screen.getByTestId("flavor-stop-all-button-research-agent"));
+    fireEvent.click(screen.getByText("Stop All"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "no live session of this agent can take this directive",
+    );
+    expect(screen.getByText("Stop all runs of research-agent?")).toBeInTheDocument();
+    expect(mockMarkShuttingDown).not.toHaveBeenCalled();
+  });
+
+  it("a row without an agent_id offers neither control", () => {
+    // A live update for a session with no agent_id builds a row keyed
+    // by its flavor string, which no agent-scoped request can name.
+    mockCustomDirectives = [sensorDirective];
+    const { agent_id: _omit, ...noId } = mockFlavors[0]!;
+    render(<FleetPanel flavors={[noId]} />);
+    expect(screen.queryByTestId("flavor-stop-all-button-research-agent")).toBeNull();
+    expect(screen.queryByTestId("flavor-directives-button-research-agent")).toBeNull();
+  });
+
+  it("names the agent, not its id, in the controls' labels and dialogs", () => {
+    mockCustomDirectives = [sensorDirective];
+    render(<FleetPanel flavors={agentRow()} />);
+    const stop = screen.getByTestId(`flavor-stop-all-button-${AGENT_ID}`);
+    expect(stop).toHaveAttribute("aria-label", "Stop all runs of sensor@host");
+    expect(stop).toHaveAttribute("title", "Stop all runs of sensor@host");
+    const trigger = screen.getByTestId(`flavor-directives-button-${AGENT_ID}`);
+    expect(trigger).toHaveAttribute("aria-label", "Trigger directives on sensor@host");
+    fireEvent.click(trigger);
+    expect(screen.getByRole("dialog")).toHaveTextContent("Trigger directives on sensor@host");
+    expect(screen.getByRole("dialog")).not.toHaveTextContent(AGENT_ID);
+  });
+
+  it("the directive trigger sends to the agent's runs of the directive's flavor", async () => {
+    mockCustomDirectives = [sensorDirective];
+    render(<FleetPanel flavors={agentRow()} />);
+    fireEvent.click(screen.getByTestId(`flavor-directives-button-${AGENT_ID}`));
+    fireEvent.click(screen.getByTestId("directive-run-rotate-model"));
+    await waitFor(() => {
+      expect(triggerCustomDirective).toHaveBeenCalledTimes(1);
+    });
+    const call = vi.mocked(triggerCustomDirective).mock.calls[0]![0];
+    // agent_id keeps it off another agent's runs that share the flavor;
+    // the flavor keeps it to the runs whose flavor registered it.
+    expect(call).toMatchObject({
+      action: "custom",
+      agent_id: AGENT_ID,
+      flavor: "research-agent",
+      fingerprint: "fp-sensor",
+    });
+    expect(call.session_id).toBeUndefined();
+    expect(await screen.findByTestId("directive-sent-rotate-model")).toHaveTextContent(
+      "Directive sent to 2 runs",
+    );
+  });
+
+  it("confirming Stop All or cancelling it leaves the agent filter alone", async () => {
+    // The dialogs render in a portal, but React bubbles their clicks
+    // through the row, whose own click toggles the agent filter.
+    const onFlavorClick = vi.fn();
+    render(<FleetPanel flavors={mockFlavors} onFlavorClick={onFlavorClick} />);
+    fireEvent.click(screen.getByTestId("flavor-stop-all-button-research-agent"));
+    fireEvent.click(screen.getByText("Cancel"));
+    fireEvent.click(screen.getByTestId("flavor-stop-all-button-research-agent"));
+    fireEvent.click(screen.getByText("Stop All"));
+    expect(await screen.findByRole("status")).toHaveTextContent("Stop sent to 3 runs");
+    expect(onFlavorClick).not.toHaveBeenCalled();
+  });
+
+  it("running a directive from the row leaves the agent filter alone", async () => {
+    mockCustomDirectives = [sensorDirective];
+    const onFlavorClick = vi.fn();
+    render(<FleetPanel flavors={agentRow()} onFlavorClick={onFlavorClick} />);
+    fireEvent.click(screen.getByTestId(`flavor-directives-button-${AGENT_ID}`));
+    fireEvent.click(screen.getByTestId("directive-run-rotate-model"));
+    await screen.findByTestId("directive-sent-rotate-model");
+    expect(onFlavorClick).not.toHaveBeenCalled();
+    // A click on the row itself still toggles it.
+    fireEvent.click(screen.getByTestId(`fleet-sidebar-agent-sensor@host`));
+    expect(onFlavorClick).toHaveBeenCalledWith(AGENT_ID);
+  });
+
+  it("offers the directive trigger only with a live session that runs custom directives", () => {
+    mockCustomDirectives = [sensorDirective];
+    const row = agentRow()[0]!;
+    const closed: FlavorSummary = {
+      ...row,
+      sessions: row.sessions.map((s) => ({ ...s, state: "closed" as const })),
+    };
+    render(<FleetPanel flavors={[closed]} />);
+    expect(screen.queryByTestId(`flavor-directives-button-${AGENT_ID}`)).toBeNull();
   });
 
   it("hides Stop All for a flavor where every live session is observer-only", () => {
@@ -297,6 +485,7 @@ describe("FleetPanel", () => {
     const claudeCodeFlavor: FlavorSummary[] = [
       {
         flavor: "claude-code",
+        agent_id: "claude-code",
         agent_type: "coding",
         session_count: 2,
         active_count: 2,
@@ -333,6 +522,7 @@ describe("FleetPanel", () => {
     const mixedFlavor: FlavorSummary[] = [
       {
         flavor: "mixed-flavor",
+        agent_id: "mixed-flavor",
         agent_type: "production",
         session_count: 2,
         active_count: 2,

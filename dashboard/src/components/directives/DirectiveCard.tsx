@@ -2,16 +2,15 @@
  * DirectiveCard — renders a single custom directive with its
  * parameter inputs and a "Run" button. Used in two places:
  *
- * 1. The session drawer's Directives tab -- targets a specific
- *    session_id (`sessionId` prop).
- * 2. The FleetPanel flavor-row Directives dialog -- targets the
- *    entire flavor's active sessions (`flavor` prop, no sessionId).
+ * 1. The session drawer's Directives tab -- targets one run
+ *    (`sessionId` prop).
+ * 2. The Fleet sidebar agent row's Directives dialog -- targets the
+ *    agent's live runs under the directive's own flavor (`agentId`
+ *    prop). The API picks the runs, including ones the page has not
+ *    loaded, and the card names how many it reached.
  *
- * Extracted from the old DirectivesPanel so both call sites share
- * the same parameter-input rendering and trigger API path. The
- * original panel wrapper (header + loading / error / empty state)
- * is gone; both consumers now own their own loading / empty
- * handling.
+ * Both call sites share the parameter-input rendering and the trigger
+ * API path; each owns its own loading and empty handling.
  */
 
 import { useState } from "react";
@@ -21,6 +20,7 @@ import type {
 } from "@/lib/types";
 import { triggerCustomDirective } from "@/lib/api";
 import { SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/constants";
+import { runCountLabel } from "@/lib/directives";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -32,16 +32,19 @@ import {
 
 interface DirectiveCardProps {
   directive: CustomDirective;
-  /**
-   * When set, the Run button targets this specific session id.
-   * Mutually exclusive with `flavor` in practice: the session drawer
-   * passes sessionId; the flavor-level dialog passes flavor only.
-   */
+  /** Targets this one run (the run drawer). Wins over the others. */
   sessionId?: string | null;
   /**
-   * When set and sessionId is not, the Run button fans out to all
-   * active sessions of this flavor via the POST /v1/directives
-   * endpoint. Defaults to the directive's own registered flavor.
+   * Targets every live run of this agent that runs custom handlers
+   * under the directive's own flavor (the Fleet row). The request
+   * carries that flavor, so a run of the agent under another flavor
+   * that registered the same handler is not reached, and neither is
+   * another agent's run that shares the flavor.
+   */
+  agentId?: string | null;
+  /**
+   * With neither of the above, the Run button reaches every live run
+   * of this flavor. Defaults to the directive's own registered flavor.
    */
   flavor?: string | null;
 }
@@ -49,6 +52,7 @@ interface DirectiveCardProps {
 export function DirectiveCard({
   directive,
   sessionId,
+  agentId,
   flavor,
 }: DirectiveCardProps) {
   const [params, setParams] = useState<Record<string, unknown>>(() => {
@@ -65,7 +69,9 @@ export function DirectiveCard({
     return defaults;
   });
   const [submitting, setSubmitting] = useState(false);
-  const [sent, setSent] = useState(false);
+  // Confirmation shown after a send: for an agent, how many runs the
+  // API reached.
+  const [sentMessage, setSentMessage] = useState<string | null>(null);
   const [submitError, setSubmitError] = useState<string | null>(null);
 
   function updateParam(name: string, value: unknown) {
@@ -75,18 +81,28 @@ export function DirectiveCard({
   async function handleRun() {
     setSubmitting(true);
     setSubmitError(null);
+    // One run; else the agent's live runs of the directive's own flavor;
+    // else every live run of a flavor.
+    const target = sessionId
+      ? { session_id: sessionId }
+      : agentId
+        ? { agent_id: agentId, flavor: directive.flavor }
+        : { flavor: flavor ?? directive.flavor };
     try {
-      await triggerCustomDirective({
+      const { count } = await triggerCustomDirective({
         action: "custom",
         directive_name: directive.name,
         fingerprint: directive.fingerprint,
-        session_id: sessionId ?? undefined,
-        flavor: sessionId ? undefined : flavor ?? directive.flavor,
+        ...target,
         parameters:
           directive.parameters.length > 0 ? params : undefined,
       });
-      setSent(true);
-      setTimeout(() => setSent(false), SUCCESS_MESSAGE_DISPLAY_MS);
+      setSentMessage(
+        sessionId || count === null
+          ? "Directive sent"
+          : `Directive sent to ${runCountLabel(count)}`,
+      );
+      setTimeout(() => setSentMessage(null), SUCCESS_MESSAGE_DISPLAY_MS);
     } catch (e) {
       setSubmitError((e as Error).message);
     } finally {
@@ -149,15 +165,23 @@ export function DirectiveCard({
             ? "Sending..."
             : sessionId
               ? "Trigger on this run"
-              : "Trigger on all active"}
+              : agentId
+                ? "Trigger on this agent's runs"
+                : "Trigger on all active"}
         </Button>
-        {sent && (
-          <span className="text-[11px] text-success">
-            Directive sent
+        {sentMessage !== null && (
+          <span
+            role="status"
+            data-testid={`directive-sent-${directive.name}`}
+            className="text-[11px] text-success"
+          >
+            {sentMessage}
           </span>
         )}
         {submitError && (
           <span
+            role="alert"
+            data-testid={`directive-error-${directive.name}`}
             className="text-[11px]"
             style={{ color: "var(--danger)" }}
           >

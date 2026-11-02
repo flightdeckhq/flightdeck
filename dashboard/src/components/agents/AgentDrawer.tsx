@@ -6,6 +6,7 @@ import { useFleetStore } from "@/store/fleet";
 import { type AgentLink, deriveAgentLinkage } from "@/lib/relationship";
 import { STATUS_LABEL, StatusDot } from "@/lib/agent-status";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
+import { TelemetrySourcePill } from "@/components/facets/TelemetrySourcePill";
 import { ClientType } from "@/lib/agent-identity";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { ProviderLogo } from "@/components/ui/provider-logo";
@@ -210,6 +211,11 @@ export function AgentDrawer({
                     size="compact"
                   />
                 )}
+                <TelemetrySourcePill
+                  telemetry={agent.telemetry}
+                  clientType={agent.client_type}
+                  testId="agent-drawer-telemetry-source"
+                />
                 <span
                   style={{
                     fontFamily: "var(--font-mono)",

@@ -67,6 +67,13 @@ the swimlane↔table parity assertion). The current journeys:
 | `T133-sub-agent-connector-ends-on-the-circles-it-joins.spec.ts` | Every connector starts on its parent circle's rim and ends on its child circle's centre |
 | `T134-hovering-a-run-lights-its-connectors.spec.ts` | Hovering a run's mark (or keyboard-focusing its glyph) lights exactly that run's connectors: a parent its fan-out, a child its own link |
 | `T135-child-row-label-hides-scrolled-circles.spec.ts` | With circles scrolled under a child row's sticky label, in Fleet and in the per-agent modal, the label's background is fully opaque |
+| `T136-freed-top-lane-is-reused.spec.ts` | A run that starts after an earlier run ended takes the top edge that run freed; the run still overlapping goes to the bottom edge |
+| `T137-runs-started-together-keep-reachable-glyphs.spec.ts` | Three runs started together keep disjoint start glyphs; each hit-tests to itself and opens its own run's tooltip |
+| `T138-back-to-back-runs-keep-both-glyphs.spec.ts` | A hand-off (with 3 ms of worker-clock overlap) stays one lane and reads ■▶, both glyphs reachable |
+| `T139-closed-run-shows-its-end-with-the-start-off-screen.spec.ts` | At 1m, 5m and 1h a closed run whose start is before the window shows its end square, with a time in its tooltip |
+| `T140-lost-run-ends-with-a-hollow-square.spec.ts` | Lost and reaped runs end at their last signal with a hollow square; an earlier lost run draws nothing |
+| `T141-resumed-run-draws-its-segments.spec.ts` | A resumed run draws ▶ ■ ▶ with a gap, and a run inside the gap keeps the row one lane |
+| `T142-short-run-keeps-its-start-before-its-end.spec.ts` | A run narrower than its glyphs reads ▶■, and no glyph covers its start circle's centre |
 
 The `_fixtures.ts` helper exports shared fixture metadata (agent
 names, flavors, role timeline offsets) and locator helpers:
@@ -172,6 +179,18 @@ before the workers' events. Every fan-out role declares
 `skip_subagent_refresh`, so T56's `--refresh-subagent-events` never
 moves it, and the lost run is pinned once by the full seed.
 
+The run-glyph lane fixtures (`LANE_FIXTURES`, the `e2e-test-run-*`
+agents) are roles that declare `lane_segments`: the run's segments as
+`[start, end]` offsets from NOW (`end` null while open) and its
+`lane_state`, optionally a last-signal offset and a close reason (the
+reaped run's `orphan_timeout`). `seed.py::_pin_lane_fixtures` shifts
+each run's events and pins its session row back to those offsets in
+one psql statement per agent, on the full seed and on every keep-alive
+cycle, so a spec sees them at most one 30 s cycle plus its own runtime
+late. None is a sub-agent, so T56's refresh leaves them alone.
+`fixtureSessionId(agent, role)` derives a fixture run's session id the
+way `seed.py::_derive_session_id` does.
+
 ### Selectors
 
 Prefer semantic selectors first (`getByRole`, `getByText`,
@@ -184,11 +203,10 @@ convention: `fleet-*`, `swimlane-*`, `session-*`, `context-*`,
 Structural testids the suite relies on:
 
 - `swimlane-agent-row-<agent_name>` + `data-agent-id` + `data-topology` (SwimLane row root)
-- `swimlane-run-bracket-start-<sid_prefix>` + `swimlane-run-bracket-end-<sid_prefix>` (RunBracket)
+- `swimlane-run-bracket-start-<sid_prefix>` + `swimlane-run-bracket-end-<sid_prefix>` (RunBracket; a resumed run has one per segment), with `data-session-id`, `data-run-lane` (`0` top edge, `1` bottom edge), `data-segment-index` and, on an end, `data-end-kind` (`closed` or `lost`); the row carries `data-lane-count`
 - `swimlane-agent-status-badge` + `data-state` (AgentStatusBadge)
 - `swimlane-sub-agent-lost-dot` (lost sub-agent cue inside the row strip)
 - `session-circle-<session_id>` (EventNode circles)
-- `session-row` + `data-session-id` (SessionEventRow, inside the drawer)
 - `session-drawer` (SessionDrawer root)
 - `active-filter-pill` + `active-filter-remove` (Events page facet chip)
 - `virtualized-placeholder` (off-screen SwimLane placeholder)

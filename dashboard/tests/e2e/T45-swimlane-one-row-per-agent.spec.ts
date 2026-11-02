@@ -29,9 +29,8 @@ test.describe("T45 — Swimlane one row per agent", () => {
 	}) => {
 		await page.goto("/");
 		await waitForFleetReady(page);
-		// The Fleet swimlane no longer renders <SessionEventRow/>
-		// children. The Events page session drawer is the only
-		// remaining consumer of that component.
+		// The Fleet swimlane renders one row per agent, with no
+		// per-run event rows under it.
 		const sessionEventRows = page.locator(
 			'[data-testid^="session-event-row-"]',
 		);

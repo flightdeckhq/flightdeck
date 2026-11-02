@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { Page, Locator } from "@playwright/test";
 
 // Poll for a locator to mount (count > 0) without using a fixed
@@ -169,6 +170,67 @@ export const FANOUT_FIXTURE = {
   workerName: "e2e-test-fanout@e2e-host-fanout/worker",
   workerRole: "worker",
 } as const;
+
+/** The run-glyph lane fixtures (canonical.json roles that declare
+ *  ``lane_segments``). seed.py's lane pin moves each run's events and
+ *  session row back to its declared offsets from NOW on the full seed
+ *  and every keep-alive cycle, all of an agent's runs in one psql
+ *  statement, so they drift at most one 30 s cycle plus a spec's own
+ *  runtime. T56's sub-agent refresh never touches them (none is a
+ *  sub-agent). Offsets are seconds from NOW. */
+export const LANE_FIXTURES = {
+  /** A [-240, -180] closed, B open from -200, C open from -150: C
+   *  takes A's freed track. */
+  laneReuse: {
+    name: "e2e-test-run-lane-reuse",
+    roles: { a: "lane-reuse-a", b: "lane-reuse-b", c: "lane-reuse-c" },
+  },
+  /** First run closed at -15 s, second open from 3 ms before that. */
+  handoff: {
+    name: "e2e-test-run-handoff",
+    roles: { first: "handoff-first", second: "handoff-second" },
+  },
+  /** One run closed 10 s ago that started 2 h ago. */
+  long: { name: "e2e-test-run-long", roles: { run: "long-closed" } },
+  /** One run 2 s long, closed at -198 s. */
+  short: { name: "e2e-test-run-short", roles: { run: "short-closed" } },
+  /** A run with segments [-210, -150] and [-60, open], and a run
+   *  [-130, -90] inside its gap. */
+  resumed: {
+    name: "e2e-test-run-resumed",
+    roles: { resumed: "resumed-run", inGap: "resumed-gap-run" },
+  },
+  /** Lost runs (one last seen 1 h 55 min ago, one 40 min ago) and a run
+   *  the reaper closed a minute ago, last seen 30 min ago. */
+  lost: {
+    name: "e2e-test-run-lost",
+    roles: { earlier: "lost-earlier", recent: "lost-recent", reaped: "reaped-run" },
+  },
+} as const;
+
+/** The session id seed.py derives for a canonical (agent, role) pair:
+ *  uuid5 of ``flightdeck-e2e/{agent_name}/{role}`` in the Flightdeck
+ *  namespace (``_derive_session_id``). */
+export function fixtureSessionId(agentName: string, role: string): string {
+  return uuid5(`flightdeck-e2e/${agentName}/${role}`, FLIGHTDECK_NAMESPACE);
+}
+
+const FLIGHTDECK_NAMESPACE = "ee22ab58-26fc-54ef-91b4-b5c0a97f9b61";
+
+/** RFC 4122 version-5 UUID (SHA-1), as Python's ``uuid.uuid5``. */
+function uuid5(name: string, namespace: string): string {
+  const ns = Uint8Array.from(
+    namespace.replace(/-/g, "").match(/../g)!.map((h) => parseInt(h, 16)),
+  );
+  const bytes = createHash("sha1")
+    .update(Buffer.concat([Buffer.from(ns), Buffer.from(name, "utf8")]))
+    .digest()
+    .subarray(0, 16);
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = Buffer.from(bytes).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 
 export const ALL_FIXTURE_AGENTS = [
   CODING_AGENT,

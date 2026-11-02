@@ -1587,6 +1587,243 @@ def _refresh_fanout(
     return len(pinned)
 
 
+# Run-glyph lane fixtures (roles that declare ``lane_segments``). Each
+# role is one run made of the declared segments, ``[start, end]`` offsets
+# in seconds from NOW (``end`` null for a segment still open), in the
+# state ``lane_state``. The lane pin moves the run's whole event stream
+# and its session row back to those offsets on the full seed and on every
+# keep-alive cycle, all of an agent's runs in one psql statement so they
+# share one NOW(). The worst drift a spec sees is one 30 s keep-alive
+# interval plus the spec's own runtime; every offset leaves that much
+# room inside the time range its spec reads it at.
+_LANE_STATES = frozenset({"active", "closed", "lost"})
+
+
+def _lane_spec(role: str, role_cfg: dict[str, Any]) -> dict[str, Any]:
+    """Validate a lane role's config and return its parts.
+
+    Returns ``segments`` (a list of ``(start, end | None)`` float
+    offsets), ``state``, ``last_seen`` (the offset of the run's last
+    signal, None for an open run whose last signal is NOW) and
+    ``close_reason`` (the last session_end's, for a closed run).
+    """
+    state = role_cfg["lane_state"]
+    if state not in _LANE_STATES:
+        raise ValueError(
+            f"role {role!r}: lane_state {state!r} is not one of {sorted(_LANE_STATES)}"
+        )
+    segments = [
+        (float(start), None if end is None else float(end))
+        for start, end in role_cfg["lane_segments"]
+    ]
+    if not segments:
+        raise ValueError(f"role {role!r}: lane_segments is empty")
+    for i, (start, end) in enumerate(segments):
+        last = i == len(segments) - 1
+        if end is None and not (last and state != "closed"):
+            raise ValueError(
+                f"role {role!r}: only the last segment of an open or lost run is open"
+            )
+        if end is not None and end < start:
+            raise ValueError(f"role {role!r}: segment {i} ends before it starts")
+    last_seen = role_cfg.get("lane_last_seen_offset_sec")
+    if state == "lost" and last_seen is None:
+        raise ValueError(f"role {role!r}: a lost run needs lane_last_seen_offset_sec")
+    if state == "closed" and last_seen is None:
+        last_seen = segments[-1][1]
+    return {
+        "segments": segments,
+        "state": state,
+        "last_seen": None if last_seen is None else float(last_seen),
+        "close_reason": role_cfg.get("lane_close_reason", "normal_exit"),
+    }
+
+
+def _lane_events_complete(session_id: str, spec: dict[str, Any]) -> bool:
+    """True when the run already holds one session_start per segment."""
+    try:
+        detail = get_session(session_id)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return False
+        raise
+    starts = sum(
+        1 for e in detail.get("events") or [] if e.get("event_type") == "session_start"
+    )
+    return starts >= len(spec["segments"])
+
+
+def _post_lane_events(
+    *,
+    agent_cfg: dict[str, Any],
+    session_id: str,
+    spec: dict[str, Any],
+) -> int:
+    """Post a lane run's events: per segment a session_start, one
+    tool_call (at the run's last signal for the last segment of a lost
+    or reaped run, else inside the segment) and, for a segment that
+    ended, its session_end. Returns the number of events posted."""
+    identity = {
+        "agent_type": agent_cfg["agent_type"],
+        "client_type": agent_cfg["client_type"],
+        "user": agent_cfg["user"],
+        "hostname": agent_cfg["hostname"],
+        "agent_name": agent_cfg["agent_name"],
+        "host": agent_cfg["host"],
+        "framework": agent_cfg["framework"],
+        "model": agent_cfg["model"],
+    }
+    segments = spec["segments"]
+    posted = 0
+    for i, (start, end) in enumerate(segments):
+        last = i == len(segments) - 1
+        post_event(
+            make_event(
+                session_id,
+                agent_cfg["flavor"],
+                "session_start",
+                timestamp=_shift_timestamp_ms(start),
+                **identity,
+            )
+        )
+        posted += 1
+        if i == 0 and wait_for_session_in_fleet(session_id, timeout=5.0) is None:
+            print(
+                f"  warn: {session_id[:8]} session_start did not surface in 5s; "
+                "subsequent event inserts may FK-violate",
+                file=sys.stderr,
+            )
+        if last and spec["last_seen"] is not None and spec["last_seen"] >= start:
+            signal = spec["last_seen"]
+        elif end is None:
+            signal = start + 1
+        else:
+            signal = (start + end) / 2
+        post_event(
+            make_event(
+                session_id,
+                agent_cfg["flavor"],
+                "tool_call",
+                timestamp=_shift_timestamp_ms(signal),
+                tool_name="e2e_lane_work",
+                tool_input={"segment": i},
+                tool_result={"ok": True},
+                **identity,
+            )
+        )
+        posted += 1
+        if end is not None:
+            post_event(
+                make_event(
+                    session_id,
+                    agent_cfg["flavor"],
+                    "session_end",
+                    timestamp=_shift_timestamp_ms(end),
+                    close_reason=spec["close_reason"] if last else "normal_exit",
+                    **identity,
+                )
+            )
+            posted += 1
+    return posted
+
+
+def _interval(offset_sec: float) -> str:
+    """``NOW() + offset`` as SQL, for an offset from canonical.json.
+    The float() guard keeps anything but a number out of the text."""
+    return f"NOW() + INTERVAL '{float(offset_sec):.3f} seconds'"
+
+
+def _pin_lane_fixtures(
+    agents_cfg: list[dict[str, Any]],
+    roles_cfg: dict[str, dict[str, Any]],
+) -> int:
+    """Move every lane run's events and session row back to its declared
+    offsets from NOW (see the lane comment above). Runs on the full seed
+    and on every keep-alive cycle; returns the number of runs pinned."""
+    pinned = 0
+    for agent_cfg in agents_cfg:
+        statements: list[str] = []
+        session_ids: list[str] = []
+        for role in agent_cfg["session_roles"]:
+            role_cfg = roles_cfg[role]
+            if "lane_segments" not in role_cfg:
+                continue
+            spec = _lane_spec(role, role_cfg)
+            session_id = _derive_session_id(agent_cfg["agent_name"], role)
+            # A uuid5 from _derive_session_id; the guard keeps the
+            # interpolated literal a UUID.
+            UUID(session_id)
+            first_start = spec["segments"][0][0]
+            last_end = spec["segments"][-1][1]
+            # Shift the run's whole event stream so its first event
+            # sits at the first segment's start: the events keep their
+            # spacing, so every boundary lands on its declared offset.
+            statements.append(
+                "UPDATE events e SET occurred_at = e.occurred_at + "
+                f"(({_interval(first_start)}) - first.at) "
+                "FROM (SELECT MIN(occurred_at) AS at FROM events "
+                f"WHERE session_id = '{session_id}'::uuid) first "
+                f"WHERE e.session_id = '{session_id}'::uuid AND first.at IS NOT NULL"
+            )
+            if spec["state"] == "active":
+                row = "state='active', ended_at=NULL, last_seen_at=NOW()"
+            elif spec["state"] == "lost":
+                row = f"state='lost', ended_at=NULL, last_seen_at={_interval(spec['last_seen'])}"
+            else:
+                row = (
+                    f"state='closed', ended_at={_interval(last_end)}, "
+                    f"last_seen_at={_interval(spec['last_seen'])}"
+                )
+            statements.append(
+                f"UPDATE sessions SET {row}, started_at={_interval(first_start)} "
+                f"WHERE session_id='{session_id}'::uuid"
+            )
+            session_ids.append(session_id)
+        if not session_ids:
+            continue
+        id_list = ", ".join(f"'{sid}'::uuid" for sid in session_ids)
+        statements.append(
+            "UPDATE agents SET last_seen_at=NOW() WHERE agent_id IN "
+            f"(SELECT agent_id FROM sessions WHERE session_id IN ({id_list}))"
+        )
+        try:
+            # psql runs a multi-statement -c string as one transaction,
+            # so the agent's runs share one NOW().
+            result = subprocess.run(
+                [
+                    "docker",
+                    "exec",
+                    "docker-postgres-1",
+                    "psql",
+                    "-U",
+                    "flightdeck",
+                    "-d",
+                    "flightdeck",
+                    "-c",
+                    "; ".join(statements),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=PSQL_EXEC_TIMEOUT_SEC,
+                check=False,
+            )
+        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+            print(
+                f"  warn: lane pin for {agent_cfg['agent_name']} failed: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        if result.returncode != 0:
+            print(
+                f"  warn: lane pin for {agent_cfg['agent_name']} returned "
+                f"{result.returncode}: {result.stderr.strip()}",
+                file=sys.stderr,
+            )
+            continue
+        pinned += len(session_ids)
+    return pinned
+
+
 def seed(mode: str = "full") -> None:
     """Seed canonical E2E fixtures.
 
@@ -1636,19 +1873,32 @@ def seed(mode: str = "full") -> None:
             for role in agent_cfg["session_roles"]:
                 role_cfg = roles_cfg[role]
                 session_id = _derive_session_id(agent_cfg["agent_name"], role)
+                lane = (
+                    _lane_spec(role, role_cfg) if "lane_segments" in role_cfg else None
+                )
 
-                if _session_is_complete(session_id, role_cfg):
+                complete = (
+                    _lane_events_complete(session_id, lane)
+                    if lane is not None
+                    else _session_is_complete(session_id, role_cfg)
+                )
+                if complete:
                     print(
                         f"  skip {agent_cfg['agent_name']}/{role} ({session_id[:8]}) — already has events"
                     )
                     skipped += 1
                     continue
 
-                posted = _post_session_events(
-                    agent_cfg=agent_cfg,
-                    session_id=session_id,
-                    role_cfg=role_cfg,
-                )
+                if lane is not None:
+                    posted = _post_lane_events(
+                        agent_cfg=agent_cfg, session_id=session_id, spec=lane
+                    )
+                else:
+                    posted = _post_session_events(
+                        agent_cfg=agent_cfg,
+                        session_id=session_id,
+                        role_cfg=role_cfg,
+                    )
                 seeded += 1
                 if agent_cfg["agent_name"] not in touched_agents:
                     touched_agents.append(agent_cfg["agent_name"])
@@ -2325,6 +2575,10 @@ def seed(mode: str = "full") -> None:
     # in both modes (see _refresh_fanout).
     backdated += _refresh_fanout(agents_cfg, roles_cfg)
 
+    # The run-glyph lane fixtures, pinned in both modes so they stay at
+    # their declared offsets for the whole suite (see _pin_lane_fixtures).
+    backdated += _pin_lane_fixtures(agents_cfg, roles_cfg)
+
     # The Claude Code session reported over OTLP goes in through the
     # OTLP receiver (otlp_seed.py), not POST /v1/events; it is
     # re-pinned active in both modes, like the fresh-class roles above.
@@ -2495,8 +2749,9 @@ if __name__ == "__main__":
             "Skip initial seeding, fleet-visibility wait, and "
             "closed/aged/stale backdating. Refresh only the active "
             "roles (fresh-active, error-active, mcp-active, "
-            "policy-active, the connector anchors and the fan-out "
-            "group). Idempotent and safe to call repeatedly."
+            "policy-active, the connector anchors, the fan-out "
+            "group and the run-glyph lane fixtures). Idempotent and "
+            "safe to call repeatedly."
         ),
     )
     mode_group.add_argument(

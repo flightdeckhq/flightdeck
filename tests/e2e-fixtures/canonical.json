@@ -287,6 +287,102 @@
       "parent_agent": "e2e-test-fanout@e2e-host-fanout",
       "skip_subagent_refresh": true,
       "purpose": "An earlier worker run that went lost: started 2 h ago, last seen 1 h 55 min ago, ended_at NULL. Its events are posted inside that span (event_offset_floor_sec lifts the usual 1 h clamp; ingestion accepts up to 48 h back). Pinned once by the full seed; the keep-alive and T56's refresh_subagent_events leave it alone, so its extent never moves during a run."
+    },
+    "concurrent-run-lost-earlier": {
+      "started_offset_sec": -7200,
+      "ended_offset_sec": null,
+      "last_seen_offset_sec": -6900,
+      "event_offset_floor_sec": -7200,
+      "force_state": "lost",
+      "purpose": "T52 anchor: an earlier run of the concurrent-runs agent that went lost (started 2 h ago, last seen 1 h 55 min ago, ended_at NULL). It ends at its last signal, so it holds no lane when the two concurrent runs start; read as running forever, it pushed both of them to the bottom edge. Pinned once by the full seed."
+    },
+    "lane-reuse-a": {
+      "started_offset_sec": -240,
+      "ended_offset_sec": -180,
+      "lane_segments": [[-240, -180]],
+      "lane_state": "closed",
+      "purpose": "T136 anchor: run A of the lane-reuse agent, closed. B starts while A runs and C starts after A ends, so C takes A's freed track: at 5m A and C keep the top edge and B sits on the bottom edge. The lane pin keeps all three at their offsets on every keep-alive cycle."
+    },
+    "lane-reuse-b": {
+      "started_offset_sec": -200,
+      "ended_offset_sec": null,
+      "lane_segments": [[-200, null]],
+      "lane_state": "active",
+      "purpose": "T136 anchor: run B of the lane-reuse agent, open from -200 s (see lane-reuse-a)."
+    },
+    "lane-reuse-c": {
+      "started_offset_sec": -150,
+      "ended_offset_sec": null,
+      "lane_segments": [[-150, null]],
+      "lane_state": "active",
+      "purpose": "T136 anchor: run C of the lane-reuse agent, open from -150 s, after run A ended (see lane-reuse-a)."
+    },
+    "handoff-first": {
+      "started_offset_sec": -40,
+      "ended_offset_sec": -15,
+      "lane_segments": [[-40, -15]],
+      "lane_state": "closed",
+      "purpose": "T138 anchor: the first run of a hand-off, closed at -15 s. The second run starts 3 ms before it ends, the overlap a worker's processing order can stamp, so the row stays one lane and reads end then start."
+    },
+    "handoff-second": {
+      "started_offset_sec": -15,
+      "ended_offset_sec": null,
+      "lane_segments": [[-15.003, null]],
+      "lane_state": "active",
+      "purpose": "T138 anchor: the second run of the hand-off, open from 3 ms before the first run ends (see handoff-first)."
+    },
+    "long-closed": {
+      "started_offset_sec": -7200,
+      "ended_offset_sec": -10,
+      "lane_segments": [[-7200, -10]],
+      "lane_state": "closed",
+      "purpose": "T139 anchor: a run that started 2 h ago and closed 10 s ago, so at 1m, 5m and 1h its start is before the window and only its end square shows."
+    },
+    "short-closed": {
+      "started_offset_sec": -200,
+      "ended_offset_sec": -198,
+      "lane_segments": [[-200, -198]],
+      "lane_state": "closed",
+      "purpose": "T142 anchor: a 2 s run, narrower on screen than its two glyphs at 5m and 1h, so its end square follows its start triangle past the run's end."
+    },
+    "resumed-run": {
+      "started_offset_sec": -210,
+      "ended_offset_sec": null,
+      "lane_segments": [[-210, -150], [-60, null]],
+      "lane_state": "active",
+      "purpose": "T141 anchor: a run that ended at -150 s and was resumed under the same session id at -60 s: two segments with a gap, each segment end drawn with its own square. Its first start leaves 90 s of the 5m window for drift."
+    },
+    "resumed-gap-run": {
+      "started_offset_sec": -130,
+      "ended_offset_sec": -90,
+      "lane_segments": [[-130, -90]],
+      "lane_state": "closed",
+      "purpose": "T141 anchor: another run of the resumed agent that ran inside the resumed run's gap, so it shares the resumed run's track and the row stays one lane."
+    },
+    "lost-earlier": {
+      "started_offset_sec": -7200,
+      "ended_offset_sec": null,
+      "lane_segments": [[-7200, null]],
+      "lane_state": "lost",
+      "lane_last_seen_offset_sec": -6900,
+      "purpose": "T140 anchor: a run that went lost 1 h 55 min ago, before the 1h window, so it draws nothing."
+    },
+    "lost-recent": {
+      "started_offset_sec": -3000,
+      "ended_offset_sec": null,
+      "lane_segments": [[-3000, null]],
+      "lane_state": "lost",
+      "lane_last_seen_offset_sec": -2400,
+      "purpose": "T140 anchor: a lost run started 50 min ago and last seen 40 min ago: at 1h it ends at its last signal with a hollow square."
+    },
+    "reaped-run": {
+      "started_offset_sec": -2100,
+      "ended_offset_sec": -60,
+      "lane_segments": [[-2100, -60]],
+      "lane_state": "closed",
+      "lane_last_seen_offset_sec": -1800,
+      "lane_close_reason": "orphan_timeout",
+      "purpose": "T140 anchor: a run the orphan-timeout reaper closed a minute ago, last seen 30 min ago: it ends at its last signal with a hollow square, not at the reap."
     }
   },
   "agents": [
@@ -542,10 +638,11 @@
       "framework": "langchain",
       "host": "e2e-host-concurrent",
       "session_roles": [
+        "concurrent-run-lost-earlier",
         "concurrent-run-a",
         "concurrent-run-b"
       ],
-      "_comment": "T52 anchor — single agent_id with two overlapping active sessions (simulates multi-pod K8s with FLIGHTDECK_HOSTNAME collapsed across pods). The swimlane renders two start brackets on the agent's row at staggered top/bottom anchors per RunBracket's bracketAnchors() rule."
+      "_comment": "T52 anchor — single agent_id with two overlapping active sessions (simulates multi-pod K8s with FLIGHTDECK_HOSTNAME collapsed across pods). An earlier lost run ends at its last signal, so at 5m the two concurrent runs' start glyphs take the top and the bottom edge (see the run anchors in ARCHITECTURE.md)."
     },
     {
       "agent_name": "e2e-test-connector-parent",
@@ -609,6 +706,102 @@
         "fanout-worker-3"
       ],
       "_comment": "The coordinator's same-role sub-agent, named {parent}/{role} as the plugin names one: a single agent with an earlier lost run and three runs started together. T132 reads its name at the 460 px default; T133 and T134 use its connectors."
+    },
+    {
+      "agent_name": "e2e-test-run-lane-reuse",
+      "agent_type": "production",
+      "client_type": "flightdeck_sensor",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-lanes",
+      "flavor": "e2e-run-lanes",
+      "model": "gpt-4o-mini",
+      "framework": "langchain",
+      "host": "e2e-host-lanes",
+      "session_roles": [
+        "lane-reuse-a",
+        "lane-reuse-b",
+        "lane-reuse-c"
+      ],
+      "_comment": "T136 anchor: three runs where the third takes the first one's freed track."
+    },
+    {
+      "agent_name": "e2e-test-run-handoff",
+      "agent_type": "production",
+      "client_type": "flightdeck_sensor",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-lanes",
+      "flavor": "e2e-run-lanes",
+      "model": "gpt-4o-mini",
+      "framework": "langchain",
+      "host": "e2e-host-lanes",
+      "session_roles": [
+        "handoff-first",
+        "handoff-second"
+      ],
+      "_comment": "T138 anchor: one run hands off to the next, 3 ms of worker-clock overlap included."
+    },
+    {
+      "agent_name": "e2e-test-run-long",
+      "agent_type": "production",
+      "client_type": "flightdeck_sensor",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-lanes",
+      "flavor": "e2e-run-lanes",
+      "model": "gpt-4o-mini",
+      "framework": "langchain",
+      "host": "e2e-host-lanes",
+      "session_roles": [
+        "long-closed"
+      ],
+      "_comment": "T139 anchor: a closed run whose start is before every window."
+    },
+    {
+      "agent_name": "e2e-test-run-short",
+      "agent_type": "production",
+      "client_type": "flightdeck_sensor",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-lanes",
+      "flavor": "e2e-run-lanes",
+      "model": "gpt-4o-mini",
+      "framework": "langchain",
+      "host": "e2e-host-lanes",
+      "session_roles": [
+        "short-closed"
+      ],
+      "_comment": "T142 anchor: a 2 s closed run."
+    },
+    {
+      "agent_name": "e2e-test-run-resumed",
+      "agent_type": "production",
+      "client_type": "flightdeck_sensor",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-lanes",
+      "flavor": "e2e-run-lanes",
+      "model": "gpt-4o-mini",
+      "framework": "langchain",
+      "host": "e2e-host-lanes",
+      "session_roles": [
+        "resumed-run",
+        "resumed-gap-run"
+      ],
+      "_comment": "T141 anchor: a resumed run with a gap, and a run inside the gap."
+    },
+    {
+      "agent_name": "e2e-test-run-lost",
+      "agent_type": "production",
+      "client_type": "flightdeck_sensor",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-lanes",
+      "flavor": "e2e-run-lanes",
+      "model": "gpt-4o-mini",
+      "framework": "langchain",
+      "host": "e2e-host-lanes",
+      "session_roles": [
+        "lost-earlier",
+        "lost-recent",
+        "reaped-run"
+      ],
+      "_comment": "T140 anchor: lost runs and a reaped run, each ending at its last signal."
     }
   ]
 }

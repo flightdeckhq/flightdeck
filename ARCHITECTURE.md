@@ -1455,7 +1455,12 @@ On a DEGRADE decision `_pre_call` sends the call to `degrade_to`: it
 swaps `model` and drops the request parameters the provider names as
 other models the call could run in its place (`model_alternative_params`;
 on the litellm adapters, `fallbacks` and `context_window_fallback_dict`),
-so the degrade target is the only model the call can run.
+so the degrade target is the only model the client side can run. A
+provider that picks a model on its own servers is outside that: when the
+degrade target is itself an OpenRouter or SAP model, request parameters
+such as OpenRouter's `models` / `route` (in `extra_body`) or SAP's
+`fallback_sap_modules` pass through unchanged, and that provider may
+serve another model.
 
 ### Pydantic schemas
 

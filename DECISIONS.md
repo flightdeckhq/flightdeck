@@ -331,6 +331,7 @@ non-streamed one the provider billed before failing (a timeout, a
 `post_call_rules` rejection) goes unreported. DEGRADE drops a call's
 `fallbacks` and `context_window_fallback_dict`.
 **Why:** those re-issue the same call; other nested calls are billed on
-their own. The degrade target is the only model the policy allows.
+their own. The degrade target is the only model the policy allows; a
+provider's own server-side routing (OpenRouter `models`) is not dropped.
 **Rejected alternative:** a broad pass-through (hides billed calls);
 reporting each fallback attempt (the loop swallows a policy block).

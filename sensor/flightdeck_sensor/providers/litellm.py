@@ -158,7 +158,10 @@ class LitellmProvider:
     # ``text_completion``, and ``responses`` on a provider without a
     # native Responses API, which litellm bridges through ``completion``.
     # A DEGRADE policy drops them, so the degrade target is the only model
-    # the call can run (see ``base._pre_call``); every adapter here keeps
+    # litellm itself can run (see ``base._pre_call``); a provider that
+    # routes on its own servers (OpenRouter's ``models`` / ``route`` in
+    # ``extra_body``, SAP's ``fallback_sap_modules``) keeps those
+    # parameters and may still serve another model. Every adapter keeps
     # this tuple, since an entry point that ignores the parameters (a
     # native Responses route, ``embedding``) loses nothing by the drop.
     model_alternative_params: tuple[str, ...] = ("fallbacks", "context_window_fallback_dict")

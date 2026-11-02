@@ -96,7 +96,11 @@ export function getSessionId(hookEvent = {}) {
   }
 
   try {
-    const sessionId = readOrCreateSessionMarker(markerKey);
+    // A session SessionStart mints records when, so its flushes skip the
+    // turns of a resumed conversation's earlier sessions. One that any
+    // other hook mints records nothing: its conversation was already
+    // running, so its start time is unknown.
+    const sessionId = readOrCreateSessionMarker(markerKey, { recordMint: isStart });
     // SessionEnd may have run between the check above and the marker
     // read; the ended id wins then too.
     const endedMeanwhile = isStart ? null : readEndedMarker(markerKey);

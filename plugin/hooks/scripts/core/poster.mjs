@@ -204,10 +204,28 @@ export function serializeEvent(payload) {
   return bare;
 }
 
+// The statuses with which ingestion (400: a body it cannot read or an
+// event that fails validation) or a proxy in front of it (413: a body
+// over its size limit) refuses the event itself: the same event sent
+// again gets the same answer. Every other failure can pass on a later
+// attempt: no answer or a timeout, 401 or 403 until the token is fixed,
+// 429, a 5xx while the stack restarts.
+export const REFUSED_STATUSES = new Set([400, 413]);
+
 // Returns true when the server accepted the event (2xx), false on any
 // network or HTTP failure. Callers that only fire and forget may ignore
 // it; ensureSessionStarted uses it to retry an unaccepted session_start.
 export async function postEvent(server, token, sessionId, payload) {
+  return (await sendEvent(server, token, sessionId, payload)).accepted;
+}
+
+/**
+ * POST one event. Returns ``{accepted, retryable, status}``: accepted on
+ * a 2xx; otherwise retryable unless the server refused the event itself
+ * (REFUSED_STATUSES), and ``status`` the HTTP status, null when no
+ * answer came. Never throws.
+ */
+export async function sendEvent(server, token, sessionId, payload) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
   try {
@@ -227,7 +245,7 @@ export async function postEvent(server, token, sessionId, payload) {
       // timeout, fetch rejection. Log and return -- the next hook
       // invocation is a fresh process and will try again.
       logUnreachable(server, shortErrorFrom(err));
-      return false;
+      return { accepted: false, retryable: true, status: null };
     }
 
     // HTTP-level failure: auth, payload validation, server error.
@@ -237,12 +255,12 @@ export async function postEvent(server, token, sessionId, payload) {
     // Claude Code invokes a fresh plugin process.
     if (!response.ok) {
       logUnreachable(server, `HTTP ${response.status}`);
-      return false;
+      return { accepted: false, retryable: !REFUSED_STATUSES.has(response.status), status: response.status };
     }
     // The body is read under the same timeout, and only when a directive
     // sink is registered (enforcement on).
     await deliverDirective(sessionId, response);
-    return true;
+    return { accepted: true, retryable: false, status: response.status };
   } finally {
     clearTimeout(timeout);
   }

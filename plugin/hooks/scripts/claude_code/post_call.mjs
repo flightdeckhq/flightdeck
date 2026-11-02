@@ -10,16 +10,18 @@ import {
   readAuthStatus,
   usageDetailFields,
 } from "../billing.mjs";
-import { postEvent } from "../core/poster.mjs";
+import { sendEvent } from "../core/poster.mjs";
 import {
   cacheSessionModel,
   isTurnEmitted,
   markEmittedTurn,
+  markTurnRefused,
   markTurnSent,
   readCachedModel,
   readModelSwitch,
   reclaimOrphanedTurn,
   readEndpointCache,
+  releaseTurnClaim,
   writeEndpointCache,
 } from "../core/state.mjs";
 import { uuid5 } from "../uuid5.mjs";
@@ -181,11 +183,32 @@ function buildContent(turn) {
 // ---------------------------------------------------------------------
 // Emit one post_call per un-emitted transcript turn.
 //
-// Called from Stop, SessionEnd, and PostToolUse. markEmittedTurn dedup
-// (per assistant message.id) keeps emission idempotent across the three
-// call sites. PostToolUse flushes mid-turn so the dashboard shows LLM
-// activity in real time instead of waiting for the turn to end at Stop.
+// Called from Stop, StopFailure, PostToolUse, PostToolUseFailure,
+// SubagentStop and the SessionEnd worker. markEmittedTurn dedup (per
+// assistant message.id) keeps emission idempotent across them.
+// PostToolUse flushes mid-turn so the dashboard shows LLM activity in
+// real time instead of waiting for the turn to end at Stop.
+//
+// Delivery rules (ARCHITECTURE.md, Plugin > Subagent hooks):
+//   * a turn whose POST fails is released and the flush stops there, so
+//     the next flush sends it, and the turns after it, in order;
+//   * a turn the server refuses as invalid (400, 413) is never retried,
+//     so it cannot hold back the turns after it;
+//   * with ``notBefore`` (the mint time of the session the flush reports
+//     under) a turn that ran earlier is not sent: it belongs to an
+//     earlier session, and is reported only under the session that was
+//     current when it ran.
 // ---------------------------------------------------------------------
+
+/**
+ * True when ``turn`` ran before ``notBefore`` (epoch milliseconds). A
+ * turn whose time the transcript does not give is taken as current.
+ */
+export function ranBefore(turn, notBefore) {
+  if (notBefore == null) return false;
+  const at = Date.parse(turn.lastTimestamp);
+  return Number.isFinite(at) && at < notBefore;
+}
 
 /**
  * The event id of the ``post_call`` for one model call, derived from the
@@ -210,6 +233,15 @@ export function defaultFlushDeadline(now = Date.now()) {
   return now + HOOK_FLUSH_DEADLINE_MS;
 }
 
+/**
+ * Send a post_call for every turn of ``turns`` no hook has sent. Returns
+ * ``{complete, failed}``: ``complete`` when every turn in scope was sent,
+ * refused or left to a live claimant; ``failed`` when a POST failed and
+ * the flush stopped there (the deadline stops it without ``failed``).
+ * ``notBefore`` is the mint time of the session the flush reports under,
+ * null when it recorded none; ``reclaimOrphaned`` takes over the claims
+ * of hooks that died before confirming their turn.
+ */
 export async function flushPostCallTurns({
   cfg,
   sessionId,
@@ -218,11 +250,23 @@ export async function flushPostCallTurns({
   capturePrompts,
   deadline = defaultFlushDeadline(),
   reclaimOrphaned = false,
+  notBefore = null,
 }) {
   let seen = 0;
   // The conversation's running token total through each turn: the
   // client-side tokens_used_session, as the sensor sends its own.
   let usedSoFar = 0;
+  // Turns from before the session that no marker shows as sent.
+  let skippedOlder = 0;
+  const finish = (result) => {
+    if (skippedOlder > 0) {
+      process.stderr.write(
+        `flightdeck: ${skippedOlder} transcript turn(s) older than this session were not sent; ` +
+          "a turn is reported only under the session it ran in.\n",
+      );
+    }
+    return result;
+  };
   for (const turn of turns) {
     seen += 1;
     if (!turn.synthetic) usedSoFar += tokensFromUsage(turn.usage).tokens_total;
@@ -234,19 +278,23 @@ export async function flushPostCallTurns({
       // PostToolUse already flushed are not lost.
       const unflushed = turns
         .slice(seen - 1)
-        .filter((t) => !t.synthetic && !isTurnEmitted(t.messageId)).length;
+        .filter((t) => !t.synthetic && !ranBefore(t, notBefore) && !isTurnEmitted(t.messageId)).length;
       process.stderr.write(
         `flightdeck: transcript flush deadline reached; ${unflushed} transcript turn(s) left unflushed.\n`,
       );
-      break;
+      return finish({ complete: false, failed: false });
     }
     // Claude Code writes a failed or interrupted turn as a synthetic
     // assistant record with no usage; it is not a model call. A failed
     // one is reported by StopFailure as an llm_error.
     if (turn.synthetic) continue;
+    if (ranBefore(turn, notBefore)) {
+      if (!isTurnEmitted(turn.messageId)) skippedOlder += 1;
+      continue;
+    }
     if (!markEmittedTurn(turn.messageId)) {
-      // Claimed by another hook. Only the SessionEnd worker takes over a
-      // claim, and only one whose process is gone.
+      // Claimed by another hook. Only SubagentStop and the SessionEnd
+      // worker take over a claim, and only one whose process is gone.
       if (!(reclaimOrphaned && reclaimOrphanedTurn(turn.messageId))) continue;
     }
     const tokens = tokensFromUsage(turn.usage);
@@ -261,7 +309,7 @@ export async function flushPostCallTurns({
     // upstream gates are the contract.
     const resolvedModel = turn.model || basePayload.model;
     cacheSessionModel(sessionId, resolvedModel);
-    const accepted = await postEvent(cfg.server, cfg.token, sessionId, {
+    const sent = await sendEvent(cfg.server, cfg.token, sessionId, {
       ...basePayload,
       id: postCallEventId(turn.messageId),
       event_type: "post_call",
@@ -279,6 +327,16 @@ export async function flushPostCallTurns({
       has_content: hasContent,
       content,
     });
-    if (accepted) markTurnSent(turn.messageId);
+    if (sent.accepted) {
+      markTurnSent(turn.messageId);
+    } else if (!sent.retryable) {
+      markTurnRefused(turn.messageId, sent.status);
+    } else {
+      // The next flush sends this turn and the ones after it, in order;
+      // one failed POST per hook is all an outage costs.
+      releaseTurnClaim(turn.messageId);
+      return finish({ complete: false, failed: true });
+    }
   }
+  return finish({ complete: true, failed: false });
 }

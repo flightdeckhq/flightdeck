@@ -5491,7 +5491,9 @@ start. Both are SVG primitives filled with `var(--accent)`;
 positioning math uses the shared `xScale` from `d3-scale` (D3
 math only, no DOM manipulation). A glyph is centred on its
 time's x in the same inset wrapper as the event circles, so a
-glyph and a circle at the same instant line up. Hover on either glyph
+glyph and a circle at the same instant line up, and near "now"
+the panel's right edge clips both alike (a glyph past the edge is
+not mounted). Hover on either glyph
 surfaces a tooltip with `run_id` (8-char prefix), start time,
 end time (or `running` for an active / idle / stale / lost
 run), state, and total tokens. Click on either glyph opens

@@ -16,10 +16,14 @@ import {
 // structural, theme-agnostic (Rule 40c.3).
 
 const AUTH = { Authorization: "Bearer tok_dev" };
+const OPEN_PALETTE = process.platform === "darwin" ? "Meta+k" : "Control+k";
 // uuid5 of flightdeck-e2e/e2e-test-sensor-agent-prod/fresh-active (see
 // seed.py _derive_session_id).
 const SENSOR_FRESH_ACTIVE_SESSION_ID = "8db1adf1-7a9e-559c-92e5-52b21fc6a42c";
 const OTEL_TITLE = "Claude Code via OpenTelemetry: observe only, no directives reach it";
+// The run drawer's source label as a screen reader reads it: the
+// visible "via OpenTelemetry" and its visually hidden qualifier.
+const OTLP_SOURCE_TEXT = "via OpenTelemetry: observe only, no directives reach it";
 
 async function sessionAgentId(page: Page, sessionId: string): Promise<string> {
   const resp = await page.request.get(`http://localhost:4000/api/v1/sessions/${sessionId}`, {
@@ -110,27 +114,49 @@ test.describe("T127 — OTLP session renders as an observer", () => {
   test("the run drawer names the source and shows no Stop Agent; a sensor run still does", async ({
     page,
   }) => {
-    await page.goto(`/events?run=${OTLP_AGENT.rootSessionId}`);
-    const badge = page.getByTestId("claude-code-badge");
-    await expect(badge).toBeVisible();
-    await expect(badge).toContainText(`v${OTLP_AGENT.claudeCodeVersion}`);
-    const source = page.getByTestId("session-source-label");
-    await expect(source).toContainText("via OpenTelemetry");
-    await expect(source).toHaveAttribute("data-telemetry", "otlp");
-    // The drawer has rendered its body (the badge above), so a Stop
-    // control or a Directives tab, if any, would be mounted by now. The
-    // seed registers a custom directive under this run's flavor, so the
-    // tab's absence is the observer gate, not an empty directive list.
-    await expect(page.getByTestId("session-drawer-stop-agent")).toHaveCount(0);
-    await expect(page.getByTestId("drawer-tab-directives")).toHaveCount(0);
-
-    // Control: the sensor agent's fresh-active run (the seed and its
-    // keep-alive pin it active; its flavor has a registered directive)
-    // renders the Stop control and the Directives tab the OTLP run
-    // lacks, so the absences above are not missing selectors.
+    // Control first: the sensor agent's fresh-active run (the seed and
+    // its keep-alive pin it active; its flavor has a registered
+    // directive) shows the Stop control and the Directives tab. The tab
+    // proves the page has loaded the registered directives, so the OTLP
+    // run's missing tab below is the observer gate, not a directive list
+    // that has not arrived yet.
     await page.goto(`/events?run=${SENSOR_FRESH_ACTIVE_SESSION_ID}`);
     await expect(page.getByTestId("session-drawer-stop-agent")).toBeVisible();
     await expect(page.getByTestId("drawer-tab-directives")).toBeVisible();
+
+    // Then the OTLP run, opened in the app from the search palette with
+    // no reload, so the loaded directive list carries over. The seed
+    // registers a custom directive under this run's flavor too. The open
+    // drawer covers the nav's search button, so the palette opens from
+    // its keyboard shortcut.
+    await page.keyboard.press(OPEN_PALETTE);
+    const palette = page.getByRole("dialog");
+    await expect(palette.getByRole("textbox", { name: "Search" })).toBeFocused();
+    await palette.getByRole("textbox", { name: "Search" }).fill(OTLP_AGENT.rootSessionId);
+    const hit = palette
+      .getByRole("option")
+      .filter({ has: page.getByTestId("search-session-telemetry-source") });
+    await expect(hit).toHaveCount(1);
+    await hit.click();
+    await expect(page).toHaveURL(new RegExp(`[?&]run=${OTLP_AGENT.rootSessionId}`));
+
+    // While the sensor run's drawer animates out, two drawers are
+    // mounted: scope to the one showing the OTLP run (the sensor run has
+    // no Claude Code badge). Its header and its tab bar render from the
+    // same session data, so once the bar is up a Stop control or a
+    // Directives tab would be too.
+    const drawer = page
+      .getByTestId("session-drawer")
+      .filter({ has: page.getByTestId("claude-code-badge") });
+    await expect(drawer.getByTestId("claude-code-badge")).toContainText(
+      `v${OTLP_AGENT.claudeCodeVersion}`,
+    );
+    const source = drawer.getByTestId("session-source-label");
+    await expect(source).toHaveText(OTLP_SOURCE_TEXT);
+    await expect(source).toHaveAttribute("data-telemetry", "otlp");
+    await expect(drawer.getByTestId("drawer-tab-timeline")).toBeVisible();
+    await expect(drawer.getByTestId("session-drawer-stop-agent")).toHaveCount(0);
+    await expect(drawer.getByTestId("drawer-tab-directives")).toHaveCount(0);
   });
 
   test("the search palette's agent hit carries the OTel pill", async ({ page }) => {

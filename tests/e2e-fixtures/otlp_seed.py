@@ -235,37 +235,72 @@ def _root_event_count(api_url: str, headers: dict[str, str]) -> int:
         raise
 
 
+def _psql(sql: str, what: str) -> bool:
+    """Run sql against the dev Postgres; report a failure on stderr and
+    return whether it succeeded."""
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                "docker-postgres-1",
+                "psql",
+                "-U",
+                "flightdeck",
+                "-d",
+                "flightdeck",
+                "-c",
+                sql,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=PSQL_EXEC_TIMEOUT_SEC,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        print(f"[seed] otlp: {what} failed: {exc}", file=sys.stderr)
+        return False
+    if result.returncode != 0:
+        print(f"[seed] otlp: {what} failed: {result.stderr.strip()}", file=sys.stderr)
+        return False
+    return True
+
+
 def _pin_root_active() -> None:
     # Only the fixture's own root row and its agent; the ids are uuid5
     # literals derived above, never input.
-    sql = (
+    _psql(
         "UPDATE sessions SET state='active', last_seen_at=NOW() "
         f"WHERE session_id='{OTLP_ROOT_SESSION_ID}'::uuid; "
         "UPDATE agents SET last_seen_at=NOW() WHERE agent_id = "
-        f"(SELECT agent_id FROM sessions WHERE session_id='{OTLP_ROOT_SESSION_ID}'::uuid)"
+        f"(SELECT agent_id FROM sessions WHERE session_id='{OTLP_ROOT_SESSION_ID}'::uuid)",
+        "active pin",
     )
-    result = subprocess.run(
-        [
-            "docker",
-            "exec",
-            "docker-postgres-1",
-            "psql",
-            "-U",
-            "flightdeck",
-            "-d",
-            "flightdeck",
-            "-c",
-            sql,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=PSQL_EXEC_TIMEOUT_SEC,
-        check=False,
+
+
+def refresh_otlp_child_events(offset_sec: int) -> bool:
+    """Pin the OTLP sub-agent child's most recent event to NOW minus
+    offset_sec and bump its session's and agent's last_seen_at, as
+    seed.py's refresh_subagent_events does for the canonical sub-agents.
+    The export is sent once, so without this the child's events age out
+    of the swimlane's widest (1 h) window an hour after the first seed
+    and T56 finds its row empty. The child stays closed. Only the
+    fixture's own child row and its agent; the id is a uuid5 literal and
+    the offset an integer constant, never input."""
+    return _psql(
+        "UPDATE events "
+        f"SET occurred_at = NOW() - INTERVAL '{int(offset_sec)} seconds' "
+        f"WHERE session_id = '{OTLP_CHILD_SESSION_ID}'::uuid "
+        "  AND occurred_at = ("
+        "    SELECT MAX(occurred_at) FROM events "
+        f"    WHERE session_id = '{OTLP_CHILD_SESSION_ID}'::uuid"
+        "  ); "
+        "UPDATE sessions SET last_seen_at = NOW() "
+        f"WHERE session_id = '{OTLP_CHILD_SESSION_ID}'::uuid; "
+        "UPDATE agents SET last_seen_at = NOW() WHERE agent_id = "
+        f"(SELECT agent_id FROM sessions WHERE session_id = '{OTLP_CHILD_SESSION_ID}'::uuid)",
+        "child event refresh",
     )
-    if result.returncode != 0:
-        print(
-            f"[seed] otlp: active pin failed: {result.stderr.strip()}", file=sys.stderr
-        )
 
 
 # Custom directives the fixture registers the way a sensor registers its

@@ -398,3 +398,22 @@ was reaching every run of the flavor.
 **Rejected alternative:** logging a failed row and answering 201 with the
 rest (a silent partial stop); answering the `session_id` + `flavor` pair
 with 400 (breaks the Directives page's "Specific run").
+
+## D240 -- The worker notifies flightdeck_fleet of every session state change it makes
+
+**Date:** 2026-11-02
+**Decision:** the reconciler's stale and lost transitions, the orphan
+reaper's close and a parent revived by its child's event each send a
+`flightdeck_fleet` notification, one per session, in the existing
+`{session_id, event_type, event_id}` payload: empty `event_type` and
+`event_id` for a state-only change, the synthetic `session_end` for a
+reaped close. The reconciler and the reaper notify inside the
+transaction that makes the change. The hub re-reads the session and
+broadcasts it as it does after an event.
+**Why:** only event writes notified, so a run that died with Fleet open
+stayed active in the browser until reload.
+**Rejected alternative:** the dashboard applying the worker's 2 and 30
+minute thresholds itself (a second copy of the worker's constants, and
+the status badge stays wrong until reload); one notification per batch
+listing ids (the hub reads one session per payload, and a large batch
+would need splitting under the 8000-byte limit).

@@ -73,6 +73,22 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **Fleet shows a run going stale, lost or closed without a reload.**
+  The worker marks a silent run stale after 2 minutes and lost after 30,
+  and closes a lost run after `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`, but none
+  of these changes reached an open dashboard, so a run that died while
+  Fleet was open stayed active until the page was reloaded. Each change
+  now reaches the page over the live stream, and a parent run revived by
+  its sub-agent's activity shows active again. The Agents table's status
+  badge now drops from active when the agent's last live run goes stale,
+  lost or closed, including a run that ended normally, and such a change
+  no longer floats the agent up the Fleet as if it were new activity.
+- **Paging through events no longer skips events that share a
+  timestamp.** `GET /v1/events` and `GET /v1/sessions/:id` order events
+  by time and then by id, so a page boundary that falls between two
+  events with the same timestamp neither skips nor repeats one. The run
+  drawer's "Show older events" sends the oldest event's id as the new
+  `before_id` cursor next to `before`.
 - **An event that names no model no longer reads "unknown".** A prompt,
   call or error without a model (Claude Code's prompt record over
   OpenTelemetry has none) shows a dash in its feed line and its Model

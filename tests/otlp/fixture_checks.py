@@ -1,10 +1,11 @@
-"""Checks that a recorded OTLP fixture holds nothing of the recording machine.
+"""Checks that a recorded OTLP fixture holds nothing of the recording machine
+or of the accounts and keys it ran with.
 
-Shared by the recorder (tests/otlp/record_claude_code.py), which refuses
-to write a scenario that fails them, and by
-tests/integration/test_otlp_fixtures.py. Dependency-free: protobuf files
-are read with a minimal wire-format walker, so the checks run where
-opentelemetry-proto is not installed.
+Shared by the recorders (tests/otlp/recorder.py, used by
+record_claude_code.py and record_genai.py), which refuse to write a
+scenario that fails them, and by tests/integration/test_otlp_fixtures.py.
+Dependency-free: protobuf files are read with a minimal wire-format
+walker, so the checks run where opentelemetry-proto is not installed.
 """
 
 from __future__ import annotations
@@ -26,9 +27,15 @@ PLACEHOLDERS = {
     "os.version": "6.6.0",
     "wsl.version": "2",
     "host.name": "host",
+    # The account a provider SDK records on its own spans (the Anthropic
+    # Python SDK's anthropic.messages.create).
+    "anthropic.organization.id": "00000000-0000-4000-8000-000000000003",
+    "anthropic.workspace.id": "wrkspc_000000000000000000000001",
 }
 DROPPED_EVENTS = {"claude_code.managed_settings_resolved", "claude_code.plugin_loaded"}
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+# A provider API key (Anthropic, OpenAI, Google) or a Flightdeck token.
+CREDENTIAL = re.compile(r"\b(sk-[A-Za-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{30,}|ftd_\w{16,})")
 HOME = re.compile(r"/home/([^/\s\"']+)")
 FORBIDDEN = ("/mnt/", "C:\\", "/Users/")
 
@@ -160,6 +167,9 @@ def problems(path: Path) -> list[str]:
         for email in EMAIL.findall(text):
             if email != PLACEHOLDERS["user.email"]:
                 out.append(f"{path.name}: email address {email!r}")
+        if CREDENTIAL.search(text):
+            # The match itself is not repeated: it may be a live key.
+            out.append(f"{path.name}: a provider API key or token")
         for user in HOME.findall(text):
             if user != "user":
                 out.append(f"{path.name}: home directory /home/{user}")

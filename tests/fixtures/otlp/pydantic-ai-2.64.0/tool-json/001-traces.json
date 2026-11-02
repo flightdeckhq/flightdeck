@@ -1,0 +1,877 @@
+{
+ "resourceSpans": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "telemetry.sdk.language",
+      "value": {
+       "stringValue": "python"
+      }
+     },
+     {
+      "key": "telemetry.sdk.name",
+      "value": {
+       "stringValue": "opentelemetry"
+      }
+     },
+     {
+      "key": "telemetry.sdk.version",
+      "value": {
+       "stringValue": "1.45.2"
+      }
+     },
+     {
+      "key": "service.instance.id",
+      "value": {
+       "stringValue": "bfd902d3-96a1-4fd0-abb8-b6792b9b0e3f"
+      }
+     },
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "unknown_service:python"
+      }
+     }
+    ]
+   },
+   "scopeSpans": [
+    {
+     "scope": {
+      "name": "com.anthropic.sdk.python",
+      "version": "2.3.0"
+     },
+     "spans": [
+      {
+       "traceId": "fd427e5d88a650d9988095afa0c28c1d",
+       "spanId": "4627164f33561f6d",
+       "parentSpanId": "2929f290b930677f",
+       "flags": 256,
+       "name": "anthropic.messages.create",
+       "kind": 3,
+       "startTimeUnixNano": "1793635549865443935",
+       "endTimeUnixNano": "1793635550763863237",
+       "attributes": [
+        {
+         "key": "server.address",
+         "value": {
+          "stringValue": "api.anthropic.com"
+         }
+        },
+        {
+         "key": "server.port",
+         "value": {
+          "intValue": "443"
+         }
+        },
+        {
+         "key": "http.request.method",
+         "value": {
+          "stringValue": "POST"
+         }
+        },
+        {
+         "key": "http.route",
+         "value": {
+          "stringValue": "/v1/messages"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "anthropic"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "chat"
+         }
+        },
+        {
+         "key": "gen_ai.request.model",
+         "value": {
+          "stringValue": "claude-haiku-4-5"
+         }
+        },
+        {
+         "key": "gen_ai.request.max_tokens",
+         "value": {
+          "intValue": "200"
+         }
+        },
+        {
+         "key": "url.scheme",
+         "value": {
+          "stringValue": "https"
+         }
+        },
+        {
+         "key": "url.path",
+         "value": {
+          "stringValue": "/v1/messages"
+         }
+        },
+        {
+         "key": "url.full",
+         "value": {
+          "stringValue": "https://api.anthropic.com/v1/messages"
+         }
+        },
+        {
+         "key": "anthropic.request.id",
+         "value": {
+          "stringValue": "req_011CgePRC1zyevY8oqvdKKnk"
+         }
+        },
+        {
+         "key": "anthropic.organization.id",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000003"
+         }
+        },
+        {
+         "key": "anthropic.workspace.id",
+         "value": {
+          "stringValue": "wrkspc_000000000000000000000001"
+         }
+        },
+        {
+         "key": "gen_ai.response.id",
+         "value": {
+          "stringValue": "msg_011CgePRCCufzZCYvNhkmfbv"
+         }
+        },
+        {
+         "key": "gen_ai.response.model",
+         "value": {
+          "stringValue": "claude-haiku-4-5-20251001"
+         }
+        },
+        {
+         "key": "anthropic.message.stop_reason",
+         "value": {
+          "stringValue": "tool_use"
+         }
+        },
+        {
+         "key": "gen_ai.usage.input_tokens",
+         "value": {
+          "intValue": "658"
+         }
+        },
+        {
+         "key": "gen_ai.usage.cache_write.input_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "gen_ai.usage.cache_read.input_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "anthropic.usage.cache_creation.ephemeral_5m_input_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "anthropic.usage.cache_creation.ephemeral_1h_input_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "anthropic.response.service_tier",
+         "value": {
+          "stringValue": "standard"
+         }
+        },
+        {
+         "key": "gen_ai.usage.output_tokens",
+         "value": {
+          "intValue": "54"
+         }
+        },
+        {
+         "key": "http.response.status_code",
+         "value": {
+          "intValue": "200"
+         }
+        }
+       ],
+       "status": {
+        "code": 1
+       }
+      },
+      {
+       "traceId": "fd427e5d88a650d9988095afa0c28c1d",
+       "spanId": "f82e33c89996a906",
+       "parentSpanId": "b43d0f5ac304e630",
+       "flags": 256,
+       "name": "anthropic.messages.create",
+       "kind": 3,
+       "startTimeUnixNano": "1793635550770274531",
+       "endTimeUnixNano": "1793635551439192838",
+       "attributes": [
+        {
+         "key": "server.address",
+         "value": {
+          "stringValue": "api.anthropic.com"
+         }
+        },
+        {
+         "key": "server.port",
+         "value": {
+          "intValue": "443"
+         }
+        },
+        {
+         "key": "http.request.method",
+         "value": {
+          "stringValue": "POST"
+         }
+        },
+        {
+         "key": "http.route",
+         "value": {
+          "stringValue": "/v1/messages"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "anthropic"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "chat"
+         }
+        },
+        {
+         "key": "gen_ai.request.model",
+         "value": {
+          "stringValue": "claude-haiku-4-5"
+         }
+        },
+        {
+         "key": "gen_ai.request.max_tokens",
+         "value": {
+          "intValue": "200"
+         }
+        },
+        {
+         "key": "url.scheme",
+         "value": {
+          "stringValue": "https"
+         }
+        },
+        {
+         "key": "url.path",
+         "value": {
+          "stringValue": "/v1/messages"
+         }
+        },
+        {
+         "key": "url.full",
+         "value": {
+          "stringValue": "https://api.anthropic.com/v1/messages"
+         }
+        },
+        {
+         "key": "anthropic.request.id",
+         "value": {
+          "stringValue": "req_011CgePRFqC5HGgAsY77aJg8"
+         }
+        },
+        {
+         "key": "anthropic.organization.id",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000003"
+         }
+        },
+        {
+         "key": "anthropic.workspace.id",
+         "value": {
+          "stringValue": "wrkspc_000000000000000000000001"
+         }
+        },
+        {
+         "key": "gen_ai.response.id",
+         "value": {
+          "stringValue": "msg_011CgePRG4atyzicCjnnaP74"
+         }
+        },
+        {
+         "key": "gen_ai.response.model",
+         "value": {
+          "stringValue": "claude-haiku-4-5-20251001"
+         }
+        },
+        {
+         "key": "anthropic.message.stop_reason",
+         "value": {
+          "stringValue": "end_turn"
+         }
+        },
+        {
+         "key": "gen_ai.usage.input_tokens",
+         "value": {
+          "intValue": "732"
+         }
+        },
+        {
+         "key": "gen_ai.usage.cache_write.input_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "gen_ai.usage.cache_read.input_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "anthropic.usage.cache_creation.ephemeral_5m_input_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "anthropic.usage.cache_creation.ephemeral_1h_input_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "anthropic.response.service_tier",
+         "value": {
+          "stringValue": "standard"
+         }
+        },
+        {
+         "key": "gen_ai.usage.output_tokens",
+         "value": {
+          "intValue": "18"
+         }
+        },
+        {
+         "key": "http.response.status_code",
+         "value": {
+          "intValue": "200"
+         }
+        }
+       ],
+       "status": {
+        "code": 1
+       }
+      }
+     ]
+    },
+    {
+     "scope": {
+      "name": "pydantic-ai",
+      "version": "2.64.0"
+     },
+     "spans": [
+      {
+       "traceId": "fd427e5d88a650d9988095afa0c28c1d",
+       "spanId": "2929f290b930677f",
+       "parentSpanId": "a6f808f769fddaca",
+       "flags": 256,
+       "name": "chat claude-haiku-4-5",
+       "kind": 3,
+       "startTimeUnixNano": "1793635549849215687",
+       "endTimeUnixNano": "1793635550766468928",
+       "attributes": [
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "chat"
+         }
+        },
+        {
+         "key": "gen_ai.agent.name",
+         "value": {
+          "stringValue": "weather_agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.call.id",
+         "value": {
+          "stringValue": "01a19d02-8278-7430-a257-2ad793c32e17"
+         }
+        },
+        {
+         "key": "gen_ai.conversation.id",
+         "value": {
+          "stringValue": "01a19d02-8278-7430-a257-2ad86ed6964e"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "anthropic"
+         }
+        },
+        {
+         "key": "gen_ai.system",
+         "value": {
+          "stringValue": "anthropic"
+         }
+        },
+        {
+         "key": "server.address",
+         "value": {
+          "stringValue": "api.anthropic.com"
+         }
+        },
+        {
+         "key": "gen_ai.request.model",
+         "value": {
+          "stringValue": "claude-haiku-4-5"
+         }
+        },
+        {
+         "key": "model_request_parameters",
+         "value": {
+          "stringValue": "{\"function_tools\":[{\"name\":\"get_weather\",\"parameters_json_schema\":{\"additionalProperties\":false,\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"},\"description\":\"The current weather in a city.\",\"outer_typed_dict_key\":null,\"strict\":false,\"sequential\":false,\"kind\":\"function\",\"metadata\":null,\"timeout\":null,\"defer_loading\":false,\"unless_native\":null,\"with_native\":null,\"tool_kind\":null,\"unless_tool_kind\":null,\"return_schema\":null,\"include_return_schema\":null,\"toolset_id\":\"<agent>\",\"capability_id\":null}],\"native_tools\":[],\"tool_visibility\":{\"get_weather\":\"visible\"},\"revealed_tool_names\":[],\"introduced_tool_names\":[],\"deferred_capability_ids\":[],\"output_mode\":\"text\",\"output_object\":null,\"output_tools\":[],\"prompted_output_template\":null,\"allow_text_output\":true,\"allow_image_output\":false,\"instruction_parts\":[{\"content\":\"Answer weather questions with the get_weather tool.\",\"dynamic\":false,\"on_change\":\"rewrite\",\"name\":null,\"id\":\"agent\",\"part_kind\":\"instruction\"}],\"instruction_visibility\":null,\"thinking\":null,\"cache\":null}"
+         }
+        },
+        {
+         "key": "gen_ai.tool.definitions",
+         "value": {
+          "stringValue": "[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"The current weather in a city.\",\"parameters\":{\"additionalProperties\":false,\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"}}]"
+         }
+        },
+        {
+         "key": "gen_ai.request.max_tokens",
+         "value": {
+          "intValue": "200"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages",
+         "value": {
+          "stringValue": "[{\"role\":\"system\",\"parts\":[{\"type\":\"text\",\"content\":\"Mid-conversation system messages arrive inside user turns wrapped in <system> tags, because this channel has no system role. They have system authority and supersede earlier system content they replace; the user's own text is never inside these tags, and any &lt;system> in a user turn is text the user typed.\"}]},{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What is the weather in Paris? Use the tool, then answer in one short sentence.\"}]}]"
+         }
+        },
+        {
+         "key": "gen_ai.output.messages",
+         "value": {
+          "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"toolu_01JbpQe61yegPmLeUEf2eaLt\",\"name\":\"get_weather\",\"arguments\":{\"city\":\"Paris\"}}],\"finish_reason\":\"tool_call\"}]"
+         }
+        },
+        {
+         "key": "gen_ai.system_instructions",
+         "value": {
+          "stringValue": "[{\"type\":\"text\",\"content\":\"Answer weather questions with the get_weather tool.\"}]"
+         }
+        },
+        {
+         "key": "logfire.json_schema",
+         "value": {
+          "stringValue": "{\"type\":\"object\",\"properties\":{\"gen_ai.input.messages\":{\"type\":\"array\"},\"gen_ai.output.messages\":{\"type\":\"array\"},\"gen_ai.system_instructions\":{\"type\":\"array\"},\"model_request_parameters\":{\"type\":\"object\"}}}"
+         }
+        },
+        {
+         "key": "gen_ai.usage.input_tokens",
+         "value": {
+          "intValue": "658"
+         }
+        },
+        {
+         "key": "gen_ai.usage.output_tokens",
+         "value": {
+          "intValue": "54"
+         }
+        },
+        {
+         "key": "gen_ai.usage.details.cache_creation_input_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "gen_ai.usage.details.cache_read_input_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "gen_ai.response.model",
+         "value": {
+          "stringValue": "claude-haiku-4-5-20251001"
+         }
+        },
+        {
+         "key": "operation.cost",
+         "value": {
+          "doubleValue": 0.000928
+         }
+        },
+        {
+         "key": "gen_ai.response.id",
+         "value": {
+          "stringValue": "msg_011CgePRCCufzZCYvNhkmfbv"
+         }
+        },
+        {
+         "key": "gen_ai.response.finish_reasons",
+         "value": {
+          "arrayValue": {
+           "values": [
+            {
+             "stringValue": "tool_call"
+            }
+           ]
+          }
+         }
+        }
+       ],
+       "status": {}
+      },
+      {
+       "traceId": "fd427e5d88a650d9988095afa0c28c1d",
+       "spanId": "d9d01d82cdc27cc1",
+       "parentSpanId": "a6f808f769fddaca",
+       "flags": 256,
+       "name": "execute_tool get_weather",
+       "kind": 1,
+       "startTimeUnixNano": "1793635550767584655",
+       "endTimeUnixNano": "1793635550768230244",
+       "attributes": [
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "execute_tool"
+         }
+        },
+        {
+         "key": "gen_ai.tool.name",
+         "value": {
+          "stringValue": "get_weather"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.id",
+         "value": {
+          "stringValue": "toolu_01JbpQe61yegPmLeUEf2eaLt"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.arguments",
+         "value": {
+          "stringValue": "{\"city\":\"Paris\"}"
+         }
+        },
+        {
+         "key": "gen_ai.agent.name",
+         "value": {
+          "stringValue": "weather_agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.call.id",
+         "value": {
+          "stringValue": "01a19d02-8278-7430-a257-2ad793c32e17"
+         }
+        },
+        {
+         "key": "gen_ai.conversation.id",
+         "value": {
+          "stringValue": "01a19d02-8278-7430-a257-2ad86ed6964e"
+         }
+        },
+        {
+         "key": "logfire.msg",
+         "value": {
+          "stringValue": "running tool: get_weather"
+         }
+        },
+        {
+         "key": "logfire.json_schema",
+         "value": {
+          "stringValue": "{\"type\":\"object\",\"properties\":{\"gen_ai.tool.call.arguments\":{\"type\":\"object\"},\"gen_ai.tool.call.result\":{\"type\":\"object\"},\"gen_ai.tool.name\":{},\"gen_ai.tool.call.id\":{}}}"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.result",
+         "value": {
+          "stringValue": "Paris: sunny, 21 C"
+         }
+        }
+       ],
+       "status": {}
+      },
+      {
+       "traceId": "fd427e5d88a650d9988095afa0c28c1d",
+       "spanId": "b43d0f5ac304e630",
+       "parentSpanId": "a6f808f769fddaca",
+       "flags": 256,
+       "name": "chat claude-haiku-4-5",
+       "kind": 3,
+       "startTimeUnixNano": "1793635550769081343",
+       "endTimeUnixNano": "1793635551439965659",
+       "attributes": [
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "chat"
+         }
+        },
+        {
+         "key": "gen_ai.agent.name",
+         "value": {
+          "stringValue": "weather_agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.call.id",
+         "value": {
+          "stringValue": "01a19d02-8278-7430-a257-2ad793c32e17"
+         }
+        },
+        {
+         "key": "gen_ai.conversation.id",
+         "value": {
+          "stringValue": "01a19d02-8278-7430-a257-2ad86ed6964e"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "anthropic"
+         }
+        },
+        {
+         "key": "gen_ai.system",
+         "value": {
+          "stringValue": "anthropic"
+         }
+        },
+        {
+         "key": "server.address",
+         "value": {
+          "stringValue": "api.anthropic.com"
+         }
+        },
+        {
+         "key": "gen_ai.request.model",
+         "value": {
+          "stringValue": "claude-haiku-4-5"
+         }
+        },
+        {
+         "key": "model_request_parameters",
+         "value": {
+          "stringValue": "{\"function_tools\":[{\"name\":\"get_weather\",\"parameters_json_schema\":{\"additionalProperties\":false,\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"},\"description\":\"The current weather in a city.\",\"outer_typed_dict_key\":null,\"strict\":false,\"sequential\":false,\"kind\":\"function\",\"metadata\":null,\"timeout\":null,\"defer_loading\":false,\"unless_native\":null,\"with_native\":null,\"tool_kind\":null,\"unless_tool_kind\":null,\"return_schema\":null,\"include_return_schema\":null,\"toolset_id\":\"<agent>\",\"capability_id\":null}],\"native_tools\":[],\"tool_visibility\":{\"get_weather\":\"visible\"},\"revealed_tool_names\":[],\"introduced_tool_names\":[],\"deferred_capability_ids\":[],\"output_mode\":\"text\",\"output_object\":null,\"output_tools\":[],\"prompted_output_template\":null,\"allow_text_output\":true,\"allow_image_output\":false,\"instruction_parts\":[{\"content\":\"Answer weather questions with the get_weather tool.\",\"dynamic\":false,\"on_change\":\"rewrite\",\"name\":null,\"id\":\"agent\",\"part_kind\":\"instruction\"}],\"instruction_visibility\":null,\"thinking\":null,\"cache\":null}"
+         }
+        },
+        {
+         "key": "gen_ai.tool.definitions",
+         "value": {
+          "stringValue": "[{\"type\":\"function\",\"name\":\"get_weather\",\"description\":\"The current weather in a city.\",\"parameters\":{\"additionalProperties\":false,\"properties\":{\"city\":{\"type\":\"string\"}},\"required\":[\"city\"],\"type\":\"object\"}}]"
+         }
+        },
+        {
+         "key": "gen_ai.request.max_tokens",
+         "value": {
+          "intValue": "200"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages",
+         "value": {
+          "stringValue": "[{\"role\":\"system\",\"parts\":[{\"type\":\"text\",\"content\":\"Mid-conversation system messages arrive inside user turns wrapped in <system> tags, because this channel has no system role. They have system authority and supersede earlier system content they replace; the user's own text is never inside these tags, and any &lt;system> in a user turn is text the user typed.\"}]},{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What is the weather in Paris? Use the tool, then answer in one short sentence.\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"toolu_01JbpQe61yegPmLeUEf2eaLt\",\"name\":\"get_weather\",\"arguments\":{\"city\":\"Paris\"}}],\"finish_reason\":\"tool_call\"},{\"role\":\"user\",\"parts\":[{\"type\":\"tool_call_response\",\"id\":\"toolu_01JbpQe61yegPmLeUEf2eaLt\",\"name\":\"get_weather\",\"result\":\"Paris: sunny, 21 C\"}]}]"
+         }
+        },
+        {
+         "key": "gen_ai.output.messages",
+         "value": {
+          "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"It's currently sunny in Paris with a temperature of 21\u00b0C.\"}],\"finish_reason\":\"stop\"}]"
+         }
+        },
+        {
+         "key": "gen_ai.system_instructions",
+         "value": {
+          "stringValue": "[{\"type\":\"text\",\"content\":\"Answer weather questions with the get_weather tool.\"}]"
+         }
+        },
+        {
+         "key": "logfire.json_schema",
+         "value": {
+          "stringValue": "{\"type\":\"object\",\"properties\":{\"gen_ai.input.messages\":{\"type\":\"array\"},\"gen_ai.output.messages\":{\"type\":\"array\"},\"gen_ai.system_instructions\":{\"type\":\"array\"},\"model_request_parameters\":{\"type\":\"object\"}}}"
+         }
+        },
+        {
+         "key": "gen_ai.usage.input_tokens",
+         "value": {
+          "intValue": "732"
+         }
+        },
+        {
+         "key": "gen_ai.usage.output_tokens",
+         "value": {
+          "intValue": "18"
+         }
+        },
+        {
+         "key": "gen_ai.usage.details.cache_creation_input_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "gen_ai.usage.details.cache_read_input_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "gen_ai.response.model",
+         "value": {
+          "stringValue": "claude-haiku-4-5-20251001"
+         }
+        },
+        {
+         "key": "operation.cost",
+         "value": {
+          "doubleValue": 0.000822
+         }
+        },
+        {
+         "key": "gen_ai.response.id",
+         "value": {
+          "stringValue": "msg_011CgePRG4atyzicCjnnaP74"
+         }
+        },
+        {
+         "key": "gen_ai.response.finish_reasons",
+         "value": {
+          "arrayValue": {
+           "values": [
+            {
+             "stringValue": "stop"
+            }
+           ]
+          }
+         }
+        }
+       ],
+       "status": {}
+      },
+      {
+       "traceId": "fd427e5d88a650d9988095afa0c28c1d",
+       "spanId": "a6f808f769fddaca",
+       "flags": 256,
+       "name": "invoke_agent weather_agent",
+       "kind": 1,
+       "startTimeUnixNano": "1793635549847599011",
+       "endTimeUnixNano": "1793635551441126731",
+       "attributes": [
+        {
+         "key": "model_name",
+         "value": {
+          "stringValue": "claude-haiku-4-5"
+         }
+        },
+        {
+         "key": "agent_name",
+         "value": {
+          "stringValue": "weather_agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.name",
+         "value": {
+          "stringValue": "weather_agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.call.id",
+         "value": {
+          "stringValue": "01a19d02-8278-7430-a257-2ad793c32e17"
+         }
+        },
+        {
+         "key": "gen_ai.conversation.id",
+         "value": {
+          "stringValue": "01a19d02-8278-7430-a257-2ad86ed6964e"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "invoke_agent"
+         }
+        },
+        {
+         "key": "logfire.msg",
+         "value": {
+          "stringValue": "weather_agent run"
+         }
+        },
+        {
+         "key": "final_result",
+         "value": {
+          "stringValue": "It's currently sunny in Paris with a temperature of 21\u00b0C."
+         }
+        },
+        {
+         "key": "gen_ai.aggregated_usage.input_tokens",
+         "value": {
+          "intValue": "1390"
+         }
+        },
+        {
+         "key": "gen_ai.aggregated_usage.output_tokens",
+         "value": {
+          "intValue": "72"
+         }
+        },
+        {
+         "key": "gen_ai.aggregated_usage.details.cache_creation_input_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "gen_ai.aggregated_usage.details.cache_read_input_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "pydantic_ai.all_messages",
+         "value": {
+          "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What is the weather in Paris? Use the tool, then answer in one short sentence.\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"tool_call\",\"id\":\"toolu_01JbpQe61yegPmLeUEf2eaLt\",\"name\":\"get_weather\",\"arguments\":{\"city\":\"Paris\"}}],\"finish_reason\":\"tool_call\"},{\"role\":\"user\",\"parts\":[{\"type\":\"tool_call_response\",\"id\":\"toolu_01JbpQe61yegPmLeUEf2eaLt\",\"name\":\"get_weather\",\"result\":\"Paris: sunny, 21 C\"}]},{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"It's currently sunny in Paris with a temperature of 21\u00b0C.\"}],\"finish_reason\":\"stop\"}]"
+         }
+        },
+        {
+         "key": "gen_ai.system_instructions",
+         "value": {
+          "stringValue": "[{\"type\":\"text\",\"content\":\"Answer weather questions with the get_weather tool.\"}]"
+         }
+        },
+        {
+         "key": "logfire.json_schema",
+         "value": {
+          "stringValue": "{\"type\":\"object\",\"properties\":{\"pydantic_ai.all_messages\":{\"type\":\"array\"},\"gen_ai.system_instructions\":{\"type\":\"array\"},\"final_result\":{\"type\":\"object\"}}}"
+         }
+        }
+       ],
+       "status": {}
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

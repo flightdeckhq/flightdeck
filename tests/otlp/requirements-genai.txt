@@ -1,0 +1,13 @@
+# The capture harness for tests/otlp/record_genai.py (Pydantic AI,
+# Strands Agents, the OpenAI Agents SDK), pinned to the versions the
+# committed recordings were made with. Install into a venv of its own;
+# the sensor's venv and lock files are not involved. Google ADK needs an
+# older OpenTelemetry SDK and has its own list, requirements-genai-adk.txt.
+pydantic-ai-slim[openai,anthropic]==2.64.0
+strands-agents[openai,otel]==1.63.0
+openai-agents==0.24.0
+opentelemetry-instrumentation-openai-agents-v2==0.1.0
+opentelemetry-sdk==1.45.2
+opentelemetry-exporter-otlp-proto-http==1.45.2
+opentelemetry-exporter-otlp-json-http==0.66b2
+opentelemetry-proto==1.45.2

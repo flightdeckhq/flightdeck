@@ -1,0 +1,642 @@
+{
+ "resourceMetrics": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "telemetry.sdk.language",
+      "value": {
+       "stringValue": "python"
+      }
+     },
+     {
+      "key": "telemetry.sdk.name",
+      "value": {
+       "stringValue": "opentelemetry"
+      }
+     },
+     {
+      "key": "telemetry.sdk.version",
+      "value": {
+       "stringValue": "1.45.2"
+      }
+     },
+     {
+      "key": "service.instance.id",
+      "value": {
+       "stringValue": "10821c45-5ff3-41db-a6b7-7e3a4fb95166"
+      }
+     },
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "strands-agents"
+      }
+     },
+     {
+      "key": "service.version",
+      "value": {
+       "stringValue": "1.63.0"
+      }
+     }
+    ]
+   },
+   "scopeMetrics": [
+    {
+     "scope": {
+      "name": "strands.telemetry.metrics"
+     },
+     "metrics": [
+      {
+       "name": "strands.event_loop.cycle_count",
+       "unit": "Count",
+       "sum": {
+        "dataPoints": [
+         {
+          "attributes": [
+           {
+            "key": "event_loop_cycle_id",
+            "value": {
+             "stringValue": "41162d45-5b3d-4699-bcf9-a855169e2811"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793635549833181725",
+          "timeUnixNano": "1793635552360558342",
+          "asInt": "1"
+         },
+         {
+          "attributes": [
+           {
+            "key": "event_loop_cycle_id",
+            "value": {
+             "stringValue": "5a92b553-09da-4dd0-baaa-31fbd3faee2b"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793635550881720887",
+          "timeUnixNano": "1793635552360558342",
+          "asInt": "1"
+         }
+        ],
+        "aggregationTemporality": 2,
+        "isMonotonic": true
+       }
+      },
+      {
+       "name": "strands.event_loop.start_cycle",
+       "unit": "Count",
+       "sum": {
+        "dataPoints": [
+         {
+          "attributes": [
+           {
+            "key": "event_loop_cycle_id",
+            "value": {
+             "stringValue": "41162d45-5b3d-4699-bcf9-a855169e2811"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793635549833221029",
+          "timeUnixNano": "1793635552360558342",
+          "asInt": "1"
+         },
+         {
+          "attributes": [
+           {
+            "key": "event_loop_cycle_id",
+            "value": {
+             "stringValue": "5a92b553-09da-4dd0-baaa-31fbd3faee2b"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793635550881738768",
+          "timeUnixNano": "1793635552360558342",
+          "asInt": "1"
+         }
+        ],
+        "aggregationTemporality": 2,
+        "isMonotonic": true
+       }
+      },
+      {
+       "name": "strands.event_loop.input.tokens",
+       "unit": "token",
+       "histogram": {
+        "dataPoints": [
+         {
+          "startTimeUnixNano": "1793635550879134801",
+          "timeUnixNano": "1793635552360558342",
+          "count": "2",
+          "sum": 185,
+          "bucketCounts": [
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "1",
+           "1",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           0.0,
+           5.0,
+           10.0,
+           25.0,
+           50.0,
+           75.0,
+           100.0,
+           250.0,
+           500.0,
+           750.0,
+           1000.0,
+           2500.0,
+           5000.0,
+           7500.0,
+           10000.0
+          ],
+          "min": 78,
+          "max": 107
+         }
+        ],
+        "aggregationTemporality": 2
+       }
+      },
+      {
+       "name": "strands.event_loop.output.tokens",
+       "unit": "token",
+       "histogram": {
+        "dataPoints": [
+         {
+          "startTimeUnixNano": "1793635550879182284",
+          "timeUnixNano": "1793635552360558342",
+          "count": "2",
+          "sum": 29,
+          "bucketCounts": [
+           "0",
+           "0",
+           "0",
+           "2",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           0.0,
+           5.0,
+           10.0,
+           25.0,
+           50.0,
+           75.0,
+           100.0,
+           250.0,
+           500.0,
+           750.0,
+           1000.0,
+           2500.0,
+           5000.0,
+           7500.0,
+           10000.0
+          ],
+          "min": 14,
+          "max": 15
+         }
+        ],
+        "aggregationTemporality": 2
+       }
+      },
+      {
+       "name": "strands.event_loop.cache_read.input.tokens",
+       "unit": "token",
+       "histogram": {
+        "dataPoints": [
+         {
+          "startTimeUnixNano": "1793635550879209230",
+          "timeUnixNano": "1793635552360558342",
+          "count": "2",
+          "sum": 0,
+          "bucketCounts": [
+           "2",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           0.0,
+           5.0,
+           10.0,
+           25.0,
+           50.0,
+           75.0,
+           100.0,
+           250.0,
+           500.0,
+           750.0,
+           1000.0,
+           2500.0,
+           5000.0,
+           7500.0,
+           10000.0
+          ],
+          "min": 0,
+          "max": 0
+         }
+        ],
+        "aggregationTemporality": 2
+       }
+      },
+      {
+       "name": "strands.event_loop.latency",
+       "unit": "ms",
+       "histogram": {
+        "dataPoints": [
+         {
+          "startTimeUnixNano": "1793635550879289385",
+          "timeUnixNano": "1793635552360558342",
+          "count": "2",
+          "sum": 0,
+          "bucketCounts": [
+           "2",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           0.0,
+           5.0,
+           10.0,
+           25.0,
+           50.0,
+           75.0,
+           100.0,
+           250.0,
+           500.0,
+           750.0,
+           1000.0,
+           2500.0,
+           5000.0,
+           7500.0,
+           10000.0
+          ],
+          "min": 0,
+          "max": 0
+         }
+        ],
+        "aggregationTemporality": 2
+       }
+      },
+      {
+       "name": "strands.model.time_to_first_token",
+       "unit": "ms",
+       "histogram": {
+        "dataPoints": [
+         {
+          "startTimeUnixNano": "1793635550879328240",
+          "timeUnixNano": "1793635552360558342",
+          "count": "2",
+          "sum": 2074,
+          "bucketCounts": [
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "2",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           0.0,
+           5.0,
+           10.0,
+           25.0,
+           50.0,
+           75.0,
+           100.0,
+           250.0,
+           500.0,
+           750.0,
+           1000.0,
+           2500.0,
+           5000.0,
+           7500.0,
+           10000.0
+          ],
+          "min": 1031,
+          "max": 1043
+         }
+        ],
+        "aggregationTemporality": 2
+       }
+      },
+      {
+       "name": "strands.tool.call_count",
+       "unit": "Count",
+       "sum": {
+        "dataPoints": [
+         {
+          "attributes": [
+           {
+            "key": "tool_name",
+            "value": {
+             "stringValue": "get_weather"
+            }
+           },
+           {
+            "key": "tool_use_id",
+            "value": {
+             "stringValue": "call_tP5ZxkHy2Mw32lWCe8OJe0NJ"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793635550881137013",
+          "timeUnixNano": "1793635552360558342",
+          "asInt": "1"
+         }
+        ],
+        "aggregationTemporality": 2,
+        "isMonotonic": true
+       }
+      },
+      {
+       "name": "strands.tool.duration",
+       "unit": "s",
+       "histogram": {
+        "dataPoints": [
+         {
+          "attributes": [
+           {
+            "key": "tool_name",
+            "value": {
+             "stringValue": "get_weather"
+            }
+           },
+           {
+            "key": "tool_use_id",
+            "value": {
+             "stringValue": "call_tP5ZxkHy2Mw32lWCe8OJe0NJ"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793635550881177086",
+          "timeUnixNano": "1793635552360558342",
+          "count": "1",
+          "sum": 0.000894954995601438,
+          "bucketCounts": [
+           "0",
+           "1",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           0.0,
+           5.0,
+           10.0,
+           25.0,
+           50.0,
+           75.0,
+           100.0,
+           250.0,
+           500.0,
+           750.0,
+           1000.0,
+           2500.0,
+           5000.0,
+           7500.0,
+           10000.0
+          ],
+          "min": 0.000894954995601438,
+          "max": 0.000894954995601438
+         }
+        ],
+        "aggregationTemporality": 2
+       }
+      },
+      {
+       "name": "strands.tool.success_count",
+       "unit": "Count",
+       "sum": {
+        "dataPoints": [
+         {
+          "attributes": [
+           {
+            "key": "tool_name",
+            "value": {
+             "stringValue": "get_weather"
+            }
+           },
+           {
+            "key": "tool_use_id",
+            "value": {
+             "stringValue": "call_tP5ZxkHy2Mw32lWCe8OJe0NJ"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793635550881207678",
+          "timeUnixNano": "1793635552360558342",
+          "asInt": "1"
+         }
+        ],
+        "aggregationTemporality": 2,
+        "isMonotonic": true
+       }
+      },
+      {
+       "name": "strands.event_loop.end_cycle",
+       "unit": "Count",
+       "sum": {
+        "dataPoints": [
+         {
+          "startTimeUnixNano": "1793635550881577170",
+          "timeUnixNano": "1793635552360558342",
+          "asInt": "1"
+         },
+         {
+          "attributes": [
+           {
+            "key": "event_loop_cycle_id",
+            "value": {
+             "stringValue": "5a92b553-09da-4dd0-baaa-31fbd3faee2b"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793635552348581184",
+          "timeUnixNano": "1793635552360558342",
+          "asInt": "1"
+         }
+        ],
+        "aggregationTemporality": 2,
+        "isMonotonic": true
+       }
+      },
+      {
+       "name": "strands.event_loop.cycle_duration",
+       "unit": "s",
+       "histogram": {
+        "dataPoints": [
+         {
+          "startTimeUnixNano": "1793635550881602967",
+          "timeUnixNano": "1793635552360558342",
+          "count": "1",
+          "sum": 1.0483548641204834,
+          "bucketCounts": [
+           "0",
+           "1",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           0.0,
+           5.0,
+           10.0,
+           25.0,
+           50.0,
+           75.0,
+           100.0,
+           250.0,
+           500.0,
+           750.0,
+           1000.0,
+           2500.0,
+           5000.0,
+           7500.0,
+           10000.0
+          ],
+          "min": 1.0483548641204834,
+          "max": 1.0483548641204834
+         },
+         {
+          "attributes": [
+           {
+            "key": "event_loop_cycle_id",
+            "value": {
+             "stringValue": "5a92b553-09da-4dd0-baaa-31fbd3faee2b"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793635552348609646",
+          "timeUnixNano": "1793635552360558342",
+          "count": "1",
+          "sum": 1.466853380203247,
+          "bucketCounts": [
+           "0",
+           "1",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           0.0,
+           5.0,
+           10.0,
+           25.0,
+           50.0,
+           75.0,
+           100.0,
+           250.0,
+           500.0,
+           750.0,
+           1000.0,
+           2500.0,
+           5000.0,
+           7500.0,
+           10000.0
+          ],
+          "min": 1.466853380203247,
+          "max": 1.466853380203247
+         }
+        ],
+        "aggregationTemporality": 2
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

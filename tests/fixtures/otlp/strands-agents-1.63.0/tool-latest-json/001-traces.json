@@ -1,0 +1,678 @@
+{
+ "resourceSpans": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "telemetry.sdk.language",
+      "value": {
+       "stringValue": "python"
+      }
+     },
+     {
+      "key": "telemetry.sdk.name",
+      "value": {
+       "stringValue": "opentelemetry"
+      }
+     },
+     {
+      "key": "telemetry.sdk.version",
+      "value": {
+       "stringValue": "1.45.2"
+      }
+     },
+     {
+      "key": "service.instance.id",
+      "value": {
+       "stringValue": "10821c45-5ff3-41db-a6b7-7e3a4fb95166"
+      }
+     },
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "strands-agents"
+      }
+     },
+     {
+      "key": "service.version",
+      "value": {
+       "stringValue": "1.63.0"
+      }
+     }
+    ]
+   },
+   "scopeSpans": [
+    {
+     "scope": {
+      "name": "strands.telemetry.tracer"
+     },
+     "spans": [
+      {
+       "traceId": "b100d7dda858dc92107449ca1b85919f",
+       "spanId": "c65ec6ec9bcec720",
+       "parentSpanId": "1e649fa0cd8cf2cb",
+       "flags": 256,
+       "name": "chat",
+       "kind": 1,
+       "startTimeUnixNano": "1793635549833478499",
+       "endTimeUnixNano": "1793635550878923995",
+       "attributes": [
+        {
+         "key": "gen_ai.event.start_time",
+         "value": {
+          "stringValue": "2026-11-02T16:05:49.833479+00:00"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "chat"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "strands-agents"
+         }
+        },
+        {
+         "key": "gen_ai.request.model",
+         "value": {
+          "stringValue": "gpt-4o-mini"
+         }
+        },
+        {
+         "key": "gen_ai.event.end_time",
+         "value": {
+          "stringValue": "2026-11-02T16:05:50.878892+00:00"
+         }
+        },
+        {
+         "key": "gen_ai.usage.prompt_tokens",
+         "value": {
+          "intValue": "78"
+         }
+        },
+        {
+         "key": "gen_ai.usage.input_tokens",
+         "value": {
+          "intValue": "78"
+         }
+        },
+        {
+         "key": "gen_ai.usage.completion_tokens",
+         "value": {
+          "intValue": "14"
+         }
+        },
+        {
+         "key": "gen_ai.usage.output_tokens",
+         "value": {
+          "intValue": "14"
+         }
+        },
+        {
+         "key": "gen_ai.usage.total_tokens",
+         "value": {
+          "intValue": "92"
+         }
+        },
+        {
+         "key": "gen_ai.usage.cache_read.input_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "gen_ai.server.time_to_first_token",
+         "value": {
+          "intValue": "1043"
+         }
+        }
+       ],
+       "events": [
+        {
+         "timeUnixNano": "1793635549833505326",
+         "name": "gen_ai.client.inference.operation.details",
+         "attributes": [
+          {
+           "key": "gen_ai.system_instructions",
+           "value": {
+            "stringValue": "[{\"type\": \"text\", \"content\": \"Answer weather questions with the get_weather tool.\"}]"
+           }
+          }
+         ]
+        },
+        {
+         "timeUnixNano": "1793635549833519418",
+         "name": "gen_ai.client.inference.operation.details",
+         "attributes": [
+          {
+           "key": "gen_ai.input.messages",
+           "value": {
+            "stringValue": "[{\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"What is the weather in Paris? Use the tool, then answer in one short sentence.\"}]}]"
+           }
+          }
+         ]
+        },
+        {
+         "timeUnixNano": "1793635550878883268",
+         "name": "gen_ai.client.inference.operation.details",
+         "attributes": [
+          {
+           "key": "gen_ai.output.messages",
+           "value": {
+            "stringValue": "[{\"role\": \"assistant\", \"parts\": [{\"type\": \"tool_call\", \"name\": \"get_weather\", \"id\": \"call_tP5ZxkHy2Mw32lWCe8OJe0NJ\", \"arguments\": {\"city\": \"Paris\"}}], \"finish_reason\": \"tool_use\"}]"
+           }
+          }
+         ]
+        }
+       ],
+       "status": {
+        "code": 1
+       }
+      },
+      {
+       "traceId": "b100d7dda858dc92107449ca1b85919f",
+       "spanId": "b8c55dfd5c774339",
+       "parentSpanId": "1e649fa0cd8cf2cb",
+       "flags": 256,
+       "name": "execute_tool get_weather",
+       "kind": 1,
+       "startTimeUnixNano": "1793635550879927390",
+       "endTimeUnixNano": "1793635550881025443",
+       "attributes": [
+        {
+         "key": "gen_ai.event.start_time",
+         "value": {
+          "stringValue": "2026-11-02T16:05:50.879929+00:00"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "execute_tool"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "strands-agents"
+         }
+        },
+        {
+         "key": "gen_ai.tool.name",
+         "value": {
+          "stringValue": "get_weather"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.id",
+         "value": {
+          "stringValue": "call_tP5ZxkHy2Mw32lWCe8OJe0NJ"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.arguments",
+         "value": {
+          "stringValue": "{\"city\": \"Paris\"}"
+         }
+        },
+        {
+         "key": "gen_ai.tool.description",
+         "value": {
+          "stringValue": "The current weather in a city."
+         }
+        },
+        {
+         "key": "gen_ai.tool.json_schema",
+         "value": {
+          "stringValue": "{\"properties\": {\"city\": {\"description\": \"The city to look up.\", \"type\": \"string\"}}, \"required\": [\"city\"], \"type\": \"object\"}"
+         }
+        },
+        {
+         "key": "gen_ai.event.end_time",
+         "value": {
+          "stringValue": "2026-11-02T16:05:50.880996+00:00"
+         }
+        },
+        {
+         "key": "gen_ai.tool.status",
+         "value": {
+          "stringValue": "success"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.result",
+         "value": {
+          "stringValue": "[{\"text\": \"Paris: sunny, 21 C\"}]"
+         }
+        }
+       ],
+       "events": [
+        {
+         "timeUnixNano": "1793635550879989941",
+         "name": "gen_ai.client.inference.operation.details",
+         "attributes": [
+          {
+           "key": "gen_ai.input.messages",
+           "value": {
+            "stringValue": "[{\"role\": \"tool\", \"parts\": [{\"type\": \"tool_call\", \"name\": \"get_weather\", \"id\": \"call_tP5ZxkHy2Mw32lWCe8OJe0NJ\", \"arguments\": {\"city\": \"Paris\"}}]}]"
+           }
+          }
+         ]
+        },
+        {
+         "timeUnixNano": "1793635550880986549",
+         "name": "gen_ai.client.inference.operation.details",
+         "attributes": [
+          {
+           "key": "gen_ai.output.messages",
+           "value": {
+            "stringValue": "[{\"role\": \"tool\", \"parts\": [{\"type\": \"tool_call_response\", \"id\": \"call_tP5ZxkHy2Mw32lWCe8OJe0NJ\", \"response\": [{\"text\": \"Paris: sunny, 21 C\"}]}]}]"
+           }
+          }
+         ]
+        }
+       ],
+       "status": {
+        "code": 1
+       }
+      },
+      {
+       "traceId": "b100d7dda858dc92107449ca1b85919f",
+       "spanId": "1e649fa0cd8cf2cb",
+       "parentSpanId": "79301fb9655c5d20",
+       "flags": 256,
+       "name": "execute_event_loop_cycle",
+       "kind": 1,
+       "startTimeUnixNano": "1793635549833292125",
+       "endTimeUnixNano": "1793635550881669798",
+       "attributes": [
+        {
+         "key": "gen_ai.event.start_time",
+         "value": {
+          "stringValue": "2026-11-02T16:05:49.833294+00:00"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "execute_event_loop_cycle"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "strands-agents"
+         }
+        },
+        {
+         "key": "event_loop.cycle_id",
+         "value": {
+          "stringValue": "41162d45-5b3d-4699-bcf9-a855169e2811"
+         }
+        },
+        {
+         "key": "gen_ai.event.end_time",
+         "value": {
+          "stringValue": "2026-11-02T16:05:50.881661+00:00"
+         }
+        }
+       ],
+       "events": [
+        {
+         "timeUnixNano": "1793635549833325474",
+         "name": "gen_ai.client.inference.operation.details",
+         "attributes": [
+          {
+           "key": "gen_ai.input.messages",
+           "value": {
+            "stringValue": "[{\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"What is the weather in Paris? Use the tool, then answer in one short sentence.\"}]}]"
+           }
+          }
+         ]
+        },
+        {
+         "timeUnixNano": "1793635550881658128",
+         "name": "gen_ai.client.inference.operation.details",
+         "attributes": [
+          {
+           "key": "gen_ai.input.messages",
+           "value": {
+            "stringValue": "[{\"role\": \"user\", \"parts\": [{\"type\": \"tool_call_response\", \"id\": \"call_tP5ZxkHy2Mw32lWCe8OJe0NJ\", \"response\": [{\"text\": \"Paris: sunny, 21 C\"}]}]}]"
+           }
+          }
+         ]
+        }
+       ],
+       "status": {
+        "code": 1
+       }
+      },
+      {
+       "traceId": "b100d7dda858dc92107449ca1b85919f",
+       "spanId": "1f8350d4def3bb58",
+       "parentSpanId": "ca435feb559886e9",
+       "flags": 256,
+       "name": "chat",
+       "kind": 1,
+       "startTimeUnixNano": "1793635550882014760",
+       "endTimeUnixNano": "1793635552348354258",
+       "attributes": [
+        {
+         "key": "gen_ai.event.start_time",
+         "value": {
+          "stringValue": "2026-11-02T16:05:50.882016+00:00"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "chat"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "strands-agents"
+         }
+        },
+        {
+         "key": "gen_ai.request.model",
+         "value": {
+          "stringValue": "gpt-4o-mini"
+         }
+        },
+        {
+         "key": "gen_ai.event.end_time",
+         "value": {
+          "stringValue": "2026-11-02T16:05:52.348329+00:00"
+         }
+        },
+        {
+         "key": "gen_ai.usage.prompt_tokens",
+         "value": {
+          "intValue": "107"
+         }
+        },
+        {
+         "key": "gen_ai.usage.input_tokens",
+         "value": {
+          "intValue": "107"
+         }
+        },
+        {
+         "key": "gen_ai.usage.completion_tokens",
+         "value": {
+          "intValue": "15"
+         }
+        },
+        {
+         "key": "gen_ai.usage.output_tokens",
+         "value": {
+          "intValue": "15"
+         }
+        },
+        {
+         "key": "gen_ai.usage.total_tokens",
+         "value": {
+          "intValue": "122"
+         }
+        },
+        {
+         "key": "gen_ai.usage.cache_read.input_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "gen_ai.server.time_to_first_token",
+         "value": {
+          "intValue": "1031"
+         }
+        }
+       ],
+       "events": [
+        {
+         "timeUnixNano": "1793635550882040686",
+         "name": "gen_ai.client.inference.operation.details",
+         "attributes": [
+          {
+           "key": "gen_ai.system_instructions",
+           "value": {
+            "stringValue": "[{\"type\": \"text\", \"content\": \"Answer weather questions with the get_weather tool.\"}]"
+           }
+          }
+         ]
+        },
+        {
+         "timeUnixNano": "1793635550882069406",
+         "name": "gen_ai.client.inference.operation.details",
+         "attributes": [
+          {
+           "key": "gen_ai.input.messages",
+           "value": {
+            "stringValue": "[{\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"What is the weather in Paris? Use the tool, then answer in one short sentence.\"}]}, {\"role\": \"assistant\", \"parts\": [{\"type\": \"tool_call\", \"name\": \"get_weather\", \"id\": \"call_tP5ZxkHy2Mw32lWCe8OJe0NJ\", \"arguments\": {\"city\": \"Paris\"}}]}, {\"role\": \"user\", \"parts\": [{\"type\": \"tool_call_response\", \"id\": \"call_tP5ZxkHy2Mw32lWCe8OJe0NJ\", \"response\": [{\"text\": \"Paris: sunny, 21 C\"}]}]}]"
+           }
+          }
+         ]
+        },
+        {
+         "timeUnixNano": "1793635552348322065",
+         "name": "gen_ai.client.inference.operation.details",
+         "attributes": [
+          {
+           "key": "gen_ai.output.messages",
+           "value": {
+            "stringValue": "[{\"role\": \"assistant\", \"parts\": [{\"type\": \"text\", \"content\": \"The weather in Paris is sunny with a temperature of 21\u00b0C.\"}], \"finish_reason\": \"end_turn\"}]"
+           }
+          }
+         ]
+        }
+       ],
+       "status": {
+        "code": 1
+       }
+      },
+      {
+       "traceId": "b100d7dda858dc92107449ca1b85919f",
+       "spanId": "ca435feb559886e9",
+       "parentSpanId": "79301fb9655c5d20",
+       "flags": 256,
+       "name": "execute_event_loop_cycle",
+       "kind": 1,
+       "startTimeUnixNano": "1793635550881805510",
+       "endTimeUnixNano": "1793635552348651723",
+       "attributes": [
+        {
+         "key": "gen_ai.event.start_time",
+         "value": {
+          "stringValue": "2026-11-02T16:05:50.881807+00:00"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "execute_event_loop_cycle"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "strands-agents"
+         }
+        },
+        {
+         "key": "event_loop.cycle_id",
+         "value": {
+          "stringValue": "5a92b553-09da-4dd0-baaa-31fbd3faee2b"
+         }
+        },
+        {
+         "key": "event_loop.parent_cycle_id",
+         "value": {
+          "stringValue": "41162d45-5b3d-4699-bcf9-a855169e2811"
+         }
+        },
+        {
+         "key": "gen_ai.event.end_time",
+         "value": {
+          "stringValue": "2026-11-02T16:05:52.348641+00:00"
+         }
+        }
+       ],
+       "events": [
+        {
+         "timeUnixNano": "1793635550881851755",
+         "name": "gen_ai.client.inference.operation.details",
+         "attributes": [
+          {
+           "key": "gen_ai.input.messages",
+           "value": {
+            "stringValue": "[{\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"What is the weather in Paris? Use the tool, then answer in one short sentence.\"}]}, {\"role\": \"assistant\", \"parts\": [{\"type\": \"tool_call\", \"name\": \"get_weather\", \"id\": \"call_tP5ZxkHy2Mw32lWCe8OJe0NJ\", \"arguments\": {\"city\": \"Paris\"}}]}, {\"role\": \"user\", \"parts\": [{\"type\": \"tool_call_response\", \"id\": \"call_tP5ZxkHy2Mw32lWCe8OJe0NJ\", \"response\": [{\"text\": \"Paris: sunny, 21 C\"}]}]}]"
+           }
+          }
+         ]
+        }
+       ],
+       "status": {
+        "code": 1
+       }
+      },
+      {
+       "traceId": "b100d7dda858dc92107449ca1b85919f",
+       "spanId": "79301fb9655c5d20",
+       "flags": 256,
+       "name": "invoke_agent weather_agent",
+       "kind": 1,
+       "startTimeUnixNano": "1793635549832841752",
+       "endTimeUnixNano": "1793635552348915337",
+       "attributes": [
+        {
+         "key": "gen_ai.event.start_time",
+         "value": {
+          "stringValue": "2026-11-02T16:05:49.832846+00:00"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "invoke_agent"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "strands-agents"
+         }
+        },
+        {
+         "key": "gen_ai.agent.name",
+         "value": {
+          "stringValue": "weather_agent"
+         }
+        },
+        {
+         "key": "gen_ai.request.model",
+         "value": {
+          "stringValue": "gpt-4o-mini"
+         }
+        },
+        {
+         "key": "gen_ai.agent.tools",
+         "value": {
+          "stringValue": "[\"get_weather\"]"
+         }
+        },
+        {
+         "key": "gen_ai.system_instructions",
+         "value": {
+          "stringValue": "[{\"type\": \"text\", \"content\": \"Answer weather questions with the get_weather tool.\"}]"
+         }
+        },
+        {
+         "key": "gen_ai.event.end_time",
+         "value": {
+          "stringValue": "2026-11-02T16:05:52.348901+00:00"
+         }
+        },
+        {
+         "key": "gen_ai.usage.prompt_tokens",
+         "value": {
+          "intValue": "185"
+         }
+        },
+        {
+         "key": "gen_ai.usage.completion_tokens",
+         "value": {
+          "intValue": "29"
+         }
+        },
+        {
+         "key": "gen_ai.usage.input_tokens",
+         "value": {
+          "intValue": "185"
+         }
+        },
+        {
+         "key": "gen_ai.usage.output_tokens",
+         "value": {
+          "intValue": "29"
+         }
+        },
+        {
+         "key": "gen_ai.usage.total_tokens",
+         "value": {
+          "intValue": "214"
+         }
+        },
+        {
+         "key": "gen_ai.usage.cache_read.input_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        },
+        {
+         "key": "gen_ai.usage.cache_creation.input_tokens",
+         "value": {
+          "intValue": "0"
+         }
+        }
+       ],
+       "events": [
+        {
+         "timeUnixNano": "1793635549832895159",
+         "name": "gen_ai.client.inference.operation.details",
+         "attributes": [
+          {
+           "key": "gen_ai.input.messages",
+           "value": {
+            "stringValue": "[{\"role\": \"user\", \"parts\": [{\"type\": \"text\", \"content\": \"What is the weather in Paris? Use the tool, then answer in one short sentence.\"}]}]"
+           }
+          }
+         ]
+        },
+        {
+         "timeUnixNano": "1793635552348884752",
+         "name": "gen_ai.client.inference.operation.details",
+         "attributes": [
+          {
+           "key": "gen_ai.output.messages",
+           "value": {
+            "stringValue": "[{\"role\": \"assistant\", \"parts\": [{\"type\": \"text\", \"content\": \"The weather in Paris is sunny with a temperature of 21\u00b0C.\\n\"}], \"finish_reason\": \"end_turn\"}]"
+           }
+          }
+         ]
+        }
+       ],
+       "status": {
+        "code": 1
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

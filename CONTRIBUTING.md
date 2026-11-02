@@ -4,7 +4,7 @@
 
 - **Go** 1.27+
 - **Python** 3.11 to 3.14 (local development uses 3.12)
-- **uv** 0.12+ (optional locally: installs the exact versions CI uses from `sensor/uv.lock`)
+- **uv** 0.12+ (installs the exact versions CI uses from `sensor/uv.lock`; the dependency vulnerability scan needs it)
 - **Node.js** 24+ (the Claude Code plugin itself runs on Node 22+)
 - **Docker** and Docker Compose
 - **golangci-lint** v2.13+ (for Go linting; earlier releases cannot type-check Go 1.27; CI pins v2.14.0)
@@ -103,6 +103,71 @@ This runs:
 - `mypy --strict` and `ruff check` on the sensor
 - `golangci-lint run ./...` on ingestion, workers, and api
 - `npm run typecheck` and `npm run lint` on the dashboard
+
+## Dependency vulnerability scans
+
+CI scans every dependency set for known vulnerabilities:
+
+| Dependencies | Tool | CI job |
+|---|---|---|
+| Go modules (ingestion, workers, api) | `govulncheck` | Go (ingestion, workers, api) |
+| npm (`dashboard/`, `plugin/`) and pip (`sensor/`) | `npm audit`, `pip-audit` via `scripts/vuln_scan.py` | Dependency vulnerability scan (npm, pip) |
+| Release images | Trivy | Scan Docker images (release workflow) |
+
+Run the npm and pip scan locally with:
+
+```bash
+make vuln-scan   # python3 scripts/vuln_scan.py
+```
+
+It needs `npm`, `uv` and network access. It audits the lockfiles rather than
+installed trees: `dashboard/package-lock.json`, and the pins it exports from
+`sensor/uv.lock`. Nothing is installed into the project; `uvx` fetches the
+pip-audit release the script pins into the uv cache, holding pip-audit's own
+dependencies to the same 14-day cooldown as the sensor's lock. The scan fails
+on:
+
+- a **high or critical** advisory in **any dashboard dependency**, dev
+  dependencies included: tailwindcss is compiled into the shipped CSS, vite and
+  its plugins build the bundle, so the dev/prod split does not mark what ships;
+- a **high or critical** advisory in a **plugin production** dependency
+  (`npm audit --omit=dev`). The plugin runs its source as is, with no bundler,
+  so its dev dependencies never reach a user. A `plugin/package.json` that
+  declares dependencies without a `package-lock.json` fails too; the plugin has
+  no dependencies today;
+- **any** advisory in the sensor's **core runtime** dependencies (`uv export
+  --no-dev`, no extras). pip-audit reports no severity, so every advisory
+  counts. Environment markers are stripped so a pin for another platform or
+  Python version is audited too, and a runtime pin pip-audit did not audit
+  fails;
+- an ignore entry past its `expires` date.
+
+npm advisories below high, and the sensor's extras and dev tooling, are listed
+in the job log without failing the job. The sensor's provider and framework
+extras are resolved by each user's own installer, so the versions locked here
+are not what a user gets. Bump them when a fix is available.
+
+### Excusing an advisory
+
+Fix a blocking finding by bumping the dependency. When no fixed release exists,
+or the fix needs a breaking upgrade that has to wait, add an entry to
+`.github/vuln-ignore.toml`:
+
+```toml
+[[ignore]]
+id = "GHSA-xxxx-xxxx-xxxx"   # the ID the scan prints; for pip, any alias works
+ecosystem = "npm"            # "npm" or "pypi"
+package = "example-package"
+reason = "No fixed release yet; the vulnerable parser only reads our own build config. Drop when 2.3.1 ships."
+expires = 2027-02-01         # a TOML date, no quotes
+```
+
+Every key is required. The reason must say why the advisory cannot be fixed now
+and what lets the entry go. Set `expires` a few months out: the scan fails the
+day after it (dates are compared in UTC), so the entry gets a fresh look instead
+of living forever, and it rejects a date more than 365 days ahead. The entry ships in a pull request like any other change, so it gets
+reviewed. An entry that no longer matches anything is flagged as a warning on
+the pull request; delete it then.
 
 ## Pull Request Process
 

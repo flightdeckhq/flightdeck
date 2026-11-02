@@ -1872,11 +1872,13 @@ paths:
     get:
       description: Returns events matching time range, flavor, event type, session,
         agent, model, framework, and event-payload facet filters with pagination.
-        Multi-value filters OR within a dimension and AND across dimensions. Supports
-        an optional “before“ keyset cursor and “order“ direction for newest-first
-        drawer pagination. When “facets=true“ the response is an EventFacets object
-        of per-dimension chip counts computed over the same filter set instead of
-        the paginated event list.
+        Multi-value filters OR within a dimension and AND across dimensions. Rows
+        are ordered by occurred_at, then id, both in the requested direction, so offset
+        pages never skip or repeat rows that share a timestamp. Supports an optional
+        “before“ keyset cursor (with “before_id“ for rows that share the cursor's
+        timestamp) and “order“ direction for newest-first drawer pagination. When
+        “facets=true“ the response is an EventFacets object of per-dimension chip
+        counts computed over the same filter set instead of the paginated event list.
       parameters:
       - description: Start time (ISO 8601)
         in: query
@@ -2042,10 +2044,16 @@ paths:
         in: query
         name: facets
         type: boolean
-      - description: Keyset cursor (ISO 8601). When set, only rows with occurred_at
-          < before are returned. Pair with order=desc for newest-first drawer pagination.
+      - description: Keyset cursor (ISO 8601). Alone, only rows with occurred_at <
+          before are returned. Pair with order=desc for newest-first drawer pagination.
         in: query
         name: before
+        type: string
+      - description: 'Id (UUID) of the row at the before cursor. With before, returns
+          the rows strictly before that row in (occurred_at, id) order: occurred_at
+          < before, or occurred_at = before and id < before_id. Requires before.'
+        in: query
+        name: before_id
         type: string
       - description: 'Sort order: asc (default) or desc'
         in: query

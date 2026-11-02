@@ -36,7 +36,7 @@ vi.mock("@/lib/api", () => ({
 
 import { useFleetStore } from "@/store/fleet";
 import { bucketFor } from "@/lib/fleet-ordering";
-import type { FlavorSummary, FleetUpdate, Session } from "@/lib/types";
+import type { AgentEvent, FlavorSummary, FleetUpdate, Session } from "@/lib/types";
 
 // ---- builders ------------------------------------------------------------
 
@@ -133,6 +133,30 @@ function seedStore(): void {
   });
 }
 
+// The event a sub-agent sent. A broadcast for a client's event always
+// carries it; only the worker's own state changes arrive without one,
+// and those are not activity and bump nothing (see
+// fleet-applyUpdate-state-only.test.ts).
+function childEvent(): AgentEvent {
+  return {
+    id: "child-event-001",
+    session_id: CHILD_SESSION_ID,
+    flavor: "child-agent",
+    event_type: "tool_call",
+    model: null,
+    tokens_input: null,
+    tokens_output: null,
+    tokens_total: null,
+    latency_ms: 12,
+    tool_name: "Read",
+    has_content: false,
+    framework: null,
+    client_type: null,
+    agent_type: "coding",
+    occurred_at: iso(NOW),
+  };
+}
+
 // A FleetUpdate for the child session — agent_id NOT null so the
 // agents[]-mirror branch is exercised too, and parent_session_id set
 // so the parent-bump branch fires.
@@ -149,6 +173,7 @@ function childUpdate(): FleetUpdate {
       state: "active",
       last_seen_at: iso(NOW),
     }),
+    last_event: childEvent(),
   };
 }
 
@@ -220,6 +245,7 @@ describe("fleet store applyUpdate — sub-agent parent-bump (Fix 5)", () => {
         state: "active",
         last_seen_at: iso(NOW),
       }),
+      last_event: childEvent(),
     };
     useFleetStore.getState().applyUpdate(rootUpdate);
 
@@ -244,6 +270,7 @@ describe("fleet store applyUpdate — sub-agent parent-bump (Fix 5)", () => {
         state: "active",
         last_seen_at: iso(NOW),
       }),
+      last_event: childEvent(),
     };
     expect(() =>
       useFleetStore.getState().applyUpdate(orphanUpdate),

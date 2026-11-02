@@ -166,7 +166,8 @@ no single point of failure introduced into the agent's execution path.
 │    token_policies  custom_directives  access_tokens      │
 │                                                          │
 │  NOTIFY channel: flightdeck_fleet                        │
-│    Workers send NOTIFY after every event write           │
+│    Workers send NOTIFY after every event write and       │
+│    every session state change                            │
 │    Query API hub receives via LISTEN                     │
 └──────────────────────────────────────────────────────────┘
 ```
@@ -183,7 +184,8 @@ no single point of failure introduced into the agent's execution path.
     READ  sessions        (terminal check, token count)
     READ  token_policies  (policy evaluation)
     READ  directives      (shutdown dedup check)
-    NOTIFY flightdeck_fleet (after every event write)
+    NOTIFY flightdeck_fleet (after every event write and every
+                            session state change)
 
   Query API → Postgres:
     READ  sessions, events, event_content, agents, custom_directives
@@ -354,7 +356,7 @@ flightdeck/
 │   │   ├── writer/
 │   │   │   ├── postgres.go     # Upsert agents, sessions, events, event_content via pgx
 │   │   │   ├── backfill.go     # Batched model-id backfill of events stored with raw ids
-│   │   │   └── notify.go       # Postgres NOTIFY after each write (real-time dashboard push)
+│   │   │   └── notify.go       # Postgres NOTIFY after each event write and session state change (real-time dashboard push)
 │   │   └── models/             # Go structs mirroring all Postgres tables
 │   └── tests/
 │       ├── processor_test.go
@@ -3378,7 +3380,10 @@ are minutes to hours long; it only adds load. Each worker process runs
 one reconciler: a pass that outlasts the interval delays the next tick
 rather than overlapping it, and the reaper locks rows with `SKIP
 LOCKED`, so the passes of several worker replicas never double-close
-a session.
+a session. After its UPDATEs commit, the pass sends a
+`flightdeck_fleet` notification for every session it moved (see
+Notify), so an open dashboard sees a run go stale or lost without
+reloading; the dashboard never applies the thresholds itself.
 
 **Orphan-timeout reaper.** The same reconciler tick also closes `lost`
 sessions that have been silent past `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`
@@ -3386,7 +3391,8 @@ sessions that have been silent past `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`
 `ended_at = NOW()`, emits a synthetic `session_end` event with
 `payload.close_reason = "orphan_timeout"` so the dashboard's
 close-reason facet surfaces the reconciler's verdict alongside
-happy-path shutdowns, and bumps
+happy-path shutdowns, notifies `flightdeck_fleet` with that event so
+the dashboard receives the close like any other `session_end`, and bumps
 `sessions_closed_total{reason="orphan_timeout"}` in the worker's
 in-process metrics registry. The reaper exists because plugin / sensor
 crashes, `kill -9`, and missed lifecycle hooks would otherwise leave
@@ -3405,7 +3411,10 @@ its children clearly streamed events. Closed parents are
 untouched (terminal state). Revivals via this path bump
 `sessions_revived_total{trigger="child_event"}` in the worker's
 in-process metrics registry, so parent-via-child revivals can be charted
-separately from any future revival path. Scope is direct
+separately from any future revival path, and notify `flightdeck_fleet`
+for the parent: the child's own notification names only the child, so
+without it a parent the dashboard saw go stale would stay stale there
+while its children worked. Scope is direct
 parent only — transitive ancestor revival is deferred until a
 framework that exercises depth>2 trees ships.
 
@@ -3570,11 +3579,47 @@ directives.
 
 ### Notify
 
-`workers/internal/writer/notify.go::NotifyFleetChange(session_id,
-event_type, event_id)` issues a Postgres NOTIFY on `flightdeck_fleet`
-after each event write. The wire payload is `{session_id, event_type,
-event_id}`. The hub fetches the exact event via PK lookup, eliminating
-the O(N) `GetSessionEvents + tail` race on paired writes.
+The worker sends a Postgres NOTIFY on `flightdeck_fleet` for every
+change an open dashboard has to see: each event it stores and each
+session state change it makes. The wire payload is `{session_id,
+event_type, event_id}` (`workers/internal/writer/notify.go`), one
+session per notification. A payload is about 130 bytes, far under
+Postgres's 8000-byte limit, so a large batch never needs splitting.
+
+| Sender | When | `event_type` | `event_id` |
+|---|---|---|---|
+| `NotifyFleetChange`, after `InsertEvent` | each event write | the event's type | the stored event's id |
+| `ReconcileStaleSessions` | a session goes `stale` or `lost` | empty | empty |
+| `ReapOrphanedLostSessions` | a `lost` session is closed | `session_end` | the synthetic `session_end`'s id |
+| `BumpParentLastSeen` | a child's event revives a `stale` or `lost` parent | empty | empty |
+
+An empty `event_id` marks a state-only change: the session row changed
+and no event was written. Carrying the event id otherwise lets the hub
+fetch exactly that event by primary key instead of re-reading the
+session's events and taking the newest, which races paired writes.
+
+Every notification is sent after the write it announces has committed,
+as its own statement; the reconciler and the reaper send a pass's
+notifications in one `pg_notify` statement for the batch, once per
+session, so a session that goes `stale` and `lost` in the same pass is
+announced once. Sending after the commit means the hub never reads a
+row before the change is visible. A failed notification is logged and
+the change stands; the dashboard shows it on its next fetch. The state
+machine therefore never depends on the notification channel: a full
+NOTIFY queue costs live updates, not stale, lost or closed transitions.
+
+Postgres delivers notifications in commit order, and the hub handles
+them one at a time and re-reads the session row for each. Every
+broadcast therefore carries a row at least as new as the change that
+sent it, and since each change notifies after it commits, the hub's
+last read of a session follows its last change. A reconciler pass and
+an event that revives the same session serialize on the row lock: when
+the revival commits first, the reconciler's UPDATE re-checks its
+condition on the revived row, skips it and announces nothing; when the
+reconciler commits first, the event's own notification follows and the
+hub's re-read shows the session active again. A repeated broadcast of
+the same row is harmless, because the dashboard replaces the session
+row it holds.
 
 ---
 
@@ -4015,6 +4060,7 @@ always create a new numbered migration.
 | 000031 | `model_pricing.fast_multiplier`: per-model fast-mode price multiplier from the catalogue |
 | 000032 | `agents_client_type_check` and `sessions_client_type_check` swapped for the client type registry's list, added `NOT VALID` |
 | 000033 | Validates the two `client_type` constraints 000032 added, in its own step so the scan of `sessions` does not hold the swap's exclusive lock |
+| 000034 | `sessions_active_by_agent_idx`: partial index on `sessions (agent_id) WHERE state = 'active'`, so the agent state rollup the hub reads for every broadcast finds an agent's active runs in one small probe |
 
 ---
 
@@ -4033,7 +4079,7 @@ authoritative parameter-level reference.
 | `GET` | `/v1/sessions/:id` | Session detail: metadata + chronological events (always an array, empty until the first event row lands) + attachments array |
 | `GET` | `/v1/agents` | Paginated agent listing; filters: `agent_type`, `client_type`, `state`, `hostname`, `user`, `os`, `orchestration` (multi-value — OR within a dimension, AND across; `os` and `orchestration` use any-session EXISTS semantics on `sessions.context`), `search` (case-insensitive substring on `agent_name` + `hostname`), `updated_since`; `sort` + `order`; `limit` (default 25, max 100) + `offset`. Each row carries the sub-agent rollup fields `agent_role` and `topology` (`lone` / `parent` / `child`) plus the runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — latest-session-only, same source as the `/v1/fleet` projection) |
 | `GET` | `/v1/agents/:id/summary` | Per-agent activity summary (totals + per-bucket series) over a 1h/24h/7d/30d window. Powers the per-agent landing page. |
-| `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `agent_id`, `model`, payload-JSONB facet filters (`error_type`, `close_reason`, `estimated_via`, `matched_entry_id`, `originating_call_context`, `mcp_server`, `terminal`), `framework` (`agent_id` + `framework` resolve via a `sessions` subquery), session-context facet filters (`os`, `arch`, `host`, `user`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — resolved via the sessions JOIN against partial expression indexes on `sessions((context->>'<key>'))` from migration 000024), `q` (free-text ILIKE search across event_type / model / session_id / agent_name / framework), `before` (keyset cursor) + `order` (`asc`/`desc`) for newest-first drawer pagination, `facets=true` to return per-dimension chip counts over the filtered set instead of the event list, `limit` (default 500, max 2000), `offset` (max 100000) |
+| `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `agent_id`, `model`, payload-JSONB facet filters (`error_type`, `close_reason`, `estimated_via`, `matched_entry_id`, `originating_call_context`, `mcp_server`, `terminal`), `framework` (`agent_id` + `framework` resolve via a `sessions` subquery), session-context facet filters (`os`, `arch`, `host`, `user`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — resolved via the sessions JOIN against partial expression indexes on `sessions((context->>'<key>'))` from migration 000024), `q` (free-text ILIKE search across event_type / model / session_id / agent_name / framework), `before` + optional `before_id` (keyset cursor on `occurred_at`, then `id`) + `order` (`asc`/`desc`) for newest-first drawer pagination, `facets=true` to return per-dimension chip counts over the filtered set instead of the event list, `limit` (default 500, max 2000), `offset` (max 100000) |
 | `GET` | `/v1/events/:id/content` | Event prompt content; 404 when capture was off for the session |
 | `GET` | `/v1/policy` | Sensor preflight: returns the policy applicable to a flavor + session_id |
 | `GET` | `/v1/policies` | List all token policies (org + flavor + session scopes) |
@@ -4215,35 +4261,55 @@ the multi-stage image where the strict triplet applies.
 
 ### Real-time push: NOTIFY → Hub → WebSocket
 
-Event propagation from Postgres to the dashboard is a four-step LISTEN /
-NOTIFY chain, fully decoupled from REST paths.
+Changes reach the dashboard through a four-step LISTEN / NOTIFY chain,
+fully decoupled from REST paths.
 
-1. **Worker INSERT + capture id.** On each event,
+1. **Worker write.** On each event,
    `workers/internal/writer/postgres.go::InsertEvent` INSERTs into `events`
-   and RETURNS the generated UUID primary key.
-2. **NOTIFY publish.**
-   `workers/internal/writer/notify.go::NotifyFleetChange` sends a Postgres
-   NOTIFY on the `flightdeck_fleet` channel with payload `{session_id,
-   event_type, event_id}`.
+   and RETURNS the generated UUID primary key. A session state change
+   (the reconciler, the reaper, a parent revived by its child) updates
+   the `sessions` row; the reaper also inserts its synthetic
+   `session_end`.
+2. **NOTIFY publish.** The worker sends a Postgres NOTIFY on the
+   `flightdeck_fleet` channel with payload `{session_id, event_type,
+   event_id}`, one per changed session (see Worker / Event Processing →
+   Notify for who sends what, and when).
 3. **Hub LISTEN + single-row fetch.** The API hub
    (`api/internal/ws/hub.go::listenOnce`) holds one pgx connection
    permanently subscribed to `flightdeck_fleet`. On each notification it
    parses the payload, fetches the session row via
-   `store.GetSession(session_id)`, and fetches the triggering event via
-   `store.GetEvent(event_id)` — a PK lookup on `events.id`.
-4. **WebSocket broadcast.** The hub wraps the session + event into a
-   `fleetUpdate` envelope and broadcasts it to every WebSocket client
-   connected to `/api/v1/stream`.
+   `store.GetSession(session_id)`, and, when `event_id` is set, fetches
+   that event via `store.GetEvent(event_id)` — a PK lookup on `events.id`.
+   When the session has an agent, it also reads the agent's rolled-up
+   state via `store.GetAgentState(agent_id)`, the same rollup the agent
+   endpoints return.
+4. **WebSocket broadcast.** The hub wraps the session (+ event) into a
+   `fleetUpdate` envelope `{type, session, last_event?, agent_state?}`
+   and broadcasts it to every WebSocket client connected to
+   `/api/v1/stream`. The envelope's `type` is `session_start` or
+   `session_end` for those event types and `session_update` otherwise.
+   A state-only change (no `event_id`) broadcasts as `session_update`
+   with the fresh session row and no `last_event`. `agent_state` is the
+   agent's state at broadcast time, omitted when the session has no
+   agent or the read fails; the dashboard takes the agent's badge from
+   it, since a page holds only some of an agent's runs.
 
-The hub runs in O(1) per NOTIFY: PK lookup on `events.id`. When
-`GetSession` returns an error (e.g. session deleted between notify and
-read), the hub logs a warning and continues rather than exiting the
-listener loop.
+Per NOTIFY the hub makes three indexed reads, none of which scans a
+session's events or an agent's run history: the session by primary key
+(with its effective-policy lookups), the event by primary key on
+`events.id`, and the agent rollup. The rollup's "any run active" check
+is one probe of `sessions_active_by_agent_idx`, a partial index that
+holds only active runs and so stays small, and its "newest run" read
+takes the first entry of the agent's `(agent_id, started_at DESC)`
+index. When `GetSession` returns an error (e.g. session deleted
+between notify and read), the hub logs a warning and continues rather
+than exiting the listener loop; a failed agent-state read only drops
+`agent_state`.
 
 The session drawer renders events via `GET /v1/sessions/:id`, which calls
-`GetSessionEvents` once on drawer-open and returns the full ordered list.
-No race window: the query runs once after the user has already scrolled
-to the session, not once per incoming event.
+`GetSessionEvents` once on drawer-open and returns the list ordered by
+`occurred_at`, then `id`. No race window: the query runs once after the
+user has already scrolled to the session, not once per incoming event.
 
 #### Wire contract
 
@@ -4251,7 +4317,14 @@ to the session, not once per incoming event.
 authoritative definition. The hub's `notifyPayload` struct in
 `api/internal/ws/hub.go` must stay field-compatible. Adding fields is
 backward compatible (`json.Unmarshal` silently drops extras); removing or
-renaming fields is not.
+renaming fields is not. `event_type` and `event_id` are empty strings in
+a state-only change, which the hub reads as "the session changed, no
+event to fetch".
+
+The WebSocket envelope is the hub's `fleetUpdate` struct, read by
+`dashboard/src/store/fleet.ts` through the `FleetUpdate` type; the same
+rule applies to it: `agent_state` is optional on the wire, and a client
+that does not know it ignores it.
 
 ### Analytics endpoint
 
@@ -4764,6 +4837,25 @@ could leave `total` stale relative to `events`, breaking pagination math
 (`offset + len(events) > total`). Repeatable read pins both reads to the
 same snapshot.
 
+Rows are ordered by `occurred_at`, then `id`, both in the requested
+direction (`order=asc`, the default, or `desc`). The `id` tiebreaker
+makes the order total: events often share a timestamp (a client that
+stamps whole seconds, the reaper's synthetic `session_end` rows, which
+share one `NOW()`), and without it Postgres may order tied rows
+differently in each page's query, so offset paging could skip or repeat
+a row at a page boundary. `GET /v1/sessions/:id` orders its events the
+same way, also when `events_limit` caps them to the newest N.
+
+Two paging styles share the order. Offset paging (`limit` + `offset`)
+serves Fleet's history load, the Events page and the agent drawer.
+Keyset paging serves the run drawer's "Show older": `before` alone
+returns rows with `occurred_at < before`; `before` with `before_id`
+(the id of the oldest row the caller holds) returns the rows strictly
+before that row in the order, `occurred_at < before`, or
+`occurred_at = before` and `id < before_id`, so rows that share the
+cursor's timestamp are neither skipped nor repeated. `before_id`
+without `before`, or one that is not a UUID, is a 400.
+
 Each returned event carries the session-level identity attributes
 `framework`, `client_type`, and `agent_type`, projected via a
 `LEFT JOIN` to `sessions` on `session_id` — the events table stores
@@ -5022,7 +5114,12 @@ the canonical contract every future table adoption inherits.
 
 `dashboard/src/pages/Agents.tsx` hosts the `/agents` route. The
 page is a one-row-per-agent sortable table backed by the same
-`GET /v1/fleet` roster the swimlane uses. Each row carries
+`GET /v1/fleet` roster the swimlane uses. It loads that roster
+through `useFleet`, as Fleet does: once when the page mounts (a direct
+visit included), then live. The page starts no load of its own, so an
+empty roster, or a load that failed, waits for the next load (a new
+agent's run, a reconnect, the next visit) instead of loading again at
+once. Each row carries
 per-agent KPI sparklines fetched from
 `GET /v1/agents/:id/summary?period=7d&bucket=day` (one fetch per
 visible row on first mount, cached module-level so a re-render
@@ -5432,6 +5529,75 @@ front-end counterpart of the worker's parent-bump propagation.
 The resolution is best-effort: an unloaded parent is skipped and
 self-heals on the next fleet load.
 
+`applyUpdate` applies a WebSocket update to the session row it names:
+the swimlane row's copy of the session, the agent's `recent_sessions`
+entry, and the counts derived from them. A run's state comes only from
+the worker, which announces each reconciler and reaper transition (see
+Worker / Event Processing → Notify); the dashboard never applies the
+stale or lost thresholds itself. Only a `session_start` or an update
+that carries an event a client sent counts as activity. A state-only
+update (no `last_event`) and the reaper's close (a `session_end` whose
+`close_reason` is `orphan_timeout`; ingestion accepts that value from
+any client, but only the worker's reaper sends it in practice) change
+the run without refreshing the agent row's `last_seen_at`, moving it
+between activity buckets, or bumping its parent's cluster. When the
+page does not hold the run, the swimlane takes nothing from them: they
+add no row and no run, so a run the reaper closes after a day of
+silence does not appear as if it had just ended, and their event
+reaches neither the live feed nor the store's `lastEvent`. A row's
+`last_seen_at` never moves back: it takes the later of its own value
+and the session's.
+
+The agent's rolled-up `state`, which the Agents table, agent drawer and
+per-agent modal badges show, comes from the update's `agent_state`: the
+hub reads the agent's state with the same rollup the agent endpoints
+use (`active` when any of its runs is active, else the state of its
+most recently started run) and sends it with every broadcast. The page
+holds only an agent's newest runs and the last day's, so a state
+derived from those would miss a long-running run started earlier. The
+agent row the page holds takes the value even when the update's run is
+one the swimlane ignores; an update without `agent_state` leaves the
+badge as it was. The swimlane row badge reads the session rows the
+swimlane holds.
+
+Every update's session state is also recorded in the store
+(`lastSessionChange`) before it is applied, whether or not the page
+holds the run, for the run drawer (see Session drawer).
+
+`load()` (first load, filter change, a new agent's first run, the
+reconnect catch-up) replaces `agents` and `flavors` with a snapshot the
+API read while the request was out. An update broadcast after that
+read can arrive before the response, and the worker sends each state
+change once, so the store keeps such updates: while a load is in
+flight, `applyUpdate` records the newest update per session, and the
+load re-applies them over its snapshot in the order of each session's
+latest update, so an agent's badge ends on the state sent last.
+Updates applied before the load started are already in its snapshot
+and are not re-applied. A run start adds to the agent row's run count
+only when the row's recent runs do not already hold that run, so a
+start re-applied over a snapshot that counted it, or a start that
+arrives twice, counts once. A re-applied run start of an agent the
+snapshot lacks (filtered out, or off the page) draws the run without
+starting another load.
+
+One load of a view (page, page size, type filter) runs at a time. A
+call made while that view's load is in flight does not start a second
+one: once the load lands, or fails (every API request times out after
+30 seconds), one more load runs for all such calls, so each caller
+still gets a snapshot read after its call (the new agent's row, what a
+reconnect missed). A stream of calls (pages mounting together, new
+agents arriving) therefore cannot keep every load from landing, and
+the first paint waits for one load, not the last of several. A load of
+another view (a type filter change) supersedes the one in flight,
+which drops its result when it lands.
+
+Broadcasts sent while the stream is down are lost. After the stream
+reconnects, `useFleet` waits `RESYNC_DELAY_MS` (two seconds, twice the
+first reconnect step, so an API that opens and drops the socket while
+it restarts costs one refetch) and then `resync`s: it refetches the
+fleet as the first load does and bumps `resyncSeq`, which tells an open
+run drawer to refetch its run.
+
 `sessionStateCounts` is computed via `useMemo` from the live `flavors`
 array on every render and passed down to `SessionStateBar` as a prop.
 
@@ -5547,6 +5713,20 @@ that supports directives, see Observer-session class) and
 `flavorDirectives.length > 0` (filtered from the fleet store's
 `customDirectives` slice by the session's flavor).
 
+The drawer reads its run through its own fetch (`useSession`), and the
+fleet store's live stream tells it when to refetch: on an
+`mcp_server_attached` event of the run (the MCP SERVERS panel), when
+the store's `lastSessionChange` reports the run in a `state` or with
+an `ended_at` other than the drawer last asked for (the worker marking
+it stale or lost, a close, a revival; recorded even for a run the page
+does not hold), and when `resyncSeq` moves after the stream
+reconnected. "Last asked for" is the change the drawer last refetched
+for, or, before any since it opened the run, what it shows: a refetch
+reads the run after the change it was started for, so a quick revival
+that arrives while a stale refetch is in flight refetches again even
+though the screen still shows the run active. The state badge carries
+`data-testid="session-drawer-state"` and the state in `data-state`.
+
 Operator-facing prose calls a session a **run**; the drawer is the
 run drawer. It opens from five entry points: (1) an event circle on
 the Fleet swimlane, (2) a run-bracket glyph on the swimlane, (3) a
@@ -5656,13 +5836,18 @@ the 500-event cap.
 ### Bulk historical events hook
 
 `dashboard/src/hooks/useHistoricalEvents.ts` calls `fetchBulkEvents({
-from, limit: 500, offset })` (which hits `GET /v1/events`; the
-function also accepts `before` / `order` keyset params for
-newest-first drawer pagination) and returns the chronological list. Fleet groups the result by `session_id` to
+from, limit: 500, offset })` (which hits `GET /v1/events` with offset
+paging) and returns the chronological list. Fleet groups the result by `session_id` to
 populate `eventsCache` and seeds `feedEvents` from the historical data
 so the live feed is not empty on page load. A run with nothing cached
 fetches its own history once, when its row first mounts
 (`useSessionEvents`); WebSocket events flow into the same caches.
+
+The run drawer's "Show older" calls `fetchOlderEvents`, the keyset
+variant of the same endpoint: `before` and `before_id` name the oldest
+event the drawer holds, picked in the server's order (`occurred_at` to
+the microsecond, then `id`; `dashboard/src/lib/event-order.ts`), with
+`order=desc`.
 
 ### Timeline
 
@@ -6064,7 +6249,10 @@ A shared `SimpleIconSvg` helper renders simple-icons paths at viewBox
 session map, WebSocket stream, customDirectives slice.
 
 `dashboard/src/hooks/useWebSocket.ts` reconnects with exponential
-backoff: 1s → 2s → 4s, capped at 30s.
+backoff: 1s → 2s → 4s, capped at 30s, starting over after every
+successful open. When a socket opens after an earlier one was lost it
+calls the caller's `onReconnect`; `useFleet` uses it to refetch what
+the page missed while the stream was down (see Fleet view).
 
 ---
 
@@ -8177,6 +8365,12 @@ Postgres) via `make test-integration`:
 
 - `test_pipeline.py` — POST event → fleet → session detail → events
 - `test_session_states.py` — active → idle → stale → lost → revive
+- `test_ws_session_transitions.py` — the reconciler's stale and lost
+  transitions, the reaper's close and a parent revived by its child
+  reach an open `/v1/stream` WebSocket
+- `test_events_paging.py` — events that share a timestamp page through
+  `GET /v1/events` (offset, both directions, and the `before` /
+  `before_id` keyset) without a gap or a repeat
 - `test_enforcement.py` — WARN, DEGRADE, BLOCK threshold crossings
 - `test_killswitch.py` — single-agent + flavor-wide directive delivery
 - `test_prompt_capture.py` — `event_content` round-trip

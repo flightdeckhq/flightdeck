@@ -831,6 +831,12 @@ export interface FleetUpdate {
   type: "session_update" | "session_start" | "session_end";
   session: Session;
   last_event?: AgentEvent;
+  /** The session's agent's rolled-up state as the API computes it
+   *  (active when any of its runs is active, else its newest run's
+   *  state), read when the update was broadcast. The agent's badge
+   *  comes from here: a page holds only some of an agent's runs.
+   *  Absent when the session has no agent or the read failed. */
+  agent_state?: SessionState | "";
 }
 
 /** Token policy as returned by GET /v1/policies. */

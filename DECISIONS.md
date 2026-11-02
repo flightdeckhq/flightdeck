@@ -407,9 +407,8 @@ reaper's close and a parent revived by its child's event each send a
 `flightdeck_fleet` notification, one per session, in the existing
 `{session_id, event_type, event_id}` payload: empty `event_type` and
 `event_id` for a state-only change, the synthetic `session_end` for a
-reaped close. The reconciler and the reaper notify inside the
-transaction that makes the change. The hub re-reads the session and
-broadcasts it as it does after an event.
+reaped close, each sent once the change has committed. The hub
+re-reads the session and broadcasts it as it does after an event.
 **Why:** only event writes notified, so a run that died with Fleet open
 stayed active in the browser until reload.
 **Rejected alternative:** the dashboard applying the worker's 2 and 30

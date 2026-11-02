@@ -2986,7 +2986,7 @@ are minutes to hours long; it only adds load. Each worker process runs
 one reconciler: a pass that outlasts the interval delays the next tick
 rather than overlapping it, and the reaper locks rows with `SKIP
 LOCKED`, so the passes of several worker replicas never double-close
-a session. The pass runs in one transaction and sends a
+a session. After its UPDATEs commit, the pass sends a
 `flightdeck_fleet` notification for every session it moved (see
 Notify), so an open dashboard sees a run go stale or lost without
 reloading; the dashboard never applies the thresholds itself.
@@ -3204,27 +3204,28 @@ and no event was written. Carrying the event id otherwise lets the hub
 fetch exactly that event by primary key instead of re-reading the
 session's events and taking the newest, which races paired writes.
 
-The reconciler pass and the reaper send their notifications inside the
-transaction that makes the change, in one `pg_notify` statement for the
-batch. Postgres delivers a transaction's notifications when it commits,
-so the hub never reads a row before the change is visible, a pass that
-rolls back announces nothing, and a session that goes `stale` and `lost`
-in one pass is announced once. The event and parent-bump notifications
-follow their write as a separate statement; a failed notification is
-logged and the change stands, and the dashboard shows it on its next
-fetch.
+Every notification is sent after the write it announces has committed,
+as its own statement; the reconciler and the reaper send a pass's
+notifications in one `pg_notify` statement for the batch, once per
+session, so a session that goes `stale` and `lost` in the same pass is
+announced once. Sending after the commit means the hub never reads a
+row before the change is visible. A failed notification is logged and
+the change stands; the dashboard shows it on its next fetch. The state
+machine therefore never depends on the notification channel: a full
+NOTIFY queue costs live updates, not stale, lost or closed transitions.
 
 Postgres delivers notifications in commit order, and the hub handles
 them one at a time and re-reads the session row for each. Every
 broadcast therefore carries a row at least as new as the change that
-sent it, and the last broadcast for a session carries its current
-state. A reconciler pass and an event that revives the same session
-serialize on the row lock: when the revival commits first, the
-reconciler's UPDATE re-checks its condition on the revived row, skips
-it and announces nothing; when the reconciler commits first, the
-event's own notification follows and the hub's re-read shows the
-session active again. A repeated broadcast of the same row is harmless,
-because the dashboard replaces the session row it holds.
+sent it, and since each change notifies after it commits, the hub's
+last read of a session follows its last change. A reconciler pass and
+an event that revives the same session serialize on the row lock: when
+the revival commits first, the reconciler's UPDATE re-checks its
+condition on the revived row, skips it and announces nothing; when the
+reconciler commits first, the event's own notification follows and the
+hub's re-read shows the session active again. A repeated broadcast of
+the same row is harmless, because the dashboard replaces the session
+row it holds.
 
 ---
 

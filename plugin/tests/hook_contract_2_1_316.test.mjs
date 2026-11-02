@@ -11,7 +11,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { cpSync, mkdtempSync, readFileSync, readdirSync } from "node:fs";
+import { cpSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,11 +29,48 @@ const FIXTURE = join(dirname(fileURLToPath(import.meta.url)), "fixtures", "claud
 // them at a copy of the fixture's.
 const RECORDED_PROJECT_DIR = "/home/user/.claude/projects/-home-user-project";
 
+const TIMESTAMP_RE = /"timestamp":"([^"]+)"/g;
+
+/** The ``.jsonl`` files under ``dir``, at any depth. */
+function jsonlFiles(dir) {
+  return readdirSync(dir, { recursive: true })
+    .filter((name) => String(name).endsWith(".jsonl"))
+    .map((name) => join(dir, String(name)));
+}
+
+/**
+ * Move every record time in the copied transcripts by one offset, so the
+ * newest is a minute old and the spacing between records is kept. The
+ * replayed post_call events carry these times, and ingestion refuses an
+ * event older than 48 hours; without the move the replay would fail two
+ * days after the recording.
+ */
+function bringTranscriptsToNow(dir) {
+  const files = jsonlFiles(dir);
+  let newest = -Infinity;
+  for (const file of files) {
+    for (const [, at] of readFileSync(file, "utf8").matchAll(TIMESTAMP_RE)) {
+      const ms = Date.parse(at);
+      if (Number.isFinite(ms)) newest = Math.max(newest, ms);
+    }
+  }
+  if (!Number.isFinite(newest)) return;
+  const shift = Date.now() - 60_000 - newest;
+  for (const file of files) {
+    const moved = readFileSync(file, "utf8").replace(TIMESTAMP_RE, (whole, at) => {
+      const ms = Date.parse(at);
+      return Number.isFinite(ms) ? `"timestamp":"${new Date(ms + shift).toISOString()}"` : whole;
+    });
+    writeFileSync(file, moved);
+  }
+}
+
 /** The recorded hooks, grouped by Claude Code session, with transcript
  * paths moved to a temp copy of the fixture's transcripts. */
 function loadSessions() {
   const transcripts = mkdtempSync(join(privateTmp, "transcripts-"));
   cpSync(join(FIXTURE, "transcripts"), transcripts, { recursive: true });
+  bringTranscriptsToNow(transcripts);
   const sessions = new Map();
   for (const line of readFileSync(join(FIXTURE, "hooks.jsonl"), "utf8").trim().split("\n")) {
     const rec = JSON.parse(line.split(RECORDED_PROJECT_DIR).join(transcripts));

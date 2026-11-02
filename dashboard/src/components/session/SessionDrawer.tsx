@@ -46,6 +46,7 @@ import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { RelationshipPill } from "@/components/facets/RelationshipPill";
 import { getClaudeCodeVersion, isClaudeCodeSession } from "@/lib/models";
 import { getBadge, getSummaryRows, truncateSessionId } from "@/lib/events";
+import { compareEventOrder, oldestEvent } from "@/lib/event-order";
 import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { OSIcon } from "@/components/ui/OSIcon";
@@ -493,22 +494,17 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
 
   const handleLoadOlder = useCallback(async () => {
     if (!sessionId || loadingOlder || !hasMoreOlder) return;
-    const cached = eventsCache.get(sessionId) ?? [];
-    if (cached.length === 0) return;
-    // Cache is ASC, so index 0 is the oldest event currently visible
-    // -- that's the keyset cursor for the next page. The length>0
-    // guard above means cached[0] is always defined; the explicit
-    // continue keeps noUncheckedIndexedAccess happy without a
-    // non-null assertion.
-    const oldest = cached[0];
+    // The keyset cursor is the oldest event the drawer holds, in the
+    // server's order (occurred_at to the microsecond, then id). Its id
+    // lets the server resume right after it instead of dropping the
+    // other events that share its timestamp. The cache is not
+    // guaranteed to be in that order (live events are appended), so
+    // the oldest is looked up rather than read from index 0.
+    const oldest = oldestEvent(eventsCache.get(sessionId) ?? []);
     if (!oldest) return;
     setLoadingOlder(true);
     try {
-      const resp = await fetchOlderEvents(
-        sessionId,
-        oldest.occurred_at,
-        eventsLimit,
-      );
+      const resp = await fetchOlderEvents(sessionId, oldest, eventsLimit);
       const older = resp.events ?? [];
       if (older.length > 0) {
         const existing = eventsCache.get(sessionId) ?? [];
@@ -520,11 +516,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
             seen.add(e.id);
           }
         }
-        merged.sort(
-          (a, b) =>
-            new Date(a.occurred_at).getTime() -
-            new Date(b.occurred_at).getTime(),
-        );
+        merged.sort(compareEventOrder);
         eventsCache.set(sessionId, merged);
         setPaginationVersion((v) => v + 1);
       }

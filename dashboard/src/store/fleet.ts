@@ -229,6 +229,83 @@ function recentSessionToSession(r: RecentSession): Session {
   };
 }
 
+/** Whether a live update is the agent doing something. A run starting
+ *  always is: the hub types an update ``session_start`` only for that
+ *  event. The worker also announces state changes it makes itself: the
+ *  reconciler marking a run stale or lost, or a child's event reviving
+ *  its parent, arrive with no event; the reaper's close of a run silent
+ *  past the orphan timeout arrives with the synthetic ``session_end`` it
+ *  wrote, whose ``close_reason`` is ``orphan_timeout`` (no client sends
+ *  that value). Neither refreshes an agent's last-seen time, moves it
+ *  between activity buckets, or floats its parent's cluster. */
+function isActivity(update: FleetUpdate): boolean {
+  if (update.type === "session_start") return true;
+  const event = update.last_event;
+  if (!event) return false;
+  return !(
+    event.event_type === "session_end" &&
+    event.payload?.close_reason === "orphan_timeout"
+  );
+}
+
+/** Whether a swimlane row of this page holds the run. */
+function holdsRun(flavors: FlavorSummary[], sessionId: string): boolean {
+  return flavors.some((f) => f.sessions.some((s) => s.session_id === sessionId));
+}
+
+/** The later of two ISO timestamps; a missing or unparseable one loses.
+ *  A row's ``last_seen_at`` only moves forward: a live update for an
+ *  older run, or a state change, must not pull it back. */
+function laterTimestamp(
+  a: string | undefined,
+  b: string | undefined,
+): string | undefined {
+  const ta = a ? Date.parse(a) : Number.NaN;
+  const tb = b ? Date.parse(b) : Number.NaN;
+  if (Number.isNaN(tb)) return a;
+  if (Number.isNaN(ta)) return b;
+  return tb > ta ? b : a;
+}
+
+/** The agent's rolled-up state as the API derives it
+ *  (``agentStateRollupSQL`` in api/internal/store/postgres.go):
+ *  ``active`` when any of its runs is active, else the state of its
+ *  most recently started run. Computed over the runs this page holds;
+ *  ``fallback`` when it holds none. */
+function rollUpAgentState(
+  runs: Iterable<Pick<Session, "state" | "started_at">>,
+  fallback: SessionState | "",
+): SessionState | "" {
+  let newest: Pick<Session, "state" | "started_at"> | undefined;
+  for (const run of runs) {
+    if (run.state === "active") return "active";
+    if (!newest || Date.parse(run.started_at) > Date.parse(newest.started_at)) {
+      newest = run;
+    }
+  }
+  return newest ? newest.state : fallback;
+}
+
+/** ``recent_sessions`` with the updated run's entry, when it holds one,
+ *  refreshed from the live session row. */
+function refreshRecentSession(
+  recent: RecentSession[] | undefined,
+  s: Session,
+): RecentSession[] | undefined {
+  if (!recent?.some((r) => r.session_id === s.session_id)) return recent;
+  return recent.map((r) =>
+    r.session_id === s.session_id
+      ? {
+          ...r,
+          state: s.state,
+          ended_at: s.ended_at ?? null,
+          last_seen_at: s.last_seen_at || r.last_seen_at,
+          tokens_used: s.tokens_used,
+        }
+      : r,
+  );
+}
+
 /** A session's ``context.telemetry`` when it is a string, else null:
  *  the value an agent row built from a live update carries as its
  *  ``telemetry``. */
@@ -409,6 +486,12 @@ export const useFleetStore = create<FleetState>((set, get) => ({
 
   applyUpdate: (update: FleetUpdate) => {
     const { flavors, agents, shuttingDown, enteredBucketAt } = get();
+    const activity = isActivity(update);
+    // A state change the worker made to a run this page does not hold
+    // has nothing to update: no row or run on the page shows it, and
+    // adding one would draw a run the reaper closed after a day of
+    // silence as if it had just ended.
+    if (!activity && !holdsRun(flavors, update.session.session_id)) return;
     // The swimlane row key is agent_id (stored under the legacy
     // ``flavor`` field name). Updates for sessions without an
     // agent_id (legacy rows awaiting enrichment) land under the
@@ -492,39 +575,44 @@ export const useFleetStore = create<FleetState>((set, get) => ({
         // Existing agent — patch in the same fields as before AND
         // head-prepend the new session into recent_sessions on
         // session_start so parent_session_id stays resolvable
-        // without a full refetch. Non-start events leave
-        // recent_sessions untouched (the existing entry already
-        // covers the session).
-        nextAgents = agents.map((a) =>
-          a.agent_id === aid
-            ? {
-                ...a,
-                total_sessions: isStart
-                  ? a.total_sessions + 1
-                  : a.total_sessions,
-                last_seen_at: nowIso,
-                state:
-                  update.session.state === "active" ||
-                  update.session.state === "idle"
-                    ? ("active" as SessionState)
-                    : a.state,
-                // A new run is the agent's latest session, so its
-                // context names the agent's source from now on.
-                telemetry:
-                  isStart && update.session.context
-                    ? contextTelemetry(update.session)
-                    : a.telemetry,
-                recent_sessions: isStart
-                  ? [
-                      sessionToRecentSession(update.session, parentAgentID),
-                      ...(a.recent_sessions ?? []).filter(
-                        (s) => s.session_id !== update.session.session_id,
-                      ),
-                    ].slice(0, RECENT_SESSIONS_WINDOW)
-                  : a.recent_sessions,
-              }
-            : a,
-        );
+        // without a full refetch. A non-start update refreshes the
+        // existing entry's state, ended_at and last_seen_at.
+        //
+        // Only activity refreshes last_seen_at. The agent's state is
+        // re-derived from its runs the way the API rolls it up, so it
+        // drops from active once its last live run goes stale, lost
+        // or closed, and comes back when one revives.
+        const agentRuns =
+          updated.find((f) => f.flavor === agentKey)?.sessions ?? [];
+        nextAgents = agents.map((a) => {
+          if (a.agent_id !== aid) return a;
+          const recentSessions = isStart
+            ? [
+                sessionToRecentSession(update.session, parentAgentID),
+                ...(a.recent_sessions ?? []).filter(
+                  (s) => s.session_id !== update.session.session_id,
+                ),
+              ].slice(0, RECENT_SESSIONS_WINDOW)
+            : refreshRecentSession(a.recent_sessions, update.session);
+          // The swimlane row's copy of a run is the live one; an entry
+          // only recent_sessions holds still counts.
+          const runs = new Map<string, Pick<Session, "state" | "started_at">>();
+          for (const r of recentSessions ?? []) runs.set(r.session_id, r);
+          for (const s of agentRuns) runs.set(s.session_id, s);
+          return {
+            ...a,
+            total_sessions: isStart ? a.total_sessions + 1 : a.total_sessions,
+            last_seen_at: activity ? nowIso : a.last_seen_at,
+            state: rollUpAgentState(runs.values(), a.state),
+            // A new run is the agent's latest session, so its
+            // context names the agent's source from now on.
+            telemetry:
+              isStart && update.session.context
+                ? contextTelemetry(update.session)
+                : a.telemetry,
+            recent_sessions: recentSessions,
+          };
+        });
       } else if (isStart) {
         // Brand-new agent — synthesise a row so the table can render
         // the agent (and its indent if it carries parent_session_id)
@@ -572,13 +660,18 @@ export const useFleetStore = create<FleetState>((set, get) => ({
       }
 
       if (nextAgents !== agents) {
-        const nextEntries = advanceBucketEntry(
-          enteredBucketAt,
-          aid,
-          priorAgent?.last_seen_at,
-          nowIso,
-          now,
-        );
+        // Only activity can move the agent into a fresher bucket; a
+        // state change leaves its last_seen_at, and so its bucket, as
+        // they were.
+        const nextEntries = activity
+          ? advanceBucketEntry(
+              enteredBucketAt,
+              aid,
+              priorAgent?.last_seen_at,
+              nowIso,
+              now,
+            )
+          : enteredBucketAt;
         set({
           agents: nextAgents,
           enteredBucketAt:
@@ -599,9 +692,11 @@ export const useFleetStore = create<FleetState>((set, get) => ({
     // entry (floats it to the top within LIVE / RECENT). Best-effort:
     // if the parent row is not loaded yet the bump is skipped and
     // self-heals on the next load() (parents of in-window children
-    // ride along via the include_parents fetch flag).
+    // ride along via the include_parents fetch flag). A child's state
+    // change is not activity and bumps nothing; a parent its child
+    // revived arrives as its own update.
     const parentSessionId = update.session.parent_session_id;
-    if (parentSessionId) {
+    if (parentSessionId && activity) {
       const state = get();
       const parentFlavor = state.flavors.find((f) =>
         f.sessions.some((s) => s.session_id === parentSessionId),
@@ -691,7 +786,10 @@ function applySessionUpdate(
       agent_id: f.agent_id ?? session.agent_id ?? undefined,
       agent_name: f.agent_name ?? session.agent_name ?? undefined,
       client_type: f.client_type ?? session.client_type ?? undefined,
-      last_seen_at: session.last_seen_at || f.last_seen_at,
+      // The row's last activity across its runs: an update for an
+      // older run, or a state change the worker made, never moves it
+      // back.
+      last_seen_at: laterTimestamp(f.last_seen_at, session.last_seen_at),
       telemetry: newestTelemetry(sessions, f.telemetry ?? null),
     };
   });

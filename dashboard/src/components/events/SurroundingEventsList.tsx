@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import { fetchBulkEvents } from "@/lib/api";
+import { compareEventOrder, compareOccurredAt } from "@/lib/event-order";
 import { getBadge, getEventDetail } from "@/lib/events";
 import type { AgentEvent } from "@/lib/types";
 
@@ -17,9 +18,11 @@ interface SurroundingEventsListProps {
 
 const DEFAULT_WINDOW = 5;
 
-// Events sharing the anchor's timestamp sort in no fixed order on the
-// server, so each side fetches this many extra to keep the anchor and
-// its true neighbours in the result when several share a time.
+// Both pages are bounded by the anchor's timestamp, inclusive, and the
+// server orders events that share it by id, so each page also holds the
+// tied events that fall on the anchor's other side. Each side fetches
+// this many extra to keep the anchor and its true neighbours in the
+// result when several share a time.
 const TIE_MARGIN = 5;
 
 const EPOCH = "1970-01-01T00:00:00Z";
@@ -30,30 +33,11 @@ const EPOCH = "1970-01-01T00:00:00Z";
 // or the request refused when the anchor itself is ahead.
 const FAR_FUTURE = "9999-12-31T23:59:59Z";
 
-/** The fraction of a second in an API timestamp, as nine digits. */
-function nanosOf(timestamp: string): string {
-  return (timestamp.match(/\.(\d+)/)?.[1] ?? "").padEnd(9, "0").slice(0, 9);
-}
-
-/**
- * Orders two API timestamps the way the server does. Date keeps
- * milliseconds only, and the API returns microseconds, so equal
- * milliseconds fall back to the fraction digits.
- */
-function compareOccurredAt(a: string, b: string): number {
-  const ms = new Date(a).getTime() - new Date(b).getTime();
-  if (ms !== 0) return ms;
-  const na = nanosOf(a);
-  const nb = nanosOf(b);
-  return na < nb ? -1 : na > nb ? 1 : 0;
-}
-
-/** ``events`` deduplicated by id, in occurred_at order (id breaks ties). */
+/** ``events`` deduplicated by id, in the server's order (occurred_at,
+ *  then id). */
 function mergeInTimeOrder(events: AgentEvent[]): AgentEvent[] {
   const byId = new Map(events.map((e) => [e.id, e]));
-  return [...byId.values()].sort(
-    (a, b) => compareOccurredAt(a.occurred_at, b.occurred_at) || a.id.localeCompare(b.id),
-  );
+  return [...byId.values()].sort(compareEventOrder);
 }
 
 /**

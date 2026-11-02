@@ -1428,26 +1428,6 @@ def test_context_facets_aggregation(
 _MT_NUM_THREADS = 4
 _MT_CALLS_PER_THREAD = 5
 
-# The flavor token budget of the pattern B degrade test (M7), with
-# degrade at 1% and block at 100%. Its four workers call without
-# pause; each call adds 18 tokens (10 in, 8 out) and takes at least the
-# mock's 50 ms, so they add at most 4 x 18 / 0.05 = 1,440 tokens a
-# second, and on a loaded machine far fewer (about 54 a second was
-# measured on a busy laptop). Both thresholds scale with the budget, so
-# the budget has to suit both ends:
-#   - block (75,000 tokens) needs at least 52 s even at the fastest
-#     rate, longer than the test can run (30 s for the degrade
-#     acknowledgement plus 20 s for phase 2), so a block can never
-#     shut the workers down before phase 2 ends;
-#   - degrade (750 tokens) fires after about 0.5 s at the fastest rate
-#     and about 14 s at 54 tokens a second, leaving its round trip
-#     (policy evaluation, the directive, the sensor's acknowledgement,
-#     its directive_result stored and polled) the rest of the 30 s.
-# A 10,000 budget put the block at about 7 s, and a round trip slower
-# than that under CI load failed the test; a 200,000 budget put degrade
-# (at 2%) past the 30 s window wherever calls are slow.
-_PATTERN_B_TOKEN_LIMIT = 75_000
-
 
 # ======================================================================
 # Test M1 -- Pattern B: concurrent calls produce no data loss
@@ -2174,17 +2154,19 @@ def test_pattern_b_degrade_seen_by_all_threads(
     flavor = unique_flavor
     degraded_model = "claude-haiku-4-5-20251001"
 
-    # No warn threshold: validateDirectiveRequest in
-    # api/internal/handlers/policies.go requires warn_at_pct <
-    # degrade_at_pct only when warn is set, and leaving it out lets
-    # degrade sit at 1%. See _PATTERN_B_TOKEN_LIMIT for why degrade
-    # comes early and block never comes within the test's windows.
+    # validateDirectiveRequest in api/internal/handlers/policies.go
+    # requires warn_at_pct < degrade_at_pct <= block_at_pct (strict).
+    # token_limit=10000, degrade_at_pct=2 → trigger threshold = 200
+    # tokens. Each call adds 18 tokens, so the workers fire degrade
+    # after ~12 cumulative calls across all threads -- a couple of
+    # seconds at most.
     code, policy_body = _post_policy(
         {
             "scope": "flavor",
             "scope_value": flavor,
-            "token_limit": _PATTERN_B_TOKEN_LIMIT,
-            "degrade_at_pct": 1,
+            "token_limit": 10_000,
+            "warn_at_pct": 1,
+            "degrade_at_pct": 2,
             "block_at_pct": 100,
             "degrade_to": degraded_model,
         }

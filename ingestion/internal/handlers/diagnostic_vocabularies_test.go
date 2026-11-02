@@ -9,10 +9,12 @@ import (
 	"testing"
 )
 
-// The llm_error taxonomy has three first-party emitters. Ingestion stores
-// an error_type outside validLLMErrorTypes as "other", so every value
-// each emitter sends must be in it; these tests read the emitters' own
-// tables so a value added to one fails here, not in production.
+// Ingestion stores a diagnostic value outside its vocabulary as "other",
+// so every value a first-party emitter sends must be in it. The llm_error
+// taxonomy has three emitters (the sensor, the Claude Code plugin, the
+// OTLP dialect); the stream outcome and abort reasons have one (the
+// sensor). These tests read the emitters' own tables, so a value added to
+// one fails here, not in production.
 
 // repoFile reads a file of another component. It fails, not skips, when
 // the file is missing: the vocabulary must stay pinned to it.
@@ -50,28 +52,60 @@ func quotedWords(src string) []string {
 	return out
 }
 
-func taxonomy() []string {
-	out := make([]string, 0, len(validLLMErrorTypes))
-	for v := range validLLMErrorTypes {
-		out = append(out, v)
+// sortedValues is a vocabulary's values in order, leaving out except.
+func sortedValues(valid map[string]bool, except string) []string {
+	out := make([]string, 0, len(valid))
+	for v := range valid {
+		if v != except {
+			out = append(out, v)
+		}
 	}
 	sort.Strings(out)
 	return out
 }
 
-// The sensor's ErrorType enum is the taxonomy: the two sets are equal.
-func TestLLMErrorTypes_MatchTheSensorClassifier(t *testing.T) {
+var enumMember = regexp.MustCompile(`(?m)^\s+[A-Z_]+ = "([a-z_]+)"$`)
+
+// sensorEnum is the sorted values of a StrEnum class in the sensor's
+// core/errors.py.
+func sensorEnum(t *testing.T, class string) []string {
+	t.Helper()
 	src := repoFile(t, "sensor", "flightdeck_sensor", "core", "errors.py")
-	enum := block(t, src, "class ErrorType(", "\n\n\n")
-	values := regexp.MustCompile(`(?m)^\s+[A-Z_]+ = "([a-z_]+)"$`).FindAllStringSubmatch(enum, -1)
+	values := enumMember.FindAllStringSubmatch(block(t, src, "class "+class+"(", "\n\n\n"), -1)
 	got := make([]string, 0, len(values))
 	for _, m := range values {
 		got = append(got, m[1])
 	}
+	if len(got) == 0 {
+		t.Fatalf("no members found in %s; the class's shape changed", class)
+	}
 	sort.Strings(got)
-	want := taxonomy()
+	return got
+}
+
+// The sensor's ErrorType enum is the taxonomy, the catch-all included:
+// the two sets are equal.
+func TestLLMErrorTypes_MatchTheSensorClassifier(t *testing.T) {
+	got, want := sensorEnum(t, "ErrorType"), sortedValues(validLLMErrorTypes, "")
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("sensor ErrorType = %v, validLLMErrorTypes = %v", got, want)
+	}
+}
+
+// The sensor's StreamOutcome and AbortReason enums are the stream
+// vocabularies apart from the catch-all, which only ingestion stores.
+func TestStreamVocabularies_MatchTheSensor(t *testing.T) {
+	for _, tc := range []struct {
+		class string
+		valid map[string]bool
+	}{
+		{"StreamOutcome", validFinalOutcomes},
+		{"AbortReason", validAbortReasons},
+	} {
+		got, want := sensorEnum(t, tc.class), sortedValues(tc.valid, unrecognisedValue)
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("sensor %s = %v, ingestion's vocabulary = %v", tc.class, got, want)
+		}
 	}
 }
 

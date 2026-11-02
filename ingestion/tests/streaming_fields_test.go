@@ -419,3 +419,80 @@ func TestStreamingFields_KnownValuesPublishedVerbatim(t *testing.T) {
 		}
 	}
 }
+
+// rawEvent is a posted body written by hand, so a test controls every
+// number literal (a Go float marshals 5 as 5, never 5.0).
+func rawEvent(eventType, fields string) []byte {
+	return []byte(`{"session_id":"22222222-2222-4222-8222-222222222222",` +
+		`"agent_id":"11111111-1111-4111-8111-111111111111",` +
+		`"agent_type":"production","client_type":"flightdeck_sensor",` +
+		`"event_type":"` + eventType + `",` + fields + `}`)
+}
+
+// Content numbers that float64 cannot hold, an id of 19 digits and a
+// decimal of 20, reach the bus as they were sent when a replaced value
+// makes ingestion rewrite the event.
+func TestStreamingFields_ReplacementKeepsEveryNumberLiteral(t *testing.T) {
+	body := rawEvent("post_call", `"tokens_input":5.0,"tokens_output":1e2,"tokens_total":105,`+
+		`"streaming":{"final_outcome":"truncated","ttft_ms":142.000000000000001,"chunk_count":38},`+
+		`"has_content":true,"content":{"messages":[{"role":"user","content":"hi",`+
+		`"metadata":{"channel_id":1234567890123456789,"ratio":0.30000000000000001665}}]}`)
+	code, resp, published := postCapturing(t, body)
+	if code != http.StatusOK {
+		t.Fatalf("status %d, want 200 (body %s)", code, resp)
+	}
+	for _, literal := range []string{
+		`1234567890123456789`, `0.30000000000000001665`, `"tokens_input":5.0`,
+		`"tokens_output":1e2`, `142.000000000000001`, `"final_outcome":"other"`,
+	} {
+		if !bytes.Contains(published, []byte(literal)) {
+			t.Errorf("published body lacks %s: %s", literal, published)
+		}
+	}
+}
+
+// The session_start rewrite that attaches the token keeps every number
+// literal too.
+func TestSessionStart_TokenRewriteKeepsEveryNumberLiteral(t *testing.T) {
+	body := rawEvent("session_start", `"sensor_version":"0.8.0",`+
+		`"context":{"pid":1234567890123456789,"load":0.30000000000000001665,"cpus":8.0}`)
+	code, resp, published := postCapturing(t, body)
+	if code != http.StatusOK {
+		t.Fatalf("status %d, want 200 (body %s)", code, resp)
+	}
+	for _, literal := range []string{
+		`1234567890123456789`, `0.30000000000000001665`, `"cpus":8.0`,
+		`"token_id":"tok-id"`, `"token_name":"tok-name"`,
+	} {
+		if !bytes.Contains(published, []byte(literal)) {
+			t.Errorf("published body lacks %s: %s", literal, published)
+		}
+	}
+}
+
+// A count sent as 5.0 is a whole number and is accepted, and an empty
+// streaming block is a valid one; with nothing to replace, both reach
+// the bus byte for byte.
+func TestStreamingFields_RawLiteralsAndEmptyBlockPublishedVerbatim(t *testing.T) {
+	for name, body := range map[string][]byte{
+		"partial count 5.0": rawEvent("llm_error",
+			`"error":{"error_type":"stream_error","abort_reason":"error_mid_stream",`+
+				`"partial_chunks":5.0,"partial_tokens_input":1500.0,"partial_tokens_output":2.4e2}`),
+		"chunk_count 38.0": rawEvent("post_call",
+			`"streaming":{"final_outcome":"completed","chunk_count":38.0,"ttft_ms":0}`),
+		"empty streaming block": rawEvent("post_call", `"streaming":{}`),
+	} {
+		code, resp, published := postCapturing(t, body)
+		if code != http.StatusOK {
+			t.Fatalf("%s: status %d, want 200 (body %s)", name, code, resp)
+		}
+		if !bytes.Equal(published, body) {
+			t.Errorf("%s was changed on the way to the bus:\n got %s\nwant %s", name, published, body)
+		}
+	}
+	// 5.5 is not a whole number.
+	code, resp, _ := postCapturing(t, rawEvent("llm_error", `"error":{"partial_chunks":5.5}`))
+	if code != http.StatusBadRequest || !strings.Contains(resp, "error.partial_chunks") {
+		t.Errorf("partial_chunks 5.5: status %d (body %s), want 400 naming it", code, resp)
+	}
+}

@@ -179,41 +179,36 @@ func checkTimingField(obj map[string]any, prefix, key string) string {
 // normalizeDiagnosticValues replaces each stream outcome, abort reason
 // and llm_error type outside its vocabulary with unrecognisedValue, and
 // counts and logs the replacement. It runs on a payload validateEventPayload
-// accepted, so every value it meets is a string or absent. It reports
-// whether it changed the payload, which the caller then re-encodes. The
-// OTLP receiver builds its streaming blocks and error types from the
-// vocabularies itself, so only a posted event can need it.
-func normalizeDiagnosticValues(payload map[string]any) bool {
-	changed := false
+// accepted, so every value it meets is a string or absent. It returns
+// one edit per replaced value, for the caller to apply to the event's
+// body with patchJSON. The OTLP receiver builds its streaming blocks and
+// error types from the vocabularies itself, so only a posted event can
+// need it.
+func normalizeDiagnosticValues(payload map[string]any) []rawEdit {
+	var edits []rawEdit
 	if block, ok := payload["streaming"].(map[string]any); ok {
-		if normalizeValue(block, "streaming.final_outcome", "final_outcome", validFinalOutcomes) {
-			changed = true
-		}
-		if normalizeValue(block, "streaming.abort_reason", "abort_reason", validAbortReasons) {
-			changed = true
-		}
+		edits = normalizeValue(edits, block, "streaming", "final_outcome", validFinalOutcomes)
+		edits = normalizeValue(edits, block, "streaming", "abort_reason", validAbortReasons)
 	}
 	if payload["event_type"] == "llm_error" {
 		if errObj, ok := payload["error"].(map[string]any); ok {
-			if normalizeValue(errObj, "error.error_type", "error_type", validLLMErrorTypes) {
-				changed = true
-			}
-			if normalizeValue(errObj, "error.abort_reason", "abort_reason", validAbortReasons) {
-				changed = true
-			}
+			edits = normalizeValue(edits, errObj, "error", "error_type", validLLMErrorTypes)
+			edits = normalizeValue(edits, errObj, "error", "abort_reason", validAbortReasons)
 		}
 	}
-	return changed
+	return edits
 }
 
-func normalizeValue(obj map[string]any, field, key string, valid map[string]bool) bool {
+// normalizeValue replaces obj[key], an object found under parent, when it
+// is a string outside valid, and appends the matching edit.
+func normalizeValue(edits []rawEdit, obj map[string]any, parent, key string, valid map[string]bool) []rawEdit {
 	s, ok := obj[key].(string)
 	if !ok || valid[s] {
-		return false
+		return edits
 	}
 	obj[key] = unrecognisedValue
-	diagnosticReplacements.note(field, s)
-	return true
+	diagnosticReplacements.note(parent+"."+key, s)
+	return append(edits, rawEdit{path: []string{parent, key}, value: unrecognisedValue})
 }
 
 // diagnosticReplacements counts the values normalizeDiagnosticValues
@@ -222,46 +217,98 @@ func normalizeValue(obj map[string]any, field, key string, valid map[string]bool
 // running count, as the publisher's lost-event error does. A sensor
 // ahead of the server can send an unknown value on every streamed call,
 // and one line per event would let it drive log volume.
-var diagnosticReplacements = newReplacementLog(time.Now)
+var diagnosticReplacements = newReplacementLog(time.Now, func(d time.Duration, f func()) {
+	time.AfterFunc(d, f)
+})
 
 // replacementLogInterval bounds the replacement warning to one line per
 // interval per process; a second reports a new value promptly and keeps
 // a client that sends one on every call to sixty lines a minute.
 const replacementLogInterval = time.Second
 
+// replacementLog counts replacements and logs at most one line per
+// replacementLogInterval. A replacement inside the interval is held and
+// a single flush is scheduled for the interval's end, so the tail of a
+// burst is logged within the interval even if no replacement follows.
+// Every replacement is either named by a line or counted in exactly one
+// line's suppressed_since_last.
 type replacementLog struct {
-	now        func() time.Time
-	mu         sync.Mutex
-	lastLogged time.Time
-	total      int64
-	suppressed int64
+	now   func() time.Time
+	after func(time.Duration, func())
+
+	mu           sync.Mutex
+	lastLogged   time.Time
+	total        int64
+	suppressed   int64
+	flushPending bool
+	// heldField and heldValue are the latest replacement not logged yet,
+	// which the flush names.
+	heldField, heldValue string
 }
 
-func newReplacementLog(now func() time.Time) *replacementLog {
-	return &replacementLog{now: now}
+func newReplacementLog(now func() time.Time, after func(time.Duration, func())) *replacementLog {
+	return &replacementLog{now: now, after: after}
 }
 
-// note counts one replacement and logs it unless a line went out less
-// than replacementLogInterval ago; the next line reports how many were
-// not logged in between.
+// replacementLine is one warning, built under the lock and written
+// after it is released.
+type replacementLine struct {
+	field, value           string
+	total, suppressedSince int64
+}
+
+func (l replacementLine) write() {
+	slog.Warn("unrecognised diagnostic value stored as "+unrecognisedValue,
+		"field", l.field,
+		"value", loggableValue(l.value),
+		"replaced_total", l.total,
+		"suppressed_since_last", l.suppressedSince,
+	)
+}
+
+// note counts one replacement and logs it, unless a line went out less
+// than replacementLogInterval ago: then the replacement is held for the
+// flush scheduled at the interval's end.
 func (r *replacementLog) note(field, value string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.total++
 	now := r.now()
-	if now.Sub(r.lastLogged) < replacementLogInterval {
+	if since := now.Sub(r.lastLogged); since < replacementLogInterval {
 		r.suppressed++
+		r.heldField, r.heldValue = field, value
+		schedule := !r.flushPending
+		r.flushPending = true
+		r.mu.Unlock()
+		if schedule {
+			r.after(replacementLogInterval-since, r.flush)
+		}
 		return
 	}
-	suppressed := r.suppressed
+	line := replacementLine{field: field, value: value, total: r.total, suppressedSince: r.suppressed}
 	r.suppressed = 0
 	r.lastLogged = now
-	slog.Warn("unrecognised diagnostic value stored as "+unrecognisedValue,
-		"field", field,
-		"value", loggableValue(value),
-		"replaced_total", r.total,
-		"suppressed_since_last", suppressed,
-	)
+	r.mu.Unlock()
+	line.write()
+}
+
+// flush logs the latest held replacement, counting the other held ones
+// in suppressed_since_last. A replacement logged after the flush was
+// scheduled has already reported the held ones, leaving nothing to do.
+func (r *replacementLog) flush() {
+	r.mu.Lock()
+	r.flushPending = false
+	if r.suppressed == 0 {
+		r.mu.Unlock()
+		return
+	}
+	line := replacementLine{
+		field: r.heldField, value: r.heldValue,
+		total: r.total, suppressedSince: r.suppressed - 1,
+	}
+	r.suppressed = 0
+	r.lastLogged = r.now()
+	r.mu.Unlock()
+	line.write()
 }
 
 // replacedTotal is the number of values replaced in this process.

@@ -26,6 +26,7 @@ from typing import Any
 from .conftest import (
     INGESTION_URL,
     auth_headers,
+    exec_sql,
     get_session_detail,
     get_session_event_count,
     make_event,
@@ -110,10 +111,12 @@ def _of_type(events: list[dict[str, Any]], event_type: str) -> dict[str, Any]:
     return event
 
 
-def _post_expecting_status(payload: dict[str, Any]) -> tuple[int, str]:
+def _post_expecting_status(
+    payload: dict[str, Any], *, raw: bytes | None = None
+) -> tuple[int, str]:
     req = urllib.request.Request(
         f"{INGESTION_URL}/v1/events",
-        data=json.dumps(payload).encode(),
+        data=raw if raw is not None else json.dumps(payload).encode(),
         headers=auth_headers(json_body=True),
         method="POST",
     )
@@ -122,6 +125,60 @@ def _post_expecting_status(payload: dict[str, Any]) -> tuple[int, str]:
             return resp.status, resp.read().decode()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode()
+
+
+def test_replaced_value_keeps_captured_content_numbers_exact() -> None:
+    """Ingestion rewrites an event whose outcome it replaces; the numbers
+    in its captured content (an id of 19 digits, a decimal of 20, which a
+    float64 cannot hold) still reach event_content as they were sent."""
+    sid = str(uuid.uuid4())
+    flavor = f"test-stream-literal-{uuid.uuid4().hex[:6]}"
+    _start_session(sid, flavor)
+    event_id = str(uuid.uuid4())
+    payload = {
+        **_streamed_post_call(sid, flavor, final_outcome="truncated"),
+        "id": event_id,
+        "has_content": True,
+        "content": {
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-5",
+            "system": None,
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "hi",
+                    "metadata": {"channel_id": 1234567890123456789, "ratio": "RATIO"},
+                }
+            ],
+            "tools": None,
+            "response": {"content": [{"type": "text", "text": "ok"}]},
+        },
+    }
+    # Python would write the decimal as the nearest float; send it raw.
+    raw = json.dumps(payload).replace('"RATIO"', "0.30000000000000001665").encode()
+    status, body = _post_expecting_status(payload, raw=raw)
+    assert status == 200, f"post_call refused: {status} {body}"
+
+    events = _events_once_stored(sid, 2)
+    streaming = _of_type(events, "post_call")["payload"]["streaming"]
+    assert streaming["final_outcome"] == "other"
+    wait_until(
+        lambda: (
+            exec_sql(
+                "SELECT count(*) FROM event_content WHERE event_id = :'eid'::uuid",
+                eid=event_id,
+            )
+            == "1"
+        ),
+        timeout=10,
+        msg=f"no event_content row for {event_id}",
+    )
+    stored = exec_sql(
+        "SELECT messages::text FROM event_content WHERE event_id = :'eid'::uuid",
+        eid=event_id,
+    )
+    assert "1234567890123456789" in stored, stored
+    assert "0.30000000000000001665" in stored, stored
 
 
 def test_known_stream_values_are_stored_as_sent() -> None:

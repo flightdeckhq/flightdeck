@@ -1707,9 +1707,10 @@ Every event body the plugin POSTs is at most 768 KiB
 NATS carries an event with the same 1 MiB `max_payload`; a larger body
 is rejected (413 from the dev nginx, 400 from ingestion), and with it
 the call's token counts. The size is measured as ingestion's Go encoder
-writes the event when it re-encodes a `session_start` to add the token
-id and name: `<`, `>` and `&` count six bytes each, U+2028 and U+2029
-six bytes each. A prompt, a
+writes the event when it rewrites one (a `session_start`, to add the
+token id and name, or an event with a replaced value; see Validation
+rules): `<`, `>` and `&` count six bytes each, U+2028 and U+2029 six
+bytes each. A prompt, a
 tool result or a sub-agent message can exceed that, so an event over
 the limit has the strings of its captured `content` cut, every one to
 the same largest length that fits, with
@@ -2796,14 +2797,13 @@ The ingestion handler rejects events with 400 when:
   `inference_scope` is outside `{global, regional}`, or
   `provider_metadata.platform` is longer than 253 characters.
 - `streaming` is not an object, its `final_outcome` or `abort_reason` is
-  not a string, its `chunk_count` is not a non-negative integer, or its
-  `ttft_ms` or an `inter_chunk_ms` value (`p50`, `p95`, `max`, in an
+  not a string, its `chunk_count` is not an integer from 0 to 2^53, or
+  its `ttft_ms` or an `inter_chunk_ms` value (`p50`, `p95`, `max`, in an
   object) is not a non-negative number.
 - On `llm_error`, `error` is not an object, its `error_type` or
   `abort_reason` is not a string, or its `partial_chunks`,
-  `partial_tokens_input` or
-  `partial_tokens_output` is not a non-negative integer (up to 2^53, the
-  bound on the other token counts).
+  `partial_tokens_input` or `partial_tokens_output` is not an integer
+  from 0 to 2^53.
 
 A JSON null counts as absent for each of these. A stream outcome, abort
 reason or error type outside its vocabulary is not rejected:
@@ -2814,7 +2814,11 @@ and an `llm_error`'s `error.abort_reason` (`client_aborted`,
 than the server can extend, and refusing the event would also drop the
 tokens it carries. Ingestion stores such a value as `other`, the
 catch-all of each vocabulary (the taxonomy's own fallback for an error it
-cannot name), and re-encodes only an event it changed. Every value the
+cannot name). It rewrites only an event it changed, and in it only the
+replaced fields: every other value keeps its exact bytes, so a number in
+captured content that a float64 cannot hold (a 19-digit id, a 20-digit
+decimal) is stored as sent. The `session_start` that receives the
+token's id and name is rewritten the same way. Every value the
 sensor's classifier, the Claude Code plugin's StopFailure mapping and the
 OTLP receiver's API-error mapping send is in the taxonomy, which tests
 read from each of them. An MCP event's and a tool failure's `error` carry
@@ -2822,7 +2826,10 @@ taxonomies of their own and are stored as sent.
 It counts the replacements in the process and logs them at most once a
 second, with the field, the running count and the value when it is a
 lowercase identifier of at most 64 characters (any other value is logged
-by its length, so a client cannot write arbitrary text into the log). A
+by its length, so a client cannot write arbitrary text into the log).
+Replacements within the second after a line are held and logged by one
+line at the end of that second, which names the latest and counts the
+others, so a burst is reported even when nothing follows it. A
 negative count is refused, as a negative `tokens_*` is: it comes from a
 broken client, not a newer one.
 

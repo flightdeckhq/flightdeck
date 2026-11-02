@@ -275,31 +275,33 @@ func EventsHandler(
 		// A stream outcome, abort reason or llm_error type outside its
 		// vocabulary is stored as the catch-all rather than refused (see
 		// normalizeDiagnosticValues), so the event's tokens still count.
-		reencode := normalizeDiagnosticValues(payload)
+		edits := normalizeDiagnosticValues(payload)
 
 		// On session_start, attach the resolved token id/name so the
 		// worker's UpsertSession can persist them onto the new session
 		// row. Subsequent events carry no token fields -- a
-		// session belongs to whichever token opened it. We re-encode
-		// the payload only when this branch or the normalisation above
-		// changed it, to avoid paying the marshal cost on the hot
-		// post_call/heartbeat path.
+		// session belongs to whichever token opened it. The body is
+		// rewritten only when this branch or the normalisation above
+		// changed it, to avoid paying the cost on the hot
+		// post_call/heartbeat path, and then only the edited fields
+		// are re-encoded (see patchJSON).
 		if eventType == "session_start" && result.ID != "" {
-			payload["token_id"] = result.ID
-			payload["token_name"] = result.Name
-			reencode = true
+			edits = append(edits,
+				rawEdit{path: []string{"token_id"}, value: result.ID},
+				rawEdit{path: []string{"token_name"}, value: result.Name},
+			)
 		}
-		if reencode {
-			rebuilt, mErr := json.Marshal(payload)
+		if len(edits) > 0 {
+			rebuilt, mErr := patchJSON(body, edits)
 			if mErr != nil {
 				// A silent fallback would publish the event as it
 				// arrived, dropping token_id/token_name (the session
 				// row would lose its owning token) or keeping a
-				// value outside its vocabulary. The map was just
-				// successfully unmarshaled from `body` so re-marshal
-				// can only fail on pathological inputs (NaN/Inf
-				// floats). Surface as 500 rather than publishing it.
-				slog.Error("re-marshal event payload",
+				// value outside its vocabulary. The body was just
+				// decoded as a JSON object, so patching it cannot
+				// fail on valid input. Surface as 500 rather than
+				// publishing it.
+				slog.Error("patch event payload",
 					"session_id", sessionID, "event_type", eventType, "err", mErr,
 				)
 				http.Error(w, "internal error", http.StatusInternalServerError)
@@ -592,6 +594,58 @@ func validateEventPayload(payload map[string]any, now time.Time) string {
 		}
 	}
 	return ""
+}
+
+// rawEdit sets the value at a path in an event's JSON body: a top-level
+// field (one key), or a field of a top-level object (two keys).
+type rawEdit struct {
+	path  []string
+	value any
+}
+
+// patchJSON applies edits to a JSON object body and returns the new
+// body. Only the objects on an edit's path are decoded, and into
+// json.RawMessage values, so every other value keeps its exact bytes.
+// Decoding the event into Go values and encoding it back would round
+// every number through float64, captured content included (an id of 19
+// digits, a decimal of 20), and the worker stores content as it
+// receives it. Keys come out in sorted order and insignificant
+// whitespace is dropped; neither changes a value.
+func patchJSON(body []byte, edits []rawEdit) ([]byte, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(body, &top); err != nil {
+		return nil, fmt.Errorf("decode event body: %w", err)
+	}
+	nested := map[string]map[string]json.RawMessage{}
+	for _, e := range edits {
+		raw, err := json.Marshal(e.value)
+		if err != nil {
+			return nil, fmt.Errorf("encode %v: %w", e.path, err)
+		}
+		switch len(e.path) {
+		case 1:
+			top[e.path[0]] = raw
+		case 2:
+			obj, ok := nested[e.path[0]]
+			if !ok {
+				if err := json.Unmarshal(top[e.path[0]], &obj); err != nil || obj == nil {
+					return nil, fmt.Errorf("%s is not an object: %v", e.path[0], err)
+				}
+				nested[e.path[0]] = obj
+			}
+			obj[e.path[1]] = raw
+		default:
+			return nil, fmt.Errorf("unsupported path %v", e.path)
+		}
+	}
+	for key, obj := range nested {
+		raw, err := json.Marshal(obj)
+		if err != nil {
+			return nil, fmt.Errorf("encode %s: %w", key, err)
+		}
+		top[key] = raw
+	}
+	return json.Marshal(top)
 }
 
 func buildResponse(ctx context.Context, dirStore DirectiveLookup, sessionID string) map[string]any {

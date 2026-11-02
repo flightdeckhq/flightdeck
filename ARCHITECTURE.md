@@ -2968,9 +2968,10 @@ sends no `subagent_completed` until the run that task wakes has ended.)
 A record of a closed sub-agent dated more than one second after the
 sub-agent's end is a resume: it is preceded by a synthetic
 `session_start` that re-attaches the row, as a closed root's is, so the
-worker adds the resumed run's tokens to `tokens_used` and the session
-drawer draws a separator for the run. A record dated at or before that
-is late, the tail of a finished run delivered out of order: it is
+worker adds the resumed run's tokens to `tokens_used` and the start is
+recorded as an attachment (see Session attachment flow). A record dated
+at or before that is late, the tail of a finished run delivered out of
+order: it is
 published without a start, and the worker stores its event but skips
 its session side effects, as for any event on a closed session (see
 Session state machine): its tokens are not added and the child stays
@@ -3007,7 +3008,7 @@ request knows: the row's, or a `subagent_completed` earlier in the same
 request. A request holding a run's end and the resumed run's records
 therefore publishes the end, then the start, then the resumed run's
 records, and the worker closes and reopens the row in that order (as
-for any start, the run separator is recorded only when the row exists
+for any start, the attachment is recorded only when the row exists
 by the time the start is published, which a sub-agent whose first run
 and resume share one export may miss). Only the first record past the
 end gets a start; a late record after it lands on the reopened row and
@@ -3502,8 +3503,9 @@ CREATE INDEX session_attachments_session_idx ON session_attachments (session_id,
 
 One row per re-attachment (subsequent `session_start` for an existing
 `session_id`). The first `session_start` does NOT write an attachment
-row — only re-attachments. Drives the session drawer's "New execution
-attached" separators.
+row — only re-attachments. The session drawer and the timeline mark
+the `session_start` within two seconds of each row (see Session
+attachment flow).
 
 ### `events` (metadata only — no prompt content inline)
 

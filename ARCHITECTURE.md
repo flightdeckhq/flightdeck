@@ -2619,13 +2619,17 @@ The `parent_session_id` FK is enforced. Forward references (a child
 by a parent-stub variant of the worker's lazy-create path: when
 a child arrives with a `parent_session_id` that
 isn't in `sessions`, the worker INSERTs a stub row with
-`flavor="unknown"` / `agent_type="unknown"` / placeholder identity
-sentinels and a synthetic `started_at` matching the child's. The
-child INSERT then satisfies the FK. When the real parent's
-`session_start` arrives later, `UpsertSession ON CONFLICT` upgrades
-the stub's `"unknown"` sentinels to real values via the existing
-write-once-but-upgrade-from-`"unknown"` branch. for
-the full pseudocode.
+`flavor="unknown"` / `agent_type="unknown"`, no agent identity (NULL
+`agent_id`, `client_type`, `agent_name`) and a synthetic `started_at`
+matching the child's. The child INSERT then satisfies the FK. The stub
+belongs to no agent until the parent's own events reach the worker.
+When the real parent's `session_start` arrives, `UpsertSession` claims
+the stub: it fills the identity, upgrades the `"unknown"` sentinels via
+the write-once-but-upgrade-from-`"unknown"` branch, and counts the
+session toward the parent's agent (see `agents` rollup). A parent whose
+`session_start` is never processed is claimed by its first other event,
+which fills the identity and counts the session but leaves the
+`"unknown"` sentinels to a `session_start`.
 
 ### Re-attachment
 
@@ -2643,6 +2647,19 @@ The `agents` table is keyed on `agent_id` and carries denormalized
 maintained by the worker. Drift between the rollup and ground truth is
 healed on demand by `POST /v1/admin/reconcile-agents` which recomputes
 the columns from the sessions table.
+
+`total_sessions` goes up by one when a session row becomes attributed
+to the agent: the worker inserts the row with the agent's identity (a
+`session_start`, or a row lazily created by another event), or fills
+the NULL identity of a parent stub (the parent's `session_start`, or
+its first other event when that start is never processed). Each write
+decides attribution on the row it has locked, in the statement that
+writes the identity (`INSERT ... ON CONFLICT DO UPDATE ... WHERE
+sessions.agent_id IS NULL` for a `session_start`, `UPDATE ... WHERE
+agent_id IS NULL` for another event), so a redelivered, retried or
+concurrent `session_start`, and a stub racing its parent's start, count
+the session once whichever reaches the worker first. A session whose
+identity is set never moves to another agent.
 
 ---
 
@@ -3446,7 +3463,9 @@ published after it (see Session attachment flow).
 
 - `HandleSessionStart`: upsert agent, upsert the session with
   state=active (a closed row is revived unless its own `session_end` was
-  published after this start), record the start's stream sequence.
+  published after this start), record the start's stream sequence, and
+  add the session to the agent's `total_sessions` when this start
+  inserted the row or claimed a parent stub (see `agents` rollup).
 - `HandlePostCall`: add the event's `tokens_total`, when positive, to
   `tokens_used`; update the session's model; advance last_seen_at. The
   policy evaluator then runs for `post_call` only. The same handler
@@ -3463,7 +3482,10 @@ published after it (see Session attachment flow).
   for a delayed redelivery and is dropped as an orphan on the last
   delivery, a closed row makes the end a duplicate, and an end that
   predates the current run is recorded as an event without closing
-  anything.
+  anything. Once the end has settled on an existing row, a row that no
+  agent owns yet (a parent stub whose `session_start` never arrived) is
+  claimed for the end's agent and counted toward its `total_sessions`;
+  the claim, like the end, never creates a row.
 - `HandleHeartbeat`: advance last_seen_at.
 - `HandleMCPServerAttached`: merge the server fingerprint into
   `sessions.context.mcp_servers` after the freshness update.
@@ -3473,7 +3495,9 @@ Every handler except `HandleSessionStart`, `HandleSessionEnd` and
 `handleSessionGuard` before its write: `closed` sessions skip the session
 side effects with a warn log; `stale` and `lost` sessions are revived to
 `active` with `last_seen_at` advanced; unknown `session_id`s are
-lazy-created so the event lands instead of FK-violating at `InsertEvent`.
+lazy-created so the event lands instead of FK-violating at `InsertEvent`;
+a row that no agent owns yet (a parent stub) is first attributed to the
+event's agent and counted toward its `total_sessions`.
 The event's normal side effects then proceed, and the event row is
 inserted, unless the event carries a client-supplied id that is already
 stored: such a copy is dropped before any handler runs (see
@@ -3554,12 +3578,16 @@ event's assumption. Three scenarios, three code paths:
   a parent-stub INSERT before the child is written, so the new
   `sessions.parent_session_id` FK is satisfied. The stub uses the
   same `"unknown"` sentinel pattern as create-on-unknown plus
-  `started_at = child.started_at` as a placeholder. When the real
-  parent's `session_start` arrives later, `UpsertSession ON CONFLICT`
-  upgrades the stub's sentinels to real values via the existing
-  write-once-but-upgrade branch. Same primitive as
-  create-on-unknown, different trigger (FK satisfaction vs
-  unknown-session-id event).
+  `started_at = child.started_at` as a placeholder, and carries no
+  agent identity. When the real parent's `session_start` arrives
+  later, `UpsertSession` claims the stub: it fills the identity,
+  upgrades the sentinels via the write-once-but-upgrade branch, and
+  counts the session toward the parent's agent once. A parent whose
+  `session_start` is never processed is claimed by its first other
+  event (`handleSessionGuard`, or `HandleSessionEnd` for its
+  `session_end`), which fills the identity only. Same
+  primitive as create-on-unknown, different trigger (FK satisfaction
+  vs unknown-session-id event).
 
 ### Policy evaluator
 
@@ -3712,7 +3740,8 @@ state rules.
 `UpsertSession`. `agent_id`, `agent_name`, and `client_type` are nullable
 because the worker's parent-stub lazy-create path inserts a placeholder
 row with no identity when a child's `session_start` arrives before its
-parent's; the real parent `session_start` fills them in. There is no
+parent's; the parent's `session_start` fills them in, or its first
+other event when that start is never processed. There is no
 index on `framework`.
 
 `tokens_used` is the only token rollup on `sessions`; per-call input /
@@ -5618,9 +5647,11 @@ run drawer to refetch its run.
 `sessionStateCounts` is computed via `useMemo` from the live `flavors`
 array on every render and passed down to `SessionStateBar` as a prop.
 
-The fleet store filters out `total_sessions=0` orphan agents — they
-exist in the `agents` table from prior runs but have no live or recent
-sessions.
+The fleet store filters out orphan agents — rows in the `agents` table
+from prior runs that have no sessions: `total_sessions` is 0 and
+`recent_sessions` is empty. An agent whose `recent_sessions` carries a
+session stays even when its counter reads 0, so counter drift cannot
+hide a live agent.
 
 ### Events view
 

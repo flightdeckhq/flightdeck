@@ -20,12 +20,25 @@ definitions:
   handlers.DirectiveRequest:
     properties:
       action:
+        description: shutdown, shutdown_flavor or custom.
+        type: string
+      agent_id:
+        description: |-
+          An agent (UUID) whose live runs that can act on the directive all
+          receive it (shutdown, custom). Exclusive with session_id; not
+          accepted with shutdown_flavor.
+        format: uuid
         type: string
       directive_name:
         type: string
       fingerprint:
         type: string
       flavor:
+        description: |-
+          shutdown_flavor: the flavor to stop. custom: every live session of
+          the flavor; with agent_id, keeps the agent's runs of this flavor;
+          with session_id, only narrows the fingerprint check. Empty for
+          shutdown.
         type: string
       grace_period_ms:
         type: integer
@@ -34,6 +47,7 @@ definitions:
       reason:
         type: string
       session_id:
+        description: One session to direct (shutdown, custom). Exclusive with agent_id.
         type: string
     type: object
   handlers.ErrorResponse:
@@ -218,7 +232,7 @@ definitions:
           started_at DESC LIMIT 1; the per-agent overhead is bounded by
           the page size. `Hostname` and `UserName` above remain the
           authoritative single-valued slices for those two dims (sourced
-          from agents-table columns); these seven are the JSONB-only
+          from agents-table columns); these are the JSONB-only
           slices the operator slices the roster by.
         type: string
       process_name:
@@ -244,6 +258,13 @@ definitions:
           currently active; otherwise the most-recent session's state.
           Empty string when the agent has no sessions yet (freshly
           upserted agent row awaiting its first session linkage).
+        type: string
+      telemetry:
+        description: |-
+          Telemetry is the latest session's `context.telemetry`: "otlp"
+          when its events were reported over OpenTelemetry, null for a
+          session a hook plugin or the sensor reports. The dashboard
+          labels the agent's source from it.
         type: string
       topology:
         description: |-
@@ -821,6 +842,12 @@ definitions:
         type: string
       state:
         type: string
+      telemetry:
+        description: |-
+          Telemetry is the agent's latest session's `context.telemetry`
+          ("otlp" for a session reported over OpenTelemetry), as on
+          AgentSummary, so the palette labels the agent's source.
+        type: string
     type: object
   store.SearchResultEvent:
     properties:
@@ -839,6 +866,12 @@ definitions:
     type: object
   store.SearchResultSession:
     properties:
+      client_type:
+        description: |-
+          ClientType is the session's client_type ("" on a parent-stub
+          row that has none), so the palette names the client beside the
+          session's source.
+        type: string
       context:
         additionalProperties: true
         type: object
@@ -1641,8 +1674,19 @@ paths:
     post:
       consumes:
       - application/json
-      description: Issues a shutdown or custom directive to a single agent session
-        or all sessions of a flavor
+      description: 'Issues a shutdown or custom directive. Targets: one session (session_id);
+        every live (active or idle) session of a flavor (shutdown_flavor, or custom
+        with flavor); or every live run of an agent that can act on it (agent_id,
+        with shutdown or custom). A run takes a shutdown when its context.supports_directives
+        is true, or when it omits the flag and its client type supports directives
+        by default (a run with no client type does unless it is marked Claude Code).
+        A custom directive also needs a client type that runs custom handlers and
+        a run flavor that registered the fingerprint; with agent_id, an optional flavor
+        keeps the agent''s runs of that flavor. A custom directive with session_id
+        goes to that session alone, and a flavor beside it only narrows the fingerprint
+        check. All rows of a fan-out are inserted in one transaction. The body is
+        the last row created, and the X-Directive-Count header says how many were
+        created.'
       parameters:
       - description: Directive definition
         in: body
@@ -1655,6 +1699,11 @@ paths:
       responses:
         "201":
           description: Created
+          headers:
+            X-Directive-Count:
+              description: 'Number of directive rows created: 1 for one session, one
+                per session reached for a flavor or an agent'
+              type: integer
           schema:
             $ref: '#/definitions/store.Directive'
         "400":
@@ -1666,11 +1715,11 @@ paths:
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
         "404":
-          description: Not Found
+          description: No live session of the flavor or the agent can take the directive
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
         "422":
-          description: Unprocessable Entity
+          description: Unknown custom directive fingerprint
           schema:
             $ref: '#/definitions/handlers.ErrorResponse'
         "500":

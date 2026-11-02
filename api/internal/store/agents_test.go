@@ -1236,7 +1236,8 @@ func TestListAgents_LatestSessionContextProjected(t *testing.T) {
 	seedSessionWithContext(t, s, agentID, "coding", "claude_code", later,
 		`{"os":"Linux","arch":"arm64","git_branch":"main",`+
 			`"git_repo":"flightdeck","orchestration":"kubernetes",`+
-			`"python_version":"3.12","process_name":"new.py"}`)
+			`"python_version":"3.12","process_name":"new.py",`+
+			`"telemetry":"otlp"}`)
 
 	resp, err := s.ListAgents(context.Background(), AgentListParams{
 		Search: agentName,
@@ -1273,6 +1274,7 @@ func TestListAgents_LatestSessionContextProjected(t *testing.T) {
 	mustEq("orchestration", "kubernetes", got.Orchestration)
 	mustEq("python_version", "3.12", got.PythonVersion)
 	mustEq("process_name", "new.py", got.ProcessName)
+	mustEq("telemetry", "otlp", got.Telemetry)
 }
 
 func TestListAgents_LatestSessionContextNullsWhenAbsent(t *testing.T) {
@@ -1315,12 +1317,14 @@ func TestListAgents_LatestSessionContextNullsWhenAbsent(t *testing.T) {
 		}
 		if got.OS != nil || got.Arch != nil || got.GitBranch != nil ||
 			got.GitRepo != nil || got.Orchestration != nil ||
-			got.PythonVersion != nil || got.ProcessName != nil {
+			got.PythonVersion != nil || got.ProcessName != nil ||
+			got.Telemetry != nil {
 			t.Errorf("%s: expected all runtime-context fields nil, got "+
 				"os=%v arch=%v git_branch=%v git_repo=%v orchestration=%v "+
-				"python_version=%v process_name=%v",
+				"python_version=%v process_name=%v telemetry=%v",
 				name, got.OS, got.Arch, got.GitBranch, got.GitRepo,
-				got.Orchestration, got.PythonVersion, got.ProcessName)
+				got.Orchestration, got.PythonVersion, got.ProcessName,
+				got.Telemetry)
 		}
 	}
 	check("no-sessions agent", noSessID)
@@ -1342,7 +1346,7 @@ func TestGetAgentFleet_LatestSessionContextProjected(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	seedSessionWithContext(t, s, agentID, "coding", "claude_code",
 		now.Add(-2*time.Hour),
-		`{"os":"Linux","git_branch":"feature-x"}`)
+		`{"os":"Linux","git_branch":"feature-x","telemetry":"otlp"}`)
 	seedSessionWithContext(t, s, agentID, "coding", "claude_code",
 		now.Add(-1*time.Hour),
 		`{"os":"Darwin","git_branch":"main","python_version":"3.12"}`)
@@ -1374,6 +1378,11 @@ func TestGetAgentFleet_LatestSessionContextProjected(t *testing.T) {
 	if got.Arch != nil {
 		t.Errorf("arch: want nil, got %v", got.Arch)
 	}
+	// telemetry is on the earlier session only: the latest run was
+	// not reported over OpenTelemetry, so the agent carries none.
+	if got.Telemetry != nil {
+		t.Errorf("telemetry: want nil (latest run has none), got %v", *got.Telemetry)
+	}
 }
 
 func TestGetAgentByID_LatestSessionContextProjected(t *testing.T) {
@@ -1386,7 +1395,7 @@ func TestGetAgentByID_LatestSessionContextProjected(t *testing.T) {
 	})
 	seedSessionWithContext(t, s, agentID, "coding", "claude_code",
 		time.Now().UTC().Add(-30*time.Minute),
-		`{"os":"Linux","arch":"arm64","process_name":"main.py"}`)
+		`{"os":"Linux","arch":"arm64","process_name":"main.py","telemetry":"otlp"}`)
 
 	got, err := s.GetAgentByID(context.Background(), agentID)
 	if err != nil {
@@ -1403,5 +1412,8 @@ func TestGetAgentByID_LatestSessionContextProjected(t *testing.T) {
 	}
 	if got.ProcessName == nil || *got.ProcessName != "main.py" {
 		t.Errorf("process_name: want main.py, got %v", got.ProcessName)
+	}
+	if got.Telemetry == nil || *got.Telemetry != "otlp" {
+		t.Errorf("telemetry: want otlp, got %v", got.Telemetry)
 	}
 }

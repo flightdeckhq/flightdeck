@@ -29,6 +29,10 @@ type SearchResultAgent struct {
 	ClientType string `json:"client_type"`
 	State      string `json:"state"`
 	LastSeen   string `json:"last_seen"`
+	// Telemetry is the agent's latest session's `context.telemetry`
+	// ("otlp" for a session reported over OpenTelemetry), as on
+	// AgentSummary, so the palette labels the agent's source.
+	Telemetry *string `json:"telemetry,omitempty"`
 }
 
 // SearchResultSession is a search hit on the sessions table.
@@ -45,6 +49,10 @@ type SearchResultSession struct {
 	TokensUsed int                    `json:"tokens_used"`
 	TokenLimit *int64                 `json:"token_limit"`
 	Context    map[string]interface{} `json:"context"`
+	// ClientType is the session's client_type ("" on a parent-stub
+	// row that has none), so the palette names the client beside the
+	// session's source.
+	ClientType string `json:"client_type"`
 }
 
 // SearchResultEvent is a search hit on the events table.
@@ -178,9 +186,11 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 				a.agent_type,
 				COALESCE(a.client_type, '') AS client_type,
 				COALESCE(rollup.state, '') AS state,
-				a.last_seen_at::text
+				a.last_seen_at::text,
+				latest.telemetry
 			FROM agents a
 			LEFT JOIN LATERAL (`+agentStateRollupSQL+`) rollup ON TRUE
+			LEFT JOIN LATERAL (`+agentLatestContextSQL+`) latest ON TRUE
 			JOIN LATERAL (
 				SELECT
 					CASE
@@ -210,7 +220,7 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 			var a SearchResultAgent
 			if err := rows.Scan(
 				&a.AgentID, &a.AgentName, &a.AgentType,
-				&a.ClientType, &a.State, &a.LastSeen,
+				&a.ClientType, &a.State, &a.LastSeen, &a.Telemetry,
 			); err != nil {
 				return fmt.Errorf("scan agent: %w", err)
 			}
@@ -232,7 +242,8 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 	g.Go(func() error {
 		rows, err := s.pool.Query(gCtx, `
 			SELECT session_id::text, flavor, host, state, started_at::text,
-			       ended_at::text, model, tokens_used, token_limit, context
+			       ended_at::text, model, tokens_used, token_limit, context,
+			       client_type
 			FROM (
 				SELECT
 					session_id, flavor,
@@ -240,6 +251,7 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 					state, started_at, ended_at,
 					COALESCE(model, '') AS model,
 					tokens_used, token_limit, context,
+					COALESCE(client_type, '') AS client_type,
 					CASE
 						WHEN session_id::text ILIKE $3 THEN 0
 						WHEN flavor ILIKE $3 THEN 1
@@ -276,6 +288,7 @@ func (s *Store) Search(ctx context.Context, query string) (*SearchResults, error
 			if err := rows.Scan(
 				&sr.SessionID, &sr.Flavor, &sr.Host, &sr.State, &sr.StartedAt,
 				&endedAt, &sr.Model, &sr.TokensUsed, &sr.TokenLimit, &contextRaw,
+				&sr.ClientType,
 			); err != nil {
 				return fmt.Errorf("scan session: %w", err)
 			}

@@ -3,6 +3,7 @@ import { useNavigate } from "react-router";
 import { ClientType } from "@/lib/agent-identity";
 import type { AgentSummary } from "@/lib/types";
 import { ClientTypePill } from "@/components/facets/ClientTypePill";
+import { TelemetrySourcePill } from "@/components/facets/TelemetrySourcePill";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { getProvider } from "@/lib/models";
@@ -122,6 +123,11 @@ function AgentTableRowImpl({
               testId={`agent-row-client-type-${agent.agent_id}`}
             />
           )}
+          <TelemetrySourcePill
+            telemetry={agent.telemetry}
+            clientType={agent.client_type}
+            testId={`agent-row-telemetry-source-${agent.agent_id}`}
+          />
           <span
             className="font-mono text-[10px] text-text-muted uppercase tracking-[0.06em]"
             data-testid={`agent-row-agent-type-${agent.agent_id}`}

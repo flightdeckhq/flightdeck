@@ -110,14 +110,6 @@ interface FleetState {
   applyUpdate: (update: FleetUpdate) => void;
   selectSession: (id: string | null) => void;
   markShuttingDown: (sessionId: string) => void;
-  /**
-   * Kept for FleetPanel's per-flavor Stop-All button. A
-   * "flavor" value is usually an agent_id; the helper walks the
-   * sessions under that flavor and marks each active/idle one as
-   * shutting down client-side so the UI reacts before the next
-   * WebSocket update lands.
-   */
-  markFlavorShuttingDown: (flavor: string) => void;
 }
 
 function listItemToSession(li: SessionListItem): Session {
@@ -237,6 +229,14 @@ function recentSessionToSession(r: RecentSession): Session {
   };
 }
 
+/** A session's ``context.telemetry`` when it is a string, else null:
+ *  the value an agent row built from a live update carries as its
+ *  ``telemetry``. */
+function contextTelemetry(session: Session): string | null {
+  const t = session.context?.telemetry;
+  return typeof t === "string" ? t : null;
+}
+
 function buildFlavors(
   agents: AgentSummary[],
   recentSessions: SessionListItem[],
@@ -305,6 +305,7 @@ function buildFlavors(
         user: a.user,
         hostname: a.hostname,
         last_seen_at: a.last_seen_at,
+        telemetry: a.telemetry ?? null,
       };
     });
 }
@@ -507,6 +508,12 @@ export const useFleetStore = create<FleetState>((set, get) => ({
                   update.session.state === "idle"
                     ? ("active" as SessionState)
                     : a.state,
+                // A new run is the agent's latest session, so its
+                // context names the agent's source from now on.
+                telemetry:
+                  isStart && update.session.context
+                    ? contextTelemetry(update.session)
+                    : a.telemetry,
                 recent_sessions: isStart
                   ? [
                       sessionToRecentSession(update.session, parentAgentID),
@@ -556,6 +563,7 @@ export const useFleetStore = create<FleetState>((set, get) => ({
           total_tokens: 0,
           state: "active",
           topology: update.session.parent_session_id ? "child" : "lone",
+          telemetry: contextTelemetry(update.session),
           recent_sessions: [
             sessionToRecentSession(update.session, parentAgentID),
           ],
@@ -635,18 +643,6 @@ export const useFleetStore = create<FleetState>((set, get) => ({
     set({ shuttingDown: next });
   },
 
-  markFlavorShuttingDown: (flavor) => {
-    const next = new Set(get().shuttingDown);
-    for (const f of get().flavors) {
-      if (f.flavor !== flavor) continue;
-      for (const s of f.sessions) {
-        if (s.state === "active" || s.state === "idle") {
-          next.add(s.session_id);
-        }
-      }
-    }
-    set({ shuttingDown: next });
-  },
 }));
 
 function applySessionUpdate(
@@ -670,6 +666,7 @@ function applySessionUpdate(
         agent_name: session.agent_name ?? undefined,
         client_type: session.client_type ?? undefined,
         last_seen_at: session.last_seen_at,
+        telemetry: contextTelemetry(session),
       },
     ];
   }
@@ -695,6 +692,28 @@ function applySessionUpdate(
       agent_name: f.agent_name ?? session.agent_name ?? undefined,
       client_type: f.client_type ?? session.client_type ?? undefined,
       last_seen_at: session.last_seen_at || f.last_seen_at,
+      telemetry: newestTelemetry(sessions, f.telemetry ?? null),
     };
   });
+}
+
+/** The agent row's ``telemetry`` after a live update: the newest
+ *  session's ``context.telemetry`` when that session carries its
+ *  context, else the row's current value. A session built from the
+ *  fleet's ``recent_sessions`` gets an empty ``{}`` context placeholder
+ *  (the rollup omits the column), which says nothing about the source,
+ *  so it counts as unknown like a missing context. */
+function newestTelemetry(sessions: Session[], current: string | null): string | null {
+  let newest: Session | null = null;
+  for (const s of sessions) {
+    if (!newest || Date.parse(s.started_at) > Date.parse(newest.started_at)) newest = s;
+  }
+  return newest && carriesContext(newest) ? contextTelemetry(newest) : current;
+}
+
+/** True when the session carries a non-empty ``context``. An empty one
+ *  names no source: it is the placeholder of a session whose context
+ *  this page never loaded, or a client that collected none. */
+function carriesContext(session: Session): boolean {
+  return !!session.context && Object.keys(session.context).length > 0;
 }

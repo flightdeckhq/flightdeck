@@ -71,21 +71,28 @@ export interface ClientTypeMeta {
   /** The billing mode the worker stores for a call that arrives
    *  without one. */
   billingMode: "metered" | "subscription" | "local";
+  /** Whether the client runs custom directive handlers (the sensor's
+   *  ``@directive`` functions). A client can act on stop or budget
+   *  directives without running custom handlers: the Claude Code
+   *  plugin and the Agent SDK interceptor answer a custom directive
+   *  with an error result, so the dashboard offers custom directives
+   *  only to types where this is true. */
+  runsCustomDirectives: boolean;
   /** Whether the worker redacts a failed tool call's error text on a
    *  capture-off session for this type. */
   stripsToolErrorText: boolean;
 }
 
 export const CLIENT_TYPE_META: Record<ClientType, ClientTypeMeta> = {
-  [ClientType.ClaudeCode]: { label: "Claude Code", agentType: AgentType.Coding, supportsDirectives: false, billingMode: "subscription", stripsToolErrorText: true },
-  [ClientType.FlightdeckSensor]: { label: "Sensor", agentType: AgentType.Production, supportsDirectives: true, billingMode: "metered", stripsToolErrorText: false },
-  [ClientType.ClaudeAgentSdk]: { label: "Claude Agent SDK", agentType: AgentType.Production, supportsDirectives: true, billingMode: "metered", stripsToolErrorText: false },
-  [ClientType.Codex]: { label: "Codex CLI", agentType: AgentType.Coding, supportsDirectives: false, billingMode: "subscription", stripsToolErrorText: true },
-  [ClientType.Copilot]: { label: "GitHub Copilot", agentType: AgentType.Coding, supportsDirectives: false, billingMode: "subscription", stripsToolErrorText: true },
-  [ClientType.OpenCode]: { label: "OpenCode", agentType: AgentType.Coding, supportsDirectives: false, billingMode: "metered", stripsToolErrorText: true },
-  [ClientType.GeminiCli]: { label: "Gemini CLI", agentType: AgentType.Coding, supportsDirectives: false, billingMode: "metered", stripsToolErrorText: true },
-  [ClientType.Cursor]: { label: "Cursor", agentType: AgentType.Coding, supportsDirectives: false, billingMode: "subscription", stripsToolErrorText: true },
-  [ClientType.Otlp]: { label: "OpenTelemetry", agentType: AgentType.Production, supportsDirectives: false, billingMode: "metered", stripsToolErrorText: true },
+  [ClientType.ClaudeCode]: { label: "Claude Code", agentType: AgentType.Coding, supportsDirectives: false, billingMode: "subscription", runsCustomDirectives: false, stripsToolErrorText: true },
+  [ClientType.FlightdeckSensor]: { label: "Sensor", agentType: AgentType.Production, supportsDirectives: true, billingMode: "metered", runsCustomDirectives: true, stripsToolErrorText: false },
+  [ClientType.ClaudeAgentSdk]: { label: "Claude Agent SDK", agentType: AgentType.Production, supportsDirectives: true, billingMode: "metered", runsCustomDirectives: false, stripsToolErrorText: false },
+  [ClientType.Codex]: { label: "Codex CLI", agentType: AgentType.Coding, supportsDirectives: false, billingMode: "subscription", runsCustomDirectives: false, stripsToolErrorText: true },
+  [ClientType.Copilot]: { label: "GitHub Copilot", agentType: AgentType.Coding, supportsDirectives: false, billingMode: "subscription", runsCustomDirectives: false, stripsToolErrorText: true },
+  [ClientType.OpenCode]: { label: "OpenCode", agentType: AgentType.Coding, supportsDirectives: false, billingMode: "metered", runsCustomDirectives: false, stripsToolErrorText: true },
+  [ClientType.GeminiCli]: { label: "Gemini CLI", agentType: AgentType.Coding, supportsDirectives: false, billingMode: "metered", runsCustomDirectives: false, stripsToolErrorText: true },
+  [ClientType.Cursor]: { label: "Cursor", agentType: AgentType.Coding, supportsDirectives: false, billingMode: "subscription", runsCustomDirectives: false, stripsToolErrorText: true },
+  [ClientType.Otlp]: { label: "OpenTelemetry", agentType: AgentType.Production, supportsDirectives: false, billingMode: "metered", runsCustomDirectives: false, stripsToolErrorText: true },
 };
 
 /**
@@ -215,3 +222,74 @@ export const AGENT_TYPE_COLOR: Record<AgentType, ClientTypeColor> = {
     border: "color-mix(in srgb, var(--text-secondary) 32%, transparent)",
   },
 };
+
+/**
+ * How a session's events reached Flightdeck, read from its
+ * ``context.telemetry`` (and, for an agent, from its latest session's,
+ * which the agent rows carry as ``telemetry``). Ingestion stamps
+ * ``otlp`` on every session it builds from an OpenTelemetry export; a
+ * session a hook plugin or the sensor reports carries none. A Claude
+ * Code session therefore reads as "Claude Code via OpenTelemetry" or
+ * "Claude Code via plugin". The value names the transport, not the
+ * client: an OTLP-reported Claude Code session keeps ``client_type``
+ * ``claude_code`` and that type's defaults.
+ */
+export const TELEMETRY_OTLP = "otlp";
+
+/** Display name of the OpenTelemetry source in labels and tooltips. */
+export const OTLP_SOURCE_LABEL = "OpenTelemetry";
+
+/** Text of the source pill (CSS-uppercased to ``OTEL``). */
+export const OTLP_SOURCE_PILL_TEXT = "OTel";
+
+/** What an OTLP source means for the operator, in the pill's tooltip
+ *  and accessible name and the run drawer's source label: no channel
+ *  runs back to the agent. */
+export const OBSERVE_ONLY_NOTE = "observe only, no directives reach it";
+
+/** The run drawer's tooltip on "via OpenTelemetry". */
+export const OTLP_SOURCE_DESCRIPTION = `Reported by Claude Code's OpenTelemetry exporter: ${OBSERVE_ONLY_NOTE}`;
+
+/** True when a ``telemetry`` value (a session's ``context.telemetry``
+ *  or an agent row's ``telemetry``) marks an OpenTelemetry source. */
+export function isOtlpTelemetry(value: unknown): boolean {
+  return value === TELEMETRY_OTLP;
+}
+
+/** True when the session was reported over OpenTelemetry. */
+export function isOtlpSession(session: {
+  context?: Record<string, unknown> | null;
+}): boolean {
+  return isOtlpTelemetry(session.context?.telemetry);
+}
+
+/**
+ * The client and the way it reports, as one phrase:
+ * ``Claude Code via OpenTelemetry`` for an OTLP-reported session,
+ * ``Claude Code via plugin`` for the Claude Code plugin, and the bare
+ * registry label for every other client (the sensor and the Agent SDK
+ * interceptor have one way to report). Null when the client type is
+ * outside the registry and the source is not OTLP.
+ */
+export function clientSourceLabel(
+  clientType: string | null | undefined,
+  telemetry: unknown,
+): string | null {
+  const label = isClientType(clientType)
+    ? CLIENT_TYPE_META[clientType].label
+    : null;
+  if (isOtlpTelemetry(telemetry)) {
+    // The generic ``otlp`` client type is itself OpenTelemetry, and an
+    // unknown client has no name: both read as the source alone.
+    return label && clientType !== ClientType.Otlp
+      ? `${label} via ${OTLP_SOURCE_LABEL}`
+      : `Reported via ${OTLP_SOURCE_LABEL}`;
+  }
+  if (clientType === ClientType.ClaudeCode) return `${label} via plugin`;
+  return label;
+}
+
+/** The OTel source pill's colour: the muted treatment the reserved
+ *  client types use, so the pill reads as a qualifier of the client
+ *  pill beside it rather than as a second brand. */
+export const TELEMETRY_SOURCE_COLOR: ClientTypeColor = RESERVED_CLIENT_COLOR;

@@ -4750,16 +4750,21 @@ domain. Both points are measured from the rendered circles, looked
 up by `data-event-id` inside the parent's and the child's rows (the
 expanded ALL row draws the same events), so a connector lands on its
 circles wherever they sit. The rim radius is half the circle's
-`offsetWidth`, which a hover scale does not change. A pair whose
-circle is not mounted, such as one on a virtualised row, is skipped.
+`offsetWidth`, which a hover scale does not change. A pair is
+skipped when a circle is not mounted, such as one on a virtualised row,
+or when its row's timeline panel clips it near "now" (its centre past
+the panel's edge), so a connector never runs past the now line.
 
 Connectors rest at 10% opacity. Hovering a run's mark (an event
-circle or a run glyph) or focusing a run glyph raises every
-connector that starts or ends on that run to 50%: a parent run lights
+circle or a run glyph), or focusing a run glyph from the keyboard
+(`:focus-visible`), raises every connector that starts or ends on that
+run to 50%: a parent run lights
 its whole fan-out, and a child run lights only its own link, even
 when several runs share a row. Each mark carries its run's id as
 `data-session-id`, and `Timeline.tsx` reads it from one delegated
-handler. Hovering a connector itself raises it too.
+handler. Focus a mouse click leaves on a glyph does not count, so the
+highlight never sticks after the pointer leaves. Hovering a connector
+itself raises it too.
 
 ---
 
@@ -5556,7 +5561,13 @@ event of every one of the agent's runs streams onto that row; there are
 no per-run rows. Sub-agent rows render indented beneath their parent
 via the `data-topology` attribute (`"root"` or `"child"`); the indent
 and background tint live in `globals.css` under the
-`[data-topology="child"]` selector. `SubAgentConnector.tsx` draws a
+`[data-topology="child"]` selector. The tint is translucent, so a child
+row's sticky label paints it opaquely, the same look in layers: its own
+tint, the row's 2 px accent line, the row's tint, and the colour the
+rows sit on (`--bg`, or the host's `--swimlane-label-backdrop`, which
+the per-agent swimlane modal sets to `--surface`). Event circles
+scrolled under the label therefore stay hidden. A root row's label
+inherits the row's opaque `--surface`. `SubAgentConnector.tsx` draws a
 Bezier connector from each parent spawn event to the child run's first
 event in view (see Swimlane sub-agent connector overlay).
 
@@ -5597,8 +5608,10 @@ not share the head's shrink, because a fraction of a pixel of shrink
 is enough for the browser to draw its ellipsis. The row's relationship
 pill shrinks, down to 1.75rem with an ellipsis, before the name gives
 up any width. At the 460 px default, a typical `user@host/role`
-sub-agent row shows its role. Root rows, and sub-agent names without
-the suffix, render as one text.
+sub-agent row shows its role. The link's `aria-label` carries the
+whole name, since the two parts would otherwise read with a space
+between them. Root rows, and sub-agent names without the suffix, render
+as one text.
 
 The ellipsis fallback is the graceful narrow-width behaviour. The
 resizable column (see Timeline section above) is the operator's
@@ -5636,7 +5649,10 @@ math only, no DOM manipulation). A glyph is centred on its
 time's x in the same inset wrapper as the event circles, so a
 glyph and a circle at the same instant line up, and near "now"
 the panel's right edge clips both alike (a glyph past the edge is
-not mounted). Hover on either glyph
+not mounted). A run that started within the last ~14 px of the window
+shows no ▶ yet (about 56 s at 1h), and a run that closed within the
+last ~13.5 px shows its ▶ but not yet its ■ (about 54 s at 1h, 27 s at
+30m), so it reads as running until the ■ clears the edge. Hover on either glyph
 surfaces a tooltip with `run_id` (8-char prefix), start time,
 end time (or `running` for an active / idle / stale / lost
 run), state, and total tokens. Click on either glyph opens
@@ -5655,8 +5671,11 @@ square as "still running"; the tooltip's end-time field reads
 **Event circles.** `EventNode.tsx` draws each event as a 22 px circle
 (`EVENT_CIRCLE_SIZE`), coloured by event type, with a lucide icon, a
 portal tooltip and a 1.25x hover scale; MCP events are hexagons. A
-circle is centred on its event's x and on the row's centre line, and
-carries `data-event-id` and `data-session-id`. The vertical centring
+circle is centred on its event's x inside the panel's inset wrapper
+(below), which puts circles and run glyphs 19 px right of their time's
+grid line, since the time axis and the grid overlay are not inset. It
+sits on the row's centre line and carries `data-event-id` and
+`data-session-id`. The vertical centring
 is a single CSS translate (`top: 50%` with `translate: 0 -50%`); the
 hover scale is a separate `transform`, so it scales about the circle's
 centre.

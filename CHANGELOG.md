@@ -82,7 +82,8 @@ All notable changes to Flightdeck are documented here.
   stops every live run of it that can take a stop, including runs the
   page has not loaded, and says how many it reached; a directive sent
   from the row reaches that agent's runs and never another agent's that
-  share the flavor.
+  share the flavor. Confirming either one no longer filters the Fleet to
+  that agent as a side effect.
 - **The Directives page's "Specific run" target reaches only that run.**
   The page sent the run's id with the directive's flavor, and the API
   sent the directive to every live run of the flavor. A `custom`

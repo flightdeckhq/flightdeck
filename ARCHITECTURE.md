@@ -5553,6 +5553,18 @@ reaches neither the live feed nor the store's `lastEvent`. A row's
 `last_seen_at` never moves back: it takes the later of its own value
 and the session's.
 
+A run start adds one to the agent's `total_sessions` only for a new
+run, as the server counts a run once, when its row is first inserted.
+The agent's `recent_sessions` holds its `RECENT_SESSIONS_WINDOW` (5)
+newest runs by `started_at`, as the API builds it, and a re-attached
+run keeps its `started_at`. So a start of a run in that window is a
+re-attachment (or the same start again), and so, once the window is
+full, is a start of a run that started before the window's oldest
+run: a resumed Claude Code session, or a late OpenTelemetry record
+re-opening a closed run. After a start the window is re-sorted by
+`started_at`: a new run leads it, a re-attached run keeps its place,
+and one older than a full window stays out.
+
 The agent's rolled-up `state`, which the Agents table, agent drawer and
 per-agent modal badges show, comes from the update's `agent_state`: the
 hub reads the agent's state with the same rollup the agent endpoints

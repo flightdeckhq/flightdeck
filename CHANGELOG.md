@@ -94,7 +94,26 @@ All notable changes to Flightdeck are documented here.
   the swimlane scrolled sideways (a narrow window, the per-agent
   swimlane modal), older circles showed through a child row's
   translucent label, over its pills and status badge. The label now
-  paints the same look opaquely.
+  paints the same look opaquely, and while the swimlane is scrolled
+  sideways it keeps its 2 px accent line pinned at its left edge.
+- **Fleet run glyphs mark where each run really started and ended.**
+  On a row with several runs, the ▶ and ■ glyphs now:
+  - take the top edge whenever no other run overlaps them in the
+    window, and share the bottom edge only while one does. A freed top
+    edge used to stay unused, and a lost run from the day before held
+    it, pushing every later run's glyphs to the bottom;
+  - sit side by side instead of on top of each other when runs start
+    together, hand off (■▶) or are very short (▶■), so every glyph can
+    be hovered and clicked;
+  - show a run's end even when its start is before the window;
+  - end a lost run, or one the orphan-timeout reaper closed, at its
+    last signal with a hollow square, instead of reading as running
+    (or as ending at the reap);
+  - draw a run that ended and was resumed as segments with gaps, each
+    segment with its own ▶ and ■, so another run in a gap no longer
+    splits the row;
+  - stay inside the panel at its right edge, so a run that has just
+    started shows its ▶.
 - **SIGTERM ends a process that runs the sensor, and a signal can no
   longer hang it.** The sensor's SIGTERM / SIGINT handler ended the
   session on the thread the signal interrupted, so a signal that landed

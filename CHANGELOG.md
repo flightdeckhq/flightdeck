@@ -13,7 +13,9 @@ All notable changes to Flightdeck are documented here.
   hook sees, such as `claude --bare`, CI and cloud sessions, show up as
   `claude_code` sessions: prompts, model calls with tokens, TTFT and
   Claude Code's own cost, tool calls (MCP ones by server and tool), denied
-  tools, API errors and sub-agents as child sessions. They observe only,
+  tools, API errors and sub-agents as child sessions (a sub-agent resumed
+  with `SendMessage` re-attaches its child session, and the resumed run's
+  tokens count toward it). They observe only,
   with no Stop button. Billing defaults to subscription
   (`flightdeck.billing_mode` overrides it) and content stays off unless
   the exporter sets `OTEL_RESOURCE_ATTRIBUTES=flightdeck.capture_prompts=true`.

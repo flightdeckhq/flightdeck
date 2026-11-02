@@ -239,17 +239,19 @@ func parseCCRecord(res *ccResource, lr *logspb.LogRecord, now time.Time) (*ccRec
 
 // MapLogs maps Claude Code's log records to events. Each session's
 // first record in a request is preceded by a synthetic session_start
-// when its row is missing (or, for a root, closed); a session another
-// client reports is not used. Every event passes POST /v1/events
+// when its row is missing or, for a root, closed; a closed sub-agent's
+// record only when it is dated more than otlpResumeTolerance after the
+// sub-agent's end (a resumed run; ccSession.startsWith). A session
+// another client reports is not used. Every event passes POST /v1/events
 // validation or is counted as rejected.
 //
 // A request whose records cannot fit the token's budget is refused
 // (Refused) before any session is read. The reads are capped per
 // request (maxOTLPSessionReadsPerRequest; records of sessions past the
-// cap are counted as rejected) and share one deadline
-// (otlpSessionLookupTimeout). A failed or late read fails the whole
-// request (Err), which the receiver answers with 503 so the exporter
-// retries.
+// cap are counted as rejected), plus one read of the request's
+// sub-agents' ends, and share one deadline (otlpSessionLookupTimeout).
+// A failed or late read fails the whole request (Err), which the
+// receiver answers with 503 so the exporter retries.
 func (d *ClaudeCodeDialect) MapLogs(ctx context.Context, req *collogs.ExportLogsServiceRequest) OTLPMapping {
 	now := d.now()
 	rejected := newRejectionSet()
@@ -300,31 +302,38 @@ func (d *ClaudeCodeDialect) MapLogs(ctx context.Context, req *collogs.ExportLogs
 		}
 	}
 
+	// Every session the request names is resolved, a sub-agent's root
+	// before it, and the sub-agents that may be closed are read for their
+	// ends, before anything is mapped.
 	lookupCtx, cancel := context.WithTimeout(ctx, otlpSessionLookupTimeout)
 	defer cancel()
 	resolver := &ccResolver{d: d, ctx: lookupCtx, sessions: map[string]*ccSession{}}
-	var events []OTLPEvent
-	var ended []string
 	for _, rec := range records {
 		if rec.agentID != "" {
-			// The run's root is resolved, and started when it must be,
-			// before its sub-agent, so the child's parent row carries the
-			// session's context and capture posture rather than being a
-			// stub the worker made for it.
-			rootRec := *rec
-			rootRec.agentID, rootRec.sessionID, rootRec.role = "", rec.rootID, ""
-			root, err := resolver.resolve(&rootRec)
-			if err != nil {
+			if _, err := resolver.resolve(rec.rootRecord()); err != nil {
 				return d.lookupFailed(err)
 			}
-			if !root.deduped && !root.capped {
-				events = d.appendStart(events, root, &rootRec)
-			}
 		}
-		s, err := resolver.resolve(rec)
-		if err != nil {
+		if _, err := resolver.resolve(rec); err != nil {
 			return d.lookupFailed(err)
 		}
+	}
+	if err := resolver.readEnds(); err != nil {
+		return d.lookupFailed(err)
+	}
+
+	var events []OTLPEvent
+	for _, rec := range records {
+		if rec.agentID != "" {
+			// The run's root is started, when it must be, before its
+			// sub-agent, so the child's parent row carries the session's
+			// context and capture posture rather than being a stub the
+			// worker made for it.
+			if root := resolver.sessions[rec.rootID]; !root.deduped && !root.capped {
+				events = d.appendStart(events, root, rec.rootRecord())
+			}
+		}
+		s := resolver.sessions[rec.sessionID]
 		if s.deduped {
 			rejected.add("its Claude Code session is reported by another Flightdeck client", 1)
 			continue
@@ -347,7 +356,12 @@ func (d *ClaudeCodeDialect) MapLogs(ctx context.Context, req *collogs.ExportLogs
 		}
 		events = append(events, OTLPEvent{EventType: eventType, SessionID: s.id, Payload: body})
 		if eventType == "session_end" {
-			ended = append(ended, s.id)
+			// The sub-agent's run ended: a later record of it in this
+			// request resumes it only when dated after the latest end.
+			s.open = false
+			if rec.ts.After(s.ended) {
+				s.ended = rec.ts
+			}
 		}
 	}
 
@@ -362,12 +376,17 @@ func (d *ClaudeCodeDialect) MapLogs(ctx context.Context, req *collogs.ExportLogs
 					d.cache.put(s.id, s.deduped, s.role)
 				}
 			}
-			for _, id := range ended {
-				d.cache.drop(id)
-			}
 		}
 	}
 	return mapping
+}
+
+// rootRecord is rec as a record of the run's root session, which a
+// sub-agent's record resolves, and starts when it must, before its own.
+func (rec *ccRecord) rootRecord() *ccRecord {
+	root := *rec
+	root.agentID, root.sessionID, root.role = "", rec.rootID, ""
+	return &root
 }
 
 func (d *ClaudeCodeDialect) lookupFailed(err error) OTLPMapping {
@@ -375,15 +394,16 @@ func (d *ClaudeCodeDialect) lookupFailed(err error) OTLPMapping {
 	return OTLPMapping{Err: fmt.Errorf("session lookup: %w", err)}
 }
 
-// appendStart appends the session's synthetic session_start when its
-// row is missing or closed and the request has not started it yet. Its
-// id derives from the session and the record it precedes, so a retried
-// export publishes the same start.
+// appendStart appends the session's synthetic session_start when rec
+// starts it (ccSession.startsWith): its row is missing, a root's is
+// closed, or a closed sub-agent resumes. Its id derives from the session
+// and the record it precedes, so a retried export publishes the same
+// start.
 func (d *ClaudeCodeDialect) appendStart(events []OTLPEvent, s *ccSession, rec *ccRecord) []OTLPEvent {
-	if !s.needsStart || s.startEmitted {
+	if !s.startsWith(rec) {
 		return events
 	}
-	s.startEmitted = true
+	s.open = true
 	p := d.basePayload(rec, s, "session_start")
 	p["id"] = identity.UUID5(identity.NamespaceFlightdeck,
 		"flightdeck://otlp/claude-code/start/"+s.id+"/"+rec.eventID)

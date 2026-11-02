@@ -2,20 +2,37 @@ package handlers
 
 import (
 	"context"
+	"slices"
 	"sync"
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/session"
 )
 
-// ClaudeCodeSessionStore is the session read the Claude Code dialect
-// makes before it publishes a session's first events: the session row's
-// state and role, whether the run's root is stored, and whether another
-// client already reports the Claude Code session (session.Store
-// implements it).
+// ClaudeCodeSessionStore is the session reads the Claude Code dialect
+// makes before it publishes a request's events (session.Store implements
+// it): LookupOTLPSession reads a session's row state and role, whether
+// the run's root is stored, and whether another client already reports
+// the Claude Code session; OTLPSessionEnds reads which of a request's
+// sub-agents are closed and when each ended.
 type ClaudeCodeSessionStore interface {
 	LookupOTLPSession(ctx context.Context, sessionID, rootSessionID, claudeCodeSessionID string) (session.OTLPSession, error)
+	OTLPSessionEnds(ctx context.Context, sessionIDs []string) (map[string]time.Time, error)
 }
+
+// otlpResumeTolerance is how much later than a closed sub-agent's end a
+// record must be dated to resume it; a record dated at or before
+// end+tolerance is late and does not reopen the sub-agent. The end and
+// the record are dated by the same Claude Code clock, which dates a
+// run's records before its subagent_completed, so a late record is not
+// dated after the end; a resumed run's first record follows a model
+// response the sub-agent gives after the resume (the parent's own turn
+// that sends the message comes first), seconds after the end (4.5 s in
+// the recorded resume). One second lies clear of both: it covers the
+// database's microsecond rounding of the stored end and corrections
+// made to the client's clock while the session runs, and stays below the
+// model turns a resume takes before the sub-agent's first record.
+const otlpResumeTolerance = time.Second
 
 // otlpSessionCacheTTL is how long a replica trusts what it read about a
 // session. Ten minutes is well inside the orphan reaper's timeout (24
@@ -132,15 +149,6 @@ func (c *otlpSessionCache) put(sessionID string, deduped bool, role string) {
 	c.entries[sessionID] = otlpSessionEntry{expires: now.Add(otlpSessionCacheTTL), deduped: deduped, role: role}
 }
 
-// drop forgets a session, so its next record is read again: publishing
-// a session's session_end drops it, and a record for the session after
-// the end re-attaches it.
-func (c *otlpSessionCache) drop(sessionID string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	delete(c.entries, sessionID)
-}
-
 func (c *otlpSessionCache) len() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -156,15 +164,35 @@ type ccSession struct {
 	// capped: the request had used its reads before this session's, so
 	// its records are not used (and nothing about it is cached).
 	capped bool
-	// needsStart: the session's first event in this request is preceded
-	// by a synthetic session_start. A root needs one when its row is
-	// missing or closed (a resumed session re-attaches); a sub-agent only
-	// when its row is missing, since a closed one has finished and a late
-	// record must not reopen it.
-	needsStart   bool
-	startEmitted bool
-	deduped      bool
-	role         string
+	// open: as far as the request knows, the session's row is open, so
+	// its records need no synthetic session_start. A missing row or a
+	// closed one is not open until the request starts it, and a
+	// sub-agent's subagent_completed in the request closes it again.
+	open bool
+	// ended is when a closed sub-agent ended, dated by its client (its
+	// latest stored session_end, or a subagent_completed earlier in the
+	// request): only a record dated more than otlpResumeTolerance after
+	// it starts the sub-agent again. It is zero for a root and for a
+	// missing row, which their first record starts.
+	ended time.Time
+	// readEnd: the request reads the sub-agent's row for its end
+	// (readEnds), since the session may be closed: it is cached, and any
+	// replica may have published its end since, or it was read closed.
+	readEnd bool
+	deduped bool
+	role    string
+}
+
+// startsWith reports whether rec, a record of s, is preceded by a
+// synthetic session_start: s is not open, and either has no end to
+// compare with (a missing row, a closed root) or ended more than
+// otlpResumeTolerance before rec was dated. A record of a closed
+// sub-agent dated at or before that is late, and starts nothing.
+func (s *ccSession) startsWith(rec *ccRecord) bool {
+	if s.open {
+		return false
+	}
+	return s.ended.IsZero() || rec.ts.After(s.ended.Add(otlpResumeTolerance))
 }
 
 // ccResolver resolves the sessions of one request, within its read cap
@@ -188,7 +216,11 @@ func (r *ccResolver) resolve(rec *ccRecord) (*ccSession, error) {
 	s := &ccSession{id: rec.sessionID, rootID: rec.rootID, child: rec.agentID != ""}
 	r.sessions[s.id] = s
 	if e, ok := r.d.cache.get(s.id); ok {
-		s.cached, s.deduped, s.role = true, e.deduped, e.role
+		// A cached session is open as far as this replica knows; a
+		// sub-agent's end can be published by any replica, so its row is
+		// read for it.
+		s.cached, s.deduped, s.role, s.open = true, e.deduped, e.role, true
+		s.readEnd = s.child && !s.deduped
 		return s, nil
 	}
 	if s.child {
@@ -208,15 +240,40 @@ func (r *ccResolver) resolve(rec *ccRecord) (*ccSession, error) {
 		return nil, err
 	}
 	s.deduped = !got.RootStored && got.ReportedElsewhere
-	switch {
-	case s.deduped:
-	case got.State == "":
-		s.needsStart = true
-	case got.State == "closed" && !s.child:
-		s.needsStart = true
-	}
+	// A missing row and a closed root are started by their first record
+	// in the request; a closed sub-agent only by a record dated after its
+	// end, which readEnds finds.
+	s.open = got.State != "" && got.State != "closed"
+	s.readEnd = s.child && !s.deduped && got.State == "closed"
 	if s.child {
 		s.role = got.AgentRole
 	}
 	return s, nil
+}
+
+// readEnds reads, in one query, which of the request's sub-agents that
+// may be closed are, and when each ended; the others are open. It runs
+// once every session of the request is resolved, under the same
+// deadline as the other reads, and a failed read fails the request.
+func (r *ccResolver) readEnds() error {
+	var ids []string
+	for id, s := range r.sessions {
+		if s.readEnd {
+			ids = append(ids, id)
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	slices.Sort(ids)
+	ends, err := r.d.store.OTLPSessionEnds(r.ctx, ids)
+	if err != nil {
+		return err
+	}
+	for _, id := range ids {
+		s := r.sessions[id]
+		ended, closed := ends[id]
+		s.open, s.ended = !closed, ended
+	}
+	return nil
 }

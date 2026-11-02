@@ -475,10 +475,10 @@ def test_resumed_subagent_re_attaches_its_child_and_counts_its_tokens(
     after the subagent_completed that closed its child session,
     re-attaches that same row, and the worker adds the second run's
     tokens to tokens_used. Claude Code exports the resumed run seconds
-    after the end (4.5 s in the recording), by when the worker has closed
-    the child, so the replay waits for that close before sending the
-    rest. A late copy of a call, dated before the end, then leaves the
-    child closed; the same call dated after the end re-attaches it."""
+    after the end (4.5 s in the recording), by when the worker has stored
+    that end, so the replay waits for it before sending the rest. A late
+    copy of a call, dated before the end, then leaves the child closed;
+    the same call dated after the end re-attaches it."""
     replay = Replay("subagent-resume-json", flavor)
     records = _typed_records(replay)
     calls = _sub_agent(records, "api_request")
@@ -497,11 +497,11 @@ def test_resumed_subagent_re_attaches_its_child_and_counts_its_tokens(
         )
     )
     replay.send(last=first_end + 1)
-    wait_until(
-        lambda: _state(child_id) == "closed",
-        timeout=LAND_TIMEOUT_SECS,
-        msg="first run's end closes the child",
-    )
+    # The worker closes the row a moment before it stores the end's
+    # event, and until then the receiver judges records against the
+    # row's ended_at (the worker's clock), so the replay waits for the
+    # stored end, as Claude Code's own pacing would.
+    _events_when(child_id, lambda ev: len(_of(ev, "session_end")) == 1)
     replay.send(first=first_end + 1)
     assert replay.rejected == replay.unmapped, replay.messages
 

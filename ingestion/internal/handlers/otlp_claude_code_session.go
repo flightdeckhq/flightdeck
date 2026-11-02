@@ -169,11 +169,13 @@ type ccSession struct {
 	// closed one is not open until the request starts it, and a
 	// sub-agent's subagent_completed in the request closes it again.
 	open bool
-	// ended is when a closed sub-agent ended, dated by its client (its
-	// latest stored session_end, or a subagent_completed earlier in the
-	// request): only a record dated more than otlpResumeTolerance after
-	// it starts the sub-agent again. It is zero for a root and for a
-	// missing row, which their first record starts.
+	// ended is when a closed sub-agent ended: as the store reads it (its
+	// latest stored session_end, dated by its client, or its ended_at
+	// while its current run's end is still being stored), or a
+	// subagent_completed earlier in the request. Only a record dated more
+	// than otlpResumeTolerance after it starts the sub-agent again. It is
+	// zero for a root and for a missing row, which their first record
+	// starts.
 	ended time.Time
 	// readEnd: the request reads the sub-agent's row for its end
 	// (readEnds), since the session may be closed: it is cached, and any
@@ -187,12 +189,19 @@ type ccSession struct {
 // synthetic session_start: s is not open, and either has no end to
 // compare with (a missing row, a closed root) or ended more than
 // otlpResumeTolerance before rec was dated. A record of a closed
-// sub-agent dated at or before that is late, and starts nothing.
+// sub-agent dated at or before that is late, and starts nothing; so is
+// one the receiver dated, whose date says nothing about Claude Code's
+// clock.
 func (s *ccSession) startsWith(rec *ccRecord) bool {
-	if s.open {
+	switch {
+	case s.open:
+		return false
+	case s.ended.IsZero():
+		return true
+	case rec.receiverDated:
 		return false
 	}
-	return s.ended.IsZero() || rec.ts.After(s.ended.Add(otlpResumeTolerance))
+	return rec.ts.After(s.ended.Add(otlpResumeTolerance))
 }
 
 // ccResolver resolves the sessions of one request, within its read cap

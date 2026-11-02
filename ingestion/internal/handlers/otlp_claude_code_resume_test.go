@@ -376,6 +376,89 @@ func TestClaudeCodeResumeBeforeTheEndIsProcessed(t *testing.T) {
 	}
 }
 
+// The worker closes a row before it stores the end's event. Read in that
+// moment, a sub-agent's latest stored end is the previous run's (or
+// none) while the current run's start is stored after it, and the store
+// answers the row's ended_at instead (the worker's clock, later than the
+// end): a late record of the current run starts nothing, and a record
+// past ended_at and the tolerance resumes the sub-agent.
+func TestClaudeCodeEndBeingStoredJudgesByEndedAt(t *testing.T) {
+	root := ccSessionUUID(ccResumeSession, "")
+	child := ccSessionUUID(ccResumeSession, ccResumeAgentID)
+	firstRunEnd := firstEnd(t)
+	runStart := firstRunEnd.Add(4500 * time.Millisecond) // the resumed run's start
+	runEnd := runStart.Add(2 * time.Second)              // its subagent_completed
+	endedAt := runEnd.Add(800 * time.Millisecond)        // the worker's close
+	for _, c := range []struct {
+		name   string
+		starts []time.Time // stored session_starts
+		ends   []time.Time // stored session_ends
+		late   time.Time   // a record of the run that just ended
+	}{
+		{"a resumed run", []time.Time{firstRunEnd.Add(-4 * time.Second), runStart}, []time.Time{firstRunEnd}, runStart.Add(1500 * time.Millisecond)},
+		{"a first run", []time.Time{runStart}, nil, runStart.Add(1500 * time.Millisecond)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for _, rec := range []struct {
+				at    time.Time
+				start bool
+			}{
+				{c.late, false},
+				{endedAt.Add(otlpResumeTolerance), false},
+				{endedAt.Add(otlpResumeTolerance + time.Millisecond), true},
+			} {
+				store := newFakeStore()
+				store.rows[root], store.rows[child] = "active", "closed"
+				store.endedAt[child] = endedAt
+				for _, at := range c.starts {
+					store.starts[child] = at
+				}
+				for _, at := range c.ends {
+					store.ends[child] = at
+				}
+				d := newResumeTestDialect(store)
+				events, _, _ := mapAll(t, d, []*collogs.ExportLogsServiceRequest{
+					exportOf(t, childCallAt(t, rec.at, ccResumeAgentID)),
+				})
+				if got := len(ofType(events, "session_start")) == 1; got != rec.start {
+					t.Errorf("record at ended_at%+v: start %v, want %v", rec.at.Sub(endedAt), got, rec.start)
+				}
+			}
+		})
+	}
+}
+
+// A record the receiver dated (it carries neither time_unix_nano nor
+// observed_time_unix_nano) never starts a closed sub-agent: its date is
+// the receiver's clock, not Claude Code's. A missing child is still
+// started by it.
+func TestClaudeCodeReceiverDatedRecordDoesNotResume(t *testing.T) {
+	root := ccSessionUUID(ccResumeSession, "")
+	child := ccSessionUUID(ccResumeSession, ccResumeAgentID)
+	undated := childCallAt(t, firstEnd(t), ccResumeAgentID)
+	undated.TimeUnixNano, undated.ObservedTimeUnixNano = 0, 0
+
+	store := newFakeStore()
+	store.rows[root], store.rows[child] = "active", "closed"
+	store.ends[child] = firstEnd(t).Add(-time.Hour) // long before the receiver's clock
+	d := newResumeTestDialect(store)
+	events, rejected, _ := mapAll(t, d, []*collogs.ExportLogsServiceRequest{exportOf(t, undated)})
+	if got := eventTypes(events); rejected != 0 || !reflect.DeepEqual(got, []string{"post_call"}) {
+		t.Errorf("a receiver-dated record of a closed child published %v (%d rejected)", got, rejected)
+	}
+	if at := events[0].P["timestamp"]; at != ccResumeFixtureNow.Format(time.RFC3339Nano) {
+		t.Errorf("the record is dated %v, want the receiver's clock", at)
+	}
+
+	missing := newFakeStore()
+	missing.rows[root] = "active"
+	d2 := newResumeTestDialect(missing)
+	events2, _, _ := mapAll(t, d2, []*collogs.ExportLogsServiceRequest{exportOf(t, undated)})
+	if got := eventTypes(events2); !reflect.DeepEqual(got, []string{"session_start", "post_call"}) {
+		t.Errorf("a receiver-dated record of a missing child published %v", got)
+	}
+}
+
 // The end read shares the request's fate: a failed read fails the whole
 // request, which publishes nothing.
 func TestClaudeCodeEndReadFailureFailsTheRequest(t *testing.T) {

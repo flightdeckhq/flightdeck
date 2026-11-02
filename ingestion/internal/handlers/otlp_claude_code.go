@@ -153,6 +153,10 @@ type ccRecord struct {
 	attrs               otlpAttrs
 	name                string // event.name: api_request
 	ts                  time.Time
+	// receiverDated: the record carries neither time_unix_nano nor
+	// observed_time_unix_nano, so ts is the receiver's clock, which an
+	// end on Claude Code's clock cannot be compared with.
+	receiverDated       bool
 	claudeCodeSessionID string
 	agentID             string // the sub-agent's agent_id; "" for the root
 	role                string // the sub-agent's role, when this record names it
@@ -224,7 +228,7 @@ func parseCCRecord(res *ccResource, lr *logspb.LogRecord, now time.Time) (*ccRec
 	case lr.GetObservedTimeUnixNano() != 0:
 		rec.ts = time.Unix(0, int64(lr.GetObservedTimeUnixNano())).UTC() //nolint:gosec // as above
 	default:
-		rec.ts = now
+		rec.ts, rec.receiverDated = now, true
 	}
 	seq := attrs.text("event.sequence")
 	rec.eventID = identity.UUID5(identity.NamespaceFlightdeck,

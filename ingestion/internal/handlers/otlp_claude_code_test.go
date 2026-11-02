@@ -77,13 +77,16 @@ func ccLogRequests(t *testing.T, scenario string) []*collogs.ExportLogsServiceRe
 }
 
 // fakeSessionStore answers session reads from rows by session id;
-// elsewhere names the Claude Code sessions another client reports, and
-// ends the date of each session's latest stored session_end.
+// elsewhere names the Claude Code sessions another client reports, ends
+// and starts the dates of each session's latest stored session_end and
+// session_start, and endedAt each row's ended_at.
 type fakeSessionStore struct {
 	mu        sync.Mutex
 	rows      map[string]string    // Flightdeck session id -> state
 	roles     map[string]string    // Flightdeck session id -> agent_role
 	ends      map[string]time.Time // Flightdeck session id -> latest session_end
+	starts    map[string]time.Time // Flightdeck session id -> latest session_start
+	endedAt   map[string]time.Time // Flightdeck session id -> ended_at
 	elsewhere map[string]bool
 	err       error
 	endErr    error // fails OTLPSessionEnds only
@@ -95,12 +98,14 @@ type fakeSessionStore struct {
 func newFakeStore() *fakeSessionStore {
 	return &fakeSessionStore{
 		rows: map[string]string{}, roles: map[string]string{},
-		ends: map[string]time.Time{}, elsewhere: map[string]bool{},
+		ends: map[string]time.Time{}, starts: map[string]time.Time{},
+		endedAt: map[string]time.Time{}, elsewhere: map[string]bool{},
 	}
 }
 
 // OTLPSessionEnds answers as session.Store does: the closed sessions
-// among ids, each with its latest session_end (zero when it has none).
+// among ids, each with its latest session_end when no session_start is
+// stored after it, else its ended_at (zero when it has neither).
 func (f *fakeSessionStore) OTLPSessionEnds(ctx context.Context, ids []string) (map[string]time.Time, error) {
 	f.mu.Lock()
 	f.endReads = append(f.endReads, append([]string(nil), ids...))
@@ -110,8 +115,15 @@ func (f *fakeSessionStore) OTLPSessionEnds(ctx context.Context, ids []string) (m
 	}
 	out := map[string]time.Time{}
 	for _, id := range ids {
-		if f.rows[id] == "closed" {
-			out[id] = f.ends[id]
+		if f.rows[id] != "closed" {
+			continue
+		}
+		end, hasEnd := f.ends[id]
+		start, hasStart := f.starts[id]
+		if hasEnd && (!hasStart || !end.Before(start)) {
+			out[id] = end
+		} else {
+			out[id] = f.endedAt[id]
 		}
 	}
 	f.mu.Unlock()
@@ -126,28 +138,34 @@ func (f *fakeSessionStore) OTLPSessionEnds(ctx context.Context, ids []string) (m
 }
 
 // applyAsWorker changes the rows as the worker does when it processes
-// published events: a session_start opens its session (creating or
-// reopening the row) and a session_end closes it, at the end's date.
+// published events and stores them: a session_start opens its session
+// (creating or reopening the row) and a session_end closes it, each
+// stored at its own date.
 func (f *fakeSessionStore) applyAsWorker(t *testing.T, events []mappedEvent) {
 	t.Helper()
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	for _, e := range events {
-		switch e.Type {
-		case "session_start":
+		if e.Type != "session_start" && e.Type != "session_end" {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339Nano, e.P["timestamp"].(string))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.Type == "session_start" {
 			f.rows[e.Session] = "active"
 			if role, ok := e.P["agent_role"].(string); ok && f.roles[e.Session] == "" {
 				f.roles[e.Session] = role
 			}
-		case "session_end":
-			f.rows[e.Session] = "closed"
-			at, err := time.Parse(time.RFC3339Nano, e.P["timestamp"].(string))
-			if err != nil {
-				t.Fatal(err)
+			if at.After(f.starts[e.Session]) {
+				f.starts[e.Session] = at
 			}
-			if at.After(f.ends[e.Session]) {
-				f.ends[e.Session] = at
-			}
+			continue
+		}
+		f.rows[e.Session], f.endedAt[e.Session] = "closed", at
+		if at.After(f.ends[e.Session]) {
+			f.ends[e.Session] = at
 		}
 	}
 }

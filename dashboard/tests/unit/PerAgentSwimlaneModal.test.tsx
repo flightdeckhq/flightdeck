@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import { PerAgentSwimlaneModal } from "@/components/agents/PerAgentSwimlaneModal";
+import { SWIMLANE_LABEL_BACKDROP_VAR } from "@/components/timeline/SwimLane";
 import { ClientType } from "@/lib/agent-identity";
 import { __resetAgentSummaryCacheForTests } from "@/hooks/useAgentSummary";
 import { fetchAgentSummary } from "@/lib/api";
@@ -100,6 +101,19 @@ describe("PerAgentSwimlaneModal", () => {
     expect(screen.getByTestId("per-agent-swimlane-modal-name").textContent).toBe(
       "test-agent",
     );
+  });
+
+  it("tells child-row labels its rows sit on --surface", () => {
+    // A child row's sticky label paints the colour its row sits on
+    // under its tint (SwimLane's opaque child-label background); in
+    // the dialog that is --surface, not the page's --bg.
+    render(
+      <MemoryRouter>
+        <PerAgentSwimlaneModal agent={mkAgent()} onClose={() => {}} />
+      </MemoryRouter>,
+    );
+    const modal = screen.getByTestId("per-agent-swimlane-modal");
+    expect(modal.style.getPropertyValue(SWIMLANE_LABEL_BACKDROP_VAR)).toBe("var(--surface)");
   });
 
   it("defaults the time range picker to 1m", () => {

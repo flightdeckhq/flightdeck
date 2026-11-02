@@ -169,6 +169,34 @@ export function splitRoleSuffix(
 	return { head: name.slice(0, -suffix.length), role: suffix };
 }
 
+/**
+ * CSS custom property a swimlane host sets to the colour its rows sit
+ * on, so a child row's label can paint that colour opaquely. Fleet
+ * rows sit on the page's ``--bg`` (the fallback); the per-agent
+ * swimlane modal's rows sit on its ``--surface`` and set it there.
+ */
+export const SWIMLANE_LABEL_BACKDROP_VAR = "--swimlane-label-backdrop";
+
+// One layer of the child-row tint (``--swimlane-row-child-bg``, a 6%
+// overlay in both themes) as an image, so it can stack.
+const CHILD_TINT_LAYER =
+	"linear-gradient(var(--swimlane-row-child-bg), var(--swimlane-row-child-bg))";
+
+// The child row's 2 px accent line at its left edge, the same as the
+// ``box-shadow: inset 2px 0 0 var(--accent)`` globals.css draws on the
+// row, which an opaque label would otherwise cover.
+const CHILD_ACCENT_LAYER = "linear-gradient(to right, var(--accent) 2px, transparent 2px)";
+
+/**
+ * Opaque background for a child row's sticky label. The row's tint is
+ * translucent, so a label that only inherited it let event circles
+ * scrolled underneath show through. This rebuilds, top to bottom, what
+ * the label showed at rest: its own inherited tint, the row's accent
+ * line, the row's tint, and the colour the row sits on. The result is
+ * the same colour, but nothing scrolled under it shows.
+ */
+const CHILD_LABEL_BACKGROUND = `${CHILD_TINT_LAYER}, ${CHILD_ACCENT_LAYER}, ${CHILD_TINT_LAYER}, var(${SWIMLANE_LABEL_BACKDROP_VAR}, var(--bg))`;
+
 // Shared single-line truncation styles for the two parts of a split
 // sub-agent name.
 const NAME_PART_TRUNCATE: React.CSSProperties = {
@@ -298,8 +326,12 @@ function SwimLaneComponent({
 					// sticky panel matching the row tint (otherwise
 					// the panel pin-fights with the row's child tint
 					// and a thin seam of var(--surface) shows under
-					// horizontal scroll).
-					background: "inherit",
+					// horizontal scroll). A root row's ``--surface``
+					// is opaque; a child row's tint is not, so its
+					// label paints the same look opaquely (see
+					// CHILD_LABEL_BACKGROUND) and circles scrolled
+					// under it stay hidden.
+					background: topology === "child" ? CHILD_LABEL_BACKGROUND : "inherit",
 					borderRight: "1px solid var(--border)",
 					position: "sticky",
 					left: 0,
@@ -378,6 +410,9 @@ function SwimLaneComponent({
 					to={{ search: `agent_drawer=${encodeURIComponent(flavor)}` }}
 					data-testid="swimlane-agent-name-link"
 					title={displayName}
+					// A split name's two flex items read with a space
+					// between them; name the link exactly instead.
+					aria-label={nameParts ? displayName : undefined}
 					className="block text-[13px] font-medium"
 					style={{
 						color: "var(--text)",

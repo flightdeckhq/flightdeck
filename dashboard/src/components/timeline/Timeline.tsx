@@ -21,6 +21,7 @@ import { AllSwimLane } from "./SwimLane";
 import { VirtualizedSwimLane } from "./VirtualizedSwimLane";
 import {
   SubAgentConnector,
+  centreWithin,
   circleCentre,
   pickSpawnEvent,
   type SubAgentConnectorSpec,
@@ -37,6 +38,20 @@ import { eventsCache } from "@/hooks/useSessionEvents";
 function runIdOf(target: EventTarget | null): string | null {
   if (!(target instanceof Element)) return null;
   return target.closest("[data-session-id]")?.getAttribute("data-session-id") ?? null;
+}
+
+/**
+ * Whether focus on ``target`` came from the keyboard. A mouse click
+ * focuses a run glyph's button too, and Chromium keeps that focus after
+ * the pointer leaves, so only ``:focus-visible`` focus lights a run.
+ */
+function isKeyboardFocus(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  try {
+    return target.matches(":focus-visible");
+  } catch {
+    return false;
+  }
 }
 
 interface TimelineProps {
@@ -399,7 +414,7 @@ export function Timeline({
     setPointerRunId(null);
   }, []);
   const handleMarkFocus = useCallback((e: React.FocusEvent) => {
-    setFocusRunId(runIdOf(e.target));
+    setFocusRunId(isKeyboardFocus(e.target) ? runIdOf(e.target) : null);
   }, []);
   const handleMarkBlur = useCallback(() => {
     setFocusRunId(null);
@@ -515,14 +530,27 @@ export function Timeline({
           `[data-event-id="${CSS.escape(childFirstEvent.id)}"]`,
         );
         if (!parentCircle || !childCircle) continue;
-        const parentCentre = circleCentre(
-          parentCircle.getBoundingClientRect(),
-          containerRect,
+        const parentBox = parentCircle.getBoundingClientRect();
+        const childBox = childCircle.getBoundingClientRect();
+        // A circle within the panel's inset of "now" is clipped by its
+        // row's timeline panel; a connector to its centre would run
+        // past the now line. Skip the pair, as for an unmounted circle.
+        const parentPanel = parentRow.querySelector(
+          '[data-testid="swimlane-timeline-panel"]',
         );
-        const childCentre = circleCentre(
-          childCircle.getBoundingClientRect(),
-          containerRect,
+        const childPanel = childRow.querySelector(
+          '[data-testid="swimlane-timeline-panel"]',
         );
+        if (
+          !parentPanel ||
+          !childPanel ||
+          !centreWithin(parentBox, parentPanel.getBoundingClientRect()) ||
+          !centreWithin(childBox, childPanel.getBoundingClientRect())
+        ) {
+          continue;
+        }
+        const parentCentre = circleCentre(parentBox, containerRect);
+        const childCentre = circleCentre(childBox, containerRect);
         const id = `${parentId}->${childSession.session_id}`;
         if (seen.has(id)) continue;
         seen.add(id);

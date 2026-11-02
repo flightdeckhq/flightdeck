@@ -4,6 +4,7 @@ import {
   SubAgentConnector,
   anchorOnCircle,
   buildConnectorPath,
+  centreWithin,
   circleCentre,
   connectorTouchesRun,
   pickSpawnEvent,
@@ -292,6 +293,25 @@ describe("circleCentre", () => {
     );
     expect(scaled.x).toBeCloseTo(resting.x, 10);
     expect(scaled.y).toBeCloseTo(resting.y, 10);
+  });
+});
+
+describe("centreWithin", () => {
+  // The row's timeline panel spans x 100..1000. A circle near "now" is
+  // clipped by the panel with its centre past the right edge; the
+  // overlay must not draw a connector to it.
+  const panel = { left: 100, top: 0, right: 1000, bottom: 48 };
+
+  it("is true for a circle whose centre is inside the panel", () => {
+    expect(centreWithin({ left: 500, top: 13, width: 22, height: 22 }, panel)).toBe(true);
+    // Overlapping the edge, but the centre (996) is still inside.
+    expect(centreWithin({ left: 985, top: 13, width: 22, height: 22 }, panel)).toBe(true);
+  });
+
+  it("is false once the centre passes the panel's edge", () => {
+    expect(centreWithin({ left: 995, top: 13, width: 22, height: 22 }, panel)).toBe(false);
+    expect(centreWithin({ left: 80, top: 13, width: 22, height: 22 }, panel)).toBe(false);
+    expect(centreWithin({ left: 500, top: 40, width: 22, height: 22 }, panel)).toBe(false);
   });
 });
 

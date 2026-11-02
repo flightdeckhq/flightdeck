@@ -90,6 +90,11 @@ All notable changes to Flightdeck are documented here.
 - **Sub-agent connectors end on the circles they join**, instead of
   19 px left of and about 11 px below them, and hovering a run's
   circle or glyph lights that run's connectors.
+- **A sub-agent row's label hides the circles scrolled under it.** When
+  the swimlane scrolled sideways (a narrow window, the per-agent
+  swimlane modal), older circles showed through a child row's
+  translucent label, over its pills and status badge. The label now
+  paints the same look opaquely.
 - **An event that names no model no longer reads "unknown".** A prompt,
   call or error without a model (Claude Code's prompt record over
   OpenTelemetry has none) shows a dash in its feed line and its Model

@@ -107,6 +107,9 @@ const CIRCLES: Record<string, Box> = {
 };
 const CONTAINER: Box = { left: 0, top: 0, width: 1400, height: 600 };
 const CIRCLE_SIZE = 22;
+// Per-row timeline-panel boxes (keyed by the row's agent id); rows not
+// listed get the container's box, so every circle is inside its panel.
+const panelBoxes = new Map<string, Box>();
 
 function rect(b: Box): DOMRect {
   return {
@@ -125,7 +128,12 @@ beforeEach(() => {
     this: Element,
   ) {
     const id = this.getAttribute("data-event-id");
-    return rect((id && CIRCLES[id]) || CONTAINER);
+    if (id && CIRCLES[id]) return rect(CIRCLES[id]);
+    if (this.getAttribute("data-testid") === "swimlane-timeline-panel") {
+      const agentId = this.closest("[data-agent-id]")?.getAttribute("data-agent-id") ?? "";
+      return rect(panelBoxes.get(agentId) ?? CONTAINER);
+    }
+    return rect(CONTAINER);
   });
   vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (
     this: HTMLElement,
@@ -136,6 +144,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+  panelBoxes.clear();
 });
 
 function renderTimeline() {
@@ -149,6 +158,19 @@ function renderTimeline() {
       />
     </MemoryRouter>,
   );
+}
+
+/** Decide whether ``:focus-visible`` matches, as the browser would after
+ *  a keyboard (true) or a mouse (false) focus. jsdom's own answer
+ *  depends on document focus, so the tests set it explicitly. */
+function stubFocusVisible(visible: boolean): void {
+  const matches = Element.prototype.matches;
+  vi.spyOn(Element.prototype, "matches").mockImplementation(function (
+    this: Element,
+    selector: string,
+  ) {
+    return selector === ":focus-visible" ? visible : matches.call(this, selector);
+  });
 }
 
 function pathPoints(d: string): number[] {
@@ -200,6 +222,17 @@ describe("Timeline sub-agent connectors", () => {
     } finally {
       unrendered.delete("c-2");
     }
+  });
+
+  it("skips a pair whose circle its row's panel clips near now", () => {
+    // The child row's panel ends at x = 700: ce-1 (centre 651) is
+    // inside it, ce-2 (centre 711) sits past the edge, as a circle
+    // within the inset of "now" does. A connector to ce-2 would run
+    // past the now line.
+    panelBoxes.set("agent-c", { left: 0, top: 0, width: 700, height: 600 });
+    renderTimeline();
+    expect(screen.getByTestId("sub-agent-connector-p-1->c-1")).toBeTruthy();
+    expect(screen.queryByTestId("sub-agent-connector-p-1->c-2")).toBeNull();
   });
 
   it("draws nothing for a pair outside the window", () => {
@@ -255,7 +288,19 @@ describe("Timeline run hover", () => {
     expect(lit()).toEqual({ c1: "false", c2: "false" });
   });
 
+  it("a focus that is not keyboard focus lights nothing", () => {
+    // A mouse click focuses the glyph's button too, and the browser
+    // keeps that focus after the pointer leaves; only :focus-visible
+    // focus may light a run, or the highlight would stick.
+    stubFocusVisible(false);
+    renderTimeline();
+    act(() => screen.getByTestId("swimlane-run-bracket-start-c-2").focus());
+    expect(lit()).toEqual({ c1: "false", c2: "false" });
+  });
+
   it("focusing a run glyph lights that run's connector until it blurs", () => {
+    // Keyboard focus (:focus-visible), as a Tab onto the glyph gives.
+    stubFocusVisible(true);
     renderTimeline();
     const glyph = screen.getByTestId("swimlane-run-bracket-start-c-2");
     act(() => glyph.focus());

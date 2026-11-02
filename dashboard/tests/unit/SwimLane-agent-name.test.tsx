@@ -6,6 +6,7 @@ import type { FlavorSummary, Session } from "@/lib/types";
 import { useFleetStore } from "@/store/fleet";
 import {
   AllSwimLane,
+  SWIMLANE_LABEL_BACKDROP_VAR,
   SwimLane,
   TIMELINE_LEFT_INSET_PX,
   splitRoleSuffix,
@@ -184,6 +185,45 @@ describe("SwimLane agent name", () => {
     expect(pill.style.flexShrink).toBe("100");
     expect(pill.style.minWidth).toBe("1.75rem");
     expect(pill.style.overflow).toBe("hidden");
+  });
+});
+
+describe("SwimLane label accessibility and background", () => {
+  it("names a split link with the whole agent name", () => {
+    const name = `${PARENT_NAME}/worker`;
+    renderRow(name, [
+      mkSession("c-1", { parent_session_id: "p-1", agent_role: "worker" }),
+    ]);
+    // The head and role spans are flex items, which read with a space
+    // between them; the link carries the exact name instead.
+    expect(screen.getByRole("link", { name })).toBe(
+      screen.getByTestId("swimlane-agent-name-link"),
+    );
+  });
+
+  it("leaves an unsplit link's name to its text", () => {
+    renderRow(PARENT_NAME, [mkSession("r-1")], "agent-root");
+    const link = screen.getByTestId("swimlane-agent-name-link");
+    expect(link.getAttribute("aria-label")).toBeNull();
+    expect(screen.getByRole("link", { name: PARENT_NAME })).toBe(link);
+  });
+
+  it("paints a child row's label opaquely: tint, accent line, tint, then the host's backdrop", () => {
+    renderRow(`${PARENT_NAME}/worker`, [
+      mkSession("c-1", { parent_session_id: "p-1", agent_role: "worker" }),
+    ]);
+    const label = document.querySelector<HTMLElement>(".swimlane-row-label")!;
+    const tint = "linear-gradient(var(--swimlane-row-child-bg), var(--swimlane-row-child-bg))";
+    expect(label.style.background).toBe(
+      `${tint}, linear-gradient(to right, var(--accent) 2px, transparent 2px), ${tint}, ` +
+        `var(${SWIMLANE_LABEL_BACKDROP_VAR}, var(--bg))`,
+    );
+  });
+
+  it("keeps a root row's label on the row's own opaque surface", () => {
+    renderRow(PARENT_NAME, [mkSession("r-1")], "agent-root");
+    const label = document.querySelector<HTMLElement>(".swimlane-row-label")!;
+    expect(label.style.background).toBe("inherit");
   });
 });
 

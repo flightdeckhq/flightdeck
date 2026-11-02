@@ -10,8 +10,10 @@ import { memo, useState } from "react";
  * ``data-event-id`` inside the parent's and the child's rows) and
  * passes their centres in the overlay's coordinate space, with the
  * parent circle's radius from its ``offsetWidth`` (a hover scale
- * leaves both unchanged). The overlay itself does pure math from
- * those numbers, no DOM measurement (Rule 16):
+ * leaves both unchanged). A pair is skipped while a circle is not
+ * mounted or its row's panel clips it near "now" (``centreWithin``).
+ * The overlay itself does pure math from those numbers, no DOM
+ * measurement (Rule 16):
  *   * Anchor on the parent event circle's CIRCUMFERENCE — never on
  *     a shared single point. For each child the anchor is the
  *     point on the circle's edge whose direction matches the line
@@ -30,8 +32,9 @@ import { memo, useState } from "react";
  *   * 10% opacity at rest. 50% while the pointer is on the path
  *     itself, or while ``hoveredId`` names a run at either end:
  *     Timeline.tsx sets it to the run whose mark (event circle or
- *     run glyph) is hovered or whose glyph has focus, so a parent
- *     run lights its whole fan-out and a child run its own link.
+ *     run glyph) is hovered or whose glyph has keyboard focus, so a
+ *     parent run lights its whole fan-out and a child run its own
+ *     link.
  *   * stroke colour reads ``--accent`` (CSS variable) so both
  *     theme projects pick up the right tone without a render
  *     branch.
@@ -84,6 +87,23 @@ export function circleCentre(
     x: rect.left - container.left + rect.width / 2,
     y: rect.top - container.top + rect.height / 2,
   };
+}
+
+/**
+ * Whether a circle's centre lies inside ``box``, its row's timeline
+ * panel. A circle within the panel's inset of "now" is clipped by the
+ * panel, its centre past the right edge; a connector ending there would
+ * run past the now line, so the overlay skips that pair.
+ *
+ * Pure function — exported for unit testing.
+ */
+export function centreWithin(
+  rect: Pick<DOMRect, "left" | "top" | "width" | "height">,
+  box: Pick<DOMRect, "left" | "top" | "right" | "bottom">,
+): boolean {
+  const x = rect.left + rect.width / 2;
+  const y = rect.top + rect.height / 2;
+  return x >= box.left && x <= box.right && y >= box.top && y <= box.bottom;
 }
 
 /**

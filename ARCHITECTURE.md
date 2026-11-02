@@ -2473,8 +2473,9 @@ When the real parent's `session_start` arrives, `UpsertSession` claims
 the stub: it fills the identity, upgrades the `"unknown"` sentinels via
 the write-once-but-upgrade-from-`"unknown"` branch, and counts the
 session toward the parent's agent (see `agents` rollup). A parent whose
-`session_start` is never processed is claimed the same way by its first
-other event.
+`session_start` is never processed is claimed by its first other event,
+which fills the identity and counts the session but leaves the
+`"unknown"` sentinels to a `session_start`.
 
 ### Re-attachment
 

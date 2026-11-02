@@ -113,10 +113,11 @@ type AgentIdentity struct {
 
 // UpsertAgent inserts the agents row when it does not exist and
 // advances last_seen_at when it does. Does NOT increment
-// total_sessions -- that rollup is tied to sessions.INSERT and lives
-// in ReviveOrCreateSession so an agent that sees 20 events from one
-// session does not bump its session counter 20 times. total_tokens
-// is bumped separately via IncrementAgentTokens on post_call events.
+// total_sessions -- that rollup is tied to a session row becoming
+// attributed to the agent (see BumpAgentSessionCount), so an agent that
+// sees 20 events from one session does not bump its session counter 20
+// times. total_tokens is bumped separately via IncrementAgentTokens on
+// post_call events.
 func (w *Writer) UpsertAgent(ctx context.Context, id AgentIdentity) error {
 	_, err := w.pool.Exec(ctx, `
 		INSERT INTO agents (
@@ -156,7 +157,34 @@ func (w *Writer) IncrementAgentTokens(ctx context.Context, agentID string, delta
 	return nil
 }
 
-// UpsertSession inserts a new session or updates its state fields.
+// UpsertSession inserts a new session or updates its state fields, and
+// reports whether this call attributed the row to agentID: it inserted
+// the row, or it filled the NULL agent_id of a row no agent owned yet (a
+// parent stub that a sub-agent's session_start wrote first). The caller
+// adds one to that agent's total_sessions when attributed is true, so
+// each session counts toward its agent exactly once, whichever of the
+// parent's and the child's session_start the worker processes first. A
+// redelivered or concurrent session_start for a row an agent already
+// owns reports false.
+//
+// The call runs as two statements that share the INSERT and SET below
+// and differ only in the ON CONFLICT DO UPDATE's WHERE clause:
+//
+//   - upsertSessionClaimSQL inserts the row, or updates an existing row
+//     whose agent_id is NULL. A returned row means this call attributed
+//     the session.
+//   - upsertSessionRefreshSQL runs when the claim returned nothing (the
+//     row exists and an agent owns it) and updates that row.
+//
+// Postgres evaluates the WHERE clause on the conflicting row after
+// locking its latest version, including a row inserted after the
+// statement's snapshot was taken, so the ownership check and the write
+// are atomic: of two session_starts (or this start and a parent stub,
+// or the guard's AttributeSession) racing on one row, exactly one
+// attributes it. A snapshot read of the prior row would not do: a stub
+// committed after the statement's snapshot is invisible to it, yet the
+// ON CONFLICT path still updates that stub, so the fill would go
+// uncounted.
 //
 // The optional contextJSON argument carries the runtime context dict
 // collected by the sensor at init() time (see sensor/core/context.py).
@@ -202,7 +230,7 @@ func (w *Writer) UpsertSession(
 	parentSessionID, agentRole string,
 	capturePrompts bool,
 	startSeq uint64,
-) (created bool, err error) {
+) (attributed bool, err error) {
 	// session_start is the authoritative context source; an empty
 	// context dict from the sensor ("I tried, there was nothing to
 	// collect") still writes `{}` so the row looks populated. Only
@@ -213,102 +241,150 @@ func (w *Writer) UpsertSession(
 	if contextJSON == nil {
 		contextJSON = []byte("{}")
 	}
-	// INSERT ... RETURNING (xmax = 0) distinguishes a fresh insert
-	// from an ON CONFLICT update, so the caller can bump the agents
-	// total_sessions rollup exactly once per new session row without
-	// tracking it in a second query.
-	var wasInsert bool
-	err = w.pool.QueryRow(ctx, `
-		INSERT INTO sessions (
-			session_id, flavor, agent_type, host, framework, model, state,
-			started_at, last_seen_at, context, token_id, token_name,
-			agent_id, client_type, agent_name,
-			parent_session_id, agent_role, capture_prompts,
-			start_seq
-		)
-		VALUES (
-			$1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7,
-			NOW(), NOW(), $8,
-			NULLIF($9, '')::uuid, NULLIF($10, ''),
-			$11::uuid, $12, $13,
-			NULLIF($14, '')::uuid, NULLIF($15, ''), $16,
-			NULLIF($17::bigint, 0)
-		)
-		ON CONFLICT (session_id) DO UPDATE
-		SET -- A closed row is revived for a re-attachment, but stays closed
-		    -- when the session_end that closed it was published after
-		    -- this session_start: the worker pool handles a session's
-		    -- events concurrently, so an end can be processed before
-		    -- its own start. An unknown sequence (NULL on either side)
-		    -- revives, which is the plain state rule.
-		    state = CASE WHEN sessions.state = 'closed'
-		                  AND sessions.closed_seq > NULLIF($17::bigint, 0)
-		                 THEN sessions.state
-		                 ELSE EXCLUDED.state END,
-		    ended_at = CASE WHEN sessions.state = 'closed'
-		                     AND sessions.closed_seq > NULLIF($17::bigint, 0)
-		                    THEN sessions.ended_at
-		                    ELSE NULL END,
-		    closed_seq = CASE WHEN sessions.state = 'closed'
-		                       AND sessions.closed_seq > NULLIF($17::bigint, 0)
-		                      THEN sessions.closed_seq
-		                      ELSE NULL END,
-		    start_seq = GREATEST(sessions.start_seq, NULLIF($17::bigint, 0)),
-		    last_seen_at = NOW(),
-		    host = COALESCE(EXCLUDED.host, sessions.host),
-		    framework = COALESCE(EXCLUDED.framework, sessions.framework),
-		    model = COALESCE(EXCLUDED.model, sessions.model),
-		    -- COALESCE the write-once columns so a lazily-created
-		    -- row with NULL context / token columns picks up the real
-		    -- values when session_start later arrives. Real values are
-		    -- preserved (COALESCE returns the stored side first).
-		    context = COALESCE(sessions.context, EXCLUDED.context),
-		    token_id = COALESCE(sessions.token_id, EXCLUDED.token_id),
-		    token_name = COALESCE(sessions.token_name, EXCLUDED.token_name),
-		    -- Sentinel upgrade: "unknown" on flavor / agent_type
-		    -- means "we lazy-created without authoritative data".
-		    -- Replace it when a real session_start brings the truth.
-		    flavor = CASE WHEN sessions.flavor = 'unknown'
-		                  THEN EXCLUDED.flavor
-		                  ELSE sessions.flavor END,
-		    agent_type = CASE WHEN sessions.agent_type = 'unknown'
-		                      THEN EXCLUDED.agent_type
-		                      ELSE sessions.agent_type END,
-		    -- Identity is write-once once non-null. A lazy-create
-		    -- writes NULL for agent_id / client_type / agent_name; the
-		    -- first authoritative session_start fills them in. Real
-		    -- values (non-null) are preserved by COALESCE.
-		    agent_id = COALESCE(sessions.agent_id, EXCLUDED.agent_id),
-		    client_type = COALESCE(sessions.client_type, EXCLUDED.client_type),
-		    agent_name = COALESCE(sessions.agent_name, EXCLUDED.agent_name),
-		    -- Sub-agent columns. Write-once on insert; preserved
-		    -- on conflict so a child's session_start can't accidentally
-		    -- rewrite the parent row's null parent_session_id /
-		    -- agent_role. The lazy-create-parent-stub branch
-		    -- (UpsertParentStub) writes NULL for both, and a later real
-		    -- parent session_start preserves NULL via COALESCE because
-		    -- the parent itself isn't a sub-agent.
-		    parent_session_id = COALESCE(
-		        sessions.parent_session_id, EXCLUDED.parent_session_id),
-		    agent_role = COALESCE(sessions.agent_role, EXCLUDED.agent_role),
-		    -- Capture posture is write-once: the first authoritative
-		    -- session_start pins it, and no later session_start (forged
-		    -- or otherwise) can flip an established session's posture.
-		    -- COALESCE keeps the already-stored value when present.
-		    capture_prompts = COALESCE(
-		        sessions.capture_prompts, EXCLUDED.capture_prompts)
-		RETURNING (xmax = 0)
-	`, sessionID, flavor, agentType, host, framework, model, state,
+	args := []any{
+		sessionID, flavor, agentType, host, framework, model, state,
 		contextJSON, tokenID, tokenName,
 		agentID, clientType, agentName,
 		parentSessionID, agentRole, capturePrompts,
 		seqParam(startSeq),
-	).Scan(&wasInsert)
-	if err != nil {
-		return false, fmt.Errorf("upsert session %s: %w", sessionID, err)
 	}
-	return wasInsert, nil
+	for range upsertSessionRounds {
+		var claimed bool
+		err = w.pool.QueryRow(ctx, upsertSessionClaimSQL, args...).Scan(&claimed)
+		if err == nil {
+			return true, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return false, fmt.Errorf("upsert session %s: %w", sessionID, err)
+		}
+		// An agent owns the row, so this start refreshes it. The refresh
+		// inserts only when the row was deleted after the claim saw it,
+		// and that new row is this call's to attribute: xmax = 0 marks an
+		// insert, while an ON CONFLICT update leaves this transaction's
+		// id in xmax.
+		var inserted bool
+		err = w.pool.QueryRow(ctx, upsertSessionRefreshSQL, args...).Scan(&inserted)
+		if err == nil {
+			return inserted, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return false, fmt.Errorf("upsert session %s: %w", sessionID, err)
+		}
+		// The row has no agent again: it was deleted after the claim saw
+		// it and a parent stub took its place. Claim it.
+	}
+	return false, fmt.Errorf("upsert session %s: the row changed owner between the claim and the refresh %d times",
+		sessionID, upsertSessionRounds)
 }
+
+// upsertSessionRounds bounds how often UpsertSession repeats its claim
+// and refresh when the row changes owner between the two statements.
+// Each repeat needs the row deleted and a parent stub inserted in its
+// place within one round trip, so even a second round is a near
+// impossibility; the third is a margin before the call returns an error
+// and the consumer redelivers the event.
+const upsertSessionRounds = 3
+
+// upsertSessionSQL is the session_start upsert that UpsertSession runs.
+// It ends at the ON CONFLICT DO UPDATE's SET list; upsertSessionClaimSQL
+// and upsertSessionRefreshSQL complete it with the WHERE clause that
+// splits an existing row by ownership, and their RETURNING lists.
+const upsertSessionSQL = `
+	INSERT INTO sessions (
+		session_id, flavor, agent_type, host, framework, model, state,
+		started_at, last_seen_at, context, token_id, token_name,
+		agent_id, client_type, agent_name,
+		parent_session_id, agent_role, capture_prompts,
+		start_seq
+	)
+	VALUES (
+		$1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7,
+		NOW(), NOW(), $8,
+		NULLIF($9, '')::uuid, NULLIF($10, ''),
+		$11::uuid, $12, $13,
+		NULLIF($14, '')::uuid, NULLIF($15, ''), $16,
+		NULLIF($17::bigint, 0)
+	)
+	ON CONFLICT (session_id) DO UPDATE
+	SET -- A closed row is revived for a re-attachment, but stays closed
+	    -- when the session_end that closed it was published after
+	    -- this session_start: the worker pool handles a session's
+	    -- events concurrently, so an end can be processed before
+	    -- its own start. An unknown sequence (NULL on either side)
+	    -- revives, which is the plain state rule.
+	    state = CASE WHEN sessions.state = 'closed'
+	                  AND sessions.closed_seq > NULLIF($17::bigint, 0)
+	                 THEN sessions.state
+	                 ELSE EXCLUDED.state END,
+	    ended_at = CASE WHEN sessions.state = 'closed'
+	                     AND sessions.closed_seq > NULLIF($17::bigint, 0)
+	                    THEN sessions.ended_at
+	                    ELSE NULL END,
+	    closed_seq = CASE WHEN sessions.state = 'closed'
+	                       AND sessions.closed_seq > NULLIF($17::bigint, 0)
+	                      THEN sessions.closed_seq
+	                      ELSE NULL END,
+	    start_seq = GREATEST(sessions.start_seq, NULLIF($17::bigint, 0)),
+	    last_seen_at = NOW(),
+	    host = COALESCE(EXCLUDED.host, sessions.host),
+	    framework = COALESCE(EXCLUDED.framework, sessions.framework),
+	    model = COALESCE(EXCLUDED.model, sessions.model),
+	    -- COALESCE the write-once columns so a lazily-created
+	    -- row with NULL context / token columns picks up the real
+	    -- values when session_start later arrives. Real values are
+	    -- preserved (COALESCE returns the stored side first).
+	    context = COALESCE(sessions.context, EXCLUDED.context),
+	    token_id = COALESCE(sessions.token_id, EXCLUDED.token_id),
+	    token_name = COALESCE(sessions.token_name, EXCLUDED.token_name),
+	    -- Sentinel upgrade: "unknown" on flavor / agent_type
+	    -- means "we lazy-created without authoritative data".
+	    -- Replace it when a real session_start brings the truth.
+	    flavor = CASE WHEN sessions.flavor = 'unknown'
+	                  THEN EXCLUDED.flavor
+	                  ELSE sessions.flavor END,
+	    agent_type = CASE WHEN sessions.agent_type = 'unknown'
+	                      THEN EXCLUDED.agent_type
+	                      ELSE sessions.agent_type END,
+	    -- Identity is write-once once non-null. A parent stub
+	    -- writes NULL for agent_id / client_type / agent_name; the
+	    -- claim statement (WHERE sessions.agent_id IS NULL) fills
+	    -- them in. Real values (non-null) are preserved by COALESCE.
+	    agent_id = COALESCE(sessions.agent_id, EXCLUDED.agent_id),
+	    client_type = COALESCE(sessions.client_type, EXCLUDED.client_type),
+	    agent_name = COALESCE(sessions.agent_name, EXCLUDED.agent_name),
+	    -- Sub-agent columns. Write-once on insert; preserved
+	    -- on conflict so a child's session_start can't accidentally
+	    -- rewrite the parent row's null parent_session_id /
+	    -- agent_role. The lazy-create-parent-stub branch
+	    -- (UpsertParentStub) writes NULL for both, and a later real
+	    -- parent session_start preserves NULL via COALESCE because
+	    -- the parent itself isn't a sub-agent.
+	    parent_session_id = COALESCE(
+	        sessions.parent_session_id, EXCLUDED.parent_session_id),
+	    agent_role = COALESCE(sessions.agent_role, EXCLUDED.agent_role),
+	    -- Capture posture is write-once: the first authoritative
+	    -- session_start pins it, and no later session_start (forged
+	    -- or otherwise) can flip an established session's posture.
+	    -- COALESCE keeps the already-stored value when present.
+	    capture_prompts = COALESCE(
+	        sessions.capture_prompts, EXCLUDED.capture_prompts)
+`
+
+const (
+	// upsertSessionClaimSQL inserts the row, or updates an existing row
+	// that no agent owns yet. A returned row is attributed to this
+	// start's agent.
+	upsertSessionClaimSQL = upsertSessionSQL + `
+	WHERE sessions.agent_id IS NULL
+	RETURNING true`
+
+	// upsertSessionRefreshSQL updates an existing row that an agent
+	// owns, or inserts the row when it is gone. RETURNING reports the
+	// insert.
+	upsertSessionRefreshSQL = upsertSessionSQL + `
+	WHERE sessions.agent_id IS NOT NULL
+	RETURNING (xmax = 0)`
+)
 
 // SessionCaptureEnabled reports whether the session was started with
 // capture posture enabled. It is the server-authoritative gate for all
@@ -1048,13 +1124,14 @@ func (w *Writer) SessionExists(ctx context.Context, sessionID string) (bool, err
 // matching the child's so the timeline ordering is sensible while
 // the real parent's authoritative data hasn't arrived yet.
 //
-// When the real parent's “session_start“ arrives later,
-// “UpsertSession“ runs through its existing
-// write-once-but-upgrade-from-“"unknown"“ ON CONFLICT branch and
-// fills in the stub's flavor / agent_type / agent_id /
-// client_type / agent_name from the EXCLUDED row. Identity fields
-// in the stub are NULL on insert; COALESCE in UpsertSession's
-// conflict branch upgrades them once. Same primitive as the lazy
+// The stub belongs to no agent: its agent_id / client_type /
+// agent_name are NULL and no agent's total_sessions counts it. When the
+// real parent's “session_start“ arrives later, “UpsertSession“'s
+// claim statement fills in the stub's identity, upgrades its
+// “"unknown"“ flavor / agent_type, and reports the row attributed, so
+// the parent's agent counts the session once. When the parent's
+// session_start is never processed, the first other event of the parent
+// session does the same through “AttributeSession“. Same primitive as the lazy
 // create-on-unknown, different trigger (FK-satisfaction vs
 // unknown-session-id event); kept as a separate helper so
 // callers don't need to express the parent-stub-specific shape
@@ -1091,10 +1168,43 @@ func (w *Writer) UpsertParentStub(
 	return tag.RowsAffected() > 0, nil
 }
 
+// AttributeSession gives a session row that no agent owns yet (a parent
+// stub whose own session_start has not been processed) the identity of
+// the agent an event of that session carries, and reports whether this
+// call did, so the caller adds the session to that agent's
+// total_sessions once. client_type and agent_name are filled only where
+// still NULL. The agent row must exist (sessions.agent_id references
+// agents), so callers upsert it first.
+//
+// The UPDATE re-checks “agent_id IS NULL“ on the row it locks, so of
+// this call and a concurrent writer attributing the same row (another
+// event's AttributeSession, or UpsertSession's claim for the session's
+// session_start) exactly one changes it. The row must be visible to the
+// statement, which holds for a caller that has already read it.
+func (w *Writer) AttributeSession(
+	ctx context.Context, sessionID string, id AgentIdentity,
+) (attributed bool, err error) {
+	tag, err := w.pool.Exec(ctx, `
+		UPDATE sessions
+		SET agent_id = $2::uuid,
+		    client_type = COALESCE(client_type, NULLIF($3, '')),
+		    agent_name = COALESCE(agent_name, NULLIF($4, ''))
+		WHERE session_id = $1::uuid
+		  AND agent_id IS NULL
+	`, sessionID, id.AgentID, id.ClientType, id.AgentName)
+	if err != nil {
+		return false, fmt.Errorf("attribute session %s: %w", sessionID, err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
 // BumpAgentSessionCount increments agents.total_sessions by 1. Called
-// only when UpsertSession / ReviveOrCreateSession observed a fresh
-// INSERT into sessions, so the counter stays accurate under repeated
-// events for the same session_id.
+// once per session row that becomes attributed to the agent: when
+// UpsertSession reports attributed (it inserted the row or claimed a
+// parent stub), when ReviveOrCreateSession inserts the row, and when
+// AttributeSession fills a stub's identity. Each of those reports true
+// for exactly one caller per row, so the counter stays accurate under
+// redelivered and concurrent events for the same session_id.
 func (w *Writer) BumpAgentSessionCount(ctx context.Context, agentID string) error {
 	_, err := w.pool.Exec(ctx, `
 		UPDATE agents

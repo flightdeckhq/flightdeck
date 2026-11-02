@@ -201,6 +201,19 @@ All notable changes to Flightdeck are documented here.
   uid 1000, but the dashboard image's nginx runs as its own user (uid
   101) and could not create its cache directory, so the pod
   crash-looped. The dashboard pod now runs as uid 101.
+- **A parent agent no longer vanishes from the Fleet when its
+  sub-agent's session starts first.** When a sub-agent's `session_start`
+  reached the worker before its parent's (an OpenTelemetry export
+  carrying both, a plugin retrying a failed root start, a framework
+  spawning a sub-agent at once), the parent's session was stored but
+  never counted, so the parent agent read 0 sessions and the Fleet hid
+  it, active session and all. The session now counts once, whichever
+  start arrives first; a parent whose start never arrives is counted by
+  its first other event; and the Fleet keeps an agent that has a recent
+  session even when its count reads 0. On an existing deployment,
+  `POST /api/v1/admin/reconcile-agents?orphan_threshold_secs=0`
+  recomputes the counts already wrong from the stored sessions and
+  deletes nothing.
 
 ### Changed
 

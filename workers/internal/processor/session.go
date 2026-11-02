@@ -80,6 +80,11 @@ func (sp *SessionProcessor) settleRow(ctx context.Context, sessionID string, clo
 //     dropped even though the session is legitimately active.
 //   - active / idle / unknown-DB-error -> no-op, caller proceeds.
 //
+// Whatever its state, a row that no agent owns (a parent stub whose own
+// session_start has not been processed) is first attributed to the
+// event's agent and counted toward its total_sessions once
+// (attributeSession).
+//
 // Returns true if the caller should skip further processing (closed
 // sessions only). All other states / failure modes fall open so the
 // event's downstream UPDATE + InsertEvent have a chance to succeed.
@@ -90,9 +95,10 @@ func (sp *SessionProcessor) settleRow(ctx context.Context, sessionID string, clo
 // never saw should not retroactively manifest a closed row).
 func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.EventPayload) (skip bool) {
 	var state string
+	var unattributed bool
 	err := sp.pool.QueryRow(ctx,
-		"SELECT state FROM sessions WHERE session_id = $1::uuid", e.SessionID,
-	).Scan(&state)
+		"SELECT state, agent_id IS NULL FROM sessions WHERE session_id = $1::uuid", e.SessionID,
+	).Scan(&state, &unattributed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Session never seen. Lazy-create from event fields.
 		occurredAt, tsErr := time.Parse(time.RFC3339, e.Timestamp)
@@ -122,6 +128,11 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 				"event_type", e.EventType,
 				"flavor", e.Flavor,
 			)
+		} else {
+			// The row appeared after the read above: another event of
+			// the session created it, or a sub-agent's session_start
+			// wrote it as a parent stub, which no agent owns yet.
+			sp.attributeSession(ctx, e)
 		}
 		sp.upgradeContextIfPresent(ctx, e)
 		return false
@@ -133,6 +144,9 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 		// no-op silently, and a transient DB blip should not trigger
 		// extra write pressure.
 		return false
+	}
+	if unattributed {
+		sp.attributeSession(ctx, e)
 	}
 	// Row exists. If the event payload carries sub-agent linkage
 	// and the row's parent_session_id / agent_role columns are still
@@ -183,6 +197,57 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 	default:
 		sp.upgradeContextIfPresent(ctx, e)
 		return false
+	}
+}
+
+// attributeSession gives a session row that no agent owns yet the
+// identity of the event's agent and, when this call did, counts the
+// session toward that agent's total_sessions. Such a row is a parent
+// stub whose own session_start has not been processed, or never will be
+// (a client that failed to send it); left alone, the session would
+// belong to no agent and its agent would show no sessions on the Fleet.
+// The identity is the one ingestion validated on the event, as for a
+// lazily created row. Best effort: a failure is logged, and the
+// session's next event or its session_start tries again.
+func (sp *SessionProcessor) attributeSession(ctx context.Context, e consumer.EventPayload) {
+	if e.AgentID == "" {
+		return
+	}
+	identity := identityFromEvent(e)
+	// The sessions.agent_id foreign key needs the agent row, which an
+	// agent whose session_start was never processed may not have yet.
+	if err := sp.w.UpsertAgent(ctx, identity); err != nil {
+		slog.Warn("upsert agent for session attribution failed",
+			"session_id", e.SessionID,
+			"agent_id", e.AgentID,
+			"err", err,
+		)
+		return
+	}
+	attributed, err := sp.w.AttributeSession(ctx, e.SessionID, identity)
+	if err != nil {
+		slog.Warn("attribute session failed",
+			"session_id", e.SessionID,
+			"agent_id", e.AgentID,
+			"err", err,
+		)
+		return
+	}
+	if !attributed {
+		return
+	}
+	slog.Info("attributed session to its agent on event",
+		"session_id", e.SessionID,
+		"agent_id", e.AgentID,
+		"event_type", e.EventType,
+	)
+	if bErr := sp.w.BumpAgentSessionCount(ctx, e.AgentID); bErr != nil {
+		// Non-fatal -- see ReviveOrCreateSession rationale.
+		slog.Warn("bump agent session count failed (attribution)",
+			"session_id", e.SessionID,
+			"agent_id", e.AgentID,
+			"err", bErr,
+		)
 	}
 }
 
@@ -307,10 +372,13 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 	// Forward-reference soft-link. When this event is a
 	// sub-agent session_start whose parent_session_id is not yet in
 	// the DB, INSERT a parent-stub row first so the child's UpsertSession
-	// satisfies the new parent_session_id FK. The real parent's later
-	// session_start (if it ever arrives) upgrades the stub via
-	// UpsertSession's existing write-once-but-upgrade-from-"unknown"
-	// branch. Stub creation failure is logged-but-non-fatal: the child
+	// satisfies the new parent_session_id FK. The stub belongs to no
+	// agent. The real parent's later session_start (if it ever arrives)
+	// claims it through UpsertSession, which fills its identity, upgrades
+	// its "unknown" sentinels and counts it toward the parent's agent; a
+	// parent whose start never arrives is claimed by its first other
+	// event (handleSessionGuard). Stub creation failure is
+	// logged-but-non-fatal: the child
 	// INSERT will then FK-violate, the worker NAKs, NATS redelivers,
 	// and the stub path retries on the redelivery — better than
 	// failing the wider session_start path on a transient stub-INSERT
@@ -342,7 +410,12 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 		}
 	}
 
-	created, err := sp.w.UpsertSession(
+	// attributed is true when this start inserted the row or claimed a
+	// parent stub that a sub-agent's session_start wrote first, so the
+	// session counts toward the agent once whichever of the two the
+	// worker processed first; a redelivered or re-attaching start of a
+	// row the agent already owns reports false.
+	attributed, err := sp.w.UpsertSession(
 		ctx, e.SessionID, e.Flavor, e.AgentType,
 		e.Host, e.Framework, e.Model, "active",
 		e.AgentID, e.ClientType, e.AgentName,
@@ -355,7 +428,7 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 	if err != nil {
 		return fmt.Errorf("session start: %w", err)
 	}
-	if created {
+	if attributed {
 		if bErr := sp.w.BumpAgentSessionCount(ctx, e.AgentID); bErr != nil {
 			// Non-fatal -- see ReviveOrCreateSession rationale.
 			slog.Warn("bump agent session count failed (session_start)",

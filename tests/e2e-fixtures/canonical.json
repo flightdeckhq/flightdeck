@@ -297,25 +297,25 @@
       "purpose": "T52 anchor: an earlier run of the concurrent-runs agent that went lost (started 2 h ago, last seen 1 h 55 min ago, ended_at NULL). It ends at its last signal, so it holds no lane when the two concurrent runs start; read as running forever, it pushed both of them to the bottom edge. Pinned once by the full seed."
     },
     "lane-reuse-a": {
-      "started_offset_sec": -240,
-      "ended_offset_sec": -180,
-      "lane_segments": [[-240, -180]],
+      "started_offset_sec": -150,
+      "ended_offset_sec": -90,
+      "lane_segments": [[-150, -90]],
       "lane_state": "closed",
       "purpose": "T136 anchor: run A of the lane-reuse agent, closed. B starts while A runs and C starts after A ends, so C takes A's freed track: at 5m A and C keep the top edge and B sits on the bottom edge. The lane pin keeps all three at their offsets on every keep-alive cycle."
     },
     "lane-reuse-b": {
-      "started_offset_sec": -200,
+      "started_offset_sec": -120,
       "ended_offset_sec": null,
-      "lane_segments": [[-200, null]],
+      "lane_segments": [[-120, null]],
       "lane_state": "active",
-      "purpose": "T136 anchor: run B of the lane-reuse agent, open from -200 s (see lane-reuse-a)."
+      "purpose": "T136 anchor: run B of the lane-reuse agent, open from -120 s (see lane-reuse-a)."
     },
     "lane-reuse-c": {
-      "started_offset_sec": -150,
+      "started_offset_sec": -60,
       "ended_offset_sec": null,
-      "lane_segments": [[-150, null]],
+      "lane_segments": [[-60, null]],
       "lane_state": "active",
-      "purpose": "T136 anchor: run C of the lane-reuse agent, open from -150 s, after run A ended (see lane-reuse-a)."
+      "purpose": "T136 anchor: run C of the lane-reuse agent, open from -60 s, after run A ended at -90 s (see lane-reuse-a)."
     },
     "handoff-first": {
       "started_offset_sec": -40,
@@ -339,23 +339,23 @@
       "purpose": "T139 anchor: a run that started 2 h ago and closed 10 s ago, so at 1m, 5m and 1h its start is before the window and only its end square shows."
     },
     "short-closed": {
-      "started_offset_sec": -200,
-      "ended_offset_sec": -198,
-      "lane_segments": [[-200, -198]],
+      "started_offset_sec": -120,
+      "ended_offset_sec": -118,
+      "lane_segments": [[-120, -118]],
       "lane_state": "closed",
       "purpose": "T142 anchor: a 2 s run, narrower on screen than its two glyphs at 5m and 1h, so its end square follows its start triangle past the run's end."
     },
     "resumed-run": {
-      "started_offset_sec": -210,
+      "started_offset_sec": -170,
       "ended_offset_sec": null,
-      "lane_segments": [[-210, -150], [-60, null]],
+      "lane_segments": [[-170, -120], [-40, null]],
       "lane_state": "active",
-      "purpose": "T141 anchor: a run that ended at -150 s and was resumed under the same session id at -60 s: two segments with a gap, each segment end drawn with its own square. Its first start leaves 90 s of the 5m window for drift."
+      "purpose": "T141 anchor: a run that ended at -120 s and was resumed under the same session id at -40 s: two segments with a gap, each segment end drawn with its own square. Its first start leaves 130 s of the 5m window for drift."
     },
     "resumed-gap-run": {
-      "started_offset_sec": -130,
-      "ended_offset_sec": -90,
-      "lane_segments": [[-130, -90]],
+      "started_offset_sec": -100,
+      "ended_offset_sec": -70,
+      "lane_segments": [[-100, -70]],
       "lane_state": "closed",
       "purpose": "T141 anchor: another run of the resumed agent that ran inside the resumed run's gap, so it shares the resumed run's track and the row stays one lane."
     },

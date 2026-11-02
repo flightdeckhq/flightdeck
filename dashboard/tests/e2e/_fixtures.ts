@@ -179,7 +179,7 @@ export const FANOUT_FIXTURE = {
  *  runtime. T56's sub-agent refresh never touches them (none is a
  *  sub-agent). Offsets are seconds from NOW. */
 export const LANE_FIXTURES = {
-  /** A [-240, -180] closed, B open from -200, C open from -150: C
+  /** A [-150, -90] closed, B open from -120, C open from -60: C
    *  takes A's freed track. */
   laneReuse: {
     name: "e2e-test-run-lane-reuse",
@@ -192,10 +192,10 @@ export const LANE_FIXTURES = {
   },
   /** One run closed 10 s ago that started 2 h ago. */
   long: { name: "e2e-test-run-long", roles: { run: "long-closed" } },
-  /** One run 2 s long, closed at -198 s. */
+  /** One run 2 s long, closed at -118 s. */
   short: { name: "e2e-test-run-short", roles: { run: "short-closed" } },
-  /** A run with segments [-210, -150] and [-60, open], and a run
-   *  [-130, -90] inside its gap. */
+  /** A run with segments [-170, -120] and [-40, open], and a run
+   *  [-100, -70] inside its gap. */
   resumed: {
     name: "e2e-test-run-resumed",
     roles: { resumed: "resumed-run", inGap: "resumed-gap-run" },

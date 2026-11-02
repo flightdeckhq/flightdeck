@@ -2,8 +2,8 @@
  * T136 — A run that starts after an earlier run ended takes the top
  * edge that run freed.
  *
- * Fixture: e2e-test-run-lane-reuse. Run A ran from -240 s to -180 s,
- * run B is open from -200 s and run C is open from -150 s, after A
+ * Fixture: e2e-test-run-lane-reuse. Run A ran from -150 s to -90 s,
+ * run B is open from -120 s and run C is open from -60 s, after A
  * ended. Tracks go to runs in start order, each to the lowest track
  * free at its start, so C reuses A's track. At 5m all three are in
  * view and B overlaps both, so the row splits: A and C keep the top

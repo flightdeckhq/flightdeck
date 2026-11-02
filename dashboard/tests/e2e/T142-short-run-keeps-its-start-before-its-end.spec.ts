@@ -2,7 +2,7 @@
  * T142 — A run narrower than its two glyphs still reads start then
  * end, and the circle at its start stays clickable.
  *
- * Fixture: e2e-test-run-short, a run of 2 s (-200 s to -198 s): 6 px at
+ * Fixture: e2e-test-run-short, a run of 2 s (-120 s to -118 s): 6 px at
  * 5m and half a pixel at 1h, less than the ▶ and ■ need side by side.
  * A segment's square always follows its own triangle, past the
  * segment's end, so the run reads ▶■, never ■▶ (the hand-off order).

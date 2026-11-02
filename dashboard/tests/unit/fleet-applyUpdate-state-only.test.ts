@@ -5,11 +5,13 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 // its parent, arrive as a session_update with the session and no
 // last_event; the orphan reaper's close arrives as a session_end
 // carrying the synthetic session_end it wrote (close_reason
-// orphan_timeout). applyUpdate must apply the run's new state and
-// ended_at, re-derive the agent's rolled-up state the way the API
-// does, and treat neither kind as activity: no fresh last_seen_at on
-// the agent row, no bucket move, no parent-cluster bump, and a row's
-// last_seen_at never moves back.
+// orphan_timeout). Every update also carries the agent's rolled-up
+// state as the API computes it (agent_state). applyUpdate must apply
+// the run's new state and ended_at on the swimlane when the page holds
+// the run, take the agent's badge from agent_state whether or not it
+// holds the run, and treat neither kind as activity: no fresh
+// last_seen_at on the agent row, no bucket move, no parent-cluster
+// bump, and a row's last_seen_at never moves back.
 
 vi.mock("@/lib/api", () => ({
   fetchFleet: vi.fn(async () => ({
@@ -31,6 +33,7 @@ import type {
   FleetUpdate,
   RecentSession,
   Session,
+  SessionState,
 } from "@/lib/types";
 
 const NOW = Date.now();
@@ -147,19 +150,21 @@ function mkEvent(over: Partial<AgentEvent> = {}): AgentEvent {
   };
 }
 
-/** One agent whose runs are `sessions`, last active ROW_SEEN. */
-function seed(sessions: Session[]): void {
+/** One agent whose held runs are `sessions`, last active ROW_SEEN. */
+function seed(sessions: Session[], agentState: SessionState = "active"): void {
   useFleetStore.setState({
     flavors: [mkFlavor(AGENT, sessions)],
-    agents: [mkAgent(AGENT, sessions)],
+    agents: [mkAgent(AGENT, sessions, { state: agentState })],
     enteredBucketAt: new Map([[AGENT, ROW_ENTERED]]),
     shuttingDown: new Set<string>(),
   });
 }
 
-const stateChange = (over: Partial<Session>): FleetUpdate => ({
+/** A state change the worker made, as the hub broadcasts it. */
+const stateChange = (over: Partial<Session>, agentState?: SessionState): FleetUpdate => ({
   type: "session_update",
   session: mkSession(over),
+  ...(agentState ? { agent_state: agentState } : {}),
 });
 
 const row = () => useFleetStore.getState().flavors.find((f) => f.flavor === AGENT);
@@ -176,11 +181,12 @@ afterEach(() => {
 });
 
 describe("applyUpdate — a state change the worker made, with no event", () => {
-  it("moves the run to stale and drops the agent's badge from active", () => {
+  it("moves the run to stale and takes the agent's badge from agent_state", () => {
     seed([mkSession()]);
 
-    useFleetStore.getState().applyUpdate(stateChange({ state: "stale" }));
+    const shown = useFleetStore.getState().applyUpdate(stateChange({ state: "stale" }, "stale"));
 
+    expect(shown).toBe(true);
     expect(run()?.state).toBe("stale");
     expect(row()?.active_count).toBe(0);
     expect(agent()?.state).toBe("stale");
@@ -190,7 +196,7 @@ describe("applyUpdate — a state change the worker made, with no event", () => 
   it("is not activity: the agent row keeps its last_seen_at, bucket entry and row position", () => {
     seed([mkSession()]);
 
-    useFleetStore.getState().applyUpdate(stateChange({ state: "stale" }));
+    useFleetStore.getState().applyUpdate(stateChange({ state: "stale" }, "stale"));
 
     expect(agent()?.last_seen_at).toBe(ROW_SEEN);
     expect(useFleetStore.getState().enteredBucketAt.get(AGENT)).toBe(ROW_ENTERED);
@@ -199,10 +205,10 @@ describe("applyUpdate — a state change the worker made, with no event", () => 
     expect(row()?.last_seen_at).toBe(ROW_SEEN);
   });
 
-  it("keeps the agent active while another of its runs is active", () => {
+  it("keeps the agent active when the API still counts another run active", () => {
     seed([mkSession(), mkSession({ session_id: OTHER_RUN, last_seen_at: ROW_SEEN })]);
 
-    useFleetStore.getState().applyUpdate(stateChange({ state: "stale" }));
+    useFleetStore.getState().applyUpdate(stateChange({ state: "stale" }, "active"));
 
     expect(run()?.state).toBe("stale");
     expect(agent()?.state).toBe("active");
@@ -210,26 +216,40 @@ describe("applyUpdate — a state change the worker made, with no event", () => 
   });
 
   it("shows a run that went silent past the lost threshold as lost", () => {
-    seed([mkSession({ state: "stale" })]);
+    seed([mkSession({ state: "stale" })], "stale");
 
-    useFleetStore.getState().applyUpdate(stateChange({ state: "lost" }));
+    useFleetStore.getState().applyUpdate(stateChange({ state: "lost" }, "lost"));
 
     expect(run()?.state).toBe("lost");
     expect(agent()?.state).toBe("lost");
   });
 
-  it("takes the newest-started run's state when none is active, as the API does", () => {
-    const older = mkSession({
-      session_id: OTHER_RUN,
-      state: "closed",
-      started_at: iso(NOW - 20 * 60_000),
-      ended_at: iso(NOW - 15 * 60_000),
-    });
-    seed([mkSession(), older]);
+  it("keeps the agent's badge when the update carries no agent_state", () => {
+    seed([mkSession()]);
 
     useFleetStore.getState().applyUpdate(stateChange({ state: "stale" }));
 
+    expect(run()?.state).toBe("stale");
+    expect(agent()?.state).toBe("active");
+  });
+
+  it("drops the badge of an agent whose only active run the page does not hold", () => {
+    // The page holds a closed run of the agent; its live run started
+    // too long ago to be loaded. When that run goes stale the swimlane
+    // has nothing to draw, but the agent's badge must follow.
+    const closedRun = mkSession({ session_id: OTHER_RUN, state: "closed", ended_at: iso(NOW - 60_000) });
+    seed([closedRun]);
+    const before = useFleetStore.getState().flavors;
+
+    const shown = useFleetStore
+      .getState()
+      .applyUpdate(stateChange({ session_id: "run-not-loaded", state: "stale" }, "stale"));
+
+    expect(shown).toBe(false);
+    expect(useFleetStore.getState().flavors).toBe(before);
     expect(agent()?.state).toBe("stale");
+    expect(agent()?.last_seen_at).toBe(ROW_SEEN);
+    expect(useFleetStore.getState().enteredBucketAt.get(AGENT)).toBe(ROW_ENTERED);
   });
 
   it("does not float the parent's cluster when a child's run changes state", () => {
@@ -252,29 +272,32 @@ describe("applyUpdate — a state change the worker made, with no event", () => 
 
     useFleetStore
       .getState()
-      .applyUpdate(stateChange({ state: "stale", parent_session_id: "parent-run" }));
+      .applyUpdate(stateChange({ state: "stale", parent_session_id: "parent-run" }, "stale"));
 
     const parent = useFleetStore.getState().flavors.find((f) => f.flavor === "parent-agent");
     expect(parent?.last_seen_at).toBe(parentSeen);
     expect(useFleetStore.getState().enteredBucketAt.get("parent-agent")).toBe(NOW - 30 * 60_000);
   });
 
-  it("ignores a state change for a run the page does not hold", () => {
+  it("adds no row and no run for a state change of a run the page does not hold", () => {
     seed([mkSession()]);
     const before = useFleetStore.getState().flavors;
 
     // A run of an agent this page never loaded goes stale...
-    useFleetStore.getState().applyUpdate(
-      stateChange({ session_id: "run-elsewhere", agent_id: "agent-elsewhere", state: "stale" }),
-    );
+    const firstShown = useFleetStore
+      .getState()
+      .applyUpdate(stateChange({ session_id: "run-elsewhere", agent_id: "agent-elsewhere", state: "stale" }, "stale"));
     // ...and a run of a loaded agent that the page does not hold is
     // reaped: neither adds a row or a run.
-    useFleetStore.getState().applyUpdate({
+    const secondShown = useFleetStore.getState().applyUpdate({
       type: "session_end",
       session: mkSession({ session_id: "run-unloaded", state: "closed", ended_at: iso(NOW) }),
       last_event: mkEvent({ session_id: "run-unloaded", payload: { close_reason: "orphan_timeout" } }),
+      agent_state: "active",
     });
 
+    expect(firstShown).toBe(false);
+    expect(secondShown).toBe(false);
     expect(useFleetStore.getState().flavors).toBe(before);
     expect(row()?.sessions.map((s) => s.session_id)).toEqual([RUN]);
     expect(agent()?.state).toBe("active");
@@ -282,10 +305,9 @@ describe("applyUpdate — a state change the worker made, with no event", () => 
 
   it("shows a parent revived by its child as active, taking its fresh last_seen_at", () => {
     const revivedAt = iso(NOW - 1_000);
-    seed([mkSession({ state: "stale", last_seen_at: iso(NOW - 5 * 60_000) })]);
-    useFleetStore.setState({ agents: [mkAgent(AGENT, [mkSession({ state: "stale" })], { state: "stale" })] });
+    seed([mkSession({ state: "stale", last_seen_at: iso(NOW - 5 * 60_000) })], "stale");
 
-    useFleetStore.getState().applyUpdate(stateChange({ state: "active", last_seen_at: revivedAt }));
+    useFleetStore.getState().applyUpdate(stateChange({ state: "active", last_seen_at: revivedAt }, "active"));
 
     expect(run()?.state).toBe("active");
     expect(agent()?.state).toBe("active");
@@ -296,12 +318,13 @@ describe("applyUpdate — a state change the worker made, with no event", () => 
 describe("applyUpdate — closes", () => {
   it("applies the reaper's close and its ended_at without counting it as activity", () => {
     const endedAt = iso(NOW);
-    seed([mkSession({ state: "lost" })]);
+    seed([mkSession({ state: "lost" })], "lost");
 
     useFleetStore.getState().applyUpdate({
       type: "session_end",
       session: mkSession({ state: "closed", ended_at: endedAt }),
       last_event: mkEvent({ payload: { close_reason: "orphan_timeout" } }),
+      agent_state: "closed",
     });
 
     expect(run()?.state).toBe("closed");
@@ -319,10 +342,44 @@ describe("applyUpdate — closes", () => {
       type: "session_end",
       session: mkSession({ state: "closed", ended_at: iso(NOW), last_seen_at: iso(NOW) }),
       last_event: mkEvent({ payload: { close_reason: "normal_exit" } }),
+      agent_state: "closed",
     });
 
     expect(agent()?.state).toBe("closed");
     expect(new Date(agent()!.last_seen_at).getTime()).toBeGreaterThan(new Date(ROW_SEEN).getTime());
+  });
+
+  it("keeps an agent active when a short run ends behind a long run the page does not hold", () => {
+    // One run started two days ago is still active; five newer short
+    // runs are the ones the page holds. Rolling up the held runs would
+    // call the agent closed when the last short run ends; the API,
+    // which counts every run, says active.
+    const shortRuns = Array.from({ length: 5 }, (_, i) =>
+      mkSession({
+        session_id: `short-${i}`,
+        state: i === 0 ? "active" : "closed",
+        started_at: iso(NOW - (5 - i) * 60 * 60_000),
+        ended_at: i === 0 ? null : iso(NOW - (5 - i) * 60 * 60_000 + 60_000),
+      }),
+    );
+    seed(shortRuns);
+
+    useFleetStore.getState().applyUpdate({
+      type: "session_end",
+      session: mkSession({
+        session_id: "short-0",
+        state: "closed",
+        started_at: iso(NOW - 5 * 60 * 60_000),
+        ended_at: iso(NOW),
+        last_seen_at: iso(NOW),
+      }),
+      last_event: mkEvent({ session_id: "short-0", payload: { close_reason: "normal_exit" } }),
+      agent_state: "active",
+    });
+
+    expect(run("short-0")?.state).toBe("closed");
+    expect(row()?.active_count).toBe(0);
+    expect(agent()?.state).toBe("active");
   });
 
   it("never moves a row's last_seen_at back for an event on an older run", () => {

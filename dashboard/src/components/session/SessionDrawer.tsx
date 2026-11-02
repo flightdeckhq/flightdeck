@@ -5,7 +5,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { TruncatedText } from "@/components/ui/TruncatedText";
 import { useKeyedFetch } from "@/hooks/useKeyedFetch";
 import { invalidateSessionCache, useSession } from "@/hooks/useSession";
-import { useFleetStore } from "@/store/fleet";
+import { useFleetStore, type SessionChange } from "@/store/fleet";
 import { SHUTDOWN_GRACE_PERIOD_MS, SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/constants";
 import {
   CLIENT_TYPE_LABEL,
@@ -105,6 +105,17 @@ const stateBadgeStyles: Record<string, StateBadge> = {
     border: "color-mix(in srgb, var(--status-lost) 30%, transparent)",
   },
 };
+
+/** Whether a live change reports a state or ended_at other than
+ *  ``known`` (what the drawer shows, or a change it already refetched
+ *  for); with nothing known, any change does. */
+function differsFrom(
+  change: SessionChange,
+  known: { state: string; ended_at: string | null } | null,
+): boolean {
+  if (!known) return true;
+  return change.state !== known.state || change.ended_at !== known.ended_at;
+}
 
 function formatDuration(startedAt: string): string {
   const ms = Date.now() - new Date(startedAt).getTime();
@@ -308,14 +319,23 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   // updates cannot clobber each other's bumps.
   const [paginationVersion, setPaginationVersion] = useState(0);
 
-  // Re-fetch on mcp_server_attached events for
-  // the open session so the MCP SERVERS panel populates live.
-  // Subscribes to the fleet store's lastEvent (broadcast by every
-  // WebSocket-delivered event); bumps revalidationKey when the
-  // event matches our session_id + the new event type. The
-  // revalidationKey threads into useSession as a useEffect dep so
-  // the next render fetches fresh data from the API.
+  // Re-fetch the open run when the live stream says something the
+  // drawer's own fetch cannot know. Subscribes to the fleet store and
+  // bumps revalidationKey, which threads into useSession as a
+  // useEffect dep so the next render fetches fresh data from the API:
+  // - an mcp_server_attached event of this run, so the MCP SERVERS
+  //   panel populates live;
+  // - a change of this run's state or ended_at (the worker marking it
+  //   stale or lost, the reaper or a client closing it, a revival),
+  //   so the state badge follows without a reload;
+  // - a catch-up after the stream reconnected, since anything sent
+  //   while it was down is gone.
   const [revalidationKey, setRevalidationKey] = useState(0);
+  // The state and ended_at the drawer shows, and the last change it
+  // refetched for: a change already shown, or already being fetched,
+  // does not refetch again.
+  const shownRunRef = useRef<{ state: string; ended_at: string | null } | null>(null);
+  const requestedChangeRef = useRef<SessionChange | null>(null);
   useEffect(() => {
     if (!sessionId) return;
     return useFleetStore.subscribe((state, prev) => {
@@ -328,10 +348,29 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
       ) {
         setRevalidationKey((k) => k + 1);
       }
+      const change = state.lastSessionChange;
+      if (
+        change &&
+        change !== prev.lastSessionChange &&
+        change.session_id === sessionId &&
+        differsFrom(change, shownRunRef.current) &&
+        differsFrom(change, requestedChangeRef.current)
+      ) {
+        requestedChangeRef.current = change;
+        setRevalidationKey((k) => k + 1);
+      }
+      if (state.resyncSeq !== prev.resyncSeq) {
+        setRevalidationKey((k) => k + 1);
+      }
     });
   }, [sessionId]);
 
   const { data, loading } = useSession(sessionId, eventsLimit, revalidationKey);
+  useEffect(() => {
+    shownRunRef.current = data?.session
+      ? { state: data.session.state, ended_at: data.session.ended_at ?? null }
+      : null;
+  }, [data?.session]);
   const customDirectives = useFleetStore((s) => s.customDirectives);
   const shuttingDown = useFleetStore((s) => s.shuttingDown);
   const markShuttingDown = useFleetStore((s) => s.markShuttingDown);
@@ -645,6 +684,8 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                     </TooltipProvider>
                   )}
                   <span
+                    data-testid="session-drawer-state"
+                    data-state={session.state}
                     className="rounded-sm font-mono text-[10px] px-1.5 py-0.5"
                     style={{
                       background: stateBadge.bg,

@@ -13,8 +13,10 @@
  *
  * - the Fleet swimlane row's badge goes from active to stale;
  * - a run silent past both thresholds shows lost;
- * - the Agents table row's state, which the fleet store re-derives
- *   from the agent's runs, drops from active to stale.
+ * - an open run drawer's state badge goes from active to stale;
+ * - the Agents table row's state, which the fleet store takes from the
+ *   API's rollup the hub sends with each update, drops from active to
+ *   stale.
  *
  * A window marker set before the change and still present after it
  * shows the page did not reload.
@@ -39,6 +41,10 @@ const HOST = "e2e-t149-host";
 
 /** How long the setup waits for the worker to store a run. */
 const WORKER_WAIT_MS = 15_000;
+/** How long the run drawer may take to show its run: it fetches the run
+ *  itself when it opens, and on a dev stack the first open also
+ *  compiles the drawer's modules, several seconds under parallel tests. */
+const DRAWER_LOAD_MS = 15_000;
 /** How long a badge may take to follow a backdated run: up to one
  *  reconciler interval (5 s) to the next tick, a tick that had already
  *  read the row before the backdate can push it one more, then the
@@ -231,6 +237,29 @@ test.describe("T149 — Fleet follows the worker's state changes without a reloa
     backdate(run, LOST_AGO);
 
     await expect(badge).toHaveAttribute("data-state", "lost", { timeout: TRANSITION_WAIT_MS });
+    expect(await stillTheSamePage(page)).toBe(true);
+  });
+
+  test("an open run drawer's state badge goes from active to stale", async ({ page, request }) => {
+    await startRun(request, run);
+    await page.goto("/");
+    await waitForFleetReady(page);
+    const row = await bringSwimlaneRowIntoView(page, run.agentName);
+    // The run's start glyph opens its drawer (as in T48).
+    const glyph = row.locator(
+      `[data-testid="swimlane-run-bracket-start-${run.sessionId.slice(0, 8)}"]`,
+    );
+    await expect.poll(async () => glyph.count(), { timeout: WORKER_WAIT_MS }).toBeGreaterThan(0);
+    await glyph.first().click();
+    const drawer = page.locator('[data-testid="session-drawer"]');
+    await expect(drawer).toHaveAttribute("data-session-id", run.sessionId);
+    const badge = drawer.locator('[data-testid="session-drawer-state"]');
+    await expect(badge).toHaveAttribute("data-state", "active", { timeout: DRAWER_LOAD_MS });
+    await markNoReload(page);
+
+    backdate(run, STALE_AGO);
+
+    await expect(badge).toHaveAttribute("data-state", "stale", { timeout: TRANSITION_WAIT_MS });
     expect(await stillTheSamePage(page)).toBe(true);
   });
 

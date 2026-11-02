@@ -685,9 +685,10 @@ async function startSubagent({ cfg, hookEvent, outerSessionId, childBase, role, 
       await waitForSubagentFiles(subagentTranscript);
     }
     // A subagent that runs again starts on the message that resumed it:
-    // the last user prompt after its last turn of its own. Without one, a
-    // resume carries no message rather than repeat the spawn's, and a
-    // first start carries the prompt it was spawned with.
+    // the last user prompt after its last turn of its own. Without one (a
+    // wake by a task notification has none), a resume carries no message
+    // rather than repeat the spawn's, and a first start carries the prompt
+    // it was spawned with.
     const resumeMessage = subagentResumeMessage({
       subagentTranscript,
       parentTranscript: hookEvent.transcript_path,
@@ -885,15 +886,24 @@ function recordsAfterOwnTurns({ subagentTranscript, parentTranscript, role }) {
   return last < 0 ? null : records.slice(last + 1);
 }
 
+// The origin Claude Code names on the meta user record a finished
+// background task wakes a subagent with. The record's text is Claude
+// Code's notice of the task, not a message to the subagent, so a wake
+// starts with no message; it is still a resume
+// (subagentResumedAfterFinalTurn).
+const TASK_NOTIFICATION_ORIGIN = "task-notification";
+
 /**
  * The message a subagent that has run before was resumed with: the text of
- * the last user prompt after its last turn of its own, or null when it
- * has no turn yet (a spawn) or no prompt follows one.
+ * the last user prompt after its last turn of its own other than a task
+ * notification's wake, or null when it has no turn yet (a spawn) or no
+ * such prompt follows one.
  */
 export function subagentResumeMessage({ subagentTranscript, parentTranscript, role }) {
   const after = recordsAfterOwnTurns({ subagentTranscript, parentTranscript, role });
   if (!after) return null;
   for (let i = after.length - 1; i >= 0; i--) {
+    if (after[i].origin?.kind === TASK_NOTIFICATION_ORIGIN) continue;
     const text = promptText(after[i]);
     if (text !== null) return text;
   }
@@ -901,9 +911,11 @@ export function subagentResumeMessage({ subagentTranscript, parentTranscript, ro
 }
 
 /**
- * Whether the subagent was already resumed after its final turn: a user
- * prompt (a SendMessage) or a queued command (a task notification) follows
- * its last turn of its own in the transcript.
+ * Whether the subagent was already resumed after its final turn: a prompt
+ * follows its last turn of its own in the transcript (a SendMessage's
+ * message or a task notification's wake, each a meta user record naming
+ * its origin), or a queued command (a task notification delivered to the
+ * running subagent).
  */
 export function subagentResumedAfterFinalTurn({ subagentTranscript, parentTranscript, role }) {
   const after = recordsAfterOwnTurns({ subagentTranscript, parentTranscript, role });

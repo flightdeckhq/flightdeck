@@ -407,9 +407,9 @@ turn whose POST failed is sent by a later hook (sub-agent ends too); a
 flush sends only turns that ran while its session was current, so one
 unsent when its session ends is dropped, never misfiled. A sub-agent's
 child, `uuid5(outer session, agent_id)`, is re-attached on each resume.
-**Why:** a failed send was never retried (24 of the 26 calls, 7.63M
-tokens, one conversation lost); a re-read after lost markers filed 5
-under a later coordinator's child; a resumed child stayed closed.
+**Why:** one conversation lost 26 calls (7.63M tokens), 24 of them after
+a failed send that was never retried; a re-read after lost markers filed
+5 under a later coordinator's child; a resumed child stayed closed.
 **Rejected alternative:** late delivery to the old run (changes D212;
 pre-0.7.1 plugins' random-id re-sends would count twice); a child keyed
 on Claude Code's session id (contradicts D190); a child per resume.

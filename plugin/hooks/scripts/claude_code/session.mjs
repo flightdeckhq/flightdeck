@@ -120,19 +120,28 @@ function hookEventName(hookEvent) {
 }
 
 /**
- * The mint time of a later Flightdeck session that has taken over this
- * Claude Code session's marker from ``sessionId``, or null while the
- * marker still names ``sessionId`` (or nothing, or a session with no
- * mint time). A process that keeps reporting under ``sessionId`` after
- * a resume minted a new session (the SessionEnd worker, a late hook)
- * sends no turn that ran at or after it: that turn is the new
- * session's.
+ * The mint time of a later Flightdeck session that has taken this Claude
+ * Code session over from ``sessionId``, or null when there is none (or
+ * it recorded no mint time). A later session is named by the marker
+ * while it runs and, once its SessionEnd has deleted the marker, by the
+ * ended-session marker; of the two, the earlier mint wins. The
+ * ended-session marker never names a session older than ``sessionId``
+ * to a process still reporting under it: SessionStart removes it before
+ * minting, and each SessionEnd overwrites it. A process that keeps
+ * reporting under ``sessionId`` after a resume minted a new session (the
+ * SessionEnd worker, a late hook) sends no turn that ran at or after it:
+ * that turn is the new session's.
  */
 export function laterSessionMint(hookEvent, sessionId) {
   const nativeId = claudeCodeSessionId(hookEvent);
   const markerKey = nativeId ? markerKeyFor(nativeId) : cwdMarkerKey(process.cwd());
-  const current = readSessionMarker(markerKey);
-  return current && current !== sessionId ? readSessionMintTime(current) : null;
+  let earliest = null;
+  for (const later of [readSessionMarker(markerKey), readEndedMarker(markerKey)]) {
+    if (!later || later === sessionId) continue;
+    const mint = readSessionMintTime(later);
+    if (mint !== null && (earliest === null || mint < earliest)) earliest = mint;
+  }
+  return earliest;
 }
 
 /**

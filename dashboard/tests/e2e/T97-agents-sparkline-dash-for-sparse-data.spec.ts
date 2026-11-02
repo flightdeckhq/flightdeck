@@ -36,7 +36,11 @@ test.describe("T97 — /agents sparkline dash for sparse data", () => {
     // Find the ancient fixture row. ``ancient-only`` is its only
     // seeded role and is intentionally outside the live 7-day
     // window for most KPI axes, so the row's sparkline cells
-    // should all collapse to the placeholder dash.
+    // should all collapse to the placeholder dash. Narrow the roster
+    // by name first: the table pages at 50 rows sorted by state, and
+    // a closed agent like this one falls to page 2 once a busy dev DB
+    // holds enough live agents.
+    await page.locator('[data-testid="agents-search-input"]').fill("e2e-test-ancient-agent");
     const row = page
       .locator('[data-testid^="agent-row-"]')
       .filter({ hasText: "e2e-test-ancient-agent" })

@@ -37,12 +37,17 @@ def with_retry(
         URLError,
         OSError,
     ),
+    should_retry: Callable[[], bool] | None = None,
 ) -> _T:
     """Execute *fn* with exponential backoff on transient failures.
 
     Retries on connection errors, timeouts, and ``URLError``.
     HTTP 5xx responses must be converted to exceptions by the caller
     before reaching this function.
+
+    *should_retry*, when given, is asked before a retry, and again after
+    its backoff: once it returns False, the last failure is raised at
+    once, without the retry's warning.
 
     Raises the final exception unchanged after *max_attempts* failures.
     """
@@ -52,16 +57,19 @@ def with_retry(
             return fn()
         except retryable as exc:
             last_exc = exc
-            if attempt < max_attempts - 1:
-                delay = backoff_base * (2**attempt)
-                _log.warning(
-                    "Transient failure (attempt %d/%d), retrying in %.1fs: %s",
-                    attempt + 1,
-                    max_attempts,
-                    delay,
-                    exc,
-                )
-                time.sleep(delay)
+            if attempt == max_attempts - 1 or (should_retry is not None and not should_retry()):
+                break
+            delay = backoff_base * (2**attempt)
+            _log.warning(
+                "Transient failure (attempt %d/%d), retrying in %.1fs: %s",
+                attempt + 1,
+                max_attempts,
+                delay,
+                exc,
+            )
+            time.sleep(delay)
+            if should_retry is not None and not should_retry():
+                break
     # Unreachable: the loop either returns or sets ``last_exc`` and
     # falls through. Explicit RuntimeError rather than
     # ``assert`` so behaviour is stable under ``python -O``.

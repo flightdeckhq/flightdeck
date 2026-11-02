@@ -8,15 +8,21 @@ Two-line integration::
 
 from __future__ import annotations
 
+import collections
 import contextlib
+import dataclasses
+import functools
+import importlib
 import logging
 import os
 import socket
+import sys
 import threading
 import uuid
 from typing import TYPE_CHECKING, Any
 
 from flightdeck_sensor import config as _env
+from flightdeck_sensor.core import import_hook as _import_hook
 from flightdeck_sensor.core.agent_id import derive_agent_id
 from flightdeck_sensor.core.context import collect as _collect_context
 from flightdeck_sensor.core.exceptions import (
@@ -32,51 +38,61 @@ from flightdeck_sensor.core.types import (
     SensorConfig,
     StatusResponse,
 )
-from flightdeck_sensor.interceptor.anthropic import (
-    SensorAnthropic,
-    _OrigBaseClient,
-    patch_anthropic_classes,
-    unpatch_anthropic_classes,
-)
-from flightdeck_sensor.interceptor.anthropic import (
-    is_patched as _anthropic_is_patched,
-)
-from flightdeck_sensor.interceptor.claude_agent_sdk import (
-    patch_claude_agent_sdk,
-    unpatch_claude_agent_sdk,
-)
-from flightdeck_sensor.interceptor.crewai import (
-    patch_crewai_classes,
-    unpatch_crewai_classes,
-)
-from flightdeck_sensor.interceptor.langgraph import (
-    patch_langgraph_classes,
-    unpatch_langgraph_classes,
-)
+
+# The LangGraph interceptor module imports LangGraph only when it patches,
+# so importing it here for init()'s node pattern costs nothing.
 from flightdeck_sensor.interceptor.langgraph import (
     set_agent_node_pattern as _set_langgraph_agent_node_pattern,
-)
-from flightdeck_sensor.interceptor.litellm import (
-    SensorLitellm,  # noqa: F401  # re-exported for flightdeck_sensor.SensorLitellm
-    patch_litellm_functions,
-    unpatch_litellm_functions,
-)
-from flightdeck_sensor.interceptor.mcp import (
-    patch_mcp_classes,
-    unpatch_mcp_classes,
-)
-from flightdeck_sensor.interceptor.openai import (
-    SensorOpenAI,
-    _OrigAsyncOpenAI,
-    _OrigOpenAI,
-    patch_openai_classes,
-    unpatch_openai_classes,
 )
 from flightdeck_sensor.provider import Provider
 from flightdeck_sensor.transport.client import ControlPlaneClient
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from types import ModuleType
+
+    # The names __getattr__ resolves on first access, typed for checkers;
+    # at runtime they are imported only once their SDK is (see
+    # _LAZY_EXPORTS).
+    from flightdeck_sensor.interceptor.anthropic import SensorAnthropic as SensorAnthropic
+    from flightdeck_sensor.interceptor.anthropic import (
+        patch_anthropic_classes as patch_anthropic_classes,
+    )
+    from flightdeck_sensor.interceptor.anthropic import (
+        unpatch_anthropic_classes as unpatch_anthropic_classes,
+    )
+    from flightdeck_sensor.interceptor.claude_agent_sdk import (
+        patch_claude_agent_sdk as patch_claude_agent_sdk,
+    )
+    from flightdeck_sensor.interceptor.claude_agent_sdk import (
+        unpatch_claude_agent_sdk as unpatch_claude_agent_sdk,
+    )
+    from flightdeck_sensor.interceptor.crewai import patch_crewai_classes as patch_crewai_classes
+    from flightdeck_sensor.interceptor.crewai import (
+        unpatch_crewai_classes as unpatch_crewai_classes,
+    )
+    from flightdeck_sensor.interceptor.langgraph import (
+        patch_langgraph_classes as patch_langgraph_classes,
+    )
+    from flightdeck_sensor.interceptor.langgraph import (
+        unpatch_langgraph_classes as unpatch_langgraph_classes,
+    )
+    from flightdeck_sensor.interceptor.litellm import SensorLitellm as SensorLitellm
+    from flightdeck_sensor.interceptor.litellm import (
+        patch_litellm_functions as patch_litellm_functions,
+    )
+    from flightdeck_sensor.interceptor.litellm import (
+        unpatch_litellm_functions as unpatch_litellm_functions,
+    )
+    from flightdeck_sensor.interceptor.mcp import patch_mcp_classes as patch_mcp_classes
+    from flightdeck_sensor.interceptor.mcp import unpatch_mcp_classes as unpatch_mcp_classes
+    from flightdeck_sensor.interceptor.openai import SensorOpenAI as SensorOpenAI
+    from flightdeck_sensor.interceptor.openai import (
+        patch_openai_classes as patch_openai_classes,
+    )
+    from flightdeck_sensor.interceptor.openai import (
+        unpatch_openai_classes as unpatch_openai_classes,
+    )
 
 Parameter = DirectiveParameter
 
@@ -146,12 +162,98 @@ def _resolve_user_name() -> str:
 # v2 concern; users who need isolated sessions should run separate
 # processes (one sensor per process).
 _lock = threading.Lock()
+# Serialises every patch and unpatch of an SDK, whether patch(), unpatch()
+# or the import hook runs it. The import hook never waits for it (see
+# _patch_pending).
 _patch_lock = threading.Lock()
 _session: Session | None = None
 _client: ControlPlaneClient | None = None
 
 # Custom directive registry -- populated by @directive decorator
 _directive_registry: dict[str, DirectiveRegistration] = {}
+
+
+@dataclasses.dataclass(frozen=True)
+class _SDKTarget:
+    """One SDK ``patch()`` covers: the module whose import makes it
+    patchable, and the interceptor module that patches it. The
+    interceptor module imports the SDK itself, so it is imported only once
+    the application has imported the SDK."""
+
+    provider: Provider
+    module: str
+    interceptor: str
+    patch: str
+    unpatch: str
+
+    @property
+    def interceptor_module(self) -> str:
+        return f"flightdeck_sensor.interceptor.{self.interceptor}"
+
+
+# Every member of Provider, in the order patch() applies them. LangGraph is
+# keyed on ``langgraph.graph``, the package StateGraph comes from:
+# ``langgraph`` itself is a namespace package shared with LangGraph's other
+# distributions, and a namespace package runs no code for the hook to see.
+_SDK_TARGETS: tuple[_SDKTarget, ...] = (
+    _SDKTarget(
+        Provider.ANTHROPIC,
+        "anthropic",
+        "anthropic",
+        "patch_anthropic_classes",
+        "unpatch_anthropic_classes",
+    ),
+    _SDKTarget(
+        Provider.OPENAI, "openai", "openai", "patch_openai_classes", "unpatch_openai_classes"
+    ),
+    _SDKTarget(
+        Provider.LITELLM,
+        "litellm",
+        "litellm",
+        "patch_litellm_functions",
+        "unpatch_litellm_functions",
+    ),
+    _SDKTarget(Provider.MCP, "mcp", "mcp", "patch_mcp_classes", "unpatch_mcp_classes"),
+    _SDKTarget(
+        Provider.CREWAI,
+        "crewai",
+        "crewai",
+        "patch_crewai_classes",
+        "unpatch_crewai_classes",
+    ),
+    _SDKTarget(
+        Provider.LANGGRAPH,
+        "langgraph.graph",
+        "langgraph",
+        "patch_langgraph_classes",
+        "unpatch_langgraph_classes",
+    ),
+    _SDKTarget(
+        Provider.CLAUDE_AGENT_SDK,
+        "claude_agent_sdk",
+        "claude_agent_sdk",
+        "patch_claude_agent_sdk",
+        "unpatch_claude_agent_sdk",
+    ),
+)
+
+# SDKs the import hook saw imported and that are not patched yet, each
+# with the quiet flag of the patch() call that asked for it: the hook
+# queues them here and patches them only when it can take _patch_lock
+# without waiting, otherwise the thread holding the lock patches them on
+# release (see _patch_pending). deque append and popleft are atomic.
+_pending: collections.deque[tuple[_SDKTarget, bool]] = collections.deque()
+
+# Names importable from this package that live in an interceptor module.
+# Resolved on first access (see __getattr__), so reading one imports its
+# SDK, which the caller is about to use anyway.
+_LAZY_EXPORTS: dict[str, str] = {
+    "SensorAnthropic": "anthropic",
+    "SensorOpenAI": "openai",
+    "SensorLitellm": "litellm",
+    **{t.patch: t.interceptor for t in _SDK_TARGETS},
+    **{t.unpatch: t.interceptor for t in _SDK_TARGETS},
+}
 
 
 # ------------------------------------------------------------------
@@ -595,18 +697,19 @@ def wrap(client: Any, quiet: bool = False) -> Any:
 
     # Detect Anthropic client
     if _is_anthropic(client):
+        anthropic_interceptor = _interceptor("anthropic")
         # If the resource classes are already patched, every call on
         # the client is intercepted there; wrapping as well would be
         # harmless (the proxy calls the original methods) but pointless.
-        if _anthropic_is_patched():
+        if anthropic_interceptor.is_patched():
             return client
-        return SensorAnthropic(client, session)
+        return anthropic_interceptor.SensorAnthropic(client, session)
 
     # Detect OpenAI client
     if _is_openai(client):
         if hasattr(type(client), "_flightdeck_patched"):
             return client
-        return SensorOpenAI(client, session)
+        return _interceptor("openai").SensorOpenAI(client, session)
 
     if not quiet:
         _log.warning(
@@ -644,6 +747,14 @@ def patch(
     anthropic import Anthropic`` continue to work correctly because the
     class objects' identities are preserved.
 
+    **Patched on import**: ``patch()`` never imports an SDK. An SDK the
+    application has already imported is patched at once; one it has not
+    is patched when the application first imports it, right after the
+    SDK's own module code runs and before the ``import`` statement
+    returns, so an SDK the application never uses is never loaded (and
+    litellm never fetches its price list for it). A reload of a patched
+    SDK is patched again. :func:`unpatch` stops this.
+
     **Idempotent**: calling ``patch()`` twice is a no-op on the second
     call -- a class is only patched if it does not already carry the
     ``_flightdeck_patched`` sentinel.
@@ -669,7 +780,7 @@ def patch(
             both forms). Default (``None``) patches every member of
             :class:`Provider`. The enum is the single source of truth
             for the valid set: adding a new interceptor means adding
-            a new enum member and a new branch below. The current
+            a new enum member and its entry in ``_SDK_TARGETS``. The current
             members are ``ANTHROPIC`` (anthropic SDK class patch),
             ``OPENAI`` (openai SDK class patch), ``LITELLM``
             (module-level ``litellm.completion`` / ``litellm.acompletion``
@@ -714,22 +825,21 @@ def patch(
         # downstream branch a clean ``str``-typed lookup target and
         # keeps the unknown-string-silently-ignored behavior intact.
         targets = {t.value if isinstance(t, Provider) else t for t in providers}
+    selected = [t for t in _SDK_TARGETS if t.provider.value in targets]
 
     with _patch_lock:
-        if Provider.ANTHROPIC.value in targets:
-            patch_anthropic_classes(quiet=quiet)
-        if Provider.OPENAI.value in targets:
-            patch_openai_classes(quiet=quiet)
-        if Provider.LITELLM.value in targets:
-            patch_litellm_functions(quiet=quiet)
-        if Provider.MCP.value in targets:
-            patch_mcp_classes(quiet=quiet)
-        if Provider.CREWAI.value in targets:
-            patch_crewai_classes(quiet=quiet)
-        if Provider.LANGGRAPH.value in targets:
-            patch_langgraph_classes(quiet=quiet)
-        if Provider.CLAUDE_AGENT_SDK.value in targets:
-            patch_claude_agent_sdk(quiet=quiet)
+        # Watch first, then look: an SDK whose import finishes in between
+        # is both reported by the hook and found imported, and patching it
+        # twice is a no-op.
+        _import_hook.watch(
+            {t.module: functools.partial(_patch_on_import, t, quiet) for t in selected}
+        )
+        for target in selected:
+            if _import_hook.imported(target.module) is not None:
+                _patch_sdk(target, quiet)
+            elif not quiet:
+                _log.debug("%s will be patched when it is imported", target.module)
+    _patch_pending()
 
 
 def unpatch() -> None:
@@ -738,7 +848,9 @@ def unpatch() -> None:
     Idempotent: safe to call without a preceding ``patch()``. Restores
     the original ``cached_property`` descriptors and the original
     ``litellm.completion`` / ``litellm.acompletion`` module attributes,
-    and removes every ``_flightdeck_patched`` sentinel.
+    and removes every ``_flightdeck_patched`` sentinel. An SDK imported
+    afterwards is no longer patched as it is imported. Never imports an
+    SDK: only the ones the application has imported can be patched.
 
     OpenAI instances that have already accessed ``.chat`` after
     ``patch()`` was called keep the wrapped version cached in their
@@ -748,13 +860,16 @@ def unpatch() -> None:
     (see :func:`unpatch_anthropic_classes`).
     """
     with _patch_lock:
-        unpatch_anthropic_classes()
-        unpatch_openai_classes()
-        unpatch_litellm_functions()
-        unpatch_mcp_classes()
-        unpatch_crewai_classes()
-        unpatch_langgraph_classes()
-        unpatch_claude_agent_sdk()
+        _import_hook.unwatch()
+        _pending.clear()
+        for target in _SDK_TARGETS:
+            interceptor = sys.modules.get(target.interceptor_module)
+            if interceptor is None or sys.modules.get(target.module) is None:
+                continue  # never patched: patching imports the interceptor module
+            getattr(interceptor, target.unpatch)()
+    # An import that finished while the lock was held may have queued its
+    # SDK; it is no longer watched, so this drops it.
+    _patch_pending()
 
 
 def get_status() -> StatusResponse:
@@ -821,15 +936,86 @@ def _is_anthropic(client: Any) -> bool:
     """Detect any Anthropic SDK client (first-party, Bedrock, Vertex,
     Foundry, AWS, Mantle; sync or async) via the ``BaseClient`` reference
     captured at interceptor-module import time, which every SDK client
-    class derives from.
+    class derives from. A client exists only once its SDK is imported,
+    so with ``anthropic`` not imported the answer is no, and nothing is
+    imported to give it.
     """
-    if _OrigBaseClient is None:
+    if "anthropic" not in sys.modules:
         return False
-    return isinstance(client, _OrigBaseClient)
+    base_client = _interceptor("anthropic")._OrigBaseClient
+    return base_client is not None and isinstance(client, base_client)
 
 
 def _is_openai(client: Any) -> bool:
-    """Detect an OpenAI / AsyncOpenAI client via captured references."""
-    if _OrigOpenAI is None or _OrigAsyncOpenAI is None:
+    """Detect an OpenAI / AsyncOpenAI client via captured references,
+    without importing ``openai`` when the application has not."""
+    if "openai" not in sys.modules:
         return False
-    return isinstance(client, (_OrigOpenAI, _OrigAsyncOpenAI))
+    interceptor = _interceptor("openai")
+    if interceptor._OrigOpenAI is None or interceptor._OrigAsyncOpenAI is None:
+        return False
+    return isinstance(client, (interceptor._OrigOpenAI, interceptor._OrigAsyncOpenAI))
+
+
+def _interceptor(name: str) -> ModuleType:
+    """The interceptor module ``flightdeck_sensor.interceptor.<name>``,
+    which imports its SDK: call it only once the SDK is imported."""
+    return importlib.import_module(f"flightdeck_sensor.interceptor.{name}")
+
+
+def _patch_sdk(target: _SDKTarget, quiet: bool) -> None:
+    """Patch one SDK the application has imported. Caller holds
+    _patch_lock."""
+    getattr(_interceptor(target.interceptor), target.patch)(quiet=quiet)
+
+
+def _patch_on_import(target: _SDKTarget, quiet: bool, _module: str) -> None:
+    """The import hook's callback: the application has just imported the
+    SDK of ``target``. Runs inside that import, so it queues the patch and
+    applies it only if the patch lock is free (see _patch_pending)."""
+    _pending.append((target, quiet))
+    _patch_pending()
+
+
+def _patch_pending() -> None:
+    """Patch the SDKs the import hook queued, unless another thread holds
+    the patch lock, in which case that thread does it when it releases.
+
+    The lock is never waited for: the hook runs inside an import, holding
+    that module's import lock, and patch() may hold the patch lock while
+    it waits for that very import to finish. Each holder therefore drains
+    the queue after releasing the lock, and a callback that queues while
+    the lock is held finds it free again or has its entry taken by the
+    holder's drain. A patch() or reload running at the same time can queue
+    an SDK twice; patching is idempotent. An SDK unpatch() stopped
+    watching is dropped from the queue.
+    """
+    while _pending and _patch_lock.acquire(blocking=False):
+        try:
+            while True:
+                try:
+                    target, quiet = _pending.popleft()
+                except IndexError:
+                    break
+                if not _import_hook.watching(target.module):
+                    continue
+                try:
+                    _patch_sdk(target, quiet)
+                except Exception:
+                    _log.warning(
+                        "flightdeck_sensor: patching %s failed; its calls are not metered",
+                        target.module,
+                        exc_info=True,
+                    )
+        finally:
+            _patch_lock.release()
+
+
+def __getattr__(name: str) -> Any:
+    """Names that live in an interceptor module (``SensorLitellm``,
+    ``patch_openai_classes``, ...), imported on first access so that
+    ``import flightdeck_sensor`` loads no SDK."""
+    interceptor = _LAZY_EXPORTS.get(name)
+    if interceptor is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(_interceptor(interceptor), name)

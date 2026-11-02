@@ -29,6 +29,13 @@ All notable changes to Flightdeck are documented here.
   Such a session offers no Stop and no custom-directive triggers. The
   agent rows of `GET /v1/fleet`, `GET /v1/agents` and the agent hits of
   `GET /v1/search` carry the latest session's `telemetry`.
+- **The README shows how to send Claude Code's OpenTelemetry to
+  Flightdeck.** It covers the environment to set and what each variable
+  does, what such a session shows, what a repository's own settings can
+  change, and how to roll it out through managed settings, GitHub
+  Actions, cloud sessions and the TypeScript Agent SDK. The plugin README
+  points `claude --bare` runs at it, and says which `FLIGHTDECK_*`
+  settings a repository can set for its own sessions.
 - **Claude Code sessions can be stopped and held to token budgets.** With
   the plugin option `enforcement` on (or `FLIGHTDECK_ENFORCEMENT=1`), the
   dashboard's Stop button and token policies reach Claude Code: a stop or
@@ -75,6 +82,44 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **Fleet swimlane circles sit on their row's centre line.** Circles
+  were shifted up twice (a CSS translate and an inline transform), so
+  they sat about 11 px high on every row, crowded the top-edge run
+  glyphs, and lost their top to the expanded ALL row's clip. They are
+  now centred on their row and on their time's x, the ALL row lines up
+  with the agent rows, and run glyphs line up with the circles of the
+  same instant (they move 11 px right).
+- **A sub-agent row keeps its role readable.** At the default 460 px
+  label column, a sub-agent's name (`user@host/role`) shrank to its
+  48 px floor and read `omria…` on every child row. The name now gives
+  way at its head and keeps the `/role` suffix whole, and the row's
+  `↳ parent` pill shrinks first.
+- **Sub-agent connectors end on the circles they join**, instead of
+  19 px left of and about 11 px below them, and hovering a run's
+  circle or glyph lights that run's connectors.
+- **A sub-agent row's label hides the circles scrolled under it.** When
+  the swimlane scrolled sideways (a narrow window, the per-agent
+  swimlane modal), older circles showed through a child row's
+  translucent label, over its pills and status badge. The label now
+  paints the same look opaquely.
+- **SIGTERM ends a process that runs the sensor, and a signal can no
+  longer hang it.** The sensor's SIGTERM / SIGINT handler ended the
+  session on the thread the signal interrupted, so a signal that landed
+  while that thread held one of the sensor's locks deadlocked the process,
+  and a SIGTERM with no handler of the application's own was swallowed:
+  the process kept running with its session closed. The session now ends
+  on the event queue's background thread, which sends `session_end` while
+  the handler waits up to 2 seconds, and the signal is then passed on:
+  SIGTERM ends the process, SIGINT raises `KeyboardInterrupt`, and an
+  application's own handler is called. A SIGTERM with no handler of the
+  application's own is held back until `session_end` is sent: 8 seconds
+  at most, or about 10.5 when an event was being posted as the signal
+  arrived (that post runs to its 10-second timeout, without a retry),
+  whether the control plane is slow or down or the interrupted code still
+  holds a lock. A slow DNS lookup for the control plane is not covered. A
+  second signal forces the exit, and a SIGTERM the application ignores
+  stays ignored
+  ([#175](https://github.com/flightdeckhq/flightdeck/issues/175)).
 - **An event that names no model no longer reads "unknown".** A prompt,
   call or error without a model (Claude Code's prompt record over
   OpenTelemetry has none) shows a dash in its feed line and its Model
@@ -217,6 +262,16 @@ All notable changes to Flightdeck are documented here.
 
 ### Changed
 
+- **The sensor patches each SDK when the application first imports it.**
+  `import flightdeck_sensor` imported every installed SDK it can patch
+  (and `patch()` the agent frameworks), so an application paid for
+  litellm, mcp, anthropic and openai whether it used them or not, and
+  litellm fetched its price list from GitHub. `import flightdeck_sensor`,
+  `init()` and `patch()` now import none of them: an SDK already imported
+  is patched at once, and one imported later is patched as it is
+  imported, so the order of the imports no longer matters. A reloaded
+  litellm stays patched
+  ([#183](https://github.com/flightdeckhq/flightdeck/issues/183)).
 - **The plugin trims a sub-agent's role the way the sensor does.** A role
   that starts or ends with U+001C to U+001F or U+0085 now has those
   trimmed, and U+FEFF is kept, so the sensor, the plugin and OTLP ingest

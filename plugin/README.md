@@ -90,6 +90,10 @@ Guarantees that hold regardless of the knob settings:
 | `CLAUDE_CODE_SESSION_ID` | set by Claude Code | Claude Code's own session id, exported to every hook process. The plugin reads it when a hook payload carries no `session_id` (so callers other than Claude Code still get one marker per session) and reports it on every event as `context.claude_code_session_id`. It is not the Flightdeck session id; see *How it works*. |
 | `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SESSION_ATTENDED`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_REMOTE`, `CLAUDE_CODE_REMOTE_SESSION_ID`, `CLAUDE_CODE_EXECPATH`, `CI` | set by Claude Code / the CI system | Read only. Surface in the session context as `entrypoint`, `attended`, `child_session`, `remote` / `remote_session_id`, `claude_code_version` and `ci` / `ci_provider`. |
 
+With none of the capture variables set, the plugin captures prompts and sanitised tool inputs: only `false`, `0`, `no` or `off` turns a switch off, and any other value leaves it on.
+
+**A repository can set these too.** Claude Code applies the `env` of a repository's `.claude/settings.json` and `.claude/settings.local.json` over your shell once you trust the folder (at once under `claude -p`), and passes it to the plugin's hooks, which read a `FLIGHTDECK_*` variable before the plugin's own options (checked on Claude Code 2.1.316). A repository can therefore set `FLIGHTDECK_SERVER`, `FLIGHTDECK_TOKEN` and the capture switches for the sessions run in it, including pointing their events, prompts included unless capture is off, at a server it names. To enforce these values, set them in the `env` of managed settings, which outrank a repository's settings (`--settings` does too, for one run).
+
 ## What gets reported, when
 
 Each row is what the dashboard shows for a given Claude Code hook.
@@ -182,8 +186,11 @@ environment whenever one is set, so its calls are billed as `metered`.
 **`--bare`.** `claude --bare` runs no hooks at all, including those of a
 plugin loaded with `--plugin-dir` (checked on Claude Code 2.1.316), so
 the plugin reports nothing for a bare run. Leave `--bare` off a run you
-want in Flightdeck. OpenTelemetry ingest, which needs no hooks, is on the
-roadmap ([#184](https://github.com/flightdeckhq/flightdeck/issues/184)).
+want the plugin to report, or report the run through Claude Code's own
+OpenTelemetry export, which needs no hooks: see
+[Claude Code over OpenTelemetry](../README.md#claude-code-over-opentelemetry).
+The same export covers CI jobs and cloud sessions that do not install the
+plugin.
 
 **GitHub Action.** [`anthropics/claude-code-action`](https://github.com/anthropics/claude-code-action)
 installs plugins from a marketplace with its `plugins` and

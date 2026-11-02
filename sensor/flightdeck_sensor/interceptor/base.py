@@ -194,18 +194,30 @@ def drain_deferred_settles(session: Session) -> None:
             _log.debug("Deferred stream settle failed", exc_info=True)
 
 
-def settle_open_guards(session: Session) -> None:
+def settle_open_guards(session: Session, lock_wait: float | None = None) -> None:
     """Settle every open stream guard of ``session``; the session calls
     this as it ends, before its event queue closes, because a guard
     collected after that could no longer report. Registration and this
     snapshot share the session's lock, because a weak set cannot be
-    iterated while another thread adds to it."""
+    iterated while another thread adds to it.
+
+    ``lock_wait`` (a signal's shutdown) bounds the wait for that lock:
+    code a signal interrupted may hold it, and on Python 3.13 may never
+    release it, so while it stays held the guards are left unsettled."""
     guards_set = getattr(session, "open_stream_guards", None)
     lock = getattr(session, "open_stream_guards_lock", None)
     if not isinstance(guards_set, weakref.WeakSet) or lock is None:
         return
-    with lock:
-        guards = list(guards_set)
+    if lock_wait is None:
+        with lock:
+            guards = list(guards_set)
+    else:
+        if not lock.acquire(timeout=lock_wait):
+            return
+        try:
+            guards = list(guards_set)
+        finally:
+            lock.release()
     for guard in guards:
         try:
             if guard._session is session and guard._entered and not guard._finalized:

@@ -140,6 +140,71 @@ const BADGE_RESERVED_ZONE_PX = 88;
 // with absolute time positions.
 const TIMELINE_LEFT_BUFFER_PX = 8;
 
+/**
+ * Left inset of the timeline panel's positioned wrapper: the buffer
+ * plus half a circle. Circles and run glyphs are centred on their
+ * time's x inside that wrapper, so a mark at the window's left edge
+ * still clears the label strip by the buffer, and a circle, a glyph
+ * and a connector end at the same instant share one x. The ALL row
+ * uses the same inset, so a given time sits at the same x on every
+ * row.
+ */
+export const TIMELINE_LEFT_INSET_PX = TIMELINE_LEFT_BUFFER_PX + EVENT_CIRCLE_SIZE / 2;
+
+/**
+ * Split a sub-agent's name into the part it shares with its parent
+ * and its ``/{role}`` suffix. The plugin names a sub-agent
+ * ``{parent}/{role}``, so the role is the only part that differs from
+ * the parent's row and the part worth keeping readable. Returns null
+ * (render the name as one text) without a role, when the name does not
+ * end in ``/{role}``, or when nothing precedes the suffix.
+ */
+export function splitRoleSuffix(
+	name: string,
+	role: string | null | undefined,
+): { head: string; role: string } | null {
+	if (!role) return null;
+	const suffix = `/${role}`;
+	if (name.length <= suffix.length || !name.endsWith(suffix)) return null;
+	return { head: name.slice(0, -suffix.length), role: suffix };
+}
+
+/**
+ * CSS custom property a swimlane host sets to the colour its rows sit
+ * on, so a child row's label can paint that colour opaquely. Fleet
+ * rows sit on the page's ``--bg`` (the fallback); the per-agent
+ * swimlane modal's rows sit on its ``--surface`` and set it there.
+ */
+export const SWIMLANE_LABEL_BACKDROP_VAR = "--swimlane-label-backdrop";
+
+// One layer of the child-row tint (``--swimlane-row-child-bg``, a 6%
+// overlay in both themes) as an image, so it can stack.
+const CHILD_TINT_LAYER =
+	"linear-gradient(var(--swimlane-row-child-bg), var(--swimlane-row-child-bg))";
+
+// The child row's 2 px accent line at its left edge, the same as the
+// ``box-shadow: inset 2px 0 0 var(--accent)`` globals.css draws on the
+// row, which an opaque label would otherwise cover.
+const CHILD_ACCENT_LAYER = "linear-gradient(to right, var(--accent) 2px, transparent 2px)";
+
+/**
+ * Opaque background for a child row's sticky label. The row's tint is
+ * translucent, so a label that only inherited it let event circles
+ * scrolled underneath show through. This rebuilds, top to bottom, what
+ * the label showed at rest: its own inherited tint, the row's accent
+ * line, the row's tint, and the colour the row sits on. The result is
+ * the same colour, but nothing scrolled under it shows.
+ */
+const CHILD_LABEL_BACKGROUND = `${CHILD_TINT_LAYER}, ${CHILD_ACCENT_LAYER}, ${CHILD_TINT_LAYER}, var(${SWIMLANE_LABEL_BACKDROP_VAR}, var(--bg))`;
+
+// Shared single-line truncation styles for the two parts of a split
+// sub-agent name.
+const NAME_PART_TRUNCATE: React.CSSProperties = {
+	overflow: "hidden",
+	textOverflow: "ellipsis",
+	whiteSpace: "nowrap",
+};
+
 function SwimLaneComponent({
 	flavor,
 	agentName,
@@ -215,6 +280,12 @@ function SwimLaneComponent({
 	const osName = readContextString(mostRecentSession, "os");
 	const orchestration = readContextString(mostRecentSession, "orchestration");
 
+	// A sub-agent row's name splits into the head it shares with the
+	// parent and its ``/{role}`` suffix, taking the role of the most
+	// recent run (the same run the label-strip icons describe).
+	const displayName = agentName ?? flavor;
+	const nameParts = splitRoleSuffix(displayName, mostRecentSession?.agent_role);
+
 	// Anchor staggering for concurrent runs of the same agent
 	// (multi-pod K8s with collapsed FLIGHTDECK_HOSTNAME, etc.).
 	// First run on the row's top edge, second + on the bottom.
@@ -255,8 +326,12 @@ function SwimLaneComponent({
 					// sticky panel matching the row tint (otherwise
 					// the panel pin-fights with the row's child tint
 					// and a thin seam of var(--surface) shows under
-					// horizontal scroll).
-					background: "inherit",
+					// horizontal scroll). A root row's ``--surface``
+					// is opaque; a child row's tint is not, so its
+					// label paints the same look opaquely (see
+					// CHILD_LABEL_BACKGROUND) and circles scrolled
+					// under it stay hidden.
+					background: topology === "child" ? CHILD_LABEL_BACKGROUND : "inherit",
 					borderRight: "1px solid var(--border)",
 					position: "sticky",
 					left: 0,
@@ -320,14 +395,24 @@ function SwimLaneComponent({
 				    column narrows the trailing siblings clip
 				    against the parent's ``overflow: hidden``
 				    boundary BEFORE the name shrinks below
-				    readability. Above ~125 px content width
-				    (which all 460-default and 640-max layouts
-				    are well above) the floor never engages, so
-				    those verified layouts are unchanged. */}
+				    readability.
+
+				    A sub-agent name (``{parent}/{role}``) renders
+				    as two spans in a flex link: the head gives
+				    way first and ellipsis-truncates, and the
+				    ``/{role}`` suffix keeps its full width until
+				    it fills the whole link (then it truncates
+				    too). The suffix takes no shrink share at all:
+				    flex hands every shrinkable item a slice of the
+				    overflow, and a fraction of a pixel is already
+				    enough for the browser to draw ``/wor…``. */}
 				<Link
 					to={{ search: `agent_drawer=${encodeURIComponent(flavor)}` }}
 					data-testid="swimlane-agent-name-link"
-					title={agentName ?? flavor}
+					title={displayName}
+					// A split name's two flex items read with a space
+					// between them; name the link exactly instead.
+					aria-label={nameParts ? displayName : undefined}
 					className="block text-[13px] font-medium"
 					style={{
 						color: "var(--text)",
@@ -337,9 +422,39 @@ function SwimLaneComponent({
 						whiteSpace: "nowrap",
 						overflow: "hidden",
 						textOverflow: "ellipsis",
+						display: nameParts ? "flex" : undefined,
 					}}
 				>
-					{agentName ?? flavor}
+					{nameParts ? (
+						<>
+							<span
+								data-testid="swimlane-agent-name-head"
+								style={{
+									...NAME_PART_TRUNCATE,
+									flexGrow: 0,
+									flexShrink: 1,
+									flexBasis: "auto",
+									minWidth: 0,
+								}}
+							>
+								{nameParts.head}
+							</span>
+							<span
+								data-testid="swimlane-agent-name-role"
+								style={{
+									...NAME_PART_TRUNCATE,
+									flexGrow: 0,
+									flexShrink: 0,
+									flexBasis: "auto",
+									maxWidth: "100%",
+								}}
+							>
+								{nameParts.role}
+							</span>
+						</>
+					) : (
+						displayName
+					)}
 				</Link>
 				{clientType && (
 					<ClientTypePill
@@ -381,6 +496,12 @@ function SwimLaneComponent({
 					<RelationshipPill
 						mode="child"
 						parentName={relationship.parentName}
+						// The pill names the parent, which the row's
+						// indent under it already shows (for a plugin
+						// sub-agent it also repeats the head of the
+						// row's own name), so it gives way before the
+						// name does.
+						shrinkable
 						testId="swimlane-relationship-pill"
 						onClick={
 							onScrollToAgent && relationship.parentAgentId
@@ -461,24 +582,25 @@ function SwimLaneComponent({
 					overflow: "hidden",
 				}}
 			>
-				{/* Inner positioned wrapper that shifts the entire
-				    event-circles + run-brackets content right by
-				    ``TIMELINE_LEFT_BUFFER_PX`` so circles and brackets
-				    never crowd the label-strip / timeline-panel
-				    boundary (which is where the AgentStatusBadge sits
-				    via ``ml-auto`` at the label strip's right edge).
-				    Absolute children inside this wrapper position via
-				    ``left: x`` relative to its left edge, so the buffer
-				    shifts the leftmost circle inward by 8 px. The
-				    rightmost circles (events at NOW) shift right by the
-				    same 8 px and are clipped by the panel's
-				    ``overflow: hidden`` — acceptable since the now-pole
-				    visual is rendered by Timeline.tsx's grid overlay,
-				    not by this row. */}
+				{/* Inner positioned wrapper, inset
+				    ``TIMELINE_LEFT_INSET_PX`` (the 8 px buffer plus
+				    half a circle) from the label-strip /
+				    timeline-panel boundary, where the
+				    AgentStatusBadge sits. Circles and run glyphs
+				    centre on their time's x inside it, so a mark at
+				    the window's left edge keeps the 8 px buffer
+				    clear of the badge. Marks within that inset of
+				    NOW are clipped by the panel's
+				    ``overflow: hidden``; Timeline.tsx's grid overlay
+				    draws the now line. */}
 				<div
+					data-testid="swimlane-timeline-inset"
 					style={{
 						position: "absolute",
-						inset: `0 0 0 ${TIMELINE_LEFT_BUFFER_PX}px`,
+						top: 0,
+						right: 0,
+						bottom: 0,
+						left: TIMELINE_LEFT_INSET_PX,
 					}}
 				>
 					<AggregatedSwimLane
@@ -501,17 +623,16 @@ function SwimLaneComponent({
 							scale={scale}
 							// RunBracket's ``inWindow`` / ``endInWindow``
 							// guards use ``timelineWidth`` to decide
-							// which brackets to render. The buffer
+							// which brackets to render. The inset
 							// wrapper above shifts every rendered child
-							// 8 px right; a bracket at xStart ≈
-							// timelineWidth would land 8 px past
-							// panel.right and be clipped by
-							// ``overflow: hidden`` — a wasted render.
-							// Subtracting ``TIMELINE_LEFT_BUFFER_PX``
+							// ``TIMELINE_LEFT_INSET_PX`` right; a
+							// bracket at xStart ≈ timelineWidth would
+							// land that far past panel.right and be
+							// clipped by ``overflow: hidden`` — a
+							// wasted render. Subtracting the inset
 							// from the effective width tightens the
-							// guards to match the wrapper's reduced
-							// visible-rendering region.
-							timelineWidth={timelineWidth - TIMELINE_LEFT_BUFFER_PX}
+							// guards to the wrapper's visible region.
+							timelineWidth={timelineWidth - TIMELINE_LEFT_INSET_PX}
 							anchor={bracketAnchorMap.get(s.session_id) ?? "top"}
 							onClick={(sid) => onSessionClick(sid)}
 						/>
@@ -690,19 +811,32 @@ function AllSwimLaneComponent({
 						overflow: "hidden",
 					}}
 				>
-					{flavors.flatMap((f) =>
-						f.sessions.map((session) => (
-							<AggregatedSessionEvents
-								key={`${f.flavor}:${session.session_id}`}
-								session={session}
-								scale={scale}
-								onSessionClick={onSessionClick}
-								flavor={f.flavor}
-								activeFilter={activeFilter}
-								version={sessionVersions?.[session.session_id] ?? 0}
-							/>
-						)),
-					)}
+					{/* Same inset wrapper as the agent rows, so a given
+					    time sits at the same x on every row. */}
+					<div
+						data-testid="swimlane-timeline-inset"
+						style={{
+							position: "absolute",
+							top: 0,
+							right: 0,
+							bottom: 0,
+							left: TIMELINE_LEFT_INSET_PX,
+						}}
+					>
+						{flavors.flatMap((f) =>
+							f.sessions.map((session) => (
+								<AggregatedSessionEvents
+									key={`${f.flavor}:${session.session_id}`}
+									session={session}
+									scale={scale}
+									onSessionClick={onSessionClick}
+									flavor={f.flavor}
+									activeFilter={activeFilter}
+									version={sessionVersions?.[session.session_id] ?? 0}
+								/>
+							)),
+						)}
+					</div>
 				</div>
 			)}
 		</div>
@@ -731,7 +865,7 @@ export const AllSwimLane = memo(AllSwimLaneComponent, (prev, next) => {
 	return false;
 });
 
-/** Aggregated 20px event circles from all sessions of an agent. */
+/** Aggregated event circles (``EVENT_CIRCLE_SIZE``) from all sessions of an agent. */
 function AggregatedSwimLane({
 	sessions,
 	scale,

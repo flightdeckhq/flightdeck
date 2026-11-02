@@ -55,7 +55,8 @@ import { readTurns } from "./transcript.mjs";
 //
 // We emit a CHILD session_start (or session_end) whose ``session_id``
 // is a deterministic uuid5 derived from the outer Flightdeck session id
-// and the subagent's correlator (``agent_id``, see _subagentCorrelator)
+// and the subagent's correlator (``agent_id``, else ``tool_use_id``,
+// ``subagent_id`` or ``id``, see _subagentCorrelator)
 // so SubagentStart, every interior hook and the matching SubagentStop
 // produce the same child id without any disk-marker plumbing.
 // ``parent_session_id`` carries the outer session's id so the worker

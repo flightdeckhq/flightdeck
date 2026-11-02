@@ -653,7 +653,10 @@ class SensorLitellm:
 # async). The async ``atext_completion`` and ``aembedding`` take
 # ``*args, **kwargs`` and forward them to their sync counterparts, whose
 # signatures name them. Sentinel attributes on the module:
-#   _flightdeck_patched            -- boolean marker, idempotency gate
+#   _flightdeck_patched            -- boolean marker that the module was
+#                                     patched (unpatch reads it); each
+#                                     wrapper carries _WRAPPER_MARK, which
+#                                     is what patching checks
 #   _flightdeck_orig_<attribute>   -- the captured original of each entry
 #                                     point patched
 
@@ -681,6 +684,13 @@ _PATCHED_ENTRY_POINTS: tuple[
     ("embedding", "embedding", _intercept_embedding, LitellmProvider, False),
     ("aembedding", "embedding", _intercept_aembedding, LitellmProvider, True),
 )
+
+# Marks the sensor's wrapper of a litellm entry point. Patching checks each
+# entry point for it rather than trusting the module's _flightdeck_patched
+# flag alone: a reload of litellm re-runs its module code in the existing
+# namespace, which rebinds every entry point to litellm's own function and
+# leaves the flag set, and patch() patches a reloaded SDK again.
+_WRAPPER_MARK = "_flightdeck_wrapper"
 
 
 def _patched_sync(
@@ -757,30 +767,32 @@ def patch_litellm_functions(quiet: bool = False) -> None:
             _log.debug("litellm not installed, skipping patch")
         return
 
-    if getattr(_litellm_module, "_flightdeck_patched", False):
-        if not quiet:
-            _log.debug("litellm already patched, skipping")
-        return
-
     # Capture every original before replacing any, so an entry point's
-    # signature source is always litellm's own function.
+    # signature source is always litellm's own function (a wrapper already
+    # in place hands inspect.signature litellm's through __wrapped__).
     originals = {
         attr: getattr(_litellm_module, attr, None) for attr, *_rest in _PATCHED_ENTRY_POINTS
     }
     patched: list[str] = []
     for attr, signature_attr, intercept, provider_cls, is_async in _PATCHED_ENTRY_POINTS:
         orig = originals[attr]
-        if orig is None:
-            continue
+        if orig is None or getattr(orig, _WRAPPER_MARK, False) is True:
+            continue  # absent from this litellm, or already the sensor's wrapper
         names = _positional_names(originals.get(signature_attr) or orig)
         build = _patched_async if is_async else _patched_sync
         # Stash the original on the module so unpatch can restore it even
         # if the module was reloaded between patch and unpatch.
         setattr(_litellm_module, f"_flightdeck_orig_{attr}", orig)
-        setattr(_litellm_module, attr, build(orig, names, intercept, provider_cls))
+        wrapper = build(orig, names, intercept, provider_cls)
+        setattr(wrapper, _WRAPPER_MARK, True)
+        setattr(_litellm_module, attr, wrapper)
         patched.append(f"litellm.{attr}")
     _litellm_module._flightdeck_patched = True
 
+    if not patched:
+        if not quiet:
+            _log.debug("litellm already patched, skipping")
+        return
     if not quiet:
         _log.info("%s patched", ", ".join(patched))
 

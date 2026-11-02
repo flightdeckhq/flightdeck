@@ -239,20 +239,24 @@ flightdeck/
 │   │   │   ├── schemas.py      # Pydantic v2 control-plane envelope validation
 │   │   │   ├── agent_id.py     # 5-tuple → deterministic agent_id derivation
 │   │   │   ├── errors.py       # Provider exception or non-success stop reason → structured llm_error taxonomy + payload wrapper
-│   │   │   └── exceptions.py   # BudgetExceededError, DirectiveError, ConfigurationError
+│   │   │   ├── exceptions.py   # BudgetExceededError, DirectiveError, ConfigurationError
+│   │   │   └── import_hook.py  # sys.meta_path finder: runs patch() for an SDK as the application imports it
 │   │   ├── transport/
-│   │   │   ├── client.py       # ControlPlaneClient + EventQueue (drain + directive threads)
+│   │   │   ├── client.py       # ControlPlaneClient + EventQueue (drain + directive threads; the drain thread ends the session for a signal)
+│   │   │   ├── body_limit.py   # Event serialisation within the ingestion body limit
 │   │   │   └── retry.py        # Exponential backoff, unavailability policy enforcement
 │   │   ├── interceptor/
 │   │   │   ├── base.py         # call, call_async, call_stream, call_stream_async, the stream guards + the outer-call mark
 │   │   │   ├── platform.py     # Endpoint attribution: host → platform label, loopback → local billing
+│   │   │   ├── raw_views.py    # Deferred metering of the SDKs' raw and streaming response views
 │   │   │   ├── anthropic.py    # SensorAnthropic + resource-level patch of the SDK's Messages classes
 │   │   │   ├── openai.py       # SensorOpenAI + chat / responses / embeddings descriptors
 │   │   │   ├── litellm.py      # SensorLitellm: module-level completion / embedding patch
 │   │   │   ├── mcp.py          # mcp.client.session.ClientSession patch: every MCP operation, every transport
 │   │   │   ├── mcp_identity.py # MCP server identity: canonical URL form + SHA-256 fingerprint
 │   │   │   ├── crewai.py       # CrewAI Agent.execute_task patch → one child session per agent turn
-│   │   │   └── langgraph.py    # LangGraph StateGraph.add_node patch → one child session per node invocation
+│   │   │   ├── langgraph.py    # LangGraph StateGraph.add_node patch → one child session per node invocation
+│   │   │   └── claude_agent_sdk.py # Claude Agent SDK query() / ClaudeSDKClient patch → one session per run
 │   │   ├── providers/
 │   │   │   ├── protocol.py     # Provider Protocol: token estimation, usage extraction (incl. in-stream usage), call details, endpoint vendor / locality, content extraction
 │   │   │   ├── anthropic.py    # AnthropicProvider: handles system, messages, tools, response
@@ -538,7 +542,8 @@ flightdeck/
 The sensor is a Python library that runs in-process inside the agent. `init`
 resolves configuration; `patch` installs sensor methods on the Anthropic
 SDK's `Messages` resource classes and sensor descriptors on the OpenAI
-client classes; every LLM call passes through the sensor synchronously.
+client classes, on each SDK as the application imports it (see "When
+patching happens"); every LLM call passes through the sensor synchronously.
 The event POST itself is offloaded onto a background queue drain thread
 so it does not sit in the hot path, but the LLM call waits for the
 sensor's response-envelope parsing before returning control to
@@ -563,7 +568,9 @@ Two background daemon threads run: `flightdeck-event-queue` drains events to
 the control plane, and `flightdeck-directive-queue` processes directives
 received in event responses (kill, custom handlers, model swap, policy
 updates). The queues are decoupled so a slow directive handler cannot block
-event throughput.
+event throughput. The drain thread also ends the session when the process
+receives SIGTERM or SIGINT (see "Shutdown and signals"), so a signal
+handler never does that work on the thread the signal interrupted.
 
 Heartbeats, polling loops, and additional daemon threads do not belong in
 the sensor. Features that require independent background activity belong in
@@ -640,9 +647,11 @@ def patch(
     responses / embeddings cached_property descriptors on OpenAI and
     AsyncOpenAI. Works with frameworks that build their own clients
     internally; isinstance checks and captured class references keep
-    working. Idempotent."""
+    working. Never imports an SDK: one the application has imported is
+    patched at once, one it imports later is patched as it is imported.
+    Idempotent."""
 
-def unpatch -> None:...
+def unpatch -> None:...  # also stops patching SDKs as they are imported
 def get_status -> StatusResponse:...
 def teardown -> None:...
 
@@ -836,8 +845,8 @@ different levels:
   patch below). The patch imports the SDK's private module
   layout; the floor is `anthropic>=0.86`, the lowest release carrying
   it. An installed SDK below the
-  floor is reported once, at import, with a warning rather than
-  silently left unmetered. The raw view returns a response whose body is
+  floor is reported once, when the sensor first patches it, with a
+  warning rather than silently left unmetered. The raw view returns a response whose body is
   already read, and is metered like a plain call. Its `parse()` is
   synchronous on both client kinds up to the 0.x SDKs; from 2.x the async
   client's raw view returns an `AsyncAPIResponse` whose `parse()` is a
@@ -973,6 +982,50 @@ views described above. The practical advice is the same for both: call
 `init` + `patch` at the top of the entrypoint, before any framework or
 user code constructs a client.
 
+### When patching happens
+
+`patch` never imports an SDK. It patches at once each SDK the
+application has already imported, and the rest as the application
+imports them: `core/import_hook.py` puts a finder at the front of
+`sys.meta_path` that, for the seven modules `patch` covers (`anthropic`,
+`openai`, `litellm`, `mcp`, `crewai`, `langgraph.graph`,
+`claude_agent_sdk`), finds the module's spec through the finders after it
+and wraps its loader. The wrapper puts the module's own loader back on
+`__loader__` and `__spec__.loader`, executes the module with it, then
+patches the SDK, in the importing thread, before the `import` statement
+returns. Every other import passes the finder after one dictionary
+lookup. So an application loads only the SDKs it uses: `import
+flightdeck_sensor`, `init` and `patch` import none of them, and litellm's
+download of its price list from GitHub, which runs when litellm is
+imported, happens only when the application imports litellm. An SDK's
+interceptor module imports the SDK, so it is loaded only once the SDK is;
+`wrap` looks for a client's SDK classes only when that SDK is imported (a
+client cannot exist before), and the interceptor names `flightdeck_sensor`
+re-exports (`SensorLitellm`, the `patch_*` / `unpatch_*` functions)
+resolve on first access. LangGraph is watched as `langgraph.graph`, where
+`StateGraph` lives: `langgraph` itself is a namespace package shared with
+LangGraph's other distributions, and a namespace package runs no code to
+hook.
+
+A reload of a patched SDK runs through the finder again and is patched
+again. The litellm patch checks each entry point for its own wrapper
+rather than trusting the module's `_flightdeck_patched` flag, because a
+reload re-runs litellm's module code in the existing namespace, which
+rebinds every entry point and leaves the flag set. An exception while
+patching on import is logged and the import goes on (the SDK is then
+unmetered); a failed import patches nothing. `unpatch` takes the finder
+out of `sys.meta_path` and unpatches only SDKs that are imported.
+
+Every patch and unpatch runs under the sensor's patch lock. A patch on
+import runs inside the import, holding that module's import lock, and
+`patch` can hold the patch lock while it waits for that same import (an
+SDK another thread is still importing when `patch` runs is waited for, so
+it is patched whole; one the calling thread is importing is left to the
+finder), so the import hook never waits for the patch lock: it queues the
+SDK and patches it only if it takes the lock without waiting, and a
+thread holding the lock patches what was queued as it releases it.
+Patching is idempotent, so an SDK queued twice is patched once.
+
 ### Module-level patching: litellm
 
 `SensorLitellm` (in `interceptor/litellm.py`) covers `litellm.completion`,
@@ -980,8 +1033,10 @@ user code constructs a client.
 `litellm.atext_completion`, `litellm.responses`, `litellm.aresponses`,
 `litellm.embedding` and `litellm.aembedding`, streaming included. litellm
 exposes its API as module-level functions, so the SDK class patching
-above does not apply; the interceptor wraps the module functions directly
-with idempotency sentinels on the module object. Each wrapper keeps the
+above does not apply; the interceptor wraps the module functions directly,
+stashing each original on the module object and marking each wrapper, which
+is what makes patching idempotent (see "When patching happens" for why the
+mark rather than a module flag). Each wrapper keeps the
 entry point's signature and takes its arguments as litellm does,
 positional ones included: they are bound to the entry point's parameter
 names (`atext_completion` and `aembedding` take `*args` and forward them
@@ -1414,7 +1469,7 @@ is safe because `_apply_directive` runs on the dedicated directive handler
 thread, not the drain thread; `Queue.join` on the event queue makes
 progress without self-deadlock.
 
-`EventQueue.flush(timeout=5.0)` synchronously drains pending events up to a
+`EventQueue.flush(timeout=3.0)` synchronously drains pending events up to a
 deadline (event queue only). Used by `Session.end` and the shutdown /
 shutdown_flavor branches. The directive queue is intentionally NOT waited
 on: `flush` is typically called from inside `_apply_directive` running on
@@ -1490,6 +1545,93 @@ a no-op with a warning. Pattern B (one init per thread, isolated Sessions)
 and Pattern C (multiple agents in one process, each with its own Session)
 are not supported in the current model.
 
+### Shutdown and signals
+
+`Session.start` registers `Session.end` with `atexit` and, when `init` runs
+on the main thread, a SIGTERM handler and (except on Windows) a SIGINT
+handler. `end` settles the streams still open, flushes the event queue,
+posts `session_end` (`close_reason=normal_exit`, or `directive_shutdown`
+after a shutdown directive), flushes again and closes the queue; a second
+call does nothing. `teardown()` calls it too.
+
+A signal handler runs on the main thread on top of whatever the signal
+interrupted, which can be inside the session's, the policy cache's or the
+event queue's lock, none of them re-entrant. So the handler takes no lock
+and waits on none:
+
+1. It claims the end of the session with a non-blocking lock acquire, so
+   it and `end` never both run it, and hands the work to the event queue's
+   drain thread: a plain attribute the drain loop checks before each wait
+   for an event, plus a wake-up item put on the queue only when the
+   queue's lock is free (otherwise the drain thread notices the request
+   within its one-second wait). The drain thread posts the events already
+   queued, settles the open streams, posts the events that queues, then
+   posts `session_end`, so `session_end` is the session's last event.
+   Directives that arrive from then on are dropped, and the directive
+   thread is stopped.
+2. The handler polls for that to finish, for up to 2 seconds, then passes
+   the signal on to the handler it replaced: it calls a Python handler
+   (Python's own SIGINT handler raises `KeyboardInterrupt`), or, for the
+   default action, restores it and raises the signal again, so the process
+   ends as it would have without the sensor. Past the 2 seconds the drain
+   thread is still finishing an event's POST that was under way, or
+   waiting for a slow control plane, or briefly for a lock the signal
+   interrupted: a Python handler is called anyway (the `end` that
+   `atexit` runs then waits for the drain thread), while for the default
+   action the handler returns and the drain thread delivers the signal to
+   the main thread again once `session_end` is out. That delivery is
+   cooperative: Python runs a handler only between the main thread's
+   bytecodes, so a main thread inside a long call into native code holds
+   the exit until the call returns.
+3. A second signal while that shutdown runs, or after it, is passed on at
+   once, so it forces the exit. A signal that interrupts `end` itself is
+   passed on at once too; one that arrives while `end` runs on another
+   thread waits for it (2 seconds at most).
+
+The drain thread's shutdown has one deadline, 8 seconds from the signal
+(`SHUTDOWN_TIMEOUT_SECS`). The queued events get the first 3 seconds and
+`session_end` the rest. Each POST the shutdown makes is one attempt, with
+its timeout capped by the time left, and the events still queued when
+their 3 seconds run out are dropped, so a control plane that is down or
+never answers holds the exit for at most the deadline, not for a retry
+cycle per event. An event's POST already under way when the signal
+arrives, the usual case while events flow, cannot be cut short: its
+attempt runs to the transport's 10-second request timeout, its retry is
+skipped, and `session_end` still gets one half-second attempt after it.
+So the shutdown ends within about 10.5 seconds of the signal
+(`SHUTDOWN_LIMIT_SECS`), well inside the 30 seconds Kubernetes gives a pod
+between SIGTERM and SIGKILL. A request timeout bounds each socket
+operation (the connect, each read), not name resolution, so a slow DNS
+lookup for the control plane can take longer. A POST that fails during
+the shutdown is counted rather than logged, and the counts, like the
+session's own log line, are logged once the shutdown is over: logging
+takes locks the interrupted code may hold.
+
+Within it, each wait of the drain thread's for a lock the interrupted code
+may hold lasts half a second at most (`SHUTDOWN_LOCK_WAIT_SECS`), and none
+is made past the deadline: on Python 3.13 an exception a signal handler
+raises while the interrupted code is at a loop's back-edge can skip that
+code's `with` and `finally` exits, leaving the lock held for good. The
+open streams are settled, and the events that queues posted, only when
+the session's, the open-stream registry's, the policy cache's and the
+event queue's locks are all free within that wait; otherwise they are
+left as they are. `session_end`'s token total, framework, model and close
+reason are read under the session's lock when it comes free in time, and
+as plain attribute reads without it otherwise; once found held, it is not
+waited for again. Nothing on this path imports a module: the modules
+it uses are loaded with the sensor, because a first import can wait for
+one the interrupted code is in the middle of, and module code that calls
+`exec` (a dataclass definition does) clears the flag CPython uses to give
+a process ended by an unhandled `KeyboardInterrupt` its SIGINT exit
+status.
+
+`end`, called after a signal started the shutdown (by `atexit`, or
+`teardown()`), waits for the drain thread to finish it, up to that
+10.5-second limit from the signal. A signal the application ignores
+(`SIG_IGN`) is left ignored and the session carries on; a handler
+installed outside Python, which Python cannot pass a signal on to, is
+left in place. No thread is added for any of this.
+
 ---
 
 ## Plugin (Claude Code)
@@ -1551,7 +1693,12 @@ counts as unset. Credentials embedded in
 the server URL are stripped before use, and the default token prints
 a warning on every hook unless `FLIGHTDECK_QUIET=1`.
 `FLIGHTDECK_CAPTURE_PROMPTS` and `FLIGHTDECK_CAPTURE_TOOL_INPUTS` stay
-environment variables (see Content Capture).
+environment variables (see Content Capture). A repository's project
+settings (`.claude/settings.json`, `.claude/settings.local.json`) can
+set any of these variables in their `env`, which Claude Code applies
+over the shell and passes to the hooks, so a repository can choose the
+server, the token and the capture switches for the sessions run in it;
+only managed settings, or `--settings`, outrank a repository's settings.
 
 Every event body the plugin POSTs is at most 768 KiB
 (`MAX_EVENT_BODY_BYTES`). Ingestion reads at most 1 MiB of a body and
@@ -2175,8 +2322,8 @@ sessions extend the derivation with a conditional 6th input,
 |---|---|---|
 | `agent_id` | UUID | Deterministically derived from the other identity fields via `core/agent_id.py` |
 | `agent_type` | `coding` \| `production` | Sensor `init` kwarg or `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` env. Plugin always emits `coding`; a plugin session's entrypoint / attended / CI / cloud signals are context fields, not identity |
-| `client_type` | one of the values in the client type registry below | Each client sends its own literal: the plugin `claude_code`, the sensor `flightdeck_sensor`; `claude_agent_sdk` is reserved for the Agent SDK interceptor ([#182](https://github.com/flightdeckhq/flightdeck/issues/182)) |
-| `agent_name` | string | Sensor `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` env. Default `{user}@{hostname}`. Plugin uses the user's chosen flavor |
+| `client_type` | one of the values in the client type registry below | Each client sends its own literal: the plugin `claude_code`, the sensor `flightdeck_sensor` and its Claude Agent SDK interceptor `claude_agent_sdk`; the OTLP receiver stamps `claude_code` on Claude Code's own telemetry (see Client type registry > OTLP sources) |
+| `agent_name` | string | Sensor `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` env, default `{user}@{hostname}`. The plugin uses `FLIGHTDECK_AGENT_NAME`, else `{user}@{hostname}`; a sub-agent appends `/{role}`. The plugin's flavor is always `claude-code` |
 | `user` | string | Resolved from `getpass.getuser` (sensor) or `process.env.USER` (plugin) |
 | `agent_role` (optional 6th) | string \| null | Framework-driven on sub-agent sessions. CrewAI: `Agent.role`. LangGraph: node name. Claude Code Task: hook payload `agent_type`. Null on root sessions and direct-SDK sessions |
 
@@ -2234,9 +2381,12 @@ response is ignored.
 registry: a closed list, so ingestion still rejects anything outside it,
 that holds every client Flightdeck integrates with, including those
 whose emitter is still planned, so adding an emitter never needs
-a schema change. The Claude Code plugin sends `claude_code` and the
-Python sensor sends `flightdeck_sensor`; the other values are
-reserved for the planned integrations ([#182](https://github.com/flightdeckhq/flightdeck/issues/182), [#184](https://github.com/flightdeckhq/flightdeck/issues/184),
+a schema change. The Claude Code plugin sends `claude_code`, the
+Python sensor sends `flightdeck_sensor` and its Claude Agent SDK
+interceptor `claude_agent_sdk`, and the OTLP receiver stamps
+`claude_code` on Claude Code's own telemetry (OTLP sources, below); the
+other values are reserved for the planned integrations
+([#184](https://github.com/flightdeckhq/flightdeck/issues/184),
 [#186](https://github.com/flightdeckhq/flightdeck/issues/186)). Each value
 carries a display label and the defaults below:
 
@@ -2298,10 +2448,12 @@ present in the data, so reserved values do not appear until a client
 sends them.
 
 **OTLP sources.** The OTLP receiver stamps the registry value of the
-tool that produced the telemetry when it recognises it (Claude Code,
-Codex CLI, Gemini CLI and GitHub Copilot export OpenTelemetry under
-their own `service.name`), so their sessions keep that tool's defaults
-and `agent_id`; `otlp` is for sources no registry entry names.
+tool that produced the telemetry, so its sessions keep that tool's
+defaults and `agent_id`: Claude Code, the one source it maps (see OTLP
+ingest > Dialects), lands as `claude_code`. Codex CLI, Gemini CLI and
+GitHub Copilot export OpenTelemetry under their own `service.name` too;
+their records are accepted and counted as rejected. `otlp` is reserved
+for a source no registry entry names.
 
 **Claude Agent SDK and Claude Code.** The Agent SDK runs the Claude Code
 CLI as a subprocess, and the sensor's Agent SDK interceptor reports each
@@ -3118,8 +3270,13 @@ tool-capture envelope the sensor and plugin use (`provider` `anthropic`,
 or `mcp` with `model` the server name), and error text on its error
 block; content is cut to
 fit the 768 KiB event body limit as the plugin cuts it. Claude Code sends
-the prompt only when `OTEL_LOG_USER_PROMPTS=1` and tool inputs only when
-`OTEL_LOG_TOOL_DETAILS=1`.
+the prompt only when `OTEL_LOG_USER_PROMPTS=1`, and tool inputs and a
+failed tool's error text only when `OTEL_LOG_TOOL_DETAILS=1`. A
+repository's project settings can set `OTEL_RESOURCE_ATTRIBUTES` (and
+with it `flightdeck.capture_prompts`) and `OTEL_SERVICE_NAME` through
+their `env`, which Claude Code applies over the shell, but not the
+`OTEL_LOG_*` switches, which Claude Code ignores there; only managed
+settings, or `--settings`, outrank a repository's settings.
 
 **Lifecycle.** A Claude Code session reported over OTLP has no end event
 of its own (a sub-agent's run ends with `subagent_completed`). It goes
@@ -4806,6 +4963,28 @@ so the curve never anchors off-screen. D3 supplies the time
 scale; the SVG path is constructed in React (Rule 16 — D3 is
 math only, never DOM manipulation).
 
+Each path starts on the rim of the parent's spawn-event circle and
+ends at the centre of the child's first circle inside the time
+domain. Both points are measured from the rendered circles, looked
+up by `data-event-id` inside the parent's and the child's rows (the
+expanded ALL row draws the same events), so a connector lands on its
+circles wherever they sit. The rim radius is half the circle's
+`offsetWidth`, which a hover scale does not change. A pair is
+skipped when a circle is not mounted, such as one on a virtualised row,
+or when its row's timeline panel clips it near "now" (its centre past
+the panel's edge), so a connector never runs past the now line.
+
+Connectors rest at 10% opacity. Hovering a run's mark (an event
+circle or a run glyph), or focusing a run glyph from the keyboard
+(`:focus-visible`), raises every connector that starts or ends on that
+run to 50%: a parent run lights
+its whole fan-out, and a child run lights only its own link, even
+when several runs share a row. Each mark carries its run's id as
+`data-session-id`, and `Timeline.tsx` reads it from one delegated
+handler. Focus a mouse click leaves on a glyph does not count, so the
+highlight never sticks after the pointer leaves. Hovering a connector
+itself raises it too.
+
 ---
 
 ## Dashboard
@@ -5512,9 +5691,9 @@ from, limit: 500, offset })` (which hits `GET /v1/events`; the
 function also accepts `before` / `order` keyset params for
 newest-first drawer pagination) and returns the chronological list. Fleet groups the result by `session_id` to
 populate `eventsCache` and seeds `feedEvents` from the historical data
-so the live feed is not empty on page load. After the initial load, no
-per-session HTTP fetches happen — WebSocket events flow into the same
-caches.
+so the live feed is not empty on page load. A run with nothing cached
+fetches its own history once, when its row first mounts
+(`useSessionEvents`); WebSocket events flow into the same caches.
 
 ### Timeline
 
@@ -5524,15 +5703,15 @@ with expand-in-place, a shared time axis, and a resizable left panel.
 `leftPanelWidth: number` state initialises from
 `localStorage[LEFT_PANEL_WIDTH_KEY]` clamped to
 `[LEFT_PANEL_MIN_WIDTH, LEFT_PANEL_MAX_WIDTH]` = `[200, 640]`. Default
-is `LEFT_PANEL_DEFAULT_WIDTH` (460), sized so a typical
-`user@host/role` agent name plus the full pill chrome
-(client-type pill, agent-type badge, provider/OS/orchestration
-icons, relationship pill, status badge) fits without truncation
-on first load. `LEFT_PANEL_MAX_WIDTH` (640) gives operators room
-to drag wider for verbose sub-agent role strings; below the
+is `LEFT_PANEL_DEFAULT_WIDTH` (460), sized so a typical `user@host`
+agent name plus the full pill chrome (client-type pill, agent-type
+badge, provider/OS/orchestration icons, relationship pill, status
+badge) fits without truncation on first load. A sub-agent row keeps
+its `/{role}` suffix whole and gives way at the head of its name (see
+the SwimLane section). `LEFT_PANEL_MAX_WIDTH` (640) gives operators
+room to drag wider for verbose sub-agent role strings; below the
 width at which a given name fits, the agent-name link
-ellipsis-truncates with an always-on `title` tooltip (see the
-SwimLane section).
+ellipsis-truncates with an always-on `title` tooltip.
 
 A drag handle is rendered absolutely on the right edge of the
 inner content div, full-height so it stays grabbable as flavor
@@ -5550,9 +5729,9 @@ move and writes through to localStorage immediately via
 `CustomEvent` so Fleet.tsx's left-fade overlay tracks the
 column edge in lockstep.
 
-`leftPanelWidth` flows down as a prop through `SwimLane` →
-`SessionEventRow`. Both components include `leftPanelWidth` in their
-`React.memo` comparators so a drag invalidates every row immediately.
+`leftPanelWidth` flows down as a prop through `VirtualizedSwimLane` to
+`SwimLane`, whose `React.memo` comparator includes it so a drag
+invalidates every row immediately.
 
 Fixed-width canvas: `TIMELINE_WIDTH_PX = 900`. The xScale maps the
 selected range domain to `[0, 900]` for every time range. Wider ranges
@@ -5584,7 +5763,10 @@ collapsed, the row reduces to a 24px-tall toggle bar (matching
 the AGENTS section header height directly below) carrying a
 `ChevronRight` icon + "All" label; clicking the toggle expands
 the row to its full 36px height with the aggregated pulse pane
-(`data-testid="swimlane-all-pulse"`) on the right. The default
+(`data-testid="swimlane-all-pulse"`) on the right. The pane uses the
+agent rows' 19 px inset (see Event circles under SwimLane), so a given
+time sits at the same x on every row, and its circles sit on the pane's
+centre line, inside the row. The default
 is collapsed because the `/agents` page now serves as the
 dedicated fleet-overview surface — the pulse line is redundant
 for most operators but stays one click away. The ALL row
@@ -5595,57 +5777,76 @@ still applies inside each circle via `EventNode.isVisible`.
 ### SwimLane
 
 `dashboard/src/components/timeline/SwimLane.tsx` renders one row per
-agent. Every event from every one of the agent's runs streams onto
-that single timeline row; there are no session sub-rows. Sub-agent
-rows render indented beneath their parent via the `data-topology`
-attribute (`"root"` or `"child"`); the indent + background tint
-chrome lives in `globals.css` under the
-`[data-topology="child"]` selector. Bezier connectors from each
-parent spawn event to its child's first event are drawn by
-`SubAgentConnector.tsx`, anchored to the parent's single-row centre
-Y.
+agent, with one label, one status badge and a fixed 48 px height. Every
+event of every one of the agent's runs streams onto that row; there are
+no per-run rows. Sub-agent rows render indented beneath their parent
+via the `data-topology` attribute (`"root"` or `"child"`); the indent
+and background tint live in `globals.css` under the
+`[data-topology="child"]` selector. The tint is translucent, so a child
+row's sticky label paints it opaquely, the same look in layers: its own
+tint, the row's 2 px accent line, the row's tint, and the colour the
+rows sit on (`--bg`, or the host's `--swimlane-label-backdrop`, which
+the per-agent swimlane modal sets to `--surface`). Event circles
+scrolled under the label therefore stay hidden. A root row's label
+inherits the row's opaque `--surface`. `SubAgentConnector.tsx` draws a
+Bezier connector from each parent spawn event to the child run's first
+event in view (see Swimlane sub-agent connector overlay).
 
-The left panel of each row carries the agent label strip in this
-left-to-right order: optional `ClaudeCodeLogo` (on a Claude Code row:
-`client_type` `claude_code`, or the `claude-code` flavor) → agent name →
-`ClientTypePill` (the registry label, e.g. "Claude Code", "Sensor") →
-agent_type badge (coding /
-production) → provider icon → OS icon → orchestration icon →
-`RelationshipPill` (lone / ↳ parent / ⤴ N) → optional
-`SubAgentLostDot` (when the most recent sub-agent session per
-role is in `lost` state) → `AgentStatusBadge` at the right
-edge.
+The left panel of each row carries the agent label strip, in this
+left-to-right order:
+1. optional `ClaudeCodeLogo` (on a Claude Code row: `client_type`
+   `claude_code`, or the `claude-code` flavor);
+2. agent name;
+3. `ClientTypePill` (the registry label, e.g. "Claude Code", "Sensor");
+4. `TelemetrySourcePill` (`OTEL`, only when the agent reports over
+   OpenTelemetry, see Session source);
+5. agent_type badge (coding / production);
+6. provider icon;
+7. OS icon;
+8. orchestration icon;
+9. `RelationshipPill` (`↳ parent` on a sub-agent row, `→ N` on a
+   parent, none on a lone agent);
+10. optional `SubAgentLostDot` (when the most recent sub-agent session
+    per role is in `lost` state);
+11. `AgentStatusBadge` at the right edge.
 
-The agent-name link (`data-testid="swimlane-agent-name-link"`)
-sets `white-space: nowrap`, `overflow: hidden`, and
-`text-overflow: ellipsis` directly so a too-narrow column
-ellipsis-truncates the name rather than wrapping or hard-
-clipping. A native `title` attribute carrying the full
-`agent_name` is set unconditionally — hover reveals the
-complete value at any column width, not just when truncated.
-A `min-width: 3rem` floor (~6 chars + the ellipsis glyph at the
-13 px label font) is the anti-collapse contract: at the 200 px
-`LEFT_PANEL_MIN_WIDTH` floor the label strip's trailing pills,
-provider/OS/orchestration icons, relationship pill, and status
-badge collectively exceed the available row space, so the
-parent's `overflow: hidden` clips those trailing siblings
-before the name shrinks below readability. At the 460-px
-default and 640-px maximum widths the floor never engages —
-the link sits comfortably above 3 rem and the trailing chrome
-all renders.
+The agent-name link (`data-testid="swimlane-agent-name-link"`) sets
+`white-space: nowrap`, `overflow: hidden` and `text-overflow: ellipsis`,
+so a too-narrow column truncates the name rather than wrapping it. It
+carries a native `title` with the full `agent_name` at every width. A
+`min-width: 3rem` floor (about six characters plus the ellipsis at the
+13 px label font) keeps the name from collapsing: at the 200 px
+`LEFT_PANEL_MIN_WIDTH` floor, the trailing chrome clips against the
+strip's `overflow: hidden` first.
 
-The ellipsis fallback is the graceful narrow-width behaviour;
-the resizable column (see Timeline section above) is the
-operator's primary recourse for a long name, with the
-`localStorage`-persisted width so the choice survives
-reloads.
+On a sub-agent row whose name ends in `/{agent_role}` (the role of its
+most recent run), the name renders in two parts: a head, which
+truncates first, and the role suffix
+(`data-testid="swimlane-agent-name-role"`). The part that differs from
+the parent's row therefore stays readable. The role part keeps its
+full width and truncates only once it fills the whole link; it does
+not share the head's shrink, because a fraction of a pixel of shrink
+is enough for the browser to draw its ellipsis. The row's relationship
+pill shrinks, down to 1.75rem with an ellipsis, before the name gives
+up any width. At the 460 px default, a typical `user@host/role`
+sub-agent row shows its role. The link's `aria-label` carries the
+whole name, since the two parts would otherwise read with a space
+between them. Root rows, and sub-agent names without the suffix, render
+as one text.
+
+The ellipsis fallback is the graceful narrow-width behaviour. The
+resizable column (see Timeline section above) is the operator's
+primary recourse for a long name, and its `localStorage`-persisted
+width survives reloads.
+
 The provider / OS / orchestration icons derive from the agent's
 most-recent session; the per-event provider logos on event circles
 carry the granular per-call attribution. Per-agent state is the
 max-priority state across the agent's runs (active > idle > stale
-> closed > lost) — the `STATE_ORDINAL` map in `SwimLane.tsx`
-defines the ranking used to roll multiple session states up into
-a single per-agent badge state.
+> closed > lost). The `STATE_ORDINAL` map in `SwimLane.tsx` defines
+the ranking that rolls multiple session states up into a single
+per-agent badge state.
+
 
 `AgentStatusBadge.tsx` renders the state colour dot + label via
 the shared `StatusDot` primitive (`lib/agent-status.tsx`). When
@@ -5665,7 +5866,14 @@ run's `started_at` X; the end glyph is a filled solid square
 triangle's bbox area so the closure reads heavier than the
 start. Both are SVG primitives filled with `var(--accent)`;
 positioning math uses the shared `xScale` from `d3-scale` (D3
-math only, no DOM manipulation). Hover on either glyph
+math only, no DOM manipulation). A glyph is centred on its
+time's x in the same inset wrapper as the event circles, so a
+glyph and a circle at the same instant line up, and near "now"
+the panel's right edge clips both alike (a glyph past the edge is
+not mounted). A run that started within the last ~14 px of the window
+shows no ▶ yet (about 56 s at 1h), and a run that closed within the
+last ~13.5 px shows its ▶ but not yet its ■ (about 54 s at 1h, 27 s at
+30m), so it reads as running until the ■ clears the edge. Hover on either glyph
 surfaces a tooltip with `run_id` (8-char prefix), start time,
 end time (or `running` for an active / idle / stale / lost
 run), state, and total tokens. Click on either glyph opens
@@ -5681,17 +5889,36 @@ alone — no end square. Operators read absence of the end
 square as "still running"; the tooltip's end-time field reads
 `running`.
 
-`EventNode.tsx` — event circles: 20px, lucide icons, CSS tooltip,
-hover scale. `SubAgentConnector.tsx` draws Bezier paths between
-parent spawn events and child first events.
+**Event circles.** `EventNode.tsx` draws each event as a 22 px circle
+(`EVENT_CIRCLE_SIZE`), coloured by event type, with a lucide icon, a
+portal tooltip and a 1.25x hover scale; MCP events are hexagons. A
+circle is centred on its event's x inside the panel's inset wrapper
+(below), which puts circles and run glyphs 19 px right of their time's
+grid line, since the time axis and the grid overlay are not inset. It
+sits on the row's centre line and carries `data-event-id` and
+`data-session-id`. The vertical centring
+is a single CSS translate (`top: 50%` with `translate: 0 -50%`); the
+hover scale is a separate `transform`, so it scales about the circle's
+centre.
 
-`SwimLane` and `EventNode` are wrapped in `React.memo` with custom
-comparators that explicitly include `activeFilter` and
-`leftPanelWidth`. Time-scale updates use `requestAnimationFrame`
-throttling so the swimlane redraws at most once per frame instead
-of once per WebSocket message. `EventNode` opacity is driven by
-React state (`isVisible && mounted`) so the fade-in transition is
-reproducible.
+The panel's positioned wrapper is inset 19 px
+(`TIMELINE_LEFT_INSET_PX`: an 8 px buffer plus half a circle), so the
+oldest circle clears the label strip. The ALL row uses the same
+inset, so a given time sits at the same x on every row. Circles
+within half a circle plus the buffer of "now" are clipped at the
+panel's right edge; the grid overlay draws the now line.
+
+Circles are coloured by event type, never by run, and render at once,
+with no mount fade.
+
+`SwimLane` is wrapped in `React.memo` with a custom comparator that
+includes `activeFilter`, `leftPanelWidth`, `sessionVersions` and the
+scale's domain. `EventNode`'s comparator compares the circle's
+position, size, visibility and event fields, so a row re-render leaves
+unchanged circles alone. The scale's right edge is floored to whole
+seconds, so the domain, and with it every circle's x, changes at most
+once per second. A WebSocket event still re-renders the rows, through
+the `sessionVersions` map.
 
 `VirtualizedSwimLane.tsx` wraps `SwimLane` with an
 IntersectionObserver-backed virtualizer so off-screen agent rows
@@ -5700,10 +5927,7 @@ agent must scroll the fixture into view before asserting on its
 `data-testid` (see `bringSwimlaneRowIntoView` in
 `tests/e2e/_fixtures.ts`).
 
-`SessionEventRow.tsx` renders a single session's per-session event
-strip inside the Events page session drawer. Used only by the
-drawer; the Fleet swimlane renders aggregated events directly on
-the agent row via `SwimLane`.
+`SessionEventRow.tsx` renders one run's event strip; no view mounts it.
 
 ### Fleet panel sidebar
 

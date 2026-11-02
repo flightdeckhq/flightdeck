@@ -23,7 +23,7 @@ import json
 import urllib.parse
 import urllib.request
 import uuid
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field
 from typing import Any
 
 from .conftest import (
@@ -50,9 +50,10 @@ FLEET_PER_PAGE = 200
 FLEET_PAGES_SCANNED = 3
 
 
-@dataclass(frozen=True)
+@dataclass
 class _Family:
-    """A parent session, its sub-agent's session, and their agents."""
+    """A parent session, its sub-agent's session, their agents, and how
+    many events the test posted for each session."""
 
     flavor: str
     agent_name: str
@@ -60,6 +61,7 @@ class _Family:
     child_sid: str
     parent_agent: str = ""
     child_agent: str = ""
+    posted: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def new(cls) -> _Family:
@@ -71,11 +73,30 @@ class _Family:
             child_sid=str(uuid.uuid4()),
         )
         # The agent ids the fixtures derive from each side's identity.
-        return replace(
-            f,
-            parent_agent=str(f.parent_event("session_end")["agent_id"]),
-            child_agent=str(f.child_event("session_end")["agent_id"]),
-        )
+        f.parent_agent = str(f.parent_event("session_end")["agent_id"])
+        f.child_agent = str(f.child_event("session_end")["agent_id"])
+        return f
+
+    def post(self, event: dict[str, Any]) -> None:
+        """POST the event and count it toward its session."""
+        post_event(event)
+        sid = event["session_id"]
+        self.posted[sid] = self.posted.get(sid, 0) + 1
+
+    def wait_stored(self) -> None:
+        """Wait until the worker has stored every event posted so far. The
+        worker inserts an event's row after the session writes the event
+        makes, so a stored count means those writes are done. Best effort:
+        a timeout leaves the caller to proceed."""
+        for sid, count in self.posted.items():
+            try:
+                wait_until(
+                    lambda sid=sid, count=count: get_session_event_count(sid) >= count,
+                    timeout=PROCESSING_TIMEOUT_SECS,
+                    msg=f"{count} events of session {sid} stored",
+                )
+            except TimeoutError:
+                pass
 
     def parent_event(self, event_type: str) -> dict[str, Any]:
         return make_event(
@@ -142,6 +163,16 @@ def _session_owner(session_id: str) -> str | None:
     return "" if raw == "no-agent" else raw
 
 
+def _session_state(session_id: str) -> str | None:
+    """The stored row's state, None while the row is missing."""
+    raw = exec_sql(
+        "SELECT COALESCE((SELECT state FROM sessions "
+        "WHERE session_id = :'sid'::uuid), 'no-row')",
+        sid=session_id,
+    )
+    return None if raw == "no-row" else raw
+
+
 def _start_child_first(f: _Family) -> None:
     """Post the child's session_start and wait until the worker has
     stored it. The worker writes the parent stub before the child row, so
@@ -149,7 +180,7 @@ def _start_child_first(f: _Family) -> None:
     assert f.parent_agent != f.child_agent, (
         "the role must give the sub-agent its own agent"
     )
-    post_event(f.child_event("session_start"))
+    f.post(f.child_event("session_start"))
     wait_until(
         lambda: _session_owner(f.child_sid) is not None,
         timeout=PROCESSING_TIMEOUT_SECS,
@@ -162,17 +193,24 @@ def _start_child_first(f: _Family) -> None:
 
 
 def _end_and_delete(f: _Family) -> None:
-    """End both runs, so no session_end is left in flight for a row that
-    is gone, then remove the rows by explicit id, children first: content
-    and events reference sessions, a child references its parent session,
-    and sessions reference agents."""
-    post_event(f.child_event("session_end"))
-    post_event(f.parent_event("session_end"))
-    for sid in (f.child_sid, f.parent_sid):
-        try:
-            wait_for_state(sid, "closed", timeout=PROCESSING_TIMEOUT_SECS)
-        except TimeoutError:
-            pass
+    """End the runs still open, then remove the rows by explicit id.
+
+    The worker stores an event's row only after the session writes the
+    event makes, and a closed row says nothing about an end still in
+    flight, so the cleanup waits until every event the test posted is
+    stored, before and after posting the closing ends; no event row can
+    then land while the rows are being deleted. A run that is already
+    closed (or never stored) gets no further end. The deletes go children
+    first: content and events reference sessions, a child references its
+    parent session, and sessions reference agents."""
+    f.wait_stored()
+    for sid, event_for in (
+        (f.child_sid, f.child_event),
+        (f.parent_sid, f.parent_event),
+    ):
+        if _session_state(sid) not in (None, "closed"):
+            f.post(event_for("session_end"))
+    f.wait_stored()
     for sid in (f.child_sid, f.parent_sid):
         for sql in (
             "DELETE FROM event_content WHERE session_id = :'id'::uuid",
@@ -189,7 +227,7 @@ def test_parent_started_after_its_sub_agent_counts_its_session_once() -> None:
     try:
         _start_child_first(f)
 
-        post_event(f.parent_event("session_start"))
+        f.post(f.parent_event("session_start"))
         wait_until(
             lambda: _session_owner(f.parent_sid) == f.parent_agent,
             timeout=PROCESSING_TIMEOUT_SECS,
@@ -206,7 +244,7 @@ def test_parent_started_after_its_sub_agent_counts_its_session_once() -> None:
         # A second session_start of the parent (a re-attachment, or a
         # client retrying the start) finds the row owned and does not
         # count it again.
-        post_event(f.parent_event("session_start"))
+        f.post(f.parent_event("session_start"))
         wait_until(
             lambda: get_session_event_count(f.parent_sid) >= 2,
             timeout=PROCESSING_TIMEOUT_SECS,
@@ -227,7 +265,7 @@ def test_parent_whose_only_event_is_its_end_counts_its_session_once() -> None:
     try:
         _start_child_first(f)
 
-        post_event(f.parent_event("session_end"))
+        f.post(f.parent_event("session_end"))
         wait_for_state(f.parent_sid, "closed", timeout=PROCESSING_TIMEOUT_SECS)
         wait_until(
             lambda: _session_owner(f.parent_sid) == f.parent_agent,
@@ -240,7 +278,7 @@ def test_parent_whose_only_event_is_its_end_counts_its_session_once() -> None:
             "the parent's session_end left the stub uncounted"
         )
 
-        post_event(f.parent_event("session_end"))
+        f.post(f.parent_event("session_end"))
         wait_until(
             lambda: get_session_event_count(f.parent_sid) >= 2,
             timeout=PROCESSING_TIMEOUT_SECS,

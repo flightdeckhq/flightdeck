@@ -35,10 +35,14 @@ type SessionProcessor struct {
 	w    *writer.Writer
 	pool *pgxpool.Pool
 
-	// lookupSession and settleEnd are the database touch points of
-	// HandleSessionEnd. Nil means the real store; unit tests set stubs.
+	// lookupSession, settleEnd and readOwner are the database reads and
+	// writes HandleSessionEnd makes for every end. Nil means the real
+	// store; unit tests set stubs. Claiming an ownerless row
+	// (attributeSession, when readOwner reports one) goes through the
+	// writer, which the database-backed tests exercise.
 	lookupSession func(ctx context.Context, sessionID string) (sessionLookup, error)
 	settleEnd     func(ctx context.Context, sessionID string, closedSeq uint64) (applied, closedNow bool, err error)
+	readOwner     func(ctx context.Context, sessionID string) (ownerless bool, err error)
 }
 
 // ErrEventDropped is returned by HandleSessionEnd when it discards an
@@ -63,6 +67,25 @@ func (sp *SessionProcessor) settleRow(ctx context.Context, sessionID string, clo
 		return sp.settleEnd(ctx, sessionID, closedSeq)
 	}
 	return sp.w.SettleSessionEnd(ctx, sessionID, closedSeq)
+}
+
+// rowOwnerless reports whether the session row exists and no agent owns
+// it. A missing row reports false: there is nothing to claim.
+func (sp *SessionProcessor) rowOwnerless(ctx context.Context, sessionID string) (bool, error) {
+	if sp.readOwner != nil {
+		return sp.readOwner(ctx, sessionID)
+	}
+	var ownerless bool
+	err := sp.pool.QueryRow(ctx,
+		"SELECT agent_id IS NULL FROM sessions WHERE session_id = $1::uuid", sessionID,
+	).Scan(&ownerless)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read owner of session %s: %w", sessionID, err)
+	}
+	return ownerless, nil
 }
 
 // handleSessionGuard enforces the revive-or-create-or-skip policy
@@ -206,11 +229,14 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 // stub whose own session_start has not been processed, or never will be
 // (a client that failed to send it); left alone, the session would
 // belong to no agent and its agent would show no sessions on the Fleet.
-// The identity is the one ingestion validated on the event, as for a
-// lazily created row. Best effort: a failure is logged, and the
-// session's next event or its session_start tries again.
+// Only an identity ingestion validated decides the owner: POST
+// /v1/events and the OTLP receiver check agent_id, agent_type and
+// client_type on every event, but POST /v1/heartbeat forwards its body
+// unchecked, so a heartbeat never claims a row (the agents table's own
+// constraints would apply either way). Best effort: a failure is logged,
+// and the session's next event or its session_start tries again.
 func (sp *SessionProcessor) attributeSession(ctx context.Context, e consumer.EventPayload) {
-	if e.AgentID == "" {
+	if e.AgentID == "" || e.EventType == "heartbeat" {
 		return
 	}
 	identity := identityFromEvent(e)
@@ -260,21 +286,16 @@ func (sp *SessionProcessor) claimOwnerlessRow(ctx context.Context, e consumer.Ev
 	if e.AgentID == "" {
 		return
 	}
-	var unattributed bool
-	err := sp.pool.QueryRow(ctx,
-		"SELECT agent_id IS NULL FROM sessions WHERE session_id = $1::uuid", e.SessionID,
-	).Scan(&unattributed)
+	ownerless, err := sp.rowOwnerless(ctx, e.SessionID)
 	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			slog.Warn("read session owner failed",
-				"session_id", e.SessionID,
-				"event_type", e.EventType,
-				"err", err,
-			)
-		}
+		slog.Warn("read session owner failed",
+			"session_id", e.SessionID,
+			"event_type", e.EventType,
+			"err", err,
+		)
 		return
 	}
-	if unattributed {
+	if ownerless {
 		sp.attributeSession(ctx, e)
 	}
 }

@@ -202,6 +202,39 @@ func TestHandleSessionEnd_ForAMissingRowCreatesNothing(t *testing.T) {
 	}
 }
 
+// POST /v1/heartbeat forwards its body without validating the identity
+// in it, so a heartbeat never claims a parent stub; the parent's next
+// event, whose identity ingestion validated, does.
+func TestHandleHeartbeat_DoesNotClaimAParentStub(t *testing.T) {
+	pool := dbPool(t)
+	ctx := context.Background()
+	sp := NewSessionProcessor(writer.New(pool), pool)
+	f := newStubFamily(t, pool)
+
+	if err := sp.HandleSessionStart(ctx, f.childStart()); err != nil {
+		t.Fatalf("child session_start: %v", err)
+	}
+	if err := sp.HandleHeartbeat(ctx, f.parentEvent("heartbeat")); err != nil {
+		t.Fatalf("parent heartbeat: %v", err)
+	}
+	if owner := sessionOwner(t, pool, f.parentSID); owner != "" {
+		t.Fatalf("a heartbeat claimed the parent stub for %s", owner)
+	}
+
+	tokens := 5
+	call := f.parentEvent("post_call")
+	call.TokensTotal = &tokens
+	if err := sp.HandlePostCall(ctx, call); err != nil {
+		t.Fatalf("parent post_call: %v", err)
+	}
+	if owner := sessionOwner(t, pool, f.parentSID); owner != f.parentAgent {
+		t.Fatalf("parent session agent_id = %q after its post_call, want %s", owner, f.parentAgent)
+	}
+	if got := agentSessions(t, pool, f.parentAgent); got != 1 {
+		t.Errorf("parent agent total_sessions = %d, want 1", got)
+	}
+}
+
 // The parent's session_start is never processed (a client failed to
 // send it), but its other events arrive: the first one claims the stub
 // for the parent's agent, and a late start does not count it again.

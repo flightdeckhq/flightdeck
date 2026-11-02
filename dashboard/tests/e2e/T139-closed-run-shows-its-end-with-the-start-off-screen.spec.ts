@@ -3,7 +3,7 @@
  * its end square.
  *
  * Fixture: e2e-test-run-long, a run that started 2 h ago and closed
- * 10 s ago. At 1m, 5m and 1h its start is before the window, so it
+ * 10 s ago. At 5m, 15m and 1h its start is before the window, so it
  * draws no ▶, but its ■ is drawn (each glyph is drawn when its own
  * time is in the window), and the tooltip's end line is a time. The
  * glyph code this replaced drew neither glyph whenever the start was
@@ -27,7 +27,10 @@ const prefix = fixtureSessionId(name, roles.run).slice(0, 8);
 test.use({ viewport: { width: 1700, height: 1800 } });
 
 test.describe("T139 — A closed run shows its end with its start off-screen", () => {
-	for (const range of ["1m", "5m", "1h"]) {
+	// Not 1m: the keep-alive re-pins the fixture once per seed pass plus
+	// 30 s, which under load can drift its end past a 1m window's edge.
+	// The 1m geometry is covered by swimlane-lanes.test.ts.
+	for (const range of ["5m", "15m", "1h"]) {
 		test(`at ${range} the end square shows and the start triangle does not`, async ({ page }) => {
 			await page.goto("/");
 			await waitForFleetReady(page);

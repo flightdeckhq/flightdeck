@@ -31,7 +31,11 @@ test.describe("T138 — Back-to-back runs keep both glyphs", () => {
 	test("the hand-off reads end then start, both reachable, on one lane", async ({ page }) => {
 		await page.goto("/");
 		await waitForFleetReady(page);
-		await page.getByRole("button", { name: "1m", exact: true }).click();
+		// 5m: the keep-alive re-pins the fixture once per seed pass plus
+		// 30 s, which under load can drift it past the edge of a 1m
+		// window. At 5m a pixel is a third of a second, so the 3 ms
+		// overlap still sits far inside the 1 s tolerance.
+		await page.getByRole("button", { name: "5m", exact: true }).click();
 		const row = await bringSwimlaneRowIntoView(page, name);
 		await expect(row).toBeVisible({ timeout: 10_000 });
 

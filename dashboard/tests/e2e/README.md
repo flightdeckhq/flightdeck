@@ -69,8 +69,8 @@ the swimlane↔table parity assertion). The current journeys:
 | `T135-child-row-label-hides-scrolled-circles.spec.ts` | With circles scrolled under a child row's sticky label, in Fleet and in the per-agent modal, the label's background is fully opaque |
 | `T136-freed-top-lane-is-reused.spec.ts` | A run that starts after an earlier run ended takes the top edge that run freed; the run still overlapping goes to the bottom edge |
 | `T137-runs-started-together-keep-reachable-glyphs.spec.ts` | Three runs started together keep disjoint start glyphs; each hit-tests to itself and opens its own run's tooltip |
-| `T138-back-to-back-runs-keep-both-glyphs.spec.ts` | A hand-off (with 3 ms of worker-clock overlap) stays one lane and reads ■▶, both glyphs reachable |
-| `T139-closed-run-shows-its-end-with-the-start-off-screen.spec.ts` | At 1m, 5m and 1h a closed run whose start is before the window shows its end square, with a time in its tooltip |
+| `T138-back-to-back-runs-keep-both-glyphs.spec.ts` | At 5m a hand-off (with 3 ms of worker-clock overlap) stays one lane and reads ■▶, both glyphs reachable |
+| `T139-closed-run-shows-its-end-with-the-start-off-screen.spec.ts` | At 5m, 15m and 1h a closed run whose start is before the window shows its end square, with a time in its tooltip |
 | `T140-lost-run-ends-with-a-hollow-square.spec.ts` | Lost and reaped runs end at their last signal with a hollow square; an earlier lost run draws nothing |
 | `T141-resumed-run-draws-its-segments.spec.ts` | A resumed run draws ▶ ■ ▶ with a gap, and a run inside the gap keeps the row one lane |
 | `T142-short-run-keeps-its-start-before-its-end.spec.ts` | A run narrower than its glyphs reads ▶■, and no glyph covers its start circle's centre |

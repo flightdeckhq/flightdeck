@@ -418,12 +418,10 @@ on Claude Code's session id (contradicts D190); a child per resume.
 
 **Date:** 2026-11-02
 **Decision:** extends D236. The plugin's `tool_call` and `mcp_tool_call`
-carry the id
-`uuid5(NAMESPACE_FLIGHTDECK, "flightdeck://claude-code/tool_call/<tool_use_id>")`.
-The hook records the event as owed before its POST,
-with only what the hook alone knows; after a failed POST a later flush
-of the same session rebuilds it from that record and the transcript's
-`tool_use` / `tool_result`, and the worker stores it once (D215).
+carry `uuid5(NAMESPACE_FLIGHTDECK, "flightdeck://claude-code/tool_call/<tool_use_id>")`.
+A hook records the event as owed before its POST, with only what it
+alone knows; after a failed POST a later flush of its session rebuilds
+it from that and the transcript, and the worker stores it once (D215).
 **Why:** a tool event was sent once with a server-made id, so a failed
 POST lost it for good (5 in the forensic conversation) and a re-send
 would have stored it twice.

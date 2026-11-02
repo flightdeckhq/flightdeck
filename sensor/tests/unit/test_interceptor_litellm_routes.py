@@ -14,6 +14,7 @@ native Responses API). No request leaves the process.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 import json
 import types
@@ -30,10 +31,10 @@ from flightdeck_sensor.interceptor import base
 from flightdeck_sensor.interceptor import litellm as litellm_interceptor
 from flightdeck_sensor.interceptor.litellm import (
     SensorLitellm,
-    _is_bridge_hop,
     _is_text_usage_only_chunk,
     _named_arguments,
     _positional_names,
+    _reissued_by_litellm,
     patch_litellm_functions,
     unpatch_litellm_functions,
 )
@@ -626,20 +627,28 @@ def test_a_litellm_call_made_under_a_bare_mark_is_reported(session: Session) -> 
     assert len(_post_calls(session)) == 1
 
 
-def test_only_the_bridge_modules_are_a_bridge_hop() -> None:
+# A litellm module that makes billed follow-up calls of its own (agentic
+# plans), which must stay reported.
+FOLLOW_UP_MODULE = "litellm.llms.custom_httpx.llm_http_handler"
+
+
+def test_only_litellms_reissue_modules_count_as_a_reissue() -> None:
     def frame_in(module: str) -> Any:
         return types.SimpleNamespace(f_globals={"__name__": module})
 
-    bridge = "litellm.responses.litellm_completion_transformation.handler"
-    assert not _is_bridge_hop(frame_in(bridge))  # no outer call in flight
-    with base.outer_intercept():
-        assert _is_bridge_hop(frame_in(bridge))
-        assert _is_bridge_hop(
-            frame_in("litellm.completion_extras.litellm_responses_transformation.handler")
-        )
-        assert not _is_bridge_hop(frame_in("litellm.litellm_core_utils.fallback_utils"))
-        assert not _is_bridge_hop(frame_in("my_app.callbacks"))
-        assert not _is_bridge_hop(None)
+    for module in (
+        "litellm.responses.litellm_completion_transformation.handler",
+        "litellm.completion_extras.litellm_responses_transformation.handler",
+        "litellm.litellm_core_utils.fallback_utils",
+    ):
+        assert _reissued_by_litellm(frame_in(module)), module
+    for module in (
+        FOLLOW_UP_MODULE,
+        "litellm.responses.mcp.chat_completions_handler",
+        "my_app.callbacks",
+    ):
+        assert not _reissued_by_litellm(frame_in(module)), module
+    assert not _reissued_by_litellm(None)
 
 
 @requires_litellm_responses
@@ -685,19 +694,21 @@ def _caller_in(module: str) -> dict[str, Any]:
 
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
 @pytest.mark.parametrize(
-    ("module", "reported"),
+    ("module", "outer_call", "reported"),
     [
-        ("litellm.responses.litellm_completion_transformation.handler", 0),
-        ("litellm.litellm_core_utils.fallback_utils", 1),
+        ("litellm.responses.litellm_completion_transformation.handler", True, 0),
+        ("litellm.litellm_core_utils.fallback_utils", True, 0),
+        (FOLLOW_UP_MODULE, True, 1),
+        ("litellm.litellm_core_utils.fallback_utils", False, 1),
     ],
-    ids=["bridge", "other-litellm-module"],
+    ids=["bridge", "fallback-loop", "follow-up-module", "no-outer-call"],
 )
-def test_under_an_outer_call_only_a_bridge_caller_passes_through(
-    session: Session, is_async: bool, module: str, reported: int
+def test_under_an_outer_call_only_a_reissue_passes_through(
+    session: Session, is_async: bool, module: str, outer_call: bool, reported: int
 ) -> None:
     namespace = _caller_in(module)
     transport = _Transport()
-    with base.outer_intercept():
+    with base.outer_intercept() if outer_call else contextlib.nullcontext():
         if is_async:
             asyncio.run(
                 namespace["ahop"](
@@ -709,6 +720,114 @@ def test_under_an_outer_call_only_a_bridge_caller_passes_through(
     assert len(transport.requests) == 1
     assert len(_events_of(session, "pre_call")) == reported
     assert len(_post_calls(session)) == reported
+
+
+# ----- fallbacks: the attempts re-issue the caller's call --------------------
+
+PRIMARY_MODEL = "gpt-4o"
+FALLBACK_MODEL = "gpt-4o-mini"
+# litellm's own mock that makes an attempt raise, as a failing provider would.
+FAILING_MOCK = "litellm.InternalServerError"
+
+
+def _fallback_call_kwargs() -> dict[str, Any]:
+    """A call whose primary model fails and whose fallback answers. (The
+    global ``litellm.model_fallbacks`` reaches the same loop, but in the
+    litellm releases both CI lanes install every attempt re-reads the
+    global and re-enters the loop, so such a call never returns, with or
+    without the sensor.)"""
+    return {
+        "model": PRIMARY_MODEL,
+        "messages": MSG,
+        "mock_response": FAILING_MOCK,
+        "fallbacks": [{"model": FALLBACK_MODEL, "mock_response": "from the fallback"}],
+    }
+
+
+def _record_policy_checks(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> list[tuple[Any, ...]]:
+    """Every ``policy.check(tokens_used, estimated)`` the session makes: the
+    pre-call check passes the call's estimate, the post-call threshold
+    check passes zero."""
+    checks: list[tuple[Any, ...]] = []
+    real_check = session.policy.check
+
+    def _recorded(*args: Any, **kwargs: Any) -> Any:
+        checks.append(args)
+        return real_check(*args, **kwargs)
+
+    monkeypatch.setattr(session.policy, "check", _recorded)
+    return checks
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_a_call_a_fallback_answers_is_reported_once_with_the_answering_model(
+    session: Session, monkeypatch: pytest.MonkeyPatch, is_async: bool
+) -> None:
+    """litellm's fallback loop runs each attempt through the patched
+    ``litellm.acompletion``; the attempts are the caller's own call, so it
+    lands as one pre_call (one policy check) and one post_call naming the
+    model that answered. The failed primary attempt is not reported."""
+    kwargs = _fallback_call_kwargs()
+    checks = _record_policy_checks(session, monkeypatch)
+    if is_async:
+        response = asyncio.run(litellm.acompletion(**kwargs))
+    else:
+        response = litellm.completion(**kwargs)
+    assert response.choices[0].message.content == "from the fallback"
+    pre_call_checks = [args for args in checks if args[1] > 0]
+    assert len(pre_call_checks) == 1  # one pre-call policy check
+    assert len(checks) == 2  # and its one post-call threshold check
+    (pre_call,) = _events_of(session, "pre_call")
+    assert pre_call["model"] == PRIMARY_MODEL
+    (pc,) = _post_calls(session)
+    assert pc["model"] == FALLBACK_MODEL
+    assert pc["model_served"] == FALLBACK_MODEL
+    assert pc["model_requested"] == PRIMARY_MODEL
+    assert _events_of(session, "llm_error") == []
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_a_call_every_fallback_fails_is_reported_once_as_an_error(
+    session: Session, monkeypatch: pytest.MonkeyPatch, is_async: bool
+) -> None:
+    kwargs: dict[str, Any] = {
+        "model": PRIMARY_MODEL,
+        "messages": MSG,
+        "mock_response": FAILING_MOCK,
+        "fallbacks": [FALLBACK_MODEL],
+    }
+    with pytest.raises(Exception, match="All fallback attempts failed"):
+        if is_async:
+            asyncio.run(litellm.acompletion(**kwargs))
+        else:
+            litellm.completion(**kwargs)
+    assert len(_events_of(session, "pre_call")) == 1
+    assert _post_calls(session) == []
+    assert len(_events_of(session, "llm_error")) == 1
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "stated limitation: with an event loop running in its thread, litellm "
+        "runs a sync call's fallback attempts in a worker thread it starts "
+        "without copying the context, so the outer-call mark does not reach "
+        "them and the call is reported twice"
+    ),
+)
+def test_a_sync_fallback_call_inside_a_running_loop_is_reported_once(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    kwargs = _fallback_call_kwargs()
+
+    async def _sync_call_inside_a_loop() -> Any:
+        return litellm.completion(**kwargs)
+
+    response = asyncio.run(_sync_call_inside_a_loop())
+    assert response.choices[0].message.content == "from the fallback"
+    assert len(_post_calls(session)) == 1
 
 
 # ----- patch / unpatch / per-callsite wrapper ---------------------------------

@@ -34,19 +34,40 @@ this module makes runs under ``base.outer_intercept()`` (see
 :func:`_as_outer_call`). The SDK interceptors hand a call made under
 the mark through untouched (litellm's OpenAI chat route constructs
 ``openai.OpenAI`` and calls ``chat.completions.create`` on it), and so
-do this module's own wrappers when litellm's responses/completion
-bridge re-issues the call through them (:data:`_BRIDGE_MODULES`):
-``responses`` on a provider without a native Responses API (Anthropic)
-bridges through ``litellm.completion`` / ``acompletion``, and
-``completion`` on a Responses-only model through ``litellm.responses``.
-``text_completion`` calls ``completion`` through the name bound in
-``litellm.main``, which is not patched. So the wrapper of the entry
-point the caller used is the single reporter: one ``pre_call``, one
-policy check and one ``post_call`` (or ``llm_error``) per litellm call,
-carrying the shape that entry point returns (a ``TextCompletionResponse``
-for ``text_completion``, the Responses API shape for ``responses`` on
-every route). Any other litellm call made while one is in flight is a
-call of its own and is reported.
+do this module's own wrappers when litellm re-issues the caller's own
+call through them (:data:`_REISSUE_MODULES`): ``responses`` on a
+provider without a native Responses API (Anthropic) bridges through
+``litellm.completion`` / ``acompletion``, ``completion`` on a
+Responses-only model through ``litellm.responses``, and a call with
+``fallbacks`` (or the global ``litellm.model_fallbacks``) runs each
+attempt through ``litellm.acompletion``. ``text_completion`` calls
+``completion`` through the name bound in ``litellm.main``, which is not
+patched. So the wrapper of the entry point the caller used is the single
+reporter: one ``pre_call``, one policy check and one ``post_call`` (or
+``llm_error``) per litellm call, carrying the shape that entry point
+returns (a ``TextCompletionResponse`` for ``text_completion``, the
+Responses API shape for ``responses`` on every route) and, for a call a
+fallback answered, the model that answered. An attempt that failed
+before a fallback answered is not reported on its own. Any other litellm
+call made while one is in flight is a call of its own and is reported.
+
+**Known double counts.** These are reported twice rather than risk
+hiding a billed call:
+
+* litellm's MCP gateway (a chat call whose tools name the gateway)
+  re-issues the call through ``litellm.acompletion`` from the same
+  function that makes the follow-up calls after its tools run, so the
+  re-issue cannot be told from a billed follow-up and is reported as
+  well.
+* A sync call with ``fallbacks`` made while an event loop is running in
+  its thread (a notebook, a sync call inside async code): litellm runs
+  the attempts in a worker thread it starts without copying the context,
+  so the mark does not reach them.
+* The re-issue check reads the module of the frame that called the
+  patched entry point. An instrumentation library that replaces
+  ``litellm.completion`` (or another entry point) after
+  ``flightdeck_sensor.patch()`` puts its own frame there, so every
+  re-issued call through it is reported twice.
 
 **Streaming.** ``stream=True`` returns the sensor's stream guard
 (:class:`base.GuardedStream` from the sync entry points,
@@ -220,35 +241,38 @@ def _named_arguments(
     return {**dict(zip(names, args, strict=False)), **kwargs}
 
 
-# litellm modules that re-issue the caller's own call through another of
-# its patched entry points, in another API shape: ``responses`` on a
-# provider without a native Responses API bridges through
-# ``litellm.completion`` / ``acompletion``, and ``completion`` on a
-# Responses-only model bridges through ``litellm.responses`` /
-# ``aresponses``. A call such a module makes while the outer litellm call
-# is in flight is that same call, which the outer wrapper reports, so it
-# passes through. Every other nested litellm call (from a callback,
-# guardrail or custom provider, or one litellm makes itself: an agentic
+# litellm modules that re-issue the caller's own call through one of its
+# patched entry points: the responses/completion bridges (``responses`` on
+# a provider without a native Responses API bridges through
+# ``litellm.completion`` / ``acompletion``, ``completion`` on a
+# Responses-only model through ``litellm.responses`` / ``aresponses``)
+# and the fallback loop (a call with ``fallbacks``, or with the global
+# ``litellm.model_fallbacks`` set, runs every attempt -- the caller's
+# model first -- through ``litellm.acompletion``). A call such a module
+# makes while the outer litellm call is in flight is that same call,
+# which the outer wrapper reports, so it passes through: once, with the
+# response that came back (a fallback's carries the model that answered),
+# and with no event for an attempt that failed before a fallback
+# answered. Every other nested litellm call (from a callback, guardrail
+# or custom provider, or one litellm makes itself: an agentic or MCP
 # follow-up, a semantic-cache embedding, an LLM judge) is a call of its
-# own and is reported. A litellm release that moves a bridge shows as a
-# double count of that bridge, which the bridge tests catch, never as a
-# missed call.
-_BRIDGE_MODULES = frozenset(
+# own and is reported. A litellm release that moves one of these shows as
+# a double count, which the re-issue tests catch, never as a missed call.
+_REISSUE_MODULES = frozenset(
     {
         "litellm.responses.litellm_completion_transformation.handler",
         "litellm.completion_extras.litellm_responses_transformation.handler",
+        "litellm.litellm_core_utils.fallback_utils",
     }
 )
 
 
-def _is_bridge_hop(caller: FrameType | None) -> bool:
-    """Whether a patched entry point was called by litellm's bridge while
-    an outer litellm call is in flight (see :data:`_BRIDGE_MODULES`).
-    ``caller`` is the frame that called it; for an async entry point,
-    the frame that awaited it."""
-    if caller is None or not base.outer_intercept_active():
-        return False
-    return caller.f_globals.get("__name__") in _BRIDGE_MODULES
+def _reissued_by_litellm(caller: FrameType | None) -> bool:
+    """Whether a patched entry point was called from one of litellm's
+    re-issue modules (:data:`_REISSUE_MODULES`). ``caller`` is the frame
+    that called it; for an async entry point, the frame that awaited it.
+    Only consulted while an outer litellm call is in flight."""
+    return caller is not None and caller.f_globals.get("__name__") in _REISSUE_MODULES
 
 
 def _inject_stream_options(kwargs: dict[str, Any]) -> tuple[dict[str, Any], bool]:
@@ -652,14 +676,17 @@ def _patched_sync(
 ) -> Callable[..., Any]:
     """The module attribute that replaces a sync entry point. The call
     passes through to litellm untouched with no active session, or when
-    litellm's bridge re-issues the outer call through it (see
-    :func:`_is_bridge_hop`). ``names`` are the entry point's positional
-    parameter names."""
+    litellm re-issues the outer call through it (see
+    :func:`_reissued_by_litellm`; the calling frame is read only while an
+    outer litellm call is in flight). ``names`` are the entry point's
+    positional parameter names."""
 
     @functools.wraps(orig)
     def _patched(*args: Any, **kwargs: Any) -> Any:
         session = _current_session()
-        if session is None or _is_bridge_hop(sys._getframe(1)):
+        if session is None or (
+            base.outer_intercept_active() and _reissued_by_litellm(sys._getframe(1))
+        ):
             return orig(*args, **kwargs)
         named = _named_arguments(names, args, kwargs)
         if named is None:
@@ -682,7 +709,9 @@ def _patched_async(
     @functools.wraps(orig)
     async def _patched(*args: Any, **kwargs: Any) -> Any:
         session = _current_session()
-        if session is None or _is_bridge_hop(sys._getframe(1)):
+        if session is None or (
+            base.outer_intercept_active() and _reissued_by_litellm(sys._getframe(1))
+        ):
             return await orig(*args, **kwargs)
         named = _named_arguments(names, args, kwargs)
         if named is None:

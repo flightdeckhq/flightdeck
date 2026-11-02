@@ -114,12 +114,12 @@ _KEY_PARTIAL_TOKENS_OUTPUT = "partial_tokens_output"
 #
 # litellm's own patched entry points read the mark too, more narrowly:
 # a litellm call made while another is in flight passes through only
-# when litellm's responses <-> completion bridge makes it (the same
-# call re-issued in another API shape, which the outer wrapper already
-# reports). Any other nested litellm call -- from a callback, guardrail
-# or custom provider, or one litellm makes itself (an agentic follow-up,
-# a semantic-cache embedding) -- is a call of its own and is policed and
-# metered (see ``_BRIDGE_MODULES`` in litellm.py).
+# when litellm re-issues the caller's own call -- its responses <->
+# completion bridge, or its fallback loop -- which the outer wrapper
+# already reports. Any other nested litellm call -- from a callback,
+# guardrail or custom provider, or one litellm makes itself (an agentic
+# follow-up, a semantic-cache embedding) -- is a call of its own and is
+# policed and metered (see ``_REISSUE_MODULES`` in litellm.py).
 #
 # Opting in:
 # * Outer side: wrap the function handed to call / call_async /

@@ -57,9 +57,11 @@ rejection): the loop swallows the exception and moves on. A stream that
 fails mid-way is not hidden, since the loop has returned its stream
 object. Under a DEGRADE policy the pre-call check drops the call's
 ``fallbacks`` and ``context_window_fallback_dict``
-(``LitellmProvider.model_alternative_params``), so no attempt runs a
-model the policy did not choose. Any other litellm call made while one
-is in flight is a call of its own and is reported.
+(``model_alternative_params``, the same on every litellm adapter:
+``text_completion``, and a ``responses`` call litellm bridges through
+``completion``, hand the caller's arguments on to ``completion``), so
+no attempt runs a model the policy did not choose. Any other litellm
+call made while one is in flight is a call of its own and is reported.
 
 **Known double counts.** These are reported more than once rather than
 risk hiding a billed call:

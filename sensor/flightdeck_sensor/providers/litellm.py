@@ -153,8 +153,14 @@ class LitellmProvider:
     # of ``model``: ``fallbacks`` (tried in turn when an attempt fails,
     # through litellm's fallback loop) and ``context_window_fallback_dict``
     # (a bigger model retried on a context-window error, inside litellm's
-    # own call wrapper). A DEGRADE policy drops them, so the degrade target
-    # is the only model the call can run (see ``base._pre_call``).
+    # own call wrapper). Both are honoured by ``completion``, and so by
+    # every entry point that reaches it with the caller's arguments:
+    # ``text_completion``, and ``responses`` on a provider without a
+    # native Responses API, which litellm bridges through ``completion``.
+    # A DEGRADE policy drops them, so the degrade target is the only model
+    # the call can run (see ``base._pre_call``); every adapter here keeps
+    # this tuple, since an entry point that ignores the parameters (a
+    # native Responses route, ``embedding``) loses nothing by the drop.
     model_alternative_params: tuple[str, ...] = ("fallbacks", "context_window_fallback_dict")
 
     def __init__(self, capture_prompts: bool = False) -> None:
@@ -791,10 +797,6 @@ class LitellmResponsesProvider(LitellmProvider):
     yields Responses events; the terminal one carries the whole response
     and its usage.
     """
-
-    # ``responses`` runs no fallback models (litellm's fallback loop and
-    # context-window retry serve its chat entry points only).
-    model_alternative_params: tuple[str, ...] = ()
 
     def estimate_tokens(self, request_kwargs: dict[str, Any]) -> tuple[int, str]:
         """Count ``instructions`` and ``input`` as chat messages."""

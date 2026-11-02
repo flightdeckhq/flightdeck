@@ -875,7 +875,11 @@ class _ContextWindowTransport:
 
 
 def _degraded(session: Session) -> None:
-    session.policy.set_degrade_model(DEGRADE_MODEL)
+    _degraded_to(session, DEGRADE_MODEL)
+
+
+def _degraded_to(session: Session, model: str) -> None:
+    session.policy.set_degrade_model(model)
 
 
 @pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
@@ -971,7 +975,11 @@ def test_degrade_drops_only_the_parameters_a_provider_declares(session: Session)
     sent = base._pre_call(session, LitellmProvider(), request, 10)
     assert sent == {"model": DEGRADE_MODEL, "messages": MSG}
     assert request["fallbacks"] == [UNCHOSEN_MODEL]  # the caller's dict is not touched
-    assert LitellmResponsesProvider.model_alternative_params == ()
+    # Every litellm entry point can reach completion with the caller's
+    # arguments (responses through litellm's bridge), so every adapter
+    # declares the same parameters.
+    for adapter in (LitellmTextCompletionProvider, LitellmResponsesProvider):
+        assert adapter.model_alternative_params == LitellmProvider.model_alternative_params
     sent = base._pre_call(session, OpenAIProvider(), request, 10)
     assert sent == {**request, "model": DEGRADE_MODEL}
 
@@ -1006,6 +1014,107 @@ def test_under_degrade_a_router_fallback_runs_the_degrade_target(
     served = [pc["model_served"] for pc in _post_calls(session)]
     assert served == [DEGRADE_MODEL]
     assert UNCHOSEN_MODEL not in json.dumps(_post_calls(session))
+
+
+# A degrade target litellm serves without a native Responses API, so a
+# degraded responses call is bridged through litellm.completion with the
+# caller's other arguments.
+BRIDGED_DEGRADE_MODEL = "anthropic/claude-3-5-haiku-20241022"
+
+
+class _AnthropicServerError:
+    """litellm's Anthropic route answering every request with a server
+    error, as an overloaded API does. Records the paths."""
+
+    def __init__(self) -> None:
+        self.paths: list[str] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.paths.append(request.url.path)
+        return httpx.Response(
+            500,
+            json={"type": "error", "error": {"type": "api_error", "message": "Internal error"}},
+        )
+
+
+@requires_litellm_responses
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_under_degrade_a_bridged_responses_call_runs_no_fallback(
+    session: Session, is_async: bool
+) -> None:
+    """Degraded to a model litellm bridges, a responses call reaches
+    ``litellm.completion`` through the bridge, which passes through as a
+    re-issue; its ``fallbacks`` would run there once the degraded attempt
+    failed. They are dropped before the bridge, so the degraded attempt's
+    failure is the call's llm_error."""
+    _degraded_to(session, BRIDGED_DEGRADE_MODEL)
+    routes = _AnthropicServerError()
+    kwargs: dict[str, Any] = {
+        "model": FALLBACK_MODEL,
+        "input": "hi",
+        "api_key": "k",
+        "fallbacks": [{"model": UNCHOSEN_MODEL, "mock_response": "served by the fallback"}],
+    }
+    with pytest.raises(litellm.InternalServerError):
+        if is_async:
+            asyncio.run(litellm.aresponses(client=_async_handler(routes), **kwargs))
+        else:
+            litellm.responses(client=_handler(routes), **kwargs)
+    assert routes.paths == ["/v1/messages"]
+    assert _post_calls(session) == []
+    assert len(_events_of(session, "llm_error")) == 1
+
+
+@requires_litellm_responses
+@pytest.mark.parametrize("param", ["fallbacks", "context_window_fallback_dict"])
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_under_degrade_a_bridged_responses_call_hands_completion_no_other_model(
+    session: Session, is_async: bool, param: str
+) -> None:
+    """What litellm's bridge hands ``completion`` for a degraded responses
+    call: the degrade target, without the parameters that would let
+    ``completion`` run another model (its fallback loop, its context-window
+    retry). Observed by standing in for the entry point the bridge calls
+    and handing the call on to litellm's own function."""
+    _degraded_to(session, BRIDGED_DEGRADE_MODEL)
+    alternatives: dict[str, Any] = {
+        "fallbacks": [UNCHOSEN_MODEL],
+        "context_window_fallback_dict": {BRIDGED_DEGRADE_MODEL: UNCHOSEN_MODEL},
+    }
+    name = "acompletion" if is_async else "completion"
+    patched = getattr(litellm, name)
+    original = getattr(litellm, f"_flightdeck_orig_{name}")
+    handed: list[dict[str, Any]] = []
+
+    def _observe(*args: Any, **kwargs: Any) -> Any:
+        handed.append(kwargs)
+        return original(*args, **kwargs)
+
+    async def _aobserve(*args: Any, **kwargs: Any) -> Any:
+        handed.append(kwargs)
+        return await original(*args, **kwargs)
+
+    routes = _HttpRoutes()
+    kwargs: dict[str, Any] = {
+        "model": FALLBACK_MODEL,
+        "input": "hi",
+        "api_key": "k",
+        param: alternatives[param],
+    }
+    setattr(litellm, name, _aobserve if is_async else _observe)
+    try:
+        if is_async:
+            asyncio.run(litellm.aresponses(client=_async_handler(routes), **kwargs))
+        else:
+            litellm.responses(client=_handler(routes), **kwargs)
+    finally:
+        setattr(litellm, name, patched)
+    (bridged,) = handed
+    assert str(bridged["model"]).endswith("claude-3-5-haiku-20241022")
+    assert param not in bridged
+    assert routes.paths == ["/v1/messages"]
+    (pc,) = _post_calls(session)
+    assert pc["model_requested"] == BRIDGED_DEGRADE_MODEL
 
 
 # ----- patch / unpatch / per-callsite wrapper ---------------------------------

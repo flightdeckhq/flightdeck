@@ -5,8 +5,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { boundedIdentity, boundedToken, MAX_MCP_IDENTITY_BYTES } from "../core/config.mjs";
-import { postEvent } from "../core/poster.mjs";
-import { buildToolErrorBlock, captureErrorText, hookDurationMs } from "./tools.mjs";
+import { buildToolErrorBlock, captureErrorText, hookDurationMs, toolCallEventId } from "./tools.mjs";
 
 // ---------------------------------------------------------------------
 // MCP tool-name parsing + server fingerprint discovery.
@@ -283,13 +282,21 @@ function buildFingerprintFromSpec(name, spec) {
 //     every MCP arg shape).
 // ---------------------------------------------------------------------
 
-export async function emitMCPToolCallEvent({
+/**
+ * The ``mcp_tool_call`` a PostToolUse / PostToolUseFailure hook reports
+ * for an MCP tool. A rebuild after a failed POST passes the hook's fields
+ * read back from its owed record and the transcript, the ``transport``
+ * the hook resolved and the time the hook sent it.
+ */
+export function buildMcpToolCallPayload({
   cfg,
   sessionId,
   basePayload,
   hookEvent,
   hookName,
   mcpIdentity,
+  transport: resolvedTransport,
+  timestamp = new Date().toISOString(),
 }) {
   // Look up transport by server_name from the session's fingerprint
   // list. The cache is built once per process via collectContext for
@@ -298,17 +305,19 @@ export async function emitMCPToolCallEvent({
   // is null and the dashboard renders that gracefully. Plugin-provided
   // servers are declared in the plugin's own .mcp.json, not the
   // project's, so they resolve to null here by design.
-  let transport = null;
-  try {
-    const fingerprints = loadMcpServerFingerprints(process.cwd());
-    if (mcpIdentity.server_name) {
-      const match = fingerprints.find(
-        (s) => s.name === mcpIdentity.server_name || s.name === mcpIdentity.server_key,
-      );
-      if (match) transport = match.transport;
+  let transport = resolvedTransport ?? null;
+  if (resolvedTransport === undefined) {
+    try {
+      const fingerprints = loadMcpServerFingerprints(process.cwd());
+      if (mcpIdentity.server_name) {
+        const match = fingerprints.find(
+          (s) => s.name === mcpIdentity.server_name || s.name === mcpIdentity.server_key,
+        );
+        if (match) transport = match.transport;
+      }
+    } catch {
+      /* silent */
     }
-  } catch {
-    /* silent */
   }
 
   // Capture-on arguments: bypass the whitelist sanitiser (its
@@ -349,7 +358,7 @@ export async function emitMCPToolCallEvent({
     transport,
     tool_name: boundedIdentity(mcpIdentity.tool_name),
     duration_ms,
-    timestamp: new Date().toISOString(),
+    timestamp,
   };
   // mcp_server is a pass-through of what Claude Code sent ({name,
   // source}, Claude Code 2.1.274+) and is absent when the hook carried
@@ -370,7 +379,10 @@ export async function emitMCPToolCallEvent({
     }
   }
   const toolUseId = boundedToken(hookEvent.tool_use_id, MAX_MCP_IDENTITY_BYTES);
-  if (toolUseId) payload.tool_use_id = toolUseId;
+  if (toolUseId) {
+    payload.id = toolCallEventId(toolUseId);
+    payload.tool_use_id = toolUseId;
+  }
 
   // Tool args + result live in event_content's dedicated tool_input /
   // tool_output columns, not inline on the payload. Plugin parity
@@ -388,8 +400,7 @@ export async function emitMCPToolCallEvent({
     });
   }
   if (errorPayload != null) payload.error = errorPayload;
-
-  await postEvent(cfg.server, cfg.token, sessionId, payload);
+  return payload;
 }
 
 /**

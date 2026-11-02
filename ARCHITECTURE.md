@@ -2844,19 +2844,31 @@ its session side effects, as for any event on a closed session (see
 Session state machine): its tokens are not added and the child stays
 closed, so a late record never reopens a finished sub-agent.
 
-The end is the date of the sub-agent's latest stored `session_end`: the
-`subagent_completed` that closed it, dated by the same Claude Code clock
-as the records compared with it, or the end the reaper stored when it
-closed the sub-agent (the row's `ended_at` when it has neither). The
-row's `ended_at` is not used otherwise: the worker sets it by its own
-clock when it processes the end, up to Claude Code's export interval (5
-seconds by default) after the end, and a resumed run's first record can
-come sooner than that. A late record is dated at or before the end,
-since Claude Code dates a run's records before its `subagent_completed`;
-a resumed run's first record follows a model response the sub-agent
-gives after the resume, seconds after the end. The second of tolerance
-between the two covers the database's microsecond rounding of the end
-and corrections made to the client's clock while the session runs.
+The end is the date of the sub-agent's latest stored `session_end`, when
+no `session_start` is stored after it: the `subagent_completed` that
+closed it, dated by the same Claude Code clock as the records compared
+with it, or the end the reaper stored when it closed the sub-agent. The
+row's `ended_at` stands in only when there is no such end: the worker
+sets it by its own clock when it processes the end, up to Claude Code's
+export interval (5 seconds by default) after the end, and a resumed
+run's first record can come sooner than that. A late record is dated at
+or before the end, since Claude Code dates a run's records before its
+`subagent_completed`; a resumed run's first record follows a model
+response the sub-agent gives after the resume, seconds after the end.
+The second of tolerance between the two covers the database's
+microsecond rounding of the end and corrections made to the client's
+clock while the session runs. A record is dated by its `time_unix_nano`,
+else its `observed_time_unix_nano`, else the time the receiver maps it;
+one the receiver dated cannot be compared with an end on Claude Code's
+clock, so it never starts a closed sub-agent and is published as late.
+
+The worker closes a row a few database round trips before it stores the
+event of the end that closed it. A row read in that moment has its
+current run's `session_start` stored after its latest stored end (the
+previous run's, or none), so its `ended_at` stands in: a late record,
+dated before it, still reads as late, but a resumed run's record dated
+within a second of it reads as late too and starts nothing; the run's
+next record, read once the end event is stored, re-attaches the row.
 
 Each record is judged by its own date against the latest end the
 request knows: the row's, or a `subagent_completed` earlier in the same
@@ -2870,11 +2882,12 @@ end gets a start; a late record after it lands on the reopened row and
 is counted with it. Every request reads the
 rows of the sub-agents it names for their ends, in one read for all of
 them, since another replica may have published an end; the replica
-cache saves the rest of a sub-agent's read. A resumed run's record
-mapped before the worker has processed the end it follows finds the row
-open and gets no start, so its tokens are not added; the run's next
-record mapped after the worker has processed the end re-attaches the
-row.
+cache saves the rest of a sub-agent's read. A resumed run's records
+mapped before the worker has processed the end they follow find the row
+open and get no start: the worker stores them on the row that end then
+closes, and their tokens are never added. The run's next record mapped
+after the worker has processed the end re-attaches the row; a resumed
+run that also ends before then is never re-attached.
 
 **Identity and billing.** `agent_type` is `coding`; the flavor is
 `claude-code` unless the resource sets `flightdeck.flavor`; the user is

@@ -483,21 +483,19 @@ dependency for a sensor that needs only pydantic); replacing
 the process); the hook waiting for the patch lock (deadlocks against a
 `patch()` waiting for that same import).
 
-## D244 -- Ingestion stores an unknown stream outcome or abort reason as `other` and refuses a negative stream count
+## D244 -- Ingestion stores an unknown stream outcome, abort reason or llm_error type as `other` and refuses a negative stream count
 
 **Date:** 2026-11-02
-**Decision:** a `streaming.final_outcome`, `streaming.abort_reason` or
-`llm_error` `error.abort_reason` outside its vocabulary is stored as
-`other`, counted and logged at most once a second. A value of the wrong
-type, a `streaming` or `llm_error` `error` that is not an object, a
-negative or fractional `partial_chunks`, `partial_tokens_*` or
-`chunk_count` and a negative stream timing answer 400, as a negative
-`tokens_*` does.
-**Why:** the outcome and reasons are diagnostics a newer sensor can
-extend, and a 400 would also drop the event's tokens. A negative count
-comes from a broken client, never a newer one, and would subtract from
-any total that adds it.
+**Decision:** a `streaming.final_outcome`, a `streaming` or `llm_error`
+`abort_reason`, or an `llm_error` `error.error_type` outside its
+vocabulary is stored as `other`, counted and logged at most once a
+second. A wrong type, a non-object `streaming` or `llm_error` `error`, a
+negative or fractional `partial_*` or `chunk_count` and a negative
+stream timing answer 400, as a negative `tokens_*` does.
+**Why:** these are diagnostics a newer client can extend (`other` is the
+taxonomy's own fallback), and a 400 would also drop the event's tokens.
+A negative count comes from a broken client and would subtract from
+totals. Tests pin the taxonomy to every first-party emitter.
 **Rejected alternative:** a 400 for an unknown value, as `estimated_via`
-and `close_reason` get (drops billed tokens whenever the sensor is ahead
-of the server); storing it as sent, as `error.error_type` still is
-(readers meet values outside the documented set).
+and `close_reason` get (drops billed tokens whenever a client is ahead of
+the server); storing it as sent (readers meet undocumented values).

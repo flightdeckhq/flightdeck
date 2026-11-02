@@ -2787,20 +2787,26 @@ The ingestion handler rejects events with 400 when:
   not a string, its `chunk_count` is not a non-negative integer, or its
   `ttft_ms` or an `inter_chunk_ms` value (`p50`, `p95`, `max`, in an
   object) is not a non-negative number.
-- On `llm_error`, `error` is not an object, its `abort_reason` is not a
-  string, or its `partial_chunks`, `partial_tokens_input` or
+- On `llm_error`, `error` is not an object, its `error_type` or
+  `abort_reason` is not a string, or its `partial_chunks`,
+  `partial_tokens_input` or
   `partial_tokens_output` is not a non-negative integer (up to 2^53, the
   bound on the other token counts).
 
-A JSON null counts as absent for each of these. A stream outcome or
-abort reason outside its vocabulary is not rejected:
+A JSON null counts as absent for each of these. A stream outcome, abort
+reason or error type outside its vocabulary is not rejected:
 `streaming.final_outcome` (`completed`, `aborted`), `streaming.abort_reason`
 and an `llm_error`'s `error.abort_reason` (`client_aborted`,
-`error_before_stream`, `error_mid_stream`, `timeout`) are diagnostics a
-sensor newer than the server can extend, and refusing the event would
-also drop the tokens it carries. Ingestion stores such a value as
-`other`, the catch-all of both vocabularies (the fallback the `llm_error`
-taxonomy's `error_type` uses), and re-encodes only an event it changed.
+`error_before_stream`, `error_mid_stream`, `timeout`) and `error.error_type`
+(the 14-entry taxonomy, see `llm_error`) are diagnostics a client newer
+than the server can extend, and refusing the event would also drop the
+tokens it carries. Ingestion stores such a value as `other`, the
+catch-all of each vocabulary (the taxonomy's own fallback for an error it
+cannot name), and re-encodes only an event it changed. Every value the
+sensor's classifier, the Claude Code plugin's StopFailure mapping and the
+OTLP receiver's API-error mapping send is in the taxonomy, which tests
+read from each of them. An MCP event's and a tool failure's `error` carry
+taxonomies of their own and are stored as sent.
 It counts the replacements in the process and logs them at most once a
 second, with the field, the running count and the value when it is a
 lowercase identifier of at most 64 characters (any other value is logged
@@ -6467,6 +6473,9 @@ Structured error event with a 14-entry taxonomy:
 | `timeout` | 504 / — | Gateway timeout (504), or a client-side timeout before a response | `timeout_error` | ✅ |
 | `stream_error` | — | Mid-stream error after a 200 response | `stream_error` | ⚠ case-by-case |
 | `other` | — / 200 | Fallback for unknown; also a `chat.completions.parse()` completion that fails the caller's schema (`http_status` 200, `provider_error_code` `schema`) | `other` | ❌ |
+
+Ingestion stores an `error_type` outside this table as `other` (see
+Validation rules).
 
 Plus `provider`, `http_status`, `provider_error_code`, `request_id`,
 `retry_after`, `is_retryable`. For a streamed call, `abort_reason` and the

@@ -261,6 +261,40 @@ func TestStreamingFields_LLMErrorAbortReason(t *testing.T) {
 	)
 }
 
+// llmErrorTaxonomy is the 14-entry llm_error error_type vocabulary
+// (ARCHITECTURE.md, llm_error).
+var llmErrorTaxonomy = []string{
+	"rate_limit", "quota_exceeded", "context_overflow", "content_filter",
+	"invalid_request", "authentication", "permission", "not_found",
+	"request_too_large", "api_error", "overloaded", "timeout",
+	"stream_error",
+}
+
+func TestStreamingFields_LLMErrorType(t *testing.T) {
+	runStreamCases(t,
+		streamField{base: failedStreamError, path: []string{"error", "error_type"}},
+		enumCases(llmErrorTaxonomy, "billing_hold", "error.error_type must be a string"),
+	)
+}
+
+// An MCP event's error_type is the MCP taxonomy and a tool failure's is
+// its own: neither is read as an llm_error type.
+func TestStreamingFields_OtherErrorTaxonomiesPublishedAsSent(t *testing.T) {
+	for _, eventType := range []string{"mcp_tool_call", "tool_call"} {
+		payload := failedStreamError()
+		payload["event_type"] = eventType
+		payload["error"] = map[string]any{"error_type": "invalid_params", "error_class": "McpError"}
+		body, _ := json.Marshal(payload)
+		code, resp, published := postCapturing(t, body)
+		if code != http.StatusOK {
+			t.Fatalf("%s: status %d, want 200 (body %s)", eventType, code, resp)
+		}
+		if !bytes.Equal(published, body) {
+			t.Errorf("%s was changed on the way to the bus:\n got %s\nwant %s", eventType, published, body)
+		}
+	}
+}
+
 func TestStreamingFields_PartialCounts(t *testing.T) {
 	for _, key := range []string{"partial_chunks", "partial_tokens_input", "partial_tokens_output"} {
 		runStreamCases(t,

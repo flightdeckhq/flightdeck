@@ -272,10 +272,10 @@ func EventsHandler(
 		sessionID, _ := payload["session_id"].(string)
 		eventType, _ := payload["event_type"].(string)
 
-		// A stream outcome or abort reason outside its vocabulary is
-		// stored as the catch-all rather than refused (see
-		// normalizeStreamingValues), so the event's tokens still count.
-		reencode := normalizeStreamingValues(payload)
+		// A stream outcome, abort reason or llm_error type outside its
+		// vocabulary is stored as the catch-all rather than refused (see
+		// normalizeDiagnosticValues), so the event's tokens still count.
+		reencode := normalizeDiagnosticValues(payload)
 
 		// On session_start, attach the resolved token id/name so the
 		// worker's UpsertSession can persist them onto the new session

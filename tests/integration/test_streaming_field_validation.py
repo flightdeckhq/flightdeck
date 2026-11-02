@@ -5,8 +5,8 @@ A post_call's ``streaming`` block and a failed stream's ``llm_error``
 the worker and read back from ``GET /v1/sessions/:id``:
 
 * a value in the vocabulary is stored as sent;
-* an outcome or abort reason the server does not know is stored as
-  ``other`` and the event still counts (its tokens reach
+* an outcome, abort reason or llm_error type the server does not know
+  is stored as ``other`` and the event still counts (its tokens reach
   ``tokens_used``);
 * a negative or malformed count, a value of the wrong type, or a block
   that is not an object is refused with 400 and stored nowhere.
@@ -136,6 +136,7 @@ def test_known_stream_values_are_stored_as_sent() -> None:
     assert streaming == STREAMING, f"streaming block changed: {streaming!r}"
     error = _of_type(events, "llm_error")["payload"]["error"]
     for key in (
+        "error_type",
         "abort_reason",
         "partial_chunks",
         "partial_tokens_input",
@@ -158,7 +159,9 @@ def test_unknown_stream_values_are_stored_as_other_and_the_event_counts() -> Non
     )
     assert status == 200, f"post_call refused: {status} {body}"
     status, body = _post_expecting_status(
-        _failed_stream(sid, flavor, abort_reason="connection_reset")
+        _failed_stream(
+            sid, flavor, abort_reason="connection_reset", error_type="billing_hold"
+        )
     )
     assert status == 200, f"llm_error refused: {status} {body}"
 
@@ -169,8 +172,9 @@ def test_unknown_stream_values_are_stored_as_other_and_the_event_counts() -> Non
     assert streaming["chunk_count"] == STREAMING["chunk_count"]
     error = _of_type(events, "llm_error")["payload"]["error"]
     assert error["abort_reason"] == "other"
+    assert error["error_type"] == "other"
     assert error["partial_tokens_input"] == STREAM_ERROR["partial_tokens_input"]
-    assert error["error_type"] == "stream_error"
+    assert error["provider"] == STREAM_ERROR["provider"]
     wait_until(
         lambda: get_session_detail(sid)["session"]["tokens_used"] >= 1290,
         timeout=10,
@@ -193,6 +197,7 @@ def test_malformed_stream_fields_are_refused_and_stored_nowhere() -> None:
         ),
         (_failed_stream(sid, flavor, partial_chunks=-3), "error.partial_chunks"),
         (_failed_stream(sid, flavor, abort_reason=7), "error.abort_reason"),
+        (_failed_stream(sid, flavor, error_type=429), "error.error_type"),
         (
             _streamed_post_call(sid, flavor, final_outcome=False),
             "streaming.final_outcome",

@@ -29,7 +29,7 @@ func TestReplacementLogCountsEveryReplacementAndLogsOncePerInterval(t *testing.T
 	if got := log.replacedTotal(); got != 3 {
 		t.Fatalf("replaced total %d, want 3", got)
 	}
-	if n := strings.Count(logs.String(), "unrecognised stream value stored as other"); n != 1 {
+	if n := strings.Count(logs.String(), "unrecognised diagnostic value stored as other"); n != 1 {
 		t.Fatalf("%d lines within one interval, want 1: %q", n, logs.String())
 	}
 	for _, want := range []string{"field=streaming.final_outcome", "value=truncated", "replaced_total=1", "suppressed_since_last=0"} {
@@ -40,7 +40,7 @@ func TestReplacementLogCountsEveryReplacementAndLogsOncePerInterval(t *testing.T
 
 	clock = clock.Add(replacementLogInterval)
 	log.note("error.abort_reason", "socket_closed")
-	if n := strings.Count(logs.String(), "unrecognised stream value stored as other"); n != 2 {
+	if n := strings.Count(logs.String(), "unrecognised diagnostic value stored as other"); n != 2 {
 		t.Fatalf("%d lines after the interval, want 2: %q", n, logs.String())
 	}
 	for _, want := range []string{"value=socket_closed", "replaced_total=4", "suppressed_since_last=2"} {
@@ -50,7 +50,7 @@ func TestReplacementLogCountsEveryReplacementAndLogsOncePerInterval(t *testing.T
 	}
 }
 
-func TestLoggableStreamValueKeepsOnlyIdentifiers(t *testing.T) {
+func TestLoggableValueKeepsOnlyIdentifiers(t *testing.T) {
 	cases := map[string]string{
 		"error_after_stream":       "error_after_stream",
 		"Truncated":                "<9 bytes, not an identifier>",
@@ -60,55 +60,60 @@ func TestLoggableStreamValueKeepsOnlyIdentifiers(t *testing.T) {
 		"timeout\nlevel=ERROR msg": "<23 bytes, not an identifier>",
 	}
 	for value, want := range cases {
-		if got := loggableStreamValue(value); got != want {
-			t.Errorf("loggableStreamValue(%q) = %q, want %q", value, got, want)
+		if got := loggableValue(value); got != want {
+			t.Errorf("loggableValue(%q) = %q, want %q", value, got, want)
 		}
 	}
 }
 
-// normalizeStreamingValues counts each value it replaces in the process
+// normalizeDiagnosticValues counts each value it replaces in the process
 // counter and none it keeps.
-func TestNormalizeStreamingValuesCountsReplacements(t *testing.T) {
+func TestNormalizeDiagnosticValuesCountsReplacements(t *testing.T) {
 	captureStreamLogs(t)
-	before := streamValueReplacements.replacedTotal()
+	before := diagnosticReplacements.replacedTotal()
 	payload := map[string]any{
 		"event_type": "llm_error",
 		"streaming":  map[string]any{"final_outcome": "truncated", "abort_reason": "client_aborted"},
-		"error":      map[string]any{"abort_reason": "connection_reset"},
+		"error":      map[string]any{"abort_reason": "connection_reset", "error_type": "billing_hold"},
 	}
-	if !normalizeStreamingValues(payload) {
-		t.Fatal("normalizeStreamingValues reported no change")
+	if !normalizeDiagnosticValues(payload) {
+		t.Fatal("normalizeDiagnosticValues reported no change")
 	}
-	if got := streamValueReplacements.replacedTotal() - before; got != 2 {
-		t.Errorf("counted %d replacements, want 2", got)
+	if got := diagnosticReplacements.replacedTotal() - before; got != 3 {
+		t.Errorf("counted %d replacements, want 3", got)
 	}
 	stream := payload["streaming"].(map[string]any)
 	if stream["final_outcome"] != "other" || stream["abort_reason"] != "client_aborted" {
 		t.Errorf("streaming block %v, want final_outcome other and abort_reason kept", stream)
 	}
-	if payload["error"].(map[string]any)["abort_reason"] != "other" {
-		t.Errorf("error.abort_reason %v, want other", payload["error"])
+	if errObj := payload["error"].(map[string]any); errObj["abort_reason"] != "other" || errObj["error_type"] != "other" {
+		t.Errorf("error object %v, want abort_reason and error_type other", errObj)
 	}
 
-	before = streamValueReplacements.replacedTotal()
-	if normalizeStreamingValues(payload) {
+	before = diagnosticReplacements.replacedTotal()
+	if normalizeDiagnosticValues(payload) {
 		t.Error("a payload already normalised was changed again")
 	}
-	if got := streamValueReplacements.replacedTotal() - before; got != 0 {
+	if got := diagnosticReplacements.replacedTotal() - before; got != 0 {
 		t.Errorf("counted %d replacements of known values, want 0", got)
 	}
 }
 
-// Only an llm_error's error object carries a stream abort reason.
-func TestNormalizeStreamingValuesLeavesOtherErrorObjects(t *testing.T) {
-	payload := map[string]any{
-		"event_type": "tool_call",
-		"error":      map[string]any{"abort_reason": "whatever"},
-	}
-	if normalizeStreamingValues(payload) {
-		t.Fatal("a tool_call's error object was normalised")
-	}
-	if payload["error"].(map[string]any)["abort_reason"] != "whatever" {
-		t.Errorf("tool_call error changed: %v", payload["error"])
+// Only an llm_error's error object is read: an MCP event's error_type is
+// the MCP taxonomy (invalid_params, connection_closed, ...), and a tool
+// failure's is its own.
+func TestNormalizeDiagnosticValuesLeavesOtherErrorObjects(t *testing.T) {
+	for _, eventType := range []string{"tool_call", "mcp_tool_call", "mcp_resource_read"} {
+		payload := map[string]any{
+			"event_type": eventType,
+			"error":      map[string]any{"abort_reason": "whatever", "error_type": "invalid_params"},
+		}
+		if normalizeDiagnosticValues(payload) {
+			t.Fatalf("a %s error object was normalised", eventType)
+		}
+		errObj := payload["error"].(map[string]any)
+		if errObj["abort_reason"] != "whatever" || errObj["error_type"] != "invalid_params" {
+			t.Errorf("%s error changed: %v", eventType, errObj)
+		}
 	}
 }

@@ -237,11 +237,12 @@ All notable changes to Flightdeck are documented here.
   trimmed, and U+FEFF is kept, so the sensor, the plugin and OTLP ingest
   derive the same agent id. Only roles with those characters at an edge
   get a different id than before.
-- **Ingestion checks the streaming fields.** A stream outcome or abort
-  reason the server does not know (`streaming.final_outcome`,
-  `streaming.abort_reason`, an `llm_error`'s `error.abort_reason`) is
-  stored as `other`, and the ingestion log counts such values, so a
-  sensor newer than the server still has its events and tokens counted.
+- **Ingestion checks the streaming fields and the error type.** A stream
+  outcome, abort reason or error type the server does not know
+  (`streaming.final_outcome`, `streaming.abort_reason`, an `llm_error`'s
+  `error.abort_reason` or `error.error_type`) is stored as `other`, and
+  the ingestion log counts such values, so a client newer than the server
+  still has its events and tokens counted.
   A negative or fractional `partial_chunks`, `partial_tokens_input`,
   `partial_tokens_output` or `chunk_count`, a negative stream timing, a
   value of the wrong type, or a `streaming` block or `llm_error` `error`

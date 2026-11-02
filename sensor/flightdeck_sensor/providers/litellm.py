@@ -26,7 +26,12 @@ from datetime import UTC
 from typing import Any
 
 from flightdeck_sensor.core.types import CallDetails, TokenUsage
-from flightdeck_sensor.providers.protocol import PromptContent, ToolInvocation, finish_reason_of
+from flightdeck_sensor.providers.protocol import (
+    PromptContent,
+    StreamAccumulator,
+    ToolInvocation,
+    finish_reason_of,
+)
 
 _log = logging.getLogger("flightdeck_sensor.providers.litellm")
 
@@ -312,6 +317,13 @@ class LitellmProvider:
 
     def final_message(self, stream: Any) -> Any | None:
         """litellm stream wrappers assemble no final message."""
+        return None
+
+    def stream_accumulator(
+        self, stream: Any, request_kwargs: dict[str, Any]
+    ) -> StreamAccumulator | None:
+        """None: the litellm interceptor assembles a streamed response
+        with litellm's own ``stream_chunk_builder``."""
         return None
 
     def text_from_stream_chunk(self, chunk: Any) -> str | None:

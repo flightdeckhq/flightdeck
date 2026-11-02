@@ -257,3 +257,50 @@ deployment.
 **Rejected alternative:** keep stripping in nginx and special-case the
 Swagger redirect (one proxy-specific rule per redirecting handler, and
 compose would still differ from the chart).
+
+## D227 -- A provider-hosted MCP call's tool_call names its server as server_name
+
+**Date:** 2026-11-01
+**Decision:** the sensor's `tool_call` for an OpenAI Responses `mcp_call`
+item carries the item's `server_label` as top-level `server_name`, cut
+at 256 characters. The event stays a `tool_call`; `server_name` is
+metadata and ships with capture off.
+**Why:** `server_name` is how every MCP event, the plugin and OTLP name
+an MCP server, and the worker projects it and the Events filter reads it
+for any event type, so the call is found by server with no new column.
+**Rejected alternative:** a `server_label` field (a second name for the
+same thing, read by nothing); emitting `mcp_tool_call` (OpenAI's servers
+made the call, not the agent's MCP client: no transport, fingerprint or
+MCP policy decision applies).
+
+## D228 -- An OpenAI Responses request is stored as instructions and input
+
+**Date:** 2026-11-01
+**Decision:** under `capture_prompts`, a Responses call's content stores
+`instructions` in `system` and `input` verbatim in `input` (a string or
+the input item list, SDK objects dumped as the JSON the SDK sends);
+`messages` stays empty.
+**Why:** nothing of the Responses request was stored. `input` is the
+API's own parameter name and already a JSONB column (embeddings), and
+`instructions` is the top-level system text Anthropic's `system` holds.
+**Rejected alternative:** rewriting `instructions` and `input` into a
+chat `messages` array (normalising one provider's shape into another's,
+which content capture never does); a new column (no reader needs one).
+
+## D229 -- OTLP ingest refuses rather than guesses on a bad billing mode or a failed session read
+
+**Date:** 2026-11-01
+**Decision:** extends D224. A `flightdeck.billing_mode` outside
+`metered`, `subscription` and `local` fails validation for the
+session's model calls, named in `partial_success`. A session read that
+fails or passes its deadline answers the whole request 503 with
+`Retry-After`, publishing and charging nothing.
+**Why:** the billing mode decides whether Claude Code's reported cost
+counts toward `estimated_cost`, so a typo must be visible. Without the
+read the receiver cannot know whether to start the session or whether
+the plugin already reports it; event ids are deterministic, so the
+exporter's retry is safe.
+**Rejected alternative:** defaulting a bad billing mode to
+`subscription` (hides the mistake, can mis-bill a metered fleet);
+publishing despite a failed read (rows with no capture posture or
+context, and possible duplicates of plugin sessions).

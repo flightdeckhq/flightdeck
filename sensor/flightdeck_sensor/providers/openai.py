@@ -13,7 +13,12 @@ from typing import Any
 
 from flightdeck_sensor.core.errors import REQUEST_ID_MAX_LEN
 from flightdeck_sensor.core.types import CallDetails, TokenUsage
-from flightdeck_sensor.providers.protocol import PromptContent, ToolInvocation, finish_reason_of
+from flightdeck_sensor.providers.protocol import (
+    PromptContent,
+    StreamAccumulator,
+    ToolInvocation,
+    finish_reason_of,
+)
 
 _log = logging.getLogger("flightdeck_sensor.providers.openai")
 
@@ -113,6 +118,184 @@ _RESPONSES_HOSTED_INPUT_FIELDS: dict[str, tuple[str, frozenset[str]] | None] = {
     "apply_patch_call": ("operation", frozenset({"type", "path", "diff"})),
     "tool_search_call": ("arguments", frozenset()),
 }
+
+
+# The Responses output item a provider-hosted MCP call lands as, and the
+# field naming the MCP server it went to.
+_RESPONSES_MCP_CALL = "mcp_call"
+_RESPONSES_MCP_SERVER_FIELD = "server_label"
+# Where the SDK's ResponseStreamState keeps the snapshot its handle_event
+# builds: a private, name-mangled attribute (the state has no public
+# accessor; only the SDK's own helper reads it). Pinned by a unit test so
+# an SDK rename shows up as a failing test, not as silently absent content.
+_RESPONSE_STATE_SNAPSHOT_ATTR = "_ResponseStreamState__current_snapshot"
+# The header the SDK's ``chat.completions.stream()`` helper adds to the
+# request it sends. Such a stream is assembled by the helper itself, which
+# the interceptor hands to the guard (see :func:`helper_stream_accumulator`).
+_HELPER_METHOD_HEADER = "x-stainless-helper-method"
+
+
+def _sdk_unset() -> Any:
+    """The SDK's "not given" sentinel for a stream state's optional
+    arguments. ``NOT_GIVEN`` is the one every release line recognises:
+    1.x checks only for it, later releases for it or ``omit``."""
+    import openai
+
+    return openai.NOT_GIVEN
+
+
+def _chat_stream_state() -> Any:
+    """A fresh ``ChatCompletionStreamState`` with no tools or response
+    format to parse. Exported from ``openai.lib.streaming.chat`` on
+    current SDKs, only from its ``_completions`` module on older 1.x
+    releases, which also require both arguments."""
+    try:
+        from openai.lib.streaming.chat import ChatCompletionStreamState
+    except ImportError:
+        from openai.lib.streaming.chat._completions import ChatCompletionStreamState
+    return ChatCompletionStreamState(input_tools=_sdk_unset(), response_format=_sdk_unset())
+
+
+def _is_helper_request(request_kwargs: dict[str, Any]) -> bool:
+    headers = request_kwargs.get("extra_headers")
+    if not isinstance(headers, dict):
+        return False
+    return any(isinstance(k, str) and k.lower() == _HELPER_METHOD_HEADER for k in headers)
+
+
+class _ChatStreamAccumulator:
+    """Assembles a raw chat completion stream with the SDK's own
+    ``ChatCompletionStreamState``, the state the ``chat.completions
+    .stream()`` helper keeps. Its ``current_completion_snapshot`` is the
+    completion as a non-streamed call returns it (every choice's message
+    content and tool calls, finish reasons, usage); it is used rather
+    than ``get_final_completion()``, which raises for a ``length`` or
+    ``content_filter`` finish that the post_call still has to report."""
+
+    def __init__(self) -> None:
+        self._state: Any = _chat_stream_state()
+        self._started = False
+
+    def add(self, chunk: Any) -> None:
+        self._state.handle_chunk(chunk)
+        self._started = True
+
+    def message(self) -> Any | None:
+        return self._state.current_completion_snapshot if self._started else None
+
+
+class _ResponsesStreamAccumulator:
+    """Assembles a raw Responses event stream. The terminal event
+    (``response.completed``, ``.incomplete`` or ``.failed``) carries the
+    whole ``Response``, which is the message. Before it, and only when
+    ``partial`` (content capture on), the SDK's ``ResponseStreamState``
+    -- the state the ``responses.stream()`` helper keeps -- folds the
+    deltas into a snapshot, which is what an early exit stores."""
+
+    def __init__(self, partial: bool) -> None:
+        self._final: Any = None
+        self._state: Any = None
+        if partial:
+            from openai.lib.streaming.responses import ResponseStreamState
+
+            self._state = ResponseStreamState(input_tools=_sdk_unset(), text_format=_sdk_unset())
+
+    def add(self, event: Any) -> None:
+        if self._final is not None:
+            return
+        if getattr(event, "type", None) in _RESPONSES_TERMINAL_EVENTS:
+            self._final = getattr(event, "response", None)
+            return
+        if self._state is not None:
+            # handle_event is the helper's own entry point; it is the one
+            # that keeps the snapshot (accumulate_event only returns it).
+            # An event the state cannot fold (one that arrives before the
+            # item it belongs to) ends the partial snapshot only: the
+            # terminal event still carries the whole response.
+            try:
+                self._state.handle_event(event)
+            except Exception as exc:
+                # Class name only: the exception text can echo the event.
+                _log.debug("responses partial snapshot dropped (%s)", type(exc).__name__)
+                self._state = None
+
+    def message(self) -> Any | None:
+        if self._final is not None:
+            return self._final
+        # The state exposes its snapshot only to the helper; an SDK that
+        # renames the attribute leaves an early exit with no partial
+        # response stored, never a wrong one.
+        return getattr(self._state, _RESPONSE_STATE_SNAPSHOT_ATTR, None)
+
+
+class _HelperStreamAccumulator:
+    """The assembly of a stream an OpenAI ``.stream()`` helper reads
+    through the guard. The helper already keeps the SDK's stream state
+    for the same events, so the guard reads the helper's instead of
+    assembling a second time: a chat helper's
+    ``current_completion_snapshot``, a Responses helper's terminal
+    ``Response`` (kept here as the event passes, which costs one
+    attribute check per event) or, before it, the snapshot its state
+    folded. Every read reads no further from the stream."""
+
+    def __init__(self, helper: Any) -> None:
+        self._helper = helper
+        self._responses = _ResponsesStreamAccumulator(partial=False)
+
+    def add(self, chunk: Any) -> None:
+        if isinstance(getattr(chunk, "type", None), str):
+            self._responses.add(chunk)
+
+    def message(self) -> Any | None:
+        final = self._responses.message()
+        if final is not None:
+            return final
+        try:
+            # A chat helper's snapshot asserts before its first chunk.
+            snapshot = getattr(self._helper, "current_completion_snapshot", None)
+        except Exception:
+            snapshot = None
+        if snapshot is not None:
+            return snapshot
+        return getattr(getattr(self._helper, "_state", None), _RESPONSE_STATE_SNAPSHOT_ATTR, None)
+
+
+def helper_stream_accumulator(helper: Any) -> StreamAccumulator:
+    """The accumulator for a stream an OpenAI ``.stream()`` helper reads
+    through the guard (see :class:`_HelperStreamAccumulator`)."""
+    return _HelperStreamAccumulator(helper)
+
+
+def _raw_stream_classes() -> tuple[type, ...]:
+    """The SDK's raw stream classes (``Stream`` / ``AsyncStream``), empty
+    when the SDK is not importable."""
+    try:
+        import openai
+
+        return (openai.Stream, openai.AsyncStream)
+    except Exception:
+        return ()
+
+
+def _jsonable(value: Any) -> Any:
+    """``value`` as plain JSON data: unchanged when it already is, else
+    with every SDK model in it dumped the way the session dumps framework
+    state (a Responses ``input`` often carries the previous response's
+    output items, which are SDK models). ``None`` when it cannot be
+    encoded at all."""
+    import json as _json
+
+    try:
+        _json.dumps(value)
+        return value
+    except (TypeError, ValueError):
+        pass
+    from flightdeck_sensor.core.session import _json_default
+
+    try:
+        return _json.loads(_json.dumps(value, default=_json_default))
+    except Exception:
+        return None
 
 
 def _field(obj: Any, name: str) -> Any:
@@ -594,6 +777,37 @@ class OpenAIProvider:
         """OpenAI stream objects assemble no final message."""
         return None
 
+    def stream_accumulator(
+        self, stream: Any, request_kwargs: dict[str, Any]
+    ) -> StreamAccumulator | None:
+        """An accumulator for a raw chat or Responses stream (a request
+        with ``messages`` is a chat call). A chat stream is assembled
+        only when something reads the result: content capture, or a
+        request that offers the model tools (``tools`` / the legacy
+        ``functions``) and so may stream tool calls. The SDK's chat state
+        re-serialises the message on every chunk, the price its own
+        ``.stream()`` helper pays, so it is not paid for a stream whose
+        assembly nothing reads, nor a second time for a stream the chat
+        helper reads (its request carries the helper's header; the
+        interceptor gives the guard :func:`helper_stream_accumulator`). A
+        Responses stream is assembled always: its terminal event already
+        carries the whole response."""
+        try:
+            classes = _raw_stream_classes()
+            if not classes or not isinstance(stream, classes):
+                return None
+            if _is_helper_request(request_kwargs):
+                return None
+            if "messages" in request_kwargs:
+                offers_tools = bool(request_kwargs.get("tools") or request_kwargs.get("functions"))
+                if not (self._capture_prompts or offers_tools):
+                    return None
+                return _ChatStreamAccumulator()
+            return _ResponsesStreamAccumulator(partial=self._capture_prompts)
+        except Exception:
+            _log.debug("stream accumulator unavailable", exc_info=True)
+            return None
+
     def text_from_stream_chunk(self, chunk: Any) -> str | None:
         """OpenAI stream objects have no ``text_stream``."""
         return None
@@ -714,8 +928,27 @@ class OpenAIProvider:
             else:
                 resp_dict = {"raw": str(response)}
 
+            if "messages" not in request_kwargs:
+                # A Responses call: its request is ``instructions`` (the
+                # top-level system text, stored where Anthropic's
+                # ``system`` goes) and ``input`` (a string or a list of
+                # input items), stored verbatim under its own name.
+                instructions = request_kwargs.get("instructions")
+                return PromptContent(
+                    system=instructions if isinstance(instructions, str) else None,
+                    messages=[],
+                    tools=_jsonable(request_kwargs.get("tools")),
+                    response=resp_dict,
+                    provider="openai",
+                    model=model,
+                    session_id="",
+                    event_id="",
+                    captured_at=now_iso,
+                    input=_jsonable(request_kwargs.get("input")),
+                )
+
             return PromptContent(
-                system=None,  # OpenAI embeds system in messages
+                system=None,  # OpenAI chat embeds system in messages
                 messages=request_kwargs.get("messages", []),
                 tools=request_kwargs.get("tools"),
                 response=resp_dict,
@@ -865,11 +1098,17 @@ class OpenAIProvider:
                     tool_id = _field(item, "id")
                 else:
                     continue
+                server = (
+                    _field(item, _RESPONSES_MCP_SERVER_FIELD)
+                    if item_type == _RESPONSES_MCP_CALL
+                    else None
+                )
                 invocations.append(
                     ToolInvocation(
                         name=str(name),
                         tool_input=tool_input,
                         tool_id=str(tool_id) if tool_id else None,
+                        server_name=server if isinstance(server, str) and server else None,
                     )
                 )
             except Exception as exc:

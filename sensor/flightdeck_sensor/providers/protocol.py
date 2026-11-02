@@ -129,6 +129,21 @@ class Provider(Protocol):
         """
         ...
 
+    def stream_accumulator(
+        self, stream: Any, request_kwargs: dict[str, Any]
+    ) -> StreamAccumulator | None:
+        """An assembler for a raw event stream (``create(stream=True)``):
+        the guard feeds it every event it reads and, when the stream
+        settles, takes the assembled message as the response, so content
+        capture and tool-call extraction see what a non-streamed call
+        returns. Built on the SDK's own accumulator, the one its helper
+        streams use. ``None`` for a helper stream (which assembles its own
+        message, see :meth:`final_message`), for a stream whose assembly
+        nothing reads (capture off and no tool the model can call), and
+        when the SDK's accumulator is unavailable. Never raises.
+        """
+        ...
+
     def text_from_stream_chunk(self, chunk: Any) -> str | None:
         """Text carried by one streamed event, for the guard's
         ``text_stream`` (Anthropic ``content_block_delta`` /
@@ -217,6 +232,26 @@ class ToolInvocation:
     name: str
     tool_input: dict[str, Any]
     tool_id: str | None = None
+    # The MCP server a provider-hosted MCP call went to (an OpenAI
+    # Responses ``mcp_call`` item's ``server_label``); ``None`` for every
+    # other tool call. Lands on the ``tool_call`` event as ``server_name``.
+    server_name: str | None = None
+
+
+class StreamAccumulator(Protocol):
+    """Assembles one raw event stream into the message a non-streamed call
+    returns (see :meth:`Provider.stream_accumulator`)."""
+
+    def add(self, chunk: Any) -> None:
+        """Fold one streamed event or chunk into the message. May raise;
+        the guard then drops the accumulator and stores no response."""
+        ...
+
+    def message(self) -> Any | None:
+        """The message assembled so far: the complete response once the
+        stream has completed, a partial one before that, ``None`` when
+        nothing has been assembled. Reads no further from the stream."""
+        ...
 
 
 @dataclass
@@ -224,17 +259,19 @@ class PromptContent:
     """Raw content extracted from a single LLM call.
 
     Provider terminology is preserved exactly -- no normalization.
-    Anthropic uses 'system' as a separate field; OpenAI embeds it in messages.
+    Anthropic uses 'system' as a separate field; OpenAI chat embeds it in
+    messages.
 
-    ``input`` is the embeddings-shaped slot. Embedding
-    calls (OpenAI ``embeddings.create``, ``litellm.embedding``,
-    LangChain ``OpenAIEmbeddings.embed_*`` transitively) put the
-    request's ``input`` parameter (a string or list of strings) here
-    rather than into the chat-shaped ``messages`` slot. Dashboard
-    branches on event_type to render via ``EmbeddingsContentViewer``
-    instead of the chat ``PromptViewer``. Provider terminology is
-    preserved here too: OpenAI's API parameter is called ``input``,
-    not ``inputs``.
+    ``input`` holds a request's ``input`` parameter verbatim, the
+    provider's own name for it. Embedding calls (OpenAI
+    ``embeddings.create``, ``litellm.embedding``, LangChain
+    ``OpenAIEmbeddings.embed_*`` transitively) put a string or list of
+    strings here rather than into the chat-shaped ``messages`` slot, and
+    the dashboard branches on event_type to render it via
+    ``EmbeddingsContentViewer``. An OpenAI Responses call puts its
+    ``input`` here too (a string or a list of input items), with its
+    ``instructions`` in ``system``; ``messages`` stays empty because the
+    Responses API has no messages parameter.
     """
 
     system: str | None
@@ -246,7 +283,7 @@ class PromptContent:
     session_id: str
     event_id: str
     captured_at: str
-    input: str | list[str] | None = None
+    input: str | list[Any] | None = None
     embedding_output: list[list[float]] | None = None
 
 

@@ -90,7 +90,11 @@ func main() {
 	sessAttacher := session.NewStore(pool)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
-	srv := server.New(addr, validator, publisher, dirStore, sessAttacher, handlers.UnmappedDialect{}, cfg.RateLimitPerMinute)
+	// Claude Code is the OTLP dialect mapped; other sources are accepted
+	// and counted as rejected. It reads sessions through the same store
+	// that runs the attachment check.
+	otlpDialect := handlers.NewClaudeCodeDialect(sessAttacher)
+	srv := server.New(addr, validator, publisher, dirStore, sessAttacher, otlpDialect, cfg.RateLimitPerMinute)
 
 	// Start server
 	go func() {

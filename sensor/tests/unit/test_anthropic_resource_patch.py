@@ -37,7 +37,7 @@ from flightdeck_sensor.core.policy import PolicyCache
 from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import SensorConfig
 from flightdeck_sensor.interceptor import anthropic as ai
-from flightdeck_sensor.interceptor import base
+from flightdeck_sensor.interceptor import base, raw_views
 from flightdeck_sensor.interceptor import platform as platform_mod
 from flightdeck_sensor.providers.anthropic import AnthropicProvider
 from flightdeck_sensor.transport.client import ControlPlaneClient
@@ -1066,7 +1066,7 @@ def test_abandoned_streaming_view_call_settles_at_the_next_intercept(session: Se
     client = _build("Anthropic", transport)
     manager = client.messages.with_streaming_response.create(model=MODEL, max_tokens=8, messages=HI)
     response = manager.__enter__()
-    assert isinstance(response, ai._DeferredResponse)
+    assert isinstance(response, raw_views.DeferredResponse)
     assert len(_events_of(session, "pre_call")) == 1
     assert not _post_calls(session)
 
@@ -1092,7 +1092,7 @@ async def test_abandoned_async_streaming_view_call_settles_at_the_next_intercept
     client = _build("AsyncAnthropic", transport)
     manager = client.messages.with_streaming_response.create(model=MODEL, max_tokens=8, messages=HI)
     response = await manager.__aenter__()
-    assert isinstance(response, ai._DeferredAsyncResponse)
+    assert isinstance(response, raw_views.DeferredAsyncResponse)
     del response, manager
     gc.collect()
     assert not _post_calls(session)
@@ -1188,7 +1188,7 @@ def test_degrade_swaps_the_model_on_the_wire_on_every_path(
     transport = _Transport()
     client = _build(name, transport)
     result = _GUARDED_PATHS[path](client)
-    if isinstance(result, ai._DeferredResponse):
+    if isinstance(result, raw_views.DeferredResponse):
         result.parse()
     assert len(transport.requests) == 1
     request = transport.requests[0]
@@ -1428,7 +1428,7 @@ def test_sdk_layout_the_patch_relies_on() -> None:
     assert ai._OrigAsyncBetaMessages is beta_messages.AsyncMessages
     assert ai._OrigBaseClient is BaseClient
     assert ai._OrigAsyncAPIClient is AsyncAPIClient
-    assert _constants.RAW_RESPONSE_HEADER == ai._RAW_RESPONSE_HEADER
+    assert _constants.RAW_RESPONSE_HEADER == raw_views.RAW_RESPONSE_HEADER
 
     # The views capture ``messages.create`` when they are built, which is
     # what makes a class-level method patch reach them -- and what keeps

@@ -1,4 +1,6 @@
 import { describe, it, expect } from "vitest";
+import { render, screen } from "@testing-library/react";
+import { StreamingPill } from "@/components/session/EventRow";
 import { getEventDetail, getSummaryRows } from "@/lib/events";
 import type { AgentEvent, StreamingMetrics } from "@/lib/types";
 
@@ -108,5 +110,52 @@ describe("getSummaryRows -- streaming sub-object surfaces in expanded grid", () 
       "Total tokens",
       "Latency",
     ]);
+  });
+});
+
+// A Claude Code session reported over OTLP sends a streaming block with
+// TTFT and the outcome only: Claude Code reports neither chunk counts
+// nor gaps. Every surface renders it without the missing fields.
+const OTLP: StreamingMetrics = { ttft_ms: 1062, final_outcome: "completed" };
+const TTFT_ONLY: StreamingMetrics = { ttft_ms: 798 };
+
+describe("streaming block without chunk statistics (OTLP)", () => {
+  it("summary rows show TTFT and the outcome, and no chunk rows", () => {
+    const rows = getSummaryRows(makeStreamingPostCall(OTLP));
+    const byKey = Object.fromEntries(rows);
+    expect(byKey["TTFT"]).toBe(`${(1062).toLocaleString()}ms`);
+    expect(byKey["Stream outcome"]).toBe("completed");
+    const keys = rows.map(([k]) => k);
+    expect(keys).not.toContain("Chunks");
+    expect(keys).not.toContain("Inter-chunk");
+  });
+
+  it("a block with only ttft_ms renders TTFT alone", () => {
+    const keys = getSummaryRows(makeStreamingPostCall(TTFT_ONLY)).map(([k]) => k);
+    expect(keys).toContain("TTFT");
+    expect(keys).not.toContain("Chunks");
+    expect(keys).not.toContain("Stream outcome");
+  });
+
+  it("detail text still leads with the TTFT", () => {
+    const parts = getEventDetail(makeStreamingPostCall(OTLP)).split(" · ");
+    expect(parts[1]).toBe(`TTFT ${(1062).toLocaleString()}ms`);
+  });
+
+  it("the STREAM pill renders with a title naming only what was sent", () => {
+    const event = makeStreamingPostCall(OTLP);
+    render(<StreamingPill event={event} />);
+    const pill = screen.getByTestId(`stream-badge-${event.id}`);
+    expect(pill.textContent).toBe("STREAM");
+    expect(pill.getAttribute("title")).toBe("ttft=1062ms");
+  });
+
+  it("the pill keeps the chunk statistics a sensor stream sends", () => {
+    const event = makeStreamingPostCall(HAPPY);
+    render(<StreamingPill event={event} />);
+    const title =
+      screen.getByTestId(`stream-badge-${event.id}`).getAttribute("title") ?? "";
+    expect(title).toContain("chunks=42");
+    expect(title).toContain("p95=80ms");
   });
 });

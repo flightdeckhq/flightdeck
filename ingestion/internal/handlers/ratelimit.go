@@ -82,6 +82,19 @@ func (rl *RateLimiter) Limit() int {
 // A charge larger than the whole budget never fits; a caller that can
 // be asked for one checks Limit first and refuses it outright.
 func (rl *RateLimiter) AllowN(rawToken string, n int) (bool, int) {
+	return rl.take(rawToken, n, true)
+}
+
+// Fits reports whether n units would fit in what is left of the token's
+// window, charging nothing, with the seconds until they would when they
+// do not. A route checks it before costly work whose result it will
+// charge for later.
+func (rl *RateLimiter) Fits(rawToken string, n int) (bool, int) {
+	return rl.take(rawToken, n, false)
+}
+
+// take is AllowN when charge is set and Fits when it is not.
+func (rl *RateLimiter) take(rawToken string, n int, charge bool) (bool, int) {
 	need := max(n, 1)
 	tw := rl.window(rawToken)
 	now := time.Now()
@@ -92,6 +105,9 @@ func (rl *RateLimiter) AllowN(rawToken string, n int) (bool, int) {
 	tw.trim(now)
 	if len(tw.timestamps)+need > rl.max {
 		return false, rl.retryAfter(tw, now, need)
+	}
+	if !charge {
+		return true, 0
 	}
 	for range max(n, 0) {
 		tw.timestamps = append(tw.timestamps, now)

@@ -296,7 +296,7 @@ func postOTLP(h http.Handler, contentType string, gz bool, body []byte) *httptes
 // a few KiB, is refused with 413 having allocated little more than the
 // inflated body.
 func TestOTLPHandlerWideBodyBoundedMemory(t *testing.T) {
-	h := OTLPLogsHandler(allowAll{}, nopPublisher{}, UnmappedDialect{}, nil)
+	h := OTLPLogsHandler(allowAll{}, nopPublisher{}, nil, UnmappedDialect{}, nil)
 	wide := []byte(`{"resourceLogs":[` + jsonList("{}", (maxOTLPDecompressedBytes-40)/3) + `]}`)
 	body := gzipped(t, wide)
 
@@ -316,7 +316,7 @@ func TestOTLPHandlerAdmittedWithinSlot(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector changes what allocations cost")
 	}
-	h := OTLPLogsHandler(allowAll{}, nopPublisher{}, UnmappedDialect{}, nil)
+	h := OTLPLogsHandler(allowAll{}, nopPublisher{}, nil, UnmappedDialect{}, nil)
 	shape := decodeShapes[5] // json empty resources
 	n := largestUnderCap(t, shape)
 	body := gzipped(t, shape.body(n))
@@ -341,7 +341,7 @@ func TestOTLPDecodeGateFull503(t *testing.T) {
 		t.Fatal("could not take the only slot")
 	}
 
-	h := OTLPLogsHandler(allowAll{}, nopPublisher{}, UnmappedDialect{}, nil)
+	h := OTLPLogsHandler(allowAll{}, nopPublisher{}, nil, UnmappedDialect{}, nil)
 	for _, ct := range []string{otlpMediaJSON, otlpMediaProtobuf} {
 		body := []byte("{}")
 		if ct == otlpMediaProtobuf {
@@ -379,7 +379,7 @@ func TestDecodeInSlotReleasesOnPanic(t *testing.T) {
 	otlpDecodes = newOTLPDecodeGate(1, 10*time.Millisecond)
 	defer func() { otlpDecodes = saved }()
 
-	h := OTLPLogsHandler(allowAll{}, nopPublisher{}, panicDialect{}, nil)
+	h := OTLPLogsHandler(allowAll{}, nopPublisher{}, nil, panicDialect{}, nil)
 	func() {
 		defer func() {
 			if recover() == nil {

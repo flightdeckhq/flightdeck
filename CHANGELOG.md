@@ -6,6 +6,19 @@ All notable changes to Flightdeck are documented here.
 
 ### Added
 
+- **Claude Code reports to Flightdeck over OpenTelemetry.** Point Claude
+  Code's telemetry at the ingestion API (`CLAUDE_CODE_ENABLE_TELEMETRY=1`,
+  `OTEL_LOGS_EXPORTER=otlp`, `OTEL_EXPORTER_OTLP_ENDPOINT=https://<host>/ingest`,
+  `OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer <token>"`) and runs no
+  hook sees, such as `claude --bare`, CI and cloud sessions, show up as
+  `claude_code` sessions: prompts, model calls with tokens, TTFT and
+  Claude Code's own cost, tool calls (MCP ones by server and tool), denied
+  tools, API errors and sub-agents as child sessions. They observe only,
+  with no Stop button. Billing defaults to subscription
+  (`flightdeck.billing_mode` overrides it) and content stays off unless
+  the exporter sets `OTEL_RESOURCE_ATTRIBUTES=flightdeck.capture_prompts=true`.
+  A session the plugin or the Agent SDK already reports is not reported a
+  second time.
 - **Claude Code sessions can be stopped and held to token budgets.** With
   the plugin option `enforcement` on (or `FLIGHTDECK_ENFORCEMENT=1`), the
   dashboard's Stop button and token policies reach Claude Code: a stop or
@@ -46,6 +59,31 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **Streamed OpenAI and Anthropic calls store their response and report
+  their tool calls.** With `capture_prompts` on, `create(stream=True)`
+  stored the request but not the streamed text, and a `responses.create`
+  call stored neither (its `input` was never captured); no raw stream
+  emitted `tool_call` events. The sensor now assembles a raw stream with
+  the SDK's own accumulator: a stream read to the end stores the response
+  and emits its tool calls as a non-streamed call does, and a stream left
+  early stores what had arrived. A Responses call stores its
+  `instructions` and `input` ([#171](https://github.com/flightdeckhq/flightdeck/issues/171)).
+- **OpenAI's `.stream()` helpers and streaming views are metered.**
+  `chat.completions.stream()`, `responses.stream()` and
+  `with_streaming_response` on either resource (and on the client) went
+  through unintercepted; they now report like `create(stream=True)`, and
+  the caller still gets the SDK's own stream objects
+  ([#171](https://github.com/flightdeckhq/flightdeck/issues/171)).
+- **Raw-response streaming calls are metered from the stream.**
+  `with_raw_response.create(stream=True)` on chat completions and
+  Responses recorded only the pre-call estimate; the stream the caller
+  parses from the response is now metered as it is read, with its
+  `streaming` block. langchain-openai takes this path with
+  `include_response_headers=True` ([#173](https://github.com/flightdeckhq/flightdeck/issues/173)).
+- **A Responses MCP tool call names its server.** The `tool_call` event
+  for an `mcp_call` output item carries the item's `server_label` as
+  `server_name`, so the Events view's MCP server filter finds it
+  ([#174](https://github.com/flightdeckhq/flightdeck/issues/174)).
 - **The Helm chart's Ingress reaches ingestion and the API.** It
   forwarded `/ingest/...` and `/api/...` unchanged to services that only
   served `/v1/...`, so every sensor, plugin and dashboard call behind it
@@ -63,6 +101,14 @@ All notable changes to Flightdeck are documented here.
   uid 1000, but the dashboard image's nginx runs as its own user (uid
   101) and could not create its cache directory, so the pod
   crash-looped. The dashboard pod now runs as uid 101.
+
+### Changed
+
+- **The plugin trims a sub-agent's role the way the sensor does.** A role
+  that starts or ends with U+001C to U+001F or U+0085 now has those
+  trimmed, and U+FEFF is kept, so the sensor, the plugin and OTLP ingest
+  derive the same agent id. Only roles with those characters at an edge
+  get a different id than before.
 
 ## v0.8.0 — 2026-10-31
 

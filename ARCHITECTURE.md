@@ -765,8 +765,8 @@ class Provider(Protocol):
 @dataclass
 class PromptContent:
     """Raw content extracted from a single LLM call or embeddings request."""
-    system: str | None              # Anthropic system param; None for OpenAI
-    messages: list[dict]            # Full messages array verbatim
+    system: str | None              # Anthropic system; OpenAI Responses instructions
+    messages: list[dict]            # Full messages array verbatim (empty for Responses)
     tools: list[dict] | None        # Tool definitions if provided
     response: dict                  # Full response as dict
     provider: str                   # "anthropic" or "openai"
@@ -774,7 +774,7 @@ class PromptContent:
     session_id: str
     event_id: str
     captured_at: str                # ISO 8601 UTC
-    input: str | list[str] | None = None               # Embeddings input (None for chat)
+    input: str | list | None = None                    # Embeddings or Responses input (None for chat)
     embedding_output: list[list[float]] | None = None  # Embedding vectors when captured
 ```
 
@@ -866,18 +866,53 @@ different levels:
   `AsyncOpenAI.chat`, `OpenAI.responses`, `AsyncOpenAI.responses`,
   `OpenAI.embeddings`, `AsyncOpenAI.embeddings` on the client classes,
   replaced with sensor descriptors that wrap the resource on first
-  access. The intercepted call paths are `chat.completions.create()` and
-  `.parse()`, `responses.create()` and `.parse()`, `embeddings.create()`,
-  and the `with_raw_response` counterparts of the chat and Responses calls
-  (`with_raw_response.create()` / `.parse()`, which return the SDK's
-  `LegacyAPIResponse` with its headers). `create(stream=True)` on chat and
-  Responses is metered from the stream. Not covered: the `.stream()`
-  helpers on those resources (they call the unwrapped resource's `create`
-  internally) and `with_streaming_response` on either resource. `parse()`
-  is the structured-output path: it never streams, and its
-  `ParsedChatCompletion` / `ParsedResponse` carries the usual `usage`.
-  `responses` is OpenAI's recommended API for new projects;
-  `embeddings` is common in RAG-heavy pipelines.
+  access. The intercepted call paths are `chat.completions.create()`,
+  `.parse()` and `.stream()`, `responses.create()`, `.parse()` and
+  `.stream()`, `embeddings.create()`, and the raw and streaming views of
+  those resources (`with_raw_response` / `with_streaming_response`, on
+  the resource or on the client). `create(stream=True)` on chat and
+  Responses is metered from the stream. The `.stream()` helpers build
+  their request by calling `self.create(..., stream=True)`, so the sensor
+  runs the SDK's own helper with the sensor's resource proxy as `self`:
+  the request takes the stream guard, the helper reads its raw events
+  through the guard, and the caller gets the SDK's own manager and
+  `ChatCompletionStream` / `ResponseStream`. The helper keeps the SDK's
+  stream state for the events it reads, so the guard takes the helper's
+  assembly (a chat helper's `current_completion_snapshot`, a Responses
+  helper's terminal `Response` or the snapshot its state folded) rather
+  than assembling the stream a second time; the chat helper's request
+  carries its `X-Stainless-Helper-Method` header, and the provider builds
+  no accumulator for it. The manager's exit also settles the guard, so a
+  helper left early reports at once. The
+  helpers' unset parameters (`NOT_GIVEN` / `omit`) are dropped before the
+  request reaches the sensor; the request is the same without them.
+  `responses.stream(response_id=...)` re-reads a stored response through
+  `retrieve` and is not a new call, so it passes through. The views mark
+  their requests with `X-Stainless-Raw-Response` (`true`, `stream`); the
+  sensor reads the header in the resource proxies, so a view on the
+  resource, on a class-patched client and on a `wrap()`-built client
+  (whose `with_raw_response` / `with_streaming_response` are the SDK's own
+  client views built over the sensor proxy) are metered the same way. A
+  raw-view call returns the SDK's `LegacyAPIResponse` with its headers and
+  its body read, and is metered like a plain call; a raw-view
+  `parse()` through the client view hands back the raw response, as the
+  resource's own `with_raw_response.parse()` does. A view call whose body
+  is unread when the caller gets it (every streaming-view call, and a
+  raw-view call with `stream=True`) is metered when the caller parses
+  it, by the same proxy the Anthropic views use
+  (`interceptor/raw_views.py`): a parsed event stream goes to the stream
+  guard, with `stream_options.include_usage` added to a chat request as
+  on `create(stream=True)`. A later `parse()` of the same response gets
+  the same guard (the SDK caches the parsed stream, and handing that back
+  would let its chunks bypass the guard), and the view's `close()` -- the
+  streaming view's context-manager exit -- settles the guard, so a stream
+  left early inside the view's `with` block is reported as the block
+  exits. langchain-openai takes the chat raw-view path
+  with `include_response_headers=True`. `parse()` is the structured-output
+  path: it never streams, and its `ParsedChatCompletion` /
+  `ParsedResponse` carries the usual `usage`. `responses` is OpenAI's
+  recommended API for new projects; `embeddings` is common in RAG-heavy
+  pipelines.
 
 Three descriptor types on the OpenAI side (`_OpenAIChatDescriptor`,
 `_OpenAIResponsesDescriptor`, `_OpenAIEmbeddingsDescriptor`), driven by an
@@ -986,13 +1021,12 @@ The SDK class patches and the litellm patch deliberately do NOT intercept:
 | Code path | Why not |
 |---|---|
 | `OpenAI.beta.chat.completions.parse` / `.stream` | Structured-output path on a separate `OpenAI.beta` `cached_property`. Not yet observed in any framework's default flow. |
-| `OpenAI.chat.completions.stream`, `OpenAI.responses.stream` | `.stream()` calls the unwrapped resource's `create` internally, so it does not pass the sensor wrapper; `create(stream=True)` on the same resources is intercepted, and so is the non-streaming `.parse()` on both. |
-| `OpenAI.chat.completions.with_raw_response.create(stream=True)`, `OpenAI.responses.with_raw_response.create(stream=True)`, `with_streaming_response` on either resource | The raw-response wrappers are intercepted for `create` and `parse`, but a streamed call through them records the pre-call estimate with no `streaming` block, and `with_streaming_response` passes through unintercepted. langchain-openai takes the chat raw-response path when `include_response_headers=True`. Planned in [#173](https://github.com/flightdeckhq/flightdeck/issues/173). |
+| `OpenAI.responses.stream(response_id=...)` | Resumes reading a response that was already generated, through `retrieve`; it is not a new call. |
 | `OpenAI.audio.*`, `images.*`, `moderations.*`, `files.*`, `fine_tuning.*`, `completions.*` (legacy) | Utility resources unrelated to LLM inference events. |
 | `Anthropic.completions.*` | Legacy completions API; superseded by `messages` / `beta.messages`. |
 | `litellm.text_completion` / `atext_completion`, `litellm.responses` / `aresponses` | Not patched. `text_completion` calls `completion` through the name bound in `litellm.main`, which the module-attribute swap does not reach: on an OpenAI chat model the OpenAI interceptor reports the SDK call it makes, and litellm's own httpx routes are unobserved. `responses` on a provider without a native Responses API is bridged through the patched `litellm.completion` and reported once as a chat call; native routes (OpenAI) go through litellm's own httpx handler and are unobserved. Both planned in [#170](https://github.com/flightdeckhq/flightdeck/issues/170). |
 | Anthropic `messages.batches.*`, `messages.count_tokens` | Batches are offline work with their own billing and run outside the kill switch and the token budget; `count_tokens` is the sensor's own estimator and makes no inference call. |
-| Anthropic `with_raw_response.create(stream=True)` whose response is never parsed | The event stream is metered once `parse()` hands it to the stream guard; a raw response that is never parsed has no close hook, so that call emits no `post_call`. The streaming view (`with_streaming_response`) always settles at close. |
+| A raw-view `create(stream=True)` (Anthropic or OpenAI) whose response is never parsed | The event stream is metered once `parse()` hands it to the stream guard. A raw response is not a context manager and has no close hook, so a call whose response is never parsed reports the pre-call estimate, with no `streaming` block, when the response is collected or the session ends. The streaming view (`with_streaming_response`) always settles at close. |
 | Frameworks that bypass the SDK entirely (raw httpx, boto3 bedrock-runtime, vertexai) | No SDK class to patch. |
 
 Extending the patch surface to a new resource is one descriptor + one entry
@@ -2047,12 +2081,14 @@ agent_id = uuid5(ee22ab58-26fc-54ef-91b4-b5c0a97f9b61,
 The namespace is `uuid5(NAMESPACE_DNS, "flightdeck.dev")` and never
 changes. Every field goes in verbatim, and the caller substitutes
 `unknown` for a missing one rather than leaving it empty. A non-empty
-`agent_role` (after trimming whitespace) is appended as a sixth
-segment, `/{agent_role}`. The sensor's `core/agent_id.py` and the
-plugin's `agent_id.mjs` implement it, and both assert the same
-vector: `coding`, `omria`, `Omri-PC`, `claude_code`, `omria@Omri-PC`
-derive `ee76931b-06fa-5da6-a019-5a8237efd496`. A new emitter's tests
-assert it too.
+`agent_role` (after trimming what Python's `str.strip()` removes: the
+Unicode White_Space characters and U+001C..U+001F) is appended as a sixth
+segment, `/{agent_role}`. The sensor's `core/agent_id.py`, the
+plugin's `agent_id.mjs` and ingestion's `internal/identity` implement it,
+and each asserts the same vector: `coding`, `omria`, `Omri-PC`,
+`claude_code`, `omria@Omri-PC` derive
+`ee76931b-06fa-5da6-a019-5a8237efd496`, and every vector in
+`contracts/identity_vectors.json`. A new emitter's tests assert them too.
 
 **Rollup ↔ projection symmetry.** The same UUID5 input tuple flows
 through two paths:
@@ -2507,17 +2543,43 @@ of its records are not used: `partial_success` counts the records
 Flightdeck did not map (`rejected_log_records`, `rejected_spans` or
 `rejected_data_points`) with a message naming why, and one record
 Flightdeck cannot use never fails the request. The message names at most
-five sources, each cut to 128 bytes, and counts the rest. Mapped events
-pass the same validation as `POST /v1/events`; a record whose event fails
-it is counted as rejected. A failed publish to NATS is 503, which OTLP
-exporters retry; the deterministic event ids make the retry safe.
+five sources, each cut to 128 bytes, and counts the rest. For log records
+it names reasons, the most frequent first, each with its count
+(`3 log records not used: "claude_code.assistant_response" is not mapped
+(2); "claude_code.tool_decision" other than a reject is not mapped (1)`),
+out of at most 64 distinct reasons a request tracks; the rest are counted
+as `N for other reasons`. Mapped events
+pass the same validation as `POST /v1/events` (one function serves both);
+a record whose event fails it is counted as rejected, the validation
+message in its reason. A failed publish to NATS is 503, which OTLP
+exporters retry; the deterministic event ids make the retry safe. So is a
+failed session read (below): the request publishes nothing, is charged
+nothing, and is answered 503.
 A request whose records are all used carries no `partial_success`.
+
+Mapping a log request can read the session table (Sessions, below),
+which the decode slot does not bound, so the reads are bounded on their
+own: at most 64 sessions a replica has not cached are read per request
+(Claude Code exports one session and its sub-agents per process, so
+only a request with invented session ids, or a collector merging many
+processes' first exports, comes near it), and the records of sessions
+past them are counted as rejected (`its session is past the 64 new
+sessions one request may name`). Exporters do not resend records
+counted in `partial_success`, so those records are dropped; the
+session's later records are read once a request has room. All of a
+request's reads share a 2-second deadline, the same wait the receiver
+allows for a decode slot; a request past it, or one whose read fails,
+is answered 503 with `Retry-After`. No read
+happens for a request whose records cannot fit the token's budget
+(Rate limit).
 
 A request is checked in this order: bearer token (401), the token's
 minute budget (429), media type and `Content-Encoding` (415 for anything
 but `gzip` or none), the size as sent (413), then, holding a decode slot
 (503), the inflated size and the decode estimate (413) and decoding
-(400), then the charge for its events (413 or 429, below). The media
+(400), the budget check before any session read (413 or 429, below), a
+failed or late session read (503), then the charge for its events (413
+or 429, below). The media
 type may carry parameters (`application/json; charset=utf-8`). An
 error response's body is a `google.rpc.Status` (`code` the gRPC status
 code, `message` the reason) in the request's encoding, and in JSON when
@@ -2538,7 +2600,11 @@ records counted as rejected cost nothing. A request whose events do not
 fit in what is left of the budget is refused with 429 and a
 `Retry-After` of when enough of the window will have aged out for them
 to fit; one whose events exceed the whole per-minute budget can never
-fit and is refused with 413. A refused request is charged nothing and
+fit and is refused with 413. The same two refusals are first checked,
+charging nothing, before the dialect reads any session, against the
+most events the request's records can map to (one per record, every
+session another client reports included): a request that cannot fit
+costs no database work. A refused request is charged nothing and
 publishes nothing. The charge is taken before publishing and a request
 whose publish then fails (503) is not refunded, so an exporter that
 retries it is charged again for the same events. The budget is the one
@@ -2559,9 +2625,9 @@ counts as no content.
 |---|---|
 | `claude_code.user_prompt` | `pre_call` |
 | `claude_code.api_request` | `post_call`: `model`, `model_requested` and `model_served`, `provider=anthropic`, `tokens_input` (`input_tokens` + `cache_read_tokens` + `cache_creation_tokens`), `tokens_output`, `tokens_cache_read`, `tokens_cache_creation`, `tokens_cache_creation_1h` (`cache_creation_1h_tokens`), `latency_ms` (`duration_ms`), a `streaming` block holding only `ttft_ms` and `final_outcome=completed` (Claude Code reports neither chunk counts nor gaps, and the dashboard renders a block without them), `cost_usd` as `cost_reported` with `cost_source=agent`, `provider_metadata.request_id` and `provider_metadata.query_source` |
-| `claude_code.api_error` | `llm_error`: `error.http_status` (`status_code`), `error.request_id`, `retry_attempt` (`attempt`), `provider=anthropic`, classified from the status code and message; `terminal` is not set, since Claude Code reports each failed attempt |
-| `claude_code.tool_result` | `tool_call` with `tool_name`, `tool_use_id`, `duration_ms` and, when `success=false`, the error block. A record with `tool_name=mcp_tool` is an `mcp_tool_call` whose `server_name` and `tool_name` are its `tool_parameters.mcp_server_name` and `mcp_tool_name` (present only when the exporter sets Claude Code's `OTEL_LOG_TOOL_DETAILS=1`; without them it stays a `tool_call` named `mcp_tool`) |
-| `claude_code.tool_decision` with `decision=reject` | `session_signal` `permission_denied`, as the plugin reports a denied tool; its `signal_data` is `tool_name`, `tool_use_id`, `reason` (the record's `source`, such as `config`) and, for an MCP tool, `mcp_server`, and never the tool's input |
+| `claude_code.api_error` | `llm_error`: `model`, `error.http_status` (`status_code`), `error.request_id`, `retry_attempt` (`attempt`), `provider=anthropic`, classified from the status code and message as the sensor classifies Anthropic's errors (400 `invalid_request`, or `context_overflow` / `quota_exceeded` when the text says so; 401 `authentication`, 402 `quota_exceeded`, 403 `permission`, 404 `not_found`, 408 and 504 `timeout`, 413 `request_too_large`, 429 `rate_limit` or `quota_exceeded`, 529 `overloaded`, other 5xx `api_error`); `error.error_message` is `Claude Code API error (HTTP <status>)`, with the record's text cut to 200 characters appended only when capture is on; `terminal` is not set, since Claude Code reports each failed attempt |
+| `claude_code.tool_result` | `tool_call` with `tool_name`, `tool_use_id`, `duration_ms` (also as `latency_ms`, as the plugin sends it) and, when `success=false`, the error block `{error_type: other, error_class: ClaudeCodeToolError, message}`, whose message is `<redacted>` while capture is off. A record with `tool_name=mcp_tool` is an `mcp_tool_call` whose `server_name` and `tool_name` are its `tool_parameters.mcp_server_name` and `mcp_tool_name` (present only when the exporter sets Claude Code's `OTEL_LOG_TOOL_DETAILS=1`; without them it stays a `tool_call` named `mcp_tool`). Nothing else of `tool_parameters` is read: for other tools it holds their input |
+| `claude_code.tool_decision` with `decision=reject` | `session_signal` `permission_denied`, as the plugin reports a denied tool; its `signal_data` is `tool_name`, `tool_use_id`, `reason` (the record's `source`, such as `config`) and, for an MCP tool, `mcp_server` (with `tool_name` the MCP tool's name), and never the tool's input |
 | `claude_code.subagent_completed` | the sub-agent's `session_end` (`close_reason=normal_exit`) |
 | any other record | counted as rejected; `claude_code.assistant_response` among them, since it can only be joined to its `post_call` by state kept across requests |
 
@@ -2578,20 +2644,40 @@ belong to a child session, `uuid5(NAMESPACE_FLIGHTDECK,
 "flightdeck://otlp/claude-code/session/<session.id>/<agent_id>")`, with
 `parent_session_id` the parent's id and `agent_role` the record's
 `agent.name`, else the `<type>` of a `query_source` of the form
-`agent:builtin:<type>`, else none. The Agent tool's own `tool_result` stays a `tool_call` on
+`agent:builtin:<type>`, else none. A sub-agent's tool records carry
+neither, so they take the role another record of the same sub-agent in
+the request names, else the one stored on the child's row (read with the
+session, below) or, when the replica has the session cached, the one it
+cached; its
+`agent_name` is `{user}@{host}/{role}` and its agent id adds the role to
+the parent's identity, as the plugin derives a sub-agent's. The Agent tool's own `tool_result` stays a `tool_call` on
 the parent.
 
 On the first mapped record of a session a replica has not cached,
-ingestion reads the session row. When the row is missing or `closed`, it
-publishes a synthetic `session_start` (id `uuid5(NAMESPACE_FLIGHTDECK,
+ingestion reads the session row. When the row is missing, or is a root
+session's and `closed`, it publishes a synthetic `session_start` (id
+`uuid5(NAMESPACE_FLIGHTDECK,
 "flightdeck://otlp/claude-code/start/<Flightdeck session id>/<event id
 of the record>")`) through the same attachment check and token stamping as
 `POST /v1/events`, so a closed session that resumes is re-attached;
-otherwise it publishes none. The cache is per replica and only saves the
+otherwise it publishes none. A closed sub-agent has finished (its
+`subagent_completed` closed it) and is never restarted: a record of it
+that arrives late is published without a start, and the worker drops it
+as it drops any event for a closed session. The cache is per replica and only saves the
 read: an entry expires 10 minutes after it is cached, well inside the
 reaper's timeout, and publishing a session's `session_end` removes it,
 so a record for a session closed since is read again and re-attaches
-it. The synthetic `session_start` sets `sensor_version` to the
+it. What a request learned is cached only once all its events are
+published, so a request refused or failed on publish starts its sessions
+again when the exporter retries it. The cache holds at most 50,000
+sessions per replica; when full it drops expired entries, at most once a
+second, and a session it still cannot hold is read on every export. A sub-agent's records
+resolve the run's root first: a root whose row is missing or closed is
+started before the child, so the child's parent row carries the
+session's context and capture posture rather than being a stub. A read
+that fails fails the request (503). The synthetic `session_start` is
+dated one microsecond before the record it precedes, so it sorts first at
+the database's microsecond precision, and sets `sensor_version` to the
 resource's `service.version`, `capture_prompts` to the session's
 posture (below), and `context` to `claude_code_session_id`
 (`session.id`), `claude_code_version`, `os`, `arch`, `terminal_type`,
@@ -2614,10 +2700,19 @@ email address, unlike the plugin's OS user, so it is personal data in
 `agents.user_name`); the host is the resource's `host.name`, else
 `unknown` (Claude Code sends none; operators set one with
 `OTEL_RESOURCE_ATTRIBUTES`); `agent_name` is `{user}@{host}`; the agent id
-is derived from them as for every client. Each `post_call` carries
+is derived from them as for every client, by a Go port of the derivation.
+`contracts/identity_vectors.json`, generated from the sensor by
+`contracts/generate_identity_vectors.py`, holds vectors the sensor, the
+plugin and the Go port each assert, the role trim included: a role is
+trimmed of exactly what Python's `str.strip()` removes, which each
+implementation names explicitly rather than relying on its language's
+own trim; `framework` is `claude-code`, as the plugin
+sends it. Each `post_call` carries
 `billing_mode`: the resource's `flightdeck.billing_mode` when set
 (`metered`, `subscription`, `local`), else `subscription`, Claude Code's
-own default. Its `cost_reported` therefore counts toward
+own default; any other value fails validation, so the session's
+`post_call` records are counted as rejected with the reason named. Its
+`cost_reported` therefore counts toward
 `estimated_cost` only on a session the operator declares metered.
 
 **Capture.** OTLP content is off unless the exporter declares it: a
@@ -2627,8 +2722,13 @@ prompt text, response text, `tool_input`, MCP arguments or results, or
 error text: only names, ids, counts, durations and success. With capture
 on, the prompt goes on the `pre_call` as a `PromptContent`
 (`provider=anthropic`, the prompt as one user message, the shape the
-plugin's `pre_call` uses), `tool_input` goes on the `tool_call` as the
-record carries it, and error text on its error block; content is cut to
+plugin's `pre_call` uses; Claude Code names no model on a prompt, so
+the `pre_call` has none), `tool_input` goes on the `tool_call` or
+`mcp_tool_call` as the record carries it (the JSON document it encodes,
+else the string), in the `event_content.tool_input` column through the
+tool-capture envelope the sensor and plugin use (`provider` `anthropic`,
+or `mcp` with `model` the server name), and error text on its error
+block; content is cut to
 fit the 768 KiB event body limit as the plugin cuts it. Claude Code sends
 the prompt only when `OTEL_LOG_USER_PROMPTS=1` and tool inputs only when
 `OTEL_LOG_TOOL_DETAILS=1`.
@@ -3141,7 +3241,7 @@ CREATE TABLE event_content (
     messages    JSONB,
     tools       JSONB,
     response    JSONB NOT NULL,
-    "input" JSONB, -- embeddings input (string or list of strings)
+    "input" JSONB, -- embeddings input, or an OpenAI Responses request's input
     tool_input  JSONB,                 -- tool args / prompt arguments
     tool_output JSONB,                 -- tool results / rendered prompts
     embedding_output JSONB,            -- embeddings vectors (capture_prompts gate)
@@ -3159,11 +3259,11 @@ never carries content inline.
 
 | Column | LLM `pre_call`/`post_call` | `embeddings` | `mcp_tool_call` | `mcp_prompt_get` | LLM `tool_call` | `mcp_resource_read` |
 |---|---|---|---|---|---|---|
-| `messages` | chat history | `[]` | `[]` | `[]` | `[]` | `[]` |
-| `system` | Anthropic system | NULL | NULL | NULL | NULL | NULL |
+| `messages` | chat history (`[]` for Responses) | `[]` | `[]` | `[]` | `[]` | `[]` |
+| `system` | Anthropic `system`, Responses `instructions` | NULL | NULL | NULL | NULL | NULL |
 | `tools` | tool schema | NULL | NULL | NULL | NULL | NULL |
 | `response` | model response | `{}` | `{}` | `{}` | `{}` | resource body (overflow) |
-| `input` | NULL | embeddings input | NULL | NULL | NULL | NULL |
+| `input` | Responses `input` (NULL for chat) | embeddings input | NULL | NULL | NULL | NULL |
 | `tool_input` | NULL | NULL | tool args | prompt args | tool input | NULL |
 | `tool_output` | NULL | NULL | tool result | rendered messages | tool output (post-hoc) | NULL |
 | `embedding_output` | NULL | output vectors | NULL | NULL | NULL | NULL |
@@ -5536,8 +5636,10 @@ records what the settle needs, drops the SDK stream (whose connection
 then closes at collection, as it would without the sensor) and queues the
 settle; the next LLM call the sensor intercepts, or the session's end,
 runs it. `messages.stream()`, `messages.create(stream=True)`,
-`chat.completions.create(stream=True)` and `responses.create(stream=True)`
-all take this path, with or without a `with` block
+`chat.completions.create(stream=True)`, `responses.create(stream=True)`,
+OpenAI's `chat.completions.stream()` and `responses.stream()` helpers and
+an event stream parsed from a raw or streaming view all take this path,
+with or without a `with` block
 (`for chunk in client.chat.completions.create(..., stream=True)`) and with
 `async for`. `create(stream=True)` sends the request inside the call, as the
 unguarded SDK does, so provider errors surface there; `messages.stream()`
@@ -5565,31 +5667,66 @@ Helper streams yield the SDK's derived events (text deltas and the like)
 alongside the raw ones, so `chunk_count` is higher for `messages.stream()`
 than for `create(stream=True)` on the same response.
 
-With `capture_prompts` on, only the `messages.stream()` helper stores a
-response: when its message is complete the assembled final message is the
-response, and when the caller leaves early the helper's accumulated
-snapshot is stored as it stands, without reading further (a stream
-reported from collection stores no partial content: the finalizer drops
-the stream before the settle runs). Raw event
-streams (`create(stream=True)` on any provider) are never assembled into a
-message, so they store the request (for `responses.create`, nothing of its
-`input`) but no response text, and emit no `tool_call`. OpenAI's
-`.stream()` helpers are listed under "Patch surface — out of scope";
+A streamed call stores the same response and emits the same `tool_call`
+events as a non-streamed one. The Anthropic `messages.stream()` helper
+assembles its own message: when it is complete the assembled final
+message is the response, and when the caller leaves early the helper's
+accumulated snapshot is stored as it stands, without reading further (a
+helper reported from collection stores no partial content: the finalizer
+drops the stream before the settle runs). A raw event stream
+(`create(stream=True)`, and the stream an OpenAI `.stream()` helper or a
+view reads through the guard) is assembled by the guard with the SDK's
+own accumulator, the one the SDK's helpers run on the same events:
+Anthropic's `accumulate_event` (its beta form for `beta.messages`),
+OpenAI's `ChatCompletionStreamState` for chat, and for Responses the
+`Response` the terminal event carries, with `ResponseStreamState` folding
+the deltas before it. The guard feeds the accumulator every event it
+reads, the usage chunk it hides from the caller included, and at the
+settle:
+
+- a stream read to its end hands over the assembled message, which is
+  the response: content capture stores it and the `tool_call` events
+  come from it (a streamed `tool_use` block's input is parsed from its
+  JSON deltas, a chat tool call's arguments are concatenated);
+- a stream the caller left early stores the partial message under
+  capture and emits no `tool_call`: a half-streamed call is not a call
+  the model made. Usage, model and stop reason come from the events as
+  before. A raw stream reported from collection keeps its accumulator
+  (parsed events only, not the connection), so it stores the partial
+  message too;
+- a stream that fails emits the `llm_error` with partial tokens and no
+  content, as before.
+
+An accumulator that raises is dropped for the rest of the stream (a
+message missing an event would be stored as if it were the response),
+and the call is metered as before; the failure is logged by exception
+class only, since the SDK accumulators build their messages from the
+streamed tool-call arguments. A chat stream is assembled only when
+something reads the result -- capture on, or a request that offers the
+model `tools` (or the legacy `functions`): the SDK's chat state
+re-serialises the message on every chunk, the price its own `.stream()`
+helper pays, and a stream that can carry no tool call with capture off
+does not pay it. A Responses stream is always assembled (its terminal
+event carries the whole response), and folds deltas only under capture;
+an event the fold cannot take (a delta for an item the stream never
+announced) ends the partial snapshot, not the assembly.
 `.parse()` never streams and is metered like `create()`, with the
 `Parsed*` result stored as the response when capture is on.
 
 ### `tool_call`
 
 Tool-use events. For Anthropic and OpenAI tool-use messages, the sensor
-emits one `tool_call` per tool invocation in the response; for streamed
-calls this holds for the Anthropic `messages.stream()` helper (its assembled
-final message is the response) while raw event streams emit none, because
-the sensor does not assemble their content blocks. Carries
+emits one `tool_call` per tool invocation in the response, streamed or
+not: a stream read to its end is assembled into the message a
+non-streamed call returns (see Streaming metering), and a stream the
+caller left early emits none. Carries
 `tool_name`, optionally `tool_input` (when `captureToolInputs=true` for
 the plugin or `capture_prompts=true` for the sensor), `tool_result` (when
 the next assistant turn shows the tool's output and capture is on).
 
-On the wire a sensor `tool_call` carries `tool_name` and `model`; under
+On the wire a sensor `tool_call` carries `tool_name` and `model`, and
+`server_name` for a call the provider made to an MCP server on the
+agent's behalf (an OpenAI Responses `mcp_call`, see below); under
 capture its input travels in the `event_content` envelope as
 `tool_input`, served by `GET /v1/events/:id/content`. The id a provider
 gives a call (a chat tool call's `id`, a Responses function call's
@@ -5604,7 +5741,13 @@ sensor emits one `tool_call` per output item that is a call:
 - `function_call`, `mcp_call` and `custom_tool_call` carry the tool's own
   name as `tool_name`; the input is the JSON-decoded `arguments` (for a
   custom tool, `{"input": <text>}`, as those tools take free-form text).
-  The MCP server label is not carried on the event ([#174](https://github.com/flightdeckhq/flightdeck/issues/174)).
+  An `mcp_call` also carries its `server_label` as `server_name`, the
+  field every MCP event and the plugin's MCP tool events name the server
+  with, cut at 256 characters as the plugin cuts it. It is metadata,
+  like the tool name, and ships with capture off; the event stays a
+  `tool_call` because the provider, not the agent's MCP client, made the
+  call, so it has no transport, fingerprint or MCP policy decision. The
+  Events view's MCP server filter matches it by `payload.server_name`.
 - Hosted tools have no per-call name, so the item type is the
   `tool_name`: `web_search_call`, `file_search_call`,
   `code_interpreter_call`, `image_generation_call`, `computer_call`,
@@ -6263,10 +6406,14 @@ captures tool use via the LLM message array when `capture_prompts=true`.
 
 Governs LLM prompt / response content, embedding inputs, and tool_result
 bodies: the user's prompt text, assistant response text, thinking blocks,
-embedding inputs, and the output of each tool the LLM invoked. Streamed
-responses are stored only when the stream is assembled into a message (the
-Anthropic `messages.stream()` helper); raw event streams store the request
-only (see "Streaming metering" under `post_call`).
+embedding inputs, and the output of each tool the LLM invoked. A
+streamed response is stored as a non-streamed one is, assembled from the
+stream; a stream the caller left early stores what had arrived (see
+"Streaming metering" under `post_call`). An OpenAI Responses request is
+stored as its own parameters: `instructions` in `system` and `input`
+verbatim in `input` (a string, or the list of input items, SDK objects
+among them dumped as the JSON the SDK sends); `messages` stays empty, as
+the Responses API has no messages parameter.
 
 No sanitiser applies. Outputs can carry arbitrary prompt-like content
 (model-generated text, tool-fetched web pages, search results) and a

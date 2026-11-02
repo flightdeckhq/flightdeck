@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/auth"
 	inats "github.com/flightdeckhq/flightdeck/ingestion/internal/nats"
 	collogs "go.opentelemetry.io/proto/slim/otlp/collector/logs/v1"
 	colmetrics "go.opentelemetry.io/proto/slim/otlp/collector/metrics/v1"
@@ -176,11 +177,11 @@ type OTLPMetricsPartialSuccess struct {
 // @Failure      429  {object}  OTLPStatus  "token's minute budget spent, or too little of it left for the request's events; see Retry-After"
 // @Failure      500  {object}  OTLPStatus  "token validation failed"
 // @Header       429  {integer}  Retry-After  "seconds until the token's minute budget has room"
-// @Failure      503  {object}  OTLPStatus  "no decode slot free (see Retry-After), or publishing the mapped events failed; retry"
-// @Header       503  {integer}  Retry-After  "seconds to wait when no decode slot was free"
+// @Failure      503  {object}  OTLPStatus  "no decode slot free or a session read failed (see Retry-After), or publishing the mapped events failed; retry"
+// @Header       503  {integer}  Retry-After  "seconds to wait when no decode slot was free or a session read failed"
 // @Router       /v1/logs [post]
-func OTLPLogsHandler(validator TokenValidator, publisher EventPublisher, dialect OTLPDialect, limiter *RateLimiter) http.HandlerFunc {
-	return otlpHandler(otlpLogsSignal, validator, publisher, dialect, limiter)
+func OTLPLogsHandler(validator TokenValidator, publisher EventPublisher, attacher SessionAttacher, dialect OTLPDialect, limiter *RateLimiter) http.HandlerFunc {
+	return otlpHandler(otlpLogsSignal, validator, publisher, attacher, dialect, limiter)
 }
 
 // OTLPTracesHandler handles POST /v1/traces.
@@ -204,8 +205,8 @@ func OTLPLogsHandler(validator TokenValidator, publisher EventPublisher, dialect
 // @Failure      503  {object}  OTLPStatus  "no decode slot free (see Retry-After), or publishing the mapped events failed; retry"
 // @Header       503  {integer}  Retry-After  "seconds to wait when no decode slot was free"
 // @Router       /v1/traces [post]
-func OTLPTracesHandler(validator TokenValidator, publisher EventPublisher, dialect OTLPDialect, limiter *RateLimiter) http.HandlerFunc {
-	return otlpHandler(otlpTracesSignal, validator, publisher, dialect, limiter)
+func OTLPTracesHandler(validator TokenValidator, publisher EventPublisher, attacher SessionAttacher, dialect OTLPDialect, limiter *RateLimiter) http.HandlerFunc {
+	return otlpHandler(otlpTracesSignal, validator, publisher, attacher, dialect, limiter)
 }
 
 // OTLPMetricsHandler handles POST /v1/metrics.
@@ -229,8 +230,8 @@ func OTLPTracesHandler(validator TokenValidator, publisher EventPublisher, diale
 // @Failure      503  {object}  OTLPStatus  "no decode slot free (see Retry-After), or publishing the mapped events failed; retry"
 // @Header       503  {integer}  Retry-After  "seconds to wait when no decode slot was free"
 // @Router       /v1/metrics [post]
-func OTLPMetricsHandler(validator TokenValidator, publisher EventPublisher, dialect OTLPDialect, limiter *RateLimiter) http.HandlerFunc {
-	return otlpHandler(otlpMetricsSignal, validator, publisher, dialect, limiter)
+func OTLPMetricsHandler(validator TokenValidator, publisher EventPublisher, attacher SessionAttacher, dialect OTLPDialect, limiter *RateLimiter) http.HandlerFunc {
+	return otlpHandler(otlpMetricsSignal, validator, publisher, attacher, dialect, limiter)
 }
 
 // otlpHandler is the OTLP/HTTP receiver for one signal. The order of
@@ -249,6 +250,7 @@ func otlpHandler(
 	sig otlpSignal,
 	validator TokenValidator,
 	publisher EventPublisher,
+	attacher SessionAttacher,
 	dialect OTLPDialect,
 	limiter *RateLimiter,
 ) http.HandlerFunc {
@@ -315,7 +317,11 @@ func otlpHandler(
 			return
 		}
 
-		mapping, acquired, status, msg := decodeInSlot(ctx, sig, dialect, enc, gzipped, raw)
+		mapCtx := ctx
+		if limiter != nil {
+			mapCtx = withOTLPBudget(ctx, otlpBudget(limiter, token))
+		}
+		mapping, acquired, status, msg := decodeInSlot(mapCtx, sig, dialect, enc, gzipped, raw)
 		if !acquired {
 			w.Header().Set("Retry-After", strconv.Itoa(otlpDecodeRetryAfterSeconds))
 			fail(http.StatusServiceUnavailable, grpcCodeUnavailable,
@@ -324,6 +330,20 @@ func otlpHandler(
 		}
 		if status != 0 {
 			fail(status, grpcCodeForStatus(status), msg)
+			return
+		}
+		if r := mapping.Refused; r != nil {
+			if r.RetryAfter > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(r.RetryAfter))
+			}
+			fail(r.Status, grpcCodeResourceExhausted, r.Message)
+			return
+		}
+		if mapping.Err != nil {
+			slog.Error("otlp mapping failed", "signal", sig.name, "err", mapping.Err)
+			w.Header().Set("Retry-After", strconv.Itoa(otlpDecodeRetryAfterSeconds))
+			fail(http.StatusServiceUnavailable, grpcCodeUnavailable,
+				"session lookup failed; retry the export")
 			return
 		}
 
@@ -342,7 +362,7 @@ func otlpHandler(
 			}
 		}
 
-		published, err := publishOTLPEvents(publisher, mapping.Events)
+		published, err := publishOTLPEvents(ctx, publisher, attacher, result, mapping.Events)
 		if err != nil {
 			slog.Error("otlp publish failed",
 				"signal", sig.name, "published", published,
@@ -352,10 +372,33 @@ func otlpHandler(
 			return
 		}
 
+		if mapping.Published != nil {
+			mapping.Published()
+		}
 		writeOTLPMessage(w, enc, http.StatusOK, sig.response(mapping))
 		slog.Info("otlp export",
 			"signal", sig.name, "status", http.StatusOK,
 			"published", published, "rejected", mapping.Rejected)
+	}
+}
+
+// otlpBudget is the budget check a dialect runs before its costly work
+// (session reads): events that exceed the token's whole budget are 413,
+// events that do not fit in what is left of it 429 with Retry-After.
+// It charges nothing; the mapped events are charged once known.
+func otlpBudget(limiter *RateLimiter, token string) func(events int) *OTLPRefusal {
+	return func(events int) *OTLPRefusal {
+		if events > limiter.Limit() {
+			return &OTLPRefusal{
+				Status: http.StatusRequestEntityTooLarge,
+				Message: fmt.Sprintf("request maps to up to %d events, more than the token's budget of %d a minute",
+					events, limiter.Limit()),
+			}
+		}
+		if fits, retryAfter := limiter.Fits(token, events); !fits {
+			return &OTLPRefusal{Status: http.StatusTooManyRequests, RetryAfter: retryAfter, Message: "rate limit exceeded"}
+		}
+		return nil
 	}
 }
 
@@ -433,18 +476,78 @@ func (e errOTLPPublishGivenUp) Error() string {
 // sequence was given up on by the publisher and counts as a failure,
 // so the exporter retries the request rather than losing its events;
 // the events' deterministic ids make the retry safe.
-func publishOTLPEvents(publisher EventPublisher, events []OTLPEvent) (int, error) {
+//
+// A session_start goes out as POST /v1/events sends one: stamped with
+// the id and name of the token that sent it, after the synchronous
+// session-attachment check (which revives a closed row), and, when it
+// re-attaches, with its stream sequence recorded on the row.
+func publishOTLPEvents(
+	ctx context.Context,
+	publisher EventPublisher,
+	attacher SessionAttacher,
+	token auth.ValidationResult,
+	events []OTLPEvent,
+) (int, error) {
 	for i, ev := range events {
+		payload := ev.Payload
+		attached := false
+		if ev.EventType == "session_start" {
+			var err error
+			if payload, err = stampSessionStartToken(payload, token); err != nil {
+				return i, err
+			}
+			attached = attachSession(ctx, attacher, ev.SessionID)
+		}
 		subject := inats.SubjectForEventType(ev.EventType)
-		seq, err := publisher.Publish(subject, ev.Payload)
+		seq, err := publisher.Publish(subject, payload)
 		if err != nil {
 			return i, err
 		}
 		if seq == 0 {
 			return i, errOTLPPublishGivenUp{subject: subject}
 		}
+		if attached {
+			if err := attacher.RecordStart(ctx, ev.SessionID, seq); err != nil {
+				slog.Warn("record session_start sequence failed",
+					"session_id", ev.SessionID, "seq", seq, "err", err)
+			}
+		}
 	}
 	return len(events), nil
+}
+
+// stampSessionStartToken adds the sending token's id and name to a
+// session_start, which the worker stores on the session row.
+func stampSessionStartToken(payload []byte, token auth.ValidationResult) ([]byte, error) {
+	if token.ID == "" {
+		return payload, nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(payload, &m); err != nil {
+		return nil, fmt.Errorf("stamp session_start token: %w", err)
+	}
+	m["token_id"] = token.ID
+	m["token_name"] = token.Name
+	return json.Marshal(m)
+}
+
+// attachSession runs the session-attachment check for a session_start
+// and reports whether it attached to an existing row. A failed check is
+// logged and treated as not attached: the flag is informational and the
+// event must still flow.
+func attachSession(ctx context.Context, attacher SessionAttacher, sessionID string) bool {
+	if attacher == nil {
+		return false
+	}
+	attached, priorState, err := attacher.Attach(ctx, sessionID)
+	if err != nil {
+		slog.Error("session attach lookup failed", "session_id", sessionID, "err", err)
+		return false
+	}
+	if attached && (priorState == "closed" || priorState == "lost") {
+		slog.Info("session revived", "session_id", sessionID, "prior_state", priorState)
+	}
+	return attached
 }
 
 // otlpRequestEncoding reports the request's OTLP encoding from its

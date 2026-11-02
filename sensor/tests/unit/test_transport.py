@@ -134,6 +134,40 @@ def test_retry_fires_with_exponential_backoff() -> None:
     assert call_count == 3
 
 
+def test_retry_stops_once_should_retry_says_no(caplog: pytest.LogCaptureFixture) -> None:
+    calls: list[int] = []
+
+    def failing_fn() -> str:
+        calls.append(1)
+        raise ConnectionError("fail")
+
+    with (
+        patch("flightdeck_sensor.transport.retry.time.sleep") as sleep,
+        pytest.raises(ConnectionError),
+    ):
+        with_retry(failing_fn, max_attempts=3, should_retry=lambda: False)
+    assert len(calls) == 1
+    sleep.assert_not_called()
+    assert "Transient failure" not in caplog.text
+
+
+def test_retry_stops_when_should_retry_turns_no_during_the_backoff() -> None:
+    calls: list[int] = []
+    answers = iter([True, False])
+
+    def failing_fn() -> str:
+        calls.append(1)
+        raise ConnectionError("fail")
+
+    with (
+        patch("flightdeck_sensor.transport.retry.time.sleep"),
+        pytest.raises(ConnectionError),
+    ):
+        # Yes before the backoff, no after it.
+        with_retry(failing_fn, max_attempts=3, should_retry=lambda: next(answers))
+    assert len(calls) == 1
+
+
 # ------------------------------------------------------------------
 # EventQueue tests
 # ------------------------------------------------------------------
@@ -158,7 +192,11 @@ class TestEventQueue:
     def test_queue_full_drops_oldest(self, caplog: pytest.LogCaptureFixture) -> None:
         mock_client = MagicMock(spec=ControlPlaneClient)
         # Slow client so drain thread doesn't empty the queue
-        mock_client.post_event.side_effect = lambda _: (time.sleep(10), None, False)[1:]
+        mock_client.post_event.side_effect = lambda _payload, **_kwargs: (
+            time.sleep(10),
+            None,
+            False,
+        )[1:]
         eq = EventQueue(mock_client)
         try:
             # Fill to capacity (drain thread may consume one, so overshoot)
@@ -189,7 +227,7 @@ class TestEventQueue:
         # static from then on except for the test's own enqueues.
         draining = threading.Event()
 
-        def blocking_post(_: object) -> tuple[None, bool]:
+        def blocking_post(_: object, **_kwargs: object) -> tuple[None, bool]:
             draining.set()
             time.sleep(10)
             return None, False
@@ -243,7 +281,7 @@ class TestEventQueue:
         agents' sessions: a directive in the response to one of those is
         not this session's to apply."""
         mock_client = MagicMock(spec=ControlPlaneClient)
-        mock_client.post_event.side_effect = lambda item: (
+        mock_client.post_event.side_effect = lambda item, **_kwargs: (
             Directive(
                 action=DirectiveAction.SHUTDOWN, reason=item["session_id"], grace_period_ms=0
             ),
@@ -278,7 +316,7 @@ class TestEventQueue:
         """A directive for an Agent SDK run's event goes to the router
         (the run's reporter), never to the sensor's own handler."""
         mock_client = MagicMock(spec=ControlPlaneClient)
-        mock_client.post_event.side_effect = lambda item: (
+        mock_client.post_event.side_effect = lambda item, **_kwargs: (
             Directive(
                 action=DirectiveAction.SHUTDOWN, reason=item["session_id"], grace_period_ms=0
             ),

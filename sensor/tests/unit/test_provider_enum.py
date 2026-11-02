@@ -60,7 +60,7 @@ def _reset_sensor() -> None:
 
 def test_provider_has_exactly_seven_members() -> None:
     """Adding a new interceptor target requires editing the enum AND
-    a new branch in ``patch()``; this test ensures one doesn't drift
+    its entry in ``_SDK_TARGETS``; this test ensures one doesn't drift
     without the other (the test in
     ``test_provider_values_match_patch_branches`` catches the
     value-side drift; this one catches the count-side).
@@ -117,21 +117,24 @@ def test_provider_member_is_a_string() -> None:
 def _patched_branches() -> dict[str, MagicMock]:
     """Open patches on every interceptor entry-point function so
     tests can assert which branches fired without mutating real SDK
-    classes. The caller wraps the dict in a ``with`` block via
+    classes. ``patch()`` looks the function up on its interceptor module
+    when it patches, so the mock sits there; entering it imports that
+    module and its SDK, which ``patch()`` then finds imported and
+    patches at once. The caller wraps the dict in a ``with`` block via
     ``contextlib.ExitStack`` to enter all four mocks at once.
     """
     return {
         "anthropic": mock_patch(
-            "flightdeck_sensor.patch_anthropic_classes",
+            "flightdeck_sensor.interceptor.anthropic.patch_anthropic_classes",
         ),
         "openai": mock_patch(
-            "flightdeck_sensor.patch_openai_classes",
+            "flightdeck_sensor.interceptor.openai.patch_openai_classes",
         ),
         "litellm": mock_patch(
-            "flightdeck_sensor.patch_litellm_functions",
+            "flightdeck_sensor.interceptor.litellm.patch_litellm_functions",
         ),
         "mcp": mock_patch(
-            "flightdeck_sensor.patch_mcp_classes",
+            "flightdeck_sensor.interceptor.mcp.patch_mcp_classes",
         ),
     }
 

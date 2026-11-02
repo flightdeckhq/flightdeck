@@ -174,15 +174,11 @@ _CUSTOM_DIRECTIVE_HANDLER_TIMEOUT_SECS = 5
 # How long a SIGTERM / SIGINT handler waits for the drain thread to send
 # session_end before it passes the signal on. A reachable control plane
 # takes the queued events and session_end in a fraction of this; past it,
-# the drain thread is still waiting for a slow control plane, or briefly
-# for locks the signal interrupted, and a signal whose default action
-# ends the process is delivered again once session_end is out.
+# the drain thread is still finishing an event's POST that was under way,
+# or waiting for a slow control plane, or briefly for locks the signal
+# interrupted, and a signal whose default action ends the process is
+# delivered again once session_end is out.
 _SIGNAL_SHUTDOWN_WAIT_SECS = 2.0
-
-# The least time session_end's single POST gets in a signal's shutdown,
-# even when the shutdown's budget is nearly spent: enough for a control
-# plane on the same network to answer.
-_SESSION_END_MIN_POST_SECS = 0.5
 
 # How often that handler re-checks whether an end() running on another
 # thread has finished. It polls, like every wait in the handler, so that
@@ -271,6 +267,21 @@ def _wait_until(done: Callable[[], bool], timeout: float) -> bool:
         if remaining <= 0:
             return False
         time.sleep(min(_SIGNAL_WAIT_POLL_SECS, remaining))
+    return True
+
+
+def _time_until(moment: float) -> float:
+    """Seconds from now to ``moment`` (a ``time.monotonic()`` value), or
+    0 once it has passed."""
+    return max(moment - time.monotonic(), 0.0)
+
+
+def _lock_comes_free(lock: Any, wait: float) -> bool:
+    """Whether ``lock`` can be taken within ``wait`` seconds; when it can,
+    it is released again at once."""
+    if not lock.acquire(timeout=wait):
+        return False
+    lock.release()
     return True
 
 
@@ -441,10 +452,10 @@ class Session:
 
         Safe to call multiple times -- second call is a no-op. When a
         SIGTERM / SIGINT handler has already started ending the session on
-        the drain thread, this waits for that to finish (up to the drain
-        thread's shutdown budget), so a process exiting right after the
-        signal -- at exit, or through ``teardown()`` -- still sends
-        session_end first.
+        the drain thread, this waits for that to finish (as long as such a
+        shutdown can take, SHUTDOWN_LIMIT_SECS from the signal), so a
+        process exiting right after the signal -- at exit, or through
+        ``teardown()`` -- still sends session_end first.
         """
         if not self._end_claim.acquire(blocking=False):
             shutdown = self._signal_shutdown
@@ -496,30 +507,43 @@ class Session:
         The code the signal interrupted may hold one of the sensor's
         locks, and on Python 3.13 may never release it (see
         SHUTDOWN_LOCK_WAIT_SECS), so nothing here waits for one for more
-        than a moment. The open streams are settled, and the events that
-        queues posted, only when every lock that takes is free. Then
-        session_end goes out last: its counters read under the session's
-        lock if it comes free within the moment, without it otherwise
+        than a moment, nor at all past the deadline. The open streams are
+        settled, and the events that queues posted, only when every lock
+        that takes is free. Then session_end goes out last: its counters
+        read under the session's lock if it comes free within the moment
+        (and not waited for again once found held), without it otherwise
         (plain attribute reads), and sent in one attempt within the time
-        left. The response's directive is not acted on: the session has
-        ended.
+        left, or SESSION_END_MIN_POST_SECS once it has run out. A failure
+        is reported once the shutdown is over, and the response's
+        directive is not acted on: the session has ended.
         """
-        from flightdeck_sensor.transport.client import SHUTDOWN_LOCK_WAIT_SECS
+        from flightdeck_sensor.transport.client import (
+            SESSION_END_MIN_POST_SECS,
+            shutdown_lock_wait,
+        )
 
-        lock_wait = min(SHUTDOWN_LOCK_WAIT_SECS, max(deadline - time.monotonic(), 0.0))
-        if self._settle_locks_free(lock_wait):
-            self._settle_open_streams(lock_wait=lock_wait)
+        probe_until = time.monotonic() + shutdown_lock_wait(deadline)
+        session_lock_free = _lock_comes_free(self._lock, _time_until(probe_until))
+        if session_lock_free and self._settle_locks_free(_time_until(probe_until)):
+            self._settle_open_streams(lock_wait=shutdown_lock_wait(deadline))
             self.event_queue.post_queued()
         try:
-            payload = self._build_payload(EventType.SESSION_END, lock_wait=lock_wait)
-            self.client.post_event(
+            payload = self._build_payload(
+                EventType.SESSION_END,
+                lock_wait=shutdown_lock_wait(deadline) if session_lock_free else 0.0,
+            )
+            self.event_queue.post_now(
                 payload,
-                timeout=max(deadline - time.monotonic(), _SESSION_END_MIN_POST_SECS),
-                max_attempts=1,
+                timeout=max(deadline - time.monotonic(), SESSION_END_MIN_POST_SECS),
             )
         finally:
             self._ended.set()
         self.client.close()
+
+    def _report_signal_end(self) -> None:
+        """Log the end of a session a signal ended; run by the drain thread
+        once that shutdown is over, since logging takes locks the code the
+        signal interrupted may hold."""
         if not self.config.quiet:
             _log.info(
                 "Flightdeck session ended on signal: session=%s tokens=%d",
@@ -528,16 +552,16 @@ class Session:
             )
 
     def _settle_locks_free(self, lock_wait: float) -> bool:
-        """Whether every lock settling a stream takes -- the session's,
-        the stream guards', the policy cache's and the event queue's --
-        can be had within ``lock_wait`` seconds in all; each is released
-        again at once."""
+        """Whether the other locks settling a stream takes -- the stream
+        guards', the policy cache's and the event queue's -- can be had
+        within ``lock_wait`` seconds in all; each is released again at
+        once. (The session's is checked first, on its own: see
+        :meth:`_end_on_drain_thread`.)"""
         deadline = time.monotonic() + lock_wait
-        for lock in (self._lock, self.open_stream_guards_lock, self.policy._lock):
-            if not lock.acquire(timeout=max(deadline - time.monotonic(), 0.0)):
+        for lock in (self.open_stream_guards_lock, self.policy._lock):
+            if not _lock_comes_free(lock, _time_until(deadline)):
                 return False
-            lock.release()
-        return self.event_queue.lock_is_free(max(deadline - time.monotonic(), 0.0))
+        return self.event_queue.lock_is_free(_time_until(deadline))
 
     def _counters(self, lock_wait: float | None = None) -> tuple[int, str | None, str | None]:
         """The session's token total, framework and model, read under its
@@ -1815,9 +1839,9 @@ class Session:
         ``_SIGNAL_SHUTDOWN_WAIT_SECS``, before passing the signal on to the
         handler it replaced. When that handler is the default action,
         which would end the process at once, and session_end is not out
-        yet, the handler returns instead -- releasing any lock the drain
-        thread is waiting for -- and the drain thread delivers the signal
-        again once session_end is out.
+        yet (an event's POST was under way, or the control plane is slow),
+        the handler returns instead, and the drain thread delivers the
+        signal again once session_end is out, within SHUTDOWN_LIMIT_SECS.
 
         A second signal, while that shutdown runs or after it, is passed
         on at once, so it forces the exit. A signal that interrupts end()
@@ -1834,7 +1858,9 @@ class Session:
             _pass_signal_on(signum, frame, prev)
             return
         self._state = SessionState.CLOSED
-        shutdown = self.event_queue.shutdown_on_drain_thread(self._end_on_drain_thread)
+        shutdown = self.event_queue.shutdown_on_drain_thread(
+            self._end_on_drain_thread, self._report_signal_end
+        )
         if shutdown is None:
             # No drain thread to send session_end; the worker closes the
             # session once it stops hearing from it.

@@ -82,12 +82,21 @@ class ControlPlaneClient:
         *,
         timeout: float | None = None,
         max_attempts: int | None = None,
+        shutting_down: Callable[[], bool] | None = None,
     ) -> tuple[Directive | None, bool]:
         """POST an event to ``/v1/events``.
 
         ``timeout`` (seconds, per request) and ``max_attempts`` default to
         the transport's own (``_TIMEOUT_SECS``, the retry policy's
         attempts); a shutdown with a deadline passes smaller ones.
+
+        ``shutting_down`` tells a post on the event queue's drain thread
+        whether a shutdown has been requested, which can happen while the
+        post is under way. Once it has, a failed attempt is not retried,
+        and a failure raises instead of being logged and handled by the
+        unavailability policy (the queue reports it once the shutdown is
+        over, since logging takes locks the code a signal interrupted may
+        hold); a directive in the response is not parsed.
 
         Returns ``(directive, attached)``:
 
@@ -109,6 +118,7 @@ class ControlPlaneClient:
             data=serialize_event(payload),
             timeout=timeout,
             max_attempts=max_attempts,
+            shutting_down=shutting_down,
         )
 
     def post_heartbeat(self, session_id: str) -> Directive | None:
@@ -209,13 +219,14 @@ class ControlPlaneClient:
         *,
         timeout: float | None = None,
         max_attempts: int | None = None,
+        shutting_down: Callable[[], bool] | None = None,
     ) -> tuple[Directive | None, bool]:
         """POST JSON and parse the response envelope for directive + attached.
 
         ``data`` is the already-encoded body when the caller has one
         (an event, kept within the size limit by ``serialize_event``).
-        ``timeout`` and ``max_attempts`` override the transport's
-        defaults (see :meth:`post_event`).
+        ``timeout``, ``max_attempts`` and ``shutting_down`` are as in
+        :meth:`post_event`.
         """
         url = f"{self._base_url}{path}"
         if data is None:
@@ -230,25 +241,36 @@ class ControlPlaneClient:
             method="POST",
         )
 
-        retry_args: dict[str, Any] = {}
+        def ending() -> bool:
+            return shutting_down is not None and shutting_down()
+
+        retry_args: dict[str, Any] = {"should_retry": lambda: not ending()}
         if max_attempts is not None:
             retry_args["max_attempts"] = max_attempts
         try:
-            raw = with_retry(lambda: self._do_request(req, timeout), **retry_args)
+            raw = with_retry(lambda: self._do_request(req, timeout, ending), **retry_args)
         except (URLError, OSError, TimeoutError, ConnectionError) as exc:
+            if ending():
+                raise
             return self._handle_unavailable(exc), False
 
-        directive = self._parse_directive(raw)
         attached = bool(raw.get("attached", False))
-        return directive, attached
+        if ending():
+            return None, attached  # the session a directive would act on is ending
+        return self._parse_directive(raw), attached
 
     def _do_request(
-        self, req: urllib.request.Request, timeout: float | None = None
+        self,
+        req: urllib.request.Request,
+        timeout: float | None = None,
+        ending: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
         """Execute a single HTTP request and return the parsed JSON body.
 
         Raises on HTTP 5xx so that :func:`with_retry` can retry.
-        HTTP 4xx is a caller bug -- log and return a neutral response.
+        HTTP 4xx is a caller bug -- log and return a neutral response;
+        once ``ending`` says a shutdown is under way, raise it instead (the
+        caller reports it after the shutdown).
         """
         try:
             with urllib.request.urlopen(
@@ -259,6 +281,8 @@ class ControlPlaneClient:
         except HTTPError as exc:
             if exc.code >= 500:
                 raise  # let retry handle it
+            if ending is not None and ending():
+                raise
             # 4xx -- caller bug, not retryable
             _log.warning("Control plane returned HTTP %d: %s", exc.code, exc.reason)
             return {"status": "ok", "directive": None}
@@ -343,14 +367,30 @@ _FLUSH_TIMEOUT_SECS = 3.0
 # reachable control plane answers in milliseconds.
 _SESSION_END_TIMEOUT_SECS = 5.0
 
-# The deadline of a whole shutdown on the drain thread, from the request
-# to the end: every POST in it is a single attempt whose timeout is capped
+# The deadline of a shutdown on the drain thread, counted from its request:
+# every POST the shutdown makes is a single attempt whose timeout is capped
 # by the time left, and every lock in it is waited for only briefly (see
 # SHUTDOWN_LOCK_WAIT_SECS), so not even a control plane that accepts and
-# never answers holds it longer. Well inside Kubernetes' default 30 s
-# termination grace period. What end() waits, by default, for a shutdown a
-# signal started.
+# never answers holds the shutdown's own work past it.
 SHUTDOWN_TIMEOUT_SECS = _FLUSH_TIMEOUT_SECS + _SESSION_END_TIMEOUT_SECS
+
+# The least time session_end's single POST gets, even once the deadline
+# has passed: enough for a control plane on the same network to answer.
+SESSION_END_MIN_POST_SECS = 0.5
+
+# The longest a shutdown on the drain thread takes, from its request to its
+# end. An event's POST already under way when the shutdown is requested
+# cannot be cut short: its attempt runs to the request timeout (its retry
+# is skipped), and session_end still gets its one short attempt after it,
+# 10.5 s in all. Well inside Kubernetes' default 30 s termination grace
+# period. A request timeout bounds each socket operation, not name
+# resolution, so a slow DNS lookup for the control plane is not covered.
+SHUTDOWN_LIMIT_SECS = max(SHUTDOWN_TIMEOUT_SECS, _TIMEOUT_SECS + SESSION_END_MIN_POST_SECS)
+
+# Room on top of SHUTDOWN_LIMIT_SECS for a waiter to see the shutdown
+# finish: the work between and after the POSTs (serialising, closing the
+# client) takes milliseconds, so half a second covers a loaded machine.
+_SHUTDOWN_FINISH_SLACK_SECS = 0.5
 
 # How long that shutdown waits for a lock the code a signal interrupted may
 # hold (the session's, the stream guards', the policy's, the event queue's)
@@ -361,6 +401,14 @@ SHUTDOWN_TIMEOUT_SECS = _FLUSH_TIMEOUT_SECS + _SESSION_END_TIMEOUT_SECS
 # ``with`` / ``finally`` cleanup, leaving its lock held. So waiting any
 # longer buys nothing, and session_end goes out without the lock.
 SHUTDOWN_LOCK_WAIT_SECS = 0.5
+
+
+def shutdown_lock_wait(deadline: float) -> float:
+    """How long a shutdown with ``deadline`` (a ``time.monotonic()``
+    value) may wait for a lock now: ``SHUTDOWN_LOCK_WAIT_SECS``, or what is
+    left before the deadline, or nothing once it has passed."""
+    return min(SHUTDOWN_LOCK_WAIT_SECS, max(deadline - time.monotonic(), 0.0))
+
 
 # How long close() waits for each queue thread to exit.
 _THREAD_EXIT_TIMEOUT_SECS = 5.0
@@ -448,10 +496,19 @@ class DrainShutdown:
         final_step: Callable[[float], None],
         wake: Callable[[], bool],
         drain_thread: threading.Thread,
+        report: Callable[[], None] | None = None,
     ) -> None:
+        # When the shutdown was requested: its deadline counts from here,
+        # not from when the drain thread gets to it, which an event's POST
+        # under way can hold up.
+        self.requested_at = time.monotonic()
         # Called on the drain thread with the shutdown's deadline (a
         # time.monotonic() value).
         self.final_step = final_step
+        # Called on the drain thread once the shutdown is over, for what
+        # its caller logs: logging takes locks the code a signal
+        # interrupted may hold.
+        self.report = report
         self._wake = wake
         self._woken = False
         self._drain_thread = drain_thread
@@ -471,14 +528,19 @@ class DrainShutdown:
         if not self._woken:
             self._woken = self._wake()
 
-    def wait(self, timeout: float = SHUTDOWN_TIMEOUT_SECS) -> bool:
+    def wait(self, timeout: float | None = None) -> bool:
         """Wait up to ``timeout`` seconds for the shutdown to finish,
         waking the drain thread meanwhile; return whether it finished.
-        On the drain thread itself it returns at once: that thread is the
-        one that finishes it."""
+        Without a timeout, wait as long as a shutdown can take
+        (``SHUTDOWN_LIMIT_SECS`` from its request). On the drain thread
+        itself it returns at once: that thread is the one that finishes
+        it."""
         if threading.current_thread() is self._drain_thread:
             return self._finished.is_set()
-        deadline = time.monotonic() + timeout
+        if timeout is None:
+            deadline = self.requested_at + SHUTDOWN_LIMIT_SECS + _SHUTDOWN_FINISH_SLACK_SECS
+        else:
+            deadline = time.monotonic() + timeout
         while not self._finished.is_set():
             self.wake()
             remaining = deadline - time.monotonic()
@@ -568,8 +630,10 @@ class EventQueue:
         # Set, with a plain attribute write, by shutdown_on_drain_thread;
         # the drain loop checks it before each wait for an event.
         self._shutdown: DrainShutdown | None = None
-        # When the shutdown stops posting queued events (see post_queued).
+        # When the shutdown stops posting queued events (see post_queued),
+        # and its deadline as a whole.
         self._queued_deadline = 0.0
+        self._shutdown_deadline = 0.0
         # What the shutdown could not send, reported once it is over:
         # logging takes locks the code a signal interrupted may hold.
         self._dropped = 0
@@ -704,13 +768,19 @@ class EventQueue:
                     _THREAD_EXIT_TIMEOUT_SECS,
                 )
 
-    def shutdown_on_drain_thread(self, final_step: Callable[[float], None]) -> DrainShutdown | None:
+    def shutdown_on_drain_thread(
+        self,
+        final_step: Callable[[float], None],
+        report: Callable[[], None] | None = None,
+    ) -> DrainShutdown | None:
         """Have the drain thread end the queue: post the events already
         queued, run ``final_step`` with the shutdown's deadline (it may
-        call :meth:`post_queued` for events it queues), stop the directive
-        thread and exit, all within ``SHUTDOWN_TIMEOUT_SECS``. The caller
-        waits on the returned handle; None means no drain thread is
-        running to do it.
+        call :meth:`post_queued` and :meth:`post_now`), stop the directive
+        thread, then run ``report`` and exit. The deadline is
+        ``SHUTDOWN_TIMEOUT_SECS`` from now; an event's POST already under
+        way is not retried, and finishes first (see SHUTDOWN_LIMIT_SECS).
+        The caller waits on the returned handle; None means no drain
+        thread is running to do it.
 
         Takes no lock that a frame below the caller could hold, so a
         signal handler can call it: the request is a plain attribute the
@@ -725,7 +795,7 @@ class EventQueue:
         shutdown = self._shutdown
         if shutdown is None:
             shutdown = DrainShutdown(
-                final_step, lambda: self._queue.offer(_WAKE), self._drain_thread
+                final_step, lambda: self._queue.offer(_WAKE), self._drain_thread, report
             )
             self._shutdown = shutdown
         shutdown.wake()
@@ -743,13 +813,13 @@ class EventQueue:
         down or slow holds the process's exit no longer than the budget,
         and session_end, posted after this, stays the session's last
         event. The queue's lock is waited for only briefly (see
-        SHUTDOWN_LOCK_WAIT_SECS); while it stays held, the events left are
-        not sent.
+        SHUTDOWN_LOCK_WAIT_SECS), and not at all past the shutdown's
+        deadline; while it stays held, the events left are not sent.
         """
         if threading.current_thread() is not self._drain_thread or self._shutdown is None:
             return
         while True:
-            item = self._queue.take(SHUTDOWN_LOCK_WAIT_SECS)
+            item = self._queue.take(shutdown_lock_wait(self._shutdown_deadline))
             if item is _NOTHING:
                 break
             try:
@@ -763,10 +833,25 @@ class EventQueue:
             finally:
                 self._queue.task_done()
 
+    def post_now(self, payload: dict[str, Any], *, timeout: float) -> None:
+        """Post ``payload`` at once, in one attempt within ``timeout``
+        seconds, during a shutdown on the drain thread (session_end, after
+        the queued events); anything else calling it is a no-op. A failure
+        is counted and reported once the shutdown is over, and a directive
+        in the response is dropped."""
+        if threading.current_thread() is not self._drain_thread or self._shutdown is None:
+            return
+        self._post(payload, timeout=timeout, max_attempts=1)
+
     def lock_is_free(self, lock_wait: float) -> bool:
         """Whether the event queue's lock can be taken within
         ``lock_wait`` seconds (see SHUTDOWN_LOCK_WAIT_SECS)."""
         return self._queue.lock_is_free(lock_wait)
+
+    def _shutting_down(self) -> bool:
+        """Whether a shutdown has been requested (a plain attribute read,
+        so the transport can ask it between the attempts of a post)."""
+        return self._shutdown is not None
 
     # ------------------------------------------------------------------
     # Internals
@@ -843,7 +928,9 @@ class EventQueue:
     ) -> None:
         """Post one event and hand any directive in the response on.
         ``timeout`` / ``max_attempts`` are a shutdown's limits for the
-        request; normal draining leaves the transport's defaults."""
+        request; normal draining leaves the transport's defaults. Once a
+        shutdown is requested, even while this post is under way, a failed
+        attempt is not retried and the failure is counted, not logged."""
         directive: Directive | None = None
         limits: dict[str, Any] = {}
         if timeout is not None:
@@ -859,7 +946,11 @@ class EventQueue:
             # async path has no session handle to log it on.
             # Discard here; Session._post_event is the sole
             # consumer of the attach confirmation.
-            directive, _ = self._client.post_event(item, **limits)  # type: ignore[arg-type]
+            directive, _ = self._client.post_event(
+                item,  # type: ignore[arg-type]
+                shutting_down=self._shutting_down,
+                **limits,
+            )
         except Exception as exc:
             if self._shutdown is not None:
                 # Reported once the shutdown is over (see _run_shutdown).
@@ -897,18 +988,19 @@ class EventQueue:
                 )
 
     def _run_shutdown(self, shutdown: DrainShutdown) -> None:
-        """Run a shutdown on the drain thread, within
-        ``SHUTDOWN_TIMEOUT_SECS``: post the events queued before it, run
-        its final step with the deadline, stop the directive thread, then
-        mark it finished (which also delivers a signal its caller asked to
-        have delivered again). What went wrong is logged only after that,
-        since logging takes locks the code a signal interrupted may hold."""
-        started = time.monotonic()
-        self._queued_deadline = started + _FLUSH_TIMEOUT_SECS
+        """Run a shutdown on the drain thread, by its deadline
+        (``SHUTDOWN_TIMEOUT_SECS`` from its request): post the events
+        queued before it, run its final step with the deadline, stop the
+        directive thread, then mark it finished (which also delivers a
+        signal its caller asked to have delivered again). What went wrong,
+        and the caller's report, are logged only after that, since logging
+        takes locks the code a signal interrupted may hold."""
+        self._queued_deadline = shutdown.requested_at + _FLUSH_TIMEOUT_SECS
+        self._shutdown_deadline = shutdown.requested_at + SHUTDOWN_TIMEOUT_SECS
         failure: Exception | None = None
         try:
             self.post_queued()
-            shutdown.final_step(started + SHUTDOWN_TIMEOUT_SECS)
+            shutdown.final_step(self._shutdown_deadline)
         except Exception as exc:
             failure = exc
         finally:
@@ -922,11 +1014,16 @@ class EventQueue:
             _log.warning("shutdown on the drain thread failed", exc_info=failure)
         if self._dropped or self._failed_posts:
             _log.warning(
-                "shutdown: %d queued events were not sent within %.1fs and %d failed",
+                "shutdown: %d queued events were not sent within %.1fs, and %d posts failed",
                 self._dropped,
                 _FLUSH_TIMEOUT_SECS,
                 self._failed_posts,
             )
+        if shutdown.report is not None:
+            try:
+                shutdown.report()
+            except Exception:
+                _log.debug("shutdown: the report failed", exc_info=True)
 
     def _directive_loop(self) -> None:
         """Background thread: drain the directive queue.

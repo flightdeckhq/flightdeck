@@ -2,25 +2,28 @@
 
 The handler runs on top of whatever the signal interrupted, which may hold
 the session's, the policy's or the event queue's lock. It takes none of
-them: the drain thread sends session_end, within one overall deadline,
-while the handler polls for a bounded time; then the signal is passed on
-(or, for the default action, delivered again once session_end is out).
-The drain thread waits for a lock the interrupted code may hold only
-briefly, and does without it: on Python 3.13 that code may never release
-it. The subprocess tests send real signals to a child; the in-process
-ones pin the hand-off and the handler's decisions without a signal.
+them: the drain thread sends session_end, within one overall deadline
+counted from the signal (an event's POST already under way finishes
+first, unretried), while the handler polls for a bounded time; then the
+signal is passed on (or, for the default action, delivered again once
+session_end is out). The drain thread waits for a lock the interrupted
+code may hold only briefly, and does without it: on Python 3.13 that code
+may never release it. The subprocess tests send real signals to a child;
+the in-process ones pin the hand-off and the handler's decisions without
+a signal.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
 import signal
 import socket
 import subprocess
 import threading
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -31,6 +34,7 @@ from flightdeck_sensor.core.types import Directive, DirectiveAction, SensorConfi
 from flightdeck_sensor.interceptor import base as interceptor_base
 from flightdeck_sensor.transport import client as client_module
 from flightdeck_sensor.transport.client import (
+    SHUTDOWN_LIMIT_SECS,
     SHUTDOWN_TIMEOUT_SECS,
     ControlPlaneClient,
     DrainShutdown,
@@ -38,6 +42,10 @@ from flightdeck_sensor.transport.client import (
     _EventStore,
 )
 from tests.unit._child_process import CaptureServer, child_env, finish, read_until, start_child
+from tests.unit._signal_child import INFLIGHT_EVENT_TYPE
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 posix_only = pytest.mark.skipif(os.name == "nt", reason="sends POSIX signals to a child")
 
@@ -74,6 +82,16 @@ DRAIN_WAIT_SECS = 5.0
 # waits for it.
 OTHER_END_SECS = 0.3
 
+# How long an event's POST is held up in process, in the test of the
+# deadline: long enough that a deadline counted from the end of it would
+# differ from one counted from the request.
+IN_FLIGHT_SECS = 0.5
+
+# How long a test waits for a child's event to reach the capture server,
+# and how often it looks.
+EVENT_ARRIVAL_SECS = 15.0
+POLL_SECS = 0.01
+
 
 def _start(capture: CaptureServer, mode: str, *args: str) -> tuple[subprocess.Popen[str], str]:
     proc = start_child("_signal_child.py", capture.url, mode, *args, env=child_env())
@@ -83,6 +101,16 @@ def _start(capture: CaptureServer, mode: str, *args: str) -> tuple[subprocess.Po
             session_id = line.split(" ", 1)[1]
     assert session_id, "the child printed no session id"
     return proc, session_id
+
+
+def _poll(done: Callable[[], bool], timeout: float) -> bool:
+    """Poll ``done`` until it is true or ``timeout`` seconds pass."""
+    deadline = time.monotonic() + timeout
+    while not done():
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(POLL_SECS)
+    return True
 
 
 # ----------------------------------------------------------------------
@@ -152,6 +180,30 @@ def test_sigterm_with_a_hanging_control_plane_ends_within_the_shutdown_deadline(
     # full-timeout attempts, then the process ended by it.
     assert code == -signal.SIGTERM, (code, out, err)
     assert elapsed < SHUTDOWN_TIMEOUT_SECS + SHUTDOWN_SLACK_SECS, elapsed
+    assert events[-1] == "session_end", events
+
+
+@posix_only
+def test_sigterm_with_an_event_post_under_way_ends_within_the_shutdown_limit() -> None:
+    with CaptureServer(hang_after_start=True) as capture:
+        proc, session_id = _start(capture, "inflight")
+        # The capture server has the event and holds its response: the
+        # drain thread is inside that POST, the usual state while events
+        # flow.
+        assert _poll(
+            lambda: INFLIGHT_EVENT_TYPE in capture.event_types(session_id), EVENT_ARRIVAL_SECS
+        )
+        sent = time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        code, out, err = finish(proc)
+        elapsed = time.monotonic() - sent
+        events = capture.event_types(session_id)
+    # The POST under way ran to its request timeout and was not retried;
+    # session_end then still got its one short attempt. Before, the
+    # deadline started only after that POST and its retry: 27 s.
+    assert code == -signal.SIGTERM, (code, out, err)
+    assert elapsed < SHUTDOWN_LIMIT_SECS + SHUTDOWN_SLACK_SECS, elapsed
+    assert events.count(INFLIGHT_EVENT_TYPE) == 1, events
     assert events[-1] == "session_end", events
 
 
@@ -460,8 +512,9 @@ def test_post_queued_is_a_no_op_off_the_drain_thread() -> None:
     client.post_event.assert_not_called()
 
 
-def test_post_event_honours_a_timeout_and_a_single_attempt() -> None:
-    # A control plane that accepts and never answers.
+def _silent_server() -> tuple[socket.socket, list[socket.socket], str]:
+    """A control plane that accepts connections and never answers: its
+    listener, the connections it has accepted, and its URL."""
     listener = socket.create_server(("127.0.0.1", 0))
     accepted: list[socket.socket] = []
 
@@ -475,19 +528,108 @@ def test_post_event_honours_a_timeout_and_a_single_attempt() -> None:
 
     threading.Thread(target=accept_forever, daemon=True).start()
     host, port = listener.getsockname()[:2]
-    client = ControlPlaneClient(server=f"http://{host}:{port}", token="tok")
+    return listener, accepted, f"http://{host}:{port}"
+
+
+def _close(listener: socket.socket, accepted: list[socket.socket]) -> None:
+    listener.close()
+    for conn in accepted:
+        conn.close()
+
+
+def test_post_event_honours_a_timeout_and_a_single_attempt() -> None:
+    listener, accepted, url = _silent_server()
+    client = ControlPlaneClient(server=url, token="tok")
     try:
         started = time.monotonic()
         result = client.post_event({"event_type": "session_end"}, timeout=0.3, max_attempts=1)
         elapsed = time.monotonic() - started
     finally:
-        listener.close()
-        for conn in accepted:
-            conn.close()
+        _close(listener, accepted)
     assert result == (None, False)
     # One attempt of 0.3 s; the defaults would take two of 10 s.
     assert elapsed < 2.0, elapsed
     assert len(accepted) == 1
+
+
+def test_a_post_under_way_when_a_shutdown_is_requested_is_neither_retried_nor_logged(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.DEBUG, logger="flightdeck_sensor")
+    listener, accepted, url = _silent_server()
+    client = ControlPlaneClient(server=url, token="tok")
+    try:
+        # The shutdown is requested once the first attempt is under way.
+        with pytest.raises(OSError):
+            client.post_event(
+                {"event_type": "post_call"}, timeout=0.3, shutting_down=lambda: bool(accepted)
+            )
+    finally:
+        _close(listener, accepted)
+    assert len(accepted) == 1
+    # The failure is the queue's to report, once the shutdown is over.
+    assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+
+def test_waiting_for_a_shutdown_lasts_until_its_limit_from_the_request() -> None:
+    # A shutdown no drain thread finishes, requested almost
+    # SHUTDOWN_LIMIT_SECS ago: what end() waits is the rest of the limit
+    # (and the slack), not a fresh SHUTDOWN_TIMEOUT_SECS from its call.
+    shutdown = DrainShutdown(lambda _deadline: None, lambda: True, threading.Thread())
+    shutdown.requested_at = time.monotonic() - SHUTDOWN_LIMIT_SECS + IN_FLIGHT_SECS
+    started = time.monotonic()
+    assert shutdown.wait() is False
+    elapsed = time.monotonic() - started
+    assert IN_FLIGHT_SECS <= elapsed < DRAIN_WAIT_SECS, elapsed
+
+
+def test_the_deadline_counts_from_the_request_not_from_a_post_under_way() -> None:
+    in_post = threading.Event()
+    release = threading.Event()
+
+    def post(payload: dict[str, Any], **_kwargs: Any) -> tuple[None, bool]:
+        in_post.set()
+        release.wait(DRAIN_WAIT_SECS)
+        return None, False
+
+    queue = EventQueue(_client(post))
+    queue.enqueue({"event_type": "post_call"})
+    assert in_post.wait(DRAIN_WAIT_SECS)
+    deadlines: list[float] = []
+    shutdown = queue.shutdown_on_drain_thread(deadlines.append)
+    assert shutdown is not None
+    # The post under way holds the drain thread past the request.
+    threading.Timer(IN_FLIGHT_SECS, release.set).start()
+    assert shutdown.wait(DRAIN_WAIT_SECS)
+    assert deadlines == [shutdown.requested_at + SHUTDOWN_TIMEOUT_SECS]
+
+
+def test_a_failed_session_end_is_counted_and_reported_once_the_shutdown_is_over(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(session_module, "_SIGNAL_SHUTDOWN_WAIT_SECS", DRAIN_WAIT_SECS)
+    caplog.set_level(logging.DEBUG, logger="flightdeck_sensor")
+    with socket.create_server(("127.0.0.1", 0)) as probe:
+        port = probe.getsockname()[1]
+    # Nothing listens there any more: every POST is refused.
+    config = SensorConfig(
+        server=f"http://127.0.0.1:{port}",
+        token="tok",
+        agent_flavor="test",
+        agent_type="production",
+        quiet=True,
+    )
+    session = Session(config=config, client=ControlPlaneClient(server=config.server, token="tok"))
+    passed_on: list[int] = []
+    session._on_signal(signal.SIGTERM, None, lambda s, _f: passed_on.append(s))
+    session.event_queue._drain_thread.join(DRAIN_WAIT_SECS)
+    messages = [r.getMessage() for r in caplog.records]
+    assert passed_on == [signal.SIGTERM]
+    assert session._ended.is_set()
+    # Not logged while the shutdown ran (logging takes locks the code the
+    # signal interrupted may hold), and counted for the report after it.
+    assert not [m for m in messages if "unreachable" in m or "Transient failure" in m], messages
+    assert [m for m in messages if "1 posts failed" in m], messages
 
 
 # ----------------------------------------------------------------------
@@ -516,6 +658,20 @@ def test_session_end_goes_out_while_the_interrupted_code_holds_the_session_lock(
 ) -> None:
     monkeypatch.setattr(session_module, "_SIGNAL_SHUTDOWN_WAIT_SECS", DRAIN_WAIT_SECS)
     session, client = _session()
+    lock_waits: list[float | None] = []
+    real_counters = session._counters
+    real_close_reason = session._sensor_close_reason
+
+    def counters(lock_wait: float | None = None) -> tuple[int, str | None, str | None]:
+        lock_waits.append(lock_wait)
+        return real_counters(lock_wait)
+
+    def close_reason(lock_wait: float | None = None) -> str | None:
+        lock_waits.append(lock_wait)
+        return real_close_reason(lock_wait)
+
+    monkeypatch.setattr(session, "_counters", counters)
+    monkeypatch.setattr(session, "_sensor_close_reason", close_reason)
     passed_on: list[int] = []
     with session._lock:
         started = time.monotonic()
@@ -530,6 +686,8 @@ def test_session_end_goes_out_while_the_interrupted_code_holds_the_session_lock(
     (call,) = client.post_event.call_args_list
     assert call.kwargs["max_attempts"] == 1
     assert 0 < call.kwargs["timeout"] <= SHUTDOWN_TIMEOUT_SECS
+    # Found held before the settle, the lock was not waited for again.
+    assert lock_waits == [0.0, 0.0]
 
 
 def test_session_end_goes_out_when_a_thread_never_releases_the_session_lock(
@@ -646,10 +804,10 @@ def test_end_waits_for_the_shutdown_a_signal_started(monkeypatch: pytest.MonkeyP
 
 def test_a_second_signal_is_passed_on_without_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(session_module, "_SIGNAL_SHUTDOWN_WAIT_SECS", 0.1)
-    waits: list[float] = []
+    waits: list[float | None] = []
     original_wait = DrainShutdown.wait
 
-    def recording_wait(self: DrainShutdown, timeout: float = SHUTDOWN_TIMEOUT_SECS) -> bool:
+    def recording_wait(self: DrainShutdown, timeout: float | None = None) -> bool:
         waits.append(timeout)
         return original_wait(self, timeout)
 

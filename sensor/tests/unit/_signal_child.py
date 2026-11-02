@@ -20,6 +20,9 @@ if none ends it, it prints ``ALIVE`` and exits normally. Modes:
   ``exec`` run, on any thread, through an audit hook; when the SIGINT
   reaches it as KeyboardInterrupt it prints them as ``LOADED <json>`` and
   exits normally.
+- ``inflight``: queues one ``INFLIGHT_EVENT_TYPE`` event before READY, so
+  that against a capture server that holds its responses the drain
+  thread's POST of it is under way when the signal lands.
 - ``chain``: installs an application SIGTERM handler before ``init()``;
   it posts a marker to the capture server and exits with
   ``APP_EXIT_CODE``.
@@ -56,6 +59,8 @@ WAIT_SECS = 30.0
 # How long ``ignore`` waits before exiting on its own.
 SHORT_WAIT_SECS = 1.0
 APP_EXIT_CODE = 7
+# The event ``inflight`` queues (test_signal_shutdown.py looks for it).
+INFLIGHT_EVENT_TYPE = "tool_call"
 
 
 def _post_marker(server: str, name: str) -> None:
@@ -130,6 +135,11 @@ def main() -> None:
         except KeyboardInterrupt:
             print(f"LOADED {json.dumps(loaded)}", flush=True)
             return
+    elif mode == "inflight":
+        session.event_queue.enqueue(
+            {"event_type": INFLIGHT_EVENT_TYPE, "session_id": session.config.session_id}
+        )
+        print("READY", flush=True)
     else:
         print("READY", flush=True)
     time.sleep(SHORT_WAIT_SECS if mode == "ignore" else WAIT_SECS)

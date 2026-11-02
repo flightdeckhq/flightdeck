@@ -2858,7 +2858,9 @@ processes' first exports, comes near it), and the records of sessions
 past them are counted as rejected (`its session is past the 64 new
 sessions one request may name`). Exporters do not resend records
 counted in `partial_success`, so those records are dropped; the
-session's later records are read once a request has room. All of a
+session's later records are read once a request has room. One more
+read, for all of them together, finds which of the sub-agents a request
+names are closed and when each ended (Sub-agent resumes, below). All of a
 request's reads share a 2-second deadline, the same wait the receiver
 allows for a decode slot; a request past it, or one whose read fails,
 is answered 503 with `Retry-After`. No read
@@ -2920,7 +2922,7 @@ counts as no content.
 | `claude_code.api_error` | `llm_error`: `model`, `error.http_status` (`status_code`), `error.request_id`, `retry_attempt` (`attempt`), `provider=anthropic`, classified from the status code and message as the sensor classifies Anthropic's errors (400 `invalid_request`, or `context_overflow` / `quota_exceeded` when the text says so; 401 `authentication`, 402 `quota_exceeded`, 403 `permission`, 404 `not_found`, 408 and 504 `timeout`, 413 `request_too_large`, 429 `rate_limit` or `quota_exceeded`, 529 `overloaded`, other 5xx `api_error`); `error.error_message` is `Claude Code API error (HTTP <status>)`, with the record's text cut to 200 characters appended only when capture is on; `terminal` is not set, since Claude Code reports each failed attempt |
 | `claude_code.tool_result` | `tool_call` with `tool_name`, `tool_use_id`, `duration_ms` (also as `latency_ms`, as the plugin sends it) and, when `success=false`, the error block `{error_type: other, error_class: ClaudeCodeToolError, message}`, whose message is `<redacted>` while capture is off. A record with `tool_name=mcp_tool` is an `mcp_tool_call` whose `server_name` and `tool_name` are its `tool_parameters.mcp_server_name` and `mcp_tool_name` (present only when the exporter sets Claude Code's `OTEL_LOG_TOOL_DETAILS=1`; without them it stays a `tool_call` named `mcp_tool`). Nothing else of `tool_parameters` is read: for other tools it holds their input |
 | `claude_code.tool_decision` with `decision=reject` | `session_signal` `permission_denied`, as the plugin reports a denied tool; its `signal_data` is `tool_name`, `tool_use_id`, `reason` (the record's `source`, such as `config`) and, for an MCP tool, `mcp_server` (with `tool_name` the MCP tool's name), and never the tool's input |
-| `claude_code.subagent_completed` | the sub-agent's `session_end` (`close_reason=normal_exit`) |
+| `claude_code.subagent_completed` | the sub-agent's `session_end` (`close_reason=normal_exit`), one per run of the sub-agent (Sub-agent resumes, below) |
 | any other record | counted as rejected; `claude_code.assistant_response` among them, since it can only be joined to its `post_call` by state kept across requests |
 
 An event's id is `uuid5(NAMESPACE_FLIGHTDECK,
@@ -2952,15 +2954,13 @@ session's and `closed`, it publishes a synthetic `session_start` (id
 "flightdeck://otlp/claude-code/start/<Flightdeck session id>/<event id
 of the record>")`) through the same attachment check and token stamping as
 `POST /v1/events`, so a closed session that resumes is re-attached;
-otherwise it publishes none. A closed sub-agent has finished (its
-`subagent_completed` closed it) and is never restarted: a record of it
-that arrives late is published without a start, and the worker stores
-its event but skips its session side effects, as for any event on a
-closed session (see Session state machine): the child stays closed. The cache is per replica and only saves the
-read: an entry expires 10 minutes after it is cached, well inside the
-reaper's timeout, and publishing a session's `session_end` removes it,
-so a record for a session closed since is read again and re-attaches
-it. What a request learned is cached only once all its events are
+otherwise it publishes none. A closed sub-agent is started again only
+by a record dated after its end (Sub-agent resumes, below). The cache is
+per replica and only saves the read: an entry expires 10 minutes after
+it is cached, well inside the reaper's timeout, so a root the reaper
+closes is read again, and re-attached, by its next record; a sub-agent,
+whose end any replica may publish, has its row read for that end on
+every request (below). What a request learned is cached only once all its events are
 published, so a request refused or failed on publish starts its sessions
 again when the exporter retries it. The cache holds at most 50,000
 sessions per replica; when full it drops expired entries, at most once a
@@ -2985,6 +2985,69 @@ same first read, a containment query (`context @> {"claude_code_session_id": …
 that the GIN index on `sessions.context` serves, and is not repeated once
 a session is stored: a session the plugin starts reporting after its
 first OTLP records were stored is reported by both.
+
+**Sub-agent resumes.** Claude Code can run a sub-agent again, under the
+same `agent_id`, after its `subagent_completed`: a `SendMessage` to a
+sub-agent that has completed resumes it, and each run ends with a
+`subagent_completed` of its own. (A sub-agent that stops while a
+background task of its own still runs has not completed: Claude Code
+sends no `subagent_completed` until the run that task wakes has ended.)
+A record of a closed sub-agent dated more than one second after the
+sub-agent's end is a resume: it is preceded by a synthetic
+`session_start` that re-attaches the row, as a closed root's is, so the
+worker adds the resumed run's tokens to `tokens_used` and the start is
+recorded as an attachment (see Session attachment flow). A record dated
+at or before that is late, the tail of a finished run delivered out of
+order: it is
+published without a start, and the worker stores its event but skips
+its session side effects, as for any event on a closed session (see
+Session state machine): its tokens are not added and the child stays
+closed, so a late record never reopens a finished sub-agent.
+
+The end is the date of the sub-agent's latest stored `session_end`, when
+no `session_start` is stored after it: the `subagent_completed` that
+closed it, dated by the same Claude Code clock as the records compared
+with it, or the end the reaper stored when it closed the sub-agent. The
+row's `ended_at` stands in only when there is no such end: the worker
+sets it by its own clock when it processes the end, up to Claude Code's
+export interval (5 seconds by default) after the end, and a resumed
+run's first record can come sooner than that. A late record is dated at
+or before the end, since Claude Code dates a run's records before its
+`subagent_completed`; a resumed run's first record follows a model
+response the sub-agent gives after the resume, seconds after the end.
+The second of tolerance between the two covers the database's
+microsecond rounding of the end and corrections made to the client's
+clock while the session runs. A record is dated by its `time_unix_nano`,
+else its `observed_time_unix_nano`, else the time the receiver maps it;
+one the receiver dated cannot be compared with an end on Claude Code's
+clock, so it never starts a closed sub-agent and is published as late.
+
+The worker closes a row a few database round trips before it stores the
+event of the end that closed it. A row read in that moment has its
+current run's `session_start` stored after its latest stored end (the
+previous run's, or none), so its `ended_at` stands in: a late record,
+dated before it, still reads as late, but a resumed run's record dated
+within a second of it reads as late too and starts nothing; the run's
+next record, read once the end event is stored, re-attaches the row.
+
+Each record is judged by its own date against the latest end the
+request knows: the row's, or a `subagent_completed` earlier in the same
+request. A request holding a run's end and the resumed run's records
+therefore publishes the end, then the start, then the resumed run's
+records, and the worker closes and reopens the row in that order (as
+for any start, the attachment is recorded only when the row exists
+by the time the start is published, which a sub-agent whose first run
+and resume share one export may miss). Only the first record past the
+end gets a start; a late record after it lands on the reopened row and
+is counted with it. Every request reads the
+rows of the sub-agents it names for their ends, in one read for all of
+them, since another replica may have published an end; the replica
+cache saves the rest of a sub-agent's read. A resumed run's records
+mapped before the worker has processed the end they follow find the row
+open and get no start: the worker stores them on the row that end then
+closes, and their tokens are never added. The run's next record mapped
+after the worker has processed the end re-attaches the row; a resumed
+run that also ends before then is never re-attached.
 
 **Identity and billing.** `agent_type` is `coding`; the flavor is
 `claude-code` unless the resource sets `flightdeck.flavor`; the user is
@@ -3027,7 +3090,7 @@ the prompt only when `OTEL_LOG_USER_PROMPTS=1` and tool inputs only when
 `OTEL_LOG_TOOL_DETAILS=1`.
 
 **Lifecycle.** A Claude Code session reported over OTLP has no end event
-of its own (a sub-agent's ends with `subagent_completed`). It goes
+of its own (a sub-agent's run ends with `subagent_completed`). It goes
 `stale` after 2 minutes without a record and `lost` after 30, and the
 orphan-timeout reaper closes it after `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`
 (24 hours by default, `close_reason=orphan_timeout`); a record that
@@ -3467,8 +3530,9 @@ CREATE INDEX session_attachments_session_idx ON session_attachments (session_id,
 
 One row per re-attachment (subsequent `session_start` for an existing
 `session_id`). The first `session_start` does NOT write an attachment
-row — only re-attachments. Drives the session drawer's "New execution
-attached" separators.
+row — only re-attachments. The session drawer and the timeline mark
+the `session_start` within two seconds of each row (see Session
+attachment flow).
 
 ### `events` (metadata only — no prompt content inline)
 

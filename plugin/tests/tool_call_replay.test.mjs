@@ -251,6 +251,23 @@ describe("tool events carry an id derived from tool_use_id and are rebuilt after
     assert.equal(toolEvents(ofConversation(capture.attempts(), conv), tu).length, 1);
   });
 
+  it("a 400 that is not ingestion's own (a proxy's) leaves the tool event owed, and a later flush rebuilds it", async () => {
+    const conv = conversation();
+    const env = machine(capture.port);
+    const [m1, tu] = [msgId(), toolUseId()];
+    await run(rootHook(conv, "SessionStart", { source: "startup" }), env);
+    append(conv.parent, [toolUseRecord(m1, tu, "Bash", { command: "date" }), toolResultRecord(tu, "Mon")]);
+    capture.fail((b) => b.event_type === "tool_call" && b.tool_use_id === tu, {
+      status: 400,
+      body: "<html>400 Bad Request</html>",
+      contentType: "text/html",
+    });
+    await run(rootHook(conv, "PostToolUse", { tool_name: "Bash", tool_use_id: tu, tool_input: { command: "date" } }), env);
+    await run(rootHook(conv, "Stop"), env);
+    assert.equal(toolEvents(ofConversation(capture.attempts(), conv), tu).length, 2);
+    assert.equal(toolEvents(ofConversation(capture.accepted(), conv), tu).length, 1);
+  });
+
   it("a tool use no hook reported is never rebuilt", async () => {
     const conv = conversation();
     const env = machine(capture.port);

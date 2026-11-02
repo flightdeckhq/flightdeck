@@ -26,8 +26,20 @@ import {
   dispatchMcpPolicyPreToolUse,
   dispatchMcpPolicySessionStart,
 } from "./mcp_policy_dispatch.mjs";
-import { defaultFlushDeadline, flushPostCallTurns, resolvePreCallModel, resolveSessionEndpoint } from "./post_call.mjs";
-import { clearSessionCacheFiles, ensureSessionStarted, getSessionId, sessionHasEnded } from "./session.mjs";
+import {
+  defaultFlushDeadline,
+  flushPostCallTurns,
+  readTurnsBounded,
+  resolvePreCallModel,
+  resolveSessionEndpoint,
+} from "./post_call.mjs";
+import {
+  clearSessionCacheFiles,
+  ensureSessionStarted,
+  getSessionId,
+  laterSessionMint,
+  sessionHasEnded,
+} from "./session.mjs";
 import { SESSION_END_WORKER_DEADLINE_MS, spawnDetachedSessionEnd } from "./session_end.mjs";
 import { SIGNAL_HOOKS, buildSignalEvent } from "./signals.mjs";
 import { buildStopFailureEvent, failedTurnFor } from "./stop_failure.mjs";
@@ -158,6 +170,11 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   // the session that was current when it ran (ARCHITECTURE.md, Plugin >
   // Subagent hooks).
   const notBefore = readSessionMintTime(outerSessionId);
+  // A process that keeps reporting under this session after a resume
+  // minted a later one (the SessionEnd worker, a hook that started before
+  // the resume) sends none of the later session's turns: each transcript
+  // read is bounded by that session's mint time (readTurnsBounded).
+  const laterMint = () => laterSessionMint(hookEvent, outerSessionId);
   // ``transcriptPath`` defaults to the parent's transcript path
   // from hookEvent. When the hook fires inside subagent context,
   // we swap to the subagent's per-execution transcript so the
@@ -295,6 +312,7 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
     identityUser,
     identityHostname,
     notBefore,
+    laterMint,
     deadline: hookDeadline,
   };
 
@@ -348,6 +366,7 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
       identityUser,
       identityHostname,
       notBefore,
+      laterMint,
       deadline: hookDeadline,
     });
     // SubagentStop flushes a transcript, so it also sends the ends other
@@ -408,17 +427,19 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   // by now.
   if (hookName === "SessionEnd") {
     const deadline = Date.now() + SESSION_END_WORKER_DEADLINE_MS;
+    const { turns, notAfter } = readTurnsBounded(getTurns, laterMint);
     const flushed = await flushPostCallTurns({
       cfg,
       sessionId,
       basePayload,
-      turns: getTurns(),
+      turns,
       capturePrompts: cfg.capturePrompts,
       deadline,
       // The last process for the session: it sends the turns a killed
       // async hook had claimed but not sent.
       reclaimOrphaned: true,
       notBefore,
+      notAfter,
     });
     // The tool events the session still owes, its last chance to send
     // them: one whose transcript records cannot be found goes without
@@ -472,14 +493,16 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   // the turns that decided on them) and the ends the session's subagents
   // still owe.
   const flushTurns = async () => {
+    const { turns, notAfter } = readTurnsBounded(getTurns, laterMint);
     const flushed = await flushPostCallTurns({
       cfg,
       sessionId,
       basePayload,
-      turns: getTurns(),
+      turns,
       capturePrompts: cfg.capturePrompts,
       deadline: hookDeadline,
       notBefore,
+      notAfter,
     });
     if (flushed.failed) return;
     const tools = await sendOwedToolCalls({ cfg, sessionId, basePayload, deadline: hookDeadline });

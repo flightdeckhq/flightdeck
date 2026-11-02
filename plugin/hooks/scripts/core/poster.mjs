@@ -204,13 +204,34 @@ export function serializeEvent(payload) {
   return bare;
 }
 
-// The statuses with which ingestion (400: a body it cannot read or an
-// event that fails validation) or a proxy in front of it (413: a body
-// over its size limit) refuses the event itself: the same event sent
-// again gets the same answer. Every other failure can pass on a later
-// attempt: no answer or a timeout, 401 or 403 until the token is fixed,
-// 429, a 5xx while the stack restarts.
-export const REFUSED_STATUSES = new Set([400, 413]);
+// How the server's refusal of an event is told apart from a failure a
+// later attempt can get past. A 413 (a proxy's body-size limit, which
+// MAX_EVENT_BODY_BYTES keeps every body far below) refuses the event
+// itself. A 400 does only when it carries ingestion's own JSON error, for
+// a body it cannot read or an event that fails validation; a 400 from
+// anything in front of ingestion (a proxy, a wrong server URL) is a
+// failure like a 502. Ingestion's clock-skew refusal is flagged
+// ``clockSkew``: the event's time is outside the window ingestion accepts
+// by its own clock, which can be the clocks disagreeing rather than the
+// event being too old (refusedForGood in claude_code/post_call.mjs
+// decides). Every other failure can pass on a later attempt: no answer or
+// a timeout, 401 or 403 until the token is fixed, 429, a 5xx while the
+// stack restarts.
+const CLOCK_SKEW_ERROR_RE = /clock-skew/;
+
+/** Ingestion's own error message in a 400's JSON body (``{"error": "..."}``), or null. */
+async function ingestionErrorMessage(response) {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) return null;
+  try {
+    const text = await response.text();
+    if (Buffer.byteLength(text, "utf8") > MAX_RESPONSE_BYTES) return null;
+    const body = JSON.parse(text);
+    return body && typeof body === "object" && typeof body.error === "string" ? body.error : null;
+  } catch {
+    return null;
+  }
+}
 
 // Returns true when the server accepted the event (2xx), false on any
 // network or HTTP failure. Callers that only fire and forget may ignore
@@ -220,10 +241,11 @@ export async function postEvent(server, token, sessionId, payload) {
 }
 
 /**
- * POST one event. Returns ``{accepted, retryable, status}``: accepted on
- * a 2xx; otherwise retryable unless the server refused the event itself
- * (REFUSED_STATUSES), and ``status`` the HTTP status, null when no
- * answer came. Never throws.
+ * POST one event. Returns ``{accepted, retryable, status, clockSkew}``:
+ * accepted on a 2xx; otherwise retryable unless the server refused the
+ * event itself (see CLOCK_SKEW_ERROR_RE above), ``clockSkew`` when that
+ * refusal was ingestion's clock-skew one, and ``status`` the HTTP status,
+ * null when no answer came. Never throws.
  */
 export async function sendEvent(server, token, sessionId, payload) {
   const controller = new AbortController();
@@ -245,7 +267,7 @@ export async function sendEvent(server, token, sessionId, payload) {
       // timeout, fetch rejection. Log and return -- the next hook
       // invocation is a fresh process and will try again.
       logUnreachable(server, shortErrorFrom(err));
-      return { accepted: false, retryable: true, status: null };
+      return { accepted: false, retryable: true, status: null, clockSkew: false };
     }
 
     // HTTP-level failure: auth, payload validation, server error.
@@ -255,12 +277,18 @@ export async function sendEvent(server, token, sessionId, payload) {
     // Claude Code invokes a fresh plugin process.
     if (!response.ok) {
       logUnreachable(server, `HTTP ${response.status}`);
-      return { accepted: false, retryable: !REFUSED_STATUSES.has(response.status), status: response.status };
+      if (response.status === 413) return { accepted: false, retryable: false, status: 413, clockSkew: false };
+      // Read under the same timeout as the request.
+      const message = response.status === 400 ? await ingestionErrorMessage(response) : null;
+      if (message !== null) {
+        return { accepted: false, retryable: false, status: 400, clockSkew: CLOCK_SKEW_ERROR_RE.test(message) };
+      }
+      return { accepted: false, retryable: true, status: response.status, clockSkew: false };
     }
     // The body is read under the same timeout, and only when a directive
     // sink is registered (enforcement on).
     await deliverDirective(sessionId, response);
-    return { accepted: true, retryable: false, status: response.status };
+    return { accepted: true, retryable: false, status: response.status, clockSkew: false };
   } finally {
     clearTimeout(timeout);
   }

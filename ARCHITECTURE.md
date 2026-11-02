@@ -1588,7 +1588,8 @@ Each value is sized for the hook's normal worst case:
 | `UserPromptSubmit` (the enforcement gate) | 10 | the same control-state read and heartbeat |
 | `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure` | 30 | the transcript flush: up to two `claude auth status` runs (5 s each) for a session whose billing mode is not settled, then 2 s per unsent turn |
 | `SubagentStop` | 30 | up to 2 s for the subagent's final turn to reach its transcript, the same flush over that transcript, then the child `session_end` |
-| `PreCompact`, `PostCompact`, `PostModelSwitch`, `Notification`, `PermissionRequest`, `PermissionDenied`, `UserPromptExpansion`, `TaskCreated`, `TaskCompleted`, `TeammateIdle`, `CwdChanged`, `ConfigChange`, `Elicitation`, `ElicitationResult`, `SubagentStart` | 15 | one or two POSTs |
+| `SubagentStart` | 15 | up to 1 s for the subagent's files, then the child `session_start`; on a resume, first up to 3 s for an end the previous execution still owes that another hook is sending, or that end itself, after that execution's unsent turns (under the 25 s flush deadline). The hook runs async, so Claude Code does not enforce the timeout on it |
+| `PreCompact`, `PostCompact`, `PostModelSwitch`, `Notification`, `PermissionRequest`, `PermissionDenied`, `UserPromptExpansion`, `TaskCreated`, `TaskCompleted`, `TeammateIdle`, `CwdChanged`, `ConfigChange`, `Elicitation`, `ElicitationResult` | 15 | one or two POSTs |
 
 Claude Code cancels a synchronous hook that runs out of time and carries on, as for
 any non-blocking error. What the hook had not done by then is deferred
@@ -1652,12 +1653,16 @@ Async hooks of a session can overlap with each other and with its
 
 - A turn's marker is claimed before its POST and names the claiming
   process; it is emptied once the server accepts the turn. When the POST
-  fails (no answer, a timeout, or an error status other than 400 and
-  413), the claim is released and the flush stops there, so the next
+  fails, the claim is released and the flush stops there, so the next
   hook sends that turn and the ones after it; during an outage each hook
-  pays one failed POST. A turn the server refuses as invalid (400, or
-  413 for its size) would be refused again, so its marker records the
-  refusal and the flush goes on to the next turn. In a print-mode or SDK
+  pays one failed POST. A turn ingestion refuses as invalid (a 400 with
+  ingestion's own JSON error, or a 413 for its size) is marked refused
+  and the flush goes on to the next turn, so it cannot hold back the
+  turns after it. Two refusals are failures instead: a 400 without that
+  body (from a proxy, or a wrong server URL), and ingestion's clock-skew
+  refusal of a turn younger than its 48-hour past window, which means the
+  two clocks disagree (the error does not say which way) and passes once
+  they agree. In a print-mode or SDK
   run, Claude Code kills the async hooks still pending at the end,
   before `SessionEnd` runs, and their claims stay behind: a subagent's
   `SubagentStop` and the SessionEnd worker, the last processes to read a
@@ -1726,13 +1731,16 @@ written to `minted-${sessionId}.txt` before the marker itself, so any
 hook that reads the marker finds it. It is keyed on the Flightdeck
 session id rather than on the marker, so the SessionEnd worker and a
 hook that runs after `SessionEnd`, which no longer have the marker,
-still find it, and it is not deleted at `SessionEnd`; the seven-day prune
-removes it. Every transcript flush of the session sends only the turns
-that ran after that time (see Subagent hooks). A session minted by any
-other hook records no time, since its conversation was already
-running when the marker was written (as when the marker was pruned),
-and neither does a marker an earlier plugin release wrote; such a
-session's flushes send every unsent turn of the transcript.
+still find it, and it is not deleted at `SessionEnd`; the seven-day
+prune removes it. Every transcript flush of the session sends only the
+turns that ran after that time (see Subagent hooks). The mint time and
+the transcript's record times come from the same machine clock, so a
+clock that steps back by Δ after `SessionStart` loses up to Δ of that
+session's first turns, whose times read as before the mint. A session
+minted by any other hook records no time, since its conversation was
+already running when the marker was written (as when the marker was
+pruned), and neither does a marker an earlier plugin release wrote; such
+a session's flushes send every unsent turn of the transcript.
 
 ### `session_start` with context
 
@@ -1829,7 +1837,8 @@ its POST the hook records the event as owed in
 the hook knows and no content: the tool name, whether it failed and was
 interrupted, its duration, the `mcp_server` hint, the event's time and
 the transcript it came from; the entry is dropped once the server
-accepts or refuses the event. When the POST fails, the entry is
+accepts the event or refuses it for good, as for a turn (see Hook
+configuration). When the POST fails, the entry is
 released, as a turn's claim is, and the next hook of the same session
 that flushes its transcript rebuilds the event after the turns: the
 fields from the entry, and the input, the result and a failure's error
@@ -1928,13 +1937,25 @@ for the same child id, which ingestion re-attaches to the closed row
 the resumed execution count toward its `tokens_used`, and the session
 drawer marks the start with the attachment badge. Each execution thus
 has one `session_start` and one `session_end`. The resume's
-`session_start` carries the same `incoming_message` as the spawn's: no
-hook carries the message that resumed the subagent. A hook of the
-child that runs while the marker is in place, an async hook of an
-execution that has ended, never sends a `session_start`, so it cannot
-reopen the child; it first waits up to one second for a resume's
+`session_start` carries, as `incoming_message`, the message that resumed
+the subagent: the last user prompt after its last turn of its own (a
+`SendMessage`'s text, which Claude Code writes as a meta record naming
+its origin). A wake by a task notification writes a queued command
+rather than a user record, so its start carries none rather than repeat
+the spawn's prompt; the first start of a subagent that ran before, under
+an earlier parent session, carries the resume's message the same way. A
+hook of the child that runs while the marker is in place, an async hook
+of an execution that has ended, never sends a `session_start`, so it
+cannot reopen the child; it first waits up to one second for a resume's
 `SubagentStart` to remove the marker, so that the first hooks of a
-resumed execution still follow its start.
+resumed execution still follow its start. Two orderings of a resume that
+comes right as the subagent stops are guarded. A resume whose previous
+execution's end a live `SubagentStop` is still sending waits up to three
+seconds for it, so the resume's start follows that end. And a
+`SubagentStop` that finds a resume's prompt already after the final turn
+(the resume's `SubagentStart` may then have looked for the marker before
+this hook wrote it, and sent no start) leaves the child open: the two
+executions stay one, ended by the later `SubagentStop`.
 
 **Delivery.** `SubagentStop` sends the child's `session_end` only once
 the subagent's turns and the tool events it owes are sent, so the end
@@ -1943,29 +1964,36 @@ subagent's final turn to the transcript (in a print-mode run the turn
 was still missing a tenth of a second after its own timestamp), so the
 hook first waits, up to two seconds, until the transcript's last
 assistant message reads as the hook's `last_assistant_message`; a hook
-without that field does not wait. Until it is accepted the end is
-owed: `SubagentStop` records it in `subagent-ends-<outer session
-id>.json` before its first POST, with the time it ran (the end's
-timestamp) and the process working on it. When a POST fails, the next
-hook of the session that flushes a transcript (`PostToolUse`,
-`PostToolUseFailure`, `Stop`, `StopFailure` or `SubagentStop`) sends
-the remaining turns and the end, and the `SessionEnd` worker does so
-last; as with a turn's claim, an entry whose process is alive is left
-to it. An end still owed when its
-subagent is resumed is sent before the resume's `session_start`, and
-dropped if that fails, so that it cannot close the resumed child.
+without that field does not wait. Until it is accepted the end is owed:
+`SubagentStop` records it in `subagent-ends-<outer session id>.json`
+before its first POST, with the time it ran (the end's timestamp) and
+the process working on it. When a POST fails, the next hook of the
+session that flushes a transcript (`PostToolUse`, `PostToolUseFailure`,
+`Stop`, `StopFailure` or `SubagentStop`) sends the remaining turns and
+the end, and the `SessionEnd` worker does so last; as with a turn's
+claim, an entry whose process is alive is left to it. An end still owed
+when its subagent is resumed is sent before the resume's
+`session_start`, and dropped if that fails, so that it cannot close the
+resumed child.
 
 **Never misfiled.** A transcript turn is sent only under the Flightdeck
 session that was current when it ran. A flush in a session with a
 recorded mint time (see Session identity) skips every turn that ran
 before it, for the root and its subagents alike, and writes to the
-hook's stderr how many of them it has no record of sending. So a subagent resumed
+hook's stderr how many of them it has no record of sending. The other
+end is bounded too: a process that goes on reporting under a session
+after a resume has minted a later one (the `SessionEnd` worker, or a
+hook that started before the resume) looks at the conversation's marker
+before and after each transcript read, and sends no turn that ran at or
+after the later session's mint; that session sends it. A session's
+marker is written before any of its turns, so whenever one of them is in
+what was read, the second look sees that session. So a subagent resumed
 after its parent's session changed sends only its new turns, under its
 new child, and a turn still unsent when its session ends is never sent:
-it is dropped rather than filed under a later session that did not
-exist when it ran. Its last chance is the `SessionEnd` worker: after
-the root's `session_end` it flushes every subagent transcript written
-since the mint (the `agent-<agent_id>.jsonl` files under
+it is dropped rather than filed under a later session that did not exist
+when it ran. Its last chance is the `SessionEnd` worker: after the
+root's `session_end` it flushes every subagent transcript written since
+the mint (the `agent-<agent_id>.jsonl` files under
 `<parent>/subagents/`, nested subagents included, each subagent's role
 read from its meta file's `agentType`), taking over orphaned claims, and
 sends the ends still owed. A session without a mint time skips that

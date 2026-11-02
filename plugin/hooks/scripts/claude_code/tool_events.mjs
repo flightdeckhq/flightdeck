@@ -20,6 +20,7 @@ import {
   takeOwedToolCall,
 } from "../core/state.mjs";
 import { buildMcpToolCallPayload, resolveMcpToolIdentity } from "./mcp.mjs";
+import { refusedForGood } from "./post_call.mjs";
 import { buildToolCallPayload } from "./tools.mjs";
 import { readToolUses } from "./transcript.mjs";
 
@@ -56,7 +57,7 @@ export async function sendToolEvent({ cfg, sessionId, payload, entry }) {
   if (!toolUseId || !entry) return postEvent(cfg.server, cfg.token, sessionId, payload);
   oweToolCall(sessionId, toolUseId, entry);
   const sent = await sendEvent(cfg.server, cfg.token, sessionId, payload);
-  if (sent.accepted || !sent.retryable) dropOwedToolCall(sessionId, toolUseId);
+  if (sent.accepted || refusedForGood(sent, payload.timestamp)) dropOwedToolCall(sessionId, toolUseId);
   else releaseOwedToolCall(sessionId, toolUseId);
   return sent.accepted;
 }
@@ -176,7 +177,7 @@ export async function sendOwedToolCalls({ cfg, sessionId, basePayload, lastChanc
       });
     }
     const sent = await sendEvent(cfg.server, cfg.token, sessionId, payload);
-    if (sent.accepted || !sent.retryable) {
+    if (sent.accepted || refusedForGood(sent, payload.timestamp)) {
       dropOwedToolCall(sessionId, toolUseId);
       continue;
     }

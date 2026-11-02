@@ -247,6 +247,20 @@ export function readOrCreateSessionMarker(markerKey, { recordMint = false } = {}
   }
 }
 
+/**
+ * The session id the marker under ``markerKey`` names now, or null when
+ * there is none. Reads only: it neither creates the marker nor refreshes
+ * it, so a process that is not the session's (the SessionEnd worker) can
+ * see whether a later session has taken the marker over.
+ */
+export function readSessionMarker(markerKey) {
+  try {
+    return readFileSync(join(stateDir(), `session-${markerKey}.txt`), "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
 /** Delete one file of the state directory. Best-effort. */
 function removeStateFile(name) {
   try {
@@ -762,7 +776,7 @@ export function releaseOwedToolCall(sessionId, toolUseId) {
   releaseOwed(OWED_TOOL_CALLS, sessionId, toolUseId);
 }
 
-/** Forget an owed tool event: the server accepted or refused it. */
+/** Forget an owed tool event: the server accepted it, or refused it for good. */
 export function dropOwedToolCall(sessionId, toolUseId) {
   dropOwed(OWED_TOOL_CALLS, sessionId, toolUseId);
 }

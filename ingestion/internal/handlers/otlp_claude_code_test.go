@@ -77,19 +77,103 @@ func ccLogRequests(t *testing.T, scenario string) []*collogs.ExportLogsServiceRe
 }
 
 // fakeSessionStore answers session reads from rows by session id;
-// elsewhere names the Claude Code sessions another client reports.
+// elsewhere names the Claude Code sessions another client reports, ends
+// and starts the dates of each session's latest stored session_end and
+// session_start, and endedAt each row's ended_at.
 type fakeSessionStore struct {
 	mu        sync.Mutex
-	rows      map[string]string // Flightdeck session id -> state
-	roles     map[string]string // Flightdeck session id -> agent_role
+	rows      map[string]string    // Flightdeck session id -> state
+	roles     map[string]string    // Flightdeck session id -> agent_role
+	ends      map[string]time.Time // Flightdeck session id -> latest session_end
+	starts    map[string]time.Time // Flightdeck session id -> latest session_start
+	endedAt   map[string]time.Time // Flightdeck session id -> ended_at
 	elsewhere map[string]bool
 	err       error
-	block     bool // every read waits for its context to end
+	endErr    error // fails OTLPSessionEnds only
+	block     bool  // every read waits for its context to end
 	calls     []string
+	endReads  [][]string // the session ids of each OTLPSessionEnds call
 }
 
 func newFakeStore() *fakeSessionStore {
-	return &fakeSessionStore{rows: map[string]string{}, roles: map[string]string{}, elsewhere: map[string]bool{}}
+	return &fakeSessionStore{
+		rows: map[string]string{}, roles: map[string]string{},
+		ends: map[string]time.Time{}, starts: map[string]time.Time{},
+		endedAt: map[string]time.Time{}, elsewhere: map[string]bool{},
+	}
+}
+
+// OTLPSessionEnds answers as session.Store does: the closed sessions
+// among ids, each with its latest session_end when no session_start is
+// stored after it, else its ended_at (zero when it has neither).
+func (f *fakeSessionStore) OTLPSessionEnds(ctx context.Context, ids []string) (map[string]time.Time, error) {
+	f.mu.Lock()
+	f.endReads = append(f.endReads, append([]string(nil), ids...))
+	block, err := f.block, f.err
+	if f.endErr != nil {
+		err = f.endErr
+	}
+	out := map[string]time.Time{}
+	for _, id := range ids {
+		if f.rows[id] != "closed" {
+			continue
+		}
+		end, hasEnd := f.ends[id]
+		start, hasStart := f.starts[id]
+		if hasEnd && (!hasStart || !end.Before(start)) {
+			out[id] = end
+		} else {
+			out[id] = f.endedAt[id]
+		}
+	}
+	f.mu.Unlock()
+	if block {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// applyAsWorker changes the rows as the worker does when it processes
+// published events and stores them: a session_start opens its session
+// (creating or reopening the row) and a session_end closes it, each
+// stored at its own date.
+func (f *fakeSessionStore) applyAsWorker(t *testing.T, events []mappedEvent) {
+	t.Helper()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, e := range events {
+		if e.Type != "session_start" && e.Type != "session_end" {
+			continue
+		}
+		at, err := time.Parse(time.RFC3339Nano, e.P["timestamp"].(string))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if e.Type == "session_start" {
+			f.rows[e.Session] = "active"
+			if role, ok := e.P["agent_role"].(string); ok && f.roles[e.Session] == "" {
+				f.roles[e.Session] = role
+			}
+			if at.After(f.starts[e.Session]) {
+				f.starts[e.Session] = at
+			}
+			continue
+		}
+		f.rows[e.Session], f.endedAt[e.Session] = "closed", at
+		if at.After(f.ends[e.Session]) {
+			f.ends[e.Session] = at
+		}
+	}
+}
+
+func (f *fakeSessionStore) endReadCalls() [][]string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([][]string(nil), f.endReads...)
 }
 
 func (f *fakeSessionStore) LookupOTLPSession(ctx context.Context, id, root, cc string) (session.OTLPSession, error) {
@@ -497,12 +581,23 @@ func TestClaudeCodeSubagentScenario(t *testing.T) {
 	if events[0].Type != "session_start" || events[0].Session != root {
 		t.Errorf("first event %s on %s", events[0].Type, events[0].Session)
 	}
-	// subagent_completed dropped the child from the cache; the root stays.
-	if _, ok := d.cache.get(child); ok {
-		t.Error("the ended child is still cached")
+	// Both stay cached: a sub-agent's end is read from its row on every
+	// request, not forgotten with the cache entry.
+	if _, ok := d.cache.get(child); !ok {
+		t.Error("the child is not cached")
 	}
 	if _, ok := d.cache.get(root); !ok {
 		t.Error("the root is not cached")
+	}
+	// The child's records after its first request were read for its end,
+	// one read per request; the root's never were.
+	for _, ids := range store.endReadCalls() {
+		if len(ids) != 1 || ids[0] != child {
+			t.Errorf("end read of %v, want only the child", ids)
+		}
+	}
+	if len(store.endReadCalls()) == 0 {
+		t.Error("the cached child was never read for its end")
 	}
 }
 

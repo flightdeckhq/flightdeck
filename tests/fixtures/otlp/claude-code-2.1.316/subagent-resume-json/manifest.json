@@ -1,0 +1,150 @@
+{
+ "scenario": "subagent-resume-json",
+ "about": "a sub-agent that completes and is resumed with SendMessage",
+ "requests": [
+  {
+   "file": "001-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "002-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "003-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "004-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "005-traces.json",
+   "path": "/v1/traces",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "006-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "007-traces.json",
+   "path": "/v1/traces",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "008-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "009-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "010-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "011-traces.json",
+   "path": "/v1/traces",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "012-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "013-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "014-traces.json",
+   "path": "/v1/traces",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "015-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "016-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "017-traces.json",
+   "path": "/v1/traces",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "018-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "019-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "020-traces.json",
+   "path": "/v1/traces",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "021-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "022-traces.json",
+   "path": "/v1/traces",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "023-metrics.json",
+   "path": "/v1/metrics",
+   "content_type": "application/json",
+   "sent_encoding": null
+  },
+  {
+   "file": "024-logs.json",
+   "path": "/v1/logs",
+   "content_type": "application/json",
+   "sent_encoding": null
+  }
+ ]
+}

@@ -195,15 +195,17 @@ func TestClaudeCodeSubagentRoleFromStoredRow(t *testing.T) {
 	}
 }
 
-// A late record of a finished sub-agent does not reopen it: a closed
-// child row gets no synthetic session_start (a closed root does, since
-// a resumed Claude Code session reports under the same id).
+// A late record of a finished sub-agent does not reopen it: a record
+// dated before the subagent_completed that closed the child gets no
+// synthetic session_start (a missing child does).
 func TestClaudeCodeClosedChildIsNotRestarted(t *testing.T) {
 	root := identity.UUID5(identity.NamespaceFlightdeck, "flightdeck://otlp/claude-code/session/"+ccSubagentSession)
 	child := identity.UUID5(identity.NamespaceFlightdeck,
 		"flightdeck://otlp/claude-code/session/"+ccSubagentSession+"/"+ccSubagentAgentID)
+	completed := recordNamed(t, ccLogRequests(t, "subagent-json"), "subagent_completed")
 	store := newFakeStore()
 	store.rows[root], store.rows[child] = "active", "closed"
+	store.ends[child] = time.Unix(0, int64(completed.GetTimeUnixNano())).UTC() //nolint:gosec // a 2026 timestamp
 	d, _ := newTestDialect(store)
 	events, _, _ := mapAll(t, d, []*collogs.ExportLogsServiceRequest{childToolResult(t)})
 	if len(ofType(events, "session_start")) != 0 {

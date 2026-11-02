@@ -5088,17 +5088,19 @@ front-end counterpart of the worker's parent-bump propagation.
 The resolution is best-effort: an unloaded parent is skipped and
 self-heals on the next fleet load.
 
-`applyUpdate` applies every WebSocket update to the session row it
-names: the swimlane row's copy of the session, the agent's
-`recent_sessions` entry, and the counts derived from them. A run's
-state comes only from the worker, which announces each reconciler and
-reaper transition (see Worker / Event Processing → Notify); the
-dashboard never applies the stale or lost thresholds itself. Only an
-update that carries an event a client sent counts as activity. A
-state-only update (no `last_event`) and the reaper's close (a
-`session_end` whose `close_reason` is `orphan_timeout`) change the run
-without refreshing the agent row's `last_seen_at`, moving it between
-activity buckets, or bumping its parent's cluster. A row's
+`applyUpdate` applies a WebSocket update to the session row it names:
+the swimlane row's copy of the session, the agent's `recent_sessions`
+entry, and the counts derived from them. A run's state comes only from
+the worker, which announces each reconciler and reaper transition (see
+Worker / Event Processing → Notify); the dashboard never applies the
+stale or lost thresholds itself. Only an update that carries an event a
+client sent counts as activity. A state-only update (no `last_event`)
+and the reaper's close (a `session_end` whose `close_reason` is
+`orphan_timeout`) change the run without refreshing the agent row's
+`last_seen_at`, moving it between activity buckets, or bumping its
+parent's cluster, and when the page does not hold the run they change
+nothing: they add no row and no run, so a run the reaper closes after a
+day of silence does not appear as if it had just ended. A row's
 `last_seen_at` never moves back: it takes the later of its own value
 and the session's. The agent's rolled-up `state`, which the Agents
 table, agent drawer and per-agent modal badges show, is re-derived the

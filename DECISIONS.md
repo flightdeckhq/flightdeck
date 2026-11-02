@@ -399,7 +399,7 @@ was reaching every run of the flavor.
 rest (a silent partial stop); answering the `session_id` + `flavor` pair
 with 400 (breaks the Directives page's "Specific run").
 
-## D240 -- The worker notifies flightdeck_fleet of every session state change it makes
+## D241 -- The worker notifies flightdeck_fleet of every session state change it makes
 
 **Date:** 2026-11-02
 **Decision:** the reconciler's stale and lost transitions, the orphan

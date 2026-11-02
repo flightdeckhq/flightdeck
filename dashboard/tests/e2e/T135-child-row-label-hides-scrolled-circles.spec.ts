@@ -23,11 +23,14 @@ import {
 // 40c.3).
 //
 // The child row is the connector anchor (e2e-test-fresh-subagent),
-// which the keep-alive gives a fresh event 5 s before every cycle, so
-// the default 1m window always holds a circle of it. The label column
-// is widened to its 640 px maximum in a 1000 px window, so the timeline
-// scrolls far enough to bring any circle older than ~10 s under the
-// label.
+// which seed.py gives a tool_call at NOW-5s on every keep-alive cycle,
+// so the default 1m window always holds a circle of it. The label
+// column is widened to its 640 px maximum in a 1000 px window. The
+// timeline then scrolls far enough to centre a circle under the label
+// once it is ~31 s old (~33 s in the modal), and to bring it under the
+// label's right part once it is ~10 s old (~12 s). A younger circle is
+// scrolled as far as the range allows, and the poll waits for it to
+// age.
 
 test.use({ viewport: { width: 1000, height: 1200 } });
 
@@ -45,28 +48,35 @@ function alphaOf(color: string): number {
   return parts.length >= 4 ? Number(parts[3]) : 1;
 }
 
-/** Scroll ``scroller`` so one of ``row``'s circles is centred under the
- *  row's label; then report whether a circle's centre is inside it. */
+/** Scroll ``scroller`` to centre ``row``'s oldest circle under the
+ *  row's label, or as close as the scroll range allows; then report
+ *  whether a circle the panel does not clip has its centre inside the
+ *  label, half a circle in from either edge. */
 async function scrollACircleUnderTheLabel(scroller: Locator, row: Locator): Promise<boolean> {
   const rowHandle = await row.elementHandle();
   return scroller.evaluate((sc, r) => {
     const rowEl = r as Element;
     const labelBox = () => rowEl.querySelector(".swimlane-row-label")!.getBoundingClientRect();
-    const circles = () => Array.from(rowEl.querySelectorAll("[data-event-id]"));
+    const panelBox = () =>
+      rowEl.querySelector('[data-testid="swimlane-timeline-panel"]')!.getBoundingClientRect();
+    // Circles the panel shows: one of them under the label is one the
+    // label has to hide.
+    const shown = () => {
+      const panel = panelBox();
+      return Array.from(rowEl.querySelectorAll("[data-event-id]"))
+        .map((c) => c.getBoundingClientRect())
+        .filter((b) => b.left >= panel.left && b.right <= panel.right);
+    };
     const label = labelBox();
-    const mid = label.left + label.width / 2;
-    const max = sc.scrollWidth - sc.clientWidth;
-    for (const c of circles()) {
-      const b = c.getBoundingClientRect();
-      const want = sc.scrollLeft + (b.left + b.width / 2 - mid);
-      if (want >= 0 && want <= max) {
-        sc.scrollLeft = want;
-        break;
-      }
+    const centres = shown().map((b) => b.left + b.width / 2);
+    if (centres.length > 0) {
+      // The oldest circle needs the least scroll. A young one needs
+      // more than the range holds, so clamp to the range's end.
+      const want = sc.scrollLeft + (Math.min(...centres) - (label.left + label.width / 2));
+      sc.scrollLeft = Math.min(Math.max(want, 0), sc.scrollWidth - sc.clientWidth);
     }
     const after = labelBox();
-    return circles().some((c) => {
-      const b = c.getBoundingClientRect();
+    return shown().some((b) => {
       const cx = b.left + b.width / 2;
       return cx > after.left + b.width / 2 && cx < after.right - b.width / 2;
     });

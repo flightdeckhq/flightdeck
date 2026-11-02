@@ -65,7 +65,8 @@ the swimlane↔table parity assertion). The current journeys:
 | `T131-event-circles-sit-on-their-row-centre.spec.ts` | Event circles sit on their row's centre line; the expanded ALL row's circles stay inside the row and share the agent rows' x |
 | `T132-sub-agent-row-name-keeps-its-role.spec.ts` | A `{parent}/{role}` sub-agent row keeps its `/role` whole at the 460 px default and when the column is dragged narrower; the head gives way |
 | `T133-sub-agent-connector-ends-on-the-circles-it-joins.spec.ts` | Every connector starts on its parent circle's rim and ends on its child circle's centre |
-| `T134-hovering-a-run-lights-its-connectors.spec.ts` | Hovering a run's mark (or focusing its glyph) lights exactly that run's connectors: a parent its fan-out, a child its own link |
+| `T134-hovering-a-run-lights-its-connectors.spec.ts` | Hovering a run's mark (or keyboard-focusing its glyph) lights exactly that run's connectors: a parent its fan-out, a child its own link |
+| `T135-child-row-label-hides-scrolled-circles.spec.ts` | With circles scrolled under a child row's sticky label, in Fleet and in the per-agent modal, the label's background is fully opaque |
 
 The `_fixtures.ts` helper exports shared fixture metadata (agent
 names, flavors, role timeline offsets) and locator helpers:

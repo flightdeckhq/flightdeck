@@ -8,7 +8,7 @@ import {
 // T134 — Hovering a run lights its connectors, and only its own.
 //
 // Connectors rest at 10% opacity. Hovering any mark of a run (an
-// event circle or a run glyph), or focusing its glyph, raises every
+// event circle or a run glyph), or keyboard-focusing its glyph, raises every
 // connector that starts or ends on that run to 50%
 // (`data-hover="true"`). The fan-out fixture makes the "only its own"
 // half observable: the coordinator run owns three worker connectors,
@@ -152,7 +152,9 @@ test.describe("T134 — hovering a run lights its connectors", () => {
     await expect.poll(() => litExactlyFor(page, null)).toBe(true);
 
     // 4. Keyboard: focusing another worker run's start glyph lights
-    //    that run's connector the way hovering does.
+    //    that run's connector the way hovering does. Only keyboard
+    //    (``:focus-visible``) focus counts, so the glyph is focused the
+    //    way a Tab would focus it; a mouse click's focus would not.
     const otherWorker = (await connectorStates(page)).find(
       (s) => s.parent === coordinator && s.child !== hoveredRun,
     );
@@ -160,7 +162,10 @@ test.describe("T134 — hovering a run lights its connectors", () => {
     const glyph = page.getByTestId(
       `swimlane-run-bracket-start-${otherWorker!.child.slice(0, 8)}`,
     );
-    await glyph.focus();
+    await glyph.evaluate((el) =>
+      (el as HTMLElement).focus({ focusVisible: true } as FocusOptions),
+    );
+    await expect(glyph).toBeFocused();
     await expect.poll(() => litExactlyFor(page, otherWorker!.child)).toBe(true);
     await glyph.blur();
     await expect.poll(() => litExactlyFor(page, null)).toBe(true);

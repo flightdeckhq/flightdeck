@@ -80,6 +80,9 @@ test.describe("T132 — sub-agent row name keeps its role", () => {
       `/${FANOUT_FIXTURE.workerRole}`,
     );
     await expect(link).toHaveText(FANOUT_FIXTURE.workerName);
+    // The two spans are flex items, which read with a space between
+    // them; the link is named with the exact agent name.
+    await expect(link).toHaveAccessibleName(FANOUT_FIXTURE.workerName);
 
     const m = await measureName(link);
     expect(m).not.toBeNull();

@@ -163,9 +163,9 @@ expires = 2027-02-01         # a TOML date, no quotes
 ```
 
 Every key is required. The reason must say why the advisory cannot be fixed now
-and what lets the entry go. Set `expires` a few months out at most: the scan
-fails the day after it, so the entry gets a fresh look instead of living
-forever. The entry ships in a pull request like any other change, so it gets
+and what lets the entry go. Set `expires` a few months out: the scan fails the
+day after it (dates are compared in UTC), so the entry gets a fresh look instead
+of living forever, and it rejects a date more than 365 days ahead. The entry ships in a pull request like any other change, so it gets
 reviewed. An entry that no longer matches anything is flagged as a warning on
 the pull request; delete it then.
 

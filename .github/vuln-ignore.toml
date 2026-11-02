@@ -11,8 +11,9 @@
 #   ecosystem  "npm" or "pypi"
 #   package    the affected package name
 #   reason     why it cannot be fixed now, and what would let it go
-#   expires    a TOML date (no quotes), at most a few months out; the
-#              scan fails after it, forcing a fresh look
+#   expires    a TOML date (no quotes), a few months out; the scan
+#              fails after it (UTC), forcing a fresh look, and rejects
+#              a date more than 365 days ahead
 #
 # Example:
 #

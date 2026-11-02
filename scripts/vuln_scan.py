@@ -27,7 +27,10 @@ What fails the scan:
   not report a severity, so every advisory counts; the core set is the
   pydantic stack ``pip install flightdeck-sensor`` pulls in. A runtime
   pin pip-audit did not audit fails too.
-- An ignore entry whose ``expires`` date has passed.
+- An ignore entry whose ``expires`` date has passed (in UTC), or lies
+  more than ``MAX_IGNORE_DAYS`` ahead.
+- A ``uv export`` that lists no pins, or npm audit JSON of the wrong
+  shape: these exit 2 like any tool failure rather than passing.
 
 What is reported without failing: npm advisories below high, and every
 advisory in the full sensor lock (all extras). The sensor's provider and
@@ -80,6 +83,11 @@ COMMAND_TIMEOUT_SECONDS = 120
 SCAN_BUDGET_SECONDS = 420
 # Lines of a failed command's stderr quoted in the error.
 STDERR_TAIL_LINES = 20
+# Furthest an ignore entry's ``expires`` date may be from today. An
+# excuse is meant to be looked at again within months, when a fixed
+# release may exist; a year is the outer bound, so a far-future date
+# cannot turn an entry into a permanent exemption.
+MAX_IGNORE_DAYS = 365
 ECOSYSTEMS = frozenset({"npm", "pypi"})
 IGNORE_KEYS = frozenset({"id", "ecosystem", "package", "reason", "expires"})
 _GHSA_RE = re.compile(r"GHSA(-[23456789cfghjmpqrvwx]{4}){3}")
@@ -204,8 +212,13 @@ def parse_npm_audit(report: dict[str, Any], stderr: str = "") -> list[Finding]:
         # the error object can be empty; the message carries the cause.
         cause = report.get("message") or report.get("error") or "no vulnerabilities key"
         raise ScanError(f"npm audit failed: {cause}\n{_stderr_tail(stderr)}".rstrip())
+    vulnerabilities = report["vulnerabilities"]
+    if not isinstance(vulnerabilities, dict):
+        raise ScanError("npm audit JSON: 'vulnerabilities' is not an object")
     findings: dict[tuple[str, str], Finding] = {}
-    for entry in report["vulnerabilities"].values():
+    for name, entry in vulnerabilities.items():
+        if not isinstance(entry, dict) or not isinstance(entry.get("via", []), list):
+            raise ScanError(f"npm audit JSON: malformed vulnerabilities entry for {name}")
         for via in entry.get("via", []):
             # A string ``via`` names another vulnerable package; only the
             # dict form carries the advisory itself.
@@ -503,6 +516,12 @@ def scan_npm(report: Report) -> None:
 def scan_pip(report: Report) -> None:
     runtime_pins, runtime_unpinned = parse_requirements(uv_export(runtime_only=True))
     full_pins, full_unpinned = parse_requirements(uv_export(runtime_only=False))
+    # An export with no pins would audit nothing and pass. The sensor
+    # always depends on pydantic, so an empty list means the export broke.
+    if not runtime_pins:
+        raise ScanError("uv export listed no pins for the sensor runtime dependencies")
+    if not full_pins:
+        raise ScanError("uv export listed no pins for the sensor with all extras")
     with tempfile.TemporaryDirectory() as tmp:
         runtime = pip_audit_pins(runtime_pins, Path(tmp), "runtime")
         full = pip_audit_pins(full_pins, Path(tmp), "full")
@@ -520,8 +539,20 @@ def scan_pip(report: Report) -> None:
     )
 
 
+def utc_today() -> datetime.date:
+    """Today in UTC, so a local run and CI agree on the day an entry expires."""
+    return datetime.datetime.now(datetime.UTC).date()
+
+
 def check_expiry(report: Report, today: datetime.date) -> None:
+    latest = today + datetime.timedelta(days=MAX_IGNORE_DAYS)
     for entry in report.ignores:
+        if entry.expires > latest:
+            report.fail(
+                f"ignore entry {entry.id} ({entry.package}) expires {entry.expires}, more than "
+                f"{MAX_IGNORE_DAYS} days out; set a date on or before {latest}",
+                title="Ignore entry expiry too far out",
+            )
         if entry.expires < today:
             report.fail(
                 f"ignore entry {entry.id} ({entry.package}) expired on {entry.expires}; "
@@ -536,7 +567,7 @@ def main(today: datetime.date | None = None) -> int:
     try:
         report = Report(load_ignores(IGNORE_FILE))
         print("== ignore list")
-        check_expiry(report, today or datetime.date.today())
+        check_expiry(report, today or utc_today())
         print(f"  {len(report.ignores)} entries")
         scan_npm(report)
         scan_pip(report)

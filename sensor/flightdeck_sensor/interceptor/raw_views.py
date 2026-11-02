@@ -151,8 +151,10 @@ class DeferredCall:
         self._settled = False
         self._headers: Any = None
         # The SDK response, held weakly: whether its body was consumed is
-        # read at settle time (see settle()).
+        # read at settle time (see settle()), unless the response proxy's
+        # finalizer already recorded it (see abandon()).
         self._response_ref: Callable[[], Any] = lambda: None
+        self._consumed_at_abandon: bool | None = None
         # The stream guard a parsed event stream went to: every later
         # parse() hands it back, and the view's close() settles it.
         self._guard: Any = None
@@ -214,21 +216,33 @@ class DeferredCall:
                 guards.add(self)
 
     def _body_consumed(self) -> bool:
+        """Whether the caller consumed the body: as the response proxy's
+        finalizer recorded it, else read through the weak reference. The
+        recorded value comes first because the collector clears weak
+        references to cyclic garbage before any finalizer runs, so a
+        response dropped inside a reference cycle (an exception's
+        traceback, an asyncio frame) can no longer be read here."""
+        if self._consumed_at_abandon is not None:
+            return self._consumed_at_abandon
         response = self._response_ref()
         return response is not None and _body_already_read(response)
 
     def _settle_now(self) -> None:
         self.settle(None, self._headers)
 
-    def abandon(self) -> None:
+    def abandon(self, consumed: bool | None = None) -> None:
         """Queue the settle for the next intercept or the session's end;
         called from the response proxy's finalizer, so nothing is
-        settled here. Whether the body was consumed is read now, while
-        the response still exists, so the queued settle holds no
-        reference to it."""
+        settled here. ``consumed`` is whether the body was consumed, read
+        by the finalizer from its own (strong) reference to the response;
+        it is recorded on the call, so the queued settle and a settle at
+        the session's end racing it on another thread both see it, and
+        neither holds a reference to the response."""
         if self._settled:
             return
-        consumed = self._body_consumed()
+        if consumed is None:
+            consumed = self._body_consumed()
+        self._consumed_at_abandon = consumed
         queue = getattr(self._session, "queued_stream_settles", None)
         if isinstance(queue, collections.deque):
             queue.append(lambda: self.settle(None, self._headers, body_consumed=consumed))
@@ -244,8 +258,9 @@ class DeferredCall:
         consumed the body some other way (``iter_lines()``, ``read()``,
         the raw ``http_response``), the transport cannot tell a full read
         from a partial one, so no ``streaming`` block is claimed and the
-        estimate stands. ``body_consumed`` is read from the response when
-        the caller does not pass it."""
+        estimate stands. When the caller does not pass ``body_consumed``,
+        it is what the response proxy's finalizer recorded, else read
+        from the response (see :meth:`_body_consumed`)."""
         if self._settled:
             return
         self._settled = True
@@ -369,10 +384,13 @@ class DeferredResponse:
     def __del__(self) -> None:
         # Abandoned without parse() or close(): queue the settle (see
         # DeferredCall.abandon); the SDK response goes with this proxy.
-        # Everything is suppressed: a finalizer can run at interpreter
-        # shutdown or inside another thread's collection.
+        # Whether its body was consumed is read here, through this
+        # proxy's own reference: in a collected cycle the call's weak
+        # reference is already cleared. Everything is suppressed: a
+        # finalizer can run at interpreter shutdown or inside another
+        # thread's collection.
         with contextlib.suppress(BaseException):
-            self._call.abandon()
+            self._call.abandon(_body_already_read(self._response))
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):
@@ -411,7 +429,7 @@ class DeferredAsyncResponse:
     def __del__(self) -> None:
         # See DeferredResponse.__del__.
         with contextlib.suppress(BaseException):
-            self._call.abandon()
+            self._call.abandon(_body_already_read(self._response))
 
     def __getattr__(self, name: str) -> Any:
         if name.startswith("_"):

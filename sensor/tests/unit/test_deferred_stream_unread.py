@@ -16,6 +16,7 @@ SDK builds every response and stream object the sensor sees.
 
 from __future__ import annotations
 
+import collections
 import gc
 from typing import TYPE_CHECKING, Any
 
@@ -290,6 +291,93 @@ def test_raw_view_body_read_then_dropped_reports_the_estimate_without_streaming(
         del raw
         gc.collect()
         base.drain_deferred_settles(session)
+    _assert_estimate_without_streaming(session)
+
+
+def _hold_in_a_cycle(obj: Any) -> None:
+    """Keep ``obj`` alive only through a reference cycle: the exception
+    kept in a local refers to its traceback, which refers to this frame,
+    whose locals hold the exception and ``obj``. Only the cyclic collector
+    frees it, and the collector clears weak references to cyclic garbage
+    before it runs any finalizer."""
+    held = obj
+    try:
+        raise ValueError("cycle")
+    except ValueError as exc:
+        err = exc
+    assert held is not None and err is not None
+
+
+def _open_and_read(session: Session, is_async: bool, keep: Any) -> None:
+    """Open a ``stream=True`` view response -- the sync raw view's
+    ``DeferredResponse`` or the async streaming view's
+    ``DeferredAsyncResponse`` -- read its body as a caller would, outside
+    the guard, and hand it to ``keep``; no other reference to it remains."""
+    completions = _completions(session, False, is_async=is_async)
+    if is_async:
+
+        async def _read() -> None:
+            manager = completions.with_streaming_response.create(stream=True, **_CHAT_KW)
+            response = await manager.__aenter__()
+            assert isinstance(response, raw_views.DeferredAsyncResponse)
+            await response.http_response.aread()
+            keep(response)
+
+        _run(_read())
+    else:
+        raw = completions.with_raw_response.create(stream=True, **_CHAT_KW)
+        assert isinstance(raw, raw_views.DeferredResponse)
+        raw.http_response.read()
+        keep(raw)
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_a_body_read_then_dropped_in_a_reference_cycle_reports_the_estimate_without_streaming(
+    is_async: bool,
+) -> None:
+    """Dropped inside a cycle, the response is freed by the cyclic
+    collector, which clears weak references before it runs finalizers: the
+    finalizer reads that the body was consumed from its own reference."""
+    session = _session(False)
+    gc.disable()
+    try:
+        with respx.mock(base_url=OPENAI_URL) as router:
+            router.post("/chat/completions").mock(
+                return_value=_sse(_chat_frames(tool=False), done=True)
+            )
+            _open_and_read(session, is_async, keep=_hold_in_a_cycle)
+            assert session.queued_stream_settles == collections.deque()  # held by the cycle
+            gc.collect()
+            base.drain_deferred_settles(session)
+    finally:
+        gc.enable()
+    _assert_estimate_without_streaming(session)
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_a_body_read_then_dropped_reports_the_estimate_when_the_session_end_sweep_runs_first(
+    is_async: bool,
+) -> None:
+    """The session's end drains the queued settles, then sweeps its open
+    calls. A response another thread drops between the two (or one a
+    collection frees there) has its settle queued but is reached by the
+    sweep first, after the response is gone: the sweep uses what the
+    finalizer recorded. The test holds the call, as the queued settle
+    does, and lets the response go however the runtime frees it (by
+    reference count, or through the cyclic collector, which on some
+    runtimes already holds a view response in a cycle)."""
+    session = _session(False)
+    calls: list[Any] = []
+    with respx.mock(base_url=OPENAI_URL) as router:
+        router.post("/chat/completions").mock(
+            return_value=_sse(_chat_frames(tool=False), done=True)
+        )
+        _open_and_read(session, is_async, keep=lambda response: calls.append(response._call))
+        gc.collect()
+        assert len(session.queued_stream_settles) == 1  # queued by the finalizer
+        base.settle_open_guards(session)
+        base.drain_deferred_settles(session)
+    assert calls[0]._settled
     _assert_estimate_without_streaming(session)
 
 

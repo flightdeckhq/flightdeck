@@ -3,10 +3,13 @@ WebSocket without any new event: the reconciler marking a run stale and
 then lost, the orphan reaper closing a lost run, and a stale parent
 revived by its sub-agent's event.
 
-Each test creates its own session through ingestion and moves it only by
-backdating its own row (or, for the parent, by posting its child's event);
-the reconciler running in the dev stack's worker does the rest on its
-next tick. Requires the dev stack (``make dev``).
+Each test creates its own agent and session through ingestion and moves
+the session only by backdating its own row (or, for the parent, by
+posting its child's event); the reconciler running in the dev stack's
+worker does the rest on its next tick. The run is its agent's only one,
+so every update must also carry the run's state as the agent's
+rolled-up ``agent_state``. Each test removes what it wrote. Requires the
+dev stack (``make dev``).
 """
 
 from __future__ import annotations
@@ -20,7 +23,14 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from websockets.asyncio.client import ClientConnection, connect
 
-from .conftest import TOKEN, exec_sql, make_event, post_event, wait_for_session_in_fleet
+from .conftest import (
+    TOKEN,
+    delete_flavor_data,
+    exec_sql,
+    make_event,
+    post_event,
+    wait_for_session_in_fleet,
+)
 from .test_session_states import PROCESSING_SLACK_SECS, RECONCILER_POSITIVE_WAIT_SECS
 
 if TYPE_CHECKING:
@@ -109,19 +119,30 @@ def _backdate(session_id: str, interval: str, *, state: str | None = None) -> No
         )
 
 
-def _started_session(flavor_prefix: str) -> str:
+def _started_session(flavor_prefix: str) -> tuple[str, str]:
+    """Start a run of a new agent of its own; return (session_id, flavor).
+    The flavor names the agent too, so the run is the agent's only one."""
     sid = str(uuid.uuid4())
-    post_event(make_event(sid, f"{flavor_prefix}-{uuid.uuid4().hex[:6]}", "session_start"))
+    flavor = f"{flavor_prefix}-{uuid.uuid4().hex[:6]}"
+    post_event(make_event(sid, flavor, "session_start", agent_name=flavor))
     assert wait_for_session_in_fleet(sid, timeout=PROCESSING_SLACK_SECS), (
         f"session {sid} never landed"
     )
-    return sid
+    return sid, flavor
 
 
 def test_reconciler_stale_then_lost_reach_the_stream_without_an_event() -> None:
     """A run that goes silent shows stale, then lost, on an open stream:
-    each a session_update carrying the session and no event."""
-    sid = _started_session("test-ws-transition")
+    each a session_update carrying the session and no event, with the
+    agent's rolled-up state."""
+    sid, flavor = _started_session("test-ws-transition")
+    try:
+        _assert_stale_then_lost(sid)
+    finally:
+        delete_flavor_data(flavor)
+
+
+def _assert_stale_then_lost(sid: str) -> None:
     events_before = _event_count(sid)
 
     async def drive() -> tuple[Update, Update, list[Update]]:
@@ -142,6 +163,8 @@ def test_reconciler_stale_then_lost_reach_the_stream_without_an_event() -> None:
 
     for update in (stale, lost):
         assert update["type"] == "session_update", update
+        # The run is its agent's only one: the agent is where it is.
+        assert update.get("agent_state") == update["session"]["state"], update
     for update in seen:
         assert "last_event" not in update, (
             f"a state change for {sid} must carry no event; got {update['last_event']}"
@@ -157,8 +180,14 @@ def test_reaper_close_reaches_the_stream_as_a_session_end() -> None:
     """A lost run past FLIGHTDECK_ORPHAN_TIMEOUT_HOURS (24 h by default)
     closes on an open stream as a session_end carrying the reaper's
     synthetic event, like any other close."""
-    sid = _started_session("test-ws-reap")
+    sid, flavor = _started_session("test-ws-reap")
+    try:
+        _assert_reaped(sid)
+    finally:
+        delete_flavor_data(flavor)
 
+
+def _assert_reaped(sid: str) -> None:
     async def drive() -> Update:
         async with connect(WS_URL) as ws:
             _backdate(sid, "25 hours", state="lost")
@@ -171,6 +200,7 @@ def test_reaper_close_reaches_the_stream_as_a_session_end() -> None:
 
     assert closed["type"] == "session_end", closed
     assert closed["session"].get("ended_at"), f"closed session {sid} has no ended_at"
+    assert closed.get("agent_state") == "closed", closed
     last_event = closed.get("last_event")
     assert last_event, f"the reaper's close for {sid} must carry its session_end"
     assert last_event["event_type"] == "session_end"
@@ -187,9 +217,17 @@ def test_reaper_close_reaches_the_stream_as_a_session_end() -> None:
 def test_parent_revived_by_its_child_reaches_the_stream() -> None:
     """A stale parent that its sub-agent's event revives shows active again
     on an open stream: the child's own broadcast names only the child."""
-    parent_sid = _started_session("test-ws-revive-parent")
-    child_sid = str(uuid.uuid4())
+    parent_sid, parent_flavor = _started_session("test-ws-revive-parent")
     child_flavor = f"test-ws-revive-child-{uuid.uuid4().hex[:6]}"
+    try:
+        _assert_parent_revived(parent_sid, child_flavor)
+    finally:
+        delete_flavor_data(child_flavor)
+        delete_flavor_data(parent_flavor)
+
+
+def _assert_parent_revived(parent_sid: str, child_flavor: str) -> None:
+    child_sid = str(uuid.uuid4())
     post_event(
         make_event(
             child_sid,
@@ -228,3 +266,4 @@ def test_parent_revived_by_its_child_reaches_the_stream() -> None:
     assert "last_event" not in revived, (
         f"the parent's revival is a state change, not an event; got {revived['last_event']}"
     )
+    assert revived.get("agent_state") == "active", revived

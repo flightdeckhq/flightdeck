@@ -2843,9 +2843,12 @@ Each record is judged by its own date against the latest end the
 request knows: the row's, or a `subagent_completed` earlier in the same
 request. A request holding a run's end and the resumed run's records
 therefore publishes the end, then the start, then the resumed run's
-records, and the worker closes and reopens the row in that order. Only
-the first record past the end gets a start; a late record after it lands
-on the reopened row and is counted with it. Every request reads the
+records, and the worker closes and reopens the row in that order (as
+for any start, the run separator is recorded only when the row exists
+by the time the start is published, which a sub-agent whose first run
+and resume share one export may miss). Only the first record past the
+end gets a start; a late record after it lands on the reopened row and
+is counted with it. Every request reads the
 rows of the sub-agents it names for their ends, in one read for all of
 them, since another replica may have published an end; the replica
 cache saves the rest of a sub-agent's read. A resumed run's record

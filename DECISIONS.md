@@ -399,6 +399,21 @@ was reaching every run of the flavor.
 rest (a silent partial stop); answering the `session_id` + `flavor` pair
 with 400 (breaks the Directives page's "Specific run").
 
+## D236 -- A Claude Code turn is retried and sent only under its own session; a resumed sub-agent re-attaches its child
+
+**Date:** 2026-11-02
+**Decision:** extends D215, narrowing its whole-transcript recovery. A
+turn whose POST failed is sent by a later hook (sub-agent ends too); a
+flush sends only turns that ran while its session was current, so one
+unsent when its session ends is dropped, never misfiled. A sub-agent's
+child, `uuid5(outer session, agent_id)`, is re-attached on each resume.
+**Why:** one conversation lost 26 calls (7.63M tokens), 24 of them after
+a failed send that was never retried; a re-read after lost markers filed
+5 under a later coordinator's child; a resumed child stayed closed.
+**Rejected alternative:** late delivery to the old run (changes D212;
+pre-0.7.1 plugins' random-id re-sends would count twice); a child keyed
+on Claude Code's session id (contradicts D190); a child per resume.
+
 ## D238 -- A record dated after a closed OTLP sub-agent's end resumes it
 
 **Date:** 2026-11-02

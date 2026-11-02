@@ -34,6 +34,10 @@ test.describe("T98 — Agent drawer header fixed four-row layout", () => {
       agentName: string,
       opts: { expectSubagents: boolean },
     ) => {
+      // Narrow the roster by name first: the table pages at 50 rows
+      // sorted by state, and a closed agent can fall to page 2 once a
+      // busy dev DB holds enough live agents.
+      await page.locator('[data-testid="agents-search-input"]').fill(agentName);
       const row = page
         .locator('[data-testid^="agent-row-"]')
         .filter({ hasText: agentName })

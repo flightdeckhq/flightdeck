@@ -241,20 +241,24 @@ flightdeck/
 │   │   │   ├── schemas.py      # Pydantic v2 control-plane envelope validation
 │   │   │   ├── agent_id.py     # 5-tuple → deterministic agent_id derivation
 │   │   │   ├── errors.py       # Provider exception or non-success stop reason → structured llm_error taxonomy + payload wrapper
-│   │   │   └── exceptions.py   # BudgetExceededError, DirectiveError, ConfigurationError
+│   │   │   ├── exceptions.py   # BudgetExceededError, DirectiveError, ConfigurationError
+│   │   │   └── import_hook.py  # sys.meta_path finder: runs patch() for an SDK as the application imports it
 │   │   ├── transport/
-│   │   │   ├── client.py       # ControlPlaneClient + EventQueue (drain + directive threads)
+│   │   │   ├── client.py       # ControlPlaneClient + EventQueue (drain + directive threads; the drain thread ends the session for a signal)
+│   │   │   ├── body_limit.py   # Event serialisation within the ingestion body limit
 │   │   │   └── retry.py        # Exponential backoff, unavailability policy enforcement
 │   │   ├── interceptor/
 │   │   │   ├── base.py         # call, call_async, call_stream, call_stream_async, the stream guards + the outer-call mark
 │   │   │   ├── platform.py     # Endpoint attribution: host → platform label, loopback → local billing
+│   │   │   ├── raw_views.py    # Deferred metering of the SDKs' raw and streaming response views
 │   │   │   ├── anthropic.py    # SensorAnthropic + resource-level patch of the SDK's Messages classes
 │   │   │   ├── openai.py       # SensorOpenAI + chat / responses / embeddings descriptors
 │   │   │   ├── litellm.py      # SensorLitellm: module-level completion / embedding patch
 │   │   │   ├── mcp.py          # mcp.client.session.ClientSession patch: every MCP operation, every transport
 │   │   │   ├── mcp_identity.py # MCP server identity: canonical URL form + SHA-256 fingerprint
 │   │   │   ├── crewai.py       # CrewAI Agent.execute_task patch → one child session per agent turn
-│   │   │   └── langgraph.py    # LangGraph StateGraph.add_node patch → one child session per node invocation
+│   │   │   ├── langgraph.py    # LangGraph StateGraph.add_node patch → one child session per node invocation
+│   │   │   └── claude_agent_sdk.py # Claude Agent SDK query() / ClaudeSDKClient patch → one session per run
 │   │   ├── providers/
 │   │   │   ├── protocol.py     # Provider Protocol: token estimation, usage extraction (incl. in-stream usage), call details, endpoint vendor / locality, content extraction
 │   │   │   ├── anthropic.py    # AnthropicProvider: handles system, messages, tools, response
@@ -540,7 +544,8 @@ flightdeck/
 The sensor is a Python library that runs in-process inside the agent. `init`
 resolves configuration; `patch` installs sensor methods on the Anthropic
 SDK's `Messages` resource classes and sensor descriptors on the OpenAI
-client classes; every LLM call passes through the sensor synchronously.
+client classes, on each SDK as the application imports it (see "When
+patching happens"); every LLM call passes through the sensor synchronously.
 The event POST itself is offloaded onto a background queue drain thread
 so it does not sit in the hot path, but the LLM call waits for the
 sensor's response-envelope parsing before returning control to
@@ -565,7 +570,9 @@ Two background daemon threads run: `flightdeck-event-queue` drains events to
 the control plane, and `flightdeck-directive-queue` processes directives
 received in event responses (kill, custom handlers, model swap, policy
 updates). The queues are decoupled so a slow directive handler cannot block
-event throughput.
+event throughput. The drain thread also ends the session when the process
+receives SIGTERM or SIGINT (see "Shutdown and signals"), so a signal
+handler never does that work on the thread the signal interrupted.
 
 Heartbeats, polling loops, and additional daemon threads do not belong in
 the sensor. Features that require independent background activity belong in
@@ -642,9 +649,11 @@ def patch(
     responses / embeddings cached_property descriptors on OpenAI and
     AsyncOpenAI. Works with frameworks that build their own clients
     internally; isinstance checks and captured class references keep
-    working. Idempotent."""
+    working. Never imports an SDK: one the application has imported is
+    patched at once, one it imports later is patched as it is imported.
+    Idempotent."""
 
-def unpatch -> None:...
+def unpatch -> None:...  # also stops patching SDKs as they are imported
 def get_status -> StatusResponse:...
 def teardown -> None:...
 
@@ -838,8 +847,8 @@ different levels:
   patch below). The patch imports the SDK's private module
   layout; the floor is `anthropic>=0.86`, the lowest release carrying
   it. An installed SDK below the
-  floor is reported once, at import, with a warning rather than
-  silently left unmetered. The raw view returns a response whose body is
+  floor is reported once, when the sensor first patches it, with a
+  warning rather than silently left unmetered. The raw view returns a response whose body is
   already read, and is metered like a plain call. Its `parse()` is
   synchronous on both client kinds up to the 0.x SDKs; from 2.x the async
   client's raw view returns an `AsyncAPIResponse` whose `parse()` is a
@@ -975,6 +984,50 @@ views described above. The practical advice is the same for both: call
 `init` + `patch` at the top of the entrypoint, before any framework or
 user code constructs a client.
 
+### When patching happens
+
+`patch` never imports an SDK. It patches at once each SDK the
+application has already imported, and the rest as the application
+imports them: `core/import_hook.py` puts a finder at the front of
+`sys.meta_path` that, for the seven modules `patch` covers (`anthropic`,
+`openai`, `litellm`, `mcp`, `crewai`, `langgraph.graph`,
+`claude_agent_sdk`), finds the module's spec through the finders after it
+and wraps its loader. The wrapper puts the module's own loader back on
+`__loader__` and `__spec__.loader`, executes the module with it, then
+patches the SDK, in the importing thread, before the `import` statement
+returns. Every other import passes the finder after one dictionary
+lookup. So an application loads only the SDKs it uses: `import
+flightdeck_sensor`, `init` and `patch` import none of them, and litellm's
+download of its price list from GitHub, which runs when litellm is
+imported, happens only when the application imports litellm. An SDK's
+interceptor module imports the SDK, so it is loaded only once the SDK is;
+`wrap` looks for a client's SDK classes only when that SDK is imported (a
+client cannot exist before), and the interceptor names `flightdeck_sensor`
+re-exports (`SensorLitellm`, the `patch_*` / `unpatch_*` functions)
+resolve on first access. LangGraph is watched as `langgraph.graph`, where
+`StateGraph` lives: `langgraph` itself is a namespace package shared with
+LangGraph's other distributions, and a namespace package runs no code to
+hook.
+
+A reload of a patched SDK runs through the finder again and is patched
+again. The litellm patch checks each entry point for its own wrapper
+rather than trusting the module's `_flightdeck_patched` flag, because a
+reload re-runs litellm's module code in the existing namespace, which
+rebinds every entry point and leaves the flag set. An exception while
+patching on import is logged and the import goes on (the SDK is then
+unmetered); a failed import patches nothing. `unpatch` takes the finder
+out of `sys.meta_path` and unpatches only SDKs that are imported.
+
+Every patch and unpatch runs under the sensor's patch lock. A patch on
+import runs inside the import, holding that module's import lock, and
+`patch` can hold the patch lock while it waits for that same import (an
+SDK another thread is still importing when `patch` runs is waited for, so
+it is patched whole; one the calling thread is importing is left to the
+finder), so the import hook never waits for the patch lock: it queues the
+SDK and patches it only if it takes the lock without waiting, and a
+thread holding the lock patches what was queued as it releases it.
+Patching is idempotent, so an SDK queued twice is patched once.
+
 ### Module-level patching: litellm
 
 `SensorLitellm` (in `interceptor/litellm.py`) covers `litellm.completion`,
@@ -982,8 +1035,10 @@ user code constructs a client.
 `litellm.atext_completion`, `litellm.responses`, `litellm.aresponses`,
 `litellm.embedding` and `litellm.aembedding`, streaming included. litellm
 exposes its API as module-level functions, so the SDK class patching
-above does not apply; the interceptor wraps the module functions directly
-with idempotency sentinels on the module object. Each wrapper keeps the
+above does not apply; the interceptor wraps the module functions directly,
+stashing each original on the module object and marking each wrapper, which
+is what makes patching idempotent (see "When patching happens" for why the
+mark rather than a module flag). Each wrapper keeps the
 entry point's signature and takes its arguments as litellm does,
 positional ones included: they are bound to the entry point's parameter
 names (`atext_completion` and `aembedding` take `*args` and forward them
@@ -1189,7 +1244,7 @@ sub-agent execution. Each child session carries
 
 | Mechanism | parent_session_id source | agent_role source | Interceptor |
 |---|---|---|---|
-| Claude Code Task subagent | hook payload `session_id` | hook payload `agent_type` (e.g. `"Explore"`) | `plugin/hooks/scripts/claude_code/subagent.mjs` (`SubagentStart` / `SubagentStop`) |
+| Claude Code Task subagent | the outer Flightdeck session id, which the hook payload's `session_id` resolves to (see Plugin, Session identity) | hook payload `agent_type` (e.g. `"Explore"`) | `plugin/hooks/scripts/claude_code/subagent.mjs` (`SubagentStart` / `SubagentStop`) |
 | CrewAI agent execution | parent crew's session | `Agent.role` attribute | `sensor/.../interceptor/crewai.py` (context manager around `Agent.execute`) |
 | LangGraph node execution | parent runner's session | node name | `sensor/.../interceptor/langgraph.py` (agent-bearing nodes only — node body invokes a patched LLM client OR matches `langgraph_agent_node_pattern` regex) |
 
@@ -1416,7 +1471,7 @@ is safe because `_apply_directive` runs on the dedicated directive handler
 thread, not the drain thread; `Queue.join` on the event queue makes
 progress without self-deadlock.
 
-`EventQueue.flush(timeout=5.0)` synchronously drains pending events up to a
+`EventQueue.flush(timeout=3.0)` synchronously drains pending events up to a
 deadline (event queue only). Used by `Session.end` and the shutdown /
 shutdown_flavor branches. The directive queue is intentionally NOT waited
 on: `flush` is typically called from inside `_apply_directive` running on
@@ -1492,6 +1547,93 @@ a no-op with a warning. Pattern B (one init per thread, isolated Sessions)
 and Pattern C (multiple agents in one process, each with its own Session)
 are not supported in the current model.
 
+### Shutdown and signals
+
+`Session.start` registers `Session.end` with `atexit` and, when `init` runs
+on the main thread, a SIGTERM handler and (except on Windows) a SIGINT
+handler. `end` settles the streams still open, flushes the event queue,
+posts `session_end` (`close_reason=normal_exit`, or `directive_shutdown`
+after a shutdown directive), flushes again and closes the queue; a second
+call does nothing. `teardown()` calls it too.
+
+A signal handler runs on the main thread on top of whatever the signal
+interrupted, which can be inside the session's, the policy cache's or the
+event queue's lock, none of them re-entrant. So the handler takes no lock
+and waits on none:
+
+1. It claims the end of the session with a non-blocking lock acquire, so
+   it and `end` never both run it, and hands the work to the event queue's
+   drain thread: a plain attribute the drain loop checks before each wait
+   for an event, plus a wake-up item put on the queue only when the
+   queue's lock is free (otherwise the drain thread notices the request
+   within its one-second wait). The drain thread posts the events already
+   queued, settles the open streams, posts the events that queues, then
+   posts `session_end`, so `session_end` is the session's last event.
+   Directives that arrive from then on are dropped, and the directive
+   thread is stopped.
+2. The handler polls for that to finish, for up to 2 seconds, then passes
+   the signal on to the handler it replaced: it calls a Python handler
+   (Python's own SIGINT handler raises `KeyboardInterrupt`), or, for the
+   default action, restores it and raises the signal again, so the process
+   ends as it would have without the sensor. Past the 2 seconds the drain
+   thread is still finishing an event's POST that was under way, or
+   waiting for a slow control plane, or briefly for a lock the signal
+   interrupted: a Python handler is called anyway (the `end` that
+   `atexit` runs then waits for the drain thread), while for the default
+   action the handler returns and the drain thread delivers the signal to
+   the main thread again once `session_end` is out. That delivery is
+   cooperative: Python runs a handler only between the main thread's
+   bytecodes, so a main thread inside a long call into native code holds
+   the exit until the call returns.
+3. A second signal while that shutdown runs, or after it, is passed on at
+   once, so it forces the exit. A signal that interrupts `end` itself is
+   passed on at once too; one that arrives while `end` runs on another
+   thread waits for it (2 seconds at most).
+
+The drain thread's shutdown has one deadline, 8 seconds from the signal
+(`SHUTDOWN_TIMEOUT_SECS`). The queued events get the first 3 seconds and
+`session_end` the rest. Each POST the shutdown makes is one attempt, with
+its timeout capped by the time left, and the events still queued when
+their 3 seconds run out are dropped, so a control plane that is down or
+never answers holds the exit for at most the deadline, not for a retry
+cycle per event. An event's POST already under way when the signal
+arrives, the usual case while events flow, cannot be cut short: its
+attempt runs to the transport's 10-second request timeout, its retry is
+skipped, and `session_end` still gets one half-second attempt after it.
+So the shutdown ends within about 10.5 seconds of the signal
+(`SHUTDOWN_LIMIT_SECS`), well inside the 30 seconds Kubernetes gives a pod
+between SIGTERM and SIGKILL. A request timeout bounds each socket
+operation (the connect, each read), not name resolution, so a slow DNS
+lookup for the control plane can take longer. A POST that fails during
+the shutdown is counted rather than logged, and the counts, like the
+session's own log line, are logged once the shutdown is over: logging
+takes locks the interrupted code may hold.
+
+Within it, each wait of the drain thread's for a lock the interrupted code
+may hold lasts half a second at most (`SHUTDOWN_LOCK_WAIT_SECS`), and none
+is made past the deadline: on Python 3.13 an exception a signal handler
+raises while the interrupted code is at a loop's back-edge can skip that
+code's `with` and `finally` exits, leaving the lock held for good. The
+open streams are settled, and the events that queues posted, only when
+the session's, the open-stream registry's, the policy cache's and the
+event queue's locks are all free within that wait; otherwise they are
+left as they are. `session_end`'s token total, framework, model and close
+reason are read under the session's lock when it comes free in time, and
+as plain attribute reads without it otherwise; once found held, it is not
+waited for again. Nothing on this path imports a module: the modules
+it uses are loaded with the sensor, because a first import can wait for
+one the interrupted code is in the middle of, and module code that calls
+`exec` (a dataclass definition does) clears the flag CPython uses to give
+a process ended by an unhandled `KeyboardInterrupt` its SIGINT exit
+status.
+
+`end`, called after a signal started the shutdown (by `atexit`, or
+`teardown()`), waits for the drain thread to finish it, up to that
+10.5-second limit from the signal. A signal the application ignores
+(`SIG_IGN`) is left ignored and the session carries on; a handler
+installed outside Python, which Python cannot pass a signal on to, is
+left in place. No thread is added for any of this.
+
 ---
 
 ## Plugin (Claude Code)
@@ -1553,7 +1695,12 @@ counts as unset. Credentials embedded in
 the server URL are stripped before use, and the default token prints
 a warning on every hook unless `FLIGHTDECK_QUIET=1`.
 `FLIGHTDECK_CAPTURE_PROMPTS` and `FLIGHTDECK_CAPTURE_TOOL_INPUTS` stay
-environment variables (see Content Capture).
+environment variables (see Content Capture). A repository's project
+settings (`.claude/settings.json`, `.claude/settings.local.json`) can
+set any of these variables in their `env`, which Claude Code applies
+over the shell and passes to the hooks, so a repository can choose the
+server, the token and the capture switches for the sessions run in it;
+only managed settings, or `--settings`, outrank a repository's settings.
 
 Every event body the plugin POSTs is at most 768 KiB
 (`MAX_EVENT_BODY_BYTES`). Ingestion reads at most 1 MiB of a body and
@@ -1589,20 +1736,23 @@ Each value is sized for the hook's normal worst case:
 | `PreToolUse` | 10 | local reads only (the policy cache, remembered decisions and, with enforcement on, the control state), plus a 2 s heartbeat when the session has been quiet for 5 s |
 | `UserPromptSubmit` (the enforcement gate) | 10 | the same control-state read and heartbeat |
 | `PostToolUse`, `PostToolUseFailure`, `Stop`, `StopFailure` | 30 | the transcript flush: up to two `claude auth status` runs (5 s each) for a session whose billing mode is not settled, then 2 s per unsent turn |
-| `SubagentStop` | 30 | the same flush over the subagent's transcript, then the child `session_end` |
-| `PreCompact`, `PostCompact`, `PostModelSwitch`, `Notification`, `PermissionRequest`, `PermissionDenied`, `UserPromptExpansion`, `TaskCreated`, `TaskCompleted`, `TeammateIdle`, `CwdChanged`, `ConfigChange`, `Elicitation`, `ElicitationResult`, `SubagentStart` | 15 | one or two POSTs |
+| `SubagentStop` | 30 | up to 2 s for the subagent's final turn to reach its transcript, the same flush over that transcript, then the child `session_end` |
+| `SubagentStart` | 15 | up to 1 s for the subagent's files, then the child `session_start`; on a resume, first up to 3 s for an end the previous execution still owes that another hook is sending, or that end itself, after that execution's unsent turns (under the 25 s flush deadline). The hook runs async, so Claude Code does not enforce the timeout on it |
+| `PreCompact`, `PostCompact`, `PostModelSwitch`, `Notification`, `PermissionRequest`, `PermissionDenied`, `UserPromptExpansion`, `TaskCreated`, `TaskCompleted`, `TeammateIdle`, `CwdChanged`, `ConfigChange`, `Elicitation`, `ElicitationResult` | 15 | one or two POSTs |
 
 Claude Code cancels a synchronous hook that runs out of time and carries on, as for
-any non-blocking error. What the hook had not done by then is lost or
-deferred: unsent turns are sent by a later hook (each carries its
-message-derived id, so a copy is dropped by the worker), a
-`session_start` that was not accepted is retried by the next hook, and
-the policy cache is written before the policy events, so gating
-continues. Lost for good are the turn whose POST was in flight, the
-remaining `policy_mcp_warn` / `policy_mcp_block` events of a
-`SessionStart`, and a child `session_end` (the child is then closed by
-the reaper). A `PreToolUse` that times out lets the tool call through,
-like every other failure of the gate (it fails open).
+any non-blocking error. What the hook had not done by then is deferred
+or lost: unsent turns are sent by a later hook (each carries its
+message-derived id, so a copy is dropped by the worker); the turn or
+tool event whose POST was in flight keeps the cancelled process's
+claim, which a subagent's `SubagentStop` or the `SessionEnd` worker
+takes over (see below and Tool calls and failures); a `session_start` that was not accepted is retried by the next
+hook; a subagent's `session_end` stays owed until a later hook sends it
+(see Subagent hooks); and the policy cache is written before the policy
+events, so gating continues. Lost for good are the remaining
+`policy_mcp_warn` / `policy_mcp_block` events of a `SessionStart`. A
+`PreToolUse` that times out lets the tool call through, like every
+other failure of the gate (it fails open).
 
 `SessionEnd` has none: Claude Code gives SessionEnd hooks a shared 1.5 s
 budget, which a per-hook timeout would raise (up to 60 s) and so delay
@@ -1651,29 +1801,45 @@ Async hooks of a session can overlap with each other and with its
 `SessionEnd`, so two pieces of state guard them:
 
 - A turn's marker is claimed before its POST and names the claiming
-  process; it is emptied once the server accepts the turn. In a
-  print-mode or SDK run, Claude Code kills the async hooks still pending
-  at the end, before `SessionEnd` runs; the SessionEnd worker, the last
-  process of the session, sends every turn whose claim was never
-  confirmed and whose process is gone. A claim held by a live process is
-  left to it, so two live processes never send one turn (the worker
-  would count two concurrent copies). Interactive runs do not cancel
-  async hooks; they finish after `SessionEnd`. The liveness check is a
-  signal-0 probe of the pid: a reused pid reads as alive, and that turn
-  is then lost as it would have been without the reclaim.
+  process; it is emptied once the server accepts the turn. When the POST
+  fails, the claim is released and the flush stops there, so the next
+  hook sends that turn and the ones after it; during an outage each hook
+  pays one failed POST. A turn ingestion refuses as invalid (a 400 with
+  ingestion's own JSON error, or a 413 for its size) is marked refused
+  and the flush goes on to the next turn, so it cannot hold back the
+  turns after it. Two refusals are failures instead: a 400 without that
+  body (from a proxy, or a wrong server URL), and ingestion's clock-skew
+  refusal of a turn younger than its 48-hour past window, which means the
+  two clocks disagree (the error does not say which way) and passes once
+  they agree. In a print-mode or SDK
+  run, Claude Code kills the async hooks still pending at the end,
+  before `SessionEnd` runs, and their claims stay behind: a subagent's
+  `SubagentStop` and the SessionEnd worker, the last processes to read a
+  transcript, take over every claim that was never confirmed and whose
+  process is gone, and send the turn. A takeover rewrites the claim
+  under a lock, so two processes never take over one turn, and a claim
+  held by a live process is left to it, so two live processes never send
+  one turn (the worker would count two concurrent copies). Interactive
+  runs do not cancel async hooks; they finish after `SessionEnd`. The
+  liveness check is a signal-0 probe of the pid: a reused pid reads as
+  alive, and that turn is then lost as it would have been without the
+  takeover.
 - `SessionEnd` leaves an ended-session marker with the session id. A
   hook of the same Claude Code session that starts after it reports
   under that id and skips the `session_start` backstop, so it neither
   mints a stray session nor reopens the ended one; the next
-  `SessionStart` (a resume) removes the marker. Events such a hook sends
-  after the worker stored `session_end` are dropped as late, as for any
-  closed session. The marker is written only for a hook event that
-  carries Claude Code's session id, never on the working-directory
-  fallback key.
+  `SessionStart` (a resume) removes the marker. The worker stores the
+  events such a hook sends after the `session_end`, but, as for any
+  closed session, skips their side effects: a call published after the
+  end adds no tokens (see Terminal-state handling). The marker is
+  written only for a hook event that carries Claude Code's session id,
+  never on the working-directory fallback key.
 
 The same lateness applies to a subagent: its interior hooks run async,
 so on a slow server an interior `tool_call` can reach the worker after
-the child's `session_end` (sent by `SubagentStop`) and be dropped.
+the child's `session_end` (sent by `SubagentStop`) and be stored without
+side effects. Such a late hook never sends the child's `session_start`
+again (see Subagent hooks), so it cannot reopen the child.
 
 ### Session identity
 
@@ -1701,12 +1867,29 @@ the child's `session_end` (sent by `SubagentStop`) and be dropped.
 
 The marker file exists because every hook invocation runs as a separate
 Node child process — pid-based fallbacks would create one session row per
-tool call. `SessionEnd` deletes the marker, so `/clear` or a new `claude`
-run mints a new session id. A run that ends without `SessionEnd` (a crash
-or a reboot) leaves the marker in place, so resuming that conversation
-(Claude Code keeps its session id on `--resume`, not on
-`--fork-session`) within seven days continues the same Flightdeck
-session; in the `$TMPDIR` fallback a reboot clears the marker.
+tool call. `SessionEnd` deletes the marker, so `/clear`, a `--resume`
+or a new `claude` run mints a new session id. A run that ends without
+`SessionEnd` (a crash or a reboot) leaves the marker in place, so
+resuming that conversation (Claude Code keeps its session id on
+`--resume`, not on `--fork-session`) within seven days continues the
+same Flightdeck session; in the `$TMPDIR` fallback a reboot clears the
+marker.
+
+A session that `SessionStart` mints also records when: the time is
+written to `minted-${sessionId}.txt` before the marker itself, so any
+hook that reads the marker finds it. It is keyed on the Flightdeck
+session id rather than on the marker, so the SessionEnd worker and a
+hook that runs after `SessionEnd`, which no longer have the marker,
+still find it, and it is not deleted at `SessionEnd`; the seven-day
+prune removes it. Every transcript flush of the session sends only the
+turns that ran after that time (see Subagent hooks). The mint time and
+the transcript's record times come from the same machine clock, so a
+clock that steps back by Δ after `SessionStart` loses up to Δ of that
+session's first turns, whose times read as before the mint. A session
+minted by any other hook records no time, since its conversation was
+already running when the marker was written (as when the marker was
+pruned), and neither does a marker an earlier plugin release wrote; such
+a session's flushes send every unsent turn of the transcript.
 
 ### `session_start` with context
 
@@ -1794,6 +1977,37 @@ Content Capture). A failed `Bash` command, a `Read` on a missing file
 and an MCP call that errored thus land as the same row shape as a
 success with one extra field.
 
+A tool event carries an id derived from its `tool_use_id`
+(`uuid5(NAMESPACE_FLIGHTDECK,
+"flightdeck://claude-code/tool_call/<tool_use_id>")`, for `tool_call`
+and `mcp_tool_call` alike), so a copy sent again is stored once. Before
+its POST the hook records the event as owed in
+`tool-calls-<session id>.json`, keyed by `tool_use_id`, with what only
+the hook knows and no content: the tool name, whether it failed and was
+interrupted, its duration, the `mcp_server` hint, the event's time and
+the transcript it came from; the entry is dropped once the server
+accepts the event or refuses it for good, as for a turn (see Hook
+configuration). When the POST fails, the entry is
+released, as a turn's claim is, and the next hook of the same session
+that flushes its transcript rebuilds the event after the turns: the
+fields from the entry, and the input, the result and a failure's error
+text from the transcript's `tool_use` and `tool_result` records (the
+result as Claude Code gave it to the model), under the same capture
+rules; the flush stops at the first failed POST. `SubagentStop` and the
+`SessionEnd` worker do so last, taking over entries whose process is
+gone, and send an event whose transcript records cannot be found
+without its content; an earlier hook keeps such an entry for later. A
+subagent's `session_end` follows the tool events its execution owes:
+while a live hook is still sending one, the end stays owed for a later
+flush and the pass goes on with the session's other subagents; the
+`SessionEnd` worker, the end's last chance, waits up to three seconds
+for such a hook before its last try, and a hook still sending after that
+leaves the end unsent. Only
+an event a hook tried to send is rebuilt: a tool use no hook reported (a
+denied permission, a hook Claude Code cancelled before it ran) stays
+unreported, and a hook that carried no `tool_use_id` sends an event
+without an id, which is not retried.
+
 For MCP tools the server identity is resolved in this order: the hook's
 `mcp_server.name` when Claude Code sent it (2.1.274 and later; its
 `source` says where the server was declared, and known values include
@@ -1812,19 +2026,33 @@ policy gate cannot fingerprint them; the gate fails open for them.
 
 ### Subagent hooks
 
-Two hooks bracket every Claude Code Task subagent invocation:
+Two hooks bracket every execution of a Claude Code subagent:
 
-- `SubagentStart` — emitted when Claude Code spawns a Task subagent.
-  The plugin emits a child `session_start` whose `parent_session_id`
-  carries the outer session's id and whose `agent_role` carries the
-  hook payload's `agent_type` (e.g. `"Explore"`, `"fork"`). When
-  `capturePrompts=true`, the prompt the parent gave the subagent is
-  captured as `incoming_message` on the child's `session_start`
-  payload.
-- `SubagentStop` — emitted when the Task subagent returns. The
-  plugin emits a child `session_end` and (when capture is on) the
-  subagent's report back as `outgoing_message`. `SubagentStop` is the
-  canonical end-of-life signal for the child.
+- `SubagentStart` — fired when Claude Code spawns a subagent, and again
+  each time a stopped subagent runs once more: when the parent resumes
+  it with `SendMessage`, or when a background task it started finishes
+  and wakes it (a task notification). The plugin emits a child
+  `session_start` whose `parent_session_id` carries the outer session's
+  id and whose `agent_role` carries the hook payload's `agent_type`
+  (e.g. `"Explore"`, `"fork"`). When `capturePrompts=true`, the prompt
+  the parent gave the subagent is captured as `incoming_message` on the
+  child's `session_start` payload.
+- `SubagentStop` — fired when the subagent returns. The plugin sends
+  the subagent's unsent turns, then a child `session_end` and (when
+  capture is on) the subagent's report back as `outgoing_message`.
+  `SubagentStop` is the canonical end-of-life signal for each execution
+  of the child.
+
+The child session id is `uuid5(NAMESPACE_FLIGHTDECK,
+"flightdeck:subagent://<outer session id>/<agent_id>")`. The outer
+session id is the Flightdeck session the hook's `session_id` resolves
+to (see Session identity), not Claude Code's own session id, and
+`agent_id` is the id Claude Code gives the subagent on every hook of
+every one of its executions (`tool_use_id` on versions without it). A
+subagent therefore keeps one child row for as long as its parent's
+Flightdeck session lasts, however often it is resumed; once the
+parent's session changes (a `--resume` after an exit), a later
+execution of the same subagent is a new child of the new session.
 
 Neither hook carries the messages themselves, so the plugin reads them
 from the files Claude Code writes for the subagent next to the parent
@@ -1856,6 +2084,85 @@ at its interior hooks and at `SubagentStop`, emit only the turns after
 the copy, its outgoing message comes from those turns, and the parent's
 `post_call` events carry the copied turns' tokens.
 
+**Resumes.** `SubagentStop` leaves an ended marker for the child,
+`subagent-ended-<child id>.txt`. A `SubagentStart` that finds it is a
+resume or a wake: it removes the marker and sends a new `session_start`
+for the same child id, which ingestion re-attaches to the closed row
+(see Session attachment flow). The child is active again, the calls of
+the resumed execution count toward its `tokens_used`, and the session
+drawer marks the start with the attachment badge. Each execution thus
+has one `session_start` and one `session_end`. The resume's
+`session_start` carries, as `incoming_message`, the message that resumed
+the subagent: the last user prompt after its last turn of its own (a
+`SendMessage`'s text, which Claude Code writes as a meta record with the
+origin `coordinator`). A wake by a task notification writes a meta
+record too, with the origin `task-notification`, but its text is Claude
+Code's notice of the task rather than a message to the subagent, so a
+wake's start carries no message, neither the notice nor the spawn's
+prompt. The first start of a subagent that ran before, under an earlier
+parent session, carries the resume's message the same way. A
+hook of the child that runs while the marker is in place, an async hook
+of an execution that has ended, never sends a `session_start`, so it
+cannot reopen the child; it first waits up to one second for a resume's
+`SubagentStart` to remove the marker, so that the first hooks of a
+resumed execution still follow its start. Two orderings of a resume that
+comes right as the subagent stops are guarded. A resume whose previous
+execution's end a live `SubagentStop` is still sending waits up to three
+seconds for it, so the resume's start follows that end. And a
+`SubagentStop` that finds a resume's prompt already after the final turn
+(the resume's `SubagentStart` may then have looked for the marker before
+this hook wrote it, and sent no start) leaves the child open: the two
+executions stay one, ended by the later `SubagentStop`.
+
+**Delivery.** `SubagentStop` sends the child's `session_end` only once
+the subagent's turns and the tool events it owes are sent, so the end
+follows every call of the execution. Claude Code runs the hook before it has written the
+subagent's final turn to the transcript (in a print-mode run the turn
+was still missing a tenth of a second after its own timestamp), so the
+hook first waits, up to two seconds, until the transcript's last
+assistant message reads as the hook's `last_assistant_message`; a hook
+without that field does not wait. Until it is accepted the end is owed:
+`SubagentStop` records it in `subagent-ends-<outer session id>.json`
+before its first POST, with the time it ran (the end's timestamp) and
+the process working on it. When a POST fails, the next hook of the
+session that flushes a transcript (`PostToolUse`, `PostToolUseFailure`,
+`Stop`, `StopFailure` or `SubagentStop`) sends the remaining turns and
+the end, and the `SessionEnd` worker does so last; as with a turn's
+claim, an entry whose process is alive is left to it. An end still owed
+when its subagent is resumed is sent before the resume's
+`session_start`, and dropped if that fails, so that it cannot close the
+resumed child.
+
+**Never misfiled.** A transcript turn is sent only under the Flightdeck
+session that was current when it ran. A flush in a session with a
+recorded mint time (see Session identity) skips every turn that ran
+before it, for the root and its subagents alike, and writes to the
+hook's stderr how many of them it has no record of sending. The other
+end is bounded too: a process that goes on reporting under a session
+after a resume has minted a later one (the `SessionEnd` worker, or a
+hook that started before the resume) looks at the conversation's marker
+before and after each transcript read, and sends no turn that ran at or
+after the later session's mint; that session sends it. The look finds a
+later session in the marker while it runs and, once its `SessionEnd`
+has deleted the marker, in the ended-session marker (see Hook
+configuration); when both name one, the earlier mint applies. A
+session's marker is written before any of its turns, and its
+ended-session marker before the marker is deleted, so whenever one of
+its turns is in what was read, the second look sees that session, unless
+another session has started since: the look then sees only the newest,
+and the turns of the one between can reach the ended session's child. So
+a subagent resumed
+after its parent's session changed sends only its new turns, under its
+new child, and a turn still unsent when its session ends is never sent:
+it is dropped rather than filed under a later session that did not exist
+when it ran. Its last chance is the `SessionEnd` worker: after the
+root's `session_end` it flushes every subagent transcript written since
+the mint (the `agent-<agent_id>.jsonl` files under
+`<parent>/subagents/`, nested subagents included, each subagent's role
+read from its meta file's `agentType`), taking over orphaned claims, and
+sends the ends still owed. A session without a mint time skips that
+pass.
+
 `PostToolUseFailure` on a Task tool emits the parent's `tool_call`
 event with the structured error block; it does NOT emit a child
 `session_end` (disambiguation). Subagent crashes that never
@@ -1873,13 +2180,17 @@ activity surfaces in real time instead of batching at Stop.
 The markers are a local optimisation, not the guarantee: they are pruned
 after seven days, they live in `$TMPDIR` (which a reboot clears) when
 Claude Code provides no data directory, and a transcript replayed or
-copied to another machine has none (a resumed conversation's next hook
-then re-reads its whole transcript). Each turn's `post_call` therefore
-carries an event id derived from the model call's message id
-(`uuid5(NAMESPACE_FLIGHTDECK,
+copied to another machine has none. Two rules keep a lost marker from
+counting a call twice or in the wrong session. A flush sends only the
+turns that ran after its session was minted (see Subagent hooks), so
+a resumed conversation does not send its history again under the new
+session; a session without a recorded mint time re-reads its whole
+transcript. And each turn's `post_call` carries an event id derived
+from the model call's message id (`uuid5(NAMESPACE_FLIGHTDECK,
 "flightdeck://claude-code/post_call/<message id>")`), so every copy of
 one call has the same id, and the worker stores it once (see
-`originating_event_id` chain).
+`originating_event_id` chain). A flush stops at its first failed POST,
+and the next flush sends that turn again (see Hook configuration).
 
 Each `post_call` carries `provider=anthropic`, the session's
 `billing_mode` and `provider_metadata.platform`, which the
@@ -1973,11 +2284,16 @@ session), drops the per-session MCP policy cache, and re-launches the
 hook script as a detached worker process (`observe_cli.mjs
 --session-end-worker`, hook event on stdin, the resolved session id in
 `CLAUDE_SESSION_ID`). The worker flushes any transcript turns that
-`Stop` or `PostToolUse` had not yet emitted as `post_call` events and
-POSTs the `session_end`; it never touches the session, `session_start`
-or policy markers, which a new session may own by then, and only adds
-per-message `emitted-` markers. Because the hook itself never waits on
-the network it finishes inside the budget whatever the server does; the
+`Stop` or `PostToolUse` had not yet emitted as `post_call` events,
+sends the session's owed tool events, and POSTs the `session_end`;
+then, in a session with a recorded mint time, it sends its subagents'
+remaining turns, owed tool events and owed `session_end`s (see
+Subagent hooks). It never touches the session, `session_start` or
+policy markers, which a new session may own by then, and writes only
+the per-message `emitted-` markers, the owed subagent ends and the owed
+tool events. Because
+the hook itself never waits on the network it finishes inside the
+budget whatever the server does; the
 test suite asserts it returns under `SESSION_END_HOOK_BUDGET_MS` with
 every request still unanswered. It waits up to 0.8 s for the worker to
 exit, so a local or fast server receives the events before the hook
@@ -2008,8 +2324,8 @@ sessions extend the derivation with a conditional 6th input,
 |---|---|---|
 | `agent_id` | UUID | Deterministically derived from the other identity fields via `core/agent_id.py` |
 | `agent_type` | `coding` \| `production` | Sensor `init` kwarg or `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` env. Plugin always emits `coding`; a plugin session's entrypoint / attended / CI / cloud signals are context fields, not identity |
-| `client_type` | one of the values in the client type registry below | Each client sends its own literal: the plugin `claude_code`, the sensor `flightdeck_sensor`; `claude_agent_sdk` is reserved for the Agent SDK interceptor ([#182](https://github.com/flightdeckhq/flightdeck/issues/182)) |
-| `agent_name` | string | Sensor `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` env. Default `{user}@{hostname}`. Plugin uses the user's chosen flavor |
+| `client_type` | one of the values in the client type registry below | Each client sends its own literal: the plugin `claude_code`, the sensor `flightdeck_sensor` and its Claude Agent SDK interceptor `claude_agent_sdk`; the OTLP receiver stamps `claude_code` on Claude Code's own telemetry (see Client type registry > OTLP sources) |
+| `agent_name` | string | Sensor `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` env, default `{user}@{hostname}`. The plugin uses `FLIGHTDECK_AGENT_NAME`, else `{user}@{hostname}`; a sub-agent appends `/{role}`. The plugin's flavor is always `claude-code` |
 | `user` | string | Resolved from `getpass.getuser` (sensor) or `process.env.USER` (plugin) |
 | `agent_role` (optional 6th) | string \| null | Framework-driven on sub-agent sessions. CrewAI: `Agent.role`. LangGraph: node name. Claude Code Task: hook payload `agent_type`. Null on root sessions and direct-SDK sessions |
 
@@ -2067,9 +2383,12 @@ response is ignored.
 registry: a closed list, so ingestion still rejects anything outside it,
 that holds every client Flightdeck integrates with, including those
 whose emitter is still planned, so adding an emitter never needs
-a schema change. The Claude Code plugin sends `claude_code` and the
-Python sensor sends `flightdeck_sensor`; the other values are
-reserved for the planned integrations ([#182](https://github.com/flightdeckhq/flightdeck/issues/182), [#184](https://github.com/flightdeckhq/flightdeck/issues/184),
+a schema change. The Claude Code plugin sends `claude_code`, the
+Python sensor sends `flightdeck_sensor` and its Claude Agent SDK
+interceptor `claude_agent_sdk`, and the OTLP receiver stamps
+`claude_code` on Claude Code's own telemetry (OTLP sources, below); the
+other values are reserved for the planned integrations
+([#184](https://github.com/flightdeckhq/flightdeck/issues/184),
 [#186](https://github.com/flightdeckhq/flightdeck/issues/186)). Each value
 carries a display label and the defaults below:
 
@@ -2131,10 +2450,12 @@ present in the data, so reserved values do not appear until a client
 sends them.
 
 **OTLP sources.** The OTLP receiver stamps the registry value of the
-tool that produced the telemetry when it recognises it (Claude Code,
-Codex CLI, Gemini CLI and GitHub Copilot export OpenTelemetry under
-their own `service.name`), so their sessions keep that tool's defaults
-and `agent_id`; `otlp` is for sources no registry entry names.
+tool that produced the telemetry, so its sessions keep that tool's
+defaults and `agent_id`: Claude Code, the one source it maps (see OTLP
+ingest > Dialects), lands as `claude_code`. Codex CLI, Gemini CLI and
+GitHub Copilot export OpenTelemetry under their own `service.name` too;
+their records are accepted and counted as rejected. `otlp` is reserved
+for a source no registry entry names.
 
 **Claude Agent SDK and Claude Code.** The Agent SDK runs the Claude Code
 CLI as a subprocess, and the sensor's Agent SDK interceptor reports each
@@ -2311,8 +2632,9 @@ the full pseudocode.
 When the sensor (or plugin) restarts and emits a `session_start` for a
 `session_id` that already exists in `sessions`, the ingestion API attaches
 the new execution to the prior row instead of creating a duplicate.
-The response envelope sets `attached: true`. The session drawer renders a
-"New execution attached · {timestamp}" separator per recorded attachment.
+The response envelope sets `attached: true`. The session drawer and the
+timeline mark each re-attaching `session_start` (see Session attachment
+flow).
 
 ### `agents` rollup
 
@@ -2567,10 +2889,14 @@ control plane honours end-to-end:
 3. **Response envelope — `attached: true` when the row pre-existed.**
 4. **Sensor — INFO log on the first attached response.** Per-process
    guard so subsequent envelopes do not duplicate the log.
-5. **Dashboard — run separator per recorded attachment.**
+5. **Dashboard — an attachment badge per recorded attachment.**
    `GET /v1/sessions/:id` returns an `attachments: []time` array. The
-   session drawer walks the array in order and draws a horizontal rule
-   labeled "New execution attached · {timestamp}" for each entry.
+   session drawer shows the `session_start` within two seconds of an
+   entry with an ATTACH badge in place of its event-type pill (tooltip
+   "Agent re-attached with the same session ID"), and the timeline
+   draws that start's node in the warning colour (tooltip "Run
+   attached"); the session's first `session_start` has no entry and
+   keeps its own look.
 
 The race between step 2 (synchronous) and the worker's
 `HandleSessionStart` (asynchronous, via NATS) is bounded: the ingestion
@@ -2838,9 +3164,10 @@ sends no `subagent_completed` until the run that task wakes has ended.)
 A record of a closed sub-agent dated more than one second after the
 sub-agent's end is a resume: it is preceded by a synthetic
 `session_start` that re-attaches the row, as a closed root's is, so the
-worker adds the resumed run's tokens to `tokens_used` and the session
-drawer draws a separator for the run. A record dated at or before that
-is late, the tail of a finished run delivered out of order: it is
+worker adds the resumed run's tokens to `tokens_used` and the start is
+recorded as an attachment (see Session attachment flow). A record dated
+at or before that is late, the tail of a finished run delivered out of
+order: it is
 published without a start, and the worker stores its event but skips
 its session side effects, as for any event on a closed session (see
 Session state machine): its tokens are not added and the child stays
@@ -2877,7 +3204,7 @@ request knows: the row's, or a `subagent_completed` earlier in the same
 request. A request holding a run's end and the resumed run's records
 therefore publishes the end, then the start, then the resumed run's
 records, and the worker closes and reopens the row in that order (as
-for any start, the run separator is recorded only when the row exists
+for any start, the attachment is recorded only when the row exists
 by the time the start is published, which a sub-agent whose first run
 and resume share one export may miss). Only the first record past the
 end gets a start; a late record after it lands on the reopened row and
@@ -2928,8 +3255,13 @@ tool-capture envelope the sensor and plugin use (`provider` `anthropic`,
 or `mcp` with `model` the server name), and error text on its error
 block; content is cut to
 fit the 768 KiB event body limit as the plugin cuts it. Claude Code sends
-the prompt only when `OTEL_LOG_USER_PROMPTS=1` and tool inputs only when
-`OTEL_LOG_TOOL_DETAILS=1`.
+the prompt only when `OTEL_LOG_USER_PROMPTS=1`, and tool inputs and a
+failed tool's error text only when `OTEL_LOG_TOOL_DETAILS=1`. A
+repository's project settings can set `OTEL_RESOURCE_ATTRIBUTES` (and
+with it `flightdeck.capture_prompts`) and `OTEL_SERVICE_NAME` through
+their `env`, which Claude Code applies over the shell, but not the
+`OTEL_LOG_*` switches, which Claude Code ignores there; only managed
+settings, or `--settings`, outrank a repository's settings.
 
 **Lifecycle.** A Claude Code session reported over OTLP has no end event
 of its own (a sub-agent's run ends with `subagent_completed`). It goes
@@ -3415,8 +3747,9 @@ CREATE INDEX session_attachments_session_idx ON session_attachments (session_id,
 
 One row per re-attachment (subsequent `session_start` for an existing
 `session_id`). The first `session_start` does NOT write an attachment
-row — only re-attachments. Drives the session drawer's "New execution
-attached" separators.
+row — only re-attachments. The session drawer and the timeline mark
+the `session_start` within two seconds of each row (see Session
+attachment flow).
 
 ### `events` (metadata only — no prompt content inline)
 
@@ -4693,6 +5026,28 @@ so the curve never anchors off-screen. D3 supplies the time
 scale; the SVG path is constructed in React (Rule 16 — D3 is
 math only, never DOM manipulation).
 
+Each path starts on the rim of the parent's spawn-event circle and
+ends at the centre of the child's first circle inside the time
+domain. Both points are measured from the rendered circles, looked
+up by `data-event-id` inside the parent's and the child's rows (the
+expanded ALL row draws the same events), so a connector lands on its
+circles wherever they sit. The rim radius is half the circle's
+`offsetWidth`, which a hover scale does not change. A pair is
+skipped when a circle is not mounted, such as one on a virtualised row,
+or when its row's timeline panel clips it near "now" (its centre past
+the panel's edge), so a connector never runs past the now line.
+
+Connectors rest at 10% opacity. Hovering a run's mark (an event
+circle or a run glyph), or focusing a run glyph from the keyboard
+(`:focus-visible`), raises every connector that starts or ends on that
+run to 50%: a parent run lights
+its whole fan-out, and a child run lights only its own link, even
+when several runs share a row. Each mark carries its run's id as
+`data-session-id`, and `Timeline.tsx` reads it from one delegated
+handler. Focus a mouse click leaves on a glyph does not count, so the
+highlight never sticks after the pointer leaves. Hovering a connector
+itself raises it too.
+
 ---
 
 ## Dashboard
@@ -5484,9 +5839,9 @@ the 500-event cap.
 from, limit: 500, offset })` (which hits `GET /v1/events` with offset
 paging) and returns the chronological list. Fleet groups the result by `session_id` to
 populate `eventsCache` and seeds `feedEvents` from the historical data
-so the live feed is not empty on page load. After the initial load, no
-per-session HTTP fetches happen — WebSocket events flow into the same
-caches.
+so the live feed is not empty on page load. A run with nothing cached
+fetches its own history once, when its row first mounts
+(`useSessionEvents`); WebSocket events flow into the same caches.
 
 The run drawer's "Show older" calls `fetchOlderEvents`, the keyset
 variant of the same endpoint: `before` and `before_id` name the oldest
@@ -5502,15 +5857,15 @@ with expand-in-place, a shared time axis, and a resizable left panel.
 `leftPanelWidth: number` state initialises from
 `localStorage[LEFT_PANEL_WIDTH_KEY]` clamped to
 `[LEFT_PANEL_MIN_WIDTH, LEFT_PANEL_MAX_WIDTH]` = `[200, 640]`. Default
-is `LEFT_PANEL_DEFAULT_WIDTH` (460), sized so a typical
-`user@host/role` agent name plus the full pill chrome
-(client-type pill, agent-type badge, provider/OS/orchestration
-icons, relationship pill, status badge) fits without truncation
-on first load. `LEFT_PANEL_MAX_WIDTH` (640) gives operators room
-to drag wider for verbose sub-agent role strings; below the
+is `LEFT_PANEL_DEFAULT_WIDTH` (460), sized so a typical `user@host`
+agent name plus the full pill chrome (client-type pill, agent-type
+badge, provider/OS/orchestration icons, relationship pill, status
+badge) fits without truncation on first load. A sub-agent row keeps
+its `/{role}` suffix whole and gives way at the head of its name (see
+the SwimLane section). `LEFT_PANEL_MAX_WIDTH` (640) gives operators
+room to drag wider for verbose sub-agent role strings; below the
 width at which a given name fits, the agent-name link
-ellipsis-truncates with an always-on `title` tooltip (see the
-SwimLane section).
+ellipsis-truncates with an always-on `title` tooltip.
 
 A drag handle is rendered absolutely on the right edge of the
 inner content div, full-height so it stays grabbable as flavor
@@ -5528,9 +5883,9 @@ move and writes through to localStorage immediately via
 `CustomEvent` so Fleet.tsx's left-fade overlay tracks the
 column edge in lockstep.
 
-`leftPanelWidth` flows down as a prop through `SwimLane` →
-`SessionEventRow`. Both components include `leftPanelWidth` in their
-`React.memo` comparators so a drag invalidates every row immediately.
+`leftPanelWidth` flows down as a prop through `VirtualizedSwimLane` to
+`SwimLane`, whose `React.memo` comparator includes it so a drag
+invalidates every row immediately.
 
 Fixed-width canvas: `TIMELINE_WIDTH_PX = 900`. The xScale maps the
 selected range domain to `[0, 900]` for every time range. Wider ranges
@@ -5562,7 +5917,10 @@ collapsed, the row reduces to a 24px-tall toggle bar (matching
 the AGENTS section header height directly below) carrying a
 `ChevronRight` icon + "All" label; clicking the toggle expands
 the row to its full 36px height with the aggregated pulse pane
-(`data-testid="swimlane-all-pulse"`) on the right. The default
+(`data-testid="swimlane-all-pulse"`) on the right. The pane uses the
+agent rows' 19 px inset (see Event circles under SwimLane), so a given
+time sits at the same x on every row, and its circles sit on the pane's
+centre line, inside the row. The default
 is collapsed because the `/agents` page now serves as the
 dedicated fleet-overview surface — the pulse line is redundant
 for most operators but stays one click away. The ALL row
@@ -5573,57 +5931,76 @@ still applies inside each circle via `EventNode.isVisible`.
 ### SwimLane
 
 `dashboard/src/components/timeline/SwimLane.tsx` renders one row per
-agent. Every event from every one of the agent's runs streams onto
-that single timeline row; there are no session sub-rows. Sub-agent
-rows render indented beneath their parent via the `data-topology`
-attribute (`"root"` or `"child"`); the indent + background tint
-chrome lives in `globals.css` under the
-`[data-topology="child"]` selector. Bezier connectors from each
-parent spawn event to its child's first event are drawn by
-`SubAgentConnector.tsx`, anchored to the parent's single-row centre
-Y.
+agent, with one label, one status badge and a fixed 48 px height. Every
+event of every one of the agent's runs streams onto that row; there are
+no per-run rows. Sub-agent rows render indented beneath their parent
+via the `data-topology` attribute (`"root"` or `"child"`); the indent
+and background tint live in `globals.css` under the
+`[data-topology="child"]` selector. The tint is translucent, so a child
+row's sticky label paints it opaquely, the same look in layers: its own
+tint, the row's 2 px accent line, the row's tint, and the colour the
+rows sit on (`--bg`, or the host's `--swimlane-label-backdrop`, which
+the per-agent swimlane modal sets to `--surface`). Event circles
+scrolled under the label therefore stay hidden. A root row's label
+inherits the row's opaque `--surface`. `SubAgentConnector.tsx` draws a
+Bezier connector from each parent spawn event to the child run's first
+event in view (see Swimlane sub-agent connector overlay).
 
-The left panel of each row carries the agent label strip in this
-left-to-right order: optional `ClaudeCodeLogo` (on a Claude Code row:
-`client_type` `claude_code`, or the `claude-code` flavor) → agent name →
-`ClientTypePill` (the registry label, e.g. "Claude Code", "Sensor") →
-agent_type badge (coding /
-production) → provider icon → OS icon → orchestration icon →
-`RelationshipPill` (lone / ↳ parent / ⤴ N) → optional
-`SubAgentLostDot` (when the most recent sub-agent session per
-role is in `lost` state) → `AgentStatusBadge` at the right
-edge.
+The left panel of each row carries the agent label strip, in this
+left-to-right order:
+1. optional `ClaudeCodeLogo` (on a Claude Code row: `client_type`
+   `claude_code`, or the `claude-code` flavor);
+2. agent name;
+3. `ClientTypePill` (the registry label, e.g. "Claude Code", "Sensor");
+4. `TelemetrySourcePill` (`OTEL`, only when the agent reports over
+   OpenTelemetry, see Session source);
+5. agent_type badge (coding / production);
+6. provider icon;
+7. OS icon;
+8. orchestration icon;
+9. `RelationshipPill` (`↳ parent` on a sub-agent row, `→ N` on a
+   parent, none on a lone agent);
+10. optional `SubAgentLostDot` (when the most recent sub-agent session
+    per role is in `lost` state);
+11. `AgentStatusBadge` at the right edge.
 
-The agent-name link (`data-testid="swimlane-agent-name-link"`)
-sets `white-space: nowrap`, `overflow: hidden`, and
-`text-overflow: ellipsis` directly so a too-narrow column
-ellipsis-truncates the name rather than wrapping or hard-
-clipping. A native `title` attribute carrying the full
-`agent_name` is set unconditionally — hover reveals the
-complete value at any column width, not just when truncated.
-A `min-width: 3rem` floor (~6 chars + the ellipsis glyph at the
-13 px label font) is the anti-collapse contract: at the 200 px
-`LEFT_PANEL_MIN_WIDTH` floor the label strip's trailing pills,
-provider/OS/orchestration icons, relationship pill, and status
-badge collectively exceed the available row space, so the
-parent's `overflow: hidden` clips those trailing siblings
-before the name shrinks below readability. At the 460-px
-default and 640-px maximum widths the floor never engages —
-the link sits comfortably above 3 rem and the trailing chrome
-all renders.
+The agent-name link (`data-testid="swimlane-agent-name-link"`) sets
+`white-space: nowrap`, `overflow: hidden` and `text-overflow: ellipsis`,
+so a too-narrow column truncates the name rather than wrapping it. It
+carries a native `title` with the full `agent_name` at every width. A
+`min-width: 3rem` floor (about six characters plus the ellipsis at the
+13 px label font) keeps the name from collapsing: at the 200 px
+`LEFT_PANEL_MIN_WIDTH` floor, the trailing chrome clips against the
+strip's `overflow: hidden` first.
 
-The ellipsis fallback is the graceful narrow-width behaviour;
-the resizable column (see Timeline section above) is the
-operator's primary recourse for a long name, with the
-`localStorage`-persisted width so the choice survives
-reloads.
+On a sub-agent row whose name ends in `/{agent_role}` (the role of its
+most recent run), the name renders in two parts: a head, which
+truncates first, and the role suffix
+(`data-testid="swimlane-agent-name-role"`). The part that differs from
+the parent's row therefore stays readable. The role part keeps its
+full width and truncates only once it fills the whole link; it does
+not share the head's shrink, because a fraction of a pixel of shrink
+is enough for the browser to draw its ellipsis. The row's relationship
+pill shrinks, down to 1.75rem with an ellipsis, before the name gives
+up any width. At the 460 px default, a typical `user@host/role`
+sub-agent row shows its role. The link's `aria-label` carries the
+whole name, since the two parts would otherwise read with a space
+between them. Root rows, and sub-agent names without the suffix, render
+as one text.
+
+The ellipsis fallback is the graceful narrow-width behaviour. The
+resizable column (see Timeline section above) is the operator's
+primary recourse for a long name, and its `localStorage`-persisted
+width survives reloads.
+
 The provider / OS / orchestration icons derive from the agent's
 most-recent session; the per-event provider logos on event circles
 carry the granular per-call attribution. Per-agent state is the
 max-priority state across the agent's runs (active > idle > stale
-> closed > lost) — the `STATE_ORDINAL` map in `SwimLane.tsx`
-defines the ranking used to roll multiple session states up into
-a single per-agent badge state.
+> closed > lost). The `STATE_ORDINAL` map in `SwimLane.tsx` defines
+the ranking that rolls multiple session states up into a single
+per-agent badge state.
+
 
 `AgentStatusBadge.tsx` renders the state colour dot + label via
 the shared `StatusDot` primitive (`lib/agent-status.tsx`). When
@@ -5643,7 +6020,14 @@ run's `started_at` X; the end glyph is a filled solid square
 triangle's bbox area so the closure reads heavier than the
 start. Both are SVG primitives filled with `var(--accent)`;
 positioning math uses the shared `xScale` from `d3-scale` (D3
-math only, no DOM manipulation). Hover on either glyph
+math only, no DOM manipulation). A glyph is centred on its
+time's x in the same inset wrapper as the event circles, so a
+glyph and a circle at the same instant line up, and near "now"
+the panel's right edge clips both alike (a glyph past the edge is
+not mounted). A run that started within the last ~14 px of the window
+shows no ▶ yet (about 56 s at 1h), and a run that closed within the
+last ~13.5 px shows its ▶ but not yet its ■ (about 54 s at 1h, 27 s at
+30m), so it reads as running until the ■ clears the edge. Hover on either glyph
 surfaces a tooltip with `run_id` (8-char prefix), start time,
 end time (or `running` for an active / idle / stale / lost
 run), state, and total tokens. Click on either glyph opens
@@ -5659,17 +6043,36 @@ alone — no end square. Operators read absence of the end
 square as "still running"; the tooltip's end-time field reads
 `running`.
 
-`EventNode.tsx` — event circles: 20px, lucide icons, CSS tooltip,
-hover scale. `SubAgentConnector.tsx` draws Bezier paths between
-parent spawn events and child first events.
+**Event circles.** `EventNode.tsx` draws each event as a 22 px circle
+(`EVENT_CIRCLE_SIZE`), coloured by event type, with a lucide icon, a
+portal tooltip and a 1.25x hover scale; MCP events are hexagons. A
+circle is centred on its event's x inside the panel's inset wrapper
+(below), which puts circles and run glyphs 19 px right of their time's
+grid line, since the time axis and the grid overlay are not inset. It
+sits on the row's centre line and carries `data-event-id` and
+`data-session-id`. The vertical centring
+is a single CSS translate (`top: 50%` with `translate: 0 -50%`); the
+hover scale is a separate `transform`, so it scales about the circle's
+centre.
 
-`SwimLane` and `EventNode` are wrapped in `React.memo` with custom
-comparators that explicitly include `activeFilter` and
-`leftPanelWidth`. Time-scale updates use `requestAnimationFrame`
-throttling so the swimlane redraws at most once per frame instead
-of once per WebSocket message. `EventNode` opacity is driven by
-React state (`isVisible && mounted`) so the fade-in transition is
-reproducible.
+The panel's positioned wrapper is inset 19 px
+(`TIMELINE_LEFT_INSET_PX`: an 8 px buffer plus half a circle), so the
+oldest circle clears the label strip. The ALL row uses the same
+inset, so a given time sits at the same x on every row. Circles
+within half a circle plus the buffer of "now" are clipped at the
+panel's right edge; the grid overlay draws the now line.
+
+Circles are coloured by event type, never by run, and render at once,
+with no mount fade.
+
+`SwimLane` is wrapped in `React.memo` with a custom comparator that
+includes `activeFilter`, `leftPanelWidth`, `sessionVersions` and the
+scale's domain. `EventNode`'s comparator compares the circle's
+position, size, visibility and event fields, so a row re-render leaves
+unchanged circles alone. The scale's right edge is floored to whole
+seconds, so the domain, and with it every circle's x, changes at most
+once per second. A WebSocket event still re-renders the rows, through
+the `sessionVersions` map.
 
 `VirtualizedSwimLane.tsx` wraps `SwimLane` with an
 IntersectionObserver-backed virtualizer so off-screen agent rows
@@ -5678,10 +6081,7 @@ agent must scroll the fixture into view before asserting on its
 `data-testid` (see `bringSwimlaneRowIntoView` in
 `tests/e2e/_fixtures.ts`).
 
-`SessionEventRow.tsx` renders a single session's per-session event
-strip inside the Events page session drawer. Used only by the
-drawer; the Fleet swimlane renders aggregated events directly on
-the agent row via `SwimLane`.
+`SessionEventRow.tsx` renders one run's event strip; no view mounts it.
 
 ### Fleet panel sidebar
 
@@ -6551,7 +6951,13 @@ call-window-independent types (`session_start`, `session_end`,
 `mcp_server_attached`, `mcp_server_name_changed`,
 `directive_result`) skip the chain stamp.
 
-Plugin parity: `crypto.randomUUID` per emission.
+The Claude Code plugin sets an id only where Claude Code names the
+thing reported: `post_call` (from the model call's message id),
+`llm_error` (from the failed turn's message id, when the transcript
+holds that turn), and `tool_call` and `mcp_tool_call` (from the
+`tool_use_id`, when the hook carries one). Its other events carry no
+id, so the worker generates one, and it stamps no
+`originating_event_id`.
 
 ### `policy_warn`
 

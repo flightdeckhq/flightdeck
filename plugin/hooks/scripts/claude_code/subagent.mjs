@@ -1,17 +1,35 @@
 // Claude Code subagents: the child session SubagentStart /
-// SubagentStop open and close, interior-hook routing onto that child,
-// and the size-routed capture of the messages between parent and child.
+// SubagentStop open and close (and re-open on a resume), interior-hook
+// routing onto that child, the delivery of a child's turns and owed
+// session_end, and the size-routed capture of the messages between
+// parent and child.
 
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 import { deriveAgentId, NAMESPACE_FLIGHTDECK } from "../agent_id.mjs";
 import { PLUGIN_VERSION } from "../core/config.mjs";
-import { postEvent } from "../core/poster.mjs";
-import { claimSessionStart, isSessionStarted, markSessionStarted, releaseSessionStart } from "../core/state.mjs";
+import { postEvent, sendEvent } from "../core/poster.mjs";
+import {
+  claimSessionStart,
+  clearSessionStarted,
+  clearSubagentEnded,
+  dropOwedSubagentEnd,
+  isSessionStarted,
+  isSubagentEnded,
+  markSessionStarted,
+  markSubagentEnded,
+  owedToolCallHeld,
+  oweSubagentEnd,
+  readOwedSubagentEnds,
+  releaseOwedSubagentEnd,
+  releaseSessionStart,
+  takeOwedSubagentEnd,
+} from "../core/state.mjs";
 import { uuid5 } from "../uuid5.mjs";
 import { finishControl } from "./control.mjs";
-import { flushPostCallTurns } from "./post_call.mjs";
+import { defaultFlushDeadline, flushPostCallTurns, readTurnsBounded, refusedForGood } from "./post_call.mjs";
+import { sendOwedToolCalls } from "./tool_events.mjs";
 import { readTurns } from "./transcript.mjs";
 
 // ---------------------------------------------------------------------
@@ -36,11 +54,16 @@ import { readTurns } from "./transcript.mjs";
 //     the subagent's transcript and meta file
 //
 // We emit a CHILD session_start (or session_end) whose ``session_id``
-// is a deterministic uuid5 derived from
-// ``(outer_session_id, tool_use_id)`` so SubagentStart and the
-// matching SubagentStop produce the same child id without any
-// disk-marker plumbing. ``parent_session_id`` carries the outer
-// session's id so the worker writes the relationship column.
+// is a deterministic uuid5 derived from the outer Flightdeck session id
+// and the subagent's correlator (``agent_id``, else ``tool_use_id``,
+// ``subagent_id`` or ``id``, see _subagentCorrelator)
+// so SubagentStart, every interior hook and the matching SubagentStop
+// produce the same child id without any disk-marker plumbing.
+// ``parent_session_id`` carries the outer session's id so the worker
+// writes the relationship column. SubagentStart fires again when a
+// stopped subagent is resumed (SendMessage) or woken (a finished
+// background task): the same child id, which the new session_start
+// re-attaches.
 // ``agent_role`` joins the agent_id derivation as the conditional
 // 6th input — same uuid the Python sensor produces for
 // a parent / role pair on the same identity 5-tuple.
@@ -134,16 +157,21 @@ export function _subagentChildSessionId(outerSessionId, correlator) {
 // back to the parent's transcript_path so the function never
 // silently produces a malformed path.
 export function _subagentTranscriptPath(parentTranscriptPath, subagentAgentId) {
-  if (!parentTranscriptPath || typeof parentTranscriptPath !== "string") {
-    return null;
-  }
   if (!subagentAgentId || typeof subagentAgentId !== "string") {
     return null;
   }
-  const parentDir = dirname(parentTranscriptPath);
+  const dir = subagentTranscriptsDir(parentTranscriptPath);
+  return dir ? join(dir, `agent-${subagentAgentId}.jsonl`) : null;
+}
+
+/** The directory of a session's subagent transcripts, or null without a parent transcript path. */
+export function subagentTranscriptsDir(parentTranscriptPath) {
+  if (!parentTranscriptPath || typeof parentTranscriptPath !== "string") {
+    return null;
+  }
   const parentBase = basename(parentTranscriptPath).replace(/\.jsonl$/i, "");
   if (!parentBase) return null;
-  return join(parentDir, parentBase, "subagents", `agent-${subagentAgentId}.jsonl`);
+  return join(dirname(parentTranscriptPath), parentBase, "subagents");
 }
 
 // Interior-event routing for Claude Code subagents.
@@ -532,6 +560,48 @@ export function subagentOutgoingMessage({ hookEvent, subagentTranscript, parentT
   return lastAssistantText(own);
 }
 
+/**
+ * The identity fields of the child session of the subagent ``correlator``
+ * under ``outerSessionId``, laid over the outer session's ``basePayload``:
+ * the child id, the link to the parent, the role, and the agent id and
+ * name the role joins (the parent's agent name plus ``/<role>``).
+ */
+export function subagentChildBase({
+  basePayload,
+  outerSessionId,
+  correlator,
+  role,
+  agentName,
+  identityUser,
+  identityHostname,
+}) {
+  return {
+    ...basePayload,
+    session_id: _subagentChildSessionId(outerSessionId, correlator),
+    parent_session_id: outerSessionId,
+    agent_role: role || null,
+    agent_id: deriveAgentId({
+      agent_type: "coding",
+      user: identityUser,
+      hostname: identityHostname,
+      client_type: "claude_code",
+      agent_name: agentName,
+      agent_role: role,
+    }),
+    agent_name: role ? `${agentName}/${role}` : agentName,
+  };
+}
+
+/**
+ * SubagentStart and SubagentStop. ``basePayload`` is the outer session's;
+ * ``notBefore`` is its mint time, null when it recorded none;
+ * ``laterMint`` looks for a later session that has taken the
+ * conversation over (laterSessionMint); no transcript POST starts after
+ * ``deadline``. Returns
+ * ``{failed}``: true when a POST of SubagentStop's failed, so the caller
+ * leaves the session's other owed ends alone while the server is not
+ * answering.
+ */
 export async function emitSubagentEvent({
   cfg,
   hookName,
@@ -541,6 +611,9 @@ export async function emitSubagentEvent({
   agentName,
   identityUser,
   identityHostname,
+  notBefore = null,
+  laterMint = null,
+  deadline = defaultFlushDeadline(),
 }) {
   const role = _subagentRole(hookEvent);
   const correlator = _subagentCorrelator(hookEvent);
@@ -556,28 +629,37 @@ export async function emitSubagentEvent({
       `flightdeck: ${hookName} payload missing agent_id and ` +
         `tool_use_id; child session emission skipped.\n`,
     );
-    return;
+    return { failed: false };
   }
-
-  const childSessionId = _subagentChildSessionId(outerSessionId, correlator);
-  const childAgentName = role ? `${agentName}/${role}` : agentName;
-  const childAgentId = deriveAgentId({
-    agent_type: "coding",
-    user: identityUser,
-    hostname: identityHostname,
-    client_type: "claude_code",
-    agent_name: agentName,
-    agent_role: role,
+  const childBase = subagentChildBase({
+    basePayload,
+    outerSessionId,
+    correlator,
+    role,
+    agentName,
+    identityUser,
+    identityHostname,
   });
+  const bounds = { notBefore, laterMint, deadline };
+  if (hookName === "SubagentStart") {
+    await startSubagent({ cfg, hookEvent, outerSessionId, childBase, role, correlator, bounds });
+    return { failed: false };
+  }
+  return stopSubagent({ cfg, hookEvent, outerSessionId, childBase, role, correlator, bounds });
+}
+
+async function startSubagent({ cfg, hookEvent, outerSessionId, childBase, role, correlator, bounds }) {
+  const childSessionId = childBase.session_id;
+  // A SubagentStart for a child its last SubagentStop closed is a resume
+  // (SendMessage) or a wake (a background task it started finished):
+  // the same child runs again, and its new session_start re-attaches the
+  // closed row, so the resumed execution's calls count toward it.
+  const resumed = isSubagentEnded(childSessionId);
+  if (resumed) await settleOwedEndBeforeResume({ cfg, outerSessionId, childBase, bounds });
 
   const payload = {
-    ...basePayload,
-    session_id: childSessionId,
-    parent_session_id: outerSessionId,
-    agent_role: role || null,
-    agent_id: childAgentId,
-    agent_name: childAgentName,
-    event_type: hookName === "SubagentStart" ? "session_start" : "session_end",
+    ...childBase,
+    event_type: "session_start",
     tool_name: null,
     tool_input: null,
     is_subagent_call: false,
@@ -585,30 +667,38 @@ export async function emitSubagentEvent({
     timestamp: new Date().toISOString(),
     has_content: false,
     content: null,
-  };
-  // Match the parent session_start contract: ingestion requires
-  // sensor_version on every session_start. Sub-agent session_start
-  // emits the same field so the wire contract holds; session_end
-  // doesn't need it but having the field doesn't break anything.
-  if (hookName === "SubagentStart") {
-    payload.sensor_version = PLUGIN_VERSION;
+    // Match the parent session_start contract: ingestion requires
+    // sensor_version on every session_start.
+    sensor_version: PLUGIN_VERSION,
     // Declare capture posture so the worker enforces it server-side
     // for the child session too (parity with the parent session_start).
-    payload.capture_prompts = cfg.capturePrompts;
-  }
+    capture_prompts: cfg.capturePrompts,
+  };
 
   // Sub-agent message routing. Body size decides
   // whether the message lives inline on payload (≤ 8 KiB) or rides
   // through the existing event_content path (> 8 KiB and ≤ 2
   // MiB). _routeSubagentMessage handles capture-off + hard-cap
   // rejection inline; here we just stamp whatever it returns.
-  if (hookName === "SubagentStart") {
-    let promptBody = null;
-    if (cfg.capturePrompts) {
-      const subagentTranscript = _subagentTranscriptPath(hookEvent.transcript_path, correlator);
-      if (typeof hookEvent.tool_input?.prompt !== "string" && subagentTranscript) {
-        await waitForSubagentFiles(subagentTranscript);
-      }
+  let promptBody = null;
+  if (cfg.capturePrompts) {
+    const subagentTranscript = _subagentTranscriptPath(hookEvent.transcript_path, correlator);
+    if (typeof hookEvent.tool_input?.prompt !== "string" && subagentTranscript) {
+      await waitForSubagentFiles(subagentTranscript);
+    }
+    // A subagent that runs again starts on the message that resumed it:
+    // the last user prompt after its last turn of its own. Without one (a
+    // wake by a task notification has none), a resume carries no message
+    // rather than repeat the spawn's, and a first start carries the prompt
+    // it was spawned with.
+    const resumeMessage = subagentResumeMessage({
+      subagentTranscript,
+      parentTranscript: hookEvent.transcript_path,
+      role,
+    });
+    if (resumeMessage !== null) {
+      promptBody = resumeMessage;
+    } else if (!resumed) {
       promptBody = subagentIncomingMessage({
         hookEvent,
         subagentTranscript,
@@ -616,97 +706,22 @@ export async function emitSubagentEvent({
         role,
       });
     }
-    const { stubOrInline, contentEnvelope } = _routeSubagentMessage(
-      promptBody, cfg.capturePrompts, "incoming",
-    );
-    if (stubOrInline) payload.incoming_message = stubOrInline;
-    if (contentEnvelope) {
-      payload.has_content = true;
-      payload.content = contentEnvelope;
-    }
-  } else {
-    // SubagentStop. Two responsibilities here:
-    //
-    //   1. Flush any unemitted assistant turns from the subagent's
-    //      per-execution transcript as post_call events, mirroring
-    //      what SessionEnd does for parent sessions. Without this
-    //      the subagent's FINAL LLM turn (the one not followed by
-    //      a tool call, so no interior PostToolUse triggered the
-    //      flush) lands as zero-token void in the dashboard.
-    //      Prefer the explicit ``agent_transcript_path`` field on
-    //      the SubagentStop payload (Claude Code provides it);
-    //      fall back to the derived path so older Claude Code
-    //      versions or subtle layout differences still work.
-    //
-    //   2. Stamp ``outgoing_message`` with the subagent's response
-    //      back to the parent (cross-agent message capture).
-    const subagentTranscript =
-      (typeof hookEvent.agent_transcript_path === "string" &&
-        hookEvent.agent_transcript_path) ||
-      _subagentTranscriptPath(hookEvent.transcript_path, correlator);
-    if (subagentTranscript) {
-      try {
-        const childBasePayload = {
-          ...basePayload,
-          session_id: childSessionId,
-          parent_session_id: outerSessionId,
-          agent_role: role || null,
-          agent_id: childAgentId,
-          agent_name: childAgentName,
-        };
-        await flushPostCallTurns({
-          cfg,
-          sessionId: childSessionId,
-          basePayload: childBasePayload,
-          turns: ownSubagentTurns(readTurns(subagentTranscript), {
-            role,
-            subagentTranscript,
-            parentTranscript: hookEvent.transcript_path,
-          }),
-          capturePrompts: cfg.capturePrompts,
-        });
-      } catch (err) {
-        // Transcript-read failures are not fatal — we still emit
-        // the session_end so the child session closes cleanly. The
-        // missing post_calls just means the subagent's final turn
-        // won't show in the dashboard; the worker's lazy-create
-        // path still tracks the session itself.
-        process.stderr.write(
-          `flightdeck: SubagentStop transcript flush failed for ` +
-            `${childSessionId}: ${err?.message || err}\n`,
-        );
-      }
-    }
-    const report = cfg.capturePrompts
-      ? subagentOutgoingMessage({
-          hookEvent,
-          subagentTranscript,
-          parentTranscript: hookEvent.transcript_path,
-          role,
-        })
-      : null;
-    const { stubOrInline, contentEnvelope } = _routeSubagentMessage(report, cfg.capturePrompts, "outgoing");
-    if (stubOrInline) payload.outgoing_message = stubOrInline;
-    if (contentEnvelope) {
-      payload.has_content = true;
-      payload.content = contentEnvelope;
-    }
+  }
+  const { stubOrInline, contentEnvelope } = _routeSubagentMessage(
+    promptBody, cfg.capturePrompts, "incoming",
+  );
+  if (stubOrInline) payload.incoming_message = stubOrInline;
+  if (contentEnvelope) {
+    payload.has_content = true;
+    payload.content = contentEnvelope;
   }
 
-  if (hookName !== "SubagentStart") {
-    // A subagent a directive stopped has ended with that stop's own
-    // session_end; send what it still owes and drop its control state.
-    const childBase = {
-      ...basePayload,
-      session_id: childSessionId,
-      parent_session_id: outerSessionId,
-      agent_role: role || null,
-      agent_id: childAgentId,
-      agent_name: childAgentName,
-    };
-    if (await finishControl({ cfg, sessionId: childSessionId, basePayload: childBase })) return;
-    await postEvent(cfg.server, cfg.token, childSessionId, payload);
-    return;
+  if (resumed) {
+    // From here the child is live again: its hooks may start it (it is
+    // no longer ended), and this start is sent although the previous
+    // execution's was accepted.
+    clearSubagentEnded(childSessionId);
+    clearSessionStarted(childSessionId);
   }
   // The child's session_start goes through the same claim and marker as
   // any other, so the child's interior hooks do not send another one.
@@ -716,4 +731,491 @@ export async function emitSubagentEvent({
   } finally {
     releaseSessionStart(childSessionId);
   }
+}
+
+// How long a resume's SubagentStart waits for a live process (the
+// previous execution's SubagentStop, or a hook retrying its end) to
+// finish with the end that execution owes, so that the resume's
+// session_start follows that end: the end's POST (TIMEOUT_MS, 2 s in
+// core/poster.mjs) and a margin for the hook's own start-up. The
+// SessionEnd worker waits as long for a live hook still sending a
+// subagent's tool event before its last try at that subagent's end.
+export const SUBAGENT_OWED_END_WAIT_MS = 3000;
+
+/**
+ * Before a resumed child's session_start: send the end its previous
+ * execution still owes, so it lands before the start, or drop it, since
+ * an end that reached the server after the start would close the resumed
+ * child. While a live process holds the end, wait for it to finish, up to
+ * SUBAGENT_OWED_END_WAIT_MS; past that the start goes out, and that
+ * process sees the resume before it posts (finishSubagentExecution).
+ */
+async function settleOwedEndBeforeResume({ cfg, outerSessionId, childBase, bounds }) {
+  const childSessionId = childBase.session_id;
+  const waitUntil = Date.now() + SUBAGENT_OWED_END_WAIT_MS;
+  while (childSessionId in readOwedSubagentEnds(outerSessionId)) {
+    const entry = takeOwedSubagentEnd(outerSessionId, childSessionId);
+    if (entry) {
+      try {
+        await finishSubagentExecution({ cfg, childBase, entry, bounds });
+      } finally {
+        dropOwedSubagentEnd(outerSessionId, childSessionId);
+      }
+      return;
+    }
+    if (Date.now() >= waitUntil) return;
+    await new Promise((resolve) => setTimeout(resolve, SUBAGENT_RESUME_POLL_MS));
+  }
+}
+
+async function stopSubagent({ cfg, hookEvent, outerSessionId, childBase, role, correlator, bounds }) {
+  const childSessionId = childBase.session_id;
+  // Prefer the explicit ``agent_transcript_path`` on the SubagentStop
+  // payload (Claude Code provides it); fall back to the derived path so
+  // older Claude Code versions or subtle layout differences still work.
+  const subagentTranscript =
+    (typeof hookEvent.agent_transcript_path === "string" && hookEvent.agent_transcript_path) ||
+    _subagentTranscriptPath(hookEvent.transcript_path, correlator);
+  const at = new Date().toISOString();
+  // The execution has ended: no later hook of it starts the child again,
+  // and a later SubagentStart re-attaches it. The end is owed until the
+  // server accepts it, so a failed POST or a hook killed mid-way leaves
+  // it to the next hook that flushes a transcript.
+  const entry = {
+    agent: correlator,
+    role,
+    transcript: subagentTranscript || null,
+    parentTranscript: typeof hookEvent.transcript_path === "string" ? hookEvent.transcript_path : null,
+    at,
+    ended: markSubagentEnded(childSessionId, at),
+  };
+  oweSubagentEnd(outerSessionId, childSessionId, entry);
+  const finalTurnSeen = await waitForFinalTurn(entry.transcript, hookEvent.last_assistant_message);
+  // A subagent resumed or woken right as it stopped has its next prompt
+  // in the transcript already, and the resume's SubagentStart may have
+  // looked for the ended marker before this hook wrote it, and so sent no
+  // session_start. The execution goes on in the same child, so it is not
+  // ended: its own SubagentStop ends it later. Only checked once the final
+  // turn is in the transcript, so a message that arrived during the run
+  // cannot pass for one that came after it.
+  const resumedMeanwhile =
+    finalTurnSeen &&
+    subagentResumedAfterFinalTurn({ subagentTranscript: entry.transcript, parentTranscript: entry.parentTranscript, role });
+  if (resumedMeanwhile) {
+    clearSubagentEnded(childSessionId);
+    dropOwedSubagentEnd(outerSessionId, childSessionId);
+    return { failed: false };
+  }
+  const outcome = await finishSubagentExecution({ cfg, childBase, entry, bounds, hookEvent });
+  // Failed, or pending behind a tool event a live hook is still sending:
+  // the end stays owed for a later flush. Only a failure stops the flush.
+  if (outcome === "failed" || outcome === "pending") {
+    releaseOwedSubagentEnd(outerSessionId, childSessionId);
+    return { failed: outcome === "failed" };
+  }
+  dropOwedSubagentEnd(outerSessionId, childSessionId);
+  return { failed: false };
+}
+
+// Claude Code runs SubagentStop before it has written the subagent's
+// final turn to its transcript: in a print-mode run the turn was still
+// missing a tenth of a second after its own timestamp. The hook carries
+// that turn's text (``last_assistant_message``), so SubagentStop waits
+// until the transcript's last assistant message reads the same, for at
+// most this long, before it flushes; otherwise the final call would be
+// sent by a later hook, after the session_end that closed the child,
+// and would not count toward it.
+export const SUBAGENT_FINAL_TURN_WAIT_MS = 2000;
+
+/** The text of the last assistant message in the transcript's tail, or null. */
+function finalAssistantText(subagentTranscript) {
+  const records = readLines(subagentTranscript, PARENT_TAIL_BYTES)
+    .map(parseLine)
+    .filter((record) => record?.type === "assistant");
+  return lastAssistantText(records);
+}
+
+/**
+ * Wait, up to SUBAGENT_FINAL_TURN_WAIT_MS, for the transcript to hold the
+ * subagent's final turn. True once it does; false without a transcript
+ * or a ``last_assistant_message`` to look for, or when the wait ran out.
+ */
+export async function waitForFinalTurn(subagentTranscript, lastAssistantMessage) {
+  const expected = typeof lastAssistantMessage === "string" ? lastAssistantMessage.trim() : "";
+  if (!subagentTranscript || expected === "") return false;
+  const deadline = Date.now() + SUBAGENT_FINAL_TURN_WAIT_MS;
+  while (finalAssistantText(subagentTranscript)?.trim() !== expected) {
+    if (Date.now() >= deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, SUBAGENT_FILES_POLL_MS));
+  }
+  return true;
+}
+
+// The text Claude Code writes as a user record when the user interrupts a
+// turn; it is not a prompt the subagent was given.
+const INTERRUPT_MARKER_RE = /^\[Request interrupted/;
+
+/**
+ * The text of a prompt a subagent was given (a user record of text: its
+ * spawn prompt, or a message that resumed it), or null for anything
+ * else: a tool result, an interrupt marker, or one of Claude Code's own
+ * meta records. A message that resumes a subagent is a meta record too,
+ * but one that names its ``origin`` (the coordinator's SendMessage, a
+ * task notification).
+ */
+function promptText(record) {
+  if (record?.type !== "user") return null;
+  if (record.isMeta === true && !(record.origin && typeof record.origin === "object")) return null;
+  const content = record.message?.content;
+  let text;
+  if (typeof content === "string") {
+    text = content;
+  } else if (Array.isArray(content) && !content.some((block) => block?.type === "tool_result")) {
+    text = content
+      .filter((block) => block?.type === "text" && typeof block.text === "string")
+      .map((block) => block.text)
+      .join("\n");
+  } else {
+    return null;
+  }
+  return text.trim() === "" || INTERRUPT_MARKER_RE.test(text.trim()) ? null : text;
+}
+
+/** The records of a subagent transcript's tail after its last assistant record of its own; null when it has none. */
+function recordsAfterOwnTurns({ subagentTranscript, parentTranscript, role }) {
+  if (!subagentTranscript) return null;
+  const records = readLines(subagentTranscript, PARENT_TAIL_BYTES).map(parseLine).filter(Boolean);
+  const copied = isForkSubagent(role, subagentTranscript)
+    ? copiedMessageIds(readRecords(subagentTranscript), subagentTranscript, parentTranscript)
+    : new Set();
+  const last = records.findLastIndex((record) => record.type === "assistant" && !copied.has(record.message?.id));
+  return last < 0 ? null : records.slice(last + 1);
+}
+
+// The origin Claude Code names on the meta user record a finished
+// background task wakes a subagent with. The record's text is Claude
+// Code's notice of the task, not a message to the subagent, so a wake
+// starts with no message; it is still a resume
+// (subagentResumedAfterFinalTurn).
+const TASK_NOTIFICATION_ORIGIN = "task-notification";
+
+/**
+ * The message a subagent that has run before was resumed with: the text of
+ * the last user prompt after its last turn of its own other than a task
+ * notification's wake, or null when it has no turn yet (a spawn) or no
+ * such prompt follows one.
+ */
+export function subagentResumeMessage({ subagentTranscript, parentTranscript, role }) {
+  const after = recordsAfterOwnTurns({ subagentTranscript, parentTranscript, role });
+  if (!after) return null;
+  for (let i = after.length - 1; i >= 0; i--) {
+    if (after[i].origin?.kind === TASK_NOTIFICATION_ORIGIN) continue;
+    const text = promptText(after[i]);
+    if (text !== null) return text;
+  }
+  return null;
+}
+
+/**
+ * Whether the subagent was already resumed after its final turn: a prompt
+ * follows its last turn of its own in the transcript (a SendMessage's
+ * message or a task notification's wake, each a meta user record naming
+ * its origin), or a queued command (a task notification delivered to the
+ * running subagent).
+ */
+export function subagentResumedAfterFinalTurn({ subagentTranscript, parentTranscript, role }) {
+  const after = recordsAfterOwnTurns({ subagentTranscript, parentTranscript, role });
+  if (!after) return false;
+  return after.some(
+    (record) => promptText(record) !== null || (record.type === "attachment" && record.attachment?.type === "queued_command"),
+  );
+}
+
+/**
+ * Finish one execution of a subagent, recorded as ``entry`` (an owed
+ * end): send the turns of its transcript no hook has sent, then, once
+ * they are all sent, its session_end, so the end follows every call it
+ * closes. ``hookEvent`` is SubagentStop's own, absent on a retry;
+ * ``bounds`` holds the session's mint time (``notBefore``), the look at
+ * the marker for a later session (``laterMint``) and the flush deadline.
+ * Returns "sent" (the end was accepted, refused for good, or carried by a
+ * directive's stop), "failed" (a POST failed or the flush ran out of
+ * time: the end is still owed), "pending" (a tool event of the execution
+ * is still owed, being sent by a live hook or past the deadline: the end
+ * waits for a later flush, so that it follows that event, and the caller
+ * goes on) or "superseded" (the subagent was resumed meanwhile, and an
+ * end now would close the resumed child).
+ */
+export async function finishSubagentExecution({ cfg, childBase, entry, bounds = {}, hookEvent = null }) {
+  const { notBefore = null, laterMint = null, deadline = defaultFlushDeadline() } = bounds;
+  const childSessionId = childBase.session_id;
+  if (entry.transcript) {
+    try {
+      const { turns, notAfter } = readTurnsBounded(
+        () =>
+          ownSubagentTurns(readTurns(entry.transcript), {
+            role: entry.role,
+            subagentTranscript: entry.transcript,
+            parentTranscript: entry.parentTranscript,
+          }),
+        laterMint,
+      );
+      const flushed = await flushPostCallTurns({
+        cfg,
+        sessionId: childSessionId,
+        basePayload: childBase,
+        turns,
+        capturePrompts: cfg.capturePrompts,
+        deadline,
+        notBefore,
+        notAfter,
+        // A killed hook's claims are taken over only under the bound,
+        // which keeps the take-over to this session's own turns.
+        reclaimOrphaned: notBefore !== null,
+      });
+      if (!flushed.complete) return "failed";
+    } catch (err) {
+      // Transcript-read failures are not fatal — we still emit the
+      // session_end so the child session closes cleanly. The missing
+      // post_calls just means the subagent's final turn won't show in
+      // the dashboard; the worker's lazy-create path still tracks the
+      // session itself.
+      process.stderr.write(
+        `flightdeck: SubagentStop transcript flush failed for ` +
+          `${childSessionId}: ${err?.message || err}\n`,
+      );
+    }
+  }
+  // The tool events the execution still owes, after the turns that
+  // decided on them and before the end; this is their last chance
+  // unless the subagent is resumed.
+  const tools = await sendOwedToolCalls({
+    cfg,
+    sessionId: childSessionId,
+    basePayload: childBase,
+    lastChance: true,
+    deadline,
+  });
+  if (tools.failed) return "failed";
+  if (!tools.complete) return "pending";
+  // Built first (it reads the transcript), so that the resume check below
+  // is the last step before the POST.
+  const payload = subagentEndPayload({ cfg, childBase, entry, hookEvent });
+  if (entry.ended !== false && !isSubagentEnded(childSessionId)) return "superseded";
+  // A subagent a directive stopped has ended with that stop's own
+  // session_end; send what it still owes and drop its control state.
+  if (await finishControl({ cfg, sessionId: childSessionId, basePayload: childBase })) return "sent";
+  const sent = await sendEvent(cfg.server, cfg.token, childSessionId, payload);
+  return sent.accepted || refusedForGood(sent, entry.at) ? "sent" : "failed";
+}
+
+/** The session_end of one subagent execution, dated when its SubagentStop ran. */
+function subagentEndPayload({ cfg, childBase, entry, hookEvent }) {
+  const payload = {
+    ...childBase,
+    event_type: "session_end",
+    tool_name: null,
+    tool_input: null,
+    is_subagent_call: false,
+    latency_ms: null,
+    timestamp: entry.at,
+    has_content: false,
+    content: null,
+  };
+  // The subagent's report back to its parent (cross-agent message
+  // capture). A retry has no hook event and reads it from the transcript.
+  const report = cfg.capturePrompts
+    ? subagentOutgoingMessage({
+        hookEvent: hookEvent ?? {},
+        subagentTranscript: entry.transcript,
+        parentTranscript: entry.parentTranscript,
+        role: entry.role,
+      })
+    : null;
+  const { stubOrInline, contentEnvelope } = _routeSubagentMessage(report, cfg.capturePrompts, "outgoing");
+  if (stubOrInline) payload.outgoing_message = stubOrInline;
+  if (contentEnvelope) {
+    payload.has_content = true;
+    payload.content = contentEnvelope;
+  }
+  return payload;
+}
+
+/**
+ * Send the subagent ends ``outerSessionId`` still owes, each after the
+ * turns and tool events its execution had not sent. ``basePayload`` is
+ * the outer session's. An entry a live process holds is left to it.
+ * Returns ``{failed, pending}``: ``failed`` is true once a POST failed,
+ * which stops the pass; ``pending`` lists the children whose end waits
+ * for a tool event a live hook is still sending, released for a later
+ * flush while the pass goes on with the other ends.
+ */
+export async function sendOwedSubagentEnds({
+  cfg,
+  outerSessionId,
+  basePayload,
+  agentName,
+  identityUser,
+  identityHostname,
+  notBefore,
+  laterMint = null,
+  deadline = defaultFlushDeadline(),
+}) {
+  const pending = [];
+  for (const childSessionId of Object.keys(readOwedSubagentEnds(outerSessionId))) {
+    const entry = takeOwedSubagentEnd(outerSessionId, childSessionId);
+    if (!entry) continue;
+    const role = typeof entry.role === "string" ? entry.role : "";
+    const valid =
+      typeof entry.agent === "string" &&
+      entry.agent !== "" &&
+      typeof entry.at === "string" &&
+      (entry.transcript === null || typeof entry.transcript === "string") &&
+      (entry.parentTranscript === null || typeof entry.parentTranscript === "string");
+    const childBase = valid
+      ? subagentChildBase({
+          basePayload,
+          outerSessionId,
+          correlator: entry.agent,
+          role,
+          agentName,
+          identityUser,
+          identityHostname,
+        })
+      : null;
+    // Not an entry this plugin wrote for this session: nothing to send.
+    if (!childBase || childBase.session_id !== childSessionId) {
+      dropOwedSubagentEnd(outerSessionId, childSessionId);
+      continue;
+    }
+    const outcome = await finishSubagentExecution({
+      cfg,
+      childBase,
+      entry: { ...entry, role },
+      bounds: { notBefore, laterMint, deadline },
+    });
+    if (outcome === "failed") {
+      releaseOwedSubagentEnd(outerSessionId, childSessionId);
+      return { failed: true, pending };
+    }
+    if (outcome === "pending") {
+      releaseOwedSubagentEnd(outerSessionId, childSessionId);
+      pending.push(childSessionId);
+      continue;
+    }
+    dropOwedSubagentEnd(outerSessionId, childSessionId);
+  }
+  return { failed: false, pending };
+}
+
+/**
+ * The SessionEnd worker's last pass over the session's subagents, their
+ * last chance to be reported under their own child sessions: the ends
+ * still owed, then the unsent turns of every subagent transcript written
+ * since the session was minted (a subagent the user stopped, or one
+ * killed with the session, has no SubagentStop to send them), then once
+ * more any end left waiting for a tool event a live hook was still
+ * sending. Only for a session with a mint time: without that bound the
+ * pass could send an earlier session's turns under this session's
+ * children. ``laterMint`` looks for a later session a resume has minted
+ * meanwhile, whose turns the pass leaves to it.
+ */
+export async function finishSubagentsAtSessionEnd({
+  cfg,
+  outerSessionId,
+  basePayload,
+  agentName,
+  identityUser,
+  identityHostname,
+  parentTranscript,
+  notBefore,
+  laterMint = null,
+  deadline,
+}) {
+  if (notBefore == null) return;
+  const identity = { basePayload, outerSessionId, agentName, identityUser, identityHostname };
+  const owedEnds = { cfg, ...identity, notBefore, laterMint, deadline };
+  const ends = await sendOwedSubagentEnds(owedEnds);
+  if (ends.failed) return;
+  const dir = subagentTranscriptsDir(parentTranscript);
+  let names = [];
+  try {
+    if (dir) names = readdirSync(dir);
+  } catch {
+    names = []; // no subagents
+  }
+  for (const name of names) {
+    const match = /^agent-(.+)\.jsonl$/.exec(name);
+    if (!match) continue;
+    const transcript = join(dir, name);
+    try {
+      // Not written since the session began: none of its turns ran in it.
+      if (statSync(transcript).mtimeMs < notBefore) continue;
+    } catch {
+      continue;
+    }
+    // The child's agent id joins the subagent's type, which only the meta
+    // file gives outside its hooks; without it the child cannot be named.
+    const meta = readSubagentMeta(transcript);
+    if (!meta) continue;
+    const role = typeof meta.agentType === "string" ? meta.agentType : "";
+    const childBase = subagentChildBase({ ...identity, correlator: match[1], role });
+    const { turns, notAfter } = readTurnsBounded(
+      () => ownSubagentTurns(readTurns(transcript), { role, subagentTranscript: transcript, parentTranscript }),
+      laterMint,
+    );
+    const flushed = await flushPostCallTurns({
+      cfg,
+      sessionId: childBase.session_id,
+      basePayload: childBase,
+      turns,
+      capturePrompts: cfg.capturePrompts,
+      deadline,
+      notBefore,
+      notAfter,
+      reclaimOrphaned: true,
+    });
+    if (!flushed.complete) return;
+    const tools = await sendOwedToolCalls({
+      cfg,
+      sessionId: childBase.session_id,
+      basePayload: childBase,
+      lastChance: true,
+      deadline,
+    });
+    if (tools.failed) return;
+  }
+  // An end left waiting for a tool event a live hook was still sending
+  // gets its last try once those hooks are done, waiting for them at most
+  // SUBAGENT_OWED_END_WAIT_MS so that the end still follows the event. A
+  // hook still sending after that leaves the end unsent.
+  if (ends.pending.length > 0) {
+    const waitUntil = Math.min(Date.now() + SUBAGENT_OWED_END_WAIT_MS, deadline ?? Infinity);
+    while (ends.pending.some((child) => owedToolCallHeld(child)) && Date.now() < waitUntil) {
+      await new Promise((resolve) => setTimeout(resolve, SUBAGENT_RESUME_POLL_MS));
+    }
+    await sendOwedSubagentEnds(owedEnds);
+  }
+}
+
+// How long a hook of an ended child waits for a resume's SubagentStart to
+// re-open it before taking itself for a late hook of the execution that
+// ended: the same second interior hooks give SubagentStart to send a new
+// child's session_start (SUBAGENT_START_GRACE_MS in session.mjs).
+export const SUBAGENT_RESUME_GRACE_MS = 1000;
+const SUBAGENT_RESUME_POLL_MS = 50;
+
+/**
+ * True when the child session ``childSessionId`` has ended and no resume
+ * re-opens it within SUBAGENT_RESUME_GRACE_MS: the hook asking is a late
+ * hook of the execution that ended and must not start the child again.
+ */
+export async function subagentStaysEnded(childSessionId) {
+  if (!isSubagentEnded(childSessionId)) return false;
+  const deadline = Date.now() + SUBAGENT_RESUME_GRACE_MS;
+  while (Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, SUBAGENT_RESUME_POLL_MS));
+    if (!isSubagentEnded(childSessionId)) return false;
+  }
+  return true;
 }

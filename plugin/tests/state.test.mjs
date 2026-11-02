@@ -27,10 +27,25 @@ import {
   STATE_FILE_MAX_AGE_MS,
   STATE_PRUNE_INTERVAL_MS,
   clearGitCache,
+  clearSubagentEnded,
+  dropOwedSubagentEnd,
+  dropOwedToolCall,
+  isSubagentEnded,
+  isTurnEmitted,
   markEmittedTurn,
+  markSubagentEnded,
+  markTurnRefused,
   markTurnSent,
   markerKeyFor,
+  oweSubagentEnd,
+  oweToolCall,
+  readOwedSubagentEnds,
+  readOwedToolCalls,
+  readSessionMintTime,
   reclaimOrphanedTurn,
+  releaseOwedSubagentEnd,
+  releaseOwedToolCall,
+  releaseTurnClaim,
   pruneStateDir,
   readGitCache,
   readOrCreateSessionMarker,
@@ -38,6 +53,8 @@ import {
   releaseSessionStart,
   stateDir,
   swapSessionCwd,
+  takeOwedSubagentEnd,
+  takeOwedToolCall,
   writeGitCache,
 } from "../hooks/scripts/core/state.mjs";
 import { sessionGitFields } from "../hooks/scripts/claude_code/context.mjs";
@@ -198,6 +215,146 @@ describe("turn claims", () => {
     for (const id of ["alive", "mine", "sent", "junk", "missing"]) {
       assert.equal(reclaimOrphanedTurn(id), false, id);
     }
+  });
+
+  it("a takeover rewrites the claim to this process, so a second taker finds it live", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    mkdirSync(stateDir(), { recursive: true });
+    const file = join(stateDir(), "emitted-orphan.txt");
+    writeFileSync(file, "claimed 2147483646");
+    assert.equal(reclaimOrphanedTurn("orphan"), true);
+    assert.equal(readFileSync(file, "utf8"), `claimed ${process.pid}`);
+    // Another process sees a live claimant now (this one) and leaves it.
+    assert.equal(reclaimOrphanedTurn("orphan"), false);
+  });
+
+  it("a takeover under way elsewhere holds the lock, and the turn is not taken twice", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    mkdirSync(stateDir(), { recursive: true });
+    writeFileSync(join(stateDir(), "emitted-locked.txt"), "claimed 2147483646");
+    mkdirSync(join(stateDir(), "emitted-locked.txt.lock"));
+    assert.equal(reclaimOrphanedTurn("locked"), false);
+  });
+
+  it("a failed POST releases this process's claim, and no other", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const id = `msg_${randomUUID()}`;
+    assert.equal(markEmittedTurn(id), true);
+    releaseTurnClaim(id);
+    assert.equal(isTurnEmitted(id), false, "released: the next hook sends it");
+    assert.equal(markEmittedTurn(id), true, "claimed again");
+    const other = join(stateDir(), "emitted-other.txt");
+    writeFileSync(other, `claimed ${process.ppid}`);
+    releaseTurnClaim("other");
+    assert.equal(existsSync(other), true, "another process's claim stays");
+    markTurnSent(id);
+    releaseTurnClaim(id);
+    assert.equal(isTurnEmitted(id), true, "a sent turn stays sent");
+  });
+
+  it("a refused turn is settled: emitted, never taken over", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const id = `msg_${randomUUID()}`;
+    assert.equal(markEmittedTurn(id), true);
+    markTurnRefused(id, 400);
+    assert.equal(readFileSync(join(stateDir(), `emitted-${id}.txt`), "utf8"), "refused 400");
+    assert.equal(isTurnEmitted(id), true);
+    assert.equal(markEmittedTurn(id), false);
+    assert.equal(reclaimOrphanedTurn(id), false);
+  });
+});
+
+describe("session mint time", () => {
+  it("is recorded, before the marker, only when the hook minting the session asks", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const before = Date.now();
+    const minted = readOrCreateSessionMarker(markerKeyFor(randomUUID()), { recordMint: true });
+    const at = readSessionMintTime(minted);
+    assert.ok(at >= before && at <= Date.now(), "the mint time is when the marker was written");
+    const plain = readOrCreateSessionMarker(markerKeyFor(randomUUID()));
+    assert.equal(readSessionMintTime(plain), null, "a session another hook minted has none");
+  });
+
+  it("is not recorded for a marker that already exists", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const key = markerKeyFor(randomUUID());
+    const sid = readOrCreateSessionMarker(key);
+    assert.equal(readOrCreateSessionMarker(key, { recordMint: true }), sid);
+    assert.equal(readSessionMintTime(sid), null);
+    assert.equal(existsSync(join(stateDir(), `minted-${sid}.txt`)), false);
+  });
+
+  it("survives SessionEnd, so the worker and late hooks still find it", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const native = randomUUID();
+    const sid = getSessionId({ session_id: native, hook_event_name: "SessionStart" });
+    const at = readSessionMintTime(sid);
+    assert.ok(at !== null, "SessionStart records it");
+    clearSessionCacheFiles({ session_id: native }, sid);
+    assert.equal(readSessionMintTime(sid), at);
+    const resumed = getSessionId({ session_id: native, hook_event_name: "SessionStart" });
+    assert.notEqual(resumed, sid);
+    assert.ok(readSessionMintTime(resumed) >= at, "a resume mints its own");
+  });
+
+  it("reads as none when unreadable", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    mkdirSync(stateDir(), { recursive: true });
+    writeFileSync(join(stateDir(), "minted-garbled.txt"), "yesterday");
+    assert.equal(readSessionMintTime("garbled"), null);
+    assert.equal(readSessionMintTime(""), null);
+  });
+});
+
+describe("ended subagent marker and owed subagent ends", () => {
+  it("marks a child ended until a resume clears it", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const child = randomUUID();
+    assert.equal(isSubagentEnded(child), false);
+    assert.equal(markSubagentEnded(child), true);
+    assert.equal(isSubagentEnded(child), true);
+    clearSubagentEnded(child);
+    assert.equal(isSubagentEnded(child), false);
+  });
+
+  it("an owed end is held by one process at a time and taken over only from a dead one", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const outer = randomUUID();
+    const [mine, theirs, orphan] = [randomUUID(), randomUUID(), randomUUID()];
+    const entry = { agent: "a1", role: "Explore", transcript: null, parentTranscript: null, at: new Date().toISOString() };
+    oweSubagentEnd(outer, mine, entry);
+    assert.equal(readOwedSubagentEnds(outer)[mine].pid, process.pid);
+    // Entries another process holds: a live one (this test's parent) and a dead one.
+    const path = join(stateDir(), `subagent-ends-${outer}.json`);
+    const ends = JSON.parse(readFileSync(path, "utf8"));
+    ends[theirs] = { ...entry, pid: process.ppid };
+    ends[orphan] = { ...entry, pid: 2147483646 };
+    writeFileSync(path, JSON.stringify(ends));
+    assert.equal(takeOwedSubagentEnd(outer, theirs), null, "a live holder keeps it");
+    assert.equal(takeOwedSubagentEnd(outer, orphan)?.pid, process.pid, "a dead holder's is taken over");
+    assert.equal(takeOwedSubagentEnd(outer, randomUUID()), null, "nothing owed");
+    releaseOwedSubagentEnd(outer, mine);
+    assert.equal(readOwedSubagentEnds(outer)[mine].pid, null, "released for the next hook");
+    for (const child of [mine, theirs, orphan]) dropOwedSubagentEnd(outer, child);
+    assert.deepEqual(readOwedSubagentEnds(outer), {});
+    assert.equal(existsSync(path), false, "nothing owed leaves no file");
+  });
+
+  it("an owed tool event is kept apart from the owed ends, held by one process, and dropped once answered", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const sid = randomUUID();
+    const entry = { eventType: "tool_call", toolName: "Bash", hook: "PostToolUse", at: new Date().toISOString(), transcript: null };
+    oweToolCall(sid, "toolu_1", entry);
+    oweSubagentEnd(sid, randomUUID(), { agent: "a1", role: "", transcript: null, parentTranscript: null, at: entry.at });
+    assert.deepEqual(Object.keys(readOwedToolCalls(sid)), ["toolu_1"]);
+    assert.equal(readOwedToolCalls(sid).toolu_1.pid, process.pid);
+    releaseOwedToolCall(sid, "toolu_1");
+    assert.equal(readOwedToolCalls(sid).toolu_1.pid, null, "released for a later flush");
+    assert.equal(takeOwedToolCall(sid, "toolu_1")?.pid, process.pid);
+    dropOwedToolCall(sid, "toolu_1");
+    assert.deepEqual(readOwedToolCalls(sid), {});
+    assert.equal(existsSync(join(stateDir(), `tool-calls-${sid}.json`)), false);
+    assert.equal(Object.keys(readOwedSubagentEnds(sid)).length, 1, "the owed ends are untouched");
   });
 });
 

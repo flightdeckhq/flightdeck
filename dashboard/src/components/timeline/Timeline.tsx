@@ -7,7 +7,6 @@ import {
   TIMELINE_WIDTH_PX,
   LEFT_PANEL_MIN_WIDTH,
   LEFT_PANEL_MAX_WIDTH,
-  EVENT_CIRCLE_SIZE,
 } from "@/lib/constants";
 import {
   persistLeftPanelWidth,
@@ -22,12 +21,38 @@ import { AllSwimLane } from "./SwimLane";
 import { VirtualizedSwimLane } from "./VirtualizedSwimLane";
 import {
   SubAgentConnector,
+  centreWithin,
+  circleCentre,
   pickSpawnEvent,
   type SubAgentConnectorSpec,
 } from "./SubAgentConnector";
 import { bucketFor, groupChildrenUnderParents } from "@/lib/fleet-ordering";
 import { deriveRelationship, scrollToAgentRow } from "@/lib/relationship";
 import { eventsCache } from "@/hooks/useSessionEvents";
+
+/**
+ * The run (session id) a swimlane mark belongs to: event circles and
+ * run glyphs carry ``data-session-id``. Null for anything else, such
+ * as row chrome, the axis or empty panel space.
+ */
+function runIdOf(target: EventTarget | null): string | null {
+  if (!(target instanceof Element)) return null;
+  return target.closest("[data-session-id]")?.getAttribute("data-session-id") ?? null;
+}
+
+/**
+ * Whether focus on ``target`` came from the keyboard. A mouse click
+ * focuses a run glyph's button too, and Chromium keeps that focus after
+ * the pointer leaves, so only ``:focus-visible`` focus lights a run.
+ */
+function isKeyboardFocus(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  try {
+    return target.matches(":focus-visible");
+  } catch {
+    return false;
+  }
+}
 
 interface TimelineProps {
   flavors: FlavorSummary[];
@@ -373,6 +398,28 @@ export function Timeline({
     width: number;
     height: number;
   }>({ width: 0, height: 0 });
+
+  // The run whose mark (event circle or run glyph) is under the
+  // pointer, and the run whose glyph has keyboard focus. Either lights
+  // that run's connectors (the pointer wins while both are set). One
+  // delegated handler on the content root reads the mark's
+  // ``data-session-id``, rather than a callback threaded through every
+  // memoised row and circle.
+  const [pointerRunId, setPointerRunId] = useState<string | null>(null);
+  const [focusRunId, setFocusRunId] = useState<string | null>(null);
+  const handleMarkPointerOver = useCallback((e: React.MouseEvent) => {
+    setPointerRunId(runIdOf(e.target));
+  }, []);
+  const handleMarkPointerLeave = useCallback(() => {
+    setPointerRunId(null);
+  }, []);
+  const handleMarkFocus = useCallback((e: React.FocusEvent) => {
+    setFocusRunId(isKeyboardFocus(e.target) ? runIdOf(e.target) : null);
+  }, []);
+  const handleMarkBlur = useCallback(() => {
+    setFocusRunId(null);
+  }, []);
+  const hoveredRunId = pointerRunId ?? focusRunId;
   // Connector specs depend on ``eventsCache`` which is a module-
   // level Map populated asynchronously by ``useSessionEvents``
   // per-session fetches. The cache mutation does NOT trigger a
@@ -464,36 +511,68 @@ export function Timeline({
         const parentSpawnEvent = pickSpawnEvent(parentEvents, childFirstEvent);
         if (!parentSpawnEvent) continue;
         const parentTs = new Date(parentSpawnEvent.occurred_at).getTime();
-        const childTs = new Date(childFirstEvent.occurred_at).getTime();
         // The parent's spawn event must ALSO be in domain. The
         // child anchor above is already in domain by construction.
         if (parentTs < domainStart || parentTs > domainEnd) {
           continue;
         }
-        const parentX =
-          leftPanelWidth + (scale(new Date(parentTs)) as number);
-        const childX =
-          leftPanelWidth + (scale(new Date(childTs)) as number);
-        const parentRect = parentRow.getBoundingClientRect();
-        const childRect = childRow.getBoundingClientRect();
-        const parentY =
-          parentRect.top - containerRect.top + parentRect.height / 2;
-        const childY =
-          childRect.top - containerRect.top + childRect.height / 2;
+        // Measure the two circles rather than recomputing where they
+        // should be: whatever offsets the rows apply (the panel
+        // inset, the centre line, a circle's size), the path then
+        // starts and ends on what is drawn. The lookup is scoped to
+        // each row because the expanded ALL row renders the same
+        // event ids. A circle that is not mounted skips the pair;
+        // the 1 s nonce re-runs this effect.
+        const parentCircle = parentRow.querySelector<HTMLElement>(
+          `[data-event-id="${CSS.escape(parentSpawnEvent.id)}"]`,
+        );
+        const childCircle = childRow.querySelector<HTMLElement>(
+          `[data-event-id="${CSS.escape(childFirstEvent.id)}"]`,
+        );
+        if (!parentCircle || !childCircle) continue;
+        const parentBox = parentCircle.getBoundingClientRect();
+        const childBox = childCircle.getBoundingClientRect();
+        // A circle within the panel's inset of "now" is clipped by its
+        // row's timeline panel; a connector to its centre would run
+        // past the now line. Skip the pair, as for an unmounted circle.
+        const parentPanel = parentRow.querySelector(
+          '[data-testid="swimlane-timeline-panel"]',
+        );
+        const childPanel = childRow.querySelector(
+          '[data-testid="swimlane-timeline-panel"]',
+        );
+        if (
+          !parentPanel ||
+          !childPanel ||
+          !centreWithin(parentBox, parentPanel.getBoundingClientRect()) ||
+          !centreWithin(childBox, childPanel.getBoundingClientRect())
+        ) {
+          continue;
+        }
+        const parentCentre = circleCentre(parentBox, containerRect);
+        const childCentre = circleCentre(childBox, containerRect);
         const id = `${parentId}->${childSession.session_id}`;
         if (seen.has(id)) continue;
         seen.add(id);
         specs.push({
           id,
-          parentX,
-          parentY,
-          parentR: EVENT_CIRCLE_SIZE / 2,
-          childX,
-          childY,
+          parentSessionId: parentId,
+          childSessionId: childSession.session_id,
+          parentEventId: parentSpawnEvent.id,
+          childEventId: childFirstEvent.id,
+          parentX: parentCentre.x,
+          parentY: parentCentre.y,
+          // ``offsetWidth`` ignores transforms, so a hovered
+          // (scaled) circle still yields its resting radius.
+          parentR: parentCircle.offsetWidth / 2,
+          childX: childCentre.x,
+          childY: childCentre.y,
         });
       }
     }
     setConnectorSpecs(specs);
+    // ``leftPanelWidth`` is not read above, but a drag moves every
+    // circle, so it re-runs the measurement.
   }, [
     filteredFlavors,
     scale,
@@ -638,18 +717,23 @@ export function Timeline({
       <div
         ref={innerContentRef}
         style={{ width: innerWidth, minWidth: "100%", position: "relative" }}
+        onMouseOver={handleMarkPointerOver}
+        onMouseLeave={handleMarkPointerLeave}
+        onFocus={handleMarkFocus}
+        onBlur={handleMarkBlur}
       >
-        {/* Sub-agent connector overlay. Sits at z-index 2 (above
-            grid lines, below event circles) so connector lines
-            paint between the parent's spawn event and the child's
-            first event without obscuring either endpoint. The
-            overlay's pointerEvents are limited to
-            the path stroke so swimlane row clicks pass through
-            empty connector space. */}
+        {/* Sub-agent connector overlay. z-index 2 like the event
+            circles, but first in the DOM, so the circles paint over
+            the connector ends without either being hidden. The
+            overlay's pointerEvents are limited to the path stroke so
+            swimlane row clicks pass through empty connector space.
+            ``hoveredId`` lights the connectors of the run whose mark
+            is hovered or focused. */}
         <SubAgentConnector
           connectors={connectorSpecs}
           width={overlaySize.width}
           height={overlaySize.height}
+          hoveredId={hoveredRunId}
         />
         {/* Vertical grid line overlay. Six lines at the same x
             positions as the time axis labels, dropping from the top

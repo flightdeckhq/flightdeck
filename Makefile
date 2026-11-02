@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check vuln-scan pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-all
+.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check vuln-scan pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-all
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -95,6 +95,9 @@ playground-stream-capture: ## Rule 40d playground: every Anthropic and OpenAI st
 
 playground-parse-litellm-routes: ## Rule 40d playground: OpenAI beta.chat parse, an async streaming view left unread, litellm text_completion and responses on every route, one post_call each. Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
 	$(PYTHON) playground/30_parse_and_litellm_routes.py
+
+playground-lazy-patch-signals: ## Rule 40a playground: patch() before the SDK imports loads no SDK and meters openai, anthropic and litellm imported afterwards; a SIGTERM inside the session lock ends the process after session_end. Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
+	$(PYTHON) playground/31_lazy_patch_signals.py
 
 playground-openai: ## Rule 40d playground: OpenAI SDK. Requires OPENAI_API_KEY.
 	$(PYTHON) playground/02_direct_openai.py

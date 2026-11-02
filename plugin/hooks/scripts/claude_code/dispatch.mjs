@@ -5,14 +5,14 @@
 import { hostname as osHostname } from "node:os";
 
 import { deriveAgentId } from "../agent_id.mjs";
-import { boundedToken, MAX_MCP_IDENTITY_BYTES, MAX_SIGNAL_BYTES } from "../core/config.mjs";
+import { boundedToken, MAX_SIGNAL_BYTES } from "../core/config.mjs";
 import { postEvent, setDirectiveSink } from "../core/poster.mjs";
 import {
   cacheSessionModel,
   clearGitCache,
   markerKeyFor,
   pruneStateDir,
-  readCachedModel,
+  readSessionMintTime,
   recordModelSwitch,
   swapSessionCwd,
 } from "../core/state.mjs";
@@ -20,14 +20,26 @@ import { clearSessionPolicyCache } from "../mcp_policy.mjs";
 import { safeCollectContext } from "./context.mjs";
 import { GATE_FLAG, finishControl, gateDecision, recordDirective, sendPendingControlEvents } from "./control.mjs";
 import { CLAUDE_CODE_EVENTS } from "./events.mjs";
-import { emitMCPToolCallEvent, resolveMcpToolIdentity } from "./mcp.mjs";
+import { buildMcpToolCallPayload, resolveMcpToolIdentity } from "./mcp.mjs";
 import {
   dispatchMcpPolicyPostToolUse,
   dispatchMcpPolicyPreToolUse,
   dispatchMcpPolicySessionStart,
 } from "./mcp_policy_dispatch.mjs";
-import { flushPostCallTurns, resolvePreCallModel, resolveSessionEndpoint } from "./post_call.mjs";
-import { clearSessionCacheFiles, ensureSessionStarted, getSessionId, sessionHasEnded } from "./session.mjs";
+import {
+  defaultFlushDeadline,
+  flushPostCallTurns,
+  readTurnsBounded,
+  resolvePreCallModel,
+  resolveSessionEndpoint,
+} from "./post_call.mjs";
+import {
+  clearSessionCacheFiles,
+  ensureSessionStarted,
+  getSessionId,
+  laterSessionMint,
+  sessionHasEnded,
+} from "./session.mjs";
 import { SESSION_END_WORKER_DEADLINE_MS, spawnDetachedSessionEnd } from "./session_end.mjs";
 import { SIGNAL_HOOKS, buildSignalEvent } from "./signals.mjs";
 import { buildStopFailureEvent, failedTurnFor } from "./stop_failure.mjs";
@@ -36,9 +48,13 @@ import {
   _subagentCorrelator,
   _subagentInteriorContext,
   emitSubagentEvent,
+  finishSubagentsAtSessionEnd,
   ownSubagentTurns,
+  sendOwedSubagentEnds,
+  subagentStaysEnded,
 } from "./subagent.mjs";
-import { buildToolErrorBlock, captureErrorText, hookDurationMs, sanitizeToolInput } from "./tools.mjs";
+import { owedToolCallEntry, sendOwedToolCalls, sendToolEvent } from "./tool_events.mjs";
+import { buildToolCallPayload } from "./tools.mjs";
 import { isRealModel, readTurns } from "./transcript.mjs";
 
 // Set by the sensor's Claude Agent SDK interceptor in the environment of
@@ -148,6 +164,17 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   }
 
   let sessionId = outerSessionId;
+  // When the outer session was minted, null when it recorded no time.
+  // Every transcript flush of this hook, the root's and a subagent's,
+  // sends only the turns that ran after it: a turn is reported only under
+  // the session that was current when it ran (ARCHITECTURE.md, Plugin >
+  // Subagent hooks).
+  const notBefore = readSessionMintTime(outerSessionId);
+  // A process that keeps reporting under this session after a resume
+  // minted a later one (the SessionEnd worker, a hook that started before
+  // the resume) sends none of the later session's turns: each transcript
+  // read is bounded by that session's mint time (readTurnsBounded).
+  const laterMint = () => laterSessionMint(hookEvent, outerSessionId);
   // ``transcriptPath`` defaults to the parent's transcript path
   // from hookEvent. When the hook fires inside subagent context,
   // we swap to the subagent's per-execution transcript so the
@@ -229,13 +256,17 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
     }
   }
 
-  const basePayload = {
-    session_id: sessionId,
+  // The outer session's fields; ``basePayload`` below is the same for a
+  // parent-context hook and the child's identity over it inside a
+  // subagent. A subagent's owed session_end is rebuilt over the outer
+  // session's fields whichever hook sends it.
+  const rootBasePayload = {
+    session_id: outerSessionId,
     flavor: "claude-code",
     agent_type: "coding",
     // Agent identity on every event.
-    agent_id: agentId,
-    agent_name: agentName,
+    agent_id: baseAgentId,
+    agent_name: baseAgentName,
     client_type: "claude_code",
     user: identityUser,
     hostname: identityHostname,
@@ -256,13 +287,33 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
     token_limit_session: null,
     has_content: false,
     content: null,
-    ...(interiorCtx
-      ? {
-          parent_session_id: interiorCtx.parentSessionId,
-          agent_role: interiorCtx.agentRole,
-        }
-      : {}),
     ...(baseContext ? { context: baseContext } : {}),
+  };
+  const basePayload = interiorCtx
+    ? {
+        ...rootBasePayload,
+        session_id: sessionId,
+        agent_id: agentId,
+        agent_name: agentName,
+        parent_session_id: interiorCtx.parentSessionId,
+        agent_role: interiorCtx.agentRole,
+      }
+    : rootBasePayload;
+  // One deadline for every transcript POST this hook starts, its own
+  // turns and the subagent ends it sends (HOOK_FLUSH_DEADLINE_MS); the
+  // SessionEnd worker sets its own below.
+  const hookDeadline = defaultFlushDeadline();
+  // The identity a subagent's owed session_end is rebuilt from.
+  const owedEndsContext = {
+    cfg,
+    outerSessionId,
+    basePayload: rootBasePayload,
+    agentName: baseAgentName,
+    identityUser,
+    identityHostname,
+    notBefore,
+    laterMint,
+    deadline: hookDeadline,
   };
 
   // Read transcript lazily -- some hooks don't need it and the file
@@ -305,7 +356,7 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
     // Pass ``baseAgentName`` explicitly so the right value flows
     // even if a future change makes ``agentName`` carry the child's
     // composed form for some other reason.
-    await emitSubagentEvent({
+    const emitted = await emitSubagentEvent({
       cfg,
       hookName,
       hookEvent,
@@ -314,7 +365,13 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
       agentName: baseAgentName,
       identityUser,
       identityHostname,
+      notBefore,
+      laterMint,
+      deadline: hookDeadline,
     });
+    // SubagentStop flushes a transcript, so it also sends the ends other
+    // subagents of the session still owe (see sendOwedSubagentEnds).
+    if (hookName === "SubagentStop" && !emitted.failed) await sendOwedSubagentEnds(owedEndsContext);
     return;
   }
 
@@ -369,54 +426,56 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   // touch the session markers: a new Claude Code session may own them
   // by now.
   if (hookName === "SessionEnd") {
-    await flushPostCallTurns({
+    const deadline = Date.now() + SESSION_END_WORKER_DEADLINE_MS;
+    const { turns, notAfter } = readTurnsBounded(getTurns, laterMint);
+    const flushed = await flushPostCallTurns({
       cfg,
       sessionId,
       basePayload,
-      turns: getTurns(),
+      turns,
       capturePrompts: cfg.capturePrompts,
-      deadline: Date.now() + SESSION_END_WORKER_DEADLINE_MS,
+      deadline,
       // The last process for the session: it sends the turns a killed
       // async hook had claimed but not sent.
       reclaimOrphaned: true,
+      notBefore,
+      notAfter,
     });
+    // The tool events the session still owes, its last chance to send
+    // them: one whose transcript records cannot be found goes without
+    // its content.
+    let reachable = !flushed.failed;
+    if (reachable) {
+      reachable = !(await sendOwedToolCalls({ cfg, sessionId, basePayload, lastChance: true, deadline })).failed;
+    }
     // A session a directive stopped already ends with its own
     // session_end (close_reason directive_shutdown).
-    if (await finishControl({ cfg, sessionId, basePayload })) return;
-    const payload = {
-      ...basePayload,
-      event_type: "session_end",
-      tool_name: null,
-      tool_input: null,
-      is_subagent_call: false,
-      latency_ms: null,
-      timestamp: new Date().toISOString(),
-      // Plugin-driven SessionEnd is always a normal exit from the
-      // operator's perspective (the user typed /exit, /clear, or the
-      // `claude -p` command completed cleanly). The worker reaper
-      // fills "orphan_timeout" on lost sessions; "sigkill_detected"
-      // is reserved for future signal-handling. Stamping explicitly
-      // here keeps the dashboard's Close Reason facet populated for
-      // every clean exit instead of falling through to the worker's
-      // unknown-default path.
-      close_reason: "normal_exit",
-    };
-    // Claude Code's own exit reason (clear, resume, logout,
-    // prompt_input_exit, other) rides alongside the enum so the specific
-    // trigger is not lost to the coarse close_reason bucket. Every one
-    // of them is a clean exit from the operator's perspective, so
-    // close_reason stays normal_exit.
-    const endReason = boundedToken(hookEvent.reason, MAX_SIGNAL_BYTES);
-    if (endReason) payload.end_reason = endReason;
-    await postEvent(cfg.server, cfg.token, sessionId, payload);
+    if (!(await finishControl({ cfg, sessionId, basePayload }))) {
+      reachable = await postEvent(cfg.server, cfg.token, sessionId, sessionEndPayload(basePayload, hookEvent));
+    }
+    // The subagents' last chance to be reported under their own child
+    // sessions, after the root's session_end so that a slow pass cannot
+    // hold it back; skipped while the server is not answering.
+    if (reachable) {
+      await finishSubagentsAtSessionEnd({
+        ...owedEndsContext,
+        parentTranscript: hookEvent.transcript_path,
+        deadline,
+      });
+    }
     return;
   }
 
   // Every other event type goes through the common session_start
   // backstop so an initial hook that is NOT SessionStart still produces
   // a session row -- except a hook that started after this run's
-  // SessionEnd, whose session_start would reopen the ended session.
-  const ended = sessionHasEnded(hookEvent, outerSessionId);
+  // SessionEnd, whose session_start would reopen the ended session, and a
+  // hook of a subagent execution that has ended (one its SubagentStop
+  // closed and no SubagentStart has resumed), whose session_start would
+  // reopen the child.
+  const ended =
+    sessionHasEnded(hookEvent, outerSessionId) ||
+    (interiorCtx !== null && (await subagentStaysEnded(sessionId)));
   if (!ended) {
     await ensureSessionStarted(cfg.server, cfg.token, sessionId, basePayload, {
       model: isRealModel(hookEvent.model) ? hookEvent.model : null,
@@ -428,6 +487,27 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   // The events directives recorded for this session still owe (a
   // directive_result, a policy event, a stopped session's session_end).
   await sendPendingControlEvents({ cfg, sessionId, basePayload });
+
+  // Each hook that flushes a transcript sends its turns under the bound,
+  // then, unless a POST failed, the tool events its session owes (after
+  // the turns that decided on them) and the ends the session's subagents
+  // still owe.
+  const flushTurns = async () => {
+    const { turns, notAfter } = readTurnsBounded(getTurns, laterMint);
+    const flushed = await flushPostCallTurns({
+      cfg,
+      sessionId,
+      basePayload,
+      turns,
+      capturePrompts: cfg.capturePrompts,
+      deadline: hookDeadline,
+      notBefore,
+      notAfter,
+    });
+    if (flushed.failed) return;
+    const tools = await sendOwedToolCalls({ cfg, sessionId, basePayload, deadline: hookDeadline });
+    if (!tools.failed) await sendOwedSubagentEnds(owedEndsContext);
+  };
 
   // A change of working directory. Claude Code runs a plugin's
   // CwdChanged hook only when the user's settings register one too, so
@@ -466,13 +546,7 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   // for subsequent UserPromptSubmit hooks on older Claude Code versions
   // that do not carry model on SessionStart.
   if (hookName === "Stop") {
-    await flushPostCallTurns({
-      cfg,
-      sessionId,
-      basePayload,
-      turns: getTurns(),
-      capturePrompts: cfg.capturePrompts,
-    });
+    await flushTurns();
     // The per-session MCP policy cache deliberately survives Stop:
     // Stop fires after every assistant turn, and PreToolUse reads the
     // cache on every MCP tool call for the life of the session. It is
@@ -484,13 +558,7 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   // this instead of Stop. Flush the calls that completed before the
   // failure, then report the failure as an llm_error.
   if (hookName === "StopFailure") {
-    await flushPostCallTurns({
-      cfg,
-      sessionId,
-      basePayload,
-      turns: getTurns(),
-      capturePrompts: cfg.capturePrompts,
-    });
+    await flushTurns();
     const failedTurn = failedTurnFor(getTurns(), hookEvent);
     await postEvent(
       cfg.server,
@@ -581,13 +649,7 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   // returns [] on read errors, but belt-and-suspenders.
   if (hookName === "PostToolUse" || hookName === "PostToolUseFailure") {
     try {
-      await flushPostCallTurns({
-        cfg,
-        sessionId,
-        basePayload,
-        turns: getTurns(),
-        capturePrompts: cfg.capturePrompts,
-      });
+      await flushTurns();
     } catch (err) {
       process.stderr.write(
         `flightdeck: post_call flush on ${hookName} failed: ${err?.message || err}\n`,
@@ -645,13 +707,21 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
           `server attribution falling back to null. See plugin README.\n`,
       );
     }
-    await emitMCPToolCallEvent({
+    // An event with a tool_use_id carries the id derived from it and is
+    // owed until the server answers (see tool_events.mjs).
+    const payload = buildMcpToolCallPayload({
       cfg,
       sessionId,
       basePayload,
       hookEvent,
       hookName,
       mcpIdentity,
+    });
+    await sendToolEvent({
+      cfg,
+      sessionId,
+      payload,
+      entry: owedToolCallEntry({ payload, hookName, hookEvent, toolName, transcriptPath }),
     });
     return;
   }
@@ -660,81 +730,43 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   // guard keeps a future unmapped hook from POSTing event_type=undefined.
   if (!eventType) return;
 
-  const sanitizedInput =
-    cfg.captureToolInputs && hookEvent.tool_input
-      ? sanitizeToolInput(hookEvent.tool_input)
-      : null;
-  const toolInputJson = sanitizedInput ? JSON.stringify(sanitizedInput) : null;
+  const payload = buildToolCallPayload({ cfg, hookName, hookEvent, eventType, toolName, basePayload, sessionId });
+  await sendToolEvent({
+    cfg,
+    sessionId,
+    payload,
+    entry: owedToolCallEntry({ payload, hookName, hookEvent, toolName, transcriptPath }),
+  });
+}
 
-  const isSubagentCall = toolName === "Task";
-  const toolDurationMs = hookDurationMs(hookEvent);
-
-  // Build event_content payload so the drawer's Prompts tab can show
-  // real tool input + output (previously tool_call events always had
-  // has_content=false, so the drawer rendered shallow metadata only).
-  // Privacy tiers: input is gated on captureToolInputs (default ON);
-  // output is gated on capturePrompts (default ON for the plugin,
-  // OFF for the Python sensor -- see resolveConfig rationale).
-  let content = null;
-  let hasContent = false;
-  if (cfg.captureToolInputs && toolName && sanitizedInput) {
-    const tools = [{ type: "tool_use", name: toolName, input: sanitizedInput }];
-    const response = [];
-    if (cfg.capturePrompts && hookEvent.tool_response != null) {
-      const out =
-        typeof hookEvent.tool_response === "string"
-          ? hookEvent.tool_response
-          : JSON.stringify(hookEvent.tool_response);
-      response.push({
-        type: "tool_result",
-        content: out.length > 2000 ? out.slice(0, 2000) + "\u2026" : out,
-      });
-    }
-    content = {
-      provider: "anthropic",
-      model: readCachedModel(sessionId) || basePayload.model || "",
-      system: null,
-      messages: [],
-      tools,
-      response,
-    };
-    hasContent = true;
-  }
-
-  // Preserve basePayload's parent_session_id when interior
-  // subagent context set it (the modern Agent tool path). Fall back
-  // to the legacy ``isSubagentCall ? sessionId : null`` shape for
-  // the deprecated Task-tool informational hint (retained as
-  // forward-compat on the parent's tool_call event for any consumer
-  // still reading it). The two paths are mutually exclusive — when
-  // interior context is active, basePayload.parent_session_id is
-  // the OUTER session id; when it isn't, the legacy line applies.
+/** The session_end the SessionEnd worker sends for the root session. */
+function sessionEndPayload(basePayload, hookEvent) {
   const payload = {
     ...basePayload,
-    event_type: eventType,
-    tool_name: toolName,
-    tool_input: toolInputJson,
-    tool_result: null,
-    is_subagent_call: isSubagentCall,
-    parent_session_id:
-      basePayload.parent_session_id ??
-      (isSubagentCall ? sessionId : null),
-    // Real tool wall time from Claude Code on PostToolUse /
-    // PostToolUseFailure, null when the hook does not carry it. The
-    // same value lands as duration_ms so tool_call and mcp_tool_call
-    // report the tool's duration under one name.
-    latency_ms: toolDurationMs,
-    duration_ms: toolDurationMs,
+    event_type: "session_end",
+    tool_name: null,
+    tool_input: null,
+    is_subagent_call: false,
+    latency_ms: null,
     timestamp: new Date().toISOString(),
-    has_content: hasContent,
-    content,
+    // Plugin-driven SessionEnd is always a normal exit from the
+    // operator's perspective (the user typed /exit, /clear, or the
+    // `claude -p` command completed cleanly). The worker reaper
+    // fills "orphan_timeout" on lost sessions; "sigkill_detected"
+    // is reserved for future signal-handling. Stamping explicitly
+    // here keeps the dashboard's Close Reason facet populated for
+    // every clean exit instead of falling through to the worker's
+    // unknown-default path.
+    close_reason: "normal_exit",
   };
-  const toolUseId = boundedToken(hookEvent.tool_use_id, MAX_MCP_IDENTITY_BYTES);
-  if (toolUseId) payload.tool_use_id = toolUseId;
-  if (hookName === "PostToolUseFailure") {
-    payload.error = buildToolErrorBlock(hookEvent, captureErrorText(cfg));
-  }
-  await postEvent(cfg.server, cfg.token, sessionId, payload);
+  // Claude Code's own exit reason (clear, resume, logout,
+  // prompt_input_exit, other) rides alongside the enum so the specific
+  // trigger is not lost to the coarse close_reason bucket. Every one
+  // of them is a clean exit from the operator's perspective, so
+  // close_reason stays normal_exit.
+  const endReason = boundedToken(hookEvent.reason, MAX_SIGNAL_BYTES);
+  if (endReason) payload.end_reason = endReason;
+  return payload;
 }
 
 /**

@@ -252,6 +252,10 @@ function RunBoundaryMark({
 				type="button"
 				data-testid={`swimlane-run-bracket-${kind}-${sessionId.slice(0, 8)}`}
 				data-bracket-kind={kind}
+				// The run this glyph marks; Timeline's delegated hover
+				// and focus handlers read it to light the run's
+				// sub-agent connectors.
+				data-session-id={sessionId}
 				aria-label={`Open run ${sessionId.slice(0, 8)} (${kind})`}
 				onClick={onClick}
 				onMouseEnter={onHoverEnter}

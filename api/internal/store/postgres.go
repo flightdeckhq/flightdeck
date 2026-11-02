@@ -44,11 +44,11 @@ type Querier interface {
 	GetAgentFleet(ctx context.Context, limit, offset int, agentType string) ([]AgentSummary, int, error)
 	GetSession(ctx context.Context, sessionID string) (*Session, error)
 	// GetSessionEvents returns events for a session in chronological
-	// (ASC) order. When limit <= 0 the full history is returned; when
-	// limit > 0 the caller gets at most the N newest events (the query
-	// runs ``ORDER BY occurred_at DESC LIMIT N`` and the result is
-	// re-sorted ASC before returning so the response shape stays
-	// chronological).
+	// (ASC) order, id breaking timestamp ties. When limit <= 0 the full
+	// history is returned; when limit > 0 the caller gets at most the N
+	// newest events (the query runs ``ORDER BY occurred_at DESC, id DESC
+	// LIMIT N`` and the result is re-sorted ASC before returning so the
+	// response shape stays chronological).
 	GetSessionEvents(ctx context.Context, sessionID string, limit int) ([]Event, error)
 	GetEvent(ctx context.Context, eventID string) (*Event, error)
 	GetSessionAttachments(ctx context.Context, sessionID string) ([]time.Time, error)
@@ -872,11 +872,17 @@ func tokenCostColumns(prefix string) string {
 // GetSessionEvents returns events for a session in chronological (ASC)
 // order. When limit <= 0 the full history is returned (legacy behaviour
 // used by Fleet-side callers that still expect the whole timeline).
-// When limit > 0 the query runs “ORDER BY occurred_at DESC LIMIT N“
-// so the composite “events(session_id, occurred_at)“ index is used
-// optimally for the newest-first slice; the slice is reversed in-place
-// before returning so the response shape the handler documents
+// When limit > 0 the query runs “ORDER BY occurred_at DESC, id DESC
+// LIMIT N“ so the composite “events(session_id, occurred_at)“ index
+// is used optimally for the newest-first slice; the slice is reversed
+// in-place before returning so the response shape the handler documents
 // (chronological ASC) holds regardless of whether a limit was applied.
+//
+// id breaks occurred_at ties, as in GetEvents, so the capped slice ends
+// on a well-defined row: the run drawer pages further back from its
+// oldest event with GetEvents' (Before, BeforeID) keyset, which follows
+// the same order, and so neither skips nor repeats the events that
+// share that event's timestamp.
 //
 // The payload JSONB column is decoded into Event.Payload so callers
 // (the dashboard) can read directive_name / directive_status / result
@@ -895,7 +901,7 @@ func (s *Store) GetSessionEvents(ctx context.Context, sessionID string, limit in
 			       latency_ms, tool_name, has_content, payload, occurred_at
 			FROM events
 			WHERE session_id = $1::uuid
-			ORDER BY occurred_at DESC
+			ORDER BY occurred_at DESC, id DESC
 			LIMIT $2
 		`
 		args = append(args, limit)
@@ -908,7 +914,7 @@ func (s *Store) GetSessionEvents(ctx context.Context, sessionID string, limit in
 			       latency_ms, tool_name, has_content, payload, occurred_at
 			FROM events
 			WHERE session_id = $1::uuid
-			ORDER BY occurred_at ASC
+			ORDER BY occurred_at ASC, id ASC
 		`
 	}
 

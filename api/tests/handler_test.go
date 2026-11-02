@@ -2705,6 +2705,53 @@ func TestGetEvents_Before_ThreadsToStore(t *testing.T) {
 	}
 }
 
+// “before_id“ rides along with “before“ into EventsParams.BeforeID,
+// microseconds included, so the store can resume after that exact row.
+func TestGetEvents_BeforeID_ThreadsToStore(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+	const id = "0b6f2c3e-8d4a-4c1f-9e7a-5a2b3c4d5e6f"
+	req := httptest.NewRequest("GET",
+		"/v1/events?from=1970-01-01T00:00:00Z&before=2026-02-01T00:00:00.123456Z&before_id="+id+"&order=desc", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if s.lastEventsParams == nil {
+		t.Fatal("mock did not receive params")
+	}
+	if s.lastEventsParams.BeforeID != id {
+		t.Errorf("expected BeforeID=%s, got %q", id, s.lastEventsParams.BeforeID)
+	}
+	if got := s.lastEventsParams.Before.Format(time.RFC3339Nano); got != "2026-02-01T00:00:00.123456Z" {
+		t.Errorf("expected Before with microseconds, got %s", got)
+	}
+}
+
+// “before_id“ names the row at a “before“ cursor: alone, or not a
+// UUID, it is a 400 rather than a query that silently ignores it.
+func TestGetEvents_InvalidBeforeID_Returns400(t *testing.T) {
+	for name, query := range map[string]string{
+		"without before": "/v1/events?from=2026-01-01T00:00:00Z&before_id=0b6f2c3e-8d4a-4c1f-9e7a-5a2b3c4d5e6f",
+		"not a uuid":     "/v1/events?from=2026-01-01T00:00:00Z&before=2026-02-01T00:00:00Z&before_id=nope",
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := &mockStore{}
+			handler := handlers.EventsListHandler(store.WrapStore(s))
+			w := httptest.NewRecorder()
+			handler(w, httptest.NewRequest("GET", query, nil))
+			if w.Code != http.StatusBadRequest {
+				t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+			}
+			if s.lastEventsParams != nil {
+				t.Errorf("store was queried with %+v, want no query", *s.lastEventsParams)
+			}
+		})
+	}
+}
+
 func TestGetEvents_InvalidBefore_Returns400(t *testing.T) {
 	s := &mockStore{}
 	handler := handlers.EventsListHandler(store.WrapStore(s))

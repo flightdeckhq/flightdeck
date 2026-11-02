@@ -323,14 +323,14 @@ caller sent; content capture stores the caller's request); a new
 ## D231 -- Each litellm call is reported by the entry point the caller used
 
 **Date:** 2026-11-01
-**Decision:** every patched litellm entry point runs under the
-outer-call mark; a nested litellm call passes through only when the
-mark is set and its caller is a litellm module that re-issues the
-caller's own call (the responses/completion bridges, the fallback loop),
-so the call is reported once, in the caller's entry point's shape, with
-the model that answered; a failed fallback attempt gets no `llm_error`.
-**Why:** those re-issue the same call; other nested litellm calls
-(callbacks, custom providers, agentic follow-ups) are billed on their own.
-**Rejected alternative:** passing every nested call through (hides billed
-calls and their policy check); reporting each fallback attempt (two
-`pre_call`s, and a policy block inside the loop is swallowed by it).
+**Decision:** a nested litellm call passes through only when the outer
+mark is set and its caller re-issues the caller's own call (the
+responses/completion bridges, the fallback loop): one report, with the
+model that answered. A failed fallback attempt gets no `llm_error`; a
+non-streamed one the provider billed before failing (a timeout, a
+`post_call_rules` rejection) goes unreported. DEGRADE drops a call's
+`fallbacks` and `context_window_fallback_dict`.
+**Why:** those re-issue the same call; other nested calls are billed on
+their own. The degrade target is the only model the policy allows.
+**Rejected alternative:** a broad pass-through (hides billed calls);
+reporting each fallback attempt (the loop swallows a policy block).

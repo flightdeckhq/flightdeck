@@ -1013,9 +1013,11 @@ provider without a native Responses API (Anthropic) bridges through the
 package-level `litellm.completion` / `acompletion`, and `completion` on a
 Responses-only model (`openai/responses/...`) bridges through the
 package-level `litellm.responses` / `aresponses` -- both patched
-wrappers; and a call with `fallbacks` (passed, or set globally as
-`litellm.model_fallbacks`) runs every attempt, the caller's own model
-first, through the package-level `litellm.acompletion`. The interceptors
+wrappers; and a call with `fallbacks` runs every attempt, the caller's
+own model first, through the package-level `litellm.acompletion`. (The
+global `litellm.model_fallbacks` reaches the same loop, but in litellm
+1.83.0 and 1.104.2 every attempt re-reads it and opens a new loop, so a
+call with it set never returns, with or without the sensor.) The interceptors
 coordinate through an outer-call mark in `interceptor/base.py`: each
 litellm wrapper runs the underlying litellm call inside
 `outer_intercept()`. An SDK interceptor that finds
@@ -1034,21 +1036,34 @@ came back, so its `model_served` (and the canonical `model` pricing and
 the model dimension use) is the model that answered, while
 `model_requested` keeps the caller's model; an attempt that failed
 before a fallback answered is not reported on its own (no `llm_error`
-for it), and a call every attempt failed lands as one `llm_error`. Any
+for it), and a call every attempt failed lands as one `llm_error`. A
+non-streamed attempt that fails after the provider billed it (a client
+timeout the provider finished anyway, or litellm's `post_call_rules`
+rejecting the response) is swallowed by the loop the same way, so its
+tokens go unreported; a stream that fails mid-way is not, because the
+loop has already returned its stream object. Under a DEGRADE policy the
+pre-call check swaps `model` to the degrade target and drops the call's
+`fallbacks` and `context_window_fallback_dict` (the litellm adapters'
+`model_alternative_params`; the second is the bigger model litellm's
+call wrapper retries on a context-window error), so no attempt runs a
+model the policy did not choose and a failure of the degraded attempt is
+the call's `llm_error`; a Router runs each deployment attempt through
+the patched entry points as a call of its own, so each attempt is
+degraded. Any
 other litellm call made while one is in flight -- from a callback,
 guardrail or custom provider, or one litellm makes itself (an agentic or
 MCP follow-up, a semantic-cache embedding, an LLM judge) -- is a call of
 its own and is policed and metered. A litellm release that moves a
 re-issue shows as a double count of it, which the re-issue tests catch,
-never as a missed call. Three cases are reported twice rather than risk
+never as a missed call. Three cases are reported more than once rather than risk
 hiding a billed call: a chat call routed through litellm's MCP gateway
 (tools that name it), which re-issues the call from the same function
 that makes the follow-up calls after its tools run, so the re-issue
 cannot be told apart; a sync call with `fallbacks` made while an event
 loop is running in its thread (a notebook, a sync call inside async
 code), whose attempts litellm runs in a worker thread it starts without
-copying the context, so the mark does not reach them (pinned by a strict
-`xfail` test); and every re-issued call when an instrumentation library
+copying the context, so the mark does not reach them and every attempt is reported as a call of its own beside the outer call (for a failed primary and one fallback: three `pre_call`s, two `post_call`s and one `llm_error`)
+(pinned by a strict `xfail` test); and every re-issued call when an instrumentation library
 replaces a litellm entry point after `flightdeck_sensor.patch()`, which
 puts its own frame where the re-issue check looks. The mark is a per-call flag held in a context variable:
 another thread, or a task created before the call, never sees it, so an SDK
@@ -1432,6 +1447,12 @@ source="server")` regardless of token thresholds. Required because the
 worker's policy evaluator may issue a DEGRADE directive based on its own
 cumulative count without populating the sensor's local `degrade_at_pct`
 cache (preflight policy fetch can fail silently).
+
+On a DEGRADE decision `_pre_call` sends the call to `degrade_to`: it
+swaps `model` and drops the request parameters the provider names as
+other models the call could run in its place (`model_alternative_params`;
+on the litellm adapters, `fallbacks` and `context_window_fallback_dict`),
+so the degrade target is the only model the call can run.
 
 ### Pydantic schemas
 

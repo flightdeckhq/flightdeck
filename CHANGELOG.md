@@ -93,7 +93,9 @@ All notable changes to Flightdeck are documented here.
   lands as one `post_call` with the usage of the shape that entry point
   returns, also where litellm serves it through the OpenAI SDK or bridges
   it between `responses` and `completion` or retries it through
-  `fallbacks` (a fallback-served call names the model that answered); a
+  `fallbacks` (a fallback-served call names the model that answered;
+  under a DEGRADE policy a call's fallbacks are dropped, so it runs only
+  the degrade target); a
   litellm call a callback or custom provider makes during another is
   still reported on its own
   ([#170](https://github.com/flightdeckhq/flightdeck/issues/170)).

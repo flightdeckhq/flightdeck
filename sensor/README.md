@@ -180,11 +180,18 @@ covers `text_completion` and `responses` on each route kind).
   litellm's own re-issues of the same call pass through: its
   responses/completion bridge and its `fallbacks` loop (a call a fallback
   answered is reported once, with the model that answered; a failed
-  attempt before it is not reported on its own).
-- **Reported twice.** A chat call routed through litellm's MCP gateway
+  attempt before it is not reported on its own, and neither are the
+  tokens of a non-streamed attempt the provider billed before it failed).
+  Under a DEGRADE policy a call's `fallbacks` and
+  `context_window_fallback_dict` are dropped, so it runs only the degrade
+  target.
+- **Reported more than once.** A chat call routed through litellm's MCP gateway
   (tools that name it), whose re-issue cannot be told from its billed
   follow-ups; a sync call with `fallbacks` made while an event loop is
   running in its thread (a notebook), whose attempts run in a worker
-  thread without the call's context; and re-issued calls when another
+  thread without the call's context, so each attempt is reported as a
+  call of its own beside the call (a failed primary and one fallback:
+  three `pre_call`s, two `post_call`s, one `llm_error`); and re-issued
+  calls when another
   instrumentation library replaces a litellm entry point after
   `flightdeck_sensor.patch()`.

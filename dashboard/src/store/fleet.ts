@@ -114,9 +114,10 @@ interface FleetState {
 
 function listItemToSession(li: SessionListItem): Session {
   // Swimlane code consumes ``Session`` (from types.ts), not
-  // ``SessionListItem``. The fields overlap except for framework /
-  // last_seen_at; we synthesise last_seen_at from ended_at / now so
-  // the swimlane's activity sort does not see missing values.
+  // ``SessionListItem``. The fields overlap except for framework.
+  // last_seen_at is the run's last signal as the API returns it: a
+  // lost run, and one the orphan-timeout reaper closed, end there on
+  // the swimlane. ended_at / now only stand in for a row without it.
   const now = new Date().toISOString();
   return {
     session_id: li.session_id,
@@ -130,8 +131,11 @@ function listItemToSession(li: SessionListItem): Session {
     model: li.model,
     state: li.state,
     started_at: li.started_at,
-    last_seen_at: li.ended_at ?? now,
+    last_seen_at: li.last_seen_at ?? li.ended_at ?? now,
     ended_at: li.ended_at,
+    // The close reasons tell the swimlane a run the reaper closed
+    // (``orphan_timeout``) when its session_end is not loaded.
+    close_reasons: li.close_reasons,
     tokens_used: li.tokens_used,
     token_limit: li.token_limit ? Number(li.token_limit) : null,
     context: (li.context ?? {}) as Record<string, unknown>,

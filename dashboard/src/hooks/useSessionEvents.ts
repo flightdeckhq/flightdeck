@@ -1,10 +1,13 @@
 import { useEffect, useState } from "react";
 import { fetchSession } from "@/lib/api";
+import { EventsCacheMap } from "@/lib/events-cache-epoch";
 import type { AgentEvent } from "@/lib/types";
 
 // Module-level cache: sessionId → events array.
-// Exported so Fleet.tsx can inject WebSocket events directly.
-export const eventsCache = new Map<string, AgentEvent[]>();
+// Exported so Fleet.tsx can inject WebSocket events directly. Every
+// write is counted (see lib/events-cache-epoch.ts), so a swimlane row
+// re-derives its runs' segments when any of their events change.
+export const eventsCache = new EventsCacheMap<string, AgentEvent[]>();
 
 // E2E debug surface — exposes the module-level cache via window so
 // Playwright specs can introspect the runtime state without

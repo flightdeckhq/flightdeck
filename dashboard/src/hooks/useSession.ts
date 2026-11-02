@@ -63,11 +63,11 @@ export function useSession(
             eventsCache.set(sessionId, detail.events);
           }
         }
-        // Mirror attachments into the shared cache so SessionEventRow
-        // and AggregatedSessionEvents can colour their session_start
-        // circles amber without each having to round-trip the API
-        // themselves. Always set (including empty array) so callers
-        // can tell "not fetched" from "fetched with no attachments".
+        // Mirror attachments into the shared cache so the swimlane's
+        // AggregatedSessionEvents can colour a re-attachment's
+        // session_start circle amber without its own round-trip.
+        // Always set (including empty array) so callers can tell
+        // "not fetched" from "fetched with no attachments".
         attachmentsCache.set(sessionId, detail.attachments ?? []);
       }
       return detail;

@@ -209,6 +209,13 @@ export interface Session {
   started_at: string;
   last_seen_at: string;
   ended_at: string | null;
+  /**
+   * Distinct ``close_reason`` values across the run's ``session_end``
+   * events. Present on rows that came from ``GET /v1/sessions``; the
+   * swimlane reads ``orphan_timeout`` here as a reaped close when the
+   * run's own ``session_end`` is not loaded.
+   */
+  close_reasons?: string[];
   tokens_used: number;
   token_limit: number | null;
   /**

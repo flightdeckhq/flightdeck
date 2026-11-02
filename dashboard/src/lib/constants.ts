@@ -128,24 +128,10 @@ export const ALL_ROW_HEIGHT_COLLAPSED = 24;
 export const ALL_ROW_HEIGHT_EXPANDED = 36;
 
 /**
- * Session row height in pixels. Rows now show a primary hostname
- * label on the top line and a muted session hash on the bottom line
- * when the session has runtime context, so 40px was too tight. 48px
- * fits both lines with clean vertical centring. SwimLane uses this
- * when computing the expanded section maxHeight so the animation
- * stays in sync with actual row sizes.
- */
-export const SESSION_ROW_HEIGHT = 48;
-
-/**
- * Diameter in pixels of every event circle in the swimlane. Used by
- * SessionEventRow (expanded session rows), AggregatedSessionEvents
- * (collapsed flavor rows and the ALL row) -- everything. Previously
- * split between 20px on aggregated rows and 24px on session rows,
- * which looked jarring when a flavor was expanded and the two sizes
- * sat directly above and below each other. 22px is the midpoint and
- * stays above EventNode's icon-size threshold (<=20 → 11px, else
- * 13px) so icon legibility matches the old 24px circles.
+ * Diameter in pixels of every event circle in the swimlane: the agent
+ * rows and the ALL row (AggregatedSessionEvents). 22px stays above
+ * EventNode's icon-size threshold (<=20 → 11px, else 13px), so the
+ * circle carries the larger icon.
  */
 export const EVENT_CIRCLE_SIZE = 22;
 

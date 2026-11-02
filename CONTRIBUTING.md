@@ -120,23 +120,32 @@ Run the npm and pip scan locally with:
 make vuln-scan   # python3 scripts/vuln_scan.py
 ```
 
-It needs `npm`, `uv` and network access, and installs nothing: it audits
-`dashboard/package-lock.json` and the requirements it exports from
-`sensor/uv.lock`, with pip-audit run through `uvx` at the version the script
-pins. The scan fails on:
+It needs `npm`, `uv` and network access. It audits the lockfiles rather than
+installed trees: `dashboard/package-lock.json`, and the pins it exports from
+`sensor/uv.lock`. Nothing is installed into the project; `uvx` fetches the
+pip-audit release the script pins into the uv cache, holding pip-audit's own
+dependencies to the same 14-day cooldown as the sensor's lock. The scan fails
+on:
 
-- a **high or critical** advisory in a dashboard **production** dependency
-  (`npm audit --omit=dev`);
+- a **high or critical** advisory in **any dashboard dependency**, dev
+  dependencies included: tailwindcss is compiled into the shipped CSS, vite and
+  its plugins build the bundle, so the dev/prod split does not mark what ships;
+- a **high or critical** advisory in a **plugin production** dependency
+  (`npm audit --omit=dev`). The plugin runs its source as is, with no bundler,
+  so its dev dependencies never reach a user. A `plugin/package.json` that
+  declares dependencies without a `package-lock.json` fails too; the plugin has
+  no dependencies today;
 - **any** advisory in the sensor's **core runtime** dependencies (`uv export
   --no-dev`, no extras). pip-audit reports no severity, so every advisory
-  counts;
-- a package under `plugin/` that declares dependencies without a
-  `package-lock.json`. The plugin has no dependencies today.
+  counts. Environment markers are stripped so a pin for another platform or
+  Python version is audited too, and a runtime pin pip-audit did not audit
+  fails;
+- an ignore entry past its `expires` date.
 
-Dashboard dev dependencies, and the sensor's extras and dev tooling, are listed
-in the job log without failing the job: they run in development and CI, and the
-sensor's provider and framework extras are resolved by each user's own
-installer. Bump them when a fix is available.
+npm advisories below high, and the sensor's extras and dev tooling, are listed
+in the job log without failing the job. The sensor's provider and framework
+extras are resolved by each user's own installer, so the versions locked here
+are not what a user gets. Bump them when a fix is available.
 
 ### Excusing an advisory
 
@@ -150,12 +159,15 @@ id = "GHSA-xxxx-xxxx-xxxx"   # the ID the scan prints; for pip, any alias works
 ecosystem = "npm"            # "npm" or "pypi"
 package = "example-package"
 reason = "No fixed release yet; the vulnerable parser only reads our own build config. Drop when 2.3.1 ships."
+expires = 2027-02-01         # a TOML date, no quotes
 ```
 
-Every key is required, and the reason must say why the advisory cannot be fixed
-now and what lets the entry go. The entry ships in a pull request like any other
-change, so it gets reviewed. The scan prints a note for an entry that no longer
-matches anything; delete it then.
+Every key is required. The reason must say why the advisory cannot be fixed now
+and what lets the entry go. Set `expires` a few months out at most: the scan
+fails the day after it, so the entry gets a fresh look instead of living
+forever. The entry ships in a pull request like any other change, so it gets
+reviewed. An entry that no longer matches anything is flagged as a warning on
+the pull request; delete it then.
 
 ## Pull Request Process
 

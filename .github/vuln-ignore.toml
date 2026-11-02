@@ -1,7 +1,8 @@
 # Advisories the dependency vulnerability scan (scripts/vuln_scan.py)
 # excuses. Each entry is one advisory in one package, with the reason it
-# cannot be fixed yet; review the list whenever a dependency is bumped.
-# The scan prints a note for an entry that no longer matches anything, so
+# cannot be fixed yet and a date by which it must be looked at again.
+# The scan fails once an entry's expiry date has passed, and annotates
+# the pull request with an entry that no longer matches anything, so
 # remove the entry once the dependency is past the fixed version.
 #
 # Keys, all required:
@@ -10,6 +11,8 @@
 #   ecosystem  "npm" or "pypi"
 #   package    the affected package name
 #   reason     why it cannot be fixed now, and what would let it go
+#   expires    a TOML date (no quotes), at most a few months out; the
+#              scan fails after it, forcing a fresh look
 #
 # Example:
 #
@@ -18,5 +21,6 @@
 # ecosystem = "npm"
 # package = "example-package"
 # reason = "No fixed release yet; the vulnerable parser only reads our own build config. Drop when 2.3.1 ships."
+# expires = 2027-02-01
 #
 # No advisory is excused today.

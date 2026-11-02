@@ -597,14 +597,17 @@ jobs:
   # Known-vulnerability scan of the npm (dashboard, plugin) and pip
   # (sensor) dependencies; the Go job's govulncheck covers the Go
   # modules and the release workflow's Trivy scan covers the images.
-  # scripts/vuln_scan.py audits the lockfiles directly, so the job
-  # installs nothing: npm audit reads dashboard/package-lock.json, and
-  # pip-audit (an exact release run through uvx) reads the requirements
-  # exported from sensor/uv.lock. It fails on a high or critical
-  # advisory in a dashboard production dependency and on any advisory
-  # in the sensor's core runtime dependencies; dev dependencies and the
-  # sensor's extras are reported in the log without failing. Excused
-  # advisories, each with a reason, live in .github/vuln-ignore.toml.
+  # scripts/vuln_scan.py audits the lockfiles directly: npm audit reads
+  # dashboard/package-lock.json, and pip-audit (an exact release that
+  # uvx fetches into the uv cache) reads the pins exported from
+  # sensor/uv.lock. Nothing is installed into the project. It fails on a
+  # high or critical advisory in any dashboard dependency (dev ones build
+  # or end up in the shipped bundle), on any advisory in the sensor's
+  # core runtime dependencies, and on an expired ignore entry; lower
+  # npm severities and the sensor's extras are reported in the log.
+  # Excused advisories, each with a reason and an expiry date, live in
+  # .github/vuln-ignore.toml. The script's own time budget stays under
+  # this job's timeout.
   dependency-scan:
     name: Dependency vulnerability scan (npm, pip)
     runs-on: ubuntu-24.04

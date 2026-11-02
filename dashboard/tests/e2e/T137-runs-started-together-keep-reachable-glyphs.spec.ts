@@ -43,36 +43,36 @@ test.describe("T137 — Runs started together keep reachable glyphs", () => {
 		);
 		for (const glyph of glyphs) await expect(glyph).toBeVisible({ timeout: 10_000 });
 
-		const boxes = [];
-		for (const glyph of glyphs) {
-			const box = await glyph.boundingBox();
-			expect(box).not.toBeNull();
-			boxes.push(box!);
-		}
+		// One synchronous pass: the window advances a few pixels a second
+		// at 5m, so boxes read one call at a time can drift apart and
+		// glyphs packed 1 px apart can seem to overlap.
+		await glyphs[0]!.scrollIntoViewIfNeeded();
+		const placed = await row.evaluate((el, ids) => {
+			return ids.map((id) => {
+				const glyph = el.querySelector(`[data-testid="swimlane-run-bracket-start-${id}"]`);
+				const r = glyph!.getBoundingClientRect();
+				const hit = document
+					.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2)
+					?.closest("button")
+					?.getAttribute("data-testid");
+				return { id, left: r.left, right: r.right, top: r.top, bottom: r.bottom, hit: hit ?? null };
+			});
+		}, prefixes);
+
 		// Pairwise disjoint.
-		for (let i = 0; i < boxes.length; i++) {
-			for (let j = i + 1; j < boxes.length; j++) {
-				const a = boxes[i]!;
-				const b = boxes[j]!;
+		for (let i = 0; i < placed.length; i++) {
+			for (let j = i + 1; j < placed.length; j++) {
+				const a = placed[i]!;
+				const b = placed[j]!;
 				const apart =
-					a.x + a.width <= b.x ||
-					b.x + b.width <= a.x ||
-					a.y + a.height <= b.y ||
-					b.y + b.height <= a.y;
-				expect(apart, `glyphs ${prefixes[i]} and ${prefixes[j]} overlap`).toBe(true);
+					a.right <= b.left || b.right <= a.left || a.bottom <= b.top || b.bottom <= a.top;
+				expect(apart, `glyphs ${a.id} and ${b.id} overlap`).toBe(true);
 			}
 		}
 
 		for (let i = 0; i < glyphs.length; i++) {
-			// Measure right before the hit test: a hover or a re-render
-			// in between can move the row.
-			await glyphs[i]!.scrollIntoViewIfNeeded();
-			const box = (await glyphs[i]!.boundingBox())!;
-			const hit = await page.evaluate(
-				([x, y]) => document.elementFromPoint(x!, y!)?.closest("button")?.getAttribute("data-testid") ?? null,
-				[box.x + box.width / 2, box.y + box.height / 2],
-			);
-			expect(hit).toBe(`swimlane-run-bracket-start-${prefixes[i]}`);
+			// The glyph's centre hit-tests to the glyph itself.
+			expect(placed[i]!.hit).toBe(`swimlane-run-bracket-start-${prefixes[i]}`);
 
 			await glyphs[i]!.hover();
 			const tooltip = page.locator(`[data-testid="swimlane-run-bracket-tooltip-${prefixes[i]}"]`);

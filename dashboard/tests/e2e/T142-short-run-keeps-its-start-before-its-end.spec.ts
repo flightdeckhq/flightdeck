@@ -41,35 +41,38 @@ test.describe("T142 — A short run keeps its start before its end", () => {
 			const end = row.locator(`[data-testid="swimlane-run-bracket-end-${prefix}"]`);
 			await expect(start).toBeVisible({ timeout: 10_000 });
 			await expect(end).toBeVisible();
-			const startBox = (await start.boundingBox())!;
-			const endBox = (await end.boundingBox())!;
-			expect(startBox.x + startBox.width).toBeLessThanOrEqual(endBox.x);
+			// Both boxes in one synchronous read: the window advances a few
+			// pixels a second, so two separate reads can drift apart.
+			const [startBox, endBox] = await row.evaluate(
+				(el, ids) =>
+					ids.map((id) => {
+						const r = el.querySelector(`[data-testid="${id}"]`)!.getBoundingClientRect();
+						return { left: r.left, right: r.right };
+					}),
+				[`swimlane-run-bracket-start-${prefix}`, `swimlane-run-bracket-end-${prefix}`],
+			);
+			expect(startBox!.right).toBeLessThanOrEqual(endBox!.left);
 
 			// The session_start circle: the run's earliest circle.
 			const circles = row.locator(`[data-session-id="${sessionId}"][data-event-id]`);
 			await expect.poll(async () => circles.count(), { timeout: 10_000 }).toBeGreaterThan(0);
-			const centres = await circles.evaluateAll((els) =>
-				els
-					.map((el) => {
-						const r = el.getBoundingClientRect();
-						return { id: el.getAttribute("data-event-id"), x: r.left + r.width / 2, y: r.top + r.height / 2 };
-					})
-					.sort((a, b) => a.x - b.x),
-			);
 			// The run's circles overlap each other at these widths; what
 			// matters is that no glyph covers the start circle's centre,
-			// so a click there reaches one of the run's circles.
-			const first = centres[0]!;
-			const hit = await page.evaluate(
-				([x, y]) => {
-					const el = document.elementFromPoint(x!, y!);
-					return {
-						glyph: el?.closest("[data-bracket-kind]") !== null && el?.closest("[data-bracket-kind]") !== undefined,
-						session: el?.closest("[data-event-id]")?.getAttribute("data-session-id") ?? null,
-					};
-				},
-				[first.x, first.y],
-			);
+			// so a click there reaches one of the run's circles. Measured
+			// and hit-tested in one synchronous pass, as the window moves.
+			const hit = await circles.evaluateAll((els) => {
+				const first = els
+					.map((el) => el.getBoundingClientRect())
+					.sort((a, b) => a.left - b.left)[0]!;
+				const el = document.elementFromPoint(
+					first.left + first.width / 2,
+					first.top + first.height / 2,
+				);
+				return {
+					glyph: el?.closest("[data-bracket-kind]") != null,
+					session: el?.closest("[data-event-id]")?.getAttribute("data-session-id") ?? null,
+				};
+			});
 			expect(hit.glyph).toBe(false);
 			expect(hit.session).toBe(sessionId);
 		});

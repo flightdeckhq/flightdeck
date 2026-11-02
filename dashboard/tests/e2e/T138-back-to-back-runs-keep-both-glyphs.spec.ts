@@ -50,9 +50,17 @@ test.describe("T138 — Back-to-back runs keep both glyphs", () => {
 		await expect(end).toHaveAttribute("data-run-lane", "0");
 		await expect(start).toHaveAttribute("data-run-lane", "0");
 
-		const endBox = (await end.boundingBox())!;
-		const startBox = (await start.boundingBox())!;
-		expect(endBox.x + endBox.width).toBeLessThanOrEqual(startBox.x);
+		// Both boxes in one synchronous read: the window advances a few
+		// pixels a second, so two separate reads can drift apart.
+		const [endBox, startBox] = await row.evaluate(
+			(el, ids) =>
+				ids.map((id) => {
+					const r = el.querySelector(`[data-testid="${id}"]`)!.getBoundingClientRect();
+					return { left: r.left, right: r.right };
+				}),
+			[`swimlane-run-bracket-end-${firstPrefix}`, `swimlane-run-bracket-start-${secondPrefix}`],
+		);
+		expect(endBox!.right).toBeLessThanOrEqual(startBox!.left);
 
 		for (const [glyph, prefix] of [
 			[end, firstPrefix],

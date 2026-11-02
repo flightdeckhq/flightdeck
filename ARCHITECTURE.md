@@ -3727,6 +3727,7 @@ always create a new numbered migration.
 | 000031 | `model_pricing.fast_multiplier`: per-model fast-mode price multiplier from the catalogue |
 | 000032 | `agents_client_type_check` and `sessions_client_type_check` swapped for the client type registry's list, added `NOT VALID` |
 | 000033 | Validates the two `client_type` constraints 000032 added, in its own step so the scan of `sessions` does not hold the swap's exclusive lock |
+| 000034 | `sessions_active_by_agent_idx`: partial index on `sessions (agent_id) WHERE state = 'active'`, so the agent state rollup the hub reads for every broadcast finds an agent's active runs in one small probe |
 
 ---
 
@@ -3960,9 +3961,14 @@ fully decoupled from REST paths.
    agent or the read fails; the dashboard takes the agent's badge from
    it, since a page holds only some of an agent's runs.
 
-The hub runs in O(1) per NOTIFY: PK lookups on `sessions` and
-`events.id`, and the agent rollup's indexed reads of the agent's
-sessions. When `GetSession` returns an error (e.g. session deleted
+Per NOTIFY the hub makes three indexed reads, none of which scans a
+session's events or an agent's run history: the session by primary key
+(with its effective-policy lookups), the event by primary key on
+`events.id`, and the agent rollup. The rollup's "any run active" check
+is one probe of `sessions_active_by_agent_idx`, a partial index that
+holds only active runs and so stays small, and its "newest run" read
+takes the first entry of the agent's `(agent_id, started_at DESC)`
+index. When `GetSession` returns an error (e.g. session deleted
 between notify and read), the hub logs a warning and continues rather
 than exiting the listener loop; a failed agent-state read only drops
 `agent_state`.
@@ -5198,6 +5204,28 @@ Every update's session state is also recorded in the store
 (`lastSessionChange`) before it is applied, whether or not the page
 holds the run, for the run drawer (see Session drawer).
 
+`load()` (first load, filter change, a new agent's first run, the
+reconnect catch-up) replaces `agents` and `flavors` with a snapshot the
+API read while the request was out. An update broadcast after that
+read can arrive before the response, and the worker sends each state
+change once, so the store keeps such updates: while a load is in
+flight, `applyUpdate` records the newest update per session, and the
+load re-applies them over its snapshot. Updates applied before the
+load started are already in its snapshot and are not re-applied. A
+re-applied run start of an agent the snapshot lacks (filtered out, or
+off the page) draws the run without starting another load.
+
+One load of a view (page, page size, type filter) runs at a time. A
+call made while that view's load is in flight does not start a second
+one: once the load lands, or fails (every API request times out after
+30 seconds), one more load runs for all such calls, so each caller
+still gets a snapshot read after its call (the new agent's row, what a
+reconnect missed). A stream of calls (pages mounting together, new
+agents arriving) therefore cannot keep every load from landing, and
+the first paint waits for one load, not the last of several. A load of
+another view (a type filter change) supersedes the one in flight,
+which drops its result when it lands.
+
 Broadcasts sent while the stream is down are lost. After the stream
 reconnects, `useFleet` waits `RESYNC_DELAY_MS` (two seconds, twice the
 first reconnect step, so an API that opens and drops the socket while
@@ -5324,12 +5352,15 @@ The drawer reads its run through its own fetch (`useSession`), and the
 fleet store's live stream tells it when to refetch: on an
 `mcp_server_attached` event of the run (the MCP SERVERS panel), when
 the store's `lastSessionChange` reports the run in a `state` or with
-an `ended_at` other than the drawer shows (the worker marking it stale
-or lost, a close, a revival; recorded even for a run the page does not
-hold), and when `resyncSeq` moves after the stream reconnected. A
-change the drawer already shows, or is already refetching for, does
-not refetch again. The state badge carries `data-testid="session-drawer-state"`
-and the state in `data-state`.
+an `ended_at` other than the drawer last asked for (the worker marking
+it stale or lost, a close, a revival; recorded even for a run the page
+does not hold), and when `resyncSeq` moves after the stream
+reconnected. "Last asked for" is the change the drawer last refetched
+for, or, before any since it opened the run, what it shows: a refetch
+reads the run after the change it was started for, so a quick revival
+that arrives while a stale refetch is in flight refetches again even
+though the screen still shows the run active. The state badge carries
+`data-testid="session-drawer-state"` and the state in `data-state`.
 
 Operator-facing prose calls a session a **run**; the drawer is the
 run drawer. It opens from five entry points: (1) an event circle on

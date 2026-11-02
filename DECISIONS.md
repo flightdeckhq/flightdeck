@@ -420,29 +420,26 @@ have published the end).
 ## D241 -- The worker notifies flightdeck_fleet of every session state change it makes
 
 **Date:** 2026-11-02
-**Decision:** the reconciler's stale and lost transitions, the orphan
-reaper's close and a parent revived by its child's event each send a
-`flightdeck_fleet` notification, one per session, in the existing
-`{session_id, event_type, event_id}` payload: empty `event_type` and
-`event_id` for a state-only change, the synthetic `session_end` for a
-reaped close, each sent once the change has committed. The hub
-re-reads the session and broadcasts it as it does after an event.
+**Decision:** the reconciler's stale and lost marks, the reaper's close
+and a parent revived by its child each notify `flightdeck_fleet` once
+committed, one session per payload (empty event fields for a state-only
+change, the synthetic `session_end` for a reaped close). Every hub
+broadcast also carries the agent's rolled-up `agent_state`, which the
+dashboard shows as the agent's badge.
 **Why:** only event writes notified, so a run that died with Fleet open
 stayed active in the browser until reload.
-**Rejected alternative:** the dashboard applying the worker's 2 and 30
-minute thresholds itself (a second copy of the worker's constants, and
-the status badge stays wrong until reload); one notification per batch
-listing ids (the hub reads one session per payload, and a large batch
-would need splitting under the 8000-byte limit).
+**Rejected alternative:** the dashboard applying the worker's thresholds
+(a second copy of its constants); one notification per batch (the hub
+reads one session per payload); rolling the badge up from the runs a
+page loaded (a page holds only an agent's newest runs and last day's).
 
 ## D242 -- Events page in (occurred_at, id) order; the keyset cursor names its row
 
 **Date:** 2026-11-02
-**Decision:** `GET /v1/events` orders rows by `occurred_at`, then `id`,
-both in the requested direction, and `GET /v1/sessions/:id` orders its
-events the same way. An optional `before_id`, the id of the row at the
-`before` cursor, returns the rows strictly before that row in this
-order; `before` alone keeps its meaning.
+**Decision:** `GET /v1/events` and `GET /v1/sessions/:id` order events
+by `occurred_at`, then `id`, in the requested direction. An optional
+`before_id`, the id of the row at the `before` cursor, returns the rows
+strictly before that row in this order; `before` alone is unchanged.
 **Why:** events often share a timestamp (whole-second client stamps,
 the reaper's `session_end` rows sharing one `NOW()`), so ordering by
 time alone let an offset page skip or repeat a tied row, and a

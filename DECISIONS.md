@@ -305,7 +305,38 @@ exporter's retry is safe.
 publishing despite a failed read (rows with no capture posture or
 context, and possible duplicates of plugin sessions).
 
-## D230 -- The dashboard names a session's source from `context.telemetry`; agent rows carry their latest session's telemetry
+## D230 -- A litellm text_completion stores its prompt verbatim in input
+
+**Date:** 2026-11-01
+**Decision:** under `capture_prompts`, a `litellm.text_completion` /
+`atext_completion` call's content stores the request's `prompt` (a
+string, a list of strings or token ids) verbatim in `input`; `messages`
+and `system` stay empty. A `litellm.responses` call is stored as D228
+stores an OpenAI Responses call.
+**Why:** the legacy completion API has no `messages`; `input` is the
+existing slot for a request's single non-chat input, stored as sent.
+**Rejected alternative:** a synthesized `[{"role": "user", "content":
+prompt}]` in `messages` (what litellm sends underneath, but not what the
+caller sent; content capture stores the caller's request); a new
+`prompt` field (a contract change no reader needs).
+
+## D231 -- Each litellm call is reported by the entry point the caller used
+
+**Date:** 2026-11-01
+**Decision:** a nested litellm call passes through only when the outer
+mark is set and its caller re-issues the caller's own call (the
+responses/completion bridges, the fallback loop): one report, with the
+model that answered. A failed fallback attempt gets no `llm_error`; a
+non-streamed one the provider billed before failing (a timeout, a
+`post_call_rules` rejection) goes unreported. DEGRADE drops a call's
+`fallbacks` and `context_window_fallback_dict`.
+**Why:** those re-issue the same call; other nested calls are billed on
+their own. The degrade target is the only model the policy allows; a
+provider's own server-side routing (OpenRouter `models`) is not dropped.
+**Rejected alternative:** a broad pass-through (hides billed calls);
+reporting each fallback attempt (the loop swallows a policy block).
+
+## D232 -- The dashboard names a session's source from `context.telemetry`; agent rows carry their latest session's telemetry
 
 **Date:** 2026-11-01
 **Decision:** a session reported over OTLP (`context.telemetry=otlp`)
@@ -322,7 +353,7 @@ context (the fleet's per-agent sessions omit context, so rows outside
 the paginated window would lose the pill); a pill on every source
 (noise on the default plugin and sensor rows).
 
-## D231 -- Custom directives are offered only to client types that run custom handlers
+## D233 -- Custom directives are offered only to client types that run custom handlers
 
 **Date:** 2026-11-01
 **Decision:** extends D214: the client type registry gains
@@ -338,11 +369,11 @@ dead end); a `client_type` string compare in the dashboard (a new
 client that runs handlers would need a code change, not a registry
 row).
 
-## D232 -- Fleet's agent-row controls are scoped to the agent and fanned out by the API
+## D234 -- Fleet's agent-row controls are scoped to the agent and fanned out by the API
 
 **Date:** 2026-11-02
-**Decision:** `POST /v1/directives` accepts `agent_id` for `shutdown`
-and `custom`. The API sends one row to each live run of the agent that
+**Decision:** extends D058: `POST /v1/directives` accepts `agent_id`
+for `shutdown` and `custom`. The API sends one row to each live run of the agent that
 can act on it, in one transaction, and returns the count in
 `X-Directive-Count`. Fleet's Stop All and its directive trigger use it.
 **Why:** a sidebar row is an agent. The dashboard holds only some of an
@@ -352,3 +383,18 @@ in the browser left live runs running while the dialog said "All".
 other agents' runs sharing the flavor); sending one directive per
 session the browser holds (misses runs it has not loaded); a new
 `/v1/agents/{id}/directives` route (a second way to create a directive).
+
+## D235 -- Directive fan-outs are all-or-nothing; a custom directive's session_id wins over its flavor
+
+**Date:** 2026-11-02
+**Decision:** extends D058: every fan-out, by agent or by flavor,
+inserts its rows in one transaction, so a failed insert answers 500 with
+nothing written. A `custom` directive that carries `session_id` goes to
+that session only; a `flavor` beside it only narrows the fingerprint
+check.
+**Why:** a 201 for a partial set left the operator believing every run
+was reached; the Directives page's "Specific run" sends both fields and
+was reaching every run of the flavor.
+**Rejected alternative:** logging a failed row and answering 201 with the
+rest (a silent partial stop); answering the `session_id` + `flavor` pair
+with 400 (breaks the Directives page's "Specific run").

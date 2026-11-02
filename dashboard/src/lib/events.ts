@@ -546,7 +546,11 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
         if (stream.ttft_ms != null) {
           rows.push(["TTFT", `${stream.ttft_ms.toLocaleString()}ms`]);
         }
-        rows.push(["Chunks", stream.chunk_count.toLocaleString()]);
+        // A client that reports no chunk statistics (Claude Code over
+        // OTLP sends TTFT and the outcome alone) gets no rows for them.
+        if (stream.chunk_count != null) {
+          rows.push(["Chunks", stream.chunk_count.toLocaleString()]);
+        }
         if (stream.inter_chunk_ms) {
           const ic = stream.inter_chunk_ms;
           rows.push([
@@ -554,12 +558,14 @@ export function getSummaryRows(event: AgentEvent): [string, string][] {
             `p50 ${ic.p50}ms · p95 ${ic.p95}ms · max ${ic.max}ms`,
           ]);
         }
-        rows.push([
-          "Stream outcome",
-          stream.final_outcome === "aborted" && stream.abort_reason
-            ? `aborted · ${stream.abort_reason}`
-            : stream.final_outcome,
-        ]);
+        if (stream.final_outcome) {
+          rows.push([
+            "Stream outcome",
+            stream.final_outcome === "aborted" && stream.abort_reason
+              ? `aborted · ${stream.abort_reason}`
+              : stream.final_outcome,
+          ]);
+        }
       }
       return rows;
     }

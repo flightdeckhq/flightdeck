@@ -88,13 +88,16 @@ export interface LLMErrorPayload {
 /** Per-chunk latency summary attached to a streaming ``post_call`` event.
  *  Populated only when the call was made with ``stream=true`` -- the
  *  field is omitted on non-streaming calls to keep the wire shape
- *  identical to the legacy behaviour. */
+ *  identical to the legacy behaviour. Only ``ttft_ms`` is always sent:
+ *  a Claude Code session reported over OTLP sends ``ttft_ms`` and
+ *  ``final_outcome`` alone, since Claude Code reports neither chunk
+ *  counts nor gaps, so every other field may be absent. */
 export interface StreamingMetrics {
   ttft_ms: number | null;
-  chunk_count: number;
-  inter_chunk_ms: { p50: number; p95: number; max: number } | null;
-  final_outcome: "completed" | "aborted";
-  abort_reason: string | null;
+  chunk_count?: number;
+  inter_chunk_ms?: { p50: number; p95: number; max: number } | null;
+  final_outcome?: "completed" | "aborted";
+  abort_reason?: string | null;
 }
 
 /** MCP transport used to talk to a server. ``stdio`` for local

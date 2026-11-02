@@ -3946,18 +3946,26 @@ fully decoupled from REST paths.
    parses the payload, fetches the session row via
    `store.GetSession(session_id)`, and, when `event_id` is set, fetches
    that event via `store.GetEvent(event_id)` — a PK lookup on `events.id`.
+   When the session has an agent, it also reads the agent's rolled-up
+   state via `store.GetAgentState(agent_id)`, the same rollup the agent
+   endpoints return.
 4. **WebSocket broadcast.** The hub wraps the session (+ event) into a
-   `fleetUpdate` envelope and broadcasts it to every WebSocket client
-   connected to `/api/v1/stream`. The envelope's `type` is
-   `session_start` or `session_end` for those event types and
-   `session_update` otherwise. A state-only change (no `event_id`)
-   broadcasts as `session_update` with the fresh session row and no
-   `last_event`.
+   `fleetUpdate` envelope `{type, session, last_event?, agent_state?}`
+   and broadcasts it to every WebSocket client connected to
+   `/api/v1/stream`. The envelope's `type` is `session_start` or
+   `session_end` for those event types and `session_update` otherwise.
+   A state-only change (no `event_id`) broadcasts as `session_update`
+   with the fresh session row and no `last_event`. `agent_state` is the
+   agent's state at broadcast time, omitted when the session has no
+   agent or the read fails; the dashboard takes the agent's badge from
+   it, since a page holds only some of an agent's runs.
 
-The hub runs in O(1) per NOTIFY: PK lookup on `events.id`. When
-`GetSession` returns an error (e.g. session deleted between notify and
-read), the hub logs a warning and continues rather than exiting the
-listener loop.
+The hub runs in O(1) per NOTIFY: PK lookups on `sessions` and
+`events.id`, and the agent rollup's indexed reads of the agent's
+sessions. When `GetSession` returns an error (e.g. session deleted
+between notify and read), the hub logs a warning and continues rather
+than exiting the listener loop; a failed agent-state read only drops
+`agent_state`.
 
 The session drawer renders events via `GET /v1/sessions/:id`, which calls
 `GetSessionEvents` once on drawer-open and returns the list ordered by
@@ -3973,6 +3981,11 @@ backward compatible (`json.Unmarshal` silently drops extras); removing or
 renaming fields is not. `event_type` and `event_id` are empty strings in
 a state-only change, which the hub reads as "the session changed, no
 event to fetch".
+
+The WebSocket envelope is the hub's `fleetUpdate` struct, read by
+`dashboard/src/store/fleet.ts` through the `FleetUpdate` type; the same
+rule applies to it: `agent_state` is optional on the wire, and a client
+that does not know it ignores it.
 
 ### Analytics endpoint
 
@@ -5155,22 +5168,42 @@ the swimlane row's copy of the session, the agent's `recent_sessions`
 entry, and the counts derived from them. A run's state comes only from
 the worker, which announces each reconciler and reaper transition (see
 Worker / Event Processing → Notify); the dashboard never applies the
-stale or lost thresholds itself. Only an update that carries an event a
-client sent counts as activity. A state-only update (no `last_event`)
-and the reaper's close (a `session_end` whose `close_reason` is
-`orphan_timeout`) change the run without refreshing the agent row's
-`last_seen_at`, moving it between activity buckets, or bumping its
-parent's cluster, and when the page does not hold the run they change
-nothing: they add no row and no run, so a run the reaper closes after a
-day of silence does not appear as if it had just ended. A row's
+stale or lost thresholds itself. Only a `session_start` or an update
+that carries an event a client sent counts as activity. A state-only
+update (no `last_event`) and the reaper's close (a `session_end` whose
+`close_reason` is `orphan_timeout`; ingestion accepts that value from
+any client, but only the worker's reaper sends it in practice) change
+the run without refreshing the agent row's `last_seen_at`, moving it
+between activity buckets, or bumping its parent's cluster. When the
+page does not hold the run, the swimlane takes nothing from them: they
+add no row and no run, so a run the reaper closes after a day of
+silence does not appear as if it had just ended, and their event
+reaches neither the live feed nor the store's `lastEvent`. A row's
 `last_seen_at` never moves back: it takes the later of its own value
-and the session's. The agent's rolled-up `state`, which the Agents
-table, agent drawer and per-agent modal badges show, is re-derived the
-way the API derives it: `active` when any of the agent's loaded runs is
-active, else the state of its most recently started loaded run. It
-therefore drops from `active` once the agent's last live run goes
-stale, lost or closed. The swimlane row badge reads the same session
-rows.
+and the session's.
+
+The agent's rolled-up `state`, which the Agents table, agent drawer and
+per-agent modal badges show, comes from the update's `agent_state`: the
+hub reads the agent's state with the same rollup the agent endpoints
+use (`active` when any of its runs is active, else the state of its
+most recently started run) and sends it with every broadcast. The page
+holds only an agent's newest runs and the last day's, so a state
+derived from those would miss a long-running run started earlier. The
+agent row the page holds takes the value even when the update's run is
+one the swimlane ignores; an update without `agent_state` leaves the
+badge as it was. The swimlane row badge reads the session rows the
+swimlane holds.
+
+Every update's session state is also recorded in the store
+(`lastSessionChange`) before it is applied, whether or not the page
+holds the run, for the run drawer (see Session drawer).
+
+Broadcasts sent while the stream is down are lost. After the stream
+reconnects, `useFleet` waits `RESYNC_DELAY_MS` (two seconds, twice the
+first reconnect step, so an API that opens and drops the socket while
+it restarts costs one refetch) and then `resync`s: it refetches the
+fleet as the first load does and bumps `resyncSeq`, which tells an open
+run drawer to refetch its run.
 
 `sessionStateCounts` is computed via `useMemo` from the live `flavors`
 array on every render and passed down to `SessionStateBar` as a prop.
@@ -5286,6 +5319,17 @@ only appears when the session runs custom directives (a sensor session
 that supports directives, see Observer-session class) and
 `flavorDirectives.length > 0` (filtered from the fleet store's
 `customDirectives` slice by the session's flavor).
+
+The drawer reads its run through its own fetch (`useSession`), and the
+fleet store's live stream tells it when to refetch: on an
+`mcp_server_attached` event of the run (the MCP SERVERS panel), when
+the store's `lastSessionChange` reports the run in a `state` or with
+an `ended_at` other than the drawer shows (the worker marking it stale
+or lost, a close, a revival; recorded even for a run the page does not
+hold), and when `resyncSeq` moves after the stream reconnected. A
+change the drawer already shows, or is already refetching for, does
+not refetch again. The state badge carries `data-testid="session-drawer-state"`
+and the state in `data-state`.
 
 Operator-facing prose calls a session a **run**; the drawer is the
 run drawer. It opens from five entry points: (1) an event circle on
@@ -5764,7 +5808,10 @@ A shared `SimpleIconSvg` helper renders simple-icons paths at viewBox
 session map, WebSocket stream, customDirectives slice.
 
 `dashboard/src/hooks/useWebSocket.ts` reconnects with exponential
-backoff: 1s → 2s → 4s, capped at 30s.
+backoff: 1s → 2s → 4s, capped at 30s, starting over after every
+successful open. When a socket opens after an earlier one was lost it
+calls the caller's `onReconnect`; `useFleet` uses it to refetch what
+the page missed while the stream was down (see Fleet view).
 
 ---
 

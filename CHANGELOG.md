@@ -82,9 +82,13 @@ All notable changes to Flightdeck are documented here.
   Fleet was open stayed active until the page was reloaded. Each change
   now reaches the page over the live stream, and a parent run revived by
   its sub-agent's activity shows active again. The Agents table's status
-  badge now drops from active when the agent's last live run goes stale,
-  lost or closed, including a run that ended normally, and such a change
-  no longer floats the agent up the Fleet as if it were new activity.
+  badge follows the agent's state as the API counts it over all its
+  runs, so it drops from active when the agent's last live run goes
+  stale, lost or closed, including a run that ended normally, and such a
+  change no longer floats the agent up the Fleet as if it were new
+  activity. An open run drawer's state badge follows too. When the live
+  stream drops (a network blip, an API restart), the page refetches once
+  it reconnects, so changes made while it was down are not lost.
 - **Paging through events no longer skips events that share a
   timestamp.** `GET /v1/events` and `GET /v1/sessions/:id` order events
   by time and then by id, so a page boundary that falls between two

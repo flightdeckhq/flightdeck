@@ -434,3 +434,20 @@ minute thresholds itself (a second copy of the worker's constants, and
 the status badge stays wrong until reload); one notification per batch
 listing ids (the hub reads one session per payload, and a large batch
 would need splitting under the 8000-byte limit).
+
+## D242 -- Events page in (occurred_at, id) order; the keyset cursor names its row
+
+**Date:** 2026-11-02
+**Decision:** `GET /v1/events` orders rows by `occurred_at`, then `id`,
+both in the requested direction, and `GET /v1/sessions/:id` orders its
+events the same way. An optional `before_id`, the id of the row at the
+`before` cursor, returns the rows strictly before that row in this
+order; `before` alone keeps its meaning.
+**Why:** events often share a timestamp (whole-second client stamps,
+the reaper's `session_end` rows sharing one `NOW()`), so ordering by
+time alone let an offset page skip or repeat a tied row, and a
+timestamp cursor dropped every row tied with the cursor.
+**Rejected alternative:** an opaque cursor token (a second paging
+contract, and offset pages still need the tiebreaker); paging by a new
+sequence or UUIDv7 column (a migration and backfill of every event, and
+it orders by arrival, not by the event time the views sort by).

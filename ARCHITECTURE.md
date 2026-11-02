@@ -1979,7 +1979,9 @@ carries a display label and the defaults below:
   envelope. A session's own `context.supports_directives` wins; the
   default applies when a `session_start` omits it. Clients that only
   observe default to `false`, and the dashboard hides their Stop
-  controls (see Observer-session class).
+  controls (see Observer-session class). The API applies the same rule
+  to pick the runs a directive addressed to an agent reaches (see
+  `directives`).
 - **Runs custom directives** (`runs_custom_directives`). Whether the
   client runs custom directive handlers (the sensor's `@directive`
   functions). A client can act on stop and budget directives without
@@ -1987,7 +1989,8 @@ carries a display label and the defaults below:
   interceptor answer a custom directive with an error
   `directive_result`. The dashboard offers custom directives only on a
   session that supports directives and whose type runs them (see
-  Observer-session class); only the dashboard reads this field.
+  Observer-session class), and the API sends a custom directive
+  addressed to an agent only to such runs.
 - **`billing_mode` default.** The mode the worker stores for an LLM call
   that arrives without one (see Estimated cost). It follows how the
   client is normally paid for: Claude Code, Codex CLI (ChatGPT login),
@@ -2040,7 +2043,10 @@ parity test pins every copy to the source: the ingestion validator; the
 API's `client_type` filter validators and their Swagger text; the
 worker's billing default (`workers/internal/billing`) and its tool-error
 gate (`workers/internal/processor/event.go`); the cost query's default
-(`api/internal/store/pricing.go`); the dashboard's `CLIENT_TYPE_META`
+(`api/internal/store/pricing.go`); the API's directive targeting (the
+types whose `supports_directives` default is true and the types that
+run custom directives, `api/internal/store/directives.go`); the
+dashboard's `CLIENT_TYPE_META`
 (label, pill, facet and directive defaults); and the `CHECK` constraints
 `agents_client_type_check` and `sessions_client_type_check`, which an
 integration test reads from `pg_constraint`. The test fixtures' pairing
@@ -3393,7 +3399,16 @@ dashboard's rule). A `custom` directive also needs the client type's
 `runs_custom_directives` and a session flavor that registered the
 directive's fingerprint. All rows of one request are inserted in one
 transaction, and the `X-Directive-Count` response header carries how
-many were created (1 for a single session).
+many were created (1 for a single session). The CORS middleware lists
+the header in `Access-Control-Expose-Headers`, so a dashboard served
+from another origin can read it.
+
+A `custom` request names its targets one of three ways: `session_id`
+for one session (a `flavor` beside it only narrows the fingerprint
+check), `flavor` for every live session of the flavor, or `agent_id`
+for the agent's runs as above, which a `flavor` narrows to the runs of
+that flavor. A request that reaches no session answers 404, and a
+fingerprint no flavor registered (or not the given one) answers 422.
 
 ### `custom_directives`
 
@@ -5355,16 +5370,20 @@ failures are swallowed.
 ### Directives page
 
 `dashboard/src/pages/Directives.tsx` — dedicated page. Header + flavor
-`Select` + search input. Renders one `DirectiveCard` per known custom
-directive (loaded from `GET /v1/directives/custom`).
+`Select` + search input. Renders one card per known custom directive
+(loaded from `GET /v1/directives/custom`), with its registration
+details and a trigger that targets every live run of the directive's
+flavor or one run picked by id.
 
-`DirectiveCard` is shared with the FleetPanel flavor-row dialog and the
-SessionDrawer Directives tab. Renders the directive name, description,
-parameter inputs (string / int / float / bool / select via Radix
-Select), and a Run button. The button targets either a single session
-(`sessionId` prop) or every active+idle session of a flavor (`flavor`
-prop). Mutually exclusive: the session drawer never passes `flavor` and
-the FleetPanel never passes `sessionId`.
+The shared `DirectiveCard` (`components/directives/DirectiveCard.tsx`)
+serves the Fleet sidebar row's dialog and the SessionDrawer Directives
+tab. It renders the directive name, description, parameter inputs
+(string / int / float / bool / select via Radix Select), and a Run
+button. The button targets a single session (`sessionId`, the run
+drawer) or the live runs of an agent (`agentId`, the Fleet row; the
+request carries the directive's own flavor, so only the agent's runs of
+the flavor that registered it are reached). After an agent-wide send it
+names how many runs the directive reached.
 
 ### Settings page
 

@@ -33,6 +33,12 @@ All notable changes to Flightdeck are documented here.
   a budget block denies the next tool call and blocks later prompts, and
   a warn or degrade threshold shows the developer a message. Off by
   default; with it off the gate costs a few milliseconds per tool call.
+- **A directive can address every live run of an agent.**
+  `POST /v1/directives` accepts `agent_id` for `shutdown` and `custom`:
+  the API sends one directive to each active or idle run of the agent
+  that can act on it (for `custom`, a run whose flavor registered the
+  directive; an optional `flavor` narrows it), in one transaction. Every
+  201 carries `X-Directive-Count`, how many runs the request reached.
 - **A model call shows the reasoning effort it ran at.** The event
   drawer lists Effort (Claude Code's `low` to `max`) beside the serving
   details. Claude Code calls also record their API request id and the
@@ -66,14 +72,22 @@ All notable changes to Flightdeck are documented here.
   answer a custom directive with an error. It now needs a session whose
   client type runs custom handlers (a new `runs_custom_directives`
   field in the client type registry; only the sensor today).
-- **The Fleet sidebar's directive trigger and Stop All work again.**
-  Since sidebar rows became one per agent, the directive trigger looked
-  directives up by the agent's id and never showed, and Stop All sent a
-  flavor-wide stop keyed by that id, which the API answered with "no
-  active sessions found for flavor". The trigger now lists the
-  directives registered under the flavors the agent's sessions run as,
-  and Stop All sends a stop to each live session of the agent that can
-  act on one.
+- **The Fleet sidebar's directive trigger and Stop All work again, and
+  reach only that agent.** Since sidebar rows became one per agent, the
+  directive trigger looked directives up by the agent's id and never
+  showed, and Stop All sent a flavor-wide stop keyed by that id, which
+  the API answered with "no active sessions found for flavor". The
+  trigger now lists the directives registered under the flavors the
+  agent's sessions run as. Both controls address the agent: Stop All
+  stops every live run of it that can take a stop, including runs the
+  page has not loaded, and says how many it reached; a directive sent
+  from the row reaches that agent's runs and never another agent's that
+  share the flavor.
+- **The Directives page's "Specific run" target reaches only that run.**
+  The page sent the run's id with the directive's flavor, and the API
+  sent the directive to every live run of the flavor. A `custom`
+  directive that names a session now goes to that session alone; a
+  flavor beside it only narrows the fingerprint check.
 - **Streamed OpenAI and Anthropic calls store their response and report
   their tool calls.** With `capture_prompts` on, `create(stream=True)`
   stored the request but not the streamed text, and a `responses.create`

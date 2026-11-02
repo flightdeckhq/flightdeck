@@ -182,8 +182,11 @@ environment whenever one is set, so its calls are billed as `metered`.
 **`--bare`.** `claude --bare` runs no hooks at all, including those of a
 plugin loaded with `--plugin-dir` (checked on Claude Code 2.1.316), so
 the plugin reports nothing for a bare run. Leave `--bare` off a run you
-want in Flightdeck. OpenTelemetry ingest, which needs no hooks, is on the
-roadmap ([#184](https://github.com/flightdeckhq/flightdeck/issues/184)).
+want the plugin to report, or report the run through Claude Code's own
+OpenTelemetry export, which needs no hooks: see
+[Claude Code over OpenTelemetry](../README.md#claude-code-over-opentelemetry).
+The same export covers CI jobs and cloud sessions that do not install the
+plugin.
 
 **GitHub Action.** [`anthropics/claude-code-action`](https://github.com/anthropics/claude-code-action)
 installs plugins from a marketplace with its `plugins` and

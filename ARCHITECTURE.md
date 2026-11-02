@@ -2201,9 +2201,12 @@ response is ignored.
 registry: a closed list, so ingestion still rejects anything outside it,
 that holds every client Flightdeck integrates with, including those
 whose emitter is still planned, so adding an emitter never needs
-a schema change. The Claude Code plugin sends `claude_code` and the
-Python sensor sends `flightdeck_sensor`; the other values are
-reserved for the planned integrations ([#182](https://github.com/flightdeckhq/flightdeck/issues/182), [#184](https://github.com/flightdeckhq/flightdeck/issues/184),
+a schema change. The Claude Code plugin sends `claude_code`, the
+Python sensor sends `flightdeck_sensor` and its Claude Agent SDK
+interceptor `claude_agent_sdk`, and the OTLP receiver stamps
+`claude_code` on Claude Code's own telemetry (OTLP sources, below); the
+other values are reserved for the planned integrations
+([#184](https://github.com/flightdeckhq/flightdeck/issues/184),
 [#186](https://github.com/flightdeckhq/flightdeck/issues/186)). Each value
 carries a display label and the defaults below:
 
@@ -2265,10 +2268,12 @@ present in the data, so reserved values do not appear until a client
 sends them.
 
 **OTLP sources.** The OTLP receiver stamps the registry value of the
-tool that produced the telemetry when it recognises it (Claude Code,
-Codex CLI, Gemini CLI and GitHub Copilot export OpenTelemetry under
-their own `service.name`), so their sessions keep that tool's defaults
-and `agent_id`; `otlp` is for sources no registry entry names.
+tool that produced the telemetry, so its sessions keep that tool's
+defaults and `agent_id`: Claude Code, the one source it maps (see OTLP
+ingest > Dialects), lands as `claude_code`. Codex CLI, Gemini CLI and
+GitHub Copilot export OpenTelemetry under their own `service.name` too;
+their records are accepted and counted as rejected. `otlp` is reserved
+for a source no registry entry names.
 
 **Claude Agent SDK and Claude Code.** The Agent SDK runs the Claude Code
 CLI as a subprocess, and the sensor's Agent SDK interceptor reports each

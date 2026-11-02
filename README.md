@@ -65,6 +65,8 @@ To use a local checkout instead of the marketplace: `claude --plugin-dir /path/t
 
 Marketplace installs do not update themselves: after a Flightdeck release run `claude plugin update flightdeck@flightdeck-plugins` (or enable auto-update for the `flightdeck-plugins` marketplace under `/plugin`).
 
+For runs the plugin does not report, such as `claude --bare`, CI jobs and cloud sessions without the plugin, and the TypeScript Agent SDK, point Claude Code's own OpenTelemetry export at Flightdeck instead: see [Claude Code over OpenTelemetry](#claude-code-over-opentelemetry).
+
 ### Production agents
 
 Install the sensor and point your agent at it:
@@ -157,7 +159,67 @@ The plugin defaults to `http://localhost:4000` + `tok_dev` for the local-dev pat
 
 Sessions carry `flavor=claude-code`, `agent_type=coding`, and `client_type=claude_code`. By default the plugin only observes and the Stop Agent button is hidden for these sessions; with its `enforcement` option on, a stop or a token budget denies the session's next tool call and blocks its prompts (see [plugin/README.md](plugin/README.md#enforcement-opt-in)). Raw file bodies written by `Write` / `Edit` are never forwarded; tool inputs go through a sanitised whitelist.
 
-`client_type` names the client that produced a session. Flightdeck accepts nine values (`claude_code`, `flightdeck_sensor`, `claude_agent_sdk`, `codex`, `copilot`, `opencode`, `gemini_cli`, `cursor`, `otlp`), each with a display label, an expected agent type, a billing-mode default and whether the client can act on directives; see "Client type registry" in [ARCHITECTURE.md](ARCHITECTURE.md). The plugin sends `claude_code`, the sensor sends `flightdeck_sensor`, and the sensor's Claude Agent SDK interceptor sends `claude_agent_sdk`; the other values are reserved for the integrations on the [Roadmap](#roadmap).
+`client_type` names the client that produced a session. Flightdeck accepts nine values (`claude_code`, `flightdeck_sensor`, `claude_agent_sdk`, `codex`, `copilot`, `opencode`, `gemini_cli`, `cursor`, `otlp`), each with a display label, an expected agent type, a billing-mode default and whether the client can act on directives; see "Client type registry" in [ARCHITECTURE.md](ARCHITECTURE.md). The plugin sends `claude_code`, the sensor sends `flightdeck_sensor`, and the sensor's Claude Agent SDK interceptor sends `claude_agent_sdk`. A session reported over OpenTelemetry takes the type of the tool that produced it, so Claude Code's own telemetry, the one source the receiver maps, also lands as `claude_code` (see [Claude Code over OpenTelemetry](#claude-code-over-opentelemetry)). The other values are reserved for the integrations on the [Roadmap](#roadmap), `otlp` for an OpenTelemetry source no other value names.
+
+### Claude Code over OpenTelemetry
+
+Claude Code exports OpenTelemetry of its own, and Flightdeck's ingestion API receives it. This reaches runs the plugin does not see: `claude --bare` (it runs no hooks, a plugin's included), CI jobs and cloud sessions without the plugin, the TypeScript Agent SDK (the sensor covers the Python one), and any Claude Code whose telemetry is pointed at Flightdeck. Set these in the environment Claude Code starts in:
+
+```bash
+export CLAUDE_CODE_ENABLE_TELEMETRY=1
+export OTEL_LOGS_EXPORTER=otlp
+export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf
+export OTEL_EXPORTER_OTLP_ENDPOINT=https://flightdeck.example.com/ingest
+export OTEL_EXPORTER_OTLP_HEADERS="Authorization=Bearer ftd_..."
+export OTEL_LOGS_EXPORT_INTERVAL=1000
+export OTEL_LOG_TOOL_DETAILS=1
+export OTEL_RESOURCE_ATTRIBUTES="host.name=$(hostname)"
+```
+
+- `CLAUDE_CODE_ENABLE_TELEMETRY=1` turns Claude Code's export on.
+- `OTEL_LOGS_EXPORTER=otlp`: every event Flightdeck stores comes from Claude Code's log events (prompts, model calls with tokens, TTFT and Claude Code's own cost, tool calls, denied tools, API errors, sub-agents). Leave `OTEL_METRICS_EXPORTER` and `OTEL_TRACES_EXPORTER` unset: the receiver accepts metrics and traces and counts them in its response, but stores neither.
+- `OTEL_EXPORTER_OTLP_PROTOCOL`: Claude Code has no default. `http/protobuf` and `http/json` both work, gzip-compressed or not; `grpc` does not, since the receiver speaks OTLP over HTTP only.
+- `OTEL_EXPORTER_OTLP_ENDPOINT`: the exporter appends `/v1/logs`, which the edge proxy routes to ingestion. On the dev stack: `http://localhost:4000/ingest`.
+- `OTEL_EXPORTER_OTLP_HEADERS`: a Flightdeck token, the kind the sensor and the plugin use (`tok_dev` on the dev stack).
+- `OTEL_LOGS_EXPORT_INTERVAL=1000`: Claude Code sends logs in batches every 5 seconds and flushes at exit under a short timeout, so a `claude -p` or Agent SDK run that is killed, or slow to flush, can lose its last batch. A 1-second interval narrows that window; an interactive session can keep the default.
+- `OTEL_LOG_TOOL_DETAILS=1` names an MCP tool call by server and tool (without it the call lands as a tool named `mcp_tool`) and a custom sub-agent by its name (otherwise `custom`). It also makes Claude Code send tool inputs, which Flightdeck drops unless capture is on (below).
+- `OTEL_RESOURCE_ATTRIBUTES`: Claude Code sends no host name, so without `host.name` all of a user's machines are one agent, `<user>@unknown`. The same comma-separated list takes Flightdeck's own keys: `flightdeck.flavor` (default `claude-code`), `flightdeck.billing_mode` and `flightdeck.capture_prompts` (below). The billing mode defaults to `subscription`; set `metered` for a run that pays per token, so its cost counts toward estimated cost. A `claude --bare` run always does: it signs in only with `ANTHROPIC_API_KEY`, an `apiKeyHelper` or a cloud provider's credentials, never a claude.ai login.
+
+What the dashboard shows for such a session:
+
+- A `claude_code` session (`agent_type=coding`) with an `OTEL` pill beside its Claude Code pill, and "via OpenTelemetry" in its run drawer. Its agent is `<user>@<host>`, the user being the signed-in `user.email` (personal data, stored on the agent), else the account id, else `unknown`.
+- It observes only: no Stop, no Stop All and no custom directive reaches it.
+- Content stays off unless the exporter asks for it twice: `flightdeck.capture_prompts=true` in `OTEL_RESOURCE_ATTRIBUTES` turns capture on for the session, and Claude Code then sends the prompt text only with `OTEL_LOG_USER_PROMPTS=1` and tool inputs only with `OTEL_LOG_TOOL_DETAILS=1`. With capture off, Flightdeck stores names, ids, counts, durations and whether each call succeeded. No server setting overrides this: whoever sets the environment decides. `OTEL_LOG_USER_PROMPTS=1` also makes Claude Code send response text, which Flightdeck does not store; `OTEL_LOG_ASSISTANT_RESPONSES=0` keeps it off the wire.
+- Running the plugin as well is safe. When the plugin, or the sensor's Agent SDK interceptor, already reports the Claude Code session, its OpenTelemetry records are dropped (counted as rejected in the export response), so nothing is counted twice. The check runs on the session's first export, so a session whose telemetry arrives before the plugin's first event is reported by both.
+- Claude Code sends no event when a session ends. The session goes `stale` after 2 minutes without a record and `lost` after 30, and the workers close it 24 hours after its last record by default (`FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`, `close_reason=orphan_timeout`). A record that arrives later reopens it.
+- Each sub-agent is a child session, labeled with its type as `agent_role`, that closes when Claude Code reports the sub-agent completed; one resumed with `SendMessage` reopens its child session. Claude Code 2.1.310 and later tags a sub-agent's log events, so `CLAUDE_CODE_ENHANCED_TELEMETRY_BETA` is not needed: it adds traces, which Flightdeck does not store.
+
+If no session appears, start Claude Code with `--debug-file <path>`: the log names the exporter's failures in `[3P telemetry]` lines. Under the Agent SDK, `CLAUDE_CODE_OTEL_DIAG_STDERR=1` writes them to the SDK's stderr.
+
+Rolling it out:
+
+- **Across an organization**, put the variables in the `env` block of Claude Code's managed settings (a managed settings file or server-managed settings). Managed settings lock the destination: Claude Code 2.1.217 and later removes a developer's own endpoint variables. Claude Code ignores these variables in a repository's `.claude/settings.json`, and no shell expands a settings file, so leave `host.name` to each machine's environment. A token made for the rollout can be revoked on its own. Ingestion allows each token 1000 events a minute (`FLIGHTDECK_RATE_LIMIT_PER_MINUTE`, counted per replica), shared with the sensor and the plugin, so a large rollout may need a higher budget or a token per team.
+- **In GitHub Actions**, `anthropics/claude-code-action` passes the step's `env` to Claude Code (its `settings` input, which it writes to the runner's user settings, works too):
+
+  ```yaml
+  - uses: anthropics/claude-code-action@v1
+    env:
+      CLAUDE_CODE_ENABLE_TELEMETRY: "1"
+      OTEL_LOGS_EXPORTER: otlp
+      OTEL_EXPORTER_OTLP_PROTOCOL: http/protobuf
+      OTEL_EXPORTER_OTLP_ENDPOINT: https://flightdeck.example.com/ingest
+      OTEL_EXPORTER_OTLP_HEADERS: Authorization=Bearer ${{ secrets.FLIGHTDECK_TOKEN }}
+      OTEL_LOGS_EXPORT_INTERVAL: "1000"
+      OTEL_RESOURCE_ATTRIBUTES: host.name=github-actions,flightdeck.billing_mode=metered
+    with:
+      anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+  ```
+
+  The run pays with an API key, hence `metered`; leave it out for `claude_code_oauth_token`. The runner must reach your Flightdeck deployment.
+- **Cloud sessions** (Claude Code on the web) read the variables from your organization's server-managed settings, which reach every cloud session except Claude Tag channel sessions. Claude Code's documentation advises against putting a credential such as the token in a cloud environment's own variables, since anyone who uses the environment can read them, and those variables are the only route to Claude Tag sessions. The session's network must reach your Flightdeck host: add its domain to the environment's allowed domains if its network access level does not cover it.
+- **The TypeScript Agent SDK** runs the Claude Code CLI, which does the exporting: set the variables in the process environment, or in `options.env`, which replaces the inherited environment, so spread `process.env` into it.
+
+A proxy in front of ingestion must accept 4 MiB request bodies on `/ingest/`; the bundled nginx does, and so does the Helm chart's `values.prod.yaml` for ingress-nginx.
 
 ### Sub-agent observability
 

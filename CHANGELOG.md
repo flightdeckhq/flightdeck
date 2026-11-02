@@ -29,6 +29,11 @@ All notable changes to Flightdeck are documented here.
   Such a session offers no Stop and no custom-directive triggers. The
   agent rows of `GET /v1/fleet`, `GET /v1/agents` and the agent hits of
   `GET /v1/search` carry the latest session's `telemetry`.
+- **The README shows how to send Claude Code's OpenTelemetry to
+  Flightdeck**: the environment to set and what each variable does, what
+  such a session shows, and how to roll it out through managed settings,
+  GitHub Actions, cloud sessions and the TypeScript Agent SDK. The plugin
+  README points `claude --bare` runs at it.
 - **Claude Code sessions can be stopped and held to token budgets.** With
   the plugin option `enforcement` on (or `FLIGHTDECK_ENFORCEMENT=1`), the
   dashboard's Stop button and token policies reach Claude Code: a stop or

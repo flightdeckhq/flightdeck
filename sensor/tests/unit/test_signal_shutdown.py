@@ -24,7 +24,13 @@ from flightdeck_sensor.core import session as session_module
 from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import Directive, DirectiveAction, SensorConfig
 from flightdeck_sensor.transport import client as client_module
-from flightdeck_sensor.transport.client import ControlPlaneClient, EventQueue, _EventStore
+from flightdeck_sensor.transport.client import (
+    SHUTDOWN_TIMEOUT_SECS,
+    ControlPlaneClient,
+    DrainShutdown,
+    EventQueue,
+    _EventStore,
+)
 from tests.unit._child_process import CaptureServer, child_env, finish, read_until, start_child
 
 if TYPE_CHECKING:
@@ -47,6 +53,10 @@ SECOND_SIGNAL_GAP_SECS = 0.5
 
 # Upper bound for in-process waits on the drain thread.
 DRAIN_WAIT_SECS = 5.0
+
+# How long the end() another thread runs takes, in the test where a signal
+# waits for it.
+OTHER_END_SECS = 0.3
 
 
 def _start(capture: CaptureServer, mode: str, *args: str) -> tuple[subprocess.Popen[str], str]:
@@ -391,32 +401,69 @@ def test_end_waits_for_the_shutdown_a_signal_started(monkeypatch: pytest.MonkeyP
 
 def test_a_second_signal_is_passed_on_without_waiting(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(session_module, "_SIGNAL_SHUTDOWN_WAIT_SECS", 0.1)
+    waits: list[float] = []
+    original_wait = DrainShutdown.wait
+
+    def recording_wait(self: DrainShutdown, timeout: float = SHUTDOWN_TIMEOUT_SECS) -> bool:
+        waits.append(timeout)
+        return original_wait(self, timeout)
+
+    monkeypatch.setattr(DrainShutdown, "wait", recording_wait)
     session, _client_mock = _session()
     passed_on: list[int] = []
     with session._lock:
         session._on_signal(signal.SIGTERM, None, lambda s, _f: passed_on.append(s))
-        started = time.monotonic()
         session._on_signal(signal.SIGTERM, None, lambda s, _f: passed_on.append(s))
-        assert time.monotonic() - started < 0.1
+    # Only the first signal waited for the drain thread; the second was
+    # passed on at once.
+    assert waits == [0.1]
     assert passed_on == [signal.SIGTERM, signal.SIGTERM]
     session.end()
 
 
-def test_a_signal_that_interrupts_end_is_passed_on_at_once() -> None:
+def test_a_signal_that_interrupts_end_is_passed_on_at_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    waited: list[float] = []
+
+    def recording_wait_until(done: Any, timeout: float) -> bool:
+        waited.append(timeout)
+        return bool(done())
+
+    monkeypatch.setattr(session_module, "_wait_until", recording_wait_until)
     session, _client_mock = _session()
     # end() claimed the session on this thread and has not finished: the
     # signal interrupted it, so waiting for it would wait for itself.
     assert session._end_claim.acquire(blocking=False)
     session._ending_thread = threading.get_ident()
     passed_on: list[int] = []
-    started = time.monotonic()
     session._on_signal(signal.SIGINT, None, lambda s, _f: passed_on.append(s))
-    assert time.monotonic() - started < 0.1
+    assert waited == []
     assert passed_on == [signal.SIGINT]
     session.event_queue.close()
 
 
 def test_a_signal_waits_for_end_running_on_another_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # A bound far above the end's own duration, so returning well before
+    # it means the handler stopped waiting because end() finished.
+    monkeypatch.setattr(session_module, "_SIGNAL_SHUTDOWN_WAIT_SECS", DRAIN_WAIT_SECS * 6)
+    session, _client_mock = _session()
+    assert session._end_claim.acquire(blocking=False)
+    session._ending_thread = threading.get_ident() + 1
+    passed_on: list[int] = []
+    end_finishes = threading.Timer(OTHER_END_SECS, session._ended.set)
+    started = time.monotonic()
+    end_finishes.start()
+    session._on_signal(signal.SIGTERM, None, lambda s, _f: passed_on.append(s))
+    elapsed = time.monotonic() - started
+    assert OTHER_END_SECS <= elapsed < DRAIN_WAIT_SECS
+    assert passed_on == [signal.SIGTERM]
+    session.event_queue.close()
+
+
+def test_a_signal_stops_waiting_for_an_end_that_never_finishes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(session_module, "_SIGNAL_SHUTDOWN_WAIT_SECS", 0.2)
@@ -426,14 +473,10 @@ def test_a_signal_waits_for_end_running_on_another_thread(
     passed_on: list[int] = []
     started = time.monotonic()
     session._on_signal(signal.SIGTERM, None, lambda s, _f: passed_on.append(s))
-    # end() on the other thread never finished here, so the handler waited
-    # its full bound before passing the signal on.
+    # end() on the other thread never finished, so the handler waited its
+    # full bound, then passed the signal on.
     assert time.monotonic() - started >= 0.2
     assert passed_on == [signal.SIGTERM]
-    session._ended.set()
-    started = time.monotonic()
-    session._on_signal(signal.SIGTERM, None, lambda s, _f: passed_on.append(s))
-    assert time.monotonic() - started < 0.1
     session.event_queue.close()
 
 

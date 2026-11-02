@@ -417,3 +417,21 @@ coordinator's child, and a resumed child stayed closed, uncounted.
 closed-session rule; random-id re-sends by plugins before 0.7.1 would
 count twice); a child keyed on Claude Code's session id (contradicts
 D190); a new child per resume.
+
+## D237 -- A Claude Code tool event's id comes from its tool_use_id; a failed one is rebuilt from the transcript
+
+**Date:** 2026-11-02
+**Decision:** extends D236. The plugin's `tool_call` and `mcp_tool_call`
+carry the id
+`uuid5(NAMESPACE_FLIGHTDECK, "flightdeck://claude-code/tool_call/<tool_use_id>")`.
+The hook records the event as owed before its POST,
+with only what the hook alone knows; after a failed POST a later flush
+of the same session rebuilds it from that record and the transcript's
+`tool_use` / `tool_result`, and the worker stores it once (D215).
+**Why:** a tool event was sent once with a server-made id, so a failed
+POST lost it for good (5 in the forensic conversation) and a re-send
+would have stored it twice.
+**Rejected alternative:** keeping the hook's payload on disk (puts tool
+output in the state directory, which holds no content); rebuilding
+every transcript tool use (reports uses no hook reports, such as denied
+permissions, and races the hook for the first copy).

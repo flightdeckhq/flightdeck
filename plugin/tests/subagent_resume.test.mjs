@@ -25,61 +25,19 @@ import {
   utimesSync,
   writeFileSync,
 } from "node:fs";
-import { createServer } from "node:http";
 import { join } from "node:path";
 
 import { postCallEventId } from "../hooks/scripts/claude_code/post_call.mjs";
 import { _subagentChildSessionId } from "../hooks/scripts/claude_code/subagent.mjs";
 import { markerKeyFor } from "../hooks/scripts/core/state.mjs";
-import { assertIngestionContract, hookEnv, isIngestPost, pollUntil, privateTmp, runScript } from "./contract_harness.mjs";
-
-/**
- * A capture server that answers chosen requests with an error status:
- * ``fail(predicate, {status, times})`` answers the next ``times``
- * matching POSTs (Infinity for all of them) with ``status``. Every other
- * POST is answered 200. ``accepted()`` holds the bodies answered 200, in
- * arrival order; ``attempts()`` every body.
- */
-function startFaultyServer() {
-  const accepted = [];
-  const attempts = [];
-  const faults = [];
-  const server = createServer((req, res) => {
-    let body = "";
-    req.setEncoding("utf8");
-    req.on("data", (chunk) => (body += chunk));
-    req.on("end", () => {
-      if (!isIngestPost(req)) {
-        res.writeHead(404, { "Content-Type": "application/json" });
-        res.end("{}");
-        return;
-      }
-      const parsed = JSON.parse(body);
-      attempts.push(parsed);
-      const fault = faults.find((f) => f.times > 0 && f.predicate(parsed));
-      if (fault) {
-        fault.times -= 1;
-        res.writeHead(fault.status, { "Content-Type": "application/json" });
-        res.end('{"error":"injected"}');
-        return;
-      }
-      accepted.push(parsed);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end('{"status":"ok","attached":false}');
-    });
-  });
-  return new Promise((resolve) => {
-    server.listen(0, "127.0.0.1", () =>
-      resolve({
-        server,
-        port: server.address().port,
-        accepted: () => accepted,
-        attempts: () => attempts,
-        fail: (predicate, { status = 502, times = 1 } = {}) => faults.push({ predicate, status, times }),
-      }),
-    );
-  });
-}
+import {
+  assertIngestionContract,
+  hookEnv,
+  pollUntil,
+  privateTmp,
+  runScript,
+  startFaultyServer,
+} from "./contract_harness.mjs";
 
 const now = () => new Date().toISOString();
 

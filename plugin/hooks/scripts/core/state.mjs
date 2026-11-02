@@ -95,6 +95,7 @@ export function touchSessionFiles(markerKey, sessionId, now = Date.now()) {
       `model-switch-${sessionId}.json`,
       `endpoint-${sessionId}.json`,
       `subagent-ends-${sessionId}.json`,
+      `tool-calls-${sessionId}.json`,
       `${MCP_POLICY_CACHE_PREFIX}${sessionId}.json`,
     );
   }
@@ -653,35 +654,74 @@ function updateJsonObject(path, update, { removeWhenEmpty = false } = {}) {
 }
 
 // ---------------------------------------------------------------------
-// Owed subagent ends. SubagentStop records the child's session_end
-// before its first POST and drops it once the server has accepted the
-// end; an entry left behind (a failed POST, a hook killed mid-way) is
-// sent by the next hook of the outer session that flushes a transcript,
-// or by the SessionEnd worker. One file per outer session, absent when
-// nothing is owed. Each entry names the process working on it (``pid``,
-// null once released), and is taken over like a turn's claim: only from
-// a process that is gone.
+// Owed work. A hook records what it is about to send before its first
+// POST and drops the record once the server has answered; a record left
+// behind (a failed POST, a hook killed mid-way) is sent by a later hook
+// of the same session, or by the SessionEnd worker. Two kinds:
+//   * subagent ends (``subagent-ends-<outer session>.json``, keyed by
+//     child session id): SubagentStop's child session_end, owed until the
+//     child's turns are sent and the end is accepted;
+//   * tool events (``tool-calls-<session>.json``, keyed by tool_use_id):
+//     a tool_call or mcp_tool_call until the server has answered, rebuilt
+//     from the record and the transcript after a failed POST.
+// One file per session and kind, absent when nothing is owed. Each record
+// names the process working on it (``pid``, null once released) and is
+// taken over like a turn's claim: only from a process that is gone.
 // ---------------------------------------------------------------------
 
-function owedEndsPath(outerSessionId) {
-  return join(stateDir(), `subagent-ends-${outerSessionId}.json`);
+const OWED_SUBAGENT_ENDS = "subagent-ends";
+const OWED_TOOL_CALLS = "tool-calls";
+
+function owedPath(kind, sessionId) {
+  return join(stateDir(), `${kind}-${sessionId}.json`);
+}
+
+function updateOwed(kind, sessionId, update) {
+  return updateJsonObject(owedPath(kind, sessionId), update, { removeWhenEmpty: true });
+}
+
+function owe(kind, sessionId, key, entry) {
+  updateOwed(kind, sessionId, (owed) => ({ ...owed, [key]: { ...entry, pid: process.pid } }));
+}
+
+function takeOwed(kind, sessionId, key) {
+  let taken = null;
+  updateOwed(kind, sessionId, (owed) => {
+    const entry = owed[key];
+    if (!entry || typeof entry !== "object") return owed;
+    const holder = Number(entry.pid);
+    if (Number.isInteger(holder) && holder > 0 && holder !== process.pid && processAlive(holder)) return owed;
+    taken = { ...entry, pid: process.pid };
+    return { ...owed, [key]: taken };
+  });
+  return taken;
+}
+
+function releaseOwed(kind, sessionId, key) {
+  updateOwed(kind, sessionId, (owed) => {
+    const entry = owed[key];
+    if (!entry || entry.pid !== process.pid) return owed;
+    return { ...owed, [key]: { ...entry, pid: null } };
+  });
+}
+
+function dropOwed(kind, sessionId, key) {
+  updateOwed(kind, sessionId, (owed) => {
+    if (!(key in owed)) return owed;
+    const rest = { ...owed };
+    delete rest[key];
+    return rest;
+  });
 }
 
 /** The owed subagent ends of ``outerSessionId``, keyed by child session id. */
 export function readOwedSubagentEnds(outerSessionId) {
-  return readJsonObject(owedEndsPath(outerSessionId));
-}
-
-function updateOwedSubagentEnds(outerSessionId, update) {
-  return updateJsonObject(owedEndsPath(outerSessionId), update, { removeWhenEmpty: true });
+  return readJsonObject(owedPath(OWED_SUBAGENT_ENDS, outerSessionId));
 }
 
 /** Record that ``childSessionId`` owes ``entry``'s end, held by this process. */
 export function oweSubagentEnd(outerSessionId, childSessionId, entry) {
-  updateOwedSubagentEnds(outerSessionId, (ends) => ({
-    ...ends,
-    [childSessionId]: { ...entry, pid: process.pid },
-  }));
+  owe(OWED_SUBAGENT_ENDS, outerSessionId, childSessionId, entry);
 }
 
 /**
@@ -689,35 +729,42 @@ export function oweSubagentEnd(outerSessionId, childSessionId, entry) {
  * entry, or null when there is none or a live process holds it.
  */
 export function takeOwedSubagentEnd(outerSessionId, childSessionId) {
-  let taken = null;
-  updateOwedSubagentEnds(outerSessionId, (ends) => {
-    const entry = ends[childSessionId];
-    if (!entry || typeof entry !== "object") return ends;
-    const holder = Number(entry.pid);
-    if (Number.isInteger(holder) && holder > 0 && holder !== process.pid && processAlive(holder)) return ends;
-    taken = { ...entry, pid: process.pid };
-    return { ...ends, [childSessionId]: taken };
-  });
-  return taken;
+  return takeOwed(OWED_SUBAGENT_ENDS, outerSessionId, childSessionId);
 }
 
 /** Let go of this process's hold on an owed end, after a failed POST. */
 export function releaseOwedSubagentEnd(outerSessionId, childSessionId) {
-  updateOwedSubagentEnds(outerSessionId, (ends) => {
-    const entry = ends[childSessionId];
-    if (!entry || entry.pid !== process.pid) return ends;
-    return { ...ends, [childSessionId]: { ...entry, pid: null } };
-  });
+  releaseOwed(OWED_SUBAGENT_ENDS, outerSessionId, childSessionId);
 }
 
 /** Forget an owed end: sent, or dropped because its subagent was resumed. */
 export function dropOwedSubagentEnd(outerSessionId, childSessionId) {
-  updateOwedSubagentEnds(outerSessionId, (ends) => {
-    if (!(childSessionId in ends)) return ends;
-    const rest = { ...ends };
-    delete rest[childSessionId];
-    return rest;
-  });
+  dropOwed(OWED_SUBAGENT_ENDS, outerSessionId, childSessionId);
+}
+
+/** The owed tool events of ``sessionId``, keyed by tool_use_id. */
+export function readOwedToolCalls(sessionId) {
+  return readJsonObject(owedPath(OWED_TOOL_CALLS, sessionId));
+}
+
+/** Record that ``sessionId`` owes the tool event of ``toolUseId``, held by this process. */
+export function oweToolCall(sessionId, toolUseId, entry) {
+  owe(OWED_TOOL_CALLS, sessionId, toolUseId, entry);
+}
+
+/** Take an owed tool event for this process; null when none is owed or a live process holds it. */
+export function takeOwedToolCall(sessionId, toolUseId) {
+  return takeOwed(OWED_TOOL_CALLS, sessionId, toolUseId);
+}
+
+/** Let go of this process's hold on an owed tool event, after a failed POST. */
+export function releaseOwedToolCall(sessionId, toolUseId) {
+  releaseOwed(OWED_TOOL_CALLS, sessionId, toolUseId);
+}
+
+/** Forget an owed tool event: the server accepted or refused it. */
+export function dropOwedToolCall(sessionId, toolUseId) {
+  dropOwed(OWED_TOOL_CALLS, sessionId, toolUseId);
 }
 
 /**

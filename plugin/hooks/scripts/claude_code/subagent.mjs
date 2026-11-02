@@ -28,6 +28,7 @@ import {
 import { uuid5 } from "../uuid5.mjs";
 import { finishControl } from "./control.mjs";
 import { defaultFlushDeadline, flushPostCallTurns } from "./post_call.mjs";
+import { sendOwedToolCalls } from "./tool_events.mjs";
 import { readTurns } from "./transcript.mjs";
 
 // ---------------------------------------------------------------------
@@ -842,6 +843,17 @@ export async function finishSubagentExecution({
       );
     }
   }
+  // The tool events the execution still owes, after the turns that
+  // decided on them and before the end; this is their last chance
+  // unless the subagent is resumed.
+  const tools = await sendOwedToolCalls({
+    cfg,
+    sessionId: childSessionId,
+    basePayload: childBase,
+    lastChance: true,
+    deadline,
+  });
+  if (!tools.complete) return "failed";
   if (entry.ended !== false && !isSubagentEnded(childSessionId)) return "superseded";
   // A subagent a directive stopped has ended with that stop's own
   // session_end; send what it still owes and drop its control state.
@@ -996,6 +1008,14 @@ export async function finishSubagentsAtSessionEnd({
       reclaimOrphaned: true,
     });
     if (!flushed.complete) return;
+    const tools = await sendOwedToolCalls({
+      cfg,
+      sessionId: childBase.session_id,
+      basePayload: childBase,
+      lastChance: true,
+      deadline,
+    });
+    if (tools.failed) return;
   }
 }
 

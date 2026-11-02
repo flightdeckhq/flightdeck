@@ -1574,39 +1574,51 @@ and waits on none:
    (Python's own SIGINT handler raises `KeyboardInterrupt`), or, for the
    default action, restores it and raises the signal again, so the process
    ends as it would have without the sensor. Past the 2 seconds the drain
-   thread is still waiting for a slow control plane, or briefly for a lock
-   the signal interrupted: a Python handler is called anyway (the `end`
-   that `atexit` runs then waits for the drain thread), while for the
-   default action the handler returns and the drain thread delivers the
-   signal to the main thread again once `session_end` is out. That
-   delivery is cooperative: Python runs a handler only between the main
-   thread's bytecodes, so a main thread inside a long call into native
-   code holds the exit until the call returns.
+   thread is still finishing an event's POST that was under way, or
+   waiting for a slow control plane, or briefly for a lock the signal
+   interrupted: a Python handler is called anyway (the `end` that
+   `atexit` runs then waits for the drain thread), while for the default
+   action the handler returns and the drain thread delivers the signal to
+   the main thread again once `session_end` is out. That delivery is
+   cooperative: Python runs a handler only between the main thread's
+   bytecodes, so a main thread inside a long call into native code holds
+   the exit until the call returns.
 3. A second signal while that shutdown runs, or after it, is passed on at
    once, so it forces the exit. A signal that interrupts `end` itself is
    passed on at once too; one that arrives while `end` runs on another
    thread waits for it (2 seconds at most).
 
-The drain thread's shutdown has one deadline, 8 seconds
-(`SHUTDOWN_TIMEOUT_SECS`), well inside the 30 seconds Kubernetes gives a
-pod between SIGTERM and SIGKILL. The queued events get the first 3
-seconds and `session_end` the rest. Each POST makes one attempt, with its
-timeout capped by the time left, and the events still queued when their 3
-seconds run out are dropped and counted in one warning, so a control plane
-that is down or never answers holds the exit for at most the deadline, not
-for a retry cycle per event.
+The drain thread's shutdown has one deadline, 8 seconds from the signal
+(`SHUTDOWN_TIMEOUT_SECS`). The queued events get the first 3 seconds and
+`session_end` the rest. Each POST the shutdown makes is one attempt, with
+its timeout capped by the time left, and the events still queued when
+their 3 seconds run out are dropped, so a control plane that is down or
+never answers holds the exit for at most the deadline, not for a retry
+cycle per event. An event's POST already under way when the signal
+arrives, the usual case while events flow, cannot be cut short: its
+attempt runs to the transport's 10-second request timeout, its retry is
+skipped, and `session_end` still gets one half-second attempt after it.
+So the shutdown ends within about 10.5 seconds of the signal
+(`SHUTDOWN_LIMIT_SECS`), well inside the 30 seconds Kubernetes gives a pod
+between SIGTERM and SIGKILL. A request timeout bounds each socket
+operation (the connect, each read), not name resolution, so a slow DNS
+lookup for the control plane can take longer. A POST that fails during
+the shutdown is counted rather than logged, and the counts, like the
+session's own log line, are logged once the shutdown is over: logging
+takes locks the interrupted code may hold.
 
 Within it, each wait of the drain thread's for a lock the interrupted code
-may hold lasts half a second at most (`SHUTDOWN_LOCK_WAIT_SECS`): on
-Python 3.13 an exception a signal handler raises while the interrupted
-code is at a loop's back-edge can skip that code's `with` and `finally`
-exits, leaving the lock held for good. The open streams are settled, and
-the events that queues posted, only when the session's, the open-stream
-registry's, the policy cache's and the event queue's locks are all free
-within that wait; otherwise they are left as they are. `session_end`'s
-token total, framework, model and close reason are read under the
-session's lock when it comes free in time, and as plain attribute reads
-without it otherwise. Nothing on this path imports a module: the modules
+may hold lasts half a second at most (`SHUTDOWN_LOCK_WAIT_SECS`), and none
+is made past the deadline: on Python 3.13 an exception a signal handler
+raises while the interrupted code is at a loop's back-edge can skip that
+code's `with` and `finally` exits, leaving the lock held for good. The
+open streams are settled, and the events that queues posted, only when
+the session's, the open-stream registry's, the policy cache's and the
+event queue's locks are all free within that wait; otherwise they are
+left as they are. `session_end`'s token total, framework, model and close
+reason are read under the session's lock when it comes free in time, and
+as plain attribute reads without it otherwise; once found held, it is not
+waited for again. Nothing on this path imports a module: the modules
 it uses are loaded with the sensor, because a first import can wait for
 one the interrupted code is in the middle of, and module code that calls
 `exec` (a dataclass definition does) clears the flag CPython uses to give
@@ -1615,10 +1627,10 @@ status.
 
 `end`, called after a signal started the shutdown (by `atexit`, or
 `teardown()`), waits for the drain thread to finish it, up to that
-8-second deadline. A signal the application ignores (`SIG_IGN`) is left
-ignored and the session carries on; a handler installed outside Python,
-which Python cannot pass a signal on to, is left in place. No thread is
-added for any of this.
+10.5-second limit from the signal. A signal the application ignores
+(`SIG_IGN`) is left ignored and the session carries on; a handler
+installed outside Python, which Python cannot pass a signal on to, is
+left in place. No thread is added for any of this.
 
 ---
 

@@ -422,18 +422,18 @@ have published the end).
 **Date:** 2026-11-02
 **Decision:** the sensor's signal handler claims the end of the session
 without waiting, hands it to the existing event-queue drain thread, polls
-up to 2 s, then passes the signal on to the handler it replaced; for the
-default action with `session_end` not yet sent, the drain thread delivers
-it again once it is, within an 8 s deadline (one attempt per POST; each
-wait for a lock the interrupted code may hold lasts 0.5 s at most). A
-second signal is passed on at once; an ignored one is left alone.
+up to 2 s, then passes the signal on; for the default action before
+`session_end` is out, the drain thread re-delivers it once it is, by 8 s
+after the signal (10.5 s if an event's POST was under way: its retry is
+skipped, each shutdown POST is one attempt, and a lock the interrupted
+code may hold is waited for 0.5 s at most). A second signal is passed on
+at once; an ignored one is left alone.
 **Why:** the handler runs on the interrupted frame, which can hold the
 session, policy or queue lock (not re-entrant; on Python 3.13 maybe for
 good), so `end()` there deadlocked; sensor rule 32 allows no other thread.
 **Rejected alternative:** `end()` in the handler (the deadlock); a helper
-thread per signal (rule 32; starting one takes `threading`'s lock, which
-the interrupted frame can hold); ending the process when the wait runs
-out (drops `session_end` whenever the control plane is slow).
+thread per signal (rule 32; `Thread.start()` takes a lock the interrupted
+frame can hold); exiting once the wait runs out (drops a slow session_end).
 
 ## D240 -- patch() patches each SDK when the application first imports it
 

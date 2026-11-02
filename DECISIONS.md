@@ -325,8 +325,8 @@ the paginated window would lose the pill); a pill on every source
 ## D231 -- Custom directives are offered only to client types that run custom handlers
 
 **Date:** 2026-11-01
-**Decision:** the client type registry gains `runs_custom_directives`
-(`true` for `flightdeck_sensor` only). The dashboard offers custom
+**Decision:** extends D214: the client type registry gains
+`runs_custom_directives` (`true` for `flightdeck_sensor` only). The dashboard offers custom
 directives (the run drawer's Directives tab, the Fleet trigger) on a
 session that supports directives and whose type runs them; Stop stays
 gated on `supports_directives` alone.
@@ -337,3 +337,18 @@ with an error result, so offering one was a dead end.
 dead end); a `client_type` string compare in the dashboard (a new
 client that runs handlers would need a code change, not a registry
 row).
+
+## D232 -- Fleet's agent-row controls are scoped to the agent and fanned out by the API
+
+**Date:** 2026-11-02
+**Decision:** `POST /v1/directives` accepts `agent_id` for `shutdown`
+and `custom`. The API sends one row to each live run of the agent that
+can act on it, in one transaction, and returns the count in
+`X-Directive-Count`. Fleet's Stop All and its directive trigger use it.
+**Why:** a sidebar row is an agent. The dashboard holds only some of an
+agent's runs (its five newest and the last day's page), so enumerating
+in the browser left live runs running while the dialog said "All".
+**Rejected alternative:** `shutdown_flavor` from the agent row (reaches
+other agents' runs sharing the flavor); sending one directive per
+session the browser holds (misses runs it has not loaded); a new
+`/v1/agents/{id}/directives` route (a second way to create a directive).

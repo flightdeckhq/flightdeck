@@ -43,8 +43,8 @@ no single point of failure introduced into the agent's execution path.
   that aggregates every event into a fleet view.
 - A token budget enforcer: warn, degrade, block — applied at call time
   inside the agent, configured centrally.
-- A kill switch: stop any agent or every agent of a flavor from a dashboard
-  click.
+- A kill switch: stop one run, or every live run of an agent, from a
+  dashboard click; the API can also stop every run of a flavor.
 - A prompt and embedding-input recorder, gated by `capture_prompts` (off by
   default in the sensor, on by default in the Claude Code plugin).
 - A Claude Code observer via a hook plugin. It reports every hook event
@@ -3383,6 +3383,18 @@ re-delivered on subsequent POSTs. A row for another session of the same
 flavor is never returned, so a stop for one session cannot reach
 another (a `shutdown_flavor` fans out into one row per session).
 
+A request with `agent_id` fans out the same way, in the API, to each
+live (active or idle) session of the agent that can act on the
+directive. A session takes a `shutdown` when its
+`context.supports_directives` says so, or, when it does not set it,
+when its client type's registry default does (a row with no client
+type counts unless its flavor or frameworks mark Claude Code, the
+dashboard's rule). A `custom` directive also needs the client type's
+`runs_custom_directives` and a session flavor that registered the
+directive's fingerprint. All rows of one request are inserted in one
+transaction, and the `X-Directive-Count` response header carries how
+many were created (1 for a single session).
+
 ### `custom_directives`
 
 ```sql
@@ -3504,7 +3516,7 @@ authoritative parameter-level reference.
 | `PUT` | `/v1/policies/:id` | Update a policy; the same validation as `POST`, except that an unchanged `degrade_to` is not re-checked |
 | `DELETE` | `/v1/policies/:id` | Delete a policy |
 | `GET` | `/v1/pricing/models` | The models a policy may degrade to: `model_pricing` rows priced on the provider's own API (the sensor passes `degrade_to` to the SDK as the model id, so a cloud-platform-only id would fail), with an output price (embedding models have none), that are not an operator alias from `pricing.yaml` or an `ft:<base>` fine-tune price key (a callable fine-tune id adds an org and suffix), and whose `deprecated_on` date (from the catalogue or a `pricing.yaml` override) has not passed; `[{model_id, provider}]` ordered by provider then model id |
-| `POST` | `/v1/directives` | Create a `shutdown`, `shutdown_flavor`, or `custom` directive |
+| `POST` | `/v1/directives` | Create a `shutdown` (one session, or every live run of an agent with `agent_id`), a `shutdown_flavor`, or a `custom` directive (one session, a flavor, or an agent's runs); `X-Directive-Count` carries how many rows were created |
 | `GET` | `/v1/directives/custom` | List registered custom directives; optional `flavor` filter |
 | `DELETE` | `/v1/directives/custom` | Delete custom directives by name prefix (`name_prefix` query param). Registered only when `ENVIRONMENT=dev`; the route does not exist otherwise |
 | `POST` | `/v1/directives/sync` | Sensor uploads its registered fingerprints; returns unknowns |
@@ -5310,13 +5322,16 @@ Each sidebar row is an agent, keyed by its `agent_id`, while a sensor
 registers custom directives under the flavor string its sessions carry.
 The row's `Directives` icon button therefore lists the directives
 registered under any flavor its sessions run as, and appears when that
-list is non-empty and at least one of its sessions runs custom
-directives (see Observer-session class). Each `DirectiveCard` fans out
-to the active sessions of the directive's own flavor. The `Stop All`
-button appears when at least one live (active or idle) session of the
-agent supports directives, and sends one `shutdown` per such session;
-a flavor-wide `shutdown_flavor` keyed by the row would match no
-session and would reach other agents' runs that share the flavor. Both
+list is non-empty and at least one live (active or idle) session of
+the agent runs custom directives (see Observer-session class). A
+`DirectiveCard` opened from the row sends the directive with the row's
+`agent_id`, so it reaches this agent's live runs whose flavor
+registered it and never another agent's runs that share the flavor.
+The `Stop All` button appears when at least one live session of the
+agent takes directives, and sends one `shutdown` request with the
+row's `agent_id`; the API stops every live run of the agent that can
+act on it, including runs the dashboard has not loaded, and the
+success message names how many runs the stop reached. Both
 buttons are icon-only (Zap and OctagonX from lucide-react) so they
 don't push the agent name to truncate at the 240px sidebar width.
 Clicking the first opens a Dialog with one `DirectiveCard` per
@@ -6576,7 +6591,7 @@ empty data. Not 403. 404 — the resource does not exist.
 
 | Action | Source | Sensor behaviour |
 |---|---|---|
-| `shutdown` | Operator (`POST /v1/directives` with `session_id`) | Raises `DirectiveError` after `grace_period_ms`; triggers `session.teardown` |
+| `shutdown` | Operator (`POST /v1/directives` with `session_id`, or with `agent_id` for every live run of an agent) | Raises `DirectiveError` after `grace_period_ms`; triggers `session.teardown` |
 | `shutdown_flavor` | Operator (`POST /v1/directives` with `flavor`, fans out via `GetActiveSessionIDsByFlavor`) | Same as `shutdown` per session |
 | `degrade` | Worker policy evaluator | Sets `_forced_degrade` + `degrade_to`; subsequent `check` returns `DEGRADE` |
 | `warn` | Worker policy evaluator | Fires `WARN` callback once per session at `warn_at_pct` (fire-once rule) |

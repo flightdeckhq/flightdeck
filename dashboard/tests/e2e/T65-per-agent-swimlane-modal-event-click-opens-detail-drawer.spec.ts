@@ -86,7 +86,36 @@ test.describe("T65 — modal event-circle click opens stacked drawer", () => {
       .poll(async () => circle.count(), { timeout: 15_000 })
       .toBeGreaterThan(0);
 
-    await circle.click({ force: true });
+    // Click a circle the pointer can actually reach. The modal opens
+    // scrolled to "now", so older circles sit under the sticky label
+    // column, and a busy row stacks circles on one another; a forced
+    // click on the first circle in DOM order then lands on whatever
+    // covers it (on a long-lived dev DB, the label's status dot).
+    let reachableEventId: string | null = null;
+    await expect
+      .poll(
+        async () => {
+          reachableEventId = await modalBody.evaluate((b) => {
+            for (const c of Array.from(
+              b.querySelectorAll<HTMLElement>('[data-testid^="session-circle-"]'),
+            )) {
+              const r = c.getBoundingClientRect();
+              const hit = document.elementFromPoint(
+                r.left + r.width / 2,
+                r.top + r.height / 2,
+              );
+              if (hit && (hit === c || c.contains(hit))) {
+                return c.getAttribute("data-event-id");
+              }
+            }
+            return null;
+          });
+          return reachableEventId;
+        },
+        { timeout: 15_000 },
+      )
+      .not.toBeNull();
+    await modalBody.locator(`[data-event-id="${reachableEventId}"]`).click();
 
     // EventDetailDrawer doesn't carry a top-level data-testid
     // but always renders an internal `data-testid="detail-badge"`

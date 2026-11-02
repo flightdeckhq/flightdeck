@@ -192,12 +192,13 @@ function buildContent(turn) {
 // Delivery rules (ARCHITECTURE.md, Plugin > Subagent hooks):
 //   * a turn whose POST fails is released and the flush stops there, so
 //     the next flush sends it, and the turns after it, in order;
-//   * a turn the server refuses as invalid (400, 413) is never retried,
-//     so it cannot hold back the turns after it;
-//   * with ``notBefore`` (the mint time of the session the flush reports
-//     under) a turn that ran earlier is not sent: it belongs to an
-//     earlier session, and is reported only under the session that was
-//     current when it ran.
+//   * a turn ingestion refuses as invalid is never retried, so it cannot
+//     hold back the turns after it (refusedForGood);
+//   * a turn is sent only under the session that was current when it
+//     ran: with ``notBefore`` (the mint time of the session the flush
+//     reports under) an earlier turn is not sent, and with ``notAfter``
+//     (the mint time of a later session that has taken the conversation
+//     over) neither is a turn at or after it.
 // ---------------------------------------------------------------------
 
 /**
@@ -208,6 +209,48 @@ export function ranBefore(turn, notBefore) {
   if (notBefore == null) return false;
   const at = Date.parse(turn.lastTimestamp);
   return Number.isFinite(at) && at < notBefore;
+}
+
+/** True when ``turn`` ran at or after ``notAfter``; an unknown time is taken as before it. */
+export function ranAtOrAfter(turn, notAfter) {
+  if (notAfter == null) return false;
+  const at = Date.parse(turn.lastTimestamp);
+  return Number.isFinite(at) && at >= notAfter;
+}
+
+/**
+ * Read a transcript's turns (``read()``) between two looks at the
+ * conversation's marker (``laterMint()``, see laterSessionMint), and
+ * return them with ``notAfter``, the earliest mint of a later session
+ * either look found. A session's marker is written before any of its
+ * turns, so a later session minted while the transcript was read is seen
+ * by the second look before any of its turns can be in what was read.
+ */
+export function readTurnsBounded(read, laterMint = null) {
+  const before = laterMint ? laterMint() : null;
+  const turns = read();
+  const after = laterMint ? laterMint() : null;
+  const found = [before, after].filter((t) => t != null);
+  return { turns, notAfter: found.length > 0 ? Math.min(...found) : null };
+}
+
+// How far in the past ingestion accepts an event's timestamp (its
+// maxClockSkewPast). Ingestion answers an event outside its clock-skew
+// window with one error, too old or too far in the future alike: an event
+// younger than this was refused because the clocks disagree, and is
+// accepted once they agree, so it is retried; an older one never will be.
+export const INGESTION_MAX_PAST_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * Whether the server refused an event (``sent``, from sendEvent) dated
+ * ``timestamp`` for good: ingestion refused it as invalid, and not for a
+ * clock-skew window the event is still inside of on this clock.
+ */
+export function refusedForGood(sent, timestamp, now = Date.now()) {
+  if (sent.accepted || sent.retryable) return false;
+  if (!sent.clockSkew) return true;
+  const at = Date.parse(timestamp);
+  return Number.isFinite(at) && now - at > INGESTION_MAX_PAST_MS;
 }
 
 /**
@@ -239,8 +282,10 @@ export function defaultFlushDeadline(now = Date.now()) {
  * refused or left to a live claimant; ``failed`` when a POST failed and
  * the flush stopped there (the deadline stops it without ``failed``).
  * ``notBefore`` is the mint time of the session the flush reports under,
- * null when it recorded none; ``reclaimOrphaned`` takes over the claims
- * of hooks that died before confirming their turn.
+ * null when it recorded none, and ``notAfter`` the mint time of a later
+ * session that has taken the conversation over (readTurnsBounded), null
+ * when there is none; ``reclaimOrphaned`` takes over the claims of hooks
+ * that died before confirming their turn.
  */
 export async function flushPostCallTurns({
   cfg,
@@ -251,6 +296,7 @@ export async function flushPostCallTurns({
   deadline = defaultFlushDeadline(),
   reclaimOrphaned = false,
   notBefore = null,
+  notAfter = null,
 }) {
   let seen = 0;
   // The conversation's running token total through each turn: the
@@ -278,7 +324,10 @@ export async function flushPostCallTurns({
       // PostToolUse already flushed are not lost.
       const unflushed = turns
         .slice(seen - 1)
-        .filter((t) => !t.synthetic && !ranBefore(t, notBefore) && !isTurnEmitted(t.messageId)).length;
+        .filter(
+          (t) =>
+            !t.synthetic && !ranBefore(t, notBefore) && !ranAtOrAfter(t, notAfter) && !isTurnEmitted(t.messageId),
+        ).length;
       process.stderr.write(
         `flightdeck: transcript flush deadline reached; ${unflushed} transcript turn(s) left unflushed.\n`,
       );
@@ -292,6 +341,9 @@ export async function flushPostCallTurns({
       if (!isTurnEmitted(turn.messageId)) skippedOlder += 1;
       continue;
     }
+    // A turn of the later session that has taken the conversation over:
+    // that session's own hooks send it.
+    if (ranAtOrAfter(turn, notAfter)) continue;
     if (!markEmittedTurn(turn.messageId)) {
       // Claimed by another hook. Only SubagentStop and the SessionEnd
       // worker take over a claim, and only one whose process is gone.
@@ -329,7 +381,7 @@ export async function flushPostCallTurns({
     });
     if (sent.accepted) {
       markTurnSent(turn.messageId);
-    } else if (!sent.retryable) {
+    } else if (refusedForGood(sent, turn.lastTimestamp)) {
       markTurnRefused(turn.messageId, sent.status);
     } else {
       // The next flush sends this turn and the ones after it, in order;

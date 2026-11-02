@@ -18,6 +18,8 @@ import {
   clearEndedMarker,
   readEndedMarker,
   readOrCreateSessionMarker,
+  readSessionMarker,
+  readSessionMintTime,
   touchSessionFiles,
 } from "../core/state.mjs";
 import { safeCollectContext } from "./context.mjs";
@@ -115,6 +117,22 @@ export function getSessionId(hookEvent = {}) {
 // The hook's name; older callers send it as ``event``.
 function hookEventName(hookEvent) {
   return hookEvent.hook_event_name || hookEvent.event || "";
+}
+
+/**
+ * The mint time of a later Flightdeck session that has taken over this
+ * Claude Code session's marker from ``sessionId``, or null while the
+ * marker still names ``sessionId`` (or nothing, or a session with no
+ * mint time). A process that keeps reporting under ``sessionId`` after
+ * a resume minted a new session (the SessionEnd worker, a late hook)
+ * sends no turn that ran at or after it: that turn is the new
+ * session's.
+ */
+export function laterSessionMint(hookEvent, sessionId) {
+  const nativeId = claudeCodeSessionId(hookEvent);
+  const markerKey = nativeId ? markerKeyFor(nativeId) : cwdMarkerKey(process.cwd());
+  const current = readSessionMarker(markerKey);
+  return current && current !== sessionId ? readSessionMintTime(current) : null;
 }
 
 /**

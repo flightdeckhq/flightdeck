@@ -1,15 +1,19 @@
 // Delivery of Claude Code transcript turns and the resume of subagents
-// across coordinator sessions (ARCHITECTURE.md, Plugin > Subagent hooks;
-// DECISIONS.md D236). The real hook script runs against a capture server
-// that can fail chosen requests:
+// across coordinator sessions (ARCHITECTURE.md, Plugin > Subagent hooks).
+// The real hook script runs against a capture server that can fail, slow
+// down or hold chosen requests:
 //
 //   * a turn whose POST fails is sent again by the next hook, and a turn
-//     the server refuses as invalid is not retried;
+//     ingestion refuses as invalid is not retried (a proxy's 400 and a
+//     clock-skew refusal of a recent turn are retried);
 //   * a turn is sent only under the Flightdeck session that was current
-//     when it ran, also after the plugin's markers are lost;
+//     when it ran: after the plugin's markers are lost, and by a
+//     SessionEnd worker still running when a resume minted a later one;
 //   * a subagent resumed (SendMessage) or woken (task notification)
-//     re-attaches its child with one session_start per execution, and a
-//     late hook of an ended execution never starts the child again;
+//     re-attaches its child with one session_start per execution, which
+//     carries the message that resumed it and follows the previous
+//     execution's end; a late hook of an ended execution never starts the
+//     child again;
 //   * a child session_end that failed is sent by a later hook, after the
 //     child's turns.
 import { describe, it, before, after } from "node:test";
@@ -28,22 +32,33 @@ import {
 import { createServer } from "node:http";
 import { join } from "node:path";
 
-import { postCallEventId } from "../hooks/scripts/claude_code/post_call.mjs";
+import { INGESTION_MAX_PAST_MS, postCallEventId, refusedForGood } from "../hooks/scripts/claude_code/post_call.mjs";
 import { _subagentChildSessionId } from "../hooks/scripts/claude_code/subagent.mjs";
 import { markerKeyFor } from "../hooks/scripts/core/state.mjs";
 import { assertIngestionContract, hookEnv, isIngestPost, pollUntil, privateTmp, runScript } from "./contract_harness.mjs";
 
 /**
- * A capture server that answers chosen requests with an error status:
- * ``fail(predicate, {status, times})`` answers the next ``times``
- * matching POSTs (Infinity for all of them) with ``status``. Every other
- * POST is answered 200. ``accepted()`` holds the bodies answered 200, in
- * arrival order; ``attempts()`` every body.
+ * A capture server that answers chosen requests otherwise than 200:
+ * ``fail(predicate, {status, times, body})`` answers the next ``times``
+ * matching POSTs (Infinity for all of them) with ``status`` and ``body``
+ * (ingestion's JSON error by default); ``delay(predicate, ms)`` answers a
+ * matching POST ``ms`` late, as a slow server would; ``hold(predicate)``
+ * keeps matching POSTs unanswered until ``release()``. Every other POST is
+ * answered 200. ``accepted()`` holds the bodies answered 200, in the order
+ * they were answered; ``attempts()`` every body, in arrival order.
  */
 function startFaultyServer() {
   const accepted = [];
   const attempts = [];
   const faults = [];
+  const delays = [];
+  const holds = [];
+  const held = [];
+  const accept = (parsed, res) => {
+    accepted.push(parsed);
+    res.writeHead(200, { "Content-Type": "application/json" });
+    res.end('{"status":"ok","attached":false}');
+  };
   const server = createServer((req, res) => {
     let body = "";
     req.setEncoding("utf8");
@@ -59,13 +74,20 @@ function startFaultyServer() {
       const fault = faults.find((f) => f.times > 0 && f.predicate(parsed));
       if (fault) {
         fault.times -= 1;
-        res.writeHead(fault.status, { "Content-Type": "application/json" });
-        res.end('{"error":"injected"}');
+        res.writeHead(fault.status, { "Content-Type": fault.contentType });
+        res.end(fault.body);
         return;
       }
-      accepted.push(parsed);
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end('{"status":"ok","attached":false}');
+      if (holds.some((predicate) => predicate(parsed))) {
+        held.push(() => accept(parsed, res));
+        return;
+      }
+      const slow = delays.find((d) => d.predicate(parsed));
+      if (slow) {
+        setTimeout(() => accept(parsed, res), slow.ms);
+        return;
+      }
+      accept(parsed, res);
     });
   });
   return new Promise((resolve) => {
@@ -75,7 +97,15 @@ function startFaultyServer() {
         port: server.address().port,
         accepted: () => accepted,
         attempts: () => attempts,
-        fail: (predicate, { status = 502, times = 1 } = {}) => faults.push({ predicate, status, times }),
+        fail: (predicate, { status = 502, times = 1, body = '{"error":"injected"}', contentType = "application/json" } = {}) =>
+          faults.push({ predicate, status, times, body, contentType }),
+        delay: (predicate, ms) => delays.push({ predicate, ms }),
+        hold: (predicate) => holds.push(predicate),
+        heldCount: () => held.length,
+        release: () => {
+          holds.length = 0;
+          while (held.length > 0) held.shift()();
+        },
       }),
     );
   });
@@ -125,6 +155,34 @@ function conversation(agentType = "general-purpose") {
 }
 
 const msgId = () => `msg_${randomUUID().replace(/-/g, "")}`;
+
+// The prefix Claude Code puts on the message a SendMessage resumes a subagent with.
+const RESUME_PREFIX = "The coordinator sent a message while you were working:\n";
+
+/** The user record a SendMessage resume writes: a meta record naming its origin. */
+function resumeRecord(text) {
+  return {
+    type: "user",
+    timestamp: now(),
+    isMeta: true,
+    origin: { kind: "coordinator" },
+    message: { role: "user", content: `${RESUME_PREFIX}${text}` },
+  };
+}
+
+/** The record a finished background task wakes a subagent with: a queued command, not a user record. */
+function wakeRecord() {
+  return {
+    type: "attachment",
+    timestamp: now(),
+    attachment: {
+      type: "queued_command",
+      prompt: "<task-notification><status>completed</status></task-notification>",
+      commandMode: "task-notification",
+      origin: { kind: "task-notification" },
+    },
+  };
+}
 
 function rootHook(conv, name, extra = {}) {
   return { hook_event_name: name, session_id: conv.native, transcript_path: conv.parent, cwd: conv.dir, ...extra };
@@ -523,5 +581,203 @@ describe("the SessionEnd worker's last pass over the subagents", () => {
       assert.ok(bodies.indexOf(callsOf(bodies, m)[0]) > rootEnd, `${m} follows the root's session_end`);
     }
     assert.deepEqual(readdirSync(box.stateDir).filter((n) => n.startsWith("subagent-ends-")), []);
+  });
+});
+
+describe("a SessionEnd worker still running when a resume mints a later session", () => {
+  let capture;
+  before(async () => {
+    capture = await startFaultyServer();
+  });
+  after(() => {
+    capture.server.closeAllConnections();
+    capture.server.close();
+  });
+
+  it("leaves the later session's turns to it, rather than sending them under the ended session's child", async () => {
+    const conv = conversation();
+    const box = machine(capture.port);
+    const [m1, m3] = [msgId(), msgId()];
+    const mine = () => ofConversation(capture.accepted(), conv);
+    await run(rootHook(conv, "SessionStart", { source: "startup" }), box.env);
+    const [s1] = rootStarts(mine()).map((b) => b.session_id);
+    const c1 = _subagentChildSessionId(s1, conv.agent);
+    append(conv.sub, [userRecord("count the files")]);
+    await run(agentHook(conv, "SubagentStart"), box.env);
+    append(conv.sub, [assistantRecord(m1)]);
+    await run(agentHook(conv, "SubagentStop", { agent_transcript_path: conv.sub, last_assistant_message: `turn ${m1}` }), box.env);
+    // S1's worker is held on its root session_end, before its pass over the
+    // subagents, as on a slow server with a backlog ...
+    capture.hold((b) => b.event_type === "session_end" && b.session_id === s1);
+    const ending = runScript(JSON.stringify(rootHook(conv, "SessionEnd", { reason: "prompt_input_exit" })), box.env);
+    await pollUntil(() => capture.heldCount() > 0, "S1's worker held on its session_end");
+    // ... while the conversation is resumed (S2) and the subagent, resumed
+    // too, writes a turn before any hook of S2 has flushed it.
+    await run(rootHook(conv, "SessionStart", { source: "resume" }), box.env);
+    const [s2] = rootStarts(mine())
+      .map((b) => b.session_id)
+      .filter((id) => id !== s1);
+    append(conv.sub, [resumeRecord("count again"), assistantRecord(m3)]);
+    capture.release();
+    const ended = await ending;
+    assert.equal(ended.code, 0, ended.stderr);
+    // S1's worker is done (the SessionEnd hook waits for it); S2's hooks run.
+    await run(agentHook(conv, "SubagentStart"), box.env);
+    await run(agentHook(conv, "PostToolUse", toolUse()), box.env);
+    const calls = callsOf(mine(), m3);
+    assert.equal(calls.length, 1, "m3 sent once");
+    assert.equal(calls[0].session_id, _subagentChildSessionId(s2, conv.agent), "under S2's child");
+    assert.equal(calls[0].parent_session_id, s2);
+    assert.equal(ofSession(mine(), c1).some((b) => b.id === postCallEventId(m3)), false, "never under S1's child");
+  });
+});
+
+describe("a resume and the previous execution's end", () => {
+  let capture;
+  before(async () => {
+    capture = await startFaultyServer();
+  });
+  after(() => {
+    capture.server.closeAllConnections();
+    capture.server.close();
+  });
+
+  const childEvents = (conv, child) =>
+    ofSession(ofConversation(capture.accepted(), conv), child)
+      .filter((b) => b.event_type !== "tool_call")
+      .map((b) => (b.event_type === "post_call" ? b.id : b.event_type));
+
+  it("a resume waits for the end a live SubagentStop is still sending, so its start follows that end", async () => {
+    const conv = conversation();
+    const box = machine(capture.port);
+    const [m1, m2] = [msgId(), msgId()];
+    await run(rootHook(conv, "SessionStart", { source: "startup" }), box.env);
+    const [sid] = rootStarts(ofConversation(capture.accepted(), conv)).map((b) => b.session_id);
+    const child = _subagentChildSessionId(sid, conv.agent);
+    append(conv.sub, [userRecord("count the files")]);
+    await run(agentHook(conv, "SubagentStart"), box.env);
+    append(conv.sub, [assistantRecord(m1)]);
+    // The server is slow to answer the end, so SubagentStop still holds it
+    // when the resume's SubagentStart runs.
+    capture.delay((b) => b.event_type === "session_end" && b.session_id === child, 1500);
+    const stopping = runScript(
+      JSON.stringify(agentHook(conv, "SubagentStop", { agent_transcript_path: conv.sub, last_assistant_message: `turn ${m1}` })),
+      box.env,
+    );
+    await pollUntil(
+      () => capture.attempts().some((b) => b.event_type === "session_end" && b.session_id === child),
+      "the end on its way",
+    );
+    append(conv.sub, [resumeRecord("count again")]);
+    await run(agentHook(conv, "SubagentStart"), box.env);
+    const stopped = await stopping;
+    assert.equal(stopped.code, 0, stopped.stderr);
+    append(conv.sub, [assistantRecord(m2)]);
+    await run(agentHook(conv, "SubagentStop", { agent_transcript_path: conv.sub, last_assistant_message: `turn ${m2}` }), box.env);
+    assert.deepEqual(childEvents(conv, child), [
+      "session_start",
+      postCallEventId(m1),
+      "session_end",
+      "session_start",
+      postCallEventId(m2),
+      "session_end",
+    ]);
+  });
+
+  it("SubagentStop leaves the child open when a resume is already queued after the final turn", async () => {
+    const conv = conversation();
+    const box = machine(capture.port);
+    const [m1, m2] = [msgId(), msgId()];
+    await run(rootHook(conv, "SessionStart", { source: "startup" }), box.env);
+    const [sid] = rootStarts(ofConversation(capture.accepted(), conv)).map((b) => b.session_id);
+    const child = _subagentChildSessionId(sid, conv.agent);
+    append(conv.sub, [userRecord("count the files")]);
+    await run(agentHook(conv, "SubagentStart"), box.env);
+    append(conv.sub, [assistantRecord(m1)]);
+    // The subagent is resumed right as it stops: the resume's prompt is in
+    // the transcript, and its SubagentStart runs before SubagentStop has
+    // marked the child ended, so it sends no session_start.
+    append(conv.sub, [resumeRecord("count again")]);
+    await run(agentHook(conv, "SubagentStart"), box.env);
+    await run(agentHook(conv, "SubagentStop", { agent_transcript_path: conv.sub, last_assistant_message: `turn ${m1}` }), box.env);
+    append(conv.sub, [assistantRecord(m2)]);
+    await run(agentHook(conv, "PostToolUse", toolUse()), box.env);
+    await run(agentHook(conv, "SubagentStop", { agent_transcript_path: conv.sub, last_assistant_message: `turn ${m2}` }), box.env);
+    assert.deepEqual(
+      childEvents(conv, child),
+      ["session_start", postCallEventId(m1), postCallEventId(m2), "session_end"],
+      "one execution, open until its last stop",
+    );
+  });
+
+  it("a resume's session_start carries the message that resumed it, or none", async () => {
+    const conv = conversation();
+    const box = machine(capture.port);
+    const [m1, m2] = [msgId(), msgId()];
+    await run(rootHook(conv, "SessionStart", { source: "startup" }), box.env);
+    const [sid] = rootStarts(ofConversation(capture.accepted(), conv)).map((b) => b.session_id);
+    const child = _subagentChildSessionId(sid, conv.agent);
+    const starts = () => ofSession(ofConversation(capture.accepted(), conv), child, "session_start");
+    append(conv.sub, [userRecord("count the files")]);
+    await run(agentHook(conv, "SubagentStart"), box.env);
+    append(conv.sub, [assistantRecord(m1)]);
+    await run(agentHook(conv, "SubagentStop", { agent_transcript_path: conv.sub, last_assistant_message: `turn ${m1}` }), box.env);
+    append(conv.sub, [resumeRecord("count them again")]);
+    await run(agentHook(conv, "SubagentStart"), box.env);
+    append(conv.sub, [assistantRecord(m2)]);
+    await run(agentHook(conv, "SubagentStop", { agent_transcript_path: conv.sub, last_assistant_message: `turn ${m2}` }), box.env);
+    // A finished background task wakes it: a queued command, no user record.
+    append(conv.sub, [wakeRecord()]);
+    await run(agentHook(conv, "SubagentStart"), box.env);
+    const [spawn, resumed, woken] = starts();
+    for (const body of starts()) assertIngestionContract(body);
+    assert.equal(spawn.incoming_message?.body, "count the files", "the spawn's prompt");
+    assert.equal(resumed.incoming_message?.body, `${RESUME_PREFIX}count them again`, "the message that resumed it");
+    assert.equal("incoming_message" in woken, false, "no user record: no message rather than the spawn's");
+  });
+});
+
+describe("refusals that are not for good", () => {
+  let capture;
+  before(async () => {
+    capture = await startFaultyServer();
+  });
+  after(() => {
+    capture.server.closeAllConnections();
+    capture.server.close();
+  });
+
+  for (const [label, fault] of [
+    ["a 400 that is not ingestion's own (a proxy's)", { status: 400, body: "<html>400 Bad Request</html>", contentType: "text/html" }],
+    [
+      "ingestion's clock-skew refusal of a recent turn",
+      { status: 400, body: JSON.stringify({ error: "timestamp out of allowed clock-skew window; check sensor host clock" }) },
+    ],
+  ]) {
+    it(`${label} is a failed POST: the next hook sends the turn again`, async () => {
+      const conv = conversation();
+      const box = machine(capture.port);
+      const m1 = msgId();
+      await run(rootHook(conv, "SessionStart", { source: "startup" }), box.env);
+      append(conv.parent, [assistantRecord(m1)]);
+      capture.fail((b) => b.event_type === "post_call" && b.id === postCallEventId(m1), fault);
+      await run(rootHook(conv, "Stop"), box.env);
+      await run(rootHook(conv, "Stop"), box.env);
+      assert.equal(callsOf(capture.attempts(), m1).length, 2);
+      assert.equal(callsOf(capture.accepted(), m1).length, 1);
+    });
+  }
+
+  it("a clock-skew refusal is for good only once the event is older than ingestion's past window", () => {
+    const now = Date.parse("2026-11-02T12:00:00Z");
+    const skew = { accepted: false, retryable: false, status: 400, clockSkew: true };
+    const invalid = { accepted: false, retryable: false, status: 400, clockSkew: false };
+    const recent = new Date(now - 60_000).toISOString();
+    const stale = new Date(now - INGESTION_MAX_PAST_MS - 60_000).toISOString();
+    assert.equal(refusedForGood(skew, recent, now), false);
+    assert.equal(refusedForGood(skew, stale, now), true);
+    assert.equal(refusedForGood(invalid, recent, now), true);
+    assert.equal(refusedForGood({ ...invalid, retryable: true }, recent, now), false);
+    assert.equal(refusedForGood({ ...invalid, accepted: true }, recent, now), false);
   });
 });

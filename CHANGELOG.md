@@ -172,8 +172,8 @@ All notable changes to Flightdeck are documented here.
   `SubagentStart` (two to four per sub-agent); one hook now sends it
   while the others skip. A sub-agent resumed with `SendMessage`, or
   woken by a background task it started, is another run of the same
-  child session: it re-opens with a new start, and the run's calls count
-  toward its tokens.
+  child session: it re-opens with a new start, which carries the message
+  that resumed it, and the run's calls count toward its tokens.
 - **A Claude Code model call whose POST failed is sent again.** The
   plugin marked a call sent before posting it and never retried it, so a
   call made while the server was unreachable (a stack restart, a 502) was

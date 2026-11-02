@@ -822,7 +822,12 @@ func (w *Writer) ReviveIfRevivable(ctx context.Context, sessionID string) (bool,
 // (SessionProcessor.bumpParentIfPresent) bumps
 // metrics.IncrSessionRevived(metrics.RevivalTriggerChildEvent) on
 // revived=true so operators can chart the rate of parent-via-child
-// revivals separately from any future revival path.
+// revivals separately from any future revival path. A revival is also
+// announced on flightdeck_fleet: the child's own notification names
+// only the child, so without it a parent the dashboard showed going
+// stale would stay stale there while its children worked. Concurrent
+// children of one parent serialize on the row lock, so exactly one of
+// them sees the stale or lost state and announces the revival.
 //
 // Scope: direct parent only. Transitive ancestor revival is deferred
 // until a framework that exercises depth>2 trees ships (Claude Code
@@ -870,6 +875,7 @@ func (w *Writer) BumpParentLastSeen(
 	}
 	switch prevState {
 	case "stale", "lost":
+		w.announce(ctx, "parent revival", stateChanges([]string{parentSessionID}))
 		return true, nil
 	case "":
 		// Closed (CTE filtered it out) or no row. Both correctly
@@ -1202,31 +1208,58 @@ func (w *Writer) ClearSequencesAbove(ctx context.Context, lastSeq uint64) (int64
 // lost after `lostThreshold`. lost → closed is a separate, configurable
 // transition handled by ReapOrphanedLostSessions so operators can tune
 // the orphan-timeout window without recompiling the worker.
+//
+// Every session it moves is announced on flightdeck_fleet once its
+// UPDATE has committed, so an open dashboard shows the run go stale or
+// lost without reloading; the dashboard never applies the thresholds
+// itself. A session marked stale and then lost in the same pass is
+// announced once. The stale marks are announced even when the lost
+// step fails: they are committed either way.
 func (w *Writer) ReconcileStaleSessions(ctx context.Context) error {
 	// Mark stale: active sessions with no signal for > staleThreshold
-	_, err := w.pool.Exec(ctx, `
+	stale, err := w.moveSessions(ctx, `
 		UPDATE sessions
 		SET state = 'stale'
 		WHERE state IN ('active', 'idle')
 		  AND last_seen_at < NOW() - make_interval(secs => $1)
+		RETURNING session_id::text
 	`, staleThreshold.Seconds())
 	if err != nil {
 		return fmt.Errorf("mark stale: %w", err)
 	}
 
 	// Mark lost: stale sessions with no signal for > lostThreshold
-	_, err = w.pool.Exec(ctx, `
+	lost, lostErr := w.moveSessions(ctx, `
 		UPDATE sessions
 		SET state = 'lost'
 		WHERE state = 'stale'
 		  AND last_seen_at < NOW() - make_interval(secs => $1)
+		RETURNING session_id::text
 	`, lostThreshold.Seconds())
-	if err != nil {
-		return fmt.Errorf("mark lost: %w", err)
-	}
 
+	w.announce(ctx, "reconcile", stateChanges(stale, lost))
+	if lostErr != nil {
+		return fmt.Errorf("mark lost: %w", lostErr)
+	}
 	return nil
 }
+
+// moveSessions runs a state-transition UPDATE whose RETURNING clause
+// yields the id of each session it moved. It returns once the statement
+// has committed, so announcing the ids afterwards can never reach the
+// hub before the change is visible.
+func (w *Writer) moveSessions(ctx context.Context, sql string, args ...any) ([]string, error) {
+	rows, err := w.pool.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	return pgx.CollectRows(rows, pgx.RowTo[string])
+}
+
+// orphanCloseEventType is the event the reaper writes for each session
+// it closes, and the event_type its notification names, so the hub
+// broadcasts the close like any other session_end.
+const orphanCloseEventType = "session_end"
 
 // ReapOrphanedLostSessions closes lost sessions that have been silent
 // longer than `threshold`, stamping close_reason="orphan_timeout" via
@@ -1238,14 +1271,16 @@ func (w *Writer) ReconcileStaleSessions(ctx context.Context) error {
 // rather than fighting for the same row. The synthetic event uses
 // gen_random_uuid()/NOW() defaults; downstream consumers (close-reason
 // facet, session detail fetch) treat it identically to a plugin- or
-// sensor-emitted session_end. Returns the number of sessions reaped
-// so the caller can bump metrics.IncrSessionClosed.
+// sensor-emitted session_end. Once the statement has committed, each
+// closed session is announced on flightdeck_fleet with its synthetic
+// event, so an open dashboard receives the close as a session_end.
+// Returns the number of sessions reaped so the caller can bump
+// metrics.IncrSessionClosed.
 func (w *Writer) ReapOrphanedLostSessions(
 	ctx context.Context,
 	threshold time.Duration,
 ) (int, error) {
-	var reaped int
-	err := w.pool.QueryRow(ctx, `
+	rows, err := w.pool.Query(ctx, `
 		WITH expired AS (
 			SELECT session_id, flavor
 			FROM sessions
@@ -1262,15 +1297,26 @@ func (w *Writer) ReapOrphanedLostSessions(
 		),
 		inserted AS (
 			INSERT INTO events (session_id, flavor, event_type, payload)
-			SELECT e.session_id, e.flavor, 'session_end',
+			SELECT e.session_id, e.flavor, $2::text,
 			       jsonb_build_object('close_reason', 'orphan_timeout')
 			FROM expired e
-			RETURNING id
+			RETURNING session_id, id
 		)
-		SELECT COUNT(*)::int FROM closed
-	`, threshold.Seconds()).Scan(&reaped)
+		SELECT c.session_id::text, COALESCE(i.id::text, '')
+		FROM closed c
+		LEFT JOIN inserted i ON i.session_id = c.session_id
+	`, threshold.Seconds(), orphanCloseEventType)
 	if err != nil {
 		return 0, fmt.Errorf("reap orphaned lost sessions (threshold=%s): %w", threshold, err)
 	}
-	return reaped, nil
+	closes, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (fleetNotifyPayload, error) {
+		p := fleetNotifyPayload{EventType: orphanCloseEventType}
+		err := row.Scan(&p.SessionID, &p.EventID)
+		return p, err
+	})
+	if err != nil {
+		return 0, fmt.Errorf("reap orphaned lost sessions (threshold=%s): %w", threshold, err)
+	}
+	w.announce(ctx, "reap", closes)
+	return len(closes), nil
 }

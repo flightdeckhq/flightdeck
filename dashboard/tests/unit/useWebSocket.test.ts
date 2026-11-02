@@ -102,6 +102,30 @@ describe("useWebSocket", () => {
     expect(FakeSocket.instances).toHaveLength(1);
   });
 
+  it("calls onReconnect when a socket opens after one was lost, never on the first open", () => {
+    const onReconnect = vi.fn();
+    renderHook(() => useWebSocket("ws://x/fleet", () => {}, onReconnect));
+    act(() => FakeSocket.instances[0]!.onopen?.());
+    expect(onReconnect).not.toHaveBeenCalled();
+
+    // The stream drops; the retry opens: that is a reconnect.
+    act(() => FakeSocket.instances[0]!.close());
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    expect(onReconnect).not.toHaveBeenCalled();
+    act(() => FakeSocket.instances[1]!.onopen?.());
+    expect(onReconnect).toHaveBeenCalledTimes(1);
+
+    // A retry that fails before opening is not one.
+    act(() => FakeSocket.instances[1]!.close());
+    act(() => {
+      vi.advanceTimersByTime(1_000);
+    });
+    act(() => FakeSocket.instances[2]!.close());
+    expect(onReconnect).toHaveBeenCalledTimes(1);
+  });
+
   it("opens nothing for a null url", () => {
     renderHook(() => useWebSocket(null, () => {}));
     expect(FakeSocket.instances).toHaveLength(0);

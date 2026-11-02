@@ -287,6 +287,27 @@ func (s *Store) GetAgentByID(
 	return &a, nil
 }
 
+// GetAgentState returns the agent's rolled-up state ("active" when any
+// of its runs is active, else its most recently started run's state),
+// computed by the same agentStateRollupSQL as GetAgentByID and the
+// agent list, without their topology and context rollups: the hub
+// calls it once per broadcast. An unknown agent yields "".
+func (s *Store) GetAgentState(ctx context.Context, agentID string) (string, error) {
+	var state string
+	err := s.pool.QueryRow(ctx, `
+		SELECT COALESCE(rollup.state, '')
+		FROM agents a
+		LEFT JOIN LATERAL (`+agentStateRollupSQL+`) rollup ON TRUE
+		WHERE a.agent_id = $1::uuid`, agentID).Scan(&state)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get agent state %s: %w", agentID, err)
+	}
+	return state, nil
+}
+
 // buildAgentFilterClause produces the WHERE conditions and their
 // parameter args for an AgentListParams. Returned conds are joined
 // with AND by the caller; each cond uses placeholders that match the

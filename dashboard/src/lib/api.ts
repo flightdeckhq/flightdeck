@@ -192,25 +192,27 @@ export function fetchSession(id: string, eventsLimit?: number): Promise<SessionD
 
 /**
  * Fetch older events for a session via the keyset-cursor variant of
- * GET /v1/events. ``before`` is an RFC 3339 timestamp (typically the
- * oldest occurred_at currently visible in the drawer); the server
- * returns at most ``limit`` rows with occurred_at < before, ordered
- * newest-first. The drawer merges the result into the shared
- * eventsCache and re-sorts ASC.
+ * GET /v1/events. ``cursor`` is the oldest event the drawer holds, in
+ * the server's order (occurred_at, then id; see lib/event-order.ts).
+ * The server returns at most ``limit`` rows strictly before it in that
+ * order, newest-first, so events that share the cursor's timestamp are
+ * neither skipped nor repeated. The drawer merges the result into the
+ * shared eventsCache and re-sorts it in the same order.
  */
 export function fetchOlderEvents(
   sessionId: string,
-  before: string,
+  cursor: Pick<AgentEvent, "occurred_at" | "id">,
   limit: number,
 ): Promise<BulkEventsResponse> {
-  // ``from`` is required by the endpoint but a keyset-by-before query
-  // is already scoped to occurred_at < before; passing the Unix epoch
-  // makes the time-window filter a no-op so the cursor is the only
-  // bound that matters.
+  // ``from`` is required by the endpoint but a keyset query is already
+  // scoped to rows before the cursor; passing the Unix epoch makes the
+  // time-window filter a no-op so the cursor is the only bound that
+  // matters.
   const sp = new URLSearchParams();
   sp.set("from", "1970-01-01T00:00:00Z");
   sp.set("session_id", sessionId);
-  sp.set("before", before);
+  sp.set("before", cursor.occurred_at);
+  sp.set("before_id", cursor.id);
   sp.set("order", "desc");
   sp.set("limit", String(limit));
   return fetchJson<BulkEventsResponse>(`/v1/events?${sp.toString()}`);

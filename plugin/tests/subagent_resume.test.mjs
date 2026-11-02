@@ -397,6 +397,43 @@ describe("a failed POST", () => {
   });
 });
 
+describe("an end still owed when the subagent is resumed", () => {
+  let capture;
+  before(async () => {
+    capture = await startFaultyServer();
+  });
+  after(() => {
+    capture.server.closeAllConnections();
+    capture.server.close();
+  });
+
+  it("is sent before the resume's session_start, so it cannot close the resumed child", async () => {
+    const conv = conversation();
+    const box = machine(capture.port);
+    const [first, second] = [msgId(), msgId()];
+    await run(rootHook(conv, "SessionStart", { source: "startup" }), box.env);
+    const [sid] = rootStarts(ofConversation(capture.accepted(), conv)).map((b) => b.session_id);
+    const child = _subagentChildSessionId(sid, conv.agent);
+    append(conv.sub, [userRecord("count the files")]);
+    await run(agentHook(conv, "SubagentStart"), box.env);
+    append(conv.sub, [assistantRecord(first)]);
+    capture.fail((b) => b.event_type === "session_end" && b.session_id === child);
+    await run(agentHook(conv, "SubagentStop", { agent_transcript_path: conv.sub, last_assistant_message: `turn ${first}` }), box.env);
+    // No hook ran in between: the end is still owed when the subagent is resumed.
+    append(conv.sub, [userRecord("The coordinator sent a message while you were working:\nagain")]);
+    await run(agentHook(conv, "SubagentStart"), box.env);
+    append(conv.sub, [assistantRecord(second)]);
+    await run(agentHook(conv, "SubagentStop", { agent_transcript_path: conv.sub, last_assistant_message: `turn ${second}` }), box.env);
+    const bodies = ofSession(ofConversation(capture.accepted(), conv), child);
+    for (const body of bodies) assertIngestionContract(body);
+    assert.deepEqual(
+      bodies.map((b) => (b.event_type === "post_call" ? b.id : b.event_type)),
+      ["session_start", postCallEventId(first), "session_end", "session_start", postCallEventId(second), "session_end"],
+    );
+    assert.equal(ofSession(ofConversation(capture.attempts(), conv), child, "session_end").length, 3, "the first end was sent twice");
+  });
+});
+
 describe("SubagentStop and a final turn Claude Code writes after the hook starts", () => {
   let capture;
   before(async () => {

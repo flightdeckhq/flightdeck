@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import { useFleetStore } from "@/store/fleet";
 import { useFleet } from "@/hooks/useFleet";
@@ -18,10 +18,11 @@ import {
  * KPI sparklines, a left facet sidebar, sort, and pagination.
  *
  * Reads the fleet roster from the shared `useFleetStore`; calls
- * `useFleet()` for its side-effect so the WebSocket subscription
- * is live on this page and the per-agent swimlane modal opened
- * from a row's STATUS chip receives live event ticks via the
- * store's `lastEvent` selector. Without that subscription a
+ * `useFleet()` for its side-effects: it loads the roster when the
+ * page mounts (a direct visit included), and its WebSocket
+ * subscription is live on this page, so the per-agent swimlane
+ * modal opened from a row's STATUS chip receives live event ticks
+ * via the store's `lastEvent` selector. Without that subscription a
  * direct deep-link to `/agents` (no prior `/fleet` visit) would
  * leave `lastEvent` null and the modal's feed would never tick.
  *
@@ -31,27 +32,18 @@ import {
  * chip opens the per-agent swimlane modal.
  */
 export function Agents() {
-  // Side-effect subscription only — the modal's feed reads from
+  // Side-effects only — the modal's feed reads from
   // ``useFleetStore.lastEvent``, not from this hook's return.
-  // useFleet is per-page; navigation cleanly tears down its WS.
+  // useFleet loads the roster on mount, so the page starts no load
+  // of its own: one keyed on an empty roster would load again each
+  // time a load ended empty or failed. useFleet is per-page;
+  // navigation cleanly tears down its WS.
   useFleet();
   const agents = useFleetStore((s) => s.agents);
-  const load = useFleetStore((s) => s.load);
-  const fleetLoading = useFleetStore((s) => s.loading);
   const [, setSearchParams] = useSearchParams();
 
   const [filter, setFilter] = useState<AgentFilterState>(EMPTY_FILTER);
   const [modalAgent, setModalAgent] = useState<AgentSummary | null>(null);
-
-  // Bootstrap the fleet roster when /agents is the first surface
-  // the operator lands on (deep-link or fresh page load). The
-  // store's load() is idempotent + cached so a re-mount of /agents
-  // after navigating Fleet → /agents doesn't refetch.
-  useEffect(() => {
-    if (agents.length === 0 && !fleetLoading) {
-      void load();
-    }
-  }, [agents.length, fleetLoading, load]);
 
   const filtered = useMemo(
     () => filterAgents(agents, filter),

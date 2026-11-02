@@ -171,6 +171,11 @@ func WritePump(client *Client) {
 // PostToolUse flush) commit close together. See
 // workers/internal/writer/notify.go for the writer side of the
 // contract.
+//
+// An empty EventID is a state-only change: the worker changed the
+// session row without writing an event (the reconciler marked it stale
+// or lost, or a child's event revived it). The hub then broadcasts the
+// session it re-reads as a session_update with no last_event.
 type notifyPayload struct {
 	SessionID string `json:"session_id"`
 	EventType string `json:"event_type"`
@@ -218,106 +223,115 @@ func (h *Hub) listenOnce(ctx context.Context, pool *pgxpool.Pool) error {
 		if err != nil {
 			return fmt.Errorf("wait for notification: %w", err)
 		}
-
-		// Special-case the directive-registered sentinel emitted by
-		// store.RegisterDirectives. It is a literal non-JSON string with
-		// no session_id, so JSON-parsing it would spam the warn log on
-		// every directive registration. Re-broadcast as the typed
-		// directives_changed message so future client code can react to
-		// directive registration in real time.
-		if notification.Payload == store.NotifyDirectiveRegistered {
-			msg, _ := json.Marshal(map[string]string{"type": msgTypeDirectivesChange})
+		if msg := h.fleetMessage(ctx, notification.Payload); msg != nil {
 			h.Broadcast(msg)
-			continue
 		}
-
-		// Parse the thin NOTIFY payload to get session_id
-		var np notifyPayload
-		if jsonErr := json.Unmarshal([]byte(notification.Payload), &np); jsonErr != nil {
-			slog.Warn("invalid NOTIFY payload", "payload", notification.Payload, "err", jsonErr)
-			continue
-		}
-
-		if np.SessionID == "" {
-			slog.Warn("NOTIFY payload missing session_id", "payload", notification.Payload)
-			continue
-		}
-
-		// Fetch the full session from the store
-		session, fetchErr := h.store.GetSession(ctx, np.SessionID)
-		if fetchErr != nil {
-			slog.Warn("failed to fetch session for WS broadcast", "session_id", np.SessionID, "err", fetchErr)
-			continue
-		}
-		if session == nil {
-			slog.Debug("session not found for WS broadcast", "session_id", np.SessionID)
-			continue
-		}
-
-		// Fetch exactly the event that triggered this NOTIFY. A
-		// direct GetEvent(event_id) is O(1) (indexed PK lookup)
-		// rather than O(N) over the session's event history, and
-		// eliminates the NOTIFY->SELECT race where
-		// GetSessionEvents + tail would return a later event when
-		// paired writes committed in quick succession.
-		var lastEvent *store.Event
-		if np.EventID != "" {
-			event, evtErr := h.store.GetEvent(ctx, np.EventID)
-			if evtErr != nil {
-				slog.Warn("failed to fetch event for WS broadcast",
-					"event_id", np.EventID,
-					"session_id", np.SessionID,
-					"err", evtErr,
-				)
-				continue
-			}
-			if event == nil {
-				// Possible when the NOTIFY arrives at the hub
-				// before the insert transaction has committed
-				// (uncommon but valid). Skip the broadcast; the
-				// client has no update to apply, and the event
-				// will be picked up by the next bulk fetch or
-				// drawer open.
-				slog.Warn("event not found for WS broadcast",
-					"event_id", np.EventID,
-					"session_id", np.SessionID,
-				)
-				continue
-			}
-			lastEvent = event
-		}
-
-		// Determine update type from event_type
-		var updateType string
-		switch np.EventType {
-		case msgTypeSessionStart:
-			updateType = msgTypeSessionStart
-		case msgTypeSessionEnd:
-			updateType = msgTypeSessionEnd
-		default:
-			updateType = msgTypeSessionUpdate
-		}
-
-		// Build and broadcast the enriched payload. fleetUpdate is
-		// composed of typed *store.Session and *store.Event fields
-		// whose JSON tags use only Go-marshalable primitives, so
-		// json.Marshal cannot fail in practice. Log
-		// at debug rather than error and continue -- a real failure
-		// here would indicate corrupted db state surfacing through
-		// the typed structs and would already have been logged
-		// upstream.
-		msg, marshalErr := json.Marshal(fleetUpdate{
-			Type:      updateType,
-			Session:   session,
-			LastEvent: lastEvent,
-		})
-		if marshalErr != nil {
-			slog.Debug("marshal fleet update (unexpected; typed structs)", "err", marshalErr)
-			continue
-		}
-
-		h.Broadcast(msg)
 	}
+}
+
+// fleetMessage turns one flightdeck_fleet notification into the
+// WebSocket message to broadcast, or nil when there is nothing to send
+// (a payload that does not parse, or a session or event that cannot be
+// read). It re-reads the session rather than trusting anything in the
+// payload, so a broadcast always carries the row as it is now, never
+// older than the change that sent the notification.
+func (h *Hub) fleetMessage(ctx context.Context, payload string) []byte {
+	// Special-case the directive-registered sentinel emitted by
+	// store.RegisterDirectives. It is a literal non-JSON string with
+	// no session_id, so JSON-parsing it would spam the warn log on
+	// every directive registration. Re-broadcast as the typed
+	// directives_changed message so future client code can react to
+	// directive registration in real time.
+	if payload == store.NotifyDirectiveRegistered {
+		msg, _ := json.Marshal(map[string]string{"type": msgTypeDirectivesChange})
+		return msg
+	}
+
+	// Parse the thin NOTIFY payload to get session_id
+	var np notifyPayload
+	if jsonErr := json.Unmarshal([]byte(payload), &np); jsonErr != nil {
+		slog.Warn("invalid NOTIFY payload", "payload", payload, "err", jsonErr)
+		return nil
+	}
+
+	if np.SessionID == "" {
+		slog.Warn("NOTIFY payload missing session_id", "payload", payload)
+		return nil
+	}
+
+	// Fetch the full session from the store
+	session, fetchErr := h.store.GetSession(ctx, np.SessionID)
+	if fetchErr != nil {
+		slog.Warn("failed to fetch session for WS broadcast", "session_id", np.SessionID, "err", fetchErr)
+		return nil
+	}
+	if session == nil {
+		slog.Debug("session not found for WS broadcast", "session_id", np.SessionID)
+		return nil
+	}
+
+	// Fetch exactly the event that triggered this NOTIFY. A
+	// direct GetEvent(event_id) is O(1) (indexed PK lookup)
+	// rather than O(N) over the session's event history, and
+	// eliminates the NOTIFY->SELECT race where
+	// GetSessionEvents + tail would return a later event when
+	// paired writes committed in quick succession. A state-only
+	// change carries no event id and broadcasts the session alone.
+	var lastEvent *store.Event
+	if np.EventID != "" {
+		event, evtErr := h.store.GetEvent(ctx, np.EventID)
+		if evtErr != nil {
+			slog.Warn("failed to fetch event for WS broadcast",
+				"event_id", np.EventID,
+				"session_id", np.SessionID,
+				"err", evtErr,
+			)
+			return nil
+		}
+		if event == nil {
+			// Possible when the NOTIFY arrives at the hub
+			// before the insert transaction has committed
+			// (uncommon but valid). Skip the broadcast; the
+			// client has no update to apply, and the event
+			// will be picked up by the next bulk fetch or
+			// drawer open.
+			slog.Warn("event not found for WS broadcast",
+				"event_id", np.EventID,
+				"session_id", np.SessionID,
+			)
+			return nil
+		}
+		lastEvent = event
+	}
+
+	// Determine update type from event_type
+	var updateType string
+	switch np.EventType {
+	case msgTypeSessionStart:
+		updateType = msgTypeSessionStart
+	case msgTypeSessionEnd:
+		updateType = msgTypeSessionEnd
+	default:
+		updateType = msgTypeSessionUpdate
+	}
+
+	// Build the enriched payload. fleetUpdate is composed of typed
+	// *store.Session and *store.Event fields whose JSON tags use only
+	// Go-marshalable primitives, so json.Marshal cannot fail in
+	// practice. Log at debug rather than error and send nothing -- a
+	// real failure here would indicate corrupted db state surfacing
+	// through the typed structs and would already have been logged
+	// upstream.
+	msg, marshalErr := json.Marshal(fleetUpdate{
+		Type:      updateType,
+		Session:   session,
+		LastEvent: lastEvent,
+	})
+	if marshalErr != nil {
+		slog.Debug("marshal fleet update (unexpected; typed structs)", "err", marshalErr)
+		return nil
+	}
+	return msg
 }
 
 // ListenNotify subscribes to the Postgres NOTIFY channel with automatic

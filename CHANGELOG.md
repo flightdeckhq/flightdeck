@@ -125,10 +125,28 @@ All notable changes to Flightdeck are documented here.
   stack.** nginx stripped the prefix, so Swagger UI's redirect pointed at
   `/docs/index.html`, which is the dashboard. nginx now forwards the path
   as sent, as the Helm chart's Ingress does.
-- **A Claude Code sub-agent has one session start.** Its first interior
-  hooks each sent another `session_start` beside the one from
+- **A Claude Code sub-agent has one session start per run.** Its first
+  interior hooks each sent another `session_start` beside the one from
   `SubagentStart` (two to four per sub-agent); one hook now sends it
-  while the others skip.
+  while the others skip. A sub-agent resumed with `SendMessage`, or
+  woken by a background task it started, is another run of the same
+  child session: it re-opens with a new start, and the run's calls count
+  toward its tokens.
+- **A Claude Code model call whose POST failed is sent again.** The
+  plugin marked a call sent before posting it and never retried it, so a
+  call made while the server was unreachable (a stack restart, a 502) was
+  lost, sub-agent calls included: one dev conversation lost 26 calls
+  (7.6M tokens). The next hook now sends it, and a sub-agent's
+  `session_end` too, after the sub-agent's calls; a call the server
+  refuses as invalid is not retried. When the session ends, the plugin
+  also sends the last calls of its sub-agents, such as one the user
+  stopped before it reported them.
+- **A Claude Code call is reported only under the session it ran in.**
+  After the plugin lost its markers (a reboot with its state in
+  `$TMPDIR`), a resumed conversation re-sent unsent calls under the new
+  session, dated before that session began. A session started with this
+  release sends only the calls made since it began; a call still unsent
+  when its session ended is no longer sent later.
 - **The Helm chart's dashboard pod starts.** The chart ran every pod as
   uid 1000, but the dashboard image's nginx runs as its own user (uid
   101) and could not create its cache directory, so the pod

@@ -348,6 +348,44 @@ function refreshRecentSession(
   );
 }
 
+/** A run's ``started_at`` in ms, oldest possible when it does not parse. */
+function startedMs(run: { started_at: string }): number {
+  const t = Date.parse(run.started_at);
+  return Number.isNaN(t) ? Number.NEGATIVE_INFINITY : t;
+}
+
+/**
+ * Whether a run start adds a run to the agent's ``total_sessions``.
+ * The server counts a run once, when its row is first inserted; a start
+ * of a run the agent already has is a re-attachment (a resumed Claude
+ * Code session, a late OpenTelemetry record re-opening a closed run).
+ * ``recent`` is the agent's ``RECENT_SESSIONS_WINDOW`` newest runs by
+ * ``started_at``. A start of a run in that window is a re-attachment
+ * (or the same start again). A re-attachment keeps the run's
+ * ``started_at`` while a new run starts now, so once the window is full
+ * a start of a run that started before the window's oldest run is a
+ * re-attachment too.
+ */
+function startCountsNewRun(recent: RecentSession[] | undefined, run: Session): boolean {
+  const window = recent ?? [];
+  if (window.some((r) => r.session_id === run.session_id)) return false;
+  if (window.length < RECENT_SESSIONS_WINDOW) return true;
+  return startedMs(run) >= Math.min(...window.map(startedMs));
+}
+
+/** ``recent_sessions`` after a run start: the agent's
+ *  ``RECENT_SESSIONS_WINDOW`` newest runs by ``started_at``, as the API
+ *  builds it. A new run starts now and leads it; a re-attached run keeps
+ *  its place, and one older than a full window's oldest run stays out. */
+function recentAfterStart(
+  recent: RecentSession[] | undefined,
+  started: RecentSession,
+): RecentSession[] {
+  return [started, ...(recent ?? []).filter((r) => r.session_id !== started.session_id)]
+    .sort((a, b) => startedMs(b) - startedMs(a) || 0)
+    .slice(0, RECENT_SESSIONS_WINDOW);
+}
+
 /** A session's ``context.telemetry`` when it is a string, else null:
  *  the value an agent row built from a live update carries as its
  *  ``telemetry``. */
@@ -686,21 +724,17 @@ export const useFleetStore = create<FleetState>((set, get) => ({
         // stale, lost or closed, and comes back when one revives.
         nextAgents = agents.map((a) => {
           if (a.agent_id !== aid) return a;
-          // A run start counts a new run, unless the row already holds
-          // the run: a start re-applied over a snapshot that counted
-          // it, or the same start arriving twice.
+          // A run start counts a new run, unless it re-attaches one the
+          // agent has: a run the row's window holds (a start re-applied
+          // over a snapshot that counted it, the same start arriving
+          // twice, a resume), or one older than a full window.
           const countsNewRun =
-            isStart &&
-            !(a.recent_sessions ?? []).some(
-              (s) => s.session_id === update.session.session_id,
-            );
+            isStart && startCountsNewRun(a.recent_sessions, update.session);
           const recentSessions = isStart
-            ? [
+            ? recentAfterStart(
+                a.recent_sessions,
                 sessionToRecentSession(update.session, parentAgentID),
-                ...(a.recent_sessions ?? []).filter(
-                  (s) => s.session_id !== update.session.session_id,
-                ),
-              ].slice(0, RECENT_SESSIONS_WINDOW)
+              )
             : refreshRecentSession(a.recent_sessions, update.session);
           return {
             ...a,

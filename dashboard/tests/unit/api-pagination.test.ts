@@ -52,16 +52,20 @@ describe("fetchOlderEvents", () => {
     globalThis.fetch = originalFetch;
   });
 
-  it("builds the expected URL with session_id, before, order=desc, and limit", async () => {
-    const before = "2026-04-21T12:00:00Z";
-    await fetchOlderEvents("s1", before, 50);
+  it("builds the expected URL with session_id, the before / before_id cursor, order=desc, and limit", async () => {
+    const before = "2026-04-21T12:00:00.123456Z";
+    const id = "0b6f2c3e-8d4a-4c1f-9e7a-5a2b3c4d5e6f";
+    await fetchOlderEvents("s1", { occurred_at: before, id }, 50);
     const url = String(spy.mock.calls[0][0]);
     // URLSearchParams encodes the colons in ``before``; decode before
     // comparing so the assertion stays readable.
     const decoded = decodeURIComponent(url);
     expect(decoded).toContain("/v1/events?");
     expect(decoded).toContain("session_id=s1");
+    // The cursor is the row, not just its time: the id lets the server
+    // resume after it among events that share the timestamp.
     expect(decoded).toContain(`before=${before}`);
+    expect(decoded).toContain(`before_id=${id}`);
     expect(decoded).toContain("order=desc");
     expect(decoded).toContain("limit=50");
     // The endpoint requires ``from``; the helper passes the Unix epoch

@@ -1,7 +1,8 @@
 import { useEffect, useRef } from "react";
 
-/** First reconnect delay; doubles on each failed attempt. */
-const INITIAL_BACKOFF_MS = 1000;
+/** First reconnect delay; doubles on each failed attempt and starts
+ *  over after a successful open. */
+export const INITIAL_BACKOFF_MS = 1000;
 /** Ceiling for the reconnect delay. */
 const MAX_BACKOFF_MS = 30_000;
 
@@ -20,17 +21,24 @@ const MAX_BACKOFF_MS = 30_000;
  * fresh closure on every render does not retrigger connect /
  * reconnect. The handler ref always points at the latest closure
  * so the WS sees current state without forcing a reconnect.
+ *
+ * ``onReconnect`` runs when a socket opens after an earlier one was
+ * lost, never on the first open. Whatever the server broadcast while
+ * the stream was down is gone, so the caller refetches what it shows.
  */
 export function useWebSocket(
   url: string | null,
-  onMessage: (data: string) => void
+  onMessage: (data: string) => void,
+  onReconnect?: () => void,
 ) {
   const handlerRef = useRef(onMessage);
+  const reconnectRef = useRef(onReconnect);
 
-  // Keep the handler ref in sync without triggering connect.
+  // Keep the handler refs in sync without triggering connect.
   useEffect(() => {
     handlerRef.current = onMessage;
-  }, [onMessage]);
+    reconnectRef.current = onReconnect;
+  }, [onMessage, onReconnect]);
 
   // One connection loop per url. ``active`` is cleared on unmount or
   // url change so a socket closing during teardown does not schedule
@@ -41,6 +49,9 @@ export function useWebSocket(
     let ws: WebSocket | null = null;
     let backoff = INITIAL_BACKOFF_MS;
     let reconnectTimer: number | undefined;
+    // Whether a socket of this loop has opened before: the next open
+    // is then a reconnect.
+    let openedBefore = false;
 
     const connect = () => {
       if (!active) return;
@@ -49,6 +60,8 @@ export function useWebSocket(
 
       socket.onopen = () => {
         backoff = INITIAL_BACKOFF_MS; // reset on successful connect
+        if (openedBefore) reconnectRef.current?.();
+        openedBefore = true;
       };
 
       socket.onmessage = (event: MessageEvent) => {

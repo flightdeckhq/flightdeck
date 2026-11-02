@@ -1127,7 +1127,7 @@ describe("SessionDrawer pagination", () => {
     expect(screen.getByTestId("show-older-events")).toBeInTheDocument();
   });
 
-  it("clicking show-older calls fetchOlderEvents with the oldest visible timestamp", async () => {
+  it("clicking show-older calls fetchOlderEvents with the oldest visible event as the cursor", async () => {
     // Drawer is cache-aware. The cache read path prefers eventsCache
     // over data.events, so we seed it with a saturated list and pull
     // the oldest occurred_at from index 0 to assert the cursor.
@@ -1163,10 +1163,55 @@ describe("SessionDrawer pagination", () => {
     await waitFor(() => {
       expect(mockFetchOlderEvents).toHaveBeenCalledTimes(1);
     });
-    const [sid, before, limit] = mockFetchOlderEvents.mock.calls[0];
+    const [sid, cursor, limit] = mockFetchOlderEvents.mock.calls[0];
     expect(sid).toBe("s1");
-    expect(before).toBe(saturated[0].occurred_at);
+    expect(cursor).toMatchObject({ occurred_at: saturated[0].occurred_at, id: saturated[0].id });
     expect(limit).toBe(100);
+
+    eventsCache.delete("s1");
+  });
+
+  it("among events that share the oldest timestamp, the cursor is the one with the smallest id", async () => {
+    // The server orders ties by id and the keyset resumes strictly
+    // after the cursor row, so the cursor must be the tie's first row
+    // in that order even when the cache holds the tie in another order
+    // (live events are appended as they arrive).
+    const { eventsCache } = await import("@/hooks/useSessionEvents");
+    const tieAt = new Date(1700000000000).toISOString();
+    const saturated = Array.from({ length: 100 }, (_, i) => ({
+      id: `sat-${String(99 - i).padStart(2, "0")}`,
+      session_id: "s1",
+      flavor: "test",
+      event_type: "post_call" as const,
+      model: "claude-sonnet-4-20250514",
+      tokens_input: 10,
+      tokens_output: 5,
+      tokens_total: 15,
+      latency_ms: 100,
+      tool_name: null,
+      has_content: false,
+      // The first three share one timestamp, in descending id order.
+      occurred_at: i < 3 ? tieAt : new Date(1700000000000 + i * 1000).toISOString(),
+    }));
+    eventsCache.set("s1", saturated);
+    mockEventsOverride = saturated;
+    mockFetchOlderEvents.mockResolvedValueOnce({
+      events: [],
+      total: 0,
+      limit: 100,
+      offset: 0,
+      has_more: false,
+    });
+
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("show-older-events"));
+
+    await waitFor(() => {
+      expect(mockFetchOlderEvents).toHaveBeenCalledTimes(1);
+    });
+    const [, cursor] = mockFetchOlderEvents.mock.calls[0];
+    // sat-99, sat-98, sat-97 share the timestamp; sat-97 sorts first.
+    expect(cursor).toMatchObject({ occurred_at: tieAt, id: "sat-97" });
 
     eventsCache.delete("s1");
   });

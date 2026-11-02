@@ -37,7 +37,7 @@ const (
 // EventsListHandler handles GET /v1/events.
 //
 // @Summary      List events with filters
-// @Description  Returns events matching time range, flavor, event type, session, agent, model, framework, and event-payload facet filters with pagination. Multi-value filters OR within a dimension and AND across dimensions. Supports an optional “before“ keyset cursor and “order“ direction for newest-first drawer pagination. When “facets=true“ the response is an EventFacets object of per-dimension chip counts computed over the same filter set instead of the paginated event list.
+// @Description  Returns events matching time range, flavor, event type, session, agent, model, framework, and event-payload facet filters with pagination. Multi-value filters OR within a dimension and AND across dimensions. Rows are ordered by occurred_at, then id, both in the requested direction, so offset pages never skip or repeat rows that share a timestamp. Supports an optional “before“ keyset cursor (with “before_id“ for rows that share the cursor's timestamp) and “order“ direction for newest-first drawer pagination. When “facets=true“ the response is an EventFacets object of per-dimension chip counts computed over the same filter set instead of the paginated event list.
 // @Tags         events
 // @Produce      json
 // @Param        from                     query  string  true   "Start time (ISO 8601)"
@@ -66,7 +66,8 @@ const (
 // @Param        process_name             query  []string false "Filter by sessions.context->>'process_name' (repeatable)"
 // @Param        q                        query  string  false  "Free-text ILIKE search across event_type, model, session_id, and the session's agent_name and framework"
 // @Param        facets                   query  bool    false  "When true, return per-dimension facet counts instead of the event list"
-// @Param        before                   query  string  false  "Keyset cursor (ISO 8601). When set, only rows with occurred_at < before are returned. Pair with order=desc for newest-first drawer pagination."
+// @Param        before                   query  string  false  "Keyset cursor (ISO 8601). Alone, only rows with occurred_at < before are returned. Pair with order=desc for newest-first drawer pagination."
+// @Param        before_id                query  string  false  "Id (UUID) of the row at the before cursor. With before, returns the rows strictly before that row in (occurred_at, id) order: occurred_at < before, or occurred_at = before and id < before_id. Requires before."
 // @Param        order                    query  string  false  "Sort order: asc (default) or desc"
 // @Param        limit                    query  int     false  "Max results (default 500, max 2000)"
 // @Param        offset                   query  int     false  "Offset for pagination (default 0, max 100000)"
@@ -149,6 +150,23 @@ func EventsListHandler(s store.Querier) http.HandlerFunc {
 				return
 			}
 			before = parsed
+		}
+
+		// Parse optional ``before_id``: the id of the row at the
+		// ``before`` cursor. Rows sort by occurred_at, then id, so with
+		// it the keyset resumes strictly after that row instead of
+		// dropping every other row that shares its timestamp. It means
+		// nothing without ``before``.
+		beforeID := strings.TrimSpace(q.Get("before_id"))
+		if beforeID != "" {
+			if before.IsZero() {
+				writeError(w, http.StatusBadRequest, "before_id requires before")
+				return
+			}
+			if !uuidRE.MatchString(beforeID) {
+				writeError(w, http.StatusBadRequest, "before_id must be a UUID")
+				return
+			}
 		}
 
 		// Parse optional ``order`` direction. Default ASC preserves the
@@ -251,6 +269,7 @@ func EventsListHandler(s store.Querier) http.HandlerFunc {
 			ProcessNames:            q["process_name"],
 			Query:                   searchQuery,
 			Before:                  before,
+			BeforeID:                beforeID,
 			Order:                   order,
 			Limit:                   limit,
 			Offset:                  offset,

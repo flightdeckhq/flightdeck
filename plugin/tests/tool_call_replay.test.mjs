@@ -13,16 +13,17 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 
 import { postCallEventId } from "../hooks/scripts/claude_code/post_call.mjs";
 import { _subagentChildSessionId } from "../hooks/scripts/claude_code/subagent.mjs";
-import { toolCallEventId } from "../hooks/scripts/claude_code/tools.mjs";
+import { REDACTED_ERROR_MESSAGE, toolCallEventId } from "../hooks/scripts/claude_code/tools.mjs";
 import { readToolUses } from "../hooks/scripts/claude_code/transcript.mjs";
 import {
   assertIngestionContract,
   hookEnv,
+  pollUntil,
   privateTmp,
   runScript,
   startFaultyServer,
@@ -301,6 +302,89 @@ describe("tool events carry an id derived from tool_use_id and are rebuilt after
     assert.equal(rebuilt.duration_ms, 5);
   });
 
+  // What a rebuild sends depends on the capture settings alone, never on
+  // what the transcript holds: here the transcript and the hooks carry
+  // markers in a tool's input, output and error text.
+  const MARKERS = { input: "SECRET_INPUT_MARKER", output: "SECRET_OUTPUT_MARKER", error: "SECRET_ERROR_MARKER" };
+  const leaked = (body) => Object.values(MARKERS).filter((marker) => JSON.stringify(body).includes(marker));
+  for (const [prompts, inputs] of [
+    [false, false],
+    [false, true],
+    [true, false],
+  ]) {
+    it(`with capturePrompts=${prompts} and captureToolInputs=${inputs}, a rebuild from a transcript that holds the content sends no more than the hook's own copy`, async () => {
+      const conv = conversation();
+      const env = machine(capture.port, {
+        FLIGHTDECK_CAPTURE_PROMPTS: String(prompts),
+        FLIGHTDECK_CAPTURE_TOOL_INPUTS: String(inputs),
+      });
+      const [bash, mcp] = [toolUseId(), toolUseId()];
+      const errorText = `${MARKERS.error}: no such file`;
+      await run(rootHook(conv, "SessionStart", { source: "startup" }), env);
+      append(conv.parent, [
+        toolUseRecord(msgId(), bash, "Bash", { command: `cat /${MARKERS.input}` }),
+        toolResultRecord(bash, errorText, true),
+        toolUseRecord(msgId(), mcp, "mcp__fs__read_file", { path: `/${MARKERS.input}` }),
+        toolResultRecord(mcp, [{ type: "text", text: MARKERS.output }]),
+      ]);
+      // Each hook's own POST fails once; a later flushing hook rebuilds it.
+      capture.fail((b) => b.tool_use_id === bash);
+      capture.fail((b) => b.tool_use_id === mcp);
+      await run(
+        rootHook(conv, "PostToolUseFailure", {
+          tool_name: "Bash",
+          tool_use_id: bash,
+          tool_input: { command: `cat /${MARKERS.input}` },
+          error: errorText,
+          is_interrupt: false,
+          duration_ms: 4,
+        }),
+        env,
+      );
+      await run(
+        rootHook(conv, "PostToolUse", {
+          tool_name: "mcp__fs__read_file",
+          tool_use_id: mcp,
+          tool_input: { path: `/${MARKERS.input}` },
+          tool_response: { content: [{ type: "text", text: MARKERS.output }] },
+          mcp_server: { name: "fs", source: "project" },
+          duration_ms: 6,
+        }),
+        env,
+      );
+      await run(rootHook(conv, "Stop"), env);
+      for (const id of [bash, mcp]) {
+        const [own, ...again] = toolEvents(ofConversation(capture.attempts(), conv), id);
+        const [rebuilt] = toolEvents(ofConversation(capture.accepted(), conv), id);
+        assert.equal(again.length, 1, "rebuilt once after the hook's failed POST");
+        assertIngestionContract(rebuilt);
+        assert.deepEqual(
+          leaked(rebuilt).filter((marker) => !leaked(own).includes(marker)),
+          [],
+          "nothing the hook's own copy did not carry",
+        );
+        assert.equal(rebuilt.tool_input ?? null, own.tool_input ?? null);
+        assert.equal(Boolean(rebuilt.has_content), Boolean(own.has_content));
+        if (!inputs) assert.equal(leaked(rebuilt).includes(MARKERS.input), false, "no tool input");
+        if (!prompts) assert.equal(leaked(rebuilt).includes(MARKERS.output), false, "no tool output");
+      }
+      // The error text is content that may quote input or output: it is
+      // sent only when both settings are on.
+      const [bashRebuilt] = toolEvents(ofConversation(capture.accepted(), conv), bash);
+      assert.equal(bashRebuilt.error.message, REDACTED_ERROR_MESSAGE);
+      assert.equal(leaked(bashRebuilt).includes(MARKERS.error), false);
+      if (!prompts && !inputs) {
+        for (const id of [bash, mcp]) {
+          const [rebuilt] = toolEvents(ofConversation(capture.accepted(), conv), id);
+          assert.deepEqual(leaked(rebuilt), [], "no input, output or error text");
+          assert.equal(rebuilt.tool_input ?? null, null);
+          assert.equal(Boolean(rebuilt.has_content), false);
+          assert.equal(rebuilt.content ?? null, null);
+        }
+      }
+    });
+  }
+
   it("a regular hook waits for the transcript's records; the SessionEnd worker sends without them", async () => {
     const conv = conversation();
     const env = machine(capture.port);
@@ -341,5 +425,151 @@ describe("tool events carry an id derived from tool_use_id and are rebuilt after
       events.map((b) => (b.event_type === "post_call" ? b.id : b.event_type === "tool_call" ? b.id : b.event_type)),
       ["session_start", postCallEventId(m1), postCallEventId(m2), toolCallEventId(tu), "session_end"],
     );
+  });
+});
+
+describe("a tool event a live hook is still sending holds back only its own subagent's end", () => {
+  let capture;
+  before(async () => {
+    capture = await startFaultyServer();
+  });
+  after(() => {
+    capture.server.closeAllConnections();
+    capture.server.close();
+  });
+
+  /** Another subagent of ``conv``'s conversation: its transcript and meta file. */
+  function anotherAgent(conv) {
+    const agent = `a${randomUUID().replace(/-/g, "").slice(0, 16)}`;
+    const dir = dirname(conv.sub);
+    writeFileSync(join(dir, `agent-${agent}.meta.json`), JSON.stringify({ agentType: "general-purpose" }));
+    const sub = join(dir, `agent-${agent}.jsonl`);
+    writeFileSync(sub, "");
+    return { agent, sub };
+  }
+  const hookOf = (conv, agent, name, extra = {}) =>
+    rootHook(conv, name, { agent_id: agent, agent_type: "general-purpose", ...extra });
+
+  /** A subagent that runs and stops; its session_end POST fails when ``endFails``, so the end is owed. */
+  async function runAndStop(conv, agent, sub, env, endFails) {
+    const s = rootStarts(conv)[0].session_id;
+    const child = _subagentChildSessionId(s, agent);
+    const m = msgId();
+    append(sub, [userRecord("work")]);
+    await run(hookOf(conv, agent, "SubagentStart"), env);
+    append(sub, [assistantRecord(m)]);
+    if (endFails) capture.fail((b) => b.event_type === "session_end" && b.session_id === child);
+    await run(hookOf(conv, agent, "SubagentStop", { agent_transcript_path: sub, last_assistant_message: `turn ${m}` }), env);
+    return child;
+  }
+
+  /** A live hook (this test process stands in for it) is still sending one of ``child``'s tool events. */
+  function holdToolEvent(env, child, transcript) {
+    const held = toolUseId();
+    const file = join(env.CLAUDE_PLUGIN_DATA, "state", `tool-calls-${child}.json`);
+    const entry = {
+      eventType: "tool_call",
+      toolName: "Bash",
+      hook: "PostToolUse",
+      durationMs: 5,
+      interrupted: null,
+      mcpServer: null,
+      transport: null,
+      at: now(),
+      transcript,
+      pid: process.pid,
+    };
+    writeFileSync(file, JSON.stringify({ [held]: entry }));
+    return { held, file };
+  }
+
+  const rootStarts = (conv) =>
+    ofConversation(capture.accepted(), conv).filter((b) => b.event_type === "session_start" && b.parent_session_id == null);
+  const endOf = (conv, sid) => ofConversation(capture.accepted(), conv).findIndex((b) => b.session_id === sid && b.event_type === "session_end");
+  const owedEnds = (env, s) => JSON.parse(readFileSync(join(env.CLAUDE_PLUGIN_DATA, "state", `subagent-ends-${s}.json`), "utf8"));
+
+  /**
+   * Subagent X has stopped and still owes its end, while a live hook still
+   * sends one of X's tool events; subagent Y was killed with the session,
+   * its last turn unsent, which only the SessionEnd worker's pass sends.
+   */
+  async function heldEndAndKilledSubagent(env) {
+    const conv = conversation();
+    const y = anotherAgent(conv);
+    await run(rootHook(conv, "SessionStart", { source: "startup" }), env);
+    const s = rootStarts(conv)[0].session_id;
+    const cx = await runAndStop(conv, conv.agent, conv.sub, env, true);
+    const holder = holdToolEvent(env, cx, conv.sub);
+    const cy = _subagentChildSessionId(s, y.agent);
+    const my = msgId();
+    append(y.sub, [userRecord("work")]);
+    await run(hookOf(conv, y.agent, "SubagentStart"), env);
+    append(y.sub, [assistantRecord(my)]);
+    return { conv, s, cx, cy, my, holder };
+  }
+
+  it("the SessionEnd worker goes on to the other subagents and leaves the held subagent's end owed", async () => {
+    const env = machine(capture.port);
+    const { conv, s, cx, cy, my } = await heldEndAndKilledSubagent(env);
+    await run(rootHook(conv, "SessionEnd", { reason: "prompt_input_exit" }), env);
+    const bodies = ofConversation(capture.accepted(), conv);
+    assert.ok(endOf(conv, s) >= 0, "the root's end");
+    assert.ok(
+      bodies.some((b) => b.session_id === cy && b.id === postCallEventId(my)),
+      "the killed subagent's last turn, in the pass that is its last chance",
+    );
+    assert.equal(endOf(conv, cx), -1, "X's end waits for the hook still sending X's tool event");
+    const owed = owedEnds(env, s);
+    assert.ok(cx in owed, "X's end is still owed");
+    assert.equal(owed[cx].pid, null, "and released for a later flush");
+  });
+
+  it("the worker sends that end once the hook is done, after the hook's event", async () => {
+    const env = machine(capture.port);
+    const { conv, cx, my, holder } = await heldEndAndKilledSubagent(env);
+    const ending = runScript(JSON.stringify(rootHook(conv, "SessionEnd", { reason: "prompt_input_exit" })), env);
+    // The worker has passed over the subagents (the killed one's last turn
+    // is in) with X's end left pending; now the hook's POST is answered and
+    // it lets go of the event, as sendToolEvent does.
+    await pollUntil(() => capture.accepted().some((b) => b.id === postCallEventId(my)), "the killed subagent's last turn");
+    await fetch(`http://127.0.0.1:${capture.port}/ingest/v1/events`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        event_type: "tool_call",
+        session_id: cx,
+        tool_use_id: holder.held,
+        context: { claude_code_session_id: conv.native },
+      }),
+    });
+    unlinkSync(holder.file);
+    const done = await ending;
+    assert.equal(done.code, 0, done.stderr);
+    const bodies = ofConversation(capture.accepted(), conv);
+    const end = endOf(conv, cx);
+    assert.ok(end >= 0, "X's end, the worker's last try");
+    assert.ok(bodies.findIndex((b) => b.tool_use_id === holder.held) < end, "after the hook's event");
+  });
+
+  it("SubagentStop leaves its end owed behind the held event and still sends the session's other owed ends", async () => {
+    const env = machine(capture.port);
+    const conv = conversation();
+    const z = anotherAgent(conv);
+    await run(rootHook(conv, "SessionStart", { source: "startup" }), env);
+    const s = rootStarts(conv)[0].session_id;
+    // Z stopped earlier and its end's POST failed: the end is owed.
+    const cz = await runAndStop(conv, z.agent, z.sub, env, true);
+    assert.equal(endOf(conv, cz), -1);
+    // X runs; a live hook is still sending one of its tool events when it stops.
+    const cx = _subagentChildSessionId(s, conv.agent);
+    const mx = msgId();
+    append(conv.sub, [userRecord("work")]);
+    await run(agentHook(conv, "SubagentStart"), env);
+    append(conv.sub, [assistantRecord(mx)]);
+    holdToolEvent(env, cx, conv.sub);
+    await run(agentHook(conv, "SubagentStop", { agent_transcript_path: conv.sub, last_assistant_message: `turn ${mx}` }), env);
+    assert.equal(endOf(conv, cx), -1, "X's end waits for the hook");
+    assert.ok(cx in owedEnds(env, s), "and stays owed");
+    assert.ok(endOf(conv, cz) >= 0, "the same SubagentStop sends Z's owed end");
   });
 });

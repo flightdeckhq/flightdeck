@@ -1847,7 +1847,13 @@ result as Claude Code gave it to the model), under the same capture
 rules; the flush stops at the first failed POST. `SubagentStop` and the
 `SessionEnd` worker do so last, taking over entries whose process is
 gone, and send an event whose transcript records cannot be found
-without its content; an earlier hook keeps such an entry for later. Only
+without its content; an earlier hook keeps such an entry for later. A
+subagent's `session_end` follows the tool events its execution owes:
+while a live hook is still sending one, the end stays owed for a later
+flush and the pass goes on with the session's other subagents; the
+`SessionEnd` worker, the end's last chance, waits up to three seconds
+for such a hook before its last try, and a hook still sending after that
+leaves the end unsent. Only
 an event a hook tried to send is rebuilt: a tool use no hook reported (a
 denied permission, a hook Claude Code cancelled before it ran) stays
 unreported, and a hook that carried no `tool_use_id` sends an event

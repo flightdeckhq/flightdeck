@@ -761,6 +761,18 @@ export function readOwedToolCalls(sessionId) {
   return readJsonObject(owedPath(OWED_TOOL_CALLS, sessionId));
 }
 
+/**
+ * Whether another live process is still sending one of the tool events
+ * ``sessionId`` owes: an entry it holds that this process could not take
+ * over. Reads only; takes nothing.
+ */
+export function owedToolCallHeld(sessionId) {
+  return Object.values(readOwedToolCalls(sessionId)).some((entry) => {
+    const holder = Number(entry?.pid);
+    return Number.isInteger(holder) && holder > 0 && holder !== process.pid && processAlive(holder);
+  });
+}
+
 /** Record that ``sessionId`` owes the tool event of ``toolUseId``, held by this process. */
 export function oweToolCall(sessionId, toolUseId, entry) {
   owe(OWED_TOOL_CALLS, sessionId, toolUseId, entry);

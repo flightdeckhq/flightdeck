@@ -413,3 +413,21 @@ under a later coordinator's child; a resumed child stayed closed.
 **Rejected alternative:** late delivery to the old run (changes D212;
 pre-0.7.1 plugins' random-id re-sends would count twice); a child keyed
 on Claude Code's session id (contradicts D190); a child per resume.
+
+## D238 -- A record dated after a closed OTLP sub-agent's end resumes it
+
+**Date:** 2026-11-02
+**Decision:** extends D224. A record of a closed sub-agent dated more
+than a second after its end (its latest `session_end`, on Claude Code's
+clock, unless a later `session_start` is stored: then `ended_at`) gets
+a synthetic `session_start` through the attach path, reopening the
+row; one dated at or before it, or not dated, starts nothing. Every
+request reads its sub-agents' ends.
+**Why:** a `SendMessage` resume runs the sub-agent again under its
+`agent_id` after `subagent_completed`; its records landed on the closed
+row and its tokens were missing from `tokens_used`.
+**Rejected alternative:** never restarting a closed sub-agent (loses a
+resumed run's tokens); restarting on any record (a late async record
+reopens a finished sub-agent); `ended_at` alone (the worker's clock, an
+export interval late); trusting the replica cache (another replica may
+have published the end).

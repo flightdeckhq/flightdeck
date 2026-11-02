@@ -15,6 +15,15 @@ filtered through it) and, for the MCP scenario, the ``mcp`` package:
 
     python tests/otlp/record_claude_code.py
 
+Name scenarios to record only those, replacing their directories and
+leaving the others as they are:
+
+    python tests/otlp/record_claude_code.py subagent-resume-json
+
+A scenario that depends on what the model chooses to do (resuming a
+sub-agent) states what its recording must show, and is not written when
+the run did not do it; run it again.
+
 What reaches a fixture:
 - Log records Flightdeck never maps and that describe the recording
   machine (managed settings, bundled plugins, the user's claude.ai
@@ -119,6 +128,52 @@ def _mcp_config(work: Path) -> list[str]:
     ]
 
 
+def _log_records(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The attributes of every log record of a scenario's JSON log
+    requests, in the order Claude Code emitted them (event.sequence)."""
+    records = [
+        {a["key"]: _json_value(a.get("value")) for a in rec.get("attributes", [])}
+        for doc in docs
+        for rl in doc.get("resourceLogs", [])
+        for sl in rl.get("scopeLogs", [])
+        for rec in sl.get("logRecords", [])
+    ]
+    return sorted(records, key=lambda r: int(r.get("event.sequence") or 0))
+
+
+def _subagent_resumed(records: list[dict[str, Any]]) -> str:
+    """A sub-agent completed, then ran and completed again under the same
+    agent_id; the problem when the recording does not show that."""
+    for agent in {r["agent_id"] for r in records if r.get("agent_id")}:
+        names = [r.get("event.name") for r in records if r.get("agent_id") == agent]
+        if "subagent_completed" not in names:
+            continue
+        after = names[names.index("subagent_completed") + 1 :]
+        if "api_request" in after and "subagent_completed" in after:
+            return ""
+    return "no sub-agent ran and completed again after its subagent_completed"
+
+
+def _subagent_woken(records: list[dict[str, Any]]) -> str:
+    """The parent was told a sub-agent had stopped, sent it no message, and
+    the sub-agent then ran again; the problem when the recording does not
+    show that."""
+    if any(r.get("tool_name") == "SendMessage" for r in records):
+        return "the parent sent the sub-agent a message"
+    agents = {r["agent_id"] for r in records if r.get("agent_id")}
+    for i, r in enumerate(records):
+        prompt = str(r.get("prompt") or "")
+        if r.get("event.name") != "user_prompt" or "<task-notification>" not in prompt:
+            continue
+        for agent in agents:
+            if f"<task-id>{agent}</task-id>" in prompt and any(
+                x.get("agent_id") == agent and x.get("event.name") == "api_request"
+                for x in records[i + 1 :]
+            ):
+                return ""
+    return "no sub-agent ran again after the parent was told it had stopped"
+
+
 SCENARIOS: list[dict[str, Any]] = [
     {
         "name": "bash-json-prompts",
@@ -149,6 +204,38 @@ SCENARIOS: list[dict[str, Any]] = [
         },
         "prompt": "Use the Agent tool to start a general-purpose sub-agent whose only job is to run `echo from-child` with the Bash tool and report the output. Then reply with one word.",
         "args": lambda work: ["--allowedTools", "Agent", "Bash(echo:*)"],
+    },
+    {
+        "name": "subagent-resume-json",
+        "about": "a sub-agent that completes and is resumed with SendMessage",
+        "env": {
+            "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
+            "OTEL_LOG_USER_PROMPTS": "1",
+        },
+        "prompt": "Use the Agent tool to start a general-purpose sub-agent whose only job is to run `echo first-run` with the Bash tool and report the output. Wait until it has finished. Then use the SendMessage tool to send that same sub-agent (address it by the agent id the Agent tool returned) this message: Run `echo second-run` with the Bash tool and report the output. Wait until it has finished again, then reply with one word.",
+        "args": lambda work: [
+            "--allowedTools",
+            "Agent",
+            "SendMessage",
+            "Bash(echo:*)",
+        ],
+        "expect": _subagent_resumed,
+    },
+    {
+        "name": "subagent-wake-json",
+        "about": "a sub-agent that stops with its background Bash task running and is woken when the task finishes",
+        "env": {
+            "OTEL_EXPORTER_OTLP_PROTOCOL": "http/json",
+            "OTEL_LOG_USER_PROMPTS": "1",
+        },
+        "prompt": "Use the Agent tool to start a general-purpose sub-agent with exactly these instructions: 'Start the command `sleep 8 && echo bg-done` with the Bash tool, with run_in_background set to true. Do not wait for it and do not check on it: end your turn right away by replying only the word started. Later, when you are notified that the background command finished, reply with its output.' Then wait for the sub-agent's final result and reply with one word.",
+        "args": lambda work: [
+            "--allowedTools",
+            "Agent",
+            "Bash(sleep:*)",
+            "Bash(echo:*)",
+        ],
+        "expect": _subagent_woken,
     },
     {
         "name": "mcp-json",
@@ -379,12 +466,14 @@ def _record(scenario: dict[str, Any], out_dir: Path) -> int:
     thread.start()
     work = Path(tempfile.mkdtemp(prefix="fd-otlp-record-"))
     try:
+        # Nothing of a Claude Code session the recorder runs inside (its
+        # session, effort, telemetry) or of Flightdeck reaches the run.
         env = {
             k: v
             for k, v in os.environ.items()
             if not (
                 k.startswith(("FLIGHTDECK_", "OTEL_", "CLAUDE_CODE_"))
-                or k == "CLAUDECODE"
+                or k in ("CLAUDECODE", "CLAUDE_EFFORT", "CLAUDE_PID")
             )
         }
         env.update(BASE_ENV)
@@ -421,12 +510,15 @@ def _record(scenario: dict[str, Any], out_dir: Path) -> int:
             "about": scenario["about"],
             "requests": [],
         }
+        log_docs: list[dict[str, Any]] = []
         for req in rec.requests:
             signal, proto = SIGNALS[req["path"]]
             if req["content_type"] == "application/json":
                 doc = _clean_json(signal, json.loads(req["body"]), work)
                 if not any(doc.values()):
                     continue  # every record described the machine
+                if signal == "logs":
+                    log_docs.append(doc)
                 name = f"{len(manifest['requests']) + 1:03d}-{signal}.json"
                 (out_dir / name).write_text(json.dumps(doc, indent=1) + "\n")
             else:
@@ -452,21 +544,39 @@ def _record(scenario: dict[str, Any], out_dir: Path) -> int:
             raise SystemExit(
                 f"scenario {scenario['name']} not written; its output fails the fixture checks: {leaks}"
             )
+        missing = (
+            scenario["expect"](_log_records(log_docs)) if "expect" in scenario else ""
+        )
+        if missing:
+            shutil.rmtree(out_dir)
+            raise SystemExit(
+                f"scenario {scenario['name']} not written: {missing}; the model did not do what the scenario needs, run it again"
+            )
         return len(manifest["requests"])
     finally:
         rec.shutdown()
         shutil.rmtree(work, ignore_errors=True)
 
 
-def main() -> None:
+def main(names: list[str]) -> None:
+    """Record the named scenarios, or every scenario (replacing the
+    version's whole directory) when none is named."""
+    known = [s["name"] for s in SCENARIOS]
+    unknown = sorted(set(names) - set(known))
+    if unknown:
+        raise SystemExit(f"unknown scenarios {unknown}; known: {known}")
     version = _claude_version()
     root = FIXTURES / f"claude-code-{version}"
-    shutil.rmtree(root, ignore_errors=True)
+    if not names:
+        shutil.rmtree(root, ignore_errors=True)
     for scenario in SCENARIOS:
+        if names and scenario["name"] not in names:
+            continue
+        shutil.rmtree(root / scenario["name"], ignore_errors=True)
         count = _record(scenario, root / scenario["name"])
         print(f"recorded {scenario['name']}: {count} requests")
     print(f"wrote {root}")
 
 
 if __name__ == "__main__":
-    main()
+    main(sys.argv[1:])

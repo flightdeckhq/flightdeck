@@ -15,6 +15,8 @@ recorder:
 | `bash-json-prompts` | Bash calls, one failing, over `http/json`, prompts and responses logged |
 | `bash-protobuf-gzip` | the same over `http/protobuf` with gzip, prompts not logged |
 | `subagent-json` | a general-purpose sub-agent that runs a Bash call |
+| `subagent-resume-json` | a sub-agent that completes, is resumed with `SendMessage` under the same `agent_id`, and completes again: one `subagent_completed` per run |
+| `subagent-wake-json` | a sub-agent that stops with its own background Bash task running and is woken when it finishes: no `subagent_completed` at the stop, one at the end |
 | `mcp-json` | an MCP tool call to the in-tree reference server |
 | `api-error-json` | a request for a model that does not exist |
 

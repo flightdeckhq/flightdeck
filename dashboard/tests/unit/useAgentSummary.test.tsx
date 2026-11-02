@@ -183,12 +183,56 @@ describe("useAgentSummary", () => {
       tokens_cache_read: 0,
       tokens_cache_creation: 0,
     };
+    const beforeTokens = result.current.summary!.totals.tokens;
     act(() => {
       useFleetStore.setState({ lastEvent: event });
     });
     await waitFor(() => {
       expect(result.current.summary!.totals.errors).toBe(beforeErrors + 1);
     });
+    // An llm_error with no billed tokens adds none.
+    expect(result.current.summary!.totals.tokens).toBe(beforeTokens);
+  });
+
+  it("counts a failed stream's billed tokens from its llm_error", async () => {
+    const { result } = renderHook(() =>
+      useAgentSummary("agent-7", { period: "7d", bucket: "day" }),
+    );
+    await waitFor(() => {
+      expect(result.current.summary).not.toBeNull();
+    });
+    const totals = result.current.summary!.totals;
+    const series = result.current.summary!.series;
+    const beforeTokens = totals.tokens;
+    const beforeErrors = totals.errors;
+    const beforeBucket = series[series.length - 1]!.tokens;
+
+    // The worker stores the stream's partial tokens as the llm_error's
+    // token columns, which is what the event row carries.
+    const event: AgentEvent = {
+      id: "e-failed-stream",
+      session_id: "s1",
+      flavor: "agent-7",
+      event_type: "llm_error",
+      occurred_at: new Date().toISOString(),
+      has_content: false,
+      tokens_input: 1500,
+      tokens_output: 240,
+      tokens_total: 1740,
+      tokens_cache_read: 0,
+      tokens_cache_creation: 0,
+    };
+    act(() => {
+      useFleetStore.setState({ lastEvent: event });
+    });
+    await waitFor(() => {
+      expect(result.current.summary!.totals.tokens).toBe(beforeTokens + 1740);
+    });
+    const after = result.current.summary!;
+    expect(after.totals.errors).toBe(beforeErrors + 1);
+    expect(after.series[after.series.length - 1]!.tokens).toBe(
+      beforeBucket + 1740,
+    );
   });
 
   it("ignores events for OTHER agents", async () => {

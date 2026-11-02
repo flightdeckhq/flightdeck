@@ -75,6 +75,19 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **Tokens of a stream that failed midway count in the server totals.**
+  The provider bills the tokens a stream delivered before it failed, and
+  the sensor reports them on the `llm_error`
+  (`error.partial_tokens_input` / `partial_tokens_output`), but only its
+  local budget counted them. The worker now stores them as the
+  `llm_error`'s token counts, so they reach the session's and the agent's
+  token totals, the analytics `tokens`, `estimated_cost`,
+  `parent_token_sum` and `child_token_sum` metrics, the per-agent summary
+  and the dashboard's token totals. They are billed as the session's
+  calls are (a `local` or `subscription` session stays out of the cost)
+  and priced at the model's input and output rates. Errors stored before
+  this release are not recounted
+  ([#172](https://github.com/flightdeckhq/flightdeck/issues/172)).
 - **SIGTERM ends a process that runs the sensor, and a signal can no
   longer hang it.** The sensor's SIGTERM / SIGINT handler ended the
   session on the thread the signal interrupted, so a signal that landed

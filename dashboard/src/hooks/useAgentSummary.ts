@@ -110,7 +110,9 @@ function ensureAgentSummary(
  * here; everything else (mcp_*, policy_*, directive_*) leaves the
  * KPI cells alone. This matches the backend `/v1/agents/:id/summary`
  * shape exactly so the in-place patch can never drift from a
- * fresh fetch.
+ * fresh fetch: tokens count a post_call's `tokens_total` and a failed
+ * stream's, which the worker stores as its llm_error's `tokens_total`
+ * (an llm_error with no billed tokens has none).
  */
 function patchAgentSummaryFromEvent(
   agentId: string,
@@ -130,7 +132,7 @@ function patchAgentSummaryFromEvent(
     if (keyAgentId !== agentId) continue;
 
     let touched = false;
-    if (isPostCall && event.tokens_total) {
+    if ((isPostCall || isError) && event.tokens_total) {
       summary.totals.tokens += event.tokens_total;
       const lastIdx = summary.series.length - 1;
       if (lastIdx >= 0) {

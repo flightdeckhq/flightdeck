@@ -598,6 +598,17 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 			return nil
 		}
 	}
+	// A failed stream's llm_error reports the tokens the provider billed
+	// before the failure; they become the event's token fields, which
+	// the handlers and the stored row count like a call's, billed as the
+	// session's calls are.
+	if applyFailedStreamTokens(&e) && e.BillingMode == "" {
+		mode, err := p.failedStreamBillingMode(ctx, e)
+		if err != nil {
+			return err
+		}
+		e.BillingMode = mode
+	}
 	// Route to the correct session handler
 	switch e.EventType {
 	case "session_start":

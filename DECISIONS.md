@@ -482,3 +482,19 @@ dependency for a sensor that needs only pydantic); replacing
 `sys.modules` with a dict that watches writes (touches every import in
 the process); the hook waiting for the patch lock (deadlocks against a
 `patch()` waiting for that same import).
+
+## D245 -- A failed stream's billed tokens are stored as its llm_error's token columns and count in every total
+
+**Date:** 2026-11-02
+**Decision:** the worker copies an `llm_error`'s `error.partial_tokens_*`
+into its `tokens_input` / `tokens_output` / `tokens_total` (when the event
+sends no top-level counts) with the billing mode of the session's latest
+`post_call`, else the client type's default. Session and agent counters,
+the `tokens` metric, `estimated_cost` and the agent summary count those
+rows; no backfill: older rows keep NULL columns.
+**Why:** one stored value every reader already sums, the dashboard's
+client-side sums included; a failed stream sends no `post_call`.
+**Rejected alternative:** reading the payload at query time (every query
+parses JSON, and analytics would count old rows the stored counters
+never will); a backfill migration (it would add tokens the live rules
+skip, such as a call published after its session ended).

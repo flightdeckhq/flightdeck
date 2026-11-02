@@ -263,6 +263,13 @@ func IsSubagentMetric(metric string) bool {
 	return subagentMetricNames[metric]
 }
 
+// tokenEventFilter restricts a query on events aliased e to the events
+// the tokens metric and the per-agent summary's tokens count: the
+// post_call of every completed or abandoned call and the llm_error of
+// every stream that failed after it was billed for tokens. A failed
+// stream sends no post_call, so no token is counted twice.
+const tokenEventFilter = "(e.event_type = 'post_call' OR " + failedStreamFilter + ")"
+
 // metricSpecs returns the specification for the requested metric.
 // “estimated_cost“ is computed from the static pricing table; see
 // pricing.go.
@@ -272,7 +279,7 @@ func metricSpecs() map[string]metricSpec {
 			baseTable: "events", alias: "e",
 			agg:         "COALESCE(SUM(e.tokens_total), 0)",
 			timeCol:     "e.occurred_at",
-			whereClause: "e.event_type = 'post_call'",
+			whereClause: tokenEventFilter,
 		},
 		"sessions": {
 			baseTable: "sessions", alias: "s",

@@ -3419,7 +3419,8 @@ published after it (see Session attachment flow).
   state=active (a closed row is revived unless its own `session_end` was
   published after this start), record the start's stream sequence.
 - `HandlePostCall`: add the event's `tokens_total`, when positive, to
-  `tokens_used`; update the session's model; advance last_seen_at. The
+  `tokens_used` (an `llm_error`'s is the tokens of its failed stream; see
+  Database, `events`); update the session's model; advance last_seen_at. The
   policy evaluator then runs for `post_call` only. The same handler
   serves `pre_call`, `tool_call`, `embeddings`, `llm_error`,
   `directive_result`, the policy events and the MCP events; one without a
@@ -3732,9 +3733,18 @@ CREATE INDEX events_type_idx    ON events (event_type, occurred_at);
 ```
 
 The token columns other than the cache pair are nullable so that "not
-reported" stays distinct from zero. `model` holds the canonical model
-id and `model_requested` / `model_served` the verbatim ones (see Cost
-estimation).
+reported" stays distinct from zero. On an `llm_error` row they hold the
+tokens the provider billed for a stream that failed after delivering
+usage: the worker copies `error.partial_tokens_input` and
+`error.partial_tokens_output` into `tokens_input` and `tokens_output`,
+with their sum as `tokens_total`, when the event reports no top-level
+token counts of its own. The cache pair stays 0, since the partial
+counts carry no cache split, and the row takes a billing mode as an LLM
+call does (see Cost estimation). No migration fills these columns: an
+`llm_error` row whose token columns are NULL beside partial counts in
+its payload stays so, and its tokens count in no total. `model` holds
+the canonical model id and `model_requested` / `model_served` the
+verbatim ones (see Cost estimation).
 
 `payload` JSONB carries event-type-specific extras: streaming sub-object on
 `post_call`, the token and cost fields that are not columns (see
@@ -4291,7 +4301,10 @@ renaming fields is not.
 
 Returns a series array with per-dimension totals and time-series data.
 GROUP BY queries are built dynamically with parameterized inputs; no raw
-string interpolation. The latency metrics (`latency_avg`, `latency_p50`,
+string interpolation. The `tokens` metric sums `tokens_total` over
+`post_call` events and over `llm_error` events whose failed stream was
+billed for tokens (see `llm_error`); `embeddings` events are not
+included. The latency metrics (`latency_avg`, `latency_p50`,
 `latency_p95`) aggregate `post_call` events only; the `latency_ms` a
 plugin `tool_call` carries (the tool's own duration) is not included.
 
@@ -4326,8 +4339,9 @@ the per-agent landing page. Query params:
 
 Returns:
 
-- `totals.tokens`: `SUM(events.tokens_total)` filtered to
-  `event_type='post_call'`.
+- `totals.tokens`: `SUM(events.tokens_total)` over `post_call` events
+  and the `llm_error` events of failed streams that carry tokens, as the
+  analytics `tokens` metric counts them.
 - `totals.errors`: `COUNT(*)` of events with
   `event_type='llm_error'`. Policy events are enforcement
   decisions, not errors, and are not counted here.
@@ -4421,6 +4435,16 @@ type; the worker fills it in when it writes the row. The cost query
 applies the same rule to a row whose `billing_mode` is empty, so a row
 the backfill (see Model ids) has not reached yet is counted the same
 way.
+
+An `llm_error` that carries the tokens of a failed stream (see
+`llm_error`) arrives without a billing mode, since the sensor stamps one
+only on completed calls. The worker gives it the billing mode of the
+session's latest `post_call`, preferring one of the same model, so a
+session whose calls are `local` or `subscription` keeps its failed
+streams out of `estimated_cost` too; a session with no `post_call` yet
+takes its client type's default. Such an event names no platform, so it
+is priced from the `direct` price list, and its input tokens, which
+carry no cache split, at the input rate.
 
 #### Where a call's cost comes from
 
@@ -4590,7 +4614,8 @@ several API replicas starting together write it at most once each.
 
 #### Formula
 
-Per `post_call` and `embeddings` event, with `t_in` the input tokens
+Per `post_call` and `embeddings` event, and per `llm_error` event whose
+failed stream was billed for tokens, with `t_in` the input tokens
 (cache reads and writes included, as the providers report them) and
 `t_cw1h` the one-hour subset of the cache writes:
 
@@ -6455,12 +6480,19 @@ helper the caller read through `get_final_message()`, which leaves
 `partial_chunks=0`) emits `error_type=stream_error` with `abort_reason`
 `error_mid_stream` (or `timeout`), `partial_chunks` (chunks read before
 the failure) and, when the stream had delivered usage,
-`partial_tokens_input` / `partial_tokens_output`. The provider bills those tokens, so the sensor
-adds them to the in-process session counter that drives its local budget
-checks; server-side session totals, the `tokens` metric and
-`estimated_cost` do not include them: the session totals add every event
-that carries `tokens_total` (`post_call` and `embeddings`) and the
-analytics metrics read `post_call` events ([#172](https://github.com/flightdeckhq/flightdeck/issues/172)).
+`partial_tokens_input` / `partial_tokens_output`. The provider bills those
+tokens. The sensor adds them to the in-process session counter that
+drives its local budget checks, and the worker stores them as the
+`llm_error` row's `tokens_input`, `tokens_output` and `tokens_total`
+(see Database, `events`), so they count in the session and agent
+totals, the `tokens` metric, `estimated_cost` and the per-agent summary
+as a completed call's tokens do. Each billed token is reported by one
+event: a stream that completes, or that the caller leaves early, is
+reported by its `post_call` and never by an `llm_error`; a stream that
+fails is reported by the `llm_error` alone (the guard settles a stream
+once, so no `post_call` follows); a retry is a new call with its own
+event; and the `llm_error` that accompanies a billed `post_call` (an
+HTTP 200 refusal, a `parse()` failure) carries no `partial_tokens_*`.
 
 Classification walks the exception's class name first (each SDK names
 its classes consistently; the Anthropic-specific `DeadlineExceededError`,

@@ -129,6 +129,23 @@ SUBAGENT_REFRESH_OFFSET_SEC = 30
 # Playwright worker indefinitely.
 PSQL_EXEC_TIMEOUT_SEC = 10
 
+# How far back ingestion accepts an event's ``occurred_at``: it
+# rejects anything older than NOW() - 48 h with HTTP 400. A role's
+# ``event_offset_floor_sec`` must stay inside this bound, so the
+# seeder refuses a floor past it instead of posting events the API
+# would drop.
+INGESTION_MAX_EVENT_AGE_SEC = 48 * 60 * 60
+
+# Gap between the fan-out coordinator's spawn event and its workers'
+# first events. The connector overlay pairs a child run's first
+# in-window event with the parent's latest event at or before it, and
+# skips the pair when that parent event has already left the window.
+# The gap is therefore the only stretch of each keep-alive cycle in
+# which the window's left edge can drop a fan-out connector; one
+# second keeps it to about 3% of a 30 s cycle, while the spawn still
+# precedes the workers as it does in a real fan-out.
+FANOUT_SPAWN_LEAD_SEC = 1
+
 # Role-name constant for the ``fresh-subagent-in-window`` fixture.
 # Excluded from ``refresh_subagent_events`` because it is already
 # covered by the active-only keep-alive watchdog (T34's
@@ -252,10 +269,17 @@ def _post_session_events(
     # reads ``session.started_at`` for the drawer query so
     # the ancient session shows up correctly.
     MAX_SAFE_EVENT_OFFSET = -3600  # 1h ago, well inside the 48h bound
-    event_started = max(started, MAX_SAFE_EVENT_OFFSET)
-    event_ended = (
-        max(int(ended), MAX_SAFE_EVENT_OFFSET + 60) if ended is not None else None
-    )
+    # A role may lift that clamp with ``event_offset_floor_sec`` so its
+    # events stay inside the run's own span (fanout-worker-lost: a run
+    # last seen 1 h 55 min ago must not carry events from 1 h ago).
+    event_floor = int(role_cfg.get("event_offset_floor_sec", MAX_SAFE_EVENT_OFFSET))
+    if event_floor < -INGESTION_MAX_EVENT_AGE_SEC:
+        raise ValueError(
+            f"event_offset_floor_sec={event_floor} is older than ingestion's "
+            f"{INGESTION_MAX_EVENT_AGE_SEC} s bound; the API would reject the events"
+        )
+    event_started = max(started, event_floor)
+    event_ended = max(int(ended), event_floor + 60) if ended is not None else None
 
     identity = {
         "agent_type": agent_cfg["agent_type"],
@@ -1281,6 +1305,7 @@ def _backdate_session(
     started_offset_sec: int,
     ended_offset_sec: int | None,
     force_state: str | None = None,
+    last_seen_offset_sec: int | None = None,
 ) -> None:
     """Force started_at / last_seen_at / ended_at to the declared offsets
     via ``docker exec psql``. The worker stamps NOW() for these columns
@@ -1298,6 +1323,12 @@ def _backdate_session(
     window does not leave the fixture in state='active'. For stale we
     leave the state alone and let the reconciler classify naturally
     based on last_seen_at.
+
+    ``last_seen_offset_sec`` backdates an open run's last_seen_at
+    apart from its started_at (a lost run that ran for a while before
+    its last signal); without it last_seen_at equals started_at. A
+    closed run's last_seen_at always equals its ended_at, as a real
+    session_end stamps both.
 
     Hardening: although every input here comes
     from hardcoded Python literals in canonical.json or int-coerced
@@ -1330,7 +1361,11 @@ def _backdate_session(
         f"started_at = {started_expr}",
     ]
     if ended_offset_sec is None:
-        parts.append(f"last_seen_at = {started_expr}")
+        if last_seen_offset_sec is None:
+            parts.append(f"last_seen_at = {started_expr}")
+        else:
+            last_seen_secs = abs(int(last_seen_offset_sec))
+            parts.append(f"last_seen_at = NOW() - INTERVAL '{last_seen_secs} seconds'")
     else:
         ended_secs = abs(int(ended_offset_sec))
         parts.append(f"last_seen_at = NOW() - INTERVAL '{ended_secs} seconds'")
@@ -1408,6 +1443,148 @@ def _wait_for_fleet_visibility(expected_agent_names: list[str], timeout: float) 
         f"Fleet did not surface all E2E fixtures after {timeout}s. "
         f"Missing: {missing}. Check workers logs."
     )
+
+
+def _refresh_fanout(
+    agents_cfg: list[dict[str, Any]],
+    roles_cfg: dict[str, dict[str, Any]],
+) -> int:
+    """Pin the fan-out fixture's open runs and post one event on each.
+
+    The roles that declare ``fanout_group`` (one ``coordinator``, its
+    ``worker`` runs) are pinned ``active`` in ONE psql call: psql runs
+    a multi-statement ``-c`` string as a single transaction, so every
+    row shares one NOW() and the workers start at exactly the same
+    instant, as a coordinator's same-role fan-out does. started_at
+    comes from each role's ``started_offset_sec``; last_seen_at is
+    NOW(), so the reconciler never ages them during a run, and
+    ended_at is cleared because only an open run belongs here.
+
+    Then the coordinator posts its spawn tool_call
+    ``FANOUT_SPAWN_LEAD_SEC`` before the workers start, and each worker
+    posts one tool_call at its start, so the window holds a fresh
+    connector pair for every worker whichever range a spec picks.
+
+    Runs on the full seed and on every keep-alive cycle. Returns the
+    number of sessions refreshed (0 when the fixture is absent).
+    """
+    coordinator: tuple[dict[str, Any], str, str] | None = None
+    workers: list[tuple[dict[str, Any], str, str]] = []
+    for agent_cfg in agents_cfg:
+        for role in agent_cfg["session_roles"]:
+            group = roles_cfg[role].get("fanout_group")
+            if group is None:
+                continue
+            entry = (agent_cfg, role, _derive_session_id(agent_cfg["agent_name"], role))
+            if group == "coordinator":
+                coordinator = entry
+            elif group == "worker":
+                workers.append(entry)
+            else:
+                raise ValueError(f"role {role!r}: unknown fanout_group {group!r}")
+    if coordinator is None or not workers:
+        return 0
+
+    pinned = [coordinator, *workers]
+    statements = []
+    for _agent_cfg, role, session_id in pinned:
+        # ``session_id`` is a uuid5 from _derive_session_id and the
+        # offset an int-coerced canonical constant, so neither can
+        # carry SQL syntax into the interpolated statement.
+        UUID(session_id)
+        started_secs = abs(int(roles_cfg[role]["started_offset_sec"]))
+        statements.append(
+            "UPDATE sessions SET state='active', ended_at=NULL, "
+            f"last_seen_at=NOW(), started_at=NOW() - INTERVAL '{started_secs} seconds' "
+            f"WHERE session_id='{session_id}'::uuid"
+        )
+    id_list = ", ".join(f"'{session_id}'::uuid" for _a, _r, session_id in pinned)
+    statements.append(
+        "UPDATE agents SET last_seen_at=NOW() WHERE agent_id IN "
+        f"(SELECT agent_id FROM sessions WHERE session_id IN ({id_list}))"
+    )
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                "docker-postgres-1",
+                "psql",
+                "-U",
+                "flightdeck",
+                "-d",
+                "flightdeck",
+                "-c",
+                "; ".join(statements),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=PSQL_EXEC_TIMEOUT_SEC,
+            check=False,
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        print(f"  warn: fan-out pin failed: {exc}", file=sys.stderr)
+        return 0
+    if result.returncode != 0:
+        print(
+            f"  warn: fan-out pin returned {result.returncode}: {result.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return 0
+
+    def _post_tool_call(
+        agent_cfg: dict[str, Any],
+        role: str,
+        session_id: str,
+        offset_sec: int,
+        tool_name: str,
+    ) -> None:
+        kwargs: dict[str, Any] = {
+            "agent_type": agent_cfg["agent_type"],
+            "client_type": agent_cfg["client_type"],
+            "user": agent_cfg["user"],
+            "hostname": agent_cfg["hostname"],
+            "agent_name": agent_cfg["agent_name"],
+            "framework": agent_cfg["framework"],
+            "model": agent_cfg["model"],
+            "host": agent_cfg["host"],
+        }
+        # A worker's events carry its agent_role so the worker's
+        # UpsertSession keeps the row a sub-agent run.
+        agent_role = roles_cfg[role].get("agent_role")
+        if agent_role:
+            kwargs["agent_role"] = agent_role
+        post_event(
+            make_event(
+                session_id,
+                agent_cfg["flavor"],
+                "tool_call",
+                timestamp=_shift_timestamp(offset_sec),
+                tool_name=tool_name,
+                tool_input={"reason": "seed keeps the fan-out fixture in window"},
+                tool_result={"ok": True},
+                **kwargs,
+            )
+        )
+
+    workers_started = int(roles_cfg[workers[0][1]]["started_offset_sec"])
+    coord_cfg, coord_role, coord_sid = coordinator
+    _post_tool_call(
+        coord_cfg,
+        coord_role,
+        coord_sid,
+        workers_started - FANOUT_SPAWN_LEAD_SEC,
+        "Agent",
+    )
+    for agent_cfg, role, session_id in workers:
+        _post_tool_call(
+            agent_cfg,
+            role,
+            session_id,
+            int(roles_cfg[role]["started_offset_sec"]),
+            "e2e_fanout_work",
+        )
+    return len(pinned)
 
 
 def seed(mode: str = "full") -> None:
@@ -2131,8 +2308,13 @@ def seed(mode: str = "full") -> None:
                 started_offset_sec=int(role_cfg["started_offset_sec"]),
                 ended_offset_sec=role_cfg["ended_offset_sec"],
                 force_state=forced_state,
+                last_seen_offset_sec=role_cfg.get("last_seen_offset_sec"),
             )
             backdated += 1
+
+    # The fan-out coordinator and its open worker runs, pinned together
+    # in both modes (see _refresh_fanout).
+    backdated += _refresh_fanout(agents_cfg, roles_cfg)
 
     # The Claude Code session reported over OTLP goes in through the
     # OTLP receiver (otlp_seed.py), not POST /v1/events; it is
@@ -2190,11 +2372,18 @@ def refresh_subagent_events() -> None:
     # canonical.json. fresh-subagent-in-window is already covered
     # by the active-only keep-alive (it is the SubAgentConnector
     # T34 anchor and needs its parent emitting a fresh event every
-    # cycle); excluding it here avoids double-refresh churn.
+    # cycle); excluding it here avoids double-refresh churn. Roles
+    # that declare ``skip_subagent_refresh`` are left alone too: the
+    # fan-out workers are pinned by the keep-alive, and the lost
+    # worker's extent (started -2 h, last seen -1 h 55 min) would
+    # otherwise stretch to NOW whenever T56 ran, at whatever point in
+    # a parallel run that is.
     subagent_roles = {
         role
         for role, role_cfg in roles_cfg.items()
-        if "parent_role" in role_cfg and role != _ROLE_FRESH_SUBAGENT_IN_WINDOW
+        if "parent_role" in role_cfg
+        and role != _ROLE_FRESH_SUBAGENT_IN_WINDOW
+        and not role_cfg.get("skip_subagent_refresh")
     }
 
     refreshed = 0
@@ -2295,9 +2484,10 @@ if __name__ == "__main__":
         action="store_true",
         help=(
             "Skip initial seeding, fleet-visibility wait, and "
-            "closed/aged/stale backdating. Refresh only the four "
-            "active roles (fresh-active, error-active, mcp-active, "
-            "policy-active). Idempotent and safe to call repeatedly."
+            "closed/aged/stale backdating. Refresh only the active "
+            "roles (fresh-active, error-active, mcp-active, "
+            "policy-active, the connector anchors and the fan-out "
+            "group). Idempotent and safe to call repeatedly."
         ),
     )
     mode_group.add_argument(

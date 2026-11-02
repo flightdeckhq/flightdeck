@@ -1725,9 +1725,18 @@ def seed(mode: str = "full") -> None:
                 # because the LIVE row never mounts. Post-fix: the
                 # agent sits at the top of the swimlane and its row
                 # is always in the materialized band.
+                #
+                # ``ended_at=NULL`` keeps the row the open run it is
+                # declared as. Something outside the suite can close a
+                # fixture run (a Stop All, a session_end from another
+                # process); pinning it active with that stale ended_at
+                # left a row that read as ended before it started, so
+                # the swimlane anchored both of T52's concurrent runs to
+                # the top edge.
                 sql = (
                     "UPDATE sessions SET "
                     "state='active', "
+                    "ended_at=NULL, "
                     "last_seen_at=NOW(), "
                     "started_at=NOW() - INTERVAL '30 seconds' "
                     f"WHERE session_id='{session_id}'::uuid; "

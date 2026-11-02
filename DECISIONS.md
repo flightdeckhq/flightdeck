@@ -307,12 +307,12 @@ caller sent; content capture stores the caller's request); a new
 **Date:** 2026-11-01
 **Decision:** every patched litellm entry point runs under the
 outer-call mark; a nested litellm call passes through only when the
-mark is set and its caller is litellm's responses/completion bridge
-module (matched on the calling frame's module name), so a bridged call
-is reported once, in the caller's entry point's shape.
-**Why:** the bridges re-issue the same call; every other nested litellm
-call (callbacks, custom providers, agentic follow-ups, semantic-cache
-embeddings) is billed on its own and must be policed.
-**Rejected alternative:** passing every nested litellm call through under
-the mark (silences those billed calls and their policy check); patching
-`litellm.main.completion` (every `acompletion` would enter twice).
+mark is set and its caller is a litellm module that re-issues the
+caller's own call (the responses/completion bridges, the fallback loop),
+so the call is reported once, in the caller's entry point's shape, with
+the model that answered; a failed fallback attempt gets no `llm_error`.
+**Why:** those re-issue the same call; other nested litellm calls
+(callbacks, custom providers, agentic follow-ups) are billed on their own.
+**Rejected alternative:** passing every nested call through (hides billed
+calls and their policy check); reporting each fallback attempt (two
+`pre_call`s, and a policy block inside the loop is swallowed by it).

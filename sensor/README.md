@@ -177,5 +177,14 @@ covers `text_completion` and `responses` on each route kind).
   by a litellm callback, guardrail or custom provider, or by a task
   created inside the call, is neither policed nor metered. A litellm
   call made from inside it is a call of its own and is reported; only
-  litellm's responses/completion bridge, which re-issues the same call
-  in another API shape, passes through.
+  litellm's own re-issues of the same call pass through: its
+  responses/completion bridge and its `fallbacks` loop (a call a fallback
+  answered is reported once, with the model that answered; a failed
+  attempt before it is not reported on its own).
+- **Reported twice.** A chat call routed through litellm's MCP gateway
+  (tools that name it), whose re-issue cannot be told from its billed
+  follow-ups; a sync call with `fallbacks` made while an event loop is
+  running in its thread (a notebook), whose attempts run in a worker
+  thread without the call's context; and re-issued calls when another
+  instrumentation library replaces a litellm entry point after
+  `flightdeck_sensor.patch()`.

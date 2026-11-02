@@ -1013,24 +1013,44 @@ provider without a native Responses API (Anthropic) bridges through the
 package-level `litellm.completion` / `acompletion`, and `completion` on a
 Responses-only model (`openai/responses/...`) bridges through the
 package-level `litellm.responses` / `aresponses` -- both patched
-wrappers. The interceptors coordinate through an outer-call mark in
-`interceptor/base.py`: each litellm wrapper runs the underlying litellm
-call inside `outer_intercept()`. An SDK interceptor that finds
+wrappers; and a call with `fallbacks` (passed, or set globally as
+`litellm.model_fallbacks`) runs every attempt, the caller's own model
+first, through the package-level `litellm.acompletion`. The interceptors
+coordinate through an outer-call mark in `interceptor/base.py`: each
+litellm wrapper runs the underlying litellm call inside
+`outer_intercept()`. An SDK interceptor that finds
 `outer_intercept_active()` true hands the call through untouched (no
 `pre_call`, policy check, stream guard or `post_call`). A litellm wrapper
-does so only when the mark is active and its caller is one of the two
-bridge modules (`_BRIDGE_MODULES` in `interceptor/litellm.py`, matched
-on the calling frame's module name; for an async entry point, the frame
-that awaits it): the bridge re-issues the caller's own call in another
-API shape, which the outer wrapper reports. So a litellm call lands as
-one `pre_call`, one policy check and one `post_call`, reported by the
-wrapper of the entry point the caller used, in that entry point's shape.
-Any other litellm call made while one is in flight -- from a callback,
-guardrail or custom provider, or one litellm makes itself (an agentic
-follow-up, a semantic-cache embedding, an LLM judge) -- is a call of its
-own and is policed and metered. A litellm release that moves a bridge
-shows as a double count of that bridge, which the bridge tests catch,
-never as a missed call. The mark is a per-call flag held in a context variable:
+does so only when the mark is active and its caller is one of litellm's
+re-issue modules -- the two bridges and the fallback loop
+(`_REISSUE_MODULES` in `interceptor/litellm.py`, matched on the calling
+frame's module name, which is read only while the mark is active; for an
+async entry point, the frame that awaits it): each re-issues the
+caller's own call, which the outer wrapper reports. So a litellm call
+lands as one `pre_call`, one policy check and one `post_call`, reported
+by the wrapper of the entry point the caller used, in that entry point's
+shape. A call a fallback answered is reported with the response that
+came back, so its `model_served` (and the canonical `model` pricing and
+the model dimension use) is the model that answered, while
+`model_requested` keeps the caller's model; an attempt that failed
+before a fallback answered is not reported on its own (no `llm_error`
+for it), and a call every attempt failed lands as one `llm_error`. Any
+other litellm call made while one is in flight -- from a callback,
+guardrail or custom provider, or one litellm makes itself (an agentic or
+MCP follow-up, a semantic-cache embedding, an LLM judge) -- is a call of
+its own and is policed and metered. A litellm release that moves a
+re-issue shows as a double count of it, which the re-issue tests catch,
+never as a missed call. Three cases are reported twice rather than risk
+hiding a billed call: a chat call routed through litellm's MCP gateway
+(tools that name it), which re-issues the call from the same function
+that makes the follow-up calls after its tools run, so the re-issue
+cannot be told apart; a sync call with `fallbacks` made while an event
+loop is running in its thread (a notebook, a sync call inside async
+code), whose attempts litellm runs in a worker thread it starts without
+copying the context, so the mark does not reach them (pinned by a strict
+`xfail` test); and every re-issued call when an instrumentation library
+replaces a litellm entry point after `flightdeck_sensor.patch()`, which
+puts its own frame where the re-issue check looks. The mark is a per-call flag held in a context variable:
 another thread, or a task created before the call, never sees it, so an SDK
 call they make at the same time is still reported; a task created inside
 the call inherits a copy of the context and reads the mark active while the

@@ -38,7 +38,7 @@ import respx
 import flightdeck_sensor
 
 from .conftest import INGESTION_URL, TOKEN, delete_flavor_data
-from .test_sensor_e2e import _force_reset_sensor
+from .test_sensor_e2e import _force_reset_sensor, _query_events_for_flavor
 from .test_sensor_streaming import (
     _anthropic_events,
     _content_status,
@@ -288,3 +288,36 @@ def test_litellm_responses_content_round_trip_honours_capture(
         assert "Hi there" in body
     else:
         assert status == 404
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_litellm_call_a_fallback_answers_lands_one_post_call_naming_the_answering_model(
+    sensor_reset: None, unique_flavor: str, is_async: bool
+) -> None:
+    """litellm runs every ``fallbacks`` attempt through the patched
+    ``litellm.acompletion``; the attempts are the caller's own call, so it
+    lands as one pre_call and one post_call whose served model (and so the
+    canonical model pricing and the model facet use) is the fallback that
+    answered. litellm's own ``mock_response`` makes the primary fail and
+    the fallback answer, so no provider is called."""
+    flavor = unique_flavor
+    kwargs = {
+        "model": "gpt-4o",
+        "messages": [{"role": "user", "content": "Hello"}],
+        "mock_response": "litellm.InternalServerError",
+        "fallbacks": [{"model": "gpt-4o-mini", "mock_response": "from the fallback"}],
+    }
+    flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+    flightdeck_sensor.patch(quiet=True)
+    if is_async:
+        response = asyncio.run(litellm.acompletion(**kwargs))
+    else:
+        response = litellm.completion(**kwargs)
+    assert response.choices[0].message.content == "from the fallback"
+    post_call = _teardown_and_expect_one(flavor, "post_call")
+    assert post_call["model_requested"] == "gpt-4o"
+    assert post_call["model_served"] == "gpt-4o-mini"
+    assert post_call["model"] == "gpt-4o-mini"
+    types = [e["event_type"] for e in _query_events_for_flavor(flavor)]
+    assert types.count("pre_call") == 1
+    assert "llm_error" not in types

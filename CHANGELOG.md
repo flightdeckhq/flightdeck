@@ -67,8 +67,10 @@ All notable changes to Flightdeck are documented here.
   routes (Anthropic, the native Responses API) not at all. Each call now
   lands as one `post_call` with the usage of the shape that entry point
   returns, also where litellm serves it through the OpenAI SDK or bridges
-  it between `responses` and `completion`; a litellm call a callback or
-  custom provider makes during another is still reported on its own
+  it between `responses` and `completion` or retries it through
+  `fallbacks` (a fallback-served call names the model that answered); a
+  litellm call a callback or custom provider makes during another is
+  still reported on its own
   ([#170](https://github.com/flightdeckhq/flightdeck/issues/170)).
 - **litellm calls made with positional arguments work under the patch.**
   `litellm.completion("gpt-4o", messages)` raised `TypeError` once

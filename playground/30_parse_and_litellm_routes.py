@@ -44,6 +44,10 @@ from _helpers import (
 
 OPENAI_MODEL = "gpt-4o-mini"
 ANTHROPIC_MODEL = "anthropic/claude-haiku-4-5-20251001"
+# A model OpenAI does not serve: the request is refused with a 404 before
+# any token is billed, so a call naming it with ``fallbacks`` is answered
+# by the fallback.
+MISSING_OPENAI_MODEL = "openai/gpt-4o-mini-flightdeck-missing"
 # Output caps: tiny calls. 16 is the Responses API's minimum
 # max_output_tokens; 40 leaves room for the structured-output JSON.
 MAX_TOKENS = 8
@@ -232,6 +236,21 @@ def main() -> None:
     )
     labels.append("responses anthropic bridged")
 
+    # 10. A call with fallbacks whose model does not exist: litellm's
+    # fallback loop retries it on the fallback, through the patched
+    # litellm.acompletion; one post_call, naming the model that answered.
+    timed(
+        "litellm.completion(fallbacks=...) (missing model, fallback answers)",
+        lambda: litellm.completion(
+            model=MISSING_OPENAI_MODEL,
+            fallbacks=[OPENAI_MODEL],
+            messages=[{"role": "user", "content": PROMPT}],
+            max_tokens=MAX_TOKENS,
+        ),
+        lambda r: f"answered by {r.model}",
+    )
+    labels.append("completion fallback")
+
     flightdeck_sensor.teardown()
 
     # ---- what landed -------------------------------------------------------
@@ -257,7 +276,18 @@ def main() -> None:
                 f" streaming={streaming.get('final_outcome')}"
                 f"/{streaming.get('chunk_count')} chunks"
             )
-        if label == "unread view":
+        if label == "completion fallback":
+            detail += (
+                f" requested={event.get('model_requested')}"
+                f" served={event.get('model_served')}"
+            )
+            ok = (
+                (tokens[0] or 0) > 0
+                and (tokens[1] or 0) > 0
+                and event.get("model_requested") == MISSING_OPENAI_MODEL
+                and str(event.get("model_served") or "").startswith(OPENAI_MODEL)
+            )
+        elif label == "unread view":
             ok = (
                 streaming is not None
                 and streaming.get("final_outcome") == "aborted"

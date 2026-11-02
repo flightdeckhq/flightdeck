@@ -4759,7 +4759,12 @@ the canonical contract every future table adoption inherits.
 
 `dashboard/src/pages/Agents.tsx` hosts the `/agents` route. The
 page is a one-row-per-agent sortable table backed by the same
-`GET /v1/fleet` roster the swimlane uses. Each row carries
+`GET /v1/fleet` roster the swimlane uses. It loads that roster
+through `useFleet`, as Fleet does: once when the page mounts (a direct
+visit included), then live. The page starts no load of its own, so an
+empty roster, or a load that failed, waits for the next load (a new
+agent's run, a reconnect, the next visit) instead of loading again at
+once. Each row carries
 per-agent KPI sparklines fetched from
 `GET /v1/agents/:id/summary?period=7d&bucket=day` (one fetch per
 visible row on first mount, cached module-level so a re-render
@@ -5210,10 +5215,15 @@ API read while the request was out. An update broadcast after that
 read can arrive before the response, and the worker sends each state
 change once, so the store keeps such updates: while a load is in
 flight, `applyUpdate` records the newest update per session, and the
-load re-applies them over its snapshot. Updates applied before the
-load started are already in its snapshot and are not re-applied. A
-re-applied run start of an agent the snapshot lacks (filtered out, or
-off the page) draws the run without starting another load.
+load re-applies them over its snapshot in the order of each session's
+latest update, so an agent's badge ends on the state sent last.
+Updates applied before the load started are already in its snapshot
+and are not re-applied. A run start adds to the agent row's run count
+only when the row's recent runs do not already hold that run, so a
+start re-applied over a snapshot that counted it, or a start that
+arrives twice, counts once. A re-applied run start of an agent the
+snapshot lacks (filtered out, or off the page) draws the run without
+starting another load.
 
 One load of a view (page, page size, type filter) runs at a time. A
 call made while that view's load is in flight does not start a second

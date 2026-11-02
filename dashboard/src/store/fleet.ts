@@ -60,9 +60,12 @@ const RECENT_SESSIONS_WINDOW = 5;
  * response lands is newer than the snapshot that would overwrite it, and
  * the worker sends each state change once. While a load is in flight,
  * ``applyUpdate`` records the newest update per session in ``pending``;
- * the load re-applies them over its snapshot. ``replaying`` is set while
- * it does, so a replayed run start of an agent the snapshot lacks
- * (filtered out, or off the page) does not ask for another load.
+ * the load re-applies them over its snapshot in the order of each
+ * session's latest update, so an agent's state ends on the update that
+ * arrived last. A re-applied run start the snapshot already counts is
+ * not counted again. ``replaying`` is set while it does, so a replayed
+ * run start of an agent the snapshot lacks (filtered out, or off the
+ * page) does not ask for another load.
  *
  * One load of a ``view`` (page, page size, type filter) runs at a time.
  * A call for the view in flight sets ``again`` rather than starting a
@@ -567,7 +570,13 @@ export const useFleetStore = create<FleetState>((set, get) => ({
 
   applyUpdate: (update: FleetUpdate) => {
     // A load in flight re-applies this over its snapshot (see liveLoad).
-    liveLoad.pending?.set(update.session.session_id, update);
+    // The session moves to the end, so the replay follows the order of
+    // each session's latest update, and an agent's state ends on the
+    // update that arrived last.
+    if (liveLoad.pending) {
+      liveLoad.pending.delete(update.session.session_id);
+      liveLoad.pending.set(update.session.session_id, update);
+    }
     const { flavors, agents, shuttingDown, enteredBucketAt } = get();
     const activity = isActivity(update);
     // The swimlane shows a state change the worker made only for a run
@@ -673,6 +682,14 @@ export const useFleetStore = create<FleetState>((set, get) => ({
         // stale, lost or closed, and comes back when one revives.
         nextAgents = agents.map((a) => {
           if (a.agent_id !== aid) return a;
+          // A run start counts a new run, unless the row already holds
+          // the run: a start re-applied over a snapshot that counted
+          // it, or the same start arriving twice.
+          const countsNewRun =
+            isStart &&
+            !(a.recent_sessions ?? []).some(
+              (s) => s.session_id === update.session.session_id,
+            );
           const recentSessions = isStart
             ? [
                 sessionToRecentSession(update.session, parentAgentID),
@@ -683,7 +700,7 @@ export const useFleetStore = create<FleetState>((set, get) => ({
             : refreshRecentSession(a.recent_sessions, update.session);
           return {
             ...a,
-            total_sessions: isStart ? a.total_sessions + 1 : a.total_sessions,
+            total_sessions: countsNewRun ? a.total_sessions + 1 : a.total_sessions,
             last_seen_at: activity ? nowIso : a.last_seen_at,
             state: update.agent_state || a.state,
             // A new run is the agent's latest session, so its

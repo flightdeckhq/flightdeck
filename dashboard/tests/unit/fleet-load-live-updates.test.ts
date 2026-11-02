@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // point while the request is out, so a live update broadcast after that
 // read can reach the page before the response does, and the worker sends
 // each state change once. The store must not let the older snapshot
-// undo such an update, and must not let the re-applied updates start
+// undo such an update: it re-applies them in the order they arrived,
+// so an agent's badge ends on the one sent last, without counting a
+// run the snapshot already counts, and without letting them start
 // loads of their own. One load of a view runs at a time: calls for the
 // view in flight get one more load after it, rather than a load each
 // that drops the one before (which a stream of calls would starve),
@@ -44,7 +46,14 @@ vi.mock("@/lib/api", () => ({
 
 import { fetchFleet } from "@/lib/api";
 import { useFleetStore } from "@/store/fleet";
-import type { AgentEvent, AgentSummary, FleetUpdate, Session, SessionState } from "@/lib/types";
+import type {
+  AgentEvent,
+  AgentSummary,
+  FleetUpdate,
+  RecentSession,
+  Session,
+  SessionState,
+} from "@/lib/types";
 
 const NOW_ISO = new Date().toISOString();
 const AGENT = "agent-r";
@@ -76,10 +85,53 @@ function session(over: Partial<Session> = {}): Session {
 }
 
 /** The run as GET /v1/sessions lists it. */
-function listItem(state: SessionState) {
-  const s = session({ state });
+function listItem(state: SessionState, over: Partial<Session> = {}) {
+  const s = session({ state, ...over });
   return { ...s, token_name: null };
 }
+
+/** The run as an agent's ``recent_sessions`` lists it. */
+function recentOf(runId: string): RecentSession {
+  return {
+    session_id: runId,
+    flavor: "flavor-r",
+    agent_type: "production",
+    agent_id: AGENT,
+    state: "active",
+    started_at: NOW_ISO,
+    last_seen_at: NOW_ISO,
+    tokens_used: 0,
+    capture_enabled: false,
+  };
+}
+
+function eventOf(runId: string, eventType: AgentEvent["event_type"]): AgentEvent {
+  return {
+    id: `${eventType}-${runId}`,
+    session_id: runId,
+    flavor: "flavor-r",
+    event_type: eventType,
+    model: null,
+    tokens_input: null,
+    tokens_output: null,
+    tokens_total: null,
+    latency_ms: null,
+    tool_name: null,
+    has_content: false,
+    framework: null,
+    client_type: "flightdeck_sensor",
+    agent_type: "production",
+    occurred_at: NOW_ISO,
+  } as AgentEvent;
+}
+
+/** A new run of the agent starts. */
+const runStart = (runId: string): FleetUpdate => ({
+  type: "session_start",
+  session: session({ session_id: runId }),
+  last_event: eventOf(runId, "session_start"),
+  agent_state: "active",
+});
 
 function agent(over: Partial<AgentSummary> = {}): AgentSummary {
   return {
@@ -284,28 +336,7 @@ describe("load() and live updates that arrive while it is in flight", () => {
 
     // A new run of the agent starts meanwhile. The agent is on the
     // page, so this needs no load of its own.
-    const started: FleetUpdate = {
-      type: "session_start",
-      session: session({ session_id: "run-r-2" }),
-      last_event: {
-        id: "start-2",
-        session_id: "run-r-2",
-        flavor: "flavor-r",
-        event_type: "session_start",
-        model: null,
-        tokens_input: null,
-        tokens_output: null,
-        tokens_total: null,
-        latency_ms: null,
-        tool_name: null,
-        has_content: false,
-        framework: null,
-        client_type: "flightdeck_sensor",
-        agent_type: "production",
-        occurred_at: NOW_ISO,
-      } as AgentEvent,
-      agent_state: "active",
-    };
+    const started = runStart("run-r-2");
     useFleetStore.getState().applyUpdate(started);
     expect(fetchFleet).toHaveBeenCalledTimes(1);
 
@@ -321,5 +352,91 @@ describe("load() and live updates that arrive while it is in flight", () => {
         ?.sessions.map((s) => s.session_id),
     ).toEqual(["run-r-2"]);
     expect(fetchFleet).toHaveBeenCalledTimes(1);
+  });
+
+  it("ends an agent's badge on the update that arrived last, across its runs", async () => {
+    const R1 = RUN;
+    const R2 = "run-r-2";
+    useFleetStore.setState({
+      flavors: [
+        {
+          flavor: AGENT,
+          agent_type: "production",
+          session_count: 2,
+          active_count: 2,
+          tokens_used_total: 0,
+          sessions: [session({ session_id: R2 }), session({ session_id: R1 })],
+          agent_id: AGENT,
+          agent_name: AGENT,
+          last_seen_at: NOW_ISO,
+        },
+      ],
+      agents: [agent({ state: "active" })],
+    });
+    const loading = useFleetStore.getState().load();
+    const apply = (u: FleetUpdate) => useFleetStore.getState().applyUpdate(u);
+
+    // While the load is out: R1 sends an event, then R2 does...
+    apply({
+      type: "session_update",
+      session: session({ session_id: R1 }),
+      last_event: eventOf(R1, "post_call"),
+      agent_state: "active",
+    });
+    apply({
+      type: "session_update",
+      session: session({ session_id: R2 }),
+      last_event: eventOf(R2, "post_call"),
+      agent_state: "active",
+    });
+    // ...R2 closes while R1 is still active...
+    apply({
+      type: "session_end",
+      session: session({ session_id: R2, state: "closed", ended_at: NOW_ISO }),
+      agent_state: "active",
+    });
+    // ...and then R1 goes stale, which leaves the agent no active run.
+    apply({
+      type: "session_update",
+      session: session({ session_id: R1, state: "stale" }),
+      agent_state: "stale",
+    });
+    expect(agentRow()?.state).toBe("stale");
+
+    // The snapshot was read before all of it.
+    await answer(
+      0,
+      [agent({ state: "active" })],
+      [listItem("active", { session_id: R2 }), listItem("active", { session_id: R1 })],
+    );
+    await loading;
+
+    expect(agentRow()?.state).toBe("stale");
+  });
+
+  it("does not count again a run start that the snapshot already counts", async () => {
+    seedHeld("active");
+    const loading = useFleetStore.getState().load();
+
+    // A new run of the agent starts while the load is out...
+    useFleetStore.getState().applyUpdate(runStart("run-r-2"));
+
+    // ...and the API read the snapshot after it: the run is counted.
+    await answer(
+      0,
+      [agent({ total_sessions: 2, recent_sessions: [recentOf("run-r-2"), recentOf(RUN)] })],
+      [listItem("active", { session_id: "run-r-2" }), listItem("active")],
+    );
+    await loading;
+
+    expect(agentRow()?.total_sessions).toBe(2);
+  });
+
+  it("counts a run whose start arrives twice once", () => {
+    seedHeld("active");
+    useFleetStore.getState().applyUpdate(runStart("run-r-2"));
+    useFleetStore.getState().applyUpdate(runStart("run-r-2"));
+
+    expect(agentRow()?.total_sessions).toBe(2);
   });
 });

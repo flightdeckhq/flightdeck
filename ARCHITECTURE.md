@@ -1551,7 +1551,12 @@ counts as unset. Credentials embedded in
 the server URL are stripped before use, and the default token prints
 a warning on every hook unless `FLIGHTDECK_QUIET=1`.
 `FLIGHTDECK_CAPTURE_PROMPTS` and `FLIGHTDECK_CAPTURE_TOOL_INPUTS` stay
-environment variables (see Content Capture).
+environment variables (see Content Capture). A repository's project
+settings (`.claude/settings.json`, `.claude/settings.local.json`) can
+set any of these variables in their `env`, which Claude Code applies
+over the shell and passes to the hooks, so a repository can choose the
+server, the token and the capture switches for the sessions run in it;
+only managed settings, or `--settings`, outrank a repository's settings.
 
 Every event body the plugin POSTs is at most 768 KiB
 (`MAX_EVENT_BODY_BYTES`). Ingestion reads at most 1 MiB of a body and
@@ -3073,8 +3078,13 @@ tool-capture envelope the sensor and plugin use (`provider` `anthropic`,
 or `mcp` with `model` the server name), and error text on its error
 block; content is cut to
 fit the 768 KiB event body limit as the plugin cuts it. Claude Code sends
-the prompt only when `OTEL_LOG_USER_PROMPTS=1` and tool inputs only when
-`OTEL_LOG_TOOL_DETAILS=1`.
+the prompt only when `OTEL_LOG_USER_PROMPTS=1`, and tool inputs and a
+failed tool's error text only when `OTEL_LOG_TOOL_DETAILS=1`. A
+repository's project settings can set `OTEL_RESOURCE_ATTRIBUTES` (and
+with it `flightdeck.capture_prompts`) and `OTEL_SERVICE_NAME` through
+their `env`, which Claude Code applies over the shell, but not the
+`OTEL_LOG_*` switches, which Claude Code ignores there; only managed
+settings, or `--settings`, outrank a repository's settings.
 
 **Lifecycle.** A Claude Code session reported over OTLP has no end event
 of its own (a sub-agent's run ends with `subagent_completed`). It goes

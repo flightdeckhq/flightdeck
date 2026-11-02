@@ -1187,7 +1187,7 @@ sub-agent execution. Each child session carries
 
 | Mechanism | parent_session_id source | agent_role source | Interceptor |
 |---|---|---|---|
-| Claude Code Task subagent | hook payload `session_id` | hook payload `agent_type` (e.g. `"Explore"`) | `plugin/hooks/scripts/claude_code/subagent.mjs` (`SubagentStart` / `SubagentStop`) |
+| Claude Code Task subagent | the outer Flightdeck session id, which the hook payload's `session_id` resolves to (see Plugin, Session identity) | hook payload `agent_type` (e.g. `"Explore"`) | `plugin/hooks/scripts/claude_code/subagent.mjs` (`SubagentStart` / `SubagentStop`) |
 | CrewAI agent execution | parent crew's session | `Agent.role` attribute | `sensor/.../interceptor/crewai.py` (context manager around `Agent.execute`) |
 | LangGraph node execution | parent runner's session | node name | `sensor/.../interceptor/langgraph.py` (agent-bearing nodes only — node body invokes a patched LLM client OR matches `langgraph_agent_node_pattern` regex) |
 
@@ -2007,7 +2007,7 @@ sessions extend the derivation with a conditional 6th input,
 | `agent_id` | UUID | Deterministically derived from the other identity fields via `core/agent_id.py` |
 | `agent_type` | `coding` \| `production` | Sensor `init` kwarg or `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` env. Plugin always emits `coding`; a plugin session's entrypoint / attended / CI / cloud signals are context fields, not identity |
 | `client_type` | one of the values in the client type registry below | Each client sends its own literal: the plugin `claude_code`, the sensor `flightdeck_sensor`; `claude_agent_sdk` is reserved for the Agent SDK interceptor ([#182](https://github.com/flightdeckhq/flightdeck/issues/182)) |
-| `agent_name` | string | Sensor `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` env. Default `{user}@{hostname}`. Plugin uses the user's chosen flavor |
+| `agent_name` | string | Sensor `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` env, default `{user}@{hostname}`. The plugin uses `FLIGHTDECK_AGENT_NAME`, else `{user}@{hostname}`; a sub-agent appends `/{role}`. The plugin's flavor is always `claude-code` |
 | `user` | string | Resolved from `getpass.getuser` (sensor) or `process.env.USER` (plugin) |
 | `agent_role` (optional 6th) | string \| null | Framework-driven on sub-agent sessions. CrewAI: `Agent.role`. LangGraph: node name. Claude Code Task: hook payload `agent_type`. Null on root sessions and direct-SDK sessions |
 
@@ -4539,6 +4539,23 @@ so the curve never anchors off-screen. D3 supplies the time
 scale; the SVG path is constructed in React (Rule 16 — D3 is
 math only, never DOM manipulation).
 
+Each path starts on the rim of the parent's spawn-event circle and
+ends at the centre of the child's first circle inside the time
+domain. Both points are measured from the rendered circles, looked
+up by `data-event-id` inside the parent's and the child's rows (the
+expanded ALL row draws the same events), so a connector lands on its
+circles wherever they sit. The rim radius is half the circle's
+`offsetWidth`, which a hover scale does not change. A pair whose
+circle is not mounted, such as one on a virtualised row, is skipped.
+
+Connectors rest at 10% opacity. Hovering a run's mark (an event
+circle or a run glyph) or focusing a run glyph raises every
+connector that starts or ends on that run to 50%: a parent run lights
+its whole fan-out, and a child run lights only its own link, even
+when several runs share a row. Each mark carries its run's id as
+`data-session-id`, and `Timeline.tsx` reads it from one delegated
+handler. Hovering a connector itself raises it too.
+
 ---
 
 ## Dashboard
@@ -5243,9 +5260,9 @@ from, limit: 500, offset })` (which hits `GET /v1/events`; the
 function also accepts `before` / `order` keyset params for
 newest-first drawer pagination) and returns the chronological list. Fleet groups the result by `session_id` to
 populate `eventsCache` and seeds `feedEvents` from the historical data
-so the live feed is not empty on page load. After the initial load, no
-per-session HTTP fetches happen — WebSocket events flow into the same
-caches.
+so the live feed is not empty on page load. A run with nothing cached
+fetches its own history once, when its row first mounts
+(`useSessionEvents`); WebSocket events flow into the same caches.
 
 ### Timeline
 
@@ -5255,15 +5272,15 @@ with expand-in-place, a shared time axis, and a resizable left panel.
 `leftPanelWidth: number` state initialises from
 `localStorage[LEFT_PANEL_WIDTH_KEY]` clamped to
 `[LEFT_PANEL_MIN_WIDTH, LEFT_PANEL_MAX_WIDTH]` = `[200, 640]`. Default
-is `LEFT_PANEL_DEFAULT_WIDTH` (460), sized so a typical
-`user@host/role` agent name plus the full pill chrome
-(client-type pill, agent-type badge, provider/OS/orchestration
-icons, relationship pill, status badge) fits without truncation
-on first load. `LEFT_PANEL_MAX_WIDTH` (640) gives operators room
-to drag wider for verbose sub-agent role strings; below the
+is `LEFT_PANEL_DEFAULT_WIDTH` (460), sized so a typical `user@host`
+agent name plus the full pill chrome (client-type pill, agent-type
+badge, provider/OS/orchestration icons, relationship pill, status
+badge) fits without truncation on first load. A sub-agent row keeps
+its `/{role}` suffix whole and gives way at the head of its name (see
+the SwimLane section). `LEFT_PANEL_MAX_WIDTH` (640) gives operators
+room to drag wider for verbose sub-agent role strings; below the
 width at which a given name fits, the agent-name link
-ellipsis-truncates with an always-on `title` tooltip (see the
-SwimLane section).
+ellipsis-truncates with an always-on `title` tooltip.
 
 A drag handle is rendered absolutely on the right edge of the
 inner content div, full-height so it stays grabbable as flavor
@@ -5281,9 +5298,9 @@ move and writes through to localStorage immediately via
 `CustomEvent` so Fleet.tsx's left-fade overlay tracks the
 column edge in lockstep.
 
-`leftPanelWidth` flows down as a prop through `SwimLane` →
-`SessionEventRow`. Both components include `leftPanelWidth` in their
-`React.memo` comparators so a drag invalidates every row immediately.
+`leftPanelWidth` flows down as a prop through `VirtualizedSwimLane` to
+`SwimLane`, whose `React.memo` comparator includes it so a drag
+invalidates every row immediately.
 
 Fixed-width canvas: `TIMELINE_WIDTH_PX = 900`. The xScale maps the
 selected range domain to `[0, 900]` for every time range. Wider ranges
@@ -5315,7 +5332,10 @@ collapsed, the row reduces to a 24px-tall toggle bar (matching
 the AGENTS section header height directly below) carrying a
 `ChevronRight` icon + "All" label; clicking the toggle expands
 the row to its full 36px height with the aggregated pulse pane
-(`data-testid="swimlane-all-pulse"`) on the right. The default
+(`data-testid="swimlane-all-pulse"`) on the right. The pane uses the
+agent rows' 19 px inset (see Event circles under SwimLane), so a given
+time sits at the same x on every row, and its circles sit on the pane's
+centre line, inside the row. The default
 is collapsed because the `/agents` page now serves as the
 dedicated fleet-overview surface — the pulse line is redundant
 for most operators but stays one click away. The ALL row
@@ -5326,57 +5346,68 @@ still applies inside each circle via `EventNode.isVisible`.
 ### SwimLane
 
 `dashboard/src/components/timeline/SwimLane.tsx` renders one row per
-agent. Every event from every one of the agent's runs streams onto
-that single timeline row; there are no session sub-rows. Sub-agent
-rows render indented beneath their parent via the `data-topology`
-attribute (`"root"` or `"child"`); the indent + background tint
-chrome lives in `globals.css` under the
-`[data-topology="child"]` selector. Bezier connectors from each
-parent spawn event to its child's first event are drawn by
-`SubAgentConnector.tsx`, anchored to the parent's single-row centre
-Y.
+agent, with one label, one status badge and a fixed 48 px height. Every
+event of every one of the agent's runs streams onto that row; there are
+no per-run rows. Sub-agent rows render indented beneath their parent
+via the `data-topology` attribute (`"root"` or `"child"`); the indent
+and background tint live in `globals.css` under the
+`[data-topology="child"]` selector. `SubAgentConnector.tsx` draws a
+Bezier connector from each parent spawn event to the child run's first
+event in view (see Swimlane sub-agent connector overlay).
 
-The left panel of each row carries the agent label strip in this
-left-to-right order: optional `ClaudeCodeLogo` (on a Claude Code row:
-`client_type` `claude_code`, or the `claude-code` flavor) → agent name →
-`ClientTypePill` (the registry label, e.g. "Claude Code", "Sensor") →
-agent_type badge (coding /
-production) → provider icon → OS icon → orchestration icon →
-`RelationshipPill` (lone / ↳ parent / ⤴ N) → optional
-`SubAgentLostDot` (when the most recent sub-agent session per
-role is in `lost` state) → `AgentStatusBadge` at the right
-edge.
+The left panel of each row carries the agent label strip, in this
+left-to-right order:
+1. optional `ClaudeCodeLogo` (on a Claude Code row: `client_type`
+   `claude_code`, or the `claude-code` flavor);
+2. agent name;
+3. `ClientTypePill` (the registry label, e.g. "Claude Code", "Sensor");
+4. `TelemetrySourcePill` (`OTEL`, only when the agent reports over
+   OpenTelemetry, see Session source);
+5. agent_type badge (coding / production);
+6. provider icon;
+7. OS icon;
+8. orchestration icon;
+9. `RelationshipPill` (`↳ parent` on a sub-agent row, `→ N` on a
+   parent, none on a lone agent);
+10. optional `SubAgentLostDot` (when the most recent sub-agent session
+    per role is in `lost` state);
+11. `AgentStatusBadge` at the right edge.
 
-The agent-name link (`data-testid="swimlane-agent-name-link"`)
-sets `white-space: nowrap`, `overflow: hidden`, and
-`text-overflow: ellipsis` directly so a too-narrow column
-ellipsis-truncates the name rather than wrapping or hard-
-clipping. A native `title` attribute carrying the full
-`agent_name` is set unconditionally — hover reveals the
-complete value at any column width, not just when truncated.
-A `min-width: 3rem` floor (~6 chars + the ellipsis glyph at the
-13 px label font) is the anti-collapse contract: at the 200 px
-`LEFT_PANEL_MIN_WIDTH` floor the label strip's trailing pills,
-provider/OS/orchestration icons, relationship pill, and status
-badge collectively exceed the available row space, so the
-parent's `overflow: hidden` clips those trailing siblings
-before the name shrinks below readability. At the 460-px
-default and 640-px maximum widths the floor never engages —
-the link sits comfortably above 3 rem and the trailing chrome
-all renders.
+The agent-name link (`data-testid="swimlane-agent-name-link"`) sets
+`white-space: nowrap`, `overflow: hidden` and `text-overflow: ellipsis`,
+so a too-narrow column truncates the name rather than wrapping it. It
+carries a native `title` with the full `agent_name` at every width. A
+`min-width: 3rem` floor (about six characters plus the ellipsis at the
+13 px label font) keeps the name from collapsing: at the 200 px
+`LEFT_PANEL_MIN_WIDTH` floor, the trailing chrome clips against the
+strip's `overflow: hidden` first.
 
-The ellipsis fallback is the graceful narrow-width behaviour;
-the resizable column (see Timeline section above) is the
-operator's primary recourse for a long name, with the
-`localStorage`-persisted width so the choice survives
-reloads.
+On a sub-agent row whose name ends in `/{agent_role}` (the role of its
+most recent run), the name renders in two parts: a head, which
+truncates first, and the role suffix
+(`data-testid="swimlane-agent-name-role"`). The part that differs from
+the parent's row therefore stays readable. The role part keeps its
+full width and truncates only once it fills the whole link; it does
+not share the head's shrink, because a fraction of a pixel of shrink
+is enough for the browser to draw its ellipsis. The row's relationship
+pill shrinks, down to 1.75rem with an ellipsis, before the name gives
+up any width. At the 460 px default, a typical `user@host/role`
+sub-agent row shows its role. Root rows, and sub-agent names without
+the suffix, render as one text.
+
+The ellipsis fallback is the graceful narrow-width behaviour. The
+resizable column (see Timeline section above) is the operator's
+primary recourse for a long name, and its `localStorage`-persisted
+width survives reloads.
+
 The provider / OS / orchestration icons derive from the agent's
 most-recent session; the per-event provider logos on event circles
 carry the granular per-call attribution. Per-agent state is the
 max-priority state across the agent's runs (active > idle > stale
-> closed > lost) — the `STATE_ORDINAL` map in `SwimLane.tsx`
-defines the ranking used to roll multiple session states up into
-a single per-agent badge state.
+> closed > lost). The `STATE_ORDINAL` map in `SwimLane.tsx` defines
+the ranking that rolls multiple session states up into a single
+per-agent badge state.
+
 
 `AgentStatusBadge.tsx` renders the state colour dot + label via
 the shared `StatusDot` primitive (`lib/agent-status.tsx`). When
@@ -5396,7 +5427,9 @@ run's `started_at` X; the end glyph is a filled solid square
 triangle's bbox area so the closure reads heavier than the
 start. Both are SVG primitives filled with `var(--accent)`;
 positioning math uses the shared `xScale` from `d3-scale` (D3
-math only, no DOM manipulation). Hover on either glyph
+math only, no DOM manipulation). A glyph is centred on its
+time's x in the same inset wrapper as the event circles, so a
+glyph and a circle at the same instant line up. Hover on either glyph
 surfaces a tooltip with `run_id` (8-char prefix), start time,
 end time (or `running` for an active / idle / stale / lost
 run), state, and total tokens. Click on either glyph opens
@@ -5412,17 +5445,33 @@ alone — no end square. Operators read absence of the end
 square as "still running"; the tooltip's end-time field reads
 `running`.
 
-`EventNode.tsx` — event circles: 20px, lucide icons, CSS tooltip,
-hover scale. `SubAgentConnector.tsx` draws Bezier paths between
-parent spawn events and child first events.
+**Event circles.** `EventNode.tsx` draws each event as a 22 px circle
+(`EVENT_CIRCLE_SIZE`), coloured by event type, with a lucide icon, a
+portal tooltip and a 1.25x hover scale; MCP events are hexagons. A
+circle is centred on its event's x and on the row's centre line, and
+carries `data-event-id` and `data-session-id`. The vertical centring
+is a single CSS translate (`top: 50%` with `translate: 0 -50%`); the
+hover scale is a separate `transform`, so it scales about the circle's
+centre.
 
-`SwimLane` and `EventNode` are wrapped in `React.memo` with custom
-comparators that explicitly include `activeFilter` and
-`leftPanelWidth`. Time-scale updates use `requestAnimationFrame`
-throttling so the swimlane redraws at most once per frame instead
-of once per WebSocket message. `EventNode` opacity is driven by
-React state (`isVisible && mounted`) so the fade-in transition is
-reproducible.
+The panel's positioned wrapper is inset 19 px
+(`TIMELINE_LEFT_INSET_PX`: an 8 px buffer plus half a circle), so the
+oldest circle clears the label strip. The ALL row uses the same
+inset, so a given time sits at the same x on every row. Circles
+within half a circle plus the buffer of "now" are clipped at the
+panel's right edge; the grid overlay draws the now line.
+
+Circles are coloured by event type, never by run, and render at once,
+with no mount fade.
+
+`SwimLane` is wrapped in `React.memo` with a custom comparator that
+includes `activeFilter`, `leftPanelWidth`, `sessionVersions` and the
+scale's domain. `EventNode`'s comparator compares the circle's
+position, size, visibility and event fields, so a row re-render leaves
+unchanged circles alone. The scale's right edge is floored to whole
+seconds, so the domain, and with it every circle's x, changes at most
+once per second. A WebSocket event still re-renders the rows, through
+the `sessionVersions` map.
 
 `VirtualizedSwimLane.tsx` wraps `SwimLane` with an
 IntersectionObserver-backed virtualizer so off-screen agent rows
@@ -5431,10 +5480,7 @@ agent must scroll the fixture into view before asserting on its
 `data-testid` (see `bringSwimlaneRowIntoView` in
 `tests/e2e/_fixtures.ts`).
 
-`SessionEventRow.tsx` renders a single session's per-session event
-strip inside the Events page session drawer. Used only by the
-drawer; the Fleet swimlane renders aggregated events directly on
-the agent row via `SwimLane`.
+`SessionEventRow.tsx` renders one run's event strip; no view mounts it.
 
 ### Fleet panel sidebar
 

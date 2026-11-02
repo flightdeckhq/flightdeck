@@ -36,11 +36,15 @@ import { readTurns } from "./transcript.mjs";
 //     the subagent's transcript and meta file
 //
 // We emit a CHILD session_start (or session_end) whose ``session_id``
-// is a deterministic uuid5 derived from
-// ``(outer_session_id, tool_use_id)`` so SubagentStart and the
-// matching SubagentStop produce the same child id without any
-// disk-marker plumbing. ``parent_session_id`` carries the outer
-// session's id so the worker writes the relationship column.
+// is a deterministic uuid5 of the outer Flightdeck session id (the
+// plugin's session marker, see session.mjs::getSessionId) and the
+// subagent's correlator (``agent_id``, else ``tool_use_id``,
+// ``subagent_id`` or ``id``, see _subagentCorrelator), so
+// SubagentStart, every interior hook and the matching SubagentStop
+// produce the same child id without any disk-marker plumbing.
+// ``parent_session_id`` carries that outer Flightdeck session id, not
+// Claude Code's own ``session_id``, so the worker writes the
+// relationship column.
 // ``agent_role`` joins the agent_id derivation as the conditional
 // 6th input — same uuid the Python sensor produces for
 // a parent / role pair on the same identity 5-tuple.

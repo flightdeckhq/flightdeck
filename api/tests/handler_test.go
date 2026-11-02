@@ -658,6 +658,10 @@ func (m *mockStore) ListAgents(_ context.Context, params store.AgentListParams) 
 // GetAgentByID consults “agentsByID“ and returns the match or
 // nil when the id is absent. Tests set “agentByIDErr“ to simulate
 // a DB failure.
+func (m *mockStore) GetAgentState(_ context.Context, _ string) (string, error) {
+	return "", nil
+}
+
 func (m *mockStore) GetAgentByID(_ context.Context, agentID string) (*store.AgentSummary, error) {
 	m.lastAgentByIDArg = agentID
 	if m.agentByIDErr != nil {

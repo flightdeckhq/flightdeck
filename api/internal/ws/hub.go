@@ -183,10 +183,18 @@ type notifyPayload struct {
 }
 
 // fleetUpdate is the enriched payload broadcast to WebSocket clients.
+//
+// AgentState is the session's agent's rolled-up state as the agent
+// endpoints compute it (active when any of its runs is active, else its
+// newest run's state), read at broadcast time. A page holds only some
+// of an agent's runs, so the dashboard takes the agent's badge from
+// here rather than from the runs it has. Omitted when the session has
+// no agent or the read fails.
 type fleetUpdate struct {
-	Type      string       `json:"type"`
-	Session   *store.Session `json:"session"`
-	LastEvent *store.Event   `json:"last_event,omitempty"`
+	Type       string         `json:"type"`
+	Session    *store.Session `json:"session"`
+	LastEvent  *store.Event   `json:"last_event,omitempty"`
+	AgentState string         `json:"agent_state,omitempty"`
 }
 
 // listenOnce acquires a connection, issues LISTEN, and blocks reading
@@ -304,6 +312,24 @@ func (h *Hub) fleetMessage(ctx context.Context, payload string) []byte {
 		lastEvent = event
 	}
 
+	// The agent's rolled-up state, read after the session so it is at
+	// least as new as the change being broadcast. A failed read only
+	// drops the field: the session update is still worth sending, and
+	// the dashboard keeps the agent's badge as it was.
+	var agentState string
+	if session.AgentID != nil && *session.AgentID != "" {
+		state, stateErr := h.store.GetAgentState(ctx, *session.AgentID)
+		if stateErr != nil {
+			slog.Warn("failed to read agent state for WS broadcast",
+				"agent_id", *session.AgentID,
+				"session_id", np.SessionID,
+				"err", stateErr,
+			)
+		} else {
+			agentState = state
+		}
+	}
+
 	// Determine update type from event_type
 	var updateType string
 	switch np.EventType {
@@ -323,9 +349,10 @@ func (h *Hub) fleetMessage(ctx context.Context, payload string) []byte {
 	// through the typed structs and would already have been logged
 	// upstream.
 	msg, marshalErr := json.Marshal(fleetUpdate{
-		Type:      updateType,
-		Session:   session,
-		LastEvent: lastEvent,
+		Type:       updateType,
+		Session:    session,
+		LastEvent:  lastEvent,
+		AgentState: agentState,
 	})
 	if marshalErr != nil {
 		slog.Debug("marshal fleet update (unexpected; typed structs)", "err", marshalErr)

@@ -3,20 +3,24 @@ package ws
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/api/internal/store"
 )
 
-// fakeStore serves the two reads the hub makes per notification. The
+// fakeStore serves the reads the hub makes per notification. The
 // embedded nil Querier makes any other call panic, so a test fails
 // loudly if the hub starts reading something else.
 type fakeStore struct {
 	store.Querier
-	sessions   map[string]*store.Session
-	events     map[string]*store.Event
-	eventReads []string
+	sessions        map[string]*store.Session
+	events          map[string]*store.Event
+	eventReads      []string
+	agentStates     map[string]string
+	agentStateErr   error
+	agentStateReads []string
 }
 
 func (f *fakeStore) GetSession(_ context.Context, id string) (*store.Session, error) {
@@ -28,15 +32,25 @@ func (f *fakeStore) GetEvent(_ context.Context, id string) (*store.Event, error)
 	return f.events[id], nil
 }
 
+func (f *fakeStore) GetAgentState(_ context.Context, agentID string) (string, error) {
+	f.agentStateReads = append(f.agentStateReads, agentID)
+	if f.agentStateErr != nil {
+		return "", f.agentStateErr
+	}
+	return f.agentStates[agentID], nil
+}
+
 const (
 	testSessionID = "5e6f7a8b-0000-4000-8000-000000000001"
 	testEventID   = "5e6f7a8b-0000-4000-8000-0000000000e1"
+	testAgentID   = "5e6f7a8b-0000-4000-8000-0000000000a1"
 )
 
 // decoded is the broadcast as a dashboard reads it.
 type decoded struct {
-	Type    string `json:"type"`
-	Session struct {
+	Type       string `json:"type"`
+	AgentState string `json:"agent_state"`
+	Session    struct {
 		SessionID string     `json:"session_id"`
 		State     string     `json:"state"`
 		EndedAt   *time.Time `json:"ended_at"`
@@ -65,10 +79,12 @@ func decode(t *testing.T, msg []byte) (decoded, map[string]json.RawMessage) {
 }
 
 func sessionIn(state string, endedAt *time.Time) *store.Session {
+	agentID := testAgentID
 	return &store.Session{
 		SessionID:  testSessionID,
 		Flavor:     "hub-test",
 		AgentType:  "coding",
+		AgentID:    &agentID,
 		State:      state,
 		StartedAt:  time.Now().Add(-time.Hour),
 		LastSeenAt: time.Now().Add(-31 * time.Minute),
@@ -155,6 +171,50 @@ func TestFleetMessage_EventWriteCarriesItsEvent(t *testing.T) {
 	}
 	if d.LastEvent == nil || d.LastEvent.ID != testEventID {
 		t.Errorf("last_event = %+v, want %s", d.LastEvent, testEventID)
+	}
+}
+
+// Every broadcast carries the agent's rolled-up state as the agent
+// endpoints compute it, so a run going stale reports the agent active
+// when another of its runs still is, whatever runs the page holds.
+func TestFleetMessage_CarriesTheAgentsRolledUpState(t *testing.T) {
+	fs := &fakeStore{
+		sessions:    map[string]*store.Session{testSessionID: sessionIn("stale", nil)},
+		agentStates: map[string]string{testAgentID: "active"},
+	}
+	d, _ := decode(t, NewHub(fs).fleetMessage(context.Background(), `{"session_id":"`+testSessionID+`"}`))
+	if d.Session.State != "stale" || d.AgentState != "active" {
+		t.Errorf("session state %q, agent_state %q; want stale and active", d.Session.State, d.AgentState)
+	}
+	if len(fs.agentStateReads) != 1 || fs.agentStateReads[0] != testAgentID {
+		t.Errorf("agent state reads = %v, want one for %s", fs.agentStateReads, testAgentID)
+	}
+}
+
+// A session with no agent carries no agent_state, and a failed read
+// still sends the session update, without the field.
+func TestFleetMessage_AgentStateIsOmittedWhenUnknown(t *testing.T) {
+	noAgent := sessionIn("stale", nil)
+	noAgent.AgentID = nil
+	fs := &fakeStore{sessions: map[string]*store.Session{testSessionID: noAgent}}
+	_, raw := decode(t, NewHub(fs).fleetMessage(context.Background(), `{"session_id":"`+testSessionID+`"}`))
+	if _, ok := raw["agent_state"]; ok {
+		t.Errorf("agent_state %s sent for a session without an agent", raw["agent_state"])
+	}
+	if len(fs.agentStateReads) != 0 {
+		t.Errorf("read agent state %v for a session without an agent", fs.agentStateReads)
+	}
+
+	failing := &fakeStore{
+		sessions:      map[string]*store.Session{testSessionID: sessionIn("stale", nil)},
+		agentStateErr: errors.New("connection reset"),
+	}
+	d, raw := decode(t, NewHub(failing).fleetMessage(context.Background(), `{"session_id":"`+testSessionID+`"}`))
+	if d.Session.State != "stale" {
+		t.Errorf("session state = %q, want the update sent anyway", d.Session.State)
+	}
+	if _, ok := raw["agent_state"]; ok {
+		t.Errorf("agent_state %s sent although its read failed", raw["agent_state"])
 	}
 }
 

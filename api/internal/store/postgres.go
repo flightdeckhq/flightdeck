@@ -104,6 +104,12 @@ type Querier interface {
 	// (nil, nil) for a missing row so the caller can distinguish
 	// 404 from a real DB error.
 	GetAgentByID(ctx context.Context, agentID string) (*AgentSummary, error)
+	// GetAgentState returns an agent's rolled-up state, the same
+	// agentStateRollupSQL value the agent endpoints return, or "" for
+	// an unknown agent. The WebSocket hub sends it with every
+	// broadcast so the dashboard never derives the agent's badge from
+	// the subset of runs a page happens to hold.
+	GetAgentState(ctx context.Context, agentID string) (string, error)
 
 	// AgentSummary powers GET /v1/agents/{id}/summary. The handler
 	// is responsible for confirming the agent exists (via

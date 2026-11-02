@@ -461,9 +461,11 @@ function SwimLaneComponent({
 					<RelationshipPill
 						mode="child"
 						parentName={relationship.parentName}
-						// The parent's name repeats the head of this
-						// row's own name, so the pill gives way
-						// before the name does.
+						// The pill names the parent, which the row's
+						// indent under it already shows (for a plugin
+						// sub-agent it also repeats the head of the
+						// row's own name), so it gives way before the
+						// name does.
 						shrinkable
 						testId="swimlane-relationship-pill"
 						onClick={

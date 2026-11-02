@@ -66,6 +66,9 @@ STRANDS_LATEST = {"OTEL_SEMCONV_STABILITY_OPT_IN": "gen_ai_latest_experimental"}
 STRANDS_REDACTED = {
     "OTEL_SEMCONV_STABILITY_OPT_IN": "gen_ai_latest_experimental,gen_ai_unredacted_attributes="
 }
+# ADK's content off sets the OTel switch and ADK's own switch for its
+# legacy spans (on by default) together: its recording does not isolate
+# what the OTel switch does alone.
 ADK_CONTENT_OFF = {
     **CONTENT_OFF,
     "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS": "false",

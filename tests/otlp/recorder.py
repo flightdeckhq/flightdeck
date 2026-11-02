@@ -17,18 +17,25 @@ checks (fixture_checks.py).
   exemplars, kvlist and array values.
 - A driver can drop log records that describe the recording machine and
   map to nothing (``drop``).
+- A scenario is not written when it still holds the value of a
+  credential in the environment, the host name or the user running the
+  recorder.
 
-Needs ``opentelemetry-proto`` for the protobuf requests.
+Needs ``opentelemetry-proto`` for the protobuf requests, on any protobuf
+release it allows (5.x included).
 """
 
 from __future__ import annotations
 
+import getpass
 import gzip
 import http.server
 import json
 import os
 import re
 import shutil
+import socket
+import subprocess
 import sys
 import threading
 import time
@@ -46,13 +53,23 @@ from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
     ExportTraceServiceRequest,
 )
 
-# The drivers run as scripts from this directory, so the checker is a
-# top-level module here.
-from fixture_checks import PLACEHOLDERS, directory_problems
+try:
+    from .fixture_checks import PLACEHOLDERS, directory_problems
+except ImportError:
+    # The drivers run as scripts from this directory, where the checker
+    # is a top-level module.
+    from fixture_checks import PLACEHOLDERS, directory_problems
 
 REPO = Path(__file__).resolve().parents[2]
 FAKE_HOME = "/home/user"
 FAKE_PROJECT = "/home/user/project"
+FAKE_REPO = f"{FAKE_HOME}/flightdeck"
+# Values too generic to refuse as names of the recording machine: the
+# stand-ins the scrubbing writes, and the loopback host name.
+_GENERIC_NAMES = {"user", "host", "localhost"}
+# The shortest host or user name refused: a shorter one would match too
+# many ordinary words.
+_MIN_NAME_LENGTH = 3
 
 SIGNALS = {
     "/v1/logs": ("logs", ExportLogsServiceRequest),
@@ -130,17 +147,52 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         pass
 
 
+def dashed(path: Path | str) -> str:
+    """A path in the form Claude Code names a project directory by
+    (``/home/a/repo`` -> ``-home-a-repo``)."""
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path))
+
+
+def checkout_roots() -> list[Path]:
+    """This repository's working tree and, when it is a linked worktree,
+    the main checkout it belongs to: either can appear in a recording."""
+    roots = [REPO]
+    try:
+        common = subprocess.run(
+            [
+                "git",
+                "-C",
+                str(REPO),
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        ).stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return roots
+    main = Path(common).parent
+    if common and main != REPO:
+        roots.append(main)
+    return roots
+
+
 def scrubber(work: Path, *interpreters: str) -> Callable[[str], str]:
     """A function that replaces the recording machine's paths in a string:
-    the scenario's working directory (and the dashed form Claude Code
-    names a project by), this repository, the home directory and the
-    Python interpreters that ran."""
+    the scenario's working directory, this repository's checkouts, the
+    home directory (each also in the dashed form Claude Code names a
+    project by) and the Python interpreters that ran."""
+    roots = checkout_roots()
     pairs = sorted(
         [
-            (re.sub(r"[^A-Za-z0-9]", "-", str(work)), "-home-user-project"),
-            (re.sub(r"[^A-Za-z0-9]", "-", str(Path.home())), "-home-user"),
+            (dashed(work), "-home-user-project"),
+            *((dashed(root), dashed(FAKE_REPO)) for root in roots),
+            (dashed(Path.home()), "-home-user"),
             (str(work), FAKE_PROJECT),
-            (str(REPO), f"{FAKE_HOME}/flightdeck"),
+            *((str(root), FAKE_REPO) for root in roots),
             (str(Path.home()), FAKE_HOME),
             *((p, "/usr/bin/python3") for p in (sys.executable, *interpreters)),
         ],
@@ -164,6 +216,31 @@ def secret_values() -> list[str]:
         for name, value in os.environ.items()
         if re.search(r"(KEY|TOKEN|SECRET|PASSWORD)", name) and len(value) >= 12
     ]
+
+
+def machine_values() -> dict[str, str]:
+    """What names the recording machine and that no pattern recognises,
+    by description: its host name (and that name's first label), the user
+    running the recorder, and this repository's checkouts in the dashed
+    form a Claude Code project directory takes (which the scrubbing
+    replaces, so finding one means a form it missed). A fixture holding
+    any of them, as a whole word in any case, is not written."""
+    names: dict[str, str] = {}
+    host = socket.gethostname()
+    for value in (host, host.split(".")[0]):
+        names[f"the host name {value!r}"] = value
+    try:
+        user = getpass.getuser()
+    except (KeyError, OSError):
+        user = ""
+    names[f"the user name {user!r}"] = user
+    for root in checkout_roots():
+        names[f"the checkout path {dashed(root)!r}"] = dashed(root)
+    return {
+        label: value
+        for label, value in names.items()
+        if len(value) >= _MIN_NAME_LENGTH and value.lower() not in _GENERIC_NAMES
+    }
 
 
 # -- JSON requests -----------------------------------------------------------
@@ -222,6 +299,18 @@ def clean_json(
 # -- protobuf requests -------------------------------------------------------
 
 
+def _is_repeated(field: Any) -> bool:
+    """Whether a protobuf field descriptor is a repeated field, on every
+    protobuf release opentelemetry-proto allows: 7 removed ``label`` in
+    favour of ``is_repeated``, which 5.x does not have."""
+    flag = getattr(field, "is_repeated", None)
+    if flag is not None:
+        return bool(flag)
+    from google.protobuf.descriptor import FieldDescriptor
+
+    return bool(field.label == FieldDescriptor.LABEL_REPEATED)
+
+
 def _clean_pb_tree(msg: Any, scrub: Callable[[str], str]) -> None:
     from google.protobuf.descriptor import FieldDescriptor
 
@@ -233,8 +322,7 @@ def _clean_pb_tree(msg: Any, scrub: Callable[[str], str]) -> None:
         msg.value.string_value = PLACEHOLDERS[msg.key]
         return
     for field, value in msg.ListFields():
-        # `is_repeated`, not `label`: protobuf 7 removed `label`.
-        repeated = field.is_repeated
+        repeated = _is_repeated(field)
         if field.type == FieldDescriptor.TYPE_STRING:
             if repeated:
                 for i, item in enumerate(value):
@@ -288,7 +376,8 @@ def write_scenario(
     """Write the recorded requests, cleaned, to ``out_dir`` with a
     ``manifest.json`` (``manifest`` plus the list of requests), and return
     the scenario's JSON log documents. Nothing is kept when the result
-    fails the fixture checks or holds a credential of this environment."""
+    fails the fixture checks, names this machine (``machine_values``) or
+    holds a credential of this environment."""
     out_dir.mkdir(parents=True)
     manifest = {**manifest, "requests": []}
     log_docs: list[dict[str, Any]] = []
@@ -319,7 +408,7 @@ def write_scenario(
             }
         )
     (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
-    leaks = directory_problems(out_dir)
+    leaks = directory_problems(out_dir, machine_values())
     written = b"".join(p.read_bytes() for p in sorted(out_dir.iterdir()))
     if any(secret.encode() in written for secret in secret_values()):
         leaks.append("a credential from this environment")

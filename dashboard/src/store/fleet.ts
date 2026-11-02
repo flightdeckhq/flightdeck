@@ -699,13 +699,21 @@ function applySessionUpdate(
 
 /** The agent row's ``telemetry`` after a live update: the newest
  *  session's ``context.telemetry`` when that session carries its
- *  context, else the row's current value (a session built from the
- *  fleet's ``recent_sessions`` has no context and says nothing about
- *  the source). */
+ *  context, else the row's current value. A session built from the
+ *  fleet's ``recent_sessions`` gets an empty ``{}`` context placeholder
+ *  (the rollup omits the column), which says nothing about the source,
+ *  so it counts as unknown like a missing context. */
 function newestTelemetry(sessions: Session[], current: string | null): string | null {
   let newest: Session | null = null;
   for (const s of sessions) {
     if (!newest || Date.parse(s.started_at) > Date.parse(newest.started_at)) newest = s;
   }
-  return newest?.context ? contextTelemetry(newest) : current;
+  return newest && carriesContext(newest) ? contextTelemetry(newest) : current;
+}
+
+/** True when the session carries a non-empty ``context``. An empty one
+ *  names no source: it is the placeholder of a session whose context
+ *  this page never loaded, or a client that collected none. */
+function carriesContext(session: Session): boolean {
+  return !!session.context && Object.keys(session.context).length > 0;
 }

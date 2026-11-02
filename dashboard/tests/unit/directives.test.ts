@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import type { Session } from "@/lib/types";
 import {
   flavorHasDirectiveCapableSession,
+  hasLiveCustomDirectiveSession,
+  runCountLabel,
   sessionRunsCustomDirectives,
   sessionSupportsDirectives,
   stoppableSessions,
@@ -231,5 +233,33 @@ describe("stoppableSessions", () => {
       mkSession("observer", "active", { supports_directives: false }),
     ];
     expect(stoppableSessions(sessions).map((s) => s.session_id)).toEqual(["live", "idle"]);
+  });
+});
+
+describe("hasLiveCustomDirectiveSession", () => {
+  it("needs a live session that runs custom handlers", () => {
+    const sensorLive = { ...mkSession("s", "idle"), client_type: "flightdeck_sensor" as const };
+    expect(hasLiveCustomDirectiveSession([sensorLive])).toBe(true);
+  });
+
+  it("is false when the only such session is no longer live", () => {
+    // A directive sent from the Fleet row reaches only live runs, so a
+    // closed sensor run beside a live plugin run offers nothing.
+    const sensorClosed = { ...mkSession("s", "closed"), client_type: "flightdeck_sensor" as const };
+    const pluginLive = {
+      ...mkSession("p", "active", { supports_directives: true }),
+      client_type: "claude_code" as const,
+      flavor: "claude-code",
+    };
+    expect(hasLiveCustomDirectiveSession([sensorClosed, pluginLive])).toBe(false);
+    expect(hasLiveCustomDirectiveSession([])).toBe(false);
+  });
+});
+
+describe("runCountLabel", () => {
+  it("names the runs a directive reached", () => {
+    expect(runCountLabel(1)).toBe("1 run");
+    expect(runCountLabel(3)).toBe("3 runs");
+    expect(runCountLabel(0)).toBe("0 runs");
   });
 });

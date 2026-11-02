@@ -6,7 +6,11 @@ import type { CustomDirective } from "@/lib/types";
 // Mock the API module so tests assert on the outgoing trigger payload
 // without going through the real fetch / NATS / worker path.
 vi.mock("@/lib/api", () => ({
-  triggerCustomDirective: vi.fn(() => Promise.resolve()),
+  // POST /v1/directives answers with the last row and how many rows
+  // the request created (X-Directive-Count).
+  triggerCustomDirective: vi.fn(() =>
+    Promise.resolve({ directive: { id: "dir-1" }, count: 1 }),
+  ),
 }));
 
 import { triggerCustomDirective } from "@/lib/api";
@@ -151,5 +155,50 @@ describe("DirectiveCard", () => {
     await waitFor(() => {
       expect(screen.getByText("boom")).toBeInTheDocument();
     });
+  });
+
+  it("with agentId, sends to the agent's runs of the directive's own flavor", async () => {
+    // The Fleet row: the directive reaches this agent's live runs under
+    // the flavor that registered it, never another agent's run that
+    // shares the flavor. A flavor-only request would reach those.
+    mockTrigger.mockResolvedValueOnce({ directive: { id: "dir-9" }, count: 3 });
+    render(<DirectiveCard directive={rotateModel} agentId="agent-1" />);
+    const run = screen.getByTestId("directive-run-rotate-model");
+    expect(run.textContent).toBe("Trigger on this agent's runs");
+    fireEvent.click(run);
+    await waitFor(() => {
+      expect(mockTrigger).toHaveBeenCalledTimes(1);
+    });
+    const call = mockTrigger.mock.calls[0]![0];
+    expect(call.agent_id).toBe("agent-1");
+    expect(call.flavor).toBe("research-agent");
+    expect(call.session_id).toBeUndefined();
+    // The confirmation names the count the API returned.
+    expect(await screen.findByTestId("directive-sent-rotate-model")).toHaveTextContent(
+      "Directive sent to 3 runs",
+    );
+  });
+
+  it("a session target wins over an agent and its confirmation names no count", async () => {
+    render(<DirectiveCard directive={rotateModel} sessionId="sess-1" agentId="agent-1" />);
+    fireEvent.click(screen.getByTestId("directive-run-rotate-model"));
+    expect(await screen.findByTestId("directive-sent-rotate-model")).toHaveTextContent(
+      /^Directive sent$/,
+    );
+    const call = mockTrigger.mock.calls[0]![0];
+    expect(call.session_id).toBe("sess-1");
+    expect(call.agent_id).toBeUndefined();
+    expect(call.flavor).toBeUndefined();
+  });
+
+  it("shows the API's reason when no run of the agent can take it", async () => {
+    mockTrigger.mockRejectedValueOnce(
+      new Error("no live session of this agent can take this directive"),
+    );
+    render(<DirectiveCard directive={rotateModel} agentId="agent-1" />);
+    fireEvent.click(screen.getByTestId("directive-run-rotate-model"));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "no live session of this agent can take this directive",
+    );
   });
 });

@@ -19,7 +19,8 @@ vi.mock("@/lib/api", () => ({
 }));
 
 import { useFleetStore } from "@/store/fleet";
-import type { AgentSummary, FlavorSummary, Session } from "@/lib/types";
+import { fetchFleet } from "@/lib/api";
+import type { AgentSummary, FlavorSummary, RecentSession, Session } from "@/lib/types";
 
 const AGENT = "agent-otlp";
 const OLD = "2026-11-01T10:00:00Z";
@@ -137,6 +138,97 @@ describe("fleet store applyUpdate — the agent's telemetry follows its newest s
     useFleetStore.getState().applyUpdate({
       type: "session_update",
       session: mkSession({ session_id: "s-newest", started_at: "2026-11-01T12:00:00Z" }),
+    });
+    expect(row()?.telemetry).toBe("otlp");
+  });
+});
+
+describe("fleet store load() then applyUpdate — a run loaded from recent_sessions", () => {
+  afterEach(() => {
+    useFleetStore.setState({
+      flavors: [],
+      agents: [],
+      enteredBucketAt: new Map<string, number>(),
+      shuttingDown: new Set<string>(),
+    });
+  });
+
+  function recentSession(over: Partial<RecentSession>): RecentSession {
+    return {
+      session_id: "s-newer",
+      flavor: "claude-code",
+      agent_type: "coding",
+      agent_id: AGENT,
+      agent_name: "dev@host",
+      client_type: "claude_code",
+      host: "host",
+      model: null,
+      framework: null,
+      state: "closed",
+      started_at: NEW,
+      ended_at: NEW,
+      last_seen_at: NEW,
+      tokens_used: 0,
+      token_limit: null,
+      capture_enabled: false,
+      parent_session_id: null,
+      parent_agent_id: null,
+      agent_role: null,
+      ...over,
+    };
+  }
+
+  it("keeps the OTel source when an older run gets an event", async () => {
+    // The agent's newest run came only from the /v1/fleet
+    // recent_sessions rollup (outside the 100-row sessions page), which
+    // carries no context, so the store holds it with an empty one. A
+    // live update to an older run must not read that empty context as
+    // "not OpenTelemetry" and drop the pill.
+    vi.mocked(fetchFleet).mockResolvedValueOnce({
+      agents: [
+        {
+          agent_id: AGENT,
+          agent_name: "dev@host",
+          agent_type: "coding",
+          client_type: "claude_code",
+          user: "dev",
+          hostname: "host",
+          first_seen_at: OLD,
+          last_seen_at: NEW,
+          total_sessions: 2,
+          total_tokens: 0,
+          state: "active",
+          topology: "lone",
+          telemetry: "otlp",
+          recent_sessions: [
+            recentSession({}),
+            recentSession({
+              session_id: "s-older",
+              state: "active",
+              started_at: OLD,
+              ended_at: null,
+              last_seen_at: NEW,
+            }),
+          ],
+        },
+      ],
+      total: 1,
+      page: 1,
+      per_page: 200,
+      context_facets: {},
+    });
+    await useFleetStore.getState().load();
+    expect(row()?.telemetry).toBe("otlp");
+    expect(row()?.sessions.find((x) => x.session_id === "s-newer")?.context).toEqual({});
+
+    useFleetStore.getState().applyUpdate({
+      type: "session_update",
+      session: mkSession({
+        session_id: "s-older",
+        started_at: OLD,
+        last_seen_at: "2026-11-01T11:05:00Z",
+        context: { telemetry: "otlp", supports_directives: false },
+      }),
     });
     expect(row()?.telemetry).toBe("otlp");
   });

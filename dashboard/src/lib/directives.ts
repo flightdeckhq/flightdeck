@@ -75,8 +75,23 @@ export function flavorHasDirectiveCapableSession(sessions: Session[]): boolean {
   return liveSessions(sessions).some(sessionSupportsDirectives);
 }
 
-/** The live sessions Stop All sends a shutdown to: those that can act
- *  on one. */
+/** The live sessions in ``sessions`` that can act on a stop. Stop All
+ *  asks the API to stop every such run of the agent, and marks the ones
+ *  the page holds as shutting down. */
 export function stoppableSessions(sessions: Session[]): Session[] {
   return liveSessions(sessions).filter(sessionSupportsDirectives);
+}
+
+/**
+ * True when at least one live (active or idle) session runs custom
+ * directive handlers. The Fleet sidebar's directive trigger needs one:
+ * a directive sent from the row reaches only the agent's live runs.
+ */
+export function hasLiveCustomDirectiveSession(sessions: Session[]): boolean {
+  return liveSessions(sessions).some(sessionRunsCustomDirectives);
+}
+
+/** "1 run" / "3 runs": how many runs a directive reached. */
+export function runCountLabel(count: number): string {
+  return `${count} ${count === 1 ? "run" : "runs"}`;
 }

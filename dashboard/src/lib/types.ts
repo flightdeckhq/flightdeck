@@ -867,10 +867,40 @@ export interface PricedModel {
 /** Request body for POST /v1/directives. */
 export interface DirectiveRequest {
   action: "shutdown" | "shutdown_flavor";
+  /** One session. */
   session_id?: string;
+  /** Every live run of this agent that can take a stop (``shutdown``
+   *  only; exclusive with ``session_id``). */
+  agent_id?: string;
+  /** ``shutdown_flavor``: the flavor to stop. */
   flavor?: string;
   reason?: string;
   grace_period_ms?: number;
+}
+
+/** POST /v1/directives body for a custom directive. Targets one
+ *  session (``session_id``; a ``flavor`` beside it only narrows the
+ *  fingerprint check), every live session of a ``flavor``, or the live
+ *  runs of an agent that run custom handlers under a flavor that
+ *  registered the directive (``agent_id``, which a ``flavor`` narrows
+ *  to that flavor's runs). */
+export interface CustomDirectiveRequest {
+  action: "custom";
+  directive_name: string;
+  fingerprint: string;
+  session_id?: string;
+  agent_id?: string;
+  flavor?: string;
+  parameters?: Record<string, unknown>;
+}
+
+/** What POST /v1/directives answers: the last directive row created,
+ *  and how many rows the request created (its ``X-Directive-Count``
+ *  header), which for an agent or a flavor is the number of runs the
+ *  directive reached. ``count`` is null when the header is missing. */
+export interface DirectiveCreated {
+  directive: Directive;
+  count: number | null;
 }
 
 /** Control-plane directive as returned by API. */

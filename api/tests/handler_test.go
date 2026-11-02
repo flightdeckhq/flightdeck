@@ -888,8 +888,8 @@ func TestSessionsHandler_ReturnsEventsInOrder(t *testing.T) {
 // The session detail response must always include the
 // "attachments" key -- empty array for sessions that have only ever
 // run once, chronological list of ISO-8601 timestamps otherwise.
-// Missing key is a contract break; the dashboard drawer relies on it
-// to decide whether to draw run separators.
+// Missing key is a contract break; the dashboard relies on it to mark
+// each re-attachment's session_start.
 func TestSessionsHandler_IncludesAttachmentsArray(t *testing.T) {
 	s := &mockStore{}
 	handler := handlers.SessionsHandler(store.WrapStore(s))

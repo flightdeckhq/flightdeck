@@ -999,9 +999,10 @@ func (s *Store) GetEvent(ctx context.Context, eventID string) (*Event, error) {
 // GetSessionAttachments returns every recorded attachment timestamp
 // for a session in chronological order. The initial session creation
 // is not an attachment, so a session that has only ever run once
-// returns an empty slice. Used by the dashboard session drawer to
-// draw a run separator per attachment and by GET /v1/sessions/{id} to
-// surface the full attachment history.
+// returns an empty slice. GET /v1/sessions/{id} returns the full
+// attachment history, which the dashboard uses to mark each
+// re-attachment's session_start (the session drawer's ATTACH badge,
+// the swimlane's amber circle).
 func (s *Store) GetSessionAttachments(ctx context.Context, sessionID string) ([]time.Time, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT attached_at

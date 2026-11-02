@@ -251,10 +251,17 @@ def _post_session_events(
     event type — workers/internal/processor/event.go recognises only
     session_start / session_end / heartbeat / directive_result and
     lazy-creates on pre_call/post_call/tool_call). Closed roles add
-    session_end at ``ended_offset_sec``.
+    session_end at ``ended_offset_sec``. A run-glyph lane role
+    (``lane_segments``) posts its segments instead (``_post_lane_events``).
 
     Returns the count of events successfully posted.
     """
+    if "lane_segments" in role_cfg:
+        return _post_lane_events(
+            agent_cfg=agent_cfg,
+            session_id=session_id,
+            spec=_lane_spec(session_id, role_cfg),
+        )
     started = int(role_cfg["started_offset_sec"])
     ended = role_cfg["ended_offset_sec"]
 
@@ -1172,8 +1179,12 @@ def _session_is_complete(
     keeps the per-session idempotency tight: if any expected
     event_type is missing, treat the session as incomplete and
     re-seed (additive — duplicates are accepted because the seed
-    runs in dev only, tests use .first() selectors).
+    runs in dev only, tests use .first() selectors). A run-glyph lane
+    role (``lane_segments``) is complete when it holds one
+    session_start per segment (``_lane_events_complete``).
     """
+    if role_cfg is not None and "lane_segments" in role_cfg:
+        return _lane_events_complete(session_id, _lane_spec(session_id, role_cfg))
     try:
         detail = get_session(session_id)
     except urllib.error.HTTPError as exc:
@@ -1599,8 +1610,9 @@ def _refresh_fanout(
 _LANE_STATES = frozenset({"active", "closed", "lost"})
 
 
-def _lane_spec(role: str, role_cfg: dict[str, Any]) -> dict[str, Any]:
-    """Validate a lane role's config and return its parts.
+def _lane_spec(label: str, role_cfg: dict[str, Any]) -> dict[str, Any]:
+    """Validate a lane role's config and return its parts. ``label`` names
+    the role (or its session) in an error.
 
     Returns ``segments`` (a list of ``(start, end | None)`` float
     offsets), ``state``, ``last_seen`` (the offset of the run's last
@@ -1610,25 +1622,25 @@ def _lane_spec(role: str, role_cfg: dict[str, Any]) -> dict[str, Any]:
     state = role_cfg["lane_state"]
     if state not in _LANE_STATES:
         raise ValueError(
-            f"role {role!r}: lane_state {state!r} is not one of {sorted(_LANE_STATES)}"
+            f"{label}: lane_state {state!r} is not one of {sorted(_LANE_STATES)}"
         )
     segments = [
         (float(start), None if end is None else float(end))
         for start, end in role_cfg["lane_segments"]
     ]
     if not segments:
-        raise ValueError(f"role {role!r}: lane_segments is empty")
+        raise ValueError(f"{label}: lane_segments is empty")
     for i, (start, end) in enumerate(segments):
         last = i == len(segments) - 1
         if end is None and not (last and state != "closed"):
             raise ValueError(
-                f"role {role!r}: only the last segment of an open or lost run is open"
+                f"{label}: only the last segment of an open or lost run is open"
             )
         if end is not None and end < start:
-            raise ValueError(f"role {role!r}: segment {i} ends before it starts")
+            raise ValueError(f"{label}: segment {i} ends before it starts")
     last_seen = role_cfg.get("lane_last_seen_offset_sec")
     if state == "lost" and last_seen is None:
-        raise ValueError(f"role {role!r}: a lost run needs lane_last_seen_offset_sec")
+        raise ValueError(f"{label}: a lost run needs lane_last_seen_offset_sec")
     if state == "closed" and last_seen is None:
         last_seen = segments[-1][1]
     return {
@@ -1873,32 +1885,19 @@ def seed(mode: str = "full") -> None:
             for role in agent_cfg["session_roles"]:
                 role_cfg = roles_cfg[role]
                 session_id = _derive_session_id(agent_cfg["agent_name"], role)
-                lane = (
-                    _lane_spec(role, role_cfg) if "lane_segments" in role_cfg else None
-                )
 
-                complete = (
-                    _lane_events_complete(session_id, lane)
-                    if lane is not None
-                    else _session_is_complete(session_id, role_cfg)
-                )
-                if complete:
+                if _session_is_complete(session_id, role_cfg):
                     print(
                         f"  skip {agent_cfg['agent_name']}/{role} ({session_id[:8]}) — already has events"
                     )
                     skipped += 1
                     continue
 
-                if lane is not None:
-                    posted = _post_lane_events(
-                        agent_cfg=agent_cfg, session_id=session_id, spec=lane
-                    )
-                else:
-                    posted = _post_session_events(
-                        agent_cfg=agent_cfg,
-                        session_id=session_id,
-                        role_cfg=role_cfg,
-                    )
+                posted = _post_session_events(
+                    agent_cfg=agent_cfg,
+                    session_id=session_id,
+                    role_cfg=role_cfg,
+                )
                 seeded += 1
                 if agent_cfg["agent_name"] not in touched_agents:
                     touched_agents.append(agent_cfg["agent_name"])

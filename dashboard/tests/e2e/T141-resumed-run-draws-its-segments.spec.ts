@@ -21,7 +21,11 @@ import {
 
 const { name, roles } = LANE_FIXTURES.resumed;
 
-test.use({ viewport: { width: 1280, height: 1800 } });
+// Wide enough for the 240 px sidebar, the 460 px label column and the
+// 900 px timeline side by side, so the swimlane does not scroll
+// sideways to "now" and no part of the timeline sits under the
+// sticky label column, where a glyph cannot be hovered or hit.
+test.use({ viewport: { width: 1700, height: 1800 } });
 
 test.describe("T141 — A resumed run draws its segments", () => {
 	test("two segments with a gap, and the run in the gap on the same lane", async ({ page }) => {

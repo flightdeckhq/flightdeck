@@ -21,7 +21,11 @@ import {
 
 const { name, roles } = LANE_FIXTURES.handoff;
 
-test.use({ viewport: { width: 1280, height: 1800 } });
+// Wide enough for the 240 px sidebar, the 460 px label column and the
+// 900 px timeline side by side, so the swimlane does not scroll
+// sideways to "now" and no part of the timeline sits under the
+// sticky label column, where a glyph cannot be hovered or hit.
+test.use({ viewport: { width: 1700, height: 1800 } });
 
 test.describe("T138 — Back-to-back runs keep both glyphs", () => {
 	test("the hand-off reads end then start, both reachable, on one lane", async ({ page }) => {

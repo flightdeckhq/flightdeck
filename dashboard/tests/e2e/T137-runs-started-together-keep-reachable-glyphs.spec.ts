@@ -21,7 +21,11 @@ import {
 
 const WORKER_ROLES = ["fanout-worker-1", "fanout-worker-2", "fanout-worker-3"];
 
-test.use({ viewport: { width: 1280, height: 1800 } });
+// Wide enough for the 240 px sidebar, the 460 px label column and the
+// 900 px timeline side by side, so the swimlane does not scroll
+// sideways to "now" and no part of the timeline sits under the
+// sticky label column, where a glyph cannot be hovered or hit.
+test.use({ viewport: { width: 1700, height: 1800 } });
 
 test.describe("T137 — Runs started together keep reachable glyphs", () => {
 	test("every start glyph is its own hit target with its own tooltip", async ({ page }) => {
@@ -60,7 +64,10 @@ test.describe("T137 — Runs started together keep reachable glyphs", () => {
 		}
 
 		for (let i = 0; i < glyphs.length; i++) {
-			const box = boxes[i]!;
+			// Measure right before the hit test: a hover or a re-render
+			// in between can move the row.
+			await glyphs[i]!.scrollIntoViewIfNeeded();
+			const box = (await glyphs[i]!.boundingBox())!;
 			const hit = await page.evaluate(
 				([x, y]) => document.elementFromPoint(x!, y!)?.closest("button")?.getAttribute("data-testid") ?? null,
 				[box.x + box.width / 2, box.y + box.height / 2],

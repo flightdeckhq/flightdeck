@@ -1,0 +1,46 @@
+{
+ "scenario": "tool-protobuf",
+ "about": "one agent run: a model call, a get_weather tool call, a final model call; content on",
+ "framework": "pydantic-ai",
+ "instrumentation": "built in (Agent.instrument_all, InstrumentationSettings version 5)",
+ "model": "anthropic claude-haiku-4-5",
+ "protocol": "http/protobuf",
+ "env": {},
+ "runner_args": [
+  "tool"
+ ],
+ "outcome": "completed",
+ "versions": {
+  "pydantic-ai-slim": "2.64.0",
+  "strands-agents": "1.63.0",
+  "openai-agents": "0.24.0",
+  "opentelemetry-instrumentation-openai-agents-v2": "0.1.0",
+  "openai": "3.42.1",
+  "anthropic": "2.3.0",
+  "opentelemetry-sdk": "1.45.2",
+  "opentelemetry-semantic-conventions": "0.66b2",
+  "opentelemetry-util-genai": "1.3b0",
+  "opentelemetry-exporter-otlp-proto-http": "1.45.2",
+  "opentelemetry-exporter-otlp-json-http": "0.66b2"
+ },
+ "requests": [
+  {
+   "file": "001-traces.pb",
+   "path": "/v1/traces",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  },
+  {
+   "file": "002-metrics.pb",
+   "path": "/v1/metrics",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  },
+  {
+   "file": "003-metrics.pb",
+   "path": "/v1/metrics",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  }
+ ]
+}

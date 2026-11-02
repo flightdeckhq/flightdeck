@@ -1,0 +1,12 @@
+# The Google ADK capture harness for tests/otlp/record_genai.py: the
+# packages it uses directly, at the versions the committed recordings
+# were made with; install it with constraints-genai-adk.txt, which pins
+# every other package of that venv. ADK 2.13 requires
+# opentelemetry-sdk<=1.44, older than the OTLP/HTTP JSON exporter
+# (opentelemetry-exporter-otlp-json-http needs 1.45), so ADK is recorded
+# over http/protobuf only.
+google-adk==2.13.0
+litellm[mcp]==1.106.6
+opentelemetry-sdk==1.44.0
+opentelemetry-exporter-otlp-proto-http==1.44.0
+opentelemetry-proto==1.44.0

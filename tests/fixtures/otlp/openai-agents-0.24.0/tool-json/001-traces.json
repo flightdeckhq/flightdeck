@@ -1,0 +1,685 @@
+{
+ "resourceSpans": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "telemetry.sdk.language",
+      "value": {
+       "stringValue": "python"
+      }
+     },
+     {
+      "key": "telemetry.sdk.name",
+      "value": {
+       "stringValue": "opentelemetry"
+      }
+     },
+     {
+      "key": "telemetry.sdk.version",
+      "value": {
+       "stringValue": "1.45.2"
+      }
+     },
+     {
+      "key": "service.instance.id",
+      "value": {
+       "stringValue": "5c913782-446e-4221-87b7-860c6c245125"
+      }
+     },
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "unknown_service:python"
+      }
+     }
+    ]
+   },
+   "scopeSpans": [
+    {
+     "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents"
+     },
+     "spans": [
+      {
+       "traceId": "f6f1bf640c951a1aa70dc27d2e81d208",
+       "spanId": "0126bc83fcbc89b8",
+       "parentSpanId": "dd3a281bf66241d9",
+       "flags": 256,
+       "name": "chat gpt-4o-mini-2024-07-18",
+       "kind": 3,
+       "startTimeUnixNano": "1793635557370566961",
+       "endTimeUnixNano": "1793635558927837034",
+       "attributes": [
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "openai"
+         }
+        },
+        {
+         "key": "gen_ai.system",
+         "value": {
+          "stringValue": "openai"
+         }
+        },
+        {
+         "key": "gen_ai.agent.name",
+         "value": {
+          "stringValue": "OpenAI Agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.id",
+         "value": {
+          "stringValue": "agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.description",
+         "value": {
+          "stringValue": "OpenAI Agents instrumentation"
+         }
+        },
+        {
+         "key": "server.address",
+         "value": {
+          "stringValue": "api.openai.com"
+         }
+        },
+        {
+         "key": "server.port",
+         "value": {
+          "intValue": "443"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "chat"
+         }
+        },
+        {
+         "key": "gen_ai.response.id",
+         "value": {
+          "stringValue": "resp_0e61d607cf2ebdd2006ae8b4e612ec87d2bd47212086259f4f"
+         }
+        },
+        {
+         "key": "gen_ai.response.model",
+         "value": {
+          "stringValue": "gpt-4o-mini-2024-07-18"
+         }
+        },
+        {
+         "key": "gen_ai.request.model",
+         "value": {
+          "stringValue": "gpt-4o-mini-2024-07-18"
+         }
+        },
+        {
+         "key": "gen_ai.usage.input_tokens",
+         "value": {
+          "intValue": "77"
+         }
+        },
+        {
+         "key": "gen_ai.usage.output_tokens",
+         "value": {
+          "intValue": "15"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages",
+         "value": {
+          "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What is the weather in Paris? Use the tool, then answer in one short sentence.\"}]}]"
+         }
+        },
+        {
+         "key": "gen_ai.output.messages",
+         "value": {
+          "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"ResponseFunctionToolCall(arguments='{\\\"city\\\":\\\"Paris\\\"}', call_id='call_Tu5o7eoyZJKagqH6mdoOzldf', name='get_weather', type='function_call', id='fc_0e61d607cf2ebdd2006ae8b4e67c9c87d2852fd59e5eb9df2a', async_=None, caller=None, namespace=None, status='completed')\"}]}]"
+         }
+        },
+        {
+         "key": "gen_ai.output.type",
+         "value": {
+          "stringValue": "text"
+         }
+        }
+       ],
+       "status": {
+        "code": 1
+       }
+      },
+      {
+       "traceId": "f6f1bf640c951a1aa70dc27d2e81d208",
+       "spanId": "bb93b84cc2ed7fb6",
+       "parentSpanId": "dd3a281bf66241d9",
+       "flags": 256,
+       "name": "execute_tool get_weather",
+       "kind": 1,
+       "startTimeUnixNano": "1793635558929441426",
+       "endTimeUnixNano": "1793635558930464723",
+       "attributes": [
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "openai"
+         }
+        },
+        {
+         "key": "gen_ai.system",
+         "value": {
+          "stringValue": "openai"
+         }
+        },
+        {
+         "key": "gen_ai.agent.name",
+         "value": {
+          "stringValue": "OpenAI Agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.id",
+         "value": {
+          "stringValue": "agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.description",
+         "value": {
+          "stringValue": "OpenAI Agents instrumentation"
+         }
+        },
+        {
+         "key": "server.address",
+         "value": {
+          "stringValue": "api.openai.com"
+         }
+        },
+        {
+         "key": "server.port",
+         "value": {
+          "intValue": "443"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "execute_tool"
+         }
+        },
+        {
+         "key": "gen_ai.tool.name",
+         "value": {
+          "stringValue": "get_weather"
+         }
+        },
+        {
+         "key": "gen_ai.tool.type",
+         "value": {
+          "stringValue": "function"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.arguments",
+         "value": {
+          "stringValue": "{\"city\":\"Paris\"}"
+         }
+        },
+        {
+         "key": "gen_ai.tool.call.result",
+         "value": {
+          "stringValue": "Paris: sunny, 21 C"
+         }
+        },
+        {
+         "key": "gen_ai.output.type",
+         "value": {
+          "stringValue": "json"
+         }
+        }
+       ],
+       "status": {
+        "code": 1
+       }
+      },
+      {
+       "traceId": "f6f1bf640c951a1aa70dc27d2e81d208",
+       "spanId": "dd3a281bf66241d9",
+       "parentSpanId": "b1c70d3dae99ea1c",
+       "flags": 256,
+       "name": "unknown",
+       "kind": 1,
+       "startTimeUnixNano": "1793635557356588045",
+       "endTimeUnixNano": "1793635558930720554",
+       "attributes": [
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "unknown"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "openai"
+         }
+        },
+        {
+         "key": "gen_ai.system",
+         "value": {
+          "stringValue": "openai"
+         }
+        },
+        {
+         "key": "gen_ai.agent.name",
+         "value": {
+          "stringValue": "OpenAI Agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.id",
+         "value": {
+          "stringValue": "agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.description",
+         "value": {
+          "stringValue": "OpenAI Agents instrumentation"
+         }
+        },
+        {
+         "key": "server.address",
+         "value": {
+          "stringValue": "api.openai.com"
+         }
+        },
+        {
+         "key": "server.port",
+         "value": {
+          "intValue": "443"
+         }
+        }
+       ],
+       "status": {
+        "code": 1
+       }
+      },
+      {
+       "traceId": "f6f1bf640c951a1aa70dc27d2e81d208",
+       "spanId": "56c376165dbbe492",
+       "parentSpanId": "dd08b78e34520084",
+       "flags": 256,
+       "name": "chat gpt-4o-mini-2024-07-18",
+       "kind": 3,
+       "startTimeUnixNano": "1793635558931365799",
+       "endTimeUnixNano": "1793635560323804785",
+       "attributes": [
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "openai"
+         }
+        },
+        {
+         "key": "gen_ai.system",
+         "value": {
+          "stringValue": "openai"
+         }
+        },
+        {
+         "key": "gen_ai.agent.name",
+         "value": {
+          "stringValue": "OpenAI Agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.id",
+         "value": {
+          "stringValue": "agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.description",
+         "value": {
+          "stringValue": "OpenAI Agents instrumentation"
+         }
+        },
+        {
+         "key": "server.address",
+         "value": {
+          "stringValue": "api.openai.com"
+         }
+        },
+        {
+         "key": "server.port",
+         "value": {
+          "intValue": "443"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "chat"
+         }
+        },
+        {
+         "key": "gen_ai.response.id",
+         "value": {
+          "stringValue": "resp_0e61d607cf2ebdd2006ae8b4e7677c87d2864b029adfc99a29"
+         }
+        },
+        {
+         "key": "gen_ai.response.model",
+         "value": {
+          "stringValue": "gpt-4o-mini-2024-07-18"
+         }
+        },
+        {
+         "key": "gen_ai.request.model",
+         "value": {
+          "stringValue": "gpt-4o-mini-2024-07-18"
+         }
+        },
+        {
+         "key": "gen_ai.usage.input_tokens",
+         "value": {
+          "intValue": "107"
+         }
+        },
+        {
+         "key": "gen_ai.usage.output_tokens",
+         "value": {
+          "intValue": "16"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages",
+         "value": {
+          "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What is the weather in Paris? Use the tool, then answer in one short sentence.\"}]}]"
+         }
+        },
+        {
+         "key": "gen_ai.output.messages",
+         "value": {
+          "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"The weather in Paris is sunny with a temperature of 21\\u00b0C.\"}]}]"
+         }
+        },
+        {
+         "key": "gen_ai.output.type",
+         "value": {
+          "stringValue": "text"
+         }
+        }
+       ],
+       "status": {
+        "code": 1
+       }
+      },
+      {
+       "traceId": "f6f1bf640c951a1aa70dc27d2e81d208",
+       "spanId": "dd08b78e34520084",
+       "parentSpanId": "b1c70d3dae99ea1c",
+       "flags": 256,
+       "name": "unknown",
+       "kind": 1,
+       "startTimeUnixNano": "1793635558930877382",
+       "endTimeUnixNano": "1793635560325508663",
+       "attributes": [
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "unknown"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "openai"
+         }
+        },
+        {
+         "key": "gen_ai.system",
+         "value": {
+          "stringValue": "openai"
+         }
+        },
+        {
+         "key": "gen_ai.agent.name",
+         "value": {
+          "stringValue": "OpenAI Agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.id",
+         "value": {
+          "stringValue": "agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.description",
+         "value": {
+          "stringValue": "OpenAI Agents instrumentation"
+         }
+        },
+        {
+         "key": "server.address",
+         "value": {
+          "stringValue": "api.openai.com"
+         }
+        },
+        {
+         "key": "server.port",
+         "value": {
+          "intValue": "443"
+         }
+        }
+       ],
+       "status": {
+        "code": 1
+       }
+      },
+      {
+       "traceId": "f6f1bf640c951a1aa70dc27d2e81d208",
+       "spanId": "b1c70d3dae99ea1c",
+       "parentSpanId": "fa1e6446964c18f9",
+       "flags": 256,
+       "name": "invoke_agent weather_agent",
+       "kind": 3,
+       "startTimeUnixNano": "1793635557356479154",
+       "endTimeUnixNano": "1793635560325924602",
+       "attributes": [
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "openai"
+         }
+        },
+        {
+         "key": "gen_ai.system",
+         "value": {
+          "stringValue": "openai"
+         }
+        },
+        {
+         "key": "server.address",
+         "value": {
+          "stringValue": "api.openai.com"
+         }
+        },
+        {
+         "key": "server.port",
+         "value": {
+          "intValue": "443"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "invoke_agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.name",
+         "value": {
+          "stringValue": "weather_agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.id",
+         "value": {
+          "stringValue": "agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.description",
+         "value": {
+          "stringValue": "OpenAI Agents instrumentation"
+         }
+        },
+        {
+         "key": "gen_ai.request.model",
+         "value": {
+          "stringValue": "gpt-4o-mini-2024-07-18"
+         }
+        },
+        {
+         "key": "gen_ai.input.messages",
+         "value": {
+          "stringValue": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"What is the weather in Paris? Use the tool, then answer in one short sentence.\"}]}]"
+         }
+        },
+        {
+         "key": "gen_ai.output.messages",
+         "value": {
+          "stringValue": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"The weather in Paris is sunny with a temperature of 21\\u00b0C.\"}]}]"
+         }
+        },
+        {
+         "key": "gen_ai.output.type",
+         "value": {
+          "stringValue": "text"
+         }
+        }
+       ],
+       "status": {
+        "code": 1
+       }
+      },
+      {
+       "traceId": "f6f1bf640c951a1aa70dc27d2e81d208",
+       "spanId": "fa1e6446964c18f9",
+       "parentSpanId": "76c91944cce76fee",
+       "flags": 256,
+       "name": "unknown",
+       "kind": 1,
+       "startTimeUnixNano": "1793635557356003229",
+       "endTimeUnixNano": "1793635560326018762",
+       "attributes": [
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "unknown"
+         }
+        },
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "openai"
+         }
+        },
+        {
+         "key": "gen_ai.system",
+         "value": {
+          "stringValue": "openai"
+         }
+        },
+        {
+         "key": "gen_ai.agent.name",
+         "value": {
+          "stringValue": "OpenAI Agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.id",
+         "value": {
+          "stringValue": "agent"
+         }
+        },
+        {
+         "key": "gen_ai.agent.description",
+         "value": {
+          "stringValue": "OpenAI Agents instrumentation"
+         }
+        },
+        {
+         "key": "server.address",
+         "value": {
+          "stringValue": "api.openai.com"
+         }
+        },
+        {
+         "key": "server.port",
+         "value": {
+          "intValue": "443"
+         }
+        }
+       ],
+       "status": {
+        "code": 1
+       }
+      },
+      {
+       "traceId": "f6f1bf640c951a1aa70dc27d2e81d208",
+       "spanId": "76c91944cce76fee",
+       "flags": 256,
+       "name": "Agent workflow",
+       "kind": 2,
+       "startTimeUnixNano": "1793635557355805743",
+       "endTimeUnixNano": "1793635560326044596",
+       "attributes": [
+        {
+         "key": "gen_ai.provider.name",
+         "value": {
+          "stringValue": "openai"
+         }
+        },
+        {
+         "key": "gen_ai.system",
+         "value": {
+          "stringValue": "openai"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "invoke_agent"
+         }
+        },
+        {
+         "key": "server.address",
+         "value": {
+          "stringValue": "api.openai.com"
+         }
+        },
+        {
+         "key": "server.port",
+         "value": {
+          "intValue": "443"
+         }
+        }
+       ],
+       "status": {
+        "code": 1
+       }
+      }
+     ],
+     "schemaUrl": "https://opentelemetry.io/schemas/1.28.0"
+    }
+   ]
+  }
+ ]
+}

@@ -1,0 +1,514 @@
+{
+ "resourceMetrics": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "telemetry.sdk.language",
+      "value": {
+       "stringValue": "python"
+      }
+     },
+     {
+      "key": "telemetry.sdk.name",
+      "value": {
+       "stringValue": "opentelemetry"
+      }
+     },
+     {
+      "key": "telemetry.sdk.version",
+      "value": {
+       "stringValue": "1.45.2"
+      }
+     },
+     {
+      "key": "service.instance.id",
+      "value": {
+       "stringValue": "5c913782-446e-4221-87b7-860c6c245125"
+      }
+     },
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "unknown_service:python"
+      }
+     }
+    ]
+   },
+   "scopeMetrics": [
+    {
+     "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.1.0"
+     },
+     "metrics": [
+      {
+       "name": "gen_ai.client.operation.duration",
+       "description": "GenAI operation duration",
+       "unit": "s",
+       "histogram": {
+        "dataPoints": [
+         {
+          "attributes": [
+           {
+            "key": "gen_ai.provider.name",
+            "value": {
+             "stringValue": "openai"
+            }
+           },
+           {
+            "key": "gen_ai.operation.name",
+            "value": {
+             "stringValue": "chat"
+            }
+           },
+           {
+            "key": "gen_ai.request.model",
+            "value": {
+             "stringValue": "gpt-4o-mini-2024-07-18"
+            }
+           },
+           {
+            "key": "server.address",
+            "value": {
+             "stringValue": "api.openai.com"
+            }
+           },
+           {
+            "key": "server.port",
+            "value": {
+             "intValue": "443"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793635558927707904",
+          "timeUnixNano": "1793635560336503219",
+          "count": "2",
+          "sum": 2.948994,
+          "bucketCounts": [
+           "0",
+           "2",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           0.0,
+           5.0,
+           10.0,
+           25.0,
+           50.0,
+           75.0,
+           100.0,
+           250.0,
+           500.0,
+           750.0,
+           1000.0,
+           2500.0,
+           5000.0,
+           7500.0,
+           10000.0
+          ],
+          "min": 1.392153,
+          "max": 1.556841
+         },
+         {
+          "attributes": [
+           {
+            "key": "gen_ai.provider.name",
+            "value": {
+             "stringValue": "openai"
+            }
+           },
+           {
+            "key": "gen_ai.operation.name",
+            "value": {
+             "stringValue": "execute_tool"
+            }
+           },
+           {
+            "key": "server.address",
+            "value": {
+             "stringValue": "api.openai.com"
+            }
+           },
+           {
+            "key": "server.port",
+            "value": {
+             "intValue": "443"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793635558930440743",
+          "timeUnixNano": "1793635560336503219",
+          "count": "1",
+          "sum": 0.000972,
+          "bucketCounts": [
+           "0",
+           "1",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           0.0,
+           5.0,
+           10.0,
+           25.0,
+           50.0,
+           75.0,
+           100.0,
+           250.0,
+           500.0,
+           750.0,
+           1000.0,
+           2500.0,
+           5000.0,
+           7500.0,
+           10000.0
+          ],
+          "min": 0.000972,
+          "max": 0.000972
+         },
+         {
+          "attributes": [
+           {
+            "key": "gen_ai.provider.name",
+            "value": {
+             "stringValue": "openai"
+            }
+           },
+           {
+            "key": "server.address",
+            "value": {
+             "stringValue": "api.openai.com"
+            }
+           },
+           {
+            "key": "server.port",
+            "value": {
+             "intValue": "443"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793635558930703345",
+          "timeUnixNano": "1793635560336503219",
+          "count": "3",
+          "sum": 5.938765,
+          "bucketCounts": [
+           "0",
+           "3",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           0.0,
+           5.0,
+           10.0,
+           25.0,
+           50.0,
+           75.0,
+           100.0,
+           250.0,
+           500.0,
+           750.0,
+           1000.0,
+           2500.0,
+           5000.0,
+           7500.0,
+           10000.0
+          ],
+          "min": 1.394599,
+          "max": 2.97006
+         },
+         {
+          "attributes": [
+           {
+            "key": "gen_ai.provider.name",
+            "value": {
+             "stringValue": "openai"
+            }
+           },
+           {
+            "key": "gen_ai.operation.name",
+            "value": {
+             "stringValue": "invoke_agent"
+            }
+           },
+           {
+            "key": "gen_ai.request.model",
+            "value": {
+             "stringValue": "gpt-4o-mini-2024-07-18"
+            }
+           },
+           {
+            "key": "server.address",
+            "value": {
+             "stringValue": "api.openai.com"
+            }
+           },
+           {
+            "key": "server.port",
+            "value": {
+             "intValue": "443"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793635560325894456",
+          "timeUnixNano": "1793635560336503219",
+          "count": "1",
+          "sum": 2.969335,
+          "bucketCounts": [
+           "0",
+           "1",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           0.0,
+           5.0,
+           10.0,
+           25.0,
+           50.0,
+           75.0,
+           100.0,
+           250.0,
+           500.0,
+           750.0,
+           1000.0,
+           2500.0,
+           5000.0,
+           7500.0,
+           10000.0
+          ],
+          "min": 2.969335,
+          "max": 2.969335
+         }
+        ],
+        "aggregationTemporality": 2
+       }
+      },
+      {
+       "name": "gen_ai.client.token.usage",
+       "description": "Number of input and output tokens used",
+       "unit": "{token}",
+       "histogram": {
+        "dataPoints": [
+         {
+          "attributes": [
+           {
+            "key": "gen_ai.provider.name",
+            "value": {
+             "stringValue": "openai"
+            }
+           },
+           {
+            "key": "gen_ai.operation.name",
+            "value": {
+             "stringValue": "chat"
+            }
+           },
+           {
+            "key": "gen_ai.request.model",
+            "value": {
+             "stringValue": "gpt-4o-mini-2024-07-18"
+            }
+           },
+           {
+            "key": "server.address",
+            "value": {
+             "stringValue": "api.openai.com"
+            }
+           },
+           {
+            "key": "server.port",
+            "value": {
+             "intValue": "443"
+            }
+           },
+           {
+            "key": "gen_ai.token.type",
+            "value": {
+             "stringValue": "input"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793635558927767502",
+          "timeUnixNano": "1793635560336503219",
+          "count": "2",
+          "sum": 184,
+          "bucketCounts": [
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "1",
+           "1",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           0.0,
+           5.0,
+           10.0,
+           25.0,
+           50.0,
+           75.0,
+           100.0,
+           250.0,
+           500.0,
+           750.0,
+           1000.0,
+           2500.0,
+           5000.0,
+           7500.0,
+           10000.0
+          ],
+          "min": 77,
+          "max": 107
+         },
+         {
+          "attributes": [
+           {
+            "key": "gen_ai.provider.name",
+            "value": {
+             "stringValue": "openai"
+            }
+           },
+           {
+            "key": "gen_ai.operation.name",
+            "value": {
+             "stringValue": "chat"
+            }
+           },
+           {
+            "key": "gen_ai.request.model",
+            "value": {
+             "stringValue": "gpt-4o-mini-2024-07-18"
+            }
+           },
+           {
+            "key": "server.address",
+            "value": {
+             "stringValue": "api.openai.com"
+            }
+           },
+           {
+            "key": "server.port",
+            "value": {
+             "intValue": "443"
+            }
+           },
+           {
+            "key": "gen_ai.token.type",
+            "value": {
+             "stringValue": "output"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793635558927815433",
+          "timeUnixNano": "1793635560336503219",
+          "count": "2",
+          "sum": 31,
+          "bucketCounts": [
+           "0",
+           "0",
+           "0",
+           "2",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           0.0,
+           5.0,
+           10.0,
+           25.0,
+           50.0,
+           75.0,
+           100.0,
+           250.0,
+           500.0,
+           750.0,
+           1000.0,
+           2500.0,
+           5000.0,
+           7500.0,
+           10000.0
+          ],
+          "min": 15,
+          "max": 16
+         }
+        ],
+        "aggregationTemporality": 2
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

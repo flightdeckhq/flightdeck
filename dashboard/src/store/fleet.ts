@@ -53,6 +53,34 @@ const SWIMLANE_LOOKBACK_MS = 24 * 60 * 60 * 1000; // 24 hours
 // the WS-update branch that consumes it.
 const RECENT_SESSIONS_WINDOW = 5;
 
+/**
+ * The load in flight, and the live updates that reach the page while it
+ * is. The API reads the load's snapshot at some point while the request
+ * is out, so an update broadcast after that read and received before the
+ * response lands is newer than the snapshot that would overwrite it, and
+ * the worker sends each state change once. While a load is in flight,
+ * ``applyUpdate`` records the newest update per session in ``pending``;
+ * the load re-applies them over its snapshot. ``replaying`` is set while
+ * it does, so a replayed run start of an agent the snapshot lacks
+ * (filtered out, or off the page) does not ask for another load.
+ *
+ * One load of a ``view`` (page, page size, type filter) runs at a time.
+ * A call for the view in flight sets ``again`` rather than starting a
+ * second load, and one more load runs once the load in flight lands or
+ * fails: every such caller (a new agent's run, a reconnect) still gets a
+ * snapshot read after its call, and a stream of calls cannot keep every
+ * load from landing. A load of another view (a type filter change)
+ * supersedes the one in flight: ``seq`` numbers the loads, and a load
+ * that is no longer the newest drops its result.
+ */
+const liveLoad: {
+  seq: number;
+  view: string | null;
+  pending: Map<string, FleetUpdate> | null;
+  again: boolean;
+  replaying: boolean;
+} = { seq: 0, view: null, pending: null, again: false, replaying: false };
+
 interface FleetState {
   /** Agent-level rows for the Fleet table view and the sidebar
    *  AGENTS list. Sourced from GET /v1/fleet. */
@@ -418,6 +446,23 @@ export const useFleetStore = create<FleetState>((set, get) => ({
     const perPage = opts.perPage ?? get().perPage;
     const filter = opts.agentType ?? get().agentTypeFilter;
     const apiFilter = filter === "all" ? undefined : filter;
+    const view = `${page}/${perPage}/${filter}`;
+
+    // This view's load is in flight: load once more after it (see
+    // liveLoad). The call resolves now; its snapshot comes with that load.
+    if (liveLoad.pending && liveLoad.view === view) {
+      liveLoad.again = true;
+      return;
+    }
+
+    // Updates applied before this load started are already in the
+    // snapshot it is about to read; only those arriving from now on can
+    // be newer than it. Calls that asked for a load before now are
+    // answered by this one too.
+    const seq = ++liveLoad.seq;
+    liveLoad.view = view;
+    liveLoad.pending = new Map();
+    liveLoad.again = false;
 
     set({ loading: true, error: null, agentTypeFilter: filter });
 
@@ -451,6 +496,13 @@ export const useFleetStore = create<FleetState>((set, get) => ({
         fetchCustomDirectives().catch(() => [] as CustomDirective[]),
       ]);
 
+      // A load of another view started meanwhile: this snapshot is for
+      // a view the page no longer shows, and the updates arriving now
+      // are recorded for that load.
+      if (seq !== liveLoad.seq) return;
+      const replay = liveLoad.pending;
+      liveLoad.pending = null;
+
       // Belt-and-suspenders: the API contract says agents is an
       // array, but a nil-slice Go return becomes JSON null, which
       // crashes every ``.map`` below. Guard once here so every
@@ -480,8 +532,28 @@ export const useFleetStore = create<FleetState>((set, get) => ({
           })),
         ),
       });
+
+      // Re-apply what arrived while the snapshot was in flight: the
+      // newest update per session, each with its full session row and
+      // its agent's state.
+      liveLoad.replaying = true;
+      try {
+        for (const update of replay?.values() ?? []) get().applyUpdate(update);
+      } finally {
+        liveLoad.replaying = false;
+      }
     } catch (e) {
+      if (seq !== liveLoad.seq) return;
+      liveLoad.pending = null;
       set({ error: (e as Error).message, loading: false });
+    }
+
+    // Calls made while this load was in flight asked for a snapshot read
+    // after them. After a failed load too: a reconnect's catch-up that
+    // waited on a load the restarting API failed must still run.
+    if (liveLoad.again) {
+      liveLoad.again = false;
+      void get().load({ page, perPage, agentType: filter });
     }
   },
 
@@ -494,6 +566,8 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   },
 
   applyUpdate: (update: FleetUpdate) => {
+    // A load in flight re-applies this over its snapshot (see liveLoad).
+    liveLoad.pending?.set(update.session.session_id, update);
     const { flavors, agents, shuttingDown, enteredBucketAt } = get();
     const activity = isActivity(update);
     // The swimlane shows a state change the worker made only for a run
@@ -522,18 +596,20 @@ export const useFleetStore = create<FleetState>((set, get) => ({
 
     set({ flavors: updated, shuttingDown: nextShuttingDown });
 
-    if (update.type === "session_start" && isNewAgent) {
+    if (update.type === "session_start" && isNewAgent && !liveLoad.replaying) {
       // A brand-new agent: refetch directives (which are flavor /
       // agent-scoped) and pull the refreshed agent roster so the
       // table view gains the row without a hard refresh. Best-effort
-      // -- failures swallowed.
+      // -- failures swallowed. Not while a load re-applies the updates
+      // that arrived during it: its snapshot is that roster, and an
+      // agent it lacks (filtered out) would start the load again.
       fetchCustomDirectives()
         .then((directives) => set({ customDirectives: directives }))
         .catch(() => {
           /* directive refresh is best-effort */
         });
-      // Narrow refetch: only hits the agents endpoint, not the
-      // sessions window, so the payload stays small.
+      // While a load of this view is in flight, this asks for one more
+      // after it (see liveLoad): its snapshot may predate the agent.
       void get().load({ page: get().page, agentType: get().agentTypeFilter });
     }
 

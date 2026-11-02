@@ -84,7 +84,10 @@ All notable changes to Flightdeck are documented here.
   on the event queue's background thread, which sends `session_end` while
   the handler waits up to 2 seconds, and the signal is then passed on:
   SIGTERM ends the process, SIGINT raises `KeyboardInterrupt`, and an
-  application's own handler is called. A second signal forces the exit,
+  application's own handler is called. A SIGTERM with no handler of the
+  application's own is held back until `session_end` is sent, for 8
+  seconds at most, whether the control plane is slow or down or the
+  interrupted code still holds a lock. A second signal forces the exit,
   and a SIGTERM the application ignores stays ignored
   ([#175](https://github.com/flightdeckhq/flightdeck/issues/175)).
 - **An event that names no model no longer reads "unknown".** A prompt,

@@ -1565,34 +1565,60 @@ and waits on none:
    for an event, plus a wake-up item put on the queue only when the
    queue's lock is free (otherwise the drain thread notices the request
    within its one-second wait). The drain thread posts the events already
-   queued (for up to 3 seconds; the rest are dropped with a warning so an
-   unreachable control plane cannot hold the exit), settles the open
-   streams, posts the events that queues, then posts `session_end`, so
-   `session_end` is the session's last event. Directives that arrive from
-   then on are dropped, and the directive thread is stopped.
+   queued, settles the open streams, posts the events that queues, then
+   posts `session_end`, so `session_end` is the session's last event.
+   Directives that arrive from then on are dropped, and the directive
+   thread is stopped.
 2. The handler polls for that to finish, for up to 2 seconds, then passes
    the signal on to the handler it replaced: it calls a Python handler
    (Python's own SIGINT handler raises `KeyboardInterrupt`), or, for the
    default action, restores it and raises the signal again, so the process
    ends as it would have without the sensor. Past the 2 seconds the drain
-   thread is most likely waiting for a lock the signal interrupted, which
-   is released only once the handler returns: a Python handler is called
-   anyway (a `KeyboardInterrupt` unwinds the frame holding the lock, and
-   the `end` that `atexit` runs then waits for the drain thread), while
-   for the default action the handler returns and the drain thread
-   delivers the signal to the main thread again once `session_end` is out.
+   thread is still waiting for a slow control plane, or briefly for a lock
+   the signal interrupted: a Python handler is called anyway (the `end`
+   that `atexit` runs then waits for the drain thread), while for the
+   default action the handler returns and the drain thread delivers the
+   signal to the main thread again once `session_end` is out. That
+   delivery is cooperative: Python runs a handler only between the main
+   thread's bytecodes, so a main thread inside a long call into native
+   code holds the exit until the call returns.
 3. A second signal while that shutdown runs, or after it, is passed on at
    once, so it forces the exit. A signal that interrupts `end` itself is
    passed on at once too; one that arrives while `end` runs on another
    thread waits for it (2 seconds at most).
 
+The drain thread's shutdown has one deadline, 8 seconds
+(`SHUTDOWN_TIMEOUT_SECS`), well inside the 30 seconds Kubernetes gives a
+pod between SIGTERM and SIGKILL. The queued events get the first 3
+seconds and `session_end` the rest. Each POST makes one attempt, with its
+timeout capped by the time left, and the events still queued when their 3
+seconds run out are dropped and counted in one warning, so a control plane
+that is down or never answers holds the exit for at most the deadline, not
+for a retry cycle per event.
+
+Within it, each wait of the drain thread's for a lock the interrupted code
+may hold lasts half a second at most (`SHUTDOWN_LOCK_WAIT_SECS`): on
+Python 3.13 an exception a signal handler raises while the interrupted
+code is at a loop's back-edge can skip that code's `with` and `finally`
+exits, leaving the lock held for good. The open streams are settled, and
+the events that queues posted, only when the session's, the open-stream
+registry's, the policy cache's and the event queue's locks are all free
+within that wait; otherwise they are left as they are. `session_end`'s
+token total, framework, model and close reason are read under the
+session's lock when it comes free in time, and as plain attribute reads
+without it otherwise. Nothing on this path imports a module: the modules
+it uses are loaded with the sensor, because a first import can wait for
+one the interrupted code is in the middle of, and module code that calls
+`exec` (a dataclass definition does) clears the flag CPython uses to give
+a process ended by an unhandled `KeyboardInterrupt` its SIGINT exit
+status.
+
 `end`, called after a signal started the shutdown (by `atexit`, or
-`teardown()`), waits for the drain thread to finish it, for up to 13
-seconds: the 3-second budget for queued events plus one 10-second request
-timeout for `session_end`. A signal the application ignores (`SIG_IGN`)
-is left ignored and the session carries on; a handler installed outside
-Python, which Python cannot pass a signal on to, is left in place. No
-thread is added for any of this.
+`teardown()`), waits for the drain thread to finish it, up to that
+8-second deadline. A signal the application ignores (`SIG_IGN`) is left
+ignored and the session carries on; a handler installed outside Python,
+which Python cannot pass a signal on to, is left in place. No thread is
+added for any of this.
 
 ---
 

@@ -96,9 +96,14 @@ ends as it would have without the sensor: SIGTERM with no handler of your
 own ends the process, SIGINT raises `KeyboardInterrupt`, and your own
 handler is called. If `session_end` is not out yet and the signal's
 action is to end the process, the sensor lets the interrupted code go on
-and delivers the signal again once `session_end` is sent. A second signal
-is passed on at once and forces the exit. A signal your application
-ignores stays ignored, and the session carries on.
+and delivers the signal again once `session_end` is sent. That shutdown
+takes 8 seconds at most, well inside Kubernetes' 30-second grace period:
+each event gets one attempt within it, so a control plane that is down
+or slow delays the exit by that much at most. Python acts on the signal
+delivered again when the main thread next runs Python code, so a long
+call into native code there delays the exit until it returns. A second
+signal is passed on at once and forces the exit. A signal your
+application ignores stays ignored, and the session carries on.
 
 ## Framework support
 

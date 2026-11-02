@@ -112,6 +112,15 @@ _KEY_PARTIAL_TOKENS_OUTPUT = "partial_tokens_output"
 # test_sdk_call_from_a_litellm_pre_call_hook_runs_under_the_mark_and_emits_nothing
 # in tests/unit/test_interceptor_litellm.py.
 #
+# litellm's own patched entry points read the mark too, more narrowly:
+# a litellm call made while another is in flight passes through only
+# when litellm re-issues the caller's own call -- its responses <->
+# completion bridge, or its fallback loop -- which the outer wrapper
+# already reports. Any other nested litellm call -- from a callback,
+# guardrail or custom provider, or one litellm makes itself (an agentic
+# follow-up, a semantic-cache embedding) -- is a call of its own and is
+# policed and metered (see ``_REISSUE_MODULES`` in litellm.py).
+#
 # Opting in:
 # * Outer side: wrap the function handed to call / call_async /
 #   call_stream / call_stream_async so it runs under
@@ -1153,6 +1162,25 @@ class GuardedAsyncStream(_GuardCore):
         await self._enter_stream()
         return self
 
+    def adopt(self, stream: Any) -> GuardedAsyncStream:
+        """Enter the guard over an SDK stream that is already open (a view
+        response's parsed event stream), which needs no ``await``: the
+        request was sent before the guard existed. An entered guard is
+        settled by its exit, ``close()``, collection or the session's
+        end, so a stream the caller never iterates is still reported,
+        as an aborted stream with no chunks. The stream is the guard's
+        own (no context manager around it), so closing the guard closes
+        the stream."""
+        if self._entered:
+            return self
+        self._entered = True
+        self._t0 = time.monotonic()
+        self._stream = stream
+        self._register_open()
+        self._attach_accumulator()
+        self._opened_t = time.monotonic()
+        return self
+
     async def __aenter__(self) -> GuardedAsyncStream:
         await self._enter_stream()
         return self
@@ -1302,8 +1330,11 @@ def _pre_call(
       so the event lands before the process exit, then raise
       :class:`BudgetExceededError`. Source is always ``"server"``
       (local thresholds fire WARN only).
-    * DEGRADE: returns a *copy* of kwargs with swapped model. POLICY_
-      DEGRADE is NOT emitted here — it fires once on
+    * DEGRADE: returns a *copy* of kwargs with swapped model, and without
+      the request parameters the provider names as other models the call
+      could run instead (``model_alternative_params``; a litellm call's
+      ``fallbacks``), so the degrade target is the only model it can run.
+      POLICY_DEGRADE is NOT emitted here — it fires once on
       ``_apply_directive(DEGRADE)`` arrival. Per-call swaps are visible
       via post_call.model only.
     * WARN: emit :attr:`EventType.POLICY_WARN` (source ``"local"`` for
@@ -1438,6 +1469,13 @@ def _pre_call(
         # visible via post_call.model. See decision lock above.
         call_kwargs = copy.copy(kwargs)
         call_kwargs["model"] = session.policy.degrade_to
+        # The degrade target is the only model the policy allows: a
+        # parameter that names other models the provider may run in its
+        # place (a litellm call's ``fallbacks``, tried when an attempt
+        # fails) is dropped, so a failure of the degraded attempt is the
+        # call's failure instead of a way around the policy.
+        for name in getattr(provider, "model_alternative_params", ()):
+            call_kwargs.pop(name, None)
         _log.info(
             "Policy DEGRADE: swapping model to %s (session %s)",
             session.policy.degrade_to,

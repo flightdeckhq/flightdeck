@@ -304,3 +304,34 @@ exporter's retry is safe.
 `subscription` (hides the mistake, can mis-bill a metered fleet);
 publishing despite a failed read (rows with no capture posture or
 context, and possible duplicates of plugin sessions).
+
+## D230 -- A litellm text_completion stores its prompt verbatim in input
+
+**Date:** 2026-11-01
+**Decision:** under `capture_prompts`, a `litellm.text_completion` /
+`atext_completion` call's content stores the request's `prompt` (a
+string, a list of strings or token ids) verbatim in `input`; `messages`
+and `system` stay empty. A `litellm.responses` call is stored as D228
+stores an OpenAI Responses call.
+**Why:** the legacy completion API has no `messages`; `input` is the
+existing slot for a request's single non-chat input, stored as sent.
+**Rejected alternative:** a synthesized `[{"role": "user", "content":
+prompt}]` in `messages` (what litellm sends underneath, but not what the
+caller sent; content capture stores the caller's request); a new
+`prompt` field (a contract change no reader needs).
+
+## D231 -- Each litellm call is reported by the entry point the caller used
+
+**Date:** 2026-11-01
+**Decision:** a nested litellm call passes through only when the outer
+mark is set and its caller re-issues the caller's own call (the
+responses/completion bridges, the fallback loop): one report, with the
+model that answered. A failed fallback attempt gets no `llm_error`; a
+non-streamed one the provider billed before failing (a timeout, a
+`post_call_rules` rejection) goes unreported. DEGRADE drops a call's
+`fallbacks` and `context_window_fallback_dict`.
+**Why:** those re-issue the same call; other nested calls are billed on
+their own. The degrade target is the only model the policy allows; a
+provider's own server-side routing (OpenRouter `models`) is not dropped.
+**Rejected alternative:** a broad pass-through (hides billed calls);
+reporting each fallback attempt (the loop swallows a policy block).

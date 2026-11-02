@@ -336,6 +336,69 @@ provider's own server-side routing (OpenRouter `models`) is not dropped.
 **Rejected alternative:** a broad pass-through (hides billed calls);
 reporting each fallback attempt (the loop swallows a policy block).
 
+## D232 -- The dashboard names a session's source from `context.telemetry`; agent rows carry their latest session's telemetry
+
+**Date:** 2026-11-01
+**Decision:** a session reported over OTLP (`context.telemetry=otlp`)
+shows an `OTEL` pill beside its client pill and "via OpenTelemetry" in
+its run drawer; the plugin's reads "via plugin". `GET /v1/fleet`,
+`GET /v1/agents` and the agent hits of `GET /v1/search` add `telemetry`,
+the latest session's value, to the runtime-context projection; search
+session hits add `client_type`.
+**Why:** an OTLP session observes only, so its source decides what the
+operator can do; agent rows carry no session context to read it from.
+**Rejected alternative:** a `client_type` per source (D224 kept
+`claude_code` for its defaults); reading it from loaded sessions'
+context (the fleet's per-agent sessions omit context, so rows outside
+the paginated window would lose the pill); a pill on every source
+(noise on the default plugin and sensor rows).
+
+## D233 -- Custom directives are offered only to client types that run custom handlers
+
+**Date:** 2026-11-01
+**Decision:** extends D214: the client type registry gains
+`runs_custom_directives` (`true` for `flightdeck_sensor` only). The dashboard offers custom
+directives (the run drawer's Directives tab, the Fleet trigger) on a
+session that supports directives and whose type runs them; Stop stays
+gated on `supports_directives` alone.
+**Why:** the enforcement-on Claude Code plugin and the Agent SDK
+interceptor take stop and budget directives but answer a custom one
+with an error result, so offering one was a dead end.
+**Rejected alternative:** gating on `supports_directives` (offers the
+dead end); a `client_type` string compare in the dashboard (a new
+client that runs handlers would need a code change, not a registry
+row).
+
+## D234 -- Fleet's agent-row controls are scoped to the agent and fanned out by the API
+
+**Date:** 2026-11-02
+**Decision:** extends D058: `POST /v1/directives` accepts `agent_id`
+for `shutdown` and `custom`. The API sends one row to each live run of the agent that
+can act on it, in one transaction, and returns the count in
+`X-Directive-Count`. Fleet's Stop All and its directive trigger use it.
+**Why:** a sidebar row is an agent. The dashboard holds only some of an
+agent's runs (its five newest and the last day's page), so enumerating
+in the browser left live runs running while the dialog said "All".
+**Rejected alternative:** `shutdown_flavor` from the agent row (reaches
+other agents' runs sharing the flavor); sending one directive per
+session the browser holds (misses runs it has not loaded); a new
+`/v1/agents/{id}/directives` route (a second way to create a directive).
+
+## D235 -- Directive fan-outs are all-or-nothing; a custom directive's session_id wins over its flavor
+
+**Date:** 2026-11-02
+**Decision:** extends D058: every fan-out, by agent or by flavor,
+inserts its rows in one transaction, so a failed insert answers 500 with
+nothing written. A `custom` directive that carries `session_id` goes to
+that session only; a `flavor` beside it only narrows the fingerprint
+check.
+**Why:** a 201 for a partial set left the operator believing every run
+was reached; the Directives page's "Specific run" sends both fields and
+was reaching every run of the flavor.
+**Rejected alternative:** logging a failed row and answering 201 with the
+rest (a silent partial stop); answering the `session_id` + `flavor` pair
+with 400 (breaks the Directives page's "Specific run").
+
 ## D238 -- A record dated after a closed OTLP sub-agent's end resumes it
 
 **Date:** 2026-11-02

@@ -75,6 +75,21 @@ type mockStore struct {
 	degradeTargets []store.PricedModel
 	// degradeTargetErr, when set, fails IsDegradeTarget.
 	degradeTargetErr error
+
+	// Agent-scoped directive plumbing. agentRuns maps an agent_id to
+	// the live runs GetDirectiveTargetsForAgent finds for it (the real
+	// store also applies the capability and fingerprint rules; the
+	// store tests cover those). The mock narrows by the query's flavor
+	// and records the query; createDirectivesErr fails CreateDirectives.
+	agentRuns            map[string][]mockAgentRun
+	lastAgentTargetQuery *store.AgentDirectiveTargetQuery
+	createDirectivesErr  error
+}
+
+// mockAgentRun is one live run of an agent in the mock store.
+type mockAgentRun struct {
+	sessionID string
+	flavor    string
 }
 
 func (m *mockStore) GetContextFacets(_ context.Context) (map[string][]store.ContextFacetValue, error) {
@@ -355,6 +370,35 @@ func (m *mockStore) CreateDirective(_ context.Context, d store.Directive) (*stor
 	d.IssuedAt = time.Now()
 	m.directives = append(m.directives, d)
 	return &d, nil
+}
+
+func (m *mockStore) GetDirectiveTargetsForAgent(_ context.Context, q store.AgentDirectiveTargetQuery) ([]string, error) {
+	m.lastAgentTargetQuery = &q
+	var ids []string
+	for _, run := range m.agentRuns[q.AgentID] {
+		if q.Flavor != "" && run.flavor != q.Flavor {
+			continue
+		}
+		ids = append(ids, run.sessionID)
+	}
+	return ids, nil
+}
+
+func (m *mockStore) CreateDirectives(_ context.Context, tmpl store.Directive, sessionIDs []string) ([]store.Directive, error) {
+	if m.createDirectivesErr != nil {
+		return nil, m.createDirectivesErr
+	}
+	created := make([]store.Directive, 0, len(sessionIDs))
+	for i, sid := range sessionIDs {
+		d := tmpl
+		d.ID = fmt.Sprintf("dir-%d", i+1)
+		d.SessionID = &sid
+		d.IssuedBy = "dashboard"
+		d.IssuedAt = time.Now()
+		created = append(created, d)
+	}
+	m.directives = append(m.directives, created...)
+	return created, nil
 }
 
 func (m *mockStore) GetActiveSessionIDsByFlavor(_ context.Context, flavor string) ([]string, error) {
@@ -1527,8 +1571,8 @@ func TestCreateDirectiveMissingSessionID(t *testing.T) {
 	}
 	var resp map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if !contains(resp["error"].(string), "session_id is required") {
-		t.Errorf("expected error about session_id, got %v", resp["error"])
+	if !contains(resp["error"].(string), "session_id or agent_id is required") {
+		t.Errorf("expected error about session_id or agent_id, got %v", resp["error"])
 	}
 }
 
@@ -1618,6 +1662,292 @@ func TestCreateDirectiveShutdownFlavorNoSessions(t *testing.T) {
 	errMsg, _ := resp["error"].(string)
 	if !contains(errMsg, "no active sessions") {
 		t.Errorf("expected error about no active sessions, got %q", errMsg)
+	}
+}
+
+// --- Agent-scoped directives and the count header ---
+
+// testAgentID is the agent the agent-scoped directive tests address.
+const testAgentID = "aaaaaaaa-0000-4000-8000-00000000000a"
+
+// postDirective sends body to POST /v1/directives against s.
+func postDirective(t *testing.T, s *mockStore, body string) *httptest.ResponseRecorder {
+	t.Helper()
+	handler := handlers.CreateDirectiveHandler(store.WrapStore(s))
+	req := httptest.NewRequest("POST", "/v1/directives", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	handler(w, req)
+	return w
+}
+
+func TestCreateDirective_ShutdownForAgentReachesEveryTargetedRun(t *testing.T) {
+	s := &mockStore{agentRuns: map[string][]mockAgentRun{
+		testAgentID: {{"s-a1", "f1"}, {"s-a2", "f1"}, {"s-a3", "f2"}},
+	}}
+	w := postDirective(t, s, `{"action":"shutdown","agent_id":"`+testAgentID+`","reason":"manual_fleet_kill"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get(handlers.DirectiveCountHeader); got != "3" {
+		t.Errorf("%s = %q, want 3", handlers.DirectiveCountHeader, got)
+	}
+	q := s.lastAgentTargetQuery
+	if q == nil || q.AgentID != testAgentID || q.Custom || q.Fingerprint != "" || q.Flavor != "" {
+		t.Fatalf("target query = %+v, want a stop for agent %s", q, testAgentID)
+	}
+	if len(s.directives) != 3 {
+		t.Fatalf("expected 3 rows, got %d", len(s.directives))
+	}
+	for i, want := range []string{"s-a1", "s-a2", "s-a3"} {
+		d := s.directives[i]
+		if d.Action != "shutdown" || d.SessionID == nil || *d.SessionID != want {
+			t.Errorf("row %d = %s for %v, want shutdown for %s", i, d.Action, d.SessionID, want)
+		}
+		if d.Flavor != nil {
+			t.Errorf("row %d names flavor %q; an agent's rows are addressed to their sessions", i, *d.Flavor)
+		}
+		if d.Reason == nil || *d.Reason != "manual_fleet_kill" || d.GracePeriodMs != 5000 {
+			t.Errorf("row %d reason %v grace %d", i, d.Reason, d.GracePeriodMs)
+		}
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["session_id"] != "s-a3" {
+		t.Errorf("body is the row for %v, want the last row created (s-a3)", resp["session_id"])
+	}
+}
+
+func TestCreateDirective_AgentWithNoTargetsIs404(t *testing.T) {
+	s := &mockStore{}
+	w := postDirective(t, s, `{"action":"shutdown","agent_id":"`+testAgentID+`"}`)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["error"] != "no live session of this agent can take this directive" {
+		t.Errorf("error = %v", resp["error"])
+	}
+	if len(s.directives) != 0 {
+		t.Errorf("expected no rows, got %d", len(s.directives))
+	}
+	if w.Header().Get(handlers.DirectiveCountHeader) != "" {
+		t.Error("a 404 carries no count")
+	}
+}
+
+func TestCreateDirective_CountHeaderOnEveryCreate(t *testing.T) {
+	sid := "00000000-0000-0000-0000-000000000001"
+	registered := []store.CustomDirective{
+		{ID: "cd-reset", Fingerprint: "fp-reset", Name: "reset", Flavor: "research-agent"},
+	}
+	for name, body := range map[string]string{
+		"one session's stop":   `{"action":"shutdown","session_id":"` + sid + `"}`,
+		"one session's custom": `{"action":"custom","session_id":"` + sid + `","directive_name":"reset","fingerprint":"fp-reset"}`,
+		"a flavor's stop":      `{"action":"shutdown_flavor","flavor":"research-agent"}`,
+		"a flavor's custom":    `{"action":"custom","flavor":"research-agent","directive_name":"reset","fingerprint":"fp-reset"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			// The mock's research-agent flavor has one live session.
+			s := &mockStore{customDirectives: registered}
+			w := postDirective(t, s, body)
+			if w.Code != http.StatusCreated {
+				t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+			}
+			if got := w.Header().Get(handlers.DirectiveCountHeader); got != "1" {
+				t.Errorf("%s = %q, want 1", handlers.DirectiveCountHeader, got)
+			}
+			if len(s.directives) != 1 {
+				t.Errorf("expected 1 row, got %d", len(s.directives))
+			}
+		})
+	}
+}
+
+func TestCreateDirective_FanOutFailureIs500(t *testing.T) {
+	registered := []store.CustomDirective{
+		{ID: "cd-reset", Fingerprint: "fp-reset", Name: "reset", Flavor: "research-agent"},
+	}
+	for name, body := range map[string]string{
+		"agent":  `{"action":"shutdown","agent_id":"` + testAgentID + `"}`,
+		"flavor": `{"action":"custom","flavor":"research-agent","directive_name":"reset","fingerprint":"fp-reset"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := &mockStore{
+				customDirectives:    registered,
+				agentRuns:           map[string][]mockAgentRun{testAgentID: {{"s-a1", "f1"}}},
+				createDirectivesErr: errors.New("insert failed"),
+			}
+			w := postDirective(t, s, body)
+			if w.Code != http.StatusInternalServerError {
+				t.Fatalf("expected 500, got %d: %s", w.Code, w.Body.String())
+			}
+			if w.Header().Get(handlers.DirectiveCountHeader) != "" {
+				t.Error("a failed request carries no count")
+			}
+		})
+	}
+}
+
+func TestCreateDirective_AgentValidation(t *testing.T) {
+	sid := "00000000-0000-0000-0000-000000000001"
+	custom := `"action":"custom","directive_name":"reset","fingerprint":"fp-reset",`
+	for _, tc := range []struct {
+		name, body, wantErr string
+	}{
+		{"stop with a session and an agent",
+			`{"action":"shutdown","session_id":"` + sid + `","agent_id":"` + testAgentID + `"}`,
+			"session_id and agent_id are mutually exclusive"},
+		{"stop with neither", `{"action":"shutdown"}`,
+			"session_id or agent_id is required when action is 'shutdown'"},
+		{"agent stop with a flavor",
+			`{"action":"shutdown","agent_id":"` + testAgentID + `","flavor":"f1"}`,
+			"flavor must be empty when action is 'shutdown'"},
+		{"agent_id not a UUID", `{"action":"shutdown","agent_id":"agent-a"}`,
+			"agent_id must be a UUID"},
+		{"flavor stop with an agent",
+			`{"action":"shutdown_flavor","flavor":"f1","agent_id":"` + testAgentID + `"}`,
+			"agent_id must be empty when action is 'shutdown_flavor'"},
+		{"custom with a session and an agent",
+			`{` + custom + `"session_id":"` + sid + `","agent_id":"` + testAgentID + `"}`,
+			"session_id and agent_id are mutually exclusive"},
+		{"custom agent_id not a UUID", `{` + custom + `"agent_id":"not-a-uuid"}`,
+			"agent_id must be a UUID"},
+		{"custom with no target", `{` + strings.TrimSuffix(custom, ",") + `}`,
+			"session_id, flavor or agent_id is required when action is 'custom'"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := &mockStore{
+				customDirectives: []store.CustomDirective{{ID: "cd", Fingerprint: "fp-reset", Name: "reset", Flavor: "f1"}},
+				agentRuns:        map[string][]mockAgentRun{testAgentID: {{"s-a1", "f1"}}},
+			}
+			w := postDirective(t, s, tc.body)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+			}
+			var resp map[string]any
+			_ = json.Unmarshal(w.Body.Bytes(), &resp)
+			if resp["error"] != tc.wantErr {
+				t.Errorf("error = %v, want %q", resp["error"], tc.wantErr)
+			}
+			if len(s.directives) != 0 || s.lastAgentTargetQuery != nil {
+				t.Error("an invalid request created rows or looked targets up")
+			}
+		})
+	}
+}
+
+func TestCreateCustomDirective_ForAgent(t *testing.T) {
+	s := &mockStore{
+		customDirectives: []store.CustomDirective{
+			{ID: "cd-rotate", Fingerprint: "fp-rotate", Name: "rotate", Flavor: "f1"},
+		},
+		agentRuns: map[string][]mockAgentRun{testAgentID: {{"s-a1", "f1"}, {"s-a2", "f1"}}},
+	}
+	w := postDirective(t, s, `{"action":"custom","agent_id":"`+testAgentID+
+		`","directive_name":"rotate","fingerprint":"fp-rotate","parameters":{"model":"m2"}}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get(handlers.DirectiveCountHeader); got != "2" {
+		t.Errorf("%s = %q, want 2", handlers.DirectiveCountHeader, got)
+	}
+	q := s.lastAgentTargetQuery
+	if q == nil || !q.Custom || q.Fingerprint != "fp-rotate" || q.Flavor != "" || q.AgentID != testAgentID {
+		t.Fatalf("target query = %+v, want the custom targets of fp-rotate", q)
+	}
+	for i, d := range s.directives {
+		if d.Action != "custom" || d.Payload == nil {
+			t.Fatalf("row %d = %+v, want a custom row with its payload", i, d)
+		}
+		var p map[string]any
+		if err := json.Unmarshal(*d.Payload, &p); err != nil {
+			t.Fatal(err)
+		}
+		params, _ := p["parameters"].(map[string]any)
+		if p["fingerprint"] != "fp-rotate" || p["directive_name"] != "rotate" || params["model"] != "m2" {
+			t.Errorf("row %d payload = %v", i, p)
+		}
+	}
+}
+
+func TestCreateCustomDirective_ForAgentFlavorNarrows(t *testing.T) {
+	// The same handler registered under two flavors, the agent running
+	// under both: the flavor keeps the runs of that flavor.
+	s := &mockStore{
+		customDirectives: []store.CustomDirective{
+			{ID: "cd-1", Fingerprint: "fp-rotate", Name: "rotate", Flavor: "f1"},
+			{ID: "cd-2", Fingerprint: "fp-rotate", Name: "rotate", Flavor: "f2"},
+		},
+		agentRuns: map[string][]mockAgentRun{testAgentID: {{"s-a1", "f1"}, {"s-a2", "f2"}}},
+	}
+	w := postDirective(t, s, `{"action":"custom","agent_id":"`+testAgentID+
+		`","flavor":"f2","directive_name":"rotate","fingerprint":"fp-rotate"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := w.Header().Get(handlers.DirectiveCountHeader); got != "1" {
+		t.Errorf("%s = %q, want 1", handlers.DirectiveCountHeader, got)
+	}
+	if q := s.lastAgentTargetQuery; q == nil || q.Flavor != "f2" {
+		t.Fatalf("target query = %+v, want flavor f2", q)
+	}
+	if len(s.directives) != 1 || *s.directives[0].SessionID != "s-a2" {
+		t.Errorf("rows = %+v, want one for s-a2", s.directives)
+	}
+}
+
+func TestCreateCustomDirective_ForAgentUnknownFingerprint(t *testing.T) {
+	for name, body := range map[string]string{
+		"registered nowhere": `{"action":"custom","agent_id":"` + testAgentID +
+			`","directive_name":"rotate","fingerprint":"fp-ghost"}`,
+		"not under the given flavor": `{"action":"custom","agent_id":"` + testAgentID +
+			`","flavor":"f2","directive_name":"rotate","fingerprint":"fp-rotate"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			s := &mockStore{
+				customDirectives: []store.CustomDirective{
+					{ID: "cd-1", Fingerprint: "fp-rotate", Name: "rotate", Flavor: "f1"},
+				},
+				agentRuns: map[string][]mockAgentRun{testAgentID: {{"s-a1", "f1"}}},
+			}
+			w := postDirective(t, s, body)
+			if w.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("expected 422, got %d: %s", w.Code, w.Body.String())
+			}
+			if len(s.directives) != 0 || s.lastAgentTargetQuery != nil {
+				t.Error("an unknown fingerprint created rows or looked targets up")
+			}
+		})
+	}
+}
+
+func TestCreateCustomDirective_SessionIDWinsOverFlavor(t *testing.T) {
+	// The Directives page's "Specific run" sends the run's id with the
+	// directive's flavor. The flavor has a live session of its own (s1
+	// in the mock), which a flavor fan-out would reach.
+	sid := "00000000-0000-0000-0000-000000000009"
+	s := &mockStore{customDirectives: []store.CustomDirective{
+		{ID: "cd-reset", Fingerprint: "fp-reset", Name: "reset", Flavor: "research-agent"},
+	}}
+	w := postDirective(t, s, `{"action":"custom","session_id":"`+sid+
+		`","flavor":"research-agent","directive_name":"reset","fingerprint":"fp-reset"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if len(s.directives) != 1 || *s.directives[0].SessionID != sid {
+		t.Fatalf("rows = %+v, want one for %s only", s.directives, sid)
+	}
+	if got := w.Header().Get(handlers.DirectiveCountHeader); got != "1" {
+		t.Errorf("%s = %q, want 1", handlers.DirectiveCountHeader, got)
+	}
+
+	// The flavor still narrows the fingerprint check.
+	w = postDirective(t, s, `{"action":"custom","session_id":"`+sid+
+		`","flavor":"other-flavor","directive_name":"reset","fingerprint":"fp-reset"}`)
+	if w.Code != http.StatusUnprocessableEntity {
+		t.Errorf("fingerprint not registered under the flavor: expected 422, got %d", w.Code)
 	}
 }
 
@@ -2170,8 +2500,8 @@ func TestCreateCustomDirectiveMissingTarget(t *testing.T) {
 	}
 	var resp map[string]any
 	_ = json.Unmarshal(w.Body.Bytes(), &resp)
-	if !contains(resp["error"].(string), "session_id or flavor is required") {
-		t.Errorf("expected error about session_id or flavor, got %v", resp["error"])
+	if !contains(resp["error"].(string), "session_id, flavor or agent_id is required") {
+		t.Errorf("expected error about session_id, flavor or agent_id, got %v", resp["error"])
 	}
 }
 

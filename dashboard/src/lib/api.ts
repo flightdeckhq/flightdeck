@@ -9,7 +9,9 @@ import type {
   PolicyRequest,
   PricedModel,
   DirectiveRequest,
+  CustomDirectiveRequest,
   Directive,
+  DirectiveCreated,
   AnalyticsParams,
   AnalyticsResponse,
   EventContent,
@@ -130,6 +132,9 @@ export interface RecentAgent {
   client_type: string;
   state: SessionState | "";
   last_seen_at: string;
+  /** The latest session's ``context.telemetry`` (``"otlp"`` for an
+   *  agent reported over OpenTelemetry). */
+  telemetry?: string | null;
 }
 
 interface RecentAgentsResponse {
@@ -219,10 +224,11 @@ export async function fetchPolicies(): Promise<Policy[]> {
   }
 }
 
-// policyError builds the ApiError for a rejected policy write. It
-// carries the API's own reason, which for a 400 names the field that
-// failed validation.
-async function policyError(res: Response, path: string): Promise<ApiError> {
+// apiErrorFromBody builds the ApiError for a rejected write. It carries
+// the API's own reason (the ``error`` field of its JSON body), which for
+// a 400 names the field that failed validation and for a directive says
+// why no run could take it.
+async function apiErrorFromBody(res: Response, path: string): Promise<ApiError> {
   const body = (await res.json().catch(() => null)) as { error?: string } | null;
   return new ApiError(res.status, path, body?.error);
 }
@@ -234,7 +240,7 @@ export async function createPolicy(data: PolicyRequest): Promise<Policy> {
     body: JSON.stringify(data),
   });
   if (!res.ok) {
-    throw await policyError(res, "POST /v1/policies");
+    throw await apiErrorFromBody(res, "POST /v1/policies");
   }
   return res.json() as Promise<Policy>;
 }
@@ -246,7 +252,7 @@ export async function updatePolicy(id: string, data: PolicyRequest): Promise<Pol
     body: JSON.stringify(data),
   });
   if (!res.ok) {
-    throw await policyError(res, `PUT /v1/policies/${id}`);
+    throw await apiErrorFromBody(res, `PUT /v1/policies/${id}`);
   }
   return res.json() as Promise<Policy>;
 }
@@ -267,16 +273,42 @@ export async function deletePolicy(id: string): Promise<void> {
   }
 }
 
-export async function createDirective(data: DirectiveRequest): Promise<Directive> {
+/** The response header POST /v1/directives sets to how many directive
+ *  rows the request created: 1 for one session, one per run reached for
+ *  an agent or a flavor (api/internal/handlers/directives.go). */
+export const DIRECTIVE_COUNT_HEADER = "X-Directive-Count";
+
+/** POST /v1/directives: the last row created and how many the request
+ *  created. A rejection throws an ApiError carrying the API's reason. */
+async function postDirective(
+  data: DirectiveRequest | CustomDirectiveRequest,
+): Promise<DirectiveCreated> {
   const res = await apiFetch(`/v1/directives`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(data),
   });
   if (!res.ok) {
-    throw new Error(`API ${res.status}: POST /v1/directives`);
+    throw await apiErrorFromBody(res, "POST /v1/directives");
   }
-  return res.json() as Promise<Directive>;
+  const directive = (await res.json()) as Directive;
+  return { directive, count: directiveCount(res) };
+}
+
+/** The run count a directive response's header carries, or null when
+ *  the header is missing or not a count. */
+function directiveCount(res: Response): number | null {
+  const raw = res.headers.get(DIRECTIVE_COUNT_HEADER);
+  if (raw === null || raw.trim() === "") return null;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : null;
+}
+
+/** Create a shutdown: one session (``session_id``), every live run of
+ *  an agent that can take a stop (``agent_id``), or a flavor
+ *  (``shutdown_flavor``). */
+export function createDirective(data: DirectiveRequest): Promise<DirectiveCreated> {
+  return postDirective(data);
 }
 
 export async function fetchEventContent(eventId: string): Promise<EventContent | null> {
@@ -326,20 +358,13 @@ export async function fetchCustomDirectives(flavor?: string): Promise<CustomDire
   return resp.directives ?? [];
 }
 
-export async function triggerCustomDirective(data: {
-  action: "custom";
-  directive_name: string;
-  fingerprint: string;
-  session_id?: string;
-  flavor?: string;
-  parameters?: Record<string, unknown>;
-}): Promise<void> {
-  const res = await apiFetch(`/v1/directives`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(data),
-  });
-  if (!res.ok) throw new Error(`API ${res.status}`);
+/** Send a custom directive to one session, every live session of a
+ *  flavor, or the live runs of an agent that run it (see
+ *  CustomDirectiveRequest). */
+export function triggerCustomDirective(
+  data: CustomDirectiveRequest,
+): Promise<DirectiveCreated> {
+  return postDirective(data);
 }
 
 export interface BulkEventsParams {

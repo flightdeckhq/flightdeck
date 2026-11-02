@@ -18,6 +18,8 @@ interface VirtualizedSwimLaneProps {
   /** Label + pill metadata. Forwarded verbatim to SwimLane. */
   agentName?: string;
   clientType?: ClientType;
+  /** The agent's ``telemetry``; ``"otlp"`` adds the OTel pill. */
+  telemetry?: string;
   agentType?: string;
   sessions: Session[];
   scale: ScaleTime<number, number>;

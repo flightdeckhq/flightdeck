@@ -483,6 +483,82 @@ func TestSearch_AgentResultCarriesClientTypeAndState(t *testing.T) {
 	}
 }
 
+// A session hit carries its client_type, so the palette names the
+// client beside the session's source.
+func TestSearch_SessionCarriesClientType(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	suffix := randomUUID(t)[:8]
+	flavor := "search-sess-ctype-" + suffix
+	agentID := seedSearchAgent(t, s, "a-"+suffix, "h-"+suffix, "u-"+suffix)
+	sessionID := seedSearchSessionWithEvents(t, s, agentID, flavor, nil)
+
+	results, err := s.Search(ctx, flavor)
+	if err != nil {
+		t.Fatalf("Search(%q): %v", flavor, err)
+	}
+	for _, sr := range results.Sessions {
+		if sr.SessionID == sessionID {
+			if sr.ClientType != "flightdeck_sensor" {
+				t.Errorf("ClientType: want flightdeck_sensor, got %q", sr.ClientType)
+			}
+			return
+		}
+	}
+	t.Fatalf("Search(%q): session %s not in results", flavor, sessionID)
+}
+
+// An agent hit carries its latest session's context.telemetry, so the
+// palette can label an agent reported over OpenTelemetry; an agent
+// whose latest session names none carries nil.
+func TestSearch_AgentCarriesLatestTelemetry(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	t.Cleanup(cleanup)
+	ctx := context.Background()
+
+	suffix := randomUUID(t)[:8]
+	otlpName := "search-otlp-" + suffix
+	pluginName := "search-plugin-" + suffix
+	otlpID := seedSearchAgent(t, s, otlpName, "h-"+suffix, "u-"+suffix)
+	pluginID := seedSearchAgent(t, s, pluginName, "h2-"+suffix, "u2-"+suffix)
+	// Registered after seedSearchAgent's cleanups, so it runs before
+	// them and the agents rows are free of sessions when deleted.
+	t.Cleanup(func() {
+		_, _ = s.pool.Exec(ctx,
+			`DELETE FROM sessions WHERE agent_id = ANY($1::uuid[])`,
+			[]string{otlpID, pluginID})
+	})
+	now := time.Now().UTC()
+	seedSessionWithContext(t, s, otlpID, "production", "flightdeck_sensor",
+		now.Add(-time.Minute), `{"telemetry":"otlp"}`)
+	seedSessionWithContext(t, s, pluginID, "production", "flightdeck_sensor",
+		now.Add(-time.Minute), `{"os":"Linux"}`)
+
+	for name, want := range map[string]string{otlpName: "otlp", pluginName: ""} {
+		results, err := s.Search(ctx, name)
+		if err != nil {
+			t.Fatalf("Search(%q): %v", name, err)
+		}
+		var got *SearchResultAgent
+		for i := range results.Agents {
+			if results.Agents[i].AgentName == name {
+				got = &results.Agents[i]
+			}
+		}
+		if got == nil {
+			t.Fatalf("Search(%q): agent not in results", name)
+		}
+		switch {
+		case want == "" && got.Telemetry != nil:
+			t.Errorf("%s: telemetry want nil, got %q", name, *got.Telemetry)
+		case want != "" && (got.Telemetry == nil || *got.Telemetry != want):
+			t.Errorf("%s: telemetry want %q, got %v", name, want, got.Telemetry)
+		}
+	}
+}
+
 func TestSearch_AgentStateParityWithListAgents(t *testing.T) {
 	// Lock the contract that /v1/search and /agents read the same
 	// rolled-up state for the same agent. Both paths consume

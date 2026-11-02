@@ -552,6 +552,7 @@ export function Timeline({
           flavor={f.flavor}
           agentName={f.agent_name}
           clientType={f.client_type ?? undefined}
+          telemetry={f.telemetry ?? undefined}
           agentType={f.agent_type}
           sessions={f.sessions}
           scale={scale}

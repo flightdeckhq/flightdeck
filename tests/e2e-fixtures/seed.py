@@ -61,6 +61,11 @@ from tests.shared.fixtures import (  # noqa: E402
 # to a different namespace".
 NAMESPACE_FLIGHTDECK = UUID("ee22ab58-26fc-54ef-91b4-b5c0a97f9b61")
 
+# The OTLP fixture lives beside this script; running it as a script puts
+# its directory first on sys.path.
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from otlp_seed import refresh_otlp_child_events, seed_otlp_fixture  # noqa: E402
+
 CANONICAL_PATH = pathlib.Path(__file__).resolve().parent / "canonical.json"
 
 # Minimum events per seeded session. Used by ``session_is_complete`` as
@@ -2129,6 +2134,11 @@ def seed(mode: str = "full") -> None:
             )
             backdated += 1
 
+    # The Claude Code session reported over OTLP goes in through the
+    # OTLP receiver (otlp_seed.py), not POST /v1/events; it is
+    # re-pinned active in both modes, like the fresh-class roles above.
+    seed_otlp_fixture(INGESTION_URL, API_URL, auth_headers(), mode=mode)
+
     print(f"[seed] done — seeded={seeded} skipped={skipped} backdated={backdated}")
 
 
@@ -2254,6 +2264,11 @@ def refresh_subagent_events() -> None:
                     f"({session_id[:8]}) failed: {exc}",
                     file=sys.stderr,
                 )
+    # The OTLP fixture's sub-agent child (otlp_seed.py) is a canonical
+    # sub-agent row too, created through the OTLP receiver rather than
+    # canonical.json.
+    if refresh_otlp_child_events(SUBAGENT_REFRESH_OFFSET_SEC):
+        refreshed += 1
     print(f"[seed] subagent-events refresh — refreshed={refreshed}")
 
 

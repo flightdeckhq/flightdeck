@@ -209,9 +209,9 @@ All notable changes to Flightdeck are documented here.
   never counted, so the parent agent read 0 sessions and the Fleet hid
   it, active session and all. The session now counts once, whichever
   start arrives first; a parent whose start never arrives is counted by
-  its first other event; and the Fleet keeps an agent that has a recent
-  session even when its count reads 0. On an existing deployment,
-  `POST /api/v1/admin/reconcile-agents?orphan_threshold_secs=0`
+  its first other event, its end included; and the Fleet keeps an agent
+  that has a recent session even when its count reads 0. On an existing
+  deployment, `POST /api/v1/admin/reconcile-agents?orphan_threshold_secs=0`
   recomputes the counts already wrong from the stored sessions and
   deletes nothing.
 

@@ -251,6 +251,34 @@ func (sp *SessionProcessor) attributeSession(ctx context.Context, e consumer.Eve
 	}
 }
 
+// claimOwnerlessRow runs attributeSession for an event that bypasses
+// handleSessionGuard (session_end) when the event's session row exists
+// and no agent owns it. The read keeps the common case, a row with an
+// owner, to one indexed lookup with no write. A missing row is left
+// missing: this never creates one.
+func (sp *SessionProcessor) claimOwnerlessRow(ctx context.Context, e consumer.EventPayload) {
+	if e.AgentID == "" {
+		return
+	}
+	var unattributed bool
+	err := sp.pool.QueryRow(ctx,
+		"SELECT agent_id IS NULL FROM sessions WHERE session_id = $1::uuid", e.SessionID,
+	).Scan(&unattributed)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			slog.Warn("read session owner failed",
+				"session_id", e.SessionID,
+				"event_type", e.EventType,
+				"err", err,
+			)
+		}
+		return
+	}
+	if unattributed {
+		sp.attributeSession(ctx, e)
+	}
+}
+
 // upgradeContextIfPresent fills in sessions.context when the incoming
 // event carries one. Called from every non-closed branch of
 // handleSessionGuard so lazy-created rows and already-active
@@ -377,7 +405,8 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 	// claims it through UpsertSession, which fills its identity, upgrades
 	// its "unknown" sentinels and counts it toward the parent's agent; a
 	// parent whose start never arrives is claimed by its first other
-	// event (handleSessionGuard). Stub creation failure is
+	// event (handleSessionGuard, or HandleSessionEnd for its end). Stub
+	// creation failure is
 	// logged-but-non-fatal: the child
 	// INSERT will then FK-violate, the worker NAKs, NATS redelivers,
 	// and the stub path retries on the redelivery — better than
@@ -674,7 +703,26 @@ func nilIfEmpty(s string) any {
 // WARN, counter, and ErrEventDropped, which Process turns into a clean
 // ACK with no event row. Letting the insert run would fail the sessions
 // foreign key and spend the retry budget on an opaque "process error".
+//
+// Once the end has settled on an existing row, a row that no agent owns
+// yet (a parent stub whose own session_start never reached the worker,
+// such as a root start the client gave up on) is claimed for the agent
+// the end names and counted once (claimOwnerlessRow). Like the end
+// itself, the claim never creates a row.
 func (sp *SessionProcessor) HandleSessionEnd(ctx context.Context, e consumer.EventPayload) (closed bool, err error) {
+	closed, err = sp.applySessionEnd(ctx, e)
+	if err == nil {
+		// A nil error means the row exists: the end closed it, found
+		// it already closed, or found it opened by a later start. The
+		// claim reads the row after the settle, so it also sees a stub
+		// a child's session_start wrote while this end was settling.
+		sp.claimOwnerlessRow(ctx, e)
+	}
+	return closed, err
+}
+
+// applySessionEnd settles a session_end on its row (see HandleSessionEnd).
+func (sp *SessionProcessor) applySessionEnd(ctx context.Context, e consumer.EventPayload) (closed bool, err error) {
 	// At most two attempts: a statement that matched nothing because
 	// the row did not exist yet is repeated once the read finds the row
 	// (another goroutine lazily created, upserted or even closed it in

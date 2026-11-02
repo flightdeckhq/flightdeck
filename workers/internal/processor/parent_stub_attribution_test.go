@@ -2,6 +2,7 @@ package processor
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -122,6 +123,82 @@ func TestHandleSessionStart_ChildBeforeParentCountsTheParentOnce(t *testing.T) {
 	}
 	if got := agentSessions(t, pool, f.childAgent); got != 1 {
 		t.Errorf("child agent total_sessions = %d after the parent's start, want 1", got)
+	}
+}
+
+// sessionState is the session's stored state.
+func sessionState(t *testing.T, pool *pgxpool.Pool, sessionID string) string {
+	t.Helper()
+	var state string
+	if err := pool.QueryRow(context.Background(),
+		`SELECT state FROM sessions WHERE session_id = $1::uuid`, sessionID).Scan(&state); err != nil {
+		t.Fatalf("read state of %s: %v", sessionID, err)
+	}
+	return state
+}
+
+// The parent's session_start never reaches the worker (a root start the
+// client gave up on) and neither does any other event of it but its
+// session_end: the end closes the stub and claims it for the parent's
+// agent, and a duplicate end does not count it again.
+func TestHandleSessionEnd_ClaimsAParentStubWhoseStartNeverArrived(t *testing.T) {
+	pool := dbPool(t)
+	ctx := context.Background()
+	sp := NewSessionProcessor(writer.New(pool), pool)
+	f := newStubFamily(t, pool)
+
+	if err := sp.HandleSessionStart(ctx, f.childStart()); err != nil {
+		t.Fatalf("child session_start: %v", err)
+	}
+	end := f.parentEvent("session_end")
+	end.StreamSeq = 50
+	closed, err := sp.HandleSessionEnd(ctx, end)
+	if err != nil || !closed {
+		t.Fatalf("parent session_end: closed = %v, err = %v; want true, nil", closed, err)
+	}
+	if owner := sessionOwner(t, pool, f.parentSID); owner != f.parentAgent {
+		t.Fatalf("parent session agent_id = %q after its end, want %s", owner, f.parentAgent)
+	}
+	if state := sessionState(t, pool, f.parentSID); state != "closed" {
+		t.Errorf("parent session state = %s, want closed", state)
+	}
+	if got := agentSessions(t, pool, f.parentAgent); got != 1 {
+		t.Errorf("parent agent total_sessions = %d, want 1", got)
+	}
+
+	if _, err := sp.HandleSessionEnd(ctx, end); err != nil {
+		t.Fatalf("duplicate parent session_end: %v", err)
+	}
+	if got := agentSessions(t, pool, f.parentAgent); got != 1 {
+		t.Errorf("parent agent total_sessions = %d after a duplicate end, want 1", got)
+	}
+	if state := sessionState(t, pool, f.parentSID); state != "closed" {
+		t.Errorf("parent session state = %s after a duplicate end, want closed", state)
+	}
+}
+
+// The claim on session_end never creates anything: an end for a session
+// the worker has not stored asks for redelivery and leaves no session
+// row and no agent row behind.
+func TestHandleSessionEnd_ForAMissingRowCreatesNothing(t *testing.T) {
+	pool := dbPool(t)
+	ctx := context.Background()
+	sp := NewSessionProcessor(writer.New(pool), pool)
+	f := newStubFamily(t, pool)
+
+	_, err := sp.HandleSessionEnd(ctx, f.parentEvent("session_end"))
+	if !errors.Is(err, consumer.ErrRetryLater) {
+		t.Fatalf("session_end for a missing row: err = %v, want ErrRetryLater", err)
+	}
+	var sessions, agents int
+	if err := pool.QueryRow(ctx, `
+		SELECT (SELECT count(*) FROM sessions WHERE session_id = $1::uuid),
+		       (SELECT count(*) FROM agents WHERE agent_id = $2::uuid)`,
+		f.parentSID, f.parentAgent).Scan(&sessions, &agents); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if sessions != 0 || agents != 0 {
+		t.Errorf("an end for a missing row left %d session and %d agent rows, want none", sessions, agents)
 	}
 }
 

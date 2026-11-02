@@ -3311,7 +3311,10 @@ published after it (see Session attachment flow).
   for a delayed redelivery and is dropped as an orphan on the last
   delivery, a closed row makes the end a duplicate, and an end that
   predates the current run is recorded as an event without closing
-  anything.
+  anything. Once the end has settled on an existing row, a row that no
+  agent owns yet (a parent stub whose `session_start` never arrived) is
+  claimed for the end's agent and counted toward its `total_sessions`;
+  the claim, like the end, never creates a row.
 - `HandleHeartbeat`: advance last_seen_at.
 - `HandleMCPServerAttached`: merge the server fingerprint into
   `sessions.context.mcp_servers` after the freshness update.
@@ -3410,7 +3413,8 @@ event's assumption. Three scenarios, three code paths:
   upgrades the sentinels via the write-once-but-upgrade branch, and
   counts the session toward the parent's agent once. A parent whose
   `session_start` is never processed is claimed by its first other
-  event (`handleSessionGuard`), which fills the identity only. Same
+  event (`handleSessionGuard`, or `HandleSessionEnd` for its
+  `session_end`), which fills the identity only. Same
   primitive as create-on-unknown, different trigger (FK satisfaction
   vs unknown-session-id event).
 

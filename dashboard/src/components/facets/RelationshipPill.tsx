@@ -1,6 +1,22 @@
 import { TruncatedText } from "@/components/ui/TruncatedText";
 
 /**
+ * Flex-shrink weight of a ``shrinkable`` pill. The swimlane's agent
+ * name shrinks with weight 1, and flex shares the overflow in
+ * proportion to weight times width, so at 100 the pill gives up
+ * almost all of the overflow first: the parent's name it repeats is
+ * the part of a sub-agent row that can afford to truncate.
+ */
+export const CHILD_PILL_SHRINK_WEIGHT = 100;
+
+/**
+ * Narrowest a ``shrinkable`` pill gets: room for the ``↳`` and an
+ * ellipsis at the pill's 10 px mono font plus its padding, so the
+ * pill still reads as a link to the parent.
+ */
+export const CHILD_PILL_MIN_WIDTH = "1.75rem";
+
+/**
  * Always-on relationship pill on the SwimLane left
  * panel. Distinct from ``SubAgentRolePill`` (which surfaces the
  * agent's role string) and from the L8 red dot (which surfaces a
@@ -24,6 +40,7 @@ export function RelationshipPill({
   childCount,
   onClick,
   testId,
+  shrinkable = false,
 }: {
   mode: "child" | "parent";
   /** Parent agent's display name. Required when mode === "child". */
@@ -35,6 +52,11 @@ export function RelationshipPill({
    *  lives outside this component. */
   onClick?: () => void;
   testId?: string;
+  /** Let the pill shrink before its row's other items, down to
+   *  ``CHILD_PILL_MIN_WIDTH`` with an ellipsis. The swimlane passes it
+   *  on a sub-agent row so the row's own name keeps its width; every
+   *  other caller keeps the pill at its natural width. */
+  shrinkable?: boolean;
 }) {
   const isInteractive = !!onClick;
   const label =
@@ -62,7 +84,11 @@ export function RelationshipPill({
       style={{
         display: "inline-flex",
         alignItems: "center",
-        flexShrink: 0,
+        flexShrink: shrinkable ? CHILD_PILL_SHRINK_WEIGHT : 0,
+        minWidth: shrinkable ? CHILD_PILL_MIN_WIDTH : undefined,
+        // Clips the pill to its shrunk width; TruncatedText draws the
+        // ellipsis inside.
+        overflow: shrinkable ? "hidden" : undefined,
         fontFamily: "var(--font-mono)",
         fontSize: 10,
         lineHeight: 1,

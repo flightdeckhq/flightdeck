@@ -146,6 +146,30 @@ export const OTLP_AGENT = {
   deniedTool: "Bash",
 } as const;
 
+/** The SubAgentConnector in-window anchor pair. seed.py pins both
+ *  runs active and posts a fresh tool_call on each at NOW-5s on every
+ *  keep-alive cycle, so the pair always has a connector at 1m and
+ *  wider ranges. */
+export const CONNECTOR_FIXTURE = {
+  parentName: "e2e-test-connector-parent",
+  childName: "e2e-test-fresh-subagent",
+} as const;
+
+/** The fan-out fixture: a coordinator named like a Claude Code plugin
+ *  agent ({user}@{host}) and its same-role sub-agent, named
+ *  {parent}/{role} as the plugin names one. The worker agent holds an
+ *  earlier lost run (started -2 h, last seen -1 h 55 min) and three
+ *  runs started together. seed.py's fan-out refresh pins the
+ *  coordinator and the three open worker runs in one statement on the
+ *  full seed and every keep-alive cycle, posting the coordinator's
+ *  spawn tool_call 1 s before the workers' tool_calls; T56's
+ *  sub-agent refresh leaves every fan-out run alone. */
+export const FANOUT_FIXTURE = {
+  coordinatorName: "e2e-test-fanout@e2e-host-fanout",
+  workerName: "e2e-test-fanout@e2e-host-fanout/worker",
+  workerRole: "worker",
+} as const;
+
 export const ALL_FIXTURE_AGENTS = [
   CODING_AGENT,
   SENSOR_AGENT,

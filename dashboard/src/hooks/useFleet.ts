@@ -1,6 +1,6 @@
-import { useEffect, useCallback, useMemo } from "react";
+import { useEffect, useCallback, useMemo, useRef } from "react";
 import { useFleetStore } from "@/store/fleet";
-import { useWebSocket } from "./useWebSocket";
+import { INITIAL_BACKOFF_MS, useWebSocket } from "./useWebSocket";
 import { wsAccessTokenQuery } from "@/lib/api";
 import { isKeepaliveWsDisabled } from "@/lib/runtime-config";
 import type { FleetUpdate, AgentEvent } from "@/lib/types";
@@ -11,6 +11,14 @@ import type { FleetUpdate, AgentEvent } from "@/lib/types";
 // of the tab. Reading on every render would do a synchronous DOM
 // access (cheap but not free) for a value that never changes.
 const KEEPALIVE_WS_DISABLED = isKeepaliveWsDisabled();
+
+/** How long after the live stream reconnects the page waits before
+ *  refetching what it missed. A socket that opens and drops again (an
+ *  API that is still restarting) reopens one backoff step later, since
+ *  the backoff starts over after every open; at twice that step, each
+ *  reopen restarts the wait and the burst costs one refetch, and the
+ *  page still catches up two seconds after the stream is back. */
+export const RESYNC_DELAY_MS = 2 * INITIAL_BACKOFF_MS;
 
 // Browsers cannot attach an Authorization header to the WebSocket
 // upgrade handshake, so the server accepts the bearer access token
@@ -33,6 +41,8 @@ export function useFleet(onEvent?: (event: AgentEvent) => void) {
   const load = useFleetStore((s) => s.load);
   const applyUpdate = useFleetStore((s) => s.applyUpdate);
   const setLastEvent = useFleetStore((s) => s.setLastEvent);
+  const noteSessionChange = useFleetStore((s) => s.noteSessionChange);
+  const resync = useFleetStore((s) => s.resync);
   const flavors = useFleetStore((s) => s.flavors);
   const loading = useFleetStore((s) => s.loading);
   const error = useFleetStore((s) => s.error);
@@ -45,14 +55,20 @@ export function useFleet(onEvent?: (event: AgentEvent) => void) {
     (data: string) => {
       try {
         const update = JSON.parse(data) as FleetUpdate;
+        // A run the page does not show still matters to a run drawer
+        // open on it, so its state is recorded before anything else.
+        let shown = true;
         if (update.session) {
-          applyUpdate(update);
+          noteSessionChange(update.session);
+          shown = applyUpdate(update);
         }
-        if (update.last_event) {
+        if (update.last_event && shown) {
           // Broadcast the event into the fleet store
           // so subscribers (SessionDrawer's mcp_server_attached
           // re-fetch trigger) react regardless of whether the
-          // envelope carries a session diff.
+          // envelope carries a session diff. The event of a run the
+          // page does not show (the reaper's close of a run it never
+          // loaded) goes to neither the store nor the live feed.
           setLastEvent(update.last_event);
           if (onEvent) onEvent(update.last_event);
         }
@@ -60,8 +76,18 @@ export function useFleet(onEvent?: (event: AgentEvent) => void) {
         // Ignore malformed messages
       }
     },
-    [applyUpdate, setLastEvent, onEvent]
+    [applyUpdate, noteSessionChange, setLastEvent, onEvent]
   );
+
+  // Broadcasts sent while the stream was down are gone: once it is
+  // back, refetch the fleet as the first load does (and let open views
+  // holding their own fetch refetch), at most once per reconnect burst.
+  const resyncTimer = useRef<number | undefined>(undefined);
+  const handleReconnect = useCallback(() => {
+    window.clearTimeout(resyncTimer.current);
+    resyncTimer.current = window.setTimeout(resync, RESYNC_DELAY_MS);
+  }, [resync]);
+  useEffect(() => () => window.clearTimeout(resyncTimer.current), []);
 
   // useMemo so the URL string is stable across renders (the
   // useWebSocket hook compares the URL by reference to decide
@@ -86,7 +112,7 @@ export function useFleet(onEvent?: (event: AgentEvent) => void) {
         : `${WS_BASE_URL}?${wsAccessTokenQuery()}`,
     [],
   );
-  useWebSocket(wsUrl, handleMessage);
+  useWebSocket(wsUrl, handleMessage, handleReconnect);
 
   return { flavors, loading, error };
 }

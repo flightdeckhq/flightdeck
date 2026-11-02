@@ -35,14 +35,13 @@ test.describe("T47 — Run bracket hover tooltip", () => {
 	}) => {
 		await page.goto("/");
 		await waitForFleetReady(page);
-		// Widen the time picker so the seeded bracket fixture sits
-		// well inside the timeline rather than at the right edge of
-		// the live-monitor (1 m) default. Under the 1 m default the
-		// keep-alive-pinned NOW-30s bracket drifts off-screen-left
-		// as wall-clock advances during the parallel suite, and the
-		// hover-target moves out of the viewport before the
-		// dispatched event lands.
-		await page.getByRole("button", { name: "1h" }).click();
+		// 5 m keeps a run that started 30-70 s ago (the keep-alive pins
+		// these runs to start 30 s before each cycle) well inside the
+		// panel, at x ≈ 690-810 px. At 1 h it sits in the panel's
+		// clipped right margin, where glyphs centre on their time
+		// inside the 19 px inset and are not mounted or visible; at
+		// 1 m it drifts out of the window before the next cycle.
+		await page.getByRole("button", { name: "5m", exact: true }).click();
 		const row = await bringSwimlaneRowIntoView(page, SINGLE_RUN_AGENT);
 		await expect(row).toBeVisible({ timeout: 10000 });
 

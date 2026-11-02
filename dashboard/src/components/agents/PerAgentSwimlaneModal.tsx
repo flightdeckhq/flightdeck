@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { X } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Timeline } from "@/components/timeline/Timeline";
+import { SWIMLANE_LABEL_BACKDROP_VAR } from "@/components/timeline/SwimLane";
 import { TopologyCell } from "@/components/fleet/TopologyCell";
 import { AgentStatusBadge } from "@/components/timeline/AgentStatusBadge";
 import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
@@ -319,15 +320,21 @@ export function PerAgentSwimlaneModal({
       <DialogContent
         data-testid="per-agent-swimlane-modal"
         className="max-w-[80vw]!"
-        style={{
-          width: "80vw",
-          height: "80vh",
-          maxHeight: "80vh",
-          padding: 0,
-          display: "flex",
-          flexDirection: "column",
-          overflow: "hidden",
-        }}
+        style={
+          {
+            width: "80vw",
+            height: "80vh",
+            maxHeight: "80vh",
+            padding: 0,
+            display: "flex",
+            flexDirection: "column",
+            overflow: "hidden",
+            // The swimlane rows in here sit on the dialog's
+            // ``--surface``, not the page's ``--bg``; a child row's
+            // opaque label paints this colour under its tint.
+            [SWIMLANE_LABEL_BACKDROP_VAR]: "var(--surface)",
+          } as React.CSSProperties
+        }
       >
         {agent && (
           <>

@@ -13,12 +13,16 @@ import (
 
 // EventsParams defines filters for bulk event queries.
 //
-// Before and Order power the drawer's "Show older events" pagination.
-// Before is a keyset cursor: when non-zero, only rows with
-// occurred_at < Before are returned. Order selects the sort direction
-// ("asc" or "desc"); any other value (including empty) falls back to
-// ASC for backwards compatibility with existing callers that rely on
-// chronological order.
+// Before, BeforeID and Order power the drawer's "Show older events"
+// pagination. Rows sort by occurred_at, then id, so the order is total
+// even when events share a timestamp. Before is a keyset cursor: when
+// non-zero, only rows with occurred_at < Before are returned. BeforeID,
+// the id of the row at the cursor, makes the keyset follow that total
+// order: rows strictly before (Before, BeforeID), so rows that share
+// the cursor's timestamp are neither skipped nor repeated. Order
+// selects the sort direction ("asc" or "desc"); any other value
+// (including empty) falls back to ASC for backwards compatibility with
+// existing callers that rely on chronological order.
 //
 // The slice filters (EventTypes, Models, ErrorTypes, …) OR within a
 // dimension and AND across dimensions. They back the `/events`
@@ -73,11 +77,12 @@ type EventsParams struct {
 	// the session-level `agent_name` / `framework` resolved through
 	// a `sessions` subquery (the events table carries neither).
 	// Empty means no free-text filter.
-	Query  string
-	Before time.Time
-	Order  string
-	Limit  int
-	Offset int
+	Query    string
+	Before   time.Time
+	BeforeID string
+	Order    string
+	Limit    int
+	Offset   int
 }
 
 // EventsResponse is the paginated response for GET /v1/events.
@@ -304,10 +309,22 @@ func buildEventsWhere(params EventsParams) (conditions []string, args []any) {
 		)`, qPlaceholder))
 	}
 	if !params.Before.IsZero() {
-		conditions = append(conditions,
-			fmt.Sprintf("occurred_at < $%d", argIdx))
-		args = append(args, params.Before)
-		argIdx++
+		if params.BeforeID != "" {
+			// Strictly before the cursor row in (occurred_at, id)
+			// order. The leading occurred_at <= bound keeps the
+			// session/occurred_at index usable; the OR then admits
+			// the cursor's own timestamp only for smaller ids.
+			conditions = append(conditions, fmt.Sprintf(
+				"occurred_at <= $%[1]d AND (occurred_at < $%[1]d OR id < $%[2]d::uuid)",
+				argIdx, argIdx+1))
+			args = append(args, params.Before, params.BeforeID)
+			argIdx += 2
+		} else {
+			conditions = append(conditions,
+				fmt.Sprintf("occurred_at < $%d", argIdx))
+			args = append(args, params.Before)
+			argIdx++
+		}
 	}
 	return conditions, args
 }
@@ -365,6 +382,13 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 	// `sessions` row, so LEFT vs INNER is immaterial for real data --
 	// LEFT is the defensive choice. ORDER BY is repeated outside the
 	// subquery because a join does not preserve the inner ordering.
+	//
+	// id breaks occurred_at ties, in the same direction, so the order
+	// is total: events often share a timestamp (a client stamping whole
+	// seconds, the reaper's session_end rows sharing one NOW()), and
+	// without the tiebreaker Postgres may order tied rows differently in
+	// each page's query, so an offset page could skip or repeat a row.
+	// The keyset cursor (Before, BeforeID) follows the same order.
 	limitIdx := len(args) + 1
 	querySQL := fmt.Sprintf(`
 		SELECT e.id::text, e.session_id::text, e.flavor, e.event_type, e.model,
@@ -376,12 +400,12 @@ func (s *Store) GetEvents(ctx context.Context, params EventsParams) (*EventsResp
 		FROM (
 			SELECT * FROM events
 			%s
-			ORDER BY occurred_at %s
+			ORDER BY occurred_at %s, id %s
 			LIMIT $%d OFFSET $%d
 		) e
 		LEFT JOIN sessions s ON s.session_id = e.session_id
-		ORDER BY e.occurred_at %s
-	`, where, orderDir, limitIdx, limitIdx+1, orderDir)
+		ORDER BY e.occurred_at %s, e.id %s
+	`, where, orderDir, orderDir, limitIdx, limitIdx+1, orderDir, orderDir)
 	args = append(args, params.Limit, params.Offset)
 
 	rows, err := tx.Query(ctx, querySQL, args...)

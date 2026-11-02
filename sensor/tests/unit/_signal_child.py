@@ -9,15 +9,27 @@ if none ends it, it prints ``ALIVE`` and exits normally. Modes:
 - ``idle``: waits holding no sensor lock.
 - ``hold``: prints READY while holding the sensor lock named by <lock>
   (``session``, ``queue`` or ``policy``) on the main thread, and keeps
-  holding it, running bytecode, for ``HOLD_SECS``, so the signal lands
-  inside the critical section.
+  holding it for ``HOLD_SECS``, so the signal lands inside the critical
+  section.
 - ``hold-long``: as ``hold`` for ``LONG_HOLD_SECS``, longer than any wait
   of the sensor's, so only a forced exit ends the process early.
+- ``leak``: another thread takes the session's lock and never releases
+  it, as when code a signal interrupted leaves it held (see
+  SHUTDOWN_LOCK_WAIT_SECS in the sensor).
+- ``imports``: from READY on, records every module loaded and every
+  ``exec`` run, on any thread, through an audit hook; when the SIGINT
+  reaches it as KeyboardInterrupt it prints them as ``LOADED <json>`` and
+  exits normally.
 - ``chain``: installs an application SIGTERM handler before ``init()``;
   it posts a marker to the capture server and exits with
   ``APP_EXIT_CODE``.
 - ``ignore``: ignores SIGTERM before ``init()`` and exits normally after
   ``SHORT_WAIT_SECS``.
+
+A lock is held in a ``time.sleep`` loop, not a busy loop: on Python 3.13
+an exception a signal handler raises while the interrupted code is at a
+loop's back-edge can skip that code's ``with`` exit, which would leave the
+lock held for good. The ``leak`` mode covers that case on purpose.
 """
 
 from __future__ import annotations
@@ -26,6 +38,7 @@ import json
 import os
 import signal
 import sys
+import threading
 import time
 import urllib.request
 from typing import Any
@@ -36,6 +49,8 @@ HOLD_SECS = 1.0
 # Longer than every sensor wait put together, so a child in ``hold-long``
 # exits within it only when a signal forces the exit.
 LONG_HOLD_SECS = 30.0
+# Sleep between checks of the hold's deadline.
+HOLD_POLL_SECS = 0.01
 # How long the child waits for a signal that should end it.
 WAIT_SECS = 30.0
 # How long ``ignore`` waits before exiting on its own.
@@ -85,7 +100,36 @@ def main() -> None:
             print("READY", flush=True)
             deadline = time.monotonic() + (HOLD_SECS if mode == "hold" else LONG_HOLD_SECS)
             while time.monotonic() < deadline:
-                pass
+                time.sleep(HOLD_POLL_SECS)
+    elif mode == "leak":
+        held = threading.Event()
+
+        def hold_for_good() -> None:
+            session._lock.acquire()
+            held.set()
+            threading.Event().wait()
+
+        threading.Thread(target=hold_for_good, daemon=True).start()
+        held.wait()
+        print("READY", flush=True)
+    elif mode == "imports":
+        loaded: list[str] = []
+
+        def record(event: str, args: tuple[Any, ...]) -> None:
+            if event == "import":
+                loaded.append(f"import {args[0]}")
+            elif event == "exec":
+                code = args[0]
+                where = f"{getattr(code, 'co_filename', '?')}:{getattr(code, 'co_name', '?')}"
+                loaded.append(f"exec {where}")
+
+        sys.addaudithook(record)
+        print("READY", flush=True)
+        try:
+            time.sleep(WAIT_SECS)
+        except KeyboardInterrupt:
+            print(f"LOADED {json.dumps(loaded)}", flush=True)
+            return
     else:
         print("READY", flush=True)
     time.sleep(SHORT_WAIT_SECS if mode == "ignore" else WAIT_SECS)

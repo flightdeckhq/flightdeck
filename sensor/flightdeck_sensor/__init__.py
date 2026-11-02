@@ -51,6 +51,49 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from types import ModuleType
 
+    # The names __getattr__ resolves on first access, typed for checkers;
+    # at runtime they are imported only once their SDK is (see
+    # _LAZY_EXPORTS).
+    from flightdeck_sensor.interceptor.anthropic import SensorAnthropic as SensorAnthropic
+    from flightdeck_sensor.interceptor.anthropic import (
+        patch_anthropic_classes as patch_anthropic_classes,
+    )
+    from flightdeck_sensor.interceptor.anthropic import (
+        unpatch_anthropic_classes as unpatch_anthropic_classes,
+    )
+    from flightdeck_sensor.interceptor.claude_agent_sdk import (
+        patch_claude_agent_sdk as patch_claude_agent_sdk,
+    )
+    from flightdeck_sensor.interceptor.claude_agent_sdk import (
+        unpatch_claude_agent_sdk as unpatch_claude_agent_sdk,
+    )
+    from flightdeck_sensor.interceptor.crewai import patch_crewai_classes as patch_crewai_classes
+    from flightdeck_sensor.interceptor.crewai import (
+        unpatch_crewai_classes as unpatch_crewai_classes,
+    )
+    from flightdeck_sensor.interceptor.langgraph import (
+        patch_langgraph_classes as patch_langgraph_classes,
+    )
+    from flightdeck_sensor.interceptor.langgraph import (
+        unpatch_langgraph_classes as unpatch_langgraph_classes,
+    )
+    from flightdeck_sensor.interceptor.litellm import SensorLitellm as SensorLitellm
+    from flightdeck_sensor.interceptor.litellm import (
+        patch_litellm_functions as patch_litellm_functions,
+    )
+    from flightdeck_sensor.interceptor.litellm import (
+        unpatch_litellm_functions as unpatch_litellm_functions,
+    )
+    from flightdeck_sensor.interceptor.mcp import patch_mcp_classes as patch_mcp_classes
+    from flightdeck_sensor.interceptor.mcp import unpatch_mcp_classes as unpatch_mcp_classes
+    from flightdeck_sensor.interceptor.openai import SensorOpenAI as SensorOpenAI
+    from flightdeck_sensor.interceptor.openai import (
+        patch_openai_classes as patch_openai_classes,
+    )
+    from flightdeck_sensor.interceptor.openai import (
+        unpatch_openai_classes as unpatch_openai_classes,
+    )
+
 Parameter = DirectiveParameter
 
 __all__ = [

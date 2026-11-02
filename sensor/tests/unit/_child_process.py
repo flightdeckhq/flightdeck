@@ -33,6 +33,10 @@ _SCRUBBED_NAMES = frozenset({"AGENT_FLAVOR", "AGENT_TYPE"})
 
 _SENSOR_ROOT = str(Path(flightdeck_sensor.__file__).resolve().parents[1])
 
+# How long a hanging capture server holds a response: longer than any
+# shutdown bound of the sensor's, so only the server's own exit ends it.
+HANG_SECS = 60.0
+
 # Canned provider answers. Shaped like the real APIs' responses so the
 # SDKs parse them into their own types and the sensor meters them.
 _CHAT_COMPLETION_USAGE = {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
@@ -98,11 +102,20 @@ class CaptureServer:
     answers OpenAI chat completions, Anthropic messages (and their token
     counts) and the sensor's heartbeat. Other GETs (the policy preflight)
     get 404, which the sensor treats as no policy.
+
+    With ``hang_after_start`` it records every event after session_start
+    and then holds the response until the server exits: a control plane
+    that accepts and never answers. While ``unavailable`` is set it
+    answers every event with 503 and records none: a control plane that
+    is down, which a test can bring back by clearing the flag.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, hang_after_start: bool = False, unavailable: bool = False) -> None:
         self.events: list[dict[str, Any]] = []
+        self.unavailable = unavailable
         self._lock = threading.Lock()
+        self._hang_after_start = hang_after_start
+        self._release = threading.Event()
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), self._handler())
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
 
@@ -124,6 +137,7 @@ class CaptureServer:
         return self
 
     def __exit__(self, *_exc: object) -> None:
+        self._release.set()  # let held responses go, so closing waits for none
         self._server.shutdown()
         self._server.server_close()
 
@@ -139,8 +153,14 @@ class CaptureServer:
                 length = int(self.headers.get("Content-Length", 0))
                 body = json.loads(self.rfile.read(length) or b"{}")
                 path = self.path.split("?", 1)[0]
-                if path.endswith("/v1/events"):
+                if path.endswith("/v1/events") and capture.unavailable:
+                    self.send_response(503)
+                    self.send_header("Content-Length", "0")
+                    self.end_headers()
+                elif path.endswith("/v1/events"):
                     capture._record(body)
+                    if capture._hang_after_start and body.get("event_type") != "session_start":
+                        capture._release.wait(HANG_SECS)
                     self._reply({"status": "ok", "directive": None})
                 elif path.endswith("/chat/completions"):
                     self._reply(

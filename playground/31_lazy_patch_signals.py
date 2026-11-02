@@ -48,12 +48,16 @@ PATCHABLE = (
     "langgraph.graph",
     "claude_agent_sdk",
 )
-# The child ends within the sensor's 2 s signal wait plus a few seconds of
-# HTTP; before the fix it never ended at all.
+# The child ends within the sensor's 8 s shutdown deadline, with room for
+# a slow machine; before the fix it never ended at all.
 CHILD_EXIT_BOUND_S = 20.0
 # How long the child holds the session lock once it prints READY: the
 # SIGTERM, sent as soon as READY is read, lands while it is held.
 CHILD_LOCK_HOLD_S = 1.0
+# Sleep between checks of the hold's deadline. A sleep loop, as in the
+# unit tests' child: Python 3.13 can skip a busy loop's `with` exit when a
+# signal handler raises at its back-edge.
+CHILD_LOCK_POLL_S = 0.01
 # Time for an event to land after the drain thread posts it.
 EVENT_LANDED_S = 15.0
 
@@ -71,7 +75,7 @@ def child(session_id: str) -> None:
         print("READY", flush=True)
         deadline = time.monotonic() + CHILD_LOCK_HOLD_S
         while time.monotonic() < deadline:
-            pass
+            time.sleep(CHILD_LOCK_POLL_S)
     time.sleep(60)
     print("ALIVE", flush=True)
 

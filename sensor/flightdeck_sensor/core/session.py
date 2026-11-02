@@ -41,6 +41,14 @@ from flightdeck_sensor.core.types import (
     TokenUsage,
 )
 
+# Imported with this module, not on first use: a signal's shutdown settles
+# the open streams on the drain thread, and nothing there may load a
+# module. A first import can wait for one the interrupted code is in the
+# middle of, and runs module code; a dataclass definition calls exec(),
+# which on CPython clears the flag that gives a process ended by an
+# unhandled KeyboardInterrupt its SIGINT exit status.
+from flightdeck_sensor.interceptor import base as _interceptor_base
+
 if TYPE_CHECKING:
     from collections.abc import Callable
 
@@ -166,9 +174,15 @@ _CUSTOM_DIRECTIVE_HANDLER_TIMEOUT_SECS = 5
 # How long a SIGTERM / SIGINT handler waits for the drain thread to send
 # session_end before it passes the signal on. A reachable control plane
 # takes the queued events and session_end in a fraction of this; past it,
-# the drain thread is most likely held up by a lock the signal
-# interrupted, which is released only once the handler returns.
+# the drain thread is still waiting for a slow control plane, or briefly
+# for locks the signal interrupted, and a signal whose default action
+# ends the process is delivered again once session_end is out.
 _SIGNAL_SHUTDOWN_WAIT_SECS = 2.0
+
+# The least time session_end's single POST gets in a signal's shutdown,
+# even when the shutdown's budget is nearly spent: enough for a control
+# plane on the same network to answer.
+_SESSION_END_MIN_POST_SECS = 0.5
 
 # How often that handler re-checks whether an end() running on another
 # thread has finished. It polls, like every wait in the handler, so that
@@ -462,28 +476,47 @@ class Session:
                 self._tokens_used,
             )
 
-    def _settle_open_streams(self) -> None:
+    def _settle_open_streams(self, lock_wait: float | None = None) -> None:
         """Settle the streams still open on this session, queuing their
-        post_call events. Never raises."""
-        from flightdeck_sensor.interceptor import base as _base
-
+        post_call events. Never raises. With ``lock_wait`` (a signal's
+        shutdown) the stream guards' lock is waited for only that long;
+        while it stays held the streams are left unsettled."""
         try:
-            _base.drain_deferred_settles(self)
-            _base.settle_open_guards(self)
+            _interceptor_base.drain_deferred_settles(self)
+            _interceptor_base.settle_open_guards(self, lock_wait=lock_wait)
         except Exception:
             _log.debug("Settling open streams at session end failed", exc_info=True)
 
-    def _end_on_drain_thread(self) -> None:
+    def _end_on_drain_thread(self, deadline: float) -> None:
         """The end of the session for a SIGTERM / SIGINT handler, run by
-        the event queue's drain thread once it has posted the events
-        queued before the signal: settles the open streams, posts the
-        events that queues, then posts session_end itself, so session_end
-        is the last event sent. The response's directive is not acted on:
-        the session has ended."""
-        self._settle_open_streams()
-        self.event_queue.post_queued()
+        the event queue's drain thread by ``deadline`` (a
+        ``time.monotonic()`` value), once it has posted the events queued
+        before the signal.
+
+        The code the signal interrupted may hold one of the sensor's
+        locks, and on Python 3.13 may never release it (see
+        SHUTDOWN_LOCK_WAIT_SECS), so nothing here waits for one for more
+        than a moment. The open streams are settled, and the events that
+        queues posted, only when every lock that takes is free. Then
+        session_end goes out last: its counters read under the session's
+        lock if it comes free within the moment, without it otherwise
+        (plain attribute reads), and sent in one attempt within the time
+        left. The response's directive is not acted on: the session has
+        ended.
+        """
+        from flightdeck_sensor.transport.client import SHUTDOWN_LOCK_WAIT_SECS
+
+        lock_wait = min(SHUTDOWN_LOCK_WAIT_SECS, max(deadline - time.monotonic(), 0.0))
+        if self._settle_locks_free(lock_wait):
+            self._settle_open_streams(lock_wait=lock_wait)
+            self.event_queue.post_queued()
         try:
-            self.client.post_event(self._build_payload(EventType.SESSION_END))
+            payload = self._build_payload(EventType.SESSION_END, lock_wait=lock_wait)
+            self.client.post_event(
+                payload,
+                timeout=max(deadline - time.monotonic(), _SESSION_END_MIN_POST_SECS),
+                max_attempts=1,
+            )
         finally:
             self._ended.set()
         self.client.close()
@@ -493,6 +526,33 @@ class Session:
                 self.config.session_id,
                 self._tokens_used,
             )
+
+    def _settle_locks_free(self, lock_wait: float) -> bool:
+        """Whether every lock settling a stream takes -- the session's,
+        the stream guards', the policy cache's and the event queue's --
+        can be had within ``lock_wait`` seconds in all; each is released
+        again at once."""
+        deadline = time.monotonic() + lock_wait
+        for lock in (self._lock, self.open_stream_guards_lock, self.policy._lock):
+            if not lock.acquire(timeout=max(deadline - time.monotonic(), 0.0)):
+                return False
+            lock.release()
+        return self.event_queue.lock_is_free(max(deadline - time.monotonic(), 0.0))
+
+    def _counters(self, lock_wait: float | None = None) -> tuple[int, str | None, str | None]:
+        """The session's token total, framework and model, read under its
+        lock. With ``lock_wait`` (a signal's shutdown) the lock is waited
+        for only that long and then read without: three plain attribute
+        reads, which at worst miss a call being recorded that moment."""
+        if lock_wait is None:
+            with self._lock:
+                return self._tokens_used, self._framework, self._model
+        acquired = self._lock.acquire(timeout=lock_wait)
+        try:
+            return self._tokens_used, self._framework, self._model
+        finally:
+            if acquired:
+                self._lock.release()
 
     def set_context(self, context: dict[str, Any]) -> None:
         """Attach runtime context for inclusion in the session_start event.
@@ -1316,12 +1376,14 @@ class Session:
     def _build_payload(
         self,
         event_type: EventType,
+        *,
+        lock_wait: float | None = None,
         **extra: Any,
     ) -> dict[str, Any]:
-        with self._lock:
-            tokens_used_session = self._tokens_used
-            framework = self._framework
-            model = self._model
+        """The event's payload. ``lock_wait`` bounds the wait for the
+        session's lock (see :meth:`_counters`); a signal's shutdown passes
+        it."""
+        tokens_used_session, framework, model = self._counters(lock_wait)
 
         is_mcp = event_type.value.startswith("mcp_")
 
@@ -1458,14 +1520,14 @@ class Session:
         # timeout / sigkill detection) on the session-table-update
         # path because those decisions live worker-side.
         if event_type == EventType.SESSION_END:
-            reason = self._sensor_close_reason()
+            reason = self._sensor_close_reason(lock_wait)
             if reason is not None:
                 payload["close_reason"] = reason
 
         payload.update(extra)
         return payload
 
-    def _sensor_close_reason(self) -> str | None:
+    def _sensor_close_reason(self, lock_wait: float | None = None) -> str | None:
         """Return what the sensor knows about why this session ended.
 
         Sensor-knowable values:
@@ -1481,11 +1543,21 @@ class Session:
         process before end(); the sensor's atexit handler then runs
         end() with _shutdown_requested still false but the worker's
         post-mortem can attribute it.
+
+        ``lock_wait`` bounds the wait for the session's lock as in
+        :meth:`_counters`.
         """
-        with self._lock:
-            if self._shutdown_requested:
-                return "directive_shutdown"
-        return "normal_exit"
+        if lock_wait is None:
+            with self._lock:
+                requested = self._shutdown_requested
+        else:
+            acquired = self._lock.acquire(timeout=lock_wait)
+            try:
+                requested = self._shutdown_requested
+            finally:
+                if acquired:
+                    self._lock.release()
+        return "directive_shutdown" if requested else "normal_exit"
 
     # ------------------------------------------------------------------
     # Directives

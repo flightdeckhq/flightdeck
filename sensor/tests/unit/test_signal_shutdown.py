@@ -2,20 +2,25 @@
 
 The handler runs on top of whatever the signal interrupted, which may hold
 the session's, the policy's or the event queue's lock. It takes none of
-them: the drain thread sends session_end while the handler polls for a
-bounded time, then the signal is passed on (or, for the default action,
-delivered again once session_end is out). The subprocess tests send real
-signals to a child holding each lock; the in-process ones pin the
-hand-off and the handler's decisions without a signal.
+them: the drain thread sends session_end, within one overall deadline,
+while the handler polls for a bounded time; then the signal is passed on
+(or, for the default action, delivered again once session_end is out).
+The drain thread waits for a lock the interrupted code may hold only
+briefly, and does without it: on Python 3.13 that code may never release
+it. The subprocess tests send real signals to a child; the in-process
+ones pin the hand-off and the handler's decisions without a signal.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import signal
+import socket
+import subprocess
 import threading
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -23,6 +28,7 @@ import pytest
 from flightdeck_sensor.core import session as session_module
 from flightdeck_sensor.core.session import Session
 from flightdeck_sensor.core.types import Directive, DirectiveAction, SensorConfig
+from flightdeck_sensor.interceptor import base as interceptor_base
 from flightdeck_sensor.transport import client as client_module
 from flightdeck_sensor.transport.client import (
     SHUTDOWN_TIMEOUT_SECS,
@@ -33,9 +39,6 @@ from flightdeck_sensor.transport.client import (
 )
 from tests.unit._child_process import CaptureServer, child_env, finish, read_until, start_child
 
-if TYPE_CHECKING:
-    import subprocess
-
 posix_only = pytest.mark.skipif(os.name == "nt", reason="sends POSIX signals to a child")
 
 # A child that handles its signal correctly exits within a few seconds:
@@ -45,11 +48,24 @@ posix_only = pytest.mark.skipif(os.name == "nt", reason="sends POSIX signals to 
 # has to separate seconds from forever, with room for a slow CI runner.
 EXIT_BOUND_SECS = 15.0
 
+# Room on top of SHUTDOWN_TIMEOUT_SECS for a child's exit to be noticed
+# once its shutdown is over, on a slow CI runner.
+SHUTDOWN_SLACK_SECS = 4.0
+
 # Gap between a first and a second signal. Standard signals do not queue:
 # a second one sent before the first handler has started would be merged
-# into it. The child is running bytecode, so its handler starts within
-# milliseconds; half a second is far inside the handler's 2 s wait.
+# into it. The child's handler starts within milliseconds; half a second
+# is far inside the handler's 2 s wait.
 SECOND_SIGNAL_GAP_SECS = 0.5
+
+# How long the test watches a child after a first SIGTERM that must not
+# end it on its own (its session_end is held by a hanging control plane):
+# past the handler's 2 s wait, well inside the shutdown's deadline.
+FIRST_SIGNAL_WATCH_SECS = 3.0
+
+# A forced exit ends the child at once; anything near the shutdown's own
+# deadline would mean the second signal was not forcing anything.
+FORCED_EXIT_BOUND_SECS = 2.0
 
 # Upper bound for in-process waits on the drain thread.
 DRAIN_WAIT_SECS = 5.0
@@ -91,6 +107,22 @@ def test_sigterm_with_a_sensor_lock_held_exits_after_session_end(lock: str) -> N
 
 
 @posix_only
+def test_sigterm_with_a_session_lock_that_is_never_released_still_sends_session_end() -> None:
+    with CaptureServer() as capture:
+        proc, session_id = _start(capture, "leak")
+        sent = time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        code, out, err = finish(proc)
+        elapsed = time.monotonic() - sent
+        events = capture.event_types(session_id)
+    # The lock stays held, as it does when Python 3.13 skips the cleanup
+    # of the code a signal interrupted: session_end goes out without it.
+    assert code == -signal.SIGTERM, (code, out, err)
+    assert elapsed < EXIT_BOUND_SECS, elapsed
+    assert events[-1] == "session_end", events
+
+
+@posix_only
 def test_sigterm_ends_the_process_after_session_end() -> None:
     with CaptureServer() as capture:
         proc, session_id = _start(capture, "idle")
@@ -107,6 +139,23 @@ def test_sigterm_ends_the_process_after_session_end() -> None:
 
 
 @posix_only
+def test_sigterm_with_a_hanging_control_plane_ends_within_the_shutdown_deadline() -> None:
+    with CaptureServer(hang_after_start=True) as capture:
+        proc, session_id = _start(capture, "idle")
+        sent = time.monotonic()
+        proc.send_signal(signal.SIGTERM)
+        code, out, err = finish(proc)
+        elapsed = time.monotonic() - sent
+        events = capture.event_types(session_id)
+    # session_end reached a control plane that never answers: the signal
+    # was held back until the shutdown's deadline, not the 20 s of two
+    # full-timeout attempts, then the process ended by it.
+    assert code == -signal.SIGTERM, (code, out, err)
+    assert elapsed < SHUTDOWN_TIMEOUT_SECS + SHUTDOWN_SLACK_SECS, elapsed
+    assert events[-1] == "session_end", events
+
+
+@posix_only
 @pytest.mark.parametrize("mode", ["idle", "hold"])
 def test_sigint_raises_keyboard_interrupt_and_session_end_is_sent(mode: str) -> None:
     with CaptureServer() as capture:
@@ -115,9 +164,7 @@ def test_sigint_raises_keyboard_interrupt_and_session_end_is_sent(mode: str) -> 
         code, out, err = finish(proc)
         events = capture.event_types(session_id)
     # Python's own SIGINT handler raises KeyboardInterrupt; uncaught, the
-    # interpreter exits through SIGINT. With the session lock held, the
-    # interrupt unwinds the frame holding it and the exit waits for the
-    # drain thread's session_end.
+    # interpreter exits through SIGINT, after session_end.
     assert code == -signal.SIGINT, (code, out, err)
     assert "KeyboardInterrupt" in err
     assert events[-1] == "session_end", events
@@ -125,21 +172,19 @@ def test_sigint_raises_keyboard_interrupt_and_session_end_is_sent(mode: str) -> 
 
 @posix_only
 def test_a_second_sigterm_forces_the_exit() -> None:
-    with CaptureServer() as capture:
-        proc, session_id = _start(capture, "hold-long", "session")
+    with CaptureServer(hang_after_start=True) as capture:
+        proc, _session_id = _start(capture, "idle")
         proc.send_signal(signal.SIGTERM)
-        time.sleep(SECOND_SIGNAL_GAP_SECS)
+        # session_end is held by the control plane, so the first signal's
+        # default action waits for the shutdown's deadline.
+        with pytest.raises(subprocess.TimeoutExpired):
+            proc.wait(timeout=FIRST_SIGNAL_WATCH_SECS)
         sent = time.monotonic()
         proc.send_signal(signal.SIGTERM)
         code, out, err = finish(proc)
         elapsed = time.monotonic() - sent
-        events = capture.event_types(session_id)
-    # The child holds the session lock for 30 s, so only a forced exit
-    # ends it this early, and the drain thread never got the lock to send
-    # session_end.
     assert code == -signal.SIGTERM, (code, out, err)
-    assert elapsed < EXIT_BOUND_SECS, elapsed
-    assert "session_end" not in events, events
+    assert elapsed < FORCED_EXIT_BOUND_SECS, elapsed
 
 
 @posix_only
@@ -153,11 +198,33 @@ def test_a_second_sigint_raises_at_once_and_session_end_is_still_sent() -> None:
         code, out, err = finish(proc)
         elapsed = time.monotonic() - sent
         events = capture.event_types(session_id)
-    # The second SIGINT raises KeyboardInterrupt without waiting; it
-    # unwinds the frame holding the lock, and the exit then waits for the
-    # drain thread's session_end.
+    # KeyboardInterrupt ends the main thread; the exit waits for the drain
+    # thread's session_end, which does not need the session's lock.
     assert code == -signal.SIGINT, (code, out, err)
     assert elapsed < EXIT_BOUND_SECS, elapsed
+    assert events[-1] == "session_end", events
+
+
+@posix_only
+def test_a_signal_shutdown_loads_no_module() -> None:
+    # The control plane is down until the signal, so session_end's
+    # response is the first one the session parses; and no SDK was used,
+    # so no stream was ever settled before the shutdown settles them.
+    with CaptureServer(unavailable=True) as capture:
+        proc, session_id = _start(capture, "imports")
+        capture.unavailable = False
+        proc.send_signal(signal.SIGINT)
+        code, out, err = finish(proc)
+        events = capture.event_types(session_id)
+    loaded = [
+        json.loads(line.split(" ", 1)[1]) for line in out.splitlines() if line.startswith("LOADED ")
+    ]
+    # A first import there can wait for one the interrupted code is in the
+    # middle of, and runs module code that may call exec(), which on
+    # CPython clears the flag that gives a process ended by an unhandled
+    # KeyboardInterrupt its SIGINT exit status.
+    assert code == 0, (code, out, err)
+    assert loaded == [[]], (loaded, err)
     assert events[-1] == "session_end", events
 
 
@@ -198,7 +265,7 @@ def test_an_ignored_sigterm_stays_ignored() -> None:
 
 def _client(post_event: Any = None) -> MagicMock:
     client = MagicMock(spec=ControlPlaneClient)
-    client.post_event.side_effect = post_event or (lambda payload: (None, False))
+    client.post_event.side_effect = post_event or (lambda payload, **_limits: (None, False))
     return client
 
 
@@ -216,12 +283,26 @@ def test_offer_never_waits_for_the_queue_lock() -> None:
     assert [store.get_nowait(), store.get_nowait()] == ["event", "wake"]
 
 
+def test_take_gives_up_on_a_held_queue_lock() -> None:
+    store = _EventStore()
+    store.put_nowait("event")
+    holder = threading.Thread(target=store.mutex.acquire)
+    holder.start()
+    holder.join(DRAIN_WAIT_SECS)
+    started = time.monotonic()
+    assert store.take(0.1) is client_module._NOTHING
+    assert time.monotonic() - started < DRAIN_WAIT_SECS
+    store.mutex.release()
+    assert store.take(0.1) == "event"
+    assert store.take(0.1) is client_module._NOTHING
+
+
 def test_the_drain_thread_posts_queued_events_before_the_final_step() -> None:
     order: list[Any] = []
     first_post = threading.Event()
     release = threading.Event()
 
-    def post(payload: dict[str, Any]) -> tuple[None, bool]:
+    def post(payload: dict[str, Any], **_limits: Any) -> tuple[None, bool]:
         if payload["n"] == 0:
             first_post.set()
             release.wait(DRAIN_WAIT_SECS)
@@ -232,13 +313,43 @@ def test_the_drain_thread_posts_queued_events_before_the_final_step() -> None:
     for n in range(3):
         queue.enqueue({"n": n, "event_type": "post_call"})
     assert first_post.wait(DRAIN_WAIT_SECS)
-    shutdown = queue.shutdown_on_drain_thread(lambda: order.append("final"))
+    shutdown = queue.shutdown_on_drain_thread(lambda _deadline: order.append("final"))
     assert shutdown is not None
     release.set()
     assert shutdown.wait(DRAIN_WAIT_SECS)
     assert order == [0, 1, 2, "final"]
     queue._drain_thread.join(DRAIN_WAIT_SECS)
     assert not queue._drain_thread.is_alive()
+
+
+def test_queued_events_are_posted_in_one_attempt_within_the_budget() -> None:
+    limits: list[dict[str, Any]] = []
+    first_post = threading.Event()
+    release = threading.Event()
+
+    def post(payload: dict[str, Any], **kwargs: Any) -> tuple[None, bool]:
+        if payload["n"] == 0:
+            first_post.set()
+            release.wait(DRAIN_WAIT_SECS)
+            return None, False
+        limits.append(kwargs)
+        return None, False
+
+    queue = EventQueue(_client(post))
+    queue.enqueue({"n": 0, "event_type": "post_call"})
+    assert first_post.wait(DRAIN_WAIT_SECS)
+    for n in (1, 2):
+        queue.enqueue({"n": n, "event_type": "post_call"})
+    deadlines: list[float] = []
+    started = time.monotonic()
+    shutdown = queue.shutdown_on_drain_thread(deadlines.append)
+    assert shutdown is not None
+    release.set()
+    assert shutdown.wait(DRAIN_WAIT_SECS)
+    assert [lim["max_attempts"] for lim in limits] == [1, 1]
+    assert all(0 < lim["timeout"] <= client_module._FLUSH_TIMEOUT_SECS for lim in limits)
+    # The final step got the whole shutdown's deadline.
+    assert deadlines and deadlines[0] - started <= SHUTDOWN_TIMEOUT_SECS + 0.5
 
 
 def test_the_hand_off_never_waits_for_a_held_queue_lock() -> None:
@@ -249,7 +360,7 @@ def test_the_hand_off_never_waits_for_a_held_queue_lock() -> None:
         # hand-off returns at once, and the drain thread, which needs the
         # lock, waits for this frame to let it go.
         started = time.monotonic()
-        shutdown = queue.shutdown_on_drain_thread(lambda: None)
+        shutdown = queue.shutdown_on_drain_thread(lambda _deadline: None)
         assert time.monotonic() - started < 1.0
         assert shutdown is not None
         assert not shutdown.wait(0.2)
@@ -266,7 +377,7 @@ def test_queued_events_past_the_budget_are_dropped(
     first_post = threading.Event()
     release = threading.Event()
 
-    def post(payload: dict[str, Any]) -> tuple[None, bool]:
+    def post(payload: dict[str, Any], **_limits: Any) -> tuple[None, bool]:
         first_post.set()
         release.wait(DRAIN_WAIT_SECS)
         posted.append(payload["n"])
@@ -278,10 +389,12 @@ def test_queued_events_past_the_budget_are_dropped(
     for n in range(1, 4):
         queue.enqueue({"n": n, "event_type": "post_call"})
     final = threading.Event()
-    shutdown = queue.shutdown_on_drain_thread(final.set)
+    shutdown = queue.shutdown_on_drain_thread(lambda _deadline: final.set())
     assert shutdown is not None
     release.set()
     assert shutdown.wait(DRAIN_WAIT_SECS)
+    # Reported once the shutdown is over, after it is marked finished.
+    queue._drain_thread.join(DRAIN_WAIT_SECS)
     assert posted == [0]
     assert final.is_set()
     assert "3 queued events were not sent" in caplog.text
@@ -292,7 +405,7 @@ def test_directives_that_arrive_during_the_shutdown_are_dropped() -> None:
     in_post = threading.Event()
     release = threading.Event()
 
-    def post(payload: dict[str, Any]) -> tuple[Directive, bool]:
+    def post(payload: dict[str, Any], **_limits: Any) -> tuple[Directive, bool]:
         in_post.set()
         release.wait(DRAIN_WAIT_SECS)
         return Directive(action=DirectiveAction.SHUTDOWN, reason="late"), False
@@ -300,7 +413,7 @@ def test_directives_that_arrive_during_the_shutdown_are_dropped() -> None:
     queue = EventQueue(_client(post), directive_handler=handled.append)
     queue.enqueue({"event_type": "post_call"})
     assert in_post.wait(DRAIN_WAIT_SECS)
-    shutdown = queue.shutdown_on_drain_thread(lambda: None)
+    shutdown = queue.shutdown_on_drain_thread(lambda _deadline: None)
     assert shutdown is not None
     release.set()
     assert shutdown.wait(DRAIN_WAIT_SECS)
@@ -316,7 +429,9 @@ def test_a_deferred_signal_is_delivered_again_once_finished(
     monkeypatch.setattr(client_module, "_redeliver", delivered.append)
     release = threading.Event()
     queue = EventQueue(_client())
-    shutdown = queue.shutdown_on_drain_thread(lambda: release.wait(DRAIN_WAIT_SECS) and None)
+    shutdown = queue.shutdown_on_drain_thread(
+        lambda _deadline: release.wait(DRAIN_WAIT_SECS) and None
+    )
     assert shutdown is not None
     assert shutdown.redeliver_when_finished(signal.SIGTERM) is False
     release.set()
@@ -334,7 +449,7 @@ def test_a_deferred_signal_is_delivered_again_once_finished(
 def test_no_drain_thread_no_hand_off() -> None:
     queue = EventQueue(_client())
     queue.close()
-    assert queue.shutdown_on_drain_thread(lambda: None) is None
+    assert queue.shutdown_on_drain_thread(lambda _deadline: None) is None
 
 
 def test_post_queued_is_a_no_op_off_the_drain_thread() -> None:
@@ -343,6 +458,36 @@ def test_post_queued_is_a_no_op_off_the_drain_thread() -> None:
     queue.post_queued()
     queue.close()
     client.post_event.assert_not_called()
+
+
+def test_post_event_honours_a_timeout_and_a_single_attempt() -> None:
+    # A control plane that accepts and never answers.
+    listener = socket.create_server(("127.0.0.1", 0))
+    accepted: list[socket.socket] = []
+
+    def accept_forever() -> None:
+        while True:
+            try:
+                conn, _ = listener.accept()
+            except OSError:
+                return
+            accepted.append(conn)
+
+    threading.Thread(target=accept_forever, daemon=True).start()
+    host, port = listener.getsockname()[:2]
+    client = ControlPlaneClient(server=f"http://{host}:{port}", token="tok")
+    try:
+        started = time.monotonic()
+        result = client.post_event({"event_type": "session_end"}, timeout=0.3, max_attempts=1)
+        elapsed = time.monotonic() - started
+    finally:
+        listener.close()
+        for conn in accepted:
+            conn.close()
+    assert result == (None, False)
+    # One attempt of 0.3 s; the defaults would take two of 10 s.
+    assert elapsed < 2.0, elapsed
+    assert len(accepted) == 1
 
 
 # ----------------------------------------------------------------------
@@ -366,32 +511,132 @@ def _event_types(client: MagicMock) -> list[str]:
     return [c.args[0]["event_type"] for c in client.post_event.call_args_list]
 
 
-def test_the_handler_does_not_deadlock_on_the_held_session_lock(
+def test_session_end_goes_out_while_the_interrupted_code_holds_the_session_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(session_module, "_SIGNAL_SHUTDOWN_WAIT_SECS", 0.2)
+    monkeypatch.setattr(session_module, "_SIGNAL_SHUTDOWN_WAIT_SECS", DRAIN_WAIT_SECS)
     session, client = _session()
     passed_on: list[int] = []
     with session._lock:
         started = time.monotonic()
         session._on_signal(signal.SIGTERM, None, lambda s, _f: passed_on.append(s))
         # Before the fix this call never returned: end() ran here and
-        # waited for the lock this frame holds.
+        # waited for the lock this frame holds. Now session_end goes out
+        # without it, while this frame still holds it.
         assert time.monotonic() - started < DRAIN_WAIT_SECS
         assert passed_on == [signal.SIGTERM]
-        assert not session._ended.is_set()
-    shutdown = session._signal_shutdown
-    assert shutdown is not None
-    assert shutdown.wait(DRAIN_WAIT_SECS)
-    assert session._ended.is_set()
+        assert session._ended.is_set()
     assert _event_types(client) == ["session_end"]
+    (call,) = client.post_event.call_args_list
+    assert call.kwargs["max_attempts"] == 1
+    assert 0 < call.kwargs["timeout"] <= SHUTDOWN_TIMEOUT_SECS
+
+
+def test_session_end_goes_out_when_a_thread_never_releases_the_session_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(session_module, "_SIGNAL_SHUTDOWN_WAIT_SECS", DRAIN_WAIT_SECS)
+    session, client = _session()
+    session._tokens_used = 42
+    held = threading.Event()
+    done = threading.Event()
+
+    def hold_for_good() -> None:
+        with session._lock:
+            held.set()
+            done.wait(DRAIN_WAIT_SECS * 4)
+
+    holder = threading.Thread(target=hold_for_good, daemon=True)
+    holder.start()
+    try:
+        assert held.wait(DRAIN_WAIT_SECS)
+        passed_on: list[int] = []
+        started = time.monotonic()
+        session._on_signal(signal.SIGTERM, None, lambda s, _f: passed_on.append(s))
+        elapsed = time.monotonic() - started
+        # Ended while the lock is still held, not once the holder lets go.
+        ended_while_held = session._ended.is_set()
+    finally:
+        done.set()
+        holder.join(DRAIN_WAIT_SECS)
+    assert ended_while_held
+    assert passed_on == [signal.SIGTERM]
+    assert elapsed < SHUTDOWN_TIMEOUT_SECS, elapsed
+    assert _event_types(client) == ["session_end"]
+    (call,) = client.post_event.call_args_list
+    assert call.args[0]["tokens_used_session"] == 42
+    assert call.args[0]["close_reason"] == "normal_exit"
+
+
+def test_open_streams_are_not_settled_while_a_lock_they_need_is_held(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(session_module, "_SIGNAL_SHUTDOWN_WAIT_SECS", DRAIN_WAIT_SECS)
+    session, client = _session()
+    settled: list[str] = []
+    monkeypatch.setattr(session, "_settle_open_streams", lambda **_kw: settled.append("settled"))
+    with session.policy._lock:
+        session._on_signal(signal.SIGTERM, None, lambda _s, _f: None)
+    assert settled == []
+    assert _event_types(client) == ["session_end"]
+
+
+class _OpenStream:
+    """Stands in for an open stream guard: what settle_open_guards reads."""
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+        self._entered = True
+        self._finalized = False
+        self.settled = False
+
+    def _settle_now(self) -> None:
+        self.settled = True
+
+
+def test_settling_open_streams_gives_up_on_a_held_guard_lock() -> None:
+    session, _client = _session()
+    stream = _OpenStream(session)
+    session.open_stream_guards.add(stream)
+    held = threading.Event()
+    release = threading.Event()
+
+    def hold() -> None:
+        with session.open_stream_guards_lock:
+            held.set()
+            release.wait(DRAIN_WAIT_SECS)
+
+    holder = threading.Thread(target=hold, daemon=True)
+    holder.start()
+    try:
+        assert held.wait(DRAIN_WAIT_SECS)
+        # Taken after the shutdown found it free: the settle still waits
+        # for it only briefly, and leaves the stream as it is.
+        interceptor_base.settle_open_guards(session, lock_wait=0.05)
+        settled_while_held = stream.settled
+    finally:
+        release.set()
+        holder.join(DRAIN_WAIT_SECS)
+    assert not settled_while_held
+    interceptor_base.settle_open_guards(session, lock_wait=0.05)
+    assert stream.settled
 
 
 def test_end_waits_for_the_shutdown_a_signal_started(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(session_module, "_SIGNAL_SHUTDOWN_WAIT_SECS", 0.1)
     session, client = _session()
-    with session._lock:
-        session._on_signal(signal.SIGTERM, None, lambda _s, _f: None)
+    release = threading.Event()
+    real_post = client.post_event.side_effect
+
+    def slow_post(payload: dict[str, Any], **limits: Any) -> tuple[None, bool]:
+        release.wait(DRAIN_WAIT_SECS)
+        result: tuple[None, bool] = real_post(payload, **limits)
+        return result
+
+    client.post_event.side_effect = slow_post
+    session._on_signal(signal.SIGTERM, None, lambda _s, _f: None)
+    assert not session._ended.is_set()
+    threading.Timer(OTHER_END_SECS, release.set).start()
     # As at exit right after the signal: end() returns once session_end
     # is out, and sends no second one.
     session.end()

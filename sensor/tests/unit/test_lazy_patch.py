@@ -10,6 +10,7 @@ stand-in SDK module.
 
 from __future__ import annotations
 
+import ast
 import importlib
 import importlib.util
 import json
@@ -17,7 +18,8 @@ import sys
 import threading
 import types
 import uuid
-from typing import TYPE_CHECKING, Any
+from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -25,9 +27,6 @@ import pytest
 import flightdeck_sensor
 from flightdeck_sensor import Provider
 from tests.unit._child_process import CaptureServer, child_env, finish, start_child
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 # The SDK modules whose import triggers a patch, as _SDK_TARGETS names them.
 SDK_MODULES = (
@@ -313,3 +312,19 @@ def test_names_from_interceptor_modules_resolve_on_first_access() -> None:
     assert SensorOpenAI is openai.SensorOpenAI
     with pytest.raises(AttributeError):
         _ = flightdeck_sensor.no_such_name
+
+
+def test_every_lazy_name_is_typed_for_checkers() -> None:
+    # A type checker never runs __getattr__: each lazy name is imported
+    # under TYPE_CHECKING, from the interceptor module it resolves from.
+    tree = ast.parse(Path(flightdeck_sensor.__file__).read_text(encoding="utf-8"))
+    typed: dict[str, str] = {}
+    for node in tree.body:
+        if not (isinstance(node, ast.If) and ast.unparse(node.test) == "TYPE_CHECKING"):
+            continue
+        for stmt in node.body:
+            if isinstance(stmt, ast.ImportFrom) and stmt.module is not None:
+                package, _, interceptor = stmt.module.rpartition(".")
+                if package == "flightdeck_sensor.interceptor":
+                    typed.update({alias.asname or alias.name: interceptor for alias in stmt.names})
+    assert typed == flightdeck_sensor._LAZY_EXPORTS

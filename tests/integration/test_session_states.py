@@ -380,6 +380,19 @@ def test_orphan_timeout_reaper_closes_lost_session() -> None:
         f"close_reason='orphan_timeout' on {sid}; saw {reasons!r}"
     )
 
+    # The reaper stamps ended_at only: last_seen_at stays at the run's
+    # last signal (backdated 25 h above), which is where the dashboard
+    # draws a reaped run's end.
+    silence = exec_sql(
+        "SELECT EXTRACT(EPOCH FROM (ended_at - last_seen_at))::bigint "
+        "FROM sessions WHERE session_id = :'sid'::uuid",
+        sid=sid,
+    ).strip()
+    assert int(silence) >= 24 * 60 * 60, (
+        f"reaper should leave last_seen_at at the last signal on {sid}; "
+        f"ended_at - last_seen_at = {silence} s"
+    )
+
 
 def _lost_session_past_the_orphan_timeout(flavor: str) -> str:
     """A session the reaper must close on its next tick: lost, and silent

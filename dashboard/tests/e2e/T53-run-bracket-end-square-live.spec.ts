@@ -1,12 +1,12 @@
 /**
  * T53 — RunBracket end-square glyph renders on the live page for
- * a closed session whose ended_at is inside the 1-minute window.
+ * a closed session whose ended_at is inside the visible window.
  *
  * Anchored on the ``fresh-closed-in-window`` canonical role (see
- * tests/e2e-fixtures/canonical.json): started -45s, ended -10s,
- * state=closed. seed.py pins both timestamps on every keep-alive
- * cycle so the run stays inside the swimlane's default 1-minute
- * domain.
+ * tests/e2e-fixtures/canonical.json): state=closed, with started_at
+ * and ended_at pinned 15 s and 3 s before every keep-alive cycle
+ * (seed.py's FRESH_CLOSED_STARTED_AGO_S / FRESH_CLOSED_ENDED_AGO_S),
+ * so the run stays inside the swimlane's recent windows.
  *
  * Guards against the Chrome-verify Issue A regression: an
  * earlier render path returned the start triangle alone for
@@ -31,10 +31,15 @@ test.describe("T53 — RunBracket end-square renders for closed-in-window sessio
 	}) => {
 		await page.goto("/");
 		await waitForFleetReady(page);
-		// Widen the time picker so the seeded fresh-closed-in-window
-		// session's end-square sits inside the timeline rather than
-		// at the right edge of the live-monitor (1 m) default.
-		await page.getByRole("button", { name: "1h" }).click();
+		// 5 m keeps the anchor's end square inside the panel. The
+		// keep-alive pins the run to end 3 s before each cycle, so at
+		// 1 h (4 s a pixel) the square sits in the panel's clipped right
+		// margin for the first ~30 s after a pin, where the swimlane
+		// does not mount it; at 1 m a slow keep-alive cycle can push the
+		// run's start out of the window, and a run whose start is out
+		// of view draws no glyphs. At 5 m the start stays in view and
+		// the end clears the margin within a few seconds of a pin.
+		await page.getByRole("button", { name: "5m", exact: true }).click();
 		// Scroll the coding-agent row into view explicitly — its
 		// fresh-closed-in-window session is the anchor.
 		const row = await bringSwimlaneRowIntoView(

@@ -194,11 +194,14 @@ describe("SwimLane label accessibility and background", () => {
     renderRow(name, [
       mkSession("c-1", { parent_session_id: "p-1", agent_role: "worker" }),
     ]);
-    // The head and role spans are flex items, which read with a space
-    // between them; the link carries the exact name instead.
-    expect(screen.getByRole("link", { name })).toBe(
-      screen.getByTestId("swimlane-agent-name-link"),
-    );
+    // The head and role spans are flex items, which a browser reads
+    // with a space between them ("…fanout /worker"); the link carries
+    // the exact name instead. jsdom does not blockify flex items, so
+    // its name computation would match without the label: assert the
+    // attribute itself (T132 checks the name Chromium computes).
+    const link = screen.getByTestId("swimlane-agent-name-link");
+    expect(link.getAttribute("aria-label")).toBe(name);
+    expect(screen.getByRole("link", { name })).toBe(link);
   });
 
   it("leaves an unsplit link's name to its text", () => {

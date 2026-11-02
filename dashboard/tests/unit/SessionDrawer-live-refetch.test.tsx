@@ -131,6 +131,23 @@ describe("SessionDrawer follows its run's state from the live stream", () => {
     expect(latestKey()).toBe(1);
   });
 
+  it("refetches again for a quick revival that arrives before the stale refetch lands", () => {
+    render(<SessionDrawer sessionId={RUN} onClose={() => {}} />);
+    // C1: the run goes stale; a refetch starts.
+    act(() => useFleetStore.getState().noteSessionChange(liveSession({ state: "stale" })));
+    expect(latestKey()).toBe(1);
+
+    // C2: it revives before that refetch lands, so the drawer still
+    // shows "active". The refetch for C1 may have read the stale row,
+    // so C2 must refetch too.
+    act(() => useFleetStore.getState().noteSessionChange(liveSession({ state: "active" })));
+    expect(latestKey()).toBe(2);
+
+    // The run's next event repeats C2: nothing new to fetch.
+    act(() => useFleetStore.getState().noteSessionChange(liveSession({ state: "active" })));
+    expect(latestKey()).toBe(2);
+  });
+
   it("refetches when the run is closed, so its ended_at shows", () => {
     render(<SessionDrawer sessionId={RUN} onClose={() => {}} />);
     act(() =>

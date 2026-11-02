@@ -107,8 +107,8 @@ const stateBadgeStyles: Record<string, StateBadge> = {
 };
 
 /** Whether a live change reports a state or ended_at other than
- *  ``known`` (what the drawer shows, or a change it already refetched
- *  for); with nothing known, any change does. */
+ *  ``known`` (the change the drawer last refetched for, or what it
+ *  shows); with nothing known, any change does. */
 function differsFrom(
   change: SessionChange,
   known: { state: string; ended_at: string | null } | null,
@@ -332,8 +332,8 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   //   while it was down is gone.
   const [revalidationKey, setRevalidationKey] = useState(0);
   // The state and ended_at the drawer shows, and the last change it
-  // refetched for: a change already shown, or already being fetched,
-  // does not refetch again.
+  // refetched for: a change equal to the one last refetched for (or,
+  // before any, to what is shown) does not refetch again.
   const shownRunRef = useRef<{ state: string; ended_at: string | null } | null>(null);
   const requestedChangeRef = useRef<SessionChange | null>(null);
   useEffect(() => {
@@ -351,13 +351,18 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
       ) {
         setRevalidationKey((k) => k + 1);
       }
+      // Compare with the change last refetched for, when there is one,
+      // else with what the drawer shows: a refetch reads the run after
+      // the change it was started for, so it shows that change or a
+      // newer one, and a change arriving while it is in flight (a quick
+      // revival after a stale mark) must refetch again even when it
+      // matches the state still on screen.
       const change = state.lastSessionChange;
       if (
         change &&
         change !== prev.lastSessionChange &&
         change.session_id === sessionId &&
-        differsFrom(change, shownRunRef.current) &&
-        differsFrom(change, requestedChangeRef.current)
+        differsFrom(change, requestedChangeRef.current ?? shownRunRef.current)
       ) {
         requestedChangeRef.current = change;
         setRevalidationKey((k) => k + 1);

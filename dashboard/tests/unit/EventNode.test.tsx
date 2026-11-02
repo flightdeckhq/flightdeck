@@ -55,6 +55,43 @@ describe("EventNode", () => {
     expect(node.style.height).toBe("20px");
   });
 
+  // ---- Placement: centred on x and on the row's centre line ----
+
+  it("shifts vertically only through the class translate; hover is a pure scale", () => {
+    const { container } = renderNode();
+    const node = container.querySelector("[style*='background']") as HTMLElement;
+    // The class carries the one vertical shift (Tailwind 4 emits it as
+    // the separate ``translate`` property).
+    expect(node.className).toContain("top-1/2");
+    expect(node.className).toContain("-translate-y-1/2");
+    // At rest there is no inline transform at all, so nothing stacks a
+    // second translate on the class's.
+    expect(node.style.transform).toBe("");
+    fireEvent.mouseEnter(node);
+    expect(node.style.transform).toBe("scale(1.25)");
+    expect(node.style.transform).not.toContain("translate");
+    fireEvent.mouseLeave(node);
+    expect(node.style.transform).toBe("");
+  });
+
+  it("centres the circle on x: left is x minus half the size", () => {
+    const { container } = renderNode({ x: 100, size: 22 });
+    const node = container.querySelector("[style*='background']") as HTMLElement;
+    expect(node.style.left).toBe("89px");
+    const { container: c2 } = renderNode({ x: 0, size: 24 });
+    const node2 = c2.querySelector("[style*='background']") as HTMLElement;
+    expect(node2.style.left).toBe("-12px");
+  });
+
+  it("carries its event and run ids as data attributes", () => {
+    const { container } = renderNode({ eventId: "evt-7", sessionId: "sess-9" });
+    const node = container.querySelector("[data-event-id]") as HTMLElement;
+    expect(node).not.toBeNull();
+    expect(node.dataset.eventId).toBe("evt-7");
+    expect(node.dataset.sessionId).toBe("sess-9");
+    expect(node.dataset.testid).toBe("session-circle-sess-9");
+  });
+
   it("click passes eventId to onClick handler", () => {
     const onClick = vi.fn();
     const { container } = renderNode({ onClick, eventId: "evt-42" });

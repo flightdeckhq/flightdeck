@@ -2,7 +2,7 @@
   "_comment": "Declarative E2E fixture dataset. Every agent name starts with 'e2e-test-' so the Playwright suite can discriminate its own fixtures amid any other data in the shared dev DB. session_ids are derived deterministically in seed.py via uuid5(NAMESPACE_FLIGHTDECK, 'flightdeck-e2e/<agent_name>/<role>'), so each seed run addresses the same session rows and idempotency is a per-session HTTP GET.",
   "agent_name_prefix": "e2e-test-",
   "session_roles": {
-    "_comment": "Timeline offsets drive the UI state each fixture tests. Offsets are seconds relative to seed-time. 'aged-closed' and 'stale' require a post-seed SQL backdate because the worker stamps last_seen_at = NOW() regardless of event payload timestamp; see seed.py :: backdate_sessions. 'phase4_extras' (when present) is a list of additional event-shape strings the seeder emits on top of the base session_start / pre_call / post_call / tool_call / session_end timeline. Recognised values: 'embeddings' (no-content), 'embeddings_with_content_string' (has_content=true, single-string input), 'embeddings_with_content_list' (has_content=true, list-of-strings input), 'streaming_post_call', 'streaming_post_call_aborted', 'call_fields_post_call' (a metered post_call carrying every per-call token, serving and cost field), 'prompt_content_post_call' (a captured Anthropic call with JSON-bearing message, tool_use and tool_result blocks for the Prompts panel's Pretty / Raw views), 'llm_error_rate_limit', 'llm_error_context_overflow', 'llm_error_authentication', 'llm_error_timeout', 'policy_warn', 'policy_degrade', 'policy_block', 'mcp_policy_user_remembered' (the Claude Code plugin's remembered MCP approval, with its permission mode), 'signal_context_compacted', 'signal_model_switched', 'signal_notification', 'signal_permission_denied', 'signal_command_expanded', 'signal_task_completed', 'signal_cwd_changed', 'signal_config_changed', 'signal_teammate_idle' and 'signal_elicitation_responded' (Claude Code session_signal events: a compaction with its captured summary, a model switch, an idle-prompt notification, an auto-mode denial, a slash command, a finished teammate task, a directory change, a project settings change, an idle teammate, a declined MCP form), 'history_padding' (25 tool_calls 30 ms apart, so a later extra sits beyond the first 21 events of its session), 'mcp_tool_list', 'mcp_tool_call', 'mcp_tool_call_failed' (mcp_tool_call with structured payload.error \u2014 MCPErrorIndicator anchor), 'mcp_resource_list', 'mcp_resource_read', 'mcp_prompt_list', 'mcp_prompt_get'.",
+    "_comment": "Timeline offsets drive the UI state each fixture tests. Offsets are seconds relative to seed-time. 'aged-closed' and 'stale' require a post-seed SQL backdate because the worker stamps last_seen_at = NOW() regardless of event payload timestamp; see seed.py :: backdate_sessions. 'phase4_extras' (when present) is a list of additional event-shape strings the seeder emits on top of the base session_start / pre_call / post_call / tool_call / session_end timeline. Recognised values: 'embeddings' (no-content), 'embeddings_with_content_string' (has_content=true, single-string input), 'embeddings_with_content_list' (has_content=true, list-of-strings input), 'streaming_post_call', 'streaming_post_call_aborted', 'call_fields_post_call' (a metered post_call carrying every per-call token, serving and cost field), 'prompt_content_post_call' (a captured Anthropic call with JSON-bearing message, tool_use and tool_result blocks for the Prompts panel's Pretty / Raw views), 'llm_error_rate_limit', 'llm_error_context_overflow', 'llm_error_authentication', 'llm_error_timeout', 'policy_warn', 'policy_degrade', 'policy_block', 'mcp_policy_user_remembered' (the Claude Code plugin's remembered MCP approval, with its permission mode), 'signal_context_compacted', 'signal_model_switched', 'signal_notification', 'signal_permission_denied', 'signal_command_expanded', 'signal_task_completed', 'signal_cwd_changed', 'signal_config_changed', 'signal_teammate_idle' and 'signal_elicitation_responded' (Claude Code session_signal events: a compaction with its captured summary, a model switch, an idle-prompt notification, an auto-mode denial, a slash command, a finished teammate task, a directory change, a project settings change, an idle teammate, a declined MCP form), 'history_padding' (25 tool_calls 30 ms apart, so a later extra sits beyond the first 21 events of its session), 'mcp_tool_list', 'mcp_tool_call', 'mcp_tool_call_failed' (mcp_tool_call with structured payload.error \u2014 MCPErrorIndicator anchor), 'mcp_resource_list', 'mcp_resource_read', 'mcp_prompt_list', 'mcp_prompt_get'. Other optional role fields: 'force_state' pins the state in the full seed's backdate; 'last_seen_offset_sec' backdates an open run's last_seen_at apart from its started_at; 'event_offset_floor_sec' lets a role post its events further back than the default 1 h clamp (ingestion accepts 48 h); 'fanout_group' ('coordinator' or 'worker') puts an open role in the fan-out refresh, which pins the whole group in one statement on the full seed and every keep-alive cycle; 'skip_subagent_refresh' keeps refresh_subagent_events (T56) off a role whose timestamps must not move.",
     "fresh-active": {
       "started_offset_sec": -30,
       "ended_offset_sec": null,
@@ -238,6 +238,55 @@
       "started_offset_sec": -40,
       "ended_offset_sec": null,
       "purpose": "Dedicated parent session for the SubAgentConnector in-window anchor. seed.py keeps this session's started_at and a fresh tool_call event in window on every keep-alive cycle so the connector geometry pass finds an in-window event on the parent endpoint. Decoupled from e2e-test-coding-agent's fresh-active session (which T14/T15/T16/T18 consume) so the keep-alive's connector-anchor refresh doesn't perturb those tests' specific event-count / event-ordering assertions."
+    },
+    "fanout-coordinator": {
+      "started_offset_sec": -40,
+      "ended_offset_sec": null,
+      "fanout_group": "coordinator",
+      "skip_subagent_refresh": true,
+      "purpose": "The fan-out coordinator's run (e2e-test-fanout@e2e-host-fanout). seed.py's fan-out refresh pins it active with started_at = NOW-40s in the same statement as its three worker runs, so all four share one NOW(), and posts its spawn tool_call at NOW-31s, one second before the workers start. Runs in the full seed and on every keep-alive cycle. T133 and T134 draw their connectors from it."
+    },
+    "fanout-worker-1": {
+      "started_offset_sec": -30,
+      "ended_offset_sec": null,
+      "agent_role": "worker",
+      "parent_role": "fanout-coordinator",
+      "parent_agent": "e2e-test-fanout@e2e-host-fanout",
+      "fanout_group": "worker",
+      "skip_subagent_refresh": true,
+      "purpose": "First of three runs of the coordinator's 'worker' sub-agent, started together the way a Claude Code coordinator fans out same-role sub-agents. The fan-out refresh pins all three active with started_at = NOW-30s and posts one tool_call each at NOW-30s. Excluded from refresh_subagent_events so T56 never moves them."
+    },
+    "fanout-worker-2": {
+      "started_offset_sec": -30,
+      "ended_offset_sec": null,
+      "agent_role": "worker",
+      "parent_role": "fanout-coordinator",
+      "parent_agent": "e2e-test-fanout@e2e-host-fanout",
+      "fanout_group": "worker",
+      "skip_subagent_refresh": true,
+      "purpose": "Second of the three worker runs started together (see fanout-worker-1)."
+    },
+    "fanout-worker-3": {
+      "started_offset_sec": -30,
+      "ended_offset_sec": null,
+      "agent_role": "worker",
+      "parent_role": "fanout-coordinator",
+      "parent_agent": "e2e-test-fanout@e2e-host-fanout",
+      "fanout_group": "worker",
+      "skip_subagent_refresh": true,
+      "purpose": "Third of the three worker runs started together (see fanout-worker-1)."
+    },
+    "fanout-worker-lost": {
+      "started_offset_sec": -7200,
+      "ended_offset_sec": null,
+      "last_seen_offset_sec": -6900,
+      "event_offset_floor_sec": -7200,
+      "force_state": "lost",
+      "agent_role": "worker",
+      "parent_role": "fanout-coordinator",
+      "parent_agent": "e2e-test-fanout@e2e-host-fanout",
+      "skip_subagent_refresh": true,
+      "purpose": "An earlier worker run that went lost: started 2 h ago, last seen 1 h 55 min ago, ended_at NULL. Its events are posted inside that span (event_offset_floor_sec lifts the usual 1 h clamp; ingestion accepts up to 48 h back). Pinned once by the full seed; the keep-alive and T56's refresh_subagent_events leave it alone, so its extent never moves during a run."
     }
   },
   "agents": [
@@ -527,6 +576,39 @@
         "fresh-subagent-in-window"
       ],
       "_comment": "SubAgentConnector in-window anchor — sub-agent paired with e2e-test-connector-parent's connector-parent-fresh session so the connector overlay has a parent-child pair with both endpoints inside the swimlane's default 1-minute domain. Keeps the connector overlay rendering at least one Bezier path on the live page without the operator widening the time window."
+    },
+    {
+      "agent_name": "e2e-test-fanout@e2e-host-fanout",
+      "agent_type": "coding",
+      "client_type": "claude_code",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-fanout",
+      "flavor": "e2e-fanout",
+      "model": "claude-sonnet-4-5",
+      "framework": "claude-code",
+      "host": "e2e-host-fanout",
+      "session_roles": [
+        "fanout-coordinator"
+      ],
+      "_comment": "Fan-out coordinator, named the way the Claude Code plugin names an agent ({user}@{host}). Listed before its worker so the coordinator's session exists when the workers' session_start carries its parent_session_id."
+    },
+    {
+      "agent_name": "e2e-test-fanout@e2e-host-fanout/worker",
+      "agent_type": "coding",
+      "client_type": "claude_code",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-fanout",
+      "flavor": "e2e-fanout",
+      "model": "claude-sonnet-4-5",
+      "framework": "claude-code",
+      "host": "e2e-host-fanout",
+      "session_roles": [
+        "fanout-worker-lost",
+        "fanout-worker-1",
+        "fanout-worker-2",
+        "fanout-worker-3"
+      ],
+      "_comment": "The coordinator's same-role sub-agent, named {parent}/{role} as the plugin names one: a single agent with an earlier lost run and three runs started together. T132 reads its name at the 460 px default; T133 and T134 use its connectors."
     }
   ]
 }

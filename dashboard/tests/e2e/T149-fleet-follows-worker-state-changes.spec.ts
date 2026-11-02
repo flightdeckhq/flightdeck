@@ -32,7 +32,7 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
 import { DISABLE_KEEPALIVE_WS_STORAGE_KEY } from "../../src/lib/constants";
-import { bringSwimlaneRowIntoView, waitForFleetReady } from "./_fixtures";
+import { bringSwimlaneRowIntoView, openAgentDrawerFromRow, waitForFleetReady } from "./_fixtures";
 
 const AUTH = { Authorization: "Bearer tok_dev" };
 const INGEST = "http://localhost:4000/ingest/v1";
@@ -50,6 +50,9 @@ const DRAWER_LOAD_MS = 15_000;
  *  read the row before the backdate can push it one more, then the
  *  notification, the hub's re-read and a render. */
 const TRANSITION_WAIT_MS = 15_000;
+/** How long one read of a swimlane badge waits for the row it just
+ *  scrolled into view; the poll around it retries. */
+const BADGE_READ_MS = 2_000;
 /** Past the worker's 2-minute stale threshold, short of 30-minute lost. */
 const STALE_AGO = "3 minutes";
 /** Past the worker's 30-minute lost threshold. */
@@ -178,6 +181,18 @@ function removeRun(run: Run): void {
   );
 }
 
+/** The agent's swimlane badge state, or null while its row is not
+ *  mounted. A run that goes stale or lost sorts below active ones and
+ *  the swimlane only mounts the rows in view, so each read scrolls the
+ *  row back into view first. */
+async function swimlaneBadgeState(page: Page, agentName: string): Promise<string | null> {
+  const row = await bringSwimlaneRowIntoView(page, agentName);
+  return row
+    .locator('[data-testid="swimlane-agent-status-badge"]')
+    .getAttribute("data-state", { timeout: BADGE_READ_MS })
+    .catch(() => null);
+}
+
 async function markNoReload(page: Page): Promise<void> {
   await page.evaluate((key) => {
     (window as unknown as Record<string, boolean>)[key] = true;
@@ -214,14 +229,16 @@ test.describe("T149 — Fleet follows the worker's state changes without a reloa
     await startRun(request, run);
     await page.goto("/");
     await waitForFleetReady(page);
-    const row = await bringSwimlaneRowIntoView(page, run.agentName);
-    const badge = row.locator('[data-testid="swimlane-agent-status-badge"]');
-    await expect(badge).toHaveAttribute("data-state", "active");
+    await expect
+      .poll(() => swimlaneBadgeState(page, run.agentName), { timeout: WORKER_WAIT_MS })
+      .toBe("active");
     await markNoReload(page);
 
     backdate(run, STALE_AGO);
 
-    await expect(badge).toHaveAttribute("data-state", "stale", { timeout: TRANSITION_WAIT_MS });
+    await expect
+      .poll(() => swimlaneBadgeState(page, run.agentName), { timeout: TRANSITION_WAIT_MS })
+      .toBe("stale");
     expect(await stillTheSamePage(page)).toBe(true);
   });
 
@@ -229,28 +246,33 @@ test.describe("T149 — Fleet follows the worker's state changes without a reloa
     await startRun(request, run);
     await page.goto("/");
     await waitForFleetReady(page);
-    const row = await bringSwimlaneRowIntoView(page, run.agentName);
-    const badge = row.locator('[data-testid="swimlane-agent-status-badge"]');
-    await expect(badge).toHaveAttribute("data-state", "active");
+    await expect
+      .poll(() => swimlaneBadgeState(page, run.agentName), { timeout: WORKER_WAIT_MS })
+      .toBe("active");
     await markNoReload(page);
 
     backdate(run, LOST_AGO);
 
-    await expect(badge).toHaveAttribute("data-state", "lost", { timeout: TRANSITION_WAIT_MS });
+    await expect
+      .poll(() => swimlaneBadgeState(page, run.agentName), { timeout: TRANSITION_WAIT_MS })
+      .toBe("lost");
     expect(await stillTheSamePage(page)).toBe(true);
   });
 
   test("an open run drawer's state badge goes from active to stale", async ({ page, request }) => {
     await startRun(request, run);
-    await page.goto("/");
-    await waitForFleetReady(page);
-    const row = await bringSwimlaneRowIntoView(page, run.agentName);
-    // The run's start glyph opens its drawer (as in T48).
-    const glyph = row.locator(
-      `[data-testid="swimlane-run-bracket-start-${run.sessionId.slice(0, 8)}"]`,
-    );
-    await expect.poll(async () => glyph.count(), { timeout: WORKER_WAIT_MS }).toBeGreaterThan(0);
-    await glyph.first().click();
+    // Open the run drawer from the Agents page (agent drawer, Runs tab,
+    // as in T72). That page keeps the live stream like Fleet, without
+    // the swimlane, whose first render fetches every run it draws and
+    // can queue the drawer's own fetch behind them on a busy stack.
+    await page.goto("/agents");
+    await expect(page.locator('[data-testid="agent-table"]')).toBeVisible();
+    await page.locator('[data-testid="agents-search-input"]').fill(run.agentName);
+    const agentRow = page.locator(`[data-testid="agent-row-${run.agentId}"]`);
+    await expect(agentRow).toBeVisible({ timeout: WORKER_WAIT_MS });
+    await openAgentDrawerFromRow(agentRow);
+    await page.locator('[data-testid="agent-drawer-tab-runs"]').click();
+    await page.locator(`[data-testid="agent-drawer-run-row-${run.sessionId}"]`).click();
     const drawer = page.locator('[data-testid="session-drawer"]');
     await expect(drawer).toHaveAttribute("data-session-id", run.sessionId);
     const badge = drawer.locator('[data-testid="session-drawer-state"]');

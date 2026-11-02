@@ -441,6 +441,32 @@ describe("FleetPanel", () => {
     );
   });
 
+  it("confirming Stop All or cancelling it leaves the agent filter alone", async () => {
+    // The dialogs render in a portal, but React bubbles their clicks
+    // through the row, whose own click toggles the agent filter.
+    const onFlavorClick = vi.fn();
+    render(<FleetPanel flavors={mockFlavors} onFlavorClick={onFlavorClick} />);
+    fireEvent.click(screen.getByTestId("flavor-stop-all-button-research-agent"));
+    fireEvent.click(screen.getByText("Cancel"));
+    fireEvent.click(screen.getByTestId("flavor-stop-all-button-research-agent"));
+    fireEvent.click(screen.getByText("Stop All"));
+    expect(await screen.findByRole("status")).toHaveTextContent("Stop sent to 3 runs");
+    expect(onFlavorClick).not.toHaveBeenCalled();
+  });
+
+  it("running a directive from the row leaves the agent filter alone", async () => {
+    mockCustomDirectives = [sensorDirective];
+    const onFlavorClick = vi.fn();
+    render(<FleetPanel flavors={agentRow()} onFlavorClick={onFlavorClick} />);
+    fireEvent.click(screen.getByTestId(`flavor-directives-button-${AGENT_ID}`));
+    fireEvent.click(screen.getByTestId("directive-run-rotate-model"));
+    await screen.findByTestId("directive-sent-rotate-model");
+    expect(onFlavorClick).not.toHaveBeenCalled();
+    // A click on the row itself still toggles it.
+    fireEvent.click(screen.getByTestId(`fleet-sidebar-agent-sensor@host`));
+    expect(onFlavorClick).toHaveBeenCalledWith(AGENT_ID);
+  });
+
   it("offers the directive trigger only with a live session that runs custom directives", () => {
     mockCustomDirectives = [sensorDirective];
     const row = agentRow()[0]!;

@@ -867,7 +867,13 @@ function FlavorItem({
             }
           : { color: "var(--text)" }
       }
-      onClick={() => onFlavorClick?.(flavor.flavor)}
+      onClick={(e) => {
+        // The row's dialogs render in a portal, but React bubbles their
+        // clicks (Stop All, Cancel, a directive's Run) through this row:
+        // only a click on the row itself toggles the agent filter.
+        if (!e.currentTarget.contains(e.target as Node)) return;
+        onFlavorClick?.(flavor.flavor);
+      }}
     >
       {/* The label group wraps instead of overflowing: pills keep
           their full width, so when the name, both pills and the count

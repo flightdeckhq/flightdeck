@@ -306,6 +306,9 @@ test.describe("T130 — Fleet agent-row controls reach only that agent", () => {
     await expect(row.getByTestId(`flavor-stop-all-sent-${fx.agentA.id}`)).toHaveText(
       "Stop sent to 3 runs",
     );
+    // The confirm click is inside the dialog, not on the row: the
+    // sidebar is not filtered to the agent.
+    await expect(row.getByRole("button", { name: "Clear filter" })).toHaveCount(0);
 
     const got = await deliveries(request, fx, [...fx.loadedRuns, fx.unloadedRun, fx.otherAgentRun]);
     for (const run of [...fx.loadedRuns, fx.unloadedRun]) {
@@ -333,6 +336,7 @@ test.describe("T130 — Fleet agent-row controls reach only that agent", () => {
     await expect(dialog.getByTestId(`directive-sent-${fx.directive.name}`)).toHaveText(
       "Directive sent to 3 runs",
     );
+    await expect(row.getByRole("button", { name: "Clear filter" })).toHaveCount(0);
 
     const got = await deliveries(request, fx, [...fx.loadedRuns, fx.unloadedRun, fx.otherAgentRun]);
     for (const r of [...fx.loadedRuns, fx.unloadedRun]) {

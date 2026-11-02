@@ -171,6 +171,65 @@ func (s *Store) LookupOTLPSession(ctx context.Context, sessionID, rootSessionID,
 	return out, nil
 }
 
+// OTLPSessionEnds reads, in one round trip, which of the sessions
+// sessionIDs are closed, and when each ended as its client dated the
+// end: the date of its latest stored session_end (an OTLP sub-agent's
+// subagent_completed, on Claude Code's clock, or the end the reaper
+// stores when it closes a session), provided no session_start is stored
+// after it, else its ended_at. The OTLP receiver compares a closed
+// sub-agent's records with it to tell a resumed run from a late record.
+// A session that is open or has no row is absent from the result; a
+// closed one whose end is unknown maps to the zero time. sessionIDs must
+// be canonical UUIDs.
+//
+// The worker closes a row before it stores the closing session_end's
+// event, so for that moment the latest stored end is the previous run's
+// (or there is none): a start stored after it, the current run's, says
+// so, and the row's ended_at, which the close just set, stands in. That
+// is on the worker's clock, later than the end, so a late record still
+// reads as late.
+//
+// Only closed sessions reach the lateral read, which takes the
+// session's latest start and end from its events (events_session_idx
+// leads with session_id) in one pass.
+func (s *Store) OTLPSessionEnds(ctx context.Context, sessionIDs []string) (map[string]time.Time, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT s.session_id::text,
+		       CASE WHEN ev.last_start IS NULL OR ev.last_end >= ev.last_start
+		            THEN COALESCE(ev.last_end, s.ended_at)
+		            ELSE s.ended_at END
+		FROM sessions AS s
+		CROSS JOIN LATERAL (
+		  SELECT max(e.occurred_at) FILTER (WHERE e.event_type = 'session_end') AS last_end,
+		         max(e.occurred_at) FILTER (WHERE e.event_type = 'session_start') AS last_start
+		  FROM events AS e
+		  WHERE e.session_id = s.session_id
+		    AND e.event_type IN ('session_start', 'session_end')
+		) AS ev
+		WHERE s.session_id = ANY($1::uuid[]) AND s.state = 'closed'
+	`, sessionIDs)
+	if err != nil {
+		return nil, fmt.Errorf("read OTLP session ends: %w", err)
+	}
+	defer rows.Close()
+	ends := make(map[string]time.Time, len(sessionIDs))
+	for rows.Next() {
+		var id string
+		var ended *time.Time
+		if err := rows.Scan(&id, &ended); err != nil {
+			return nil, fmt.Errorf("read OTLP session ends: %w", err)
+		}
+		ends[id] = time.Time{}
+		if ended != nil {
+			ends[id] = *ended
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("read OTLP session ends: %w", err)
+	}
+	return ends, nil
+}
+
 // canonicalUUID matches the canonical 8-4-4-4-12 hex form, which the
 // ::uuid cast accepts.
 var canonicalUUID = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)

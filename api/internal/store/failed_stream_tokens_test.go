@@ -9,13 +9,19 @@ import (
 )
 
 // failedStreamScenario seeds one agent's session in the last hour with a
-// completed call, a failed stream whose llm_error carries the tokens the
-// provider billed (as the worker stores them: in the token columns) and
-// an llm_error without tokens on a model no price covers.
+// completed call, an embeddings call, a failed stream whose llm_error
+// carries the tokens the provider billed (as the worker stores them: in
+// the token columns) and an llm_error without tokens on a model no price
+// covers. The session's counter holds the same three billed amounts.
 type failedStreamScenario struct {
-	agentID, flavor, model, noTokensModel string
-	callTokens, failedTokens              int
-	wantCost                              float64
+	agentID, flavor, model, noTokensModel     string
+	callTokens, embeddingTokens, failedTokens int
+	wantCost                                  float64
+}
+
+// billedTokens is what every server total counts for the scenario.
+func (sc failedStreamScenario) billedTokens() int {
+	return sc.callTokens + sc.embeddingTokens + sc.failedTokens
 }
 
 func seedFailedStreamScenario(t *testing.T, s *Store, now time.Time) failedStreamScenario {
@@ -23,13 +29,13 @@ func seedFailedStreamScenario(t *testing.T, s *Store, now time.Time) failedStrea
 	ctx := context.Background()
 	sc := failedStreamScenario{
 		agentID: randomUUID(t), flavor: "test-failed-stream-" + randomUUID(t)[:8],
-		callTokens: 1100, failedTokens: 1740,
+		callTokens: 1100, embeddingTokens: 200, failedTokens: 1740,
 	}
 	sc.model, sc.noTokensModel = sc.flavor+"-model", sc.flavor+"-unpriced"
 	seedAgent(t, s, sc.agentID, now.Add(-2*time.Hour), now, 1, 0)
 	sessionID := randomUUID(t)
 	seedSessionRow(t, s, sessionID, sc.agentID, sc.flavor, nil, nil,
-		`{"frameworks": ["langchain"]}`, now.Add(-time.Hour), sc.callTokens+sc.failedTokens)
+		`{"frameworks": ["langchain"]}`, now.Add(-time.Hour), sc.billedTokens())
 	seedPrice(t, s, sc.model, 3, 15)
 	insert := func(eventType, model string, in, out *int, billing *string) {
 		t.Helper()
@@ -44,12 +50,14 @@ func seedFailedStreamScenario(t *testing.T, s *Store, now time.Time) failedStrea
 	metered := "metered"
 	in, out := 1000, 100
 	insert("post_call", sc.model, &in, &out, &metered)
+	ein, eout := 200, 0
+	insert("embeddings", sc.model, &ein, &eout, &metered)
 	pin, pout := 1500, 240
 	insert("llm_error", sc.model, &pin, &pout, &metered)
 	// An llm_error with no tokens (a refused request) on an unpriced
 	// model: it counts nowhere and must not be reported unpriced.
 	insert("llm_error", sc.noTokensModel, nil, nil, nil)
-	sc.wantCost = float64(1000*3+100*15+1500*3+240*15) / 1e6
+	sc.wantCost = float64(1000*3+100*15+200*3+1500*3+240*15) / 1e6
 	return sc
 }
 
@@ -81,7 +89,8 @@ func TestQueryAnalytics_TokensCountFailedStreams(t *testing.T) {
 	now := time.Now().UTC().Truncate(time.Microsecond)
 	sc := seedFailedStreamScenario(t, s, now)
 
-	want := float64(sc.callTokens + sc.failedTokens)
+	// The metric counts what the session's counter holds.
+	want := float64(sc.billedTokens())
 	for _, tc := range failedStreamGroupBys {
 		p := tc.params
 		if tc.name == "agent filter" {
@@ -92,7 +101,7 @@ func TestQueryAnalytics_TokensCountFailedStreams(t *testing.T) {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
 		if resp.Totals.GrandTotal != want {
-			t.Errorf("%s: tokens = %v, want %v (the call and the failed stream)", tc.name, resp.Totals.GrandTotal, want)
+			t.Errorf("%s: tokens = %v, want %v (the call, the embeddings and the failed stream)", tc.name, resp.Totals.GrandTotal, want)
 		}
 		for _, series := range resp.Series {
 			if series.Dimension == sc.noTokensModel {
@@ -175,7 +184,7 @@ func TestAgentSummary_CountsFailedStreams(t *testing.T) {
 	if err != nil {
 		t.Fatalf("summary: %v", err)
 	}
-	want := int64(sc.callTokens + sc.failedTokens)
+	want := int64(sc.billedTokens())
 	if resp.Totals.Tokens != want {
 		t.Errorf("totals.tokens = %d, want %d", resp.Totals.Tokens, want)
 	}

@@ -7,7 +7,8 @@ processed by the worker, those tokens reach the session's
 ``tokens_used``, the agent's ``total_tokens``, the stored event's token
 columns, the analytics ``tokens`` and ``estimated_cost`` metrics, the
 sub-agent token sums and the per-agent summary, once, next to the
-session's completed call.
+session's completed call and its embeddings call, which every one of
+those totals counts too.
 
 Wire-seeded, mock-free. Parallel-safe: fresh session ids, unique flavors
 and a unique user (so a unique agent) per test.
@@ -39,6 +40,7 @@ CALL_IN, CALL_OUT = 1000, 100
 PARTIAL_IN, PARTIAL_OUT = 1500, 240
 CALL_TOKENS = CALL_IN + CALL_OUT
 PARTIAL_TOKENS = PARTIAL_IN + PARTIAL_OUT
+EMBEDDING_TOKENS = 300
 FAILED_STREAM_ERROR: dict[str, Any] = {
     "error_type": "stream_error",
     "provider": "anthropic",
@@ -141,9 +143,24 @@ def test_failed_stream_tokens_reach_session_agent_analytics_and_summary() -> Non
     flavor = f"test-failed-stream-{uuid.uuid4().hex[:6]}"
     _start(sid, flavor, user)
     _call(sid, flavor, user, CALL_IN, CALL_OUT)
+    # An embeddings call: the session total has always counted it, and
+    # the analytics tokens metric and the agent summary count it too.
+    post_event(
+        make_event(
+            sid,
+            flavor,
+            "embeddings",
+            user=user,
+            model="text-embedding-3-small",
+            tokens_input=EMBEDDING_TOKENS,
+            tokens_output=0,
+            tokens_total=EMBEDDING_TOKENS,
+            latency_ms=120,
+        )
+    )
     _failed_stream(sid, flavor, user)
-    detail = _stored(sid, 3)
-    want = CALL_TOKENS + PARTIAL_TOKENS
+    detail = _stored(sid, 4)
+    want = CALL_TOKENS + EMBEDDING_TOKENS + PARTIAL_TOKENS
 
     assert detail["session"]["tokens_used"] == want, detail["session"]
     error = next(e for e in detail["events"] if e["event_type"] == "llm_error")

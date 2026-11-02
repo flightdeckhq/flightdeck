@@ -235,6 +235,44 @@ describe("useAgentSummary", () => {
     );
   });
 
+  it("counts an embeddings call's tokens like the backend", async () => {
+    const { result } = renderHook(() =>
+      useAgentSummary("agent-8", { period: "7d", bucket: "day" }),
+    );
+    await waitFor(() => {
+      expect(result.current.summary).not.toBeNull();
+    });
+    const before = result.current.summary!.totals;
+    const beforeTokens = before.tokens;
+    const beforeErrors = before.errors;
+    const beforeP95 = before.latency_p95_ms;
+
+    const event: AgentEvent = {
+      id: "e-embeddings",
+      session_id: "s1",
+      flavor: "agent-8",
+      event_type: "embeddings",
+      occurred_at: new Date().toISOString(),
+      has_content: false,
+      tokens_input: 300,
+      tokens_output: 0,
+      tokens_total: 300,
+      // Above the cached p95: an embeddings call's latency is not one
+      // of the summary's call latencies.
+      latency_ms: 5000,
+      tokens_cache_read: 0,
+      tokens_cache_creation: 0,
+    };
+    act(() => {
+      useFleetStore.setState({ lastEvent: event });
+    });
+    await waitFor(() => {
+      expect(result.current.summary!.totals.tokens).toBe(beforeTokens + 300);
+    });
+    expect(result.current.summary!.totals.errors).toBe(beforeErrors);
+    expect(result.current.summary!.totals.latency_p95_ms).toBe(beforeP95);
+  });
+
   it("ignores events for OTHER agents", async () => {
     const { result } = renderHook(() =>
       useAgentSummary("agent-5", { period: "7d", bucket: "day" }),

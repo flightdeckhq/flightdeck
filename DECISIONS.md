@@ -523,9 +523,11 @@ into its `tokens_input` / `tokens_output` / `tokens_total` (when the event
 sends no top-level counts) with the billing mode of the session's latest
 `post_call`, else the client type's default. Session and agent counters,
 the `tokens` metric, `estimated_cost` and the agent summary count those
-rows; no backfill: older rows keep NULL columns.
+rows; no backfill: older rows keep NULL columns. The `tokens` metric and
+the summary also count `embeddings`, as the counters and cost do.
 **Why:** one stored value every reader already sums, the dashboard's
-client-side sums included; a failed stream sends no `post_call`.
+client-side sums included; a failed stream sends no `post_call`. No
+recorded reason kept embeddings out of `tokens`.
 **Rejected alternative:** reading the payload at query time (every query
 parses JSON, and analytics would count old rows the stored counters
 never will); a backfill migration (it would add tokens the live rules

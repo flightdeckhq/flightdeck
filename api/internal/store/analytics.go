@@ -265,10 +265,11 @@ func IsSubagentMetric(metric string) bool {
 
 // tokenEventFilter restricts a query on events aliased e to the events
 // the tokens metric and the per-agent summary's tokens count: the
-// post_call of every completed or abandoned call and the llm_error of
-// every stream that failed after it was billed for tokens. A failed
-// stream sends no post_call, so no token is counted twice.
-const tokenEventFilter = "(e.event_type = 'post_call' OR " + failedStreamFilter + ")"
+// provider-billed calls the session totals and estimated cost count too
+// (every post_call and embeddings) and the llm_error of every stream
+// that failed after it was billed for tokens. A failed stream sends no
+// post_call, so no token is counted twice.
+const tokenEventFilter = "(e.event_type IN ('post_call', 'embeddings') OR " + failedStreamFilter + ")"
 
 // metricSpecs returns the specification for the requested metric.
 // “estimated_cost“ is computed from the static pricing table; see

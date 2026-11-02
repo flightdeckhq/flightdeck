@@ -93,7 +93,9 @@ All notable changes to Flightdeck are documented here.
   and the dashboard's token totals. They are billed as the session's
   calls are (a `local` or `subscription` session stays out of the cost)
   and priced at the model's input and output rates. Errors stored before
-  this release are not recounted
+  this release are not recounted. The analytics `tokens` metric and the
+  per-agent summary now also count embeddings calls, which the session
+  totals and the cost already did, so every token total agrees
   ([#172](https://github.com/flightdeckhq/flightdeck/issues/172)).
 - **Fleet swimlane circles sit on their row's centre line.** Circles
   were shifted up twice (a CSS translate and an inline transform), so

@@ -4390,9 +4390,10 @@ that does not know it ignores it.
 Returns a series array with per-dimension totals and time-series data.
 GROUP BY queries are built dynamically with parameterized inputs; no raw
 string interpolation. The `tokens` metric sums `tokens_total` over
-`post_call` events and over `llm_error` events whose failed stream was
-billed for tokens (see `llm_error`); `embeddings` events are not
-included. The latency metrics (`latency_avg`, `latency_p50`,
+`post_call` and `embeddings` events and over `llm_error` events whose
+failed stream was billed for tokens (see `llm_error`): the provider-billed
+tokens the session and agent totals and `estimated_cost` count, so every
+server-side total of tokens agrees. The latency metrics (`latency_avg`, `latency_p50`,
 `latency_p95`) aggregate `post_call` events only; the `latency_ms` a
 plugin `tool_call` carries (the tool's own duration) is not included.
 
@@ -4427,9 +4428,9 @@ the per-agent landing page. Query params:
 
 Returns:
 
-- `totals.tokens`: `SUM(events.tokens_total)` over `post_call` events
-  and the `llm_error` events of failed streams that carry tokens, as the
-  analytics `tokens` metric counts them.
+- `totals.tokens`: `SUM(events.tokens_total)` over `post_call` and
+  `embeddings` events and the `llm_error` events of failed streams that
+  carry tokens, as the analytics `tokens` metric counts them.
 - `totals.errors`: `COUNT(*)` of events with
   `event_type='llm_error'`. Policy events are enforcement
   decisions, not errors, and are not counted here.

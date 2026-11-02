@@ -64,6 +64,11 @@ type Querier interface {
 	DegradeTargets(ctx context.Context) ([]PricedModel, error)
 	IsDegradeTarget(ctx context.Context, modelID string) (bool, error)
 	CreateDirective(ctx context.Context, d Directive) (*Directive, error)
+	// CreateDirectives inserts one directive per session in one
+	// transaction; GetDirectiveTargetsForAgent picks the live runs of an
+	// agent a directive addressed to it reaches (directives.go).
+	CreateDirectives(ctx context.Context, tmpl Directive, sessionIDs []string) ([]Directive, error)
+	GetDirectiveTargetsForAgent(ctx context.Context, q AgentDirectiveTargetQuery) ([]string, error)
 	GetActiveSessionIDsByFlavor(ctx context.Context, flavor string) ([]string, error)
 	SyncDirectives(ctx context.Context, flavor string, fingerprints []string) ([]string, error)
 	RegisterDirectives(ctx context.Context, directives []CustomDirective) error
@@ -1175,22 +1180,13 @@ func (s *Store) GetActiveSessionIDsByFlavor(ctx context.Context, flavor string) 
 }
 
 // CreateDirective inserts a new directive and returns the full record.
+// CreateDirectives (directives.go) inserts a set in one transaction.
 func (s *Store) CreateDirective(ctx context.Context, d Directive) (*Directive, error) {
-	var result Directive
-	err := s.pool.QueryRow(ctx, `
-		INSERT INTO directives (session_id, flavor, action, reason, grace_period_ms, issued_by, payload)
-		VALUES ($1, $2, $3, $4, $5, 'dashboard', $6)
-		RETURNING id::text, session_id::text, flavor, action, reason, degrade_to,
-		          grace_period_ms, issued_by, issued_at, delivered_at, payload
-	`, d.SessionID, d.Flavor, d.Action, d.Reason, d.GracePeriodMs, d.Payload).Scan(
-		&result.ID, &result.SessionID, &result.Flavor, &result.Action, &result.Reason,
-		&result.DegradeTo, &result.GracePeriodMs, &result.IssuedBy, &result.IssuedAt,
-		&result.DeliveredAt, &result.Payload,
-	)
+	result, err := insertDirective(ctx, s.pool, d)
 	if err != nil {
 		return nil, fmt.Errorf("create directive: %w", err)
 	}
-	return &result, nil
+	return result, nil
 }
 
 // EventContent represents a row in the event_content table.

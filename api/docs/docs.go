@@ -606,7 +606,7 @@ const docTemplate = `{
         },
         "/v1/directives": {
             "post": {
-                "description": "Issues a shutdown or custom directive to a single agent session or all sessions of a flavor",
+                "description": "Issues a shutdown or custom directive. Targets: one session (session_id); every live (active or idle) session of a flavor (shutdown_flavor, or custom with flavor); or every live run of an agent that can act on it (agent_id, with shutdown or custom). A run takes a shutdown when its context.supports_directives is true, or when it omits the flag and its client type supports directives by default (a run with no client type does unless it is marked Claude Code). A custom directive also needs a client type that runs custom handlers and a run flavor that registered the fingerprint; with agent_id, an optional flavor keeps the agent's runs of that flavor. A custom directive with session_id goes to that session alone, and a flavor beside it only narrows the fingerprint check. All rows of a fan-out are inserted in one transaction. The body is the last row created, and the X-Directive-Count header says how many were created.",
                 "consumes": [
                     "application/json"
                 ],
@@ -633,6 +633,12 @@ const docTemplate = `{
                         "description": "Created",
                         "schema": {
                             "$ref": "#/definitions/store.Directive"
+                        },
+                        "headers": {
+                            "X-Directive-Count": {
+                                "type": "integer",
+                                "description": "Number of directive rows created: 1 for one session, one per session reached for a flavor or an agent"
+                            }
                         }
                     },
                     "400": {
@@ -648,13 +654,13 @@ const docTemplate = `{
                         }
                     },
                     "404": {
-                        "description": "Not Found",
+                        "description": "No live session of the flavor or the agent can take the directive",
                         "schema": {
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
                     },
                     "422": {
-                        "description": "Unprocessable Entity",
+                        "description": "Unknown custom directive fingerprint",
                         "schema": {
                             "$ref": "#/definitions/handlers.ErrorResponse"
                         }
@@ -2645,7 +2651,13 @@ const docTemplate = `{
             "type": "object",
             "properties": {
                 "action": {
+                    "description": "shutdown, shutdown_flavor or custom.",
                     "type": "string"
+                },
+                "agent_id": {
+                    "description": "An agent (UUID) whose live runs that can act on the directive all\nreceive it (shutdown, custom). Exclusive with session_id; not\naccepted with shutdown_flavor.",
+                    "type": "string",
+                    "format": "uuid"
                 },
                 "directive_name": {
                     "type": "string"
@@ -2654,6 +2666,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "flavor": {
+                    "description": "shutdown_flavor: the flavor to stop. custom: every live session of\nthe flavor; with agent_id, keeps the agent's runs of this flavor;\nwith session_id, only narrows the fingerprint check. Empty for\nshutdown.",
                     "type": "string"
                 },
                 "grace_period_ms": {
@@ -2666,6 +2679,7 @@ const docTemplate = `{
                     "type": "string"
                 },
                 "session_id": {
+                    "description": "One session to direct (shutdown, custom). Exclusive with agent_id.",
                     "type": "string"
                 }
             }

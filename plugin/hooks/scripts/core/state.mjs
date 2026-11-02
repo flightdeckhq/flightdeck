@@ -90,9 +90,11 @@ export function touchSessionFiles(markerKey, sessionId, now = Date.now()) {
   if (sessionId) {
     names.push(
       `started-${sessionId}.txt`,
+      `minted-${sessionId}.txt`,
       `model-${sessionId}.txt`,
       `model-switch-${sessionId}.json`,
       `endpoint-${sessionId}.json`,
+      `subagent-ends-${sessionId}.json`,
       `${MCP_POLICY_CACHE_PREFIX}${sessionId}.json`,
     );
   }
@@ -197,10 +199,12 @@ export function ephemeralSessionId(cwd) {
 
 /**
  * Return the session id stored under ``markerKey``, minting a uuid4 and
- * storing it when there is none yet. Throws when the directory or file
- * cannot be used; the caller then falls back to ephemeralSessionId.
+ * storing it when there is none yet. With ``recordMint`` (the hook is a
+ * SessionStart) a minted session also records when it was minted (see
+ * readSessionMintTime). Throws when the directory or file cannot be used;
+ * the caller then falls back to ephemeralSessionId.
  */
-export function readOrCreateSessionMarker(markerKey) {
+export function readOrCreateSessionMarker(markerKey, { recordMint = false } = {}) {
   const dir = stateDir();
   const file = join(dir, `session-${markerKey}.txt`);
   // Owner-only: the directory holds session markers, the cached
@@ -218,6 +222,9 @@ export function readOrCreateSessionMarker(markerKey) {
     /* fall through to create */
   }
   const candidate = randomUUID();
+  // The mint time is written before the marker, so a hook that reads the
+  // marker always finds it.
+  const minted = recordMint && writeSessionMintTime(candidate);
   try {
     const fd = openSync(file, "wx");
     try {
@@ -227,6 +234,7 @@ export function readOrCreateSessionMarker(markerKey) {
     }
     return candidate;
   } catch (err) {
+    if (minted) removeStateFile(`minted-${candidate}.txt`);
     if (err && err.code === "EEXIST") {
       // Concurrent first-hook race: another process beat us to the
       // file. Read whatever they wrote so every hook in the same
@@ -235,6 +243,64 @@ export function readOrCreateSessionMarker(markerKey) {
       if (winner) return winner;
     }
     throw err;
+  }
+}
+
+/**
+ * The session id the marker under ``markerKey`` names now, or null when
+ * there is none. Reads only: it neither creates the marker nor refreshes
+ * it, so a process that is not the session's (the SessionEnd worker) can
+ * see whether a later session has taken the marker over.
+ */
+export function readSessionMarker(markerKey) {
+  try {
+    return readFileSync(join(stateDir(), `session-${markerKey}.txt`), "utf8").trim() || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Delete one file of the state directory. Best-effort. */
+function removeStateFile(name) {
+  try {
+    unlinkSync(join(stateDir(), name));
+  } catch {
+    /* already gone */
+  }
+}
+
+// ---------------------------------------------------------------------
+// Session mint time. A session SessionStart mints records when, so its
+// flushes can tell the transcript turns that ran in it from the turns of
+// a resumed conversation's earlier sessions: a turn is reported only
+// under the session that was current when it ran. Kept under the
+// Flightdeck session id rather than the marker key, so the SessionEnd
+// worker and a hook that runs after SessionEnd, which no longer have the
+// marker, still find it; SessionEnd leaves it to the prune.
+// ---------------------------------------------------------------------
+
+function writeSessionMintTime(sessionId) {
+  try {
+    writeFileSync(join(stateDir(), `minted-${sessionId}.txt`), new Date().toISOString());
+    return true;
+  } catch {
+    return false; // the session's flushes then send every unsent turn
+  }
+}
+
+/**
+ * When ``sessionId`` was minted, in epoch milliseconds, or null when it
+ * recorded no time: a session minted by a hook other than SessionStart,
+ * a marker an earlier plugin release wrote, or an id given through
+ * CLAUDE_SESSION_ID by something other than the SessionEnd hand-off.
+ */
+export function readSessionMintTime(sessionId) {
+  if (!sessionId) return null;
+  try {
+    const at = Date.parse(readFileSync(join(stateDir(), `minted-${sessionId}.txt`), "utf8").trim());
+    return Number.isFinite(at) ? at : null;
+  } catch {
+    return null;
   }
 }
 
@@ -388,6 +454,46 @@ export function markSessionStarted(sessionId) {
   }
 }
 
+/** Forget that ``sessionId``'s session_start was accepted, so the next one is sent. */
+export function clearSessionStarted(sessionId) {
+  removeStateFile(`started-${sessionId}.txt`);
+}
+
+// ---------------------------------------------------------------------
+// Ended subagent marker. SubagentStop leaves it for the child session;
+// a later SubagentStart of the same child (a SendMessage resume, or a
+// finished background task waking the subagent) removes it and sends
+// the child's session_start again, re-attaching the closed row. While it
+// is in place no hook of the child sends a session_start, so an async
+// hook of an execution that has ended cannot reopen the child.
+// ---------------------------------------------------------------------
+
+/**
+ * Record that the child session ``childSessionId`` ended. Best-effort:
+ * returns false when the marker could not be written, in which case a
+ * late hook may reopen the child and a resume is not re-attached.
+ */
+export function markSubagentEnded(childSessionId, at = new Date().toISOString()) {
+  const dir = stateDir();
+  try {
+    mkdirOwnerOnly(dir);
+    writeFileSync(join(dir, `subagent-ended-${childSessionId}.txt`), at);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Whether ``childSessionId`` ended and was not resumed since. */
+export function isSubagentEnded(childSessionId) {
+  return existsSync(join(stateDir(), `subagent-ended-${childSessionId}.txt`));
+}
+
+/** Forget that ``childSessionId`` ended (it is resumed). */
+export function clearSubagentEnded(childSessionId) {
+  removeStateFile(`subagent-ended-${childSessionId}.txt`);
+}
+
 // ---------------------------------------------------------------------
 // Per-session model cache -- SessionStart's `model` field survives on
 // disk so UserPromptSubmit can populate pre_call.model without waiting
@@ -469,19 +575,24 @@ export function clearControlState(sessionId) {
 
 /** The session's control state, or an empty object. */
 export function readControlState(sessionId) {
+  return readJsonObject(controlPath(sessionId));
+}
+
+/** The JSON object stored at ``path``, or an empty object. */
+function readJsonObject(path) {
   try {
-    const state = JSON.parse(readFileSync(controlPath(sessionId), "utf8"));
-    return state && typeof state === "object" && !Array.isArray(state) ? state : {};
+    const value = JSON.parse(readFileSync(path, "utf8"));
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
   } catch {
     return {};
   }
 }
 
-// A peer holds the control lock for one read and one write; waiting up
+// A peer holds a state file's lock for one read and one write; waiting up
 // to this long covers a slow disk. Past it the update goes ahead
-// unlocked rather than losing a stop.
-const CONTROL_LOCK_WAIT_MS = 1_000;
-const CONTROL_LOCK_POLL_MS = 20;
+// unlocked rather than losing a stop or an owed subagent end.
+const STATE_LOCK_WAIT_MS = 1_000;
+const STATE_LOCK_POLL_MS = 20;
 
 function sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -492,27 +603,43 @@ function sleepSync(ms) {
  * and write the result atomically. Returns the state written, or the
  * state read when the directory cannot be written (an update that
  * removes notices then removes nothing, so a notice can show again).
- * When the lock is still held after CONTROL_LOCK_WAIT_MS the update runs
+ * When the lock is still held after STATE_LOCK_WAIT_MS the update runs
  * unlocked, and a concurrent update can be lost. Taking over a stale
  * lock is not exclusive either: two hooks that both find it stale can
  * both take it; it needs a holder dead for LOCK_DIR_STALE_MS first.
  */
 export function updateControlState(sessionId, update) {
-  const path = controlPath(sessionId);
+  return updateJsonObject(controlPath(sessionId), update);
+}
+
+/**
+ * The read-modify-write updateControlState describes, on the JSON object
+ * at ``path``. With ``removeWhenEmpty`` an update that leaves the object
+ * empty deletes the file, so a reader on the common path finds none.
+ */
+function updateJsonObject(path, update, { removeWhenEmpty = false } = {}) {
   const lockPath = `${path}.lock`;
   try {
     mkdirOwnerOnly(stateDir());
   } catch {
-    return update(readControlState(sessionId));
+    return update(readJsonObject(path));
   }
-  const deadline = Date.now() + CONTROL_LOCK_WAIT_MS;
+  const deadline = Date.now() + STATE_LOCK_WAIT_MS;
   let locked = takeLockDir(lockPath);
   while (!locked && Date.now() < deadline) {
-    sleepSync(CONTROL_LOCK_POLL_MS);
+    sleepSync(STATE_LOCK_POLL_MS);
     locked = takeLockDir(lockPath);
   }
   try {
-    const next = update(readControlState(sessionId));
+    const next = update(readJsonObject(path));
+    if (removeWhenEmpty && Object.keys(next).length === 0) {
+      try {
+        unlinkSync(path);
+      } catch (err) {
+        if (err?.code !== "ENOENT") throw err;
+      }
+      return next;
+    }
     const partial = `${path}.${process.pid}.tmp`;
     try {
       writeFileSync(partial, JSON.stringify(next));
@@ -527,7 +654,7 @@ export function updateControlState(sessionId, update) {
     }
     return next;
   } catch {
-    return readControlState(sessionId);
+    return readJsonObject(path);
   } finally {
     if (locked) {
       try {
@@ -537,6 +664,74 @@ export function updateControlState(sessionId, update) {
       }
     }
   }
+}
+
+// ---------------------------------------------------------------------
+// Owed subagent ends. SubagentStop records the child's session_end
+// before its first POST and drops it once the server has accepted the
+// end; an entry left behind (a failed POST, a hook killed mid-way) is
+// sent by the next hook of the outer session that flushes a transcript,
+// or by the SessionEnd worker. One file per outer session, absent when
+// nothing is owed. Each entry names the process working on it (``pid``,
+// null once released), and is taken over like a turn's claim: only from
+// a process that is gone.
+// ---------------------------------------------------------------------
+
+function owedEndsPath(outerSessionId) {
+  return join(stateDir(), `subagent-ends-${outerSessionId}.json`);
+}
+
+/** The owed subagent ends of ``outerSessionId``, keyed by child session id. */
+export function readOwedSubagentEnds(outerSessionId) {
+  return readJsonObject(owedEndsPath(outerSessionId));
+}
+
+function updateOwedSubagentEnds(outerSessionId, update) {
+  return updateJsonObject(owedEndsPath(outerSessionId), update, { removeWhenEmpty: true });
+}
+
+/** Record that ``childSessionId`` owes ``entry``'s end, held by this process. */
+export function oweSubagentEnd(outerSessionId, childSessionId, entry) {
+  updateOwedSubagentEnds(outerSessionId, (ends) => ({
+    ...ends,
+    [childSessionId]: { ...entry, pid: process.pid },
+  }));
+}
+
+/**
+ * Take the owed end of ``childSessionId`` for this process. Returns the
+ * entry, or null when there is none or a live process holds it.
+ */
+export function takeOwedSubagentEnd(outerSessionId, childSessionId) {
+  let taken = null;
+  updateOwedSubagentEnds(outerSessionId, (ends) => {
+    const entry = ends[childSessionId];
+    if (!entry || typeof entry !== "object") return ends;
+    const holder = Number(entry.pid);
+    if (Number.isInteger(holder) && holder > 0 && holder !== process.pid && processAlive(holder)) return ends;
+    taken = { ...entry, pid: process.pid };
+    return { ...ends, [childSessionId]: taken };
+  });
+  return taken;
+}
+
+/** Let go of this process's hold on an owed end, after a failed POST. */
+export function releaseOwedSubagentEnd(outerSessionId, childSessionId) {
+  updateOwedSubagentEnds(outerSessionId, (ends) => {
+    const entry = ends[childSessionId];
+    if (!entry || entry.pid !== process.pid) return ends;
+    return { ...ends, [childSessionId]: { ...entry, pid: null } };
+  });
+}
+
+/** Forget an owed end: sent, or dropped because its subagent was resumed. */
+export function dropOwedSubagentEnd(outerSessionId, childSessionId) {
+  updateOwedSubagentEnds(outerSessionId, (ends) => {
+    if (!(childSessionId in ends)) return ends;
+    const rest = { ...ends };
+    delete rest[childSessionId];
+    return rest;
+  });
 }
 
 /**
@@ -678,21 +873,64 @@ export function markTurnSent(messageId) {
   }
 }
 
+const REFUSED_PREFIX = "refused ";
+
 /**
- * Whether the SessionEnd worker should send ``messageId`` although it is
- * claimed: true when the claim was never confirmed sent and the process
- * that made it is gone, as when Claude Code killed a pending async hook
- * at the end of a print-mode run. A live claimant is still sending and
- * is left alone, so two live processes never send one turn.
+ * Record that the server refused ``messageId``'s post_call as invalid
+ * (``status``), so no hook sends it again: the same event would be
+ * refused again, and a turn that is retried forever would hold back
+ * every turn after it.
+ */
+export function markTurnRefused(messageId, status) {
+  try {
+    writeFileSync(join(stateDir(), `emitted-${messageId}.txt`), `${REFUSED_PREFIX}${status ?? ""}`.trim());
+  } catch {
+    /* the claim stays; a takeover sends it again and it is refused again */
+  }
+}
+
+/**
+ * Give up this process's claim on ``messageId`` after its POST failed,
+ * so the next hook that reads the transcript sends the turn. A claim
+ * this process no longer holds is left alone.
+ */
+export function releaseTurnClaim(messageId) {
+  const file = join(stateDir(), `emitted-${messageId}.txt`);
+  try {
+    if (readFileSync(file, "utf8") === `${CLAIM_PREFIX}${process.pid}`) unlinkSync(file);
+  } catch {
+    /* already gone */
+  }
+}
+
+/**
+ * Take over ``messageId``'s claim when it was never confirmed sent and
+ * the process that made it is gone, as when Claude Code killed a pending
+ * async hook at the end of a print-mode run. The claim is rewritten to
+ * name this process under a lock, so of two processes taking over the
+ * same turn only one sends it. A live claimant is still sending and is
+ * left alone, so two live processes never send one turn. True when this
+ * process now holds the claim.
  */
 export function reclaimOrphanedTurn(messageId) {
+  const file = join(stateDir(), `emitted-${messageId}.txt`);
+  const lockPath = `${file}.lock`;
+  if (!takeLockDir(lockPath)) return false;
   try {
-    const claim = readFileSync(join(stateDir(), `emitted-${messageId}.txt`), "utf8");
+    const claim = readFileSync(file, "utf8");
     if (!claim.startsWith(CLAIM_PREFIX)) return false;
     const pid = Number.parseInt(claim.slice(CLAIM_PREFIX.length), 10);
-    return Number.isInteger(pid) && pid > 0 && pid !== process.pid && !processAlive(pid);
+    if (!(Number.isInteger(pid) && pid > 0 && pid !== process.pid && !processAlive(pid))) return false;
+    writeFileSync(file, `${CLAIM_PREFIX}${process.pid}`);
+    return true;
   } catch {
     return false;
+  } finally {
+    try {
+      rmdirSync(lockPath);
+    } catch {
+      /* removed as stale by another hook */
+    }
   }
 }
 
@@ -703,8 +941,9 @@ export function markEmittedTurn(messageId) {
     mkdirOwnerOnly(dir);
     // The claim names the claiming process; markTurnSent empties the
     // file once the server accepted the turn, so a sent turn's marker
-    // costs an inode but no data block. A claim whose process died
-    // before that (a hook killed mid-flush) is re-sent by the
+    // costs an inode but no data block, and releaseTurnClaim removes
+    // it when the POST failed. A claim whose process died before either
+    // (a hook killed mid-flush) is taken over by SubagentStop or the
     // SessionEnd worker (reclaimOrphanedTurn).
     const fd = openSync(file, "wx");
     try {

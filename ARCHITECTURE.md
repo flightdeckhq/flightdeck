@@ -1914,11 +1914,13 @@ drawer marks the start with the attachment badge. Each execution thus
 has one `session_start` and one `session_end`. The resume's
 `session_start` carries, as `incoming_message`, the message that resumed
 the subagent: the last user prompt after its last turn of its own (a
-`SendMessage`'s text, which Claude Code writes as a meta record naming
-its origin). A wake by a task notification writes a queued command
-rather than a user record, so its start carries none rather than repeat
-the spawn's prompt; the first start of a subagent that ran before, under
-an earlier parent session, carries the resume's message the same way. A
+`SendMessage`'s text, which Claude Code writes as a meta record with the
+origin `coordinator`). A wake by a task notification writes a meta
+record too, with the origin `task-notification`, but its text is Claude
+Code's notice of the task rather than a message to the subagent, so a
+wake's start carries no message, neither the notice nor the spawn's
+prompt. The first start of a subagent that ran before, under an earlier
+parent session, carries the resume's message the same way. A
 hook of the child that runs while the marker is in place, an async hook
 of an execution that has ended, never sends a `session_start`, so it
 cannot reopen the child; it first waits up to one second for a resume's
@@ -1960,9 +1962,16 @@ end is bounded too: a process that goes on reporting under a session
 after a resume has minted a later one (the `SessionEnd` worker, or a
 hook that started before the resume) looks at the conversation's marker
 before and after each transcript read, and sends no turn that ran at or
-after the later session's mint; that session sends it. A session's
-marker is written before any of its turns, so whenever one of them is in
-what was read, the second look sees that session. So a subagent resumed
+after the later session's mint; that session sends it. The look finds a
+later session in the marker while it runs and, once its `SessionEnd`
+has deleted the marker, in the ended-session marker (see Hook
+configuration); when both name one, the earlier mint applies. A
+session's marker is written before any of its turns, and its
+ended-session marker before the marker is deleted, so whenever one of
+its turns is in what was read, the second look sees that session, unless
+another session has started since: the look then sees only the newest,
+and the turns of the one between can reach the ended session's child. So
+a subagent resumed
 after its parent's session changed sends only its new turns, under its
 new child, and a turn still unsent when its session ends is never sent:
 it is dropped rather than filed under a later session that did not exist

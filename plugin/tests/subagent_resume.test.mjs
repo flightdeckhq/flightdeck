@@ -33,7 +33,12 @@ import { createServer } from "node:http";
 import { join } from "node:path";
 
 import { INGESTION_MAX_PAST_MS, postCallEventId, refusedForGood } from "../hooks/scripts/claude_code/post_call.mjs";
-import { _subagentChildSessionId } from "../hooks/scripts/claude_code/subagent.mjs";
+import {
+  _subagentChildSessionId,
+  subagentResumedAfterFinalTurn,
+  subagentResumeMessage,
+} from "../hooks/scripts/claude_code/subagent.mjs";
+import { SESSION_END_WORKER_FLAG } from "../hooks/scripts/claude_code/session_end.mjs";
 import { markerKeyFor } from "../hooks/scripts/core/state.mjs";
 import { assertIngestionContract, hookEnv, isIngestPost, pollUntil, privateTmp, runScript } from "./contract_harness.mjs";
 
@@ -170,16 +175,23 @@ function resumeRecord(text) {
   };
 }
 
-/** The record a finished background task wakes a subagent with: a queued command, not a user record. */
+// The start of the notice Claude Code writes when a background task wakes a subagent.
+const WAKE_NOTICE = "[SYSTEM NOTIFICATION - NOT USER INPUT]\nThis is an automated background-task event, NOT a message from the user.";
+
+/**
+ * The record a finished background task wakes a subagent with, as Claude
+ * Code writes it: a meta user record naming a task notification as its
+ * origin, whose text is Claude Code's notice of the task.
+ */
 function wakeRecord() {
   return {
-    type: "attachment",
+    type: "user",
     timestamp: now(),
-    attachment: {
-      type: "queued_command",
-      prompt: "<task-notification><status>completed</status></task-notification>",
-      commandMode: "task-notification",
-      origin: { kind: "task-notification" },
+    isMeta: true,
+    origin: { kind: "task-notification", producer: "session-task" },
+    message: {
+      role: "user",
+      content: `${WAKE_NOTICE}\n\n<task-notification>\n<task-id>b0wake</task-id>\n<status>completed</status>\n</task-notification>`,
     },
   };
 }
@@ -594,43 +606,76 @@ describe("a SessionEnd worker still running when a resume mints a later session"
     capture.server.close();
   });
 
-  it("leaves the later session's turns to it, rather than sending them under the ended session's child", async () => {
-    const conv = conversation();
-    const box = machine(capture.port);
-    const [m1, m3] = [msgId(), msgId()];
-    const mine = () => ofConversation(capture.accepted(), conv);
-    await run(rootHook(conv, "SessionStart", { source: "startup" }), box.env);
-    const [s1] = rootStarts(mine()).map((b) => b.session_id);
-    const c1 = _subagentChildSessionId(s1, conv.agent);
-    append(conv.sub, [userRecord("count the files")]);
-    await run(agentHook(conv, "SubagentStart"), box.env);
-    append(conv.sub, [assistantRecord(m1)]);
-    await run(agentHook(conv, "SubagentStop", { agent_transcript_path: conv.sub, last_assistant_message: `turn ${m1}` }), box.env);
-    // S1's worker is held on its root session_end, before its pass over the
-    // subagents, as on a slow server with a backlog ...
-    capture.hold((b) => b.event_type === "session_end" && b.session_id === s1);
-    const ending = runScript(JSON.stringify(rootHook(conv, "SessionEnd", { reason: "prompt_input_exit" })), box.env);
-    await pollUntil(() => capture.heldCount() > 0, "S1's worker held on its session_end");
-    // ... while the conversation is resumed (S2) and the subagent, resumed
-    // too, writes a turn before any hook of S2 has flushed it.
-    await run(rootHook(conv, "SessionStart", { source: "resume" }), box.env);
-    const [s2] = rootStarts(mine())
-      .map((b) => b.session_id)
-      .filter((id) => id !== s1);
-    append(conv.sub, [resumeRecord("count again"), assistantRecord(m3)]);
-    capture.release();
-    const ended = await ending;
-    assert.equal(ended.code, 0, ended.stderr);
-    // S1's worker is done (the SessionEnd hook waits for it); S2's hooks run.
-    await run(agentHook(conv, "SubagentStart"), box.env);
-    await run(agentHook(conv, "PostToolUse", toolUse()), box.env);
-    const calls = callsOf(mine(), m3);
-    assert.equal(calls.length, 1, "m3 sent once");
-    assert.equal(calls[0].session_id, _subagentChildSessionId(s2, conv.agent), "under S2's child");
-    assert.equal(calls[0].parent_session_id, s2);
-    assert.equal(ofSession(mine(), c1).some((b) => b.id === postCallEventId(m3)), false, "never under S1's child");
-  });
+  for (const s2Ends of [false, true]) {
+    const variant = s2Ends ? "the later session has ended too" : "the later session still runs";
+    it(`leaves the later session's turns to it, rather than sending them under the ended session's child (${variant})`, async () => {
+      const conv = conversation();
+      const box = machine(capture.port);
+      const [m1, m3] = [msgId(), msgId()];
+      const mine = () => ofConversation(capture.accepted(), conv);
+      await run(rootHook(conv, "SessionStart", { source: "startup" }), box.env);
+      const [s1] = rootStarts(mine()).map((b) => b.session_id);
+      const c1 = _subagentChildSessionId(s1, conv.agent);
+      append(conv.sub, [userRecord("count the files")]);
+      await run(agentHook(conv, "SubagentStart"), box.env);
+      append(conv.sub, [assistantRecord(m1)]);
+      await run(agentHook(conv, "SubagentStop", { agent_transcript_path: conv.sub, last_assistant_message: `turn ${m1}` }), box.env);
+      // S1 ends: its SessionEnd hook clears the marker and leaves the
+      // ended-session marker. The worker it hands off to finds no server
+      // and sends nothing. S1's worker is slow (a slow server, a backlog):
+      // it runs here later, in the foreground, once the conversation has
+      // been resumed (S2) and the subagent, resumed too, has written a turn
+      // that no hook of S2 has flushed yet. (Holding the worker's POST
+      // instead would not do: the poster gives up on a POST after two
+      // seconds, and a worker whose session_end failed skips its pass.)
+      await run(rootHook(conv, "SessionEnd", { reason: "prompt_input_exit" }), { ...box.env, FLIGHTDECK_SERVER: await unreachableServer() });
+      await run(rootHook(conv, "SessionStart", { source: "resume" }), box.env);
+      const [s2] = rootStarts(mine())
+        .map((b) => b.session_id)
+        .filter((id) => id !== s1);
+      append(conv.sub, [resumeRecord("count again"), assistantRecord(m3)]);
+      if (s2Ends) {
+        // S2 ends as well before S1's worker reads the subagent's
+        // transcript. Its SessionEnd deletes the marker that named it, and
+        // its root session_end fails, so its own pass over the subagents,
+        // m3's last chance in S2, does not run.
+        capture.fail((b) => b.event_type === "session_end" && b.session_id === s2 && !b.parent_session_id, {
+          times: Infinity,
+        });
+        await run(rootHook(conv, "SessionEnd", { reason: "prompt_input_exit" }), box.env);
+        assert.equal(callsOf(mine(), m3).length, 0, "S2's pass did not run");
+      }
+      const done = await runScript(
+        JSON.stringify(rootHook(conv, "SessionEnd", { reason: "prompt_input_exit" })),
+        { ...box.env, CLAUDE_SESSION_ID: s1 },
+        [SESSION_END_WORKER_FLAG],
+      );
+      assert.equal(done.code, 0, done.stderr);
+      // Its session_end was accepted and no POST failed, so its pass over
+      // the subagents ran and read the transcript with m3 in it.
+      assert.equal(ofSession(mine(), s1, "session_end").length, 1, "S1's worker sent its session_end");
+      assert.doesNotMatch(done.stderr, /cannot reach/, "every POST of S1's worker was answered");
+      assert.equal(ofSession(mine(), c1).some((b) => b.id === postCallEventId(m3)), false, "never under S1's child");
+      // S1's worker is done; a later hook of S2 (after its end, one that
+      // reports under the ended S2) sends m3 under S2's child.
+      await run(agentHook(conv, "SubagentStart"), box.env);
+      await run(agentHook(conv, "PostToolUse", toolUse()), box.env);
+      const calls = callsOf(mine(), m3);
+      assert.equal(calls.length, 1, "m3 sent once");
+      assert.equal(calls[0].session_id, _subagentChildSessionId(s2, conv.agent), "under S2's child");
+      assert.equal(calls[0].parent_session_id, s2);
+    });
+  }
 });
+
+/** A server address nothing listens on: a POST to it fails at once. */
+async function unreachableServer() {
+  const server = createServer();
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  await new Promise((resolve) => server.close(resolve));
+  return `http://127.0.0.1:${port}`;
+}
 
 describe("a resume and the previous execution's end", () => {
   let capture;
@@ -726,14 +771,44 @@ describe("a resume and the previous execution's end", () => {
     await run(agentHook(conv, "SubagentStart"), box.env);
     append(conv.sub, [assistantRecord(m2)]);
     await run(agentHook(conv, "SubagentStop", { agent_transcript_path: conv.sub, last_assistant_message: `turn ${m2}` }), box.env);
-    // A finished background task wakes it: a queued command, no user record.
+    // A finished background task wakes it: a meta user record whose text
+    // is Claude Code's notice, not a message to the subagent.
     append(conv.sub, [wakeRecord()]);
     await run(agentHook(conv, "SubagentStart"), box.env);
     const [spawn, resumed, woken] = starts();
     for (const body of starts()) assertIngestionContract(body);
     assert.equal(spawn.incoming_message?.body, "count the files", "the spawn's prompt");
     assert.equal(resumed.incoming_message?.body, `${RESUME_PREFIX}count them again`, "the message that resumed it");
-    assert.equal("incoming_message" in woken, false, "no user record: no message rather than the spawn's");
+    assert.equal("incoming_message" in woken, false, "a wake: no message, neither the notice nor the spawn's prompt");
+  });
+});
+
+describe("the message a subagent is resumed with", () => {
+  /** The transcript arguments for a subagent whose transcript holds ``records``. */
+  function transcriptOf(records) {
+    const conv = conversation();
+    append(conv.sub, records);
+    return { subagentTranscript: conv.sub, parentTranscript: conv.parent, role: conv.agentType };
+  }
+  const ran = () => [userRecord("count the files"), assistantRecord(msgId())];
+
+  it("a wake carries no message but is a resume; a coordinator's resume carries its message", () => {
+    const woken = transcriptOf([...ran(), wakeRecord()]);
+    assert.equal(subagentResumeMessage(woken), null, "a wake: no message, not Claude Code's notice");
+    assert.equal(subagentResumedAfterFinalTurn(woken), true, "a wake is still a resume");
+
+    const resumed = transcriptOf([...ran(), resumeRecord("count them again")]);
+    assert.equal(subagentResumeMessage(resumed), `${RESUME_PREFIX}count them again`);
+    assert.equal(subagentResumedAfterFinalTurn(resumed), true);
+
+    // A coordinator's message and a wake both waiting when it runs again:
+    // the message, whichever came last.
+    const both = transcriptOf([...ran(), resumeRecord("and the dirs"), wakeRecord()]);
+    assert.equal(subagentResumeMessage(both), `${RESUME_PREFIX}and the dirs`);
+
+    const idle = transcriptOf(ran());
+    assert.equal(subagentResumeMessage(idle), null, "nothing after its last turn");
+    assert.equal(subagentResumedAfterFinalTurn(idle), false);
   });
 });
 

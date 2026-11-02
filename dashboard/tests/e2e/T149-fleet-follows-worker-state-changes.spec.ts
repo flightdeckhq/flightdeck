@@ -68,11 +68,11 @@ function newRun(project: string): Run {
   };
 }
 
-function event(run: Run, eventType: "session_start" | "session_end"): Record<string, unknown> {
-  const payload: Record<string, unknown> = {
+function sessionStart(run: Run): Record<string, unknown> {
+  return {
     session_id: run.sessionId,
     flavor: run.flavor,
-    event_type: eventType,
+    event_type: "session_start",
     host: HOST,
     framework: null,
     model: null,
@@ -95,24 +95,15 @@ function event(run: Run, eventType: "session_start" | "session_end"): Record<str
     client_type: "flightdeck_sensor",
     user: "e2e",
     hostname: HOST,
+    sensor_version: "e2e-fixture/0.0.0",
+    context: { os: "Linux", arch: "x86_64", hostname: HOST, user: "e2e" },
   };
-  if (eventType === "session_start") {
-    payload.sensor_version = "e2e-fixture/0.0.0";
-    payload.context = { os: "Linux", arch: "x86_64", hostname: HOST, user: "e2e" };
-  }
-  return payload;
-}
-
-async function post(api: APIRequestContext, payload: Record<string, unknown>): Promise<void> {
-  const resp = await api.post(`${INGEST}/events`, { headers: AUTH, data: payload });
-  expect(resp.ok(), `POST ${String(payload.event_type)}: ${resp.status()} ${await resp.text()}`).toBe(
-    true,
-  );
 }
 
 /** Start the run and wait until the worker has stored it as active. */
 async function startRun(api: APIRequestContext, run: Run): Promise<void> {
-  await post(api, event(run, "session_start"));
+  const resp = await api.post(`${INGEST}/events`, { headers: AUTH, data: sessionStart(run) });
+  expect(resp.ok(), `POST session_start: ${resp.status()} ${await resp.text()}`).toBe(true);
   await expect
     .poll(
       async () => {
@@ -125,36 +116,60 @@ async function startRun(api: APIRequestContext, run: Run): Promise<void> {
     .toBe("active");
 }
 
+/** Run SQL against the stack's Postgres, values bound as psql
+ *  variables, and return psql's trimmed output. */
+function psql(sql: string, vars: Record<string, string>): string {
+  const args = [
+    "exec",
+    "-i",
+    "docker-postgres-1",
+    "psql",
+    "-U",
+    "flightdeck",
+    "-d",
+    "flightdeck",
+    "-tA",
+    "-v",
+    "ON_ERROR_STOP=1",
+  ];
+  for (const [name, value] of Object.entries(vars)) args.push("-v", `${name}=${value}`);
+  const result = spawnSync("docker", args, { input: sql, encoding: "utf8" });
+  if (result.error) throw new Error(`psql: failed to run docker: ${result.error.message}`);
+  expect(result.status, `psql: ${result.stderr}`).toBe(0);
+  return result.stdout.trim();
+}
+
 /** Move this run's own last signal into the past, so the next
  *  reconciler tick acts on it. Touches no other row. */
 function backdate(run: Run, ago: string): void {
-  const result = spawnSync(
-    "docker",
-    [
-      "exec",
-      "-i",
-      "docker-postgres-1",
-      "psql",
-      "-U",
-      "flightdeck",
-      "-d",
-      "flightdeck",
-      "-tA",
-      "-v",
-      `sid=${run.sessionId}`,
-      "-v",
-      `ago=${ago}`,
-    ],
-    {
-      input:
-        "UPDATE sessions SET last_seen_at = NOW() - CAST(:'ago' AS interval) " +
-        "WHERE session_id = :'sid'::uuid",
-      encoding: "utf8",
-    },
+  const out = psql(
+    "UPDATE sessions SET last_seen_at = NOW() - CAST(:'ago' AS interval) " +
+      "WHERE session_id = :'sid'::uuid",
+    { sid: run.sessionId, ago },
   );
-  if (result.error) throw new Error(`backdate: failed to run docker: ${result.error.message}`);
-  expect(result.status, `backdate psql: ${result.stderr}`).toBe(0);
-  expect(result.stdout.trim()).toBe("UPDATE 1");
+  expect(out).toBe("UPDATE 1");
+}
+
+/** Remove what this test's run wrote. The flavor is the run's own, so
+ *  nothing removed belongs to another test; without this every run
+ *  would leave a new agent on a shared stack. */
+function removeRun(run: Run): void {
+  psql(
+    `BEGIN;
+     DELETE FROM event_content WHERE session_id IN
+       (SELECT session_id FROM sessions WHERE flavor = :'flavor');
+     DELETE FROM events WHERE session_id IN
+       (SELECT session_id FROM sessions WHERE flavor = :'flavor');
+     DELETE FROM directives WHERE session_id IN
+       (SELECT session_id FROM sessions WHERE flavor = :'flavor');
+     WITH gone AS (DELETE FROM sessions WHERE flavor = :'flavor' RETURNING agent_id)
+     DELETE FROM agents a USING (SELECT DISTINCT agent_id FROM gone) g
+     WHERE a.agent_id = g.agent_id
+       AND NOT EXISTS (SELECT 1 FROM sessions o
+                       WHERE o.agent_id = a.agent_id AND o.flavor <> :'flavor');
+     COMMIT;`,
+    { flavor: run.flavor },
+  );
 }
 
 async function markNoReload(page: Page): Promise<void> {
@@ -182,9 +197,8 @@ test.describe("T149 — Fleet follows the worker's state changes without a reloa
     }, DISABLE_KEEPALIVE_WS_STORAGE_KEY);
   });
 
-  test.afterEach(async ({ request }) => {
-    // Close the run so it does not linger as lost on the stack.
-    await post(request, event(run, "session_end"));
+  test.afterEach(() => {
+    removeRun(run);
   });
 
   test("the swimlane badge goes from active to stale when the run goes silent", async ({

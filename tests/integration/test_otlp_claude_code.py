@@ -122,28 +122,38 @@ class Replay:
         self.unmapped = len(records) - len(self.mapped)
         self.rejected = 0
         self.messages: list[str] = []
+        self.shift_ns: int | None = None
 
-    def send(self) -> Replay:
-        latest = latest_time_ns([(r["content_type"], r["body"]) for r in self.requests])
-        # The last record lands a second before now, inside the window.
-        shift = time.time_ns() - latest - 1_000_000_000
-        for r in self.requests:
-            body = rewrite_logs(
-                r["content_type"],
-                r["body"],
-                session_id=self.claude_code_session_id,
-                shift_ns=shift,
-                resource_attrs=self.attrs,
+    def send(self, first: int = 0, last: int | None = None) -> Replay:
+        """POST the scenario's log requests ``[first:last]``. Every send
+        of one replay moves the records by the same shift, taken at the
+        first send so the last record lands a second before it, inside
+        the validation window."""
+        if self.shift_ns is None:
+            latest = latest_time_ns(
+                [(r["content_type"], r["body"]) for r in self.requests]
             )
-            status, resp = _post_logs(
-                body, r["content_type"], r.get("sent_encoding") == "gzip"
-            )
-            assert status == 200, resp
-            rejected, message = _rejected(r["content_type"], resp)
-            self.rejected += rejected
-            if message:
-                self.messages.append(message)
+            self.shift_ns = time.time_ns() - latest - 1_000_000_000
+        for r in self.requests[first:last]:
+            self.post(r["content_type"], r["body"], r.get("sent_encoding") == "gzip")
         return self
+
+    def post(self, content_type: str, body: bytes, gzipped: bool = False) -> None:
+        """POST one log export of the scenario, rewritten as send does."""
+        assert self.shift_ns is not None, "send the replay first"
+        body = rewrite_logs(
+            content_type,
+            body,
+            session_id=self.claude_code_session_id,
+            shift_ns=self.shift_ns,
+            resource_attrs=self.attrs,
+        )
+        status, resp = _post_logs(body, content_type, gzipped)
+        assert status == 200, resp
+        rejected, message = _rejected(content_type, resp)
+        self.rejected += rejected
+        if message:
+            self.messages.append(message)
 
     def count(self, name: str) -> int:
         return sum(1 for a in self.mapped if a.get("event.name") == name)
@@ -364,3 +374,228 @@ def _session_exists(session_id: str) -> bool:
         if exc.code == 404:
             return False
         raise
+
+
+def _state(session_id: str) -> str:
+    """The session's state, or "" while it has no row."""
+    try:
+        return str(get_session_detail(session_id)["session"]["state"])
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            return ""
+        raise
+
+
+def _typed_records(replay: Replay) -> list[dict[str, Any]]:
+    """Every attribute of each log record of a JSON scenario, typed as the
+    fixture holds it (Claude Code sends token counts as numbers), with the
+    record's recorded time as ``timeUnixNano``."""
+    out = []
+    for r in replay.requests:
+        assert r["content_type"] == JSON, r["file"]
+        for rl in json.loads(r["body"]).get("resourceLogs", []):
+            for sl in rl.get("scopeLogs", []):
+                for rec in sl.get("logRecords", []):
+                    attrs: dict[str, Any] = {
+                        kv["key"]: next(iter(kv["value"].values()), None)
+                        if kv.get("value")
+                        else None
+                        for kv in rec.get("attributes", [])
+                    }
+                    attrs["timeUnixNano"] = int(rec["timeUnixNano"])
+                    out.append(attrs)
+    return out
+
+
+def _call_tokens(call: dict[str, Any]) -> int:
+    """A recorded model call's tokens as the contract counts them: its
+    input (uncached, cache reads and cache writes) plus its output."""
+    return sum(
+        int(call[k])
+        for k in (
+            "input_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "output_tokens",
+        )
+    )
+
+
+def _sub_agent(records: list[dict[str, Any]], event_name: str) -> list[dict[str, Any]]:
+    return [
+        a for a in records if a.get("agent_id") and a.get("event.name") == event_name
+    ]
+
+
+def _child_call_export(
+    replay: Replay, agent_id: str, at_ns: int, sequence: int
+) -> bytes:
+    """A JSON log export holding a copy of the sub-agent's last recorded
+    model call, dated ``at_ns`` (recorded time, before the replay's shift)
+    under a new ``event.sequence``, so it is a record of its own."""
+    for r in reversed(replay.requests):
+        for rl in json.loads(r["body"])["resourceLogs"]:
+            for sl in rl["scopeLogs"]:
+                for rec in reversed(sl["logRecords"]):
+                    attrs = {kv["key"]: kv["value"] for kv in rec["attributes"]}
+                    if attrs.get("agent_id") == {"stringValue": agent_id} and attrs.get(
+                        "event.name"
+                    ) == {"stringValue": "api_request"}:
+                        rec["timeUnixNano"] = rec["observedTimeUnixNano"] = str(at_ns)
+                        for kv in rec["attributes"]:
+                            if kv["key"] == "event.sequence":
+                                kv["value"] = {"intValue": sequence}
+                        export = {
+                            "resourceLogs": [
+                                {
+                                    "resource": rl["resource"],
+                                    "scopeLogs": [
+                                        {"scope": sl["scope"], "logRecords": [rec]}
+                                    ],
+                                }
+                            ]
+                        }
+                        return json.dumps(export).encode()
+    raise AssertionError(f"no model call of {agent_id} in {replay.scenario}")
+
+
+def _children(parent_session_id: str) -> list[str]:
+    req = urllib.request.Request(
+        f"{API_URL}/v1/sessions?parent_session_id={parent_session_id}",
+        headers=auth_headers(),
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return [s["session_id"] for s in json.loads(resp.read())["sessions"]]
+
+
+def test_resumed_subagent_re_attaches_its_child_and_counts_its_tokens(
+    flavor: str,
+) -> None:
+    """The recorded SendMessage resume: the sub-agent's second run, dated
+    after the subagent_completed that closed its child session,
+    re-attaches that same row, and the worker adds the second run's
+    tokens to tokens_used. Claude Code exports the resumed run seconds
+    after the end (4.5 s in the recording), by when the worker has stored
+    that end, so the replay waits for it before sending the rest. A late
+    copy of a call, dated before the end, then leaves the child closed;
+    the same call dated after the end re-attaches it."""
+    replay = Replay("subagent-resume-json", flavor)
+    records = _typed_records(replay)
+    calls = _sub_agent(records, "api_request")
+    ends = _sub_agent(records, "subagent_completed")
+    agent_id = calls[0]["agent_id"]
+    assert len(ends) == 2 and len(calls) == 4
+    assert {a["agent_id"] for a in calls + ends} == {agent_id}
+    child_id = otlp_session_id(replay.claude_code_session_id, agent_id)
+
+    first_end = next(
+        i
+        for i, r in enumerate(replay.requests)
+        if any(
+            a.get("event.name") == "subagent_completed"
+            for a in record_attributes(r["content_type"], r["body"])
+        )
+    )
+    replay.send(last=first_end + 1)
+    # The worker closes the row a moment before it stores the end's
+    # event, and until then the receiver judges records against the
+    # row's ended_at (the worker's clock), so the replay waits for the
+    # stored end, as Claude Code's own pacing would.
+    _events_when(child_id, lambda ev: len(_of(ev, "session_end")) == 1)
+    replay.send(first=first_end + 1)
+    assert replay.rejected == replay.unmapped, replay.messages
+
+    events = _events_when(
+        child_id,
+        lambda ev: len(_of(ev, "session_end")) == 2 and len(_of(ev, "post_call")) == 4,
+    )
+    wait_until(
+        lambda: _state(child_id) == "closed",
+        timeout=LAND_TIMEOUT_SECS,
+        msg="second run's end closes the child",
+    )
+    detail = get_session_detail(child_id)
+    both_runs = sum(_call_tokens(c) for c in calls)
+    assert detail["session"]["tokens_used"] == both_runs, (
+        f"tokens_used {detail['session']['tokens_used']}, the two runs' calls "
+        f"hold {both_runs} (first run alone: {sum(_call_tokens(c) for c in calls[:2])})"
+    )
+    assert len(_of(events, "session_start")) == 2
+    assert len(detail["attachments"]) == 1, detail["attachments"]
+    assert _children(replay.session_id) == [child_id]
+    assert detail["session"]["parent_session_id"] == replay.session_id
+    assert detail["session"]["agent_role"] == "general-purpose"
+
+    # A late record, dated before the second end, does not reopen it.
+    second_end = int(ends[1]["timeUnixNano"])
+    replay.post(
+        JSON, _child_call_export(replay, agent_id, second_end - 2 * 10**9, 9001)
+    )
+    events = _events_when(child_id, lambda ev: len(_of(ev, "post_call")) == 5)
+    detail = get_session_detail(child_id)
+    assert detail["session"]["state"] == "closed"
+    assert len(detail["attachments"]) == 1
+    assert detail["session"]["tokens_used"] == both_runs
+    assert len(_of(events, "session_start")) == 2
+
+    # The same call dated after the end resumes the sub-agent again.
+    replay.post(
+        JSON, _child_call_export(replay, agent_id, second_end + 5 * 10**9, 9002)
+    )
+    wait_until(
+        lambda: len(get_session_detail(child_id)["attachments"]) == 2,
+        timeout=LAND_TIMEOUT_SECS,
+        msg="a record after the end re-attaches the child",
+    )
+    wait_until(
+        lambda: (
+            get_session_detail(child_id)["session"]["tokens_used"]
+            == both_runs + _call_tokens(calls[-1])
+        ),
+        timeout=LAND_TIMEOUT_SECS,
+        msg="the resumed call's tokens count",
+    )
+    assert get_session_detail(child_id)["session"]["state"] != "closed"
+
+
+def test_resume_in_the_export_that_ends_the_run(flavor: str) -> None:
+    """Claude Code's 5 s default export interval can put a run's
+    subagent_completed and the resumed run's records in one export: the
+    receiver publishes the end, then a start, then the resumed run, and
+    the worker closes the child and reopens it in that order."""
+    replay = Replay("subagent-resume-json", flavor)
+    records = _typed_records(replay)
+    calls = _sub_agent(records, "api_request")
+    merged = {
+        "resourceLogs": [
+            rl for r in replay.requests for rl in json.loads(r["body"])["resourceLogs"]
+        ]
+    }
+    replay.requests = [
+        {
+            "file": "merged",
+            "path": "/v1/logs",
+            "content_type": JSON,
+            "sent_encoding": None,
+            "body": json.dumps(merged).encode(),
+        }
+    ]
+    replay.send()
+    assert replay.rejected == replay.unmapped, replay.messages
+
+    child_id = otlp_session_id(replay.claude_code_session_id, calls[0]["agent_id"])
+    events = _events_when(
+        child_id,
+        lambda ev: len(_of(ev, "session_end")) == 2 and len(_of(ev, "post_call")) == 4,
+    )
+    assert len(_of(events, "session_start")) == 2
+    wait_until(
+        lambda: (
+            _state(child_id) == "closed"
+            and get_session_detail(child_id)["session"]["tokens_used"]
+            == sum(_call_tokens(c) for c in calls)
+        ),
+        timeout=LAND_TIMEOUT_SECS,
+        msg="both runs' tokens count and the second end closes the child",
+    )
+    assert _children(replay.session_id) == [child_id]

@@ -399,6 +399,24 @@ was reaching every run of the flavor.
 rest (a silent partial stop); answering the `session_id` + `flavor` pair
 with 400 (breaks the Directives page's "Specific run").
 
+## D238 -- A record dated after a closed OTLP sub-agent's end resumes it
+
+**Date:** 2026-11-02
+**Decision:** extends D224. A record of a closed sub-agent dated more
+than a second after its end (its latest `session_end`, on Claude Code's
+clock, unless a later `session_start` is stored: then `ended_at`) gets
+a synthetic `session_start` through the attach path, reopening the
+row; one dated at or before it, or not dated, starts nothing. Every
+request reads its sub-agents' ends.
+**Why:** a `SendMessage` resume runs the sub-agent again under its
+`agent_id` after `subagent_completed`; its records landed on the closed
+row and its tokens were missing from `tokens_used`.
+**Rejected alternative:** never restarting a closed sub-agent (loses a
+resumed run's tokens); restarting on any record (a late async record
+reopens a finished sub-agent); `ended_at` alone (the worker's clock, an
+export interval late); trusting the replica cache (another replica may
+have published the end).
+
 ## D241 -- The worker notifies flightdeck_fleet of every session state change it makes
 
 **Date:** 2026-11-02

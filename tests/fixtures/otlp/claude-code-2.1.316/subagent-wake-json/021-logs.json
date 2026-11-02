@@ -1,0 +1,598 @@
+{
+ "resourceLogs": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "host.arch",
+      "value": {
+       "stringValue": "amd64"
+      }
+     },
+     {
+      "key": "os.type",
+      "value": {
+       "stringValue": "linux"
+      }
+     },
+     {
+      "key": "os.version",
+      "value": {
+       "stringValue": "6.6.0"
+      }
+     },
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "claude-code"
+      }
+     },
+     {
+      "key": "service.version",
+      "value": {
+       "stringValue": "2.1.316"
+      }
+     },
+     {
+      "key": "wsl.version",
+      "value": {
+       "stringValue": "2"
+      }
+     }
+    ],
+    "droppedAttributesCount": 0
+   },
+   "scopeLogs": [
+    {
+     "scope": {
+      "name": "com.anthropic.claude_code.events",
+      "version": "2.1.316"
+     },
+     "logRecords": [
+      {
+       "timeUnixNano": "1793611266324000000",
+       "observedTimeUnixNano": "1793611266324000000",
+       "body": {
+        "stringValue": "claude_code.api_request"
+       },
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "2f93a086-ec21-4dbe-b63b-a627b3855e2c"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000002"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "user@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000001"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_000000000000000000000001"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "wsl-Ubuntu"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "api_request"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-11-02T09:21:06.324Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 26
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "0fe9f2ce-29e5-4fa1-91d9-d468ee9ca15e"
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "claude-haiku-4-5-20251001"
+         }
+        },
+        {
+         "key": "input_tokens",
+         "value": {
+          "intValue": 8
+         }
+        },
+        {
+         "key": "output_tokens",
+         "value": {
+          "intValue": 50
+         }
+        },
+        {
+         "key": "cache_read_tokens",
+         "value": {
+          "intValue": 15778
+         }
+        },
+        {
+         "key": "cache_creation_tokens",
+         "value": {
+          "intValue": 243
+         }
+        },
+        {
+         "key": "cache_creation_5m_tokens",
+         "value": {
+          "intValue": 243
+         }
+        },
+        {
+         "key": "cache_creation_1h_tokens",
+         "value": {
+          "intValue": 0
+         }
+        },
+        {
+         "key": "cost_usd",
+         "value": {
+          "doubleValue": 0.00213955
+         }
+        },
+        {
+         "key": "cost_usd_micros",
+         "value": {
+          "intValue": 2140
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "intValue": 1213
+         }
+        },
+        {
+         "key": "ttft_ms",
+         "value": {
+          "intValue": 856
+         }
+        },
+        {
+         "key": "request_id",
+         "value": {
+          "stringValue": "req_011CgdrZ2SeMEzanNixUdFsA"
+         }
+        },
+        {
+         "key": "client_request_id",
+         "value": {
+          "stringValue": "4110b917-5ea7-47c2-b007-ba85bb89443b"
+         }
+        },
+        {
+         "key": "speed",
+         "value": {
+          "stringValue": "normal"
+         }
+        },
+        {
+         "key": "query_source",
+         "value": {
+          "stringValue": "agent:builtin:general-purpose"
+         }
+        },
+        {
+         "key": "agent.name",
+         "value": {
+          "stringValue": "general-purpose"
+         }
+        },
+        {
+         "key": "agent_id",
+         "value": {
+          "stringValue": "ac2db042948fd3e03"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0
+      },
+      {
+       "timeUnixNano": "1793611266324000000",
+       "observedTimeUnixNano": "1793611266324000000",
+       "body": {
+        "stringValue": "claude_code.assistant_response"
+       },
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "2f93a086-ec21-4dbe-b63b-a627b3855e2c"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000002"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "user@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000001"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_000000000000000000000001"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "wsl-Ubuntu"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "assistant_response"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-11-02T09:21:06.324Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 27
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "0fe9f2ce-29e5-4fa1-91d9-d468ee9ca15e"
+         }
+        },
+        {
+         "key": "response_length",
+         "value": {
+          "intValue": 7
+         }
+        },
+        {
+         "key": "response",
+         "value": {
+          "stringValue": "bg-done"
+         }
+        },
+        {
+         "key": "request_id",
+         "value": {
+          "stringValue": "req_011CgdrZ2SeMEzanNixUdFsA"
+         }
+        },
+        {
+         "key": "message.uuid",
+         "value": {
+          "stringValue": "b82806f4-f365-4f98-8196-acea8a71e7f6"
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "claude-haiku-4-5-20251001"
+         }
+        },
+        {
+         "key": "query_source",
+         "value": {
+          "stringValue": "agent:builtin:general-purpose"
+         }
+        },
+        {
+         "key": "agent_id",
+         "value": {
+          "stringValue": "ac2db042948fd3e03"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0
+      },
+      {
+       "timeUnixNano": "1793611266328000000",
+       "observedTimeUnixNano": "1793611266328000000",
+       "body": {
+        "stringValue": "claude_code.subagent_completed"
+       },
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "2f93a086-ec21-4dbe-b63b-a627b3855e2c"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000002"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "user@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000001"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_000000000000000000000001"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "wsl-Ubuntu"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "subagent_completed"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-11-02T09:21:06.328Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 28
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "0fe9f2ce-29e5-4fa1-91d9-d468ee9ca15e"
+         }
+        },
+        {
+         "key": "agent_type",
+         "value": {
+          "stringValue": "general-purpose"
+         }
+        },
+        {
+         "key": "agent.source",
+         "value": {
+          "stringValue": "built-in"
+         }
+        },
+        {
+         "key": "is_built_in",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "is_async",
+         "value": {
+          "boolValue": true
+         }
+        },
+        {
+         "key": "total_tokens",
+         "value": {
+          "intValue": 16079
+         }
+        },
+        {
+         "key": "total_tool_uses",
+         "value": {
+          "intValue": 2
+         }
+        },
+        {
+         "key": "duration_ms",
+         "value": {
+          "intValue": 13322
+         }
+        },
+        {
+         "key": "model",
+         "value": {
+          "stringValue": "claude-haiku-4-5"
+         }
+        },
+        {
+         "key": "final_model",
+         "value": {
+          "stringValue": "claude-haiku-4-5"
+         }
+        },
+        {
+         "key": "model_swapped",
+         "value": {
+          "boolValue": false
+         }
+        },
+        {
+         "key": "agent_id",
+         "value": {
+          "stringValue": "ac2db042948fd3e03"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0
+      },
+      {
+       "timeUnixNano": "1793611266414000000",
+       "observedTimeUnixNano": "1793611266414000000",
+       "body": {
+        "stringValue": "claude_code.user_prompt"
+       },
+       "attributes": [
+        {
+         "key": "user.id",
+         "value": {
+          "stringValue": "0000000000000000000000000000000000000000000000000000000000000000"
+         }
+        },
+        {
+         "key": "session.id",
+         "value": {
+          "stringValue": "2f93a086-ec21-4dbe-b63b-a627b3855e2c"
+         }
+        },
+        {
+         "key": "organization.id",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000002"
+         }
+        },
+        {
+         "key": "user.email",
+         "value": {
+          "stringValue": "user@example.com"
+         }
+        },
+        {
+         "key": "user.account_uuid",
+         "value": {
+          "stringValue": "00000000-0000-4000-8000-000000000001"
+         }
+        },
+        {
+         "key": "user.account_id",
+         "value": {
+          "stringValue": "user_000000000000000000000001"
+         }
+        },
+        {
+         "key": "terminal.type",
+         "value": {
+          "stringValue": "wsl-Ubuntu"
+         }
+        },
+        {
+         "key": "event.name",
+         "value": {
+          "stringValue": "user_prompt"
+         }
+        },
+        {
+         "key": "event.timestamp",
+         "value": {
+          "stringValue": "2026-11-02T09:21:06.414Z"
+         }
+        },
+        {
+         "key": "event.sequence",
+         "value": {
+          "intValue": 29
+         }
+        },
+        {
+         "key": "prompt.id",
+         "value": {
+          "stringValue": "c4f70a25-24d6-4816-a37d-801178f65ba6"
+         }
+        },
+        {
+         "key": "prompt_length",
+         "value": {
+          "stringValue": "657"
+         }
+        },
+        {
+         "key": "prompt",
+         "value": {
+          "stringValue": "<task-notification>\n<task-id>ac2db042948fd3e03</task-id>\n<output-file>/tmp/claude-1000/-home-user-project/2f93a086-ec21-4dbe-b63b-a627b3855e2c/tasks/ac2db042948fd3e03.output</output-file>\n<status>completed</status>\n<summary>Agent \"Run background sleep command\" finished</summary>\n<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>\n<result>bg-done</result>\n<usage><subagent_tokens>16163</subagent_tokens><tool_uses>2</tool_uses><duration_ms>13322</duration_ms></usage>\n</task-notification>"
+         }
+        },
+        {
+         "key": "prompt_text",
+         "value": {
+          "stringValue": "<task-notification>\n<task-id>ac2db042948fd3e03</task-id>\n<output-file>/tmp/claude-1000/-home-user-project/2f93a086-ec21-4dbe-b63b-a627b3855e2c/tasks/ac2db042948fd3e03.output</output-file>\n<status>completed</status>\n<summary>Agent \"Run background sleep command\" finished</summary>\n<note>A task-notification fires each time this agent stops with no live background children of its own. The user can send it another message and resume it, so the same task-id may notify more than once.</note>\n<result>bg-done</result>\n<usage><subagent_tokens>16163</subagent_tokens><tool_uses>2</tool_uses><duration_ms>13322</duration_ms></usage>\n</task-notification>"
+         }
+        },
+        {
+         "key": "message.uuid",
+         "value": {
+          "stringValue": "c0ac5a98-3217-4720-84f3-772c4e7665ad"
+         }
+        }
+       ],
+       "droppedAttributesCount": 0,
+       "flags": 1,
+       "traceId": "aa280c9a5620dbbbf09700cefec61908",
+       "spanId": "630bd499c8e97ce9"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

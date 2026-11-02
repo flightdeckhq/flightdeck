@@ -1330,8 +1330,11 @@ def _pre_call(
       so the event lands before the process exit, then raise
       :class:`BudgetExceededError`. Source is always ``"server"``
       (local thresholds fire WARN only).
-    * DEGRADE: returns a *copy* of kwargs with swapped model. POLICY_
-      DEGRADE is NOT emitted here — it fires once on
+    * DEGRADE: returns a *copy* of kwargs with swapped model, and without
+      the request parameters the provider names as other models the call
+      could run instead (``model_alternative_params``; a litellm call's
+      ``fallbacks``), so the degrade target is the only model it can run.
+      POLICY_DEGRADE is NOT emitted here — it fires once on
       ``_apply_directive(DEGRADE)`` arrival. Per-call swaps are visible
       via post_call.model only.
     * WARN: emit :attr:`EventType.POLICY_WARN` (source ``"local"`` for
@@ -1466,6 +1469,13 @@ def _pre_call(
         # visible via post_call.model. See decision lock above.
         call_kwargs = copy.copy(kwargs)
         call_kwargs["model"] = session.policy.degrade_to
+        # The degrade target is the only model the policy allows: a
+        # parameter that names other models the provider may run in its
+        # place (a litellm call's ``fallbacks``, tried when an attempt
+        # fails) is dropped, so a failure of the degraded attempt is the
+        # call's failure instead of a way around the policy.
+        for name in getattr(provider, "model_alternative_params", ()):
+            call_kwargs.pop(name, None)
         _log.info(
             "Policy DEGRADE: swapping model to %s (session %s)",
             session.policy.degrade_to,

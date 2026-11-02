@@ -50,6 +50,7 @@ from .test_interceptor_litellm import (
     SDK_PROMPT_TOKENS,
     _anthropic_message_body,
     _async_sdk_client,
+    _chat_completion_body,
     _events_of,
     _post_calls,
     _sdk_client,
@@ -814,7 +815,9 @@ def test_a_call_every_fallback_fails_is_reported_once_as_an_error(
         "stated limitation: with an event loop running in its thread, litellm "
         "runs a sync call's fallback attempts in a worker thread it starts "
         "without copying the context, so the outer-call mark does not reach "
-        "them and the call is reported twice"
+        "them and every attempt is reported as a call of its own beside the "
+        "outer call (a failed primary and one fallback: three pre_calls, two "
+        "post_calls and one llm_error)"
     ),
 )
 def test_a_sync_fallback_call_inside_a_running_loop_is_reported_once(
@@ -828,6 +831,181 @@ def test_a_sync_fallback_call_inside_a_running_loop_is_reported_once(
     response = asyncio.run(_sync_call_inside_a_loop())
     assert response.choices[0].message.content == "from the fallback"
     assert len(_post_calls(session)) == 1
+
+
+# ----- DEGRADE: the degrade target is the only model a call can run ---------
+
+DEGRADE_MODEL = "gpt-4o-mini"
+# A model the policy did not choose, which litellm would otherwise run.
+UNCHOSEN_MODEL = "o1"
+
+
+def _context_window_error() -> httpx.Response:
+    """What api.openai.com answers a request past the model's context
+    window; litellm raises ``ContextWindowExceededError`` for it."""
+    return httpx.Response(
+        400,
+        json={
+            "error": {
+                "message": (
+                    "This model's maximum context length is 128000 tokens. "
+                    "However, your messages resulted in 200000 tokens."
+                ),
+                "type": "invalid_request_error",
+                "param": "messages",
+                "code": "context_length_exceeded",
+            }
+        },
+    )
+
+
+class _ContextWindowTransport:
+    """The chat endpoint: the degrade target's context window is exceeded,
+    every other model answers. Records the model of every request."""
+
+    def __init__(self) -> None:
+        self.models: list[str] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        model = json.loads(request.content or b"{}").get("model")
+        self.models.append(model)
+        if model == DEGRADE_MODEL:
+            return _context_window_error()
+        return httpx.Response(200, json=_chat_completion_body())
+
+
+def _degraded(session: Session) -> None:
+    session.policy.set_degrade_model(DEGRADE_MODEL)
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_under_degrade_a_failing_degraded_attempt_runs_no_fallback(
+    session: Session, is_async: bool
+) -> None:
+    """DEGRADE swaps the model; litellm would then try the caller's
+    ``fallbacks`` once the degraded attempt failed, so a model the policy
+    did not choose would serve the call unchecked. The pre-call check
+    drops them: the degraded attempt's failure is the call's llm_error."""
+    _degraded(session)
+    kwargs: dict[str, Any] = {
+        "model": PRIMARY_MODEL,
+        "messages": MSG,
+        "mock_response": FAILING_MOCK,
+        "fallbacks": [{"model": UNCHOSEN_MODEL, "mock_response": "served by the fallback"}],
+    }
+    with pytest.raises(litellm.InternalServerError):
+        if is_async:
+            asyncio.run(litellm.acompletion(**kwargs))
+        else:
+            litellm.completion(**kwargs)
+    assert len(_events_of(session, "pre_call")) == 1
+    assert _post_calls(session) == []
+    (error,) = _events_of(session, "llm_error")
+    assert error["model"] == DEGRADE_MODEL
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_under_degrade_the_degraded_attempt_answers(session: Session, is_async: bool) -> None:
+    _degraded(session)
+    kwargs: dict[str, Any] = {
+        "model": PRIMARY_MODEL,
+        "messages": MSG,
+        "mock_response": "from the degrade target",
+        "fallbacks": [{"model": UNCHOSEN_MODEL, "mock_response": "served by the fallback"}],
+    }
+    if is_async:
+        response = asyncio.run(litellm.acompletion(**kwargs))
+    else:
+        response = litellm.completion(**kwargs)
+    assert response.choices[0].message.content == "from the degrade target"
+    (pc,) = _post_calls(session)
+    assert pc["model_served"] == DEGRADE_MODEL
+
+
+@pytest.mark.parametrize("degrade", [True, False], ids=["degraded", "not-degraded"])
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_a_context_window_fallback_runs_only_when_the_call_is_not_degraded(
+    session: Session, is_async: bool, degrade: bool
+) -> None:
+    """litellm's call wrapper retries a context-window error with
+    ``context_window_fallback_dict[model]``. Not degraded, the bigger
+    model answers (the parameter works); degraded, the parameter is
+    dropped, so the degraded attempt's error is the call's llm_error."""
+    if degrade:
+        _degraded(session)
+    transport = _ContextWindowTransport()
+    window_fallbacks = {DEGRADE_MODEL: UNCHOSEN_MODEL, PRIMARY_MODEL: UNCHOSEN_MODEL}
+    kwargs: dict[str, Any] = {
+        "model": DEGRADE_MODEL if not degrade else PRIMARY_MODEL,
+        "messages": MSG,
+        "context_window_fallback_dict": window_fallbacks,
+    }
+
+    def _call() -> Any:
+        if is_async:
+            return asyncio.run(litellm.acompletion(client=_async_sdk_client(transport), **kwargs))
+        return litellm.completion(client=_sdk_client(transport), **kwargs)
+
+    if degrade:
+        with pytest.raises(litellm.ContextWindowExceededError):
+            _call()
+        assert transport.models == [DEGRADE_MODEL]
+        assert _post_calls(session) == []
+        assert len(_events_of(session, "llm_error")) == 1
+    else:
+        _call()
+        assert transport.models == [DEGRADE_MODEL, UNCHOSEN_MODEL]
+
+
+def test_degrade_drops_only_the_parameters_a_provider_declares(session: Session) -> None:
+    from flightdeck_sensor.providers.litellm import LitellmProvider
+    from flightdeck_sensor.providers.openai import OpenAIProvider
+
+    _degraded(session)
+    request: dict[str, Any] = {
+        "model": PRIMARY_MODEL,
+        "messages": MSG,
+        "fallbacks": [UNCHOSEN_MODEL],
+        "context_window_fallback_dict": {PRIMARY_MODEL: UNCHOSEN_MODEL},
+    }
+    sent = base._pre_call(session, LitellmProvider(), request, 10)
+    assert sent == {"model": DEGRADE_MODEL, "messages": MSG}
+    assert request["fallbacks"] == [UNCHOSEN_MODEL]  # the caller's dict is not touched
+    assert LitellmResponsesProvider.model_alternative_params == ()
+    sent = base._pre_call(session, OpenAIProvider(), request, 10)
+    assert sent == {**request, "model": DEGRADE_MODEL}
+
+
+@pytest.mark.parametrize("is_async", [False, True], ids=["sync", "async"])
+def test_under_degrade_a_router_fallback_runs_the_degrade_target(
+    session: Session, is_async: bool
+) -> None:
+    """A Router runs each deployment attempt through the patched entry
+    points, as a call of its own, so DEGRADE swaps every attempt: its
+    fallback deployment cannot serve the unchosen model."""
+    router = litellm.Router(
+        model_list=[
+            {
+                "model_name": "primary",
+                "litellm_params": {"model": PRIMARY_MODEL, "mock_response": FAILING_MOCK},
+            },
+            {
+                "model_name": "backup",
+                "litellm_params": {"model": UNCHOSEN_MODEL, "mock_response": "from the backup"},
+            },
+        ],
+        fallbacks=[{"primary": ["backup"]}],
+        num_retries=0,
+    )
+    _degraded(session)
+    if is_async:
+        response = asyncio.run(router.acompletion(model="primary", messages=MSG))
+    else:
+        response = router.completion(model="primary", messages=MSG)
+    assert response.choices[0].message.content == "from the backup"
+    served = [pc["model_served"] for pc in _post_calls(session)]
+    assert served == [DEGRADE_MODEL]
+    assert UNCHOSEN_MODEL not in json.dumps(_post_calls(session))
 
 
 # ----- patch / unpatch / per-callsite wrapper ---------------------------------

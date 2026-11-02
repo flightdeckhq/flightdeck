@@ -39,8 +39,10 @@ call through them (:data:`_REISSUE_MODULES`): ``responses`` on a
 provider without a native Responses API (Anthropic) bridges through
 ``litellm.completion`` / ``acompletion``, ``completion`` on a
 Responses-only model through ``litellm.responses``, and a call with
-``fallbacks`` (or the global ``litellm.model_fallbacks``) runs each
-attempt through ``litellm.acompletion``. ``text_completion`` calls
+``fallbacks`` runs each attempt through ``litellm.acompletion`` (the
+global ``litellm.model_fallbacks`` reaches the same loop, but in litellm
+1.83.0 and 1.104.2 a call with it set never returns, with or without the
+sensor: every attempt re-reads it and opens a new loop). ``text_completion`` calls
 ``completion`` through the name bound in ``litellm.main``, which is not
 patched. So the wrapper of the entry point the caller used is the single
 reporter: one ``pre_call``, one policy check and one ``post_call`` (or
@@ -48,11 +50,19 @@ reporter: one ``pre_call``, one policy check and one ``post_call`` (or
 returns (a ``TextCompletionResponse`` for ``text_completion``, the
 Responses API shape for ``responses`` on every route) and, for a call a
 fallback answered, the model that answered. An attempt that failed
-before a fallback answered is not reported on its own. Any other litellm
-call made while one is in flight is a call of its own and is reported.
+before a fallback answered is not reported on its own, nor are the
+tokens of a non-streamed attempt the provider billed before it failed (a
+client timeout the provider finished anyway, a ``post_call_rules``
+rejection): the loop swallows the exception and moves on. A stream that
+fails mid-way is not hidden, since the loop has returned its stream
+object. Under a DEGRADE policy the pre-call check drops the call's
+``fallbacks`` and ``context_window_fallback_dict``
+(``LitellmProvider.model_alternative_params``), so no attempt runs a
+model the policy did not choose. Any other litellm call made while one
+is in flight is a call of its own and is reported.
 
-**Known double counts.** These are reported twice rather than risk
-hiding a billed call:
+**Known double counts.** These are reported more than once rather than
+risk hiding a billed call:
 
 * litellm's MCP gateway (a chat call whose tools name the gateway)
   re-issues the call through ``litellm.acompletion`` from the same
@@ -62,7 +72,9 @@ hiding a billed call:
 * A sync call with ``fallbacks`` made while an event loop is running in
   its thread (a notebook, a sync call inside async code): litellm runs
   the attempts in a worker thread it starts without copying the context,
-  so the mark does not reach them.
+  so the mark does not reach them and every attempt is reported as a
+  call of its own beside the outer call (a failed primary and one
+  fallback: three pre_calls, two post_calls and one llm_error).
 * The re-issue check reads the module of the frame that called the
   patched entry point. An instrumentation library that replaces
   ``litellm.completion`` (or another entry point) after
@@ -246,9 +258,10 @@ def _named_arguments(
 # a provider without a native Responses API bridges through
 # ``litellm.completion`` / ``acompletion``, ``completion`` on a
 # Responses-only model through ``litellm.responses`` / ``aresponses``)
-# and the fallback loop (a call with ``fallbacks``, or with the global
-# ``litellm.model_fallbacks`` set, runs every attempt -- the caller's
-# model first -- through ``litellm.acompletion``). A call such a module
+# and the fallback loop (a call with ``fallbacks`` runs every attempt --
+# the caller's model first -- through ``litellm.acompletion``; the global
+# ``litellm.model_fallbacks`` reaches it too, but such a call never
+# returns in litellm 1.83.0 and 1.104.2). A call such a module
 # makes while the outer litellm call is in flight is that same call,
 # which the outer wrapper reports, so it passes through: once, with the
 # response that came back (a fallback's carries the model that answered),

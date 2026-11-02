@@ -15,16 +15,18 @@ const testEndSeq uint64 = 101
 // scriptedSession stands in for the sessions table: settle answers with
 // the scripted (applied, closedNow) pair, or with the next pair of
 // settleSeq when set, and records the sequence it was given; lookup
-// answers with the scripted state. Either can fail.
+// answers with the scripted state. Either can fail. owner reports the
+// row as owned by an agent, so no claim runs, and records each read.
 type scriptedSession struct {
-	applied   bool
-	closedNow bool
-	settleSeq [][2]bool
-	state     sessionLookup
-	settleErr error
-	lookupErr error
-	settled   []uint64
-	lookups   int
+	applied    bool
+	closedNow  bool
+	settleSeq  [][2]bool
+	state      sessionLookup
+	settleErr  error
+	lookupErr  error
+	settled    []uint64
+	lookups    int
+	ownerReads []string
 }
 
 func (s *scriptedSession) settle(_ context.Context, _ string, closedSeq uint64) (bool, bool, error) {
@@ -46,8 +48,13 @@ func (s *scriptedSession) lookup(context.Context, string) (sessionLookup, error)
 	return s.state, nil
 }
 
+func (s *scriptedSession) owner(_ context.Context, sessionID string) (bool, error) {
+	s.ownerReads = append(s.ownerReads, sessionID)
+	return false, nil
+}
+
 func (s *scriptedSession) processor() *SessionProcessor {
-	return &SessionProcessor{lookupSession: s.lookup, settleEnd: s.settle}
+	return &SessionProcessor{lookupSession: s.lookup, settleEnd: s.settle, readOwner: s.owner}
 }
 
 func sessionEndEvent(finalDelivery bool) consumer.EventPayload {
@@ -58,6 +65,55 @@ func sessionEndEvent(finalDelivery bool) consumer.EventPayload {
 		Timestamp:     "2026-10-20T10:51:22Z",
 		StreamSeq:     testEndSeq,
 		FinalDelivery: finalDelivery,
+	}
+}
+
+// A session_end as clients send it carries the agent identity. The end
+// path reads the row's owner once the end has settled on an existing
+// row (to claim a parent stub no agent owns), and never for an end that
+// found no row or failed.
+func TestHandleSessionEnd_ReadsTheOwnerOnlyOnceTheRowExists(t *testing.T) {
+	cases := []struct {
+		name      string
+		session   *scriptedSession
+		final     bool
+		wantErr   error
+		wantReads int
+	}{
+		{"closed by this end", &scriptedSession{applied: true, closedNow: true}, false, nil, 1},
+		{"duplicate on a closed row", &scriptedSession{state: sessionLookupClosed}, false, nil, 1},
+		{"row opened by a later start", &scriptedSession{state: sessionLookupOpen}, false, nil, 1},
+		{"missing row, redelivery", &scriptedSession{state: sessionLookupMissing}, false, consumer.ErrRetryLater, 0},
+		{"missing row, final delivery", &scriptedSession{state: sessionLookupMissing}, true, ErrEventDropped, 0},
+		{"settle error", &scriptedSession{settleErr: errors.New("connection reset")}, false, nil, 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			metrics.Reset()
+			e := sessionEndEvent(tc.final)
+			e.AgentID = "0a1f6f0e-31b7-5e7a-9e1c-2b6d6c3c9d10"
+			e.AgentType = "coding"
+			e.ClientType = "claude_code"
+			e.AgentName = "omria@Omri-PC"
+			e.User = "omria"
+			e.Hostname = "Omri-PC"
+
+			_, err := tc.session.processor().HandleSessionEnd(context.Background(), e)
+			switch {
+			case tc.session.settleErr != nil:
+				if err == nil {
+					t.Fatal("expected the settle error to propagate")
+				}
+			case !errors.Is(err, tc.wantErr):
+				t.Fatalf("err = %v, want %v", err, tc.wantErr)
+			}
+			if len(tc.session.ownerReads) != tc.wantReads {
+				t.Fatalf("owner read %d times, want %d", len(tc.session.ownerReads), tc.wantReads)
+			}
+			if tc.wantReads > 0 && tc.session.ownerReads[0] != e.SessionID {
+				t.Fatalf("owner read for %s, want %s", tc.session.ownerReads[0], e.SessionID)
+			}
+		})
 	}
 }
 

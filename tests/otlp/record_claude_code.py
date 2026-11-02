@@ -24,23 +24,19 @@ A scenario that depends on what the model chooses to do (resuming a
 sub-agent) states what its recording must show, and is not written when
 the run did not do it; run it again.
 
-What reaches a fixture:
+What reaches a fixture (recorder.py does the cleaning):
 - Log records Flightdeck never maps and that describe the recording
   machine (managed settings, bundled plugins, the user's claude.ai
   connector connections) are dropped.
 - Identity attributes (``user.email``, ``user.account_uuid``,
   ``user.account_id``, ``user.id``, ``organization.id``) are replaced by
   fixed placeholders, and machine paths by ``/home/user`` stand-ins.
-- JSON requests stay JSON (OTLP's JSON writes trace and span ids as hex,
-  which a protobuf round trip would turn into base64); protobuf requests
-  are decoded, cleaned and re-encoded, and stored uncompressed, with the
-  encoding they were sent in recorded in the manifest.
+- JSON requests stay JSON; protobuf requests are stored uncompressed,
+  with the encoding they were sent in recorded in the manifest.
 """
 
 from __future__ import annotations
 
-import gzip
-import http.server
 import json
 import os
 import re
@@ -48,25 +44,16 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import threading
-import time
 from pathlib import Path
 from typing import Any
 
-from opentelemetry.proto.collector.logs.v1.logs_service_pb2 import (
-    ExportLogsServiceRequest,
-)
-from opentelemetry.proto.collector.metrics.v1.metrics_service_pb2 import (
-    ExportMetricsServiceRequest,
-)
-from opentelemetry.proto.collector.trace.v1.trace_service_pb2 import (
-    ExportTraceServiceRequest,
-)
+# The checker owns the placeholders, so what the recorder writes and what
+# the test accepts cannot drift apart; both modules sit next to this one.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from fixture_checks import DROPPED_EVENTS  # noqa: E402
+from recorder import REPO, Recorder, json_value, scrubber, write_scenario  # noqa: E402
 
-REPO = Path(__file__).resolve().parents[2]
 FIXTURES = REPO / "tests" / "fixtures" / "otlp"
-FAKE_HOME = "/home/user"
-FAKE_PROJECT = "/home/user/project"
 MODEL = "claude-haiku-4-5"
 # A scenario is a few model turns; this bounds a stuck one.
 SCENARIO_TIMEOUT_SECS = 240
@@ -74,21 +61,6 @@ SCENARIO_TIMEOUT_SECS = 240
 # a recording is complete once no request has arrived for this long.
 QUIET_SECS = 4.0
 QUIET_DEADLINE_SECS = 30.0
-
-# The checker owns the placeholders, so what the recorder writes and what
-# the test accepts cannot drift apart.
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-from fixture_checks import (
-    DROPPED_EVENTS,
-    PLACEHOLDERS,
-    directory_problems,
-)
-
-SIGNALS = {
-    "/v1/logs": ("logs", ExportLogsServiceRequest),
-    "/v1/traces": ("traces", ExportTraceServiceRequest),
-    "/v1/metrics": ("metrics", ExportMetricsServiceRequest),
-}
 
 BASE_ENV = {
     "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
@@ -132,7 +104,7 @@ def _log_records(docs: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """The attributes of every log record of a scenario's JSON log
     requests, in the order Claude Code emitted them (event.sequence)."""
     records = [
-        {a["key"]: _json_value(a.get("value")) for a in rec.get("attributes", [])}
+        {a["key"]: json_value(a.get("value")) for a in rec.get("attributes", [])}
         for doc in docs
         for rl in doc.get("resourceLogs", [])
         for sl in rl.get("scopeLogs", [])
@@ -259,67 +231,6 @@ SCENARIOS: list[dict[str, Any]] = [
 ]
 
 
-class Recorder(http.server.ThreadingHTTPServer):
-    """An OTLP/HTTP endpoint that keeps every request it receives."""
-
-    def __init__(self) -> None:
-        super().__init__(("127.0.0.1", 0), _Handler)
-        self.requests: list[dict[str, Any]] = []
-        self.lock = threading.Lock()
-        self.last = time.monotonic()
-
-
-class _Handler(http.server.BaseHTTPRequestHandler):
-    server: Recorder
-
-    def do_POST(self) -> None:
-        body = self.rfile.read(int(self.headers.get("content-length") or 0))
-        encoding = (self.headers.get("content-encoding") or "").lower()
-        if encoding == "gzip":
-            body = gzip.decompress(body)
-        with self.server.lock:
-            self.server.requests.append(
-                {
-                    "path": self.path,
-                    "content_type": (self.headers.get("content-type") or "").split(";")[
-                        0
-                    ],
-                    "content_encoding": encoding or None,
-                    "body": body,
-                }
-            )
-            self.server.last = time.monotonic()
-        self.send_response(200)
-        self.send_header(
-            "Content-Type", self.headers.get("content-type") or "application/json"
-        )
-        self.end_headers()
-        self.wfile.write(
-            b"{}" if "json" in (self.headers.get("content-type") or "") else b""
-        )
-
-    def log_message(self, *args: Any) -> None:
-        pass
-
-
-def _scrub_text(text: str, work: Path) -> str:
-    pairs = sorted(
-        [
-            (re.sub(r"[^A-Za-z0-9]", "-", str(work)), "-home-user-project"),
-            (re.sub(r"[^A-Za-z0-9]", "-", str(Path.home())), "-home-user"),
-            (str(work), FAKE_PROJECT),
-            (str(REPO), f"{FAKE_HOME}/flightdeck"),
-            (str(Path.home()), FAKE_HOME),
-            (sys.executable, "/usr/bin/python3"),
-            (PYTHON, "/usr/bin/python3"),
-        ],
-        key=lambda p: -len(p[0]),
-    )
-    for old, new in pairs:
-        text = text.replace(old, new)
-    return text
-
-
 def _dropped(name: Any, attrs: dict[str, Any]) -> bool:
     """A log record that describes the recording machine and maps to
     nothing: managed settings, bundled plugins, claude.ai connectors."""
@@ -329,125 +240,6 @@ def _dropped(name: Any, attrs: dict[str, Any]) -> bool:
         name == "claude_code.mcp_server_connection"
         and attrs.get("server_scope") == "claudeai"
     )
-
-
-# -- JSON requests -----------------------------------------------------------
-
-
-def _json_value(v: Any) -> Any:
-    return next(iter(v.values())) if isinstance(v, dict) and v else None
-
-
-def _clean_json_tree(node: Any, work: Path) -> Any:
-    """Every identity KeyValue to its placeholder and every string
-    scrubbed, at any depth (attributes of records, resources, scopes,
-    span events and links, exemplars, kvlist and array values)."""
-    if isinstance(node, dict):
-        key = node.get("key")
-        if (
-            isinstance(key, str)
-            and key in PLACEHOLDERS
-            and isinstance(node.get("value"), dict)
-        ):
-            return {**node, "value": {"stringValue": PLACEHOLDERS[key]}}
-        return {k: _clean_json_tree(v, work) for k, v in node.items()}
-    if isinstance(node, list):
-        return [_clean_json_tree(v, work) for v in node]
-    if isinstance(node, str):
-        return _scrub_text(node, work)
-    return node
-
-
-def _clean_json(signal: str, doc: dict[str, Any], work: Path) -> dict[str, Any]:
-    top, scopes, items = {
-        "logs": ("resourceLogs", "scopeLogs", "logRecords"),
-        "traces": ("resourceSpans", "scopeSpans", "spans"),
-        "metrics": ("resourceMetrics", "scopeMetrics", "metrics"),
-    }[signal]
-    for res in doc.get(top, []):
-        for scope in res.get(scopes, []):
-            if signal == "logs":
-                scope[items] = [
-                    r
-                    for r in scope.get(items, [])
-                    if not _dropped(
-                        _json_value(r.get("body")),
-                        {
-                            a["key"]: _json_value(a.get("value"))
-                            for a in r.get("attributes", [])
-                        },
-                    )
-                ]
-        res[scopes] = [s for s in res.get(scopes, []) if s.get(items)]
-    doc[top] = [r for r in doc.get(top, []) if r.get(scopes)]
-    cleaned: dict[str, Any] = _clean_json_tree(doc, work)
-    return cleaned
-
-
-# -- protobuf requests -------------------------------------------------------
-
-
-def _clean_pb_tree(msg: Any, work: Path) -> None:
-    """Every identity KeyValue to its placeholder and every string field
-    and string AnyValue scrubbed, at any depth."""
-    from google.protobuf.descriptor import FieldDescriptor
-
-    if (
-        msg.DESCRIPTOR.full_name == "opentelemetry.proto.common.v1.KeyValue"
-        and msg.key in PLACEHOLDERS
-    ):
-        msg.value.Clear()
-        msg.value.string_value = PLACEHOLDERS[msg.key]
-        return
-    for field, value in msg.ListFields():
-        repeated = field.label == FieldDescriptor.LABEL_REPEATED
-        if field.type == FieldDescriptor.TYPE_STRING:
-            if repeated:
-                for i, item in enumerate(value):
-                    value[i] = _scrub_text(item, work)
-            else:
-                setattr(msg, field.name, _scrub_text(value, work))
-        elif field.type == FieldDescriptor.TYPE_MESSAGE:
-            for item in value if repeated else [value]:
-                _clean_pb_tree(item, work)
-
-
-def _clean_pb(signal: str, msg: Any, work: Path) -> Any:
-    top, scopes, items = {
-        "logs": ("resource_logs", "scope_logs", "log_records"),
-        "traces": ("resource_spans", "scope_spans", "spans"),
-        "metrics": ("resource_metrics", "scope_metrics", "metrics"),
-    }[signal]
-    for res in getattr(msg, top):
-        for scope in getattr(res, scopes):
-            if signal == "logs":
-                kept = [
-                    r
-                    for r in scope.log_records
-                    if not _dropped(
-                        r.body.string_value,
-                        {a.key: a.value.string_value for a in r.attributes},
-                    )
-                ]
-                del scope.log_records[:]
-                scope.log_records.extend(kept)
-        kept_scopes = [s for s in getattr(res, scopes) if len(getattr(s, items))]
-        del getattr(res, scopes)[:]
-        getattr(res, scopes).extend(kept_scopes)
-    kept_res = [r for r in getattr(msg, top) if len(getattr(r, scopes))]
-    del getattr(msg, top)[:]
-    getattr(msg, top).extend(kept_res)
-    _clean_pb_tree(msg, work)
-    return msg
-
-
-def _wait_quiet(rec: Recorder) -> None:
-    deadline = time.monotonic() + QUIET_DEADLINE_SECS
-    while time.monotonic() < deadline:
-        with rec.lock:
-            if time.monotonic() - rec.last >= QUIET_SECS:
-                return
-        time.sleep(0.2)
 
 
 def _claude_version() -> str:
@@ -462,8 +254,7 @@ def _claude_version() -> str:
 
 def _record(scenario: dict[str, Any], out_dir: Path) -> int:
     rec = Recorder()
-    thread = threading.Thread(target=rec.serve_forever, daemon=True)
-    thread.start()
+    rec.start()
     work = Path(tempfile.mkdtemp(prefix="fd-otlp-record-"))
     try:
         # Nothing of a Claude Code session the recorder runs inside (its
@@ -478,7 +269,7 @@ def _record(scenario: dict[str, Any], out_dir: Path) -> int:
         }
         env.update(BASE_ENV)
         env.update(scenario["env"])
-        env["OTEL_EXPORTER_OTLP_ENDPOINT"] = f"http://127.0.0.1:{rec.server_address[1]}"
+        env["OTEL_EXPORTER_OTLP_ENDPOINT"] = rec.endpoint
         cmd = [
             "claude",
             "-p",
@@ -503,47 +294,14 @@ def _record(scenario: dict[str, Any], out_dir: Path) -> int:
             raise SystemExit(
                 f"scenario {scenario['name']} failed ({run.returncode}): {run.stderr or run.stdout}"
             )
-        _wait_quiet(rec)
-        out_dir.mkdir(parents=True)
-        manifest = {
-            "scenario": scenario["name"],
-            "about": scenario["about"],
-            "requests": [],
-        }
-        log_docs: list[dict[str, Any]] = []
-        for req in rec.requests:
-            signal, proto = SIGNALS[req["path"]]
-            if req["content_type"] == "application/json":
-                doc = _clean_json(signal, json.loads(req["body"]), work)
-                if not any(doc.values()):
-                    continue  # every record described the machine
-                if signal == "logs":
-                    log_docs.append(doc)
-                name = f"{len(manifest['requests']) + 1:03d}-{signal}.json"
-                (out_dir / name).write_text(json.dumps(doc, indent=1) + "\n")
-            else:
-                msg = proto()
-                msg.ParseFromString(req["body"])
-                _clean_pb(signal, msg, work)
-                if not msg.ByteSize():
-                    continue  # every record described the machine
-                name = f"{len(manifest['requests']) + 1:03d}-{signal}.pb"
-                (out_dir / name).write_bytes(msg.SerializeToString())
-            manifest["requests"].append(
-                {
-                    "file": name,
-                    "path": req["path"],
-                    "content_type": req["content_type"],
-                    "sent_encoding": req["content_encoding"],
-                }
-            )
-        (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=1) + "\n")
-        leaks = directory_problems(out_dir)
-        if leaks:
-            shutil.rmtree(out_dir)
-            raise SystemExit(
-                f"scenario {scenario['name']} not written; its output fails the fixture checks: {leaks}"
-            )
+        rec.wait_quiet(QUIET_SECS, QUIET_DEADLINE_SECS)
+        log_docs = write_scenario(
+            rec.requests,
+            out_dir,
+            {"scenario": scenario["name"], "about": scenario["about"]},
+            scrubber(work, PYTHON),
+            _dropped,
+        )
         missing = (
             scenario["expect"](_log_records(log_docs)) if "expect" in scenario else ""
         )
@@ -552,6 +310,7 @@ def _record(scenario: dict[str, Any], out_dir: Path) -> int:
             raise SystemExit(
                 f"scenario {scenario['name']} not written: {missing}; the model did not do what the scenario needs, run it again"
             )
+        manifest = json.loads((out_dir / "manifest.json").read_text())
         return len(manifest["requests"])
     finally:
         rec.shutdown()

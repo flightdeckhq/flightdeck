@@ -1,0 +1,50 @@
+{
+ "scenario": "tool-no-content-protobuf",
+ "about": "the same run with content capture off",
+ "framework": "google-adk",
+ "instrumentation": "built in (maybe_set_otel_providers, telemetry schema 2)",
+ "model": "openai gpt-4o-mini through LiteLLM",
+ "protocol": "http/protobuf",
+ "env": {
+  "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "false",
+  "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS": "false"
+ },
+ "runner_args": [
+  "tool"
+ ],
+ "outcome": "completed",
+ "versions": {
+  "google-adk": "2.13.0",
+  "litellm": "1.106.6",
+  "openai": "2.54.0",
+  "opentelemetry-sdk": "1.44.0",
+  "opentelemetry-semantic-conventions": "0.65b0",
+  "opentelemetry-exporter-otlp-proto-http": "1.44.0"
+ },
+ "requests": [
+  {
+   "file": "001-traces.pb",
+   "path": "/v1/traces",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  },
+  {
+   "file": "002-logs.pb",
+   "path": "/v1/logs",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  },
+  {
+   "file": "003-metrics.pb",
+   "path": "/v1/metrics",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  },
+  {
+   "file": "004-metrics.pb",
+   "path": "/v1/metrics",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  }
+ ]
+}

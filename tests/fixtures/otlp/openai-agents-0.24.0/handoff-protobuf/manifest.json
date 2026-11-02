@@ -1,0 +1,48 @@
+{
+ "scenario": "handoff-protobuf",
+ "about": "a triage agent that hands off to the weather agent, which calls get_weather",
+ "framework": "openai-agents",
+ "instrumentation": "opentelemetry-instrumentation-openai-agents-v2 (OpenTelemetry contrib)",
+ "model": "openai gpt-4o-mini",
+ "protocol": "http/protobuf",
+ "env": {
+  "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "true"
+ },
+ "runner_args": [
+  "handoff"
+ ],
+ "outcome": "completed",
+ "versions": {
+  "pydantic-ai-slim": "2.64.0",
+  "strands-agents": "1.63.0",
+  "openai-agents": "0.24.0",
+  "opentelemetry-instrumentation-openai-agents-v2": "0.1.0",
+  "openai": "3.42.1",
+  "anthropic": "2.3.0",
+  "opentelemetry-sdk": "1.45.2",
+  "opentelemetry-semantic-conventions": "0.66b2",
+  "opentelemetry-util-genai": "1.3b0",
+  "opentelemetry-exporter-otlp-proto-http": "1.45.2",
+  "opentelemetry-exporter-otlp-json-http": "0.66b2"
+ },
+ "requests": [
+  {
+   "file": "001-traces.pb",
+   "path": "/v1/traces",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  },
+  {
+   "file": "002-metrics.pb",
+   "path": "/v1/metrics",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  },
+  {
+   "file": "003-metrics.pb",
+   "path": "/v1/metrics",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  }
+ ]
+}

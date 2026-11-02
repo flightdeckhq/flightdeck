@@ -1,17 +1,20 @@
-"""Checks that a recorded OTLP fixture holds nothing of the recording machine.
+"""Checks that a recorded OTLP fixture holds nothing of the recording machine
+or of the accounts and keys it ran with.
 
-Shared by the recorder (tests/otlp/record_claude_code.py), which refuses
-to write a scenario that fails them, and by
-tests/integration/test_otlp_fixtures.py. Dependency-free: protobuf files
-are read with a minimal wire-format walker, so the checks run where
-opentelemetry-proto is not installed.
+Shared by the recorders (tests/otlp/recorder.py, used by
+record_claude_code.py and record_genai.py), which refuse to write a
+scenario that fails them, and by tests/integration/test_otlp_fixtures.py.
+Dependency-free: protobuf files are read with a minimal wire-format
+walker, so the checks run where opentelemetry-proto is not installed.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -26,11 +29,42 @@ PLACEHOLDERS = {
     "os.version": "6.6.0",
     "wsl.version": "2",
     "host.name": "host",
+    # The account a provider SDK records on its own spans (the Anthropic
+    # Python SDK's anthropic.messages.create).
+    "anthropic.organization.id": "00000000-0000-4000-8000-000000000003",
+    "anthropic.workspace.id": "wrkspc_000000000000000000000001",
 }
 DROPPED_EVENTS = {"claude_code.managed_settings_resolved", "claude_code.plugin_loaded"}
 EMAIL = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
+# Credentials and account ids, by their published shapes: an Anthropic or
+# OpenAI API key (sk-...), a Google API key, an OpenAI organization or
+# project id, an AWS access key id, a Google OAuth access token, a GitHub
+# token, a Flightdeck token.
+CREDENTIAL = re.compile(
+    r"\b(?:sk-[A-Za-z0-9_-]{20,}"
+    r"|AIza[0-9A-Za-z_-]{30,}"
+    r"|org-[A-Za-z0-9]{20,}"
+    r"|proj_[A-Za-z0-9]{20,}"
+    r"|(?:AKIA|ASIA)[0-9A-Z]{16}"
+    r"|ya29\.[0-9A-Za-z_-]{20,}"
+    r"|gh[pousr]_[A-Za-z0-9]{30,}"
+    r"|github_pat_[A-Za-z0-9_]{20,}"
+    r"|ftd_\w{16,})"
+)
 HOME = re.compile(r"/home/([^/\s\"']+)")
-FORBIDDEN = ("/mnt/", "C:\\", "/Users/")
+# A home directory in the dashed form Claude Code names a project
+# directory by (/home/alice/repo -> -home-alice-repo), as a path component.
+DASHED_HOME = re.compile(r"(?:^|/)-(?:home|Users|mnt-[a-z]-Users)-([^-/\s\"']+)")
+# A home directory written ~name/.
+TILDE_HOME = re.compile(r"(?<![\w~])~([A-Za-z][A-Za-z0-9._-]*)/")
+# Paths that only a real machine has: WSL drives, Windows and macOS home
+# directories, root's home, macOS per-user temporary directories.
+FORBIDDEN = ("/mnt/", "C:\\", "/Users/", "/root/", "/var/folders/")
+# Control characters a string value may hold and still be text.
+_TEXT_CONTROLS = ("\n", "\r", "\t")
+# What the protobuf walker reports as the value of a KeyValue whose value
+# is not a string, so a placeholder key holding a number is still caught.
+NOT_A_STRING = "<not a string>"
 
 
 # -- protobuf wire format ------------------------------------------------------
@@ -89,24 +123,30 @@ def _as_text(buf: bytes) -> str | None:
         text = buf.decode("utf-8")
     except UnicodeDecodeError:
         return None
-    return text if text.isprintable() or "\n" in text else None
+    if text.isprintable() or any(c in text for c in _TEXT_CONTROLS):
+        return text
+    return None
 
 
 def _pb_walk(buf: bytes) -> Iterator[tuple[str, Any]]:
-    """("text", s) for every string-looking value and ("kv", (key, value))
-    for every OTLP KeyValue whose value is a string AnyValue."""
+    """("text", s) for every string-looking value (bytes values included)
+    and ("kv", (key, value)) for every OTLP KeyValue: its string value, or
+    NOT_A_STRING for any other value."""
     fields = _as_message(buf)
     if fields is None:
         return
     # KeyValue: field 1 = key (string), field 2 = AnyValue whose field 1
-    # is string_value.
+    # is string_value (an empty AnyValue is an empty field 2).
     if len(fields) == 2 and fields[0][:2] == (1, 2) and fields[1][:2] == (2, 2):
         key = _as_text(fields[0][2])
-        inner = _as_message(fields[1][2])
-        if key is not None and inner and inner[0][:2] == (1, 2):
-            value = _as_text(inner[0][2])
-            if value is not None:
-                yield "kv", (key, value)
+        inner = _as_message(fields[1][2]) or []
+        if key is not None:
+            value = (
+                _as_text(inner[0][2])
+                if len(inner) == 1 and inner[0][:2] == (1, 2)
+                else None
+            )
+            yield "kv", (key, NOT_A_STRING if value is None else value)
     for _, wire, value in fields:
         if wire != 2:
             continue
@@ -125,6 +165,16 @@ def _json_walk(doc: Any) -> Iterator[tuple[str, Any]]:
             value = next(iter(doc["value"].values()), None) if doc["value"] else None
             if isinstance(value, str):
                 yield "kv", (doc["key"], value)
+        if isinstance(doc.get("bytesValue"), str):
+            # OTLP JSON writes a bytes AnyValue as base64; what it encodes
+            # is checked like any other string.
+            try:
+                raw = base64.b64decode(doc["bytesValue"], validate=True)
+            except (binascii.Error, ValueError):
+                raw = b""
+            text = _as_text(raw) if raw else None
+            if text is not None:
+                yield "text", text
         for v in doc.values():
             yield from _json_walk(v)
     elif isinstance(doc, list):
@@ -134,8 +184,19 @@ def _json_walk(doc: Any) -> Iterator[tuple[str, Any]]:
         yield "text", doc
 
 
-def problems(path: Path) -> list[str]:
-    """What in one fixture file would leak the recording machine."""
+def _whole_word(value: str) -> re.Pattern[str]:
+    return re.compile(
+        r"(?<![A-Za-z0-9])" + re.escape(value) + r"(?![A-Za-z0-9])", re.IGNORECASE
+    )
+
+
+def problems(path: Path, machine: Mapping[str, str] | None = None) -> list[str]:
+    """What in one fixture file would leak the recording machine.
+
+    ``machine`` maps a description to a value that names the machine doing
+    the recording (its host name, the user running the recorder); the
+    recorder passes it, so a value no pattern can recognise is still
+    caught. It is matched as a whole word, ignoring case."""
     out: list[str] = []
     data = path.read_bytes()
     if path.suffix == ".pb":
@@ -144,6 +205,7 @@ def problems(path: Path) -> list[str]:
         items = list(_pb_walk(data))
     else:
         items = list(_json_walk(json.loads(data)))
+    named = [(label, _whole_word(v)) for label, v in (machine or {}).items() if v]
     for kind, item in items:
         if kind == "kv":
             key, value = item
@@ -160,16 +222,27 @@ def problems(path: Path) -> list[str]:
         for email in EMAIL.findall(text):
             if email != PLACEHOLDERS["user.email"]:
                 out.append(f"{path.name}: email address {email!r}")
+        if CREDENTIAL.search(text):
+            # The match itself is not repeated: it may be a live key.
+            out.append(f"{path.name}: a provider API key, token or account id")
         for user in HOME.findall(text):
             if user != "user":
                 out.append(f"{path.name}: home directory /home/{user}")
+        for user in DASHED_HOME.findall(text) + TILDE_HOME.findall(text):
+            if user != "user":
+                out.append(f"{path.name}: home directory of {user!r}")
         for needle in FORBIDDEN:
             if needle in text:
                 out.append(f"{path.name}: machine path {needle!r}")
+        for label, pattern in named:
+            if pattern.search(text):
+                out.append(f"{path.name}: {label}")
     return sorted(set(out))
 
 
-def directory_problems(scenario: Path) -> list[str]:
+def directory_problems(
+    scenario: Path, machine: Mapping[str, str] | None = None
+) -> list[str]:
     """problems() for every file of a scenario, and that the manifest
     lists exactly the request files present."""
     out: list[str] = []
@@ -181,5 +254,5 @@ def directory_problems(scenario: Path) -> list[str]:
             f"{scenario.name}: manifest lists {sorted(listed ^ present)} differently from the files"
         )
     for name in sorted(present):
-        out.extend(problems(scenario / name))
+        out.extend(problems(scenario / name, machine))
     return out

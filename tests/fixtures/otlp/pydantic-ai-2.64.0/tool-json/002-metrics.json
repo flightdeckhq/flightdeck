@@ -1,0 +1,327 @@
+{
+ "resourceMetrics": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "telemetry.sdk.language",
+      "value": {
+       "stringValue": "python"
+      }
+     },
+     {
+      "key": "telemetry.sdk.name",
+      "value": {
+       "stringValue": "opentelemetry"
+      }
+     },
+     {
+      "key": "telemetry.sdk.version",
+      "value": {
+       "stringValue": "1.45.2"
+      }
+     },
+     {
+      "key": "service.instance.id",
+      "value": {
+       "stringValue": "bfd902d3-96a1-4fd0-abb8-b6792b9b0e3f"
+      }
+     },
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "unknown_service:python"
+      }
+     }
+    ]
+   },
+   "scopeMetrics": [
+    {
+     "scope": {
+      "name": "pydantic-ai",
+      "version": "2.64.0"
+     },
+     "metrics": [
+      {
+       "name": "gen_ai.client.token.usage",
+       "description": "Measures number of input and output tokens used",
+       "unit": "{token}",
+       "histogram": {
+        "dataPoints": [
+         {
+          "attributes": [
+           {
+            "key": "gen_ai.operation.name",
+            "value": {
+             "stringValue": "chat"
+            }
+           },
+           {
+            "key": "gen_ai.provider.name",
+            "value": {
+             "stringValue": "anthropic"
+            }
+           },
+           {
+            "key": "gen_ai.system",
+            "value": {
+             "stringValue": "anthropic"
+            }
+           },
+           {
+            "key": "gen_ai.request.model",
+            "value": {
+             "stringValue": "claude-haiku-4-5"
+            }
+           },
+           {
+            "key": "gen_ai.response.model",
+            "value": {
+             "stringValue": "claude-haiku-4-5-20251001"
+            }
+           },
+           {
+            "key": "gen_ai.token.type",
+            "value": {
+             "stringValue": "input"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793635550766585471",
+          "timeUnixNano": "1793635551448431292",
+          "count": "2",
+          "sum": 1390,
+          "bucketCounts": [
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "2",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           1,
+           4,
+           16,
+           64,
+           256,
+           1024,
+           4096,
+           16384,
+           65536,
+           262144,
+           1048576,
+           4194304,
+           16777216,
+           67108864
+          ],
+          "exemplars": [
+           {
+            "timeUnixNano": "1793635551439983743",
+            "spanId": "a6f808f769fddaca",
+            "traceId": "fd427e5d88a650d9988095afa0c28c1d",
+            "asInt": "732"
+           }
+          ],
+          "min": 658,
+          "max": 732
+         },
+         {
+          "attributes": [
+           {
+            "key": "gen_ai.operation.name",
+            "value": {
+             "stringValue": "chat"
+            }
+           },
+           {
+            "key": "gen_ai.provider.name",
+            "value": {
+             "stringValue": "anthropic"
+            }
+           },
+           {
+            "key": "gen_ai.system",
+            "value": {
+             "stringValue": "anthropic"
+            }
+           },
+           {
+            "key": "gen_ai.request.model",
+            "value": {
+             "stringValue": "claude-haiku-4-5"
+            }
+           },
+           {
+            "key": "gen_ai.response.model",
+            "value": {
+             "stringValue": "claude-haiku-4-5-20251001"
+            }
+           },
+           {
+            "key": "gen_ai.token.type",
+            "value": {
+             "stringValue": "output"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793635550766630983",
+          "timeUnixNano": "1793635551448431292",
+          "count": "2",
+          "sum": 72,
+          "bucketCounts": [
+           "0",
+           "0",
+           "0",
+           "2",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           1,
+           4,
+           16,
+           64,
+           256,
+           1024,
+           4096,
+           16384,
+           65536,
+           262144,
+           1048576,
+           4194304,
+           16777216,
+           67108864
+          ],
+          "exemplars": [
+           {
+            "timeUnixNano": "1793635551440030181",
+            "spanId": "a6f808f769fddaca",
+            "traceId": "fd427e5d88a650d9988095afa0c28c1d",
+            "asInt": "18"
+           }
+          ],
+          "min": 18,
+          "max": 54
+         }
+        ],
+        "aggregationTemporality": 2
+       }
+      },
+      {
+       "name": "operation.cost",
+       "description": "Monetary cost",
+       "unit": "{USD}",
+       "histogram": {
+        "dataPoints": [
+         {
+          "attributes": [
+           {
+            "key": "gen_ai.operation.name",
+            "value": {
+             "stringValue": "chat"
+            }
+           },
+           {
+            "key": "gen_ai.provider.name",
+            "value": {
+             "stringValue": "anthropic"
+            }
+           },
+           {
+            "key": "gen_ai.system",
+            "value": {
+             "stringValue": "anthropic"
+            }
+           },
+           {
+            "key": "gen_ai.request.model",
+            "value": {
+             "stringValue": "claude-haiku-4-5"
+            }
+           },
+           {
+            "key": "gen_ai.response.model",
+            "value": {
+             "stringValue": "claude-haiku-4-5-20251001"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793635550766671065",
+          "timeUnixNano": "1793635551448431292",
+          "count": "2",
+          "sum": 0.00175,
+          "bucketCounts": [
+           "0",
+           "2",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           0.0,
+           5.0,
+           10.0,
+           25.0,
+           50.0,
+           75.0,
+           100.0,
+           250.0,
+           500.0,
+           750.0,
+           1000.0,
+           2500.0,
+           5000.0,
+           7500.0,
+           10000.0
+          ],
+          "exemplars": [
+           {
+            "timeUnixNano": "1793635551440052771",
+            "spanId": "a6f808f769fddaca",
+            "traceId": "fd427e5d88a650d9988095afa0c28c1d",
+            "asDouble": 0.000822
+           }
+          ],
+          "min": 0.000822,
+          "max": 0.000928
+         }
+        ],
+        "aggregationTemporality": 2
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

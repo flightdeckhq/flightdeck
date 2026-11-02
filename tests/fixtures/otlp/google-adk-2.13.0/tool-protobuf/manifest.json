@@ -1,0 +1,55 @@
+{
+ "scenario": "tool-protobuf",
+ "about": "one agent run with a get_weather tool call; content on (=true)",
+ "framework": "google-adk",
+ "instrumentation": "built in (maybe_set_otel_providers, telemetry schema 2)",
+ "model": "openai gpt-4o-mini through LiteLLM",
+ "protocol": "http/protobuf",
+ "env": {
+  "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "true"
+ },
+ "runner_args": [
+  "tool"
+ ],
+ "outcome": "completed",
+ "versions": {
+  "google-adk": "2.13.0",
+  "litellm": "1.106.6",
+  "openai": "2.54.0",
+  "opentelemetry-sdk": "1.44.0",
+  "opentelemetry-semantic-conventions": "0.65b0",
+  "opentelemetry-exporter-otlp-proto-http": "1.44.0"
+ },
+ "requests": [
+  {
+   "file": "001-logs.pb",
+   "path": "/v1/logs",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  },
+  {
+   "file": "002-traces.pb",
+   "path": "/v1/traces",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  },
+  {
+   "file": "003-logs.pb",
+   "path": "/v1/logs",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  },
+  {
+   "file": "004-metrics.pb",
+   "path": "/v1/metrics",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  },
+  {
+   "file": "005-metrics.pb",
+   "path": "/v1/metrics",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  }
+ ]
+}

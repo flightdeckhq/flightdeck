@@ -364,8 +364,7 @@ function buildFlavors(
     byAgent.set(li.agent_id, bucket);
   }
   return agents
-    // Filter out agent rows whose
-    // ``total_sessions`` is zero. These are orphan rows that
+    // Filter out orphan agent rows: agents with no sessions. They
     // accumulate from prior test runs (sessions truncated /
     // pruned / never landed) and from production crashes that
     // upserted an agent record before any session_start landed.
@@ -377,7 +376,14 @@ function buildFlavors(
     // without any session history don't belong in the swimlane
     // surface at all. They're still queryable via the Investigate
     // page or admin tooling; the swimlane just doesn't list them.
-    .filter((a) => a.total_sessions > 0)
+    //
+    // ``total_sessions`` is a counter the worker maintains, so it
+    // is not the only witness: an agent whose ``recent_sessions``
+    // carries a session is kept even when the counter reads 0, and a
+    // counter that drifted can never hide a live agent.
+    .filter(
+      (a) => a.total_sessions > 0 || (a.recent_sessions?.length ?? 0) > 0,
+    )
     .map((a) => {
       // Merge the embedded /v1/fleet rollup with the paginated
       // /v1/sessions slice. The embedded shape carries this agent's

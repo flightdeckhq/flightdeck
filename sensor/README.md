@@ -83,6 +83,23 @@ logs, and an INFO line on the first response where the backend
 confirms attachment. See ARCHITECTURE.md ("Session attachment flow")
 for the full protocol.
 
+## Shutdown and signals
+
+The session ends, sending `session_end`, when the process exits normally
+(an `atexit` handler), when you call `flightdeck_sensor.teardown()`, or
+on SIGTERM or SIGINT. For a signal, the sensor's handler does not end the
+session on the thread the signal interrupted, which may be holding one of
+the sensor's locks: the event queue's background thread sends the queued
+events and `session_end`, and the handler waits up to 2 seconds for it.
+It then passes the signal on to the handler it replaced, so the process
+ends as it would have without the sensor: SIGTERM with no handler of your
+own ends the process, SIGINT raises `KeyboardInterrupt`, and your own
+handler is called. If `session_end` is not out yet and the signal's
+action is to end the process, the sensor lets the interrupted code go on
+and delivers the signal again once `session_end` is sent. A second signal
+is passed on at once and forces the exit. A signal your application
+ignores stays ignored, and the session carries on.
+
 ## Framework support
 
 `flightdeck_sensor.patch()` installs seven interceptors process-wide:
@@ -92,6 +109,17 @@ interceptor. Every LLM call that flows through a patched entry point
 emits a `pre_call` / `post_call` event pair without any
 framework-specific wiring; the other interceptors emit their own event
 types, described in the table.
+
+`patch()` never imports an SDK. An SDK your application has already
+imported is patched at once; one it imports later is patched as it is
+imported, before the `import` statement returns, so the order of
+`import openai` and `flightdeck_sensor.patch()` does not matter, and an
+SDK the application never imports is never loaded. `import
+flightdeck_sensor`, `init()` and `patch()` therefore load none of
+anthropic, openai, litellm, mcp, crewai, langgraph or claude-agent-sdk,
+and litellm downloads its price list from GitHub (which it does when it
+is imported) only if your application imports it. `unpatch()` (and
+`teardown()`) stops patching SDKs as they are imported.
 
 | Framework | Interceptor | Entry points |
 | --- | --- | --- |

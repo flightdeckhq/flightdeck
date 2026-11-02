@@ -239,20 +239,24 @@ flightdeck/
 │   │   │   ├── schemas.py      # Pydantic v2 control-plane envelope validation
 │   │   │   ├── agent_id.py     # 5-tuple → deterministic agent_id derivation
 │   │   │   ├── errors.py       # Provider exception or non-success stop reason → structured llm_error taxonomy + payload wrapper
-│   │   │   └── exceptions.py   # BudgetExceededError, DirectiveError, ConfigurationError
+│   │   │   ├── exceptions.py   # BudgetExceededError, DirectiveError, ConfigurationError
+│   │   │   └── import_hook.py  # sys.meta_path finder: runs patch() for an SDK as the application imports it
 │   │   ├── transport/
-│   │   │   ├── client.py       # ControlPlaneClient + EventQueue (drain + directive threads)
+│   │   │   ├── client.py       # ControlPlaneClient + EventQueue (drain + directive threads; the drain thread ends the session for a signal)
+│   │   │   ├── body_limit.py   # Event serialisation within the ingestion body limit
 │   │   │   └── retry.py        # Exponential backoff, unavailability policy enforcement
 │   │   ├── interceptor/
 │   │   │   ├── base.py         # call, call_async, call_stream, call_stream_async, the stream guards + the outer-call mark
 │   │   │   ├── platform.py     # Endpoint attribution: host → platform label, loopback → local billing
+│   │   │   ├── raw_views.py    # Deferred metering of the SDKs' raw and streaming response views
 │   │   │   ├── anthropic.py    # SensorAnthropic + resource-level patch of the SDK's Messages classes
 │   │   │   ├── openai.py       # SensorOpenAI + chat / responses / embeddings descriptors
 │   │   │   ├── litellm.py      # SensorLitellm: module-level completion / embedding patch
 │   │   │   ├── mcp.py          # mcp.client.session.ClientSession patch: every MCP operation, every transport
 │   │   │   ├── mcp_identity.py # MCP server identity: canonical URL form + SHA-256 fingerprint
 │   │   │   ├── crewai.py       # CrewAI Agent.execute_task patch → one child session per agent turn
-│   │   │   └── langgraph.py    # LangGraph StateGraph.add_node patch → one child session per node invocation
+│   │   │   ├── langgraph.py    # LangGraph StateGraph.add_node patch → one child session per node invocation
+│   │   │   └── claude_agent_sdk.py # Claude Agent SDK query() / ClaudeSDKClient patch → one session per run
 │   │   ├── providers/
 │   │   │   ├── protocol.py     # Provider Protocol: token estimation, usage extraction (incl. in-stream usage), call details, endpoint vendor / locality, content extraction
 │   │   │   ├── anthropic.py    # AnthropicProvider: handles system, messages, tools, response
@@ -538,7 +542,8 @@ flightdeck/
 The sensor is a Python library that runs in-process inside the agent. `init`
 resolves configuration; `patch` installs sensor methods on the Anthropic
 SDK's `Messages` resource classes and sensor descriptors on the OpenAI
-client classes; every LLM call passes through the sensor synchronously.
+client classes, on each SDK as the application imports it (see "When
+patching happens"); every LLM call passes through the sensor synchronously.
 The event POST itself is offloaded onto a background queue drain thread
 so it does not sit in the hot path, but the LLM call waits for the
 sensor's response-envelope parsing before returning control to
@@ -563,7 +568,9 @@ Two background daemon threads run: `flightdeck-event-queue` drains events to
 the control plane, and `flightdeck-directive-queue` processes directives
 received in event responses (kill, custom handlers, model swap, policy
 updates). The queues are decoupled so a slow directive handler cannot block
-event throughput.
+event throughput. The drain thread also ends the session when the process
+receives SIGTERM or SIGINT (see "Shutdown and signals"), so a signal
+handler never does that work on the thread the signal interrupted.
 
 Heartbeats, polling loops, and additional daemon threads do not belong in
 the sensor. Features that require independent background activity belong in
@@ -640,9 +647,11 @@ def patch(
     responses / embeddings cached_property descriptors on OpenAI and
     AsyncOpenAI. Works with frameworks that build their own clients
     internally; isinstance checks and captured class references keep
-    working. Idempotent."""
+    working. Never imports an SDK: one the application has imported is
+    patched at once, one it imports later is patched as it is imported.
+    Idempotent."""
 
-def unpatch -> None:...
+def unpatch -> None:...  # also stops patching SDKs as they are imported
 def get_status -> StatusResponse:...
 def teardown -> None:...
 
@@ -836,8 +845,8 @@ different levels:
   patch below). The patch imports the SDK's private module
   layout; the floor is `anthropic>=0.86`, the lowest release carrying
   it. An installed SDK below the
-  floor is reported once, at import, with a warning rather than
-  silently left unmetered. The raw view returns a response whose body is
+  floor is reported once, when the sensor first patches it, with a
+  warning rather than silently left unmetered. The raw view returns a response whose body is
   already read, and is metered like a plain call. Its `parse()` is
   synchronous on both client kinds up to the 0.x SDKs; from 2.x the async
   client's raw view returns an `AsyncAPIResponse` whose `parse()` is a
@@ -973,6 +982,50 @@ views described above. The practical advice is the same for both: call
 `init` + `patch` at the top of the entrypoint, before any framework or
 user code constructs a client.
 
+### When patching happens
+
+`patch` never imports an SDK. It patches at once each SDK the
+application has already imported, and the rest as the application
+imports them: `core/import_hook.py` puts a finder at the front of
+`sys.meta_path` that, for the seven modules `patch` covers (`anthropic`,
+`openai`, `litellm`, `mcp`, `crewai`, `langgraph.graph`,
+`claude_agent_sdk`), finds the module's spec through the finders after it
+and wraps its loader. The wrapper puts the module's own loader back on
+`__loader__` and `__spec__.loader`, executes the module with it, then
+patches the SDK, in the importing thread, before the `import` statement
+returns. Every other import passes the finder after one dictionary
+lookup. So an application loads only the SDKs it uses: `import
+flightdeck_sensor`, `init` and `patch` import none of them, and litellm's
+download of its price list from GitHub, which runs when litellm is
+imported, happens only when the application imports litellm. An SDK's
+interceptor module imports the SDK, so it is loaded only once the SDK is;
+`wrap` looks for a client's SDK classes only when that SDK is imported (a
+client cannot exist before), and the interceptor names `flightdeck_sensor`
+re-exports (`SensorLitellm`, the `patch_*` / `unpatch_*` functions)
+resolve on first access. LangGraph is watched as `langgraph.graph`, where
+`StateGraph` lives: `langgraph` itself is a namespace package shared with
+LangGraph's other distributions, and a namespace package runs no code to
+hook.
+
+A reload of a patched SDK runs through the finder again and is patched
+again. The litellm patch checks each entry point for its own wrapper
+rather than trusting the module's `_flightdeck_patched` flag, because a
+reload re-runs litellm's module code in the existing namespace, which
+rebinds every entry point and leaves the flag set. An exception while
+patching on import is logged and the import goes on (the SDK is then
+unmetered); a failed import patches nothing. `unpatch` takes the finder
+out of `sys.meta_path` and unpatches only SDKs that are imported.
+
+Every patch and unpatch runs under the sensor's patch lock. A patch on
+import runs inside the import, holding that module's import lock, and
+`patch` can hold the patch lock while it waits for that same import (an
+SDK another thread is still importing when `patch` runs is waited for, so
+it is patched whole; one the calling thread is importing is left to the
+finder), so the import hook never waits for the patch lock: it queues the
+SDK and patches it only if it takes the lock without waiting, and a
+thread holding the lock patches what was queued as it releases it.
+Patching is idempotent, so an SDK queued twice is patched once.
+
 ### Module-level patching: litellm
 
 `SensorLitellm` (in `interceptor/litellm.py`) covers `litellm.completion`,
@@ -980,8 +1033,10 @@ user code constructs a client.
 `litellm.atext_completion`, `litellm.responses`, `litellm.aresponses`,
 `litellm.embedding` and `litellm.aembedding`, streaming included. litellm
 exposes its API as module-level functions, so the SDK class patching
-above does not apply; the interceptor wraps the module functions directly
-with idempotency sentinels on the module object. Each wrapper keeps the
+above does not apply; the interceptor wraps the module functions directly,
+stashing each original on the module object and marking each wrapper, which
+is what makes patching idempotent (see "When patching happens" for why the
+mark rather than a module flag). Each wrapper keeps the
 entry point's signature and takes its arguments as litellm does,
 positional ones included: they are bound to the entry point's parameter
 names (`atext_completion` and `aembedding` take `*args` and forward them
@@ -1414,7 +1469,7 @@ is safe because `_apply_directive` runs on the dedicated directive handler
 thread, not the drain thread; `Queue.join` on the event queue makes
 progress without self-deadlock.
 
-`EventQueue.flush(timeout=5.0)` synchronously drains pending events up to a
+`EventQueue.flush(timeout=3.0)` synchronously drains pending events up to a
 deadline (event queue only). Used by `Session.end` and the shutdown /
 shutdown_flavor branches. The directive queue is intentionally NOT waited
 on: `flush` is typically called from inside `_apply_directive` running on
@@ -1489,6 +1544,55 @@ sensor a process-wide singleton. The second `init` call in any thread is
 a no-op with a warning. Pattern B (one init per thread, isolated Sessions)
 and Pattern C (multiple agents in one process, each with its own Session)
 are not supported in the current model.
+
+### Shutdown and signals
+
+`Session.start` registers `Session.end` with `atexit` and, when `init` runs
+on the main thread, a SIGTERM handler and (except on Windows) a SIGINT
+handler. `end` settles the streams still open, flushes the event queue,
+posts `session_end` (`close_reason=normal_exit`, or `directive_shutdown`
+after a shutdown directive), flushes again and closes the queue; a second
+call does nothing. `teardown()` calls it too.
+
+A signal handler runs on the main thread on top of whatever the signal
+interrupted, which can be inside the session's, the policy cache's or the
+event queue's lock, none of them re-entrant. So the handler takes no lock
+and waits on none:
+
+1. It claims the end of the session with a non-blocking lock acquire, so
+   it and `end` never both run it, and hands the work to the event queue's
+   drain thread: a plain attribute the drain loop checks before each wait
+   for an event, plus a wake-up item put on the queue only when the
+   queue's lock is free (otherwise the drain thread notices the request
+   within its one-second wait). The drain thread posts the events already
+   queued (for up to 3 seconds; the rest are dropped with a warning so an
+   unreachable control plane cannot hold the exit), settles the open
+   streams, posts the events that queues, then posts `session_end`, so
+   `session_end` is the session's last event. Directives that arrive from
+   then on are dropped, and the directive thread is stopped.
+2. The handler polls for that to finish, for up to 2 seconds, then passes
+   the signal on to the handler it replaced: it calls a Python handler
+   (Python's own SIGINT handler raises `KeyboardInterrupt`), or, for the
+   default action, restores it and raises the signal again, so the process
+   ends as it would have without the sensor. Past the 2 seconds the drain
+   thread is most likely waiting for a lock the signal interrupted, which
+   is released only once the handler returns: a Python handler is called
+   anyway (a `KeyboardInterrupt` unwinds the frame holding the lock, and
+   the `end` that `atexit` runs then waits for the drain thread), while
+   for the default action the handler returns and the drain thread
+   delivers the signal to the main thread again once `session_end` is out.
+3. A second signal while that shutdown runs, or after it, is passed on at
+   once, so it forces the exit. A signal that interrupts `end` itself is
+   passed on at once too; one that arrives while `end` runs on another
+   thread waits for it (2 seconds at most).
+
+`end`, called after a signal started the shutdown (by `atexit`, or
+`teardown()`), waits for the drain thread to finish it, for up to 13
+seconds: the 3-second budget for queued events plus one 10-second request
+timeout for `session_end`. A signal the application ignores (`SIG_IGN`)
+is left ignored and the session carries on; a handler installed outside
+Python, which Python cannot pass a signal on to, is left in place. No
+thread is added for any of this.
 
 ---
 

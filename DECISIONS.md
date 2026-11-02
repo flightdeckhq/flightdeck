@@ -416,3 +416,38 @@ resumed run's tokens); restarting on any record (a late async record
 reopens a finished sub-agent); `ended_at` alone (the worker's clock, an
 export interval late); trusting the replica cache (another replica may
 have published the end).
+
+## D239 -- A SIGTERM / SIGINT handler ends the session on the drain thread and takes no lock
+
+**Date:** 2026-11-02
+**Decision:** the sensor's signal handler claims the end of the session
+without waiting, hands it to the existing event-queue drain thread, polls
+up to 2 s, then passes the signal on to the handler it replaced. For the
+default action with `session_end` not yet sent, it returns and the drain
+thread delivers the signal again once it is. A second signal is passed on
+at once; an ignored signal is left alone.
+**Why:** the handler runs on top of the interrupted frame, which can hold
+the session, policy or queue lock (none re-entrant), so `end()` in the
+handler deadlocked; sensor rule 32 allows no other thread.
+**Rejected alternative:** `end()` in the handler (the deadlock); a
+helper thread per signal (a thread rule 32 forbids, and starting one
+takes `threading`'s own lock, which the interrupted frame can hold);
+ending the process when the wait runs out (drops `session_end` whenever
+the drain thread needs the lock the signal interrupted).
+
+## D240 -- patch() patches each SDK when the application first imports it
+
+**Date:** 2026-11-02
+**Decision:** `import flightdeck_sensor`, `init()` and `patch()` import no
+SDK. `patch()` patches an SDK already imported at once, and the others
+from a `sys.meta_path` finder that wraps the loader of the seven modules
+it covers and patches right after the module runs. The import hook never
+waits for the patch lock: it queues the SDK for the thread that holds it.
+**Why:** importing every installed SDK cost seconds at startup and made
+litellm fetch its price list from GitHub in applications that never used
+litellm.
+**Rejected alternative:** wrapt's post-import hooks (a runtime
+dependency for a sensor that needs only pydantic); replacing
+`sys.modules` with a dict that watches writes (touches every import in
+the process); the hook waiting for the patch lock (deadlocks against a
+`patch()` waiting for that same import).

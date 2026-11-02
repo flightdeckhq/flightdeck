@@ -173,6 +173,59 @@ export function readTurns(transcriptPath) {
 }
 
 /**
+ * The tool uses a transcript records, keyed by tool_use_id: the tool's
+ * name and input from the assistant's ``tool_use`` block, and its result
+ * from the ``tool_result`` block of the user record that answered it
+ * (the content Claude Code gave the model, whether it was an error, and
+ * the record's time), null while the transcript holds no result.
+ * Returns an empty map when the transcript is missing.
+ */
+export function readToolUses(transcriptPath) {
+  const uses = new Map();
+  if (!transcriptPath) return uses;
+  let raw;
+  try {
+    raw = readFileSync(transcriptPath, "utf8");
+  } catch {
+    return uses;
+  }
+  for (const line of raw.split("\n")) {
+    // Both block types contain the string; most records have neither.
+    if (!line.includes('"tool_')) continue;
+    let rec;
+    try {
+      rec = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const blocks = rec?.message?.content;
+    if (!Array.isArray(blocks)) continue;
+    for (const block of blocks) {
+      if (rec.type === "assistant" && block?.type === "tool_use" && typeof block.id === "string") {
+        const known = uses.get(block.id);
+        uses.set(block.id, {
+          name: typeof block.name === "string" ? block.name : null,
+          input: block.input ?? null,
+          result: known?.result ?? null,
+        });
+      } else if (rec.type === "user" && block?.type === "tool_result" && typeof block.tool_use_id === "string") {
+        const known = uses.get(block.tool_use_id);
+        uses.set(block.tool_use_id, {
+          name: known?.name ?? null,
+          input: known?.input ?? null,
+          result: {
+            content: block.content ?? null,
+            isError: block.is_error === true,
+            timestamp: typeof rec.timestamp === "string" ? rec.timestamp : null,
+          },
+        });
+      }
+    }
+  }
+  return uses;
+}
+
+/**
  * Convenience wrapper: return the most recent turn, or null. Kept for
  * callers that only want the final turn (e.g. version-probe on
  * SessionStart).

@@ -5,14 +5,13 @@
 import { hostname as osHostname } from "node:os";
 
 import { deriveAgentId } from "../agent_id.mjs";
-import { boundedToken, MAX_MCP_IDENTITY_BYTES, MAX_SIGNAL_BYTES } from "../core/config.mjs";
+import { boundedToken, MAX_SIGNAL_BYTES } from "../core/config.mjs";
 import { postEvent, setDirectiveSink } from "../core/poster.mjs";
 import {
   cacheSessionModel,
   clearGitCache,
   markerKeyFor,
   pruneStateDir,
-  readCachedModel,
   readSessionMintTime,
   recordModelSwitch,
   swapSessionCwd,
@@ -21,7 +20,7 @@ import { clearSessionPolicyCache } from "../mcp_policy.mjs";
 import { safeCollectContext } from "./context.mjs";
 import { GATE_FLAG, finishControl, gateDecision, recordDirective, sendPendingControlEvents } from "./control.mjs";
 import { CLAUDE_CODE_EVENTS } from "./events.mjs";
-import { emitMCPToolCallEvent, resolveMcpToolIdentity } from "./mcp.mjs";
+import { buildMcpToolCallPayload, resolveMcpToolIdentity } from "./mcp.mjs";
 import {
   dispatchMcpPolicyPostToolUse,
   dispatchMcpPolicyPreToolUse,
@@ -54,7 +53,8 @@ import {
   sendOwedSubagentEnds,
   subagentStaysEnded,
 } from "./subagent.mjs";
-import { buildToolErrorBlock, captureErrorText, hookDurationMs, sanitizeToolInput } from "./tools.mjs";
+import { owedToolCallEntry, sendOwedToolCalls, sendToolEvent } from "./tool_events.mjs";
+import { buildToolCallPayload } from "./tools.mjs";
 import { isRealModel, readTurns } from "./transcript.mjs";
 
 // Set by the sensor's Claude Agent SDK interceptor in the environment of
@@ -441,9 +441,15 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
       notBefore,
       notAfter,
     });
+    // The tool events the session still owes, its last chance to send
+    // them: one whose transcript records cannot be found goes without
+    // its content.
+    let reachable = !flushed.failed;
+    if (reachable) {
+      reachable = !(await sendOwedToolCalls({ cfg, sessionId, basePayload, lastChance: true, deadline })).failed;
+    }
     // A session a directive stopped already ends with its own
     // session_end (close_reason directive_shutdown).
-    let reachable = !flushed.failed;
     if (!(await finishControl({ cfg, sessionId, basePayload }))) {
       reachable = await postEvent(cfg.server, cfg.token, sessionId, sessionEndPayload(basePayload, hookEvent));
     }
@@ -483,8 +489,9 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   await sendPendingControlEvents({ cfg, sessionId, basePayload });
 
   // Each hook that flushes a transcript sends its turns under the bound,
-  // then, unless a POST failed, the ends the session's subagents still
-  // owe.
+  // then, unless a POST failed, the tool events its session owes (after
+  // the turns that decided on them) and the ends the session's subagents
+  // still owe.
   const flushTurns = async () => {
     const { turns, notAfter } = readTurnsBounded(getTurns, laterMint);
     const flushed = await flushPostCallTurns({
@@ -497,7 +504,9 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
       notBefore,
       notAfter,
     });
-    if (!flushed.failed) await sendOwedSubagentEnds(owedEndsContext);
+    if (flushed.failed) return;
+    const tools = await sendOwedToolCalls({ cfg, sessionId, basePayload, deadline: hookDeadline });
+    if (!tools.failed) await sendOwedSubagentEnds(owedEndsContext);
   };
 
   // A change of working directory. Claude Code runs a plugin's
@@ -698,13 +707,21 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
           `server attribution falling back to null. See plugin README.\n`,
       );
     }
-    await emitMCPToolCallEvent({
+    // An event with a tool_use_id carries the id derived from it and is
+    // owed until the server answers (see tool_events.mjs).
+    const payload = buildMcpToolCallPayload({
       cfg,
       sessionId,
       basePayload,
       hookEvent,
       hookName,
       mcpIdentity,
+    });
+    await sendToolEvent({
+      cfg,
+      sessionId,
+      payload,
+      entry: owedToolCallEntry({ payload, hookName, hookEvent, toolName, transcriptPath }),
     });
     return;
   }
@@ -713,81 +730,13 @@ export async function dispatchHookEvent({ cfg, hookEvent, input, sessionEndWorke
   // guard keeps a future unmapped hook from POSTing event_type=undefined.
   if (!eventType) return;
 
-  const sanitizedInput =
-    cfg.captureToolInputs && hookEvent.tool_input
-      ? sanitizeToolInput(hookEvent.tool_input)
-      : null;
-  const toolInputJson = sanitizedInput ? JSON.stringify(sanitizedInput) : null;
-
-  const isSubagentCall = toolName === "Task";
-  const toolDurationMs = hookDurationMs(hookEvent);
-
-  // Build event_content payload so the drawer's Prompts tab can show
-  // real tool input + output (previously tool_call events always had
-  // has_content=false, so the drawer rendered shallow metadata only).
-  // Privacy tiers: input is gated on captureToolInputs (default ON);
-  // output is gated on capturePrompts (default ON for the plugin,
-  // OFF for the Python sensor -- see resolveConfig rationale).
-  let content = null;
-  let hasContent = false;
-  if (cfg.captureToolInputs && toolName && sanitizedInput) {
-    const tools = [{ type: "tool_use", name: toolName, input: sanitizedInput }];
-    const response = [];
-    if (cfg.capturePrompts && hookEvent.tool_response != null) {
-      const out =
-        typeof hookEvent.tool_response === "string"
-          ? hookEvent.tool_response
-          : JSON.stringify(hookEvent.tool_response);
-      response.push({
-        type: "tool_result",
-        content: out.length > 2000 ? out.slice(0, 2000) + "\u2026" : out,
-      });
-    }
-    content = {
-      provider: "anthropic",
-      model: readCachedModel(sessionId) || basePayload.model || "",
-      system: null,
-      messages: [],
-      tools,
-      response,
-    };
-    hasContent = true;
-  }
-
-  // Preserve basePayload's parent_session_id when interior
-  // subagent context set it (the modern Agent tool path). Fall back
-  // to the legacy ``isSubagentCall ? sessionId : null`` shape for
-  // the deprecated Task-tool informational hint (retained as
-  // forward-compat on the parent's tool_call event for any consumer
-  // still reading it). The two paths are mutually exclusive — when
-  // interior context is active, basePayload.parent_session_id is
-  // the OUTER session id; when it isn't, the legacy line applies.
-  const payload = {
-    ...basePayload,
-    event_type: eventType,
-    tool_name: toolName,
-    tool_input: toolInputJson,
-    tool_result: null,
-    is_subagent_call: isSubagentCall,
-    parent_session_id:
-      basePayload.parent_session_id ??
-      (isSubagentCall ? sessionId : null),
-    // Real tool wall time from Claude Code on PostToolUse /
-    // PostToolUseFailure, null when the hook does not carry it. The
-    // same value lands as duration_ms so tool_call and mcp_tool_call
-    // report the tool's duration under one name.
-    latency_ms: toolDurationMs,
-    duration_ms: toolDurationMs,
-    timestamp: new Date().toISOString(),
-    has_content: hasContent,
-    content,
-  };
-  const toolUseId = boundedToken(hookEvent.tool_use_id, MAX_MCP_IDENTITY_BYTES);
-  if (toolUseId) payload.tool_use_id = toolUseId;
-  if (hookName === "PostToolUseFailure") {
-    payload.error = buildToolErrorBlock(hookEvent, captureErrorText(cfg));
-  }
-  await postEvent(cfg.server, cfg.token, sessionId, payload);
+  const payload = buildToolCallPayload({ cfg, hookName, hookEvent, eventType, toolName, basePayload, sessionId });
+  await sendToolEvent({
+    cfg,
+    sessionId,
+    payload,
+    entry: owedToolCallEntry({ payload, hookName, hookEvent, toolName, transcriptPath }),
+  });
 }
 
 /** The session_end the SessionEnd worker sends for the root session. */

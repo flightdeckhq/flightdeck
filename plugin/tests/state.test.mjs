@@ -29,6 +29,7 @@ import {
   clearGitCache,
   clearSubagentEnded,
   dropOwedSubagentEnd,
+  dropOwedToolCall,
   isSubagentEnded,
   isTurnEmitted,
   markEmittedTurn,
@@ -37,10 +38,13 @@ import {
   markTurnSent,
   markerKeyFor,
   oweSubagentEnd,
+  oweToolCall,
   readOwedSubagentEnds,
+  readOwedToolCalls,
   readSessionMintTime,
   reclaimOrphanedTurn,
   releaseOwedSubagentEnd,
+  releaseOwedToolCall,
   releaseTurnClaim,
   pruneStateDir,
   readGitCache,
@@ -50,6 +54,7 @@ import {
   stateDir,
   swapSessionCwd,
   takeOwedSubagentEnd,
+  takeOwedToolCall,
   writeGitCache,
 } from "../hooks/scripts/core/state.mjs";
 import { sessionGitFields } from "../hooks/scripts/claude_code/context.mjs";
@@ -333,6 +338,23 @@ describe("ended subagent marker and owed subagent ends", () => {
     for (const child of [mine, theirs, orphan]) dropOwedSubagentEnd(outer, child);
     assert.deepEqual(readOwedSubagentEnds(outer), {});
     assert.equal(existsSync(path), false, "nothing owed leaves no file");
+  });
+
+  it("an owed tool event is kept apart from the owed ends, held by one process, and dropped once answered", () => {
+    process.env.CLAUDE_PLUGIN_DATA = mkdtempSync(join(root, "data-"));
+    const sid = randomUUID();
+    const entry = { eventType: "tool_call", toolName: "Bash", hook: "PostToolUse", at: new Date().toISOString(), transcript: null };
+    oweToolCall(sid, "toolu_1", entry);
+    oweSubagentEnd(sid, randomUUID(), { agent: "a1", role: "", transcript: null, parentTranscript: null, at: entry.at });
+    assert.deepEqual(Object.keys(readOwedToolCalls(sid)), ["toolu_1"]);
+    assert.equal(readOwedToolCalls(sid).toolu_1.pid, process.pid);
+    releaseOwedToolCall(sid, "toolu_1");
+    assert.equal(readOwedToolCalls(sid).toolu_1.pid, null, "released for a later flush");
+    assert.equal(takeOwedToolCall(sid, "toolu_1")?.pid, process.pid);
+    dropOwedToolCall(sid, "toolu_1");
+    assert.deepEqual(readOwedToolCalls(sid), {});
+    assert.equal(existsSync(join(stateDir(), `tool-calls-${sid}.json`)), false);
+    assert.equal(Object.keys(readOwedSubagentEnds(sid)).length, 1, "the owed ends are untouched");
   });
 });
 

@@ -1594,10 +1594,10 @@ Each value is sized for the hook's normal worst case:
 Claude Code cancels a synchronous hook that runs out of time and carries on, as for
 any non-blocking error. What the hook had not done by then is deferred
 or lost: unsent turns are sent by a later hook (each carries its
-message-derived id, so a copy is dropped by the worker); the turn whose
-POST was in flight keeps the cancelled process's claim, which a
-subagent's `SubagentStop` or the `SessionEnd` worker takes over (see
-below); a `session_start` that was not accepted is retried by the next
+message-derived id, so a copy is dropped by the worker); the turn or
+tool event whose POST was in flight keeps the cancelled process's
+claim, which a subagent's `SubagentStop` or the `SessionEnd` worker
+takes over (see below and Tool calls and failures); a `session_start` that was not accepted is retried by the next
 hook; a subagent's `session_end` stays owed until a later hook sends it
 (see Subagent hooks); and the policy cache is written before the policy
 events, so gating continues. Lost for good are the remaining
@@ -1828,6 +1828,37 @@ Content Capture). A failed `Bash` command, a `Read` on a missing file
 and an MCP call that errored thus land as the same row shape as a
 success with one extra field.
 
+A tool event carries an id derived from its `tool_use_id`
+(`uuid5(NAMESPACE_FLIGHTDECK,
+"flightdeck://claude-code/tool_call/<tool_use_id>")`, for `tool_call`
+and `mcp_tool_call` alike), so a copy sent again is stored once. Before
+its POST the hook records the event as owed in
+`tool-calls-<session id>.json`, keyed by `tool_use_id`, with what only
+the hook knows and no content: the tool name, whether it failed and was
+interrupted, its duration, the `mcp_server` hint, the event's time and
+the transcript it came from; the entry is dropped once the server
+accepts the event or refuses it for good, as for a turn (see Hook
+configuration). When the POST fails, the entry is
+released, as a turn's claim is, and the next hook of the same session
+that flushes its transcript rebuilds the event after the turns: the
+fields from the entry, and the input, the result and a failure's error
+text from the transcript's `tool_use` and `tool_result` records (the
+result as Claude Code gave it to the model), under the same capture
+rules; the flush stops at the first failed POST. `SubagentStop` and the
+`SessionEnd` worker do so last, taking over entries whose process is
+gone, and send an event whose transcript records cannot be found
+without its content; an earlier hook keeps such an entry for later. A
+subagent's `session_end` follows the tool events its execution owes:
+while a live hook is still sending one, the end stays owed for a later
+flush and the pass goes on with the session's other subagents; the
+`SessionEnd` worker, the end's last chance, waits up to three seconds
+for such a hook before its last try, and a hook still sending after that
+leaves the end unsent. Only
+an event a hook tried to send is rebuilt: a tool use no hook reported (a
+denied permission, a hook Claude Code cancelled before it ran) stays
+unreported, and a hook that carried no `tool_use_id` sends an event
+without an id, which is not retried.
+
 For MCP tools the server identity is resolved in this order: the hook's
 `mcp_server.name` when Claude Code sent it (2.1.274 and later; its
 `source` says where the server was declared, and known values include
@@ -1935,8 +1966,8 @@ this hook wrote it, and sent no start) leaves the child open: the two
 executions stay one, ended by the later `SubagentStop`.
 
 **Delivery.** `SubagentStop` sends the child's `session_end` only once
-the subagent's turns are sent, so the end follows every call of the
-execution. Claude Code runs the hook before it has written the
+the subagent's turns and the tool events it owes are sent, so the end
+follows every call of the execution. Claude Code runs the hook before it has written the
 subagent's final turn to the transcript (in a print-mode run the turn
 was still missing a tenth of a second after its own timestamp), so the
 hook first waits, up to two seconds, until the transcript's last
@@ -2104,12 +2135,14 @@ session), drops the per-session MCP policy cache, and re-launches the
 hook script as a detached worker process (`observe_cli.mjs
 --session-end-worker`, hook event on stdin, the resolved session id in
 `CLAUDE_SESSION_ID`). The worker flushes any transcript turns that
-`Stop` or `PostToolUse` had not yet emitted as `post_call` events and
-POSTs the `session_end`; then, in a session with a recorded mint time,
-it sends its subagents' remaining turns and owed `session_end`s (see
+`Stop` or `PostToolUse` had not yet emitted as `post_call` events,
+sends the session's owed tool events, and POSTs the `session_end`;
+then, in a session with a recorded mint time, it sends its subagents'
+remaining turns, owed tool events and owed `session_end`s (see
 Subagent hooks). It never touches the session, `session_start` or
 policy markers, which a new session may own by then, and writes only
-the per-message `emitted-` markers and the owed subagent ends. Because
+the per-message `emitted-` markers, the owed subagent ends and the owed
+tool events. Because
 the hook itself never waits on the network it finishes inside the
 budget whatever the server does; the
 test suite asserts it returns under `SESSION_END_HOOK_BUDGET_MS` with
@@ -6573,11 +6606,13 @@ call-window-independent types (`session_start`, `session_end`,
 `mcp_server_attached`, `mcp_server_name_changed`,
 `directive_result`) skip the chain stamp.
 
-The Claude Code plugin sets an id on two event types only, each derived
-from its transcript: `post_call` (from the model call's message id) and
+The Claude Code plugin sets an id only where Claude Code names the
+thing reported: `post_call` (from the model call's message id),
 `llm_error` (from the failed turn's message id, when the transcript
-holds that turn). Its other events carry no id, so the worker generates
-one, and it stamps no `originating_event_id`.
+holds that turn), and `tool_call` and `mcp_tool_call` (from the
+`tool_use_id`, when the hook carries one). Its other events carry no
+id, so the worker generates one, and it stamps no
+`originating_event_id`.
 
 ### `policy_warn`
 

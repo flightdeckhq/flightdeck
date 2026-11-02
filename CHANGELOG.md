@@ -205,6 +205,12 @@ All notable changes to Flightdeck are documented here.
   refuses as invalid is not retried. When the session ends, the plugin
   also sends the last calls of its sub-agents, such as one the user
   stopped before it reported them.
+- **A Claude Code tool call whose POST failed is sent again.** A tool
+  call was sent once, with an id the server made, so one made while the
+  server was unreachable was lost (5 in the same dev conversation). Each
+  tool event now carries an id derived from Claude Code's `tool_use_id`;
+  when its POST fails, a later hook rebuilds it from the conversation's
+  transcript and sends it, and the server stores it once.
 - **A Claude Code call is reported only under the session it ran in.**
   After the plugin lost its markers (a reboot with its state in
   `$TMPDIR`), a resumed conversation re-sent unsent calls under the new

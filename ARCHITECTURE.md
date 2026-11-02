@@ -1693,7 +1693,12 @@ counts as unset. Credentials embedded in
 the server URL are stripped before use, and the default token prints
 a warning on every hook unless `FLIGHTDECK_QUIET=1`.
 `FLIGHTDECK_CAPTURE_PROMPTS` and `FLIGHTDECK_CAPTURE_TOOL_INPUTS` stay
-environment variables (see Content Capture).
+environment variables (see Content Capture). A repository's project
+settings (`.claude/settings.json`, `.claude/settings.local.json`) can
+set any of these variables in their `env`, which Claude Code applies
+over the shell and passes to the hooks, so a repository can choose the
+server, the token and the capture switches for the sessions run in it;
+only managed settings, or `--settings`, outrank a repository's settings.
 
 Every event body the plugin POSTs is at most 768 KiB
 (`MAX_EVENT_BODY_BYTES`). Ingestion reads at most 1 MiB of a body and
@@ -2317,7 +2322,7 @@ sessions extend the derivation with a conditional 6th input,
 |---|---|---|
 | `agent_id` | UUID | Deterministically derived from the other identity fields via `core/agent_id.py` |
 | `agent_type` | `coding` \| `production` | Sensor `init` kwarg or `AGENT_TYPE` / `FLIGHTDECK_AGENT_TYPE` env. Plugin always emits `coding`; a plugin session's entrypoint / attended / CI / cloud signals are context fields, not identity |
-| `client_type` | one of the values in the client type registry below | Each client sends its own literal: the plugin `claude_code`, the sensor `flightdeck_sensor`; `claude_agent_sdk` is reserved for the Agent SDK interceptor ([#182](https://github.com/flightdeckhq/flightdeck/issues/182)) |
+| `client_type` | one of the values in the client type registry below | Each client sends its own literal: the plugin `claude_code`, the sensor `flightdeck_sensor` and its Claude Agent SDK interceptor `claude_agent_sdk`; the OTLP receiver stamps `claude_code` on Claude Code's own telemetry (see Client type registry > OTLP sources) |
 | `agent_name` | string | Sensor `AGENT_FLAVOR` / `FLIGHTDECK_AGENT_NAME` env, default `{user}@{hostname}`. The plugin uses `FLIGHTDECK_AGENT_NAME`, else `{user}@{hostname}`; a sub-agent appends `/{role}`. The plugin's flavor is always `claude-code` |
 | `user` | string | Resolved from `getpass.getuser` (sensor) or `process.env.USER` (plugin) |
 | `agent_role` (optional 6th) | string \| null | Framework-driven on sub-agent sessions. CrewAI: `Agent.role`. LangGraph: node name. Claude Code Task: hook payload `agent_type`. Null on root sessions and direct-SDK sessions |
@@ -2376,9 +2381,12 @@ response is ignored.
 registry: a closed list, so ingestion still rejects anything outside it,
 that holds every client Flightdeck integrates with, including those
 whose emitter is still planned, so adding an emitter never needs
-a schema change. The Claude Code plugin sends `claude_code` and the
-Python sensor sends `flightdeck_sensor`; the other values are
-reserved for the planned integrations ([#182](https://github.com/flightdeckhq/flightdeck/issues/182), [#184](https://github.com/flightdeckhq/flightdeck/issues/184),
+a schema change. The Claude Code plugin sends `claude_code`, the
+Python sensor sends `flightdeck_sensor` and its Claude Agent SDK
+interceptor `claude_agent_sdk`, and the OTLP receiver stamps
+`claude_code` on Claude Code's own telemetry (OTLP sources, below); the
+other values are reserved for the planned integrations
+([#184](https://github.com/flightdeckhq/flightdeck/issues/184),
 [#186](https://github.com/flightdeckhq/flightdeck/issues/186)). Each value
 carries a display label and the defaults below:
 
@@ -2440,10 +2448,12 @@ present in the data, so reserved values do not appear until a client
 sends them.
 
 **OTLP sources.** The OTLP receiver stamps the registry value of the
-tool that produced the telemetry when it recognises it (Claude Code,
-Codex CLI, Gemini CLI and GitHub Copilot export OpenTelemetry under
-their own `service.name`), so their sessions keep that tool's defaults
-and `agent_id`; `otlp` is for sources no registry entry names.
+tool that produced the telemetry, so its sessions keep that tool's
+defaults and `agent_id`: Claude Code, the one source it maps (see OTLP
+ingest > Dialects), lands as `claude_code`. Codex CLI, Gemini CLI and
+GitHub Copilot export OpenTelemetry under their own `service.name` too;
+their records are accepted and counted as rejected. `otlp` is reserved
+for a source no registry entry names.
 
 **Claude Agent SDK and Claude Code.** The Agent SDK runs the Claude Code
 CLI as a subprocess, and the sensor's Agent SDK interceptor reports each
@@ -3243,8 +3253,13 @@ tool-capture envelope the sensor and plugin use (`provider` `anthropic`,
 or `mcp` with `model` the server name), and error text on its error
 block; content is cut to
 fit the 768 KiB event body limit as the plugin cuts it. Claude Code sends
-the prompt only when `OTEL_LOG_USER_PROMPTS=1` and tool inputs only when
-`OTEL_LOG_TOOL_DETAILS=1`.
+the prompt only when `OTEL_LOG_USER_PROMPTS=1`, and tool inputs and a
+failed tool's error text only when `OTEL_LOG_TOOL_DETAILS=1`. A
+repository's project settings can set `OTEL_RESOURCE_ATTRIBUTES` (and
+with it `flightdeck.capture_prompts`) and `OTEL_SERVICE_NAME` through
+their `env`, which Claude Code applies over the shell, but not the
+`OTEL_LOG_*` switches, which Claude Code ignores there; only managed
+settings, or `--settings`, outrank a repository's settings.
 
 **Lifecycle.** A Claude Code session reported over OTLP has no end event
 of its own (a sub-agent's run ends with `subagent_completed`). It goes

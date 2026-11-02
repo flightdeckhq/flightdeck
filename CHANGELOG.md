@@ -73,6 +73,21 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **Fleet swimlane circles sit on their row's centre line.** Circles
+  were shifted up twice (a CSS translate and an inline transform), so
+  they sat about 11 px high on every row, crowded the top-edge run
+  glyphs, and lost their top to the expanded ALL row's clip. They are
+  now centred on their row and on their time's x, the ALL row lines up
+  with the agent rows, and run glyphs line up with the circles of the
+  same instant (they move 11 px right).
+- **A sub-agent row keeps its role readable.** At the default 460 px
+  label column, a sub-agent's name (`user@host/role`) shrank to its
+  48 px floor and read `omria…` on every child row. The name now gives
+  way at its head and keeps the `/role` suffix whole, and the row's
+  `↳ parent` pill shrinks first.
+- **Sub-agent connectors end on the circles they join**, instead of
+  19 px left of and about 11 px below them, and hovering a run's
+  circle or glyph lights that run's connectors.
 - **An event that names no model no longer reads "unknown".** A prompt,
   call or error without a model (Claude Code's prompt record over
   OpenTelemetry has none) shows a dash in its feed line and its Model

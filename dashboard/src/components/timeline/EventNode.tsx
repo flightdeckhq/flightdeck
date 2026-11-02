@@ -191,7 +191,19 @@ function EventNodeComponent({
     <>
       <div
         data-testid={`session-circle-${sessionId}`}
+        // The event and its run, for lookups by id rather than by
+        // position: the sub-agent connector overlay finds the circles
+        // it joins by ``data-event-id``, and Timeline's hover handler
+        // reads the run a hovered mark belongs to from
+        // ``data-session-id``.
+        data-event-id={eventId}
+        data-session-id={sessionId}
         className={cn(
+          // ``top-1/2 -translate-y-1/2`` is the only vertical shift.
+          // Tailwind 4 emits ``-translate-y-1/2`` as the separate
+          // ``translate`` property, which applies before ``transform``,
+          // so the hover ``scale`` below still scales about the
+          // circle's centre.
           "absolute top-1/2 -translate-y-1/2 cursor-pointer flex items-center justify-center shrink-0",
           // Non-MCP events keep the rounded-full circle shape via
           // Tailwind. MCP events are clip-path hexagons (see B-5b)
@@ -219,7 +231,10 @@ function EventNodeComponent({
         data-mcp-family={isMCP ? "true" : undefined}
         data-event-shape={isMCP ? "hexagon" : "circle"}
         style={{
-          left: x, width: size, height: size,
+          // Centred on its time's x: the swimlane insets the panel's
+          // positioned wrapper by half a circle (plus a buffer), so the
+          // oldest circle still clears the label strip.
+          left: x - size / 2, width: size, height: size,
           backgroundColor: color, color: "white",
           // MCP hexagon: drop the white border because clip-path
           // would clip it into jagged fragments at the apexes; the
@@ -228,7 +243,9 @@ function EventNodeComponent({
           // chrome separation against adjacent circles.
           border: isMCP ? "none" : "1.5px solid rgba(255,255,255,0.1)",
           clipPath: isMCP ? HEXAGON_CLIP_PATH : undefined,
-          transform: hovered ? "translateY(-50%) scale(1.25)" : "translateY(-50%) scale(1)",
+          // Scale only. A translate here would stack on the class's
+          // ``translate`` and lift the circle a second half-height.
+          transform: hovered ? "scale(1.25)" : undefined,
           // zIndex 2 (was 1) so circles paint above the timeline
           // grid line overlay which now sits at zIndex 1.
           zIndex: hovered ? 10 : 2,

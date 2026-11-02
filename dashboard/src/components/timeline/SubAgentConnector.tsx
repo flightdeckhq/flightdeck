@@ -6,7 +6,12 @@ import { memo, useState } from "react";
  * first-event) pair when BOTH endpoints are simultaneously visible
  * in the Fleet swimlane window.
  *
- * Geometry (pure math, no DOM manipulation per Rule 16):
+ * Endpoints: Timeline.tsx measures the rendered circles (found by
+ * ``data-event-id`` inside the parent's and the child's rows) and
+ * passes their centres in the overlay's coordinate space, with the
+ * parent circle's radius from its ``offsetWidth`` (a hover scale
+ * leaves both unchanged). The overlay itself does pure math from
+ * those numbers, no DOM measurement (Rule 16):
  *   * Anchor on the parent event circle's CIRCUMFERENCE — never on
  *     a shared single point. For each child the anchor is the
  *     point on the circle's edge whose direction matches the line
@@ -19,38 +24,81 @@ import { memo, useState } from "react";
  *     control point. The control point sits halfway in x and at
  *     the anchor's y so the curve bows out toward the child's
  *     row, mirroring how an operator would draw a hand-sketched
- *     arrow.
+ *     arrow. The curve ends at the child circle's centre.
  *
  * Visual:
- *   * 10% opacity at rest. 50% on hover of the connector path
- *     itself OR of either endpoint. The endpoint hover is wired
- *     by Timeline.tsx via the ``hoveredId`` prop.
+ *   * 10% opacity at rest. 50% while the pointer is on the path
+ *     itself, or while ``hoveredId`` names a run at either end:
+ *     Timeline.tsx sets it to the run whose mark (event circle or
+ *     run glyph) is hovered or whose glyph has focus, so a parent
+ *     run lights its whole fan-out and a child run its own link.
  *   * stroke colour reads ``--accent`` (CSS variable) so both
  *     theme projects pick up the right tone without a render
  *     branch.
  *
  * Layer order (Rule 16 — D3 for math only, never for DOM):
  *   * z-index 1 = grid lines (Timeline's existing).
- *   * z-index 2 = THIS overlay's SVG. Sits between grid and
- *     event circles so circles paint over connector endpoints
- *     cleanly.
- *   * z-index 3 = event circles (EventNode).
+ *   * z-index 2 = THIS overlay's SVG, first in the DOM.
+ *   * z-index 2 = event circles (EventNode), later in the DOM, so
+ *     they paint over the connector ends; a hovered circle rises
+ *     to z-index 10.
  */
 
 export interface SubAgentConnectorSpec {
   /** Stable id used in data-testid + hover dedup. Caller
    *  conventionally builds it as ``${parentSessionId}->${childSessionId}``. */
   id: string;
+  /** The runs at each end. ``hoveredId`` lights the connector when
+   *  it names either one. */
+  parentSessionId: string;
+  childSessionId: string;
+  /** The events whose circles the connector joins: the parent's
+   *  spawn event and the child's first event in the window. Exposed
+   *  as ``data-parent-event-id`` / ``data-child-event-id``. */
+  parentEventId: string;
+  childEventId: string;
   /** Parent event circle centre (px) in the SVG coordinate space. */
   parentX: number;
   parentY: number;
-  /** Parent event circle radius (px). EVENT_CIRCLE_SIZE / 2 today;
-   *  passed in so a future visual change to the circle size
-   *  flows through without a constant duplication here. */
+  /** Parent event circle radius (px): half the rendered circle's
+   *  ``offsetWidth``, so a circle-size change flows through. */
   parentR: number;
-  /** Child first event position (px). */
+  /** Child first event circle centre (px). */
   childX: number;
   childY: number;
+}
+
+/**
+ * Centre of a rendered circle in the overlay's coordinate space:
+ * the circle's viewport rect relative to the container the SVG is
+ * absolutely positioned in (its top-left is the SVG's origin). A
+ * hover scale grows the rect about its centre, so the centre holds.
+ *
+ * Pure function — exported for unit testing.
+ */
+export function circleCentre(
+  rect: Pick<DOMRect, "left" | "top" | "width" | "height">,
+  container: Pick<DOMRect, "left" | "top">,
+): { x: number; y: number } {
+  return {
+    x: rect.left - container.left + rect.width / 2,
+    y: rect.top - container.top + rect.height / 2,
+  };
+}
+
+/**
+ * Whether ``hoveredRunId`` names a run at either end of ``spec``.
+ *
+ * Pure function — exported for unit testing.
+ */
+export function connectorTouchesRun(
+  spec: Pick<SubAgentConnectorSpec, "parentSessionId" | "childSessionId">,
+  hoveredRunId: string | null | undefined,
+): boolean {
+  return (
+    !!hoveredRunId &&
+    (spec.parentSessionId === hoveredRunId || spec.childSessionId === hoveredRunId)
+  );
 }
 
 interface SubAgentConnectorProps {
@@ -60,10 +108,12 @@ interface SubAgentConnectorProps {
    *  timeline width and height = the flavors section height. */
   width: number;
   height: number;
-  /** Externally driven hover. Timeline.tsx sets this via mouse
-   *  enter on the parent event circle OR child swimlane row so
-   *  the "either endpoint brightens the connector" contract from
-   *  design § 4.3 can be tested via the public DOM surface. */
+  /** Externally driven hover: the session id of the run whose mark
+   *  (event circle or run glyph) the pointer is on, or whose glyph
+   *  has keyboard focus. Timeline.tsx sets it from the marks'
+   *  ``data-session-id``. Every connector with that run at either
+   *  end lights up, so a parent run lights its whole fan-out and a
+   *  child run its own link. */
   hoveredId?: string | null;
 }
 
@@ -190,12 +240,16 @@ function SubAgentConnectorComponent({
     >
       {connectors.map((c) => {
         const active =
-          hoveredId === c.id || internalHover === c.id;
+          internalHover === c.id || connectorTouchesRun(c, hoveredId);
         return (
           <path
             key={c.id}
             data-testid={`sub-agent-connector-${c.id}`}
             data-hover={active ? "true" : "false"}
+            data-parent-session-id={c.parentSessionId}
+            data-child-session-id={c.childSessionId}
+            data-parent-event-id={c.parentEventId}
+            data-child-event-id={c.childEventId}
             d={buildConnectorPath(c)}
             stroke="var(--accent)"
             strokeWidth={1.5}

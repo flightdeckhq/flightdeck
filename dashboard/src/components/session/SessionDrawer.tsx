@@ -337,6 +337,9 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
   const shownRunRef = useRef<{ state: string; ended_at: string | null } | null>(null);
   const requestedChangeRef = useRef<SessionChange | null>(null);
   useEffect(() => {
+    // A change refetched for belongs to the run it named: the drawer
+    // may now show another one (it switches runs in place).
+    requestedChangeRef.current = null;
     if (!sessionId) return;
     return useFleetStore.subscribe((state, prev) => {
       const event = state.lastEvent;

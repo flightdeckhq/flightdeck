@@ -151,6 +151,23 @@ describe("SessionDrawer follows its run's state from the live stream", () => {
     expect(latestKey()).toBe(0);
   });
 
+  it("after switching to another run, refetches for that run's first change too", () => {
+    const { rerender } = render(<SessionDrawer sessionId={RUN} onClose={() => {}} />);
+    act(() => useFleetStore.getState().noteSessionChange(liveSession({ state: "stale" })));
+    expect(latestKey()).toBe(1);
+
+    // The drawer now shows another run, still active, which then goes
+    // stale too: the same state as the change refetched for before.
+    shownState = "active";
+    rerender(<SessionDrawer sessionId="s2-other-run" onClose={() => {}} />);
+    act(() =>
+      useFleetStore
+        .getState()
+        .noteSessionChange(liveSession({ session_id: "s2-other-run", state: "stale" })),
+    );
+    expect(latestKey()).toBe(2);
+  });
+
   it("refetches after the stream reconnected", () => {
     render(<SessionDrawer sessionId={RUN} onClose={() => {}} />);
     act(() => useFleetStore.getState().resync());

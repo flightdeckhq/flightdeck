@@ -29,6 +29,13 @@ All notable changes to Flightdeck are documented here.
   Such a session offers no Stop and no custom-directive triggers. The
   agent rows of `GET /v1/fleet`, `GET /v1/agents` and the agent hits of
   `GET /v1/search` carry the latest session's `telemetry`.
+- **The README shows how to send Claude Code's OpenTelemetry to
+  Flightdeck.** It covers the environment to set and what each variable
+  does, what such a session shows, what a repository's own settings can
+  change, and how to roll it out through managed settings, GitHub
+  Actions, cloud sessions and the TypeScript Agent SDK. The plugin README
+  points `claude --bare` runs at it, and says which `FLIGHTDECK_*`
+  settings a repository can set for its own sessions.
 - **Claude Code sessions can be stopped and held to token budgets.** With
   the plugin option `enforcement` on (or `FLIGHTDECK_ENFORCEMENT=1`), the
   dashboard's Stop button and token policies reach Claude Code: a stop or
@@ -88,6 +95,26 @@ All notable changes to Flightdeck are documented here.
   and priced at the model's input and output rates. Errors stored before
   this release are not recounted
   ([#172](https://github.com/flightdeckhq/flightdeck/issues/172)).
+- **Fleet swimlane circles sit on their row's centre line.** Circles
+  were shifted up twice (a CSS translate and an inline transform), so
+  they sat about 11 px high on every row, crowded the top-edge run
+  glyphs, and lost their top to the expanded ALL row's clip. They are
+  now centred on their row and on their time's x, the ALL row lines up
+  with the agent rows, and run glyphs line up with the circles of the
+  same instant (they move 11 px right).
+- **A sub-agent row keeps its role readable.** At the default 460 px
+  label column, a sub-agent's name (`user@host/role`) shrank to its
+  48 px floor and read `omria…` on every child row. The name now gives
+  way at its head and keeps the `/role` suffix whole, and the row's
+  `↳ parent` pill shrinks first.
+- **Sub-agent connectors end on the circles they join**, instead of
+  19 px left of and about 11 px below them, and hovering a run's
+  circle or glyph lights that run's connectors.
+- **A sub-agent row's label hides the circles scrolled under it.** When
+  the swimlane scrolled sideways (a narrow window, the per-agent
+  swimlane modal), older circles showed through a child row's
+  translucent label, over its pills and status badge. The label now
+  paints the same look opaquely.
 - **SIGTERM ends a process that runs the sensor, and a signal can no
   longer hang it.** The sensor's SIGTERM / SIGINT handler ended the
   session on the thread the signal interrupted, so a signal that landed

@@ -62,6 +62,11 @@ the swimlane↔table parity assertion). The current journeys:
 | `T53-run-bracket-end-square-live.spec.ts` | RunBracket end-square glyph (■) mounts for a closed-in-window session — regression guard for the end-glyph render path |
 | `T54-child-row-bg-tint.spec.ts` | Child swimlane rows carry a visually distinct `background-color` from root rows — regression guard against an inline-style override beating the `[data-topology="child"]` CSS rule |
 | `T55-swimlane-sub-agent-session-circle-renders.spec.ts` | Sub-agent swimlane row renders event circles and the connector overlay anchors at least one Bezier path for an in-window parent-child pair — regression guard for the agent-row `last_seen_at` bump that keeps sub-agent rows materialised at default viewport |
+| `T131-event-circles-sit-on-their-row-centre.spec.ts` | Event circles sit on their row's centre line; the expanded ALL row's circles stay inside the row and share the agent rows' x |
+| `T132-sub-agent-row-name-keeps-its-role.spec.ts` | A `{parent}/{role}` sub-agent row keeps its `/role` whole at the 460 px default and when the column is dragged narrower; the head gives way |
+| `T133-sub-agent-connector-ends-on-the-circles-it-joins.spec.ts` | Every connector starts on its parent circle's rim and ends on its child circle's centre |
+| `T134-hovering-a-run-lights-its-connectors.spec.ts` | Hovering a run's mark (or keyboard-focusing its glyph) lights exactly that run's connectors: a parent its fan-out, a child its own link |
+| `T135-child-row-label-hides-scrolled-circles.spec.ts` | With circles scrolled under a child row's sticky label, in Fleet and in the per-agent modal, the label's background is fully opaque |
 
 The `_fixtures.ts` helper exports shared fixture metadata (agent
 names, flavors, role timeline offsets) and locator helpers:
@@ -155,6 +160,17 @@ their in-window recency invariant.
 `dashboard/tests/e2e/_fixtures.ts` mirrors the canonical metadata
 in TypeScript so spec files reference agents and roles via
 type-safe constants instead of stringly-typed magic.
+
+The fan-out fixture (`FANOUT_FIXTURE`) is a coordinator,
+`e2e-test-fanout@e2e-host-fanout`, and its same-role sub-agent
+`e2e-test-fanout@e2e-host-fanout/worker`: an earlier lost run (started
+-2 h, last seen -1 h 55 min) and three runs started together. Roles
+with `fanout_group` are pinned by `seed.py::_refresh_fanout` in one
+psql statement, so they share one NOW(), on the full seed and on every
+keep-alive cycle, which also posts the coordinator's spawn event 1 s
+before the workers' events. Every fan-out role declares
+`skip_subagent_refresh`, so T56's `--refresh-subagent-events` never
+moves it, and the lost run is pinned once by the full seed.
 
 ### Selectors
 

@@ -9,6 +9,8 @@ import {
   SubAgentLostDot,
 } from "@/components/facets/SubAgentRolePill";
 import {
+  CHILD_PILL_MIN_WIDTH,
+  CHILD_PILL_SHRINK_WEIGHT,
   RelationshipPill,
 } from "@/components/facets/RelationshipPill";
 
@@ -200,6 +202,34 @@ describe("RelationshipPill rendering", () => {
     expect(getByTestId("relationship-pill").getAttribute("title")).toBe(
       "Spawned from omria@Omri-PC",
     );
+  });
+
+  it("a shrinkable pill gives way first: shrink weight 100, a 1.75rem floor, clipped", () => {
+    const { getByTestId } = render(
+      <RelationshipPill mode="child" parentName="omria@Omri-PC" shrinkable />,
+    );
+    const pill = getByTestId("relationship-pill");
+    expect(pill.style.flexShrink).toBe(String(CHILD_PILL_SHRINK_WEIGHT));
+    expect(CHILD_PILL_SHRINK_WEIGHT).toBe(100);
+    expect(pill.style.minWidth).toBe(CHILD_PILL_MIN_WIDTH);
+    expect(CHILD_PILL_MIN_WIDTH).toBe("1.75rem");
+    expect(pill.style.overflow).toBe("hidden");
+    // The label still ellipsis-truncates inside the clipped pill.
+    expect(pill.textContent).toContain("omria@Omri-PC");
+  });
+
+  it("keeps every other pill at its natural width (flexShrink 0, no floor)", () => {
+    const { getAllByTestId } = render(
+      <>
+        <RelationshipPill mode="child" parentName="omria@Omri-PC" />
+        <RelationshipPill mode="parent" childCount={2} />
+      </>,
+    );
+    for (const pill of getAllByTestId("relationship-pill")) {
+      expect(pill.style.flexShrink).toBe("0");
+      expect(pill.style.minWidth).toBe("");
+      expect(pill.style.overflow).toBe("");
+    }
   });
 
   it("parent pill carries a 'Spawned N sub-agent(s)' tooltip with correct pluralisation", () => {

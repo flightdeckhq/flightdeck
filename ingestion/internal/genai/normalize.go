@@ -444,7 +444,7 @@ func failedUsage(n *node) []*node {
 	for len(level) > 0 {
 		var found, next []*node
 		for _, c := range level {
-			if (c.fact.Op == opChat || c.fact.Op == opGenerateContent) &&
+			if (c.fact.Op == opChat || c.fact.Op == OpGenerateContent) &&
 				(metaHas(c.meta, attrInputTokens) || metaHas(c.meta, attrOutputTokens)) {
 				found = append(found, c)
 			}

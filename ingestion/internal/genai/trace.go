@@ -28,10 +28,12 @@ const (
 	kindHandoff
 )
 
-// The gen_ai.operation.name values the mapping reads.
+// The gen_ai.operation.name values the mapping reads. OpGenerateContent
+// is exported for the assembler, which counts Google ADK's
+// generate_content spans against their log records.
 const (
 	opChat            = "chat"
-	opGenerateContent = "generate_content"
+	OpGenerateContent = "generate_content"
 	opExecuteTool     = "execute_tool"
 	opInvokeAgent     = "invoke_agent"
 	opAgentHandoff    = "agent_handoff"
@@ -124,7 +126,7 @@ func classify(n *node) spanKind {
 		return kindLink // a scope the table does not name only links
 	}
 	switch n.fact.Op {
-	case opChat, opGenerateContent:
+	case opChat, OpGenerateContent:
 		return kindModel
 	case opExecuteTool:
 		return kindTool

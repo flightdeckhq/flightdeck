@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -15,13 +16,139 @@ import (
 	"testing"
 )
 
-// workerStructs parses the worker's consumer package and returns, for
-// EventPayload and each struct of the package reachable from it, the
-// struct's JSON field names and its fields whose type is (a pointer to)
-// another struct of the package, with that struct's name. It fails on an
-// exported field with no json tag: the decoder would match it by its Go
-// name.
-func workerStructs(t *testing.T) (map[string][]string, map[string]map[string]string) {
+// structRef is a field's struct type as the decoder fills it: the name of
+// a struct of the worker's package, and the container the struct sits in
+// ("" for the struct itself or a pointer to it, "list" for a slice or an
+// array of it, "map" for a map's values).
+type structRef struct {
+	name, container string
+}
+
+// externalNonStructs are the types from other packages the worker's
+// event fields may hold that are not structs, so the decoder fills no
+// field of theirs by name.
+var externalNonStructs = map[string]bool{"json.RawMessage": true}
+
+// workerStructShapes reads the struct declarations of files, one Go
+// package, and returns, for EventPayload and each struct reachable from
+// it, the struct's JSON field names and its fields that hold a struct of
+// the package, directly, through a pointer or in a container. It refuses
+// what it cannot follow by name: an embedded field (the decoder promotes
+// its fields to the outer object), an exported field with no json tag
+// (matched by its Go name), an inline struct type, a type from another
+// package that is not known to be a non-struct, and a container of a
+// container.
+func workerStructShapes(files []*ast.File) (map[string][]string, map[string]map[string]structRef, error) {
+	specs := map[string]ast.Expr{}
+	for _, file := range files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			if spec, ok := n.(*ast.TypeSpec); ok {
+				specs[spec.Name.Name] = spec.Type
+			}
+			return true
+		})
+	}
+	names := map[string][]string{}
+	nested := map[string]map[string]structRef{}
+	for pending := []string{"EventPayload"}; len(pending) > 0; pending = pending[1:] {
+		typeName := pending[0]
+		if _, done := nested[typeName]; done {
+			continue
+		}
+		st, ok := specs[typeName].(*ast.StructType)
+		if !ok {
+			return nil, nil, fmt.Errorf("no struct %s", typeName)
+		}
+		nested[typeName] = map[string]structRef{}
+		for _, field := range st.Fields.List {
+			if len(field.Names) == 0 {
+				return nil, nil, fmt.Errorf("%s embeds %s: its fields would be read as %s's own", typeName, exprString(field.Type), typeName)
+			}
+			if len(field.Names) > 1 {
+				return nil, nil, fmt.Errorf("%s declares %d fields on one line; declare one per line", typeName, len(field.Names))
+			}
+			goName := field.Names[0].Name
+			if !field.Names[0].IsExported() {
+				continue
+			}
+			name, err := jsonName(field)
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s.%s: %w", typeName, goName, err)
+			}
+			if name == "-" {
+				continue
+			}
+			names[typeName] = append(names[typeName], name)
+			ref, err := resolveStruct(specs, field.Type, "", map[string]bool{})
+			if err != nil {
+				return nil, nil, fmt.Errorf("%s.%s: %w", typeName, goName, err)
+			}
+			if ref != nil {
+				nested[typeName][name] = *ref
+				pending = append(pending, ref.name)
+			}
+		}
+		sort.Strings(names[typeName])
+	}
+	return names, nested, nil
+}
+
+// resolveStruct is the struct of the package that expr holds, or nil when
+// it holds none; container is the container already unwrapped.
+func resolveStruct(specs map[string]ast.Expr, expr ast.Expr, container string, seen map[string]bool) (*structRef, error) {
+	wrap := func(inner ast.Expr, kind string) (*structRef, error) {
+		if container != "" {
+			return nil, fmt.Errorf("a %s inside a %s", kind, container)
+		}
+		return resolveStruct(specs, inner, kind, seen)
+	}
+	switch e := expr.(type) {
+	case *ast.StarExpr:
+		return resolveStruct(specs, e.X, container, seen)
+	case *ast.ArrayType:
+		return wrap(e.Elt, "list")
+	case *ast.MapType:
+		return wrap(e.Value, "map")
+	case *ast.Ident:
+		spec, declared := specs[e.Name]
+		if !declared {
+			return nil, nil // a predeclared type
+		}
+		if _, isStruct := spec.(*ast.StructType); isStruct {
+			return &structRef{name: e.Name, container: container}, nil
+		}
+		if seen[e.Name] {
+			return nil, nil
+		}
+		seen[e.Name] = true
+		return resolveStruct(specs, spec, container, seen)
+	case *ast.StructType:
+		return nil, fmt.Errorf("an inline struct type; declare it as a named struct so its fields can be checked")
+	case *ast.SelectorExpr:
+		if externalNonStructs[exprString(e)] {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("%s comes from another package, which this test cannot read; if it is not a struct, add it to externalNonStructs", exprString(e))
+	case *ast.InterfaceType:
+		return nil, nil
+	}
+	return nil, fmt.Errorf("unsupported field type %T", expr)
+}
+
+func exprString(expr ast.Expr) string {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return e.Name
+	case *ast.SelectorExpr:
+		return exprString(e.X) + "." + e.Sel.Name
+	case *ast.StarExpr:
+		return "*" + exprString(e.X)
+	}
+	return fmt.Sprintf("%T", expr)
+}
+
+// workerStructs is workerStructShapes over the worker's consumer package.
+func workerStructs(t *testing.T) (map[string][]string, map[string]map[string]structRef) {
 	t.Helper()
 	dir := filepath.Join("..", "..", "..", "workers", "internal", "consumer")
 	entries, err := os.ReadDir(dir)
@@ -29,7 +156,7 @@ func workerStructs(t *testing.T) (map[string][]string, map[string]map[string]str
 		t.Fatalf("read %s: %v", dir, err)
 	}
 	fset := token.NewFileSet()
-	types := map[string]*ast.StructType{}
+	var files []*ast.File
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
 			continue
@@ -38,70 +165,32 @@ func workerStructs(t *testing.T) (map[string][]string, map[string]map[string]str
 		if err != nil {
 			t.Fatalf("parse %s: %v", e.Name(), err)
 		}
-		ast.Inspect(file, func(n ast.Node) bool {
-			if spec, ok := n.(*ast.TypeSpec); ok {
-				if st, ok := spec.Type.(*ast.StructType); ok {
-					types[spec.Name.Name] = st
-				}
-			}
-			return true
-		})
+		files = append(files, file)
 	}
-	names := map[string][]string{}
-	nested := map[string]map[string]string{}
-	for pending := []string{"EventPayload"}; len(pending) > 0; pending = pending[1:] {
-		typeName := pending[0]
-		if _, done := nested[typeName]; done {
-			continue
-		}
-		st, ok := types[typeName]
-		if !ok {
-			t.Fatalf("no struct %s in %s", typeName, dir)
-		}
-		nested[typeName] = map[string]string{}
-		for _, field := range st.Fields.List {
-			if len(field.Names) == 0 || !field.Names[0].IsExported() {
-				continue
-			}
-			name := jsonName(t, typeName, field)
-			if name == "-" {
-				continue
-			}
-			names[typeName] = append(names[typeName], name)
-			expr := field.Type
-			if star, ok := expr.(*ast.StarExpr); ok {
-				expr = star.X
-			}
-			if ident, ok := expr.(*ast.Ident); ok {
-				if _, isStruct := types[ident.Name]; isStruct {
-					nested[typeName][name] = ident.Name
-					pending = append(pending, ident.Name)
-				}
-			}
-		}
-		sort.Strings(names[typeName])
+	names, nested, err := workerStructShapes(files)
+	if err != nil {
+		t.Fatalf("the worker's event structs: %v", err)
 	}
 	return names, nested
 }
 
-func jsonName(t *testing.T, typeName string, field *ast.Field) string {
-	t.Helper()
+func jsonName(field *ast.Field) (string, error) {
 	if field.Tag == nil {
-		t.Fatalf("%s.%s has no json tag", typeName, field.Names[0].Name)
+		return "", fmt.Errorf("no json tag")
 	}
 	tag, err := strconv.Unquote(field.Tag.Value)
 	if err != nil {
-		t.Fatalf("%s.%s tag: %v", typeName, field.Names[0].Name, err)
+		return "", fmt.Errorf("tag: %w", err)
 	}
 	name, ok := reflect.StructTag(tag).Lookup("json")
 	if !ok {
-		t.Fatalf("%s.%s has no json tag", typeName, field.Names[0].Name)
+		return "", fmt.Errorf("no json tag")
 	}
 	name, _, _ = strings.Cut(name, ",")
 	if name == "" {
-		t.Fatalf("%s.%s's json tag names no field", typeName, field.Names[0].Name)
+		return "", fmt.Errorf("the json tag names no field")
 	}
-	return name
+	return name, nil
 }
 
 func sortedNames(names []string) []string {
@@ -130,17 +219,128 @@ func TestEventFieldNames_MatchTheWorkerEventPayload(t *testing.T) {
 	if len(nested["EventPayload"]) == 0 {
 		t.Fatal("EventPayload has no struct-typed field; the parser no longer finds SubagentMessage")
 	}
-	for field, structName := range nested["EventPayload"] {
-		level := eventFields.nested[field]
-		if level == nil {
-			t.Errorf("the worker decodes %s into %s, and ingestion has no level for it", field, structName)
+	for _, problem := range levelProblems(names, nested, eventFields) {
+		t.Error(problem)
+	}
+}
+
+// levelProblems compares each struct-holding field of the worker's
+// EventPayload with ingestion's nested levels under top.
+func levelProblems(names map[string][]string, nested map[string]map[string]structRef, top *fieldNames) []string {
+	var out []string
+	for field, ref := range nested["EventPayload"] {
+		if ref.container != "" {
+			// checkFieldNameCase descends into an object, not into a list
+			// or a map of objects.
+			out = append(out, fmt.Sprintf("the worker decodes %s as a %s of %s; extend checkFieldNameCase to that shape and give it a level", field, ref.container, ref.name))
 			continue
 		}
-		if got, want := namesOf(level), names[structName]; strings.Join(got, ",") != strings.Join(want, ",") {
-			t.Errorf("%s: ingestion %v, worker %s %v", field, got, structName, want)
+		level := top.nested[field]
+		if level == nil {
+			out = append(out, fmt.Sprintf("the worker decodes %s into %s, and ingestion has no level for it", field, ref.name))
+			continue
 		}
-		if len(nested[structName]) != 0 {
-			t.Errorf("%s nests structs %v; check them a level deeper too", structName, nested[structName])
+		if got, want := namesOf(level), names[ref.name]; strings.Join(got, ",") != strings.Join(want, ",") {
+			out = append(out, fmt.Sprintf("%s: ingestion %v, worker %s %v", field, got, ref.name, want))
+		}
+		if len(nested[ref.name]) != 0 {
+			out = append(out, fmt.Sprintf("%s nests structs %v; check them a level deeper too", ref.name, nested[ref.name]))
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// Each way the worker's struct fields and ingestion's levels can differ is
+// reported, a struct in a list or a map included.
+func TestLevelProblems_ReportsEveryMismatch(t *testing.T) {
+	names := map[string][]string{"Msg": {"body", "captured_at"}, "Inner": {"a"}}
+	top := newFieldNames([]string{"direct", "renamed", "listed", "mapped", "deep", "short"}, map[string]*fieldNames{
+		"direct": newFieldNames([]string{"body", "captured_at"}, nil),
+		"deep":   newFieldNames([]string{"body", "captured_at"}, nil),
+		"short":  newFieldNames([]string{"body"}, nil),
+	})
+	nested := map[string]map[string]structRef{
+		"EventPayload": {
+			"direct":  {name: "Msg"},
+			"renamed": {name: "Msg"},
+			"listed":  {name: "Msg", container: "list"},
+			"mapped":  {name: "Msg", container: "map"},
+			"deep":    {name: "Outer"},
+			"short":   {name: "Msg"},
+		},
+		"Outer": {"inner": {name: "Inner"}},
+	}
+	names["Outer"] = []string{"body", "captured_at"}
+	got := strings.Join(levelProblems(names, nested, top), "\n")
+	for _, want := range []string{
+		"the worker decodes listed as a list of Msg",
+		"the worker decodes mapped as a map of Msg",
+		"the worker decodes renamed into Msg, and ingestion has no level for it",
+		"Outer nests structs",
+		"short: ingestion [body], worker Msg [body captured_at]",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("problems lack %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "direct") {
+		t.Errorf("a matching level was reported:\n%s", got)
+	}
+}
+
+// workerStructShapes follows every shape in which the decoder can fill a
+// struct of the package, and refuses the shapes it cannot follow by name.
+func TestWorkerStructShapes_FollowsOrRefusesEveryFieldShape(t *testing.T) {
+	const decls = `
+type SubagentMessage struct {
+	Body json.RawMessage ` + "`json:\"body\"`" + `
+}
+type Messages []SubagentMessage
+type Body = json.RawMessage
+`
+	tag := func(name string) string { return " `json:\"" + name + "\"`" }
+	cases := []struct {
+		name, field string
+		want        structRef // followed field "x"; zero when none
+		wantErr     string
+	}{
+		{"struct", "X SubagentMessage" + tag("x"), structRef{name: "SubagentMessage"}, ""},
+		{"pointer", "X *SubagentMessage" + tag("x"), structRef{name: "SubagentMessage"}, ""},
+		{"slice", "X []SubagentMessage" + tag("x"), structRef{name: "SubagentMessage", container: "list"}, ""},
+		{"slice of pointers", "X []*SubagentMessage" + tag("x"), structRef{name: "SubagentMessage", container: "list"}, ""},
+		{"array", "X [2]SubagentMessage" + tag("x"), structRef{name: "SubagentMessage", container: "list"}, ""},
+		{"map", "X map[string]SubagentMessage" + tag("x"), structRef{name: "SubagentMessage", container: "map"}, ""},
+		{"named slice type", "X Messages" + tag("x"), structRef{name: "SubagentMessage", container: "list"}, ""},
+		{"alias of json.RawMessage", "X Body" + tag("x"), structRef{}, ""},
+		{"maps of non-structs", "X map[string]interface{}" + tag("x"), structRef{}, ""},
+		{"embedded struct", "SubagentMessage", structRef{}, "embeds SubagentMessage"},
+		{"embedded pointer", "*SubagentMessage", structRef{}, "embeds *SubagentMessage"},
+		{"inline struct", "X struct{ A int " + tag("a") + " }" + tag("x"), structRef{}, "inline struct"},
+		{"slice of inline structs", "X []struct{ A int " + tag("a") + " }" + tag("x"), structRef{}, "inline struct"},
+		{"struct from another package", "X time.Time" + tag("x"), structRef{}, "time.Time comes from another package"},
+		{"list of maps", "X []map[string]SubagentMessage" + tag("x"), structRef{}, "a map inside a list"},
+		{"untagged exported field", "X int", structRef{}, "no json tag"},
+	}
+	for _, tc := range cases {
+		src := "package consumer\n" + decls + "type EventPayload struct {\n\tID string" + tag("id") + "\n\t" + tc.field + "\n}\n"
+		file, err := parser.ParseFile(token.NewFileSet(), "nats.go", src, 0)
+		if err != nil {
+			t.Fatalf("%s: parse: %v", tc.name, err)
+		}
+		_, nested, err := workerStructShapes([]*ast.File{file})
+		if tc.wantErr != "" {
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Errorf("%s: error %v, want one containing %q", tc.name, err, tc.wantErr)
+			}
+			continue
+		}
+		if err != nil {
+			t.Errorf("%s: %v", tc.name, err)
+			continue
+		}
+		if got := nested["EventPayload"]["x"]; got != tc.want {
+			t.Errorf("%s: followed %+v, want %+v", tc.name, got, tc.want)
 		}
 	}
 }

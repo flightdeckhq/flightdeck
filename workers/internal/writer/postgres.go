@@ -58,6 +58,29 @@ func (w *Writer) EventExists(ctx context.Context, id string) (bool, error) {
 	return exists, nil
 }
 
+// LatestCallBillingMode returns the billing mode of the session's most
+// recent post_call, preferring one of model, or "" when the session has
+// no post_call with a billing mode. A failed stream's llm_error carries
+// none of its own and is billed as the session's calls are.
+func (w *Writer) LatestCallBillingMode(ctx context.Context, sessionID, model string) (string, error) {
+	var mode string
+	err := w.pool.QueryRow(ctx, `
+		SELECT billing_mode FROM events
+		WHERE session_id = $1::uuid
+		  AND event_type = 'post_call'
+		  AND billing_mode IS NOT NULL
+		ORDER BY (model = $2) DESC NULLS LAST, occurred_at DESC
+		LIMIT 1
+	`, sessionID, model).Scan(&mode)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("latest call billing mode for %s: %w", sessionID, err)
+	}
+	return mode, nil
+}
+
 // querier is what the event and event-content inserts run on: the pool
 // for a standalone write, or a transaction when an event and its
 // content must land together.

@@ -375,16 +375,20 @@ def test_anthropic_async_helper_text_stream_lands_real_usage(
         assert post_call["payload"]["streaming"]["final_outcome"] == "completed"
 
 
+@pytest.mark.parametrize("configured", [None, "subscription"])
 def test_anthropic_error_event_mid_stream_lands_one_llm_error(
     sensor_reset: None,
     unique_flavor: str,
+    configured: str | None,
 ) -> None:
     flavor = unique_flavor
     with respx.mock(assert_all_called=False, assert_all_mocked=True) as rmock:
         rmock.post("https://api.anthropic.com/v1/messages").mock(
             return_value=_sse(_anthropic_events(fail_after=4))
         )
-        flightdeck_sensor.init(server=INGESTION_URL, token=TOKEN)
+        flightdeck_sensor.init(
+            server=INGESTION_URL, token=TOKEN, billing_mode=configured
+        )
         client = flightdeck_sensor.wrap(anthropic.Anthropic(api_key="test-key"))
 
         with pytest.raises(anthropic.APIError):
@@ -408,6 +412,18 @@ def test_anthropic_error_event_mid_stream_lands_one_llm_error(
             for e in _query_events_for_flavor(flavor)
             if e["event_type"] == "post_call"
         ] == []
+        # The provider billed what the stream delivered: the worker stores
+        # it as the llm_error's token counts, under the billing mode the
+        # sensor stamped (the configured one, else metered for a remote
+        # client), and adds it to the session's total.
+        partial = err["payload"]["error"]
+        billed = partial["partial_tokens_input"] + partial.get(
+            "partial_tokens_output", 0
+        )
+        assert err["tokens_input"] == partial["partial_tokens_input"]
+        assert err["tokens_total"] == billed
+        assert err["billing_mode"] == (configured or "metered")
+        assert (_query_session_for_flavor(flavor) or {}).get("tokens_used") == billed
 
 
 def test_anthropic_rate_limit_on_stream_open_raises_at_create(

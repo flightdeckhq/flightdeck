@@ -45,12 +45,33 @@ function subscribeToCache(listener: () => void): () => void {
     fleetUnsubscribe = useFleetStore.subscribe((state, prev) => {
       const event = state.lastEvent;
       if (!event || event === prev.lastEvent) return;
-      if (patchAgentSummaryFromEvent(event.flavor, event)) notifyCacheChanged();
+      const agentId = agentIdOfLiveEvent(state, event);
+      if (agentId && patchAgentSummaryFromEvent(agentId, event)) notifyCacheChanged();
     });
   }
   return () => {
     cacheListeners.delete(listener);
   };
+}
+
+/**
+ * The agent a live event belongs to: the `agent_id` of the session the
+ * broadcast carried with it, else the fleet row that holds the event's
+ * run (rows are keyed by agent id). Null when neither knows it; the
+ * patch is then skipped and the next fetch of the summary has the event.
+ * The event's own `flavor` is a label, not an agent id, and is not used.
+ */
+function agentIdOfLiveEvent(
+  state: ReturnType<typeof useFleetStore.getState>,
+  event: AgentEvent,
+): string | null {
+  if (state.lastEventAgentId) return state.lastEventAgentId;
+  for (const row of state.flavors) {
+    if (row.sessions.some((s) => s.session_id === event.session_id)) {
+      return row.flavor;
+    }
+  }
+  return null;
 }
 
 interface SummaryOpts {
@@ -110,7 +131,10 @@ function ensureAgentSummary(
  * here; everything else (mcp_*, policy_*, directive_*) leaves the
  * KPI cells alone. This matches the backend `/v1/agents/:id/summary`
  * shape exactly so the in-place patch can never drift from a
- * fresh fetch.
+ * fresh fetch: tokens count a post_call's and an embeddings call's
+ * `tokens_total` and a failed stream's, which the worker stores as its
+ * llm_error's `tokens_total` (an llm_error with no billed tokens has
+ * none).
  */
 function patchAgentSummaryFromEvent(
   agentId: string,
@@ -125,12 +149,14 @@ function patchAgentSummaryFromEvent(
   // page load on tomorrow's date refetches naturally.
   const isPostCall = event.event_type === "post_call";
   const isError = event.event_type === "llm_error";
+  const countsTokens =
+    isPostCall || isError || event.event_type === "embeddings";
   for (const [key, summary] of agentSummaryCache.entries()) {
     const [keyAgentId] = key.split("|");
     if (keyAgentId !== agentId) continue;
 
     let touched = false;
-    if (isPostCall && event.tokens_total) {
+    if (countsTokens && event.tokens_total) {
       summary.totals.tokens += event.tokens_total;
       const lastIdx = summary.series.length - 1;
       if (lastIdx >= 0) {

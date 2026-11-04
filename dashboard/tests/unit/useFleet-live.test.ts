@@ -137,6 +137,7 @@ afterEach(() => {
     flavors: [],
     agents: [],
     lastEvent: null,
+    lastEventAgentId: null,
     lastSessionChange: null,
     resyncSeq: 0,
   });
@@ -179,6 +180,9 @@ describe("useFleet live stream", () => {
     act(() => socket.deliver({ type: "session_update", session: mkSession(), last_event: call }));
     expect(onEvent).toHaveBeenCalledWith(call);
     expect(useFleetStore.getState().lastEvent).toEqual(call);
+    // The event names no agent; the agent_id of the session the
+    // broadcast carried goes with it, for the per-agent summaries.
+    expect(useFleetStore.getState().lastEventAgentId).toBe("agent-one");
 
     // A state change of the held run carries no event; its state is recorded.
     act(() =>

@@ -263,6 +263,11 @@ func IsSubagentMetric(metric string) bool {
 	return subagentMetricNames[metric]
 }
 
+// tokenEventFilter restricts a query to the events the tokens metric and
+// the per-agent summary's tokens count: the same billed events estimated
+// cost prices (billedEventFilter).
+const tokenEventFilter = billedEventFilter
+
 // metricSpecs returns the specification for the requested metric.
 // “estimated_cost“ is computed from the static pricing table; see
 // pricing.go.
@@ -272,7 +277,7 @@ func metricSpecs() map[string]metricSpec {
 			baseTable: "events", alias: "e",
 			agg:         "COALESCE(SUM(e.tokens_total), 0)",
 			timeCol:     "e.occurred_at",
-			whereClause: "e.event_type = 'post_call'",
+			whereClause: tokenEventFilter,
 		},
 		"sessions": {
 			baseTable: "sessions", alias: "s",

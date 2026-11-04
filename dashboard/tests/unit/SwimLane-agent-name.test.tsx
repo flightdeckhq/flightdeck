@@ -24,6 +24,7 @@ import { EVENT_CIRCLE_SIZE } from "@/lib/constants";
 vi.mock("@/hooks/useSessionEvents", () => ({
   useSessionEvents: () => ({ events: [], loading: false }),
   attachmentsCache: new Map(),
+  fullHistoryLoaded: new Set(),
   eventsCache: new Map(),
 }));
 

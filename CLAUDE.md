@@ -155,8 +155,8 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
 35. **SQL lives only in each service's store packages, never in handlers.**
     Those are `api/internal/store` (with the token lookups and revocation
     `LISTEN` of `api/internal/auth`), `ingestion/internal/session`,
-    `ingestion/internal/auth`, `ingestion/internal/directive` and
-    `workers/internal/writer`; `workers/internal/migrate` applies the
+    `ingestion/internal/auth`, `ingestion/internal/directive`,
+    `ingestion/internal/otlpstage` and `workers/internal/writer`; `workers/internal/migrate` applies the
     migration files. The current places outside store packages that run
     SQL are:
     - `workers/internal/processor/policy.go`: token policy lookups and the

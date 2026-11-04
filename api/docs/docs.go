@@ -3666,6 +3666,13 @@ const docTemplate = `{
                 "client_type": {
                     "type": "string"
                 },
+                "close_reasons": {
+                    "description": "CloseReasons lists the distinct close_reason values across the\nsession's session_end events (closeReasonsSQL), always an array.\nA run the reaper closed is older than the Fleet's 24 h sessions\npage, so this rollup is where the dashboard learns it was reaped.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
+                },
                 "ended_at": {
                     "type": "string"
                 },
@@ -3895,6 +3902,13 @@ const docTemplate = `{
                 },
                 "client_type": {
                     "type": "string"
+                },
+                "close_reasons": {
+                    "description": "CloseReasons lists the distinct close_reason values across the\nsession's session_end events (closeReasonsSQL), always an array.\nThe Fleet swimlane reads ` + "`" + `` + "`" + `orphan_timeout` + "`" + `` + "`" + ` here as a run the\nreaper closed, which ends at its last_seen_at.",
+                    "type": "array",
+                    "items": {
+                        "type": "string"
+                    }
                 },
                 "context": {
                     "description": "Runtime context collected by the sensor at init() time and\nstored once in sessions.context (JSONB) on the session_start\nevent. Carries hostname, OS, git, orchestration, frameworks,\netc. -- see sensor/flightdeck_sensor/core/context.py.",

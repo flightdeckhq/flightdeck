@@ -754,6 +754,15 @@ definitions:
         type: boolean
       client_type:
         type: string
+      close_reasons:
+        description: |-
+          CloseReasons lists the distinct close_reason values across the
+          session's session_end events (closeReasonsSQL), always an array.
+          A run the reaper closed is older than the Fleet's 24 h sessions
+          page, so this rollup is where the dashboard learns it was reaped.
+        items:
+          type: string
+        type: array
       ended_at:
         type: string
       flavor:
@@ -945,6 +954,15 @@ definitions:
         type: boolean
       client_type:
         type: string
+      close_reasons:
+        description: |-
+          CloseReasons lists the distinct close_reason values across the
+          session's session_end events (closeReasonsSQL), always an array.
+          The Fleet swimlane reads ``orphan_timeout`` here as a run the
+          reaper closed, which ends at its last_seen_at.
+        items:
+          type: string
+        type: array
       context:
         additionalProperties: {}
         description: |-

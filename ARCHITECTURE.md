@@ -3130,7 +3130,8 @@ but `gzip` or none), the size as sent (413), then, holding a decode slot
 (503), the inflated size and the decode estimate (413) and decoding
 (400), the budget check before any session read (413 or 429, below), a
 failed or late session read (503), then the charge for its events (413
-or 429, below). The media
+or 429, below), then, for GenAI records, the staging write (503; see
+GenAI dialect > Staging). The media
 type may carry parameters (`application/json; charset=utf-8`). An
 error response's body is a `google.rpc.Status` (`code` the gRPC status
 code, `message` the reason) in the request's encoding, and in JSON when
@@ -3149,7 +3150,10 @@ are mapped, and before anything is published or staged, it is charged
 one unit per event it will publish, synthetic `session_start` events
 included, and one unit per GenAI record it will stage plus one more per
 agent span among them (an agent span becomes a `session_start` and a
-`session_end`): records counted as rejected cost nothing. A GenAI
+`session_end`): records counted as rejected while mapping cost nothing.
+GenAI records refused by the per-trace cap (GenAI dialect > Staging)
+are found only inside the staging write, after the charge, so they are
+charged although counted as rejected. A GenAI
 trace's events are published later, by the assembler, outside any
 request, and are never charged again. A request whose events do not
 fit in what is left of the budget is refused with 429 and a
@@ -3157,8 +3161,9 @@ fit in what is left of the budget is refused with 429 and a
 to fit; one whose events exceed the whole per-minute budget can never
 fit and is refused with 413. The same two refusals are first checked,
 charging nothing, before the dialect reads any session, against the
-most events the request's records can map to (one per record, every
-session another client reports included): a request that cannot fit
+most events the request's records can map to (one per record and two
+per GenAI agent span, every session another client reports included):
+a request that cannot fit
 costs no database work. A refused request is charged nothing and
 publishes nothing. The charge is taken before publishing and a request
 whose publish then fails (503) is not refunded, so an exporter that
@@ -3423,17 +3428,43 @@ trace. A request that carries both Claude Code and GenAI records
 publishes the Claude Code events first, then stages the GenAI records;
 a failure on either side answers 503, and both are safe to retry.
 
-A staged span keeps only metadata: operation, agent and tool names,
-models, provider, token counts, response, tool call and conversation
-ids, cost, time to first token, status, `error.type` and the first
-exception event's type. Stack traces and attributes not on that list
-are never kept. Message text, tool definitions, arguments and results,
+A staged span keeps only metadata, the span's identity and timing
+(trace, span and parent ids, whether the parent is remote, scope name
+and version, name, start, end and status code) and these attributes:
+
+- `gen_ai.operation.name`, `gen_ai.agent.name`, `gen_ai.request.model`,
+  `gen_ai.response.model`, `gen_ai.provider.name` and `gen_ai.system`
+  (the older name of the provider attribute, read when
+  `gen_ai.provider.name` is absent);
+- `gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens`, the
+  three cache-read spellings and
+  `gen_ai.usage.details.cache_creation_input_tokens`;
+- `gen_ai.tool.name`, `gen_ai.tool.call.id` and `gen_ai.tool.type`
+  (ADK's `TransferToAgentTool` marks a hand-off);
+- OpenAI Agents' `gen_ai.handoff.from_agent` and `gen_ai.handoff.to_agent`,
+  which give a hand-off's `{from, to}`;
+- `error.type` and the first exception event's `exception.type` (ADK
+  repeats the event);
+- `gen_ai.server.time_to_first_token`, `operation.cost`,
+  `gen_ai.response.id`, `gen_ai.conversation.id` and
+  `gcp.vertex.agent.event_id` (kept for tracing a call back to ADK);
+- for an ADK log record, `has_messages`: whether it carried messages,
+  which is not itself content.
+
+Stack traces and attributes not on that list are never kept. A GenAI
+span without a 16-byte trace id and an 8-byte span id, or an ADK log
+record without both, cannot be placed in a trace and is counted as
+rejected (`a GenAI record needs a 16-byte trace id and an 8-byte span
+id`), so a malformed record never fails the staging write. Message text, tool definitions, arguments and results,
 and error text are staged, in `otlp_span_content`, only under the
 capture rules below, and are deleted once the trace is assembled. A
 resent span is ignored, and leaves the trace's timers as they were. A
 trace holds at most 10,000 staged records; records past that are
 counted as rejected (`trace exceeds 10000 spans`), which bounds one
-assembly at about 20,000 events.
+assembly at about 20,000 events. A trace's identity resource (the
+allowlisted attributes identity and billing read) is the one that
+created its row, and later resources only AND into its capture
+posture, so every assembly of a trace derives the same identity.
 
 **Assembly.** Every ingestion process runs an assembler. Once a second
 it claims due traces under a two-minute lease (`FOR UPDATE SKIP
@@ -3476,26 +3507,43 @@ model span whose subtree holds an already assembled model span
 publishes nothing, so totals stay single. When their session has
 already ended, they are wrapped in a `session_start` that re-attaches
 it (see Session attachment flow) and a `session_end` at its original
-end. A late span cannot make an earlier root a child, because
+end. The re-attaching `session_start` is dated one microsecond before
+the earliest event it precedes, as the Claude Code dialect's synthetic
+start is, so it stays inside the validation window however old the
+session is; the worker keeps the re-attached row's `started_at` (see
+Session state machine > Assembled sessions). The worker keeps a late call's tokens even when it
+reaches a worker replica before its re-attaching start (see NATS
+consumer). A late span cannot make an earlier root a child, because
 `parent_session_id` is written once. A late ADK log record whose call
 was already assembled is dropped with its content; the call keeps its
 tokens. A trace's staged records are deleted 1 hour after a `complete`
 assembly and 24 hours after any other, so late ancestry can still be
 used while its session can still be re-attached; a sweep every 10
-minutes deletes expired traces, and one every minute deletes any staged
-content older than 24 hours and 30 seconds.
+minutes deletes expired traces, and one every minute deletes staged
+content more than 24 hours and 30 seconds after it was staged. A record
+that arrives after its trace's rows were deleted starts a new trace row
+with no ancestry: it is assembled as a trace whose root never arrived,
+its calls going to the unattributed session, and a record already
+assembled before is published under the same ids again, which the
+worker drops as copies.
 
 **Sessions.** Each `invoke_agent` span with a `gen_ai.agent.name` is a
 session. An agent span with no agent span among its ancestors is a
 root. Otherwise its parent session is its nearest agent ancestor, at any
 depth and through any span between them, and its `agent_role` is its
-name (trimmed, at most 256 characters), so an agent called as a tool is
-a child. Agents that hand off are sibling roots of the same
-`otel_trace_id`; the hand-off is an `agent_handoff` `session_signal` on
-the agent handing off, with `signal_data` `{from, to}`, read from OpenAI
-Agents' `agent_handoff` span, or from ADK's `execute_tool
-transfer_to_agent` span (which also stays a `tool_call`) and the sibling
-agent that starts next. A model call or tool belongs to its nearest
+name (trimmed, at most 256 bytes, cut at a UTF-8 boundary), so an agent
+called as a tool is a child. Every event of a child session (its start,
+calls, tools, signals and end) carries its `parent_session_id` and
+`agent_role`, as the Claude Code dialect's do. Agents that hand off are
+sibling roots of the same `otel_trace_id`; the hand-off is an
+`agent_handoff` `session_signal` on the agent handing off, with
+`signal_data` `{from, to}` (agent names, each at most 256 bytes, cut at
+a UTF-8 boundary), read from OpenAI Agents' `agent_handoff` span
+(`gen_ai.handoff.from_agent`, `gen_ai.handoff.to_agent`), or from ADK's
+`execute_tool` span whose `gen_ai.tool.type` is `TransferToAgentTool`
+(which also stays a `tool_call`) and the sibling agent that starts
+next; the tool's arguments are content and are never read for it. A
+model call or tool belongs to its nearest
 agent ancestor, never to the agent its own attributes name; one with no
 named agent ancestor belongs to the trace's unattributed session, a root
 created only when needed, with `context.otel_unattributed=true`, that
@@ -3508,23 +3556,32 @@ exception type, and the message only with capture on. Its
 `session_start` carries `sensor_version` (the framework's version),
 `capture_prompts` (the trace's posture, below) and a `context` of
 `telemetry=otlp`, `supports_directives=false`, `frameworks`
-(`["<framework label>/<version>"]`), `otel_trace_id`, `otel_span_id`,
+(`["<framework label>/<version>"]`, or the bare label when the version
+is empty, as the plugin does for Claude Code), `otel_trace_id`, `otel_span_id`,
 `otel_scope`, `otel_assembly` (the reason the trace was due, so a
 degraded attribution can be told from a normal one) and
 `gen_ai_conversation_id` when the framework sends one.
 
 Ids are `uuid5(NAMESPACE_FLIGHTDECK, "flightdeck://otlp/genai/<token
 id>/<trace id hex>/<kind>/<span id hex>")`, the kind `session`, `event`,
-`start`, `end` or `signal` (the unattributed session's id has no span
-segment), and a re-attaching start and its end append the trace's
-assembly count. Timestamps are span starts and ends, so re-assembling a
+`start`, `end` or `signal`. The unattributed session's `session`,
+`start` and `end` ids have no span segment. A re-attaching start and its
+end append `/<first_received_at>/<assembly_count>` of the trace row (the
+row's creation time in Unix nanoseconds, then how many assemblies it
+has had), so they are unique even when a trace's rows were deleted and
+a later record created a new row whose count starts again from zero,
+and the same for a retried assembly of one row. Timestamps are span starts and ends, so re-assembling a
 trace stores nothing twice. The token in the id keeps two tokens that
 send the same trace id apart: a token rotated in the middle of a run
 stages the rest of the run as a separate trace with separate sessions.
 
 **Calls and tools.** A `chat` or `generate_content` span is a
-`post_call` unless another model span lies between it and its agent:
-Pydantic AI on the Anthropic SDK reports every call twice, nested.
+`post_call` unless another model span lies between it and its agent, so
+a framework that wraps its own model span around another recognised
+model span counts the call once. (The Anthropic SDK's
+`anthropic.messages.create` spans that Pydantic AI nests under each
+`chat` span are in a scope the table does not name, so they are link
+spans and are never counted in the first place.)
 
 | `post_call` field | Source |
 |---|---|
@@ -3536,7 +3593,7 @@ Pydantic AI on the Anthropic SDK reports every call twice, nested.
 | `tokens_total` | `tokens_input` + `tokens_output`; a count that does not parse makes it -1, which validation refuses, as in the Claude Code dialect |
 | `tokens_cache_read` | the first present of `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.details.cache_read_input_tokens` and `gen_ai.usage.cache_read_input_tokens`, never their sum |
 | `tokens_cache_creation` | `gen_ai.usage.details.cache_creation_input_tokens` |
-| `provider` | `gen_ai.provider.name` from the frameworks the table above trusts, mapped to the provider vocabulary (`anthropic`, `openai`, `gcp.*` to `google`, `x_ai` to `xai`, `mistral_ai` to `mistral`); otherwise omitted and derived by the worker from the model |
+| `provider` | `gen_ai.provider.name` from the frameworks the table above trusts, mapped to the provider vocabulary (`anthropic`, `openai`, `gcp.*` to `google`, `x_ai` to `xai`, `mistral_ai` to `mistral`); a value outside that mapping, or one from an untrusted framework, is omitted, never passed through (validation would refuse it and drop the `post_call`), and the worker derives the provider from the model |
 | `streaming` | `ttft_ms` from `gen_ai.server.time_to_first_token` and `final_outcome=completed`, when sent |
 | `cost_reported` | `operation.cost`, with `cost_source=agent` |
 | `provider_metadata.response_id` | `gen_ai.response.id` |
@@ -3566,7 +3623,7 @@ the flavor differs. User and host come from the resource's `user.id`
 (else `user.name`) and `host.name`, else `unknown`; ADK's per-record
 `user.id` names the application's user and is not read. The agent id is
 derived from them as for every client (see Identity model), every part
-cut to 256 characters first, a child's from its root's `agent_name` and
+cut to 256 bytes at a UTF-8 boundary first, a child's from its root's `agent_name` and
 its role. None of the four frameworks sends a flavor, user or host, so
 two apps on one framework that name an agent alike share that agent
 until each sets
@@ -3595,7 +3652,7 @@ Captured content is the one content Flightdeck writes outside
 `event_content`, and only transiently: it waits in
 `otlp_span_content` while its trace is assembled, is written only when
 the exporter declares capture, and is deleted when the trace is
-assembled, or by the sweep once it is older than 24 hours and 30
+assembled, or by the sweep once it has been staged for 24 hours and 30
 seconds. With capture off nothing is staged, and no content reaches any
 table. Assembled content lands in `event_content` like any other, stored
 as the framework sent it, never converted to a provider's format, with
@@ -3608,7 +3665,13 @@ on a `tool_call`, through the tool-capture envelope; and a child's
 content, else its parent's `execute_tool` content. An ADK `post_call`
 takes its content from the log record with its span id. ADK records a
 tool's arguments and result only inside the next model call's messages,
-so its `tool_call`s carry none.
+so its `tool_call`s carry none. A root agent's own content (Pydantic
+AI's `pydantic_ai.all_messages` and `final_result`, OpenAI Agents'
+input and output messages on a root `invoke_agent` span) has no
+destination: whether an agent is a root is known only at assembly, so
+it is staged like a child's, then deleted with the trace's content
+without being published. The same text is in the root's model calls'
+`messages` and `response`.
 
 **Lifecycle.** A GenAI session reaches the dashboard after its run
 ends, 3 to 30 seconds later, already closed, with the run's own start
@@ -3665,7 +3728,19 @@ process them in either order. An event carrying content that one
 replica handles before another replica has stored its session's
 `session_start` lands on a lazily created row with no capture posture,
 and its content is dropped (see Ingestion API > `POST /v1/events`).
-Across replicas, correctness rests on the session-row rules below.
+Likewise, a call that one replica handles before another has stored the
+re-attaching `session_start` published ahead of it finds the row closed
+with its own stream sequence above `closed_seq`, and its tokens are not
+added.
+
+Two redeliveries close these gaps, as the delayed redelivery of an
+early `session_end` does: an event carrying content whose row is
+missing or has no capture posture, and a call event that finds its row
+closed with a stream sequence above `closed_seq`, are redelivered after
+one second and after two before the worker falls back to lazy creation
+or to the closed-session skip. A start published ahead of them on
+another replica lands in that time. Across replicas, correctness
+otherwise rests on the session-row rules below.
 
 Appending never waits, so a slow session holds back only the sessions
 that share its lane. The queues are bounded by the consumer's
@@ -3750,14 +3825,27 @@ Notify), so an open dashboard sees a run go stale or lost without
 reloading; the dashboard never applies the thresholds itself.
 
 **Assembled sessions.** A session assembled from an OpenTelemetry
-trace (its `context` carries `otel_trace_id`; see OTLP ingest > GenAI
-dialect) takes `started_at` from its `session_start` timestamp and
-`ended_at` from its `session_end` timestamp, each capped at the
-worker's clock, because it is published after the run it describes.
+trace (its `session_start` `context` carries `otel_trace_id`; see OTLP
+ingest > GenAI dialect) is published after the run it describes, so it
+takes its times from its events, each capped at the worker's clock:
+
+- A `session_start` that inserts the row sets `started_at` to the
+  start's timestamp. One that finds a row its session has never started
+  (a parent stub, whose `started_at` is its child's start, or a row
+  lazily created by another event, whose `started_at` is that event's
+  time; neither has a `context` yet) replaces that placeholder with the
+  start's timestamp. One that finds a row its session already started
+  (a re-attachment, whose `context` already carries `otel_trace_id`)
+  keeps the row's `started_at`.
+- A `session_end` that closes the row sets `ended_at` to the end's
+  timestamp.
+
 Every other session takes both from the worker's clock when it writes
-the `session_start` and the `session_end` (a lazily created row and a
-parent stub take a placeholder `started_at`; see Three revival
-scenarios). `last_seen_at` is always the worker's clock.
+the `session_start` and the `session_end`, and a lazily created row or
+a parent stub keeps its placeholder `started_at` until then (see Three
+revival scenarios). `last_seen_at` is the worker's clock on every write
+except the one that lazily creates a row or a parent stub, which sets
+it to the same time as that row's `started_at`.
 
 **Orphan-timeout reaper.** The same reconciler tick also closes `lost`
 sessions that have been silent past `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`
@@ -3789,8 +3877,10 @@ separately from any future revival path, and notify `flightdeck_fleet`
 for the parent: the child's own notification names only the child, so
 without it a parent the dashboard saw go stale would stay stale there
 while its children worked. Scope is direct
-parent only — transitive ancestor revival is deferred until a
-framework that exercises depth>2 trees ships.
+parent only. The GenAI dialect of OTLP ingest builds trees of any depth,
+but its sessions arrive already closed, and the bump leaves closed
+parents alone, so no grandparent depends on it; the clients that report
+live sessions report one level of sub-agents.
 
 **Terminal-state handling.** `closed` is terminal and final. `session_end`
 at any non-closed state transitions directly to `closed`, unless it was
@@ -4251,7 +4341,8 @@ CREATE TABLE otlp_traces (
     source_version    TEXT NOT NULL DEFAULT '',
     token_name        TEXT NOT NULL DEFAULT '',
     resource          JSONB NOT NULL,                -- allowlisted resource attributes only: service.name / service.version, host.name,
-                                                     -- user.id / user.name, flightdeck.{flavor, agent_type, billing_mode, capture_prompts}
+                                                     -- user.id / user.name, flightdeck.{flavor, agent_type, billing_mode, capture_prompts};
+                                                     -- of the resource that created the row, never updated
     capture           BOOLEAN NOT NULL,              -- AND over every contributing resource: off wins
     first_received_at TIMESTAMPTZ NOT NULL,
     last_received_at  TIMESTAMPTZ NOT NULL,
@@ -4301,9 +4392,12 @@ CREATE TABLE otlp_span_content (                     -- written only when captur
     span_id   BYTEA NOT NULL,
     kind      SMALLINT NOT NULL,
     content   JSONB NOT NULL,
+    staged_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),  -- the backstop sweep's age is measured from it
     PRIMARY KEY (token_key, trace_id, span_id, kind),
     FOREIGN KEY (token_key, trace_id, span_id, kind) REFERENCES otlp_spans ON DELETE CASCADE
 );
+
+CREATE INDEX otlp_span_content_staged_idx ON otlp_span_content (staged_at);
 ```
 
 Ingestion owns these tables (see OTLP ingest > GenAI dialect), and no
@@ -4320,7 +4414,9 @@ when its `gen` moved during the assembly, so a record staged meanwhile
 is assembled next time whatever order the two transactions committed
 in. The partial indexes keep the due-trace claim and the retention sweep
 on the rows they need: `pending` traces by `resolve_at`, finished ones
-by `assembled_at`. Deleting a trace row removes its records and their
+by `assembled_at`; `otlp_span_content_staged_idx` serves the content
+backstop sweep, which deletes rows whose `staged_at` is more than 24
+hours and 30 seconds old. Deleting a trace row removes its records and their
 content by cascade.
 
 ### `model_pricing` (prices for estimated cost, written by the API)
@@ -4535,7 +4631,7 @@ always create a new numbered migration.
 | 000032 | `agents_client_type_check` and `sessions_client_type_check` swapped for the client type registry's list, added `NOT VALID` |
 | 000033 | Validates the two `client_type` constraints 000032 added, in its own step so the scan of `sessions` does not hold the swap's exclusive lock |
 | 000034 | `sessions_active_by_agent_idx`: partial index on `sessions (agent_id) WHERE state = 'active'`, so the agent state rollup the hub reads for every broadcast finds an agent's active runs in one small probe |
-| 000035 | `otlp_traces`, `otlp_spans` and `otlp_span_content`: the OTLP GenAI staging tables and their partial indexes; the down file drops the three tables, last created first |
+| 000035 | `otlp_traces`, `otlp_spans` and `otlp_span_content`: the OTLP GenAI staging tables and their indexes; the down file drops the three tables, last created first |
 
 ---
 
@@ -7742,7 +7838,8 @@ detail; the bare name lives on the per-event field.
 
 `framework=null` is valid and means no classifier matched at sensor
 init. The Claude Code plugin emits `framework="claude-code"`, with
-`claude-code/<version>` in `context.frameworks[]`; the OTLP receiver
+`claude-code/<version>` in `context.frameworks[]`, or a bare
+`claude-code` when it cannot tell the version; the OTLP receiver
 sends `framework="claude-code"` for Claude Code's telemetry too, and
 `context.claude_code_version` in place of the versioned entry. Its GenAI dialect
 emits the framework label (`pydantic_ai`, `strands`, `openai_agents`,
@@ -7940,7 +8037,9 @@ appear only for such sessions, so neither an observer session nor an
 enforcement-on Claude Code plugin session or Agent SDK run, which
 answer a custom directive with an error, is offered one. A Claude Code
 session reported over OTLP is an observer session: its
-`context.supports_directives` is `false`.
+`context.supports_directives` is `false`. So is every session of an
+OpenTelemetry GenAI framework (`client_type=otlp`, see OTLP ingest >
+GenAI dialect), which also arrives already closed.
 
 ---
 
@@ -8979,13 +9078,17 @@ leaves fixture-by-fixture lookup to `bringSwimlaneRowIntoView`.
 7. Never use MUI, Ant Design, or Chakra UI.
 8. D3 is used for time scale math only. React owns the DOM.
 9. SQL lives only in each service's store packages, never in handlers:
-   `api/internal/store` (with the token lookups of `api/internal/auth`),
-   `ingestion/internal/session`, `ingestion/internal/auth`,
-   `ingestion/internal/directive` and `workers/internal/writer`. The
-   current places outside store packages that run SQL are
-   `workers/internal/processor/policy.go` (token policy lookups), the
-   `enrichSessionEnd` queries in `workers/internal/processor/event.go`,
-   and the `LISTEN` in `api/internal/ws/hub.go`.
+   `api/internal/store` (with the token lookups and revocation `LISTEN`
+   of `api/internal/auth`), `ingestion/internal/session`,
+   `ingestion/internal/auth`, `ingestion/internal/directive` and
+   `workers/internal/writer`; `workers/internal/migrate` applies the
+   migration files. The current places outside store packages that run
+   SQL are `workers/internal/processor/policy.go` (token policy lookups
+   and the directives it issues), `workers/internal/processor/session.go`
+   (session-row reads: `rowOwnerless`, `handleSessionGuard`,
+   `sessionLookupState`), the `enrichSessionEnd` queries in
+   `workers/internal/processor/event.go`, and the `LISTEN` / `UNLISTEN`
+   in `api/internal/ws/hub.go`.
 10. All database migrations have an up and a down.
 11. Prompt content is never stored or logged when `capture_prompts=false`.
     This is a hard rule. No exceptions.

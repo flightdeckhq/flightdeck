@@ -153,14 +153,19 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
     migration file that has already been applied. Always add a new migration.
 
 35. **SQL lives only in each service's store packages, never in handlers.**
-    Those are `api/internal/store` (with the token lookups of
-    `api/internal/auth`), `ingestion/internal/session`,
+    Those are `api/internal/store` (with the token lookups and revocation
+    `LISTEN` of `api/internal/auth`), `ingestion/internal/session`,
     `ingestion/internal/auth`, `ingestion/internal/directive` and
-    `workers/internal/writer`. The current places outside store packages
-    that run SQL are `workers/internal/processor/policy.go` (token policy
-    lookups), the `enrichSessionEnd` queries in
-    `workers/internal/processor/event.go`, and the `LISTEN` in
-    `api/internal/ws/hub.go`.
+    `workers/internal/writer`; `workers/internal/migrate` applies the
+    migration files. The current places outside store packages that run
+    SQL are:
+    - `workers/internal/processor/policy.go`: token policy lookups and the
+      directives it issues;
+    - `workers/internal/processor/session.go`: session-row reads
+      (`rowOwnerless`, `handleSessionGuard`, `sessionLookupState`);
+    - `workers/internal/processor/event.go`: the `enrichSessionEnd`
+      queries;
+    - `api/internal/ws/hub.go`: the `LISTEN` / `UNLISTEN`.
 
 36. **Validate all event payloads at the ingestion API boundary.** Do not pass
     invalid events to NATS.

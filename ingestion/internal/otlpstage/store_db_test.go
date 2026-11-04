@@ -28,7 +28,9 @@ import (
 // made here never takes a real deployment's rows, whose times are
 // current; but the reverse does not hold: a real-clock assembler or
 // sweeper on the same database finds every 2001-dated test trace long
-// due or expired, and claims or deletes it mid-test. Each test stages
+// due or expired, and claims or deletes it mid-test. For the same
+// reason, never run two copies of this package against one database at
+// once: their 2001-dated claims take each other's traces. Each test stages
 // under a token key of its own, deletes its rows when it ends, and
 // claim assertions look only at the test's own token.
 
@@ -496,36 +498,51 @@ func TestStageCapsRecordsPerTrace(t *testing.T) {
 }
 
 // Two requests that touch the same traces in opposite orders never
-// deadlock, because each writes its traces in (token, trace) order.
+// deadlock, because each writes its traces in (token, trace) order. The
+// requests run in waves of one opposite-order pair, released together,
+// so at most two writes ever queue on a trace's row lock: a longer queue
+// would wait out the real StageTimeout under load and fail for a reason
+// that is not a deadlock. Without the ordering, a pair that each take
+// their first trace before either takes its second deadlocks, which
+// Postgres reports as an error the test fails on.
 func TestStageConcurrentRequestsDoNotDeadlock(t *testing.T) {
+	// waves is how many opposite-order pairs run, one pair at a time.
+	// With the ordering removed from the store, six of six runs
+	// deadlocked in the first wave (the pair that creates both rows); the
+	// later waves, on existing rows, cover the lock-on-update path too,
+	// and each takes milliseconds.
+	const waves = 25
 	e := newTestEnv(t)
 	a, b := e.newKey(), e.newKey()
-	const rounds = 20
-	var wg sync.WaitGroup
-	errs := make(chan error, 2*rounds)
-	for i := range rounds {
+	for i := range waves {
 		id := byte(2 * (i + 1))
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			_, err := e.store.Stage(context.Background(), []TraceBatch{e.batch(a, span(id, 1)), e.batch(b, span(id, 1))})
-			errs <- err
-		}()
-		go func() {
-			defer wg.Done()
-			_, err := e.store.Stage(context.Background(), []TraceBatch{e.batch(b, span(id+1, 1)), e.batch(a, span(id+1, 1))})
-			errs <- err
-		}()
-	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatalf("concurrent Stage: %v", err)
+		pairs := [2][]TraceBatch{
+			{e.batch(a, span(id, 1)), e.batch(b, span(id, 1))},
+			{e.batch(b, span(id+1, 1)), e.batch(a, span(id+1, 1))},
+		}
+		start := make(chan struct{})
+		errs := make(chan error, len(pairs))
+		var wg sync.WaitGroup
+		for _, batches := range pairs {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				_, err := e.store.Stage(context.Background(), batches)
+				errs <- err
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(errs)
+		for err := range errs {
+			if err != nil {
+				t.Fatalf("wave %d: concurrent Stage: %v", i, err)
+			}
 		}
 	}
-	if e.spanRows(a) != 2*rounds || e.spanRows(b) != 2*rounds {
-		t.Fatalf("staged %d and %d records, want %d each", e.spanRows(a), e.spanRows(b), 2*rounds)
+	if e.spanRows(a) != 2*waves || e.spanRows(b) != 2*waves {
+		t.Fatalf("staged %d and %d records, want %d each", e.spanRows(a), e.spanRows(b), 2*waves)
 	}
 }
 

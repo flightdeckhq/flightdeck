@@ -65,14 +65,27 @@ describe("attachmentStartIds", () => {
     expect(ids).toEqual(new Set(["late1", "late2"]));
   });
 
-  it("treats a start no loaded event precedes as the original", () => {
+  it("with the run's whole history loaded, never gives its first start to an attachment", () => {
     // An attachment whose start is not stored: the run's own first
-    // start, the earliest event loaded, is not given to it.
-    const ids = attachmentStartIds(
-      [ev("first", "2026-04-07T10:00:00Z"), ev("call", "2026-04-07T10:01:00Z", "post_call")],
-      ["2026-04-07T10:05:00Z"],
-    );
-    expect(ids.size).toBe(0);
+    // start is not given to it once the full history is known.
+    const events = [ev("first", "2026-04-07T10:00:00Z"), ev("call", "2026-04-07T10:01:00Z", "post_call")];
+    expect(attachmentStartIds(events, ["2026-04-07T10:05:00Z"], true).size).toBe(0);
+  });
+
+  it("gives a late-stamped attachment the resume a window opens on, as the full history does", () => {
+    // A window that starts after a gap holds only the resume's events:
+    // the resume's start is the earliest loaded, but not the original.
+    const full = [
+      ev("a0", "2026-11-04T09:00:00.000Z"),
+      ev("a1", "2026-11-04T09:00:10.000Z", "tool_call"),
+      ev("a2", "2026-11-04T09:01:00.000Z", "session_end"),
+      ev("r0", "2026-11-04T10:00:00.000Z"),
+      ev("r1", "2026-11-04T10:00:05.000Z", "tool_call"),
+    ];
+    const attachments = ["2026-11-04T10:00:04.000Z"];
+    expect(attachmentStartIds(full, attachments, true)).toEqual(new Set(["r0"]));
+    expect(attachmentStartIds(full, attachments)).toEqual(new Set(["r0"]));
+    expect(attachmentStartIds(full.slice(3), attachments)).toEqual(new Set(["r0"]));
   });
 
   it("gives each attachment its own start, the latest one at or before it", () => {
@@ -113,9 +126,12 @@ describe("attachmentStartIds", () => {
   it("marks nothing without attachments, and ignores events that are not starts", () => {
     expect(attachmentStartIds([ORIGINAL, ev("again", "2026-04-07T10:02:00Z")], []).size).toBe(0);
     expect(attachmentStartIds([ORIGINAL, ev("again", "2026-04-07T10:02:00Z")], undefined).size).toBe(0);
+    // A call next to the attachment is not its start; with the whole
+    // history loaded, the original start is not either.
     const ids = attachmentStartIds(
       [ORIGINAL, ev("call", "2026-04-07T10:02:00Z", "post_call")],
       ["2026-04-07T10:02:01Z"],
+      true,
     );
     expect(ids.size).toBe(0);
   });

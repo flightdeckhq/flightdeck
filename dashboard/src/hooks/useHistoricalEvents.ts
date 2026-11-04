@@ -11,10 +11,12 @@ import {
 /** Stable empty list, so an idle result does not change identity. */
 const NO_EVENTS: AgentEvent[] = [];
 
-/** One range selection. A new object per selection, so picking a range
- *  again (1m → 1h → 1m) is a new load, not the old one. */
+/** One load of a window. A new object per range pick and per reload,
+ *  so picking a range again (1m → 1h → 1m) or a reload after the live
+ *  stream reconnected is a new load, not the old one. */
 interface WindowRequest {
   range: TimeRange;
+  reloadKey: number;
 }
 
 interface DrainState {
@@ -91,9 +93,15 @@ async function drainWindow(
  * Returns the events loaded so far, oldest first, updated after every
  * page; the previous range's events stay until the new range's first
  * page arrives. A range change or unmount aborts the drain in flight.
+ * A new ``reloadKey`` loads the window again, ending now: Fleet passes
+ * the store's ``resyncSeq``, so events sent while the live stream was
+ * down are loaded once it is back.
  */
-export function useHistoricalEvents(timeRange: TimeRange) {
-  const request = useMemo<WindowRequest>(() => ({ range: timeRange }), [timeRange]);
+export function useHistoricalEvents(timeRange: TimeRange, reloadKey = 0) {
+  const request = useMemo<WindowRequest>(
+    () => ({ range: timeRange, reloadKey }),
+    [timeRange, reloadKey],
+  );
   const [state, setState] = useState<DrainState>({
     request: null,
     events: NO_EVENTS,

@@ -150,6 +150,14 @@ if (
 // fetched yet" -- treat both as no attachments at render time.
 export const attachmentsCache = new Map<string, string[]>();
 
+// Runs whose whole history the cache holds: a fetch without an
+// ``events_limit`` landed, a capped fetch came back short of its cap, or
+// the run drawer's "Show older" reached the run's first event. Every
+// later write only adds newer events, so the run stays whole. The
+// ATTACH rule (lib/events.ts::attachmentStartIds) reads it: only then is
+// the earliest cached start known to be the run's original one.
+export const fullHistoryLoaded = new Set<string>();
+
 // Track which sessions have been fetched to prevent duplicate requests.
 // Once a session is in this set, it will NEVER be fetched again.
 const fetchedSessions = new Set<string>();
@@ -193,6 +201,9 @@ export function useSessionEvents(
 
     fetchSession(sessionId)
       .then((detail) => {
+        // The full history (no events_limit), marked before the merge
+        // so the re-render it causes already reads it.
+        fullHistoryLoaded.add(sessionId);
         // Merge, never replace: a live event injected while the fetch
         // was in flight stays.
         if (mergeSessionEvents(sessionId, detail.events ?? [])) {

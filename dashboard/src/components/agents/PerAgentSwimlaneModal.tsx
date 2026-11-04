@@ -10,7 +10,7 @@ import { LiveFeed } from "@/components/fleet/LiveFeed";
 import { SessionDrawer } from "@/components/session/SessionDrawer";
 import { useAgentSummary } from "@/hooks/useAgentSummary";
 import { useNow } from "@/hooks/useNow";
-import { eventsCache, mergeSessionEvents } from "@/hooks/useSessionEvents";
+import { eventsCache, fullHistoryLoaded, mergeSessionEvents } from "@/hooks/useSessionEvents";
 import { useEventsCacheEpoch } from "@/lib/events-cache-epoch";
 import { useFleetStore } from "@/store/fleet";
 import { fetchSession } from "@/lib/api";
@@ -207,6 +207,8 @@ export function PerAgentSwimlaneModal({
           const evs = detail.events ?? [];
           // Merge, never replace: a live tick may have reached the
           // cache while the fetch was in flight.
+          // A fetch without a cap: the run's whole history.
+          fullHistoryLoaded.add(sid);
           mergeSessionEvents(sid, evs);
           return { sid, events: evs };
         } catch {

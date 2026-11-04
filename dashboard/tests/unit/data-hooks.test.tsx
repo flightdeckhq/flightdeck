@@ -17,7 +17,7 @@ import { useSession, invalidateSessionCache } from "@/hooks/useSession";
 import { useSearch } from "@/hooks/useSearch";
 import { useAnalytics } from "@/hooks/useAnalytics";
 import { useHistoricalEvents } from "@/hooks/useHistoricalEvents";
-import { eventsCache } from "@/hooks/useSessionEvents";
+import { eventsCache, fullHistoryLoaded } from "@/hooks/useSessionEvents";
 import {
   HISTORY_DRAIN_MAX_EVENTS,
   HISTORY_PAGE_SIZE,
@@ -141,6 +141,23 @@ describe("useSession and the events cache", () => {
     eventsCache.set("s-keep", [{ id: "k", session_id: "s-keep", occurred_at: "2026-05-15T12:00:00Z" } as never]);
     invalidateSessionCache("s-keep");
     expect(eventsCache.get("s-keep")).toHaveLength(1);
+  });
+
+  it("marks a run's history whole only when the fetch was uncapped or came back short of its cap", async () => {
+    const e = (id: string, sid: string) =>
+      ({ id, session_id: sid, occurred_at: `2026-05-15T12:00:0${id.length}Z` }) as never;
+    for (const id of ["s-full", "s-short", "s-capped"]) invalidateSessionCache(id);
+    api.fetchSession.mockImplementation(async (id: string, limit?: number) => ({
+      ...detail(id),
+      events: id === "s-capped" ? [e("a", id), e("bb", id)].slice(0, limit) : [e("a", id)],
+    }));
+    for (const [id, limit] of [["s-full", undefined], ["s-short", 2], ["s-capped", 2]] as const) {
+      const { result } = renderHook(() => useSession(id, limit));
+      await waitFor(() => expect(result.current.data).not.toBeNull());
+    }
+    expect(fullHistoryLoaded.has("s-full")).toBe(true);
+    expect(fullHistoryLoaded.has("s-short")).toBe(true);
+    expect(fullHistoryLoaded.has("s-capped")).toBe(false);
   });
 });
 
@@ -286,6 +303,21 @@ describe("useHistoricalEvents", () => {
     await act(async () => releaseNew({ events: [ev("new", 5)], total: 1, has_more: false }));
     expect(idsOf(result.current.events)).toEqual(["new"]);
     expect(result.current.loading).toBe(false);
+  });
+
+  it("a new reloadKey (the live stream reconnected) loads the window again, ending now", async () => {
+    api.fetchBulkEvents
+      .mockResolvedValueOnce({ events: [ev("before", 1)], total: 1, has_more: false })
+      .mockResolvedValueOnce({ events: [ev("during-outage", 5), ev("before", 1)], total: 2, has_more: false });
+    const { result, rerender } = renderHook(({ k }) => useHistoricalEvents("5m", k), {
+      initialProps: { k: 0 },
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    rerender({ k: 1 });
+    await waitFor(() => expect(idsOf(result.current.events)).toEqual(["before", "during-outage"]));
+    const [first, second] = api.fetchBulkEvents.mock.calls.map((c) => c[0]);
+    expect(Date.parse(second.to)).toBeGreaterThanOrEqual(Date.parse(first.to));
+    expect(second.before).toBeUndefined();
   });
 
   it("picking a range again loads it again", async () => {

@@ -24,7 +24,12 @@ import { OrchestrationIcon } from "@/components/ui/OrchestrationIcon";
 import { EventNode } from "./EventNode";
 import { RunBracket } from "./RunBracket";
 import { AgentStatusBadge } from "./AgentStatusBadge";
-import { useSessionEvents, attachmentsCache, eventsCache } from "@/hooks/useSessionEvents";
+import {
+	useSessionEvents,
+	attachmentsCache,
+	eventsCache,
+	fullHistoryLoaded,
+} from "@/hooks/useSessionEvents";
 import { useEventsCacheEpoch } from "@/lib/events-cache-epoch";
 import {
 	layoutRowGlyphs,
@@ -984,7 +989,11 @@ function AggregatedSessionEvents({
 		if (!domainStart || !domainEnd) return [];
 		const startMs = domainStart.getTime();
 		const endMs = domainEnd.getTime();
-		const attachIds = attachmentStartIds(events, attachmentsCache.get(session.session_id));
+		const attachIds = attachmentStartIds(
+			events,
+			attachmentsCache.get(session.session_id),
+			fullHistoryLoaded.has(session.session_id),
+		);
 		return events
 			.filter((event) => {
 				const t = new Date(event.occurred_at).getTime();

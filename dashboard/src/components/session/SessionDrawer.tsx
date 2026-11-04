@@ -55,7 +55,7 @@ import {
   getOrchestrationLabel,
 } from "@/components/ui/OrchestrationIcon";
 import { SyntaxJson } from "@/components/ui/syntax-json";
-import { eventsCache, mergeSessionEvents } from "@/hooks/useSessionEvents";
+import { eventsCache, fullHistoryLoaded, mergeSessionEvents } from "@/hooks/useSessionEvents";
 import type { AgentEvent, Session as SessionType } from "@/lib/types";
 
 export type DrawerTab = "timeline" | "prompts" | "sub-agents" | "directives";
@@ -555,6 +555,8 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
       if (mergeSessionEvents(sessionId, resp.events ?? [])) {
         setPaginationVersion((v) => v + 1);
       }
+      // Nothing older: the cache now holds the run's whole history.
+      if (!resp.has_more) fullHistoryLoaded.add(sessionId);
       setHasMoreOlder(resp.has_more);
     } catch {
       // Leave hasMoreOlder alone so the user can retry; the button
@@ -1014,6 +1016,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                   <EventFeed
                     events={displayEvents}
                     attachments={data?.attachments ?? []}
+                    fullHistory={sessionId !== null && fullHistoryLoaded.has(sessionId)}
                     expandedEventId={expandedEventId}
                     onToggleExpand={(id) => setExpandedEventId(expandedEventId === id ? null : id)}
                     onViewPrompts={handleViewPrompts}
@@ -1815,6 +1818,8 @@ function MetadataBar({ session }: { session: SessionType }) {
 interface EventFeedProps {
   events: AgentEvent[];
   attachments: string[];
+  /** The run's whole history is loaded (see ``fullHistoryLoaded``). */
+  fullHistory: boolean;
   expandedEventId: string | null;
   onToggleExpand: (id: string) => void;
   onViewPrompts: (eventId: string) => void;
@@ -1834,6 +1839,7 @@ interface EventFeedProps {
 function EventFeed({
   events,
   attachments,
+  fullHistory,
   expandedEventId,
   onToggleExpand,
   onViewPrompts,
@@ -1845,8 +1851,8 @@ function EventFeed({
   onLoadOlder,
 }: EventFeedProps) {
   const attachIds = useMemo(
-    () => attachmentStartIds(events, attachments),
-    [events, attachments],
+    () => attachmentStartIds(events, attachments, fullHistory),
+    [events, attachments, fullHistory],
   );
   return (
     <div className="flex flex-col" data-testid="session-event-feed">

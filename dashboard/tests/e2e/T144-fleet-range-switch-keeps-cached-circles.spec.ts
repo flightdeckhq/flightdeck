@@ -18,6 +18,7 @@
  * the spec runs against a production build too.
  */
 import { test, expect, type Route } from "@playwright/test";
+import { HISTORY_DRAIN_MAX_EVENTS } from "@/lib/constants";
 import { CODING_AGENT, bringSwimlaneRowIntoView, waitForFleetReady } from "./_fixtures";
 
 /** Events per page the 15m load is forced to. */
@@ -30,7 +31,12 @@ const WIDE_WINDOW_MS = 10 * 60_000;
 test.describe("T144 — A range switch keeps the cached circles", () => {
 	test("the newest circle survives a wider window's pages and the switch back", async ({ page }) => {
 		let hiddenEventId: string | null = null;
-		const widePages: { order: string | null; beforeId: string | null; hasMore: boolean }[] = [];
+		const widePages: {
+			order: string | null;
+			beforeId: string | null;
+			hasMore: boolean;
+			rows: number;
+		}[] = [];
 		let narrowPagesAfterHiding = 0;
 
 		await page.route("**/v1/events?*", async (route: Route) => {
@@ -44,6 +50,7 @@ test.describe("T144 — A range switch keeps the cached circles", () => {
 			if (wide) url.searchParams.set("limit", String(FORCED_PAGE_SIZE));
 			const response = await route.fetch({ url: url.toString() });
 			const body = await response.json();
+			const rows = Array.isArray(body?.events) ? body.events.length : 0;
 			if (Array.isArray(body?.events)) {
 				body.events = body.events.filter((e: { id?: string }) => e.id !== hiddenEventId);
 			}
@@ -53,6 +60,7 @@ test.describe("T144 — A range switch keeps the cached circles", () => {
 					order: url.searchParams.get("order"),
 					beforeId: url.searchParams.get("before_id"),
 					hasMore: body?.has_more === true,
+					rows,
 				});
 			} else {
 				narrowPagesAfterHiding += 1;
@@ -83,10 +91,16 @@ test.describe("T144 — A range switch keeps the cached circles", () => {
 
 		// Widen: the window loads newest first, its later pages continue
 		// from the previous page's oldest event, and the load runs until
-		// a page says there is no more.
+		// a page says there is no more or the load's cap is reached (a
+		// busy window never says there is no more).
 		await page.getByRole("button", { name: "15m", exact: true }).click();
 		await expect
-			.poll(() => widePages.some((p) => !p.hasMore), { timeout: 30_000 })
+			.poll(
+				() =>
+					widePages.some((p) => !p.hasMore) ||
+					widePages.reduce((n, p) => n + p.rows, 0) >= HISTORY_DRAIN_MAX_EVENTS,
+				{ timeout: 30_000 },
+			)
 			.toBe(true);
 		expect(widePages.filter((p) => p.beforeId !== null).length).toBeGreaterThan(0);
 		expect(widePages.every((p) => p.order === "desc")).toBe(true);

@@ -314,7 +314,10 @@ export function Fleet() {
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
 
   // The selected window's events, loaded newest first, page by page.
-  const { events: historicalEvents } = useHistoricalEvents(timeRange);
+  // Loaded again after the live stream reconnects (``resyncSeq``), so
+  // events sent while it was down fill in.
+  const resyncSeq = useFleetStore((s) => s.resyncSeq);
+  const { events: historicalEvents } = useHistoricalEvents(timeRange, resyncSeq);
 
   // Merge every page into eventsCache and the live feed. Both merge by
   // event id, so a range switch only adds circles and history never

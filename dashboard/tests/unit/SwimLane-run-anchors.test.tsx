@@ -5,7 +5,7 @@ import { scaleTime } from "d3-scale";
 import type { AgentEvent, Session, SessionDetail } from "@/lib/types";
 import { useFleetStore } from "@/store/fleet";
 import { SwimLane } from "@/components/timeline/SwimLane";
-import { eventsCache } from "@/hooks/useSessionEvents";
+import { attachmentsCache, eventsCache } from "@/hooks/useSessionEvents";
 
 // SwimLane places each run's glyphs with the lanes layout: segments
 // from the run's cached session_start / session_end events, the top
@@ -242,5 +242,26 @@ describe("SwimLane run anchors", () => {
       expect(kinds).toEqual(["start", "end", "start"]);
     });
     expect(fetchSession).toHaveBeenCalledWith(run.session_id);
+  });
+
+  it("colours a late-stamped re-attach after the drawer's capped fetch cached only the resume", () => {
+    // The run drawer fetched the run's newest events (a cap that
+    // stopped at the resume) and stored its attachments; the Fleet row
+    // then holds a suffix that opens on the resume's start. That start
+    // is the attachment's, stamped 4 s after it, not the run's original.
+    const run = mkSession({ session_id: nextId("q"), started_at: at(-60 * MIN) });
+    const resume = mkEvent(run.session_id, "session_start", -2 * MIN);
+    const call = mkEvent(run.session_id, "tool_call", -2 * MIN + 5 * S);
+    eventsCache.set(run.session_id, [resume, call]);
+    attachmentsCache.set(run.session_id, [at(-2 * MIN + 4 * S)]);
+    try {
+      renderRow([run], 5 * MIN);
+      const circle = within(row())
+        .getAllByTestId(`session-circle-${run.session_id}`)
+        .find((c) => c.getAttribute("data-event-id") === resume.id);
+      expect(circle?.outerHTML).toContain("var(--warning)");
+    } finally {
+      attachmentsCache.delete(run.session_id);
+    }
   });
 });

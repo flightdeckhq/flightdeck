@@ -2992,8 +2992,12 @@ control plane honours end-to-end:
    re-attach adds one start after it, and a run's loaded events reach
    back from its newest without a gap (see Bulk historical events
    hook), so the earliest loaded start is the original when more starts
-   are loaded than the run has entries, or when no loaded event is
-   older than it. `started_at` cannot tell it: for a client's run it is
+   are loaded than the run has entries, or when the run's whole history
+   is loaded (`fullHistoryLoaded` in `useSessionEvents.ts`: a fetch
+   without `events_limit`, a capped fetch that came back short of its
+   cap, or "Show older" reaching the first event). A window can open on
+   a resume's start, so otherwise the earliest loaded start may be a
+   re-attach and may be taken. `started_at` cannot tell it: for a client's run it is
    the worker's clock, which can lag the client's start by seconds. The
    Fleet swimlane draws a run that ended and was resumed as segments
    with a gap between them (see SwimLane).
@@ -6589,7 +6593,11 @@ history once, when its row first mounts.
 Every load ends at the run's newest event (a window, a run's own
 fetch, the drawer's newest `events_limit`) or continues back from the
 oldest event already held (the drawer's "Show older"), so a run's
-cached events have no gap in the middle. The run drawer's "Show older"
+cached events have no gap in the middle. Live events sent while the
+WebSocket was down would leave one, so when the stream reconnects
+Fleet loads the selected window again, ending at that moment (the
+store's `resyncSeq`, which also refetches the fleet); the merge by id
+keeps what is already held. The run drawer's "Show older"
 calls `fetchOlderEvents`, the keyset variant of the same endpoint:
 `before` and `before_id` name the oldest event the drawer holds, picked
 in the server's order, with `order=desc`. The drawer's page-size pill

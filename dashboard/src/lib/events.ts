@@ -228,12 +228,12 @@ export const ATTACH_MATCH_WINDOW_MS = 2000;
  * Every re-attach adds one start after the run's original one, and the
  * events a page holds for a run reach back from its newest without a
  * gap. So the earliest loaded start is the original when more starts
- * are loaded than the run has attachments, or when no loaded event is
- * older than it (the run's first event is its original start).
- * Otherwise the original is not loaded and every loaded start may be
- * taken. (The original is not told by ``started_at``: for a client's
- * run that is the worker's clock, which can lag the client's start by
- * seconds.)
+ * are loaded than the run has attachments, or when ``fullHistory`` says
+ * the run's whole history is loaded. Otherwise the loaded events may
+ * begin at a resume's start (a window that opens after a gap), the
+ * original may not be loaded, and every loaded start may be taken.
+ * (The original is not told by ``started_at``: for a client's run that
+ * is the worker's clock, which can lag the client's start by seconds.)
  *
  * ``events`` need not be sorted. Sessions carry a handful of
  * attachments at most, so the scans are linear.
@@ -241,6 +241,7 @@ export const ATTACH_MATCH_WINDOW_MS = 2000;
 export function attachmentStartIds(
   events: readonly { id: string; event_type: string; occurred_at: string }[],
   attachments: readonly string[] | undefined,
+  fullHistory = false,
 ): Set<string> {
   const matched = new Set<string>();
   if (!attachments || attachments.length === 0) return matched;
@@ -272,13 +273,7 @@ export function attachmentStartIds(
 
   // An attachment stamped later than its start: the latest start not
   // yet matched that is dated at or before it, never the original.
-  const earliest = starts[0]!;
-  const loadedFromTheStart = events.every((e) => {
-    const ms = new Date(e.occurred_at).getTime();
-    return Number.isNaN(ms) || ms >= earliest.ms;
-  });
-  const original =
-    starts.length > attachedMs.length || loadedFromTheStart ? earliest : undefined;
+  const original = starts.length > attachedMs.length || fullHistory ? starts[0] : undefined;
   for (const att of unmatched) {
     let pick: { id: string; ms: number } | undefined;
     for (const s of starts) {

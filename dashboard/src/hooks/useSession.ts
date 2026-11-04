@@ -1,7 +1,7 @@
 import { useKeyedFetch } from "./useKeyedFetch";
 import { fetchSession } from "@/lib/api";
 import type { SessionDetail } from "@/lib/types";
-import { attachmentsCache, mergeSessionEvents } from "./useSessionEvents";
+import { attachmentsCache, fullHistoryLoaded, mergeSessionEvents } from "./useSessionEvents";
 
 // Cache session metadata so reopening the same drawer doesn't re-fetch.
 // Each entry records the revalidation revision it was fetched under, so
@@ -57,11 +57,18 @@ export function useSession(
       // answer to a question nobody is asking any more.
       if (sessionId && !signal.aborted) {
         sessionCache.set(sessionId, { detail, revision });
+        // Without a cap, or short of it, the fetch is the run's whole
+        // history; a capped fetch that filled its cap is only its newest
+        // events, which say nothing about the run's original start.
+        const events = detail.events ?? [];
+        if (eventsLimit === undefined || events.length < eventsLimit) {
+          fullHistoryLoaded.add(sessionId);
+        }
         // Merge into eventsCache so the swimlane and the drawer share
         // the same data. Merge, never replace: the cache may hold
         // events this fetch does not (older ones a window load or
         // "Show older" brought in, live ones newer than the fetch).
-        mergeSessionEvents(sessionId, detail.events ?? []);
+        mergeSessionEvents(sessionId, events);
         // Mirror attachments into the shared cache so the swimlane's
         // AggregatedSessionEvents can colour a re-attachment's
         // session_start circle amber without its own round-trip.

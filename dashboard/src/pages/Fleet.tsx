@@ -28,7 +28,7 @@ import {
 } from "@/lib/constants";
 import { useLeftPanelWidth } from "@/lib/leftPanelWidth";
 import { useSwimlaneScroll } from "@/lib/useSwimlaneScroll";
-import { eventsCache } from "@/hooks/useSessionEvents";
+import { mergeFeedEvents, mergeIntoEventsCache, mergeSessionEvents } from "@/hooks/useSessionEvents";
 
 /**
  * Timeline view mode. The "bars" stacked-histogram variant was
@@ -150,11 +150,11 @@ export function Fleet() {
   const arrivalCounter = useRef(0);
 
   const handleNewEvent = useCallback((event: AgentEvent) => {
-    // Inject into eventsCache for swimlane (instant update via version bump)
+    // Merge into eventsCache for the swimlane (instant update via
+    // version bump); the merge keeps the run's list in order and drops
+    // an event it already holds.
     const sid = event.session_id;
-    const cached = eventsCache.get(sid) ?? [];
-    if (!cached.some((e) => e.id === event.id)) {
-      eventsCache.set(sid, [...cached, event]);
+    if (mergeSessionEvents(sid, [event])) {
       setSessionVersions((prev) => ({ ...prev, [sid]: (prev[sid] ?? 0) + 1 }));
     }
 
@@ -171,11 +171,7 @@ export function Fleet() {
         return next.length > PAUSE_QUEUE_MAX_EVENTS ? next.slice(-PAUSE_QUEUE_MAX_EVENTS) : next;
       });
     } else {
-      setFeedEvents((prev) =>
-        prev.some((p) => p.event.id === event.id)
-          ? prev
-          : [...prev, fe].slice(-FEED_MAX_EVENTS),
-      );
+      setFeedEvents((prev) => mergeFeedEvents(prev, [fe], FEED_MAX_EVENTS));
     }
   }, []);
 
@@ -317,50 +313,42 @@ export function Fleet() {
   const [directEventDetail, setDirectEventDetail] = useState<AgentEvent | null>(null);
   const [activeFilter, setActiveFilter] = useState<string | null>(null);
 
-  // Bulk historical events load — one request replaces all per-session fetches
-  const { events: historicalEvents } = useHistoricalEvents(timeRange);
+  // The selected window's events, loaded newest first, page by page.
+  // Loaded again after the live stream reconnects (``resyncSeq``), so
+  // events sent while it was down fill in.
+  const resyncSeq = useFleetStore((s) => s.resyncSeq);
+  const { events: historicalEvents } = useHistoricalEvents(timeRange, resyncSeq);
 
-  // Populate eventsCache and feedEvents from bulk load
+  // Merge every page into eventsCache and the live feed. Both merge by
+  // event id, so a range switch only adds circles and history never
+  // displaces live events.
   useEffect(() => {
     if (!historicalEvents.length) return;
 
-    // Group by session_id and populate cache
-    const grouped = new Map<string, AgentEvent[]>();
-    for (const event of historicalEvents) {
-      const existing = grouped.get(event.session_id) ?? [];
-      grouped.set(event.session_id, [...existing, event]);
-    }
-    grouped.forEach((events, sessionId) => {
-      const existing = eventsCache.get(sessionId);
-      if (!existing || existing.length < events.length) {
-        eventsCache.set(sessionId, events);
-      }
-    });
+    const changed = mergeIntoEventsCache(historicalEvents);
 
-    // Increment versions for all affected sessions. This effect
+    // Bump the version of the runs whose list changed. This effect
     // synchronises an external store (the module-level eventsCache
     // written above, which the swimlane reads); the version bump is
     // what tells the swimlane to re-read it, so it has to follow the
     // cache write and cannot move into render.
-    // eslint-disable-next-line react-hooks/set-state-in-effect
-    setSessionVersions((prev) => {
-      const next = { ...prev };
-      grouped.forEach((_, sessionId) => {
-        next[sessionId] = (next[sessionId] ?? 0) + 1;
+    if (changed.size > 0) {
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      setSessionVersions((prev) => {
+        const next = { ...prev };
+        changed.forEach((sessionId) => {
+          next[sessionId] = (next[sessionId] ?? 0) + 1;
+        });
+        return next;
       });
-      return next;
-    });
+    }
 
-    // Populate live feed from historical events
+    // Seed the live feed from the same events.
     const feedFromHistory: FeedEvent[] = historicalEvents.map((event) => ({
       arrivedAt: new Date(event.occurred_at).getTime(),
       event,
     }));
-    setFeedEvents((prev) => {
-      const seen = new Set(prev.map((fe) => fe.event.id));
-      const merged = [...prev, ...feedFromHistory.filter((fe) => !seen.has(fe.event.id))];
-      return merged.slice(-FEED_MAX_EVENTS);
-    });
+    setFeedEvents((prev) => mergeFeedEvents(prev, feedFromHistory, FEED_MAX_EVENTS));
   }, [historicalEvents]);
 
   // Recent directive events for the FleetPanel sidebar.
@@ -511,7 +499,7 @@ export function Fleet() {
     // Drain queue into feedEvents -- scopedFeedEvents' upper-bound
     // filter will hold these back from the feed until the virtual
     // clock passes each event's occurred_at.
-    setFeedEvents((prev) => [...prev, ...pauseQueue].slice(-FEED_MAX_EVENTS));
+    setFeedEvents((prev) => mergeFeedEvents(prev, pauseQueue, FEED_MAX_EVENTS));
     setPauseQueue([]);
     setVirtualNow(pausedAt.getTime());
     setPaused(false);

@@ -39,6 +39,35 @@ export function compareEventOrder(a: Ordered, b: Ordered): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
+/**
+ * ``events`` in the server's order, as a new array. Each timestamp is
+ * parsed once rather than on every comparison, and a list that is
+ * already in order (what the API returns) is copied without sorting:
+ * a run's full history can hold thousands of events.
+ */
+export function sortByEventOrder<T extends Ordered>(events: readonly T[]): T[] {
+  const keyed = events.map((e) => ({
+    e,
+    ms: new Date(e.occurred_at).getTime(),
+    nanos: nanosOf(e.occurred_at),
+  }));
+  const cmp = (a: (typeof keyed)[number], b: (typeof keyed)[number]): number => {
+    const ms = a.ms - b.ms;
+    if (ms !== 0) return ms;
+    if (a.nanos !== b.nanos) return a.nanos < b.nanos ? -1 : 1;
+    return a.e.id < b.e.id ? -1 : a.e.id > b.e.id ? 1 : 0;
+  };
+  let sorted = true;
+  for (let i = 1; i < keyed.length; i++) {
+    if (cmp(keyed[i - 1]!, keyed[i]!) > 0) {
+      sorted = false;
+      break;
+    }
+  }
+  if (!sorted) keyed.sort(cmp);
+  return keyed.map((k) => k.e);
+}
+
 /** The first event in the server's order, or undefined when there are
  *  none. The list need not be sorted. */
 export function oldestEvent<T extends Ordered>(events: readonly T[]): T | undefined {

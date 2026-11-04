@@ -2976,14 +2976,32 @@ control plane honours end-to-end:
 4. **Sensor — INFO log on the first attached response.** Per-process
    guard so subsequent envelopes do not duplicate the log.
 5. **Dashboard — an attachment badge per recorded attachment.**
-   `GET /v1/sessions/:id` returns an `attachments: []time` array. The
-   session drawer shows the `session_start` within two seconds of an
-   entry with an ATTACH badge in place of its event-type pill (tooltip
-   "Agent re-attached with the same session ID"), and the timeline
-   draws that start's node in the warning colour (tooltip "Run
-   attached"); the session's first `session_start` has no entry and
-   keeps its own look. The Fleet swimlane draws a run that ended and
-   was resumed as segments with a gap between them (see SwimLane).
+   `GET /v1/sessions/:id` returns an `attachments: []time` array, each
+   entry the time ingestion recorded the attach. The run drawer shows
+   each re-attaching `session_start` with an ATTACH badge in place of
+   its event-type pill (tooltip "Agent re-attached with the same
+   session ID"), and the timeline draws that start's node in the
+   warning colour (tooltip "Run attached"). Both read the same rule
+   (`attachmentStartIds` in `dashboard/src/lib/events.ts`). The
+   `session_start` nearest an entry, within two seconds of it, is that
+   entry's start (a client's own start, which the attach stamps a
+   moment later). An entry with no start that close belongs to a start
+   dated by its record rather than by its arrival, as an OpenTelemetry
+   re-attaching start is (see OTLP ingest), and marks the latest start
+   not yet matched that is dated at or before it. That rule never takes
+   the run's original `session_start`, which has no entry: every
+   re-attach adds one start after it, and a run's loaded events reach
+   back from its newest without a gap (see Bulk historical events
+   hook), so the earliest loaded start is the original when more starts
+   are loaded than the run has entries, or when the run's whole history
+   is loaded (`fullHistoryLoaded` in `useSessionEvents.ts`: a fetch
+   without `events_limit`, a capped fetch that came back short of its
+   cap, or "Show older" reaching the first event). A window can open on
+   a resume's start, so otherwise the earliest loaded start may be a
+   re-attach and may be taken. `started_at` cannot tell it: for a client's run it is
+   the worker's clock, which can lag the client's start by seconds. The
+   Fleet swimlane draws a run that ended and was resumed as segments
+   with a gap between them (see SwimLane).
 
 The race between step 2 (synchronous) and the worker's
 `HandleSessionStart` (asynchronous, via NATS) is bounded: the ingestion
@@ -3531,7 +3549,10 @@ precedes, as the Claude Code dialect's synthetic start is, so it stays
 inside the validation window however old the session is; the worker
 keeps the re-attached row's `started_at` (see Session state machine >
 Assembled sessions), and the session's attachment marker is drawn at
-that point, mid-run. The `session_end` is dated at the session's
+that point, mid-run. Its attachment entry carries the time the record
+arrived, later than that start, and the run drawer and the swimlane
+still mark that start as the attachment (see Session attachment flow,
+step 5). The `session_end` is dated at the session's
 original end, unless that is outside the validation window (a
 `max_hold` trace whose agent ended early, given a late record a day
 after its assembly), when it is dated one microsecond after the latest
@@ -5552,8 +5573,10 @@ a row at a page boundary. `GET /v1/sessions/:id` orders its events the
 same way, also when `events_limit` caps them to the newest N.
 
 Two paging styles share the order. Offset paging (`limit` + `offset`)
-serves Fleet's history load, the Events page and the agent drawer.
-Keyset paging serves the run drawer's "Show older": `before` alone
+serves the Events page and the agent drawer. Keyset paging serves
+Fleet's history load and the run drawer's "Show older", both newest
+first (`order=desc`), each page continuing from the oldest event the
+previous one returned: `before` alone
 returns rows with `occurred_at < before`; `before` with `before_id`
 (the id of the oldest row the caller holds) returns the rows strictly
 before that row in the order, `occurred_at < before`, or
@@ -6036,10 +6059,11 @@ Modal layout:
   `eventsCache` for each session in the scoped set (mirroring
   the swimlane's `useSessionEvents` path so the lane and the
   feed read from one source of truth, including events older
-  than any wall-clock window); `useFleetStore.lastEvent` ticks
-  every WS event into the feed dedup'd by `event.id` and is
-  also injected into `eventsCache` so the swimlane sees the
-  same live tick. Both streams filter through
+  than any wall-clock window), merging each fetched run into the
+  cache by event id (`mergeIntoEventsCache`);
+  `useFleetStore.lastEvent` ticks every WS event into the feed
+  dedup'd by `event.id` and merges it into `eventsCache` the same
+  way, so the swimlane sees the same live tick. Both streams filter through
   `scopedSessionIds` (a `Set<string>` of `session_id` values)
   before merging — `session_id` is the match key, not
   `flavor`, because `FlavorSummary.flavor` carries the
@@ -6062,10 +6086,21 @@ Modal layout:
   is a `motion` (`motion/react`) position-fixed overlay (not a nested
   Radix Dialog), so it stacks above the modal without
   Radix focus-trap or backdrop-click conflicts. Closing the
-  drawer clears `selectedEvent`; the modal stays open.
+  drawer clears `selectedEvent`; the modal stays open. Its
+  "View entire run →" link closes it and opens that run in the
+  run drawer.
+- **Run glyph click** — a run's ▶ or ■ glyph sets the modal's
+  local `selectedRunId`, which mounts `SessionDrawer` (the run
+  drawer) inside the Dialog content, the same `motion` overlay
+  the Fleet page uses. Closing it clears `selectedRunId`; the
+  modal stays open. Re-pointing the modal at another agent clears
+  both the selected event and the selected run.
 - **Close** — the header's `×` button calls the host's
-  `onClose`; outside-click and `Esc` route through the same
-  path. Returns to the launching surface at the same scroll
+  `onClose`; outside-click routes through the same path. `Esc`
+  closes the innermost open layer first: the event detail drawer,
+  then the run drawer, then the modal (the Dialog's
+  `onEscapeKeyDown` keeps the modal open while a drawer is up).
+  Returns to the launching surface at the same scroll
   position; the URL gains no segments while the modal is
   open.
 
@@ -6466,9 +6501,10 @@ though the screen still shows the run active. The state badge carries
 
 Operator-facing prose calls a session a **run**; the drawer is the
 run drawer. It opens from five entry points: (1) an event circle on
-the Fleet swimlane, (2) a run-bracket glyph on the swimlane, (3) a
-row in the agent drawer's Runs tab, (4) the "View entire run →"
-link in the `EventDetailDrawer` metadata section, and (5) the
+the Fleet swimlane, (2) a run-bracket glyph on the Fleet swimlane or
+in the per-agent swimlane modal, (3) a row in the agent drawer's Runs
+tab, (4) the "View entire run →" link in the `EventDetailDrawer`
+metadata section (on Fleet and in the per-agent modal), and (5) the
 run-badge column on the `/events` event table. When opened from
 the agent drawer (entry point 3) the optional `backLabel` /
 `onBack` props render a "← Back to {agent}" breadcrumb that
@@ -6575,19 +6611,52 @@ the 500-event cap.
 
 ### Bulk historical events hook
 
-`dashboard/src/hooks/useHistoricalEvents.ts` calls `fetchBulkEvents({
-from, limit: 500, offset })` (which hits `GET /v1/events` with offset
-paging) and returns the chronological list. Fleet groups the result by `session_id` to
-populate `eventsCache` and seeds `feedEvents` from the historical data
-so the live feed is not empty on page load. A run with nothing cached
-fetches its own history once, when its row first mounts
-(`useSessionEvents`); WebSocket events flow into the same caches.
+`dashboard/src/hooks/useHistoricalEvents.ts` loads the selected
+window's events through `fetchBulkEvents` (`GET /v1/events`), newest
+first (`order=desc`), `HISTORY_PAGE_SIZE` (1,000) events per request.
+The window's `from` and `to` are fixed when the range is picked. Each
+page after the first continues from the oldest event the previous page
+returned, with the keyset cursor (`before` + `before_id`). The hook
+keeps requesting pages while `has_more` is true, until the window is
+complete or `HISTORY_DRAIN_MAX_EVENTS` (5,000) events are loaded, so a
+window busier than the cap loses its oldest events, never its newest.
+A failed page stops the drain and a range change aborts it. The hook
+returns the events loaded so far, oldest first, after every page; the
+previous range's events stay in place until the new range's first page
+arrives.
 
-The run drawer's "Show older" calls `fetchOlderEvents`, the keyset
-variant of the same endpoint: `before` and `before_id` name the oldest
-event the drawer holds, picked in the server's order (`occurred_at` to
-the microsecond, then `id`; `dashboard/src/lib/event-order.ts`), with
-`order=desc`.
+Fleet merges every page into `eventsCache` by event id
+(`mergeIntoEventsCache` in `useSessionEvents.ts`), keeps each run's
+list in the server's order (`occurred_at` to the microsecond, then
+`id`; `dashboard/src/lib/event-order.ts`), and bumps the version of
+only the runs whose list changed. Every writer of the cache merges the
+same way and never replaces or drops a run's list: live WebSocket
+events, a run's own history fetch (`useSessionEvents`), the run
+drawer's fetch (`useSession`) and its "Show older" pages, and the
+per-agent swimlane modal's seed and live ticks. Switching ranges
+therefore only adds circles. A run with nothing cached fetches its
+history once, when its row first mounts.
+
+Every load ends at the run's newest event (a window, a run's own
+fetch, the drawer's newest `events_limit`) or continues back from the
+oldest event already held (the drawer's "Show older"), so a run's
+cached events have no gap in the middle. Live events sent while the
+WebSocket was down would leave one, so when the stream reconnects
+Fleet loads the selected window again, ending at that moment (the
+store's `resyncSeq`, which also refetches the fleet); the merge by id
+keeps what is already held. The run drawer's "Show older"
+calls `fetchOlderEvents`, the keyset variant of the same endpoint:
+`before` and `before_id` name the oldest event the drawer holds, picked
+in the server's order, with `order=desc`. The drawer's page-size pill
+sets how many events its fetch and each "Show older" page ask for;
+changing it refetches the run and merges the answer, so the drawer
+keeps showing every event it already holds.
+
+The live feed is seeded from the same pages and keeps the newest
+`FEED_MAX_EVENTS` events by arrival (`mergeFeedEvents`), so history
+that loads after live events never displaces them. The Fleet sidebar's
+Directive Activity and Policy Events panels read the feed, so they
+show the window's newest events too.
 
 ### Timeline
 
@@ -7000,6 +7069,8 @@ tunable magic numbers:
 |---|---|---|
 | `FEED_MAX_EVENTS` | 500 | Live feed display buffer cap |
 | `PAUSE_QUEUE_MAX_EVENTS` | 1000 | Pause queue cap |
+| `HISTORY_PAGE_SIZE` | 1000 | Events per request of Fleet's history load |
+| `HISTORY_DRAIN_MAX_EVENTS` | 5000 | Most events Fleet's history load keeps per window (its newest) |
 | `FEED_INITIAL_LOAD` | 100 | Initial fleet store load size |
 | `FEED_MIN_HEIGHT` | 120 | Live feed resize lower bound |
 | `FEED_MAX_HEIGHT` | 600 | Live feed resize upper bound |

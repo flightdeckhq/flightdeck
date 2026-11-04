@@ -211,35 +211,78 @@ export function getBadge(eventType: string): BadgeConfig {
 export const ATTACH_MATCH_WINDOW_MS = 2000;
 
 /**
- * Decide whether `event` is a session_start that corresponds to a
- * recorded re-attachment in `attachments`.
+ * The ids of a run's re-attaching session_start events: the starts
+ * its recorded attachments (``attachments``, each the time ingestion
+ * recorded the attach) belong to.
  *
- * - Only session_start events are eligible; anything else returns
- *   false trivially.
- * - An event matches an attachment when |occurred_at - attached_at|
- *   ≤ ATTACH_MATCH_WINDOW_MS.
- * - The very first session_start (the original) has no matching
- *   attachment row and therefore returns false unchanged.
+ * - The session_start nearest an attachment, within
+ *   ATTACH_MATCH_WINDOW_MS of it, is that attachment's start: a
+ *   client's own start, which the attach stamps a moment later.
+ * - An attachment with no start that close belongs to a start dated
+ *   by its record rather than by its arrival, as the OpenTelemetry
+ *   re-attaching start is: dated one microsecond before the late
+ *   records it wraps, while the attach is stamped when they arrive. It
+ *   takes the latest start not yet matched that is dated at or before
+ *   it, never the run's original start.
  *
- * Linear scan against `attachments` is fine -- sessions typically
- * have 0..10 attachments even for aggressive orchestrators.
+ * Every re-attach adds one start after the run's original one, and the
+ * events a page holds for a run reach back from its newest without a
+ * gap. So the earliest loaded start is the original when more starts
+ * are loaded than the run has attachments, or when ``fullHistory`` says
+ * the run's whole history is loaded. Otherwise the loaded events may
+ * begin at a resume's start (a window that opens after a gap), the
+ * original may not be loaded, and every loaded start may be taken.
+ * (The original is not told by ``started_at``: for a client's run that
+ * is the worker's clock, which can lag the client's start by seconds.)
+ *
+ * ``events`` need not be sorted. Sessions carry a handful of
+ * attachments at most, so the scans are linear.
  */
-export function isAttachmentStartEvent(
-  event: { event_type: string; occurred_at: string },
-  attachments: string[] | undefined,
-): boolean {
-  if (event.event_type !== "session_start") return false;
-  if (!attachments || attachments.length === 0) return false;
-  const eventMs = new Date(event.occurred_at).getTime();
-  if (Number.isNaN(eventMs)) return false;
-  for (const att of attachments) {
-    const attMs = new Date(att).getTime();
-    if (Number.isNaN(attMs)) continue;
-    if (Math.abs(attMs - eventMs) <= ATTACH_MATCH_WINDOW_MS) {
-      return true;
-    }
+export function attachmentStartIds(
+  events: readonly { id: string; event_type: string; occurred_at: string }[],
+  attachments: readonly string[] | undefined,
+  fullHistory = false,
+): Set<string> {
+  const matched = new Set<string>();
+  if (!attachments || attachments.length === 0) return matched;
+  const starts: { id: string; ms: number }[] = [];
+  for (const e of events) {
+    if (e.event_type !== "session_start") continue;
+    const ms = new Date(e.occurred_at).getTime();
+    if (!Number.isNaN(ms)) starts.push({ id: e.id, ms });
   }
-  return false;
+  if (starts.length === 0) return matched;
+  starts.sort((a, b) => a.ms - b.ms || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+  const attachedMs = attachments
+    .map((a) => new Date(a).getTime())
+    .filter((ms) => !Number.isNaN(ms))
+    .sort((a, b) => a - b);
+
+  // The nearest start close to an attachment is that attachment's.
+  const unmatched: number[] = [];
+  for (const att of attachedMs) {
+    let near: { id: string; ms: number } | undefined;
+    for (const s of starts) {
+      if (matched.has(s.id) || Math.abs(s.ms - att) > ATTACH_MATCH_WINDOW_MS) continue;
+      if (near === undefined || Math.abs(s.ms - att) < Math.abs(near.ms - att)) near = s;
+    }
+    if (near) matched.add(near.id);
+    else unmatched.push(att);
+  }
+
+  // An attachment stamped later than its start: the latest start not
+  // yet matched that is dated at or before it, never the original.
+  const original = starts.length > attachedMs.length || fullHistory ? starts[0] : undefined;
+  for (const att of unmatched) {
+    let pick: { id: string; ms: number } | undefined;
+    for (const s of starts) {
+      if (s.ms > att) break;
+      if (s !== original && !matched.has(s.id)) pick = s;
+    }
+    if (pick) matched.add(pick.id);
+  }
+  return matched;
 }
 
 /* ---- Event detail text ---- */

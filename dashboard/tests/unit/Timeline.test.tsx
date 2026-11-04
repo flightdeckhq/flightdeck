@@ -39,6 +39,7 @@ vi.mock("@/hooks/useSessionEvents", () => {
   return {
     useSessionEvents: () => ({ events: [], loading: false }),
     attachmentsCache: new Map(),
+    fullHistoryLoaded: new Set(),
     eventsCache: new Map([
       ["s1", [{ ...stub, session_id: "s1", flavor: "research-agent" }]],
       ["s2", [{ ...stub, session_id: "s2", flavor: "coding-agent" }]],

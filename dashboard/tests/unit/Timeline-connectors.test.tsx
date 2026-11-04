@@ -51,6 +51,7 @@ vi.mock("@/hooks/useSessionEvents", () => ({
     loading: false,
   }),
   attachmentsCache: new Map(),
+  fullHistoryLoaded: new Set(),
   eventsCache: events,
 }));
 

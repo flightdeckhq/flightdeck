@@ -169,7 +169,6 @@ describe("EventRow for a session_signal", () => {
     render(
       <EventRow
         event={signalEvent("context_compacted", true)}
-        attachments={[]}
         isExpanded
         onToggleExpand={() => {}}
         onViewPrompts={() => {}}
@@ -183,7 +182,6 @@ describe("EventRow for a session_signal", () => {
     render(
       <EventRow
         event={signalEvent("model_switched", false)}
-        attachments={[]}
         isExpanded
         onToggleExpand={() => {}}
       />,

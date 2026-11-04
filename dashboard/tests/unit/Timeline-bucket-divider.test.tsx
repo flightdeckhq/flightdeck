@@ -28,6 +28,7 @@ import type { FlavorSummary } from "@/lib/types";
 vi.mock("@/hooks/useSessionEvents", () => ({
   useSessionEvents: () => ({ events: [], loading: false }),
   attachmentsCache: new Map(),
+  fullHistoryLoaded: new Set(),
   eventsCache: new Map(),
 }));
 

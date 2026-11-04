@@ -12,7 +12,6 @@ import {
   getBadge,
   getEventDetail,
   getSummaryRows,
-  isAttachmentStartEvent,
 } from "@/lib/events";
 import { getProvider } from "@/lib/models";
 import { SyntaxJson } from "@/components/ui/syntax-json";
@@ -42,7 +41,10 @@ import { MCPEventDetails, isMCPEvent } from "./MCPEventDetails";
  */
 export interface EventRowProps {
   event: AgentEvent;
-  attachments: string[];
+  /** The event is a re-attaching session_start (see
+   *  ``attachmentStartIds`` in lib/events.ts): it shows the ATTACH
+   *  badge in place of its event-type pill. */
+  isAttachment?: boolean;
   isExpanded: boolean;
   onToggleExpand: (id: string) => void;
   onViewPrompts?: (eventId: string) => void;
@@ -51,13 +53,12 @@ export interface EventRowProps {
 
 export function EventRow({
   event,
-  attachments,
+  isAttachment = false,
   isExpanded,
   onToggleExpand,
   onViewPrompts,
   onOpenDetail,
 }: EventRowProps) {
-  const isAttachment = isAttachmentStartEvent(event, attachments);
   const badge = isAttachment ? attachBadge : getBadge(event.event_type);
   const detail = getEventDetail(event);
   return (

@@ -7,9 +7,11 @@ import { TopologyCell } from "@/components/fleet/TopologyCell";
 import { AgentStatusBadge } from "@/components/timeline/AgentStatusBadge";
 import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import { LiveFeed } from "@/components/fleet/LiveFeed";
+import { SessionDrawer } from "@/components/session/SessionDrawer";
 import { useAgentSummary } from "@/hooks/useAgentSummary";
 import { useNow } from "@/hooks/useNow";
-import { eventsCache } from "@/hooks/useSessionEvents";
+import { eventsCache, fullHistoryLoaded, mergeSessionEvents } from "@/hooks/useSessionEvents";
+import { useEventsCacheEpoch } from "@/lib/events-cache-epoch";
 import { useFleetStore } from "@/store/fleet";
 import { fetchSession } from "@/lib/api";
 import {
@@ -67,16 +69,22 @@ export function PerAgentSwimlaneModal({
     () => agent?.topology === "parent",
   );
   const [selectedEvent, setSelectedEvent] = useState<AgentEvent | null>(null);
+  // The run open in the run drawer, from a run glyph click or the event
+  // drawer's "View entire run".
+  const [selectedRunId, setSelectedRunId] = useState<string | null>(null);
 
   // Reset the toggle and the window to the shared default whenever the
   // modal re-points at a different agent — a reopen never inherits the
-  // prior agent's range. Adjusted during render, keyed on the agent.
+  // prior agent's range, event or run. Adjusted during render, keyed on
+  // the agent.
   const pointedAt = `${agent?.agent_id ?? ""}|${agent?.topology ?? ""}`;
   const [resetFor, setResetFor] = useState(pointedAt);
   if (pointedAt !== resetFor) {
     setResetFor(pointedAt);
     setShowSubAgents(agent?.topology === "parent");
     setTimeRange(DEFAULT_TIME_RANGE);
+    setSelectedEvent(null);
+    setSelectedRunId(null);
   }
 
   const { summary } = useAgentSummary(agent?.agent_id ?? "", {
@@ -197,7 +205,11 @@ export function PerAgentSwimlaneModal({
         try {
           const detail = await fetchSession(sid);
           const evs = detail.events ?? [];
-          if (evs.length > 0) eventsCache.set(sid, evs);
+          // Merge, never replace: a live tick may have reached the
+          // cache while the fetch was in flight.
+          // A fetch without a cap: the run's whole history.
+          fullHistoryLoaded.add(sid);
+          mergeSessionEvents(sid, evs);
           return { sid, events: evs };
         } catch {
           return { sid, events: [] as AgentEvent[] };
@@ -248,11 +260,7 @@ export function PerAgentSwimlaneModal({
   useEffect(() => {
     if (!agentId || !lastEvent) return;
     if (!scopedSessionIds.has(lastEvent.session_id)) return;
-    const sid = lastEvent.session_id;
-    const cached = eventsCache.get(sid) ?? [];
-    if (!cached.some((e) => e.id === lastEvent.id)) {
-      eventsCache.set(sid, [...cached, lastEvent]);
-    }
+    mergeSessionEvents(lastEvent.session_id, [lastEvent]);
     arrivalCounter.current += 1;
     const fe: FeedEvent = {
       arrivedAt: Date.now() + arrivalCounter.current * 0.001,
@@ -319,6 +327,17 @@ export function PerAgentSwimlaneModal({
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent
         data-testid="per-agent-swimlane-modal"
+        // Esc closes the innermost open layer first: the event drawer,
+        // then the run drawer, and only then the modal.
+        onEscapeKeyDown={(e) => {
+          if (selectedEvent) {
+            e.preventDefault();
+            setSelectedEvent(null);
+          } else if (selectedRunId) {
+            e.preventDefault();
+            setSelectedRunId(null);
+          }
+        }}
         className="max-w-[80vw]!"
         style={
           {
@@ -547,8 +566,11 @@ export function PerAgentSwimlaneModal({
                 <Timeline
                   flavors={scopedFlavors}
                   timeRange={timeRange}
-                  onNodeClick={(_sessionId, _eventId, event) => {
+                  onNodeClick={(sessionId, _eventId, event) => {
+                    // An event circle opens the event drawer; a run
+                    // glyph (no event) opens the run drawer.
                     if (event) setSelectedEvent(event);
+                    else setSelectedRunId(sessionId);
                   }}
                 />
               </div>
@@ -574,15 +596,52 @@ export function PerAgentSwimlaneModal({
                 portal coordination is required; the drawer
                 overlays the page on its own and the modal's
                 Radix focus-trap stays out of its way. */}
+            <ModalRunDrawer
+              sessionId={selectedRunId}
+              onClose={() => setSelectedRunId(null)}
+              onSwitchSession={setSelectedRunId}
+            />
+
             <EventDetailDrawer
               event={selectedEvent}
               onClose={() => setSelectedEvent(null)}
+              onViewRun={(sessionId) => {
+                setSelectedEvent(null);
+                setSelectedRunId(sessionId);
+              }}
             />
 
           </>
         )}
       </DialogContent>
     </Dialog>
+  );
+}
+
+/**
+ * The run drawer inside the modal. The modal's live ticks merge into
+ * ``eventsCache``, and the drawer re-reads the cache when its
+ * ``version`` moves, so the cache's write count is its version. Kept
+ * in its own component so a cache write re-renders the drawer, not the
+ * modal and its swimlane.
+ */
+function ModalRunDrawer({
+  sessionId,
+  onClose,
+  onSwitchSession,
+}: {
+  sessionId: string | null;
+  onClose: () => void;
+  onSwitchSession: (sessionId: string) => void;
+}) {
+  const cacheEpoch = useEventsCacheEpoch();
+  return (
+    <SessionDrawer
+      sessionId={sessionId}
+      onClose={onClose}
+      version={sessionId ? cacheEpoch : 0}
+      onSwitchSession={onSwitchSession}
+    />
   );
 }
 

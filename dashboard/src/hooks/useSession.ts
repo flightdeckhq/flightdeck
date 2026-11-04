@@ -1,7 +1,7 @@
 import { useKeyedFetch } from "./useKeyedFetch";
 import { fetchSession } from "@/lib/api";
 import type { SessionDetail } from "@/lib/types";
-import { attachmentsCache, eventsCache } from "./useSessionEvents";
+import { attachmentsCache, fullHistoryLoaded, mergeSessionEvents } from "./useSessionEvents";
 
 // Cache session metadata so reopening the same drawer doesn't re-fetch.
 // Each entry records the revalidation revision it was fetched under, so
@@ -9,14 +9,15 @@ import { attachmentsCache, eventsCache } from "./useSessionEvents";
 const sessionCache = new Map<string, { detail: SessionDetail; revision: number }>();
 
 /**
- * Drop any cached state for a session so the next useSession() mount
+ * Drop a session's cached detail so the next useSession() mount
  * performs a fresh fetch. Used by the drawer when the page-size pill
- * changes: a user asking for 50 newest events after
- * having loaded 100 must not reuse the old cache entry.
+ * changes: a user asking for 50 newest events after having loaded 100
+ * must not reuse the old detail. The run's events stay in
+ * ``eventsCache``: the swimlane draws from them, and the refetch merges
+ * into them by id.
  */
 export function invalidateSessionCache(sessionId: string): void {
   sessionCache.delete(sessionId);
-  eventsCache.delete(sessionId);
   attachmentsCache.delete(sessionId);
 }
 
@@ -56,13 +57,18 @@ export function useSession(
       // answer to a question nobody is asking any more.
       if (sessionId && !signal.aborted) {
         sessionCache.set(sessionId, { detail, revision });
-        // Populate eventsCache so swimlane and drawer share the same data
-        if (detail.events && detail.events.length > 0) {
-          const existing = eventsCache.get(sessionId);
-          if (!existing || existing.length < detail.events.length) {
-            eventsCache.set(sessionId, detail.events);
-          }
+        // Without a cap, or short of it, the fetch is the run's whole
+        // history; a capped fetch that filled its cap is only its newest
+        // events, which say nothing about the run's original start.
+        const events = detail.events ?? [];
+        if (eventsLimit === undefined || events.length < eventsLimit) {
+          fullHistoryLoaded.add(sessionId);
         }
+        // Merge into eventsCache so the swimlane and the drawer share
+        // the same data. Merge, never replace: the cache may hold
+        // events this fetch does not (older ones a window load or
+        // "Show older" brought in, live ones newer than the fetch).
+        mergeSessionEvents(sessionId, events);
         // Mirror attachments into the shared cache so the swimlane's
         // AggregatedSessionEvents can colour a re-attachment's
         // session_start circle amber without its own round-trip.

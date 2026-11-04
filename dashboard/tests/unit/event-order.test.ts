@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { compareEventOrder, compareOccurredAt, oldestEvent } from "@/lib/event-order";
+import { compareEventOrder, compareOccurredAt, oldestEvent, sortByEventOrder } from "@/lib/event-order";
 
 // The API returns occurred_at to the microsecond, with trailing zeros
 // trimmed, and ids as canonical lowercase UUIDs.
@@ -51,5 +51,21 @@ describe("oldestEvent", () => {
 
   it("returns undefined for no events", () => {
     expect(oldestEvent([])).toBeUndefined();
+  });
+});
+
+describe("sortByEventOrder", () => {
+  const ev = (id: string, occurred_at: string) => ({ id, occurred_at });
+
+  it("orders by time to the microsecond, then id, as compareEventOrder does", () => {
+    const events = [ev(ID_MID, T_PLUS_1US), ev(ID_LOW, T_PLUS_2MS), ev(ID_LOW, T_PLUS_1US), ev(ID_MID, T)];
+    expect(sortByEventOrder(events)).toEqual([...events].sort(compareEventOrder));
+  });
+
+  it("returns a new array, also when the list is already in order", () => {
+    const events = [ev(ID_LOW, T), ev(ID_LOW, T_PLUS_500US)];
+    const sorted = sortByEventOrder(events);
+    expect(sorted).toEqual(events);
+    expect(sorted).not.toBe(events);
   });
 });

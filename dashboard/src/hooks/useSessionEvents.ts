@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchSession } from "@/lib/api";
-import { compareEventOrder } from "@/lib/event-order";
+import { compareEventOrder, sortByEventOrder } from "@/lib/event-order";
 import { EventsCacheMap } from "@/lib/events-cache-epoch";
 import type { AgentEvent, FeedEvent } from "@/lib/types";
 
@@ -31,13 +31,13 @@ export function mergeRunEvents(
     fresh.push(e);
   }
   if (fresh.length === 0) return null;
-  fresh.sort(compareEventOrder);
+  const ordered = sortByEventOrder(fresh);
   // A live tick or a newer page lands after everything held: append.
   const last = have[have.length - 1];
-  if (last === undefined || compareEventOrder(fresh[0]!, last) > 0) {
-    return [...have, ...fresh];
+  if (last === undefined || compareEventOrder(ordered[0]!, last) > 0) {
+    return [...have, ...ordered];
   }
-  return [...have, ...fresh].sort(compareEventOrder);
+  return sortByEventOrder([...have, ...ordered]);
 }
 
 /** Merge one run's events into the cache by id. Returns whether its

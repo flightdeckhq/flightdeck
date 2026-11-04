@@ -79,6 +79,13 @@ All notable changes to Flightdeck are documented here.
   reason and an expiry date. Run it locally with `make vuln-scan`.
   `simple-icons` moves to the dashboard's `dependencies`, since the
   bundle imports it.
+- **The staging tables for OpenTelemetry GenAI traces.** Migration
+  000035 adds `otlp_traces`, `otlp_spans` and `otlp_span_content`, and
+  the ingestion API gains the store that stages a trace's records,
+  leases due traces to one replica at a time, marks what an assembly
+  published and sweeps finished traces and old content. Nothing writes
+  to them yet: the receiver still rejects GenAI spans
+  ([#184](https://github.com/flightdeckhq/flightdeck/issues/184)).
 
 ### Fixed
 

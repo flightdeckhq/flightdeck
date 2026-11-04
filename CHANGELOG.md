@@ -308,6 +308,13 @@ All notable changes to Flightdeck are documented here.
   value of the wrong type, or a `streaming` block or `llm_error` `error`
   that is not an object is refused with 400
   ([#176](https://github.com/flightdeckhq/flightdeck/issues/176)).
+- **Ingestion refuses a field name in the wrong case.** The worker reads
+  field names ignoring case, so a key such as `TOKENS_INPUT` or
+  `Streaming` used to skip ingestion's checks and still be stored as
+  `tokens_input` or `streaming`. A key that differs from a field name
+  only in case, at the top level, in `incoming_message` /
+  `outgoing_message`, in `streaming` or in an `llm_error`'s `error`, is
+  now refused with 400; any other unknown key is handled as before.
 
 ## v0.8.0 — 2026-10-31
 

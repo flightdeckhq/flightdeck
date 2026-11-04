@@ -118,6 +118,31 @@ func TestOTLPHandlerPublishesSessionStartLikeEvents(t *testing.T) {
 	}
 }
 
+// Stamping the token on an OTLP session_start re-encodes only the token
+// fields: an integer a float64 cannot hold, a decimal of 20 digits and a
+// 5.0 in the event reach the bus as they were written.
+func TestOTLPSessionStartTokenStampKeepsEveryNumberLiteral(t *testing.T) {
+	payload := []byte(`{"event_type":"session_start",` +
+		`"session_id":"22222222-2222-4222-8222-222222222222",` +
+		`"context":{"pid":1234567890123456789,"load":0.30000000000000001665,"cpus":8.0}}`)
+	pub := &recordingPublisher{}
+	n, err := publishOTLPEvents(context.Background(), pub, nil,
+		auth.ValidationResult{Valid: true, ID: "token-id-1", Name: "ci-exporter"},
+		[]OTLPEvent{{EventType: "session_start", SessionID: "22222222-2222-4222-8222-222222222222", Payload: payload}},
+	)
+	if err != nil || n != 1 {
+		t.Fatalf("published %d, err %v", n, err)
+	}
+	for _, literal := range []string{
+		`"pid":1234567890123456789`, `"load":0.30000000000000001665`, `"cpus":8.0`,
+		`"token_id":"token-id-1"`, `"token_name":"ci-exporter"`,
+	} {
+		if !strings.Contains(string(pub.bodies[0]), literal) {
+			t.Errorf("published session_start lacks %s: %s", literal, pub.bodies[0])
+		}
+	}
+}
+
 // A session read that fails is a 503 the exporter retries; nothing is
 // published or charged.
 func TestOTLPHandlerLookupFailureIs503(t *testing.T) {

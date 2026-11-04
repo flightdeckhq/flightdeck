@@ -73,6 +73,14 @@ func TestReplacementLogCountsEveryReplacementAndLogsOncePerInterval(t *testing.T
 	if n := strings.Count(logs.String(), replacementLogText); n != 2 {
 		t.Fatalf("an empty flush logged a line: %q", logs.String())
 	}
+
+	// The empty flush is no longer pending: the next held replacement
+	// schedules one of its own.
+	clock = clock.Add(100 * time.Millisecond)
+	log.note("error.error_type", "after_empty_flush")
+	if len(timer.delays) != 2 || timer.delays[1] != replacementLogInterval-100*time.Millisecond {
+		t.Fatalf("scheduled flushes %v, want a second one 900ms out", timer.delays)
+	}
 }
 
 // A burst followed by silence still reaches the log: the flush scheduled
@@ -114,6 +122,72 @@ func TestReplacementLogFlushesTheTailOfABurst(t *testing.T) {
 	}
 	if n := strings.Count(logs.String(), replacementLogText); n != 2 {
 		t.Fatalf("a replacement inside the interval logged at once: %q", logs.String())
+	}
+}
+
+// A pending flush that fires after a replacement logged at once has
+// restarted the interval does not write a second line right behind it:
+// it moves to the end of the new interval, where it reports what was
+// held since.
+func TestReplacementLogFlushAfterADirectLineWaitsForItsInterval(t *testing.T) {
+	logs := captureStreamLogs(t)
+	start := time.Date(2026, time.November, 2, 12, 0, 0, 0, time.UTC)
+	clock := start
+	timer := &manualTimer{}
+	log := newReplacementLog(func() time.Time { return clock }, timer.after)
+
+	log.note("streaming.final_outcome", "first")
+	clock = start.Add(500 * time.Millisecond)
+	log.note("error.error_type", "held_early")
+	if len(timer.delays) != 1 || timer.delays[0] != 500*time.Millisecond {
+		t.Fatalf("scheduled flushes %v, want one, 500ms out", timer.delays)
+	}
+	staleFlush := timer.fire
+
+	// The interval ends; a replacement logs at once and reports the held
+	// one before the pending flush gets the lock, and a second
+	// replacement in the same instant is held.
+	clock = start.Add(replacementLogInterval)
+	log.note("error.abort_reason", "direct_again")
+	log.note("error.error_type", "held_late")
+	if n := strings.Count(logs.String(), replacementLogText); n != 2 {
+		t.Fatalf("%d lines, want 2: %q", n, logs.String())
+	}
+	if len(timer.delays) != 1 {
+		t.Fatalf("a held replacement scheduled a flush while one was pending: %v", timer.delays)
+	}
+
+	// The pending flush gets the lock a little after the direct line.
+	clock = start.Add(replacementLogInterval + 200*time.Millisecond)
+	staleFlush()
+	if n := strings.Count(logs.String(), replacementLogText); n != 2 {
+		t.Fatalf("the pending flush logged right after the direct line: %q", logs.String())
+	}
+	if len(timer.delays) != 2 || timer.delays[1] != 800*time.Millisecond {
+		t.Fatalf("scheduled flushes %v, want the flush re-armed for the direct line's interval end, 800ms out", timer.delays)
+	}
+	log.mu.Lock()
+	pending := log.flushPending
+	log.mu.Unlock()
+	if !pending {
+		t.Fatal("the re-armed flush is not marked pending")
+	}
+
+	clock = start.Add(2 * replacementLogInterval)
+	timer.fire()
+	lines := strings.Split(strings.TrimSpace(logs.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("%d lines, want 3: %q", len(lines), logs.String())
+	}
+	for _, want := range []string{"value=held_late", "replaced_total=4", "suppressed_since_last=0"} {
+		if !strings.Contains(lines[2], want) {
+			t.Fatalf("flush line lacks %q: %q", want, lines[2])
+		}
+	}
+	for _, want := range []string{"value=direct_again", "replaced_total=3", "suppressed_since_last=1"} {
+		if !strings.Contains(lines[1], want) {
+			t.Fatalf("direct line lacks %q: %q", want, lines[1])
+		}
 	}
 }
 
@@ -190,9 +264,9 @@ func TestNormalizeDiagnosticValuesLeavesOtherErrorObjects(t *testing.T) {
 	}
 }
 
-// patchJSON rewrites only the edited fields: every other value keeps its
-// exact bytes, numbers that float64 cannot hold included.
-func TestPatchJSONKeepsEveryOtherValueByteForByte(t *testing.T) {
+// patchJSON rewrites only the edited fields: every other value is kept,
+// numbers that float64 cannot hold included.
+func TestPatchJSONKeepsEveryOtherValueAndNumberLiteral(t *testing.T) {
 	body := []byte(`{"event_type":"post_call","tokens_total":5.0,` +
 		`"streaming":{"final_outcome":"truncated","ttft_ms":12.500000000000000001,"chunk_count":38},` +
 		`"content":{"channel_id":1234567890123456789,"ratio":0.30000000000000001665,"text":"a<b>&c"}}`)
@@ -223,6 +297,27 @@ func TestPatchJSONKeepsEveryOtherValueByteForByte(t *testing.T) {
 	}
 	if len(after) != len(before)+1 {
 		t.Errorf("patched body has %d fields, want %d", len(after), len(before)+1)
+	}
+}
+
+// The bytes that change without changing a value are exactly the ones
+// patchJSON's comment and ARCHITECTURE.md name: the five characters Go's
+// encoder escapes in a string, insignificant whitespace, and the order of
+// the keys of the top level and the edited object. An object nobody
+// edited keeps its key order.
+func TestPatchJSONChangesOnlyTheDocumentedSpelling(t *testing.T) {
+	body := []byte("{ \"z\" : \"a<b>&c\u2028d\u2029e \\u00e9\" , " +
+		"\"streaming\" : { \"ttft_ms\" : 1.50 , \"final_outcome\" : \"truncated\" } , " +
+		"\"content\" : { \"y\" : 1 , \"b\" : [ 1 , 2 ] } }")
+	out, err := patchJSON(body, []rawEdit{{path: []string{"streaming", "final_outcome"}, value: "other"}})
+	if err != nil {
+		t.Fatalf("patchJSON: %v", err)
+	}
+	want := `{"content":{"y":1,"b":[1,2]},` +
+		`"streaming":{"final_outcome":"other","ttft_ms":1.50},` +
+		`"z":"a\u003cb\u003e\u0026c\u2028d\u2029e \u00e9"}`
+	if string(out) != want {
+		t.Fatalf("patched body\n got %s\nwant %s", out, want)
 	}
 }
 

@@ -294,19 +294,29 @@ func (r *replacementLog) note(field, value string) {
 // flush logs the latest held replacement, counting the other held ones
 // in suppressed_since_last. A replacement logged after the flush was
 // scheduled has already reported the held ones, leaving nothing to do.
+// If that line also restarted the interval and replacements were held
+// after it, the flush is moved to the end of the new interval, so two
+// lines are never written less than an interval apart.
 func (r *replacementLog) flush() {
 	r.mu.Lock()
-	r.flushPending = false
 	if r.suppressed == 0 {
+		r.flushPending = false
 		r.mu.Unlock()
 		return
 	}
+	now := r.now()
+	if since := now.Sub(r.lastLogged); since < replacementLogInterval {
+		r.mu.Unlock()
+		r.after(replacementLogInterval-since, r.flush)
+		return
+	}
+	r.flushPending = false
 	line := replacementLine{
 		field: r.heldField, value: r.heldValue,
 		total: r.total, suppressedSince: r.suppressed - 1,
 	}
 	r.suppressed = 0
-	r.lastLogged = r.now()
+	r.lastLogged = now
 	r.mu.Unlock()
 	line.write()
 }

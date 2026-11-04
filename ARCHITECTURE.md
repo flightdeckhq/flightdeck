@@ -2790,6 +2790,7 @@ above into `events.payload` under the same key.
 
 The ingestion handler rejects events with 400 when:
 
+- A key differs from a field name only in case (see below).
 - `agent_id` is missing or not a UUID.
 - `agent_type` is outside `{coding, production}`.
 - `client_type` is outside the client type registry (see Identity model).
@@ -2832,10 +2833,15 @@ than the server can extend, and refusing the event would also drop the
 tokens it carries. Ingestion stores such a value as `other`, the
 catch-all of each vocabulary (the taxonomy's own fallback for an error it
 cannot name). It rewrites only an event it changed, and in it only the
-replaced fields: every other value keeps its exact bytes, so a number in
-captured content that a float64 cannot hold (a 19-digit id, a 20-digit
-decimal) is stored as sent. The `session_start` that receives the
-token's id and name is rewritten the same way. Every value the
+replaced fields: every other value is kept, number literals included, so
+a number in captured content that a float64 cannot hold (a 19-digit id, a
+20-digit decimal) is stored as sent. Spelling that does not change a
+value can change: Go's encoder writes `<`, `>` and `&` in every string as
+`\u003c`, `\u003e` and `\u0026`, and U+2028 and U+2029 as `\u2028` and
+`\u2029`; insignificant whitespace is dropped; and the keys of the top
+level and of an edited object are written in sorted order. The
+`session_start` that receives the token's id and name, posted or built by
+the OTLP receiver, is rewritten the same way. Every value the
 sensor's classifier, the Claude Code plugin's StopFailure mapping and the
 OTLP receiver's API-error mapping send is in the taxonomy, which tests
 read from each of them. An MCP event's and a tool failure's `error` carry
@@ -2849,6 +2855,19 @@ line at the end of that second, which names the latest and counts the
 others, so a burst is reported even when nothing follows it. A
 negative count is refused, as a negative `tokens_*` is: it comes from a
 broken client, not a newer one.
+
+Field names match exactly, and a case variant of a known field name is
+refused. Every check above reads a field under its exact name, while the
+worker decodes an event into typed structures whose field matching
+ignores case: Go's JSON decoder folds Unicode case, so `TOKENS_INPUT`,
+`Tokens_Input` and `tokenſ_input` (long s) would all reach it as
+`tokens_input`. Ingestion therefore answers 400 to a key that is not a
+field name but folds to one, at the top level (the fields of the
+worker's event structure), in `incoming_message` and `outgoing_message`,
+in `streaming` and its `inter_chunk_ms`, and in an `llm_error`'s
+`error`. A key that folds to no field name is published as sent. Tests
+read the field names from the worker's event structure and from the
+sensor's stream and error builders.
 
 A `session_end` for a `session_id` Flightdeck has never seen (an orphan
 `session_end`) is **not** rejected at ingestion — the event is accepted and

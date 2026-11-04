@@ -383,9 +383,17 @@ func EventsHandler(
 // so an OTLP event and a posted one meet the same contract. It returns
 // the client-facing message, or "" when the event is valid.
 func validateEventPayload(payload map[string]any, now time.Time) string {
-	// Validate required fields
 	sessionID, _ := payload["session_id"].(string)
 	eventType, _ := payload["event_type"].(string)
+
+	// Every check below reads a field under its exact name, and the
+	// worker matches names ignoring case, so a case variant of a field
+	// name is refused first (see checkFieldNameCase).
+	if msg := checkFieldNameCase(payload, eventType); msg != "" {
+		return msg
+	}
+
+	// Validate required fields
 	if sessionID == "" || eventType == "" {
 		return "session_id and event_type are required"
 	}
@@ -605,12 +613,18 @@ type rawEdit struct {
 
 // patchJSON applies edits to a JSON object body and returns the new
 // body. Only the objects on an edit's path are decoded, and into
-// json.RawMessage values, so every other value keeps its exact bytes.
-// Decoding the event into Go values and encoding it back would round
-// every number through float64, captured content included (an id of 19
-// digits, a decimal of 20), and the worker stores content as it
-// receives it. Keys come out in sorted order and insignificant
-// whitespace is dropped; neither changes a value.
+// json.RawMessage values, so every value it does not edit is kept, number
+// literals included. Decoding the event into Go values and encoding it
+// back would round every number through float64, captured content
+// included (an id of 19 digits, a decimal of 20), and the worker stores
+// content as it receives it.
+//
+// The bytes still change where the value does not: Go's encoder writes
+// <, > and & in every string as \u003c, \u003e and \u0026, and U+2028
+// and U+2029 as \u2028 and \u2029; it drops insignificant whitespace;
+// and it re-encodes the keys of the top level and of each edited object
+// in sorted order, so a key repeated there keeps only its last value,
+// the one validation read.
 func patchJSON(body []byte, edits []rawEdit) ([]byte, error) {
 	var top map[string]json.RawMessage
 	if err := json.Unmarshal(body, &top); err != nil {

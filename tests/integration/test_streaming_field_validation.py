@@ -9,7 +9,9 @@ the worker and read back from ``GET /v1/sessions/:id``:
   is stored as ``other`` and the event still counts (its tokens reach
   ``tokens_used``);
 * a negative or malformed count, a value of the wrong type, or a block
-  that is not an object is refused with 400 and stored nowhere.
+  that is not an object is refused with 400 and stored nowhere;
+* a key that differs from a field name only in case is refused with 400
+  and stored nowhere, since the worker would read it as that field.
 
 Wire-seeded, mock-free. Parallel-safe: a fresh session id and a unique
 flavor per test.
@@ -301,3 +303,52 @@ def test_malformed_stream_fields_are_refused_and_stored_nowhere() -> None:
     assert sorted(e["event_type"] for e in events) == ["llm_error", "session_start"], (
         events
     )
+
+
+def test_case_variant_field_names_are_refused_and_stored_nowhere() -> None:
+    """The worker matches field names ignoring case, so ``Streaming``
+    holding a string and ``TOKENS_INPUT`` holding a negative count would
+    reach it as ``streaming`` and ``tokens_input`` past every check.
+    Ingestion refuses such keys, at the top level and inside the blocks
+    it checks."""
+    sid = str(uuid.uuid4())
+    flavor = f"test-field-case-{uuid.uuid4().hex[:6]}"
+    _start_session(sid, flavor)
+    no_block = {
+        k: v for k, v in _streamed_post_call(sid, flavor).items() if k != "streaming"
+    }
+    refused: list[tuple[dict[str, Any], str]] = [
+        ({**no_block, "Streaming": "garbage"}, '"Streaming"'),
+        ({**_streamed_post_call(sid, flavor), "TOKENS_INPUT": -5}, '"TOKENS_INPUT"'),
+        (
+            _streamed_post_call(sid, flavor, Final_Outcome="x"),
+            '"streaming.Final_Outcome"',
+        ),
+        (
+            _failed_stream(sid, flavor, Partial_Tokens_Input=-1),
+            '"error.Partial_Tokens_Input"',
+        ),
+    ]
+    for payload, key in refused:
+        status, body = _post_expecting_status(payload)
+        assert status == 400, f"{key}: expected 400, got {status} ({body})"
+        message = json.loads(body)["error"]
+        assert f"{key} is not a field name" in message, message
+
+    # As above: once a valid event posted after the refusals is stored,
+    # any refused one that had reached the bus is stored too.
+    marker = str(uuid.uuid4())
+    post_event({**_streamed_post_call(sid, flavor), "id": marker})
+    wait_until(
+        lambda: any(
+            e.get("id") == marker for e in get_session_detail(sid).get("events", [])
+        ),
+        timeout=10,
+        msg=f"session {sid} did not store the valid post_call",
+    )
+    detail = get_session_detail(sid)
+    events = detail.get("events", [])
+    assert sorted(e["event_type"] for e in events) == ["post_call", "session_start"], (
+        events
+    )
+    assert detail["session"]["tokens_used"] == 1290, detail["session"]

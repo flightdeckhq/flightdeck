@@ -1311,6 +1311,10 @@ def test_a_call_published_after_the_end_cannot_keep_the_session_open() -> None:
     assert closed == len(sids), f"{closed} of {len(sids)} {flavor} sessions closed"
 
 
+# Holding the agents row stalls the worker that handles the start for
+# up to the lock timeout, and every session routed to that worker
+# waits behind it, so this runs with the stack to itself.
+@pytest.mark.exclusive
 @pytest.mark.parametrize(
     "closed_seq_sql", ["NULL", "start_seq - 1"], ids=["unsequenced", "older"]
 )

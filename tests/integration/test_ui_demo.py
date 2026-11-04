@@ -691,18 +691,19 @@ def test_ui_demo() -> None:
         # Simulates a Temporal / Airflow workflow that re-runs the same
         # logical job under a stable session_id. Each end/start
         # cycle appends one row to session_attachments; after N cycles
-        # GET /v1/sessions/:id returns {..., attachments: [t1, ..., tN]}
-        # and the drawer draws one "New execution attached" separator
-        # per row. This populates the UI with enough history to see
-        # the separator rendering without needing a real orchestrator.
+        # GET /v1/sessions/:id returns {..., attachments: [t1, ..., tN]}.
+        # The drawer badges each re-attachment's session_start ATTACH,
+        # and the Fleet swimlane draws the run as one segment per
+        # session_start .. session_end stretch. This populates the UI
+        # with enough history to see both without needing a real
+        # orchestrator.
         #
         # Picks two sessions from the cohort -- one research, one code
         # -- so both providers' drawers show the behaviour. The
         # research pick gets 3 attachments, the code pick gets 4, so
         # screenshots differ between the two. Events posted during
         # each run are lightweight (one post_call + one tool_call) so
-        # the drawer timeline shows distinct event clusters per run
-        # separated by the horizontal rule.
+        # the drawer timeline shows distinct event clusters per run.
         #
         # Spacing: a small sleep between session_end and the next
         # session_start gives the worker's HandleSessionEnd a chance
@@ -1077,7 +1078,7 @@ def test_ui_demo() -> None:
     assert total_events > 50, f"Expected > 50 events, got {total_events}"
 
     # Verify the attachment history landed in the detail endpoint.
-    # The drawer uses this array to draw run separators, so any break
+    # The drawer uses this array to badge each re-attachment, so any break
     # in the pipeline (ingestion attach store, worker session revive,
     # api Querier.GetSessionAttachments) surfaces here. Non-fatal:
     # print instead of assert so a demo run with a stale binary still

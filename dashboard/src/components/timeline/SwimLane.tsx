@@ -1,4 +1,4 @@
-import { memo, useMemo } from "react";
+import { memo, useCallback, useMemo } from "react";
 import { Link } from "react-router";
 import type { ScaleTime } from "d3-scale";
 import { ChevronRight } from "lucide-react";
@@ -22,9 +22,15 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { OSIcon } from "@/components/ui/OSIcon";
 import { OrchestrationIcon } from "@/components/ui/OrchestrationIcon";
 import { EventNode } from "./EventNode";
-import { RunBracket, bracketAnchors } from "./RunBracket";
+import { RunBracket } from "./RunBracket";
 import { AgentStatusBadge } from "./AgentStatusBadge";
-import { useSessionEvents, attachmentsCache } from "@/hooks/useSessionEvents";
+import { useSessionEvents, attachmentsCache, eventsCache } from "@/hooks/useSessionEvents";
+import { useEventsCacheEpoch } from "@/lib/events-cache-epoch";
+import {
+	layoutRowGlyphs,
+	runSegments,
+	type RunSegment,
+} from "@/lib/swimlane-lanes";
 import { isAttachmentStartEvent, isDiscoveryEvent, isEventVisible } from "@/lib/events";
 import { useShowDiscoveryEvents } from "@/lib/discoveryEventsPref";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
@@ -150,6 +156,22 @@ const TIMELINE_LEFT_BUFFER_PX = 8;
  * row.
  */
 export const TIMELINE_LEFT_INSET_PX = TIMELINE_LEFT_BUFFER_PX + EVENT_CIRCLE_SIZE / 2;
+
+// A run's segments, kept per session row and recomputed only when the
+// row object or the run's cached events change (both are replaced, never
+// mutated, on every update).
+const segmentsCache = new WeakMap<
+	Session,
+	{ events: readonly AgentEvent[] | undefined; segments: RunSegment[] }
+>();
+
+function segmentsFor(session: Session, events: readonly AgentEvent[] | undefined): RunSegment[] {
+	const hit = segmentsCache.get(session);
+	if (hit && hit.events === events) return hit.segments;
+	const segments = runSegments(session, events);
+	segmentsCache.set(session, { events, segments });
+	return segments;
+}
 
 /**
  * Split a sub-agent's name into the part it shares with its parent
@@ -286,15 +308,48 @@ function SwimLaneComponent({
 	const displayName = agentName ?? flavor;
 	const nameParts = splitRoleSuffix(displayName, mostRecentSession?.agent_role);
 
-	// Anchor staggering for concurrent runs of the same agent
-	// (multi-pod K8s with collapsed FLIGHTDECK_HOSTNAME, etc.).
-	// First run on the row's top edge, second + on the bottom.
-	const bracketAnchorMap = useMemo(() => bracketAnchors(sessions), [sessions]);
+	// Run glyphs: where each of the row's runs ran (its segments, from
+	// the run's session_start / session_end events the page holds), on
+	// which edge of the row, and where each glyph sits so none covers
+	// another. Recomputed when the row's runs, the window, or the events
+	// cache change; the cache epoch catches a run's own history fetch,
+	// which lands without re-rendering the row.
+	const cacheEpoch = useEventsCacheEpoch();
+	const [domainStart, domainEnd] = scale.domain();
+	const d0 = domainStart?.getTime() ?? 0;
+	const d1 = domainEnd?.getTime() ?? 0;
+	const runLayout = useMemo(() => {
+		const segments = sessions.flatMap((s) =>
+			segmentsFor(s, eventsCache.get(s.session_id)),
+		);
+		return layoutRowGlyphs({
+			segments,
+			d0,
+			d1,
+			toX: (ms) => scale(new Date(ms)),
+			// The inset wrapper starts TIMELINE_LEFT_INSET_PX into the
+			// panel, whose overflow clips at 0 and timelineWidth.
+			visibleLeft: -TIMELINE_LEFT_INSET_PX,
+			visibleRight: timelineWidth - TIMELINE_LEFT_INSET_PX,
+		});
+		// ``scale`` is a function of d0, d1 and timelineWidth, and
+		// ``cacheEpoch`` stands for the eventsCache reads.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [sessions, cacheEpoch, d0, d1, timelineWidth]);
+	const sessionById = useMemo(
+		() => new Map(sessions.map((s) => [s.session_id, s])),
+		[sessions],
+	);
+	const onGlyphClick = useCallback(
+		(sessionId: string) => onSessionClick(sessionId),
+		[onSessionClick],
+	);
 
 	return (
 		<div
 			data-agent-id={flavor}
 			data-topology={topology}
+			data-lane-count={runLayout.laneCount}
 			data-testid={`swimlane-agent-row-${agentName ?? flavor}`}
 			className="flex w-full items-stretch border-b"
 			style={{
@@ -612,31 +667,21 @@ function SwimLaneComponent({
 						sessionVersions={sessionVersions}
 						matchingSessionIds={matchingSessionIds}
 					/>
-					{/* Run boundary brackets overlay the aggregated event
-					    circles. Each run renders one bracket pair (start +
-					    end); concurrent runs stagger on top / bottom anchors
-					    so they remain distinguishable. */}
-					{sessions.map((s) => (
-						<RunBracket
-							key={`run-bracket-${s.session_id}`}
-							session={s}
-							scale={scale}
-							// RunBracket's ``inWindow`` / ``endInWindow``
-							// guards use ``timelineWidth`` to decide
-							// which brackets to render. The inset
-							// wrapper above shifts every rendered child
-							// ``TIMELINE_LEFT_INSET_PX`` right; a
-							// bracket at xStart ≈ timelineWidth would
-							// land that far past panel.right and be
-							// clipped by ``overflow: hidden`` — a
-							// wasted render. Subtracting the inset
-							// from the effective width tightens the
-							// guards to the wrapper's visible region.
-							timelineWidth={timelineWidth - TIMELINE_LEFT_INSET_PX}
-							anchor={bracketAnchorMap.get(s.session_id) ?? "top"}
-							onClick={(sid) => onSessionClick(sid)}
-						/>
-					))}
+					{/* Run glyphs overlay the event circles on the row's top
+					    and bottom edges: a ▶ and a ■ at each segment's start
+					    and end in the window, in edge-then-left order so Tab
+					    follows the picture. */}
+					{runLayout.glyphs.map((glyph) => {
+						const session = sessionById.get(glyph.segment.sessionId);
+						return session ? (
+							<RunBracket
+								key={glyph.key}
+								glyph={glyph}
+								session={session}
+								onClick={onGlyphClick}
+							/>
+						) : null;
+					})}
 				</div>
 			</div>
 		</div>

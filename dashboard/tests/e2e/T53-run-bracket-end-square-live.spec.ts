@@ -31,14 +31,10 @@ test.describe("T53 — RunBracket end-square renders for closed-in-window sessio
 	}) => {
 		await page.goto("/");
 		await waitForFleetReady(page);
-		// 5 m keeps the anchor's end square inside the panel. The
-		// keep-alive pins the run to end 3 s before each cycle, so at
-		// 1 h (4 s a pixel) the square sits in the panel's clipped right
-		// margin for the first ~30 s after a pin, where the swimlane
-		// does not mount it; at 1 m a slow keep-alive cycle can push the
-		// run's start out of the window, and a run whose start is out
-		// of view draws no glyphs. At 5 m the start stays in view and
-		// the end clears the margin within a few seconds of a pin.
+		// 5 m keeps the anchor's start and end squarely inside the
+		// panel. The keep-alive pins the run to end 3 s before each
+		// cycle, so at 1 h (4 s a pixel) its square is pulled back to the
+		// panel's right edge among the glyphs of every run near "now".
 		await page.getByRole("button", { name: "5m", exact: true }).click();
 		// Scroll the coding-agent row into view explicitly — its
 		// fresh-closed-in-window session is the anchor.

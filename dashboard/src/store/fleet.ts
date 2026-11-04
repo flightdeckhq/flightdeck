@@ -177,9 +177,10 @@ export interface SessionChange {
 
 function listItemToSession(li: SessionListItem): Session {
   // Swimlane code consumes ``Session`` (from types.ts), not
-  // ``SessionListItem``. The fields overlap except for framework /
-  // last_seen_at; we synthesise last_seen_at from ended_at / now so
-  // the swimlane's activity sort does not see missing values.
+  // ``SessionListItem``. The fields overlap except for framework.
+  // last_seen_at is the run's last signal as the API returns it: a
+  // lost run, and one the orphan-timeout reaper closed, end there on
+  // the swimlane. ended_at / now only stand in for a row without it.
   const now = new Date().toISOString();
   return {
     session_id: li.session_id,
@@ -193,8 +194,11 @@ function listItemToSession(li: SessionListItem): Session {
     model: li.model,
     state: li.state,
     started_at: li.started_at,
-    last_seen_at: li.ended_at ?? now,
+    last_seen_at: li.last_seen_at ?? li.ended_at ?? now,
     ended_at: li.ended_at,
+    // The close reasons tell the swimlane a run the reaper closed
+    // (``orphan_timeout``) when its session_end is not loaded.
+    close_reasons: li.close_reasons,
     tokens_used: li.tokens_used,
     token_limit: li.token_limit ? Number(li.token_limit) : null,
     context: (li.context ?? {}) as Record<string, unknown>,
@@ -255,6 +259,7 @@ function sessionToRecentSession(
     parent_session_id: s.parent_session_id ?? null,
     parent_agent_id: parentAgentID ?? null,
     agent_role: s.agent_role ?? null,
+    close_reasons: s.close_reasons,
   };
 }
 
@@ -289,6 +294,9 @@ function recentSessionToSession(r: RecentSession): Session {
     token_name: null,
     parent_session_id: r.parent_session_id ?? null,
     agent_role: r.agent_role ?? null,
+    // A run the reaper closed is older than the 24 h sessions page, so
+    // the rollup is where the swimlane learns of the reap.
+    close_reasons: r.close_reasons,
   };
 }
 
@@ -346,9 +354,51 @@ function refreshRecentSession(
           ended_at: s.ended_at ?? null,
           last_seen_at: s.last_seen_at || r.last_seen_at,
           tokens_used: s.tokens_used,
+          close_reasons: s.close_reasons ?? r.close_reasons,
         }
       : r,
   );
+}
+
+/** A run's ``started_at`` in ms, oldest possible when it does not parse. */
+function startedMs(run: { started_at: string }): number {
+  const t = Date.parse(run.started_at);
+  return Number.isNaN(t) ? Number.NEGATIVE_INFINITY : t;
+}
+
+/**
+ * Whether a run start adds a run to the agent's ``total_sessions``.
+ * The server counts a run once, when its row is first inserted; a start
+ * of a run the agent already has is a re-attachment (a resumed Claude
+ * Code session, a late OpenTelemetry record re-opening a closed run).
+ * ``recent`` is the agent's ``RECENT_SESSIONS_WINDOW`` newest runs by
+ * ``started_at``. A start of a run in that window is a re-attachment
+ * (or the same start again). A re-attachment keeps the run's
+ * ``started_at`` while a new run starts now, so once the window is full
+ * a start of a run that started before the window's oldest run is a
+ * re-attachment too. The page cannot tell that from the first start of
+ * a genuinely new run with an old ``started_at`` (an OpenTelemetry
+ * session created late from an old record), which it then does not
+ * count either; the next fleet load corrects the count.
+ */
+function startCountsNewRun(recent: RecentSession[] | undefined, run: Session): boolean {
+  const window = recent ?? [];
+  if (window.some((r) => r.session_id === run.session_id)) return false;
+  if (window.length < RECENT_SESSIONS_WINDOW) return true;
+  return startedMs(run) >= Math.min(...window.map(startedMs));
+}
+
+/** ``recent_sessions`` after a run start: the agent's
+ *  ``RECENT_SESSIONS_WINDOW`` newest runs by ``started_at``, as the API
+ *  builds it. A new run starts now and leads it; a re-attached run keeps
+ *  its place, and one older than a full window's oldest run stays out. */
+function recentAfterStart(
+  recent: RecentSession[] | undefined,
+  started: RecentSession,
+): RecentSession[] {
+  return [started, ...(recent ?? []).filter((r) => r.session_id !== started.session_id)]
+    .sort((a, b) => startedMs(b) - startedMs(a) || 0)
+    .slice(0, RECENT_SESSIONS_WINDOW);
 }
 
 /** A session's ``context.telemetry`` when it is a string, else null:
@@ -696,21 +746,17 @@ export const useFleetStore = create<FleetState>((set, get) => ({
         // stale, lost or closed, and comes back when one revives.
         nextAgents = agents.map((a) => {
           if (a.agent_id !== aid) return a;
-          // A run start counts a new run, unless the row already holds
-          // the run: a start re-applied over a snapshot that counted
-          // it, or the same start arriving twice.
+          // A run start counts a new run, unless it re-attaches one the
+          // agent has: a run the row's window holds (a start re-applied
+          // over a snapshot that counted it, the same start arriving
+          // twice, a resume), or one older than a full window.
           const countsNewRun =
-            isStart &&
-            !(a.recent_sessions ?? []).some(
-              (s) => s.session_id === update.session.session_id,
-            );
+            isStart && startCountsNewRun(a.recent_sessions, update.session);
           const recentSessions = isStart
-            ? [
+            ? recentAfterStart(
+                a.recent_sessions,
                 sessionToRecentSession(update.session, parentAgentID),
-                ...(a.recent_sessions ?? []).filter(
-                  (s) => s.session_id !== update.session.session_id,
-                ),
-              ].slice(0, RECENT_SESSIONS_WINDOW)
+              )
             : refreshRecentSession(a.recent_sessions, update.session);
           return {
             ...a,
@@ -896,8 +942,13 @@ function applySessionUpdate(
 
   return flavors.map((f) => {
     if (f.flavor !== agentKey) return f;
+    // The update replaces the run's row, but keeps the close reasons the
+    // page knew when the update's row lacks them (an API older than the
+    // field): the swimlane reads a reaped close from them.
     const sessions = f.sessions.map((s) =>
-      s.session_id === session.session_id ? session : s,
+      s.session_id === session.session_id
+        ? { ...session, close_reasons: session.close_reasons ?? s.close_reasons }
+        : s,
     );
     if (!sessions.some((s) => s.session_id === session.session_id)) {
       sessions.unshift(session);

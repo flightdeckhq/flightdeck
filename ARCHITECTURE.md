@@ -438,8 +438,8 @@ flightdeck/
 │   │   ├── pages/              # Fleet.tsx, Agents.tsx, Investigate.tsx (Events), Analytics.tsx,
 │   │   │                       # Policies.tsx, Directives.tsx, Settings.tsx, NotFound.tsx
 │   │   ├── components/
-│   │   │   ├── timeline/       # Timeline, SwimLane, VirtualizedSwimLane, SessionEventRow, EventNode,
-│   │   │   │                   # TimeAxis, RunBracket, AgentStatusBadge, SubAgentConnector
+│   │   │   ├── timeline/       # Timeline, SwimLane, VirtualizedSwimLane, EventNode, TimeAxis,
+│   │   │   │                   # RunBracket, AgentStatusBadge, SubAgentConnector
 │   │   │   ├── fleet/          # FleetPanel, SessionStateBar, LiveFeed,
 │   │   │   │                   # EventDetailDrawer, EventFilterBar, TopologyCell
 │   │   │   ├── agents/         # AgentTable, AgentTableRow, AgentFacetSidebar, AgentSparkline,
@@ -469,8 +469,8 @@ flightdeck/
 │   │   ├── lib/                # api, time, types, utils, events, models, constants, directives, runtime-config,
 │   │   │                       # agent-identity, agent-status, agents-filter, agents-format, agents-sort,
 │   │   │                       # fleet-ordering, relationship, policy-scope-labels, swimlane-lost-sub-agent,
-│   │   │                       # useSwimlaneScroll, allRowCollapsed, discoveryEventsPref, leftPanelWidth,
-│   │   │                       # investigate-sidebar-width
+│   │   │                       # swimlane-lanes, events-cache-epoch, useSwimlaneScroll, allRowCollapsed,
+│   │   │                       # discoveryEventsPref, leftPanelWidth, investigate-sidebar-width
 │   │   ├── types/context.ts    # Runtime-context types shared by the CONTEXT sidebar and the session drawer
 │   │   └── styles/             # globals.css (Tailwind import, @theme colour tokens), themes.css
 │   └── tests/                  # unit (Vitest + RTL), e2e (Playwright), setup.ts
@@ -2980,7 +2980,8 @@ control plane honours end-to-end:
    "Agent re-attached with the same session ID"), and the timeline
    draws that start's node in the warning colour (tooltip "Run
    attached"); the session's first `session_start` has no entry and
-   keeps its own look.
+   keeps its own look. The Fleet swimlane draws a run that ended and
+   was resumed as segments with a gap between them (see SwimLane).
 
 The race between step 2 (synchronous) and the worker's
 `HandleSessionStart` (asynchronous, via NATS) is bounded: the ingestion
@@ -3884,7 +3885,8 @@ it to the same time as that row's `started_at`.
 **Orphan-timeout reaper.** The same reconciler tick also closes `lost`
 sessions that have been silent past `FLIGHTDECK_ORPHAN_TIMEOUT_HOURS`
 (default 24 h). Reaping flips the row to `state=closed`, stamps
-`ended_at = NOW()`, emits a synthetic `session_end` event with
+`ended_at = NOW()`, leaves `last_seen_at` at the session's last
+signal, emits a synthetic `session_end` event with
 `payload.close_reason = "orphan_timeout"` so the dashboard's
 close-reason facet surfaces the reconciler's verdict alongside
 happy-path shutdowns, notifies `flightdeck_fleet` with that event so
@@ -3894,6 +3896,9 @@ in-process metrics registry. The reaper exists because plugin / sensor
 crashes, `kill -9`, and missed lifecycle hooks would otherwise leave
 `lost` rows pinned forever; without the timeout the Fleet view
 accumulates dead rows that look indistinguishable from a long pause.
+The Fleet swimlane reads the reaper's close from that `close_reason`
+and draws the run ending at its `last_seen_at`, as lost, rather than
+at the reap (see SwimLane).
 
 **Parent-bump propagation.** Every non-`session_start` /
 non-`session_end` handler that has a non-empty `parent_session_id`
@@ -4690,7 +4695,7 @@ authoritative parameter-level reference.
 |---|---|---|
 | `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, recent_sessions rollup, and runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — sourced from the agent's most recent session's `context` JSONB via a `LEFT JOIN LATERAL`), context_facets |
 | `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `include_parents`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`), `child_count`, and `attachment_count` (the number of re-attachments to the session, surfaced as the agent drawer Runs-tab attached pill) |
-| `GET` | `/v1/sessions/:id` | Session detail: metadata + chronological events (always an array, empty until the first event row lands) + attachments array |
+| `GET` | `/v1/sessions/:id` | Session detail: metadata (including `close_reasons`, the distinct `close_reason` values of its `session_end` events) + chronological events (always an array, empty until the first event row lands) + attachments array |
 | `GET` | `/v1/agents` | Paginated agent listing; filters: `agent_type`, `client_type`, `state`, `hostname`, `user`, `os`, `orchestration` (multi-value — OR within a dimension, AND across; `os` and `orchestration` use any-session EXISTS semantics on `sessions.context`), `search` (case-insensitive substring on `agent_name` + `hostname`), `updated_since`; `sort` + `order`; `limit` (default 25, max 100) + `offset`. Each row carries the sub-agent rollup fields `agent_role` and `topology` (`lone` / `parent` / `child`) plus the runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — latest-session-only, same source as the `/v1/fleet` projection) |
 | `GET` | `/v1/agents/:id/summary` | Per-agent activity summary (totals + per-bucket series) over a 1h/24h/7d/30d window. Powers the per-agent landing page. |
 | `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `agent_id`, `model`, payload-JSONB facet filters (`error_type`, `close_reason`, `estimated_via`, `matched_entry_id`, `originating_call_context`, `mcp_server`, `terminal`), `framework` (`agent_id` + `framework` resolve via a `sessions` subquery), session-context facet filters (`os`, `arch`, `host`, `user`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — resolved via the sessions JOIN against partial expression indexes on `sessions((context->>'<key>'))` from migration 000024), `q` (free-text ILIKE search across event_type / model / session_id / agent_name / framework), `before` + optional `before_id` (keyset cursor on `occurred_at`, then `id`) + `order` (`asc`/`desc`) for newest-first drawer pagination, `facets=true` to return per-dimension chip counts over the filtered set instead of the event list, `limit` (default 500, max 2000), `offset` (max 100000) |
@@ -5558,10 +5563,16 @@ last_seen_at, tokens_used, token_limit), the `capture_enabled`
 flag, and the sub-agent linkage columns (parent_session_id,
 agent_role). `framework` is the bare-name `sessions.framework`
 attribution; it feeds the `/agents` page framework filter chips.
-The heavy correlated-subquery
-columns of `SessionListItem` (error_types, policy_event_types,
-mcp_server_names, ...) are intentionally absent so the per-agent
-rollup stays cheap on fleet pages with 50+ agents.
+It also carries `close_reasons`, the distinct `close_reason` values of
+the run's `session_end` events (always an array): a run the
+orphan-timeout reaper closed has been silent for at least the orphan
+timeout (24 h by default), so it is older than the Fleet's 24 h
+sessions page and this rollup is where the swimlane learns it was
+reaped. The array is computed in the outer query, for the kept rows
+only. The other heavy correlated-subquery columns of
+`SessionListItem` (error_types, policy_event_types, mcp_server_names,
+...) are intentionally absent so the per-agent rollup stays cheap on
+fleet pages with 50+ agents.
 
 The rollup guarantees each visible agent row carries its
 `RecentSessionsPerAgent` most-recent sessions independently of
@@ -6189,6 +6200,23 @@ reaches neither the live feed nor the store's `lastEvent`. A row's
 `last_seen_at` never moves back: it takes the later of its own value
 and the session's.
 
+A run start adds one to the agent's `total_sessions` only for a new
+run, as the server counts a run once, when its row is first inserted.
+The agent's `recent_sessions` holds its `RECENT_SESSIONS_WINDOW` (5)
+newest runs by `started_at`, as the API builds it, and a re-attached
+run keeps its `started_at`. So a start of a run in that window is a
+re-attachment (or the same start again), and so, once the window is
+full, is a start of a run that started before the window's oldest
+run: a resumed Claude Code session, or a late OpenTelemetry record
+re-opening a closed run. After a start the window is re-sorted by
+`started_at`: a new run leads it, a re-attached run keeps its place,
+and one older than a full window stays out. The page cannot tell such a
+re-attachment from the first start of a genuinely new run that started
+before the window's oldest run (an OpenTelemetry session created late
+from an old record): it does not count that one either, and the next
+fleet load (a new agent's run, a reconnect, a filter change) corrects
+the count.
+
 The agent's rolled-up `state`, which the Agents table, agent drawer and
 per-agent modal badges show, comes from the update's `agent_state`: the
 hub reads the agent's state with the same rollup the agent endpoints
@@ -6583,11 +6611,14 @@ no per-run rows. Sub-agent rows render indented beneath their parent
 via the `data-topology` attribute (`"root"` or `"child"`); the indent
 and background tint live in `globals.css` under the
 `[data-topology="child"]` selector. The tint is translucent, so a child
-row's sticky label paints it opaquely, the same look in layers: its own
-tint, the row's 2 px accent line, the row's tint, and the colour the
-rows sit on (`--bg`, or the host's `--swimlane-label-backdrop`, which
-the per-agent swimlane modal sets to `--surface`). Event circles
-scrolled under the label therefore stay hidden. A root row's label
+row's sticky label paints it opaquely, in layers: its own tint, the
+row's 2 px accent line, the row's tint, and the colour the rows sit on
+(`--bg`, or the host's `--swimlane-label-backdrop`, which the per-agent
+swimlane modal sets to `--surface`). At rest that is the row's own look.
+Event circles scrolled under the label therefore stay hidden. The
+accent line is part of the label's paint, so when the swimlane scrolls
+sideways the label keeps a 2 px accent line pinned at its left edge,
+while the row's own line scrolls away with the row. A root row's label
 inherits the row's opaque `--surface`. `SubAgentConnector.tsx` draws a
 Bezier connector from each parent spawn event to the child run's first
 event in view (see Swimlane sub-agent connector overlay).
@@ -6659,42 +6690,126 @@ animation is GPU-cheap when many dots paint at once.
 static soft glow. Theme-agnostic — colours resolve to
 `var(--status-*)` custom properties.
 
-`RunBracket.tsx` overlays per-run boundary glyphs on the row.
-The start glyph is a filled play-button triangle (▶) at the
-run's `started_at` X; the end glyph is a filled solid square
-(■) at the run's `ended_at` X, sized at roughly 1.3× the
-triangle's bbox area so the closure reads heavier than the
-start. Both are SVG primitives filled with `var(--accent)`;
-positioning math uses the shared `xScale` from `d3-scale` (D3
-math only, no DOM manipulation). A glyph is centred on its
-time's x in the same inset wrapper as the event circles, so a
-glyph and a circle at the same instant line up, and near "now"
-the panel's right edge clips both alike (a glyph past the edge is
-not mounted). A run that started within the last ~14 px of the window
-shows no ▶ yet (about 56 s at 1h), and a run that closed within the
-last ~13.5 px shows its ▶ but not yet its ■ (about 54 s at 1h, 27 s at
-30m), so it reads as running until the ■ clears the edge. Hover on either glyph
-surfaces a tooltip with `run_id` (8-char prefix), start time,
-end time (or `running` for an active / idle / stale / lost
-run), state, and total tokens. Click on either glyph opens
-the session drawer scoped to that run. Concurrent runs of the
-same agent (e.g. multi-pod K8s with collapsed
-`FLIGHTDECK_HOSTNAME`) render their glyph pairs on offset
-anchors: first run on the row's top edge, second run on the
-bottom edge. Three or more concurrent runs accept visual
-overlap; the hover tooltip disambiguates by `run_id`.
+**Run segments.** `dashboard/src/lib/swimlane-lanes.ts` works out
+where each of the row's runs ran, as pure functions with no DOM and no
+D3 beyond the shared scale. A run is one or more segments: each stretch
+from a `session_start` to the following `session_end` is a segment, and
+the time between a `session_end` and the next `session_start` (a run
+resumed under the same session id, see Session attachment flow) is a
+gap, where the run draws nothing. The first segment starts at the run's
+`started_at`, which a resume keeps, so an event dated more than the
+two-second attach match window before it is not a boundary of the
+run. A `session_start` inside a segment, a client re-attaching to a
+run that never ended, continues that segment.
 
-Active / idle / stale / lost runs render the start triangle
-alone — no end square. Operators read absence of the end
-square as "still running"; the tooltip's end-time field reads
-`running`.
+The session row describes the run's last segment, in the state the
+worker last announced (the dashboard applies no stale or lost
+thresholds of its own, see Fleet view):
+- an `active`, `idle` or `stale` run is open, and its last segment
+  reaches the window's right edge;
+- a `lost` run's last segment ends at its `last_seen_at`;
+- a `closed` run's last segment ends at its `ended_at`, unless the
+  orphan-timeout reaper closed it. A reaped segment ends at the run's
+  `last_seen_at`, which the reaper leaves at the run's last signal,
+  and reads as lost. The reaper's close is a `session_end` whose
+  `close_reason` is `orphan_timeout`: the run's last `session_end`
+  when the page holds it, otherwise the run's `close_reasons`. Every
+  session row the page holds carries them: `GET /v1/sessions`, the
+  agents' `recent_sessions` rollup, and the session the live stream
+  re-reads (`GetSession`), and a live update keeps the reasons the
+  page already knew when its row lacks them.
+
+An earlier segment that the reaper closed ends at the run's last event
+before that `session_end`, and reads as lost too.
+
+Segment boundaries come from the run's events the page holds
+(`eventsCache`, see Bulk historical events hook). A run fetches its
+whole history once, when its row first mounts with nothing cached for
+it; a run whose events in the selected window reached the cache first
+holds only those and the live ones. So:
+- a run with no events loaded draws as one segment from its
+  `started_at`;
+- a run whose earliest loaded event is a resume's `session_start`
+  draws nothing before that start, since the boundaries before it are
+  not loaded;
+- a run that the session row shows running again after its last
+  loaded `session_end` starts its last segment at its first loaded
+  event after that end, or at its `last_seen_at` when there is none.
+
+The run drawer lists every event of a run, gaps included. The events
+cache notifies its readers on every write, and SwimLane re-derives the
+row's segments when it changes.
+
+**Run anchors.** Every segment of every run the row holds gets a
+track, in start order, with ties broken by run id: the lowest track
+that is free when the segment starts and whose last segment ended no
+more than one window span earlier; otherwise a new track. A track is
+free once its last segment has ended, within a tolerance
+(`OVERLAP_TOLERANCE_MS`, 1 s, or one pixel of the window when that is
+longer). The worker stamps a run's `started_at` and the previous run's
+`ended_at` with its own clock as it processes each event, so a hand-off
+can overlap by a few milliseconds. A gap frees its track, so a run
+that ran inside another run's gap shares that track.
+
+A segment is in view when it overlaps the window, and only segments in
+view count. When no two segments in view overlap inside the window by
+more than the tolerance, every glyph sits on the row's top edge
+(`data-lane-count="1"`); a hand-off does not count as an overlap.
+Otherwise the segments of the topmost track in view keep the top edge
+and every other segment's glyphs share the bottom edge
+(`data-lane-count="2"`); each glyph carries its edge as
+`data-run-lane`, `0` or `1`. Circles stay on the row's centre line.
+
+**Run glyphs.** `RunBracket.tsx` draws each mark SwimLane places, at
+the start and end of each segment in view:
+- The start glyph is a filled triangle (▶) in `var(--accent)`. Its
+  flat base sits 1 px inside the segment's start, and it points into
+  the segment.
+- The end glyph is a square whose right edge sits 1 px inside the
+  segment's end, about 1.3 times the triangle's bounding-box area so
+  the closure reads heavier. A closed segment's square is filled with
+  `var(--accent)`; a lost segment's square is hollow, with a
+  `var(--status-lost)` stroke. The button carries the kind as
+  `data-end-kind` (`closed` or `lost`).
+- An open segment has no end glyph, so a missing square reads as
+  "still running".
+
+Each glyph is drawn when its own time is in the window, so a segment
+that started before the window still shows its end. A segment's
+square always follows its own triangle, past the segment's end when
+the segment is narrower than the two glyphs, so a short run reads ▶■.
+Glyphs on one edge are spread apart where they would overlap: they sit
+side by side in time order, 1 px apart, with an end before a start at
+the same instant, so a hand-off reads ■▶. A glyph that would cross the
+panel's right edge is pulled back inside it, with the glyphs before
+it, so a run that has just started shows its ▶ at the edge. No glyph
+moves more than `MAX_GLYPH_SHIFT_PX` (24 px, the shift a zero-length
+run's square needs to follow its triangle) from where its time puts
+it, so on a busy row, where spreading every glyph would carry it far
+from its run, glyphs past that limit overlap near their own time
+instead. Every glyph also stays inside the panel, never under the
+label column. On the row's top and bottom edges
+the glyphs stay clear of the circles on the centre line, so every
+circle's centre, including the circles at a segment's start and end,
+stays clickable.
+
+Each glyph is a `<button>` at z-index 2, with a `var(--accent)`
+focus-visible outline and an `aria-label` that names the run, the
+glyph and its time. Hover or focus opens a portal tooltip with the run
+id prefix, the segment's start, its end (`hh:mm:ss`, `running`, or
+`lost · last seen hh:mm:ss`), the run's state and total tokens, and,
+on a resumed run, which segment it is (`segment 2 of 3`). In the Fleet
+view a click opens the run drawer scoped to that run. Glyphs are
+React-rendered SVG positioned with the shared `xScale` (D3 is used for
+math only, never to manipulate the DOM).
 
 **Event circles.** `EventNode.tsx` draws each event as a 22 px circle
 (`EVENT_CIRCLE_SIZE`), coloured by event type, with a lucide icon, a
 portal tooltip and a 1.25x hover scale; MCP events are hexagons. A
 circle is centred on its event's x inside the panel's inset wrapper
-(below), which puts circles and run glyphs 19 px right of their time's
-grid line, since the time axis and the grid overlay are not inset. It
+(below), which puts circles, and the run glyphs beside them, 19 px
+right of their time's grid line, since the time axis and the grid
+overlay are not inset. It
 sits on the row's centre line and carries `data-event-id` and
 `data-session-id`. The vertical centring
 is a single CSS translate (`top: 50%` with `translate: 0 -50%`); the
@@ -6726,8 +6841,6 @@ render as lightweight placeholders. Specs that locate a fixture
 agent must scroll the fixture into view before asserting on its
 `data-testid` (see `bringSwimlaneRowIntoView` in
 `tests/e2e/_fixtures.ts`).
-
-`SessionEventRow.tsx` renders one run's event strip; no view mounts it.
 
 ### Fleet panel sidebar
 
@@ -6835,7 +6948,6 @@ tunable magic numbers:
 | `ALL_ROW_COLLAPSED_KEY` | `flightdeck-all-row-collapsed` | Fleet ALL-row collapse state |
 | `ALL_ROW_HEIGHT_COLLAPSED` | 24 | ALL-row height when collapsed (matches AGENTS header) |
 | `ALL_ROW_HEIGHT_EXPANDED` | 36 | ALL-row height when expanded (pulse pane) |
-| `SESSION_ROW_HEIGHT` | 48 | Two-line session row height |
 | `TIMELINE_WIDTH_PX` | 900 | Fixed event-circles canvas width |
 | `TIMELINE_RANGE_MS` | `{1m: 60_000, 5m: 300_000, 15m: 900_000, 30m: 1_800_000, 1h: 3_600_000}` | Range labels → ms |
 | `THEME_STORAGE_KEY` | `flightdeck-theme` | Theme persistence key |

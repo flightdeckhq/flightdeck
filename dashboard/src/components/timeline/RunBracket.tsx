@@ -1,63 +1,41 @@
 import { memo, useCallback, useState } from "react";
 import { createPortal } from "react-dom";
-import type { ScaleTime } from "d3-scale";
 import type { Session } from "@/lib/types";
+import {
+	END_GLYPH_SIZE_PX,
+	START_GLYPH_SIZE_PX,
+	type RowGlyph,
+} from "@/lib/swimlane-lanes";
 
-// RunBracket renders the per-run boundary glyphs on a single agent's
-// swimlane row:
+// RunBracket draws one run glyph that SwimLane placed with
+// ``layoutRowGlyphs`` (lib/swimlane-lanes.ts):
 //
-//   * ``"start"`` is a filled play-button triangle (▶) at the run's
-//     started_at X. Always rendered when the run's start is in the
-//     visible time window.
-//   * ``"end"`` is a filled solid square (■) at the run's ended_at X,
-//     sized ~1.3× the triangle's bbox area so the closure reads as a
-//     heavier visual signal at a glance. Rendered ONLY when the run
-//     has actually ended; active / idle / stale / lost runs render no
-//     end glyph (operators read absence as "still running").
+//   * ``"start"``: a filled triangle (▶) whose flat base sits just
+//     inside a segment's start, pointing into the segment.
+//   * ``"end"``: a square whose right edge sits just inside a segment's
+//     end. Filled for a closed segment; hollow with a ``--status-lost``
+//     stroke for a lost one (a lost run, or one the orphan-timeout
+//     reaper closed, ends at its last signal). An open segment has no
+//     end glyph, so a missing square reads as "still running".
 //
-// Hover surfaces a tooltip with the run's metadata (id prefix, start,
-// end-or-"running", state, tokens); click opens the existing session
-// drawer scoped to that run.
-//
-// Concurrent runs of the same agent (multi-pod K8s with collapsed
-// FLIGHTDECK_HOSTNAME, etc.) render with a vertical offset so two
-// overlapping pairs are visually distinguishable: ``anchor="top"``
-// pins the glyphs to the row's top edge, ``anchor="bottom"`` pins
-// them to the bottom. Three or more concurrent runs accept visual
-// overlap; the hover tooltip disambiguates by run_id.
-
-export type RunBracketAnchor = "top" | "bottom";
+// The glyph sits on the row's top or bottom edge, at the left edge the
+// layout packed it to. Hover or focus shows the run's tooltip; a click
+// hands the run's id to ``onClick``.
 
 interface RunBracketProps {
+	glyph: RowGlyph;
+	/** The run the glyph marks: its state and tokens fill the tooltip. */
 	session: Session;
-	scale: ScaleTime<number, number>;
-	/**
-	 * Right edge of the timeline panel in pixels. Kept on the prop
-	 * surface for compatibility with the SwimLane row's clip math;
-	 * the active-run end glyph is no longer rendered so the value is
-	 * unused for that path.
-	 */
-	timelineWidth: number;
-	/** Vertical anchor for staggering concurrent runs. */
-	anchor: RunBracketAnchor;
 	onClick: (sessionId: string) => void;
 }
 
-// Triangle (start glyph) base + height. Sized to roughly match the
-// event-circle visual weight (~10 px) so the start doesn't dominate
-// the row.
-const TRIANGLE_WIDTH = 10;
-const TRIANGLE_HEIGHT = 10;
-// Square (end glyph) side. Bbox area is SQUARE_SIDE² which we size
-// at ~1.3× the triangle's bbox area (TRIANGLE_WIDTH × TRIANGLE_HEIGHT)
-// so the closure reads heavier than the start. sqrt(1.3 × 10 × 10) ≈
-// 11.4 → 11 keeps the integer pixel grid honest while preserving the
-// asymmetry.
-const SQUARE_SIDE = 11;
 // Vertical inset from the row edge so the glyph clears the row
 // border. Same value start + end so the pair sits on a shared
 // baseline.
 const VERTICAL_MARGIN = 2;
+// A lost segment's hollow square: the stroke width, and the inset that
+// keeps the whole stroke inside the glyph's box.
+const LOST_STROKE_PX = 1.5;
 // Horizontal gap between the glyph and its hover tooltip.
 const TOOLTIP_OFFSET = 4;
 // Hover tooltip layout. Kept inline (the tooltip lives only on
@@ -86,143 +64,51 @@ const TOOLTIP_FONT_SIZE = 11;
 // the single source of truth for the bracket tooltip.
 const TOOLTIP_Z_INDEX = 9999;
 
-function formatRunTime(iso: string): string {
-	const d = new Date(iso);
+function formatRunTime(ms: number): string {
+	const d = new Date(ms);
 	const hh = String(d.getHours()).padStart(2, "0");
 	const mm = String(d.getMinutes()).padStart(2, "0");
 	const ss = String(d.getSeconds()).padStart(2, "0");
 	return `${hh}:${mm}:${ss}`;
 }
 
-function RunBracketComponent({
-	session,
-	scale,
-	timelineWidth,
-	anchor,
-	onClick,
-}: RunBracketProps) {
-	const onMarkClick = useCallback(() => {
-		onClick(session.session_id);
-	}, [onClick, session.session_id]);
-
-	const start = new Date(session.started_at);
-	const xStart = scale(start);
-	// ``endedAt`` is the narrowed local mirror of session.ended_at;
-	// using it for the gate eliminates the ``session.ended_at as
-	// string`` cast at the formatRunTime + end-Date construction
-	// sites below.
-	const endedAt: string | null = session.ended_at ?? null;
-	const end = endedAt === null ? null : new Date(endedAt);
-	const xEnd = end ? scale(end) : null;
-
-	const domain = scale.domain();
-	const domainStart = domain[0];
-	const domainEnd = domain[1];
-	// inWindow guards the START glyph specifically: if started_at is
-	// off-screen, neither the triangle nor the square render (the
-	// pair anchors on start). ``timelineWidth`` participates here
-	// because the triangle's right edge can sit slightly inside the
-	// visible band even when xStart is just past it.
-	const inWindow =
-		xStart >= -TRIANGLE_WIDTH && xStart <= timelineWidth + TRIANGLE_WIDTH;
-	const startInDomain =
-		!!domainStart &&
-		!!domainEnd &&
-		start.getTime() >= domainStart.getTime() &&
-		start.getTime() <= domainEnd.getTime();
-	if (!inWindow || !startInDomain) {
-		// The start glyph is outside the visible window; nothing to
-		// anchor the pair to. Skip the render entirely so a long-
-		// running historical run that started before the visible
-		// window doesn't clutter the row with a left-edge stub.
-		return null;
-	}
-
-	const idPrefix = session.session_id.slice(0, 8);
-	const startLabel = formatRunTime(session.started_at);
-	const endLabel = endedAt ? formatRunTime(endedAt) : "running";
-	const tokens = session.tokens_used ?? 0;
-	const tooltipText = `run ${idPrefix}\nstart: ${startLabel}\nend:   ${endLabel}\nstate: ${session.state}\ntokens: ${tokens.toLocaleString()}`;
-
-	// Symmetric clip guard for the end square mirroring the start
-	// triangle's inWindow check. Without this, a closed run whose
-	// ended_at scales to a value outside the visible pixel range
-	// leaks an absolutely-positioned <button> outside the row's
-	// horizontal bounds and a click target lands in nowhere-land.
-	const endInWindow =
-		xEnd !== null &&
-		xEnd >= -SQUARE_SIDE &&
-		xEnd <= timelineWidth + SQUARE_SIDE &&
-		!!end &&
-		!!domainStart &&
-		!!domainEnd &&
-		end.getTime() >= domainStart.getTime() &&
-		end.getTime() <= domainEnd.getTime();
-
-	return (
-		<>
-			<RunBoundaryMark
-				kind="start"
-				x={xStart}
-				anchor={anchor}
-				tooltip={tooltipText}
-				sessionId={session.session_id}
-				onClick={onMarkClick}
-			/>
-			{/* End square only renders for closed runs whose ended_at
-			    is inside the visible pixel range AND the scale's
-			    domain. Active / idle / stale / lost runs render the
-			    start triangle alone so operators read "no end glyph"
-			    as "still running" — no in-progress dashed tick at the
-			    right edge. */}
-			{endInWindow && xEnd !== null && (
-				<RunBoundaryMark
-					kind="end"
-					x={xEnd}
-					anchor={anchor}
-					tooltip={tooltipText}
-					sessionId={session.session_id}
-					onClick={onMarkClick}
-				/>
-			)}
-		</>
-	);
+/** The tooltip's end line for a segment. */
+function endLabel(glyph: RowGlyph): string {
+	const { segment } = glyph;
+	if (segment.endKind === "open") return "running";
+	if (segment.endKind === "lost") return `lost · last seen ${formatRunTime(segment.endMs)}`;
+	return formatRunTime(segment.endMs);
 }
 
-// RunBoundaryMark renders one glyph (triangle OR square) anchored at
-// ``x`` on the swimlane row. Uses SVG ``<polygon>`` for the start
-// triangle and ``<rect>`` for the end square — D3 still does math
-// only via the parent's scale; the glyph itself is React-rendered
-// SVG (Rule 16).
-function RunBoundaryMark({
-	kind,
-	x,
-	anchor,
-	tooltip,
-	sessionId,
-	onClick,
-}: {
-	kind: "start" | "end";
-	x: number;
-	anchor: RunBracketAnchor;
-	tooltip: string;
-	sessionId: string;
-	onClick: () => void;
-}) {
-	const [tooltipPos, setTooltipPos] = useState<
-		{ left: number; top: number } | null
-	>(null);
+/** The glyph's accessible name: the run, the glyph and its time. */
+function ariaLabel(glyph: RowGlyph, idPrefix: string): string {
+	const { segment } = glyph;
+	const part = segment.count > 1 ? `, segment ${segment.index + 1} of ${segment.count}` : "";
+	if (glyph.kind === "start") {
+		return `Open run ${idPrefix}${part}, start ${formatRunTime(segment.startMs)}`;
+	}
+	if (segment.endKind === "lost") {
+		return `Open run ${idPrefix}${part}, lost, last seen ${formatRunTime(segment.endMs)}`;
+	}
+	return `Open run ${idPrefix}${part}, end ${formatRunTime(segment.endMs)}`;
+}
+
+function RunBracketComponent({ glyph, session, onClick }: RunBracketProps) {
+	const { segment, kind } = glyph;
+	const sessionId = segment.sessionId;
+	const idPrefix = sessionId.slice(0, 8);
+	const [tooltipPos, setTooltipPos] = useState<{ left: number; top: number } | null>(null);
+	const onMarkClick = useCallback(() => onClick(sessionId), [onClick, sessionId]);
 	const onHoverEnter = useCallback(
 		(e: React.MouseEvent<HTMLButtonElement> | React.FocusEvent<HTMLButtonElement>) => {
 			// Anchor the tooltip to the button's viewport rect so
 			// ``position: fixed`` takes it out of the timeline-panel's
-			// ``overflow: hidden`` clip — the tooltip is ~56 px tall
-			// (3 lines × line-height 1.4 + padding + border) which
-			// exceeds the 48-px row, so an absolutely-positioned
-			// child of the panel gets clipped either at the top or
-			// the bottom regardless of anchor. The fixed-coordinate
-			// approach mirrors how ``EventNode`` positions its own
-			// tooltip and is the only way to render off-clip.
+			// ``overflow: hidden`` clip — the tooltip is taller than the
+			// 48-px row, so an absolutely-positioned child of the panel
+			// gets clipped at the top or the bottom whatever its edge.
+			// The fixed-coordinate approach mirrors how ``EventNode``
+			// positions its own tooltip and is the only way to render
+			// off-clip.
 			const rect = e.currentTarget.getBoundingClientRect();
 			setTooltipPos({
 				left: rect.right + TOOLTIP_OFFSET,
@@ -238,37 +124,47 @@ function RunBoundaryMark({
 	// pointer must stay on the button to keep the tooltip visible,
 	// so any active scroll already moves the operator off-button
 	// and ``onMouseLeave`` fires. ``EventNode`` has the same
-	// no-listener behaviour for the same reason; revisit jointly
-	// if a v1 user reports drift.
+	// no-listener behaviour for the same reason.
 
-	const glyphSize = kind === "start" ? TRIANGLE_WIDTH : SQUARE_SIDE;
-	const glyphHeight = kind === "start" ? TRIANGLE_HEIGHT : SQUARE_SIDE;
-	const top = anchor === "top" ? VERTICAL_MARGIN : undefined;
-	const bottom = anchor === "bottom" ? VERTICAL_MARGIN : undefined;
+	const size = kind === "start" ? START_GLYPH_SIZE_PX : END_GLYPH_SIZE_PX;
+	const lost = kind === "end" && segment.endKind === "lost";
+	const tokens = session.tokens_used ?? 0;
+	const lines = [
+		`run ${idPrefix}`,
+		`start: ${formatRunTime(segment.startMs)}`,
+		`end:   ${endLabel(glyph)}`,
+		`state: ${session.state}`,
+		`tokens: ${tokens.toLocaleString()}`,
+	];
+	if (segment.count > 1) lines.push(`segment ${segment.index + 1} of ${segment.count}`);
 
 	return (
 		<>
 			<button
 				type="button"
-				data-testid={`swimlane-run-bracket-${kind}-${sessionId.slice(0, 8)}`}
+				data-testid={`swimlane-run-bracket-${kind}-${idPrefix}`}
 				data-bracket-kind={kind}
 				// The run this glyph marks; Timeline's delegated hover
 				// and focus handlers read it to light the run's
 				// sub-agent connectors.
 				data-session-id={sessionId}
-				aria-label={`Open run ${sessionId.slice(0, 8)} (${kind})`}
-				onClick={onClick}
+				data-run-lane={glyph.lane}
+				data-segment-index={segment.index}
+				data-end-kind={kind === "end" ? segment.endKind : undefined}
+				aria-label={ariaLabel(glyph, idPrefix)}
+				onClick={onMarkClick}
 				onMouseEnter={onHoverEnter}
 				onMouseLeave={onHoverLeave}
 				onFocus={onHoverEnter}
 				onBlur={onHoverLeave}
+				className="focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent)"
 				style={{
 					position: "absolute",
-					left: x - glyphSize / 2,
-					top,
-					bottom,
-					width: glyphSize,
-					height: glyphHeight,
+					left: glyph.left,
+					top: glyph.lane === 0 ? VERTICAL_MARGIN : undefined,
+					bottom: glyph.lane === 1 ? VERTICAL_MARGIN : undefined,
+					width: size,
+					height: size,
 					padding: 0,
 					background: "transparent",
 					border: "none",
@@ -279,30 +175,36 @@ function RunBoundaryMark({
 				}}
 			>
 				<svg
-					width={glyphSize}
-					height={glyphHeight}
-					viewBox={`0 0 ${glyphSize} ${glyphHeight}`}
+					width={size}
+					height={size}
+					viewBox={`0 0 ${size} ${size}`}
 					style={{ display: "block" }}
 					aria-hidden="true"
 				>
 					{kind === "start" ? (
 						<polygon
-							points={`0,0 ${TRIANGLE_WIDTH},${TRIANGLE_HEIGHT / 2} 0,${TRIANGLE_HEIGHT}`}
+							points={`0,0 ${size},${size / 2} 0,${size}`}
 							fill="var(--accent)"
+						/>
+					) : lost ? (
+						<rect
+							x={LOST_STROKE_PX / 2}
+							y={LOST_STROKE_PX / 2}
+							width={size - LOST_STROKE_PX}
+							height={size - LOST_STROKE_PX}
+							fill="none"
+							stroke="var(--status-lost)"
+							strokeWidth={LOST_STROKE_PX}
 						/>
 					) : (
-						<rect
-							width={SQUARE_SIDE}
-							height={SQUARE_SIDE}
-							fill="var(--accent)"
-						/>
+						<rect width={size} height={size} fill="var(--accent)" />
 					)}
 				</svg>
 			</button>
 			{tooltipPos && (
 				<RunBracketTooltipPortal
 					sessionId={sessionId}
-					tooltip={tooltip}
+					tooltip={lines.join("\n")}
 					tooltipPos={tooltipPos}
 				/>
 			)}
@@ -355,42 +257,3 @@ function RunBracketTooltipPortal({
 }
 
 export const RunBracket = memo(RunBracketComponent);
-
-// bracketAnchors returns "top" for the first run and "bottom"
-// for every subsequent concurrent run anchored under the same agent
-// row. Concurrent is defined as any run whose ``[started_at,
-// ended_at OR open-ended]`` interval overlaps any earlier run's
-// interval. Three or more concurrent runs collapse to "bottom" (we
-// cap the vertical lanes at 2). Caller passes the agent's sessions
-// in any order — they're sorted chronologically by start time
-// internally.
-//
-// An active / idle run (no ``ended_at``) is treated as open-ended:
-// its overlap interval extends to ``+Infinity``, so every later run
-// sees it as still running. Using wall-clock now as a stand-in
-// end would incorrectly mark an active run as "ended" relative to
-// any test fixture that uses future timestamps.
-export function bracketAnchors(
-	sessions: Session[],
-): Map<string, RunBracketAnchor> {
-	const anchors = new Map<string, RunBracketAnchor>();
-	const sorted = [...sessions].sort(
-		(a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime(),
-	);
-	const openIntervals: { id: string; endMs: number }[] = [];
-	for (const s of sorted) {
-		const startMs = new Date(s.started_at).getTime();
-		const endMs = s.ended_at
-			? new Date(s.ended_at).getTime()
-			: Number.POSITIVE_INFINITY;
-		// Drop intervals that ended before this run started.
-		for (let i = openIntervals.length - 1; i >= 0; i--) {
-			const iv = openIntervals[i];
-			if (iv && iv.endMs < startMs) openIntervals.splice(i, 1);
-		}
-		const anchor: RunBracketAnchor = openIntervals.length === 0 ? "top" : "bottom";
-		anchors.set(s.session_id, anchor);
-		openIntervals.push({ id: s.session_id, endMs });
-	}
-	return anchors;
-}

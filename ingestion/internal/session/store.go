@@ -69,9 +69,9 @@ func (s *Store) Attach(ctx context.Context, sessionID string) (bool, string, err
 		return false, "", fmt.Errorf("lookup session %s: %w", sessionID, err)
 	}
 
-	// Revive closed/lost → active. started_at stays as it was on the
-	// original close (the dashboard's run separator draws off
-	// session_attachments); ended_at and closed_seq are cleared below.
+	// Revive closed/lost → active. started_at stays at the run's first
+	// start (session_attachments records each re-attachment); ended_at
+	// and closed_seq are cleared below.
 	if priorState == "closed" || priorState == "lost" {
 		// Clear ended_at on revive so the session no longer looks
 		// "finished at time X" while state=active. Without this, the

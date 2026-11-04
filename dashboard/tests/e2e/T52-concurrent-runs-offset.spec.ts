@@ -4,17 +4,17 @@
  *
  * Multi-pod K8s deployments with collapsed FLIGHTDECK_HOSTNAME
  * (and any other case where two sessions share an agent_id and
- * have overlapping time windows) get bracket pairs anchored to
- * opposite edges of the swimlane row so they remain visually
- * distinguishable. The ``bracketAnchors`` helper in
- * ``RunBracket.tsx`` assigns "top" to the first run and "bottom"
- * to every subsequent concurrent run; the brackets' inline
- * top / bottom style props reflect that anchor.
+ * have overlapping time windows) get their run glyphs on opposite
+ * edges of the swimlane row so they remain visually
+ * distinguishable: while two runs overlap in the window, the
+ * topmost track in view keeps the top edge and the other run's
+ * glyphs sit on the bottom edge (lib/swimlane-lanes.ts).
  *
- * Fixture: any agent in the seeded fleet that exposes 2+ runs.
- * The spec scans every visible swimlane row, picks one with at
- * least two start brackets, and asserts the two start ticks
- * carry different vertical offsets.
+ * Fixture: e2e-test-concurrent-runs, two open runs that overlap
+ * and, before them, a run that went lost 1 h 55 min ago. A lost run
+ * ends at its last signal, so it holds no lane; read as running
+ * forever, it used to push both concurrent runs to the bottom edge,
+ * where their start glyphs shared one vertical offset.
  */
 import { test, expect } from "@playwright/test";
 import { bringSwimlaneRowIntoView, waitForFleetReady } from "./_fixtures";
@@ -37,10 +37,10 @@ test.describe("T52 — Concurrent runs offset anchors", () => {
 		await waitForFleetReady(page);
 		// 5 m keeps a run that started 30-70 s ago (the keep-alive pins
 		// these runs to start 30 s before each cycle) well inside the
-		// panel, at x ≈ 690-810 px. At 1 h it sits in the panel's
-		// clipped right margin, where glyphs centre on their time
-		// inside the 19 px inset and are not mounted or visible; at
-		// 1 m it drifts out of the window before the next cycle.
+		// panel, at x ≈ 690-810 px. At 1 h it sits at the panel's right
+		// edge, where the glyphs of every run that started then are
+		// packed together; at 1 m it drifts out of the window before
+		// the next cycle.
 		await page.getByRole("button", { name: "5m", exact: true }).click();
 		const row = await bringSwimlaneRowIntoView(page, CONCURRENT_AGENT);
 		await expect(row).toBeVisible({ timeout: 10000 });
@@ -73,10 +73,10 @@ test.describe("T52 — Concurrent runs offset anchors", () => {
 		await waitForFleetReady(page);
 		// 5 m keeps a run that started 30-70 s ago (the keep-alive pins
 		// these runs to start 30 s before each cycle) well inside the
-		// panel, at x ≈ 690-810 px. At 1 h it sits in the panel's
-		// clipped right margin, where glyphs centre on their time
-		// inside the 19 px inset and are not mounted or visible; at
-		// 1 m it drifts out of the window before the next cycle.
+		// panel, at x ≈ 690-810 px. At 1 h it sits at the panel's right
+		// edge, where the glyphs of every run that started then are
+		// packed together; at 1 m it drifts out of the window before
+		// the next cycle.
 		await page.getByRole("button", { name: "5m", exact: true }).click();
 		const row = await bringSwimlaneRowIntoView(page, CONCURRENT_AGENT);
 		await expect(row).toBeVisible({ timeout: 10000 });

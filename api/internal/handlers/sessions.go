@@ -99,9 +99,11 @@ func SessionsHandler(s store.Querier) http.HandlerFunc {
 		}
 
 		// Attachments failure is non-fatal: the session + events are
-		// load-bearing for the drawer; the attachment list only adds
-		// run separators. Log and continue with an empty slice so a
-		// transient DB hiccup doesn't black out the whole drawer.
+		// load-bearing for the drawer; the attachment list only marks
+		// each re-attachment's session_start (the drawer's ATTACH
+		// badge, the swimlane's amber circle). Log and continue with an
+		// empty slice so a transient DB hiccup doesn't black out the
+		// whole drawer.
 		attachments, attErr := s.GetSessionAttachments(r.Context(), id)
 		if attErr != nil {
 			slog.Warn("get session attachments error", "id", id, "err", attErr)

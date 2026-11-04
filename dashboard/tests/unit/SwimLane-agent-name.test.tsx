@@ -245,18 +245,20 @@ describe("SwimLane timeline inset", () => {
     expect(wrapper.style.bottom).toBe("0px");
   });
 
-  it("culls run glyphs at the inset wrapper's visible edge, not the old 8 px one", () => {
+  it("pulls a just-started run's glyph back inside the inset wrapper's visible edge", () => {
     // 60 s map onto 900 px. A run that started 350 ms ago sits at
-    // x ≈ 894.75 in wrapper coordinates: more than a glyph's width
-    // past the wrapper's visible right edge (900 - 19 = 881), so its
-    // start glyph would be clipped anyway and is not rendered. With
-    // the old 8 px subtraction (892) it was still rendered.
+    // x ≈ 894.75 in wrapper coordinates, past the wrapper's visible
+    // right edge (900 - 19 = 881), where the panel would clip it. The
+    // glyph is pulled back so its right edge meets the visible edge,
+    // and the run that has just started shows its ▶.
     renderRow(
       PARENT_NAME,
       [mkSession("r-late", { started_at: new Date(NOW.getTime() - 350).toISOString() })],
       "agent-late",
     );
-    expect(screen.queryByTestId("swimlane-run-bracket-start-r-late")).toBeNull();
+    const glyph = screen.getByTestId("swimlane-run-bracket-start-r-late");
+    const right = parseFloat(glyph.style.left) + parseFloat(glyph.style.width);
+    expect(right).toBe(900 - TIMELINE_LEFT_INSET_PX);
   });
 
   it("keeps the start glyph of a run that started well inside the window", () => {

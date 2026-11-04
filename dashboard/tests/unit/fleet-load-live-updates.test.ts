@@ -439,4 +439,65 @@ describe("load() and live updates that arrive while it is in flight", () => {
 
     expect(agentRow()?.total_sessions).toBe(2);
   });
+
+  // A full window of the agent's five newest runs, started an hour ago
+  // and later, one a minute apart.
+  const HOUR_AGO = Date.parse(NOW_ISO) - 60 * 60 * 1000;
+  const windowRuns = () =>
+    [0, 1, 2, 3, 4].map((i) => ({
+      ...recentOf(`run-w-${i}`),
+      started_at: new Date(HOUR_AGO + (4 - i) * 60_000).toISOString(),
+    }));
+
+  it("does not count a re-attached run older than a full window, nor let it into the window", () => {
+    seedHeld("active");
+    useFleetStore.setState({
+      agents: [agent({ total_sessions: 12, recent_sessions: windowRuns() })],
+    });
+    // A resume of a run started yesterday: it keeps its started_at.
+    const yesterday = new Date(HOUR_AGO - 24 * 60 * 60 * 1000).toISOString();
+    useFleetStore.getState().applyUpdate({
+      ...runStart("run-old"),
+      session: session({ session_id: "run-old", started_at: yesterday }),
+    });
+
+    expect(agentRow()?.total_sessions).toBe(12);
+    expect(agentRow()?.recent_sessions?.map((r) => r.session_id)).toEqual(
+      windowRuns().map((r) => r.session_id),
+    );
+  });
+
+  it("counts a new run with a full window, and it leads the window", () => {
+    seedHeld("active");
+    useFleetStore.setState({
+      agents: [agent({ total_sessions: 12, recent_sessions: windowRuns() })],
+    });
+    useFleetStore.getState().applyUpdate(runStart("run-new"));
+
+    expect(agentRow()?.total_sessions).toBe(13);
+    expect(agentRow()?.recent_sessions?.map((r) => r.session_id)).toEqual([
+      "run-new",
+      "run-w-0",
+      "run-w-1",
+      "run-w-2",
+      "run-w-3",
+    ]);
+  });
+
+  it("keeps a re-attached run of the window in its place", () => {
+    seedHeld("active");
+    useFleetStore.setState({
+      agents: [agent({ total_sessions: 12, recent_sessions: windowRuns() })],
+    });
+    const third = windowRuns()[2]!;
+    useFleetStore.getState().applyUpdate({
+      ...runStart(third.session_id),
+      session: session({ session_id: third.session_id, started_at: third.started_at }),
+    });
+
+    expect(agentRow()?.total_sessions).toBe(12);
+    expect(agentRow()?.recent_sessions?.map((r) => r.session_id)).toEqual(
+      windowRuns().map((r) => r.session_id),
+    );
+  });
 });

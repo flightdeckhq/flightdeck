@@ -150,6 +150,13 @@ func (m *mockStore) GetSession(_ context.Context, id string) (*store.Session, er
 	if id == "unknown" {
 		return nil, nil
 	}
+	if id == "sess-reaped" {
+		return &store.Session{
+			SessionID: id, Flavor: "test", State: "closed",
+			StartedAt: time.Now(), LastSeenAt: time.Now(),
+			CloseReasons: []string{"orphan_timeout"},
+		}, nil
+	}
 	if id == "sess-with-policy" {
 		limit := int64(100000)
 		warn := 80
@@ -894,8 +901,8 @@ func TestSessionsHandler_ReturnsEventsInOrder(t *testing.T) {
 // The session detail response must always include the
 // "attachments" key -- empty array for sessions that have only ever
 // run once, chronological list of ISO-8601 timestamps otherwise.
-// Missing key is a contract break; the dashboard drawer relies on it
-// to decide whether to draw run separators.
+// Missing key is a contract break; the dashboard relies on it to mark
+// each re-attachment's session_start.
 func TestSessionsHandler_IncludesAttachmentsArray(t *testing.T) {
 	s := &mockStore{}
 	handler := handlers.SessionsHandler(store.WrapStore(s))
@@ -923,6 +930,32 @@ func TestSessionsHandler_IncludesAttachmentsArray(t *testing.T) {
 	}
 	if len(arr) != 0 {
 		t.Errorf("expected empty attachments for mock store, got %v", arr)
+	}
+}
+
+// The run drawer and the live stream's session row both come from
+// GetSession; close_reasons rides on it so the swimlane can tell a run
+// the orphan-timeout reaper closed.
+func TestSessionsHandler_SessionCarriesCloseReasons(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions/sess-reaped", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d (body=%s)", w.Code, w.Body.String())
+	}
+	var resp struct {
+		Session struct {
+			CloseReasons []string `json:"close_reasons"`
+		} `json:"session"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("invalid JSON: %v body=%s", err, w.Body.String())
+	}
+	if len(resp.Session.CloseReasons) != 1 || resp.Session.CloseReasons[0] != "orphan_timeout" {
+		t.Errorf("session.close_reasons = %v, want [orphan_timeout]", resp.Session.CloseReasons)
 	}
 }
 

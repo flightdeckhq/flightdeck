@@ -203,6 +203,12 @@ type Session struct {
 	// change is required.
 	CaptureEnabled bool `json:"capture_enabled"`
 
+	// CloseReasons lists the distinct close_reason values across the
+	// session's session_end events (closeReasonsSQL), always an array.
+	// The Fleet swimlane reads ``orphan_timeout`` here as a run the
+	// reaper closed, which ends at its last_seen_at.
+	CloseReasons []string `json:"close_reasons"`
+
 	// Sub-agent observability columns. Both nullable, both
 	// populated only on sub-agent sessions (Claude Code Task
 	// subagent, CrewAI agent execution, LangGraph agent-bearing
@@ -384,7 +390,29 @@ type RecentSession struct {
 	// been deleted (FK is ON DELETE SET NULL).
 	ParentAgentID *string `json:"parent_agent_id,omitempty"`
 	AgentRole     *string `json:"agent_role,omitempty"`
+	// CloseReasons lists the distinct close_reason values across the
+	// session's session_end events (closeReasonsSQL), always an array.
+	// A run the reaper closed is older than the Fleet's 24 h sessions
+	// page, so this rollup is where the dashboard learns it was reaped.
+	CloseReasons []string `json:"close_reasons"`
 }
+
+// closeReasonsSQL is the distinct close_reason values of a session's
+// session_end events, sorted, as a text[] that is never NULL.
+// The %s verb takes the session id expression of the enclosing query. Shared by
+// GetSession and GetRecentSessionsByAgentIDs; SessionListItem's listing
+// query builds the same array.
+const closeReasonsSQL = `COALESCE(
+	ARRAY(
+		SELECT DISTINCT e.payload->>'close_reason'
+		FROM events e
+		WHERE e.session_id = %s
+		AND e.event_type = 'session_end'
+		AND e.payload->>'close_reason' IS NOT NULL
+		ORDER BY 1
+	),
+	ARRAY[]::text[]
+)`
 
 // RecentSessionsPerAgent caps the per-agent rollup on the
 // /v1/fleet response. Five rows is enough to cover the swimlane's
@@ -570,7 +598,8 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 			t.state,
 			t.started_at, t.ended_at, t.last_seen_at, t.tokens_used,
 			t.token_limit, t.capture_enabled,
-			t.parent_session_id, t.parent_agent_id, t.agent_role
+			t.parent_session_id, t.parent_agent_id, t.agent_role,
+			` + fmt.Sprintf(closeReasonsSQL, "t.session_id::uuid") + ` AS close_reasons
 		FROM (
 			SELECT
 				s.session_id::text AS session_id,
@@ -623,6 +652,7 @@ func (s *Store) GetRecentSessionsByAgentIDs(
 			&r.StartedAt, &r.EndedAt, &r.LastSeenAt, &r.TokensUsed,
 			&r.TokenLimit, &r.CaptureEnabled,
 			&r.ParentSessionID, &r.ParentAgentID, &r.AgentRole,
+			&r.CloseReasons,
 		); err != nil {
 			return nil, fmt.Errorf("scan recent session: %w", err)
 		}
@@ -771,7 +801,8 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 				LIMIT 1
 			) AS capture_enabled,
 			s.parent_session_id::text,
-			s.agent_role
+			s.agent_role,
+			`+fmt.Sprintf(closeReasonsSQL, "s.session_id")+` AS close_reasons
 		FROM sessions s
 		LEFT JOIN token_policies ps
 			ON ps.scope = 'session' AND ps.scope_value = s.session_id::text
@@ -791,6 +822,7 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 		&sess.DegradeTo, &sess.BlockAtPct,
 		&sess.CaptureEnabled,
 		&sess.ParentSessionID, &sess.AgentRole,
+		&sess.CloseReasons,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -1011,9 +1043,10 @@ func (s *Store) GetEvent(ctx context.Context, eventID string) (*Event, error) {
 // GetSessionAttachments returns every recorded attachment timestamp
 // for a session in chronological order. The initial session creation
 // is not an attachment, so a session that has only ever run once
-// returns an empty slice. Used by the dashboard session drawer to
-// draw a run separator per attachment and by GET /v1/sessions/{id} to
-// surface the full attachment history.
+// returns an empty slice. GET /v1/sessions/{id} returns the full
+// attachment history, which the dashboard uses to mark each
+// re-attachment's session_start (the session drawer's ATTACH badge,
+// the swimlane's amber circle).
 func (s *Store) GetSessionAttachments(ctx context.Context, sessionID string) ([]time.Time, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT attached_at

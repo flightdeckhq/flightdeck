@@ -3504,7 +3504,15 @@ It then marks the records it loaded as assembled, by key, and deletes
 their content. A trace stays due if a record was staged while it was
 being assembled; an assembly whose lease expired marks nothing, and the
 next holder publishes the same event ids again, which the worker drops
-as copies. A `quiet` or `max_hold` assembly treats an agent whose chain
+as copies. Every claim has an owner id of its own, so an expired lease
+is not renewed, released or marked even when the same process claims
+the trace again. With each renewal, the first chunk's included, the
+assembler re-reads the trace's capture posture, and once a record
+without capture has turned it off it publishes none of the content it
+loaded. A trace claimed before it is complete (a Google ADK trace
+still missing log records) is released to be due again, never later
+than 24 hours after its first record, nor later than a record staged
+during the claim made it due. A `quiet` or `max_hold` assembly treats an agent whose chain
 of ancestors is cut by a missing span as a root. An event dated more
 than 48 hours before its assembly fails validation (see Validation
 rules), is logged with its reason, and the rest of the trace is
@@ -4459,7 +4467,10 @@ key and takes the row lock that serialises writes to one trace, then
 inserts the records that are new (`ON CONFLICT DO NOTHING`, so a
 resent record stages nothing and moves neither the timers nor `gen`),
 then their content, and then, only when a record was new, moves the
-trace's timers and bumps `gen`. A trace's 10,000-record cap counts
+trace's timers and bumps `gen`. The timers and the records are dated
+from when the write held the row lock, not from when it began, so a
+write that waited behind another never dates them earlier, and
+`last_received_at` never moves back. A trace's 10,000-record cap counts
 staged records, so a resent record never takes a new one's place. A
 write without capture on a trace that had it, a resent record's
 included (off is the safe direction), sets `capture` false and deletes

@@ -21,10 +21,15 @@ import (
 
 // These tests run against a real Postgres at TEST_POSTGRES_URL (else
 // FLIGHTDECK_POSTGRES_URL) migrated through 000035, and skip when
-// neither is set (CI's unit jobs run without a database). Each test
-// stages under a token key of its own and deletes its rows when it
-// ends. The store's clock runs in 2001, so a claim or a sweep made here
-// never reaches a real deployment's rows, whose times are current, and
+// neither is set (CI's unit jobs run without a database).
+//
+// Point them at a database of their own, never one an ingestion process
+// assembles from. The store's clock runs in 2001, so a claim or a sweep
+// made here never takes a real deployment's rows, whose times are
+// current; but the reverse does not hold: a real-clock assembler or
+// sweeper on the same database finds every 2001-dated test trace long
+// due or expired, and claims or deletes it mid-test. Each test stages
+// under a token key of its own, deletes its rows when it ends, and
 // claim assertions look only at the test's own token.
 
 // pollTimeout bounds every wait for another goroutine's database work:
@@ -52,6 +57,12 @@ func (c *testClock) Advance(d time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.now = c.now.Add(d)
+}
+
+func (c *testClock) Set(t time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = t
 }
 
 type testEnv struct {
@@ -706,8 +717,8 @@ func TestMarkAssembledMarksTheSnapshotAndDeletesItsContent(t *testing.T) {
 	_, lt := e.claimOne("a", key)
 
 	res, err := e.store.MarkAssembled(ctx, "a", key, lt.Gen, ReasonComplete, lt.Unassembled())
-	if err != nil || res != (MarkResult{Marked: true}) {
-		t.Fatalf("MarkAssembled = %+v, %v; want marked and not pending", res, err)
+	if err != nil || res != (MarkResult{Marked: true, Capture: true}) {
+		t.Fatalf("MarkAssembled = %+v, %v; want marked, not pending, capture on", res, err)
 	}
 	tr := e.traceRow(key)
 	if tr.AssembledAt == nil || !tr.AssembledAt.Equal(e.clock.Now()) {
@@ -806,8 +817,8 @@ func TestMarkAssembledLeavesALateCommittingRecordUnassembled(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := e.store.MarkAssembled(ctx, "a", key, lt.Gen, ReasonComplete, lt.Unassembled())
-	if err != nil || res != (MarkResult{Marked: true, Pending: true}) {
-		t.Fatalf("MarkAssembled = %+v, %v; want marked and still pending", res, err)
+	if err != nil || res != (MarkResult{Marked: true, Pending: true, Capture: true}) {
+		t.Fatalf("MarkAssembled = %+v, %v; want marked, still pending, capture on", res, err)
 	}
 	if !e.assembledFlag(key, 1) || e.assembledFlag(key, 2) {
 		t.Fatal("want the snapshot's record assembled and the late one not")
@@ -828,11 +839,11 @@ func TestLeaseRenewalAndExpiry(t *testing.T) {
 
 	// A renewal pushes the expiry out from the renewal time.
 	e.clock.Advance(LeaseTTL / 2)
-	if ok, err := e.store.RenewLease(ctx, "a", key); err != nil || !ok {
-		t.Fatalf("RenewLease by the holder = %v, %v", ok, err)
+	if lease, err := e.store.RenewLease(ctx, "a", key); err != nil || !lease.Held {
+		t.Fatalf("RenewLease by the holder = %+v, %v", lease, err)
 	}
-	if ok, err := e.store.RenewLease(ctx, "b", key); err != nil || ok {
-		t.Fatalf("RenewLease by another owner = %v, %v; want refused", ok, err)
+	if lease, err := e.store.RenewLease(ctx, "b", key); err != nil || lease.Held {
+		t.Fatalf("RenewLease by another owner = %+v, %v; want refused", lease, err)
 	}
 	if tr := e.traceRow(key); !tr.LeaseExpires.Equal(claimedAt.Add(LeaseTTL/2 + LeaseTTL)) {
 		t.Fatalf("lease expires %v, want renewal time + TTL", tr.LeaseExpires)
@@ -850,8 +861,8 @@ func TestLeaseRenewalAndExpiry(t *testing.T) {
 	if got := e.claimOwn("b"); len(got) != 1 {
 		t.Fatalf("claimed %d traces after the lease expired, want 1", len(got))
 	}
-	if ok, err := e.store.RenewLease(ctx, "a", key); err != nil || ok {
-		t.Fatalf("RenewLease after losing the lease = %v, %v; want refused", ok, err)
+	if lease, err := e.store.RenewLease(ctx, "a", key); err != nil || lease.Held {
+		t.Fatalf("RenewLease after losing the lease = %+v, %v; want refused", lease, err)
 	}
 	res, err := e.store.MarkAssembled(ctx, "a", key, lt.Gen, ReasonComplete, lt.Unassembled())
 	if err != nil || res.Marked {
@@ -870,13 +881,13 @@ func TestDeferReleasesTheLease(t *testing.T) {
 	ctx := context.Background()
 	key := e.newKey()
 	e.stage(e.batch(key, span(1, 0)))
-	e.claimOne("a", key)
+	_, lt := e.claimOne("a", key)
 	later := e.clock.Now().Add(time.Second)
 
-	if ok, err := e.store.Defer(ctx, "b", key, later); err != nil || ok {
+	if ok, err := e.store.Defer(ctx, "b", key, lt.Gen, later); err != nil || ok {
 		t.Fatalf("Defer by another owner = %v, %v; want refused", ok, err)
 	}
-	if ok, err := e.store.Defer(ctx, "a", key, later); err != nil || !ok {
+	if ok, err := e.store.Defer(ctx, "a", key, lt.Gen, later); err != nil || !ok {
 		t.Fatalf("Defer by the holder = %v, %v", ok, err)
 	}
 	tr := e.traceRow(key)
@@ -889,6 +900,177 @@ func TestDeferReleasesTheLease(t *testing.T) {
 	e.clock.Advance(time.Second)
 	if got := e.claimOwn("b"); len(got) != 1 {
 		t.Fatalf("claimed %d traces once the deferred one was due, want 1", len(got))
+	}
+}
+
+// An expired lease is not a lease: even with no other claim on the
+// trace, and the owner id unchanged, a stale assembly marks, renews and
+// defers nothing.
+func TestAnExpiredLeaseMarksRenewsAndDefersNothing(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	key := e.newKey()
+	e.stage(e.batch(key, span(1, 0)))
+	_, lt := e.claimOne("a", key)
+
+	e.clock.Advance(LeaseTTL)
+	if lease, err := e.store.RenewLease(ctx, "a", key); err != nil || !lease.Held {
+		t.Fatalf("RenewLease at exactly the expiry = %+v, %v; want held", lease, err)
+	}
+	e.clock.Advance(LeaseTTL + time.Microsecond)
+	before := e.traceRow(key)
+	if lease, err := e.store.RenewLease(ctx, "a", key); err != nil || lease.Held {
+		t.Fatalf("RenewLease of an expired lease = %+v, %v; want refused", lease, err)
+	}
+	if ok, err := e.store.Defer(ctx, "a", key, lt.Gen, e.clock.Now()); err != nil || ok {
+		t.Fatalf("Defer of an expired lease = %v, %v; want refused", ok, err)
+	}
+	res, err := e.store.MarkAssembled(ctx, "a", key, lt.Gen, ReasonComplete, lt.Unassembled())
+	if err != nil || res.Marked {
+		t.Fatalf("MarkAssembled of an expired lease = %+v, %v; want nothing marked", res, err)
+	}
+	after := e.traceRow(key)
+	if e.assembledFlag(key, 1) || after.AssemblyCount != 0 || after.AssembledAt != nil ||
+		!after.LeaseExpires.Equal(before.LeaseExpires) || !after.ResolveAt.Equal(before.ResolveAt) {
+		t.Fatalf("an expired lease changed the trace: before %+v, after %+v", before, after)
+	}
+	// The trace is claimable again, and the new claim assembles it.
+	got := e.claimOwn("a-2")
+	if len(got) != 1 {
+		t.Fatalf("claimed %d traces after the lease expired, want 1", len(got))
+	}
+	if res, err := e.store.MarkAssembled(ctx, "a-2", key, lt.Gen, ReasonComplete, lt.Unassembled()); err != nil || !res.Marked {
+		t.Fatalf("MarkAssembled by the new claim = %+v, %v", res, err)
+	}
+}
+
+func TestDeferNeverPassesTheMaxHold(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	key := e.newKey()
+	e.stage(e.batch(key, span(1, 0)))
+	_, lt := e.claimOne("a", key)
+
+	if ok, err := e.store.Defer(ctx, "a", key, lt.Gen, testEpoch.Add(2*MaxTraceHold)); err != nil || !ok {
+		t.Fatalf("Defer = %v, %v", ok, err)
+	}
+	if tr := e.traceRow(key); !tr.ResolveAt.Equal(testEpoch.Add(MaxTraceHold)) {
+		t.Fatalf("resolve_at=%v, want the first record + max hold", tr.ResolveAt)
+	}
+}
+
+// A record staged while the trace is claimed sets its timer; a deferral
+// made on the older snapshot never moves that timer later.
+func TestDeferKeepsTheTimerOfARecordStagedDuringTheClaim(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	key := e.newKey()
+	e.stage(e.batch(key, span(1, 0)))
+	_, lt := e.claimOne("a", key)
+
+	e.stage(e.batch(key, span(2, 1)))
+	staged := e.traceRow(key).ResolveAt
+	if !staged.Equal(e.clock.Now().Add(RootGrace)) {
+		t.Fatalf("the racing record set resolve_at=%v, want now + root grace", staged)
+	}
+	if ok, err := e.store.Defer(ctx, "a", key, lt.Gen, e.clock.Now().Add(AdkLogWait)); err != nil || !ok {
+		t.Fatalf("Defer = %v, %v", ok, err)
+	}
+	if tr := e.traceRow(key); !tr.ResolveAt.Equal(staged) {
+		t.Fatalf("resolve_at=%v after the deferral, want the racing record's %v", tr.ResolveAt, staged)
+	}
+
+	// With no record staged during the claim, the deferral stands, even
+	// when it is later than the trace's last timer.
+	_, lt = e.claimOne("a", key)
+	want := e.clock.Now().Add(AdkLogWait)
+	if ok, err := e.store.Defer(ctx, "a", key, lt.Gen, want); err != nil || !ok {
+		t.Fatalf("Defer = %v, %v", ok, err)
+	}
+	if tr := e.traceRow(key); !tr.ResolveAt.Equal(want) {
+		t.Fatalf("resolve_at=%v, want the deferral's %v", tr.ResolveAt, want)
+	}
+}
+
+// A record without capture staged after the snapshot turns the trace
+// off: the next lease renewal and the mark both say so, so the assembler
+// drops the content it loaded.
+func TestCaptureTurnedOffAfterTheSnapshotIsReported(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	key := e.newKey()
+	e.stage(e.batch(key, captured(span(1, 0), `{"a":1}`)))
+	_, lt := e.claimOne("a", key)
+	if !lt.Capture || lt.Facts[0].Content == nil {
+		t.Fatalf("snapshot capture=%v content=%s, want both", lt.Capture, lt.Facts[0].Content)
+	}
+	if lease, err := e.store.RenewLease(ctx, "a", key); err != nil || lease != (Lease{Held: true, Capture: true}) {
+		t.Fatalf("RenewLease before the uncaptured record = %+v, %v", lease, err)
+	}
+
+	e.stage(e.batch(key, span(2, 1)))
+	if lease, err := e.store.RenewLease(ctx, "a", key); err != nil || lease != (Lease{Held: true}) {
+		t.Fatalf("RenewLease after the uncaptured record = %+v, %v; want held with capture off", lease, err)
+	}
+	res, err := e.store.MarkAssembled(ctx, "a", key, lt.Gen, ReasonComplete, lt.Unassembled())
+	if err != nil || res != (MarkResult{Marked: true, Pending: true}) {
+		t.Fatalf("MarkAssembled = %+v, %v; want marked, pending, capture off", res, err)
+	}
+}
+
+// A write that waited behind another for the trace's row lock dates the
+// trace from when it could write, not from when it started.
+func TestStageDatesTheTraceAfterTheRowLock(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	key := e.newKey()
+	e.stage(e.batch(key, span(1, 0)))
+
+	tx := e.beginIngest(e.batch(key, span(2, 1)))
+	done := make(chan error, 1)
+	go func() {
+		_, err := e.store.Stage(ctx, []TraceBatch{e.batch(key, span(3, 1))})
+		done <- err
+	}()
+	poll(t, "the second write to wait on the first's row lock", func() bool {
+		return e.count(`
+			SELECT count(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND wait_event_type = 'Lock'
+			  AND query LIKE '%INSERT INTO otlp_traces%'`) > 0
+	})
+	e.clock.Advance(time.Second)
+	writable := e.clock.Now()
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("waiting Stage: %v", err)
+	}
+	tr := e.traceRow(key)
+	if !tr.LastReceivedAt.Equal(writable) || !tr.ResolveAt.Equal(writable.Add(RootGrace)) {
+		t.Fatalf("last_received_at=%v resolve_at=%v, want %v and + root grace", tr.LastReceivedAt, tr.ResolveAt, writable)
+	}
+	var received time.Time
+	if err := e.pool.QueryRow(ctx, `
+		SELECT received_at FROM otlp_spans WHERE token_key = $1 AND trace_id = $2 AND span_id = $3`,
+		key.TokenKey, key.TraceID[:], idBytes(3)).Scan(&received); err != nil {
+		t.Fatal(err)
+	}
+	if !received.Equal(writable) {
+		t.Fatalf("received_at=%v, want %v", received, writable)
+	}
+}
+
+// A replica whose clock runs behind never moves last_received_at back.
+func TestStageNeverMovesLastReceivedBack(t *testing.T) {
+	e := newTestEnv(t)
+	key := e.newKey()
+	e.clock.Set(testEpoch.Add(10 * time.Second))
+	e.stage(e.batch(key, span(1, 0)))
+	e.clock.Set(testEpoch)
+	e.stage(e.batch(key, span(2, 1)))
+	if tr := e.traceRow(key); !tr.LastReceivedAt.Equal(testEpoch.Add(10*time.Second)) || tr.Gen != 2 {
+		t.Fatalf("last_received_at=%v gen=%d, want the later time kept and gen 2", tr.LastReceivedAt, tr.Gen)
 	}
 }
 

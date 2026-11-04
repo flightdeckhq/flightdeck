@@ -399,9 +399,8 @@ func (s *Store) stageTx(ctx context.Context, tx pgx.Tx, batches []TraceBatch) (S
 		}
 		return bytes.Compare(a.Key.TraceID[:], b.Key.TraceID[:])
 	})
-	now := s.clock()
 	for i := range ordered {
-		r, err := stageTrace(ctx, tx, &ordered[i], now)
+		r, err := stageTrace(ctx, tx, &ordered[i], s.clock)
 		if err != nil {
 			return StageResult{}, err
 		}
@@ -419,7 +418,12 @@ func jsonOrEmpty(raw json.RawMessage) string {
 	return string(raw)
 }
 
-func stageTrace(ctx context.Context, tx pgx.Tx, b *TraceBatch, now time.Time) (StageResult, error) {
+// stageTrace stages one trace's records. It reads the clock once for a
+// row it may create and again once it holds the trace's row lock, so a
+// write that waited behind another (up to StageTimeout) dates the
+// trace's timers and records from when it could write, never from
+// before an earlier writer's.
+func stageTrace(ctx context.Context, tx pgx.Tx, b *TraceBatch, clock func() time.Time) (StageResult, error) {
 	var res StageResult
 	if len(b.Records) == 0 {
 		return res, nil
@@ -440,6 +444,7 @@ func stageTrace(ctx context.Context, tx pgx.Tx, b *TraceBatch, now time.Time) (S
 		rootSeenAt *time.Time
 		firstRecv  time.Time
 	)
+	created := clock()
 	err := tx.QueryRow(ctx, `
 		INSERT INTO otlp_traces (token_key, trace_id, source, source_version, token_name,
 		                         resource, capture, first_received_at, last_received_at, resolve_at)
@@ -447,11 +452,12 @@ func stageTrace(ctx context.Context, tx pgx.Tx, b *TraceBatch, now time.Time) (S
 		ON CONFLICT (token_key, trace_id) DO UPDATE SET last_received_at = otlp_traces.last_received_at
 		RETURNING span_count, capture, root_seen_at, first_received_at`,
 		b.Key.TokenKey, traceID, b.Source, b.SourceVersion, b.TokenName,
-		jsonOrEmpty(b.Resource), batchCapture, now, now.Add(QuietTimeout),
+		jsonOrEmpty(b.Resource), batchCapture, created, created.Add(QuietTimeout),
 	).Scan(&spanCount, &oldCapture, &rootSeenAt, &firstRecv)
 	if err != nil {
 		return res, fmt.Errorf("otlpstage: upsert trace: %w", err)
 	}
+	now := clock()
 
 	// 2. Which records are new. The trace row lock is held, so no other
 	// write adds records to this trace until this transaction ends.
@@ -557,7 +563,7 @@ func stageTrace(ctx context.Context, tx pgx.Tx, b *TraceBatch, now time.Time) (S
 	if _, err := tx.Exec(ctx, `
 		UPDATE otlp_traces
 		SET gen = gen + 1, pending = true, span_count = span_count + $3,
-		    last_received_at = $4, root_seen_at = $5, resolve_at = $6
+		    last_received_at = GREATEST(last_received_at, $4), root_seen_at = $5, resolve_at = $6
 		WHERE token_key = $1 AND trace_id = $2`,
 		b.Key.TokenKey, traceID, len(inserted), now, newRootSeen,
 		resolveAt(firstRecv, rootNow, now)); err != nil {
@@ -566,8 +572,9 @@ func stageTrace(ctx context.Context, tx pgx.Tx, b *TraceBatch, now time.Time) (S
 	return res, nil
 }
 
-// dedupe keeps the first record of each key, so a request that repeats a
-// record stages it once.
+// dedupe keeps the first copy of each key, in request order, so a
+// request that repeats a record stages it once; a later copy is counted
+// as a duplicate even when its fields differ from the first.
 func dedupe(records []Record) []Record {
 	seen := make(map[FactKey]bool, len(records))
 	out := make([]Record, 0, len(records))
@@ -717,6 +724,12 @@ func scanTrace(row pgx.Row) (Trace, error) {
 // claim, or an ingest that is writing to them, holds, so no replica
 // waits on another; the next tick takes them. No lock outlives the
 // claim's own transaction.
+//
+// owner must be unique to this claim, not only to the process (for
+// example the process id plus a claim counter): the lease checks in
+// RenewLease, Defer and MarkAssembled tell claims apart by owner, so an
+// owner id reused across claims would let a stale assembly from an
+// earlier claim act on a later one.
 func (s *Store) ClaimDue(ctx context.Context, owner string) ([]Trace, error) {
 	if owner == "" {
 		return nil, errors.New("otlpstage: a claim needs an owner")
@@ -755,6 +768,12 @@ func (s *Store) ClaimDue(ctx context.Context, owner string) ([]Trace, error) {
 // snapshot, with content for the records not yet assembled. A record
 // committed after the snapshot is not in it, so MarkAssembled, given
 // only the snapshot's keys, leaves it unassembled.
+//
+// The snapshot's Capture and content are the posture when it was read.
+// A record without capture staged afterwards turns the trace's capture
+// off, and the content loaded here must then not be published: the
+// assembler re-reads the posture with RenewLease before every chunk,
+// and MarkAssembled reports it again.
 func (s *Store) LoadTrace(ctx context.Context, key TraceKey) (LoadedTrace, error) {
 	out := LoadedTrace{Key: key}
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
@@ -814,30 +833,55 @@ func (s *Store) LoadTrace(ctx context.Context, key TraceKey) (LoadedTrace, error
 	return out, nil
 }
 
-// RenewLease extends owner's lease on the trace by LeaseTTL from now.
-// It returns false when owner no longer holds the lease (another
-// replica claimed the trace after it expired); the caller then stops
-// publishing.
-func (s *Store) RenewLease(ctx context.Context, owner string, key TraceKey) (bool, error) {
-	now := s.clock()
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE otlp_traces SET lease_expires = $4
-		WHERE token_key = $1 AND trace_id = $2 AND lease_owner = $3`,
-		key.TokenKey, key.TraceID[:], owner, now.Add(LeaseTTL))
-	if err != nil {
-		return false, fmt.Errorf("otlpstage: renew lease: %w", err)
-	}
-	return tag.RowsAffected() == 1, nil
+// Lease is the state RenewLease reads.
+type Lease struct {
+	// Held is false when owner's lease has expired or another claim
+	// holds the trace; the caller then stops publishing.
+	Held bool
+	// Capture is the trace's capture posture now. When it is false the
+	// caller publishes none of the content it loaded, whatever the
+	// snapshot said.
+	Capture bool
 }
 
-// Defer releases owner's lease on a trace that is not ready yet, or
-// whose publish failed, and makes it due again at resolveAt. It returns
-// false when owner no longer holds the lease.
-func (s *Store) Defer(ctx context.Context, owner string, key TraceKey, resolveAt time.Time) (bool, error) {
+// RenewLease extends owner's unexpired lease on the trace by LeaseTTL
+// from now, and reads the trace's capture posture. The assembler calls
+// it before every chunk it publishes, the first included. An expired
+// lease is not renewed even when no other claim has taken the trace: its
+// assembly ends, and the next claim starts over.
+func (s *Store) RenewLease(ctx context.Context, owner string, key TraceKey) (Lease, error) {
+	now := s.clock()
+	var lease Lease
+	err := s.pool.QueryRow(ctx, `
+		UPDATE otlp_traces SET lease_expires = $5
+		WHERE token_key = $1 AND trace_id = $2 AND lease_owner = $3 AND lease_expires >= $4
+		RETURNING capture`,
+		key.TokenKey, key.TraceID[:], owner, now, now.Add(LeaseTTL)).Scan(&lease.Capture)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Lease{}, nil
+	}
+	if err != nil {
+		return Lease{}, fmt.Errorf("otlpstage: renew lease: %w", err)
+	}
+	lease.Held = true
+	return lease, nil
+}
+
+// Defer releases owner's unexpired lease on a trace that is not ready
+// yet, or whose publish failed, and makes it due again at resolveAt, but
+// never later than the trace's own timers allow: not past MaxTraceHold
+// after its first record, and, when a record was staged during the
+// claim (its gen moved from gen, the gen the caller decided on), not
+// past the time that record made it due. It returns false when owner no
+// longer holds an unexpired lease.
+func (s *Store) Defer(ctx context.Context, owner string, key TraceKey, gen int64, resolveAt time.Time) (bool, error) {
 	tag, err := s.pool.Exec(ctx, `
-		UPDATE otlp_traces SET lease_owner = NULL, lease_expires = NULL, resolve_at = $4
-		WHERE token_key = $1 AND trace_id = $2 AND lease_owner = $3`,
-		key.TokenKey, key.TraceID[:], owner, resolveAt.UTC())
+		UPDATE otlp_traces
+		SET lease_owner = NULL, lease_expires = NULL,
+		    resolve_at = LEAST(first_received_at + $7 * interval '1 microsecond',
+		                       CASE WHEN gen <> $5 THEN LEAST(resolve_at, $6) ELSE $6 END)
+		WHERE token_key = $1 AND trace_id = $2 AND lease_owner = $3 AND lease_expires >= $4`,
+		key.TokenKey, key.TraceID[:], owner, s.clock(), gen, resolveAt.UTC(), MaxTraceHold.Microseconds())
 	if err != nil {
 		return false, fmt.Errorf("otlpstage: defer trace: %w", err)
 	}
@@ -846,16 +890,22 @@ func (s *Store) Defer(ctx context.Context, owner string, key TraceKey, resolveAt
 
 // MarkResult is what MarkAssembled did.
 type MarkResult struct {
-	// Marked is false when owner no longer held the lease: nothing was
-	// marked, and the next holder publishes the same event ids again.
+	// Marked is false when owner no longer held an unexpired lease:
+	// nothing was marked, and the next holder publishes the same event
+	// ids again.
 	Marked bool
 	// Pending is true when a record was staged after the snapshot was
 	// loaded (the trace's gen moved), so the trace stays due.
 	Pending bool
+	// Capture is the trace's capture posture at the mark. It is false
+	// when a record without capture turned the trace off after the
+	// snapshot; the assembler re-checks the posture before each chunk
+	// (RenewLease), and this is the last reading, for its log line.
+	Capture bool
 }
 
 // MarkAssembled records an assembly of the snapshot LoadTrace returned:
-// it releases owner's lease, counts the assembly and its reason, keeps
+// when owner's lease is unexpired, it releases it, counts the assembly and its reason, keeps
 // the trace pending when its gen moved since the snapshot, marks the
 // given records assembled by key and deletes their content. The trace
 // row is updated first, so the mark waits for an ingest writing to the
@@ -878,9 +928,9 @@ func (s *Store) MarkAssembled(ctx context.Context, owner string, key TraceKey, g
 		SET lease_owner = NULL, lease_expires = NULL, assembled_at = $5,
 		    assembly_count = assembly_count + 1, assembly_reason = $6,
 		    pending = (gen <> $4)
-		WHERE token_key = $1 AND trace_id = $2 AND lease_owner = $3
-		RETURNING pending`,
-		key.TokenKey, key.TraceID[:], owner, gen, s.clock(), string(reason)).Scan(&res.Pending)
+		WHERE token_key = $1 AND trace_id = $2 AND lease_owner = $3 AND lease_expires >= $5
+		RETURNING pending, capture`,
+		key.TokenKey, key.TraceID[:], owner, gen, s.clock(), string(reason)).Scan(&res.Pending, &res.Capture)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MarkResult{}, nil
 	}
@@ -928,12 +978,12 @@ func (s *Store) SweepTraces(ctx context.Context) (int64, error) {
 		DELETE FROM otlp_traces t
 		USING (SELECT token_key, trace_id FROM otlp_traces
 		       WHERE NOT pending AND assembled_at < $1
-		         AND (assembly_reason = 'complete' OR assembled_at < $2)
+		         AND (assembly_reason = $4 OR assembled_at < $2)
 		       LIMIT $3
 		       FOR UPDATE SKIP LOCKED) expired
 		WHERE t.token_key = expired.token_key AND t.trace_id = expired.trace_id
 		  AND NOT t.pending`,
-		now.Add(-CompleteRetention), now.Add(-DegradedRetention), SweepBatch)
+		now.Add(-CompleteRetention), now.Add(-DegradedRetention), SweepBatch, string(ReasonComplete))
 }
 
 // SweepContent deletes staged content more than ContentBackstopAge old,

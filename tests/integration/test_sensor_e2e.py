@@ -27,10 +27,14 @@ has its regression test below.
 
 from __future__ import annotations
 
+import collections
+import copy
 import json
 import os
+import sys
 import threading
 import time
+import traceback
 import uuid
 import urllib.error
 import urllib.request
@@ -91,6 +95,43 @@ OPENAI_RESPONSE: dict[str, Any] = {
         "total_tokens": 18,
     },
 }
+
+
+def _build_sdk_response_models() -> None:
+    """Build the provider SDKs' response models now, on one thread.
+
+    Both SDKs declare their pydantic models with ``defer_build`` (unless
+    ``DEFER_PYDANTIC_BUILD=false``), so a model's schema is built the first
+    time a response is parsed into it, and pydantic's ``model_rebuild`` is
+    not thread-safe: when several threads make their first calls at once,
+    one can delete the schema another has just built, and a third then
+    reads ``BaseModel``'s placeholder and raises "Pydantic models should
+    inherit from BaseModel, BaseModel cannot be instantiated directly".
+    That killed workers of the multi-threaded tests below on their first
+    call. Parsing one response through each SDK's own path
+    (``construct_type``, as ``messages.create`` / ``chat.completions.create``
+    do) builds every model these tests' responses use before any of them
+    starts a thread.
+    """
+    from anthropic._models import construct_type as construct_anthropic
+    from openai._models import construct_type as construct_openai
+
+    construct_anthropic(type_=anthropic.types.Message, value=copy.deepcopy(ANTHROPIC_RESPONSE))
+    construct_openai(
+        type_=openai.types.chat.ChatCompletion, value=copy.deepcopy(OPENAI_RESPONSE)
+    )
+
+
+_build_sdk_response_models()
+
+
+def test_sdk_response_models_are_built_before_any_test_starts_a_thread() -> None:
+    # Without the build above, these stay incomplete until the first
+    # response is parsed, which the multi-threaded tests do from four
+    # threads at once.
+    assert anthropic.types.Message.__pydantic_complete__
+    assert anthropic.types.Usage.__pydantic_complete__
+    assert openai.types.chat.ChatCompletion.__pydantic_complete__
 
 # ----------------------------------------------------------------------
 # DB helpers (direct psql via docker exec, mirroring conftest patterns)
@@ -1428,6 +1469,45 @@ def test_context_facets_aggregation(
 _MT_NUM_THREADS = 4
 _MT_CALLS_PER_THREAD = 5
 
+# A worker inside one call for this long has stalled: a call takes the
+# mock's 50 ms plus the sensor's own work, well under a second even on a
+# loaded CI runner. Its stack, and every other thread's, is then recorded
+# once for the failure message.
+_MT_STALL_SECS = 3.0
+
+
+def _directive_rows(session_id: str) -> list[dict[str, Any]]:
+    """The session's directives: action, issued_at, delivered_at."""
+    rows: list[dict[str, Any]] = _psql_json(
+        "SELECT COALESCE(json_agg(row_to_json(d) ORDER BY d.issued_at), '[]'::json) "
+        "FROM (SELECT action, issued_at, delivered_at FROM directives "
+        "WHERE session_id = :'session_id'::uuid) d",
+        session_id=session_id,
+    )
+    return rows
+
+
+def _thread_errors(errors: list[tuple[int, BaseException]]) -> str:
+    """The exceptions that ended worker threads, with their tracebacks."""
+    return "\n".join(
+        f"worker t{tid}:\n" + "".join(traceback.format_exception(exc)) for tid, exc in errors
+    )
+
+
+def _thread_stacks(threads: list[threading.Thread]) -> str:
+    """The current stack of every thread in ``threads`` and of the
+    sensor's own threads (the event queue's and the directive queue's)."""
+    frames = sys._current_frames()
+    shown = list(threads) + [
+        t for t in threading.enumerate() if t.name.startswith("flightdeck") and t not in threads
+    ]
+    parts: list[str] = []
+    for thread in shown:
+        frame = frames.get(thread.ident) if thread.ident is not None else None
+        stack = "".join(traceback.format_stack(frame)) if frame is not None else "  (not running)\n"
+        parts.append(f"--- {thread.name} (alive={thread.is_alive()}) ---\n{stack}")
+    return "\n".join(parts)
+
 
 # ======================================================================
 # Test M1 -- Pattern B: concurrent calls produce no data loss
@@ -2202,11 +2282,58 @@ def test_pattern_b_degrade_seen_by_all_threads(
                 phase2_results: list[tuple[int, str]] = []
                 results_lock = threading.Lock()
                 stop = threading.Event()
-                errors: list[BaseException] = []
+                errors: list[tuple[int, BaseException]] = []
+                # Per-worker progress, for a failure's message: calls
+                # made, when the last one returned, when the current one
+                # started.
+                calls = [0] * _MT_NUM_THREADS
+                last_return = [0.0] * _MT_NUM_THREADS
+                call_started = [0.0] * _MT_NUM_THREADS
+                stall_stacks: list[str] = []
+                started_at = time.monotonic()
+                # Seconds after the workers started: when each died, when
+                # phase 2 began (the degrade's acknowledgement landed).
+                died_at: list[float | None] = [None] * _MT_NUM_THREADS
+                phase2_began: list[float] = []
+
+                # The directives the drain thread receives, with when.
+                sensor_session = flightdeck_sensor._session
+                assert sensor_session is not None
+                received: list[tuple[float, str]] = []
+                real_post_event = sensor_session.client.post_event
+
+                def _recording_post_event(*args: Any, **kwargs: Any) -> Any:
+                    result = real_post_event(*args, **kwargs)
+                    if result[0] is not None:
+                        received.append((time.monotonic() - started_at, result[0].action.value))
+                    return result
+
+                sensor_session.client.post_event = _recording_post_event  # type: ignore[method-assign]
+
+                def _state() -> str:
+                    """The sensor's view and the database's, for a failure."""
+                    policy = sensor_session.policy
+                    queue = sensor_session.event_queue
+                    directive_queue = queue._directive_queue
+                    event_types = collections.Counter(
+                        e.get("event_type") for e in _query_events_for_flavor(flavor)
+                    )
+                    return (
+                        f"sensor: forced_degrade={policy._forced_degrade} "
+                        f"degrade_to={policy.degrade_to} tokens_used={sensor_session.tokens_used} "
+                        f"shutdown_requested={sensor_session._shutdown_requested} "
+                        f"event_queue={queue._queue.qsize()} "
+                        f"directive_queue={directive_queue.qsize() if directive_queue else None}\n"
+                        f"directives received (s after start, action): "
+                        f"{[(round(t, 2), a) for t, a in received]}\n"
+                        f"directives in the database: {_directive_rows(session_id)}\n"
+                        f"events by type: {dict(event_types)}"
+                    )
 
                 def _worker(thread_id: int) -> None:
                     try:
                         while not stop.is_set():
+                            call_started[thread_id] = time.monotonic()
                             resp = client.messages.create(
                                 model="claude-sonnet-4-6",
                                 messages=[
@@ -2217,18 +2344,45 @@ def test_pattern_b_degrade_seen_by_all_threads(
                                 ],
                                 max_tokens=10,
                             )
+                            calls[thread_id] += 1
+                            last_return[thread_id] = time.monotonic()
                             with phase_lock:
                                 cur = phase[0]
                             if cur == 2:
                                 with results_lock:
                                     phase2_results.append((thread_id, resp.model))
                     except BaseException as exc:  # noqa: BLE001
-                        errors.append(exc)
+                        died_at[thread_id] = round(time.monotonic() - started_at, 2)
+                        errors.append((thread_id, exc))
 
                 workers = [
-                    threading.Thread(target=_worker, args=(i,))
+                    threading.Thread(target=_worker, args=(i,), name=f"t{i}")
                     for i in range(_MT_NUM_THREADS)
                 ]
+
+                def _progress() -> str:
+                    now = time.monotonic()
+                    with results_lock:
+                        phase2 = [tid for tid, _ in phase2_results]
+                    lines = [
+                        (
+                            f"now={now - started_at:.1f}s after the workers started; "
+                            f"phase 2 began at {phase2_began[0] if phase2_began else None}s"
+                        )
+                    ] + [
+                        f"t{i}: alive={t.is_alive()} calls={calls[i]} "
+                        f"phase2_calls={phase2.count(i)} "
+                        f"last_return={now - last_return[i]:.1f}s ago "
+                        f"current_call_started={now - call_started[i]:.1f}s ago "
+                        f"died_at={died_at[i]}"
+                        for i, t in enumerate(workers)
+                    ]
+                    if errors:
+                        lines.append(_thread_errors(errors))
+                    if stall_stacks:
+                        lines.append(f"stacks at the first stall:\n{stall_stacks[0]}")
+                    return "\n".join(lines)
+
                 for t in workers:
                     t.start()
 
@@ -2236,35 +2390,54 @@ def test_pattern_b_degrade_seen_by_all_threads(
                     # Wait until the directive handler thread has
                     # applied the degrade -- proven by the
                     # directive_result(acknowledged) event landing.
-                    _wait_for_directive_result(
-                        flavor, "degrade", "acknowledged", timeout=30
-                    )
+                    try:
+                        _wait_for_directive_result(
+                            flavor, "degrade", "acknowledged", timeout=30
+                        )
+                    except TimeoutError as exc:
+                        raise TimeoutError(
+                            f"{exc}\n{_progress()}\n{_state()}\n"
+                            f"stacks:\n{_thread_stacks(workers)}"
+                        ) from None
 
                     # Switch to phase 2: every call from now on must
                     # observe forced_degrade.
                     with phase_lock:
                         phase[0] = 2
+                    phase2_began.append(round(time.monotonic() - started_at, 2))
 
                     # Let phase 2 accumulate enough samples that every
-                    # worker contributes at least once.
+                    # worker contributes at least once. A worker that
+                    # died fails the test at once, with its exception; one
+                    # stuck in a call gets every thread's stack recorded.
                     def _enough_phase2() -> bool:
                         with results_lock:
-                            return (
-                                len({tid for tid, _ in phase2_results})
-                                >= _MT_NUM_THREADS
-                            )
+                            if len({tid for tid, _ in phase2_results}) >= _MT_NUM_THREADS:
+                                return True
+                        if errors:
+                            raise AssertionError(f"a worker thread died:\n{_progress()}")
+                        now = time.monotonic()
+                        if not stall_stacks and any(
+                            started > last and now - started > _MT_STALL_SECS
+                            for started, last in zip(call_started, last_return, strict=True)
+                        ):
+                            stall_stacks.append(_thread_stacks(workers))
+                        return False
 
-                    wait_until(
-                        _enough_phase2,
-                        timeout=20,
-                        msg=("not all workers contributed phase-2 calls"),
-                    )
+                    try:
+                        wait_until(
+                            _enough_phase2,
+                            timeout=20,
+                            msg=("not all workers contributed phase-2 calls"),
+                        )
+                    except TimeoutError as exc:
+                        raise TimeoutError(f"{exc}\n{_progress()}\n{_state()}") from None
                 finally:
                     stop.set()
                     for t in workers:
                         t.join(timeout=15)
 
-                assert errors == [], f"thread errors: {errors}"
+                assert errors == [], f"thread errors:\n{_thread_errors(errors)}"
 
                 # Every phase 2 call from every worker must use the
                 # degraded model. ANY sonnet call in phase 2 means a

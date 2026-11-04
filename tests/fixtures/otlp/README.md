@@ -47,7 +47,11 @@ versions it ran with. The manifests of the cache and model-error
 scenarios also hold `provider_calls`: what the provider itself answered
 each call (route, HTTP status, its `usage` object, or the error's type
 and code). `tests/otlp/genai/provider_tap.py` reads them off the HTTP
-responses in the runner, keeping nothing else of a response.
+responses in the runner, keeping nothing else of a response. It reads a
+streamed response to its end before handing it on, so in a run with
+the tap installed a stream's time to first token (Strands'
+`gen_ai.server.time_to_first_token`) is close to its whole duration. The
+manifests are checked like the request files.
 
 The harness needs two venvs of its own, since Google ADK needs an older
 OpenTelemetry SDK than the rest. Each has a list of the packages it uses

@@ -81,6 +81,14 @@ unchanged, and the cache attributes map to `tokens_cache_read` and
 `gen_ai.usage.input_tokens` again, which a reading of Anthropic's own
 `input_tokens` would suggest.
 
+Anthropic splits cache writes by retention, and only the nested
+Anthropic SDK span carries the split
+(`anthropic.usage.cache_creation.ephemeral_5m_input_tokens` and
+`ephemeral_1h_input_tokens`). Pydantic AI's own span has the total
+alone, so `tokens_cache_creation_1h` cannot come from the outermost
+model span, which is the one tokens are taken from. Every write in these
+recordings was a 5-minute one.
+
 ## Tool spans
 
 | | Pydantic AI | Strands Agents | OpenAI Agents SDK | Google ADK |
@@ -161,7 +169,7 @@ and every run ends with the framework raising.
 |---|---|---|---|---|
 | Model-call span | `chat claude-fd-does-not-exist`, ERROR | `chat`, ERROR | `chat` (no model in the name), ERROR | `generate_content openai/gpt-fd-does-not-exist`, ERROR |
 | Status message | `ModelNotFoundError: status_code: 404, ...` with the provider's error body (and its request id) | the provider's message (`Error code: 404 - The model ... does not exist ...`) | `Error getting response: {...}` with the provider's message | `NotFoundError: litellm.NotFoundError: OpenAIException - ...` |
-| `error.type` | none (the Anthropic SDK span under it has `error.type=not_found_error` and `http.response.status_code=404`) | none | none | none on the span; the `gen_ai.client.operation.duration` metric carries `error.type=NotFoundError` |
+| `error.type` | none (the Anthropic SDK span under it has `error.type=not_found_error` and `http.response.status_code=404`) | none | none | none on the span; the three duration metrics (`gen_ai.client.operation.duration`, `gen_ai.invoke_agent.duration`, `gen_ai.invoke_workflow.duration`) carry `error.type=NotFoundError` |
 | Exception event | `pydantic_ai.exceptions.ModelNotFoundError` | `openai.NotFoundError` | none | `litellm.exceptions.NotFoundError` |
 | Request model | `gen_ai.request.model` | `gen_ai.request.model` | none | `gen_ai.request.model` |
 | Usage | none: no `gen_ai.usage.*` on any span | none | none | none on the span or on its log record, which still comes (with the input messages, content being on) |

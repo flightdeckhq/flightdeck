@@ -147,3 +147,27 @@ def test_a_scenario_holding_a_credential_of_the_environment_is_not_written(
     assert "credential" in str(refused.value)
     assert secret not in str(refused.value)
     assert not out.exists()
+
+
+def test_a_manifest_naming_this_machine_is_not_written(tmp_path: Path) -> None:
+    """What a driver puts in the manifest (provider_calls among it) is
+    checked like the request files: a host name, a home directory or an
+    account id there makes the recorder refuse the scenario."""
+    planted = {
+        "home directory": [{"path": "/home/alice/repo"}],
+        "account id": [{"error": {"code": "org-" + "Ab1" * 8}}],
+    }
+    for label, value in recorder.machine_values().items():
+        if label.startswith("the host name"):
+            planted[label] = [{"path": f"/v1/{value}"}]
+    for i, (what, calls) in enumerate(planted.items()):
+        out = tmp_path / f"out-{i}"
+        with pytest.raises(SystemExit) as refused:
+            recorder.write_scenario(
+                [_request("fine")],
+                out,
+                {"scenario": "probe", "provider_calls": calls},
+                recorder.scrubber(tmp_path / "work"),
+            )
+        assert "manifest.json" in str(refused.value), what
+        assert not out.exists(), what

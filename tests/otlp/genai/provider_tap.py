@@ -9,6 +9,10 @@ from its server-sent events) and, for an error, the error's type and
 code. Nothing else of the response is kept: no message, no content, no
 request or account id. The OTLP exporters send with urllib3, so their
 requests are not touched.
+
+A streamed response is read to its end before the SDK gets it, so with
+the tap installed a stream's time to first token is about its whole
+duration: a recording made with it does not measure that latency.
 """
 
 from __future__ import annotations

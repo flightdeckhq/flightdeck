@@ -184,13 +184,17 @@ The run-glyph lane fixtures (`LANE_FIXTURES`, the `e2e-test-run-*`
 agents) are roles that declare `lane_segments`: the run's segments as
 `[start, end]` offsets from NOW (`end` null while open) and its
 `lane_state`, optionally a last-signal offset and a close reason (the
-reaped run's `orphan_timeout`). `seed.py::_pin_lane_fixtures` shifts
-each run's events and pins its session row back to those offsets in
-one psql call for all of them, on the full seed and on every
-keep-alive cycle, so a spec sees them at most one keep-alive cycle plus
-its own runtime late. It drops any orphan-timeout `session_end` a role
-does not declare (the reaper's work on a stack left running without the
-keep-alive), and pins the agents' `last_seen_at` 60 s back
+reaped run's `orphan_timeout`). `seed.py::_pin_lane_fixtures` pins
+each run's session row back to those offsets in one psql call for all
+of them, on the full seed and on every keep-alive cycle, so a spec sees
+them at most one keep-alive cycle plus its own runtime late. A role
+that sets `lane_shift_events` (the resumed run and the short run,
+whose specs read their `session_end` boundaries) has its whole event
+stream shifted with the row; every other lane run reads its boundaries
+from the row, since the swimlane ignores events dated before
+`started_at`. The pin drops every `session_end` a role does not
+declare (the reaper's work on a stack left running without the
+keep-alive, or a client closing a fixture run mid-suite), and pins the agents' `last_seen_at` 60 s back
 (`LANE_AGENT_SEEN_AGO_SEC`), so their rows sit just below the Fleet's
 LIVE rows: near enough for the lane specs to scroll to quickly, without
 crowding the LIVE rows other specs read out of view. None is a sub-agent, so T56's refresh leaves them alone.

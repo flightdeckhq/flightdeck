@@ -1607,10 +1607,11 @@ def _refresh_fanout(
 # Run-glyph lane fixtures (roles that declare ``lane_segments``). Each
 # role is one run made of the declared segments, ``[start, end]`` offsets
 # in seconds from NOW (``end`` null for a segment still open), in the
-# state ``lane_state``. The lane pin moves the run's whole event stream
-# and its session row back to those offsets on the full seed and on every
-# keep-alive cycle, every lane run in one psql call so they share one
-# NOW(). The worst drift a spec sees is one keep-alive cycle (a seed pass
+# state ``lane_state``. The lane pin moves the run's session row back to
+# those offsets on the full seed and on every keep-alive cycle, with its
+# whole event stream when the role sets ``lane_shift_events`` (a run
+# whose spec reads its session_end boundaries), every lane run in one
+# psql call so they share one NOW(). The worst drift a spec sees is one keep-alive cycle (a seed pass
 # plus 30 s) plus the spec's own runtime; every offset leaves that much
 # room inside the time range its spec reads it at.
 _LANE_STATES = frozenset({"active", "closed", "lost"})
@@ -1631,7 +1632,9 @@ def _lane_spec(label: str, role_cfg: dict[str, Any]) -> dict[str, Any]:
     Returns ``segments`` (a list of ``(start, end | None)`` float
     offsets), ``state``, ``last_seen`` (the offset of the run's last
     signal, None for an open run whose last signal is NOW) and
-    ``close_reason`` (the last session_end's, for a closed run).
+    ``close_reason`` (the last session_end's, for a closed run) and
+    ``shift_events`` (whether the pin moves the run's events with its
+    row).
     """
     state = role_cfg["lane_state"]
     if state not in _LANE_STATES:
@@ -1770,9 +1773,15 @@ def _pin_lane_fixtures(
     agents_cfg: list[dict[str, Any]],
     roles_cfg: dict[str, dict[str, Any]],
 ) -> int:
-    """Move every lane run's events and session row back to its declared
-    offsets from NOW (see the lane comment above). Runs on the full seed
-    and on every keep-alive cycle; returns the number of runs pinned.
+    """Move every lane run's session row back to its declared offsets
+    from NOW (see the lane comment above), and with it the events of a
+    role that sets ``lane_shift_events``. Runs on the full seed and on
+    every keep-alive cycle; returns the number of runs pinned.
+
+    A run whose events stay put reads its boundaries from its pinned
+    row: the swimlane ignores events dated before ``started_at``. Its
+    one boundary event that still counts is a declared reaper close,
+    read for its ``close_reason`` rather than its time.
 
     All lane runs are pinned in one psql call, one transaction, so they
     share one NOW() and the pin costs the seed one ``docker exec``. The
@@ -1781,8 +1790,9 @@ def _pin_lane_fixtures(
 
     A stack left running without the keep-alive lets the worker's
     reconciler and orphan-timeout reaper act on these runs; the pin puts
-    the rows back, and drops any reaper ``session_end`` a role does not
-    declare, which the shift would otherwise carry into the future."""
+    the rows back and drops every ``session_end`` the role does not
+    declare, which would otherwise end a segment the spec reads as open
+    (or, shifted, land in the future)."""
     statements: list[str] = []
     lane_ids: list[str] = []
     pinned = 0

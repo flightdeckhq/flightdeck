@@ -34,9 +34,15 @@ test.describe("T140 — A lost run ends with a hollow square", () => {
 	test("lost and reaped runs end at their last signal; an earlier lost run draws nothing", async ({ page }) => {
 		await page.goto("/");
 		await waitForFleetReady(page);
-		await page.getByRole("button", { name: "1h", exact: true }).click();
+		// Find the row at the default 1m first: scrolling the swimlane
+		// mounts rows as it goes, and at a wide window each one draws
+		// that window's events, so hunting at 1h on a busy stack takes
+		// most of the test's time. The row stays mounted across the
+		// range switch.
 		const row = await bringSwimlaneRowIntoView(page, name);
 		await expect(row).toBeVisible({ timeout: 10_000 });
+		await page.getByRole("button", { name: "1h", exact: true }).click();
+		await expect(row).toBeVisible();
 
 		const lostEnd = row.locator(`[data-testid="swimlane-run-bracket-end-${prefix(roles.recent)}"]`);
 		const reapedEnd = row.locator(`[data-testid="swimlane-run-bracket-end-${prefix(roles.reaped)}"]`);

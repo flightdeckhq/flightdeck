@@ -46,9 +46,15 @@ test.describe("T143 — A reaped run older than the sessions page ends at its la
 
 		await page.goto("/");
 		await waitForFleetReady(page);
-		await page.getByRole("button", { name: "1h", exact: true }).click();
+		// Find the row at the default 1m first: scrolling the swimlane
+		// mounts rows as it goes, and at a wide window each one draws
+		// that window's events, so hunting at 1h on a busy stack takes
+		// most of the test's time. The row stays mounted across the
+		// range switch.
 		const row = await bringSwimlaneRowIntoView(page, name);
 		await expect(row).toBeVisible({ timeout: 10_000 });
+		await page.getByRole("button", { name: "1h", exact: true }).click();
+		await expect(row).toBeVisible();
 
 		const end = row.locator(`[data-testid="swimlane-run-bracket-end-${sessionId.slice(0, 8)}"]`);
 		await expect(end).toHaveAttribute("data-end-kind", "lost", { timeout: 10_000 });

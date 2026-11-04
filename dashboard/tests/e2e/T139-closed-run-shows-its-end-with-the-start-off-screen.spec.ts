@@ -34,9 +34,15 @@ test.describe("T139 — A closed run shows its end with its start off-screen", (
 		test(`at ${range} the end square shows and the start triangle does not`, async ({ page }) => {
 			await page.goto("/");
 			await waitForFleetReady(page);
-			await page.getByRole("button", { name: range, exact: true }).click();
+			// Find the row at the default 1m first: scrolling the swimlane
+			// mounts rows as it goes, and at a wide window each one draws
+			// that window's events, so hunting at 1h on a busy stack takes
+			// most of the test's time. The row stays mounted across the
+			// range switch.
 			const row = await bringSwimlaneRowIntoView(page, name);
 			await expect(row).toBeVisible({ timeout: 10_000 });
+			await page.getByRole("button", { name: range, exact: true }).click();
+			await expect(row).toBeVisible();
 
 			const end = row.locator(`[data-testid="swimlane-run-bracket-end-${prefix}"]`);
 			await expect(end).toBeVisible({ timeout: 10_000 });

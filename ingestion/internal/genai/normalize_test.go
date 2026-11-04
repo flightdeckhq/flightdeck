@@ -342,6 +342,26 @@ func TestE23NestedAndLateModelAncestor(t *testing.T) {
 	}
 }
 
+// A span of a scope the table does not name only links, whatever its
+// operation: a provider SDK's chat span directly under an agent is not a
+// call, and its named invoke_agent is not an agent. (In the recordings
+// such spans sit under a framework model span, which would also drop
+// them, so this case isolates the scope rule.)
+func TestE23ForeignScopeOnlyLinks(t *testing.T) {
+	s := newSynth(t, "pydantic-ai")
+	root := s.span(nil, "invoke_agent a", opInvokeAgent, "a", 300, nil)
+	s.scope = "com.anthropic.sdk.python"
+	s.span(&root, "anthropic.messages.create", opChat, "", 100, usage(500, 50))
+	s.span(&root, "invoke_agent other", opInvokeAgent, "other", 50, nil)
+	evs := Resolve(s.input(LabelPydanticAI, nil))
+	if n := len(ofType(evs, "post_call")); n != 0 {
+		t.Errorf("%d post_calls from a foreign scope", n)
+	}
+	if n := len(ofType(evs, "session_start")); n != 1 {
+		t.Errorf("%d sessions, want only the framework's agent", n)
+	}
+}
+
 // Agents named alike in different frameworks (and so flavors) are
 // different agents.
 func TestE23CrossFrameworkAgentsStayApart(t *testing.T) {

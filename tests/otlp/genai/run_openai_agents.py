@@ -1,7 +1,11 @@
 """One OpenAI Agents SDK run, traced by OpenTelemetry's OpenAI Agents
 instrumentation (opentelemetry-instrumentation-openai-agents-v2).
 
-    run_openai_agents.py tool|tool-error|subagent|handoff
+    run_openai_agents.py tool|tool-error|subagent|handoff|cache|model-error
+
+``cache`` runs one agent twice with long instructions, whose prefix
+OpenAI caches by itself; ``model-error`` asks for a model that does not
+exist.
 
 The SDK's own trace exporter (to OpenAI's tracing backend) is removed
 first, so the run's spans reach only the OTel processor the
@@ -17,10 +21,14 @@ import sys
 from agents import Agent, ModelSettings, Runner, function_tool, set_trace_processors
 from opentelemetry import trace
 from opentelemetry.instrumentation.openai_agents import OpenAIAgentsInstrumentor
-from otel_setup import finish, install
+import provider_tap
+from otel_setup import cacheable_instructions, finish, install
 
 MODEL = "gpt-4o-mini"
 SETTINGS = ModelSettings(max_tokens=200)
+# Over the 1024-token prefix OpenAI caches automatically.
+CACHE_LINES = 100
+MISSING_MODEL = "gpt-fd-does-not-exist"
 
 
 @function_tool
@@ -36,6 +44,7 @@ def lookup_order(order_id: str) -> str:
 
 
 def main(kind: str) -> None:
+    provider_tap.install()
     flush = install()
     set_trace_processors([])
     OpenAIAgentsInstrumentor().instrument(tracer_provider=trace.get_tracer_provider())
@@ -47,7 +56,26 @@ def main(kind: str) -> None:
         model=MODEL,
         model_settings=SETTINGS,
     )
-    if kind == "tool":
+    runs = 1
+    if kind == "cache":
+        agent = Agent(
+            name="cached_agent",
+            instructions=cacheable_instructions(CACHE_LINES),
+            model=MODEL,
+            # Without a cache key the Responses API served neither of two
+            # back-to-back calls from its cache in four tries; with one it
+            # routes both to the same cache.
+            model_settings=ModelSettings(
+                max_tokens=20, extra_args={"prompt_cache_key": "fd-genai-capture"}
+            ),
+        )
+        prompt, runs = "Reply with the word ready.", 2
+    elif kind == "model-error":
+        agent = Agent(
+            name="missing_model_agent", model=MISSING_MODEL, model_settings=SETTINGS
+        )
+        prompt = "Reply with one word."
+    elif kind == "tool":
         agent, prompt = (
             weather,
             "What is the weather in Paris? Use the tool, then answer in one short sentence.",
@@ -85,7 +113,8 @@ def main(kind: str) -> None:
         )
         prompt = "What is the weather in Paris? Answer in one short sentence."
     try:
-        result = Runner.run_sync(agent, prompt)
+        for _ in range(runs):
+            result = Runner.run_sync(agent, prompt)
         outcome, detail = "completed", str(result.final_output)[:200]
     except Exception as exc:
         outcome, detail = type(exc).__name__, str(exc)[:200]

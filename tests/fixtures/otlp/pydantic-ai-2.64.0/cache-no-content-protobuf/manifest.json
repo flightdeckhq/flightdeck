@@ -1,0 +1,83 @@
+{
+ "scenario": "cache-no-content-protobuf",
+ "about": "two runs with the same long instructions under anthropic_cache_instructions: the first writes the prompt cache, the second reads it; content off",
+ "framework": "pydantic-ai",
+ "instrumentation": "built in (Agent.instrument_all, InstrumentationSettings version 5)",
+ "model": "anthropic claude-haiku-4-5",
+ "protocol": "http/protobuf",
+ "env": {},
+ "runner_args": [
+  "cache",
+  "--no-content"
+ ],
+ "outcome": "completed",
+ "provider_calls": [
+  {
+   "path": "/v1/messages",
+   "status": 200,
+   "usage": {
+    "input_tokens": 12,
+    "cache_creation_input_tokens": 6670,
+    "cache_read_input_tokens": 0,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 6670,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 4,
+    "service_tier": "standard",
+    "inference_geo": "not_available",
+    "speed": "standard"
+   }
+  },
+  {
+   "path": "/v1/messages",
+   "status": 200,
+   "usage": {
+    "input_tokens": 12,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 6670,
+    "cache_creation": {
+     "ephemeral_5m_input_tokens": 0,
+     "ephemeral_1h_input_tokens": 0
+    },
+    "output_tokens": 5,
+    "service_tier": "standard",
+    "inference_geo": "not_available",
+    "speed": "standard"
+   }
+  }
+ ],
+ "versions": {
+  "pydantic-ai-slim": "2.64.0",
+  "strands-agents": "1.63.0",
+  "openai-agents": "0.24.0",
+  "opentelemetry-instrumentation-openai-agents-v2": "0.1.0",
+  "openai": "3.42.1",
+  "anthropic": "2.3.0",
+  "opentelemetry-sdk": "1.45.2",
+  "opentelemetry-semantic-conventions": "0.66b2",
+  "opentelemetry-util-genai": "1.3b0",
+  "opentelemetry-exporter-otlp-proto-http": "1.45.2",
+  "opentelemetry-exporter-otlp-json-http": "0.66b2"
+ },
+ "requests": [
+  {
+   "file": "001-traces.pb",
+   "path": "/v1/traces",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  },
+  {
+   "file": "002-metrics.pb",
+   "path": "/v1/metrics",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  },
+  {
+   "file": "003-metrics.pb",
+   "path": "/v1/metrics",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  }
+ ]
+}

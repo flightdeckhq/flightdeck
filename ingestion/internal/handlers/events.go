@@ -272,26 +272,37 @@ func EventsHandler(
 		sessionID, _ := payload["session_id"].(string)
 		eventType, _ := payload["event_type"].(string)
 
+		// A stream outcome, abort reason or llm_error type outside its
+		// vocabulary is stored as the catch-all rather than refused (see
+		// normalizeDiagnosticValues), so the event's tokens still count.
+		edits := normalizeDiagnosticValues(payload)
+
 		// On session_start, attach the resolved token id/name so the
 		// worker's UpsertSession can persist them onto the new session
 		// row. Subsequent events carry no token fields -- a
-		// session belongs to whichever token opened it. We re-encode
-		// the payload only in the session_start branch to avoid paying
-		// the marshal cost on the hot post_call/heartbeat path.
+		// session belongs to whichever token opened it. The body is
+		// rewritten only when this branch or the normalisation above
+		// changed it, to avoid paying the cost on the hot
+		// post_call/heartbeat path, and then only the edited fields
+		// are re-encoded (see patchJSON).
 		if eventType == "session_start" && result.ID != "" {
-			payload["token_id"] = result.ID
-			payload["token_name"] = result.Name
-			rebuilt, mErr := json.Marshal(payload)
+			edits = append(edits,
+				rawEdit{path: []string{"token_id"}, value: result.ID},
+				rawEdit{path: []string{"token_name"}, value: result.Name},
+			)
+		}
+		if len(edits) > 0 {
+			rebuilt, mErr := patchJSON(body, edits)
 			if mErr != nil {
-				// A silent fallback would drop token_id/token_name from
-				// the worker's UpsertSession, leaving the session row
-				// without its owning token. The map was just
-				// successfully unmarshaled from `body` so re-marshal
-				// can only fail on pathological inputs (NaN/Inf
-				// floats). Surface as 500 rather than silently
-				// dropping audit fields.
-				slog.Error("re-marshal session_start payload with token",
-					"session_id", sessionID, "err", mErr,
+				// A silent fallback would publish the event as it
+				// arrived, dropping token_id/token_name (the session
+				// row would lose its owning token) or keeping a
+				// value outside its vocabulary. The body was just
+				// decoded as a JSON object, so patching it cannot
+				// fail on valid input. Surface as 500 rather than
+				// publishing it.
+				slog.Error("patch event payload",
+					"session_id", sessionID, "event_type", eventType, "err", mErr,
 				)
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
@@ -372,9 +383,17 @@ func EventsHandler(
 // so an OTLP event and a posted one meet the same contract. It returns
 // the client-facing message, or "" when the event is valid.
 func validateEventPayload(payload map[string]any, now time.Time) string {
-	// Validate required fields
 	sessionID, _ := payload["session_id"].(string)
 	eventType, _ := payload["event_type"].(string)
+
+	// Every check below reads a field under its exact name, and the
+	// worker matches names ignoring case, so a case variant of a field
+	// name is refused first (see checkFieldNameCase).
+	if msg := checkFieldNameCase(payload, eventType); msg != "" {
+		return msg
+	}
+
+	// Validate required fields
 	if sessionID == "" || eventType == "" {
 		return "session_id and event_type are required"
 	}
@@ -439,6 +458,9 @@ func validateEventPayload(payload map[string]any, now time.Time) string {
 		}
 	}
 	if msg := validateTokenCostFields(payload); msg != "" {
+		return msg
+	}
+	if msg := validateStreamingFields(payload, eventType); msg != "" {
 		return msg
 	}
 
@@ -580,6 +602,64 @@ func validateEventPayload(payload map[string]any, now time.Time) string {
 		}
 	}
 	return ""
+}
+
+// rawEdit sets the value at a path in an event's JSON body: a top-level
+// field (one key), or a field of a top-level object (two keys).
+type rawEdit struct {
+	path  []string
+	value any
+}
+
+// patchJSON applies edits to a JSON object body and returns the new
+// body. Only the objects on an edit's path are decoded, and into
+// json.RawMessage values, so every value it does not edit is kept, number
+// literals included. Decoding the event into Go values and encoding it
+// back would round every number through float64, captured content
+// included (an id of 19 digits, a decimal of 20), and the worker stores
+// content as it receives it.
+//
+// The bytes still change where the value does not: Go's encoder writes
+// <, > and & in every string as \u003c, \u003e and \u0026, and U+2028
+// and U+2029 as \u2028 and \u2029; it drops insignificant whitespace;
+// and it re-encodes the keys of the top level and of each edited object
+// in sorted order, so a key repeated there keeps only its last value,
+// the one validation read.
+func patchJSON(body []byte, edits []rawEdit) ([]byte, error) {
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(body, &top); err != nil {
+		return nil, fmt.Errorf("decode event body: %w", err)
+	}
+	nested := map[string]map[string]json.RawMessage{}
+	for _, e := range edits {
+		raw, err := json.Marshal(e.value)
+		if err != nil {
+			return nil, fmt.Errorf("encode %v: %w", e.path, err)
+		}
+		switch len(e.path) {
+		case 1:
+			top[e.path[0]] = raw
+		case 2:
+			obj, ok := nested[e.path[0]]
+			if !ok {
+				if err := json.Unmarshal(top[e.path[0]], &obj); err != nil || obj == nil {
+					return nil, fmt.Errorf("%s is not an object: %v", e.path[0], err)
+				}
+				nested[e.path[0]] = obj
+			}
+			obj[e.path[1]] = raw
+		default:
+			return nil, fmt.Errorf("unsupported path %v", e.path)
+		}
+	}
+	for key, obj := range nested {
+		raw, err := json.Marshal(obj)
+		if err != nil {
+			return nil, fmt.Errorf("encode %s: %w", key, err)
+		}
+		top[key] = raw
+	}
+	return json.Marshal(top)
 }
 
 func buildResponse(ctx context.Context, dirStore DirectiveLookup, sessionID string) map[string]any {

@@ -1,0 +1,117 @@
+{
+ "resourceMetrics": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "telemetry.sdk.language",
+      "value": {
+       "stringValue": "python"
+      }
+     },
+     {
+      "key": "telemetry.sdk.name",
+      "value": {
+       "stringValue": "opentelemetry"
+      }
+     },
+     {
+      "key": "telemetry.sdk.version",
+      "value": {
+       "stringValue": "1.45.2"
+      }
+     },
+     {
+      "key": "service.instance.id",
+      "value": {
+       "stringValue": "64a24cbd-526c-420e-a9b2-ca31065e57cf"
+      }
+     },
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "strands-agents"
+      }
+     },
+     {
+      "key": "service.version",
+      "value": {
+       "stringValue": "1.63.0"
+      }
+     }
+    ]
+   },
+   "scopeMetrics": [
+    {
+     "scope": {
+      "name": "strands.telemetry.metrics"
+     },
+     "metrics": [
+      {
+       "name": "strands.event_loop.cycle_count",
+       "unit": "Count",
+       "sum": {
+        "dataPoints": [
+         {
+          "attributes": [
+           {
+            "key": "event_loop_cycle_id",
+            "value": {
+             "stringValue": "f28a0c18-0af0-4e1b-b359-295792350629"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793782370144246211",
+          "timeUnixNano": "1793782370849893830",
+          "exemplars": [
+           {
+            "timeUnixNano": "1793782370144188546",
+            "spanId": "bb55d1b47d8295b6",
+            "traceId": "79c92dc555c1442e4207e9b667dc7120",
+            "asInt": "1"
+           }
+          ],
+          "asInt": "1"
+         }
+        ],
+        "aggregationTemporality": 2,
+        "isMonotonic": true
+       }
+      },
+      {
+       "name": "strands.event_loop.start_cycle",
+       "unit": "Count",
+       "sum": {
+        "dataPoints": [
+         {
+          "attributes": [
+           {
+            "key": "event_loop_cycle_id",
+            "value": {
+             "stringValue": "f28a0c18-0af0-4e1b-b359-295792350629"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793782370144290699",
+          "timeUnixNano": "1793782370849893830",
+          "exemplars": [
+           {
+            "timeUnixNano": "1793782370144265561",
+            "spanId": "bb55d1b47d8295b6",
+            "traceId": "79c92dc555c1442e4207e9b667dc7120",
+            "asInt": "1"
+           }
+          ],
+          "asInt": "1"
+         }
+        ],
+        "aggregationTemporality": 2,
+        "isMonotonic": true
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -301,6 +301,22 @@ All notable changes to Flightdeck are documented here.
 
 ### Changed
 
+- **The contract for OpenTelemetry GenAI frameworks is written down.**
+  ARCHITECTURE.md (OTLP ingest > GenAI dialect) and D246 describe how
+  the ingestion API will map the GenAI spans of Pydantic AI, Strands
+  Agents, the OpenAI Agents SDK and Google ADK; the receiver does not map
+  them yet. Ingestion stages a trace's spans in Postgres and assembles
+  them once the run has ended, so a run appears in Fleet 3 to 30
+  seconds after it ends, already closed and with its real start and end
+  times. Each named agent is a session, an agent called as a tool is a
+  child session, and agents that hand off are sibling sessions with an
+  `agent_handoff` signal. The sessions are `client_type=otlp`, observe
+  only, with the framework in `context.frameworks`; set
+  `OTEL_RESOURCE_ATTRIBUTES=flightdeck.flavor=<app>,host.name=<host>` to
+  keep two apps' agents apart. Content stays off unless the exporter
+  sets `flightdeck.capture_prompts=true`, and captured content waits in
+  a staging table only until its trace is assembled
+  ([#184](https://github.com/flightdeckhq/flightdeck/issues/184)).
 - **The sensor patches each SDK when the application first imports it.**
   `import flightdeck_sensor` imported every installed SDK it can patch
   (and `patch()` the agent frameworks), so an application paid for
@@ -316,6 +332,24 @@ All notable changes to Flightdeck are documented here.
   trimmed, and U+FEFF is kept, so the sensor, the plugin and OTLP ingest
   derive the same agent id. Only roles with those characters at an edge
   get a different id than before.
+- **Ingestion checks the streaming fields and the error type.** A stream
+  outcome, abort reason or error type the server does not know
+  (`streaming.final_outcome`, `streaming.abort_reason`, an `llm_error`'s
+  `error.abort_reason` or `error.error_type`) is stored as `other`, and
+  the ingestion log counts such values, so a client newer than the server
+  still has its events and tokens counted.
+  A negative or fractional `partial_chunks`, `partial_tokens_input`,
+  `partial_tokens_output` or `chunk_count`, a negative stream timing, a
+  value of the wrong type, or a `streaming` block or `llm_error` `error`
+  that is not an object is refused with 400
+  ([#176](https://github.com/flightdeckhq/flightdeck/issues/176)).
+- **Ingestion refuses a field name in the wrong case.** The worker reads
+  field names ignoring case, so a key such as `TOKENS_INPUT` or
+  `Streaming` used to skip ingestion's checks and still be stored as
+  `tokens_input` or `streaming`. A key that differs from a field name
+  only in case, at the top level, in `incoming_message` /
+  `outgoing_message`, in `streaming` or in an `llm_error`'s `error`, is
+  now refused with 400; any other unknown key is handled as before.
 
 ## v0.8.0 — 2026-10-31
 

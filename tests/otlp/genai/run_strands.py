@@ -1,6 +1,10 @@
 """One Strands Agents run with its OpenTelemetry tracing on.
 
-    run_strands.py tool|tool-error|subagent
+    run_strands.py tool|tool-error|subagent|cache|model-error
+
+``cache`` runs two agents with the same long system prompt, whose prefix
+OpenAI caches by itself; ``model-error`` asks for a model that does not
+exist.
 
 Tracing is set up as Strands documents it, ``StrandsTelemetry()``, whose
 tracer provider carries Strands' resource (``service.name`` from
@@ -17,12 +21,16 @@ from __future__ import annotations
 
 import sys
 
-from otel_setup import finish, install
+import provider_tap
+from otel_setup import cacheable_instructions, finish, install
 from strands import Agent, tool
 from strands.models.openai import OpenAIModel
 from strands.telemetry import StrandsTelemetry
 
 MODEL = {"model_id": "gpt-4o-mini", "params": {"max_tokens": 200}}
+# Over the 1024-token prefix OpenAI caches automatically.
+CACHE_LINES = 100
+MISSING_MODEL = "gpt-fd-does-not-exist"
 
 
 @tool
@@ -46,6 +54,7 @@ def lookup_order(order_id: str) -> str:
 
 
 def main(kind: str) -> None:
+    provider_tap.install()
     telemetry = StrandsTelemetry()
     flush = install(
         resource=telemetry.resource, tracer_provider=telemetry.tracer_provider
@@ -59,7 +68,30 @@ def main(kind: str) -> None:
         tools=[get_weather],
         callback_handler=None,
     )
-    if kind == "tool":
+    agents: list[Agent] = []
+    if kind == "cache":
+        # Two fresh agents, so both calls send the same prefix and nothing
+        # of the first conversation.
+        agents = [
+            Agent(
+                model=OpenAIModel(
+                    model_id=MODEL["model_id"], params={"max_tokens": 20}
+                ),
+                name="cached_agent",
+                system_prompt=cacheable_instructions(CACHE_LINES),
+                callback_handler=None,
+            )
+            for _ in range(2)
+        ]
+        prompt = "Reply with the word ready."
+    elif kind == "model-error":
+        agent = Agent(
+            model=OpenAIModel(model_id=MISSING_MODEL, params={"max_tokens": 20}),
+            name="missing_model_agent",
+            callback_handler=None,
+        )
+        prompt = "Reply with one word."
+    elif kind == "tool":
         agent, prompt = (
             weather,
             "What is the weather in Paris? Use the tool, then answer in one short sentence.",
@@ -88,7 +120,8 @@ def main(kind: str) -> None:
         )
         prompt = "Ask the weather agent for the weather in Paris, then answer in one short sentence."
     try:
-        result = agent(prompt)
+        for each in agents or [agent]:
+            result = each(prompt)
         outcome, detail = "completed", str(result)[:200]
     except Exception as exc:
         outcome, detail = type(exc).__name__, str(exc)[:200]

@@ -43,7 +43,15 @@ traces it. Pydantic AI calls Anthropic's `claude-haiku-4-5`, the others
 OpenAI's `gpt-4o-mini` (Google ADK through LiteLLM). Each
 `manifest.json` adds the framework, instrumentation, model, the
 environment switches the run set, how the run ended, and the package
-versions it ran with.
+versions it ran with. The manifests of the cache and model-error
+scenarios also hold `provider_calls`: what the provider itself answered
+each call (route, HTTP status, its `usage` object, or the error's type
+and code). `tests/otlp/genai/provider_tap.py` reads them off the HTTP
+responses in the runner, keeping nothing else of a response. It reads a
+streamed response to its end before handing it on, so in a run with
+the tap installed a stream's time to first token (Strands'
+`gen_ai.server.time_to_first_token`) is close to its whole duration. The
+manifests are checked like the request files.
 
 The harness needs two venvs of its own, since Google ADK needs an older
 OpenTelemetry SDK than the rest. Each has a list of the packages it uses
@@ -74,6 +82,8 @@ environment.
 | `tool-error-protobuf` | a tool that raises `ValueError` (it ends the run in Pydantic AI and Google ADK; Strands and the OpenAI Agents SDK hand the error to the model) |
 | `subagent-protobuf` | an agent whose tool runs a second agent (agent as a tool), which calls `get_weather` |
 | `handoff-protobuf` | a triage agent that hands the conversation to a second agent (OpenAI Agents `handoffs`, Google ADK `transfer_to_agent`) |
+| `cache-protobuf`, `cache-no-content-protobuf` | two calls with the same long instructions, the second reading their prefix from the provider's prompt cache: Pydantic AI with `anthropic_cache_instructions`, the OpenAI-backed frameworks by OpenAI's automatic caching (the OpenAI Agents SDK with a `prompt_cache_key`); content off except in Strands, which has no off switch |
+| `model-error-protobuf`, `model-error-json` | a run on a model the provider does not have: the provider refuses the call with a 404 (Google ADK over protobuf only) |
 
 Google ADK is recorded over `http/protobuf` only: OpenTelemetry's Python
 OTLP/HTTP JSON exporter needs an SDK newer than the one ADK allows.

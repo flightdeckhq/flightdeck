@@ -237,6 +237,15 @@ func (w *Writer) IncrementAgentTokens(ctx context.Context, agentID string, delta
 //     reconciler's close, or an earlier release) is always revived.
 //   - start_seq -- the greater of the stored value and this event's
 //     stream sequence, so the row records the start of its latest run.
+//   - started_at -- the worker's clock when this start inserts the row.
+//     An assembled OpenTelemetry session (this start's context carries
+//     otel_trace_id) is published after the run it describes, so it
+//     takes startedAt, capped at the worker's clock, both on insert and
+//     on a row its session has never started: a parent stub or a lazily
+//     created row, whose started_at is a placeholder and whose capture
+//     posture is still NULL (every session_start writes one). A row its
+//     session already started (a re-attachment) keeps its started_at,
+//     and so does every row a start without otel_trace_id reaches.
 //   - flavor, agent_type -- CASE upgrade from the sentinel "unknown".
 //     "unknown" is the value the lazy-create path writes when a
 //     non-session_start event lacks flavor/agent_type data. A
@@ -253,6 +262,7 @@ func (w *Writer) UpsertSession(
 	parentSessionID, agentRole string,
 	capturePrompts bool,
 	startSeq uint64,
+	startedAt time.Time,
 ) (attributed bool, err error) {
 	// session_start is the authoritative context source; an empty
 	// context dict from the sensor ("I tried, there was nothing to
@@ -269,7 +279,7 @@ func (w *Writer) UpsertSession(
 		contextJSON, tokenID, tokenName,
 		agentID, clientType, agentName,
 		parentSessionID, agentRole, capturePrompts,
-		seqParam(startSeq),
+		seqParam(startSeq), timeParam(startedAt),
 	}
 	for range upsertSessionRounds {
 		var claimed bool
@@ -322,7 +332,12 @@ const upsertSessionSQL = `
 	)
 	VALUES (
 		$1::uuid, $2, $3, NULLIF($4, ''), NULLIF($5, ''), NULLIF($6, ''), $7,
-		NOW(), NOW(), $8,
+		-- An assembled OpenTelemetry session is dated by its start,
+		-- capped at the worker's clock; every other by the clock.
+		CASE WHEN $8::jsonb ? 'otel_trace_id'
+		     THEN LEAST(NOW(), COALESCE($18::timestamptz, NOW()))
+		     ELSE NOW() END,
+		NOW(), $8,
 		NULLIF($9, '')::uuid, NULLIF($10, ''),
 		$11::uuid, $12, $13,
 		NULLIF($14, '')::uuid, NULLIF($15, ''), $16,
@@ -348,6 +363,15 @@ const upsertSessionSQL = `
 	                      THEN sessions.closed_seq
 	                      ELSE NULL END,
 	    start_seq = GREATEST(sessions.start_seq, NULLIF($17::bigint, 0)),
+	    -- An assembled session's start replaces the placeholder
+	    -- started_at of a row its session has never started (a parent
+	    -- stub or a lazily created row: no session_start has written
+	    -- its capture posture yet). A re-attachment, and every other
+	    -- client's start, keeps the stored value.
+	    started_at = CASE WHEN sessions.capture_prompts IS NULL
+	                       AND EXCLUDED.context ? 'otel_trace_id'
+	                      THEN EXCLUDED.started_at
+	                      ELSE sessions.started_at END,
 	    last_seen_at = NOW(),
 	    host = COALESCE(EXCLUDED.host, sessions.host),
 	    framework = COALESCE(EXCLUDED.framework, sessions.framework),
@@ -1283,24 +1307,44 @@ func (w *Writer) BumpAgentSessionCount(ctx context.Context, agentID string) erro
 // this write cannot be closed by the previous run's end. A closed row
 // whose closed_seq is already at or past this end is left untouched,
 // so a duplicate end at or below the stored closed_seq costs no write.
+//
+// The close dates ended_at by the worker's clock, except on an assembled
+// OpenTelemetry session (the row's context carries otel_trace_id), which
+// is published after its run and takes endedAt, capped at the worker's
+// clock. A zero endedAt (a timestamp that did not parse) is the clock.
+//
 // Returns whether a row matched and whether it was closed by this call;
 // no match means the row is missing, already closed by this or a later
 // end, or opened by a later start, which the caller tells apart with a
-// read.
-func (w *Writer) SettleSessionEnd(ctx context.Context, sessionID string, closedSeq uint64) (applied, closedNow bool, err error) {
+// read. Whether this call closed the row is the row's state before the
+// write, read under the row lock the prior CTE takes, so it holds
+// whatever date the close wrote: an event-dated ended_at can equal the
+// one already stored (a re-attachment's end is dated at the original
+// end), so comparing it with the clock or with the end's own time would
+// not tell a close from a duplicate.
+func (w *Writer) SettleSessionEnd(ctx context.Context, sessionID string, closedSeq uint64, endedAt time.Time) (applied, closedNow bool, err error) {
 	err = w.pool.QueryRow(ctx, `
-		UPDATE sessions
+		WITH prior AS (
+			SELECT session_id, state FROM sessions
+			WHERE session_id = $1::uuid
+			FOR UPDATE
+		)
+		UPDATE sessions s
 		SET state = 'closed',
-		    ended_at = CASE WHEN state = 'closed' THEN ended_at ELSE NOW() END,
-		    last_seen_at = CASE WHEN state = 'closed' THEN last_seen_at ELSE NOW() END,
-		    closed_seq = CASE WHEN state = 'closed'
-		                      THEN GREATEST(closed_seq, NULLIF($2::bigint, 0))
+		    ended_at = CASE WHEN s.state = 'closed' THEN s.ended_at
+		                    WHEN COALESCE(s.context ? 'otel_trace_id', false)
+		                    THEN LEAST(NOW(), COALESCE($3::timestamptz, NOW()))
+		                    ELSE NOW() END,
+		    last_seen_at = CASE WHEN s.state = 'closed' THEN s.last_seen_at ELSE NOW() END,
+		    closed_seq = CASE WHEN s.state = 'closed'
+		                      THEN GREATEST(s.closed_seq, NULLIF($2::bigint, 0))
 		                      ELSE NULLIF($2::bigint, 0) END
-		WHERE session_id = $1::uuid
-		  AND (start_seq IS NULL OR $2::bigint = 0 OR start_seq < $2::bigint)
-		  AND (state <> 'closed' OR closed_seq IS NULL OR closed_seq < $2::bigint)
-		RETURNING COALESCE(ended_at = NOW(), false)
-	`, sessionID, seqParam(closedSeq)).Scan(&closedNow)
+		FROM prior
+		WHERE s.session_id = prior.session_id
+		  AND (s.start_seq IS NULL OR $2::bigint = 0 OR s.start_seq < $2::bigint)
+		  AND (s.state <> 'closed' OR s.closed_seq IS NULL OR s.closed_seq < $2::bigint)
+		RETURNING prior.state <> 'closed'
+	`, sessionID, seqParam(closedSeq), timeParam(endedAt)).Scan(&closedNow)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return false, false, nil
 	}
@@ -1308,6 +1352,16 @@ func (w *Writer) SettleSessionEnd(ctx context.Context, sessionID string, closedS
 		return false, false, fmt.Errorf("settle session end %s: %w", sessionID, err)
 	}
 	return true, closedNow, nil
+}
+
+// timeParam converts an event's timestamp for a timestamptz parameter.
+// The zero time (a timestamp that did not parse) is NULL, which the
+// statements read as the worker's clock.
+func timeParam(t time.Time) *time.Time {
+	if t.IsZero() {
+		return nil
+	}
+	return &t
 }
 
 // seqParam converts a stream sequence for a bigint parameter. Zero means

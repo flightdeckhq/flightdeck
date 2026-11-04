@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/flightdeckhq/flightdeck/workers/internal/consumer"
 	"github.com/flightdeckhq/flightdeck/workers/internal/metrics"
@@ -29,7 +30,7 @@ type scriptedSession struct {
 	ownerReads []string
 }
 
-func (s *scriptedSession) settle(_ context.Context, _ string, closedSeq uint64) (bool, bool, error) {
+func (s *scriptedSession) settle(_ context.Context, _ string, closedSeq uint64, _ time.Time) (bool, bool, error) {
 	s.settled = append(s.settled, closedSeq)
 	if s.settleErr != nil {
 		return false, false, s.settleErr

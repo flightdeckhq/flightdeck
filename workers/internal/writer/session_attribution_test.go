@@ -92,7 +92,7 @@ func startSession(ctx context.Context, w *Writer, sessionID string, id AgentIden
 		ctx, sessionID, "writer-test", id.AgentType,
 		"writer-test-host", "", "", "active",
 		id.AgentID, id.ClientType, id.AgentName,
-		nil, "", "", "", "", true, 0,
+		nil, "", "", "", "", true, 0, time.Time{},
 	)
 	if err != nil || !attributed {
 		return attributed, err

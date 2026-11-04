@@ -1022,6 +1022,10 @@ def test_reattachment_with_the_previous_end_queued_keeps_its_first_calls() -> No
     wait_for_state(sid, "closed", timeout=STATE_TIMEOUT_SECS)
 
 
+# Holding the agents row stalls the worker that handles the start for
+# up to the lock timeout, and every session routed to that worker
+# waits behind it, so this runs with the stack to itself.
+@pytest.mark.exclusive
 def test_reattachment_processed_after_both_runs_ended_stays_closed() -> None:
     """Force the worst order: the previous run's end and the new run's
     end are both processed before the re-attaching session_start. The
@@ -1204,6 +1208,10 @@ def test_reattaching_start_is_accepted_while_its_session_row_is_held() -> None:
     wait_for_state(sid, "closed", timeout=STATE_TIMEOUT_SECS)
 
 
+# Holding the agents row stalls the worker that handles the start for
+# up to the lock timeout, and every session routed to that worker
+# waits behind it, so this runs with the stack to itself.
+@pytest.mark.exclusive
 def test_reattaching_start_is_stamped_while_an_event_insert_shares_its_row() -> None:
     """The stamp must pass the KEY SHARE lock an in-flight event insert
     holds on the session row through the foreign key, since a busy

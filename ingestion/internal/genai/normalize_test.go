@@ -792,7 +792,7 @@ func TestE23DepthTwo(t *testing.T) {
 	b := s.span(&nw, "invoke_agent b", opInvokeAgent, "b", 280, nil)
 	t2 := s.span(&b, "execute_tool c", opExecuteTool, "b", 200, map[string]any{attrToolName: "c"})
 	c := s.span(&t2, "invoke_agent c", opInvokeAgent, "c", 100, nil)
-	s.span(&c, "generate_content", opGenerateContent, "c", 50, usage(5, 1))
+	s.span(&c, "generate_content", OpGenerateContent, "c", 50, usage(5, 1))
 	evs := Resolve(s.input(LabelGoogleADK, nil))
 	names := startsByName(t, evs)
 	gc := names["google_adk/a/c"]

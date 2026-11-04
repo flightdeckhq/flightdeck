@@ -18,11 +18,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/assembler"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/auth"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/config"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/directive"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/handlers"
 	inats "github.com/flightdeckhq/flightdeck/ingestion/internal/nats"
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/otlpstage"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/server"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/session"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -96,6 +98,20 @@ func main() {
 	otlpDialect := handlers.NewClaudeCodeDialect(sessAttacher)
 	srv := server.New(addr, validator, publisher, dirStore, sessAttacher, otlpDialect, cfg.RateLimitPerMinute)
 
+	// The OTLP GenAI assembler: every process claims due staged traces
+	// and publishes them through the receiver's publish path. It stops
+	// claiming when runCtx ends, before the server shuts down.
+	genaiAssembler := assembler.New(
+		otlpstage.NewStore(pool),
+		handlers.NewOTLPPublisher(publisher, sessAttacher),
+		assembler.WithInterval(cfg.GenAIClaimInterval),
+	)
+	assemblerDone := make(chan struct{})
+	go func() {
+		defer close(assemblerDone)
+		genaiAssembler.Run(runCtx)
+	}()
+
 	// Start server
 	go func() {
 		slog.Info("ingestion API starting", "addr", addr)
@@ -114,6 +130,14 @@ func main() {
 	stopRun()
 	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(cfg.ShutdownTimeoutSecs)*time.Second)
 	defer cancel()
+
+	// Let the assembly in progress finish its chunk and release its
+	// lease before the database and bus connections close.
+	select {
+	case <-assemblerDone:
+	case <-ctx.Done():
+		slog.Warn("genai assembler did not stop before the shutdown timeout; its lease lapses")
+	}
 
 	if err := srv.Shutdown(ctx); err != nil {
 		slog.Error("shutdown error", "err", err)

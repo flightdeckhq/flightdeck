@@ -24,6 +24,11 @@ type OTLPEvent struct {
 	EventType string
 	SessionID string
 	Payload   []byte
+	// SkipAttach publishes a session_start without the attachment check:
+	// the GenAI assembler's first start of a session, whose id is new to
+	// every row except one an earlier attempt at the same assembly
+	// started (the worker drops that copy).
+	SkipAttach bool
 }
 
 // OTLPMapping is what a dialect makes of one decoded export request:

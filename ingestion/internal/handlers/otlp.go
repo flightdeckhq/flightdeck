@@ -517,18 +517,21 @@ func publishOTLPEvents(
 }
 
 // stampSessionStartToken adds the sending token's id and name to a
-// session_start, which the worker stores on the session row.
+// session_start, which the worker stores on the session row. Only those
+// two fields are encoded (see patchJSON), so every number in the event
+// keeps its literal, as it does on POST /v1/events.
 func stampSessionStartToken(payload []byte, token auth.ValidationResult) ([]byte, error) {
 	if token.ID == "" {
 		return payload, nil
 	}
-	var m map[string]any
-	if err := json.Unmarshal(payload, &m); err != nil {
+	stamped, err := patchJSON(payload, []rawEdit{
+		{path: []string{"token_id"}, value: token.ID},
+		{path: []string{"token_name"}, value: token.Name},
+	})
+	if err != nil {
 		return nil, fmt.Errorf("stamp session_start token: %w", err)
 	}
-	m["token_id"] = token.ID
-	m["token_name"] = token.Name
-	return json.Marshal(m)
+	return stamped, nil
 }
 
 // attachSession runs the session-attachment check for a session_start

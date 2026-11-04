@@ -21,24 +21,26 @@ _log = logging.getLogger("flightdeck_sensor.transport.body_limit")
 
 #: Largest event body the sensor sends, as measured by
 #: :func:`encoded_size`; the remaining quarter of the 1 MiB limit covers
-#: the token id and name ingestion adds to a ``session_start``.
+#: what ingestion adds when it rewrites an event: the token id and name
+#: of a ``session_start``, or the catch-all of a replaced value.
 MAX_EVENT_BODY_BYTES = 768 * 1024
 
 # Characters ingestion's Go encoder writes as six-byte unicode escapes
-# when it re-encodes a session_start (one byte each here).
+# when it rewrites a session_start or an event with a replaced value
+# (one byte each here).
 _GO_ESCAPED = (b"<", b">", b"&")
 
 
 def encoded_size(body: bytes) -> int:
-    """The size of a JSON body once ingestion has re-encoded it.
+    """The size of a JSON body once ingestion has rewritten it.
 
-    The sensor's ``json.dumps`` already escapes every non-ASCII
-    character, which Go writes as shorter UTF-8, so text grows only by
-    ``<``, ``>`` and ``&``. Go also writes some floats longer than
-    Python does (``1e16`` as ``10000000000000000``), which this does not
-    count; a ``session_start``, the one event ingestion re-encodes,
-    carries text content. Every event is measured this way; for the
-    others it only over-counts.
+    Ingestion rewrites a ``session_start`` (to add the token id and
+    name) or an event with a replaced value, with Go's encoder. Every
+    value it does not change keeps its bytes, numbers included, but the
+    encoder escapes ``<``, ``>`` and ``&`` in every string; the sensor's
+    ``json.dumps`` already escapes every non-ASCII character, which Go
+    keeps as written, so text grows only by those three. Every event is
+    measured this way; for the others it only over-counts.
     """
     return len(body) + 5 * sum(body.count(ch) for ch in _GO_ESCAPED)
 

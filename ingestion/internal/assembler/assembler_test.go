@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -26,7 +27,7 @@ func TestCompleteness(t *testing.T) {
 	last := first.Add(2 * time.Second)
 	adkFacts := func(withLog bool) otlpstage.LoadedTrace {
 		lt := otlpstage.LoadedTrace{Facts: []otlpstage.StagedFact{
-			{Fact: otlpstage.Fact{SpanID: [8]byte{1}, Kind: otlpstage.KindSpan, Op: "generate_content"}},
+			{Fact: otlpstage.Fact{SpanID: [8]byte{1}, Kind: otlpstage.KindSpan, Op: genai.OpGenerateContent}},
 		}}
 		if withLog {
 			lt.Facts = append(lt.Facts, otlpstage.StagedFact{Fact: otlpstage.Fact{SpanID: [8]byte{1}, Kind: otlpstage.KindLog}})
@@ -116,6 +117,34 @@ func TestEncodeDropsContentWithCaptureOff(t *testing.T) {
 		if _, has := body["content"]; has != capture || body["has_content"] != capture {
 			t.Errorf("capture %v: content present %v, has_content %v", capture, has, body["has_content"])
 		}
+	}
+}
+
+// The retry delay doubles per consecutive failure up to its cap, and a
+// trace past the tracked bound waits the cap without being counted.
+func TestRetryDelayIsCappedAndBounded(t *testing.T) {
+	a := New(nil, nil)
+	key := otlpstage.TraceKey{TokenKey: "t"}
+	var got []time.Duration
+	for range 8 {
+		got = append(got, a.retryDelay(key))
+	}
+	want := []time.Duration{1, 2, 4, 8, 16, 30, 30, 30}
+	for i := range want {
+		if got[i] != want[i]*time.Second {
+			t.Fatalf("delays = %v, want %v seconds", got, want)
+		}
+	}
+	a.failures = map[otlpstage.TraceKey]int{}
+	for i := range maxTrackedFailures {
+		a.failures[otlpstage.TraceKey{TokenKey: strconv.Itoa(i)}] = 1
+	}
+	other := otlpstage.TraceKey{TokenKey: "untracked"}
+	if d := a.retryDelay(other); d != RetryDelayMax {
+		t.Errorf("a trace past the bound waits %v, want %v", d, RetryDelayMax)
+	}
+	if _, tracked := a.failures[other]; tracked || len(a.failures) != maxTrackedFailures {
+		t.Errorf("the failure map grew past its bound: %d", len(a.failures))
 	}
 }
 
@@ -330,18 +359,42 @@ func (a *recordingAttacher) checks() []string {
 	return append([]string(nil), a.attached...)
 }
 
-// renewCounter wraps the store to count lease renewals.
+// renewCounter wraps the store to count lease renewals (per trace), to
+// fail the next renewal, and to run a hook just before a trace loads.
 type renewCounter struct {
 	*otlpstage.Store
-	mu      sync.Mutex
-	renewed int
+	mu         sync.Mutex
+	renewed    int
+	renewedFor map[otlpstage.TraceKey]int
+	failRenew  bool
+	beforeLoad func(otlpstage.TraceKey)
 }
 
 func (r *renewCounter) RenewLease(ctx context.Context, owner string, key otlpstage.TraceKey) (otlpstage.Lease, error) {
 	r.mu.Lock()
 	r.renewed++
+	if r.renewedFor == nil {
+		r.renewedFor = map[otlpstage.TraceKey]int{}
+	}
+	r.renewedFor[key]++
+	fail := r.failRenew
+	r.failRenew = false
 	r.mu.Unlock()
+	if fail {
+		return otlpstage.Lease{}, errors.New("renewal failed")
+	}
 	return r.Store.RenewLease(ctx, owner, key)
+}
+
+func (r *renewCounter) LoadTrace(ctx context.Context, key otlpstage.TraceKey) (otlpstage.LoadedTrace, error) {
+	r.mu.Lock()
+	hook := r.beforeLoad
+	r.beforeLoad = nil
+	r.mu.Unlock()
+	if hook != nil {
+		hook(key)
+	}
+	return r.Store.LoadTrace(ctx, key)
 }
 
 type env struct {
@@ -540,7 +593,7 @@ func TestADKDefersForItsLogRecords(t *testing.T) {
 	adk := func(key otlpstage.TraceKey) otlpstage.Record {
 		e.stage(key, "google_adk",
 			e.span(1, 0, "gcp.vertex.agent", "invoke_agent", "a", 10*time.Second, 9*time.Second, nil),
-			e.span(2, 1, "gcp.vertex.agent", "generate_content", "a", 9*time.Second, time.Second,
+			e.span(2, 1, "gcp.vertex.agent", genai.OpGenerateContent, "a", 9*time.Second, time.Second,
 				map[string]any{"gen_ai.usage.input_tokens": 5, "gen_ai.usage.output_tokens": 1}))
 		lr := otlpstage.Record{Fact: otlpstage.Fact{
 			SpanID: [8]byte{0xb0, 7: 2}, Kind: otlpstage.KindLog, ScopeName: "gcp.vertex.agent",
@@ -766,16 +819,120 @@ func TestPublishFailureRetries(t *testing.T) {
 	if !out.Deferred || out.Marked || out.Published != 0 {
 		t.Fatalf("outcome = %+v", out)
 	}
-	if _, owner, at, _ := e.traceState(key); owner != nil || !at.Equal(e.clock.Now().Add(RetryDelay)) {
+	if _, owner, at, _ := e.traceState(key); owner != nil || !at.Equal(e.clock.Now().Add(RetryDelayMin)) {
 		t.Errorf("released to %v (owner %v), want a second later", at, owner)
 	}
 	e.bus.fail = false
 	if out := e.tick(); len(out) != 0 {
 		t.Fatalf("retried before its delay: %v", out)
 	}
-	e.clock.Advance(RetryDelay)
+	e.clock.Advance(RetryDelayMin)
 	if out := e.tickOne(); !out.Marked || out.Published != 4 {
 		t.Fatalf("the retry: %+v", out)
+	}
+}
+
+// A trace that keeps failing to publish is retried after a delay that
+// doubles from RetryDelayMin up to RetryDelayMax, and starts again from
+// the minimum once it is published.
+func TestPublishFailureBacksOff(t *testing.T) {
+	e := newEnv(t)
+	key := e.key()
+	e.agentRun(key)
+	e.clock.Advance(otlpstage.RootGrace)
+	e.bus.fail = true
+	want := []time.Duration{time.Second, 2 * time.Second, 4 * time.Second, 8 * time.Second, 16 * time.Second, RetryDelayMax, RetryDelayMax}
+	for i, delay := range want {
+		if out := e.tickOne(); !out.Deferred || out.Marked {
+			t.Fatalf("failure %d: %+v", i+1, out)
+		}
+		if _, _, at, _ := e.traceState(key); !at.Equal(e.clock.Now().Add(delay)) {
+			t.Fatalf("failure %d released to %v, want %v later", i+1, at.Sub(e.clock.Now()), delay)
+		}
+		e.clock.Advance(delay)
+	}
+	e.bus.fail = false
+	if out := e.tickOne(); !out.Marked {
+		t.Fatalf("after the outage: %+v", out)
+	}
+	if n := len(e.asm.failures); n != 0 {
+		t.Errorf("%d traces still counted as failing after the publish", n)
+	}
+}
+
+// A lease renewal that errors (the run context cancelled under it, or
+// the database) releases the lease at once instead of leaving it to
+// lapse, so another process can take the trace.
+func TestRenewalErrorReleasesTheLease(t *testing.T) {
+	e := newEnv(t)
+	key := e.key()
+	e.agentRun(key)
+	e.clock.Advance(otlpstage.RootGrace)
+	e.store.failRenew = true
+	out := e.tickOne()
+	if !out.Deferred || out.Marked || out.Published != 0 {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if pending, owner, at, _ := e.traceState(key); !pending || owner != nil || at.After(e.clock.Now()) {
+		t.Fatalf("after the failed renewal pending=%v owner=%v resolve_at=%v, want released and due now", pending, owner, at)
+	}
+	if out := e.tickOne(); !out.Marked {
+		t.Fatalf("the next claim: %+v", out)
+	}
+}
+
+// The leases of a claim's traces still waiting their turn are kept
+// alive while an earlier, long assembly runs, so they are assembled in
+// the same round rather than lapsing.
+func TestWaitingLeasesInABatchAreRenewed(t *testing.T) {
+	e := newEnv(t, WithChunkSize(1))
+	first, second := e.key(), e.key()
+	e.agentRun(first)
+	e.agentRun(second)
+	e.clock.Advance(otlpstage.RootGrace)
+	// Each chunk takes half a lease: one trace's four chunks take twice
+	// the TTL, which a waiting lease would not survive unrenewed.
+	e.bus.after = func(int) { e.clock.Advance(otlpstage.LeaseTTL / 2) }
+	outs := e.tick()
+	if len(outs) != 2 {
+		t.Fatalf("claimed %d traces, want both", len(outs))
+	}
+	for _, out := range outs {
+		if !out.Marked || out.Published != 4 || out.LeaseLost {
+			t.Errorf("trace %x: %+v", out.Key.TraceID[:2], out)
+		}
+	}
+	waited := outs[1].Key
+	// Its own four chunk renewals, plus at least one while it waited.
+	if n := e.store.renewedFor[waited]; n < 5 {
+		t.Errorf("the waiting trace's lease was renewed %d times, want at least 5", n)
+	}
+}
+
+// A record staged between the claim and the load moves the trace's
+// timer earlier; releasing a trace that is not ready keeps that time,
+// since the release passes the claim's gen and sees it moved.
+func TestNotReadyReleaseKeepsARacingRecordsTime(t *testing.T) {
+	e := newEnv(t)
+	key := e.key()
+	// A Google ADK trace missing its log record: due 30 s after its root.
+	e.stage(key, "google_adk",
+		e.span(1, 0, "gcp.vertex.agent", "invoke_agent", "a", 10*time.Second, 9*time.Second, nil),
+		e.span(2, 1, "gcp.vertex.agent", genai.OpGenerateContent, "a", 9*time.Second, time.Second,
+			map[string]any{"gen_ai.usage.input_tokens": 5}))
+	e.clock.Advance(otlpstage.RootGrace)
+	e.store.beforeLoad = func(k otlpstage.TraceKey) {
+		// The racing record: staged after the claim read the trace,
+		// it makes the trace due RootGrace from now.
+		e.stage(k, "google_adk", e.span(3, 1, "gcp.vertex.agent", "execute_tool", "a", 2*time.Second, time.Second,
+			map[string]any{"gen_ai.tool.name": "t"}))
+	}
+	if out := e.tickOne(); !out.Deferred || out.Marked {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if _, _, at, _ := e.traceState(key); !at.Equal(e.clock.Now().Add(otlpstage.RootGrace)) {
+		t.Errorf("released to %v, want the racing record's %v, not the log wait",
+			at, e.clock.Now().Add(otlpstage.RootGrace))
 	}
 }
 

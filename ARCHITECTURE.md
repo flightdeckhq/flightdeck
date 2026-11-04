@@ -3522,9 +3522,16 @@ during the claim made it due: 30 seconds after its root, or 3 seconds
 after its next record, whichever comes first, rather than polled. A
 trace claimed before its own timer (one a failed publish released to be
 retried) is released to that timer, so it is never judged `quiet` or
-`complete` early. A publish that fails (the message bus is down)
-releases the trace, marking nothing, to be retried a second later; the
-records are durable, so exporters are not affected. A session's first
+`complete` early. A publish (or a load) that fails, the message bus
+or the database being down, releases the trace, marking nothing, to be
+retried after a delay that starts at one second and doubles with each
+consecutive failure of that trace in the process, up to 30 seconds; the
+records are durable, so exporters are not affected. A lease renewal
+that errors releases the trace at once rather than leaving its lease to
+lapse. While one trace of a claim assembles, the leases of the claim's
+traces still waiting are renewed too, at chunk boundaries, at least
+every 30 seconds, so a long assembly never lets them lapse; a trace
+whose waiting lease was lost is left to the next claim. A session's first
 `session_start` skips the attachment check: its id is new to every row
 except one an earlier attempt at the same assembly started, whose
 copy the worker drops, so only a re-attaching start runs it. On

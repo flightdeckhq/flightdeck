@@ -33,6 +33,15 @@ type Config struct {
 	GenAIClaimInterval time.Duration
 }
 
+// MinGenAIClaimInterval is the shortest claim interval
+// FLIGHTDECK_GENAI_CLAIM_INTERVAL_MS may set. Every replica claims on
+// this interval against the shared database, so a mistyped value of a
+// few milliseconds would turn each replica into a tight query loop;
+// 50 ms is already twenty claims a second per replica, faster than any
+// integration run needs, since a trace is due no sooner than 3 seconds
+// after its root.
+const MinGenAIClaimInterval = 50 * time.Millisecond
+
 // Load reads configuration from environment variables.
 // Panics on missing required values -- fail fast on misconfiguration.
 func Load() Config {
@@ -45,8 +54,9 @@ func Load() Config {
 		RateLimitPerMinute:  envIntOrDefault("FLIGHTDECK_RATE_LIMIT_PER_MINUTE", 1000),
 		GenAIClaimInterval:  time.Duration(envIntOrDefault("FLIGHTDECK_GENAI_CLAIM_INTERVAL_MS", 0)) * time.Millisecond,
 	}
-	if cfg.GenAIClaimInterval < 0 {
-		panic("environment variable FLIGHTDECK_GENAI_CLAIM_INTERVAL_MS must not be negative")
+	if cfg.GenAIClaimInterval != 0 && cfg.GenAIClaimInterval < MinGenAIClaimInterval {
+		panic(fmt.Sprintf("environment variable FLIGHTDECK_GENAI_CLAIM_INTERVAL_MS must be 0 (the default) or at least %d",
+			MinGenAIClaimInterval.Milliseconds()))
 	}
 	return cfg
 }

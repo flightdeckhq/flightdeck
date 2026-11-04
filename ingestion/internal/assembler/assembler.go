@@ -45,10 +45,34 @@ const (
 	// events.
 	ChunkSize = 500
 
-	// RetryDelay is how soon a trace whose load or publish failed is due
-	// again: the next claim but one, so a bus or database outage is
-	// retried promptly without a tight loop.
-	RetryDelay = time.Second
+	// RetryDelayMin is how soon a trace whose load or publish failed is
+	// due again after its first failure: the next claim but one, so a
+	// brief bus or database hiccup is retried promptly.
+	RetryDelayMin = time.Second
+
+	// RetryDelayMax caps the retry delay, which doubles with each
+	// consecutive failure of the same trace in this process. A trace that
+	// cannot be published (the bus is down for long) is retried, and
+	// warned about, at most twice a minute rather than every second until
+	// its max hold, and is still published within half a minute of the
+	// outage ending.
+	RetryDelayMax = 30 * time.Second
+
+	// maxTrackedFailures bounds the traces whose consecutive failures
+	// this process counts for the retry delay. An outage fails every
+	// pending trace, so without a bound the count would grow with the
+	// backlog; a trace past the bound is retried after RetryDelayMax.
+	maxTrackedFailures = 10000
+
+	// batchRenewEvery is how often the leases of a claim's traces not yet
+	// started are renewed while earlier ones of the same claim assemble:
+	// at trace and chunk boundaries, once a quarter of the lease's TTL has
+	// passed since the last renewal. A chunk publishes in well under a
+	// second, so a waiting lease never comes within a minute and a half
+	// of lapsing, however long the traces before it take; sizing the
+	// claim to fit the TTL cannot promise that, since one trace of
+	// 20,000 events may itself take longer than two minutes.
+	batchRenewEvery = otlpstage.LeaseTTL / 4
 
 	// SweepContentInterval is how often the staged-content backstop
 	// sweep runs. The backstop age is a day, so a minute of slack is
@@ -96,6 +120,10 @@ type Assembler struct {
 	// owner ids are unique per claim, never reused across claims.
 	ownerBase string
 	claims    atomic.Uint64
+	// failures counts each trace's consecutive load or publish failures
+	// in this process, for the retry delay. Tick runs on one goroutine at
+	// a time (Run's), so it needs no lock.
+	failures map[otlpstage.TraceKey]int
 }
 
 // Option configures an Assembler.
@@ -129,6 +157,7 @@ func New(store Store, publisher Publisher, opts ...Option) *Assembler {
 		store: store, publisher: publisher, now: time.Now,
 		interval: ClaimInterval, chunkSize: ChunkSize,
 		ownerBase: processName(),
+		failures:  map[otlpstage.TraceKey]int{},
 	}
 	for _, opt := range opts {
 		opt(a)
@@ -205,7 +234,8 @@ func (a *Assembler) sweepTraces(ctx context.Context) {
 
 // Tick claims due traces once and assembles each, and returns what each
 // assembly did, in claim order. It stops after the trace in progress once
-// ctx is done, releasing the rest of the claim.
+// ctx is done, releasing the rest of the claim. Tick is not safe for
+// concurrent use; Run calls it from one goroutine.
 func (a *Assembler) Tick(ctx context.Context) []Outcome {
 	owner := a.nextOwner()
 	claimed, err := a.store.ClaimDue(ctx, owner)
@@ -215,8 +245,13 @@ func (a *Assembler) Tick(ctx context.Context) []Outcome {
 		}
 		return nil
 	}
+	b := &batch{a: a, owner: owner, renewedAt: a.now(), lost: map[otlpstage.TraceKey]bool{}}
+	for _, tr := range claimed {
+		b.waiting = append(b.waiting, tr.Key)
+	}
 	outcomes := make([]Outcome, 0, len(claimed))
 	for _, tr := range claimed {
+		b.start(tr.Key)
 		if ctx.Err() != nil {
 			// Shutting down: release the rest of the claim at once,
 			// so another process takes it without waiting for the
@@ -225,11 +260,60 @@ func (a *Assembler) Tick(ctx context.Context) []Outcome {
 			outcomes = append(outcomes, Outcome{Key: tr.Key, Deferred: true})
 			continue
 		}
-		out := a.assemble(ctx, owner, tr)
+		b.keepAlive(ctx)
+		if b.lost[tr.Key] {
+			// Its lease was not renewed while it waited (another claim
+			// holds it, or it lapsed): the next claim assembles it.
+			outcomes = append(outcomes, Outcome{Key: tr.Key, LeaseLost: true})
+			continue
+		}
+		out := a.assemble(ctx, b, tr)
 		out.Key = tr.Key
 		outcomes = append(outcomes, out)
 	}
 	return outcomes
+}
+
+// batch is one claim's traces: the owner they are leased to, and the
+// ones still waiting their turn, whose leases are kept alive while
+// earlier ones assemble.
+type batch struct {
+	a         *Assembler
+	owner     string
+	waiting   []otlpstage.TraceKey
+	renewedAt time.Time
+	lost      map[otlpstage.TraceKey]bool
+}
+
+// start takes key off the waiting list: its own assembly renews it now.
+func (b *batch) start(key otlpstage.TraceKey) {
+	for i, k := range b.waiting {
+		if k == key {
+			b.waiting = append(b.waiting[:i], b.waiting[i+1:]...)
+			return
+		}
+	}
+}
+
+// keepAlive renews the waiting traces' leases once batchRenewEvery has
+// passed since the last renewal; a lease that is no longer held, or
+// whose renewal failed, is marked lost and its trace is left for the
+// next claim.
+func (b *batch) keepAlive(ctx context.Context) {
+	now := b.a.now()
+	if len(b.waiting) == 0 || now.Sub(b.renewedAt) < batchRenewEvery {
+		return
+	}
+	b.renewedAt = now
+	for _, key := range b.waiting {
+		if b.lost[key] {
+			continue
+		}
+		lease, err := b.a.store.RenewLease(ctx, b.owner, key)
+		if err != nil || !lease.Held {
+			b.lost[key] = true
+		}
+	}
 }
 
 // Outcome is what one assembly did, for its log line and for tests.
@@ -244,23 +328,31 @@ type Outcome struct {
 	Marked    bool
 }
 
-// assemble assembles one claimed trace.
-func (a *Assembler) assemble(ctx context.Context, owner string, tr otlpstage.Trace) Outcome {
+// assemble assembles one claimed trace of batch b.
+func (a *Assembler) assemble(ctx context.Context, b *batch, tr otlpstage.Trace) Outcome {
 	var out Outcome
+	owner := b.owner
 	lt, err := a.store.LoadTrace(ctx, tr.Key)
 	if errors.Is(err, otlpstage.ErrTraceNotFound) {
+		delete(a.failures, tr.Key)
 		return out // swept since the claim
 	}
 	if err != nil {
-		slog.Warn("genai trace load failed", "trace", hex.EncodeToString(tr.Key.TraceID[:]), "err", err)
-		a.release(ctx, owner, tr.Key, tr.Gen, a.now().Add(RetryDelay))
+		retry := a.retryDelay(tr.Key)
+		slog.Warn("genai trace load failed", "trace", hex.EncodeToString(tr.Key.TraceID[:]),
+			"retry_in", retry.String(), "err", err)
+		a.release(ctx, owner, tr.Key, tr.Gen, a.now().Add(retry))
 		out.Deferred = true
 		return out
 	}
 	now := a.now()
 	reason, ready, wait := Completeness(tr, lt, now)
 	if !ready {
-		a.release(ctx, owner, tr.Key, lt.Gen, wait)
+		// The claim's gen, not the snapshot's: a record staged between
+		// the claim and the load moved the trace's timer, and Defer keeps
+		// that time when it is the earlier one only if it sees the gen
+		// moved from the one the claim read.
+		a.release(ctx, owner, tr.Key, tr.Gen, wait)
 		out.Deferred = true
 		return out
 	}
@@ -281,10 +373,16 @@ func (a *Assembler) assemble(ctx context.Context, owner string, tr otlpstage.Tra
 			a.logAssembly(tr, lt, out, len(events))
 			return out
 		}
+		b.keepAlive(ctx)
 		lease, err := a.store.RenewLease(ctx, owner, tr.Key)
 		if err != nil {
-			slog.Warn("genai lease renewal failed", "trace", hex.EncodeToString(tr.Key.TraceID[:]), "err", err)
-			out.LeaseLost = true
+			// The lease may still be held (the renewal failed, or the
+			// run context was cancelled under it): release it now, so
+			// another process need not wait for it to lapse. A lease
+			// that was really lost matches no row, and nothing happens.
+			slog.Warn("genai lease renewal failed; releasing", "trace", hex.EncodeToString(tr.Key.TraceID[:]), "err", err)
+			a.release(ctx, owner, tr.Key, lt.Gen, a.now())
+			out.Deferred = true
 			a.logAssembly(tr, lt, out, len(events))
 			return out
 		}
@@ -310,9 +408,10 @@ func (a *Assembler) assemble(ctx context.Context, owner string, tr otlpstage.Tra
 		out.Published += published
 		out.Chunks++
 		if err != nil {
+			retry := a.retryDelay(tr.Key)
 			slog.Warn("genai publish failed; retrying", "trace", hex.EncodeToString(tr.Key.TraceID[:]),
-				"published", out.Published, "err", err)
-			a.release(ctx, owner, tr.Key, lt.Gen, a.now().Add(RetryDelay))
+				"published", out.Published, "retry_in", retry.String(), "err", err)
+			a.release(ctx, owner, tr.Key, lt.Gen, a.now().Add(retry))
 			out.Deferred = true
 			a.logAssembly(tr, lt, out, len(events))
 			return out
@@ -332,9 +431,30 @@ func (a *Assembler) assemble(ctx context.Context, owner string, tr otlpstage.Tra
 		out.LeaseLost = true
 	default:
 		out.Marked = true
+		delete(a.failures, tr.Key)
 	}
 	a.logAssembly(tr, lt, out, len(events))
 	return out
+}
+
+// retryDelay counts one more consecutive failure of the trace and
+// returns how long to wait before retrying it: RetryDelayMin, doubling
+// with each failure up to RetryDelayMax. A trace past maxTrackedFailures
+// is not counted and waits RetryDelayMax.
+func (a *Assembler) retryDelay(key otlpstage.TraceKey) time.Duration {
+	n, tracked := a.failures[key]
+	if !tracked && len(a.failures) >= maxTrackedFailures {
+		return RetryDelayMax
+	}
+	a.failures[key] = n + 1
+	delay := RetryDelayMin
+	for range n {
+		delay *= 2
+		if delay >= RetryDelayMax {
+			return RetryDelayMax
+		}
+	}
+	return delay
 }
 
 // withoutCapture is the events of a mapping without capture, in place of
@@ -481,7 +601,7 @@ func adkLogsComplete(lt otlpstage.LoadedTrace) bool {
 		}
 	}
 	for _, f := range lt.Facts {
-		if f.Kind == otlpstage.KindSpan && f.Op == "generate_content" && !logs[f.SpanID] {
+		if f.Kind == otlpstage.KindSpan && f.Op == genai.OpGenerateContent && !logs[f.SpanID] {
 			return false
 		}
 	}

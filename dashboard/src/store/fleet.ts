@@ -252,6 +252,7 @@ function sessionToRecentSession(
     parent_session_id: s.parent_session_id ?? null,
     parent_agent_id: parentAgentID ?? null,
     agent_role: s.agent_role ?? null,
+    close_reasons: s.close_reasons,
   };
 }
 
@@ -286,6 +287,9 @@ function recentSessionToSession(r: RecentSession): Session {
     token_name: null,
     parent_session_id: r.parent_session_id ?? null,
     agent_role: r.agent_role ?? null,
+    // A run the reaper closed is older than the 24 h sessions page, so
+    // the rollup is where the swimlane learns of the reap.
+    close_reasons: r.close_reasons,
   };
 }
 
@@ -343,6 +347,7 @@ function refreshRecentSession(
           ended_at: s.ended_at ?? null,
           last_seen_at: s.last_seen_at || r.last_seen_at,
           tokens_used: s.tokens_used,
+          close_reasons: s.close_reasons ?? r.close_reasons,
         }
       : r,
   );
@@ -364,7 +369,10 @@ function startedMs(run: { started_at: string }): number {
  * (or the same start again). A re-attachment keeps the run's
  * ``started_at`` while a new run starts now, so once the window is full
  * a start of a run that started before the window's oldest run is a
- * re-attachment too.
+ * re-attachment too. The page cannot tell that from the first start of
+ * a genuinely new run with an old ``started_at`` (an OpenTelemetry
+ * session created late from an old record), which it then does not
+ * count either; the next fleet load corrects the count.
  */
 function startCountsNewRun(recent: RecentSession[] | undefined, run: Session): boolean {
   const window = recent ?? [];
@@ -925,8 +933,13 @@ function applySessionUpdate(
 
   return flavors.map((f) => {
     if (f.flavor !== agentKey) return f;
+    // The update replaces the run's row, but keeps the close reasons the
+    // page knew when the update's row lacks them (an API older than the
+    // field): the swimlane reads a reaped close from them.
     const sessions = f.sessions.map((s) =>
-      s.session_id === session.session_id ? session : s,
+      s.session_id === session.session_id
+        ? { ...session, close_reasons: session.close_reasons ?? s.close_reasons }
+        : s,
     );
     if (!sessions.some((s) => s.session_id === session.session_id)) {
       sessions.unshift(session);

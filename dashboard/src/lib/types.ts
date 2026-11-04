@@ -756,6 +756,10 @@ export interface RecentSession {
    *  parent session has been deleted (FK ON DELETE SET NULL). */
   parent_agent_id?: string | null;
   agent_role?: string | null;
+  /** Distinct ``close_reason`` values across the run's ``session_end``
+   *  events. The swimlane reads ``orphan_timeout`` here as a reaped
+   *  close: such a run is older than the 24 h sessions page. */
+  close_reasons?: string[];
 }
 
 /**

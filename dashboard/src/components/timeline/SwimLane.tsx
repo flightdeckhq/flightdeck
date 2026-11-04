@@ -328,7 +328,8 @@ function SwimLaneComponent({
 			d1,
 			toX: (ms) => scale(new Date(ms)),
 			// The inset wrapper starts TIMELINE_LEFT_INSET_PX into the
-			// panel, whose overflow clips at timelineWidth.
+			// panel, whose overflow clips at 0 and timelineWidth.
+			visibleLeft: -TIMELINE_LEFT_INSET_PX,
 			visibleRight: timelineWidth - TIMELINE_LEFT_INSET_PX,
 		});
 		// ``scale`` is a function of d0, d1 and timelineWidth, and

@@ -40,6 +40,16 @@ export const GLYPH_GAP_PX = 1;
  *  end, so both marks stay inside the run's span. */
 export const GLYPH_BOUNDARY_INSET_PX = 1;
 
+/** The farthest packing moves a glyph from where its time puts it.
+ *  It is the shift a zero-length segment's ■ needs to follow its own ▶
+ *  (the ▶'s inset and width, the gap, the ■'s width and inset), about
+ *  two glyph widths: far enough to spread a few glyphs that want one
+ *  spot, near enough that a glyph still reads as its run's. Past it,
+ *  glyphs overlap near their own time instead of drifting along a busy
+ *  row. */
+export const MAX_GLYPH_SHIFT_PX =
+  GLYPH_BOUNDARY_INSET_PX + START_GLYPH_SIZE_PX + GLYPH_GAP_PX + END_GLYPH_SIZE_PX + GLYPH_BOUNDARY_INSET_PX;
+
 /** The ``close_reason`` of the ``session_end`` the worker's
  *  orphan-timeout reaper writes when it closes a run that stayed lost
  *  past ``FLIGHTDECK_ORPHAN_TIMEOUT_HOURS``. */
@@ -328,21 +338,26 @@ export interface GlyphBox {
 }
 
 /**
- * Place glyphs so that none on one edge overlaps another, and return
- * each glyph's left edge by key.
+ * Place glyphs so that, where it can, none on one edge overlaps
+ * another, and return each glyph's left edge by key.
  *
  * Within a track the glyphs keep their order in time: each segment's ▶
- * before its ■, so a segment narrower than the two glyphs reads ▶■
- * with the ■ past the segment's end, and a segment's ■ before the next
- * segment's ▶. The edge's tracks are then merged by those positions,
- * an end before a start at the same spot, so a hand-off reads ■▶, and
- * each glyph sits at least ``GLYPH_GAP_PX`` right of the one before.
- * A glyph that would cross ``visibleRight`` is pulled back inside it,
- * with as many glyphs before it as that needs.
+ * before its ■, and a segment's ■ before the next segment's ▶. The
+ * edge's tracks are then merged by those positions, an end before a
+ * start at the same spot, so a hand-off reads ■▶, and each glyph sits
+ * at least ``GLYPH_GAP_PX`` right of the one before. A glyph that would
+ * cross ``visible.right`` is pulled back inside it, with as many glyphs
+ * before it as that needs.
+ *
+ * No glyph moves more than ``MAX_GLYPH_SHIFT_PX`` from its
+ * ``desiredLeft``: on a busy edge, where spreading would carry glyphs
+ * far from their runs, the glyphs past that limit overlap near their
+ * own time instead. Last, every glyph is clamped inside
+ * ``[visible.left, visible.right]``.
  */
 export function packGlyphs(
   boxes: readonly GlyphBox[],
-  visibleRight: number,
+  visible: { left: number; right: number },
 ): Map<string, number> {
   const lefts = new Map<string, number>();
   for (const lane of [0, 1] as const) {
@@ -383,16 +398,35 @@ export function packGlyphs(
     );
     let previousRight = Number.NEGATIVE_INFINITY;
     for (const item of items) {
-      item.left = Math.max(item.left, previousRight + GLYPH_GAP_PX);
+      item.left = Math.min(
+        Math.max(item.left, previousRight + GLYPH_GAP_PX),
+        item.box.desiredLeft + MAX_GLYPH_SHIFT_PX,
+      );
       previousRight = item.left + item.box.width;
     }
-    let limit = visibleRight;
+    let limit = visible.right;
     for (let i = items.length - 1; i >= 0; i--) {
       const item = items[i]!;
       const maxLeft = limit - item.box.width;
       if (item.left <= maxLeft) break;
-      item.left = maxLeft;
+      item.left = Math.max(maxLeft, item.box.desiredLeft - MAX_GLYPH_SHIFT_PX);
       limit = item.left - GLYPH_GAP_PX;
+    }
+    for (const item of items) {
+      item.left = Math.min(Math.max(item.left, visible.left), visible.right - item.box.width);
+    }
+    // A segment's ■ reads after its own ▶ even where capped glyphs
+    // overlap, or the right edge clamped them: the ▶ goes no further
+    // right than just before its ■. That stays within the cap, since the
+    // ■'s own position is at least a ▶ width right of the ▶'s.
+    const ends = new Map<string, { left: number }>();
+    for (const item of items) {
+      if (item.box.kind === "end") ends.set(`${item.box.sessionId}#${item.box.segmentIndex}`, item);
+    }
+    for (const start of items) {
+      if (start.box.kind !== "start") continue;
+      const end = ends.get(`${start.box.sessionId}#${start.box.segmentIndex}`);
+      if (end) start.left = Math.min(start.left, end.left - GLYPH_GAP_PX);
     }
     for (const item of items) lefts.set(item.box.key, item.left);
   }
@@ -433,19 +467,22 @@ export interface RowGlyphLayout {
  * edge. Each glyph is drawn when its own time is in the window.
  *
  * ``toX`` maps a time to an x in the panel's inset wrapper, and
- * ``visibleRight`` is the panel's right edge in those coordinates.
+ * ``visibleLeft`` / ``visibleRight`` are the panel's edges in those
+ * coordinates.
  */
 export function layoutRowGlyphs({
   segments,
   d0,
   d1,
   toX,
+  visibleLeft,
   visibleRight,
 }: {
   segments: readonly RunSegment[];
   d0: number;
   d1: number;
   toX: (ms: number) => number;
+  visibleLeft: number;
   visibleRight: number;
 }): RowGlyphLayout {
   const rangeMs = d1 - d0;
@@ -474,29 +511,36 @@ export function layoutRowGlyphs({
       segmentIndex: segment.index,
       segmentStartMs: segment.startMs,
     };
-    if (segment.startMs >= d0 && segment.startMs <= d1) {
+    const startDrawn = segment.startMs >= d0 && segment.startMs <= d1;
+    const startLeft = toX(segment.startMs) + GLYPH_BOUNDARY_INSET_PX;
+    if (startDrawn) {
       boxes.push({
         ...base,
         key: `${key}:start`,
         kind: "start",
         timeMs: segment.startMs,
-        desiredLeft: toX(segment.startMs) + GLYPH_BOUNDARY_INSET_PX,
+        desiredLeft: startLeft,
         width: START_GLYPH_SIZE_PX,
       });
     }
     if (segment.endKind !== "open" && segment.endMs >= d0 && segment.endMs <= d1) {
+      const endLeft = toX(segment.endMs) - END_GLYPH_SIZE_PX - GLYPH_BOUNDARY_INSET_PX;
       boxes.push({
         ...base,
         key: `${key}:end`,
         kind: "end",
         timeMs: segment.endMs,
-        desiredLeft: toX(segment.endMs) - END_GLYPH_SIZE_PX - GLYPH_BOUNDARY_INSET_PX,
+        // A segment narrower than its two glyphs puts its ■ right after
+        // its own ▶: that is where its time puts it.
+        desiredLeft: startDrawn
+          ? Math.max(endLeft, startLeft + START_GLYPH_SIZE_PX + GLYPH_GAP_PX)
+          : endLeft,
         width: END_GLYPH_SIZE_PX,
       });
     }
   }
 
-  const lefts = packGlyphs(boxes, visibleRight);
+  const lefts = packGlyphs(boxes, { left: visibleLeft, right: visibleRight });
   const glyphs: RowGlyph[] = boxes.map((box) => {
     const placed = bySegmentKey.get(segmentKey({ sessionId: box.sessionId, index: box.segmentIndex }))!;
     return {

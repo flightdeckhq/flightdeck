@@ -332,6 +332,7 @@ flightdeck/
 │   │   ├── nats/publisher.go   # JetStream publisher (event_type → subject routing)
 │   │   ├── session/store.go    # Synchronous attach-on-session_start and the start-sequence stamp (writer)
 │   │   ├── otlpstage/store.go  # OTLP GenAI staging: stage records, claim due traces under a lease, load, mark assembled, sweeps
+│   │   ├── genai/              # OTLP GenAI mapping, pure (no I/O): scope table, span/log record → content-free fact, trace index, identity, Resolve (trace → events)
 │   │   └── directive/store.go  # Pending directive lookup (atomic UPDATE...RETURNING)
 │   └── tests/
 │       ├── handler_test.go
@@ -3565,6 +3566,9 @@ a UTF-8 boundary), read from OpenAI Agents' `agent_handoff` span
 `execute_tool` span whose `gen_ai.tool.type` is `TransferToAgentTool`
 (which also stays a `tool_call`) and the sibling agent that starts
 next; the tool's arguments are content and are never read for it. A
+name the spans do not give (no sibling agent starts after the transfer,
+or the agent handing off is the unattributed session) is left out of
+`signal_data` rather than guessed. A
 model call or tool belongs to its nearest
 agent ancestor, never to the agent its own attributes name; one with no
 named agent ancestor belongs to the trace's unattributed session, a root
@@ -3618,8 +3622,8 @@ spans and are never counted in the first place.)
 | `tokens_input` | `gen_ai.usage.input_tokens`, which the conventions define to include cache; when it is smaller than the cache counts, they are added to it and `provider_metadata.input_excluded_cache=true` |
 | `tokens_output` | `gen_ai.usage.output_tokens` |
 | `tokens_total` | `tokens_input` + `tokens_output`; a count that does not parse makes it -1, which validation refuses, as in the Claude Code dialect |
-| `tokens_cache_read` | the first present of `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.details.cache_read_input_tokens` and `gen_ai.usage.cache_read_input_tokens`, never their sum |
-| `tokens_cache_creation` | `gen_ai.usage.details.cache_creation_input_tokens` |
+| `tokens_cache_read` | the first present of `gen_ai.usage.cache_read.input_tokens`, `gen_ai.usage.details.cache_read_input_tokens` and `gen_ai.usage.cache_read_input_tokens`, never their sum; left out when the span sends none (OpenAI Agents drops the cache reads OpenAI reports), so an unknown share is not recorded as zero |
+| `tokens_cache_creation` | `gen_ai.usage.details.cache_creation_input_tokens`; left out when not sent |
 | `provider` | `gen_ai.provider.name` from the frameworks the table above trusts, mapped to the provider vocabulary (`anthropic`, `openai`, `gcp.*` to `google`, `x_ai` to `xai`, `mistral_ai` to `mistral`); a value outside that mapping, or one from an untrusted framework, is omitted, never passed through (validation would refuse it and drop the `post_call`), and the worker derives the provider from the model |
 | `streaming` | `ttft_ms` from `gen_ai.server.time_to_first_token` and `final_outcome=completed`, when sent |
 | `cost_reported` | `operation.cost`, with `cost_source=agent` |
@@ -3631,7 +3635,19 @@ spans), from ADK's log records, which repeat their span's usage, or from
 metrics. A failed model span (ERROR status and no usage, in all four
 frameworks' recordings; see `tests/fixtures/otlp/GENAI_COMPARISON.md` >
 A failed model call) is an `llm_error` on its agent's session, never a
-`post_call`; its error text is content, kept only with capture on. An
+`post_call`; its error text is content, kept only with capture on. No
+framework puts the HTTP status or the provider's error code on its own
+span, so the error is classified from its class name alone (`error.type`,
+else the first exception's type), as the sensor classifies a provider's
+exception by class: the last dotted segment is matched against the
+sensor's class names, a name ending in one taking its type
+(`openai.NotFoundError` and Pydantic AI's `ModelNotFoundError` are
+`not_found`), and a span that names no class is `other`. Its
+`error_message` is the class name (`model call failed` when there is
+none), `http_status`, `provider_error_code`, `request_id` and
+`retry_after` are null, `is_retryable` follows the taxonomy, and
+`model_requested`, `provider` and `latency_ms` are read as for a
+`post_call`. An
 `execute_tool` span is a `tool_call` on its agent's session, with
 `tool_name`, `tool_use_id` (`gen_ai.tool.call.id`, absent for ADK's
 `<not specified>`), `latency_ms` and `duration_ms`; an `execute_tool`
@@ -3654,7 +3670,11 @@ the flavor differs. User and host come from the resource's `user.id`
 `user.id` names the application's user and is not read. The agent id is
 derived from them as for every client (see Identity model), every part
 cut to 256 bytes at a UTF-8 boundary first, a child's from its root's `agent_name` and
-its role. None of the four frameworks sends a flavor, user or host, so
+its role. A root agent's name is trimmed and cut the way a role is, so
+the two read alike. The parts are cut, not the `agent_name` they make up,
+so a child's `agent_name` at any depth is its root's `agent_name` and its
+own role, never the chain of agents between them (`parent_session_id`
+carries that). None of the four frameworks sends a flavor, user or host, so
 two apps on one framework that name an agent alike share that agent
 until each sets
 `OTEL_RESOURCE_ATTRIBUTES=flightdeck.flavor=<app>,host.name=<host>`.

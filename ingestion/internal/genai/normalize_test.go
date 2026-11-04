@@ -505,8 +505,8 @@ func TestE23LateAncestorKeepsIdentity(t *testing.T) {
 
 	// The parent, its tool and call arrive late, with a late tool call
 	// of the inner agent's.
-	s.fact(inner).Assembled = true
-	s.facts[3].Assembled = true
+	s.fact(inner).Assembled, s.fact(inner).AssembledIn = true, 1
+	s.facts[3].Assembled, s.facts[3].AssembledIn = true, 1
 	s.span(&inner, "execute_tool late", opExecuteTool, "inner", 5, map[string]any{attrToolName: "late"})
 	in := s.input(LabelPydanticAI, nil)
 	in.Trace.AssemblyCount = 1
@@ -545,6 +545,80 @@ func TestE23LateAncestorKeepsIdentity(t *testing.T) {
 	}
 	if n := len(ofType(evs, "tool_call")); n != 2 {
 		t.Errorf("%d tool calls, want the parent's and the late one", n)
+	}
+}
+
+// The third assembly after a late ancestor: the agent was published as a
+// root in assembly 1, its late parent was assembled in assembly 2, and a
+// late record of the agent's arrives for assembly 3. The parent was
+// assembled after the agent, so the agent still keeps the identity it
+// was published with, and the parent stays a root.
+func TestE23ThirdAssemblyKeepsIdentity(t *testing.T) {
+	s := newSynth(t, "pydantic-ai")
+	parent := s.span(nil, "invoke_agent outer", opInvokeAgent, "outer", 2000, nil)
+	tool := s.span(&parent, "execute_tool ask", opExecuteTool, "outer", 1500, map[string]any{attrToolName: "ask"})
+	inner := s.span(&tool, "invoke_agent inner", opInvokeAgent, "inner", 1000, nil)
+	s.fact(inner).Assembled, s.fact(inner).AssembledIn = true, 1
+	s.fact(parent).Assembled, s.fact(parent).AssembledIn = true, 2
+	s.fact(tool).Assembled, s.fact(tool).AssembledIn = true, 2
+	s.span(&inner, "execute_tool late", opExecuteTool, "inner", 5, map[string]any{attrToolName: "late"})
+	in := s.input(LabelPydanticAI, nil)
+	in.Trace.AssemblyCount = 2
+	evs := Resolve(in)
+	checkSequence(t, evs)
+	starts := ofType(evs, "session_start")
+	if len(starts) != 1 {
+		t.Fatalf("%d starts, want only the inner agent's re-attach", len(starts))
+	}
+	st := starts[0]
+	if st["agent_name"] != "pydantic_ai/inner" || st["parent_session_id"] != nil || st["agent_role"] != nil ||
+		st["agent_id"] != identity.AgentID(defaultAgentType, unknownIdentity, unknownIdentity, ClientType, "pydantic_ai/inner", "") {
+		t.Errorf("third assembly re-parented the agent: %v", st)
+	}
+	for _, ev := range evs {
+		if ev.Payload["parent_session_id"] != nil {
+			t.Errorf("%s carries a parent", ev.EventType)
+		}
+	}
+}
+
+// An agent assembled together with its parent keeps that parent in a
+// later assembly: the rule drops only ancestors assembled after it.
+func TestE23LaterAssemblyKeepsAParentAssembledWithIt(t *testing.T) {
+	for _, parentIn := range []int{1, 2} { // before the child, or with it
+		s := newSynth(t, "pydantic-ai")
+		parent := s.span(nil, "invoke_agent outer", opInvokeAgent, "outer", 2000, nil)
+		tool := s.span(&parent, "execute_tool ask", opExecuteTool, "outer", 1500, map[string]any{attrToolName: "ask"})
+		inner := s.span(&tool, "invoke_agent inner", opInvokeAgent, "inner", 1000, nil)
+		s.fact(parent).Assembled, s.fact(parent).AssembledIn = true, parentIn
+		s.fact(tool).Assembled, s.fact(tool).AssembledIn = true, parentIn
+		s.fact(inner).Assembled, s.fact(inner).AssembledIn = true, 2
+		s.span(&inner, "execute_tool late", opExecuteTool, "inner", 5, map[string]any{attrToolName: "late"})
+		in := s.input(LabelPydanticAI, nil)
+		in.Trace.AssemblyCount = 2
+		starts := ofType(Resolve(in), "session_start")
+		if len(starts) != 1 || starts[0]["agent_name"] != "pydantic_ai/outer/inner" || starts[0]["parent_session_id"] == nil {
+			t.Errorf("parent assembled in %d, child in 2: starts = %v, want the child under its parent", parentIn, starts)
+		}
+	}
+}
+
+// A failed call whose framework retried it reports every attempt at the
+// outermost level with usage, summed, each once; usage deeper under an
+// attempt is not added again.
+func TestE23FailedCallSumsAttempts(t *testing.T) {
+	s := newSynth(t, "pydantic-ai")
+	root := s.span(nil, "invoke_agent a", opInvokeAgent, "a", 900, nil)
+	outer := s.span(&root, "chat outer", opChat, "a", 800, nil)
+	s.fact(outer).Status = statusError
+	s.scope = "com.anthropic.sdk.python"
+	first := s.span(&outer, "attempt 1", opChat, "", 200, usage(100, 0))
+	s.span(&outer, "attempt 2", opChat, "", 200, map[string]any{attrInputTokens: 120})
+	s.span(&outer, "attempt 3", opChat, "", 200, nil)
+	s.span(&first, "nested", opChat, "", 100, usage(100, 0))
+	block := ofType(Resolve(s.input(LabelPydanticAI, nil)), "llm_error")[0]["error"].(map[string]any)
+	if block["partial_tokens_input"] != int64(220) || block["partial_tokens_output"] != int64(0) {
+		t.Errorf("partial counts = %v / %v, want 220 / 0", block["partial_tokens_input"], block["partial_tokens_output"])
 	}
 }
 

@@ -150,12 +150,13 @@ func (n *node) nearestAgent() *node {
 	return nil
 }
 
-// nearestAssembledAgent is the closest agent span among n's ancestors
-// that an earlier assembly already published, skipping agent spans not
-// yet assembled.
-func (n *node) nearestAssembledAgent() *node {
+// nearestAgentAssembledBy is the closest agent span among n's ancestors
+// that was assembled in assembly `by` or an earlier one, skipping agent
+// spans not yet assembled or assembled later: the ancestors n's session
+// was published with when assembly `by` published it.
+func (n *node) nearestAgentAssembledBy(by int) *node {
 	for a := n.parent; a != nil; a = a.parent {
-		if a.kind == kindAgent && a.fact.Assembled {
+		if a.kind == kindAgent && a.fact.Assembled && a.fact.AssembledIn <= by {
 			return a
 		}
 	}

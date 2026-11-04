@@ -20,7 +20,7 @@ import (
 )
 
 // These tests run against a real Postgres at TEST_POSTGRES_URL (else
-// FLIGHTDECK_POSTGRES_URL) migrated through 000035, and skip when
+// FLIGHTDECK_POSTGRES_URL) migrated through 000036, and skip when
 // neither is set (CI's unit jobs run without a database).
 //
 // Point them at a database of their own, never one an ingestion process
@@ -94,12 +94,18 @@ func newTestEnv(t *testing.T) *testEnv {
 		t.Skipf("postgres unavailable, skipping DB test: %v", err)
 	}
 	t.Cleanup(pool.Close)
-	var present bool
-	if err := pool.QueryRow(ctx, `SELECT to_regclass('otlp_traces') IS NOT NULL`).Scan(&present); err != nil {
+	var present, assembledIn bool
+	if err := pool.QueryRow(ctx, `
+		SELECT to_regclass('otlp_traces') IS NOT NULL,
+		       EXISTS (SELECT 1 FROM information_schema.columns
+		               WHERE table_name = 'otlp_spans' AND column_name = 'assembled_in')`).Scan(&present, &assembledIn); err != nil {
 		t.Fatalf("check staging schema: %v", err)
 	}
 	if !present {
 		t.Fatal("otlp_traces is missing: apply migration 000035 to the test database")
+	}
+	if !assembledIn {
+		t.Fatal("otlp_spans.assembled_in is missing: apply migration 000036 to the test database")
 	}
 	clock := &testClock{now: testEpoch}
 	token := "otlpstage-test-" + randomHex(t, 6)
@@ -846,6 +852,81 @@ func TestMarkAssembledLeavesALateCommittingRecordUnassembled(t *testing.T) {
 	}
 }
 
+// Each assembly stamps the records it marks with its own number (the
+// trace's assembly_count after it), LoadTrace returns it, and a record
+// not yet assembled has none.
+func TestMarkAssembledRecordsTheAssembly(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	key := e.newKey()
+	e.stage(e.batch(key, span(2, 1)))
+	_, lt := e.claimOne("a", key)
+	if lt.Facts[0].AssembledIn != 0 {
+		t.Fatalf("an unassembled record loads with assembled_in %d", lt.Facts[0].AssembledIn)
+	}
+	if res, err := e.store.MarkAssembled(ctx, "a", key, lt.Gen, ReasonQuiet, lt.Unassembled()); err != nil || !res.Marked {
+		t.Fatalf("first mark = %+v, %v", res, err)
+	}
+
+	// The late root arrives and is assembled second.
+	e.stage(e.batch(key, span(1, 0)))
+	_, lt = e.claimOne("b", key)
+	in := map[byte]int{}
+	for _, f := range lt.Facts {
+		in[f.SpanID[7]] = f.AssembledIn
+	}
+	if in[2] != 1 || in[1] != 0 {
+		t.Fatalf("before the second mark assembled_in = %v, want record 2 in assembly 1 and record 1 in none", in)
+	}
+	if res, err := e.store.MarkAssembled(ctx, "b", key, lt.Gen, ReasonComplete, lt.Unassembled()); err != nil || !res.Marked {
+		t.Fatalf("second mark = %+v, %v", res, err)
+	}
+	lt, err := e.store.LoadTrace(ctx, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range lt.Facts {
+		in[f.SpanID[7]] = f.AssembledIn
+		if !f.Assembled {
+			t.Fatalf("record %d not assembled", f.SpanID[7])
+		}
+	}
+	if in[2] != 1 || in[1] != 2 {
+		t.Fatalf("after two assemblies assembled_in = %v, want record 2 in 1 and record 1 in 2", in)
+	}
+	if tr := e.traceRow(key); tr.AssemblyCount != 2 {
+		t.Fatalf("assembly_count = %d, want 2", tr.AssemblyCount)
+	}
+}
+
+// A mark whose lease expired stamps nothing, and the check refuses a
+// record marked assembled without its assembly or the reverse.
+func TestAssembledInStaysWithTheFlag(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	key := e.newKey()
+	e.stage(e.batch(key, span(1, 0)))
+	_, lt := e.claimOne("a", key)
+	e.clock.Advance(LeaseTTL + time.Second)
+	if res, err := e.store.MarkAssembled(ctx, "a", key, lt.Gen, ReasonComplete, lt.Unassembled()); err != nil || res.Marked {
+		t.Fatalf("expired mark = %+v, %v; want nothing marked", res, err)
+	}
+	if n := e.count(`SELECT count(*) FROM otlp_spans WHERE token_key = $1 AND assembled_in IS NOT NULL`, key.TokenKey); n != 0 {
+		t.Fatalf("an expired mark stamped %d records", n)
+	}
+	for _, sql := range []string{
+		`UPDATE otlp_spans SET assembled = true WHERE token_key = $1 AND trace_id = $2`,
+		`UPDATE otlp_spans SET assembled_in = 1 WHERE token_key = $1 AND trace_id = $2`,
+		`UPDATE otlp_spans SET assembled = true, assembled_in = 0 WHERE token_key = $1 AND trace_id = $2`,
+	} {
+		_, err := e.pool.Exec(ctx, sql, key.TokenKey, key.TraceID[:])
+		var pgErr *pgconn.PgError
+		if !errors.As(err, &pgErr) || pgErr.Code != "23514" || pgErr.ConstraintName != "otlp_spans_assembled_in_check" {
+			t.Errorf("%s: err = %v, want the assembled_in check to refuse it", sql, err)
+		}
+	}
+}
+
 func TestLeaseRenewalAndExpiry(t *testing.T) {
 	e := newTestEnv(t)
 	ctx := context.Background()
@@ -1211,19 +1292,25 @@ func schemaSnapshot(t *testing.T, tx pgx.Tx) []string {
 	return lines
 }
 
-func migrationFile(t *testing.T, direction string) string {
+// The staging migrations, by number.
+const (
+	migrationStaging     = "000035_otlp_genai_staging"
+	migrationAssembledIn = "000036_otlp_spans_assembled_in"
+)
+
+func migrationFile(t *testing.T, name, direction string) string {
 	t.Helper()
 	b, err := os.ReadFile(filepath.Join("..", "..", "..", "docker", "postgres", "migrations",
-		"000035_otlp_genai_staging."+direction+".sql"))
+		name+"."+direction+".sql"))
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
 	}
 	return string(b)
 }
 
-// The down file removes exactly what the up file adds, and the up file
-// run again restores it. Both run inside a transaction that is rolled
-// back, so the database is left as it was.
+// Each down file removes exactly what its up file adds, newest first, and
+// the up files run again restore the schema. All of it runs inside a
+// transaction that is rolled back, so the database is left as it was.
 func TestDownMigrationRestoresTheSchema(t *testing.T) {
 	e := newTestEnv(t)
 	ctx := context.Background()
@@ -1233,27 +1320,94 @@ func TestDownMigrationRestoresTheSchema(t *testing.T) {
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	migrated := schemaSnapshot(t, tx)
-	if _, err := tx.Exec(ctx, migrationFile(t, "down")); err != nil {
-		t.Fatalf("down: %v", err)
-	}
-	down := schemaSnapshot(t, tx)
-	var withoutStaging []string
-	for _, line := range migrated {
-		if !strings.Contains(line, "otlp_") {
-			withoutStaging = append(withoutStaging, line)
+	without := func(lines []string, marker string) []string {
+		var out []string
+		for _, line := range lines {
+			if !strings.Contains(line, marker) {
+				out = append(out, line)
+			}
 		}
+		return out
 	}
-	if !slices.Equal(down, withoutStaging) {
-		t.Fatalf("the down migration changed more than the staging tables:\nafter down: %v\nwant: %v", down, withoutStaging)
+	migrated := schemaSnapshot(t, tx)
+	if _, err := tx.Exec(ctx, migrationFile(t, migrationAssembledIn, "down")); err != nil {
+		t.Fatalf("down 000036: %v", err)
 	}
-	if len(down) == len(migrated) {
-		t.Fatal("the down migration removed nothing")
+	down36 := schemaSnapshot(t, tx)
+	if want := without(migrated, "assembled_in"); !slices.Equal(down36, want) {
+		t.Fatalf("the 000036 down migration changed more than assembled_in:\nafter down: %v\nwant: %v", down36, want)
 	}
-	if _, err := tx.Exec(ctx, migrationFile(t, "up")); err != nil {
-		t.Fatalf("up: %v", err)
+	if len(down36) == len(migrated) {
+		t.Fatal("the 000036 down migration removed nothing")
+	}
+	if _, err := tx.Exec(ctx, migrationFile(t, migrationStaging, "down")); err != nil {
+		t.Fatalf("down 000035: %v", err)
+	}
+	down35 := schemaSnapshot(t, tx)
+	if want := without(down36, "otlp_"); !slices.Equal(down35, want) {
+		t.Fatalf("the 000035 down migration changed more than the staging tables:\nafter down: %v\nwant: %v", down35, want)
+	}
+	if len(down35) == len(down36) {
+		t.Fatal("the 000035 down migration removed nothing")
+	}
+	if _, err := tx.Exec(ctx, migrationFile(t, migrationStaging, "up")); err != nil {
+		t.Fatalf("up 000035: %v", err)
+	}
+	if again := schemaSnapshot(t, tx); !slices.Equal(again, down36) {
+		t.Fatalf("up 000035 after down did not restore its schema:\ngot: %v\nwant: %v", again, down36)
+	}
+	if _, err := tx.Exec(ctx, migrationFile(t, migrationAssembledIn, "up")); err != nil {
+		t.Fatalf("up 000036: %v", err)
 	}
 	if again := schemaSnapshot(t, tx); !slices.Equal(again, migrated) {
 		t.Fatalf("up after down did not restore the schema:\ngot: %v\nwant: %v", again, migrated)
+	}
+}
+
+// 000036 gives a record marked before it its trace's assembly_count,
+// so the check it adds holds for every row. It runs inside a rolled-back
+// transaction, against rows of this test's own token only.
+func TestAssembledInMigrationBackfillsMarkedRecords(t *testing.T) {
+	e := newTestEnv(t)
+	ctx := context.Background()
+	key := e.newKey()
+	e.stage(e.batch(key, span(1, 0), span(2, 1)))
+	tx, err := e.pool.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, migrationFile(t, migrationAssembledIn, "down")); err != nil {
+		t.Fatalf("down 000036: %v", err)
+	}
+	// As a store before 000036 marked: the flag only, and the count.
+	if _, err := tx.Exec(ctx, `UPDATE otlp_traces SET assembly_count = 3 WHERE token_key = $1 AND trace_id = $2`,
+		key.TokenKey, key.TraceID[:]); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE otlp_spans SET assembled = true WHERE token_key = $1 AND trace_id = $2 AND span_id = $3`,
+		key.TokenKey, key.TraceID[:], idBytes(1)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tx.Exec(ctx, migrationFile(t, migrationAssembledIn, "up")); err != nil {
+		t.Fatalf("up 000036 over a marked record: %v", err)
+	}
+	rows, err := tx.Query(ctx, `SELECT span_id, assembled_in FROM otlp_spans WHERE token_key = $1 AND trace_id = $2 ORDER BY span_id`,
+		key.TokenKey, key.TraceID[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[byte]*int32{}
+	for rows.Next() {
+		var id []byte
+		var in *int32
+		if err := rows.Scan(&id, &in); err != nil {
+			t.Fatal(err)
+		}
+		got[id[7]] = in
+	}
+	rows.Close()
+	if got[1] == nil || *got[1] != 3 || got[2] != nil {
+		t.Fatalf("after 000036: marked record assembled_in=%v, unmarked=%v; want 3 and NULL", got[1], got[2])
 	}
 }

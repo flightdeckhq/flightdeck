@@ -306,6 +306,22 @@ All notable changes to Flightdeck are documented here.
   embeddings calls**, which the session and agent totals and the cost
   already did, so every token total agrees
   ([#172](https://github.com/flightdeckhq/flightdeck/issues/172)).
+- **The contract for OpenTelemetry GenAI frameworks is written down.**
+  ARCHITECTURE.md (OTLP ingest > GenAI dialect) and D246 describe how
+  the ingestion API will map the GenAI spans of Pydantic AI, Strands
+  Agents, the OpenAI Agents SDK and Google ADK; the receiver does not map
+  them yet. Ingestion stages a trace's spans in Postgres and assembles
+  them once the run has ended, so a run appears in Fleet 3 to 30
+  seconds after it ends, already closed and with its real start and end
+  times. Each named agent is a session, an agent called as a tool is a
+  child session, and agents that hand off are sibling sessions with an
+  `agent_handoff` signal. The sessions are `client_type=otlp`, observe
+  only, with the framework in `context.frameworks`; set
+  `OTEL_RESOURCE_ATTRIBUTES=flightdeck.flavor=<app>,host.name=<host>` to
+  keep two apps' agents apart. Content stays off unless the exporter
+  sets `flightdeck.capture_prompts=true`, and captured content waits in
+  a staging table only until its trace is assembled
+  ([#184](https://github.com/flightdeckhq/flightdeck/issues/184)).
 - **The sensor patches each SDK when the application first imports it.**
   `import flightdeck_sensor` imported every installed SDK it can patch
   (and `patch()` the agent frameworks), so an application paid for

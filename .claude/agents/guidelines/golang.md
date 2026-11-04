@@ -85,7 +85,8 @@ Flightdeck conventions (see `CLAUDE.md`):
   `docker/postgres/migrations/` (`000NNN_description.up.sql` +
   `000NNN_description.down.sql`, exact inverses). Never modify an applied
   migration. Never add schema changes to `init.sql` (seed data only).
-  No raw SQL lives outside `api/internal/store/`. Every event payload is
+  SQL lives only in each service's store packages, never in handlers
+  (CLAUDE.md rule 35 lists them). Every event payload is
   validated at the ingestion API boundary before it reaches NATS.
   `GET /v1/events/:id/content` returns **404** when capture is disabled
   for that session — not 200 with empty data, not 403.

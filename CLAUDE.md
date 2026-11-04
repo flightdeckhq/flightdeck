@@ -149,7 +149,11 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
     changes to `init.sql` -- it contains seed data only. Never modify an existing
     migration file that has already been applied. Always add a new migration.
 
-35. **No raw SQL outside `api/internal/store/`.** SQL lives in the store package only.
+35. **SQL lives only in each service's store packages, never in handlers.**
+    Those are `api/internal/store` (with the token lookups of
+    `api/internal/auth`), `ingestion/internal/session`,
+    `ingestion/internal/auth`, `ingestion/internal/directive` and
+    `workers/internal/writer`.
 
 36. **Validate all event payloads at the ingestion API boundary.** Do not pass
     invalid events to NATS.

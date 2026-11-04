@@ -514,3 +514,21 @@ timestamp cursor dropped every row tied with the cursor.
 contract, and offset pages still need the tiebreaker); paging by a new
 sequence or UUIDv7 column (a migration and backfill of every event, and
 it orders by arrival, not by the event time the views sort by).
+
+## D246 -- OTLP GenAI spans are staged in Postgres and assembled per trace
+
+**Date:** 2026-11-04
+**Decision:** extends D224 to Pydantic AI, Strands, OpenAI Agents and
+ADK. Ingestion stages each GenAI span (and ADK content log) in Postgres
+by token, trace and span, answering 200 after the commit; captured
+content is staged only when declared and deleted on assembly, the one
+exception to content living only in `event_content`. An assembler in
+every ingestion process leases due traces and publishes ordinary events:
+each named `invoke_agent` span a session (hand-offs as sibling roots),
+tokens from the outermost model span, `client_type=otlp`, content as
+`provider=otel_genai`, session times from the events.
+**Why:** spans export when they end, so an agent's span arrives after its
+calls, at any replica; session identity, parent and capture are write-once.
+**Rejected alternative:** per-replica memory buffers with a peer ring
+(a crash loses 200-acked data); emit-then-reattribute (moves stored
+events, deletes notified sessions, adds event types old workers drop).

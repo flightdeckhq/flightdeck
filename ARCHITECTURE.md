@@ -4110,7 +4110,7 @@ authoritative parameter-level reference.
 |---|---|---|
 | `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, recent_sessions rollup, and runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — sourced from the agent's most recent session's `context` JSONB via a `LEFT JOIN LATERAL`), context_facets |
 | `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `include_parents`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`), `child_count`, and `attachment_count` (the number of re-attachments to the session, surfaced as the agent drawer Runs-tab attached pill) |
-| `GET` | `/v1/sessions/:id` | Session detail: metadata + chronological events (always an array, empty until the first event row lands) + attachments array |
+| `GET` | `/v1/sessions/:id` | Session detail: metadata (including `close_reasons`, the distinct `close_reason` values of its `session_end` events) + chronological events (always an array, empty until the first event row lands) + attachments array |
 | `GET` | `/v1/agents` | Paginated agent listing; filters: `agent_type`, `client_type`, `state`, `hostname`, `user`, `os`, `orchestration` (multi-value — OR within a dimension, AND across; `os` and `orchestration` use any-session EXISTS semantics on `sessions.context`), `search` (case-insensitive substring on `agent_name` + `hostname`), `updated_since`; `sort` + `order`; `limit` (default 25, max 100) + `offset`. Each row carries the sub-agent rollup fields `agent_role` and `topology` (`lone` / `parent` / `child`) plus the runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — latest-session-only, same source as the `/v1/fleet` projection) |
 | `GET` | `/v1/agents/:id/summary` | Per-agent activity summary (totals + per-bucket series) over a 1h/24h/7d/30d window. Powers the per-agent landing page. |
 | `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `agent_id`, `model`, payload-JSONB facet filters (`error_type`, `close_reason`, `estimated_via`, `matched_entry_id`, `originating_call_context`, `mcp_server`, `terminal`), `framework` (`agent_id` + `framework` resolve via a `sessions` subquery), session-context facet filters (`os`, `arch`, `host`, `user`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — resolved via the sessions JOIN against partial expression indexes on `sessions((context->>'<key>'))` from migration 000024), `q` (free-text ILIKE search across event_type / model / session_id / agent_name / framework), `before` + optional `before_id` (keyset cursor on `occurred_at`, then `id`) + `order` (`asc`/`desc`) for newest-first drawer pagination, `facets=true` to return per-dimension chip counts over the filtered set instead of the event list, `limit` (default 500, max 2000), `offset` (max 100000) |
@@ -4958,10 +4958,16 @@ last_seen_at, tokens_used, token_limit), the `capture_enabled`
 flag, and the sub-agent linkage columns (parent_session_id,
 agent_role). `framework` is the bare-name `sessions.framework`
 attribution; it feeds the `/agents` page framework filter chips.
-The heavy correlated-subquery
-columns of `SessionListItem` (error_types, policy_event_types,
-mcp_server_names, ...) are intentionally absent so the per-agent
-rollup stays cheap on fleet pages with 50+ agents.
+It also carries `close_reasons`, the distinct `close_reason` values of
+the run's `session_end` events (always an array): a run the
+orphan-timeout reaper closed has been silent for at least the orphan
+timeout (24 h by default), so it is older than the Fleet's 24 h
+sessions page and this rollup is where the swimlane learns it was
+reaped. The array is computed in the outer query, for the kept rows
+only. The other heavy correlated-subquery columns of
+`SessionListItem` (error_types, policy_event_types, mcp_server_names,
+...) are intentionally absent so the per-agent rollup stays cheap on
+fleet pages with 50+ agents.
 
 The rollup guarantees each visible agent row carries its
 `RecentSessionsPerAgent` most-recent sessions independently of
@@ -5592,7 +5598,12 @@ full, is a start of a run that started before the window's oldest
 run: a resumed Claude Code session, or a late OpenTelemetry record
 re-opening a closed run. After a start the window is re-sorted by
 `started_at`: a new run leads it, a re-attached run keeps its place,
-and one older than a full window stays out.
+and one older than a full window stays out. The page cannot tell such a
+re-attachment from the first start of a genuinely new run that started
+before the window's oldest run (an OpenTelemetry session created late
+from an old record): it does not count that one either, and the next
+fleet load (a new agent's run, a reconnect, a filter change) corrects
+the count.
 
 The agent's rolled-up `state`, which the Agents table, agent drawer and
 per-agent modal badges show, comes from the update's `agent_state`: the
@@ -6087,8 +6098,11 @@ thresholds of its own, see Fleet view):
   `last_seen_at`, which the reaper leaves at the run's last signal,
   and reads as lost. The reaper's close is a `session_end` whose
   `close_reason` is `orphan_timeout`: the run's last `session_end`
-  when the page holds it, otherwise the run's `close_reasons` from
-  `GET /v1/sessions`.
+  when the page holds it, otherwise the run's `close_reasons`. Every
+  session row the page holds carries them: `GET /v1/sessions`, the
+  agents' `recent_sessions` rollup, and the session the live stream
+  re-reads (`GetSession`), and a live update keeps the reasons the
+  page already knew when its row lacks them.
 
 An earlier segment that the reaper closed ends at the run's last event
 before that `session_end`, and reads as lost too.
@@ -6146,14 +6160,20 @@ the start and end of each segment in view:
   "still running".
 
 Each glyph is drawn when its own time is in the window, so a segment
-that started before the window still shows its end. Glyphs on one edge
-never overlap: they sit side by side in time order, 1 px apart, with
-an end before a start at the same instant, so a hand-off reads ■▶. A
-segment's square always follows its own triangle, past the segment's
-end when the segment is narrower than the two glyphs, so a short run
-reads ▶■. A glyph that would cross the panel's right edge is pulled
-back inside it, with the glyphs before it, so a run that has just
-started shows its ▶ at the edge. On the row's top and bottom edges
+that started before the window still shows its end. A segment's
+square always follows its own triangle, past the segment's end when
+the segment is narrower than the two glyphs, so a short run reads ▶■.
+Glyphs on one edge are spread apart where they would overlap: they sit
+side by side in time order, 1 px apart, with an end before a start at
+the same instant, so a hand-off reads ■▶. A glyph that would cross the
+panel's right edge is pulled back inside it, with the glyphs before
+it, so a run that has just started shows its ▶ at the edge. No glyph
+moves more than `MAX_GLYPH_SHIFT_PX` (24 px, the shift a zero-length
+run's square needs to follow its triangle) from where its time puts
+it, so on a busy row, where spreading every glyph would carry it far
+from its run, glyphs past that limit overlap near their own time
+instead. Every glyph also stays inside the panel, never under the
+label column. On the row's top and bottom edges
 the glyphs stay clear of the circles on the centre line, so every
 circle's centre, including the circles at a segment's start and end,
 stays clickable.

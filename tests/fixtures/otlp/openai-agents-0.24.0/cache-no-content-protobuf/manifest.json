@@ -1,0 +1,82 @@
+{
+ "scenario": "cache-no-content-protobuf",
+ "about": "two runs with the same long instructions: OpenAI caches the second call's prefix by itself; content off",
+ "framework": "openai-agents",
+ "instrumentation": "opentelemetry-instrumentation-openai-agents-v2 (OpenTelemetry contrib)",
+ "model": "openai gpt-4o-mini",
+ "protocol": "http/protobuf",
+ "env": {
+  "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT": "false"
+ },
+ "runner_args": [
+  "cache"
+ ],
+ "outcome": "completed",
+ "provider_calls": [
+  {
+   "path": "/v1/responses",
+   "status": 200,
+   "usage": {
+    "input_tokens": 1921,
+    "input_tokens_details": {
+     "cache_write_tokens": 0,
+     "cached_tokens": 1792
+    },
+    "output_tokens": 3,
+    "output_tokens_details": {
+     "reasoning_tokens": 0
+    },
+    "total_tokens": 1924
+   }
+  },
+  {
+   "path": "/v1/responses",
+   "status": 200,
+   "usage": {
+    "input_tokens": 1921,
+    "input_tokens_details": {
+     "cache_write_tokens": 0,
+     "cached_tokens": 1792
+    },
+    "output_tokens": 3,
+    "output_tokens_details": {
+     "reasoning_tokens": 0
+    },
+    "total_tokens": 1924
+   }
+  }
+ ],
+ "versions": {
+  "pydantic-ai-slim": "2.64.0",
+  "strands-agents": "1.63.0",
+  "openai-agents": "0.24.0",
+  "opentelemetry-instrumentation-openai-agents-v2": "0.1.0",
+  "openai": "3.42.1",
+  "anthropic": "2.3.0",
+  "opentelemetry-sdk": "1.45.2",
+  "opentelemetry-semantic-conventions": "0.66b2",
+  "opentelemetry-util-genai": "1.3b0",
+  "opentelemetry-exporter-otlp-proto-http": "1.45.2",
+  "opentelemetry-exporter-otlp-json-http": "0.66b2"
+ },
+ "requests": [
+  {
+   "file": "001-traces.pb",
+   "path": "/v1/traces",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  },
+  {
+   "file": "002-metrics.pb",
+   "path": "/v1/metrics",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  },
+  {
+   "file": "003-metrics.pb",
+   "path": "/v1/metrics",
+   "content_type": "application/x-protobuf",
+   "sent_encoding": null
+  }
+ ]
+}

@@ -42,8 +42,9 @@ ADK 1.36.0, while both write attributes from later conventions
 | Request model | `gen_ai.request.model=claude-haiku-4-5` | `gen_ai.request.model=gpt-4o-mini` | `gen_ai.request.model` holds the response model (`gpt-4o-mini-2024-07-18`) | `gen_ai.request.model=openai/gpt-4o-mini` (LiteLLM's provider prefix kept) |
 | Response model, id | `gen_ai.response.model`, `gen_ai.response.id` (`msg_...`), `gen_ai.response.finish_reasons` | none | `gen_ai.response.model`, `gen_ai.response.id` (`resp_...`) | `gen_ai.response.finish_reasons` only |
 | Tokens | `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` | `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens`, also `prompt_tokens`, `completion_tokens`, `total_tokens` | `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` | `gen_ai.usage.input_tokens`, `gen_ai.usage.output_tokens` |
-| Cache read tokens | `gen_ai.usage.details.cache_read_input_tokens` | `gen_ai.usage.cache_read.input_tokens`, and `gen_ai.usage.cache_read_input_tokens` under the default conventions only | none | `gen_ai.usage.cache_read.input_tokens` |
-| Cache creation tokens | `gen_ai.usage.details.cache_creation_input_tokens` | none (only an agent's totals carry them) | none | none |
+| Cache read tokens | `gen_ai.usage.details.cache_read_input_tokens` always; `gen_ai.usage.cache_read.input_tokens` and `gen_ai.usage.details.cache_read_tokens` too when non-zero | `gen_ai.usage.cache_read.input_tokens`, and `gen_ai.usage.cache_read_input_tokens` under the default conventions only | none, even when the provider reports them | `gen_ai.usage.cache_read.input_tokens` |
+| Cache creation tokens | `gen_ai.usage.details.cache_creation_input_tokens` always; `gen_ai.usage.cache_creation.input_tokens` and `gen_ai.usage.details.cache_write_tokens` too when non-zero | none (only an agent's totals carry them) | none | none (OpenAI reports none) |
+| Do the input tokens include cached ones? | yes (Cached input tokens, below) | yes | yes | yes |
 | Other | `operation.cost` (USD), `gen_ai.tool.definitions`, `server.address`, `gen_ai.request.max_tokens` | `gen_ai.server.time_to_first_token` (ms) | `server.address`, `server.port` | `gen_ai.tool.definitions` |
 | Agent on the span | `gen_ai.agent.name`, `gen_ai.agent.call.id` | none | `gen_ai.agent.name=OpenAI Agent`, `gen_ai.agent.id=agent`: the instrumentation's placeholders, the same for every agent | `gen_ai.agent.name` |
 | Conversation | `gen_ai.conversation.id` | none | none | `gen_ai.conversation.id` |
@@ -56,8 +57,37 @@ model call: `gen_ai.operation.name=chat`, its own `gen_ai.usage.*`
 placeholders in these files), but no agent and no conversation: only its
 parent `chat` span says whose call it was. The OpenAI SDK used here
 emits no spans.
-Cache tokens were zero in every run, so whether `input_tokens` includes
-them could not be told from these recordings.
+
+## Cached input tokens
+
+The `cache-*` scenarios make two calls with the same long instructions,
+and their manifests hold what the provider answered each call
+(`provider_calls`). In all four frameworks `gen_ai.usage.input_tokens`
+**includes** the cached tokens: it is the whole prompt, cached or not,
+and the cached share is reported beside it.
+
+| Framework, scenario | Provider's usage (call 1; call 2) | Span `gen_ai.usage.input_tokens` | Arithmetic |
+|---|---|---|---|
+| Pydantic AI, `cache-no-content-protobuf` (Anthropic) | `input_tokens` 12, `cache_creation_input_tokens` 6670, `cache_read_input_tokens` 0; then 12, 0, 6670 | 6682; 6682 | 12 + 6670 + 0 = 6682 and 12 + 0 + 6670 = 6682: Anthropic's `input_tokens` counts only the uncached tokens, and Pydantic AI adds both cache counts to it. The Anthropic SDK's own span reports the same 6682. |
+| Strands, `cache-protobuf` (OpenAI chat completions) | `prompt_tokens` 1933, `cached_tokens` 0; then 1933, 1792 | 1933; 1933 | OpenAI's `prompt_tokens` already includes `cached_tokens`; Strands copies it, and `gen_ai.usage.cache_read.input_tokens` is 0 then 1792. |
+| Google ADK, `cache-no-content-protobuf` (OpenAI through LiteLLM) | `prompt_tokens` 1934, `cached_tokens` 1024; then 1934, 1792 | 1934; 1934 | The same: `prompt_tokens` copied, `gen_ai.usage.cache_read.input_tokens` 1024 then 1792. The first call was already partly cached, from the Strands run's identical instructions moments before. |
+| OpenAI Agents, `cache-no-content-protobuf` (OpenAI Responses API) | `input_tokens` 1921, `cached_tokens` 1792; then 1921, 1792 | 1921; 1921 | The Responses API's `input_tokens` includes `cached_tokens`, and the instrumentation copies it, but it records no cache attribute, so the cached share is lost. Both calls were hits: diagnostic runs moments before had warmed the cache. The Responses API served neither of two back-to-back calls from its cache in four tries until the request carried a `prompt_cache_key`. |
+
+Flightdeck's `tokens_input` already counts cached tokens in (for Claude
+Code it is `input_tokens` + `cache_read_tokens` +
+`cache_creation_tokens`), so `gen_ai.usage.input_tokens` maps to it
+unchanged, and the cache attributes map to `tokens_cache_read` and
+`tokens_cache_creation`. A normalizer must not add the cache counts to
+`gen_ai.usage.input_tokens` again, which a reading of Anthropic's own
+`input_tokens` would suggest.
+
+Anthropic splits cache writes by retention, and only the nested
+Anthropic SDK span carries the split
+(`anthropic.usage.cache_creation.ephemeral_5m_input_tokens` and
+`ephemeral_1h_input_tokens`). Pydantic AI's own span has the total
+alone, so `tokens_cache_creation_1h` cannot come from the outermost
+model span, which is the one tokens are taken from. Every write in these
+recordings was a 5-minute one.
 
 ## Tool spans
 
@@ -128,6 +158,32 @@ latest-convention content must merge a span's same-named events, and
 one reading ADK's must take the content from the log record and the
 tokens from the span, since the record repeats them.
 
+## A failed model call
+
+The `model-error-*` scenarios ask for a model the provider does not
+have, and the provider answers 404 (Anthropic `not_found_error`, OpenAI
+`invalid_request_error` / `model_not_found`). No framework retries it,
+and every run ends with the framework raising.
+
+| | Pydantic AI | Strands Agents | OpenAI Agents SDK | Google ADK |
+|---|---|---|---|---|
+| Model-call span | `chat claude-fd-does-not-exist`, ERROR | `chat`, ERROR | `chat` (no model in the name), ERROR | `generate_content openai/gpt-fd-does-not-exist`, ERROR |
+| Status message | `ModelNotFoundError: status_code: 404, ...` with the provider's error body (and its request id) | the provider's message (`Error code: 404 - The model ... does not exist ...`) | `Error getting response: {...}` with the provider's message | `NotFoundError: litellm.NotFoundError: OpenAIException - ...` |
+| `error.type` | none (the Anthropic SDK span under it has `error.type=not_found_error` and `http.response.status_code=404`) | none | none | none on the span; the three duration metrics (`gen_ai.client.operation.duration`, `gen_ai.invoke_agent.duration`, `gen_ai.invoke_workflow.duration`) carry `error.type=NotFoundError` |
+| Exception event | `pydantic_ai.exceptions.ModelNotFoundError` | `openai.NotFoundError` | none | `litellm.exceptions.NotFoundError` |
+| Request model | `gen_ai.request.model` | `gen_ai.request.model` | none | `gen_ai.request.model` |
+| Usage | none: no `gen_ai.usage.*` on any span | none | none | none on the span or on its log record, which still comes (with the input messages, content being on) |
+| Agent and root | `invoke_agent` ERROR with the exception | `invoke_agent` and the cycle span ERROR with the exception | `invoke_agent` ERROR, but the `Agent workflow` root OK | `invoke_agent` and `invoke_workflow` ERROR with the exception |
+
+A failed model call is therefore a model-call span with ERROR status,
+no usage and, in three frameworks, an exception event naming the error.
+It maps to `llm_error`. A normalizer can classify the error from the
+exception type or from the status message only: no framework puts the
+HTTP status or the provider's error type on its own span. Pydantic AI's
+Anthropic SDK span is the exception, carrying both. Whatever the error
+text and status message hold is content, so it belongs behind the
+capture gate.
+
 ## Errors (a tool that raises `ValueError`)
 
 | | Pydantic AI | Strands Agents | OpenAI Agents SDK | Google ADK |
@@ -166,7 +222,8 @@ What differs:
 - Duplicate model spans: the Anthropic SDK 2.x adds its own `chat` span, which names no agent, under Pydantic AI's. Counting every `chat` span counts that call twice.
 - Totals on agent spans: Pydantic AI (`gen_ai.aggregated_usage.*`) and Strands (`gen_ai.usage.*`, the same keys as a model call) total the agent's own model calls, not its sub-agents'. Summing usage over all spans double-counts.
 - ADK's log records repeat their model span's `gen_ai.usage.*`: a normalizer that maps log records as well as spans, as the Claude Code dialect maps log records, counts each of ADK's calls twice.
-- Cache tokens: cache reads come in three spellings, `gen_ai.usage.cache_read.input_tokens` (Strands, ADK), `gen_ai.usage.details.cache_read_input_tokens` (Pydantic AI) and `gen_ai.usage.cache_read_input_tokens` (Strands under its default conventions only). Cache creation is on the model span in Pydantic AI only (`gen_ai.usage.details.cache_creation_input_tokens`); Strands has it only in an agent's totals, ADK and OpenAI Agents send none, and OpenAI Agents sends no cache tokens at all. In these recordings `estimated_cost` could price cache writes per call only for Pydantic AI.
+- Cache tokens: `gen_ai.usage.input_tokens` includes cached tokens in all four (Cached input tokens). Cache reads come in `gen_ai.usage.cache_read.input_tokens` (Strands, ADK, and Pydantic AI when non-zero), `gen_ai.usage.details.cache_read_input_tokens` (Pydantic AI, always) and `gen_ai.usage.cache_read_input_tokens` (Strands under its default conventions only). Cache creation is on the model span in Pydantic AI only (`gen_ai.usage.cache_creation.input_tokens` when non-zero, `gen_ai.usage.details.cache_creation_input_tokens` always). Strands has it only in an agent's totals, ADK and OpenAI Agents send none, and OpenAI Agents drops even the cache reads OpenAI reports. In these recordings `estimated_cost` could price cache writes per call only for Pydantic AI.
+- A failed model call: a model-call span with ERROR status and no usage (4), an exception event (3, not OpenAI Agents), and no `error.type` or HTTP status on the framework's own span (4). OpenAI Agents leaves its root span OK.
 - Response model and id: Pydantic AI and OpenAI Agents only; the request model is raw in Strands, provider-prefixed in ADK, and the response model in OpenAI Agents.
 - Agent on model and tool spans: absent in Strands, a constant placeholder in OpenAI Agents.
 - Session ids: `gen_ai.conversation.id` in Pydantic AI (per run) and ADK (per ADK session, not on tool spans); nothing in Strands or OpenAI Agents.
@@ -186,8 +243,9 @@ How a normalizer would identify a session and an agent from these spans:
   - Unlike the Claude Code dialect, which maps each log record on its own, the GenAI normalizer needs this state.
 
 Not covered by these recordings: runs of more than one turn in one
-conversation, streaming responses, non-zero cache tokens, Pydantic AI on
-another provider, Strands `Swarm` hand-offs, agents in other languages,
+conversation, streaming responses, cache writes on a provider other
+than Anthropic, provider errors other than an unknown model (rate limits,
+overload, a request the model rejects), Pydantic AI on another provider, Strands `Swarm` hand-offs, agents in other languages,
 and the OpenTelemetry Python SDK's own GenAI instrumentations for the
 provider SDKs (`opentelemetry-instrumentation-openai-v2` and others),
 which would add their own model-call spans as the Anthropic SDK does.

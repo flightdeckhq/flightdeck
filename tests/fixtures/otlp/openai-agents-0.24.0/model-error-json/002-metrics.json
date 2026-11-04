@@ -1,0 +1,285 @@
+{
+ "resourceMetrics": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "telemetry.sdk.language",
+      "value": {
+       "stringValue": "python"
+      }
+     },
+     {
+      "key": "telemetry.sdk.name",
+      "value": {
+       "stringValue": "opentelemetry"
+      }
+     },
+     {
+      "key": "telemetry.sdk.version",
+      "value": {
+       "stringValue": "1.45.2"
+      }
+     },
+     {
+      "key": "service.instance.id",
+      "value": {
+       "stringValue": "9c695e72-cfbf-487f-9a70-8aebffcc72a5"
+      }
+     },
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "unknown_service:python"
+      }
+     }
+    ]
+   },
+   "scopeMetrics": [
+    {
+     "scope": {
+      "name": "opentelemetry.instrumentation.openai_agents",
+      "version": "0.1.0"
+     },
+     "metrics": [
+      {
+       "name": "gen_ai.client.operation.duration",
+       "description": "GenAI operation duration",
+       "unit": "s",
+       "histogram": {
+        "dataPoints": [
+         {
+          "attributes": [
+           {
+            "key": "gen_ai.provider.name",
+            "value": {
+             "stringValue": "openai"
+            }
+           },
+           {
+            "key": "gen_ai.operation.name",
+            "value": {
+             "stringValue": "chat"
+            }
+           },
+           {
+            "key": "server.address",
+            "value": {
+             "stringValue": "api.openai.com"
+            }
+           },
+           {
+            "key": "server.port",
+            "value": {
+             "intValue": "443"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793782389885220644",
+          "timeUnixNano": "1793782389889847062",
+          "count": "1",
+          "sum": 6.276591,
+          "bucketCounts": [
+           "0",
+           "0",
+           "1",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           0.0,
+           5.0,
+           10.0,
+           25.0,
+           50.0,
+           75.0,
+           100.0,
+           250.0,
+           500.0,
+           750.0,
+           1000.0,
+           2500.0,
+           5000.0,
+           7500.0,
+           10000.0
+          ],
+          "exemplars": [
+           {
+            "timeUnixNano": "1793782389885127636",
+            "spanId": "6f767a207c5691dd",
+            "traceId": "1f0761d8936c4386f304e50a1edf88ff",
+            "asDouble": 6.276591
+           }
+          ],
+          "min": 6.276591,
+          "max": 6.276591
+         },
+         {
+          "attributes": [
+           {
+            "key": "gen_ai.provider.name",
+            "value": {
+             "stringValue": "openai"
+            }
+           },
+           {
+            "key": "server.address",
+            "value": {
+             "stringValue": "api.openai.com"
+            }
+           },
+           {
+            "key": "server.port",
+            "value": {
+             "intValue": "443"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793782389885520381",
+          "timeUnixNano": "1793782389889847062",
+          "count": "2",
+          "sum": 12.586517,
+          "bucketCounts": [
+           "0",
+           "0",
+           "2",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           0.0,
+           5.0,
+           10.0,
+           25.0,
+           50.0,
+           75.0,
+           100.0,
+           250.0,
+           500.0,
+           750.0,
+           1000.0,
+           2500.0,
+           5000.0,
+           7500.0,
+           10000.0
+          ],
+          "exemplars": [
+           {
+            "timeUnixNano": "1793782389885501601",
+            "spanId": "1ee397ba8a5c09a2",
+            "traceId": "1f0761d8936c4386f304e50a1edf88ff",
+            "asDouble": 6.292805
+           }
+          ],
+          "min": 6.292805,
+          "max": 6.293712
+         },
+         {
+          "attributes": [
+           {
+            "key": "gen_ai.provider.name",
+            "value": {
+             "stringValue": "openai"
+            }
+           },
+           {
+            "key": "gen_ai.operation.name",
+            "value": {
+             "stringValue": "invoke_agent"
+            }
+           },
+           {
+            "key": "server.address",
+            "value": {
+             "stringValue": "api.openai.com"
+            }
+           },
+           {
+            "key": "server.port",
+            "value": {
+             "intValue": "443"
+            }
+           }
+          ],
+          "startTimeUnixNano": "1793782389885701180",
+          "timeUnixNano": "1793782389889847062",
+          "count": "1",
+          "sum": 6.293095,
+          "bucketCounts": [
+           "0",
+           "0",
+           "1",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0",
+           "0"
+          ],
+          "explicitBounds": [
+           0.0,
+           5.0,
+           10.0,
+           25.0,
+           50.0,
+           75.0,
+           100.0,
+           250.0,
+           500.0,
+           750.0,
+           1000.0,
+           2500.0,
+           5000.0,
+           7500.0,
+           10000.0
+          ],
+          "exemplars": [
+           {
+            "timeUnixNano": "1793782389885685091",
+            "spanId": "952cf48518485749",
+            "traceId": "1f0761d8936c4386f304e50a1edf88ff",
+            "asDouble": 6.293095
+           }
+          ],
+          "min": 6.293095,
+          "max": 6.293095
+         }
+        ],
+        "aggregationTemporality": 2
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

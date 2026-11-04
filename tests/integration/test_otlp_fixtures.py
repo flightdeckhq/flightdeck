@@ -416,3 +416,23 @@ def test_the_recorder_s_machine_names_are_caught_as_whole_words(
     assert any("user name" in p for p in found), found
     path.write_bytes(_protobuf_log([("note", 1, b"malice aforethought")]))
     assert problems(path, machine) == []
+
+
+def test_a_planted_value_in_a_manifest_is_caught(tmp_path: Path) -> None:
+    """The manifest is checked like the request files: what a recorder
+    writes there (provider_calls) can leak a home directory, an account id
+    or the recording machine's name."""
+    recorded = FIXTURES / "claude-code-2.1.316" / "api-error-json"
+    for source in recorded.iterdir():
+        shutil.copy(source, tmp_path / source.name)
+    assert directory_problems(tmp_path) == []
+    manifest = json.loads((tmp_path / "manifest.json").read_text())
+    manifest["provider_calls"] = [
+        {"path": "/home/alice/repo", "error": {"code": "org-" + "Ab1" * 8}},
+        {"path": "/v1/build-box-7"},
+    ]
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
+    found = directory_problems(tmp_path, {"the host name": "build-box-7"})
+    assert any("manifest.json: home directory /home/alice" in p for p in found), found
+    assert any("manifest.json: a provider API key" in p for p in found), found
+    assert any("manifest.json: the host name" in p for p in found), found

@@ -1,8 +1,9 @@
 // Package store -- pricing.go
 //
 // The SQL that turns events into estimated cost (ARCHITECTURE.md, Cost
-// estimation). Every LLM event (post_call, embeddings) is priced from
-// its model_pricing row, found per event by CostPriceJoinSQL, with the
+// estimation). Every LLM event (post_call, embeddings, and an llm_error
+// that carries a failed stream's billed tokens) is priced from its
+// model_pricing row, found per event by CostPriceJoinSQL, with the
 // formula in costRowSQL; only metered calls are counted, and a cost the
 // gateway or client reported is used in place of the estimate. The
 // expressions are built from constants and from the operator's
@@ -20,11 +21,21 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-// costEventTypes are the events whose tokens estimated cost prices.
-const costEventTypes = "('post_call', 'embeddings')"
+// failedStreamFilter matches an llm_error whose stream failed after the
+// provider had delivered, and billed, tokens: the worker stores them in
+// the event's token columns (ARCHITECTURE.md, llm_error). Every other
+// llm_error carries none.
+const failedStreamFilter = "(e.event_type = 'llm_error' AND e.tokens_total > 0)"
 
-// costEventFilter restricts a query on events aliased e to them.
-const costEventFilter = "e.event_type IN " + costEventTypes
+// billedEventFilter restricts a query on events aliased e to the events
+// that carry provider-billed tokens: every post_call and embeddings call,
+// and the llm_error of every stream that failed after it was billed for
+// tokens. A failed stream sends no post_call, so no token is counted
+// twice. Every server-side total of tokens and cost reads the same set.
+const billedEventFilter = "(e.event_type IN ('post_call', 'embeddings') OR " + failedStreamFilter + ")"
+
+// costEventFilter restricts a query to the events estimated cost prices.
+const costEventFilter = billedEventFilter
 
 // subscriptionClientTypes are the client types whose billing_mode
 // default in the client type registry (contracts/client_types.json) is
@@ -181,8 +192,8 @@ func costRowSQL(settings PricingSettings) string {
 }
 
 // BuildCostAggregateSQL is the estimated-cost aggregate over events
-// aliased e joined to their prices with CostPriceJoinSQL. It sums LLM
-// events only, so it is correct in a query over every event type (the
+// aliased e joined to their prices with CostPriceJoinSQL. It sums the
+// events costEventFilter selects only, so it is correct in a query over every event type (the
 // per-agent summary) as well as in one already limited to them.
 func BuildCostAggregateSQL() string {
 	return "COALESCE(SUM(" + costRowSQL(CurrentPricingSettings()) +

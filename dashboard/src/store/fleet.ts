@@ -132,12 +132,19 @@ interface FleetState {
    */
   lastEvent: AgentEvent | null;
   /**
+   * The ``agent_id`` of the session the broadcast carried with
+   * ``lastEvent``, or null when it carried none. An event names its
+   * flavor, a label, but not its agent; the per-agent summary cache
+   * keys its live patch on this.
+   */
+  lastEventAgentId: string | null;
+  /**
    * Dispatch — called from useFleet's WS handler for every
    * event-bearing message about a run the page shows. Replaces
-   * ``lastEvent`` so SessionDrawer subscribers fire their re-fetch
-   * effect.
+   * ``lastEvent`` (and ``lastEventAgentId`` with it) so SessionDrawer
+   * subscribers fire their re-fetch effect.
    */
-  setLastEvent: (event: AgentEvent | null) => void;
+  setLastEvent: (event: AgentEvent | null, agentId?: string | null) => void;
   /**
    * The latest state the live stream reported for a session, any
    * session, recorded before ``applyUpdate`` so it covers runs the
@@ -496,6 +503,7 @@ export const useFleetStore = create<FleetState>((set, get) => ({
   agentTypeFilter: "all",
   flavorFilter: null,
   lastEvent: null,
+  lastEventAgentId: null,
   lastSessionChange: null,
   resyncSeq: 0,
   enteredBucketAt: new Map<string, number>(),
@@ -881,7 +889,8 @@ export const useFleetStore = create<FleetState>((set, get) => ({
 
   selectSession: (id) => set({ selectedSessionId: id }),
 
-  setLastEvent: (event) => set({ lastEvent: event }),
+  setLastEvent: (event, agentId = null) =>
+    set({ lastEvent: event, lastEventAgentId: agentId }),
 
   noteSessionChange: (session) =>
     set({

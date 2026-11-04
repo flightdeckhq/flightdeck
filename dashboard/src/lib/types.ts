@@ -96,7 +96,9 @@ export interface StreamingMetrics {
   ttft_ms: number | null;
   chunk_count?: number;
   inter_chunk_ms?: { p50: number; p95: number; max: number } | null;
-  final_outcome?: "completed" | "aborted";
+  /** ``other`` when the client sent an outcome the server does not
+   *  know: ingestion stores it as the catch-all. */
+  final_outcome?: "completed" | "aborted" | "other";
   abort_reason?: string | null;
 }
 

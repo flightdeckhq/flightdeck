@@ -318,6 +318,75 @@ def test_openai_stream_chunk_details() -> None:
     assert details == CallDetails(model_served="gpt-5.1-2025-11-13", service_tier="priority")
 
 
+class _FailingStream(_FakeStream):
+    """A stream that delivers its events and then breaks, as a dropped
+    connection does mid-response."""
+
+    def __iter__(self) -> Any:
+        yield from self._events
+        raise ConnectionError("connection reset mid-stream")
+
+
+def _stream_error(session: Session) -> dict[str, Any]:
+    queue = session.event_queue
+    assert isinstance(queue, MagicMock)
+    (payload,) = [
+        c.args[0]
+        for c in queue.enqueue.call_args_list
+        if c.args[0].get("event_type") == "llm_error"
+    ]
+    return payload
+
+
+@pytest.mark.parametrize(
+    ("configured", "local", "billing"),
+    [
+        (None, False, "metered"),
+        (None, True, "local"),
+        ("subscription", False, "subscription"),
+        ("subscription", True, "subscription"),
+    ],
+)
+def test_failed_stream_error_carries_the_calls_billing_mode(
+    configured: str | None, local: bool, billing: str
+) -> None:
+    """The provider bills a failed stream's partial tokens as it would
+    the call, so the llm_error carries the billing mode a post_call of the
+    same client would: the configured one, else local for a loopback
+    client, else metered."""
+    start = _anthropic_message(output_tokens=7, output_tokens_details=None).model_dump()
+    start["content"] = []
+    start["stop_reason"] = None
+    events = [RawMessageStartEvent.model_validate({"type": "message_start", "message": start})]
+    session = _session(billing_mode=configured)
+    real = MagicMock()
+    real.create = MagicMock(return_value=_FailingStream(events))
+    provider = AnthropicProvider(local=local)
+    with pytest.raises(ConnectionError):
+        list(SensorMessages(real, session, provider).create(stream=True, **KW))
+
+    err = _stream_error(session)
+    assert err["billing_mode"] == billing
+    assert err["error"]["abort_reason"] == "error_mid_stream"
+    assert err["error"]["partial_tokens_input"] > 0
+    assert not [
+        c
+        for c in session.event_queue.enqueue.call_args_list  # type: ignore[attr-defined]
+        if c.args[0].get("event_type") == "post_call"
+    ]
+
+
+def test_an_error_that_is_not_a_stream_failure_carries_no_billing_mode() -> None:
+    """Only a failed stream's llm_error carries tokens to price; an error
+    raised by the request itself stays as before."""
+    session = _session(billing_mode="subscription")
+    real = MagicMock()
+    real.create = MagicMock(side_effect=ConnectionError("refused"))
+    with pytest.raises(ConnectionError):
+        SensorMessages(real, session, AnthropicProvider()).create(**KW)
+    assert "billing_mode" not in _stream_error(session)
+
+
 def test_configured_billing_mode_wins() -> None:
     session = _session(billing_mode="subscription")
     base._post_call(

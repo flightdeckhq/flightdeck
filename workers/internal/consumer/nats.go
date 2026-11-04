@@ -23,8 +23,8 @@ const (
 	// malformed event can't loop forever against the consumer.
 	maxDeliver = 3
 	// retryDelayBase spaces out the redeliveries of a message the
-	// processor could not act on yet: a session_end whose session_start
-	// is still being written by another goroutine, or any transient
+	// processor could not act on yet (see ErrRetryLater: state another
+	// goroutine or worker replica is still writing), or any transient
 	// database error. The delay grows with the delivery number (one
 	// second after the first delivery, two after the second, within the
 	// three-delivery budget), so a message is retried for about three
@@ -462,10 +462,15 @@ type SubagentMessage struct {
 }
 
 // ErrRetryLater is returned by the processor when an event cannot be
-// settled yet because state another goroutine is still writing has not
-// landed (a session_end whose session_start is in flight). The consumer
-// NAKs the message with a delay instead of logging a processing error,
-// and the message comes back on its next delivery.
+// settled yet because state another goroutine, or another worker
+// replica, is still writing has not landed: a session_end whose
+// session_start is in flight, an event carrying content whose session
+// has no capture posture yet, or a late call of an assembled
+// OpenTelemetry session whose re-attaching session_start is in flight.
+// The consumer NAKs the message with a delay instead of logging a
+// processing error, and the message comes back on its next delivery.
+// The processor never returns it on the final delivery (FinalDelivery):
+// it takes its fallback then, so waiting never ends a message.
 var ErrRetryLater = errors.New("consumer: retry later")
 
 // deliveryOutcome is the worker's answer to NATS for a processed message.

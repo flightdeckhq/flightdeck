@@ -75,6 +75,7 @@ the swimlane↔table parity assertion). The current journeys:
 | `T141-resumed-run-draws-its-segments.spec.ts` | A resumed run draws ▶ ■ ▶ with a gap, and a run inside the gap keeps the row one lane |
 | `T142-short-run-keeps-its-start-before-its-end.spec.ts` | A run narrower than its glyphs reads ▶■, and no glyph covers its start circle's centre |
 | `T143-reaped-run-older-than-the-sessions-page-ends-at-its-last-signal.spec.ts` | A reaped run older than the 24 h sessions page, with its events kept from the page, ends at its last signal with a hollow square, from the rollup's `close_reasons` |
+| `T150-agent-tokens-count-failed-streams.spec.ts` | The Agents row's token total counts a failed stream's billed tokens and an embeddings call after a load, and adds a failed stream posted while the page is open without a reload |
 
 The `_fixtures.ts` helper exports shared fixture metadata (agent
 names, flavors, role timeline offsets) and locator helpers:

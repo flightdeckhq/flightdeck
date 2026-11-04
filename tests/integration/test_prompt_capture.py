@@ -348,3 +348,65 @@ def test_a_backlog_of_capture_on_sessions_keeps_every_calls_content() -> None:
         or "0"
     )
     assert with_content == len(sids), f"{len(sids) - with_content} of {len(sids)} calls lost their content"
+
+
+@pytest.mark.exclusive
+def test_content_published_before_its_session_start_keeps_its_content() -> None:
+    """Queue each session's content-bearing post_call ahead of its
+    session_start (capture on) behind a paused worker, then let it drain.
+    This is the order a second worker replica can process them in: the
+    replicas share one durable consumer, so a session's start can wait in
+    one replica's lane while another holds its content. The call finds no
+    capture posture, is redelivered after a second instead of landing on
+    a lazily created row, and keeps its content once the start has
+    stored the posture. Holds with one worker or several.
+    """
+    flavor = f"capture-before-start-{uuid.uuid4().hex[:6]}"
+    sids = [str(uuid.uuid4()) for _ in range(BACKLOG_SESSIONS)]
+    content = {
+        "provider": "anthropic",
+        "model": "claude-sonnet-4-6",
+        "system": None,
+        "messages": [{"role": "user", "content": "before its start"}],
+        "tools": None,
+        "response": {"content": [{"type": "text", "text": "ok"}]},
+    }
+    with worker_paused():
+        for sid in sids:
+            post_event(
+                make_event(sid, flavor, "post_call", tokens_total=5, has_content=True, content=content)
+            )
+        for sid in sids:
+            post_event(make_event(sid, flavor, "session_start"))
+
+    def stored() -> int:
+        return int(
+            exec_sql(
+                "SELECT COUNT(*) FROM events WHERE flavor = :'flavor' AND event_type = 'post_call'",
+                flavor=flavor,
+            )
+            or "0"
+        )
+
+    wait_until(
+        lambda: stored() == len(sids),
+        timeout=BACKLOG_TIMEOUT_SECS,
+        msg=f"not every post_call of {flavor} was stored",
+    )
+    with_content = int(
+        exec_sql(
+            "SELECT COUNT(*) FROM events e JOIN event_content c ON c.event_id = e.id "
+            "WHERE e.flavor = :'flavor' AND e.event_type = 'post_call' AND e.has_content",
+            flavor=flavor,
+        )
+        or "0"
+    )
+    assert with_content == len(sids), f"{len(sids) - with_content} of {len(sids)} calls lost their content"
+    no_posture = int(
+        exec_sql(
+            "SELECT COUNT(*) FROM sessions WHERE flavor = :'flavor' AND capture_prompts IS NOT TRUE",
+            flavor=flavor,
+        )
+        or "0"
+    )
+    assert no_posture == 0, f"{no_posture} sessions lack the capture posture their start sent"

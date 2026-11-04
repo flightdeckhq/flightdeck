@@ -67,16 +67,18 @@ export function shortErrorFrom(err) {
 // whole (413 from a proxy with nginx's default 1 MiB limit, 400 from
 // ingestion when the cut body fails to parse), its token counts with
 // it. The poster keeps every body under 768 KiB as measured by
-// encodedBytes; the remaining quarter covers the token id and name
-// ingestion adds to a session_start.
+// encodedBytes; the remaining quarter covers what ingestion adds when it
+// rewrites an event: the token id and name of a session_start, or the
+// catch-all of a replaced value.
 export const MAX_EVENT_BODY_BYTES = 768 * 1024;
 
 const GO_ESCAPED_ASCII_RE = /[<>&]/g;
 const GO_ESCAPED_SEPARATORS_RE = /[\u2028\u2029]/g;
 
 /**
- * The size of a JSON body once ingestion has re-encoded it. Ingestion
- * re-marshals a session_start with Go's encoding/json, which writes
+ * The size of a JSON body once ingestion has rewritten it. Ingestion
+ * rewrites a session_start, or an event with a replaced value, with
+ * Go's encoding/json, which writes
  * ``<``, ``>`` and ``&`` as six-byte ``\u003c`` escapes (one byte in
  * the plugin's JSON) and U+2028 / U+2029 as six-byte escapes (three
  * bytes in UTF-8), so content heavy in markup or code grows on the way

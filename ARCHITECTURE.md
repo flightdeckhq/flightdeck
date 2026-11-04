@@ -1707,9 +1707,10 @@ Every event body the plugin POSTs is at most 768 KiB
 NATS carries an event with the same 1 MiB `max_payload`; a larger body
 is rejected (413 from the dev nginx, 400 from ingestion), and with it
 the call's token counts. The size is measured as ingestion's Go encoder
-writes the event when it re-encodes a `session_start` to add the token
-id and name: `<`, `>` and `&` count six bytes each, U+2028 and U+2029
-six bytes each. A prompt, a
+writes the event when it rewrites one (a `session_start`, to add the
+token id and name, or an event with a replaced value; see Validation
+rules): `<`, `>` and `&` count six bytes each, U+2028 and U+2029 six
+bytes each. A prompt, a
 tool result or a sub-agent message can exceed that, so an event over
 the limit has the strings of its captured `content` cut, every one to
 the same largest length that fits, with
@@ -2789,6 +2790,7 @@ above into `events.payload` under the same key.
 
 The ingestion handler rejects events with 400 when:
 
+- A key differs from a field name only in case (see below).
 - `agent_id` is missing or not a UUID.
 - `agent_type` is outside `{coding, production}`.
 - `client_type` is outside the client type registry (see Identity model).
@@ -2797,7 +2799,7 @@ The ingestion handler rejects events with 400 when:
   more than 5m in the future (`maxClockSkewFuture`). The 48h past
   bound accommodates retry-after-long-outage windows.
 - `tokens_input`, `tokens_output` or `tokens_total` is negative (cache
-  counts and a failed stream's `partial_tokens_*` are not range-checked).
+  counts are not range-checked).
 - `tokens_reasoning`, `tokens_cache_creation_1h` or `cost_reported` is
   negative or not a finite number.
 - `billing_mode` is outside `{metered, subscription, local}`, `provider`
@@ -2812,6 +2814,60 @@ The ingestion handler rejects events with 400 when:
   characters, or
   `inference_scope` is outside `{global, regional}`, or
   `provider_metadata.platform` is longer than 253 characters.
+- `streaming` is not an object, its `final_outcome` or `abort_reason` is
+  not a string, its `chunk_count` is not an integer from 0 to 2^53, or
+  its `ttft_ms` or an `inter_chunk_ms` value (`p50`, `p95`, `max`, in an
+  object) is not a non-negative number.
+- On `llm_error`, `error` is not an object, its `error_type` or
+  `abort_reason` is not a string, or its `partial_chunks`,
+  `partial_tokens_input` or `partial_tokens_output` is not an integer
+  from 0 to 2^53.
+
+A JSON null counts as absent for each of these. A stream outcome, abort
+reason or error type outside its vocabulary is not rejected:
+`streaming.final_outcome` (`completed`, `aborted`), `streaming.abort_reason`
+and an `llm_error`'s `error.abort_reason` (`client_aborted`,
+`error_before_stream`, `error_mid_stream`, `timeout`) and `error.error_type`
+(the 14-entry taxonomy, see `llm_error`) are diagnostics a client newer
+than the server can extend, and refusing the event would also drop the
+tokens it carries. Ingestion stores such a value as `other`, the
+catch-all of each vocabulary (the taxonomy's own fallback for an error it
+cannot name). It rewrites only an event it changed, and in it only the
+replaced fields: every other value is kept, number literals included, so
+a number in captured content that a float64 cannot hold (a 19-digit id, a
+20-digit decimal) is stored as sent. Spelling that does not change a
+value can change: Go's encoder writes `<`, `>` and `&` in every string as
+`\u003c`, `\u003e` and `\u0026`, and U+2028 and U+2029 as `\u2028` and
+`\u2029`; insignificant whitespace is dropped; and the keys of the top
+level and of an edited object are written in sorted order. The
+`session_start` that receives the token's id and name, posted or built by
+the OTLP receiver, is rewritten the same way. Every value the
+sensor's classifier, the Claude Code plugin's StopFailure mapping and the
+OTLP receiver's API-error mapping send is in the taxonomy, which tests
+read from each of them. An MCP event's and a tool failure's `error` carry
+taxonomies of their own and are stored as sent.
+It counts the replacements in the process and logs them at most once a
+second, with the field, the running count and the value when it is a
+lowercase identifier of at most 64 characters (any other value is logged
+by its length, so a client cannot write arbitrary text into the log).
+Replacements within the second after a line are held and logged by one
+line at the end of that second, which names the latest and counts the
+others, so a burst is reported even when nothing follows it. A
+negative count is refused, as a negative `tokens_*` is: it comes from a
+broken client, not a newer one.
+
+Field names match exactly, and a case variant of a known field name is
+refused. Every check above reads a field under its exact name, while the
+worker decodes an event into typed structures whose field matching
+ignores case: Go's JSON decoder folds Unicode case, so `TOKENS_INPUT`,
+`Tokens_Input` and `tokenſ_input` (long s) would all reach it as
+`tokens_input`. Ingestion therefore answers 400 to a key that is not a
+field name but folds to one, at the top level (the fields of the
+worker's event structure), in `incoming_message` and `outgoing_message`,
+in `streaming` and its `inter_chunk_ms`, and in an `llm_error`'s
+`error`. A key that folds to no field name is published as sent. Tests
+read the field names from the worker's event structure and from the
+sensor's stream and error builders.
 
 A `session_end` for a `session_id` Flightdeck has never seen (an orphan
 `session_end`) is **not** rejected at ingestion — the event is accepted and
@@ -6472,7 +6528,8 @@ streaming view (`with_raw_response.create(stream=True)`) is timed from
 the `parse()` call, where the guard opens, not from the request. A stream
 that fails emits `llm_error` instead (`abort_reason` `error_before_stream`,
 `error_mid_stream` or `timeout`). The streaming sub-object is omitted
-entirely for non-streaming calls.
+entirely for non-streaming calls. Ingestion stores a `final_outcome` or
+`abort_reason` outside these values as `other` (see Validation rules).
 
 #### Streaming metering
 
@@ -6744,6 +6801,9 @@ Structured error event with a 14-entry taxonomy:
 | `stream_error` | — | Mid-stream error after a 200 response | `stream_error` | ⚠ case-by-case |
 | `other` | — / 200 | Fallback for unknown; also a `chat.completions.parse()` completion that fails the caller's schema (`http_status` 200, `provider_error_code` `schema`) | `other` | ❌ |
 
+Ingestion stores an `error_type` outside this table as `other` (see
+Validation rules).
+
 Plus `provider`, `http_status`, `provider_error_code`, `request_id`,
 `retry_after`, `is_retryable`. For a streamed call, `abort_reason` and the
 `partial_*` counts below sit with these under `payload.error`
@@ -6756,7 +6816,9 @@ helper the caller read through `get_final_message()`, which leaves
 `partial_chunks=0`) emits `error_type=stream_error` with `abort_reason`
 `error_mid_stream` (or `timeout`), `partial_chunks` (chunks read before
 the failure) and, when the stream had delivered usage,
-`partial_tokens_input` / `partial_tokens_output`. The provider bills those tokens, so the sensor
+`partial_tokens_input` / `partial_tokens_output`. Ingestion stores an
+`abort_reason` outside these values as `other` and refuses a `partial_*`
+count that is not a non-negative integer (see Validation rules). The provider bills those tokens, so the sensor
 adds them to the in-process session counter that drives its local budget
 checks; server-side session totals, the `tokens` metric and
 `estimated_cost` do not include them: the session totals add every event

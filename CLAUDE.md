@@ -71,7 +71,10 @@ Frontend code rules (11-17) live in `dashboard/CLAUDE.md`.
     content. No system prompts. No tool inputs or outputs. No response text.
     If you find code that stores content when capture is off, it is a bug.
 
-19. **Content goes in event_content table only.** Prompt content is never stored
+19. **Content goes in event_content table only, except transiently, while a
+    GenAI trace is assembled.** That staged content is written only when the
+    exporter declares capture, and is deleted on assembly or by the backstop
+    sweep. Prompt content is never stored
     inline in the events table. The events table always contains metadata only.
     Content is fetched on demand via `GET /v1/events/:id/content`.
 
@@ -149,7 +152,20 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
     changes to `init.sql` -- it contains seed data only. Never modify an existing
     migration file that has already been applied. Always add a new migration.
 
-35. **No raw SQL outside `api/internal/store/`.** SQL lives in the store package only.
+35. **SQL lives only in each service's store packages, never in handlers.**
+    Those are `api/internal/store` (with the token lookups and revocation
+    `LISTEN` of `api/internal/auth`), `ingestion/internal/session`,
+    `ingestion/internal/auth`, `ingestion/internal/directive` and
+    `workers/internal/writer`; `workers/internal/migrate` applies the
+    migration files. The current places outside store packages that run
+    SQL are:
+    - `workers/internal/processor/policy.go`: token policy lookups and the
+      directives it issues;
+    - `workers/internal/processor/session.go`: session-row reads
+      (`rowOwnerless`, `handleSessionGuard`, `sessionLookupState`);
+    - `workers/internal/processor/event.go`: the `enrichSessionEnd`
+      queries;
+    - `api/internal/ws/hub.go`: the `LISTEN` / `UNLISTEN`.
 
 36. **Validate all event payloads at the ingestion API boundary.** Do not pass
     invalid events to NATS.

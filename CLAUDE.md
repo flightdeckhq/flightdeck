@@ -71,7 +71,10 @@ Frontend code rules (11-17) live in `dashboard/CLAUDE.md`.
     content. No system prompts. No tool inputs or outputs. No response text.
     If you find code that stores content when capture is off, it is a bug.
 
-19. **Content goes in event_content table only.** Prompt content is never stored
+19. **Content goes in event_content table only, except transiently, while a
+    GenAI trace is assembled.** That staged content is written only when the
+    exporter declares capture, and is deleted on assembly or by the backstop
+    sweep. Prompt content is never stored
     inline in the events table. The events table always contains metadata only.
     Content is fetched on demand via `GET /v1/events/:id/content`.
 
@@ -153,7 +156,11 @@ Sensor rules (27-32) live in `sensor/CLAUDE.md`.
     Those are `api/internal/store` (with the token lookups of
     `api/internal/auth`), `ingestion/internal/session`,
     `ingestion/internal/auth`, `ingestion/internal/directive` and
-    `workers/internal/writer`.
+    `workers/internal/writer`. The current places outside store packages
+    that run SQL are `workers/internal/processor/policy.go` (token policy
+    lookups), the `enrichSessionEnd` queries in
+    `workers/internal/processor/event.go`, and the `LISTEN` in
+    `api/internal/ws/hub.go`.
 
 36. **Validate all event payloads at the ingestion API boundary.** Do not pass
     invalid events to NATS.

@@ -8919,7 +8919,11 @@ leaves fixture-by-fixture lookup to `bringSwimlaneRowIntoView`.
 9. SQL lives only in each service's store packages, never in handlers:
    `api/internal/store` (with the token lookups of `api/internal/auth`),
    `ingestion/internal/session`, `ingestion/internal/auth`,
-   `ingestion/internal/directive` and `workers/internal/writer`.
+   `ingestion/internal/directive` and `workers/internal/writer`. The
+   current places outside store packages that run SQL are
+   `workers/internal/processor/policy.go` (token policy lookups), the
+   `enrichSessionEnd` queries in `workers/internal/processor/event.go`,
+   and the `LISTEN` in `api/internal/ws/hub.go`.
 10. All database migrations have an up and a down.
 11. Prompt content is never stored or logged when `capture_prompts=false`.
     This is a hard rule. No exceptions.

@@ -92,17 +92,19 @@ func main() {
 	sessAttacher := session.NewStore(pool)
 
 	addr := fmt.Sprintf(":%s", cfg.Port)
-	// Claude Code is the OTLP dialect mapped; other sources are accepted
-	// and counted as rejected. It reads sessions through the same store
-	// that runs the attachment check.
-	otlpDialect := handlers.NewClaudeCodeDialect(sessAttacher)
+	// OTLP resources are routed by scope: Claude Code through its
+	// dialect (which reads sessions through the same store that runs the
+	// attachment check), the recorded GenAI frameworks to the staging
+	// store the assembler drains, anything else counted as rejected.
+	stagingStore := otlpstage.NewStore(pool)
+	otlpDialect := handlers.NewOTLPRouter(handlers.NewClaudeCodeDialect(sessAttacher), stagingStore)
 	srv := server.New(addr, validator, publisher, dirStore, sessAttacher, otlpDialect, cfg.RateLimitPerMinute)
 
 	// The OTLP GenAI assembler: every process claims due staged traces
 	// and publishes them through the receiver's publish path. It stops
 	// claiming when runCtx ends, before the server shuts down.
 	genaiAssembler := assembler.New(
-		otlpstage.NewStore(pool),
+		stagingStore,
 		handlers.NewOTLPPublisher(publisher, sessAttacher),
 		assembler.WithInterval(cfg.GenAIClaimInterval),
 	)

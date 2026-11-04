@@ -7,6 +7,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/auth"
 	collogs "go.opentelemetry.io/proto/slim/otlp/collector/logs/v1"
 	colmetrics "go.opentelemetry.io/proto/slim/otlp/collector/metrics/v1"
 	coltrace "go.opentelemetry.io/proto/slim/otlp/collector/trace/v1"
@@ -51,6 +52,44 @@ type OTLPMapping struct {
 	Err       error
 	Refused   *OTLPRefusal
 	Published func()
+	// Stage, when set, writes the request's GenAI records to the staging
+	// store. The receiver calls it after the events are published and
+	// answers 503 when it fails; it returns the records the store refused
+	// (a trace past its record cap), which are counted as rejected, and
+	// a message naming why.
+	Stage func(ctx context.Context) (rejected int64, message string, err error)
+	// StagedUnits is what the records Stage writes cost against the
+	// token's budget: one per record and one more per agent span, which
+	// becomes a session_start and a session_end. The receiver charges it
+	// with the events, before anything is published or staged.
+	StagedUnits int
+}
+
+// otlpTokenKey carries the validated token of an OTLP request in its
+// context: the GenAI dialect stages a request's records under it.
+type otlpTokenKey struct{}
+
+func withOTLPToken(ctx context.Context, token auth.ValidationResult) context.Context {
+	return context.WithValue(ctx, otlpTokenKey{}, token)
+}
+
+// otlpToken is the request's validated token; ok is false when none is
+// attached (a dialect called outside the receiver).
+func otlpToken(ctx context.Context) (auth.ValidationResult, bool) {
+	t, ok := ctx.Value(otlpTokenKey{}).(auth.ValidationResult)
+	return t, ok && t.ID != ""
+}
+
+// joinOTLPMessages joins the partial_success messages of a request's
+// parts, skipping empty ones.
+func joinOTLPMessages(parts ...string) string {
+	var out []string
+	for _, p := range parts {
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return strings.Join(out, "; ")
 }
 
 // OTLPRefusal is a request the receiver refuses: its HTTP status, the

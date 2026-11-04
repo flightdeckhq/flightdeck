@@ -120,6 +120,19 @@ func indexTrace(facts []otlpstage.StagedFact) *traceIndex {
 	return ix
 }
 
+// IsAgentSpan reports whether a span fact is an agent span by the rule
+// the mapping uses: an invoke_agent span of a recognised scope with a
+// non-empty gen_ai.agent.name. The receiver charges each one twice, for
+// the session_start and session_end it becomes.
+func IsAgentSpan(f otlpstage.Fact) bool {
+	if f.Kind != otlpstage.KindSpan {
+		return false
+	}
+	n := &node{fact: &otlpstage.StagedFact{Fact: f}}
+	n.source, _ = SourceForScope(f.ScopeName)
+	return classify(n) == kindAgent
+}
+
 // classify is the span's kind, from its scope and operation.
 func classify(n *node) spanKind {
 	if n.source.Label == "" {

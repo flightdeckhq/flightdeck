@@ -86,6 +86,9 @@ All notable changes to Flightdeck are documented here.
   published and sweeps finished traces and old content. Nothing writes
   to them yet: the receiver still rejects GenAI spans
   ([#184](https://github.com/flightdeckhq/flightdeck/issues/184)).
+  Migration 000036 adds `otlp_spans.assembled_in`, the assembly that
+  marked each record, so an agent already published keeps its parent
+  however late an ancestor of it arrives.
 
 ### Fixed
 

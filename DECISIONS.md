@@ -567,3 +567,19 @@ calls, at any replica; session identity, parent and capture are write-once.
 loses 200-acked data); emit-then-reattribute (moves stored events, adds
 event types old workers drop); assembly in the worker (a second copy of
 the validator); any `gen_ai` scope by operation name (Claude Code's match).
+
+## D247 -- Each staged GenAI record records the assembly that marked it
+
+**Date:** 2026-11-04
+**Decision:** `otlp_spans.assembled_in` holds the number of the assembly
+that marked a record (the trace's `assembly_count` after it), NULL exactly
+while unassembled. An already published agent takes as its parent only an
+agent ancestor assembled in the same assembly or an earlier one, so a late
+ancestor never re-parents it, in its arrival assembly or any later one.
+**Why:** identity, parent and role are written once; without the number, an
+ancestor assembled after the agent cannot be told from one assembled with
+it once both are marked, and a third assembly re-parented the agent.
+**Rejected alternative:** persisting each published session's identity on
+the trace row (a second copy of what the mapping derives, kept in step on
+every assembly); a stateless rule ignoring unassembled ancestors (holds
+only until the ancestor is itself assembled).

@@ -178,9 +178,10 @@ func (r *resolver) agentSession(n *node) *session {
 	pa := n.nearestAgent()
 	if n.fact.Assembled {
 		// An earlier assembly published this session, with the parent it
-		// had then; an ancestor agent not yet assembled arrived after it
-		// and must not turn it into a child, so it keeps its identity.
-		pa = n.nearestAssembledAgent()
+		// had then: an ancestor agent assembled later than it, or not yet,
+		// arrived after it and must not turn it into a child, so it keeps
+		// the identity it was published with.
+		pa = n.nearestAgentAssembledBy(n.fact.AssembledIn)
 	}
 	if pa != nil {
 		s.parent = r.agentSession(pa)
@@ -415,11 +416,11 @@ func (r *resolver) llmError(s *session, n *node) map[string]any {
 	// reported as a failed stream's is, in the error object, so this
 	// event is the one that reports those tokens; the top-level token
 	// fields stay absent, as the sensor sends them.
-	if u := failedUsage(n); u != nil {
-		if in, ok := partialCount(u.meta, attrInputTokens); ok {
+	if spans := failedUsage(n); len(spans) > 0 {
+		if in, ok := partialSum(spans, attrInputTokens); ok {
 			block["partial_tokens_input"] = in
 		}
-		if out, ok := partialCount(u.meta, attrOutputTokens); ok {
+		if out, ok := partialSum(spans, attrOutputTokens); ok {
 			block["partial_tokens_output"] = out
 		}
 	}
@@ -430,21 +431,22 @@ func (r *resolver) llmError(s *session, n *node) map[string]any {
 	return p
 }
 
-// failedUsage is the span whose usage a failed model call reports: the
-// call's own span when it carries usage, else the outermost model-call
-// span below it, of any scope, that does (a framework span that failed
-// over a provider SDK span that had counted the call), searched level by
-// level and never past an agent span. nil when none carries usage. Only
-// the failed call's llm_error reads it, so the usage is reported once.
-func failedUsage(n *node) *node {
+// failedUsage is the spans whose usage a failed model call reports: the
+// call's own span when it carries usage, else every model-call span, of
+// any scope, at the outermost level below it where any carries usage (a
+// framework span that failed over provider SDK spans that had counted
+// the call, one per attempt when it retried), searched level by level and
+// never past an agent span. Each span is in one level only, so none is
+// counted twice; nil when none carries usage. Only the failed call's
+// llm_error reads them, so the usage is reported once.
+func failedUsage(n *node) []*node {
 	level := []*node{n}
 	for len(level) > 0 {
-		var next []*node
+		var found, next []*node
 		for _, c := range level {
-			if c.fact.Op == opChat || c.fact.Op == opGenerateContent {
-				if metaHas(c.meta, attrInputTokens) || metaHas(c.meta, attrOutputTokens) {
-					return c
-				}
+			if (c.fact.Op == opChat || c.fact.Op == opGenerateContent) &&
+				(metaHas(c.meta, attrInputTokens) || metaHas(c.meta, attrOutputTokens)) {
+				found = append(found, c)
 			}
 			for _, gc := range c.children {
 				if gc.kind != kindAgent {
@@ -452,9 +454,30 @@ func failedUsage(n *node) *node {
 				}
 			}
 		}
+		if len(found) > 0 {
+			return found
+		}
 		level = next
 	}
 	return nil
+}
+
+// partialSum is the sum of one token count over the spans that carry it
+// as a whole number validation accepts; false when none does, or when
+// the sum passes 2^53, so the count is left out rather than wrong.
+func partialSum(spans []*node, key string) (int64, bool) {
+	var sum int64
+	sent := false
+	for _, s := range spans {
+		if n, ok := partialCount(s.meta, key); ok {
+			sum += n
+			sent = true
+			if sum > maxWholeNumber {
+				return 0, false
+			}
+		}
+	}
+	return sum, sent
 }
 
 // partialCount is a failed call's token count when it is a whole number

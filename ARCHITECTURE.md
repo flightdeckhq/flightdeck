@@ -3501,8 +3501,9 @@ publishes ordinary events through the receiver's own publish path
 with the lease renewed between chunks: every session's `session_start`,
 parents before children, then each session's calls, tools and signals
 in order of span end, then the `session_end`s, children before parents.
-It then marks the records it loaded as assembled, by key, and deletes
-their content. A trace stays due if a record was staged while it was
+It then marks the records it loaded as assembled, by key, with the
+number of the assembly that marked them (`assembled_in`, 1 for a trace's
+first), and deletes their content. A trace stays due if a record was staged while it was
 being assembled; an assembly whose lease expired marks nothing, and the
 next holder publishes the same event ids again, which the worker drops
 as copies. Every claim has an owner id of its own, so an expired lease
@@ -3538,16 +3539,12 @@ event it follows. A late call that reaches a worker replica before its
 re-attaching start is redelivered until the start lands, for up to
 three seconds (see NATS consumer). An agent span an earlier assembly
 already published takes as its parent only the nearest agent ancestor
-that was also already assembled, so an ancestor that arrives in a later
-assembly is a root of its own, with its own calls and tools, and the
-agent's events in that assembly keep the `agent_name`, agent id and
-missing parent it was published with. A staged record does not say which
-assembly published it, so once that late ancestor has itself been
-assembled it cannot be told from one assembled with the agent: a record
-of the agent's in a third assembly takes the ancestor as its parent, and
-its events carry the child's `agent_name` and agent id, while the
-session row keeps the root's parent (`parent_session_id` is written
-once). A late ADK log record whose call
+assembled in the same assembly or an earlier one (by `assembled_in`):
+the parent it was published with. An ancestor that arrived in a later
+assembly is a root of its own, with its own calls and tools, in that
+assembly and every one after it, and the agent's later events keep the
+`agent_name`, agent id and parent it was published with
+(`parent_session_id` is also written once). A late ADK log record whose call
 was already assembled is dropped with its content; the call keeps its
 tokens. A trace's staged records are deleted 1 hour after a `complete`
 assembly and 24 hours after any other, so late ancestry can still be
@@ -3649,14 +3646,18 @@ agent's session, never a `post_call`; its error text is content, kept
 only with capture on. The four frameworks' recordings carry no usage on
 one (see `tests/fixtures/otlp/GENAI_COMPARISON.md` > A failed model
 call), but a provider may bill a call that then fails, so the usage is
-read from the failed span, else from the outermost model-call span below
-it, of any scope and never past an agent span, that carries usage, and
-is reported as a failed stream's is: `error.partial_tokens_input` and
+read from the failed span, else from the outermost level of model-call
+spans below it, of any scope and never past an agent span, that carries
+usage, summing every span at that level that does (a framework that
+retried the call reports one span per attempt), and is reported as a
+failed stream's is: `error.partial_tokens_input` and
 `error.partial_tokens_output`, each left out when absent or malformed,
 never 0, with the top-level token fields absent and `billing_mode` set
 when the resource declares it. That `llm_error` is the one event that
 reports those tokens, since a model span under another model span is
-never a call of its own. No
+never a call of its own. A model span that arrives after its failed
+outer call was assembled publishes nothing, so its usage is not counted:
+reporting it would take a second event for the one failed call. No
 framework puts the HTTP status or the provider's error code on its own
 span, so the error is classified from its class name alone (`error.type`,
 else the first exception's type), as the sensor classifies a provider's
@@ -4482,6 +4483,8 @@ CREATE TABLE otlp_spans (                            -- spans (kind 1) and ADK l
     status         SMALLINT NOT NULL,
     meta           JSONB NOT NULL,                   -- the content-free allowlisted attributes
     assembled      BOOLEAN NOT NULL DEFAULT FALSE,
+    assembled_in   INTEGER,                          -- the assembly that marked it (the trace's assembly_count after
+                                                     -- that assembly, from 1); NULL exactly while not assembled
     received_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     PRIMARY KEY (token_key, trace_id, span_id, kind),
     FOREIGN KEY (token_key, trace_id) REFERENCES otlp_traces ON DELETE CASCADE
@@ -4517,8 +4520,9 @@ staged records, so a resent record never takes a new one's place. A
 write without capture on a trace that had it, a resent record's
 included (off is the safe direction), sets `capture` false and deletes
 the trace's content rows in the same transaction.
-An assembly marks the records it loaded `assembled`, by key, and
-deletes their content; the trace row is released, and stays `pending`
+An assembly marks the records it loaded `assembled`, by key, with its
+own number in `assembled_in` (a check holds the two columns together),
+and deletes their content; the trace row is released, and stays `pending`
 when its `gen` moved during the assembly, so a record staged meanwhile
 is assembled next time whatever order the two transactions committed
 in. The partial indexes keep the due-trace claim and the retention sweep
@@ -4741,6 +4745,7 @@ always create a new numbered migration.
 | 000033 | Validates the two `client_type` constraints 000032 added, in its own step so the scan of `sessions` does not hold the swap's exclusive lock |
 | 000034 | `sessions_active_by_agent_idx`: partial index on `sessions (agent_id) WHERE state = 'active'`, so the agent state rollup the hub reads for every broadcast finds an agent's active runs in one small probe |
 | 000035 | `otlp_traces`, `otlp_spans` and `otlp_span_content`: the OTLP GenAI staging tables and their indexes; the down file drops the three tables, last created first |
+| 000036 | `otlp_spans.assembled_in`: the assembly that marked a record, with a check that it is set exactly when `assembled` is (records marked before it get their trace's `assembly_count`); the down file drops the column |
 
 ---
 

@@ -246,9 +246,13 @@ type StagedFact struct {
 	Fact
 	// Content is the record's staged content; it is loaded only for
 	// records not yet assembled, and nil when there is none.
-	Content    json.RawMessage
-	Assembled  bool
-	ReceivedAt time.Time
+	Content   json.RawMessage
+	Assembled bool
+	// AssembledIn is the number of the assembly that marked the record
+	// (the trace's assembly_count after it, from 1); 0 while it is not
+	// assembled.
+	AssembledIn int
+	ReceivedAt  time.Time
 }
 
 // LoadedTrace is a snapshot of one trace's records.
@@ -794,7 +798,7 @@ func (s *Store) LoadTrace(ctx context.Context, key TraceKey) (LoadedTrace, error
 	rows, err := tx.Query(ctx, `
 		SELECT s.span_id, s.kind, s.parent_span_id, s.remote_parent, s.scope_name, s.scope_version,
 		       s.name, s.op, s.agent_name, s.start_ns, s.end_ns, s.status, s.meta,
-		       s.assembled, s.received_at, c.content
+		       s.assembled, s.assembled_in, s.received_at, c.content
 		FROM otlp_spans s
 		LEFT JOIN otlp_span_content c
 		       ON NOT s.assembled
@@ -813,15 +817,19 @@ func (s *Store) LoadTrace(ctx context.Context, key TraceKey) (LoadedTrace, error
 			spanID, parent []byte
 			kind           int16
 			content        []byte
+			assembledIn    *int32
 		)
 		if err := rows.Scan(&spanID, &kind, &parent, &f.RemoteParent, &f.ScopeName, &f.ScopeVersion,
 			&f.Name, &f.Op, &f.AgentName, &f.StartNs, &f.EndNs, &f.Status, &f.Meta,
-			&f.Assembled, &f.ReceivedAt, &content); err != nil {
+			&f.Assembled, &assembledIn, &f.ReceivedAt, &content); err != nil {
 			return out, fmt.Errorf("otlpstage: scan record: %w", err)
 		}
 		copy(f.SpanID[:], spanID)
 		copy(f.ParentSpanID[:], parent)
 		f.Kind = Kind(kind)
+		if assembledIn != nil {
+			f.AssembledIn = int(*assembledIn)
+		}
 		if content != nil {
 			f.Content = content
 		}
@@ -907,13 +915,17 @@ type MarkResult struct {
 // MarkAssembled records an assembly of the snapshot LoadTrace returned:
 // when owner's lease is unexpired, it releases it, counts the assembly and its reason, keeps
 // the trace pending when its gen moved since the snapshot, marks the
-// given records assembled by key and deletes their content. The trace
+// given records assembled by key, with the assembly's number (the new
+// assembly_count) in assembled_in, and deletes their content. The trace
 // row is updated first, so the mark waits for an ingest writing to the
 // trace and then sees its gen; and a record committed after the
 // snapshot is not among keys, so it stays unassembled whatever order
 // the two transactions committed in.
 func (s *Store) MarkAssembled(ctx context.Context, owner string, key TraceKey, gen int64, reason Reason, keys []FactKey) (MarkResult, error) {
-	var res MarkResult
+	var (
+		res      MarkResult
+		assembly int32
+	)
 	if !reason.valid() {
 		return res, fmt.Errorf("otlpstage: unknown assembly reason %q", reason)
 	}
@@ -929,8 +941,8 @@ func (s *Store) MarkAssembled(ctx context.Context, owner string, key TraceKey, g
 		    assembly_count = assembly_count + 1, assembly_reason = $6,
 		    pending = (gen <> $4)
 		WHERE token_key = $1 AND trace_id = $2 AND lease_owner = $3 AND lease_expires >= $5
-		RETURNING pending, capture`,
-		key.TokenKey, key.TraceID[:], owner, gen, s.clock(), string(reason)).Scan(&res.Pending, &res.Capture)
+		RETURNING pending, capture, assembly_count`,
+		key.TokenKey, key.TraceID[:], owner, gen, s.clock(), string(reason)).Scan(&res.Pending, &res.Capture, &assembly)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return MarkResult{}, nil
 	}
@@ -945,10 +957,10 @@ func (s *Store) MarkAssembled(ctx context.Context, owner string, key TraceKey, g
 			kinds[i] = int16(k.Kind)
 		}
 		if _, err := tx.Exec(ctx, `
-			UPDATE otlp_spans SET assembled = true
+			UPDATE otlp_spans SET assembled = true, assembled_in = $5
 			WHERE token_key = $1 AND trace_id = $2 AND NOT assembled
 			  AND (span_id, kind) IN (SELECT * FROM unnest($3::bytea[], $4::smallint[]))`,
-			key.TokenKey, key.TraceID[:], ids, kinds); err != nil {
+			key.TokenKey, key.TraceID[:], ids, kinds, assembly); err != nil {
 			return MarkResult{}, fmt.Errorf("otlpstage: mark records: %w", err)
 		}
 		if _, err := tx.Exec(ctx, `

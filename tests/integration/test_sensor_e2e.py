@@ -2253,6 +2253,10 @@ def test_pattern_b_degrade_seen_by_all_threads(
                 call_started = [0.0] * _MT_NUM_THREADS
                 stall_stacks: list[str] = []
                 started_at = time.monotonic()
+                # Seconds after the workers started: when each died, when
+                # phase 2 began (the degrade's acknowledgement landed).
+                died_at: list[float | None] = [None] * _MT_NUM_THREADS
+                phase2_began: list[float] = []
 
                 # The directives the drain thread receives, with when.
                 sensor_session = flightdeck_sensor._session
@@ -2310,6 +2314,7 @@ def test_pattern_b_degrade_seen_by_all_threads(
                                 with results_lock:
                                     phase2_results.append((thread_id, resp.model))
                     except BaseException as exc:  # noqa: BLE001
+                        died_at[thread_id] = round(time.monotonic() - started_at, 2)
                         errors.append((thread_id, exc))
 
                 workers = [
@@ -2322,10 +2327,16 @@ def test_pattern_b_degrade_seen_by_all_threads(
                     with results_lock:
                         phase2 = [tid for tid, _ in phase2_results]
                     lines = [
+                        (
+                            f"now={now - started_at:.1f}s after the workers started; "
+                            f"phase 2 began at {phase2_began[0] if phase2_began else None}s"
+                        )
+                    ] + [
                         f"t{i}: alive={t.is_alive()} calls={calls[i]} "
                         f"phase2_calls={phase2.count(i)} "
                         f"last_return={now - last_return[i]:.1f}s ago "
-                        f"current_call_started={now - call_started[i]:.1f}s ago"
+                        f"current_call_started={now - call_started[i]:.1f}s ago "
+                        f"died_at={died_at[i]}"
                         for i, t in enumerate(workers)
                     ]
                     if errors:
@@ -2355,12 +2366,16 @@ def test_pattern_b_degrade_seen_by_all_threads(
                     # observe forced_degrade.
                     with phase_lock:
                         phase[0] = 2
+                    phase2_began.append(round(time.monotonic() - started_at, 2))
 
                     # Let phase 2 accumulate enough samples that every
                     # worker contributes at least once. A worker that
                     # died fails the test at once, with its exception; one
                     # stuck in a call gets every thread's stack recorded.
                     def _enough_phase2() -> bool:
+                        with results_lock:
+                            if len({tid for tid, _ in phase2_results}) >= _MT_NUM_THREADS:
+                                return True
                         if errors:
                             raise AssertionError(f"a worker thread died:\n{_progress()}")
                         now = time.monotonic()
@@ -2369,11 +2384,7 @@ def test_pattern_b_degrade_seen_by_all_threads(
                             for started, last in zip(call_started, last_return, strict=True)
                         ):
                             stall_stacks.append(_thread_stacks(workers))
-                        with results_lock:
-                            return (
-                                len({tid for tid, _ in phase2_results})
-                                >= _MT_NUM_THREADS
-                            )
+                        return False
 
                     try:
                         wait_until(

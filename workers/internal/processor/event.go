@@ -530,6 +530,43 @@ type Processor struct {
 	clearSequences func(ctx context.Context, lastSeq uint64) (int64, error)
 }
 
+// carriesContent reports whether the event holds something the capture
+// gate in Process decides on: prompt content for event_content, the MCP
+// inline content, or a hook-based client's tool error text.
+func carriesContent(e consumer.EventPayload) bool {
+	return e.HasContent || len(e.Content) > 0 || ToolErrorNeedsCaptureCheck(e)
+}
+
+// awaitCapturePosture decides whether an event carrying content must
+// wait for its session's capture posture. Every worker replica pulls
+// from the one durable consumer, so a session's session_start can be
+// waiting in another replica's lane while this replica holds the
+// session's content: processed now, the content would meet a missing
+// row or a row with no posture (lazily created, or a parent stub) and
+// be dropped as if capture were off. Such an event asks for a delayed
+// redelivery (consumer.ErrRetryLater) so the start lands first. On the
+// last delivery the budget allows it never waits: the posture is not
+// read here and the gate below falls back to its fail-safe read, so the
+// wait can delay the event but never end it.
+//
+// known reports that the posture was read and is set; enabled is then
+// the posture, which is write-once, so the gate can use it without a
+// second read.
+func (p *Processor) awaitCapturePosture(ctx context.Context, e consumer.EventPayload) (known, enabled bool, err error) {
+	// A session_start writes the posture itself before the gate runs.
+	if e.FinalDelivery || e.EventType == "session_start" || !carriesContent(e) {
+		return false, false, nil
+	}
+	known, enabled, err = p.w.SessionCapturePosture(ctx, e.SessionID)
+	if err != nil {
+		return false, false, err
+	}
+	if !known {
+		return false, false, consumer.ErrRetryLater
+	}
+	return true, enabled, nil
+}
+
 // NewProcessor creates a fully wired Processor.
 func NewProcessor(pool *pgxpool.Pool) *Processor {
 	w := writer.New(pool)
@@ -597,6 +634,10 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 			slog.Debug("dropping duplicate event", "event_id", e.ID, "event_type", e.EventType, "session_id", e.SessionID)
 			return nil
 		}
+	}
+	postureKnown, postureEnabled, err := p.awaitCapturePosture(ctx, e)
+	if err != nil {
+		return err
 	}
 	// Route to the correct session handler
 	switch e.EventType {
@@ -734,8 +775,12 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	// only for content-bearing events; drop content fail-safe when
 	// capture is off or the session's posture is not yet known.
 	captureOn := true
-	if e.HasContent || len(e.Content) > 0 || ToolErrorNeedsCaptureCheck(e) {
-		captureOn = p.w.SessionCaptureEnabled(ctx, e.SessionID)
+	if carriesContent(e) {
+		if postureKnown {
+			captureOn = postureEnabled
+		} else {
+			captureOn = p.w.SessionCaptureEnabled(ctx, e.SessionID)
+		}
 		if !captureOn {
 			extra = stripExtraContent(extra)
 			// A hook-based client's tool error text is content too (a

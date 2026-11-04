@@ -82,6 +82,16 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **Captured content survives several worker replicas.** The workers
+  share one NATS consumer (the Helm chart runs two), so one replica
+  could store a call's content before another had stored its session's
+  `session_start`, and the content was dropped as if capture were off.
+  A call carrying content now waits for its session's capture posture,
+  redelivered after one second and after two, before the worker falls
+  back. A late call of a session assembled from OpenTelemetry GenAI
+  spans waits the same way for its re-attaching `session_start`, so its
+  tokens count; every other call that reaches a closed session is
+  skipped at once, as before.
 - **Fleet swimlane circles sit on their row's centre line.** Circles
   were shifted up twice (a CSS translate and an inline transform), so
   they sat about 11 px high on every row, crowded the top-edge run

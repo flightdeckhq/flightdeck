@@ -2742,8 +2742,10 @@ write-once onto `sessions.capture_prompts` (the first authoritative
 session's posture). Every content sink — the `event_content` table and
 the inline MCP `content` projection into `events.payload` — is gated on
 that stored session value, not on the per-event `has_content` flag.
-Content whose session posture is off (or not yet known) is dropped and
-`has_content` is forced false on the stored row. This prevents a forged
+Content whose session posture is off, or still not known on the last
+delivery the retry budget allows (an event carrying content waits for
+its session's posture first; see Worker > NATS consumer), is dropped
+and `has_content` is forced false on the stored row. This prevents a forged
 event on the message bus from persisting prompt content for a
 capture-off session. When `capture_prompts=true` for the session, the
 `content` field contains a `PromptContent` object the worker stores in
@@ -3756,11 +3758,11 @@ early `session_end` does, each after one second and after two:
 
 - an event carrying content whose row is missing or has no capture
   posture, before the worker falls back to lazy creation;
-- a token-bearing event (`post_call`, `embeddings`, or an `llm_error`
-  carrying partial tokens) that finds its row closed with its stream
-  sequence above `closed_seq`, when the row's `context` carries
-  `otel_trace_id`, before the worker falls back to the closed-session
-  skip. The session guard already reads the row, so the check costs no
+- a token-bearing event (a `post_call`, `embeddings`, or an `llm_error`
+  carrying partial tokens, with `tokens_total` above zero) that finds
+  its row closed with its stream sequence above a known `closed_seq`,
+  when the row's `context` carries `otel_trace_id`, before the worker
+  falls back to the closed-session skip. The session guard already reads the row, so the check costs no
   extra query. Every other event on a closed row, and every other
   client's session, is skipped at once, as before a redelivery existed:
   a plugin's or sensor's straggler after its end is not delayed.

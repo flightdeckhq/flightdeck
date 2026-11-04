@@ -406,6 +406,31 @@ func (w *Writer) SessionCaptureEnabled(ctx context.Context, sessionID string) bo
 	return enabled
 }
 
+// SessionCapturePosture reads the session's stored capture posture.
+// known is false when the row does not exist or its posture is NULL (a
+// lazily created row or a parent stub, whose session_start has not been
+// processed yet); enabled is the posture when known. Unlike
+// SessionCaptureEnabled it returns a database error rather than folding
+// it into "off", so the caller can retry the event instead of dropping
+// its content on a transient failure.
+func (w *Writer) SessionCapturePosture(ctx context.Context, sessionID string) (known, enabled bool, err error) {
+	var posture *bool
+	err = w.pool.QueryRow(ctx,
+		`SELECT capture_prompts FROM sessions WHERE session_id = $1::uuid`,
+		sessionID,
+	).Scan(&posture)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, false, nil
+	}
+	if err != nil {
+		return false, false, fmt.Errorf("read capture posture of %s: %w", sessionID, err)
+	}
+	if posture == nil {
+		return false, false, nil
+	}
+	return true, *posture, nil
+}
+
 // UpgradeSessionContext fills in the sessions.context column on a row
 // whose context is either NULL (lazy-create) or the empty JSON
 // object “{}“. Once the column holds real data, the COALESCE branch

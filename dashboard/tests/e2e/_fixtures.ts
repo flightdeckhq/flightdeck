@@ -206,6 +206,10 @@ export const LANE_FIXTURES = {
     name: "e2e-test-run-lost",
     roles: { earlier: "lost-earlier", recent: "lost-recent", reaped: "reaped-run" },
   },
+  /** A run started 30 h ago (outside the Fleet's 24 h sessions page),
+   *  last seen 20 min ago, reaped 2 min ago: only the agent's
+   *  recent_sessions rollup carries it. */
+  reapedOld: { name: "e2e-test-run-reaped-old", roles: { run: "reaped-old-run" } },
 } as const;
 
 /** The session id seed.py derives for a canonical (agent, role) pair:

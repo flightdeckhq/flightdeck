@@ -383,6 +383,15 @@
       "lane_last_seen_offset_sec": -1800,
       "lane_close_reason": "orphan_timeout",
       "purpose": "T140 anchor: a run the orphan-timeout reaper closed a minute ago, last seen 30 min ago: it ends at its last signal with a hollow square, not at the reap."
+    },
+    "reaped-old-run": {
+      "started_offset_sec": -108000,
+      "ended_offset_sec": -120,
+      "lane_segments": [[-108000, -120]],
+      "lane_state": "closed",
+      "lane_last_seen_offset_sec": -1200,
+      "lane_close_reason": "orphan_timeout",
+      "purpose": "T143 anchor: a run that started 30 h ago, outside the Fleet's 24 h sessions page, was last seen 20 min ago and was closed by the orphan-timeout reaper 2 min ago. Only the agent's recent_sessions rollup carries it, so the swimlane learns of the reap from the rollup's close_reasons."
     }
   },
   "agents": [
@@ -802,6 +811,21 @@
         "reaped-run"
       ],
       "_comment": "T140 anchor: lost runs and a reaped run, each ending at its last signal."
+    },
+    {
+      "agent_name": "e2e-test-run-reaped-old",
+      "agent_type": "production",
+      "client_type": "flightdeck_sensor",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-lanes",
+      "flavor": "e2e-run-lanes",
+      "model": "gpt-4o-mini",
+      "framework": "langchain",
+      "host": "e2e-host-lanes",
+      "session_roles": [
+        "reaped-old-run"
+      ],
+      "_comment": "T143 anchor: a reaped run older than the 24 h sessions page."
     }
   ]
 }

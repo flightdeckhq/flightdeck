@@ -24,7 +24,23 @@ vi.mock("@/lib/api", () => ({
         total_tokens: 0,
         state: "lost",
         topology: "lone",
-        recent_sessions: [],
+        // A run reaped after more than a day of silence: older than the
+        // 24 h sessions page, so only the rollup carries it.
+        recent_sessions: [
+          {
+            session_id: "rollup-reaped-run",
+            flavor: "e2e",
+            agent_type: "coding",
+            agent_id: AGENT_ID,
+            state: "closed",
+            started_at: "2026-10-31T06:00:00Z",
+            ended_at: "2026-11-02T08:00:00Z",
+            last_seen_at: "2026-10-31T07:00:00Z",
+            tokens_used: 0,
+            capture_enabled: false,
+            close_reasons: ["orphan_timeout"],
+          },
+        ],
       },
     ],
     total: 1,
@@ -77,6 +93,7 @@ vi.mock("@/lib/api", () => ({
 }));
 
 import { useFleetStore } from "@/store/fleet";
+import type { Session } from "@/lib/types";
 
 afterEach(() => {
   useFleetStore.setState({ agents: [], flavors: [], loading: false, error: null });
@@ -99,5 +116,27 @@ describe("fleet store keeps each run's last signal", () => {
     expect(reaped?.last_seen_at).toBe("2026-11-01T06:30:00Z");
     expect(reaped?.ended_at).toBe("2026-11-02T08:00:00Z");
     expect(reaped?.close_reasons).toEqual(["orphan_timeout"]);
+  });
+});
+
+describe("fleet store keeps a run's close reasons", () => {
+  it("takes them from the recent_sessions rollup for a run older than the sessions page", async () => {
+    await useFleetStore.getState().load();
+    expect(runOf("rollup-reaped-run")?.close_reasons).toEqual(["orphan_timeout"]);
+  });
+
+  it("keeps them across a live update whose row lacks them, and takes new ones", async () => {
+    await useFleetStore.getState().load();
+    const reaped = runOf("reaped-run")!;
+    const update = (session: Session) =>
+      useFleetStore.getState().applyUpdate({ type: "session_update", session });
+
+    const { close_reasons: _dropped, ...withoutReasons } = reaped;
+    update({ ...withoutReasons, tokens_used: 5 });
+    expect(runOf("reaped-run")?.tokens_used).toBe(5);
+    expect(runOf("reaped-run")?.close_reasons).toEqual(["orphan_timeout"]);
+
+    update({ ...reaped, close_reasons: ["normal_exit", "orphan_timeout"] });
+    expect(runOf("reaped-run")?.close_reasons).toEqual(["normal_exit", "orphan_timeout"]);
   });
 });

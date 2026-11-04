@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
   END_GLYPH_SIZE_PX,
+  GLYPH_BOUNDARY_INSET_PX,
   GLYPH_GAP_PX,
+  MAX_GLYPH_SHIFT_PX,
   OVERLAP_TOLERANCE_MS,
   START_GLYPH_SIZE_PX,
   assignSegmentTracks,
@@ -15,6 +17,10 @@ import {
   type SegmentEvent,
   type SegmentSession,
 } from "@/lib/swimlane-lanes";
+
+/** The panel's edges in the inset wrapper's coordinates (900 px panel,
+ *  19 px inset). */
+const PANEL = { left: -19, right: 881 };
 
 // A fixed "now" all fixtures are relative to.
 const NOW = Date.parse("2026-11-02T12:00:00.000Z");
@@ -67,7 +73,7 @@ function scaleFor(rangeMs: number) {
   const d0 = NOW - rangeMs;
   const d1 = NOW;
   const toX = (ms: number) => ((ms - d0) / rangeMs) * 900;
-  return { d0, d1, toX, visibleRight: 900 - 19 };
+  return { d0, d1, toX, visibleLeft: -19, visibleRight: 900 - 19 };
 }
 
 describe("runSegments", () => {
@@ -466,10 +472,44 @@ function box(overrides: Partial<GlyphBox> & Pick<GlyphBox, "key" | "desiredLeft"
 }
 
 describe("packGlyphs", () => {
+  it("moves no glyph more than MAX_GLYPH_SHIFT_PX: past it, glyphs overlap near their time", () => {
+    // Twenty runs that start together want one spot; spread 11 px apart
+    // they would reach 209 px away.
+    const boxes = Array.from({ length: 20 }, (_, i) =>
+      box({ key: `r${String(i).padStart(2, "0")}`, desiredLeft: 300, track: i }),
+    );
+    const lefts = packGlyphs(boxes, PANEL);
+    for (const b of boxes) {
+      expect(Math.abs(lefts.get(b.key)! - 300)).toBeLessThanOrEqual(MAX_GLYPH_SHIFT_PX);
+    }
+    // The first few still spread apart.
+    expect(lefts.get("r01")! - lefts.get("r00")!).toBe(START_GLYPH_SIZE_PX + GLYPH_GAP_PX);
+  });
+
+  it("caps the right-edge pull-back too, and clamps every glyph inside the panel", () => {
+    const boxes = Array.from({ length: 20 }, (_, i) =>
+      box({ key: `r${String(i).padStart(2, "0")}`, desiredLeft: 878, track: i }),
+    );
+    const lefts = packGlyphs(boxes, PANEL);
+    for (const b of boxes) {
+      const left = lefts.get(b.key)!;
+      expect(left).toBeGreaterThanOrEqual(878 - MAX_GLYPH_SHIFT_PX);
+      expect(left + b.width).toBeLessThanOrEqual(PANEL.right);
+    }
+  });
+
+  it("clamps a glyph at the window's left edge inside the panel", () => {
+    const lefts = packGlyphs(
+      [box({ key: "e", desiredLeft: -40, kind: "end", width: END_GLYPH_SIZE_PX })],
+      PANEL,
+    );
+    expect(lefts.get("e")).toBe(PANEL.left);
+  });
+
   it("leaves glyphs that are apart where they want to be", () => {
     const lefts = packGlyphs(
       [box({ key: "a", desiredLeft: 100 }), box({ key: "b", desiredLeft: 300, track: 1 })],
-      881,
+      PANEL,
     );
     expect(lefts.get("a")).toBe(100);
     expect(lefts.get("b")).toBe(300);
@@ -482,7 +522,7 @@ describe("packGlyphs", () => {
         box({ key: "a", desiredLeft: 500, track: 0 }),
         box({ key: "b", desiredLeft: 500, track: 1 }),
       ],
-      881,
+      PANEL,
     );
     expect([lefts.get("a"), lefts.get("b"), lefts.get("c")]).toEqual([
       500,
@@ -497,7 +537,7 @@ describe("packGlyphs", () => {
         box({ key: "next", desiredLeft: 400, track: 1, sessionId: "a" }),
         box({ key: "prev", desiredLeft: 400, track: 0, kind: "end", width: END_GLYPH_SIZE_PX, sessionId: "b" }),
       ],
-      881,
+      PANEL,
     );
     expect(lefts.get("prev")).toBe(400);
     expect(lefts.get("next")).toBe(400 + END_GLYPH_SIZE_PX + GLYPH_GAP_PX);
@@ -517,7 +557,7 @@ describe("packGlyphs", () => {
           sessionId: "short",
         }),
       ],
-      881,
+      PANEL,
     );
     expect(lefts.get("s")).toBe(201);
     expect(lefts.get("e")).toBe(201 + START_GLYPH_SIZE_PX + GLYPH_GAP_PX);
@@ -530,7 +570,7 @@ describe("packGlyphs", () => {
         box({ key: "a-end", desiredLeft: 194, kind: "end", width: END_GLYPH_SIZE_PX, sessionId: "a", timeMs: 5 }),
         box({ key: "b-start", desiredLeft: 207, sessionId: "b", segmentStartMs: 5, timeMs: 5 }),
       ],
-      881,
+      PANEL,
     );
     const order = ["a-start", "a-end", "b-start"].map((k) => lefts.get(k)!);
     expect(order[0]!).toBeLessThan(order[1]!);
@@ -543,7 +583,7 @@ describe("packGlyphs", () => {
         box({ key: "a", desiredLeft: 878, track: 0 }),
         box({ key: "b", desiredLeft: 878, track: 1 }),
       ],
-      881,
+      PANEL,
     );
     expect(lefts.get("b")).toBe(881 - START_GLYPH_SIZE_PX);
     expect(lefts.get("a")).toBe(881 - 2 * START_GLYPH_SIZE_PX - GLYPH_GAP_PX);
@@ -552,7 +592,7 @@ describe("packGlyphs", () => {
   it("packs each edge on its own", () => {
     const lefts = packGlyphs(
       [box({ key: "top", desiredLeft: 300, lane: 0 }), box({ key: "bottom", desiredLeft: 300, lane: 1, track: 1 })],
-      881,
+      PANEL,
     );
     expect(lefts.get("top")).toBe(300);
     expect(lefts.get("bottom")).toBe(300);
@@ -726,7 +766,7 @@ describe("layoutRowGlyphs", () => {
   });
 
   it("returns nothing for an empty window", () => {
-    expect(layoutRowGlyphs({ segments: [seg("a", 0, 1)], d0: 5, d1: 5, toX: () => 0, visibleRight: 881 })).toEqual({
+    expect(layoutRowGlyphs({ segments: [seg("a", 0, 1)], d0: 5, d1: 5, toX: () => 0, visibleLeft: -19, visibleRight: 881 })).toEqual({
       laneCount: 1,
       glyphs: [],
     });
@@ -787,16 +827,28 @@ describe("layoutRowGlyphs properties", () => {
         const d1 = NOW - rangeMs * 2 + frame * S + Math.floor(rand() * rangeMs);
         const d0 = d1 - rangeMs;
         const toX = (ms: number) => ((ms - d0) / rangeMs) * 900;
-        const layout = layoutRowGlyphs({ segments: all, d0, d1, toX, visibleRight: 881 });
+        const layout = layoutRowGlyphs({ segments: all, d0, d1, toX, visibleLeft: -19, visibleRight: 881 });
         const toleranceMs = Math.max(OVERLAP_TOLERANCE_MS, rangeMs / 900);
 
-        // Glyphs on one edge never overlap.
+        // Glyphs on one edge overlap only where spreading them further
+        // would move one past the shift cap or out of the panel.
+        const natural = naturalLefts(all, d0, d1, toX);
+        const pinned = (g: { key: string; left: number; width: number }) => {
+          const shift = Math.abs(g.left - natural.get(g.key)!);
+          return (
+            shift >= MAX_GLYPH_SHIFT_PX - 1e-6 ||
+            g.left <= -19 + 1e-6 ||
+            g.left + g.width >= 881 - 1e-6
+          );
+        };
         for (const lane of [0, 1]) {
           const boxes = layout.glyphs
             .filter((g) => g.lane === lane)
             .sort((a, b) => a.left - b.left);
           for (let i = 1; i < boxes.length; i++) {
-            expect(boxes[i]!.left).toBeGreaterThanOrEqual(boxes[i - 1]!.left + boxes[i - 1]!.width);
+            const a = boxes[i - 1]!;
+            const b = boxes[i]!;
+            if (b.left < a.left + a.width) expect(pinned(a) || pinned(b)).toBe(true);
           }
         }
 
@@ -844,6 +896,83 @@ describe("layoutRowGlyphs properties", () => {
       const earlierTracks = assignSegmentTracks(earlier, rangeMs, OVERLAP_TOLERANCE_MS);
       for (const s of earlier) {
         expect(earlierTracks.get(segmentKey(s))).toBe(tracks.get(segmentKey(s)));
+      }
+    }
+  });
+});
+
+// Every glyph's left edge as its time alone puts it: the ▶ just inside
+// the start, the ■ just inside the end, or right after its own ▶ for a
+// segment narrower than the two glyphs.
+function naturalLefts(
+  segments: readonly RunSegment[],
+  d0: number,
+  d1: number,
+  toX: (ms: number) => number,
+): Map<string, number> {
+  const out = new Map<string, number>();
+  for (const s of segments) {
+    if (!(s.startMs <= d1 && s.endMs >= d0)) continue;
+    const key = segmentKey(s);
+    const startDrawn = s.startMs >= d0 && s.startMs <= d1;
+    const startLeft = toX(s.startMs) + GLYPH_BOUNDARY_INSET_PX;
+    if (startDrawn) out.set(`${key}:start`, startLeft);
+    if (s.endKind !== "open" && s.endMs >= d0 && s.endMs <= d1) {
+      const endLeft = toX(s.endMs) - END_GLYPH_SIZE_PX - GLYPH_BOUNDARY_INSET_PX;
+      out.set(
+        `${key}:end`,
+        startDrawn ? Math.max(endLeft, startLeft + START_GLYPH_SIZE_PX + GLYPH_GAP_PX) : endLeft,
+      );
+    }
+  }
+  return out;
+}
+
+describe("layoutRowGlyphs on dense rows", () => {
+  // A busy row: hundreds of short runs, a few seconds each, as an
+  // integration suite or a fan-out storm produces (one live row drew 192
+  // glyphs in a minute).
+  it.each([
+    ["1m", 1 * MIN, 300],
+    ["5m", 5 * MIN, 600],
+    ["15m", 15 * MIN, 400],
+  ])("keeps every glyph within the shift cap and inside the panel at %s", (_label, rangeMs, runs) => {
+    const rand = mulberry32(runs + rangeMs);
+    const segments: RunSegment[] = [];
+    for (let r = 0; r < runs; r++) {
+      const start = NOW - rangeMs * 1.2 + rand() * rangeMs * 1.2;
+      const length = rand() < 0.1 ? 0 : rand() * 4 * S;
+      segments.push({
+        sessionId: `dense-${String(r).padStart(4, "0")}`,
+        index: 0,
+        count: 1,
+        startMs: start,
+        endMs: rand() < 0.05 ? Infinity : start + length,
+        endKind: rand() < 0.2 ? "lost" : "closed",
+      });
+    }
+    for (const shift of [0, 7 * S, 31 * S]) {
+      const d1 = NOW - shift;
+      const d0 = d1 - rangeMs;
+      const toX = (ms: number) => ((ms - d0) / rangeMs) * 900;
+      const layout = layoutRowGlyphs({ segments, d0, d1, toX, visibleLeft: PANEL.left, visibleRight: PANEL.right });
+      const natural = naturalLefts(segments, d0, d1, toX);
+      expect(layout.glyphs.length).toBe(natural.size);
+      const byKey = new Map(layout.glyphs.map((g) => [g.key, g]));
+      for (const g of layout.glyphs) {
+        // Inside the panel, never under the label column.
+        expect(g.left).toBeGreaterThanOrEqual(PANEL.left);
+        expect(g.left + g.width).toBeLessThanOrEqual(PANEL.right);
+        // Within the cap of its own time, or of the panel edge its time
+        // lies past.
+        const nat = Math.min(Math.max(natural.get(g.key)!, PANEL.left), PANEL.right - g.width);
+        expect(Math.abs(g.left - nat)).toBeLessThanOrEqual(MAX_GLYPH_SHIFT_PX + 1e-6);
+      }
+      // A segment's ▶ never reads after its own ■.
+      for (const g of layout.glyphs) {
+        if (g.kind !== "start") continue;
+        const end = byKey.get(g.key.replace(/:start$/, ":end"));
+        if (end) expect(g.left).toBeLessThan(end.left);
       }
     }
   });

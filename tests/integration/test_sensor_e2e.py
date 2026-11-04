@@ -28,6 +28,7 @@ has its regression test below.
 from __future__ import annotations
 
 import collections
+import copy
 import json
 import os
 import sys
@@ -94,6 +95,43 @@ OPENAI_RESPONSE: dict[str, Any] = {
         "total_tokens": 18,
     },
 }
+
+
+def _build_sdk_response_models() -> None:
+    """Build the provider SDKs' response models now, on one thread.
+
+    Both SDKs declare their pydantic models with ``defer_build`` (unless
+    ``DEFER_PYDANTIC_BUILD=false``), so a model's schema is built the first
+    time a response is parsed into it, and pydantic's ``model_rebuild`` is
+    not thread-safe: when several threads make their first calls at once,
+    one can delete the schema another has just built, and a third then
+    reads ``BaseModel``'s placeholder and raises "Pydantic models should
+    inherit from BaseModel, BaseModel cannot be instantiated directly".
+    That killed workers of the multi-threaded tests below on their first
+    call. Parsing one response through each SDK's own path
+    (``construct_type``, as ``messages.create`` / ``chat.completions.create``
+    do) builds every model these tests' responses use before any of them
+    starts a thread.
+    """
+    from anthropic._models import construct_type as construct_anthropic
+    from openai._models import construct_type as construct_openai
+
+    construct_anthropic(type_=anthropic.types.Message, value=copy.deepcopy(ANTHROPIC_RESPONSE))
+    construct_openai(
+        type_=openai.types.chat.ChatCompletion, value=copy.deepcopy(OPENAI_RESPONSE)
+    )
+
+
+_build_sdk_response_models()
+
+
+def test_sdk_response_models_are_built_before_any_test_starts_a_thread() -> None:
+    # Without the build above, these stay incomplete until the first
+    # response is parsed, which the multi-threaded tests do from four
+    # threads at once.
+    assert anthropic.types.Message.__pydantic_complete__
+    assert anthropic.types.Usage.__pydantic_complete__
+    assert openai.types.chat.ChatCompletion.__pydantic_complete__
 
 # ----------------------------------------------------------------------
 # DB helpers (direct psql via docker exec, mirroring conftest patterns)

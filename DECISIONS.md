@@ -541,11 +541,11 @@ commit; captured content is staged only when declared and deleted on
 assembly, the one exception to content living only in `event_content`.
 Every ingestion process leases due traces and publishes ordinary events:
 each named `invoke_agent` span a session, hand-offs sibling roots, tokens
-from the outermost model span, `client_type=otlp`, `provider=otel_genai`.
+from the outermost model span, `client_type=otlp`, `provider=otel_genai`;
+the worker dates these sessions from their events.
 **Why:** spans export when they end, so an agent's span arrives after its
 calls, at any replica; session identity, parent and capture are write-once.
 **Rejected alternative:** per-replica buffers with a peer ring (a crash
 loses 200-acked data); emit-then-reattribute (moves stored events, adds
-event types old workers drop); assembly in the worker (a second
-trust-boundary validator); mapping any `gen_ai` scope by operation name
-(Claude Code's own spans carry the same names).
+event types old workers drop); assembly in the worker (a second copy of
+the validator); any `gen_ai` scope by operation name (Claude Code's match).

@@ -3464,7 +3464,11 @@ counted as rejected (`trace exceeds 10000 spans`), which bounds one
 assembly at about 20,000 events. A trace's identity resource (the
 allowlisted attributes identity and billing read) is the one that
 created its row, and later resources only AND into its capture
-posture, so every assembly of a trace derives the same identity.
+posture, so every assembly of a trace derives the same identity. A
+trace that spans two services (one service's agent calling another's
+over instrumented HTTP) therefore gives every agent in it the flavor,
+user and host of the service whose record arrived first; reading the
+resource per record is a later option.
 
 **Assembly.** Every ingestion process runs an assembler. Once a second
 it claims due traces under a two-minute lease (`FOR UPDATE SKIP
@@ -3506,14 +3510,19 @@ and are assembled the same way: only their events are published, and a
 model span whose subtree holds an already assembled model span
 publishes nothing, so totals stay single. When their session has
 already ended, they are wrapped in a `session_start` that re-attaches
-it (see Session attachment flow) and a `session_end` at its original
-end. The re-attaching `session_start` is dated one microsecond before
-the earliest event it precedes, as the Claude Code dialect's synthetic
-start is, so it stays inside the validation window however old the
-session is; the worker keeps the re-attached row's `started_at` (see
-Session state machine > Assembled sessions). The worker keeps a late call's tokens even when it
-reaches a worker replica before its re-attaching start (see NATS
-consumer). A late span cannot make an earlier root a child, because
+it (see Session attachment flow) and a `session_end`. The re-attaching
+`session_start` is dated one microsecond before the earliest event it
+precedes, as the Claude Code dialect's synthetic start is, so it stays
+inside the validation window however old the session is; the worker
+keeps the re-attached row's `started_at` (see Session state machine >
+Assembled sessions), and the session's attachment marker is drawn at
+that point, mid-run. The `session_end` is dated at the session's
+original end, unless that is outside the validation window (a
+`max_hold` trace whose agent ended early, given a late record a day
+after its assembly), when it is dated one microsecond after the latest
+event it follows. A late call that reaches a worker replica before its
+re-attaching start is redelivered until the start lands, for up to
+three seconds (see NATS consumer). A late span cannot make an earlier root a child, because
 `parent_session_id` is written once. A late ADK log record whose call
 was already assembled is dropped with its content; the call keeps its
 tokens. A trace's staged records are deleted 1 hour after a `complete`
@@ -3564,13 +3573,18 @@ degraded attribution can be told from a normal one) and
 
 Ids are `uuid5(NAMESPACE_FLIGHTDECK, "flightdeck://otlp/genai/<token
 id>/<trace id hex>/<kind>/<span id hex>")`, the kind `session`, `event`,
-`start`, `end` or `signal`. The unattributed session's `session`,
-`start` and `end` ids have no span segment. A re-attaching start and its
-end append `/<first_received_at>/<assembly_count>` of the trace row (the
-row's creation time in Unix nanoseconds, then how many assemblies it
-has had), so they are unique even when a trace's rows were deleted and
-a later record created a new row whose count starts again from zero,
-and the same for a retried assembly of one row. Timestamps are span starts and ends, so re-assembling a
+`start`, `end` or `signal`. `<first_received_at>` below is the trace
+row's stored `first_received_at` column in Unix nanoseconds (the
+column has microsecond precision, so the value ends in `000`), read
+from the row, never the in-memory time of the insert, so a retried
+assembly of the row computes the same ids. The unattributed session's
+`session`, `start` and `end` ids have no span segment and end in
+`/<first_received_at>`, so a trace row created again after the old
+one's rows were deleted gets an unattributed session of its own rather
+than reusing the closed one. A re-attaching start and its end append
+`/<first_received_at>/<assembly_count>` (how many assemblies the row
+has had), so they are unique even when a new row's count starts again
+from zero. Timestamps are span starts and ends, so re-assembling a
 trace stores nothing twice. The token in the id keeps two tokens that
 send the same trace id apart: a token rotated in the middle of a run
 stages the rest of the run as a separate trace with separate sessions.
@@ -3728,19 +3742,33 @@ process them in either order. An event carrying content that one
 replica handles before another replica has stored its session's
 `session_start` lands on a lazily created row with no capture posture,
 and its content is dropped (see Ingestion API > `POST /v1/events`).
-Likewise, a call that one replica handles before another has stored the
-re-attaching `session_start` published ahead of it finds the row closed
-with its own stream sequence above `closed_seq`, and its tokens are not
-added.
+Likewise, a late call of an assembled OpenTelemetry session (see OTLP
+ingest > GenAI dialect) that one replica handles before another has
+stored the re-attaching `session_start` published ahead of it finds the
+row closed with its own stream sequence above `closed_seq`, and its
+tokens are not added.
 
 Two redeliveries close these gaps, as the delayed redelivery of an
-early `session_end` does: an event carrying content whose row is
-missing or has no capture posture, and a call event that finds its row
-closed with a stream sequence above `closed_seq`, are redelivered after
-one second and after two before the worker falls back to lazy creation
-or to the closed-session skip. A start published ahead of them on
-another replica lands in that time. Across replicas, correctness
-otherwise rests on the session-row rules below.
+early `session_end` does, each after one second and after two:
+
+- an event carrying content whose row is missing or has no capture
+  posture, before the worker falls back to lazy creation;
+- a token-bearing event (`post_call`, `embeddings`, or an `llm_error`
+  carrying partial tokens) that finds its row closed with its stream
+  sequence above `closed_seq`, when the row's `context` carries
+  `otel_trace_id`, before the worker falls back to the closed-session
+  skip. The session guard already reads the row, so the check costs no
+  extra query. Every other event on a closed row, and every other
+  client's session, is skipped at once, as before a redelivery existed:
+  a plugin's or sensor's straggler after its end is not delayed.
+
+A start published ahead of them on another replica lands in that time.
+The waiting spends deliveries, so the last delivery the budget allows
+always takes the fallback (lazy creation, or the skip with the event
+row stored) and never ends the message: a transient database error on
+an earlier delivery is retried as before, and an event is never lost to
+the wait. Across replicas, correctness otherwise rests on the
+session-row rules below.
 
 Appending never waits, so a slow session holds back only the sessions
 that share its lane. The queues are bounded by the consumer's
@@ -3879,8 +3907,7 @@ without it a parent the dashboard saw go stale would stay stale there
 while its children worked. Scope is direct
 parent only. The GenAI dialect of OTLP ingest builds trees of any depth,
 but its sessions arrive already closed, and the bump leaves closed
-parents alone, so no grandparent depends on it; the clients that report
-live sessions report one level of sub-agents.
+parents alone, so none of its sessions depends on it.
 
 **Terminal-state handling.** `closed` is terminal and final. `session_end`
 at any non-closed state transitions directly to `closed`, unless it was

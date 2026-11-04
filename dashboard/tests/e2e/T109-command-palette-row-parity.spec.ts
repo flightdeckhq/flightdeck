@@ -26,7 +26,10 @@ test.describe("T109 — palette row parity (agent + run)", () => {
     const agentOptions = dialog
       .getByRole("option")
       .filter({ hasText: /claude-subagent/ });
-    await expect.poll(async () => agentOptions.count()).toBeGreaterThan(0);
+    // The search runs against every stored event; while the suite is
+    // starting up the first answer can take longer than a poll's
+    // default five seconds.
+    await expect.poll(async () => agentOptions.count(), { timeout: 15_000 }).toBeGreaterThan(0);
 
     const firstAgentRow = agentOptions.first();
     // ClientTypePill renders the brand label ("CLAUDE CODE" or
@@ -60,7 +63,10 @@ test.describe("T109 — palette row parity (agent + run)", () => {
     const runOptions = dialog
       .getByRole("option")
       .filter({ hasText: /claude-code/ });
-    await expect.poll(async () => runOptions.count()).toBeGreaterThan(0);
+    // The search runs against every stored event; while the suite is
+    // starting up the first answer can take longer than a poll's
+    // default five seconds.
+    await expect.poll(async () => runOptions.count(), { timeout: 15_000 }).toBeGreaterThan(0);
 
     const firstRunRow = runOptions.first();
     // Model text — seed assigns claude-sonnet-* or gpt-* to e2e

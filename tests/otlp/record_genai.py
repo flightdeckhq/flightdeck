@@ -111,6 +111,32 @@ TOOL = ["get_weather"]
 ERROR = ["lookup_order"]
 SUBAGENTS = ["assistant", "weather_agent"]
 HANDOFF = ["triage_agent", "weather_agent"]
+# A scenario whose run must end with the framework raising, whatever the
+# exception's name.
+FAILED = "<failed>"
+
+
+def _cache_read(calls: list[dict[str, Any]]) -> str:
+    """The run's last successful provider call read from the prompt cache;
+    the problem when it did not."""
+    ok = [c for c in calls if c["status"] < 400]
+    if len(ok) < 2:
+        return f"{len(ok)} successful provider calls, not 2"
+    usage = ok[-1].get("usage", {})
+    read = (
+        usage.get("cache_read_input_tokens")
+        or (usage.get("prompt_tokens_details") or {}).get("cached_tokens")
+        or (usage.get("input_tokens_details") or {}).get("cached_tokens")
+    )
+    return "" if read else "the second call read nothing from the prompt cache"
+
+
+def _provider_error(calls: list[dict[str, Any]]) -> str:
+    """The provider refused a call; the problem when none was refused."""
+    if any(c["status"] >= 400 for c in calls):
+        return ""
+    return "the provider refused no call"
+
 
 SCENARIOS: list[dict[str, Any]] = [
     # Pydantic AI: content is its own InstrumentationSettings switch.
@@ -282,6 +308,112 @@ SCENARIOS: list[dict[str, Any]] = [
         "env": CONTENT_ON,
         "expect": {"tools": ["transfer_to_agent", *TOOL], "agents": HANDOFF},
     },
+    # Prompt caching and a refused model call. The cache runs make two
+    # calls with the same long instructions; the second must read the
+    # prefix from the provider's cache.
+    {
+        "framework": "pydantic-ai",
+        "name": "cache-no-content-protobuf",
+        "about": "two runs with the same long instructions under anthropic_cache_instructions: the first writes the prompt cache, the second reads it; content off",
+        "args": ["cache", "--no-content"],
+        "expect": {"agents": ["cached_agent"]},
+        "check": _cache_read,
+    },
+    {
+        "framework": "pydantic-ai",
+        "name": "model-error-protobuf",
+        "about": "a run on a model Anthropic does not have: the provider refuses the call",
+        "args": ["model-error"],
+        "expect": {"agents": ["missing_model_agent"]},
+        "outcome": FAILED,
+        "check": _provider_error,
+    },
+    {
+        "framework": "pydantic-ai",
+        "name": "model-error-json",
+        "about": "the same over http/json",
+        "args": ["model-error"],
+        "protocol": "http/json",
+        "expect": {"agents": ["missing_model_agent"]},
+        "outcome": FAILED,
+        "check": _provider_error,
+    },
+    {
+        "framework": "strands-agents",
+        "name": "cache-protobuf",
+        "about": "two agents with the same long system prompt, one call each: OpenAI caches the second call's prefix by itself",
+        "args": ["cache"],
+        "expect": {"agents": ["cached_agent"]},
+        "check": _cache_read,
+    },
+    {
+        "framework": "strands-agents",
+        "name": "model-error-protobuf",
+        "about": "a run on a model OpenAI does not have: the provider refuses the call",
+        "args": ["model-error"],
+        "expect": {"agents": ["missing_model_agent"]},
+        "outcome": FAILED,
+        "check": _provider_error,
+    },
+    {
+        "framework": "strands-agents",
+        "name": "model-error-json",
+        "about": "the same over http/json",
+        "args": ["model-error"],
+        "protocol": "http/json",
+        "expect": {"agents": ["missing_model_agent"]},
+        "outcome": FAILED,
+        "check": _provider_error,
+    },
+    {
+        "framework": "openai-agents",
+        "name": "cache-no-content-protobuf",
+        "about": "two runs with the same long instructions: OpenAI caches the second call's prefix by itself; content off",
+        "args": ["cache"],
+        "env": CONTENT_OFF,
+        "expect": {"agents": ["cached_agent"]},
+        "check": _cache_read,
+    },
+    {
+        "framework": "openai-agents",
+        "name": "model-error-protobuf",
+        "about": "a run on a model OpenAI does not have: the provider refuses the call",
+        "args": ["model-error"],
+        "env": CONTENT_ON,
+        "expect": {},
+        "outcome": FAILED,
+        "check": _provider_error,
+    },
+    {
+        "framework": "openai-agents",
+        "name": "model-error-json",
+        "about": "the same over http/json",
+        "args": ["model-error"],
+        "env": CONTENT_ON,
+        "protocol": "http/json",
+        "expect": {},
+        "outcome": FAILED,
+        "check": _provider_error,
+    },
+    {
+        "framework": "google-adk",
+        "name": "cache-no-content-protobuf",
+        "about": "two sessions with the same long instruction: OpenAI caches the second call's prefix by itself; content off",
+        "args": ["cache"],
+        "env": ADK_CONTENT_OFF,
+        "expect": {"agents": ["cached_agent"]},
+        "check": _cache_read,
+    },
+    {
+        "framework": "google-adk",
+        "name": "model-error-protobuf",
+        "about": "a run on a model OpenAI does not have, through LiteLLM: the provider refuses the call",
+        "args": ["model-error"],
+        "env": CONTENT_ON,
+        "expect": {},
+        "outcome": FAILED,
+        "check": _provider_error,
+    },
 ]
 
 
@@ -401,9 +533,18 @@ def _record(scenario: dict[str, Any]) -> Path:
                 f"{scenario['framework']}/{scenario['name']} failed ({run.returncode}): {tail}"
             )
         result = results[-1]
-        if result["outcome"] != scenario.get("outcome", "completed"):
+        expected = scenario.get("outcome", "completed")
+        ended = result["outcome"]
+        if ended != expected and not (expected == FAILED and ended != "completed"):
             raise SystemExit(
-                f"{scenario['framework']}/{scenario['name']} not written: the run ended with {result['outcome']}: {_redact(result.get('detail', ''), secrets)}"
+                f"{scenario['framework']}/{scenario['name']} not written: the run ended with {ended}: {_redact(result.get('detail', ''), secrets)}"
+            )
+        problem = (
+            scenario["check"](result["provider_calls"]) if "check" in scenario else ""
+        )
+        if problem:
+            raise SystemExit(
+                f"{scenario['framework']}/{scenario['name']} not written: {problem}; run it again"
             )
         rec.wait_quiet(QUIET_SECS, QUIET_DEADLINE_SECS)
         missing = _missing(trace_spans(rec.requests), scenario["expect"])
@@ -427,6 +568,7 @@ def _record(scenario: dict[str, Any]) -> Path:
                 "env": scenario.get("env", {}),
                 "runner_args": scenario["args"],
                 "outcome": result["outcome"],
+                "provider_calls": result["provider_calls"],
                 "versions": result["versions"],
             },
             scrubber(work, framework["python"]),

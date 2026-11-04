@@ -17,6 +17,13 @@ import { useSession, invalidateSessionCache } from "@/hooks/useSession";
 import { useSearch } from "@/hooks/useSearch";
 import { useAnalytics } from "@/hooks/useAnalytics";
 import { useHistoricalEvents } from "@/hooks/useHistoricalEvents";
+import { eventsCache } from "@/hooks/useSessionEvents";
+import {
+  HISTORY_DRAIN_MAX_EVENTS,
+  HISTORY_PAGE_SIZE,
+  TIMELINE_RANGE_MS,
+  type TimeRange,
+} from "@/lib/constants";
 
 beforeEach(() => {
   for (const fn of Object.values(api)) fn.mockReset();
@@ -116,6 +123,27 @@ describe("useSession review regressions", () => {
   });
 });
 
+describe("useSession and the events cache", () => {
+  it("merges a newest-N fetch into a longer cached list instead of skipping it", async () => {
+    invalidateSessionCache("s-merge");
+    const at = (s: number) => `2026-05-15T12:00:${String(s).padStart(2, "0")}Z`;
+    const e = (id: string, s: number) => ({ id, session_id: "s-merge", occurred_at: at(s) }) as never;
+    // The cache holds three older events (a window load), the drawer's
+    // newest-2 fetch brings one it lacks.
+    eventsCache.set("s-merge", [e("a", 1), e("b", 2), e("c", 3)]);
+    api.fetchSession.mockResolvedValue({ ...detail("s-merge"), events: [e("c", 3), e("d", 4)] });
+    const { result } = renderHook(() => useSession("s-merge", 2));
+    await waitFor(() => expect(result.current.data).not.toBeNull());
+    expect((eventsCache.get("s-merge") ?? []).map((x) => x.id)).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("invalidateSessionCache keeps the run's cached events", () => {
+    eventsCache.set("s-keep", [{ id: "k", session_id: "s-keep", occurred_at: "2026-05-15T12:00:00Z" } as never]);
+    invalidateSessionCache("s-keep");
+    expect(eventsCache.get("s-keep")).toHaveLength(1);
+  });
+});
+
 describe("useSearch", () => {
   it("does not search short queries", () => {
     const { result } = renderHook(() => useSearch("a"));
@@ -161,68 +189,114 @@ describe("useAnalytics", () => {
 });
 
 describe("useHistoricalEvents", () => {
-  const ev = (id: string) => ({ id }) as never;
+  /** An event at second ``s`` of the window, newest first in a page. */
+  const ev = (id: string, s = 0) =>
+    ({ id, session_id: "r", occurred_at: `2026-05-15T12:00:${String(s).padStart(2, "0")}Z` }) as never;
+  const idsOf = (events: readonly unknown[]) => events.map((e) => (e as { id: string }).id);
 
-  it("loads the first page and appends the next on loadMore", async () => {
-    api.fetchBulkEvents
-      .mockResolvedValueOnce({ events: [ev("a"), ev("b")], total: 3, has_more: true })
-      .mockResolvedValueOnce({ events: [ev("c")], total: 3, has_more: false });
+  it("asks for the window newest first, with from and to fixed", async () => {
+    api.fetchBulkEvents.mockResolvedValueOnce({ events: [ev("b", 2), ev("a", 1)], total: 2, has_more: false });
     const { result } = renderHook(() => useHistoricalEvents("1h"));
-    await waitFor(() => expect(result.current.events).toHaveLength(2));
-    expect(result.current.hasMore).toBe(true);
-
-    act(() => result.current.loadMore());
-    await waitFor(() => expect(result.current.events).toHaveLength(3));
-    expect(result.current.hasMore).toBe(false);
-    // The second request continues from the first page's offset and window.
-    const [firstArgs, secondArgs] = api.fetchBulkEvents.mock.calls.map((c) => c[0]);
-    expect(secondArgs.offset).toBe(2);
-    expect(secondArgs.from).toBe(firstArgs.from);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    const [args] = api.fetchBulkEvents.mock.calls[0];
+    expect(args.order).toBe("desc");
+    expect(args.limit).toBe(HISTORY_PAGE_SIZE);
+    expect(Date.parse(args.to) - Date.parse(args.from)).toBe(TIMELINE_RANGE_MS["1h"]);
+    expect(args.before).toBeUndefined();
   });
 
-  it("a second loadMore before the first settles does not append the same page twice", async () => {
-    let releaseFirst: (v: unknown) => void = () => {};
+  it("drains pages until has_more is false, each continuing before the last page's oldest event", async () => {
     api.fetchBulkEvents
-      .mockResolvedValueOnce({ events: [ev("a")], total: 3, has_more: true })
-      .mockImplementationOnce(() => new Promise((r) => (releaseFirst = r)))
-      .mockResolvedValueOnce({ events: [ev("b")], total: 3, has_more: true });
+      .mockResolvedValueOnce({ events: [ev("d", 4), ev("c", 3)], total: 4, has_more: true })
+      .mockResolvedValueOnce({ events: [ev("b", 2), ev("a", 1)], total: 2, has_more: false });
     const { result } = renderHook(() => useHistoricalEvents("1h"));
-    await waitFor(() => expect(result.current.events).toHaveLength(1));
-    act(() => result.current.loadMore());
-    act(() => result.current.loadMore());
-    await waitFor(() => expect(result.current.events).toHaveLength(2));
-    // The superseded first request settling late changes nothing.
-    await act(async () => releaseFirst({ events: [ev("b")], total: 3, has_more: true }));
-    expect(result.current.events.map((e) => (e as { id: string }).id)).toEqual(["a", "b"]);
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(api.fetchBulkEvents).toHaveBeenCalledTimes(2);
+    const [first, second] = api.fetchBulkEvents.mock.calls.map((c) => c[0]);
+    expect(second.before).toBe("2026-05-15T12:00:03Z");
+    expect(second.before_id).toBe("c");
+    expect(second.from).toBe(first.from);
+    expect(second.to).toBe(first.to);
   });
 
-  it("reports a failed first loadMore", async () => {
+  it("returns the events oldest first", async () => {
     api.fetchBulkEvents
-      .mockResolvedValueOnce({ events: [ev("a")], total: 2, has_more: true })
+      .mockResolvedValueOnce({ events: [ev("d", 4), ev("c", 3)], total: 4, has_more: true })
+      .mockResolvedValueOnce({ events: [ev("b", 2), ev("a", 1)], total: 2, has_more: false });
+    const { result } = renderHook(() => useHistoricalEvents("1h"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(idsOf(result.current.events)).toEqual(["a", "b", "c", "d"]);
+  });
+
+  it("stops at HISTORY_DRAIN_MAX_EVENTS, keeping the newest", async () => {
+    // Every page is full and claims more, so only the cap ends the drain.
+    const pages = Math.ceil(HISTORY_DRAIN_MAX_EVENTS / HISTORY_PAGE_SIZE);
+    let served = 0;
+    api.fetchBulkEvents.mockImplementation(async (params: { limit: number }) => {
+      const page = Array.from({ length: params.limit }, (_, i) => ev(`e${served + i}`));
+      served += params.limit;
+      return { events: page, total: 1_000_000, has_more: true };
+    });
+    const { result } = renderHook(() => useHistoricalEvents("1h"));
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    expect(api.fetchBulkEvents).toHaveBeenCalledTimes(pages);
+    expect(result.current.events).toHaveLength(HISTORY_DRAIN_MAX_EVENTS);
+    // The first page (the window's newest) is all there.
+    expect(idsOf(result.current.events)).toContain("e0");
+  });
+
+  it("a failed page stops the drain and keeps the pages already loaded", async () => {
+    api.fetchBulkEvents
+      .mockResolvedValueOnce({ events: [ev("b", 2)], total: 3, has_more: true })
       .mockRejectedValueOnce(new Error("page failed"));
     const { result } = renderHook(() => useHistoricalEvents("1h"));
-    await waitFor(() => expect(result.current.events).toHaveLength(1));
-    act(() => result.current.loadMore());
     await waitFor(() => expect(result.current.error).toBe("page failed"));
+    expect(result.current.loading).toBe(false);
+    expect(idsOf(result.current.events)).toEqual(["b"]);
+    expect(api.fetchBulkEvents).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps the previous range's events until the new range loads, then drops appended pages", async () => {
-    let releaseSecond: (v: unknown) => void = () => {};
+  it("a range change aborts the drain in flight and keeps the previous range's events until the new first page", async () => {
+    let releaseOldSecond: (v: unknown) => void = () => {};
+    let releaseNew: (v: unknown) => void = () => {};
+    const signals: AbortSignal[] = [];
     api.fetchBulkEvents
-      .mockResolvedValueOnce({ events: [ev("a")], total: 2, has_more: true })
-      .mockResolvedValueOnce({ events: [ev("b")], total: 2, has_more: false })
-      .mockImplementationOnce(() => new Promise((r) => (releaseSecond = r)));
+      .mockImplementationOnce(async (_p: unknown, signal: AbortSignal) => {
+        signals.push(signal);
+        return { events: [ev("old", 1)], total: 2, has_more: true };
+      })
+      .mockImplementationOnce((_p: unknown, signal: AbortSignal) => {
+        signals.push(signal);
+        return new Promise((r) => (releaseOldSecond = r));
+      })
+      .mockImplementationOnce(() => new Promise((r) => (releaseNew = r)));
     const { result, rerender } = renderHook(({ r }) => useHistoricalEvents(r), {
-      initialProps: { r: "1h" as const },
+      initialProps: { r: "1h" as TimeRange },
     });
-    await waitFor(() => expect(result.current.events).toHaveLength(1));
-    act(() => result.current.loadMore());
-    await waitFor(() => expect(result.current.events).toHaveLength(2));
+    await waitFor(() => expect(idsOf(result.current.events)).toEqual(["old"]));
+    await waitFor(() => expect(api.fetchBulkEvents).toHaveBeenCalledTimes(2));
 
-    rerender({ r: "5m" as never });
+    rerender({ r: "5m" });
+    expect(signals[1]?.aborted).toBe(true);
     expect(result.current.loading).toBe(true);
-    expect(result.current.events.map((e) => (e as { id: string }).id)).toEqual(["a", "b"]);
-    await act(async () => releaseSecond({ events: [ev("z")], total: 1, has_more: false }));
-    expect(result.current.events.map((e) => (e as { id: string }).id)).toEqual(["z"]);
+    expect(idsOf(result.current.events)).toEqual(["old"]);
+    // The aborted page settling late changes nothing.
+    await act(async () => releaseOldSecond({ events: [ev("stale", 0)], total: 1, has_more: false }));
+    expect(idsOf(result.current.events)).toEqual(["old"]);
+    await act(async () => releaseNew({ events: [ev("new", 5)], total: 1, has_more: false }));
+    expect(idsOf(result.current.events)).toEqual(["new"]);
+    expect(result.current.loading).toBe(false);
+  });
+
+  it("picking a range again loads it again", async () => {
+    api.fetchBulkEvents.mockResolvedValue({ events: [ev("a", 1)], total: 1, has_more: false });
+    const { result, rerender } = renderHook(({ r }) => useHistoricalEvents(r), {
+      initialProps: { r: "1m" as TimeRange },
+    });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    rerender({ r: "1h" });
+    await waitFor(() => expect(result.current.loading).toBe(false));
+    rerender({ r: "1m" });
+    await waitFor(() => expect(api.fetchBulkEvents).toHaveBeenCalledTimes(3));
   });
 });

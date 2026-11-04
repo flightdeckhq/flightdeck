@@ -31,7 +31,7 @@ import {
 	runSegments,
 	type RunSegment,
 } from "@/lib/swimlane-lanes";
-import { isAttachmentStartEvent, isDiscoveryEvent, isEventVisible } from "@/lib/events";
+import { attachmentStartIds, isDiscoveryEvent, isEventVisible } from "@/lib/events";
 import { useShowDiscoveryEvents } from "@/lib/discoveryEventsPref";
 import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { useFleetStore } from "@/store/fleet";
@@ -984,7 +984,7 @@ function AggregatedSessionEvents({
 		if (!domainStart || !domainEnd) return [];
 		const startMs = domainStart.getTime();
 		const endMs = domainEnd.getTime();
-		const attachments = attachmentsCache.get(session.session_id) ?? [];
+		const attachIds = attachmentStartIds(events, attachmentsCache.get(session.session_id));
 		return events
 			.filter((event) => {
 				const t = new Date(event.occurred_at).getTime();
@@ -1001,7 +1001,7 @@ function AggregatedSessionEvents({
 				occurredAt: event.occurred_at,
 				directiveName: event.payload?.directive_name,
 				directiveStatus: event.payload?.directive_status,
-				isAttachment: isAttachmentStartEvent(event, attachments),
+				isAttachment: attachIds.has(event.id),
 			}));
 		// ``attachments`` is intentionally omitted from the dep array;
 		// its identity flips on every parent render and adding it

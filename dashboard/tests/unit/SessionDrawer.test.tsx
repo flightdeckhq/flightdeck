@@ -867,6 +867,36 @@ describe("SessionDrawer", () => {
     });
   });
 
+  it("a re-attaching start dated well before its attachment still shows ATTACH (OpenTelemetry late records)", () => {
+    // The OTLP assembler dates its re-attaching start one microsecond
+    // before the late records it wraps (10:02:00), while ingestion
+    // stamps the attachment when the records arrive, minutes later
+    // (10:09:30). The original start, at started_at, keeps START.
+    mockEventsOverride = [
+      baseEvents[0],
+      baseEvents[1],
+      {
+        id: "e-otlp-attach",
+        session_id: "s1",
+        flavor: "test",
+        event_type: "session_start" as const,
+        model: null,
+        tokens_input: null,
+        tokens_output: null,
+        tokens_total: null,
+        latency_ms: null,
+        tool_name: null,
+        has_content: false,
+        occurred_at: "2026-04-07T10:02:00.000000Z",
+      },
+    ];
+    mockAttachments = ["2026-04-07T10:09:30Z"];
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    const pills = screen.getAllByTestId("event-type-pill");
+    expect(pills.filter((el) => el.textContent === "ATTACH")).toHaveLength(1);
+    expect(pills.filter((el) => el.textContent === "START")).toHaveLength(1);
+  });
+
   it("session_start without matching attachment keeps the START badge", () => {
     // Attachments array is empty: every session_start is the
     // original. The only session_start in baseEvents must render as

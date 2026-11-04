@@ -106,7 +106,7 @@ export interface EventNodeProps {
    * to "Session attached". Caller is responsible for passing this
    * only when the event_type is session_start AND it matched the
    * session's attachments array -- see
-   * lib/events.ts::isAttachmentStartEvent. Follows the
+   * lib/events.ts::attachmentStartIds. Follows the
    * directive_result override pattern already in this file so
    * there's one consistent way to colour-swap a circle.
    */

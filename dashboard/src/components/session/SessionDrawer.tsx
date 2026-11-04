@@ -45,8 +45,8 @@ import { ClaudeCodeLogo } from "@/components/ui/claude-code-logo";
 import { CodingAgentBadge } from "@/components/ui/coding-agent-badge";
 import { RelationshipPill } from "@/components/facets/RelationshipPill";
 import { getClaudeCodeVersion, isClaudeCodeSession } from "@/lib/models";
-import { getBadge, getSummaryRows, truncateSessionId } from "@/lib/events";
-import { compareEventOrder, oldestEvent } from "@/lib/event-order";
+import { attachmentStartIds, getBadge, getSummaryRows, truncateSessionId } from "@/lib/events";
+import { oldestEvent } from "@/lib/event-order";
 import { getProvider } from "@/lib/models";
 import { ProviderLogo } from "@/components/ui/provider-logo";
 import { OSIcon } from "@/components/ui/OSIcon";
@@ -55,7 +55,7 @@ import {
   getOrchestrationLabel,
 } from "@/components/ui/OrchestrationIcon";
 import { SyntaxJson } from "@/components/ui/syntax-json";
-import { eventsCache } from "@/hooks/useSessionEvents";
+import { eventsCache, mergeSessionEvents } from "@/hooks/useSessionEvents";
 import type { AgentEvent, Session as SessionType } from "@/lib/types";
 
 export type DrawerTab = "timeline" | "prompts" | "sub-agents" | "directives";
@@ -544,27 +544,15 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
     // The keyset cursor is the oldest event the drawer holds, in the
     // server's order (occurred_at to the microsecond, then id). Its id
     // lets the server resume right after it instead of dropping the
-    // other events that share its timestamp. The cache is not
-    // guaranteed to be in that order (live events are appended), so
-    // the oldest is looked up rather than read from index 0.
+    // other events that share its timestamp. Every cache writer keeps
+    // the list in that order, but the oldest is still looked up rather
+    // than read from index 0, which costs nothing and cannot drift.
     const oldest = oldestEvent(eventsCache.get(sessionId) ?? []);
     if (!oldest) return;
     setLoadingOlder(true);
     try {
       const resp = await fetchOlderEvents(sessionId, oldest, eventsLimit);
-      const older = resp.events ?? [];
-      if (older.length > 0) {
-        const existing = eventsCache.get(sessionId) ?? [];
-        const seen = new Set(existing.map((e) => e.id));
-        const merged = [...existing];
-        for (const e of older) {
-          if (!seen.has(e.id)) {
-            merged.push(e);
-            seen.add(e.id);
-          }
-        }
-        merged.sort(compareEventOrder);
-        eventsCache.set(sessionId, merged);
+      if (mergeSessionEvents(sessionId, resp.events ?? [])) {
         setPaginationVersion((v) => v + 1);
       }
       setHasMoreOlder(resp.has_more);
@@ -1856,6 +1844,10 @@ function EventFeed({
   loadingOlder,
   onLoadOlder,
 }: EventFeedProps) {
+  const attachIds = useMemo(
+    () => attachmentStartIds(events, attachments),
+    [events, attachments],
+  );
   return (
     <div className="flex flex-col" data-testid="session-event-feed">
       <EventsLimitPills value={eventsLimit} onChange={onLimitChange} />
@@ -1876,7 +1868,7 @@ function EventFeed({
           <EventRow
             key={event.id}
             event={event}
-            attachments={attachments}
+            isAttachment={attachIds.has(event.id)}
             isExpanded={expandedEventId === event.id}
             onToggleExpand={onToggleExpand}
             onViewPrompts={onViewPrompts}

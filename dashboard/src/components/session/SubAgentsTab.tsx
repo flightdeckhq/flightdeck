@@ -607,7 +607,6 @@ function EventMiniTimeline({
         <EventRow
           key={e.id}
           event={e}
-          attachments={[]}
           isExpanded={expandedEventId === e.id}
           onToggleExpand={(id) =>
             setExpandedEventId((prev) => (prev === id ? null : id))

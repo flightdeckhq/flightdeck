@@ -151,6 +151,24 @@ All notable changes to Flightdeck are documented here.
     splits the row;
   - stay inside the panel at its right edge, so a run that has just
     started shows its ▶.
+- **Fleet loads each window newest first and keeps what it already
+  shows.** A busy window used to load its oldest 500 events, so its
+  newest circles, and the newest entries of the live feed and the Policy
+  Events and Directive Activity panels, could be missing. Fleet now
+  loads the window newest first, 1,000 events a page up to 5,000.
+  Switching ranges only adds circles; it used to replace a run's
+  circles with the new window's, losing the newest ones. History that
+  loads after live events no longer pushes them out of the live feed,
+  and changing the run drawer's page size no longer clears that run's
+  circles from the swimlane.
+- **A run glyph in the per-agent swimlane modal opens the run drawer.**
+  It used to do nothing; the event drawer's "View entire run" now works
+  there too. Esc closes the event drawer, then the run drawer, then the
+  modal.
+- **A run re-attached by late OpenTelemetry records shows its ATTACH
+  badge.** The assembler dates the re-attaching start by the records,
+  minutes before ingestion records the attach, so the run drawer and
+  the swimlane did not match the two and showed a plain START.
 - **SIGTERM ends a process that runs the sensor, and a signal can no
   longer hang it.** The sensor's SIGTERM / SIGINT handler ended the
   session on the thread the signal interrupted, so a signal that landed

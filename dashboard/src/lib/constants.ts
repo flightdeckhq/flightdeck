@@ -13,6 +13,19 @@ export const FEED_MAX_EVENTS = 500;
  *  Events are still in the database -- only the in-memory buffer is capped. */
 export const PAUSE_QUEUE_MAX_EVENTS = 1000;
 
+/** Events per request of Fleet's history load (``useHistoricalEvents``).
+ *  Half the API's 2,000-row cap per request: big enough that a typical
+ *  window loads in one or two requests, small enough that the first
+ *  page, which carries the window's newest events, renders quickly. */
+export const HISTORY_PAGE_SIZE = 1000;
+
+/** The most events Fleet's history load keeps for one window. The load
+ *  runs newest first, so a busier window loses its oldest events, never
+ *  its newest. Five pages: about what the swimlane and the feed can
+ *  re-merge per page without a visible stall, and an hour of a busy
+ *  fleet. */
+export const HISTORY_DRAIN_MAX_EVENTS = 5000;
+
 /** Number of recent events loaded from the fleet store
  *  into the live feed on initial mount. */
 export const FEED_INITIAL_LOAD = 100;

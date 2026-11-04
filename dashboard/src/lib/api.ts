@@ -382,6 +382,11 @@ export interface BulkEventsParams {
   order?: "asc" | "desc";
   limit?: number;
   offset?: number;
+  /** Keyset cursor: the ``occurred_at`` and ``id`` of the oldest event
+   *  the caller holds. With ``order: "desc"`` the page continues
+   *  strictly before that event in the server's order. */
+  before?: string;
+  before_id?: string;
   /** Event-grain facet filters — multi-value, OR within a
    *  dimension, AND across dimensions. */
   event_types?: string[];
@@ -441,6 +446,8 @@ function buildEventsQuery(params: BulkEventsParams): URLSearchParams {
   if (params.order) sp.set("order", params.order);
   if (params.limit !== undefined) sp.set("limit", String(params.limit));
   if (params.offset !== undefined) sp.set("offset", String(params.offset));
+  if (params.before) sp.set("before", params.before);
+  if (params.before_id) sp.set("before_id", params.before_id);
   for (const v of params.event_types ?? []) sp.append("event_type", v);
   for (const v of params.models ?? []) sp.append("model", v);
   for (const v of params.frameworks ?? []) sp.append("framework", v);

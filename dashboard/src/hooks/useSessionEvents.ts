@@ -1,13 +1,94 @@
 import { useEffect, useState } from "react";
 import { fetchSession } from "@/lib/api";
+import { compareEventOrder } from "@/lib/event-order";
 import { EventsCacheMap } from "@/lib/events-cache-epoch";
-import type { AgentEvent } from "@/lib/types";
+import type { AgentEvent, FeedEvent } from "@/lib/types";
 
-// Module-level cache: sessionId → events array.
-// Exported so Fleet.tsx can inject WebSocket events directly. Every
-// write is counted (see lib/events-cache-epoch.ts), so a swimlane row
-// re-derives its runs' segments when any of their events change.
+// Module-level cache: sessionId → events array, in the server's order
+// (occurred_at, then id; lib/event-order.ts). Every write is counted
+// (see lib/events-cache-epoch.ts), so a swimlane row re-derives its
+// runs' segments when any of their events change. Every writer goes
+// through mergeSessionEvents / mergeIntoEventsCache below, which add
+// events by id and never replace or drop a run's list.
 export const eventsCache = new EventsCacheMap<string, AgentEvent[]>();
+
+/**
+ * A run's cached events with ``incoming`` added by id, in the server's
+ * order, or null when ``incoming`` holds no event the list lacks (the
+ * caller then keeps the list it has, same array). ``existing`` is in
+ * the server's order, as every list in the cache is.
+ */
+export function mergeRunEvents(
+  existing: readonly AgentEvent[] | undefined,
+  incoming: readonly AgentEvent[],
+): AgentEvent[] | null {
+  const have = existing ?? [];
+  const seen = new Set(have.map((e) => e.id));
+  const fresh: AgentEvent[] = [];
+  for (const e of incoming) {
+    if (seen.has(e.id)) continue;
+    seen.add(e.id);
+    fresh.push(e);
+  }
+  if (fresh.length === 0) return null;
+  fresh.sort(compareEventOrder);
+  // A live tick or a newer page lands after everything held: append.
+  const last = have[have.length - 1];
+  if (last === undefined || compareEventOrder(fresh[0]!, last) > 0) {
+    return [...have, ...fresh];
+  }
+  return [...have, ...fresh].sort(compareEventOrder);
+}
+
+/** Merge one run's events into the cache by id. Returns whether its
+ *  list changed. */
+export function mergeSessionEvents(sessionId: string, incoming: readonly AgentEvent[]): boolean {
+  const merged = mergeRunEvents(eventsCache.get(sessionId), incoming);
+  if (merged === null) return false;
+  eventsCache.set(sessionId, merged);
+  return true;
+}
+
+/** Merge events of any runs into the cache by id, grouped by
+ *  ``session_id``. Returns the ids of the runs whose list changed. */
+export function mergeIntoEventsCache(events: readonly AgentEvent[]): Set<string> {
+  const grouped = new Map<string, AgentEvent[]>();
+  for (const e of events) {
+    const list = grouped.get(e.session_id);
+    if (list) list.push(e);
+    else grouped.set(e.session_id, [e]);
+  }
+  const changed = new Set<string>();
+  grouped.forEach((list, sessionId) => {
+    if (mergeSessionEvents(sessionId, list)) changed.add(sessionId);
+  });
+  return changed;
+}
+
+/**
+ * The live feed with ``incoming`` added by event id (an event already
+ * in the feed keeps its entry), ordered by arrival and capped at the
+ * newest ``cap`` by arrival. History pages carry their events'
+ * ``occurred_at`` as arrival and live events the moment they arrived,
+ * so history that loads after live events never displaces them.
+ * Returns ``prev`` itself when nothing is added.
+ */
+export function mergeFeedEvents(
+  prev: readonly FeedEvent[],
+  incoming: readonly FeedEvent[],
+  cap: number,
+): FeedEvent[] {
+  const seen = new Set(prev.map((fe) => fe.event.id));
+  const fresh: FeedEvent[] = [];
+  for (const fe of incoming) {
+    if (seen.has(fe.event.id)) continue;
+    seen.add(fe.event.id);
+    fresh.push(fe);
+  }
+  if (fresh.length === 0) return prev as FeedEvent[];
+  const merged = [...prev, ...fresh].sort((a, b) => a.arrivedAt - b.arrivedAt);
+  return merged.length > cap ? merged.slice(-cap) : merged;
+}
 
 // E2E debug surface — exposes the module-level cache via window so
 // Playwright specs can introspect the runtime state without
@@ -78,9 +159,9 @@ export function useSessionEvents(
 
     fetchSession(sessionId)
       .then((detail) => {
-        const evts = detail.events ?? [];
-        if (evts.length > 0) {
-          eventsCache.set(sessionId, evts);
+        // Merge, never replace: a live event injected while the fetch
+        // was in flight stays.
+        if (mergeSessionEvents(sessionId, detail.events ?? [])) {
           setTick((t) => t + 1); // force re-read from cache
         }
         // Cache attachments unconditionally (including the empty

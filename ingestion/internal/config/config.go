@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"time"
 )
 
 // Config holds all configuration for the ingestion API service.
@@ -24,6 +25,12 @@ type Config struct {
 	// FLIGHTDECK_RATE_LIMIT_PER_MINUTE inherit the default and behave
 	// exactly as before.
 	RateLimitPerMinute int
+	// GenAIClaimInterval is how often the OTLP GenAI assembler claims
+	// due traces, from FLIGHTDECK_GENAI_CLAIM_INTERVAL_MS. Zero, the
+	// default, keeps assembler.ClaimInterval (one second). It exists so
+	// an integration run can claim faster; it is not a tuning knob, and
+	// the Helm chart does not set it.
+	GenAIClaimInterval time.Duration
 }
 
 // Load reads configuration from environment variables.
@@ -36,6 +43,10 @@ func Load() Config {
 		Env:                 envOrDefault("FLIGHTDECK_ENV", "development"),
 		ShutdownTimeoutSecs: envIntOrDefault("SHUTDOWN_TIMEOUT_SECS", 30),
 		RateLimitPerMinute:  envIntOrDefault("FLIGHTDECK_RATE_LIMIT_PER_MINUTE", 1000),
+		GenAIClaimInterval:  time.Duration(envIntOrDefault("FLIGHTDECK_GENAI_CLAIM_INTERVAL_MS", 0)) * time.Millisecond,
+	}
+	if cfg.GenAIClaimInterval < 0 {
+		panic("environment variable FLIGHTDECK_GENAI_CLAIM_INTERVAL_MS must not be negative")
 	}
 	return cfg
 }

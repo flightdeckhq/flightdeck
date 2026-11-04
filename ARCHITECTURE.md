@@ -326,6 +326,7 @@ flightdeck/
 │   │   │   ├── otlp_decode.go  # OTLP limits: exact gzip inflate, decode-cost estimate, decode slots
 │   │   │   ├── otlp_json.go    # OTLP JSON decoding (streaming in-place hex id rewrite)
 │   │   │   ├── otlp_dialect.go # OTLPDialect: decoded export request → events to publish + rejected count
+│   │   │   ├── otlp_publish.go # The receiver's publish path (token stamp, attachment check, start sequence), shared with the GenAI assembler
 │   │   │   ├── ratelimit.go    # Per-token sliding-window rate limiter (in-memory, keyed by token hash; auth runs first)
 │   │   │   └── (Swagger UI route)
 │   │   ├── auth/token.go       # Bearer token validation against access_tokens
@@ -333,6 +334,7 @@ flightdeck/
 │   │   ├── session/store.go    # Synchronous attach-on-session_start and the start-sequence stamp (writer)
 │   │   ├── otlpstage/store.go  # OTLP GenAI staging: stage records, claim due traces under a lease, load, mark assembled, sweeps
 │   │   ├── genai/              # OTLP GenAI mapping, pure (no I/O): scope table, span/log record → content-free fact, trace index, identity, Resolve (trace → events)
+│   │   ├── assembler/assembler.go # OTLP GenAI assembler: claim due traces, completeness, chunked publish under lease renewal, mark, sweeps
 │   │   └── directive/store.go  # Pending directive lookup (atomic UPDATE...RETURNING)
 │   └── tests/
 │       ├── handler_test.go
@@ -3511,10 +3513,24 @@ is not renewed, released or marked even when the same process claims
 the trace again. With each renewal, the first chunk's included, the
 assembler re-reads the trace's capture posture, and once a record
 without capture has turned it off it publishes none of the content it
-loaded. A trace claimed before it is complete (a Google ADK trace
+loaded: it maps the rest of the trace again as if capture were off,
+so the sessions it starts after that carry `capture_prompts=false`
+and a failed tool's message is `<redacted>`. A trace claimed before it is complete (a Google ADK trace
 still missing log records) is released to be due again, never later
 than 24 hours after its first record, nor later than a record staged
-during the claim made it due. A `quiet` or `max_hold` assembly treats an agent whose chain
+during the claim made it due: 30 seconds after its root, or 3 seconds
+after its next record, whichever comes first, rather than polled. A
+trace claimed before its own timer (one a failed publish released to be
+retried) is released to that timer, so it is never judged `quiet` or
+`complete` early. A publish that fails (the message bus is down)
+releases the trace, marking nothing, to be retried a second later; the
+records are durable, so exporters are not affected. A session's first
+`session_start` skips the attachment check: its id is new to every row
+except one an earlier attempt at the same assembly started, whose
+copy the worker drops, so only a re-attaching start runs it. On
+shutdown an assembler stops claiming, finishes the chunk it is
+publishing, and releases its lease without marking, so another process
+assembles the trace at once and publishes the same ids. A `quiet` or `max_hold` assembly treats an agent whose chain
 of ancestors is cut by a missing span as a root. An event dated more
 than 48 hours before its assembly fails validation (see Validation
 rules), is logged with its reason, and the rest of the trace is
@@ -3755,7 +3771,9 @@ following as late records.
 
 **Operations.** Each assembly is logged once (trace, reason, records,
 events, lag and chunks), with a warning for an expired lease or a
-refused event. The staging tables answer what is waiting: the pending
+refused event. With nothing staged, an assembler's work is one claim a
+second, an index probe of the empty set of pending traces, and the two
+sweeps. The staging tables answer what is waiting: the pending
 traces, the oldest pending trace's age, and the reasons traces were
 assembled. A sensor and an OTLP exporter reporting the same run report
 it twice, and nothing detects it, so an agent should report one way.

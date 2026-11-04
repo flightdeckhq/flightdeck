@@ -21,10 +21,12 @@ test.describe("T145 — A run glyph in the per-agent modal opens the run drawer"
 
 		// Find the agent's row by its name, then open its modal from the
 		// STATUS chip.
+		// One wait for the agent's own row: the table lists every agent the
+		// stack has seen, and on a long-lived dev stack the first rows can
+		// take a while to land.
 		const rows = page.locator('[data-testid^="agent-row-"][data-agent-id]');
-		await expect.poll(async () => rows.count(), { timeout: 10_000 }).toBeGreaterThan(0);
 		const agentRow = rows.filter({ hasText: AGENT_NAME }).first();
-		await expect(agentRow).toBeVisible({ timeout: 10_000 });
+		await expect(agentRow).toBeVisible({ timeout: 15_000 });
 		const agentId = await agentRow.getAttribute("data-agent-id");
 		expect(agentId).not.toBeNull();
 		await page.locator(`[data-testid="agent-row-open-swimlane-modal-${agentId}"]`).click();

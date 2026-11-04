@@ -169,6 +169,19 @@ describe("mergeRunEvents / mergeIntoEventsCache", () => {
     expect(merged?.[0]).toBe(held[0]);
   });
 
+  it("puts a single late live event in its place and drops one it already holds", () => {
+    const held = [
+      ev("a", "s", "2026-05-15T12:00:01Z"),
+      ev("c", "s", "2026-05-15T12:00:03Z"),
+      ev("d", "s", "2026-05-15T12:00:04Z"),
+    ];
+    expect(ids(mergeRunEvents(held, [ev("b", "s", "2026-05-15T12:00:02Z")]))).toEqual(["a", "b", "c", "d"]);
+    expect(ids(mergeRunEvents(held, [ev("z", "s", "2026-05-15T12:00:00Z")]))).toEqual(["z", "a", "c", "d"]);
+    expect(mergeRunEvents(held, [ev("c", "s", "2026-05-15T12:00:03Z")])).toBeNull();
+    expect(mergeRunEvents(held, [ev("d", "s", "2026-05-15T12:00:04Z")])).toBeNull();
+    expect(ids(mergeRunEvents([], [ev("a", "s", "2026-05-15T12:00:01Z")]))).toEqual(["a"]);
+  });
+
   it("groups by run and reports only the runs whose list changed", () => {
     eventsCache.set("x", [ev("x1", "x", "2026-05-15T12:00:00Z")]);
     const changed = mergeIntoEventsCache([

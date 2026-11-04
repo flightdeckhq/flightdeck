@@ -23,6 +23,8 @@ export function mergeRunEvents(
   incoming: readonly AgentEvent[],
 ): AgentEvent[] | null {
   const have = existing ?? [];
+  // A single live event: no id set over the whole run and no sort.
+  if (incoming.length === 1) return mergeOneEvent(have, incoming[0]!);
   const seen = new Set(have.map((e) => e.id));
   const fresh: AgentEvent[] = [];
   for (const e of incoming) {
@@ -38,6 +40,31 @@ export function mergeRunEvents(
     return [...have, ...ordered];
   }
   return sortByEventOrder([...have, ...ordered]);
+}
+
+/**
+ * ``mergeRunEvents`` for one event, the live path's case: a run gets
+ * one event per WebSocket message, often in bursts. An event after the
+ * run's last one (almost always) is appended; one that is not is put in
+ * its place by binary search. Either way the run costs one copy, not an
+ * id set and a sort, so a burst into a long run stays linear per event.
+ */
+function mergeOneEvent(have: readonly AgentEvent[], event: AgentEvent): AgentEvent[] | null {
+  const last = have[have.length - 1];
+  if (last === undefined) return [event];
+  const vsLast = compareEventOrder(event, last);
+  if (vsLast > 0) return [...have, event];
+  if (vsLast === 0 || have.some((e) => e.id === event.id)) return null;
+  let lo = 0;
+  let hi = have.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (compareEventOrder(have[mid]!, event) < 0) lo = mid + 1;
+    else hi = mid;
+  }
+  const next = have.slice();
+  next.splice(lo, 0, event);
+  return next;
 }
 
 /** Merge one run's events into the cache by id. Returns whether its
@@ -86,7 +113,14 @@ export function mergeFeedEvents(
     fresh.push(fe);
   }
   if (fresh.length === 0) return prev as FeedEvent[];
-  const merged = [...prev, ...fresh].sort((a, b) => a.arrivedAt - b.arrivedAt);
+  // Live events arrive in order: append without sorting the feed.
+  const last = prev[prev.length - 1];
+  const inOrder = fresh.every(
+    (fe, i) => fe.arrivedAt >= (i === 0 ? (last?.arrivedAt ?? -Infinity) : fresh[i - 1]!.arrivedAt),
+  );
+  const merged = inOrder
+    ? [...prev, ...fresh]
+    : [...prev, ...fresh].sort((a, b) => a.arrivedAt - b.arrivedAt);
   return merged.length > cap ? merged.slice(-cap) : merged;
 }
 

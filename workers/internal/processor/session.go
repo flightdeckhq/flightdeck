@@ -41,7 +41,7 @@ type SessionProcessor struct {
 	// (attributeSession, when readOwner reports one) goes through the
 	// writer, which the database-backed tests exercise.
 	lookupSession func(ctx context.Context, sessionID string) (sessionLookup, error)
-	settleEnd     func(ctx context.Context, sessionID string, closedSeq uint64) (applied, closedNow bool, err error)
+	settleEnd     func(ctx context.Context, sessionID string, closedSeq uint64, endedAt time.Time) (applied, closedNow bool, err error)
 	readOwner     func(ctx context.Context, sessionID string) (ownerless bool, err error)
 }
 
@@ -62,11 +62,24 @@ func (sp *SessionProcessor) lookupState(ctx context.Context, sessionID string) (
 	return sp.sessionLookupState(ctx, sessionID)
 }
 
-func (sp *SessionProcessor) settleRow(ctx context.Context, sessionID string, closedSeq uint64) (applied, closedNow bool, err error) {
+func (sp *SessionProcessor) settleRow(ctx context.Context, sessionID string, closedSeq uint64, endedAt time.Time) (applied, closedNow bool, err error) {
 	if sp.settleEnd != nil {
-		return sp.settleEnd(ctx, sessionID, closedSeq)
+		return sp.settleEnd(ctx, sessionID, closedSeq, endedAt)
 	}
-	return sp.w.SettleSessionEnd(ctx, sessionID, closedSeq)
+	return sp.w.SettleSessionEnd(ctx, sessionID, closedSeq, endedAt)
+}
+
+// eventTime is the time the event's client dated it, or the zero time
+// when its timestamp does not parse. Only an assembled OpenTelemetry
+// session's start and end are dated by it (the writer caps it at the
+// worker's clock, and reads the zero time as the clock); every other
+// session takes the worker's clock.
+func eventTime(e consumer.EventPayload) time.Time {
+	ts, err := time.Parse(time.RFC3339, e.Timestamp)
+	if err != nil {
+		return time.Time{}
+	}
+	return ts
 }
 
 // rowOwnerless reports whether the session row exists and no agent owns
@@ -523,6 +536,7 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 		e.ParentSessionID, e.AgentRole,
 		e.CapturePrompts,
 		e.StreamSeq,
+		eventTime(e),
 	)
 	if err != nil {
 		return fmt.Errorf("session start: %w", err)
@@ -809,7 +823,7 @@ func (sp *SessionProcessor) applySessionEnd(ctx context.Context, e consumer.Even
 	// between), so a second miss means the row really predates this end
 	// or is closed by an end at or past it.
 	for attempt := 0; ; attempt++ {
-		applied, closedNow, err := sp.settleRow(ctx, e.SessionID, e.StreamSeq)
+		applied, closedNow, err := sp.settleRow(ctx, e.SessionID, e.StreamSeq, eventTime(e))
 		if err != nil {
 			return false, err
 		}

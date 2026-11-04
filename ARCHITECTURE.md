@@ -5311,9 +5311,16 @@ module-level cache is keyed by the composite
 `(agent_id, period, bucket)` tuple so the table's `7d / day`
 view and any other surface (e.g. the per-agent swimlane
 modal) caching a different period coexist without colliding.
-The hook patches the matching agent's `totals` and most-recent
-series bucket from the WebSocket event and ticks a per-agent
-counter so only that row's memoised cells invalidate.
+The hook patches the agent a WebSocket event belongs to: the
+`agent_id` of the session the broadcast carries with the event, else
+the fleet row that holds the event's run (an event carries its
+flavor, a label, and no agent id; one neither ties to an agent is
+left to the next fetch). It adds the `tokens_total` of a `post_call`,
+an `embeddings` call or a failed stream's `llm_error` to
+`totals.tokens` and the most-recent series bucket, as the summary
+endpoint counts them, counts an `llm_error` in `errors`, and raises
+`latency_p95_ms` to a `post_call`'s latency above it, then ticks a
+per-agent counter so only that row's memoised cells invalidate.
 
 The agent drawer's open/closed state is URL-backed via the
 `?agent_drawer=<agent_id>` query param: a `/agents` row click

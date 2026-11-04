@@ -97,6 +97,12 @@ All notable changes to Flightdeck are documented here.
   per-agent summary now also count embeddings calls, which the session
   totals and the cost already did, so every token total agrees
   ([#172](https://github.com/flightdeckhq/flightdeck/issues/172)).
+- **The Agents table's token, error and latency cells update live.**
+  The live patch looked up an event's agent by the event's flavor, a
+  label that never equals an agent id, so the cells changed only when
+  the page fetched the summaries again. It now takes the agent from the
+  session the live stream sends with the event, or from the fleet row
+  that holds the event's run.
 - **Fleet swimlane circles sit on their row's centre line.** Circles
   were shifted up twice (a CSS translate and an inline transform), so
   they sat about 11 px high on every row, crowded the top-edge run

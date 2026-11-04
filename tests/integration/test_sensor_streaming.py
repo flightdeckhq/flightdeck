@@ -408,6 +408,18 @@ def test_anthropic_error_event_mid_stream_lands_one_llm_error(
             for e in _query_events_for_flavor(flavor)
             if e["event_type"] == "post_call"
         ] == []
+        # The provider billed what the stream delivered: the worker stores
+        # it as the llm_error's token counts, billed as the session's calls
+        # (none yet, so the sensor client's default), and adds it to the
+        # session's total.
+        partial = err["payload"]["error"]
+        billed = partial["partial_tokens_input"] + partial.get(
+            "partial_tokens_output", 0
+        )
+        assert err["tokens_input"] == partial["partial_tokens_input"]
+        assert err["tokens_total"] == billed
+        assert err["billing_mode"] == "metered"
+        assert (_query_session_for_flavor(flavor) or {}).get("tokens_used") == billed
 
 
 def test_anthropic_rate_limit_on_stream_open_raises_at_create(

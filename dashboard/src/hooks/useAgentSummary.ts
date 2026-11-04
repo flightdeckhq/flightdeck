@@ -45,12 +45,33 @@ function subscribeToCache(listener: () => void): () => void {
     fleetUnsubscribe = useFleetStore.subscribe((state, prev) => {
       const event = state.lastEvent;
       if (!event || event === prev.lastEvent) return;
-      if (patchAgentSummaryFromEvent(event.flavor, event)) notifyCacheChanged();
+      const agentId = agentIdOfLiveEvent(state, event);
+      if (agentId && patchAgentSummaryFromEvent(agentId, event)) notifyCacheChanged();
     });
   }
   return () => {
     cacheListeners.delete(listener);
   };
+}
+
+/**
+ * The agent a live event belongs to: the `agent_id` of the session the
+ * broadcast carried with it, else the fleet row that holds the event's
+ * run (rows are keyed by agent id). Null when neither knows it; the
+ * patch is then skipped and the next fetch of the summary has the event.
+ * The event's own `flavor` is a label, not an agent id, and is not used.
+ */
+function agentIdOfLiveEvent(
+  state: ReturnType<typeof useFleetStore.getState>,
+  event: AgentEvent,
+): string | null {
+  if (state.lastEventAgentId) return state.lastEventAgentId;
+  for (const row of state.flavors) {
+    if (row.sessions.some((s) => s.session_id === event.session_id)) {
+      return row.flavor;
+    }
+  }
+  return null;
 }
 
 interface SummaryOpts {

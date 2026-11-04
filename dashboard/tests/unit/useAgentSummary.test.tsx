@@ -3,6 +3,7 @@ import { renderHook, waitFor, act } from "@testing-library/react";
 import type {
   AgentEvent,
   AgentSummaryResponse,
+  FlavorSummary,
 } from "@/lib/types";
 
 // Hoisted mock — vi.mock fires before any of the test file's
@@ -55,12 +56,43 @@ import { useFleetStore } from "@/store/fleet";
 
 beforeEach(() => {
   __resetAgentSummaryCacheForTests();
-  useFleetStore.setState({ lastEvent: null });
+  useFleetStore.setState({ lastEvent: null, lastEventAgentId: null, flavors: [] });
 });
 
 afterEach(() => {
   vi.restoreAllMocks();
 });
+
+/** Deliver a live event as useFleet does: the broadcast carries the
+ *  event and its session, whose agent_id goes with the event. */
+function deliver(event: AgentEvent, agentId: string | null): void {
+  useFleetStore.getState().setLastEvent(event, agentId);
+}
+
+/** A live event with a realistic flavor: a label, never an agent id. */
+function liveEvent(fields: Partial<AgentEvent>): AgentEvent {
+  return {
+    id: `e-${Math.random().toString(36).slice(2)}`,
+    session_id: "s1",
+    flavor: "research-agent",
+    event_type: "post_call",
+    occurred_at: new Date().toISOString(),
+    has_content: false,
+    tokens_cache_read: 0,
+    tokens_cache_creation: 0,
+    ...fields,
+  } as AgentEvent;
+}
+
+async function loaded(agentId: string) {
+  const hook = renderHook(() =>
+    useAgentSummary(agentId, { period: "7d", bucket: "day" }),
+  );
+  await waitFor(() => {
+    expect(hook.result.current.summary).not.toBeNull();
+  });
+  return hook.result;
+}
 
 describe("useAgentSummary", () => {
   it("fetches nothing for an empty agent id and is not loading", async () => {
@@ -102,32 +134,43 @@ describe("useAgentSummary", () => {
     expect(fetchAgentSummaryMock).toHaveBeenCalledTimes(1);
   });
 
-  it("patches totals when a post_call event lands for the agent", async () => {
-    const { result } = renderHook(() =>
-      useAgentSummary("agent-3", { period: "7d", bucket: "day" }),
-    );
-    await waitFor(() => {
-      expect(result.current.summary).not.toBeNull();
-    });
+  it("patches the agent the broadcast's session names", async () => {
+    const result = await loaded("agent-3");
     const before = result.current.summary!.totals.tokens;
-
-    const event: AgentEvent = {
-      id: "e1",
-      session_id: "s1",
-      flavor: "agent-3",
-      event_type: "post_call",
-      occurred_at: new Date().toISOString(),
-      has_content: false,
-      tokens_cache_read: 0,
-      tokens_cache_creation: 0,
-      tokens_total: 50,
-    };
     act(() => {
-      useFleetStore.setState({ lastEvent: event });
+      deliver(liveEvent({ tokens_total: 50 }), "agent-3");
     });
     await waitFor(() => {
       expect(result.current.summary!.totals.tokens).toBe(before + 50);
     });
+  });
+
+  it("finds the agent from the fleet row that holds the run when the broadcast names none", async () => {
+    const result = await loaded("agent-9");
+    const before = result.current.summary!.totals.tokens;
+    useFleetStore.setState({
+      flavors: [
+        { flavor: "agent-other", sessions: [{ session_id: "s-other" }] },
+        { flavor: "agent-9", sessions: [{ session_id: "s-9" }] },
+      ] as unknown as FlavorSummary[],
+    });
+    act(() => {
+      deliver(liveEvent({ session_id: "s-9", tokens_total: 70 }), null);
+    });
+    await waitFor(() => {
+      expect(result.current.summary!.totals.tokens).toBe(before + 70);
+    });
+  });
+
+  it("skips an event no broadcast or fleet row ties to an agent, whatever its flavor", async () => {
+    const result = await loaded("agent-6");
+    const before = result.current.summary!.totals.tokens;
+    // A flavor that happens to equal the agent id is still not a key.
+    await act(async () => {
+      deliver(liveEvent({ flavor: "agent-6", session_id: "s-unknown", tokens_total: 40 }), null);
+    });
+    await act(async () => {});
+    expect(result.current.summary!.totals.tokens).toBe(before);
   });
 
   it("applies a live event once however many hooks show the agent", async () => {
@@ -141,22 +184,18 @@ describe("useAgentSummary", () => {
       expect(row.current.summary).not.toBeNull();
       expect(modal.current.summary).not.toBeNull();
     });
-    const event = {
-      id: "e-once",
-      session_id: "s-1",
-      flavor: "agent-1",
-      event_type: "post_call",
-      model: "claude-sonnet-4-6",
-      tokens_input: 30,
-      tokens_output: 20,
-      tokens_total: 50,
-      latency_ms: 10,
-      tool_name: null,
-      has_content: false,
-      occurred_at: "2026-05-14T12:00:00Z",
-    } as unknown as AgentEvent;
     act(() => {
-      useFleetStore.setState({ lastEvent: event });
+      deliver(
+        liveEvent({
+          id: "e-once",
+          model: "claude-sonnet-4-6",
+          tokens_input: 30,
+          tokens_output: 20,
+          tokens_total: 50,
+          latency_ms: 10,
+        }),
+        "agent-1",
+      );
     });
     await waitFor(() => {
       expect(row.current.summary!.totals.tokens).toBe(150);
@@ -165,27 +204,11 @@ describe("useAgentSummary", () => {
   });
 
   it("patches errors on llm_error events", async () => {
-    const { result } = renderHook(() =>
-      useAgentSummary("agent-4", { period: "7d", bucket: "day" }),
-    );
-    await waitFor(() => {
-      expect(result.current.summary).not.toBeNull();
-    });
+    const result = await loaded("agent-4");
     const beforeErrors = result.current.summary!.totals.errors;
-
-    const event: AgentEvent = {
-      id: "e2",
-      session_id: "s1",
-      flavor: "agent-4",
-      event_type: "llm_error",
-      occurred_at: new Date().toISOString(),
-      has_content: false,
-      tokens_cache_read: 0,
-      tokens_cache_creation: 0,
-    };
     const beforeTokens = result.current.summary!.totals.tokens;
     act(() => {
-      useFleetStore.setState({ lastEvent: event });
+      deliver(liveEvent({ event_type: "llm_error" }), "agent-4");
     });
     await waitFor(() => {
       expect(result.current.summary!.totals.errors).toBe(beforeErrors + 1);
@@ -195,12 +218,7 @@ describe("useAgentSummary", () => {
   });
 
   it("counts a failed stream's billed tokens from its llm_error", async () => {
-    const { result } = renderHook(() =>
-      useAgentSummary("agent-7", { period: "7d", bucket: "day" }),
-    );
-    await waitFor(() => {
-      expect(result.current.summary).not.toBeNull();
-    });
+    const result = await loaded("agent-7");
     const totals = result.current.summary!.totals;
     const series = result.current.summary!.series;
     const beforeTokens = totals.tokens;
@@ -209,21 +227,16 @@ describe("useAgentSummary", () => {
 
     // The worker stores the stream's partial tokens as the llm_error's
     // token columns, which is what the event row carries.
-    const event: AgentEvent = {
-      id: "e-failed-stream",
-      session_id: "s1",
-      flavor: "agent-7",
-      event_type: "llm_error",
-      occurred_at: new Date().toISOString(),
-      has_content: false,
-      tokens_input: 1500,
-      tokens_output: 240,
-      tokens_total: 1740,
-      tokens_cache_read: 0,
-      tokens_cache_creation: 0,
-    };
     act(() => {
-      useFleetStore.setState({ lastEvent: event });
+      deliver(
+        liveEvent({
+          event_type: "llm_error",
+          tokens_input: 1500,
+          tokens_output: 240,
+          tokens_total: 1740,
+        }),
+        "agent-7",
+      );
     });
     await waitFor(() => {
       expect(result.current.summary!.totals.tokens).toBe(beforeTokens + 1740);
@@ -236,35 +249,24 @@ describe("useAgentSummary", () => {
   });
 
   it("counts an embeddings call's tokens like the backend", async () => {
-    const { result } = renderHook(() =>
-      useAgentSummary("agent-8", { period: "7d", bucket: "day" }),
-    );
-    await waitFor(() => {
-      expect(result.current.summary).not.toBeNull();
-    });
+    const result = await loaded("agent-8");
     const before = result.current.summary!.totals;
     const beforeTokens = before.tokens;
     const beforeErrors = before.errors;
     const beforeP95 = before.latency_p95_ms;
-
-    const event: AgentEvent = {
-      id: "e-embeddings",
-      session_id: "s1",
-      flavor: "agent-8",
-      event_type: "embeddings",
-      occurred_at: new Date().toISOString(),
-      has_content: false,
-      tokens_input: 300,
-      tokens_output: 0,
-      tokens_total: 300,
-      // Above the cached p95: an embeddings call's latency is not one
-      // of the summary's call latencies.
-      latency_ms: 5000,
-      tokens_cache_read: 0,
-      tokens_cache_creation: 0,
-    };
     act(() => {
-      useFleetStore.setState({ lastEvent: event });
+      deliver(
+        liveEvent({
+          event_type: "embeddings",
+          tokens_input: 300,
+          tokens_output: 0,
+          tokens_total: 300,
+          // Above the cached p95: an embeddings call's latency is not
+          // one of the summary's call latencies.
+          latency_ms: 5000,
+        }),
+        "agent-8",
+      );
     });
     await waitFor(() => {
       expect(result.current.summary!.totals.tokens).toBe(beforeTokens + 300);
@@ -274,33 +276,16 @@ describe("useAgentSummary", () => {
   });
 
   it("ignores events for OTHER agents", async () => {
-    const { result } = renderHook(() =>
-      useAgentSummary("agent-5", { period: "7d", bucket: "day" }),
-    );
-    await waitFor(() => {
-      expect(result.current.summary).not.toBeNull();
-    });
+    const result = await loaded("agent-5");
     const before = result.current.summary!.totals.tokens;
-
-    const event: AgentEvent = {
-      id: "e3",
-      session_id: "s1",
-      flavor: "different-agent",
-      event_type: "post_call",
-      occurred_at: new Date().toISOString(),
-      has_content: false,
-      tokens_cache_read: 0,
-      tokens_cache_creation: 0,
-      tokens_total: 999,
-    };
     await act(async () => {
-      useFleetStore.setState({ lastEvent: event });
+      deliver(liveEvent({ tokens_total: 999 }), "different-agent");
     });
     // Flush queued effects via act so the WS subscription has its
-    // chance to fire (and exit early because the event's flavor
-    // doesn't match this hook's agent_id). qa.md forbids raw
-    // setTimeout for synchronization; act() drains the microtask
-    // queue deterministically.
+    // chance to fire (and exit early because the event belongs to
+    // another agent). qa.md forbids raw setTimeout for
+    // synchronization; act() drains the microtask queue
+    // deterministically.
     await act(async () => {});
     expect(result.current.summary!.totals.tokens).toBe(before);
   });

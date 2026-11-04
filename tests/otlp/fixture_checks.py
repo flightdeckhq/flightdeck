@@ -243,8 +243,9 @@ def problems(path: Path, machine: Mapping[str, str] | None = None) -> list[str]:
 def directory_problems(
     scenario: Path, machine: Mapping[str, str] | None = None
 ) -> list[str]:
-    """problems() for every file of a scenario, and that the manifest
-    lists exactly the request files present."""
+    """problems() for every file of a scenario, the manifest included (it
+    can hold what the provider answered), and that the manifest lists
+    exactly the request files present."""
     out: list[str] = []
     manifest = json.loads((scenario / "manifest.json").read_text())
     listed = {r["file"] for r in manifest["requests"]}
@@ -253,6 +254,6 @@ def directory_problems(
         out.append(
             f"{scenario.name}: manifest lists {sorted(listed ^ present)} differently from the files"
         )
-    for name in sorted(present):
+    for name in [*sorted(present), "manifest.json"]:
         out.extend(problems(scenario / name, machine))
     return out

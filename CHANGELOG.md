@@ -82,6 +82,16 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **Captured content survives several worker replicas.** The workers
+  share one NATS consumer (the Helm chart runs two), so one replica
+  could store a call's content before another had stored its session's
+  `session_start`, and the content was dropped as if capture were off.
+  A call carrying content now waits for its session's capture posture,
+  redelivered after one second and after two, before the worker falls
+  back. A late call of a session assembled from OpenTelemetry GenAI
+  spans waits the same way for its re-attaching `session_start`, so its
+  tokens count; every other call that reaches a closed session is
+  skipped at once, as before.
 - **Tokens of a stream that failed midway count in the server totals.**
   The provider bills the tokens a stream delivered before it failed, and
   the sensor reports them on the `llm_error`

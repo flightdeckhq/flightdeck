@@ -112,16 +112,26 @@ func (sp *SessionProcessor) rowOwnerless(ctx context.Context, sessionID string) 
 // sessions only). All other states / failure modes fall open so the
 // event's downstream UPDATE + InsertEvent have a chance to succeed.
 //
+// The one exception to skipping a closed row at once is a late call of
+// an assembled OpenTelemetry session (awaitsReattachment): the guard
+// then returns consumer.ErrRetryLater, so the event is redelivered after
+// the re-attaching session_start another worker replica holds has
+// landed. The same read supplies the row's closed_seq and context, so
+// the check costs no extra query.
+//
 // HandleSessionEnd does its own lookup instead -- closing a stale/lost
 // session should transition directly via SettleSessionEnd, and we do
 // not lazy-create on session_end (a teardown signal for a session we
 // never saw should not retroactively manifest a closed row).
-func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.EventPayload) (skip bool) {
+func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.EventPayload) (skip bool, err error) {
 	var state string
-	var unattributed bool
-	err := sp.pool.QueryRow(ctx,
-		"SELECT state, agent_id IS NULL FROM sessions WHERE session_id = $1::uuid", e.SessionID,
-	).Scan(&state, &unattributed)
+	var unattributed, assembled bool
+	var closedSeq int64
+	err = sp.pool.QueryRow(ctx, `
+		SELECT state, agent_id IS NULL, COALESCE(closed_seq, 0),
+		       COALESCE(context ? 'otel_trace_id', false)
+		FROM sessions WHERE session_id = $1::uuid`, e.SessionID,
+	).Scan(&state, &unattributed, &closedSeq, &assembled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Session never seen. Lazy-create from event fields.
 		occurredAt, tsErr := time.Parse(time.RFC3339, e.Timestamp)
@@ -143,7 +153,7 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 				"event_type", e.EventType,
 				"err", cErr,
 			)
-			return false
+			return false, nil
 		}
 		if created {
 			slog.Info("lazy-created session on event",
@@ -158,7 +168,7 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 			sp.attributeSession(ctx, e)
 		}
 		sp.upgradeContextIfPresent(ctx, e)
-		return false
+		return false, nil
 	}
 	if err != nil {
 		// Non-ErrNoRows DB error -- fail open, like the rest of this
@@ -166,7 +176,7 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 		// have no confirmation the row exists, so the UPDATE would
 		// no-op silently, and a transient DB blip should not trigger
 		// extra write pressure.
-		return false
+		return false, nil
 	}
 	if unattributed {
 		sp.attributeSession(ctx, e)
@@ -189,12 +199,15 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 	}
 	switch state {
 	case "closed":
+		if awaitsReattachment(e, closedSeq, assembled) {
+			return false, consumer.ErrRetryLater
+		}
 		metrics.IncrDropped(metrics.ReasonClosedSessionSkip)
 		slog.Warn("skipping event for closed session",
 			"session_id", e.SessionID,
 			"event_type", e.EventType,
 		)
-		return true
+		return true, nil
 	case "stale", "lost":
 		slog.Warn("reviving stale/lost session on event",
 			"session_id", e.SessionID,
@@ -216,11 +229,47 @@ func (sp *SessionProcessor) handleSessionGuard(ctx context.Context, e consumer.E
 			)
 		}
 		sp.upgradeContextIfPresent(ctx, e)
-		return false
+		return false, nil
 	default:
 		sp.upgradeContextIfPresent(ctx, e)
+		return false, nil
+	}
+}
+
+// awaitsReattachment reports whether a call that found its session
+// closed should be redelivered rather than skipped. An assembled
+// OpenTelemetry session (its context carries otel_trace_id) gets its
+// late calls wrapped in a re-attaching session_start and a session_end;
+// every worker replica pulls from the one durable consumer, so the call
+// can reach this replica while the start waits in another's lane. The
+// row is then still closed by the previous run's end, with the call's
+// stream sequence above closed_seq, and the call's tokens would not be
+// added. Redelivered, the call finds the row reopened by the start, or
+// closed again by the new end with the call before it, and its tokens
+// count.
+//
+// Only token-bearing calls wait (a post_call, embeddings or llm_error
+// with tokens, the ones addTokensBeforeEnd would count), only on
+// assembled sessions, and only with both sequences known. Every other
+// event on a closed row, and every other client's straggler after its
+// end, is skipped at once. On the last delivery the budget allows the
+// call never waits: it takes the closed-session skip, with its event
+// row stored.
+func awaitsReattachment(e consumer.EventPayload, closedSeq int64, assembled bool) bool {
+	if e.FinalDelivery || !assembled || !tokenBearing(e) {
 		return false
 	}
+	return closedSeq > 0 && e.StreamSeq > uint64(closedSeq)
+}
+
+// tokenBearing reports whether the event is a model call that adds
+// tokens to its session.
+func tokenBearing(e consumer.EventPayload) bool {
+	switch e.EventType {
+	case "post_call", "embeddings", "llm_error":
+		return e.TokensTotal != nil && *e.TokensTotal > 0
+	}
+	return false
 }
 
 // attributeSession gives a session row that no agent owns yet the
@@ -493,7 +542,11 @@ func (sp *SessionProcessor) HandleSessionStart(ctx context.Context, e consumer.E
 
 // HandleHeartbeat updates last_seen_at on the session.
 func (sp *SessionProcessor) HandleHeartbeat(ctx context.Context, e consumer.EventPayload) error {
-	if sp.handleSessionGuard(ctx, e) {
+	skip, err := sp.handleSessionGuard(ctx, e)
+	if err != nil {
+		return err
+	}
+	if skip {
 		return nil
 	}
 	if err := sp.w.UpdateLastSeen(ctx, e.SessionID); err != nil {
@@ -547,7 +600,13 @@ func (sp *SessionProcessor) bumpParentIfPresent(ctx context.Context, e consumer.
 // are logged but do not abort processing -- the token update is
 // load-bearing.
 func (sp *SessionProcessor) HandlePostCall(ctx context.Context, e consumer.EventPayload) error {
-	if sp.handleSessionGuard(ctx, e) {
+	skip, err := sp.handleSessionGuard(ctx, e)
+	if err != nil {
+		// consumer.ErrRetryLater: a late call of an assembled session
+		// waits for its re-attaching session_start.
+		return err
+	}
+	if skip {
 		return sp.addTokensBeforeEnd(ctx, e)
 	}
 	if e.Model != "" {

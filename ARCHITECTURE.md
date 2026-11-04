@@ -3885,17 +3885,21 @@ takes its times from its events, each capped at the worker's clock:
   start's timestamp. One that finds a row its session has never started
   (a parent stub, whose `started_at` is its child's start, or a row
   lazily created by another event, whose `started_at` is that event's
-  time; neither has a `context` yet) replaces that placeholder with the
-  start's timestamp. One that finds a row its session already started
-  (a re-attachment, whose `context` already carries `otel_trace_id`)
-  keeps the row's `started_at`.
-- A `session_end` that closes the row sets `ended_at` to the end's
-  timestamp.
+  time; neither has a capture posture yet, which every `session_start`
+  writes) replaces that placeholder with the start's timestamp. One
+  that finds a row its session already started (a re-attachment, whose
+  `context` already carries `otel_trace_id`) keeps the row's
+  `started_at`.
+- A `session_end` that closes a row whose `context` carries
+  `otel_trace_id` sets `ended_at` to the end's timestamp. An end that
+  closes a lazily created row before its session's start is written
+  (the start waiting on another worker replica) takes the worker's
+  clock, as the row does not yet say it is assembled.
 
 Every other session takes both from the worker's clock when it writes
 the `session_start` and the `session_end`, and a lazily created row or
-a parent stub keeps its placeholder `started_at` until then (see Three
-revival scenarios). `last_seen_at` is the worker's clock on every write
+a parent stub keeps its placeholder `started_at` when its
+`session_start` is written (see Three revival scenarios). `last_seen_at` is the worker's clock on every write
 except the one that lazily creates a row or a parent stub, which sets
 it to the same time as that row's `started_at`.
 

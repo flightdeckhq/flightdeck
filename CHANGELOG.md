@@ -90,12 +90,11 @@ All notable changes to Flightdeck are documented here.
   `llm_error`'s token counts, so they reach the session's and the agent's
   token totals, the analytics `tokens`, `estimated_cost`,
   `parent_token_sum` and `child_token_sum` metrics, the per-agent summary
-  and the dashboard's token totals. They are billed as the session's
-  calls are (a `local` or `subscription` session stays out of the cost)
-  and priced at the model's input and output rates. Errors stored before
-  this release are not recounted. The analytics `tokens` metric and the
-  per-agent summary now also count embeddings calls, which the session
-  totals and the cost already did, so every token total agrees
+  and the dashboard's token totals. The sensor stamps the call's billing
+  mode on such an `llm_error` (a `local` or `subscription` call stays out
+  of the cost; an error from an older sensor is billed as its session's
+  calls are), and the tokens are priced at the model's input and output
+  rates. Errors stored before this release are not recounted
   ([#172](https://github.com/flightdeckhq/flightdeck/issues/172)).
 - **The Agents table's token, error and latency cells update live.**
   The live patch looked up an event's agent by the event's flavor, a
@@ -303,6 +302,10 @@ All notable changes to Flightdeck are documented here.
 
 ### Changed
 
+- **The analytics `tokens` metric and the per-agent summary count
+  embeddings calls**, which the session and agent totals and the cost
+  already did, so every token total agrees
+  ([#172](https://github.com/flightdeckhq/flightdeck/issues/172)).
 - **The sensor patches each SDK when the application first imports it.**
   `import flightdeck_sensor` imported every installed SDK it can patch
   (and `patch()` the agent frameworks), so an application paid for

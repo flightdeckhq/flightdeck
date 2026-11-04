@@ -27,10 +27,15 @@ import (
 // llm_error carries none.
 const failedStreamFilter = "(e.event_type = 'llm_error' AND e.tokens_total > 0)"
 
-// costEventFilter restricts a query on events aliased e to the events
-// whose tokens estimated cost prices: the LLM calls (post_call,
-// embeddings) and the failed streams.
-const costEventFilter = "(e.event_type IN ('post_call', 'embeddings') OR " + failedStreamFilter + ")"
+// billedEventFilter restricts a query on events aliased e to the events
+// that carry provider-billed tokens: every post_call and embeddings call,
+// and the llm_error of every stream that failed after it was billed for
+// tokens. A failed stream sends no post_call, so no token is counted
+// twice. Every server-side total of tokens and cost reads the same set.
+const billedEventFilter = "(e.event_type IN ('post_call', 'embeddings') OR " + failedStreamFilter + ")"
+
+// costEventFilter restricts a query to the events estimated cost prices.
+const costEventFilter = billedEventFilter
 
 // subscriptionClientTypes are the client types whose billing_mode
 // default in the client type registry (contracts/client_types.json) is

@@ -520,11 +520,11 @@ it orders by arrival, not by the event time the views sort by).
 **Date:** 2026-11-02
 **Decision:** the worker copies an `llm_error`'s `error.partial_tokens_*`
 into its `tokens_input` / `tokens_output` / `tokens_total` (when the event
-sends no top-level counts) with the billing mode of the session's latest
-`post_call`, else the client type's default. Session and agent counters,
+sends no top-level counts). The sensor stamps the call's `billing_mode` on
+it; one without (an older sensor) takes the session's latest `post_call`'s,
+else the client type's default. Session and agent counters,
 the `tokens` metric, `estimated_cost` and the agent summary count those
-rows; no backfill: older rows keep NULL columns. The `tokens` metric and
-the summary also count `embeddings`, as the counters and cost do.
+rows (no backfill); `tokens` and the summary count `embeddings` too.
 **Why:** one stored value every reader already sums, the dashboard's
 client-side sums included; a failed stream sends no `post_call`. No
 recorded reason kept embeddings out of `tokens`.

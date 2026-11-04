@@ -1,9 +1,13 @@
 package processor
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"math"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,6 +134,26 @@ func TestApplyFailedStreamTokens(t *testing.T) {
 	}
 }
 
+// A partial count the token columns cannot hold, a string included, is
+// dropped with a warning naming the event, not silently.
+func TestApplyFailedStreamTokensWarnsWhenItDropsACount(t *testing.T) {
+	var buf bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	e := consumer.EventPayload{
+		ID: "ev-1", SessionID: "s-1", EventType: "llm_error",
+		Error: streamError(map[string]any{"partial_tokens_input": "100"}),
+	}
+	if applyFailedStreamTokens(&e) || e.TokensTotal != nil {
+		t.Fatalf("a string partial count was applied: %v", e.TokensTotal)
+	}
+	if !strings.Contains(buf.String(), "not counted") || !strings.Contains(buf.String(), "event_id=ev-1") {
+		t.Errorf("no warning naming the event: %q", buf.String())
+	}
+}
+
 // failedStreamFixture is a session of a flightdeck_sensor agent, started
 // through Process, for the DB-backed tests.
 type failedStreamFixture struct {
@@ -197,6 +221,21 @@ type storedError struct {
 	model          *string
 }
 
+// deref and derefInt print a nullable column's value, or NULL.
+func deref(p *string) string {
+	if p == nil {
+		return "NULL"
+	}
+	return *p
+}
+
+func derefInt(p *int) string {
+	if p == nil {
+		return "NULL"
+	}
+	return strconv.Itoa(*p)
+}
+
 func (f failedStreamFixture) storedLLMError(t *testing.T, id string) storedError {
 	t.Helper()
 	var s storedError
@@ -208,8 +247,39 @@ func (f failedStreamFixture) storedLLMError(t *testing.T, id string) storedError
 	return s
 }
 
+// The billing mode the sensor stamps on a failed stream's llm_error is
+// kept: the session's other calls do not override it, and the client
+// type's default does not either.
+func TestProcess_FailedStreamKeepsTheBillingModeItCarries(t *testing.T) {
+	f := newFailedStreamFixture(t, "flightdeck_sensor")
+	call := f.event("post_call", "flightdeck_sensor", "production")
+	call.Model, call.BillingMode, call.TokensTotal = "gpt-4o-mini", "metered", intPtr(50)
+	f.process(t, call)
+
+	local := f.event("llm_error", "flightdeck_sensor", "production")
+	local.ID, local.Model, local.BillingMode = randomID(t), "gpt-4o-mini", "local"
+	local.Error = streamError(map[string]any{"partial_tokens_input": 90, "partial_tokens_output": 10})
+	f.process(t, local)
+	if row := f.storedLLMError(t, local.ID); deref(row.billing) != "local" {
+		t.Errorf("billing_mode = %s, want local (the event's own, over the same model's metered call)", deref(row.billing))
+	}
+
+	first := newFailedStreamFixture(t, "flightdeck_sensor")
+	sub := first.event("llm_error", "flightdeck_sensor", "production")
+	sub.ID, sub.Model, sub.BillingMode = randomID(t), "deepseek-r1", "subscription"
+	sub.Error = streamError(map[string]any{"partial_tokens_input": 30})
+	first.process(t, sub)
+	if row := first.storedLLMError(t, sub.ID); deref(row.billing) != "subscription" {
+		t.Errorf("billing_mode = %s, want subscription (the event's own, over the client default)", deref(row.billing))
+	}
+	if s, _ := f.totals(t); s != 50+100 {
+		t.Errorf("tokens_used = %d, want %d (the tokens still count)", s, 50+100)
+	}
+}
+
 // A failed stream's partial tokens reach the session and agent totals
-// and the stored row, billed as the session's calls of that model are.
+// and the stored row. An event without a billing mode (an older sensor)
+// is billed as the session's calls of that model are.
 func TestProcess_FailedStreamTokensCountAndTakeTheCallsBillingMode(t *testing.T) {
 	f := newFailedStreamFixture(t, "flightdeck_sensor")
 	call := f.event("post_call", "flightdeck_sensor", "production")
@@ -230,16 +300,17 @@ func TestProcess_FailedStreamTokensCountAndTakeTheCallsBillingMode(t *testing.T)
 	}
 	row := f.storedLLMError(t, failed.ID)
 	if row.in == nil || *row.in != 1500 || row.out == nil || *row.out != 240 || row.total == nil || *row.total != 1740 {
-		t.Errorf("stored token columns = %v / %v / %v, want 1500 / 240 / 1740", row.in, row.out, row.total)
+		t.Errorf("stored token columns = %s / %s / %s, want 1500 / 240 / 1740", derefInt(row.in), derefInt(row.out), derefInt(row.total))
 	}
 	// The latest call overall is metered, but the latest of the same
 	// model is local: the failed stream is billed as that model's calls.
 	if row.billing == nil || *row.billing != "local" {
-		t.Errorf("billing_mode = %v, want local (the same model's latest call)", row.billing)
+		t.Errorf("billing_mode = %s, want local (the same model's latest call)", deref(row.billing))
 	}
 }
 
-// With no call of the same model, the latest call of any model sets the
+// An event without a billing mode (an older sensor): with no call of the
+// same model, the latest call of any model sets the
 // billing mode; with no call at all, the client type's default does.
 func TestProcess_FailedStreamBillingModeFallbacks(t *testing.T) {
 	f := newFailedStreamFixture(t, "flightdeck_sensor")
@@ -248,7 +319,7 @@ func TestProcess_FailedStreamBillingModeFallbacks(t *testing.T) {
 	first.Error = streamError(map[string]any{"partial_tokens_input": 100, "partial_tokens_output": 10})
 	f.process(t, first)
 	if row := f.storedLLMError(t, first.ID); row.billing == nil || *row.billing != "metered" {
-		t.Errorf("first failed stream billing_mode = %v, want metered (flightdeck_sensor default)", row.billing)
+		t.Errorf("first failed stream billing_mode = %s, want metered (flightdeck_sensor default)", deref(row.billing))
 	}
 
 	call := f.event("post_call", "flightdeck_sensor", "production")
@@ -259,7 +330,7 @@ func TestProcess_FailedStreamBillingModeFallbacks(t *testing.T) {
 	second.Error = streamError(map[string]any{"partial_tokens_input": 40})
 	f.process(t, second)
 	if row := f.storedLLMError(t, second.ID); row.billing == nil || *row.billing != "subscription" {
-		t.Errorf("second failed stream billing_mode = %v, want subscription (the latest call's)", row.billing)
+		t.Errorf("second failed stream billing_mode = %s, want subscription (the latest call's)", deref(row.billing))
 	}
 	if s, _ := f.totals(t); s != 110+20+40 {
 		t.Errorf("tokens_used = %d, want %d", s, 110+20+40)
@@ -271,7 +342,7 @@ func TestProcess_FailedStreamBillingModeFallbacks(t *testing.T) {
 	failed.Error = streamError(map[string]any{"partial_tokens_input": 7})
 	cc.process(t, failed)
 	if row := cc.storedLLMError(t, failed.ID); row.billing == nil || *row.billing != "subscription" {
-		t.Errorf("claude_code failed stream billing_mode = %v, want subscription (its default)", row.billing)
+		t.Errorf("claude_code failed stream billing_mode = %s, want subscription (its default)", deref(row.billing))
 	}
 }
 
@@ -293,7 +364,7 @@ func TestProcess_LLMErrorWithoutPartialTokensCountsNothing(t *testing.T) {
 	}
 	row := f.storedLLMError(t, plain.ID)
 	if row.total != nil || row.billing != nil {
-		t.Errorf("plain llm_error stored tokens_total %v, billing_mode %v; want NULL", row.total, row.billing)
+		t.Errorf("plain llm_error stored tokens_total %s, billing_mode %s; want NULL", derefInt(row.total), deref(row.billing))
 	}
 }
 

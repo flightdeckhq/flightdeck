@@ -205,3 +205,48 @@ func TestAgentSummary_CountsFailedStreams(t *testing.T) {
 		t.Errorf("series tokens = %d, want %d", seriesTokens, want)
 	}
 }
+
+// A failed stream the sensor stamped local (or subscription) counts in
+// the token totals and costs nothing, though its model has a price.
+func TestQueryAnalytics_FailedStreamBilledLocallyCostsNothing(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	flavor := "test-failed-stream-local-" + randomUUID(t)[:8]
+	agentID := randomUUID(t)
+	seedAgent(t, s, agentID, now.Add(-2*time.Hour), now, 1, 0)
+	sessionID := randomUUID(t)
+	seedSessionRow(t, s, sessionID, agentID, flavor, nil, nil, `{}`, now.Add(-time.Hour), 500)
+	model := flavor + "-model"
+	seedPrice(t, s, model, 3, 15)
+	for _, mode := range []string{"local", "subscription"} {
+		if _, err := s.pool.Exec(ctx, `
+			INSERT INTO events (session_id, flavor, event_type, model, tokens_input, tokens_output,
+				tokens_total, billing_mode, provider, occurred_at)
+			VALUES ($1::uuid, $2, 'llm_error', $3, 200, 50, 250, $4, 'other', $5)`,
+			sessionID, flavor, model, mode, now.Add(-30*time.Minute)); err != nil {
+			t.Fatalf("seed %s llm_error: %v", mode, err)
+		}
+	}
+	p := AnalyticsParams{
+		GroupBy: "model", Range: "custom", Granularity: "day",
+		From: now.Add(-time.Hour), To: now, FilterFlavor: flavor,
+	}
+	p.Metric = "tokens"
+	tokens, err := s.QueryAnalytics(ctx, p)
+	if err != nil {
+		t.Fatalf("tokens: %v", err)
+	}
+	if tokens.Totals.GrandTotal != 500 {
+		t.Errorf("tokens = %v, want 500", tokens.Totals.GrandTotal)
+	}
+	p.Metric = "estimated_cost"
+	cost, err := s.QueryAnalytics(ctx, p)
+	if err != nil {
+		t.Fatalf("cost: %v", err)
+	}
+	if cost.Totals.GrandTotal != 0 {
+		t.Errorf("cost = %v, want 0 (local and subscription are not metered)", cost.Totals.GrandTotal)
+	}
+}

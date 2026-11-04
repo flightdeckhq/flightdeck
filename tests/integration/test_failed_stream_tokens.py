@@ -237,3 +237,22 @@ def test_failed_stream_tokens_reach_the_parents_sub_agent_sums() -> None:
     assert child["session"]["tokens_used"] == want, child["session"]
     assert _analytics("child_token_sum", parent_flavor, "parent_session_id") == want
     assert _analytics("parent_token_sum", parent_flavor, "parent_session_id") == want
+
+
+def test_failed_stream_billed_locally_counts_tokens_and_no_cost() -> None:
+    """The sensor stamps the call's billing mode on a failed stream's
+    llm_error: a local model server's partial tokens count in every token
+    total but cost nothing, even when the model id has a price."""
+    user = f"failed-stream-local-{uuid.uuid4().hex[:8]}"
+    sid = str(uuid.uuid4())
+    flavor = f"test-failed-stream-{uuid.uuid4().hex[:6]}"
+    _start(sid, flavor, user)
+    _failed_stream(sid, flavor, user, billing_mode="local")
+    detail = _stored(sid, 2)
+
+    error = next(e for e in detail["events"] if e["event_type"] == "llm_error")
+    assert error["billing_mode"] == "local", error
+    assert error["tokens_total"] == PARTIAL_TOKENS, error
+    assert detail["session"]["tokens_used"] == PARTIAL_TOKENS, detail["session"]
+    assert _analytics("tokens", flavor, "model") == PARTIAL_TOKENS
+    assert _analytics("estimated_cost", flavor, "model") == 0

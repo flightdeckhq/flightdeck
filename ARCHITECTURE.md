@@ -2759,7 +2759,8 @@ subsequent writes (set-once semantics).
 #### Token, model and cost fields
 
 LLM events (`post_call`, `embeddings`) carry these fields; every one is
-optional on the wire, so an older client's events stay valid. What each
+optional on the wire, so an older client's events stay valid. The
+`llm_error` of a stream that fails also carries `billing_mode`. What each
 feeds is described under Cost estimation.
 
 | Field | Stored in | Meaning |
@@ -4554,15 +4555,16 @@ applies the same rule to a row whose `billing_mode` is empty, so a row
 the backfill (see Model ids) has not reached yet is counted the same
 way.
 
-An `llm_error` that carries the tokens of a failed stream (see
-`llm_error`) arrives without a billing mode, since the sensor stamps one
-only on completed calls. The worker gives it the billing mode of the
-session's latest `post_call`, preferring one of the same model, so a
-session whose calls are `local` or `subscription` keeps its failed
-streams out of `estimated_cost` too; a session with no `post_call` yet
-takes its client type's default. Such an event names no platform, so it
-is priced from the `direct` price list, and its input tokens, which
-carry no cache split, at the input rate.
+The sensor stamps the same `billing_mode` on the `llm_error` of a
+stream that fails (see `llm_error`) as on its calls: the configured
+mode, else `local` for a loopback client and `metered` otherwise, so a
+`local` or `subscription` session keeps its failed streams out of
+`estimated_cost`. An `llm_error` that carries a failed stream's tokens
+without a billing mode (sent by a sensor that predates the field) gets
+the billing mode of the session's latest `post_call`, preferring one of
+the same model, else its client type's default. Such an event names no
+platform, so it is priced from the `direct` price list, and its input
+tokens, which carry no cache split, at the input rate.
 
 #### Where a call's cost comes from
 
@@ -6789,7 +6791,9 @@ helper the caller read through `get_final_message()`, which leaves
 `partial_chunks=0`) emits `error_type=stream_error` with `abort_reason`
 `error_mid_stream` (or `timeout`), `partial_chunks` (chunks read before
 the failure) and, when the stream had delivered usage,
-`partial_tokens_input` / `partial_tokens_output`. The provider bills those
+`partial_tokens_input` / `partial_tokens_output`, and the event carries
+the call's top-level `billing_mode` (see Cost estimation, Billing modes).
+The provider bills those
 tokens. The sensor adds them to the in-process session counter that
 drives its local budget checks, and the worker stores them as the
 `llm_error` row's `tokens_input`, `tokens_output` and `tokens_total`

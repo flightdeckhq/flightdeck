@@ -1,6 +1,10 @@
 """One Google ADK run with ADK's OpenTelemetry tracing on.
 
-    run_adk.py tool|tool-error|subagent|handoff
+    run_adk.py tool|tool-error|subagent|handoff|cache|model-error
+
+``cache`` runs one agent in two sessions with a long instruction, whose
+prefix OpenAI caches by itself; ``model-error`` asks for a model that
+does not exist.
 
 The providers are set up the way ``adk web`` and ``adk api_server`` set
 them up, ``maybe_set_otel_providers()``: OTLP/HTTP protobuf exporters
@@ -23,10 +27,14 @@ from google.adk.runners import InMemoryRunner
 from google.adk.telemetry.setup import maybe_set_otel_providers
 from google.adk.tools.agent_tool import AgentTool
 from google.genai import types
-from otel_setup import finish, flush_globals
+import provider_tap
+from otel_setup import cacheable_instructions, finish, flush_globals
 
 APP = "fd_capture"
 USER = "user"
+# Over the 1024-token prefix OpenAI caches automatically.
+CACHE_LINES = 100
+MISSING_MODEL = "gpt-fd-does-not-exist"
 
 
 def get_weather(city: str) -> str:
@@ -53,6 +61,12 @@ async def run(agent: LlmAgent, prompt: str) -> str:
 
 
 def main(kind: str) -> None:
+    import litellm
+
+    # LiteLLM sends over aiohttp unless told otherwise; over httpx,
+    # provider_tap sees what the provider answered. Telemetry is the same.
+    litellm.disable_aiohttp_transport = True
+    provider_tap.install()
     maybe_set_otel_providers()
     model = LiteLlm(model="openai/gpt-4o-mini", max_tokens=200)
     weather = LlmAgent(
@@ -62,7 +76,23 @@ def main(kind: str) -> None:
         instruction="Answer weather questions with the get_weather tool.",
         tools=[get_weather],
     )
-    if kind == "tool":
+    runs = 1
+    if kind == "cache":
+        # Each run is a session of its own, so both calls send the same
+        # prefix and nothing of the first conversation.
+        agent = LlmAgent(
+            name="cached_agent",
+            model=LiteLlm(model="openai/gpt-4o-mini", max_tokens=20),
+            instruction=cacheable_instructions(CACHE_LINES),
+        )
+        prompt, runs = "Reply with the word ready.", 2
+    elif kind == "model-error":
+        agent = LlmAgent(
+            name="missing_model_agent",
+            model=LiteLlm(model=f"openai/{MISSING_MODEL}", max_tokens=20),
+        )
+        prompt = "Reply with one word."
+    elif kind == "tool":
         agent, prompt = (
             weather,
             "What is the weather in Paris? Use the tool, then answer in one short sentence.",
@@ -91,8 +121,16 @@ def main(kind: str) -> None:
             sub_agents=[weather],
         )
         prompt = "What is the weather in Paris? Answer in one short sentence."
+
+    async def run_all() -> str:
+        # One event loop for every run: LiteLLM keeps its clients per loop.
+        reply = ""
+        for _ in range(runs):
+            reply = await run(agent, prompt)
+        return reply
+
     try:
-        outcome, detail = "completed", asyncio.run(run(agent, prompt))[:200]
+        outcome, detail = "completed", asyncio.run(run_all())[:200]
     except Exception as exc:
         outcome, detail = type(exc).__name__, str(exc)[:200]
     flush_globals()

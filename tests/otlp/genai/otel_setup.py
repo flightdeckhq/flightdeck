@@ -139,10 +139,25 @@ def versions() -> dict[str, str]:
 
 
 def finish(outcome: str, **details: Any) -> None:
-    """Print the result line: the installed versions and how the run ended
-    (``completed``, or the exception the framework raised)."""
-    print(
-        RESULT_MARKER
-        + json.dumps({"versions": versions(), "outcome": outcome, **details}),
-        flush=True,
+    """Print the result line: the installed versions, how the run ended
+    (``completed``, or the exception the framework raised) and what the
+    model provider answered (provider_tap)."""
+    import provider_tap
+
+    result = {
+        "versions": versions(),
+        "outcome": outcome,
+        "provider_calls": provider_tap.calls(),
+        **details,
+    }
+    print(RESULT_MARKER + json.dumps(result), flush=True)
+
+
+def cacheable_instructions(lines: int) -> str:
+    """A long, fixed system prompt for the cache scenarios: the same text in
+    every call of a run, so a provider can serve the later calls' prefix
+    from its prompt cache. About 18 tokens a line."""
+    return "Follow these guidelines.\n" + "\n".join(
+        f"Guideline {i}: answer in plain words, keep replies short, and never invent facts."
+        for i in range(1, lines + 1)
     )

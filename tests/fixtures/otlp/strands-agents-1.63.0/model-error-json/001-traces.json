@@ -1,0 +1,330 @@
+{
+ "resourceSpans": [
+  {
+   "resource": {
+    "attributes": [
+     {
+      "key": "telemetry.sdk.language",
+      "value": {
+       "stringValue": "python"
+      }
+     },
+     {
+      "key": "telemetry.sdk.name",
+      "value": {
+       "stringValue": "opentelemetry"
+      }
+     },
+     {
+      "key": "telemetry.sdk.version",
+      "value": {
+       "stringValue": "1.45.2"
+      }
+     },
+     {
+      "key": "service.instance.id",
+      "value": {
+       "stringValue": "64a24cbd-526c-420e-a9b2-ca31065e57cf"
+      }
+     },
+     {
+      "key": "service.name",
+      "value": {
+       "stringValue": "strands-agents"
+      }
+     },
+     {
+      "key": "service.version",
+      "value": {
+       "stringValue": "1.63.0"
+      }
+     }
+    ]
+   },
+   "scopeSpans": [
+    {
+     "scope": {
+      "name": "strands.telemetry.tracer"
+     },
+     "spans": [
+      {
+       "traceId": "79c92dc555c1442e4207e9b667dc7120",
+       "spanId": "27958c2b0526eb8c",
+       "parentSpanId": "238278f50dbc9c15",
+       "flags": 256,
+       "name": "chat",
+       "kind": 1,
+       "startTimeUnixNano": "1793782370144514689",
+       "endTimeUnixNano": "1793782370843142749",
+       "attributes": [
+        {
+         "key": "gen_ai.event.start_time",
+         "value": {
+          "stringValue": "2026-11-04T08:52:50.144516+00:00"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "chat"
+         }
+        },
+        {
+         "key": "gen_ai.system",
+         "value": {
+          "stringValue": "strands-agents"
+         }
+        },
+        {
+         "key": "gen_ai.request.model",
+         "value": {
+          "stringValue": "gpt-fd-does-not-exist"
+         }
+        },
+        {
+         "key": "gen_ai.event.end_time",
+         "value": {
+          "stringValue": "2026-11-04T08:52:50.841858+00:00"
+         }
+        }
+       ],
+       "events": [
+        {
+         "timeUnixNano": "1793782370144540127",
+         "name": "gen_ai.user.message",
+         "attributes": [
+          {
+           "key": "content",
+           "value": {
+            "stringValue": "[{\"text\": \"Reply with one word.\"}]"
+           }
+          }
+         ]
+        },
+        {
+         "timeUnixNano": "1793782370843135736",
+         "name": "exception",
+         "attributes": [
+          {
+           "key": "exception.type",
+           "value": {
+            "stringValue": "openai.NotFoundError"
+           }
+          },
+          {
+           "key": "exception.message",
+           "value": {
+            "stringValue": "Error code: 404 - The model `gpt-fd-does-not-exist` does not exist or you do not have access to it."
+           }
+          },
+          {
+           "key": "exception.stacktrace",
+           "value": {
+            "stringValue": "Traceback (most recent call last):\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/event_loop/event_loop.py\", line 899, in terminal\n    async for event in stream_messages(\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/event_loop/streaming.py\", line 599, in stream_messages\n    async for event in process_stream(chunks, start_time, cancel_signal, invocation_context):\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/event_loop/streaming.py\", line 467, in process_stream\n    async for chunk in chunks:\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/models/openai.py\", line 741, in stream\n    response = await client.chat.completions.create(**request)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py\", line 3414, in create\n    return await self._post(\n           ^^^^^^^^^^^^^^^^^\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/openai/_base_client.py\", line 2085, in post\n    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/openai/_base_client.py\", line 1870, in request\n    raise self._make_status_error_from_response(err.response) from None\nopenai.NotFoundError: Error code: 404 - The model `gpt-fd-does-not-exist` does not exist or you do not have access to it.\n"
+           }
+          },
+          {
+           "key": "exception.escaped",
+           "value": {
+            "stringValue": "False"
+           }
+          }
+         ]
+        }
+       ],
+       "status": {
+        "message": "Error code: 404 - The model `gpt-fd-does-not-exist` does not exist or you do not have access to it.",
+        "code": 2
+       }
+      },
+      {
+       "traceId": "79c92dc555c1442e4207e9b667dc7120",
+       "spanId": "238278f50dbc9c15",
+       "parentSpanId": "bb55d1b47d8295b6",
+       "flags": 256,
+       "name": "execute_event_loop_cycle",
+       "kind": 1,
+       "startTimeUnixNano": "1793782370144362917",
+       "endTimeUnixNano": "1793782370843938082",
+       "attributes": [
+        {
+         "key": "gen_ai.event.start_time",
+         "value": {
+          "stringValue": "2026-11-04T08:52:50.144365+00:00"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "execute_event_loop_cycle"
+         }
+        },
+        {
+         "key": "gen_ai.system",
+         "value": {
+          "stringValue": "strands-agents"
+         }
+        },
+        {
+         "key": "event_loop.cycle_id",
+         "value": {
+          "stringValue": "f28a0c18-0af0-4e1b-b359-295792350629"
+         }
+        },
+        {
+         "key": "gen_ai.event.end_time",
+         "value": {
+          "stringValue": "2026-11-04T08:52:50.843249+00:00"
+         }
+        }
+       ],
+       "events": [
+        {
+         "timeUnixNano": "1793782370144395691",
+         "name": "gen_ai.user.message",
+         "attributes": [
+          {
+           "key": "content",
+           "value": {
+            "stringValue": "[{\"text\": \"Reply with one word.\"}]"
+           }
+          }
+         ]
+        },
+        {
+         "timeUnixNano": "1793782370843934059",
+         "name": "exception",
+         "attributes": [
+          {
+           "key": "exception.type",
+           "value": {
+            "stringValue": "openai.NotFoundError"
+           }
+          },
+          {
+           "key": "exception.message",
+           "value": {
+            "stringValue": "Error code: 404 - The model `gpt-fd-does-not-exist` does not exist or you do not have access to it."
+           }
+          },
+          {
+           "key": "exception.stacktrace",
+           "value": {
+            "stringValue": "Traceback (most recent call last):\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/event_loop/event_loop.py\", line 287, in event_loop_cycle\n    async for model_event in model_events:\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/event_loop/event_loop.py\", line 829, in _handle_model_execution\n    raise e\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/event_loop/event_loop.py\", line 735, in _handle_model_execution\n    async for event in agent._middleware_registry.invoke(\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/middleware/_registry.py\", line 154, in invoke\n    async for event in gen:\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/event_loop/event_loop.py\", line 899, in terminal\n    async for event in stream_messages(\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/event_loop/streaming.py\", line 599, in stream_messages\n    async for event in process_stream(chunks, start_time, cancel_signal, invocation_context):\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/event_loop/streaming.py\", line 467, in process_stream\n    async for chunk in chunks:\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/models/openai.py\", line 741, in stream\n    response = await client.chat.completions.create(**request)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py\", line 3414, in create\n    return await self._post(\n           ^^^^^^^^^^^^^^^^^\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/openai/_base_client.py\", line 2085, in post\n    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/openai/_base_client.py\", line 1870, in request\n    raise self._make_status_error_from_response(err.response) from None\nopenai.NotFoundError: Error code: 404 - The model `gpt-fd-does-not-exist` does not exist or you do not have access to it.\n"
+           }
+          },
+          {
+           "key": "exception.escaped",
+           "value": {
+            "stringValue": "False"
+           }
+          }
+         ]
+        }
+       ],
+       "status": {
+        "message": "Error code: 404 - The model `gpt-fd-does-not-exist` does not exist or you do not have access to it.",
+        "code": 2
+       }
+      },
+      {
+       "traceId": "79c92dc555c1442e4207e9b667dc7120",
+       "spanId": "bb55d1b47d8295b6",
+       "flags": 256,
+       "name": "invoke_agent missing_model_agent",
+       "kind": 1,
+       "startTimeUnixNano": "1793782370143883626",
+       "endTimeUnixNano": "1793782370845039659",
+       "attributes": [
+        {
+         "key": "gen_ai.event.start_time",
+         "value": {
+          "stringValue": "2026-11-04T08:52:50.143889+00:00"
+         }
+        },
+        {
+         "key": "gen_ai.operation.name",
+         "value": {
+          "stringValue": "invoke_agent"
+         }
+        },
+        {
+         "key": "gen_ai.system",
+         "value": {
+          "stringValue": "strands-agents"
+         }
+        },
+        {
+         "key": "gen_ai.agent.name",
+         "value": {
+          "stringValue": "missing_model_agent"
+         }
+        },
+        {
+         "key": "gen_ai.request.model",
+         "value": {
+          "stringValue": "gpt-fd-does-not-exist"
+         }
+        },
+        {
+         "key": "gen_ai.event.end_time",
+         "value": {
+          "stringValue": "2026-11-04T08:52:50.844111+00:00"
+         }
+        }
+       ],
+       "events": [
+        {
+         "timeUnixNano": "1793782370143954693",
+         "name": "gen_ai.user.message",
+         "attributes": [
+          {
+           "key": "content",
+           "value": {
+            "stringValue": "[{\"text\": \"Reply with one word.\"}]"
+           }
+          }
+         ]
+        },
+        {
+         "timeUnixNano": "1793782370845036529",
+         "name": "exception",
+         "attributes": [
+          {
+           "key": "exception.type",
+           "value": {
+            "stringValue": "openai.NotFoundError"
+           }
+          },
+          {
+           "key": "exception.message",
+           "value": {
+            "stringValue": "Error code: 404 - The model `gpt-fd-does-not-exist` does not exist or you do not have access to it."
+           }
+          },
+          {
+           "key": "exception.stacktrace",
+           "value": {
+            "stringValue": "Traceback (most recent call last):\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/agent/agent.py\", line 1609, in stream_async\n    async for event in events:\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/agent/agent.py\", line 1765, in _run_loop\n    async for event in self._middleware_registry.invoke(\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/middleware/_registry.py\", line 154, in invoke\n    async for event in gen:\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/agent/agent.py\", line 1947, in terminal\n    async for event in events:\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/agent/agent.py\", line 2004, in _execute_event_loop_cycle\n    async for event in events:\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/event_loop/event_loop.py\", line 287, in event_loop_cycle\n    async for model_event in model_events:\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/event_loop/event_loop.py\", line 829, in _handle_model_execution\n    raise e\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/event_loop/event_loop.py\", line 735, in _handle_model_execution\n    async for event in agent._middleware_registry.invoke(\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/middleware/_registry.py\", line 154, in invoke\n    async for event in gen:\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/event_loop/event_loop.py\", line 899, in terminal\n    async for event in stream_messages(\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/event_loop/streaming.py\", line 599, in stream_messages\n    async for event in process_stream(chunks, start_time, cancel_signal, invocation_context):\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/event_loop/streaming.py\", line 467, in process_stream\n    async for chunk in chunks:\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/strands/models/openai.py\", line 741, in stream\n    response = await client.chat.completions.create(**request)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/openai/resources/chat/completions/completions.py\", line 3414, in create\n    return await self._post(\n           ^^^^^^^^^^^^^^^^^\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/openai/_base_client.py\", line 2085, in post\n    return await self.request(cast_to, opts, stream=stream, stream_cls=stream_cls)\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/home/user/.cache/fd-genai-capture-venv/lib/python3.12/site-packages/openai/_base_client.py\", line 1870, in request\n    raise self._make_status_error_from_response(err.response) from None\nopenai.NotFoundError: Error code: 404 - The model `gpt-fd-does-not-exist` does not exist or you do not have access to it.\n"
+           }
+          },
+          {
+           "key": "exception.escaped",
+           "value": {
+            "stringValue": "False"
+           }
+          }
+         ]
+        }
+       ],
+       "status": {
+        "message": "Error code: 404 - The model `gpt-fd-does-not-exist` does not exist or you do not have access to it.",
+        "code": 2
+       }
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

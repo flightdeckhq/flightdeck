@@ -190,9 +190,10 @@ one psql call for all of them, on the full seed and on every
 keep-alive cycle, so a spec sees them at most one keep-alive cycle plus
 its own runtime late. It drops any orphan-timeout `session_end` a role
 does not declare (the reaper's work on a stack left running without the
-keep-alive), and does not bump the agents' `last_seen_at`, so these rows
-do not crowd other specs' rows out of view; the lane specs scroll to
-them. None is a sub-agent, so T56's refresh leaves them alone.
+keep-alive), and pins the agents' `last_seen_at` 60 s back
+(`LANE_AGENT_SEEN_AGO_SEC`), so their rows sit just below the Fleet's
+LIVE rows: near enough for the lane specs to scroll to quickly, without
+crowding the LIVE rows other specs read out of view. None is a sub-agent, so T56's refresh leaves them alone.
 `fixtureSessionId(agent, role)` derives a fixture run's session id the
 way `seed.py::_derive_session_id` does.
 

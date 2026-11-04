@@ -1609,6 +1609,14 @@ def _refresh_fanout(
 # room inside the time range its spec reads it at.
 _LANE_STATES = frozenset({"active", "closed", "lost"})
 
+# How long ago the lane agents were last seen, as the pin sets it. Past
+# the Fleet's 15 s LIVE bucket and well inside its 5 min RECENT bucket
+# (dashboard/src/lib/fleet-ordering.ts), and re-pinned every keep-alive
+# cycle: the lane rows sit just below the LIVE rows, where the lane specs
+# reach them in a few scroll steps, without pushing the LIVE rows other
+# specs read (T103's child rows at a 900 px viewport) out of view.
+LANE_AGENT_SEEN_AGO_SEC = 60
+
 
 def _lane_spec(label: str, role_cfg: dict[str, Any]) -> dict[str, Any]:
     """Validate a lane role's config and return its parts. ``label`` names
@@ -1755,15 +1763,15 @@ def _pin_lane_fixtures(
 
     All lane runs are pinned in one psql call, one transaction, so they
     share one NOW() and the pin costs the seed one ``docker exec``. The
-    agents' ``last_seen_at`` is left alone: bumping it would float these
-    rows to the top of the Fleet and push other specs' rows out of view;
-    the lane specs scroll to their rows.
+    agents' ``last_seen_at`` is pinned ``LANE_AGENT_SEEN_AGO_SEC`` back
+    (see there), so their rows sit just below the Fleet's LIVE rows.
 
     A stack left running without the keep-alive lets the worker's
     reconciler and orphan-timeout reaper act on these runs; the pin puts
     the rows back, and drops any reaper ``session_end`` a role does not
     declare, which the shift would otherwise carry into the future."""
     statements: list[str] = []
+    lane_ids: list[str] = []
     pinned = 0
     for agent_cfg in agents_cfg:
         for role in agent_cfg["session_roles"]:
@@ -1808,8 +1816,15 @@ def _pin_lane_fixtures(
                 f"WHERE session_id='{session_id}'::uuid"
             )
             pinned += 1
+            lane_ids.append(session_id)
     if not statements:
         return 0
+    id_list = ", ".join(f"'{sid}'::uuid" for sid in lane_ids)
+    statements.append(
+        "UPDATE agents SET last_seen_at = NOW() - "
+        f"INTERVAL '{int(LANE_AGENT_SEEN_AGO_SEC)} seconds' WHERE agent_id IN "
+        f"(SELECT agent_id FROM sessions WHERE session_id IN ({id_list}))"
+    )
     try:
         # psql runs a multi-statement -c string as one transaction.
         result = subprocess.run(

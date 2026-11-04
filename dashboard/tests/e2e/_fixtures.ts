@@ -174,9 +174,8 @@ export const FANOUT_FIXTURE = {
 /** The run-glyph lane fixtures (canonical.json roles that declare
  *  ``lane_segments``). seed.py's lane pin moves each run's events and
  *  session row back to its declared offsets from NOW on the full seed
- *  and every keep-alive cycle, all of an agent's runs in one psql
- *  statement, so they drift at most one 30 s cycle plus a spec's own
- *  runtime. T56's sub-agent refresh never touches them (none is a
+ *  and every keep-alive cycle, all of them in one psql call, so they
+ *  drift at most one keep-alive cycle plus a spec's own runtime. T56's sub-agent refresh never touches them (none is a
  *  sub-agent). Offsets are seconds from NOW. */
 export const LANE_FIXTURES = {
   /** A [-150, -90] closed, B open from -120, C open from -60: C

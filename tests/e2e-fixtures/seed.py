@@ -1603,9 +1603,9 @@ def _refresh_fanout(
 # in seconds from NOW (``end`` null for a segment still open), in the
 # state ``lane_state``. The lane pin moves the run's whole event stream
 # and its session row back to those offsets on the full seed and on every
-# keep-alive cycle, all of an agent's runs in one psql statement so they
-# share one NOW(). The worst drift a spec sees is one 30 s keep-alive
-# interval plus the spec's own runtime; every offset leaves that much
+# keep-alive cycle, every lane run in one psql call so they share one
+# NOW(). The worst drift a spec sees is one keep-alive cycle (a seed pass
+# plus 30 s) plus the spec's own runtime; every offset leaves that much
 # room inside the time range its spec reads it at.
 _LANE_STATES = frozenset({"active", "closed", "lost"})
 
@@ -1751,11 +1751,21 @@ def _pin_lane_fixtures(
 ) -> int:
     """Move every lane run's events and session row back to its declared
     offsets from NOW (see the lane comment above). Runs on the full seed
-    and on every keep-alive cycle; returns the number of runs pinned."""
+    and on every keep-alive cycle; returns the number of runs pinned.
+
+    All lane runs are pinned in one psql call, one transaction, so they
+    share one NOW() and the pin costs the seed one ``docker exec``. The
+    agents' ``last_seen_at`` is left alone: bumping it would float these
+    rows to the top of the Fleet and push other specs' rows out of view;
+    the lane specs scroll to their rows.
+
+    A stack left running without the keep-alive lets the worker's
+    reconciler and orphan-timeout reaper act on these runs; the pin puts
+    the rows back, and drops any reaper ``session_end`` a role does not
+    declare, which the shift would otherwise carry into the future."""
+    statements: list[str] = []
     pinned = 0
     for agent_cfg in agents_cfg:
-        statements: list[str] = []
-        session_ids: list[str] = []
         for role in agent_cfg["session_roles"]:
             role_cfg = roles_cfg[role]
             if "lane_segments" not in role_cfg:
@@ -1767,6 +1777,13 @@ def _pin_lane_fixtures(
             UUID(session_id)
             first_start = spec["segments"][0][0]
             last_end = spec["segments"][-1][1]
+            if spec["close_reason"] != "orphan_timeout":
+                statements.append(
+                    "DELETE FROM events "
+                    f"WHERE session_id = '{session_id}'::uuid "
+                    "AND event_type = 'session_end' "
+                    "AND payload->>'close_reason' = 'orphan_timeout'"
+                )
             # Shift the run's whole event stream so its first event
             # sits at the first segment's start: the events keep their
             # spacing, so every boundary lands on its declared offset.
@@ -1790,49 +1807,38 @@ def _pin_lane_fixtures(
                 f"UPDATE sessions SET {row}, started_at={_interval(first_start)} "
                 f"WHERE session_id='{session_id}'::uuid"
             )
-            session_ids.append(session_id)
-        if not session_ids:
-            continue
-        id_list = ", ".join(f"'{sid}'::uuid" for sid in session_ids)
-        statements.append(
-            "UPDATE agents SET last_seen_at=NOW() WHERE agent_id IN "
-            f"(SELECT agent_id FROM sessions WHERE session_id IN ({id_list}))"
+            pinned += 1
+    if not statements:
+        return 0
+    try:
+        # psql runs a multi-statement -c string as one transaction.
+        result = subprocess.run(
+            [
+                "docker",
+                "exec",
+                "docker-postgres-1",
+                "psql",
+                "-U",
+                "flightdeck",
+                "-d",
+                "flightdeck",
+                "-c",
+                "; ".join(statements),
+            ],
+            capture_output=True,
+            text=True,
+            timeout=PSQL_EXEC_TIMEOUT_SEC,
+            check=False,
         )
-        try:
-            # psql runs a multi-statement -c string as one transaction,
-            # so the agent's runs share one NOW().
-            result = subprocess.run(
-                [
-                    "docker",
-                    "exec",
-                    "docker-postgres-1",
-                    "psql",
-                    "-U",
-                    "flightdeck",
-                    "-d",
-                    "flightdeck",
-                    "-c",
-                    "; ".join(statements),
-                ],
-                capture_output=True,
-                text=True,
-                timeout=PSQL_EXEC_TIMEOUT_SEC,
-                check=False,
-            )
-        except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
-            print(
-                f"  warn: lane pin for {agent_cfg['agent_name']} failed: {exc}",
-                file=sys.stderr,
-            )
-            continue
-        if result.returncode != 0:
-            print(
-                f"  warn: lane pin for {agent_cfg['agent_name']} returned "
-                f"{result.returncode}: {result.stderr.strip()}",
-                file=sys.stderr,
-            )
-            continue
-        pinned += len(session_ids)
+    except (subprocess.TimeoutExpired, FileNotFoundError) as exc:
+        print(f"  warn: lane pin failed: {exc}", file=sys.stderr)
+        return 0
+    if result.returncode != 0:
+        print(
+            f"  warn: lane pin returned {result.returncode}: {result.stderr.strip()}",
+            file=sys.stderr,
+        )
+        return 0
     return pinned
 
 

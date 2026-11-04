@@ -186,9 +186,13 @@ agents) are roles that declare `lane_segments`: the run's segments as
 `lane_state`, optionally a last-signal offset and a close reason (the
 reaped run's `orphan_timeout`). `seed.py::_pin_lane_fixtures` shifts
 each run's events and pins its session row back to those offsets in
-one psql statement per agent, on the full seed and on every keep-alive
-cycle, so a spec sees them at most one 30 s cycle plus its own runtime
-late. None is a sub-agent, so T56's refresh leaves them alone.
+one psql call for all of them, on the full seed and on every
+keep-alive cycle, so a spec sees them at most one keep-alive cycle plus
+its own runtime late. It drops any orphan-timeout `session_end` a role
+does not declare (the reaper's work on a stack left running without the
+keep-alive), and does not bump the agents' `last_seen_at`, so these rows
+do not crowd other specs' rows out of view; the lane specs scroll to
+them. None is a sub-agent, so T56's refresh leaves them alone.
 `fixtureSessionId(agent, role)` derives a fixture run's session id the
 way `seed.py::_derive_session_id` does.
 

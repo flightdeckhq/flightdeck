@@ -21,6 +21,12 @@ test.describe("T77 — run drawer opens from 5 entry points", () => {
   test("1: a swimlane event circle opens the run drawer", async ({ page }) => {
     await page.goto("/");
     await waitForFleetReady(page);
+    // At the default 1m window the coding agent's newest events age
+    // into the oldest stretch of the timeline as the seed gets older,
+    // and at a 1280 px viewport that stretch sits under the sticky row
+    // label, where a circle cannot be clicked. At 5m they stay in the
+    // newest fifth of the timeline for the whole keep-alive cycle.
+    await page.getByRole("button", { name: "5m", exact: true }).click();
     const row = await bringSwimlaneRowIntoView(page, CODING_AGENT.name);
     // Scope to the in-view row's circles (not the global ``.first()``)
     // so a re-render between scroll and click can't resolve the

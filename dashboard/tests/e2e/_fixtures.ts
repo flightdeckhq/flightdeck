@@ -193,8 +193,8 @@ export const LANE_FIXTURES = {
   long: { name: "e2e-test-run-long", roles: { run: "long-closed" } },
   /** One run 2 s long, closed at -118 s. */
   short: { name: "e2e-test-run-short", roles: { run: "short-closed" } },
-  /** A run with segments [-170, -120] and [-40, open], and a run
-   *  [-100, -70] inside its gap. */
+  /** A run with segments [-400, -340] and [-60, open], and a run
+   *  [-250, -150] inside its gap. */
   resumed: {
     name: "e2e-test-run-resumed",
     roles: { resumed: "resumed-run", inGap: "resumed-gap-run" },

@@ -2,13 +2,13 @@
  * T141 — A run that ended and was resumed draws each segment, with a
  * gap, and a run inside the gap does not split the row.
  *
- * Fixture: e2e-test-run-resumed. resumed-run ran from -170 s to -120 s,
- * ended, and was resumed under the same session id at -40 s (still
- * open); resumed-gap-run ran from -100 s to -70 s, inside the gap. At
- * 5m the resumed run draws ▶ ■ ▶ (its first segment's end gets its own
+ * Fixture: e2e-test-run-resumed. resumed-run ran from -400 s to -340 s,
+ * ended, and was resumed under the same session id at -60 s (still
+ * open); resumed-gap-run ran from -250 s to -150 s, inside the gap. At
+ * 15m the resumed run draws ▶ ■ ▶ (its first segment's end gets its own
  * square), and the gap frees its track, so the other run shares it and
  * the row stays one lane. The glyph code this replaced drew the resumed
- * run as one stretch from its first start, with no square at -120 s,
+ * run as one stretch from its first start, with no square at -340 s,
  * and moved the run in the gap to the bottom edge.
  */
 import { test, expect } from "@playwright/test";
@@ -31,7 +31,7 @@ test.describe("T141 — A resumed run draws its segments", () => {
 	test("two segments with a gap, and the run in the gap on the same lane", async ({ page }) => {
 		await page.goto("/");
 		await waitForFleetReady(page);
-		await page.getByRole("button", { name: "5m", exact: true }).click();
+		await page.getByRole("button", { name: "15m", exact: true }).click();
 		const row = await bringSwimlaneRowIntoView(page, name);
 		await expect(row).toBeVisible({ timeout: 10_000 });
 

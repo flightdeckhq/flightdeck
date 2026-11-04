@@ -343,19 +343,21 @@
       "ended_offset_sec": -118,
       "lane_segments": [[-120, -118]],
       "lane_state": "closed",
+      "lane_shift_events": true,
       "purpose": "T142 anchor: a 2 s run, narrower on screen than its two glyphs at 5m and 1h, so its end square follows its start triangle past the run's end."
     },
     "resumed-run": {
-      "started_offset_sec": -170,
+      "started_offset_sec": -400,
       "ended_offset_sec": null,
-      "lane_segments": [[-170, -120], [-40, null]],
+      "lane_segments": [[-400, -340], [-60, null]],
       "lane_state": "active",
-      "purpose": "T141 anchor: a run that ended at -120 s and was resumed under the same session id at -40 s: two segments with a gap, each segment end drawn with its own square. Its first start leaves 130 s of the 5m window for drift."
+      "lane_shift_events": true,
+      "purpose": "T141 anchor: a run that ended at -340 s and was resumed under the same session id at -60 s: two segments with a gap, each segment end drawn with its own square. The lane pin shifts its events with its row, so both segments keep their offsets; at 15m its first start leaves 500 s of the window for drift."
     },
     "resumed-gap-run": {
-      "started_offset_sec": -100,
-      "ended_offset_sec": -70,
-      "lane_segments": [[-100, -70]],
+      "started_offset_sec": -250,
+      "ended_offset_sec": -150,
+      "lane_segments": [[-250, -150]],
       "lane_state": "closed",
       "purpose": "T141 anchor: another run of the resumed agent that ran inside the resumed run's gap, so it shares the resumed run's track and the row stays one lane."
     },

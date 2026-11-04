@@ -1510,6 +1510,12 @@ def _refresh_fanout(
             f"WHERE session_id='{session_id}'::uuid"
         )
     id_list = ", ".join(f"'{session_id}'::uuid" for _a, _r, session_id in pinned)
+    # Only an open run belongs here, so a session_end on one of these
+    # runs came from outside the seeder (the reaper, or a client closing
+    # a fixture run mid-suite) and would draw a second segment.
+    statements.append(
+        f"DELETE FROM events WHERE session_id IN ({id_list}) AND event_type = 'session_end'"
+    )
     statements.append(
         "UPDATE agents SET last_seen_at=NOW() WHERE agent_id IN "
         f"(SELECT agent_id FROM sessions WHERE session_id IN ({id_list}))"
@@ -1656,6 +1662,7 @@ def _lane_spec(label: str, role_cfg: dict[str, Any]) -> dict[str, Any]:
         "state": state,
         "last_seen": None if last_seen is None else float(last_seen),
         "close_reason": role_cfg.get("lane_close_reason", "normal_exit"),
+        "shift_events": bool(role_cfg.get("lane_shift_events")),
     }
 
 
@@ -1732,7 +1739,13 @@ def _post_lane_events(
             )
         )
         posted += 1
-        if end is not None:
+        # A run whose events stay where they were posted reads its
+        # boundaries from its pinned row: a session_end would go stale
+        # as the pin moves the row, so only the declared reaper close,
+        # which marks the run reaped rather than dating its end, is
+        # posted for it.
+        reaper_close = last and spec["close_reason"] == "orphan_timeout"
+        if end is not None and (spec["shift_events"] or reaper_close):
             post_event(
                 make_event(
                     session_id,
@@ -1785,23 +1798,38 @@ def _pin_lane_fixtures(
             UUID(session_id)
             first_start = spec["segments"][0][0]
             last_end = spec["segments"][-1][1]
-            if spec["close_reason"] != "orphan_timeout":
-                statements.append(
-                    "DELETE FROM events "
-                    f"WHERE session_id = '{session_id}'::uuid "
-                    "AND event_type = 'session_end' "
-                    "AND payload->>'close_reason' = 'orphan_timeout'"
-                )
-            # Shift the run's whole event stream so its first event
-            # sits at the first segment's start: the events keep their
-            # spacing, so every boundary lands on its declared offset.
-            statements.append(
-                "UPDATE events e SET occurred_at = e.occurred_at + "
-                f"(({_interval(first_start)}) - first.at) "
-                "FROM (SELECT MIN(occurred_at) AS at FROM events "
-                f"WHERE session_id = '{session_id}'::uuid) first "
-                f"WHERE e.session_id = '{session_id}'::uuid AND first.at IS NOT NULL"
+            # A session_end the role does not declare came from outside
+            # the seeder: the reaper's close of a run left silent, or a
+            # client closing a fixture run mid-suite. Keep only the
+            # seeder's own: a closed segment's, which always names a
+            # close_reason, and the declared reaper close.
+            keep = (
+                "payload->>'close_reason' = 'orphan_timeout'"
+                if spec["close_reason"] == "orphan_timeout"
+                else "FALSE"
             )
+            if spec["shift_events"]:
+                keep = (
+                    f"({keep} OR (payload->>'close_reason' IS NOT NULL "
+                    "AND payload->>'close_reason' <> 'orphan_timeout'))"
+                )
+            statements.append(
+                "DELETE FROM events "
+                f"WHERE session_id = '{session_id}'::uuid "
+                f"AND event_type = 'session_end' AND NOT {keep}"
+            )
+            if spec["shift_events"]:
+                # Shift the run's whole event stream so its first event
+                # sits at the first segment's start: the events keep
+                # their spacing, so every boundary lands on its declared
+                # offset.
+                statements.append(
+                    "UPDATE events e SET occurred_at = e.occurred_at + "
+                    f"(({_interval(first_start)}) - first.at) "
+                    "FROM (SELECT MIN(occurred_at) AS at FROM events "
+                    f"WHERE session_id = '{session_id}'::uuid) first "
+                    f"WHERE e.session_id = '{session_id}'::uuid AND first.at IS NOT NULL"
+                )
             if spec["state"] == "active":
                 row = "state='active', ended_at=NULL, last_seen_at=NOW()"
             elif spec["state"] == "lost":

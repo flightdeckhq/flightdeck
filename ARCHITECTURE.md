@@ -5539,13 +5539,29 @@ navigate to the events page:
 
 - agent → `?agent_drawer=<agent_id>` (mounted by
   `AgentDrawerHost`, app-level overlay).
-- event → `?event=<event_id>&event_session=<session_id>` (mounted
-  by `EventDetailDrawerHost`, app-level overlay; distinct param
-  pair so the run drawer (`?run=`) cannot mount simultaneously).
-  Hydrated via a single `GET /v1/events` page scoped to
-  `session_id`; sessions with more than `EVENT_DRAWER_FETCH_LIMIT`
-  events surface an explicit "not found" empty state rather than
-  rendering an invisible drawer.
+- event → `?event=<event_id>&event_session=<session_id>&event_at=<occurred_at>`
+  (mounted by `EventDetailDrawerHost`, app-level overlay; distinct
+  param pair so the run drawer (`?run=`) cannot mount
+  simultaneously). Hydrated through `GET /v1/events` scoped to
+  `session_id` (`findSessionEvent` in
+  `dashboard/src/hooks/findSessionEvent.ts`), so an event anywhere in
+  a run of any length resolves:
+  - with `event_at` (the palette always sets it), one request whose
+    `from` and `to` bound that millisecond returns the event and any
+    that share it (the search API's timestamps come in Postgres's text
+    form, which the events filter does not take, so the dashboard
+    rewrites them as ISO; a failed request falls through to the next
+    rule);
+  - without it (an older bookmark), or if that misses, the run is
+    read newest first in pages of `EVENT_LOOKUP_PAGE_SIZE` (2,000,
+    the endpoint's cap) with the keyset cursor until the event turns
+    up, the run ends, or `EVENT_LOOKUP_MAX_PAGES` (25) pages are read.
+    Those pages reach back from the run's newest event without a gap,
+    so they merge into `eventsCache` by id like every other load (see
+    Bulk historical events hook); the single-timestamp answer does
+    not, since it would leave a gap.
+  An event that is not found surfaces an explicit "not found" empty
+  state rather than an invisible drawer.
 - run → navigates to `/events?run=<session_id>` (the run drawer
   lives on that page).
 
@@ -6632,8 +6648,9 @@ list in the server's order (`occurred_at` to the microsecond, then
 only the runs whose list changed. Every writer of the cache merges the
 same way and never replaces or drops a run's list: live WebSocket
 events, a run's own history fetch (`useSessionEvents`), the run
-drawer's fetch (`useSession`) and its "Show older" pages, and the
-per-agent swimlane modal's seed and live ticks. Switching ranges
+drawer's fetch (`useSession`) and its "Show older" pages, the
+per-agent swimlane modal's seed and live ticks, and the event deep
+link's newest-first pages (`findSessionEvent`). Switching ranges
 therefore only adds circles. A run with nothing cached fetches its
 history once, when its row first mounts.
 
@@ -7071,6 +7088,8 @@ tunable magic numbers:
 | `PAUSE_QUEUE_MAX_EVENTS` | 1000 | Pause queue cap |
 | `HISTORY_PAGE_SIZE` | 1000 | Events per request of Fleet's history load |
 | `HISTORY_DRAIN_MAX_EVENTS` | 5000 | Most events Fleet's history load keeps per window (its newest) |
+| `EVENT_LOOKUP_PAGE_SIZE` | 2000 | Events per request when the event deep link reads a run newest first |
+| `EVENT_LOOKUP_MAX_PAGES` | 25 | Most pages the event deep link reads before it reports the event not found |
 | `FEED_INITIAL_LOAD` | 100 | Initial fleet store load size |
 | `FEED_MIN_HEIGHT` | 120 | Live feed resize lower bound |
 | `FEED_MAX_HEIGHT` | 600 | Live feed resize upper bound |

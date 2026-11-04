@@ -68,8 +68,9 @@ export function useFleet(onEvent?: (event: AgentEvent) => void) {
           // re-fetch trigger) react regardless of whether the
           // envelope carries a session diff. The event of a run the
           // page does not show (the reaper's close of a run it never
-          // loaded) goes to neither the store nor the live feed.
-          setLastEvent(update.last_event);
+          // loaded) goes to neither the store nor the live feed. The
+          // session's agent_id goes with it: the event names no agent.
+          setLastEvent(update.last_event, update.session?.agent_id ?? null);
           if (onEvent) onEvent(update.last_event);
         }
       } catch {

@@ -92,6 +92,26 @@ All notable changes to Flightdeck are documented here.
   spans waits the same way for its re-attaching `session_start`, so its
   tokens count; every other call that reaches a closed session is
   skipped at once, as before.
+- **Tokens of a stream that failed midway count in the server totals.**
+  The provider bills the tokens a stream delivered before it failed, and
+  the sensor reports them on the `llm_error`
+  (`error.partial_tokens_input` / `partial_tokens_output`), but only its
+  local budget counted them. The worker now stores them as the
+  `llm_error`'s token counts, so they reach the session's and the agent's
+  token totals, the analytics `tokens`, `estimated_cost`,
+  `parent_token_sum` and `child_token_sum` metrics, the per-agent summary
+  and the dashboard's token totals. The sensor stamps the call's billing
+  mode on such an `llm_error` (a `local` or `subscription` call stays out
+  of the cost; an error from an older sensor is billed as its session's
+  calls are), and the tokens are priced at the model's input and output
+  rates. Errors stored before this release are not recounted
+  ([#172](https://github.com/flightdeckhq/flightdeck/issues/172)).
+- **The Agents table's token, error and latency cells update live.**
+  The live patch looked up an event's agent by the event's flavor, a
+  label that never equals an agent id, so the cells changed only when
+  the page fetched the summaries again. It now takes the agent from the
+  session the live stream sends with the event, or from the fleet row
+  that holds the event's run.
 - **Fleet swimlane circles sit on their row's centre line.** Circles
   were shifted up twice (a CSS translate and an inline transform), so
   they sat about 11 px high on every row, crowded the top-edge run
@@ -292,6 +312,10 @@ All notable changes to Flightdeck are documented here.
 
 ### Changed
 
+- **The analytics `tokens` metric and the per-agent summary count
+  embeddings calls**, which the session and agent totals and the cost
+  already did, so every token total agrees
+  ([#172](https://github.com/flightdeckhq/flightdeck/issues/172)).
 - **The contract for OpenTelemetry GenAI frameworks is written down.**
   ARCHITECTURE.md (OTLP ingest > GenAI dialect) and D246 describe how
   the ingestion API will map the GenAI spans of Pydantic AI, Strands

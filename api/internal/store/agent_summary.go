@@ -131,9 +131,11 @@ func (s *Store) AgentSummary(
 	// without splitting the query into N round-trips.
 	//
 	// The cost expression (BuildCostAggregateSQL) carries its own
-	// FILTER to the LLM event types (post_call and embeddings), and
-	// the price lookup (CostPriceJoinSQL) yields no row for any other
-	// event, so the query can scan every event of the agent.
+	// FILTER to the priced events (post_call, embeddings and failed
+	// streams' llm_error), and the price lookup (CostPriceJoinSQL)
+	// yields no row for any other event, so the query can scan every
+	// event of the agent. Tokens count the same calls and failed
+	// streams as the analytics tokens metric (tokenEventFilter).
 	//
 	// COUNT(DISTINCT session_id) is unfiltered: an agent's
 	// "sessions in the window" is every session that emitted at
@@ -143,7 +145,7 @@ func (s *Store) AgentSummary(
 	totalsSQL := `
 		SELECT
 			COALESCE(SUM(e.tokens_total)
-				FILTER (WHERE e.event_type = 'post_call'), 0) AS tokens,
+				FILTER (WHERE ` + tokenEventFilter + `), 0) AS tokens,
 			COUNT(*) FILTER (WHERE e.event_type = 'llm_error') AS errors,
 			COUNT(DISTINCT e.session_id) AS sessions,
 			COALESCE(` + costExpr + `, 0) AS cost_usd,
@@ -207,7 +209,7 @@ func (s *Store) AgentSummary(
 		SELECT
 			date_trunc('%s', e.occurred_at) AS bucket,
 			COALESCE(SUM(e.tokens_total)
-				FILTER (WHERE e.event_type = 'post_call'), 0) AS tokens,
+				FILTER (WHERE %s), 0) AS tokens,
 			COUNT(*) FILTER (WHERE e.event_type = 'llm_error') AS errors,
 			COUNT(DISTINCT e.session_id) AS sessions,
 			COALESCE(%s, 0) AS cost_usd,
@@ -221,7 +223,7 @@ func (s *Store) AgentSummary(
 		  AND e.occurred_at < $3
 		GROUP BY bucket
 		ORDER BY bucket
-	`, params.Bucket, costExpr, priceJoin)
+	`, params.Bucket, tokenEventFilter, costExpr, priceJoin)
 
 	rows, err := s.pool.Query(ctx, seriesSQL,
 		params.AgentID, start, end)

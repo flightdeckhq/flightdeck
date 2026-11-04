@@ -418,6 +418,15 @@ def _max_reported(a: int | None, b: int | None) -> int | None:
 BILLING_METERED = "metered"
 BILLING_LOCAL = "local"
 
+
+def _call_billing_mode(session: Session, provider: Provider) -> str:
+    """The billing mode of one call through ``provider``: the configured
+    mode, else local for a model server on this machine, else metered.
+    Stamped on a call's post_call and on a failed stream's llm_error, whose
+    partial tokens the provider bills the same way."""
+    return session.config.billing_mode or (BILLING_LOCAL if provider.local else BILLING_METERED)
+
+
 # The ingestion API's cap on the free-form strings of the token and cost
 # fields (model ids, tier, speed, residency, stop reason), in UTF-8 bytes;
 # a longer value would get the whole event rejected, so it is cut to fit
@@ -825,6 +834,9 @@ class _GuardCore:
                 self._kwargs,
                 is_stream_error=saw_data,
                 partial=self._partial_block(exc_val, saw_data),
+                # The partial tokens are billed as the call would have
+                # been; the server prices them by this mode.
+                billing_mode=_call_billing_mode(self._session, self._provider),
             )
         except Exception as emit_exc:
             # No exc_info: the provider exception is the active context and
@@ -1842,6 +1854,7 @@ def _emit_error(
     *,
     is_stream_error: bool = False,
     partial: dict[str, Any] | None = None,
+    billing_mode: str | None = None,
 ) -> None:
     _mark_reported(exc)
     try:
@@ -1868,7 +1881,9 @@ def _emit_error(
         error_payload = classification.to_payload()
         if partial is not None:
             error_payload.update(partial)
-        _enqueue_error_event(session, provider, error_payload, model, latency_ms)
+        _enqueue_error_event(
+            session, provider, error_payload, model, latency_ms, billing_mode=billing_mode
+        )
     except Exception as emit_exc:
         # No exc_info: the provider exception is the active context and
         # may echo prompt text; the failure class is enough.
@@ -1881,9 +1896,13 @@ def _enqueue_error_event(
     error_payload: dict[str, Any],
     model: str | None,
     latency_ms: int,
+    *,
+    billing_mode: str | None = None,
 ) -> None:
     """Build and enqueue the LLM_ERROR event around a finished ``error``
-    sub-object, whether it came from an exception or a stop reason."""
+    sub-object, whether it came from an exception or a stop reason.
+    ``billing_mode`` is stamped top-level when given (a failed stream's
+    llm_error, whose partial tokens the provider bills)."""
     # Per-(provider, request_id) retry counter — bounded LRU on
     # Session — answers "did the retry chain finally give up".
     # terminal is best-effort: an error is terminal when the
@@ -1919,6 +1938,8 @@ def _enqueue_error_event(
     payload["error"] = error_payload
     payload["retry_attempt"] = retry_attempt
     payload["terminal"] = terminal
+    if billing_mode is not None:
+        payload["billing_mode"] = billing_mode
     session.event_queue.enqueue(payload)
 
 
@@ -1971,8 +1992,7 @@ def _add_token_cost_fields(
         fields: dict[str, Any] = {
             "model_requested": provider.get_model(call_kwargs or {}) or None,
             "provider": provider.vendor,
-            "billing_mode": session.config.billing_mode
-            or (BILLING_LOCAL if provider.local else BILLING_METERED),
+            "billing_mode": _call_billing_mode(session, provider),
             "inference_scope": provider.inference_scope,
             # Each share must fit inside its total, or ingestion rejects
             # the whole event; a share that does not is left out.

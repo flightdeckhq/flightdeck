@@ -318,6 +318,20 @@ func TestProcess_LateTokenBearingCallsWaitThenFallBackToTheSkip(t *testing.T) {
 	}
 }
 
+// A failed stream's llm_error carries its billed tokens in its error
+// block (partial_tokens_input / partial_tokens_output); those count as
+// its tokens, so a late one waits like any other call with tokens.
+func TestProcess_LateFailedStreamWithPartialTokensWaits(t *testing.T) {
+	pool := dbPool(t)
+	p := NewProcessor(pool)
+	sessionID := seedClosedRow(t, pool, 500, assembledContext)
+	e := lateCall(sessionID, "llm_error", 0, 501, false)
+	e.Error = json.RawMessage(`{"error_type":"stream_error","partial_tokens_input":4,"partial_tokens_output":5}`)
+	if err := p.Process(context.Background(), e); !errors.Is(err, consumer.ErrRetryLater) {
+		t.Fatalf("late llm_error with partial tokens: err = %v, want ErrRetryLater", err)
+	}
+}
+
 // The redelivery is scoped: a plugin's or sensor's straggler after its
 // end, a call without tokens, any other event, a call published before
 // the end, and a row whose end sequence is unknown are all handled at

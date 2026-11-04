@@ -532,6 +532,24 @@ totals. Tests pin the taxonomy to every first-party emitter.
 and `close_reason` get (drops billed tokens whenever a client is ahead of
 the server); storing it as sent (readers meet undocumented values).
 
+## D245 -- A failed stream's billed tokens are stored as its llm_error's token columns and count in every total
+
+**Date:** 2026-11-02
+**Decision:** the worker copies an `llm_error`'s `error.partial_tokens_*`
+into its `tokens_input` / `tokens_output` / `tokens_total` (when the event
+sends no top-level counts). The sensor stamps the call's `billing_mode` on
+it; one without (an older sensor) takes the session's latest `post_call`'s,
+else the client type's default. Session and agent counters,
+the `tokens` metric, `estimated_cost` and the agent summary count those
+rows (no backfill); `tokens` and the summary count `embeddings` too.
+**Why:** one stored value every reader already sums, the dashboard's
+client-side sums included; a failed stream sends no `post_call`. No
+recorded reason kept embeddings out of `tokens`.
+**Rejected alternative:** reading the payload at query time (every query
+parses JSON, and analytics would count old rows the stored counters
+never will); a backfill migration (it would add tokens the live rules
+skip, such as a call published after its session ended).
+
 ## D246 -- OTLP GenAI spans are staged in Postgres and assembled per trace
 
 **Date:** 2026-11-04

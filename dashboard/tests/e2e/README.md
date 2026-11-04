@@ -67,6 +67,7 @@ the swimlane↔table parity assertion). The current journeys:
 | `T133-sub-agent-connector-ends-on-the-circles-it-joins.spec.ts` | Every connector starts on its parent circle's rim and ends on its child circle's centre |
 | `T134-hovering-a-run-lights-its-connectors.spec.ts` | Hovering a run's mark (or keyboard-focusing its glyph) lights exactly that run's connectors: a parent its fan-out, a child its own link |
 | `T135-child-row-label-hides-scrolled-circles.spec.ts` | With circles scrolled under a child row's sticky label, in Fleet and in the per-agent modal, the label's background is fully opaque |
+| `T150-agent-tokens-count-failed-streams.spec.ts` | The Agents row's token total counts a failed stream's billed tokens and an embeddings call after a load, and adds a failed stream posted while the page is open without a reload |
 
 The `_fixtures.ts` helper exports shared fixture metadata (agent
 names, flavors, role timeline offsets) and locator helpers:

@@ -417,7 +417,7 @@ const docTemplate = `{
         },
         "/v1/agents/{agent_id}/summary": {
             "get": {
-                "description": "Returns totals (tokens, errors, sessions, cost_usd, latency_p50_ms, latency_p95_ms) and a per-bucket time series for one agent over the requested period. Powers the per-agent landing page. “period“ is one of “1h“, “24h“, “7d“, “30d“ (default “7d“). “bucket“ is one of “hour“, “day“, “week“; when omitted it is derived from period (1h/24h → hour, 7d/30d → day). Errors count events with “event_type = 'llm_error'“ only — policy events are enforcement decisions, not failures. Sessions is “COUNT(DISTINCT session_id)“ across events in the window. Latency percentiles use “event_type = 'post_call'“ rows only, matching the analytics endpoint convention.",
+                "description": "Returns totals (tokens, errors, sessions, cost_usd, latency_p50_ms, latency_p95_ms) and a per-bucket time series for one agent over the requested period. Powers the per-agent landing page. “period“ is one of “1h“, “24h“, “7d“, “30d“ (default “7d“). “bucket“ is one of “hour“, “day“, “week“; when omitted it is derived from period (1h/24h → hour, 7d/30d → day). Tokens sum “tokens_total“ over “post_call“ and “embeddings“ events and over the “llm_error“ events of streams that failed after the provider billed tokens, the events the session totals and cost count. Errors count events with “event_type = 'llm_error'“ only — policy events are enforcement decisions, not failures. Sessions is “COUNT(DISTINCT session_id)“ across events in the window. Latency percentiles use “event_type = 'post_call'“ rows only, matching the analytics endpoint convention.",
                 "produces": [
                     "application/json"
                 ],

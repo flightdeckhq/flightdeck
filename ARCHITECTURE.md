@@ -3615,7 +3615,10 @@ spans and are never counted in the first place.)
 Tokens come from that span only: never from agent spans (Pydantic AI's
 `gen_ai.aggregated_usage.*`, the `gen_ai.usage.*` on Strands' agent
 spans), from ADK's log records, which repeat their span's usage, or from
-metrics. A failed model span is an ordinary `post_call`. An
+metrics. A failed model span (ERROR status and no usage, in all four
+frameworks' recordings; see `tests/fixtures/otlp/GENAI_COMPARISON.md` >
+A failed model call) is an `llm_error` on its agent's session, never a
+`post_call`; its error text is content, kept only with capture on. An
 `execute_tool` span is a `tool_call` on its agent's session, with
 `tool_name`, `tool_use_id` (`gen_ai.tool.call.id`, absent for ADK's
 `<not specified>`), `latency_ms` and `duration_ms`; an `execute_tool`

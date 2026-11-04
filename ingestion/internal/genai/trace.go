@@ -150,6 +150,18 @@ func (n *node) nearestAgent() *node {
 	return nil
 }
 
+// nearestAssembledAgent is the closest agent span among n's ancestors
+// that an earlier assembly already published, skipping agent spans not
+// yet assembled.
+func (n *node) nearestAssembledAgent() *node {
+	for a := n.parent; a != nil; a = a.parent {
+		if a.kind == kindAgent && a.fact.Assembled {
+			return a
+		}
+	}
+	return nil
+}
+
 // modelAbove reports whether a model span lies between n and its
 // nearest agent ancestor (or, with none, anywhere above it): a model
 // span wrapped in another counts once, as the outer call.

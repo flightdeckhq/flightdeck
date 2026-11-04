@@ -3536,8 +3536,18 @@ original end, unless that is outside the validation window (a
 after its assembly), when it is dated one microsecond after the latest
 event it follows. A late call that reaches a worker replica before its
 re-attaching start is redelivered until the start lands, for up to
-three seconds (see NATS consumer). A late span cannot make an earlier root a child, because
-`parent_session_id` is written once. A late ADK log record whose call
+three seconds (see NATS consumer). An agent span an earlier assembly
+already published takes as its parent only the nearest agent ancestor
+that was also already assembled, so an ancestor that arrives in a later
+assembly is a root of its own, with its own calls and tools, and the
+agent's events in that assembly keep the `agent_name`, agent id and
+missing parent it was published with. A staged record does not say which
+assembly published it, so once that late ancestor has itself been
+assembled it cannot be told from one assembled with the agent: a record
+of the agent's in a third assembly takes the ancestor as its parent, and
+its events carry the child's `agent_name` and agent id, while the
+session row keeps the root's parent (`parent_session_id` is written
+once). A late ADK log record whose call
 was already assembled is dropped with its content; the call keeps its
 tokens. A trace's staged records are deleted 1 hour after a `complete`
 assembly and 24 hours after any other, so late ancestry can still be
@@ -3578,7 +3588,9 @@ starts at its earliest span and ends at its latest.
 A session starts at its agent span's start and ends at its end
 (`close_reason=normal_exit`), with `state=error` and the sub-agent error
 block when the span failed: `error_class` from `error.type`, else the
-exception type, and the message only with capture on. Its
+exception type (cut to 256 bytes at a UTF-8 boundary, as on a failed
+tool or model call; a span that names neither ends in error with no
+block), and the message only with capture on. Its
 `session_start` carries `sensor_version` (the framework's version),
 `capture_prompts` (the trace's posture, below) and a `context` of
 `telemetry=otlp`, `supports_directives=false`, `frameworks`
@@ -3632,10 +3644,19 @@ spans and are never counted in the first place.)
 Tokens come from that span only: never from agent spans (Pydantic AI's
 `gen_ai.aggregated_usage.*`, the `gen_ai.usage.*` on Strands' agent
 spans), from ADK's log records, which repeat their span's usage, or from
-metrics. A failed model span (ERROR status and no usage, in all four
-frameworks' recordings; see `tests/fixtures/otlp/GENAI_COMPARISON.md` >
-A failed model call) is an `llm_error` on its agent's session, never a
-`post_call`; its error text is content, kept only with capture on. No
+metrics. A failed model span (ERROR status) is an `llm_error` on its
+agent's session, never a `post_call`; its error text is content, kept
+only with capture on. The four frameworks' recordings carry no usage on
+one (see `tests/fixtures/otlp/GENAI_COMPARISON.md` > A failed model
+call), but a provider may bill a call that then fails, so the usage is
+read from the failed span, else from the outermost model-call span below
+it, of any scope and never past an agent span, that carries usage, and
+is reported as a failed stream's is: `error.partial_tokens_input` and
+`error.partial_tokens_output`, each left out when absent or malformed,
+never 0, with the top-level token fields absent and `billing_mode` set
+when the resource declares it. That `llm_error` is the one event that
+reports those tokens, since a model span under another model span is
+never a call of its own. No
 framework puts the HTTP status or the provider's error code on its own
 span, so the error is classified from its class name alone (`error.type`,
 else the first exception's type), as the sensor classifies a provider's
@@ -3643,8 +3664,8 @@ exception by class: the last dotted segment is matched against the
 sensor's class names, a name ending in one taking its type
 (`openai.NotFoundError` and Pydantic AI's `ModelNotFoundError` are
 `not_found`), and a span that names no class is `other`. Its
-`error_message` is the class name (`model call failed` when there is
-none), `http_status`, `provider_error_code`, `request_id` and
+`error_message` is the class name, cut to 256 bytes at a UTF-8
+boundary (`model call failed` when there is none), `http_status`, `provider_error_code`, `request_id` and
 `retry_after` are null, `is_retryable` follows the taxonomy, and
 `model_requested`, `provider` and `latency_ms` are read as for a
 `post_call`. An
@@ -3653,7 +3674,8 @@ none), `http_status`, `provider_error_code`, `request_id` and
 `<not specified>`), `latency_ms` and `duration_ms`; an `execute_tool`
 that runs a child agent stays a `tool_call` on the parent. A failed tool
 carries the error block `{error_type: other, error_class, message}`,
-`error_class` from `error.type`, else the first exception type; its
+`error_class` from `error.type`, else the first exception type, cut to
+256 bytes at a UTF-8 boundary (left out when the span names neither); its
 message is the status message, else the exception message, cut to 200
 characters, with capture on, and `<redacted>` with capture off.
 

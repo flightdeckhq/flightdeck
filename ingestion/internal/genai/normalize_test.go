@@ -479,6 +479,233 @@ func TestE23LateRecordReattaches(t *testing.T) {
 	}
 }
 
+// A late ancestor agent cannot turn an agent an earlier assembly
+// published as a root into a child: a quiet assembly made the agent a
+// root because its parent had not arrived, and when the parent arrives
+// with a late record of the agent's, the re-attach keeps the agent's
+// name and id and gives it no parent; the parent is a root of its own
+// and keeps its own calls.
+func TestE23LateAncestorKeepsIdentity(t *testing.T) {
+	s := newSynth(t, "pydantic-ai")
+	parent := s.span(nil, "invoke_agent outer", opInvokeAgent, "outer", 2000, nil)
+	tool := s.span(&parent, "execute_tool ask", opExecuteTool, "outer", 1500, map[string]any{attrToolName: "ask"})
+	inner := s.span(&tool, "invoke_agent inner", opInvokeAgent, "inner", 1000, nil)
+	s.span(&inner, "chat 1", opChat, "inner", 100, usage(10, 1))
+	outerCall := s.span(&parent, "chat outer", opChat, "outer", 100, usage(20, 2))
+
+	// The first assembly saw only the inner agent and its call.
+	first := s.input(LabelPydanticAI, nil)
+	first.Reason = otlpstage.ReasonQuiet
+	first.Facts = []otlpstage.StagedFact{*s.fact(inner), s.facts[3]}
+	early := startsByName(t, Resolve(first))
+	was, ok := early["pydantic_ai/inner"]
+	if !ok || was["parent_session_id"] != nil {
+		t.Fatalf("first assembly sessions = %v", keys(early))
+	}
+
+	// The parent, its tool and call arrive late, with a late tool call
+	// of the inner agent's.
+	s.fact(inner).Assembled = true
+	s.facts[3].Assembled = true
+	s.span(&inner, "execute_tool late", opExecuteTool, "inner", 5, map[string]any{attrToolName: "late"})
+	in := s.input(LabelPydanticAI, nil)
+	in.Trace.AssemblyCount = 1
+	evs := Resolve(in)
+	checkSequence(t, evs)
+	var reattach map[string]any
+	for _, ev := range evs {
+		if ev.EventType == "session_start" && ev.Attach {
+			reattach = ev.Payload
+		}
+	}
+	if reattach == nil {
+		t.Fatal("the inner agent was not re-attached")
+	}
+	if reattach["agent_name"] != was["agent_name"] || reattach["agent_id"] != was["agent_id"] || reattach["session_id"] != was["session_id"] {
+		t.Errorf("re-attach identity %v / %v, want %v / %v", reattach["agent_name"], reattach["agent_id"], was["agent_name"], was["agent_id"])
+	}
+	if _, has := reattach["parent_session_id"]; has {
+		t.Errorf("re-attach gained a parent: %v", reattach["parent_session_id"])
+	}
+	for _, ev := range evs {
+		if ev.SessionID == was["session_id"] && (ev.Payload["parent_session_id"] != nil || ev.Payload["agent_role"] != nil) {
+			t.Errorf("late %s of the inner agent carries a parent or role", ev.EventType)
+		}
+	}
+	late := startsByName(t, evs)
+	outer := late["pydantic_ai/outer"]
+	if outer == nil || outer["parent_session_id"] != nil {
+		t.Fatalf("late parent = %v, want a root", outer)
+	}
+	for _, p := range ofType(evs, "post_call") {
+		if p["id"] == identity.UUID5(identity.NamespaceFlightdeck, idPrefix+"tok-synth/"+hexID(synthTraceID[:])+"/event/"+hexID(outerCall[:])) &&
+			p["session_id"] != outer["session_id"] {
+			t.Error("the late parent's call is not on its session")
+		}
+	}
+	if n := len(ofType(evs, "tool_call")); n != 2 {
+		t.Errorf("%d tool calls, want the parent's and the late one", n)
+	}
+}
+
+// A failed model call that carries usage reports it once, in the
+// error object as a failed stream's partial counts, with no top-level
+// counts and with billing_mode when the resource declares it; a count
+// that is absent or malformed is left out, never 0.
+func TestE23FailedCallReportsUsage(t *testing.T) {
+	cases := []struct {
+		name    string
+		attrs   map[string]any
+		in, out any
+	}{
+		{"both counts", usage(120, 7), int64(120), int64(7)},
+		{"input only", map[string]any{attrInputTokens: 120}, int64(120), nil},
+		{"malformed output", map[string]any{attrInputTokens: 120, attrOutputTokens: "many"}, int64(120), nil},
+		{"no usage", map[string]any{}, nil, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newSynth(t, "pydantic-ai")
+			root := s.span(nil, "invoke_agent a", opInvokeAgent, "a", 300, nil)
+			attrs := map[string]any{attrExceptionType: "openai.RateLimitError"}
+			for k, v := range tc.attrs {
+				attrs[k] = v
+			}
+			call := s.span(&root, "chat m", opChat, "a", 100, attrs)
+			s.fact(call).Status = statusError
+			evs := Resolve(s.input(LabelPydanticAI, map[string]string{attrBillingMode: "subscription"}))
+			if n := len(ofType(evs, "post_call")); n != 0 {
+				t.Fatalf("%d post_calls", n)
+			}
+			p := ofType(evs, "llm_error")[0]
+			for _, k := range []string{"tokens_input", "tokens_output", "tokens_total"} {
+				if _, has := p[k]; has {
+					t.Errorf("top-level %s set", k)
+				}
+			}
+			block := p["error"].(map[string]any)
+			if got, has := block["partial_tokens_input"]; tc.in == nil && has || tc.in != nil && got != tc.in {
+				t.Errorf("partial_tokens_input = %v (present %v), want %v", got, has, tc.in)
+			}
+			if got, has := block["partial_tokens_output"]; tc.out == nil && has || tc.out != nil && got != tc.out {
+				t.Errorf("partial_tokens_output = %v (present %v), want %v", got, has, tc.out)
+			}
+			if p["billing_mode"] != "subscription" || block["error_type"] != "rate_limit" || block["is_retryable"] != true {
+				t.Errorf("llm_error = %v", p)
+			}
+		})
+	}
+	// No billing_mode without the resource attribute.
+	s := newSynth(t, "pydantic-ai")
+	root := s.span(nil, "invoke_agent a", opInvokeAgent, "a", 300, nil)
+	call := s.span(&root, "chat m", opChat, "a", 100, usage(1, 1))
+	s.fact(call).Status = statusError
+	if p := ofType(Resolve(s.input(LabelPydanticAI, nil)), "llm_error")[0]; p["billing_mode"] != nil {
+		t.Errorf("billing_mode = %v without the resource attribute", p["billing_mode"])
+	}
+}
+
+// failedOverUsage builds an agent whose framework model span failed
+// without usage over model spans below it that carry usage: a recognised
+// one under a link span, and a provider SDK one deeper still. It returns
+// the builder.
+func failedOverUsage(t *testing.T) *synth {
+	s := newSynth(t, "pydantic-ai")
+	root := s.span(nil, "invoke_agent a", opInvokeAgent, "a", 500, nil)
+	outer := s.span(&root, "chat outer", opChat, "a", 400, map[string]any{attrExceptionType: "pydantic_ai.exceptions.ModelHTTPError"})
+	s.fact(outer).Status = statusError
+	link := s.span(&outer, "retry", "", "", 300, nil)
+	mid := s.span(&link, "chat mid", opChat, "", 200, usage(900, 40))
+	s.scope = "com.anthropic.sdk.python"
+	s.span(&mid, "anthropic.messages.create", opChat, "", 100, usage(5, 5))
+	return s
+}
+
+// An outer model span that fails without usage over a model span that
+// reported it carries the usage of the outermost span below it with
+// usage, and the tokens are reported by that llm_error alone.
+func TestE23FailedOuterCallTakesInnerUsage(t *testing.T) {
+	evs := Resolve(failedOverUsage(t).input(LabelPydanticAI, nil))
+	if n := len(ofType(evs, "post_call")); n != 0 {
+		t.Fatalf("%d post_calls: the inner usage would be counted twice", n)
+	}
+	errs := ofType(evs, "llm_error")
+	if len(errs) != 1 {
+		t.Fatalf("%d llm_errors", len(errs))
+	}
+	block := errs[0]["error"].(map[string]any)
+	if block["partial_tokens_input"] != int64(900) || block["partial_tokens_output"] != int64(40) {
+		t.Errorf("partial counts = %v / %v, want the outermost span with usage (900 / 40)", block["partial_tokens_input"], block["partial_tokens_output"])
+	}
+	// A child agent's usage below a failed call is never borrowed.
+	s := newSynth(t, "pydantic-ai")
+	root := s.span(nil, "invoke_agent a", opInvokeAgent, "a", 500, nil)
+	outer := s.span(&root, "chat outer", opChat, "a", 400, nil)
+	s.fact(outer).Status = statusError
+	child := s.span(&outer, "invoke_agent b", opInvokeAgent, "b", 300, nil)
+	s.span(&child, "chat b", opChat, "b", 100, usage(30, 3))
+	evs = Resolve(s.input(LabelPydanticAI, nil))
+	if block := ofType(evs, "llm_error")[0]["error"].(map[string]any); block["partial_tokens_input"] != nil {
+		t.Errorf("borrowed a child agent's usage: %v", block)
+	}
+	if n := len(ofType(evs, "post_call")); n != 1 {
+		t.Errorf("the child's call: %d post_calls, want 1", n)
+	}
+}
+
+// A failed agent span ends its session in error: with its class when the
+// framework records an exception (Strands), and without an error block
+// when it records none (OpenAI Agents).
+func TestE23FailedAgentSpans(t *testing.T) {
+	for _, tc := range []struct {
+		scope, label, class string
+	}{
+		{"strands.telemetry.tracer", LabelStrands, "openai.NotFoundError"},
+		{"opentelemetry.instrumentation.openai_agents", LabelOpenAIAgents, ""},
+	} {
+		s := newSynth(t, tc.scope)
+		attrs := map[string]any{}
+		if tc.class != "" {
+			attrs[attrExceptionType] = tc.class
+		}
+		root := s.span(nil, "invoke_agent a", opInvokeAgent, "a", 300, attrs)
+		s.fact(root).Status = statusError
+		s.span(&root, "chat", opChat, "", 100, usage(1, 1))
+		end := ofType(Resolve(s.input(tc.label, nil)), "session_end")[0]
+		if end["state"] != "error" || end["close_reason"] != "normal_exit" {
+			t.Errorf("%s end = %v", tc.label, end)
+		}
+		block, has := end["error"].(map[string]any)
+		if tc.class == "" && has || tc.class != "" && block["error_class"] != tc.class {
+			t.Errorf("%s error = %v", tc.label, end["error"])
+		}
+	}
+}
+
+// An error class past 256 bytes is cut at a UTF-8 boundary on a tool's
+// error block, a session's and an llm_error's message.
+func TestE23LongErrorClass(t *testing.T) {
+	long := strings.Repeat("ü", 300) + "Error"
+	s := newSynth(t, "pydantic-ai")
+	root := s.span(nil, "invoke_agent a", opInvokeAgent, "a", 300, map[string]any{attrErrorType: long})
+	s.fact(root).Status = statusError
+	call := s.span(&root, "chat", opChat, "a", 100, map[string]any{attrErrorType: long})
+	s.fact(call).Status = statusError
+	tool := s.span(&root, "execute_tool t", opExecuteTool, "a", 10, map[string]any{attrToolName: "t", attrErrorType: long})
+	s.fact(tool).Status = statusError
+	evs := Resolve(s.input(LabelPydanticAI, nil))
+	for name, v := range map[string]any{
+		"tool error_class":    ofType(evs, "tool_call")[0]["error"].(map[string]any)["error_class"],
+		"session error_class": ofType(evs, "session_end")[0]["error"].(map[string]any)["error_class"],
+		"llm_error message":   ofType(evs, "llm_error")[0]["error"].(map[string]any)["error_message"],
+	} {
+		str, _ := v.(string)
+		if len(str) > maxErrorClassBytes || len(str) < maxErrorClassBytes-1 || !utf8.ValidString(str) {
+			t.Errorf("%s is %d bytes (valid %v)", name, len(str), utf8.ValidString(str))
+		}
+	}
+}
+
 // Depth 2: a grandchild's parent is its nearest agent, through any link
 // spans; its agent_name and id derive from the top-most agent's name and
 // its own role, as every child's do.

@@ -175,7 +175,14 @@ func (r *resolver) agentSession(n *node) *session {
 		return s
 	}
 	s := &session{id: r.id(idSession, n.spanHex()), agent: n, label: agentLabel(n.fact.AgentName)}
-	if pa := n.nearestAgent(); pa != nil {
+	pa := n.nearestAgent()
+	if n.fact.Assembled {
+		// An earlier assembly published this session, with the parent it
+		// had then; an ancestor agent not yet assembled arrived after it
+		// and must not turn it into a child, so it keeps its identity.
+		pa = n.nearestAssembledAgent()
+	}
+	if pa != nil {
 		s.parent = r.agentSession(pa)
 		root := s.parent
 		for root.parent != nil {
@@ -394,7 +401,7 @@ func (r *resolver) llmError(s *session, n *node) map[string]any {
 	if provider != "" {
 		errProvider = provider
 	}
-	p["error"] = map[string]any{
+	block := map[string]any{
 		"error_type":          errorType,
 		"provider":            errProvider,
 		"http_status":         nil,
@@ -404,7 +411,62 @@ func (r *resolver) llmError(s *session, n *node) map[string]any {
 		"retry_after":         nil,
 		"is_retryable":        retryableErrorTypes[errorType],
 	}
+	// The provider may have billed a call that then failed. Its usage is
+	// reported as a failed stream's is, in the error object, so this
+	// event is the one that reports those tokens; the top-level token
+	// fields stay absent, as the sensor sends them.
+	if u := failedUsage(n); u != nil {
+		if in, ok := partialCount(u.meta, attrInputTokens); ok {
+			block["partial_tokens_input"] = in
+		}
+		if out, ok := partialCount(u.meta, attrOutputTokens); ok {
+			block["partial_tokens_output"] = out
+		}
+	}
+	p["error"] = block
+	if r.ident.billing != "" {
+		p["billing_mode"] = r.ident.billing
+	}
 	return p
+}
+
+// failedUsage is the span whose usage a failed model call reports: the
+// call's own span when it carries usage, else the outermost model-call
+// span below it, of any scope, that does (a framework span that failed
+// over a provider SDK span that had counted the call), searched level by
+// level and never past an agent span. nil when none carries usage. Only
+// the failed call's llm_error reads it, so the usage is reported once.
+func failedUsage(n *node) *node {
+	level := []*node{n}
+	for len(level) > 0 {
+		var next []*node
+		for _, c := range level {
+			if c.fact.Op == opChat || c.fact.Op == opGenerateContent {
+				if metaHas(c.meta, attrInputTokens) || metaHas(c.meta, attrOutputTokens) {
+					return c
+				}
+			}
+			for _, gc := range c.children {
+				if gc.kind != kindAgent {
+					next = append(next, gc)
+				}
+			}
+		}
+		level = next
+	}
+	return nil
+}
+
+// partialCount is a failed call's token count when it is a whole number
+// validation accepts (0 to 2^53); a count that is absent or malformed is
+// left out rather than reported as 0 or refused with the error it
+// belongs to.
+func partialCount(m map[string]any, key string) (int64, bool) {
+	n, present, ok := metaInt(m, key)
+	if !present || !ok || n < 0 || n > maxWholeNumber {
+		return 0, false
+	}
+	return n, true
 }
 
 func (r *resolver) tool(s *session, n *node) map[string]any {
@@ -423,6 +485,9 @@ func (r *resolver) tool(s *session, n *node) map[string]any {
 		if class := errorClass(n); class != "" {
 			block["error_class"] = class
 		}
+		// TODO: with capture on, the status message (else the exception
+		// message) is filled in when the GenAI content PR lands; it is
+		// staged content this mapping does not read yet.
 		if !r.in.Trace.Capture {
 			block["message"] = redactedMessage
 		}
@@ -462,13 +527,22 @@ func (r *resolver) provider(n *node) string {
 	return ""
 }
 
+// maxErrorClassBytes bounds a failed span's error class, which is also a
+// failed model call's error_message: an exception's qualified class name
+// is a few dozen bytes, and 256 is the bound validation holds the other
+// short diagnostic strings of an event to, so an exporter cannot put an
+// unbounded string in a field read as a name.
+const maxErrorClassBytes = 256
+
 // errorClass is a failed span's error class: error.type, else the type
-// of its first exception event.
+// of its first exception event, cut to maxErrorClassBytes at a UTF-8
+// boundary.
 func errorClass(n *node) string {
-	if t := metaText(n.meta, attrErrorType); t != "" {
-		return t
+	t := metaText(n.meta, attrErrorType)
+	if t == "" {
+		t = metaText(n.meta, attrExceptionType)
 	}
-	return metaText(n.meta, attrExceptionType)
+	return truncateUTF8(t, maxErrorClassBytes)
 }
 
 // publishOrder lays the sessions' starts and ends around their events.
@@ -562,11 +636,11 @@ func (r *resolver) edges(s *session) *sessionEdge {
 	end["close_reason"] = closeNormalExit
 	if s.agent != nil && s.agent.failed() {
 		end["state"] = stateError
-		block := map[string]any{}
+		// A failed agent that names no class (OpenAI Agents records no
+		// exception) ends in error without an error block.
 		if class := errorClass(s.agent); class != "" {
-			block["error_class"] = class
+			end["error"] = map[string]any{"error_class": class}
 		}
-		end["error"] = block
 	}
 	return &sessionEdge{
 		s:       s,

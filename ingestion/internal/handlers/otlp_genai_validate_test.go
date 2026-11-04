@@ -178,6 +178,91 @@ func TestGenAIFixtureEventsPassValidation(t *testing.T) {
 	}
 }
 
+// A failed model call's usage, its own or that of the outermost model
+// span below it, rides on the llm_error as partial counts that pass
+// validation, so the worker counts it once.
+func TestGenAIFailedCallUsagePassesValidation(t *testing.T) {
+	type spec struct {
+		id, parent byte
+		scope, op  string
+		agent      string
+		failed     bool
+		meta       map[string]any
+	}
+	base := time.Date(2026, 11, 4, 11, 0, 0, 0, time.UTC)
+	build := func(specs []spec) []otlpstage.StagedFact {
+		var facts []otlpstage.StagedFact
+		for i, sp := range specs {
+			meta := map[string]any{"gen_ai.operation.name": sp.op}
+			if sp.agent != "" {
+				meta["gen_ai.agent.name"] = sp.agent
+			}
+			for k, v := range sp.meta {
+				meta[k] = v
+			}
+			raw, _ := json.Marshal(meta)
+			f := otlpstage.Fact{
+				SpanID: [8]byte{7: sp.id}, Kind: otlpstage.KindSpan, ScopeName: sp.scope, ScopeVersion: "2.64.0",
+				Name: sp.op, Op: sp.op, AgentName: sp.agent, Status: 1, Meta: raw,
+				StartNs: base.Add(time.Duration(i) * time.Millisecond).UnixNano(),
+				EndNs:   base.Add(time.Second - time.Duration(i)*time.Millisecond).UnixNano(),
+			}
+			if sp.parent != 0 {
+				f.ParentSpanID = [8]byte{7: sp.parent}
+			}
+			if sp.failed {
+				f.Status = 2
+			}
+			facts = append(facts, otlpstage.StagedFact{Fact: f})
+		}
+		return facts
+	}
+	usage := map[string]any{"gen_ai.usage.input_tokens": 900, "gen_ai.usage.output_tokens": 40}
+	for name, specs := range map[string][]spec{
+		"own usage": {
+			{id: 1, scope: "pydantic-ai", op: "invoke_agent", agent: "a"},
+			{id: 2, parent: 1, scope: "pydantic-ai", op: "chat", failed: true, meta: usage},
+		},
+		"usage below": {
+			{id: 1, scope: "pydantic-ai", op: "invoke_agent", agent: "a"},
+			{id: 2, parent: 1, scope: "pydantic-ai", op: "chat", failed: true},
+			{id: 3, parent: 2, scope: "com.anthropic.sdk.python", op: "chat", meta: usage},
+		},
+	} {
+		evs := genai.Resolve(genai.Input{
+			Trace: otlpstage.Trace{
+				Key:    otlpstage.TraceKey{TokenKey: "tok-validate", TraceID: [16]byte{15: 1}},
+				Source: genai.LabelPydanticAI, SourceVersion: "2.64.0",
+				Resource:        json.RawMessage(`{"flightdeck.billing_mode":"metered"}`),
+				FirstReceivedAt: base,
+			},
+			Facts: build(specs), Reason: otlpstage.ReasonComplete,
+		})
+		now := base.Add(time.Minute)
+		var found bool
+		for _, ev := range evs {
+			body, msg := finishOTLPEvent(ev.Payload, now)
+			if msg != "" {
+				t.Errorf("%s: %s is invalid: %s", name, ev.EventType, msg)
+				continue
+			}
+			if ev.EventType != "llm_error" {
+				continue
+			}
+			var decoded struct {
+				Error map[string]any `json:"error"`
+			}
+			if err := json.Unmarshal(body, &decoded); err != nil {
+				t.Fatal(err)
+			}
+			found = decoded.Error["partial_tokens_input"] == float64(900) && decoded.Error["partial_tokens_output"] == float64(40)
+		}
+		if !found {
+			t.Errorf("%s: no valid llm_error carrying the call's usage", name)
+		}
+	}
+}
+
 // A re-attaching start and end, and an unattributed session, pass
 // validation too: they appear in no recording assembled once.
 func TestGenAILateAndUnattributedEventsPassValidation(t *testing.T) {

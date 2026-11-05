@@ -518,24 +518,17 @@ it orders by arrival, not by the event time the views sort by).
 ## D243 -- Concurrent runs of one agent split its swimlane row into lanes
 
 **Date:** 2026-11-02
-**Decision:** extends D157: each agent keeps one row, one label and a fixed
-48 px height. While two or more of its runs overlap in the window, the row
-splits into up to four lanes, each holding one run's circles, glyphs and a
-line joining them; from a fifth lane on, runs share the fourth. A run's
-lane follows its track (the lowest track free at its start whose last
-segment ended within one window span) ranked among the tracks in view, so
-sequential runs share a lane, the lanes below move up when a track leaves
-the window, and a resumed run's segments may sit in different lanes. The
-row is one line again once no overlap is in view.
-**Why:** Claude Code fans out same-role sub-agents routinely (four runs of
-one agent were seen open at once), more than a top and a bottom edge can
-tell apart. The Agent SDK path is not helped: its sub-agent turns fold into
-the run's own session.
-**Rejected alternative:** per-run sub-rows or a row that grows per lane
-(rows below shift while live, which D157 rejected); a per-spawn agent
-identity (reverses D115 and D126); hover-only linking (nothing to see at a
-glance or on touch); a three-lane cap (keeps circle icons, but a fourth
-concurrent run would share a lane).
+**Decision:** extends D157: one row, one label, 48 px per agent. While runs
+overlap in the window the row splits into up to four lanes of circles,
+glyphs and a run line; tracks past the fourth share the fourth. A run's
+lane is its track (the lowest free at its start whose last segment ended
+within one window span) ranked among the tracks in view: sequential runs
+share a lane, lanes below move up when a track leaves the window, and a
+resumed run's segments may sit in different lanes. No overlap: one line.
+**Why:** Claude Code fans out same-role sub-agents (four were seen open at
+once), more than two edges can separate; Agent SDK sub-agents stay one run.
+**Rejected alternative:** per-run sub-rows or a growing row (D157); a
+per-spawn identity (reverses D115, D126); hover-only linking; a 3-lane cap.
 
 ## D244 -- Ingestion stores an unknown stream outcome, abort reason or llm_error type as `other` and refuses a negative stream count
 

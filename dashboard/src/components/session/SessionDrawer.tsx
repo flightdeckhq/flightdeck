@@ -30,7 +30,7 @@ import {
 } from "@/components/ui/dialog";
 import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
-import { NoEventContent } from "./NoEventContent";
+import { NoEventContent, NoRunContent } from "./NoEventContent";
 import { SignalPromptsPanel } from "./SignalContentViewer";
 import { SubAgentsTab } from "./SubAgentsTab";
 import { EnrichmentSummary } from "@/components/events/EnrichmentSummary";
@@ -1065,6 +1065,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                 )}
                 {activeTab === "prompts" && (
                   <PromptsTab
+                    session={data?.session ?? null}
                     events={displayEvents}
                     selectedEventId={selectedEventId}
                     focusedEventId={focusedPromptEventId}
@@ -2203,6 +2204,8 @@ function EventDetailView({ event: initialEvent, session, onBack }: { event: Agen
 /* ---- Prompts tab ---- */
 
 interface PromptsTabProps {
+  /** The run, whose capture posture picks the empty state. */
+  session: SessionType | null;
   events: AgentEvent[];
   selectedEventId: string | null;
   /**
@@ -2218,6 +2221,7 @@ interface PromptsTabProps {
 }
 
 function PromptsTab({
+  session,
   events,
   selectedEventId,
   focusedEventId,
@@ -2248,11 +2252,7 @@ function PromptsTab({
   }, [focusedEventId, selectedEventId]);
 
   if (contentEvents.length === 0) {
-    return (
-      <div className="px-4 py-8 text-center text-xs text-text-muted">
-        Prompt capture is not enabled for this deployment.
-      </div>
-    );
+    return <NoRunContent session={session} />;
   }
 
   if (selectedEventId) {

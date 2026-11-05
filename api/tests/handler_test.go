@@ -157,6 +157,14 @@ func (m *mockStore) GetSession(_ context.Context, id string) (*store.Session, er
 			CloseReasons: []string{"orphan_timeout"},
 		}, nil
 	}
+	if id == "sess-capture-on" {
+		on := true
+		return &store.Session{
+			SessionID: id, Flavor: "test", State: "closed",
+			StartedAt: time.Now(), LastSeenAt: time.Now(),
+			CapturePrompts: &on,
+		}, nil
+	}
 	if id == "sess-with-policy" {
 		limit := int64(100000)
 		warn := 80
@@ -956,6 +964,42 @@ func TestSessionsHandler_SessionCarriesCloseReasons(t *testing.T) {
 	}
 	if len(resp.Session.CloseReasons) != 1 || resp.Session.CloseReasons[0] != "orphan_timeout" {
 		t.Errorf("session.close_reasons = %v, want [orphan_timeout]", resp.Session.CloseReasons)
+	}
+}
+
+// The Prompts tab tells a capture-off run from a capture-on run that
+// stored no content by the session's stored posture: capture_prompts
+// is on the session detail as stored, true, false or null, and is
+// always present (never omitted) so null reads as "not declared".
+func TestSessionsHandler_SessionCarriesCapturePrompts(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsHandler(store.WrapStore(s))
+	for _, tc := range []struct {
+		id   string
+		want string
+	}{
+		{"sess-capture-on", `"capture_prompts":true`},
+		{"sess-plain", `"capture_prompts":null`},
+	} {
+		req := httptest.NewRequest("GET", "/v1/sessions/"+tc.id, nil)
+		w := httptest.NewRecorder()
+		handler(w, req)
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d (body=%s)", tc.id, w.Code, w.Body.String())
+		}
+		var resp struct {
+			Session map[string]json.RawMessage `json:"session"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("%s: invalid JSON: %v body=%s", tc.id, err, w.Body.String())
+		}
+		raw, ok := resp.Session["capture_prompts"]
+		if !ok {
+			t.Fatalf("%s: session lacks capture_prompts: %s", tc.id, w.Body.String())
+		}
+		if got := `"capture_prompts":` + string(raw); got != tc.want {
+			t.Errorf("%s: %s, want %s", tc.id, got, tc.want)
+		}
 	}
 }
 

@@ -165,6 +165,11 @@ export const GENAI_FIXTURE = {
   googleAdk: "e2e-genai-google-adk",
   /** Pydantic AI model call that failed: one llm_error. */
   modelError: "e2e-genai-model-error",
+  /** Pydantic AI run with capture declared but its own content switch
+   *  off: capture on, no content stored. */
+  noContent: "e2e-genai-no-content",
+  /** The Pydantic AI tool run replayed without capture: capture off. */
+  captureOff: "e2e-genai-capture-off",
   /** Synthetic depth-2 run (coordinator -> researcher ->
    *  fact_checker) and, in a trace of its own, an unattributed call. */
   depth2: "e2e-genai-depth2",

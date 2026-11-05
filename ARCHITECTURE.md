@@ -4867,7 +4867,7 @@ authoritative parameter-level reference.
 |---|---|---|
 | `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, recent_sessions rollup, and runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — sourced from the agent's most recent session's `context` JSONB via a `LEFT JOIN LATERAL`), context_facets |
 | `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `include_parents`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`), `child_count`, and `attachment_count` (the number of re-attachments to the session, surfaced as the agent drawer Runs-tab attached pill) |
-| `GET` | `/v1/sessions/:id` | Session detail: metadata (including `close_reasons`, the distinct `close_reason` values of its `session_end` events) + chronological events (always an array, empty until the first event row lands) + attachments array |
+| `GET` | `/v1/sessions/:id` | Session detail: metadata (including `close_reasons`, the distinct `close_reason` values of its `session_end` events, and `capture_prompts`, the session's stored capture posture: `true` or `false` once a `session_start` declared it, `null` while none has) + chronological events (always an array, empty until the first event row lands) + attachments array |
 | `GET` | `/v1/agents` | Paginated agent listing; filters: `agent_type`, `client_type`, `state`, `hostname`, `user`, `os`, `orchestration` (multi-value — OR within a dimension, AND across; `os` and `orchestration` use any-session EXISTS semantics on `sessions.context`), `search` (case-insensitive substring on `agent_name` + `hostname`), `updated_since`; `sort` + `order`; `limit` (default 25, max 100) + `offset`. Each row carries the sub-agent rollup fields `agent_role` and `topology` (`lone` / `parent` / `child`) plus the runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — latest-session-only, same source as the `/v1/fleet` projection) |
 | `GET` | `/v1/agents/:id/summary` | Per-agent activity summary (totals + per-bucket series) over a 1h/24h/7d/30d window. Powers the per-agent landing page. |
 | `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `agent_id`, `model`, payload-JSONB facet filters (`error_type`, `close_reason`, `estimated_via`, `matched_entry_id`, `originating_call_context`, `mcp_server`, `terminal`), `framework` (`agent_id` + `framework` resolve via a `sessions` subquery), session-context facet filters (`os`, `arch`, `host`, `user`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — resolved via the sessions JOIN against partial expression indexes on `sessions((context->>'<key>'))` from migration 000024), `q` (free-text ILIKE search across event_type / model / session_id / agent_name / framework), `before` + optional `before_id` (keyset cursor on `occurred_at`, then `id`) + `order` (`asc`/`desc`) for newest-first drawer pagination, `facets=true` to return per-dimension chip counts over the filtered set instead of the event list, `limit` (default 500, max 2000), `offset` (max 100000) |
@@ -6644,18 +6644,28 @@ provider's branch, under an `OpenTelemetry GenAI` header:
   messages, response or tool input and output as its stored fields.
 
 Every box keeps its Pretty / Raw toggle, Raw showing the value as
-stored. An event without content opens the Prompts tab of its detail
-view (in the run drawer and the event drawer) on the capture-disabled
-message only when its run has no content at all (`capture_enabled`
-false). In a run with content it says "No content was recorded for
-this event", and, for an OpenTelemetry GenAI run, why: a call whose
-framework sent no messages (one that carries only tool definitions
-stores none), or a Google ADK tool call, whose arguments and result are
-inside the next model call's messages. A capture-on GenAI run whose
-calls all stored nothing (a framework with its own content switch off)
-has no content row, so its Prompts tab reads as capture-disabled: the
-session's stored posture (`sessions.capture_prompts`) is not on the
-session API.
+stored.
+
+The Prompts tab's empty states read the run's stored capture posture,
+`capture_prompts` on `GET /v1/sessions/:id` (the run drawer and the
+event drawer both load the run through it), and whether any of its
+events stored content (`capture_enabled`). Capture is on for a run when
+either is true: a run older than the stored posture carries `null`
+there, and content can only have been stored with capture on.
+
+- capture off: the capture-disabled message (CLAUDE.md rule 21);
+- capture on and nothing stored for the run: "No content was recorded
+  for this run", and, for an OpenTelemetry GenAI run, why: the
+  framework sent none (its own content switch off, or only tool
+  definitions, which store none);
+- capture on and nothing stored for one event (its detail view's
+  Prompts tab): "No content was recorded for this event", and, for an
+  OpenTelemetry GenAI run, why: a call whose framework sent no
+  messages, or a Google ADK tool call, whose arguments and result are
+  inside the next model call's messages.
+
+The Sub-agents tab shows its capture-disabled message by the same
+rule (a message body on the run's events also counts as capture on).
 
 Streaming `post_call` rows render TTFT in the detail string and a
 `<StreamingPill>` (`STREAM` for completed, `ABORTED` for aborted). The

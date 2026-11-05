@@ -127,10 +127,17 @@ All notable changes to Flightdeck are documented here.
   each tool call's arguments and result, as the framework sent them:
   GenAI message parts, Strands' content blocks, OpenAI Agents' text, in
   both themes, with Raw for the stored value. A hand-off reads
-  "hand-off · triage_agent → weather_agent" in the run's timeline. In a
-  run that captured content, an event without any now says "No content
-  was recorded for this event" (with why, for a GenAI call or a Google
-  ADK tool call) instead of claiming capture is off.
+  "hand-off · triage_agent → weather_agent" in the run's timeline.
+- **The Prompts tab no longer says capture is off when it is on.**
+  `GET /v1/sessions/:id` returns `capture_prompts`, the session's stored
+  capture posture (`true`, `false`, or `null` before a `session_start`
+  declared it). A capture-on run that stored no content (a framework
+  with its own content switch off) now reads "No content was recorded
+  for this run", and an event without content in a capture-on run "No
+  content was recorded for this event", each with why for an
+  OpenTelemetry GenAI run, while a capture-off run keeps "Prompt capture
+  is not enabled for this deployment". The run drawer's Duration of an
+  ended run is now its length, not its age.
 
 ### Fixed
 

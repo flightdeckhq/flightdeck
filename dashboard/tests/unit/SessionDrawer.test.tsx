@@ -572,6 +572,59 @@ describe("SessionDrawer", () => {
     expect(screen.queryByText(/Prompt capture is not enabled/)).toBeNull();
   });
 
+  it("a capture-on run that stored no content says the run recorded none, and why", () => {
+    // E5-style: the framework's own content switch was off, so no
+    // event has content (capture_enabled false) though the run's
+    // stored posture is on.
+    mockSessionOverride = { ...genaiSession, capture_prompts: true, capture_enabled: false };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByText("Prompts"));
+    expect(screen.getByTestId("prompts-no-content-for-run")).toHaveTextContent(
+      "No content was recorded for this run.",
+    );
+    expect(screen.getByTestId("prompts-no-content-reason")).toHaveTextContent(
+      "the framework sent no content for any call",
+    );
+    expect(screen.queryByText(/Prompt capture is not enabled/)).toBeNull();
+  });
+
+  it("a capture-off run that stored no content keeps the disabled state", () => {
+    mockSessionOverride = { ...genaiSession, capture_prompts: false, capture_enabled: false };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByText("Prompts"));
+    expect(screen.getByTestId("prompts-capture-disabled")).toHaveTextContent(
+      "Prompt capture is not enabled for this deployment.",
+    );
+    expect(screen.queryByTestId("prompts-no-content-for-run")).toBeNull();
+  });
+
+  it("a capture-on sensor run with no content says so without a framework reason", () => {
+    mockSessionOverride = { capture_prompts: true, capture_enabled: false };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByText("Prompts"));
+    expect(screen.getByTestId("prompts-no-content-for-run")).toHaveTextContent(
+      "No content was recorded for this run.",
+    );
+    expect(screen.queryByTestId("prompts-no-content-reason")).toBeNull();
+  });
+
+  it("an event of a capture-on run with no content anywhere says the event recorded none", () => {
+    mockSessionOverride = { ...genaiSession, capture_prompts: true, capture_enabled: false };
+    const directEvent = { ...baseEvents[1], id: "e-call", has_content: false };
+    render(
+      <SessionDrawer
+        sessionId="s1"
+        onClose={() => {}}
+        directEventDetail={directEvent}
+        onClearDirectEvent={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("detail-tab-prompts"));
+    expect(screen.getByTestId("prompts-no-content-for-event")).toHaveTextContent(
+      "No content was recorded for this event.",
+    );
+  });
+
   it("an ended run's duration is start to end, not its age", () => {
     mockSessionOverride = {
       ...genaiSession,
@@ -583,7 +636,7 @@ describe("SessionDrawer", () => {
   });
 
   it("an event without content in a capture-off run keeps the disabled state", () => {
-    mockSessionOverride = { ...genaiSession, capture_enabled: false };
+    mockSessionOverride = { ...genaiSession, capture_prompts: false, capture_enabled: false };
     const directEvent = { ...baseEvents[1], id: "e-call", has_content: false };
     render(
       <SessionDrawer

@@ -1,16 +1,9 @@
 import { test, expect } from "@playwright/test";
-import {
-  GENAI_FIXTURE,
-  bringSwimlaneRowIntoView,
-  genaiEvents,
-  genaiSession,
-  newestGenaiRun,
-  waitForFleetReady,
-} from "./_fixtures";
+import { GENAI_FIXTURE, genaiEvents, genaiSession, newestGenaiRun } from "./_fixtures";
 
 // T152 — the shapes of an OpenTelemetry GenAI run beyond one agent:
 // an agent that runs a sub-agent that runs a sub-agent (depth 2) as
-// three Fleet rows joined by sub-agent connectors and parent pills; a
+// swimlane rows joined by sub-agent connectors, and parent pills; a
 // trace's calls that no named agent made, in a session marked
 // unattributed; a hand-off as a signal on the agent handing off; a
 // failed model call as an error row; and the OTel pill naming the
@@ -20,43 +13,83 @@ import {
 
 const PILL_TITLE_PYDANTIC = "Pydantic AI via OpenTelemetry: observe only, no directives reach it";
 
-// Tall viewport so the three depth-2 rows mount together without
-// virtualization evicting the parent (the T34 pattern).
+// The swimlane ranges, shortest first, and the share of a range a run's
+// age may take so the run sits well inside the range's right edge.
+const RANGES: ReadonlyArray<[string, number]> = [
+  ["5m", 5 * 60_000],
+  ["15m", 15 * 60_000],
+  ["30m", 30 * 60_000],
+  ["1h", 60 * 60_000],
+];
+const RANGE_FILL = 0.8;
+
+/** The shortest swimlane range in which a run started at ``startedAt``
+ *  sits no closer to the right edge than ``1 - RANGE_FILL``. */
+function rangeFor(startedAt: string): string {
+  const age = Date.now() - new Date(startedAt).getTime();
+  for (const [name, ms] of RANGES) {
+    if (age < ms * RANGE_FILL) return name;
+  }
+  return "1h";
+}
+
+// Tall viewport so a parent's and its sub-agent's swimlane rows mount
+// together in the modal (the T34 pattern).
 test.use({ viewport: { width: 1280, height: 1800 } });
 
 test.describe("T152 — OpenTelemetry GenAI sub-agents, hand-offs and errors", () => {
-  test("a depth-2 run is three Fleet rows joined by sub-agent connectors", async ({ page }) => {
-    const run = await newestGenaiRun(page, GENAI_FIXTURE.depth2);
-    const root = `${GENAI_FIXTURE.depth2}/coordinator`;
-    const researcher = genaiSession(run, `${root}/researcher`);
-    const checker = genaiSession(run, `${root}/fact_checker`);
-    genaiSession(run, root);
+  // The per-agent swimlane modal draws the focused agent with its
+  // direct sub-agents and the connectors between them, so the depth-2
+  // chain is checked one level at a time: the coordinator's modal joins
+  // it to the researcher, the researcher's joins it to the fact checker.
+  // (The modal is reached through the agent drawer's deep link rather
+  // than by scrolling Fleet's full roster, which on a large dev DB
+  // takes longer than a test's budget.)
+  for (const [parentRole, childRole] of [
+    ["", "researcher"],
+    ["researcher", "fact_checker"],
+  ] as const) {
+    test(`a depth-2 run: ${parentRole || "the coordinator"}'s swimlane joins it to ${childRole}`, async ({
+      page,
+    }) => {
+      const run = await newestGenaiRun(page, GENAI_FIXTURE.depth2);
+      const root = `${GENAI_FIXTURE.depth2}/coordinator`;
+      const parent = genaiSession(run, parentRole ? `${root}/${parentRole}` : root);
+      const child = genaiSession(run, `${root}/${childRole}`);
 
-    await page.goto("/");
-    await waitForFleetReady(page);
-    // The seed dates the run within the last minutes: the 1h range
-    // holds every one of its events.
-    await page.getByRole("button", { name: "1h", exact: true }).click();
-    const leafRow = await bringSwimlaneRowIntoView(page, checker.agent_name);
-    await expect(leafRow).toBeVisible();
-    await expect(leafRow.getByTestId("swimlane-telemetry-source-pill")).toHaveText(/otel/i);
-
-    // One connector into each sub-agent: coordinator -> researcher and
-    // researcher -> fact_checker.
-    for (const child of [researcher, checker]) {
+      await page.goto(`/agents?agent_drawer=${parent.agent_id}`);
+      // The agent drawer reads the agent from the fleet roster, which
+      // on a large dev DB takes several seconds to load.
+      await expect(page.getByTestId("agent-drawer-name")).toHaveText(parent.agent_name, {
+        timeout: 15_000,
+      });
+      await page.getByTestId("agent-drawer-open-swimlane").click();
+      // A range that holds the run well inside its right edge: a run
+      // drawn a few pixels from "now" can leave its connector's
+      // endpoints at the clipped edge.
+      await page.getByTestId(`per-agent-swimlane-modal-time-${rangeFor(child.started_at)}`).click();
+      // The toggle defaults on only for a pure parent; the researcher is
+      // both a child and a parent, so turn it on.
+      await page.getByTestId("per-agent-swimlane-modal-show-sub-agents-input").check();
+      const dialog = page.getByRole("dialog");
+      await expect(
+        dialog.getByTestId(`swimlane-agent-row-${child.agent_name}`),
+      ).toBeVisible();
+      await expect(
+        dialog
+          .getByTestId(`swimlane-agent-row-${child.agent_name}`)
+          .getByTestId("swimlane-telemetry-source-pill"),
+      ).toHaveText(/otel/i);
+      // The modal holds only the parent's and the child's rows, so any
+      // connector in it joins the two (an earlier seed's run may be the
+      // one drawn).
       await expect
-        .poll(
-          () =>
-            page
-              .locator(
-                `[data-testid^="sub-agent-connector-"][data-child-session-id="${child.session_id}"]`,
-              )
-              .count(),
-          { timeout: 15_000 },
-        )
+        .poll(() => dialog.locator('[data-testid^="sub-agent-connector-"][data-child-session-id]').count(), {
+          timeout: 15_000,
+        })
         .toBeGreaterThanOrEqual(1);
-    }
-  });
+    });
+  }
 
   test("the middle agent's drawer shows the agent that spawned it and the one it spawned", async ({
     page,
@@ -121,7 +154,9 @@ test.describe("T152 — OpenTelemetry GenAI sub-agents, hand-offs and errors", (
     const run = await newestGenaiRun(page, GENAI_FIXTURE.pydanticAi);
     const agent = genaiSession(run, `${GENAI_FIXTURE.pydanticAi}/weather_agent`);
     await page.goto(`/agents?agent_drawer=${agent.agent_id}`);
-    await expect(page.getByTestId("agent-drawer-name")).toHaveText(agent.agent_name);
+    await expect(page.getByTestId("agent-drawer-name")).toHaveText(agent.agent_name, {
+      timeout: 15_000,
+    });
     await expect(page.getByTestId("agent-drawer-telemetry-source")).toHaveAttribute(
       "title",
       PILL_TITLE_PYDANTIC,

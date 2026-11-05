@@ -12,8 +12,10 @@ render exactly what ingestion stores for a real export.
   a Pydantic AI tool run and a Strands one (older-conventions content
   blocks), an OpenAI Agents hand-off (two root agents and an
   ``agent_handoff`` signal), a Google ADK tool run (content from its
-  log records; its tool call stores none) and a Pydantic AI model call
-  that failed (an ``llm_error``).
+  log records; its tool call stores none), a Pydantic AI model call
+  that failed (an ``llm_error``) and a Pydantic AI run whose own
+  content switch was off (capture on, no content stored); and, as the
+  capture-off control, the Pydantic AI tool run without capture.
 * One synthetic Pydantic AI run no recording has: an agent that runs a
   sub-agent that runs a sub-agent (depth 2), and, in a trace of its
   own, a model call no named agent made (the trace's unattributed
@@ -61,12 +63,21 @@ LIST_WINDOW = timedelta(hours=1)
 
 # The recorded runs: (flavor, framework directory, scenario, how many
 # sessions the run stores).
+# The one recorded run replayed without flightdeck.capture_prompts: the
+# Prompts tab's capture-off control.
+CAPTURE_OFF_FLAVOR = "e2e-genai-capture-off"
+
 RECORDED: tuple[tuple[str, str, str, int], ...] = (
     ("e2e-genai-pydantic-ai", "pydantic-ai-2.64.0", "tool-json", 1),
     ("e2e-genai-strands", "strands-agents-1.63.0", "tool-protobuf", 1),
     ("e2e-genai-openai-handoff", "openai-agents-0.24.0", "handoff-protobuf", 2),
     ("e2e-genai-google-adk", "google-adk-2.13.0", "tool-protobuf", 1),
     ("e2e-genai-model-error", "pydantic-ai-2.64.0", "model-error-json", 1),
+    # Capture declared, but Pydantic AI's own content switch was off:
+    # the run stores no content though its posture is on.
+    ("e2e-genai-no-content", "pydantic-ai-2.64.0", "tool-no-content-protobuf", 1),
+    # The same framework's run with capture not declared: capture off.
+    (CAPTURE_OFF_FLAVOR, "pydantic-ai-2.64.0", "tool-json", 1),
 )
 
 # The synthetic depth-2 run, and the unattributed call in a trace of
@@ -78,6 +89,15 @@ RESOURCE_BASE = {
     "flightdeck.agent_type": "coding",
     "flightdeck.capture_prompts": "true",
 }
+
+
+def _resource(flavor: str) -> dict[str, str]:
+    """A recorded run's added resource attributes: the flavor, the agent
+    type and, except for the capture-off control, capture."""
+    attrs = {**RESOURCE_BASE, "flightdeck.flavor": flavor}
+    if flavor == CAPTURE_OFF_FLAVOR:
+        del attrs["flightdeck.capture_prompts"]
+    return attrs
 
 
 def _replay_recorded(
@@ -104,7 +124,7 @@ def _replay_recorded(
             body,
             trace_key=trace_key,
             shift_ns=shift_ns,
-            resource_attrs={**RESOURCE_BASE, "flightdeck.flavor": flavor},
+            resource_attrs=_resource(flavor),
         )
         _post(ingestion_url, headers, r["path"], r["content_type"], rewritten)
         traces |= genai_trace_ids(r["path"], r["content_type"], rewritten)

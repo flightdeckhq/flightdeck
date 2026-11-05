@@ -96,6 +96,14 @@ describe("EventDetailDrawer", () => {
     expect(screen.queryByText(/Prompt capture is not enabled/)).toBeNull();
   });
 
+  it("prompts tab reads the run's stored posture: capture on with nothing stored is not 'capture off'", async () => {
+    mockSessionFields = { capture_prompts: true };
+    render(<EventDetailDrawer event={postCallEvent} onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("detail-tab-prompts"));
+    expect(await screen.findByTestId("prompts-no-content-for-event")).toBeInTheDocument();
+    expect(screen.queryByText(/Prompt capture is not enabled/)).toBeNull();
+  });
+
   it("prompts tab of a Google ADK tool call on a capture-on run says where its content is", async () => {
     mockCaptureEnabled = true;
     mockSessionFields = {

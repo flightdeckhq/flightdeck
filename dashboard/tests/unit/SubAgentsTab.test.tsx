@@ -37,6 +37,7 @@ function mkSession(overrides: Partial<Session> = {}): Session {
     tokens_used: overrides.tokens_used ?? 0,
     token_limit: null,
     capture_enabled: overrides.capture_enabled,
+    capture_prompts: overrides.capture_prompts,
     parent_session_id: overrides.parent_session_id,
     agent_role: overrides.agent_role,
   };
@@ -370,6 +371,32 @@ describe("SubAgentsTab — MESSAGES preview", () => {
       ).toContain("Prompt capture is not enabled"),
     );
     expect(screen.queryByTestId("sub-agents-own-input")).toBeNull();
+  });
+
+  it("capture_prompts=true with no message bodies is not called capture-off", async () => {
+    // A capture-on OpenTelemetry GenAI child whose framework sent no
+    // message stores none, so capture_enabled is false too; the stored
+    // posture keeps the Rule 21 message off it.
+    fetchSessionMock.mockResolvedValue({
+      session: mkSession({ session_id: "p-1", flavor: "parent" }),
+      events: [],
+    });
+    renderTab({
+      session: mkSession({
+        session_id: "c-1",
+        parent_session_id: "p-1",
+        capture_enabled: false,
+        capture_prompts: true,
+      }),
+      events: mkEvents({}),
+    });
+    fireEvent.click(await screen.findByTestId("sub-agents-spawned-from-toggle"));
+    await waitFor(() =>
+      expect(screen.getByTestId("sub-agents-spawned-from")).toBeInTheDocument(),
+    );
+    expect(screen.getByTestId("sub-agents-spawned-from").textContent).not.toContain(
+      "Prompt capture is not enabled",
+    );
   });
 
   it("per-child INPUT/OUTPUT renders on expand (parent-side)", async () => {

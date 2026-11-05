@@ -247,6 +247,14 @@ export interface Session {
    */
   capture_enabled?: boolean;
   /**
+   * The session's stored capture posture (``sessions.capture_prompts``)
+   * from ``GET /v1/sessions/:id``: true or false once a session_start
+   * declared it, null while none has. Absent on rows from other
+   * endpoints. The Prompts tab tells a capture-off run from a
+   * capture-on run that stored no content by it.
+   */
+  capture_prompts?: boolean | null;
+  /**
    * Name of the access_tokens row that opened this session.
    * Null for tok_dev-authenticated sessions and rows that predate
    * token attribution.

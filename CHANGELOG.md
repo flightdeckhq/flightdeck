@@ -129,7 +129,8 @@ All notable changes to Flightdeck are documented here.
   with the lane count (22, 18, 12, then 10 px without an icon). A stale
   run's line is dashed from its last signal. A run line opens its run
   like a glyph, and takes keyboard focus when the run's glyphs are out
-  of view. The row is one line again once the overlap leaves the window.
+  of view. The row is one line again once the overlap leaves the window
+  ([#256](https://github.com/flightdeckhq/flightdeck/pull/256)).
 
 ### Fixed
 

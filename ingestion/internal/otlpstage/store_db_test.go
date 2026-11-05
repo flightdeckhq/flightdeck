@@ -318,6 +318,35 @@ func TestStageIsIdempotent(t *testing.T) {
 	}
 }
 
+// A trace whose records come from two resources of different frameworks
+// keeps the framework, version and identity resource of the batch that
+// created its row: a later batch's are not written, so every assembly
+// of the trace derives the same identity. Capture still ANDs.
+func TestStageFirstRecordsIdentityWins(t *testing.T) {
+	e := newTestEnv(t)
+	key := e.newKey()
+	first := e.batch(key, captured(span(1, 0), `{"a":1}`))
+	e.stage(first)
+	second := TraceBatch{
+		Key: key, TokenName: "another name", Source: "strands", SourceVersion: "9.9.9",
+		Resource: json.RawMessage(`{"service.name":"another-service","flightdeck.flavor":"other"}`),
+		Records:  []Record{span(2, 1)},
+	}
+	e.stage(second)
+	tr := e.traceRow(key)
+	if tr.Source != first.Source || tr.SourceVersion != first.SourceVersion || tr.TokenName != first.TokenName {
+		t.Errorf("row = %s %s %q, want the first batch's %s %s %q",
+			tr.Source, tr.SourceVersion, tr.TokenName, first.Source, first.SourceVersion, first.TokenName)
+	}
+	var res map[string]any
+	if err := json.Unmarshal(tr.Resource, &res); err != nil || res["service.name"] != "otlpstage-test" || res["flightdeck.flavor"] != nil {
+		t.Errorf("resource = %s, want the first batch's", tr.Resource)
+	}
+	if tr.Capture || e.contentRows(key) != 0 || tr.SpanCount != 2 {
+		t.Errorf("capture=%v content=%d spans=%d: the second batch did not AND in", tr.Capture, e.contentRows(key), tr.SpanCount)
+	}
+}
+
 func TestStageWritesTheTraceRowBeforeItsRecords(t *testing.T) {
 	e := newTestEnv(t)
 	ctx := context.Background()

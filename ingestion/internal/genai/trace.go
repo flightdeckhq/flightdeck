@@ -125,12 +125,14 @@ func indexTrace(facts []otlpstage.StagedFact) *traceIndex {
 // non-empty gen_ai.agent.name. The receiver charges each one twice, for
 // the session_start and session_end it becomes.
 func IsAgentSpan(f otlpstage.Fact) bool {
-	if f.Kind != otlpstage.KindSpan {
-		return false
-	}
+	return f.Kind == otlpstage.KindSpan && kindOf(f) == kindAgent
+}
+
+// kindOf is a span fact's kind by the rule the mapping uses.
+func kindOf(f otlpstage.Fact) spanKind {
 	n := &node{fact: &otlpstage.StagedFact{Fact: f}}
 	n.source, _ = SourceForScope(f.ScopeName)
-	return classify(n) == kindAgent
+	return classify(n)
 }
 
 // classify is the span's kind, from its scope and operation.

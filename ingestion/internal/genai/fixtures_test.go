@@ -57,7 +57,8 @@ type fixtureTrace struct {
 
 // loadScenario stages a recorded scenario's records the way the receiver
 // does: every scope of a resource that carries a recognised scope, ADK's
-// details log records, nothing else. It returns the scenario's traces in
+// details log records, nothing else, each with the content a resource
+// declaring capture would stage. It returns the scenario's traces in
 // order of first record.
 func loadScenario(t *testing.T, framework, scenario string) []*fixtureTrace {
 	t.Helper()
@@ -73,7 +74,7 @@ func loadScenario(t *testing.T, framework, scenario string) []*fixtureTrace {
 	byTrace := map[[16]byte]*fixtureTrace{}
 	var order []*fixtureTrace
 	seen := map[[16]byte]map[otlpstage.FactKey]bool{}
-	add := func(idx int, trace [16]byte, src Source, scope *commonpb.InstrumentationScope, res []*commonpb.KeyValue, f otlpstage.Fact) {
+	add := func(idx int, trace [16]byte, src Source, scope *commonpb.InstrumentationScope, res []*commonpb.KeyValue, f otlpstage.Fact, content json.RawMessage) {
 		ft := byTrace[trace]
 		if ft == nil {
 			ft = &fixtureTrace{row: otlpstage.Trace{
@@ -91,7 +92,7 @@ func loadScenario(t *testing.T, framework, scenario string) []*fixtureTrace {
 			return
 		}
 		seen[trace][f.Key()] = true
-		ft.facts = append(ft.facts, otlpstage.StagedFact{Fact: f})
+		ft.facts = append(ft.facts, otlpstage.StagedFact{Fact: f, Content: content})
 		ft.arrived = append(ft.arrived, idx)
 	}
 	for idx, r := range m.Requests {
@@ -119,7 +120,7 @@ func loadScenario(t *testing.T, framework, scenario string) []*fixtureTrace {
 						if err != nil {
 							t.Fatalf("%s: %v", r.File, err)
 						}
-						add(idx, trace, src, recognised, res, f)
+						add(idx, trace, src, recognised, res, f, SpanContent(f, sp))
 					}
 				}
 			}
@@ -141,7 +142,7 @@ func loadScenario(t *testing.T, framework, scenario string) []*fixtureTrace {
 						if err != nil {
 							t.Fatalf("%s: %v", r.File, err)
 						}
-						add(idx, trace, src, sl.GetScope(), res, f)
+						add(idx, trace, src, sl.GetScope(), res, f, LogContent(lr))
 					}
 				}
 			}
@@ -206,10 +207,17 @@ func fixtureInput(t *testing.T, framework, scenario string, capture bool) Input 
 	return inputOf(traces[0], capture)
 }
 
+// inputOf is a fixture trace with capture on or off. With it off the
+// records carry no content, as the receiver stages none.
 func inputOf(ft *fixtureTrace, capture bool) Input {
 	row := ft.row
 	row.Capture = capture
 	facts := append([]otlpstage.StagedFact(nil), ft.facts...)
+	if !capture {
+		for i := range facts {
+			facts[i].Content = nil
+		}
+	}
 	return Input{
 		Trace:  row,
 		Facts:  facts,
@@ -451,11 +459,13 @@ func keys(m map[string]map[string]any) []string {
 	return out
 }
 
-// Every recorded GenAI scenario maps to a well-formed, content-free
-// event sequence: unique ids, every event inside a started session,
-// starts parents first and ends children first, no content, and the
-// same events when ADK's log records are left out (they are never
-// mapped to events).
+// Every recorded GenAI scenario maps to a well-formed event sequence:
+// unique ids, every event inside a started session, starts parents first
+// and ends children first; with capture off no content at all, and with
+// it on content only in the shapes event_content and the sub-agent
+// message fields take. ADK's log records are never mapped to events of
+// their own: leaving them out changes nothing with capture off, and
+// only content with it on.
 func TestFixtureInvariants(t *testing.T) {
 	for _, fw := range []string{fxPydantic, fxStrands, fxOpenAI, fxADK} {
 		ents, err := os.ReadDir(filepath.Join(fixtureRoot, fw))
@@ -477,11 +487,15 @@ func TestFixtureInvariants(t *testing.T) {
 								spansOnly.Facts = append(spansOnly.Facts, f)
 							}
 						}
-						if !reflect.DeepEqual(Resolve(spansOnly), evs) {
+						if !reflect.DeepEqual(withoutContent(Resolve(spansOnly), capture), withoutContent(evs, capture)) {
 							t.Error("log records changed the mapping")
 						}
 						for _, ev := range evs {
-							checkNoContent(t, ev, capture)
+							if capture {
+								checkContentShape(t, ev)
+							} else {
+								checkNoContent(t, ev, capture)
+							}
 						}
 					})
 				}
@@ -511,6 +525,57 @@ func checkNoContent(t *testing.T, ev Event, capture bool) {
 	case "session_end":
 		if has {
 			t.Errorf("session error carries a message: %v", msg)
+		}
+	}
+}
+
+// withoutContent is events with what capture governs removed when
+// capture is on, so two mappings can be compared on everything else.
+func withoutContent(evs []Event, capture bool) []Event {
+	if !capture {
+		return evs
+	}
+	out := make([]Event, len(evs))
+	for i, ev := range evs {
+		p := map[string]any{}
+		for k, v := range ev.Payload {
+			switch k {
+			case "content", "has_content", "incoming_message", "outgoing_message":
+				continue
+			}
+			p[k] = v
+		}
+		out[i] = Event{EventType: ev.EventType, SessionID: ev.SessionID, Attach: ev.Attach, Payload: p}
+	}
+	return out
+}
+
+// checkContentShape asserts an event's content, when it has any, is in
+// the shape event_content stores: the GenAI provider (or the sub-agent
+// provider, for an overflowing sub-agent message), a model string and
+// non-null messages and response, the columns that are NOT NULL.
+func checkContentShape(t *testing.T, ev Event) {
+	t.Helper()
+	p := ev.Payload
+	c, _ := p["content"].(map[string]any)
+	if (p["has_content"] == true) != (c != nil) {
+		t.Fatalf("%s: has_content %v with content %v", ev.EventType, p["has_content"], c)
+	}
+	if c == nil {
+		return
+	}
+	if c["provider"] != ContentProvider && c["provider"] != subagentProvider {
+		t.Errorf("%s content provider = %v", ev.EventType, c["provider"])
+	}
+	if _, ok := c["model"].(string); !ok {
+		t.Errorf("%s content model = %v", ev.EventType, c["model"])
+	}
+	if c["messages"] == nil || c["response"] == nil {
+		t.Errorf("%s content without messages or response: %v", ev.EventType, c)
+	}
+	if sys, has := c["system"]; has && sys != nil {
+		if s, ok := sys.(string); !ok || !json.Valid([]byte(s)) {
+			t.Errorf("%s system = %v, want JSON text", ev.EventType, sys)
 		}
 	}
 }
@@ -598,9 +663,13 @@ func TestE1E3NestedSDKSpansDropped(t *testing.T) {
 }
 
 // E4, E18: a failed tool carries the error block, and a failed agent
-// ends its session with state=error and its error class; the text is
-// content, so with capture off the tool's message is the placeholder.
+// ends its session with state=error and its error class. The text is
+// content: with capture on the tool's message is the status message,
+// else the exception message (Pydantic AI leaves the status message
+// empty), and the agent's end carries its own; with capture off the
+// tool's message is the placeholder and the end carries none.
 func TestE4E18Errors(t *testing.T) {
+	wantTool := map[string]string{fxPydantic: "order 42 not found", fxADK: "ValueError: order 42 not found"}
 	for _, fw := range []string{fxPydantic, fxADK} {
 		for _, capture := range []bool{true, false} {
 			evs := Resolve(fixtureInput(t, fw, "tool-error-protobuf", capture))
@@ -608,12 +677,20 @@ func TestE4E18Errors(t *testing.T) {
 			if block["error_type"] != "other" || block["error_class"] != "ValueError" {
 				t.Errorf("%s tool error = %v", fw, block)
 			}
-			if msg, has := block["message"]; capture && has || !capture && msg != redactedMessage {
-				t.Errorf("%s capture %v: tool error message %v", fw, capture, msg)
+			want := redactedMessage
+			if capture {
+				want = wantTool[fw]
+			}
+			if block["message"] != want {
+				t.Errorf("%s capture %v: tool error message %v, want %q", fw, capture, block["message"], want)
 			}
 			end := ofType(evs, "session_end")[0]
-			if end["state"] != "error" || end["error"].(map[string]any)["error_class"] != "ValueError" || end["close_reason"] != "normal_exit" {
+			endErr := end["error"].(map[string]any)
+			if end["state"] != "error" || endErr["error_class"] != "ValueError" || end["close_reason"] != "normal_exit" {
 				t.Errorf("%s end = %v", fw, end)
+			}
+			if msg, has := endErr["message"]; capture && msg != "ValueError: order 42 not found" || !capture && has {
+				t.Errorf("%s capture %v: session error message %v", fw, capture, msg)
 			}
 		}
 	}

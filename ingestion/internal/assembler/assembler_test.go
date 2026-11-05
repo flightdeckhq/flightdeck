@@ -85,16 +85,45 @@ func TestOwnerIDsAreUniquePerClaim(t *testing.T) {
 	}
 }
 
-// With capture off no content is published, whatever an event holds;
-// with it on, the content goes through. The mapping carries no content
-// yet, so content is put on a mapped event here.
+// With capture off nothing capture governs is published, whatever the
+// mapping made of the staged content: no content, no sub-agent message,
+// a failed tool's message the placeholder and a failed agent's end
+// without its message. With capture on all of it goes through, except
+// a root agent's own content, which has no destination.
 func TestEncodeDropsContentWithCaptureOff(t *testing.T) {
 	now := time.Date(2004, 1, 1, 0, 0, 10, 0, time.UTC)
-	meta, _ := json.Marshal(map[string]any{"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "a"})
-	facts := []otlpstage.StagedFact{{Fact: otlpstage.Fact{
-		SpanID: [8]byte{1}, Kind: otlpstage.KindSpan, ScopeName: "pydantic-ai", Op: "invoke_agent", AgentName: "a",
-		StartNs: now.Add(-5 * time.Second).UnixNano(), EndNs: now.Add(-time.Second).UnixNano(), Status: 1, Meta: meta,
-	}}}
+	fact := func(id, parent byte, op, agent string, failed bool, meta map[string]any, content string) otlpstage.StagedFact {
+		m := map[string]any{"gen_ai.operation.name": op}
+		if agent != "" {
+			m["gen_ai.agent.name"] = agent
+		}
+		for k, v := range meta {
+			m[k] = v
+		}
+		raw, _ := json.Marshal(m)
+		f := otlpstage.Fact{
+			SpanID: [8]byte{7: id}, Kind: otlpstage.KindSpan, ScopeName: "pydantic-ai", Op: op, AgentName: agent,
+			StartNs: now.Add(-9*time.Second + time.Duration(id)*time.Millisecond).UnixNano(),
+			EndNs:   now.Add(-time.Second - time.Duration(id)*time.Millisecond).UnixNano(), Status: 1, Meta: raw,
+		}
+		if parent != 0 {
+			f.ParentSpanID = [8]byte{7: parent}
+		}
+		if failed {
+			f.Status = 2
+		}
+		return otlpstage.StagedFact{Fact: f, Content: json.RawMessage(content)}
+	}
+	facts := []otlpstage.StagedFact{
+		fact(1, 0, "invoke_agent", "a", false, nil, `{"final_result":"root answer"}`),
+		fact(2, 1, "chat", "", false, map[string]any{"gen_ai.usage.input_tokens": 1, "gen_ai.usage.output_tokens": 1},
+			`{"gen_ai.input.messages":[{"role":"user","parts":[{"type":"text","content":"secret prompt"}]}]}`),
+		fact(3, 1, "execute_tool", "", false, map[string]any{"gen_ai.tool.name": "ask"}, `{"gen_ai.tool.call.arguments":{"q":"secret question"}}`),
+		fact(4, 3, "invoke_agent", "b", true, map[string]any{"error.type": "ValueError"},
+			`{"final_result":"secret answer","error.message":"secret failure"}`),
+		fact(5, 4, "execute_tool", "", true, map[string]any{"gen_ai.tool.name": "x", "error.type": "ValueError"},
+			`{"error.message":"secret tool failure"}`),
+	}
 	pub := handlers.NewOTLPPublisher(&recordingBus{}, nil)
 	a := New(nil, pub)
 	for _, capture := range []bool{true, false} {
@@ -103,19 +132,36 @@ func TestEncodeDropsContentWithCaptureOff(t *testing.T) {
 				Resource: json.RawMessage(`{}`), Capture: true, FirstReceivedAt: now},
 			Facts: facts, Reason: otlpstage.ReasonComplete,
 		})
-		end := events[len(events)-1]
-		end.Payload["has_content"] = true
-		end.Payload["content"] = map[string]any{"provider": "otel_genai", "model": "", "messages": []any{"hello"}}
 		out, refused := a.encode(events, now, capture)
 		if refused != 0 || len(out) != len(events) {
 			t.Fatalf("capture %v: %d refused of %d", capture, refused, len(events))
 		}
-		var body map[string]any
-		if err := json.Unmarshal(out[len(out)-1].Payload, &body); err != nil {
-			t.Fatal(err)
+		var joined strings.Builder
+		for _, ev := range out {
+			joined.Write(ev.Payload)
 		}
-		if _, has := body["content"]; has != capture || body["has_content"] != capture {
-			t.Errorf("capture %v: content present %v, has_content %v", capture, has, body["has_content"])
+		for _, secret := range []string{"secret prompt", "secret question", "secret answer", "secret failure", "secret tool failure"} {
+			if strings.Contains(joined.String(), secret) != capture {
+				t.Errorf("capture %v: %q published %v", capture, secret, !capture)
+			}
+		}
+		if strings.Contains(joined.String(), "root answer") {
+			t.Errorf("capture %v: a root agent's own content was published", capture)
+		}
+		if capture {
+			continue
+		}
+		for _, ev := range out {
+			var body map[string]any
+			if err := json.Unmarshal(ev.Payload, &body); err != nil {
+				t.Fatal(err)
+			}
+			if body["has_content"] != false || body["incoming_message"] != nil || body["outgoing_message"] != nil {
+				t.Errorf("%s carries content with capture off: %v", ev.EventType, body)
+			}
+			if block, _ := body["error"].(map[string]any); ev.EventType == "tool_call" && block != nil && block["message"] != genai.RedactedMessage {
+				t.Errorf("tool error message %v", block["message"])
+			}
 		}
 	}
 }
@@ -547,6 +593,12 @@ func (e *env) agentRun(key otlpstage.TraceKey) {
 	)
 }
 
+// withContent is a record with staged content.
+func withContent(r otlpstage.Record, content string) otlpstage.Record {
+	r.Content = json.RawMessage(content)
+	return r
+}
+
 func types(evs []published) []string {
 	var out []string
 	for _, ev := range evs {
@@ -741,8 +793,9 @@ func TestCaptureFlipBetweenChunks(t *testing.T) {
 	e.stage(key, "pydantic_ai",
 		e.span(1, 0, "pydantic-ai", "invoke_agent", "a", 10*time.Second, 9*time.Second, nil),
 		e.span(2, 1, "pydantic-ai", "execute_tool", "a", 8*time.Second, 6*time.Second, map[string]any{"gen_ai.tool.name": "ask"}),
-		e.span(3, 2, "pydantic-ai", "invoke_agent", "b", 7*time.Second, 5*time.Second, nil),
-		failed,
+		withContent(e.span(3, 2, "pydantic-ai", "invoke_agent", "b", 7*time.Second, 5*time.Second, nil),
+			`{"gen_ai.input.messages":[{"role":"user","parts":[{"type":"text","content":"secret question"}]}]}`),
+		withContent(failed, `{"error.message":"secret failure"}`),
 	)
 	e.clock.Advance(otlpstage.RootGrace)
 	e.bus.after = func(n int) {
@@ -766,7 +819,7 @@ func TestCaptureFlipBetweenChunks(t *testing.T) {
 				t.Errorf("tool error message after capture went off = %v", msg)
 			}
 		}
-		if ev.payload["has_content"] != false {
+		if ev.payload["has_content"] != false || ev.payload["incoming_message"] != nil {
 			t.Errorf("%v carries content", ev.payload["event_type"])
 		}
 	}
@@ -1064,4 +1117,86 @@ func TestSweepDeletesExpiredTraces(t *testing.T) {
 	if n != 0 {
 		t.Errorf("%d traces left after the sweep", n)
 	}
+}
+
+// contentRows is how many content rows a trace has staged.
+func (e *env) contentRows(key otlpstage.TraceKey) int {
+	e.t.Helper()
+	var n int
+	if err := e.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM otlp_span_content WHERE token_key = $1 AND trace_id = $2`,
+		key.TokenKey, key.TraceID[:]).Scan(&n); err != nil {
+		e.t.Fatal(err)
+	}
+	return n
+}
+
+// Staged content reaches the events it belongs to through the store:
+// a Google ADK call takes its content from its log record whether the
+// record was staged before its span or after it, and a child agent the
+// message its parent sent it. The trace's content rows are deleted once
+// it is marked.
+func TestAssemblesStagedContent(t *testing.T) {
+	e := newEnv(t)
+	key := e.key()
+	call := func(id byte, startAgo time.Duration) otlpstage.Record {
+		return e.span(id, 1, "gcp.vertex.agent", genai.OpGenerateContent, "a", startAgo, time.Second,
+			map[string]any{"gen_ai.usage.input_tokens": 5, "gen_ai.usage.output_tokens": 1})
+	}
+	logOf := func(id byte, text string) otlpstage.Record {
+		r := e.span(id, 0, "gcp.vertex.agent", "", "", time.Second, 0, nil)
+		r.Kind, r.Name, r.Op = otlpstage.KindLog, genai.ADKDetailsEvent, ""
+		r.Meta = json.RawMessage(`{"has_messages":true}`)
+		return withContent(r, `{"gen_ai.input.messages":[{"role":"user","parts":[{"type":"text","content":"`+text+`"}]}]}`)
+	}
+	// The first call's log record arrives before any span, the second's
+	// after its span.
+	e.stage(key, "google_adk", logOf(2, "asked before"))
+	e.stage(key, "google_adk",
+		e.span(1, 0, "gcp.vertex.agent", "invoke_agent", "a", 10*time.Second, 9*time.Second, nil),
+		call(2, 9*time.Second), call(3, 5*time.Second),
+		e.span(4, 1, "gcp.vertex.agent", "execute_tool", "a", 7*time.Second, time.Second, map[string]any{"gen_ai.tool.name": "ask"}),
+		withContent(e.span(5, 4, "gcp.vertex.agent", "invoke_agent", "child", 7*time.Second, time.Second/2, nil),
+			`{"gen_ai.input.messages":[{"role":"user","parts":[{"type":"text","content":"what the parent asked"}]}]}`),
+	)
+	e.stage(key, "google_adk", logOf(3, "asked after"))
+	if n := e.contentRows(key); n != 3 {
+		t.Fatalf("%d content rows staged, want 3", n)
+	}
+	e.clock.Advance(otlpstage.RootGrace)
+	if out := e.tickOne(); !out.Marked || out.Reason != otlpstage.ReasonComplete {
+		t.Fatalf("outcome = %+v", out)
+	}
+	var calls []string
+	var incoming any
+	for _, ev := range e.bus.snapshot() {
+		p := ev.payload
+		switch p["event_type"] {
+		case "post_call":
+			c, _ := p["content"].(map[string]any)
+			if p["has_content"] != true || c["provider"] != genai.ContentProvider {
+				t.Errorf("post_call content = %v", p["content"])
+				continue
+			}
+			calls = append(calls, fmtJSON(c["messages"]))
+		case "session_start":
+			if p["agent_role"] == "child" {
+				incoming = p["incoming_message"]
+			}
+		}
+	}
+	if len(calls) != 2 || !strings.Contains(calls[0], "asked before") || !strings.Contains(calls[1], "asked after") {
+		t.Errorf("post_call messages = %v", calls)
+	}
+	if m, _ := incoming.(map[string]any); !strings.Contains(fmtJSON(m["body"]), "what the parent asked") {
+		t.Errorf("child incoming_message = %v", incoming)
+	}
+	if n := e.contentRows(key); n != 0 {
+		t.Errorf("%d content rows left after the mark", n)
+	}
+}
+
+func fmtJSON(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
 }

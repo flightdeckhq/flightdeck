@@ -540,10 +540,25 @@ func stripAll(events []genai.Event) []genai.Event {
 	return out
 }
 
-// stripContent removes an event's content.
+// stripContent removes everything of an event that capture governs:
+// its content, a child's incoming and outgoing messages, and error
+// text (a failed tool's message becomes the placeholder; a failed
+// agent's end loses its message).
 func stripContent(p map[string]any) {
 	delete(p, "content")
+	delete(p, "incoming_message")
+	delete(p, "outgoing_message")
 	p["has_content"] = false
+	block, _ := p["error"].(map[string]any)
+	if _, has := block["message"]; !has {
+		return
+	}
+	switch p["event_type"] {
+	case "tool_call":
+		block["message"] = genai.RedactedMessage
+	case "session_end":
+		delete(block, "message")
+	}
 }
 
 // encode validates and encodes a chunk's events; an event validation

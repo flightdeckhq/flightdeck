@@ -19,6 +19,13 @@ run, whose first export holds none of its agent spans (it is staged and
 waits for its root), and a Google ADK run whose last log record arrives
 after its root (the assembler waits for it rather than assembling the
 trace without it).
+
+Replayed with ``flightdeck.capture_prompts=true`` on the resource, the
+runs' content is staged while their traces wait and reaches
+``event_content`` once assembled, served by ``GET
+/v1/events/{id}/content``: each call's messages, each tool's arguments
+and result, a child agent's messages. With capture off nothing is
+staged, nothing reaches ``event_content`` and the endpoint answers 404.
 """
 
 from __future__ import annotations
@@ -44,7 +51,7 @@ from ..otlp.replay import (
     genai_trace_ids,
     rewrite_genai,
 )
-from .conftest import INGESTION_URL, auth_headers, exec_sql, wait_until
+from .conftest import API_URL, INGESTION_URL, auth_headers, exec_sql, wait_until
 
 FIXTURES = Path(__file__).resolve().parents[1] / "fixtures" / "otlp"
 JSON = "application/json"
@@ -211,11 +218,20 @@ def test_every_recorded_genai_scenario_has_a_want() -> None:
 class Replay:
     """One recorded scenario rewritten for a replay of its own."""
 
-    def __init__(self, framework: str, scenario: str, flavor: str) -> None:
+    def __init__(
+        self, framework: str, scenario: str, flavor: str, capture: bool = False
+    ) -> None:
         self.dir = FIXTURES / framework / scenario
         manifest = json.loads((self.dir / "manifest.json").read_text())
         self.requests: list[dict[str, Any]] = manifest["requests"]
         self.flavor = flavor
+        self.capture = capture
+        resource_attrs = {
+            "flightdeck.flavor": flavor,
+            "flightdeck.agent_type": "coding",
+        }
+        if capture:
+            resource_attrs["flightdeck.capture_prompts"] = "true"
         raw = [(r, (self.dir / r["file"]).read_bytes()) for r in self.requests]
         latest = max(
             (
@@ -235,10 +251,7 @@ class Replay:
                 body,
                 trace_key=self.trace_key,
                 shift_ns=self.shift_ns,
-                resource_attrs={
-                    "flightdeck.flavor": flavor,
-                    "flightdeck.agent_type": "coding",
-                },
+                resource_attrs=resource_attrs,
             )
             for r, body in raw
         ]
@@ -347,6 +360,39 @@ def content_rows(session_ids: list[str]) -> int:
     )
 
 
+def stored_event_rows(flavor: str) -> list[dict[str, Any]]:
+    return _json_rows(
+        "SELECT e.id, e.session_id, e.event_type, e.has_content, e.payload,"
+        " s.parent_session_id"
+        " FROM events e JOIN sessions s USING (session_id)"
+        " WHERE e.flavor = :'flavor' ORDER BY e.occurred_at, e.id",
+        flavor=flavor,
+    )
+
+
+def staged_rows(trace_hex: str) -> tuple[int, int]:
+    """How many records and content rows a trace has staged."""
+    out = exec_sql(
+        "SELECT (SELECT count(*) FROM otlp_spans WHERE trace_id = decode(:'tid', 'hex'))"
+        " || ',' || (SELECT count(*) FROM otlp_span_content WHERE trace_id = decode(:'tid', 'hex'))",
+        tid=trace_hex,
+    )
+    spans, content = out.strip().split(",")
+    return int(spans), int(content)
+
+
+def fetch_content(event_id: str) -> tuple[int, dict[str, Any] | None]:
+    """GET /v1/events/{id}/content: the status and the body on a 200."""
+    req = urllib.request.Request(
+        f"{API_URL}/v1/events/{event_id}/content", headers=auth_headers()
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status, json.loads(resp.read())
+    except urllib.error.HTTPError as err:
+        return err.code, None
+
+
 def staged_trace(trace_hex: str) -> dict[str, Any] | None:
     rows = _json_rows(
         "SELECT root_seen_at IS NOT NULL AS root_seen, pending, assembly_count, assembly_reason,"
@@ -431,9 +477,9 @@ def delete_replay(flavor: str, trace_ids: set[str]) -> None:
 def replay_factory() -> Iterator[Any]:
     made: list[Replay] = []
 
-    def make(framework: str, scenario: str) -> Replay:
+    def make(framework: str, scenario: str, capture: bool = False) -> Replay:
         flavor = f"test-otlp-genai-{uuid.uuid4().hex[:10]}"
-        replay = Replay(framework, scenario, flavor)
+        replay = Replay(framework, scenario, flavor, capture)
         made.append(replay)
         return replay
 
@@ -459,7 +505,8 @@ def check_stored(
     for s in sessions:
         name = s["agent_name"].removeprefix(prefix)
         parent_name, _ = want.sessions[name]
-        assert s["client_type"] == "otlp" and s["capture_prompts"] is False, s
+        assert s["client_type"] == "otlp", s
+        assert s["capture_prompts"] is replay.capture, s
         ctx = s["context"] or {}
         assert (
             ctx.get("telemetry") == "otlp" and ctx.get("supports_directives") is False
@@ -517,8 +564,9 @@ def check_stored(
             span,
         )
 
-    # Capture is off: no content of any event was stored.
-    assert content_rows(list(by_id)) == 0
+    if not replay.capture:
+        # Capture is off: no content of any event was stored.
+        assert content_rows(list(by_id)) == 0
 
 
 @pytest.mark.parametrize(
@@ -589,3 +637,178 @@ def test_adk_log_record_after_the_root_is_waited_for(replay_factory: Any) -> Non
     check_stored(replay, want, sessions, events)
     staged = staged_trace(trace)
     assert staged is not None and staged["assembly_reason"] == "complete", staged
+
+
+# ---------------------------------------------------------------------------
+# Content under the capture gate
+
+
+def test_capture_off_stages_and_stores_no_content(replay_factory: Any) -> None:
+    """With capture off a waiting trace stages its records and no content,
+    the assembled events store none, and the content endpoint answers
+    404 for every event (rule 37)."""
+    replay = replay_factory(OA, "subagent-protobuf")
+    files = [r["file"] for r in replay.requests]
+    split = files.index("002-traces.pb")
+    replay.send(0, split)
+    (trace,) = replay.trace_ids()
+    spans, content = staged_rows(trace)
+    assert spans > 0 and content == 0, (spans, content)
+
+    replay.send(split)
+    want = SCENARIOS[(OA, "subagent-protobuf")]
+    sessions, events = wait_assembled(replay.flavor, want)
+    check_stored(replay, want, sessions, events)
+    rows = stored_event_rows(replay.flavor)
+    assert rows and not any(r["has_content"] for r in rows), rows
+    for r in rows:
+        payload = r["payload"] or {}
+        assert (
+            "incoming_message" not in payload and "outgoing_message" not in payload
+        ), r
+        if r["event_type"] in ("post_call", "tool_call"):
+            assert fetch_content(r["id"])[0] == 404, r
+
+
+# The recordings whose runs captured content, and what each stores: a
+# fragment of the first call's input messages, and the first tool's
+# arguments and result (None where the framework records none on the
+# tool span: Google ADK keeps them inside the next call's messages).
+CONTENT_SCENARIOS: dict[tuple[str, str], tuple[str, Any, Any]] = {
+    (PY, "tool-protobuf"): (
+        "What is the weather in Paris?",
+        {"city": "Paris"},
+        "Paris: sunny, 21 C",
+    ),
+    (ST, "tool-protobuf"): (
+        "What is the weather in Paris?",
+        {"city": "Paris"},
+        [{"text": "Paris: sunny, 21 C"}],
+    ),
+    (ST, "tool-latest-json"): (
+        "What is the weather in Paris?",
+        {"city": "Paris"},
+        [{"text": "Paris: sunny, 21 C"}],
+    ),
+    (OA, "tool-json"): (
+        "What is the weather in Paris?",
+        {"city": "Paris"},
+        "Paris: sunny, 21 C",
+    ),
+    (ADK, "tool-protobuf"): ("What is the weather in Paris?", None, None),
+}
+
+
+@pytest.mark.parametrize(
+    ("framework", "scenario"),
+    list(CONTENT_SCENARIOS),
+    ids=[f"{fw}/{sc}" for fw, sc in CONTENT_SCENARIOS],
+)
+def test_captured_content_is_served(
+    framework: str, scenario: str, replay_factory: Any
+) -> None:
+    """With capture declared, every call's content (Google ADK's from its
+    log records, one of which arrives before its span and one after)
+    and every tool's arguments and result reach event_content under the
+    GenAI provider, and the content endpoint serves them (200); the
+    staged content is deleted once the trace is assembled."""
+    question, tool_input, tool_output = CONTENT_SCENARIOS[(framework, scenario)]
+    want = SCENARIOS[(framework, scenario)]
+    replay = replay_factory(framework, scenario, capture=True)
+    replay.send()
+    sessions, events = wait_assembled(replay.flavor, want)
+    check_stored(replay, want, sessions, events)
+
+    rows = stored_event_rows(replay.flavor)
+    calls = [r for r in rows if r["event_type"] == "post_call"]
+    assert calls and all(r["has_content"] for r in calls), calls
+    for r in calls:
+        status, body = fetch_content(r["id"])
+        assert status == 200 and body is not None, (r, status)
+        assert body["provider"] == "otel_genai", body
+        assert body["messages"] and question in json.dumps(body["messages"]), body
+    tools = [r for r in rows if r["event_type"] == "tool_call"]
+    for r in tools:
+        status, body = fetch_content(r["id"])
+        if tool_input is None:
+            assert not r["has_content"] and status == 404, (r, status)
+            continue
+        assert r["has_content"] and status == 200 and body is not None, (r, status)
+        assert (
+            body["tool_input"] == tool_input and body["tool_output"] == tool_output
+        ), body
+    for tid in replay.trace_ids():
+        assert staged_rows(tid)[1] == 0, tid
+
+
+def test_captured_content_waits_staged_until_assembly(replay_factory: Any) -> None:
+    """A captured trace waiting for its root holds its content in the
+    staging table only; once assembled the content is in event_content,
+    a child agent's session carries the message its parent sent it and
+    its answer, and the staging table holds none."""
+    replay = replay_factory(OA, "subagent-protobuf", capture=True)
+    files = [r["file"] for r in replay.requests]
+    split = files.index("002-traces.pb")
+    replay.send(0, split)
+    (trace,) = replay.trace_ids()
+    spans, content = staged_rows(trace)
+    assert spans > 0 and content > 0, (spans, content)
+    assert stored_sessions(replay.flavor) == []
+
+    replay.send(split)
+    want = SCENARIOS[(OA, "subagent-protobuf")]
+    sessions, events = wait_assembled(replay.flavor, want)
+    check_stored(replay, want, sessions, events)
+    assert staged_rows(trace)[1] == 0
+
+    rows = stored_event_rows(replay.flavor)
+    child_start = [
+        r
+        for r in rows
+        if r["event_type"] == "session_start" and r["parent_session_id"] is not None
+    ]
+    child_end = [
+        r
+        for r in rows
+        if r["event_type"] == "session_end" and r["parent_session_id"] is not None
+    ]
+    assert len(child_start) == 1 and len(child_end) == 1, rows
+    incoming = (child_start[0]["payload"] or {}).get("incoming_message") or {}
+    outgoing = (child_end[0]["payload"] or {}).get("outgoing_message") or {}
+    assert "weather like in Paris" in json.dumps(incoming.get("body")), incoming
+    assert "sunny" in json.dumps(outgoing.get("body")), outgoing
+    roots = {s["session_id"] for s in sessions if s["parent_session_id"] is None}
+    for r in rows:
+        if r["session_id"] in roots and r["event_type"].startswith("session_"):
+            payload = r["payload"] or {}
+            assert "incoming_message" not in payload, r
+    calls = [r for r in rows if r["event_type"] == "post_call"]
+    assert len(calls) == 4 and all(fetch_content(r["id"])[0] == 200 for r in calls)
+
+
+@pytest.mark.parametrize(
+    ("framework", "scenario"),
+    [
+        (PY, "tool-no-content-protobuf"),
+        (ST, "tool-redacted-protobuf"),
+        (OA, "tool-no-content-protobuf"),
+        (ADK, "tool-no-content-protobuf"),
+    ],
+    ids=["E5", "E8", "E12", "E17"],
+)
+def test_framework_without_content_stores_none_under_capture(
+    framework: str, scenario: str, replay_factory: Any
+) -> None:
+    """A run whose framework recorded no content (its own switch off, or
+    Strands' [REDACTED]) stores none even with capture declared: the
+    sessions are capture-on, and every content request is a 404."""
+    want = SCENARIOS[(framework, scenario)]
+    replay = replay_factory(framework, scenario, capture=True)
+    replay.send()
+    sessions, events = wait_assembled(replay.flavor, want)
+    check_stored(replay, want, sessions, events)
+    assert content_rows([s["session_id"] for s in sessions]) == 0
+    for r in stored_event_rows(replay.flavor):
+        assert not r["has_content"], r
+        if r["event_type"] in ("post_call", "tool_call"):
+            assert fetch_content(r["id"])[0] == 404, r

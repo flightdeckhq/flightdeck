@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/genai"
 	commonpb "go.opentelemetry.io/proto/slim/otlp/common/v1"
 )
 
@@ -143,15 +144,16 @@ func (a otlpAttrs) boolean(key string) (b, present, ok bool) {
 const otlpRedacted = "<REDACTED>"
 
 // content is a content attribute (a prompt, a tool input, error text)
-// when it carries content: a non-empty string other than the
-// redaction placeholder.
+// when it carries content: a non-empty string other than a redaction
+// placeholder, Claude Code's <REDACTED> or the [REDACTED] other
+// exporters send (genai.IsRedacted holds the list for every dialect).
 func (a otlpAttrs) content(key string) (string, bool) {
 	v, has := a[key]
 	if !has || v == nil {
 		return "", false
 	}
 	s, isStr := v.GetValue().(*commonpb.AnyValue_StringValue)
-	if !isStr || s.StringValue == "" || strings.TrimSpace(s.StringValue) == otlpRedacted {
+	if !isStr || s.StringValue == "" || genai.IsRedacted(s.StringValue) {
 		return "", false
 	}
 	return s.StringValue, true

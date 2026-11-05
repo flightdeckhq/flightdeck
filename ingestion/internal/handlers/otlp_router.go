@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -115,7 +116,11 @@ func (r *OTLPRouter) stageLog(g *genaiRequest, rejected *rejectionSet, res genai
 		rejected.add(genai.ErrRecordIDs.Error(), 1)
 		return
 	}
-	g.add(trace, res, f)
+	var content json.RawMessage
+	if res.capture {
+		content = genai.LogContent(lr)
+	}
+	g.add(trace, res, f, content)
 }
 
 // MapTraces stages every span of a resource carrying a recognised GenAI
@@ -152,7 +157,14 @@ func (r *OTLPRouter) MapTraces(ctx context.Context, req *coltrace.ExportTraceSer
 					rejected.add(genai.ErrRecordIDs.Error(), 1)
 					continue
 				}
-				g.add(trace, res, f)
+				// Content is read only from a resource that declares
+				// capture; without it nothing of the span's content
+				// leaves the request.
+				var content json.RawMessage
+				if res.capture {
+					content = genai.SpanContent(f, sp)
+				}
+				g.add(trace, res, f, content)
 			}
 		}
 	}

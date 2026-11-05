@@ -680,7 +680,16 @@ jobs:
           UV_PROJECT_ENVIRONMENT: ${{ env.pythonLocation }}
         run: uv sync --locked --inexact --extra dev --extra anthropic --extra openai
 
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version: "1.27.3"
+          cache-dependency-path: |
+            ingestion/go.sum
+            workers/go.sum
+            api/go.sum
+
       - name: Boot the dev stack
+        id: boot
         # `make dev` returns once all services have been instructed to
         # start. tests/integration/conftest.py:_wait_for_services then
         # polls the /health endpoints with a 60 s ceiling, so the
@@ -708,6 +717,21 @@ jobs:
         # additional coverage. ``make test-e2e`` still works locally
         # for targeted runs.
         run: make test-integration
+
+      - name: Go tests that need Postgres
+        # The Go tests that read TEST_POSTGRES_URL or
+        # TEST_ASSEMBLER_POSTGRES_URL skip in the Go job, which has no
+        # database. This step runs them against this stack's Postgres,
+        # so they run on both majors the matrix covers.
+        # scripts/go-db-tests.sh gives each package a fresh database
+        # (init.sql seed, then the workers' migrate-only mode up to the
+        # newest migration), fails on any skipped test in those
+        # packages, and fails when a DB-gated package is missing from
+        # its list. It runs even when the integration tests failed, so
+        # the two results stay independent, but not when the stack
+        # never booted.
+        if: ${{ !cancelled() && steps.boot.outcome == 'success' }}
+        run: make test-go-db
 
       - name: Dump stack logs on failure
         if: failure()

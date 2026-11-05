@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check vuln-scan pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-all
+.PHONY: help build test test-plugin test-integration test-go-db test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check vuln-scan pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-all
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -63,6 +63,14 @@ test-integration: ## Run integration tests (requires running stack)
 	$(MAKE) seed-e2e
 	$(PYTHON) -m pytest tests/integration -p no:respx -v -n $(INTEGRATION_WORKERS) --dist load -m "not manual and not exclusive"
 	$(PYTHON) -m pytest tests/integration -p no:respx -v -m "exclusive"
+
+# test-go-db runs the Go tests that need Postgres (the ones gated on
+# TEST_POSTGRES_URL / TEST_ASSEMBLER_POSTGRES_URL) against the running
+# dev stack's Postgres, each package on a fresh database of its own
+# that the script creates, migrates and drops. It never touches the
+# `flightdeck` database. CI runs it in the integration job.
+test-go-db: ## Run the Go tests that need Postgres (requires running stack)
+	./scripts/go-db-tests.sh
 
 test-sensor-e2e: ## Run sensor respx-driven end-to-end tests (requires running stack)
 	$(MAKE) -C docker dev

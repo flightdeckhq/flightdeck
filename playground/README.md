@@ -39,6 +39,10 @@ The suite also doubles as Flightdeck's canonical Rule 40d manual-exercise surfac
 | `29_stream_capture.py` | anthropic + openai SDKs | One small stream per streaming path: Anthropic `messages.create(stream=True)`, OpenAI `chat.completions.create(stream=True)` and `responses.create(stream=True)` (each with a forced tool), the `chat.completions.stream()` / `responses.stream()` helpers, `with_raw_response.create(stream=True)` and `with_streaming_response.create(stream=True)` on both OpenAI resources, and a Responses call to OpenAI's public DeepWiki MCP server (SKIP line when it is unavailable); asserts each lands a completed `streaming` block with real tokens and stored content holding the streamed text or tool call, every forced tool lands its `tool_call`, and the `mcp_call` names its server as `server_name` |
 | `30_parse_and_litellm_routes.py` | openai SDK + `litellm` | OpenAI `beta.chat.completions.parse()`, an async `with_streaming_response.create(stream=True)` left with its stream parsed but unread, and litellm `text_completion` / `atext_completion` (OpenAI through the SDK, Anthropic on litellm's httpx route, streamed and not) and `responses` / `aresponses` (OpenAI native, streamed async, and Anthropic bridged through `completion`); asserts exactly one `post_call` per call with real tokens (the unread view as an aborted stream with no chunks on the estimate) and the stored `input` of a Responses call |
 | `31_lazy_patch_signals.py` | openai, anthropic, `litellm` | `import flightdeck_sensor`, `init()` and `patch()` load none of the SDKs `patch()` covers (`sys.modules` is checked), then openai, anthropic and litellm are imported and each makes one tiny call that must land a metered `post_call` (the litellm call once); then a child process makes a call, holds the session's lock and is sent a real SIGTERM, and must end by SIGTERM with its `session_end` on the stack |
+| `32_genai_pydantic_ai.py` | Pydantic AI over OpenTelemetry, no sensor | Pydantic AI's own instrumentation exports to `/ingest/v1/traces` with `flightdeck.agent_type=coding`, `flightdeck.flavor=playground-genai-pydantic-ai` and `flightdeck.capture_prompts=true`; an `assistant` agent runs `weather_agent` through its `ask_weather_agent` tool (Anthropic Claude Haiku 4.5). Asserts two `otlp` sessions, the child's `parent_session_id` and `agent_role`, tokens on every `post_call` summing to `tokens_used`, `ask_weather_agent` and `get_weather` tool calls, a 200 from `GET /v1/events/:id/content` for every call and the child's tool call, and the child's `incoming_message` |
+| `33_genai_strands.py` | Strands Agents over OpenTelemetry, no sensor | The same run and checks through `StrandsTelemetry().setup_otlp_exporter()`, on Strands' OpenAI provider (`gpt-4o-mini`) in place of its Bedrock default |
+| `34_genai_openai_agents.py` | OpenAI Agents SDK + `opentelemetry-instrumentation-openai-agents-v2`, no sensor | The same run and checks with `Agent.as_tool` (`gpt-4o-mini`); the SDK's own trace exporter is removed so the run reaches Flightdeck only |
+| `35_genai_google_adk.py` | Google ADK over OpenTelemetry, no sensor | The same run through `AgentTool` with `maybe_set_otel_providers()`, which also exports each call's content as a log record to `/ingest/v1/logs`; OpenAI `gpt-4o-mini` through ADK's LiteLLM wrapper in place of its Gemini default. ADK records tool arguments only inside model messages, so its tool calls and child carry no content of their own and only the calls' content is checked |
 | `policy_demo_warn.py` | anthropic + flavor-scoped policy | server WARN directive emits `policy_warn` with `source=server` |
 | `policy_demo_block.py` | anthropic + flavor-scoped policy | server BLOCK pre-flight emits `policy_block` + `BudgetExceededError`; `intended_model` + `token_limit` round-trip |
 | `policy_demo_degrade.py` | anthropic + flavor-scoped policy | server DEGRADE swaps the model on threshold cross; `to_model` lands and post_calls show the swap |
@@ -51,6 +55,39 @@ The suite also doubles as Flightdeck's canonical Rule 40d manual-exercise surfac
 - `ANTHROPIC_API_KEY` and `OPENAI_API_KEY` in the environment for the chat / embeddings demos.
 - Optional: `BIFROST_URL` (for `15_bifrost.py`), `node` 20+ (for `14_claude_code_plugin.py`).
 - Framework packages for the examples you want to run. Each file prints a `SKIP: pip install <package>` line and exits cleanly when its dependency is missing, so you can run the suite with only the frameworks you care about installed. The full project-pinned set is installed by `pip install -e ./sensor[dev,anthropic,openai]` (see root README setup).
+
+## OpenTelemetry GenAI frameworks
+
+`32`–`35` run a framework with its own OpenTelemetry instrumentation and no
+sensor: the framework's OTLP exporter sends the run to the receiver
+(ARCHITECTURE.md, OTLP ingest > GenAI dialect), which assembles each trace
+into `otlp` sessions 3 to 30 seconds after the run ends. `_genai.py` sets
+the exporter's environment before the framework is imported
+(`OTEL_EXPORTER_OTLP_ENDPOINT` at the stack's `/ingest`, the bearer token
+in `OTEL_EXPORTER_OTLP_HEADERS`, and the `flightdeck.*` resource
+attributes in `OTEL_RESOURCE_ATTRIBUTES`), drops any other `OTEL_*`
+variable the shell holds, then polls the API for at most 90 seconds until
+the sessions pass every check.
+
+The frameworks are pinned at the versions the receiver's recordings were
+made with, and run from two venvs of their own rather than the sensor's
+(Google ADK needs an older OpenTelemetry SDK than the other three). They
+are the venvs the recordings use (`tests/fixtures/otlp/README.md`); keep
+them on a Linux filesystem:
+
+```bash
+uv venv --python 3.12 ~/.cache/fd-genai-capture-venv
+uv pip install --python ~/.cache/fd-genai-capture-venv/bin/python \
+  -r tests/otlp/requirements-genai.txt -c tests/otlp/constraints-genai.txt
+uv venv --python 3.12 ~/.cache/fd-genai-capture-adk-venv
+uv pip install --python ~/.cache/fd-genai-capture-adk-venv/bin/python \
+  -r tests/otlp/requirements-genai-adk.txt -c tests/otlp/constraints-genai-adk.txt
+```
+
+`make playground-genai-<framework>` runs one script with its venv
+(`GENAI_PYTHON` and `GENAI_ADK_PYTHON` override the paths), and
+`run_all.py` runs them under `FD_GENAI_PYTHON` and `FD_GENAI_ADK_PYTHON`
+(the same defaults). Under any other interpreter they SKIP.
 
 ## Running
 

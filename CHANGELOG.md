@@ -128,6 +128,12 @@ All notable changes to Flightdeck are documented here.
   GenAI message parts, Strands' content blocks, OpenAI Agents' text, in
   both themes, with Raw for the stored value. A hand-off reads
   "hand-off · triage_agent → weather_agent" in the run's timeline.
+- **A playground script per OpenTelemetry framework.**
+  `playground/32_genai_pydantic_ai.py` through `35_genai_google_adk.py`
+  point each framework's OTLP exporter at a Flightdeck stack, run an
+  agent that calls a sub-agent as a tool, and check the two sessions
+  that come back: the parent and child, tokens, tool calls and stored
+  content (`make playground-genai-<framework>`).
 - **The Prompts tab no longer says capture is off when it is on.**
   `GET /v1/sessions/:id` returns `capture_prompts`, the session's stored
   capture posture (`true`, `false`, or `null` before a `session_start`

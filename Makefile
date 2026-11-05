@@ -1,4 +1,4 @@
-.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check vuln-scan pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-all
+.PHONY: help build test test-plugin test-integration test-sensor-e2e test-e2e test-e2e-ui seed-e2e lint dev dev-reset down logs release-prep release-tag version-check vuln-scan pricing-refresh migrate-local-up migrate-local-status playground-anthropic playground-openai playground-langchain playground-langgraph playground-llamaindex playground-crewai playground-litellm playground-mcp playground-claude-code playground-bifrost playground-policies playground-subagents-crewai playground-subagents-langgraph playground-mcp-policy-warn playground-mcp-policy-block playground-mcp-policy-block-on-uncertainty playground-mcp-policy-blocklist playground-mcp-policy-crewai playground-mcp-policy-langgraph playground-mcp-policy-langchain playground-mcp-policy-llamaindex playground-mcp-policy-template-apply playground-anthropic-platforms playground-claude-agent-sdk playground-stream-capture playground-parse-litellm-routes playground-lazy-patch-signals playground-genai-pydantic-ai playground-genai-strands playground-genai-openai-agents playground-genai-google-adk playground-all
 
 # ---------------------------------------------------------------------------
 # Python interpreter resolution.
@@ -16,6 +16,14 @@
 # eliminates that "silent skip on wrong Python" failure mode.
 # ---------------------------------------------------------------------------
 PYTHON ?= ./sensor/.venv/bin/python
+
+# The OpenTelemetry GenAI playground scripts run their framework with no
+# sensor, from two venvs pinned to the versions the receiver's
+# recordings were made with: Google ADK needs an older OpenTelemetry SDK
+# than Pydantic AI, Strands and the OpenAI Agents SDK. playground/README.md
+# has the commands that build them.
+GENAI_PYTHON ?= $(HOME)/.cache/fd-genai-capture-venv/bin/python
+GENAI_ADK_PYTHON ?= $(HOME)/.cache/fd-genai-capture-adk-venv/bin/python
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
@@ -99,6 +107,18 @@ playground-parse-litellm-routes: ## Rule 40d playground: OpenAI beta.chat parse,
 playground-lazy-patch-signals: ## Rule 40a playground: patch() before the SDK imports loads no SDK and meters openai, anthropic and litellm imported afterwards; a SIGTERM inside the session lock ends the process after session_end. Requires ANTHROPIC_API_KEY + OPENAI_API_KEY.
 	$(PYTHON) playground/31_lazy_patch_signals.py
 
+playground-genai-pydantic-ai: ## Rule 40a playground: Pydantic AI over OpenTelemetry, an agent running a sub-agent as a tool lands as two otlp sessions. Requires the GenAI venv + ANTHROPIC_API_KEY.
+	$(GENAI_PYTHON) playground/32_genai_pydantic_ai.py
+
+playground-genai-strands: ## Rule 40a playground: Strands Agents over OpenTelemetry (OpenAI provider), sub-agent as a tool. Requires the GenAI venv + OPENAI_API_KEY.
+	$(GENAI_PYTHON) playground/33_genai_strands.py
+
+playground-genai-openai-agents: ## Rule 40a playground: OpenAI Agents SDK over OpenTelemetry, sub-agent as a tool. Requires the GenAI venv + OPENAI_API_KEY.
+	$(GENAI_PYTHON) playground/34_genai_openai_agents.py
+
+playground-genai-google-adk: ## Rule 40a playground: Google ADK over OpenTelemetry (OpenAI through LiteLLM), sub-agent through AgentTool. Requires the ADK venv + OPENAI_API_KEY.
+	$(GENAI_ADK_PYTHON) playground/35_genai_google_adk.py
+
 playground-openai: ## Rule 40d playground: OpenAI SDK. Requires OPENAI_API_KEY.
 	$(PYTHON) playground/02_direct_openai.py
 
@@ -177,8 +197,8 @@ playground-policies: ## Rule 40d playground: policy WARN / DEGRADE / BLOCK / for
 	$(PYTHON) playground/policy_demo_degrade.py
 	$(PYTHON) playground/policy_demo_forced_degrade.py
 
-playground-all: ## Run every playground script (skips on missing API keys / optional CLI / optional gateway URL).
-	$(PYTHON) playground/run_all.py
+playground-all: ## Run every playground script (skips on missing API keys / optional CLI / optional gateway URL / missing GenAI venvs).
+	FD_GENAI_PYTHON=$(GENAI_PYTHON) FD_GENAI_ADK_PYTHON=$(GENAI_ADK_PYTHON) $(PYTHON) playground/run_all.py
 
 # `test-e2e` is the Playwright browser-end-to-end suite;
 # `test-sensor-e2e` is the pytest respx suite. Two separate targets

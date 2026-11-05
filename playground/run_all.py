@@ -15,6 +15,7 @@ Exit: 0 iff every file returned 0 (PASS) or 2 (SKIP).
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -37,6 +38,30 @@ if sys.version_info < (3, 11) or sys.version_info >= (3, 14):
 
 
 SKIP_RC = 2  # each example exits 2 when its framework / API key is missing
+
+# The OpenTelemetry GenAI scripts (``*_genai_*.py``) run the framework
+# with no sensor, from venvs of their own pinned to the versions the
+# receiver's recordings were made with (playground/README.md). Google
+# ADK needs an older OpenTelemetry SDK than the other three, so it has a
+# venv of its own. A script whose venv is missing is not run: it is
+# tagged SKIP, with a line naming the venv it needs.
+_HOME = Path.home()
+GENAI_PYTHON = os.environ.get(
+    "FD_GENAI_PYTHON", str(_HOME / ".cache/fd-genai-capture-venv/bin/python")
+)
+GENAI_ADK_PYTHON = os.environ.get(
+    "FD_GENAI_ADK_PYTHON",
+    str(_HOME / ".cache/fd-genai-capture-adk-venv/bin/python"),
+)
+
+
+def _interpreter(name: str) -> str | None:
+    """The Python a playground file runs under, or None when it is a
+    GenAI script whose venv is missing."""
+    if "_genai_" not in name:
+        return sys.executable
+    python = GENAI_ADK_PYTHON if "google_adk" in name else GENAI_PYTHON
+    return python if Path(python).is_file() else None
 
 
 def _tag(rc: int) -> str:
@@ -64,9 +89,12 @@ def main() -> int:
         # multiple sequential real-API calls and routinely run
         # 30–90s end-to-end (network jitter, model warm-up,
         # post-call drain). 180s caps them while still flagging a
-        # genuinely stuck run loud and early.
+        # genuinely stuck run loud and early. The GenAI scripts make
+        # four model calls, then wait up to 90s for the receiver to
+        # assemble the trace.
         if (
             "subagents" in name
+            or "_genai_" in name
             or "mcp_policy_langchain" in name
             or "mcp_policy_llamaindex" in name
         ):
@@ -74,9 +102,19 @@ def main() -> int:
         else:
             timeout_s = 60
         print(f"\n=== {name} ===", flush=True)
+        python = _interpreter(name)
+        if python is None:
+            print(
+                "GenAI scripts skipped: no venv at "
+                f"{GENAI_ADK_PYTHON if 'google_adk' in name else GENAI_PYTHON}"
+                " (playground/README.md, OpenTelemetry GenAI frameworks)",
+                flush=True,
+            )
+            rows.append((name, SKIP_RC, 0.0, "no GenAI venv"))
+            continue
         t0 = time.monotonic()
         try:
-            rc = subprocess.call([sys.executable, path], cwd=here, timeout=timeout_s)
+            rc = subprocess.call([python, path], cwd=here, timeout=timeout_s)
             reason = ""
         except subprocess.TimeoutExpired:
             rc, reason = 124, f"timeout after {timeout_s}s"
@@ -86,7 +124,10 @@ def main() -> int:
     passes = skips = fails = 0
     for name, rc, dt, reason in rows:
         tag = _tag(rc)
-        note = f" ({reason or f'exit {rc}'})" if tag == "FAIL" else ""
+        if tag == "FAIL":
+            note = f" ({reason or f'exit {rc}'})"
+        else:
+            note = f" ({reason})" if reason else ""
         print(f"  {name:<28} {tag}   {dt:>4.1f}s{note}")
         passes += tag == "PASS"
         skips += tag == "SKIP"

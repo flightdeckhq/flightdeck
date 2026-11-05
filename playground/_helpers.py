@@ -15,8 +15,6 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-import flightdeck_sensor
-
 
 # ---------------------------------------------------------------------
 # Endpoints + auth — single source of truth for every playground script.
@@ -150,6 +148,10 @@ def init_sensor(
     # helper's flavor wins even if a caller has stale values in
     # their shell.
     os.environ["AGENT_FLAVOR"] = flavor
+
+    # Imported here so the OpenTelemetry GenAI scripts, which run from
+    # venvs without the sensor (see _genai.py), can use this module.
+    import flightdeck_sensor
 
     flightdeck_sensor.init(
         server=INGESTION_URL,

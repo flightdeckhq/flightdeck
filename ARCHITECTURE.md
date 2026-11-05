@@ -6635,8 +6635,12 @@ them.
 
 The Prompts tab loads `PromptViewer` for chat events with
 `event.has_content`, `EmbeddingsContentViewer` for embeddings events
-with content, otherwise the capture-disabled message. Provider
-terminology is preserved exactly — Anthropic sessions display
+with content, otherwise the capture-disabled message. The run
+drawer's Prompts tab lists the run's events that stored content of
+the types `post_call`, `tool_call`, `mcp_tool_call` and
+`mcp_prompt_get`, each opening in `PromptViewer`. The viewer's
+header names the provider and, when the content names one, the model.
+Provider terminology is preserved exactly — Anthropic sessions display
 `system`, `messages`, `tools`, and `response` as separate fields; OpenAI
 sessions display `messages` (system role included), `tools`, and
 `response`. A tool call's content (the sensor's `tool_call`,
@@ -8388,9 +8392,19 @@ ways:
   `GET /v1/events/{id}/content`. A 2 MiB hard cap applies; bodies
   beyond that are truncated with a marker.
 
-`MCP_TOOL_CALL` and `MCP_PROMPT_GET` use per-field truncation
-markers in `payload.extras` rather than has_content routing, since
-their captured shapes are smaller and inlining is always cheap.
+`MCP_TOOL_CALL` and `MCP_PROMPT_GET` route their captured arguments
+and result (rendered messages for a prompt fetch) to `event_content`'s
+`tool_input` / `tool_output` columns with `has_content=true`; nothing
+is inline on the event. The event's MCP details accordion fetches them
+from `GET /v1/events/{id}/content` when it opens and shows them as
+Arguments and Result (or Rendered). A row stored before the dedicated
+columns keeps them inline as `arguments` / `result` / `rendered`
+(with per-field truncation markers for large values), and the
+accordion shows those as stored. A call with nothing captured says
+why: the capture-disabled notice when capture is off for its run
+(the run's stored `capture_prompts`, or any of its events storing
+content, as the Prompts tab reads it), otherwise that the call
+recorded no request or response body.
 
 **Dashboard surfacing**. Every MCP event_type renders with its own
 TYPE pill ("MCP TOOL CALL", "MCP TOOLS DISCOVERED", "MCP RESOURCE

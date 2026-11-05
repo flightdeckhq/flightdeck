@@ -92,6 +92,18 @@ describe("PromptViewer — a tool call's arguments and result", () => {
     expect(screen.queryByTestId("prompt-box-tool-output")).toBeNull();
   });
 
+  it("the header leaves out the separator when the content names no model", async () => {
+    await renderContent(fixture("claude_code_otlp_tool_call"));
+    expect(screen.queryByTestId("prompt-viewer-model")).toBeNull();
+    expect(screen.queryByText("·")).toBeNull();
+  });
+
+  it("the header keeps the separator and the model when there is one", async () => {
+    await renderContent(fixture("sensor_tool_call"));
+    expect(screen.getByTestId("prompt-viewer-model")).toHaveTextContent("gpt-4o-mini");
+    expect(screen.getByText("·")).toBeInTheDocument();
+  });
+
   it("Raw shows the arguments and the result exactly as stored", async () => {
     const content = fixture("mcp_tool_call");
     await renderContent(content);

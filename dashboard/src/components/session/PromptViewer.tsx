@@ -352,8 +352,12 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
       <div className="flex items-center gap-2 pb-3" style={{ borderBottom: "1px solid var(--border-subtle)" }}>
         <ProviderLogo provider={getProvider(model) !== "unknown" ? getProvider(model) : (provider as "anthropic" | "openai" | "unknown")} size={16} />
         <span className="text-[13px]" style={{ color: "var(--text-secondary)" }}>{provider}</span>
-        <span style={{ color: "var(--text-muted)" }}>·</span>
-        <span className="font-mono text-[13px]" style={{ color: "var(--text-secondary)" }}>{model}</span>
+        {model && (
+          <>
+            <span style={{ color: "var(--text-muted)" }}>·</span>
+            <span data-testid="prompt-viewer-model" className="font-mono text-[13px]" style={{ color: "var(--text-secondary)" }}>{model}</span>
+          </>
+        )}
       </div>
 
       {/* System prompt */}

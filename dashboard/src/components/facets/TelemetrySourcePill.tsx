@@ -22,17 +22,22 @@ import {
 export function TelemetrySourcePill({
   telemetry,
   clientType,
+  framework,
   testId,
 }: {
   /** ``context.telemetry`` of the session, or an agent row's
    *  ``telemetry``. */
   telemetry: unknown;
   clientType?: string | null;
+  /** The session's (or the agent's latest session's) framework label,
+   *  which names an agent framework's GenAI telemetry in the tooltip
+   *  ("Pydantic AI via OpenTelemetry"). */
+  framework?: string | null;
   testId?: string;
 }) {
   if (!isOtlpTelemetry(telemetry)) return null;
   const colors = TELEMETRY_SOURCE_COLOR;
-  const description = `${clientSourceLabel(clientType, telemetry)}: ${OBSERVE_ONLY_NOTE}`;
+  const description = `${clientSourceLabel(clientType, telemetry, framework)}: ${OBSERVE_ONLY_NOTE}`;
   return (
     <span
       data-testid={testId}

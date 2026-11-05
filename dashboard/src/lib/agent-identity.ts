@@ -264,29 +264,85 @@ export function isOtlpSession(session: {
 }
 
 /**
+ * Display names of the agent frameworks whose OpenTelemetry GenAI
+ * telemetry ingestion maps, keyed by the framework label it stamps on
+ * the session (``sessions.framework`` and the label part of
+ * ``context.frameworks[0]``). ARCHITECTURE.md > OTLP ingest > GenAI
+ * dialect lists them.
+ */
+export const OTLP_FRAMEWORK_NAMES: Readonly<Record<string, string>> = {
+  pydantic_ai: "Pydantic AI",
+  strands: "Strands Agents",
+  openai_agents: "OpenAI Agents",
+  google_adk: "Google ADK",
+};
+
+/**
+ * The display name of a framework label, given bare (``pydantic_ai``)
+ * or with its version (``pydantic_ai/2.64.0``, the
+ * ``context.frameworks`` form): the name ``OTLP_FRAMEWORK_NAMES``
+ * gives it, else the label itself, so a framework added to ingestion
+ * before the dashboard learns its name still reads. Null for an empty
+ * or non-string value.
+ */
+export function otlpFrameworkName(framework: unknown): string | null {
+  if (typeof framework !== "string") return null;
+  const label = framework.split("/")[0]?.trim() ?? "";
+  if (!label) return null;
+  return OTLP_FRAMEWORK_NAMES[label] ?? label;
+}
+
+/** The version part of a ``context.frameworks`` entry
+ *  (``pydantic_ai/2.64.0`` -> ``2.64.0``); null when it has none. */
+export function frameworkVersion(framework: unknown): string | null {
+  if (typeof framework !== "string") return null;
+  const slash = framework.indexOf("/");
+  const version = slash >= 0 ? framework.slice(slash + 1).trim() : "";
+  return version || null;
+}
+
+/**
  * The client and the way it reports, as one phrase:
  * ``Claude Code via OpenTelemetry`` for an OTLP-reported session,
  * ``Claude Code via plugin`` for the Claude Code plugin, and the bare
  * registry label for every other client (the sensor and the Agent SDK
- * interceptor have one way to report). Null when the client type is
- * outside the registry and the source is not OTLP.
+ * interceptor have one way to report). A session of the generic
+ * ``otlp`` client type, an agent framework's GenAI telemetry, is named
+ * after its framework when one is given (``Pydantic AI via
+ * OpenTelemetry``). Null when the client type is outside the registry
+ * and the source is not OTLP.
  */
 export function clientSourceLabel(
   clientType: string | null | undefined,
   telemetry: unknown,
+  framework?: unknown,
 ): string | null {
   const label = isClientType(clientType)
     ? CLIENT_TYPE_META[clientType].label
     : null;
   if (isOtlpTelemetry(telemetry)) {
+    if (label && clientType !== ClientType.Otlp) {
+      return `${label} via ${OTLP_SOURCE_LABEL}`;
+    }
     // The generic ``otlp`` client type is itself OpenTelemetry, and an
-    // unknown client has no name: both read as the source alone.
-    return label && clientType !== ClientType.Otlp
-      ? `${label} via ${OTLP_SOURCE_LABEL}`
+    // unknown client has no name: both read as their framework, else
+    // as the source alone.
+    const name = otlpFrameworkName(framework);
+    return name
+      ? `${name} via ${OTLP_SOURCE_LABEL}`
       : `Reported via ${OTLP_SOURCE_LABEL}`;
   }
   if (clientType === ClientType.ClaudeCode) return `${label} via plugin`;
   return label;
+}
+
+/** The run drawer's tooltip on "via OpenTelemetry" for a session an
+ *  agent framework's GenAI instrumentation reported. */
+export function otlpFrameworkSourceDescription(framework: unknown): string {
+  const name = otlpFrameworkName(framework);
+  return name
+    ? `Reported by ${name}'s OpenTelemetry instrumentation: ${OBSERVE_ONLY_NOTE}`
+    : `Reported over ${OTLP_SOURCE_LABEL}: ${OBSERVE_ONLY_NOTE}`;
 }
 
 /** The OTel source pill's colour: the muted treatment the reserved

@@ -118,6 +118,26 @@ All notable changes to Flightdeck are documented here.
   capture, nothing of it is staged or stored. `[REDACTED]` now counts
   as no content, as `<REDACTED>` does
   ([#253](https://github.com/flightdeckhq/flightdeck/pull/253)).
+- **The dashboard shows those frameworks' runs.** The run drawer names
+  the framework and its version ("Pydantic AI v2.64.0 via
+  OpenTelemetry"), shows the run's trace id and marks a trace's
+  unattributed session; the OTel pill on the Agents table and the agent
+  drawer names the framework too. The Prompts tab shows each call's
+  system instructions, messages, response and tool definitions, and
+  each tool call's arguments and result, as the framework sent them:
+  GenAI message parts, Strands' content blocks, OpenAI Agents' text, in
+  both themes, with Raw for the stored value. A hand-off reads
+  "hand-off · triage_agent → weather_agent" in the run's timeline.
+- **The Prompts tab no longer says capture is off when it is on.**
+  `GET /v1/sessions/:id` returns `capture_prompts`, the session's stored
+  capture posture (`true`, `false`, or `null` before a `session_start`
+  declared it). A capture-on run that stored no content (a framework
+  with its own content switch off) now reads "No content was recorded
+  for this run", and an event without content in a capture-on run "No
+  content was recorded for this event", each with why for an
+  OpenTelemetry GenAI run, while a capture-off run keeps "Prompt capture
+  is not enabled for this deployment". The run drawer's Duration of an
+  ended run is now its length, not its age.
 - **An agent's Fleet row splits into lanes while its runs overlap.**
   When a Claude Code coordinator fans out several sub-agents of one
   role, their runs used to stack their circles on one line. While two or

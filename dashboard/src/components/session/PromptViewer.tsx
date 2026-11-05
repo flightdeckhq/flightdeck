@@ -330,6 +330,10 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
 
   if (!content) return null;
 
+  if (content.provider === OTEL_GENAI_PROVIDER) {
+    return <OtelGenaiContent content={content} eventId={eventId} />;
+  }
+
   const messages = Array.isArray(content.messages) ? content.messages : [];
   const provider = content.provider ?? "unknown";
   const model = content.model ?? "";
@@ -439,6 +443,436 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
           <ViewBox key={`${eventId}-response`} raw={content.response} name="the response" testId="prompt-box-response">
             <PrettyResponse response={content.response} provider={provider} />
           </ViewBox>
+        </Section>
+      )}
+    </div>
+  );
+}
+
+/* ---- OpenTelemetry GenAI content ----
+ *
+ * An agent framework that reports over OpenTelemetry (Pydantic AI,
+ * Strands Agents, OpenAI Agents, Google ADK) sends its messages in
+ * shapes of its own: the GenAI conventions' ``{role, parts}`` messages,
+ * Strands' Bedrock-style ``{role, content: [{text} | {toolUse} |
+ * {toolResult}]}`` under the older conventions, text that is a Python
+ * repr of an SDK object. None of them is a provider's wire format, so
+ * ingestion stores them as sent under ``provider=otel_genai`` and they
+ * render here in their own terms, never converted into the Anthropic
+ * or OpenAI shape the branches above read (CLAUDE.md rule 20). A part
+ * or block this renderer does not know shows as its JSON, and content
+ * with no messages, response or tool input and output shows as stored.
+ */
+
+/** The ``event_content.provider`` of OpenTelemetry GenAI content. */
+export const OTEL_GENAI_PROVIDER = "otel_genai";
+
+/** The header's name for where OpenTelemetry GenAI content comes from. */
+export const OTEL_GENAI_SOURCE_LABEL = "OpenTelemetry GenAI";
+
+/** The content's stored fields that identify it rather than hold it,
+ *  left out of the generic view. */
+const OTEL_GENAI_ID_FIELDS = new Set(["event_id", "session_id", "provider", "model", "captured_at"]);
+
+/** A stored value as a list of messages: a list as it is, any other
+ *  value that holds something as a list of one, and an empty list for
+ *  nothing (``[]``, ``{}``, null), which ingestion stores for a call
+ *  without a response and for every tool call. */
+function genaiList(value: unknown): unknown[] {
+  if (Array.isArray(value)) return value;
+  if (isPlainObject(value)) return Object.keys(value).length > 0 ? [value] : [];
+  if (typeof value === "string") return value.trim() ? [value] : [];
+  return value == null ? [] : [value];
+}
+
+/** True when a stored value holds something to show. */
+function hasGenaiValue(value: unknown): boolean {
+  if (value == null) return false;
+  if (typeof value === "string") return value.length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (isPlainObject(value)) return Object.keys(value).length > 0;
+  return true;
+}
+
+/** The system instructions: ingestion keeps them as JSON in the text
+ *  column, so a column that holds a JSON list or object is that JSON,
+ *  and any other text is the instructions as sent. */
+function genaiSystem(systemPrompt: string | null): unknown {
+  if (systemPrompt == null || systemPrompt === "") return undefined;
+  return parseJsonContainer(systemPrompt) ?? systemPrompt;
+}
+
+function Muted({ children, testId }: { children: React.ReactNode; testId?: string }) {
+  return (
+    <div data-testid={testId} className="text-xs" style={{ color: "var(--text-muted)" }}>
+      {children}
+    </div>
+  );
+}
+
+/** A value as the framework sent it: text (pretty-printed when it holds
+ *  JSON), an object as labelled fields, a list as message parts. */
+function GenaiValue({ value }: { value: unknown }) {
+  if (value == null) return <Muted>(none)</Muted>;
+  if (typeof value === "string") {
+    if (value.length === 0) return <Muted>(empty)</Muted>;
+    const parsed = parseJsonContainer(value);
+    if (parsed !== undefined) return <GenaiValue value={parsed} />;
+    return (
+      <div className="rounded-md p-2.5" style={textBoxStyle}>
+        {value}
+      </div>
+    );
+  }
+  if (Array.isArray(value)) return <GenaiParts parts={value} />;
+  if (isPlainObject(value)) {
+    if (Object.keys(value).length === 0) return <Muted>(empty)</Muted>;
+    return (
+      <div className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)" }}>
+        <KeyValueList data={value} />
+      </div>
+    );
+  }
+  return (
+    <div className="rounded-md p-2.5" style={textBoxStyle}>
+      {String(value)}
+    </div>
+  );
+}
+
+/** A tool call inside a message: the tool's name and its arguments. */
+function GenaiToolCall({ name, args, id }: { name: unknown; args: unknown; id: unknown }) {
+  const parsed = typeof args === "string" ? (parseJsonContainer(args) ?? args) : args;
+  return (
+    <div
+      data-testid="genai-part-tool-call"
+      className="rounded-md p-2.5"
+      style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}
+    >
+      <div className="flex items-baseline gap-2">
+        <span className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>
+          {typeof name === "string" && name ? name : "tool"}
+        </span>
+        {typeof id === "string" && id && (
+          <span className="truncate font-mono text-[10px]" style={{ color: "var(--text-muted)" }} title={id}>
+            {id}
+          </span>
+        )}
+      </div>
+      <div className="mt-2">
+        {isPlainObject(parsed) && Object.keys(parsed).length > 0 ? (
+          <KeyValueList data={parsed} />
+        ) : parsed == null || (isPlainObject(parsed) && Object.keys(parsed).length === 0) ? (
+          <Muted>(no arguments)</Muted>
+        ) : (
+          <BlockValue value={parsed} />
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** A tool's result inside a message, with the call it answers. */
+function GenaiToolResponse({ name, value, id, status }: { name: unknown; value: unknown; id: unknown; status?: unknown }) {
+  return (
+    <div data-testid="genai-part-tool-response">
+      <BlockLabel>
+        tool result
+        {typeof name === "string" && name ? ` · ${name}` : ""}
+        {typeof status === "string" && status ? ` · ${status}` : ""}
+      </BlockLabel>
+      {typeof id === "string" && id && (
+        <div className="mb-1 truncate font-mono text-[10px]" style={{ color: "var(--text-muted)" }} title={id}>
+          {id}
+        </div>
+      )}
+      <GenaiValue value={value} />
+    </div>
+  );
+}
+
+/** One part of a message, in the framework's terms. */
+function GenaiPart({ part }: { part: unknown }) {
+  if (typeof part === "string") return <TextOrJson text={part} />;
+  if (!isPlainObject(part)) return <JsonBox data={part} />;
+  const type = typeof part.type === "string" ? part.type : "";
+  // The GenAI semantic conventions' message parts.
+  if (type === "text" && typeof part.content === "string") {
+    return <TextOrJson text={part.content} />;
+  }
+  if (type === "reasoning" && typeof part.content === "string") {
+    return (
+      <div data-testid="genai-part-reasoning">
+        <BlockLabel>reasoning</BlockLabel>
+        <div className="rounded-md p-2.5" style={{ ...textBoxStyle, color: "var(--text-secondary)" }}>
+          {part.content}
+        </div>
+      </div>
+    );
+  }
+  if (type === "tool_call" || type === "server_tool_call") {
+    return <GenaiToolCall name={part.name} args={part.arguments} id={part.id} />;
+  }
+  if (type === "tool_call_response" || type === "server_tool_call_response") {
+    return <GenaiToolResponse name={part.name} value={part.response ?? part.result} id={part.id} />;
+  }
+  if (type === "uri" || type === "blob" || type === "file") {
+    const detail = [part.mime_type, part.modality, type === "uri" ? part.uri : null]
+      .filter((v): v is string => typeof v === "string" && v.length > 0)
+      .join(" · ");
+    return <Muted>[{type}{detail ? ` · ${detail}` : ""}]</Muted>;
+  }
+  // Strands' Bedrock-style content blocks (the older GenAI conventions).
+  if (!type) {
+    if (typeof part.text === "string" && Object.keys(part).length === 1) {
+      return <TextOrJson text={part.text} />;
+    }
+    if (isPlainObject(part.toolUse)) {
+      const use = part.toolUse;
+      return <GenaiToolCall name={use.name} args={use.input} id={use.toolUseId} />;
+    }
+    if (isPlainObject(part.toolResult)) {
+      const result = part.toolResult;
+      return <GenaiToolResponse name={null} value={result.content} id={result.toolUseId} status={result.status} />;
+    }
+  }
+  return <JsonBox data={part} />;
+}
+
+function GenaiParts({ parts }: { parts: unknown[] }) {
+  if (parts.length === 0) return <Muted>(empty)</Muted>;
+  return (
+    <div className="space-y-2">
+      {parts.map((part, i) => (
+        <GenaiPart key={i} part={part} />
+      ))}
+    </div>
+  );
+}
+
+/** A message's body: its ``parts`` (the GenAI conventions), else its
+ *  ``content`` (Strands' older events), else its ``message`` (Strands'
+ *  older choice event), else the message as stored. */
+function GenaiMessageBody({ entry }: { entry: unknown }) {
+  if (!isPlainObject(entry)) return <GenaiValue value={entry} />;
+  for (const key of ["parts", "content", "message"] as const) {
+    const v = entry[key];
+    if (Array.isArray(v)) return <GenaiParts parts={v} />;
+    if (typeof v === "string") return <TextOrJson text={v} />;
+  }
+  const rest = Object.fromEntries(
+    Object.entries(entry).filter(([k]) => k !== "role" && k !== "finish_reason"),
+  );
+  return Object.keys(rest).length > 0 ? <JsonBox data={rest} /> : <Muted>(empty)</Muted>;
+}
+
+function GenaiMessageBox({
+  entry,
+  index,
+  kind,
+  eventId,
+}: {
+  entry: unknown;
+  index: number;
+  kind: "message" | "response";
+  eventId: string;
+}) {
+  const msg = isPlainObject(entry) ? entry : null;
+  const role =
+    msg && typeof msg.role === "string" && msg.role
+      ? msg.role
+      : kind === "response"
+        ? "assistant"
+        : `message_${index}`;
+  const finish = msg && typeof msg.finish_reason === "string" ? msg.finish_reason : null;
+  return (
+    <ViewBox
+      key={`${eventId}-${kind}-${index}`}
+      raw={entry}
+      name={`${kind} ${index + 1} (${role})`}
+      testId={`prompt-box-${kind}-${index}`}
+      label={
+        <span className="flex items-center gap-2">
+          <RoleBadge role={role} />
+          {finish && (
+            <span
+              data-testid="genai-finish-reason"
+              className="font-mono text-[10px]"
+              style={{ color: "var(--text-muted)" }}
+              title="Why the model stopped"
+            >
+              {finish}
+            </span>
+          )}
+        </span>
+      }
+    >
+      <GenaiMessageBody entry={entry} />
+    </ViewBox>
+  );
+}
+
+/** A tool definition the call offered the model. */
+function GenaiToolDefinition({ entry, index, eventId }: { entry: unknown; index: number; eventId: string }) {
+  const tool = isPlainObject(entry) ? entry : {};
+  const fn = isPlainObject(tool.function) ? tool.function : {};
+  const name =
+    typeof tool.name === "string" ? tool.name : typeof fn.name === "string" ? fn.name : `tool_${index}`;
+  const desc =
+    typeof tool.description === "string"
+      ? tool.description
+      : typeof fn.description === "string"
+        ? fn.description
+        : null;
+  const schema = isPlainObject(tool.parameters)
+    ? tool.parameters
+    : isPlainObject(fn.parameters)
+      ? fn.parameters
+      : null;
+  const props = schema && isPlainObject(schema.properties) ? schema.properties : null;
+  return (
+    <ViewBox
+      key={`${eventId}-tool-${index}`}
+      raw={entry}
+      name={`tool ${name}`}
+      testId={`prompt-box-tool-${index}`}
+      label={
+        <span className="font-mono text-[13px] font-semibold" style={{ color: "var(--event-tool)" }}>
+          {name}
+        </span>
+      }
+    >
+      <div className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)", border: "1px solid var(--border)" }}>
+        {desc && <div className="text-xs" style={{ color: "var(--text-secondary)" }}>{desc}</div>}
+        {props && Object.keys(props).length > 0 && (
+          <>
+            <div className="mt-2 text-[10px] font-semibold uppercase tracking-[0.06em]" style={{ color: "var(--text-muted)" }}>
+              Parameters
+            </div>
+            <div className="mt-1 space-y-0.5">
+              {Object.entries(props).map(([propName, propDef]) => (
+                <div key={propName} className="flex items-center gap-2 font-mono text-xs">
+                  <span className="font-medium" style={{ color: "var(--text)" }}>{propName}</span>
+                  <span style={{ color: "var(--text-muted)" }}>·</span>
+                  <span style={{ color: "var(--text-muted)" }}>
+                    {isPlainObject(propDef) && typeof propDef.type === "string" ? propDef.type : "any"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
+        {!desc && !(props && Object.keys(props).length > 0) && <Muted>(no parameters)</Muted>}
+      </div>
+    </ViewBox>
+  );
+}
+
+function OtelGenaiContent({ content, eventId }: { content: EventContent; eventId: string }) {
+  const model = content.model ?? "";
+  const provider = getProvider(model);
+  const system = genaiSystem(content.system_prompt);
+  const messages = Array.isArray(content.messages) ? content.messages : [];
+  const response = genaiList(content.response);
+  const tools = Array.isArray(content.tools) ? content.tools : [];
+  const hasArgs = hasGenaiValue(content.tool_input);
+  const hasResult = hasGenaiValue(content.tool_output);
+  const recognised =
+    system !== undefined || messages.length > 0 || response.length > 0 || hasArgs || hasResult;
+  // Content with none of the above (tool definitions alone, or a field
+  // this renderer does not know) shows every stored field as it is.
+  const stored = Object.fromEntries(
+    Object.entries(content).filter(([k, v]) => !OTEL_GENAI_ID_FIELDS.has(k) && hasGenaiValue(v)),
+  );
+
+  return (
+    <div data-testid="prompt-viewer-otel-genai" className="flex flex-col px-3 py-2">
+      <div className="flex items-center gap-2 pb-3" style={{ borderBottom: "1px solid var(--border-subtle)" }}>
+        {model && provider !== "unknown" && <ProviderLogo provider={provider} size={16} />}
+        <span
+          data-testid="prompt-viewer-source"
+          className="text-[13px]"
+          style={{ color: "var(--text-secondary)" }}
+          title="Stored as the framework sent it over OpenTelemetry"
+        >
+          {OTEL_GENAI_SOURCE_LABEL}
+        </span>
+        {model && (
+          <>
+            <span style={{ color: "var(--text-muted)" }}>·</span>
+            <span className="font-mono text-[13px]" style={{ color: "var(--text-secondary)" }}>{model}</span>
+          </>
+        )}
+      </div>
+
+      {system !== undefined && (
+        <Section title="System">
+          <ViewBox key={`${eventId}-system`} raw={system} name="the system instructions" testId="prompt-box-system" label={<RoleBadge role="system" />}>
+            <GenaiValue value={system} />
+          </ViewBox>
+        </Section>
+      )}
+
+      {messages.length > 0 && (
+        <Section title="Messages" count={messages.length}>
+          <div className="space-y-2">
+            {messages.map((entry, i) => (
+              <GenaiMessageBox key={`${eventId}-message-${i}`} entry={entry} index={i} kind="message" eventId={eventId} />
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {response.length > 0 && (
+        <Section title="Response" count={response.length}>
+          <div className="space-y-2">
+            {response.map((entry, i) => (
+              <GenaiMessageBox key={`${eventId}-response-${i}`} entry={entry} index={i} kind="response" eventId={eventId} />
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {hasArgs && (
+        <Section title="Arguments">
+          <ViewBox key={`${eventId}-tool-input`} raw={content.tool_input} name="the tool's arguments" testId="prompt-box-tool-input">
+            <GenaiValue value={content.tool_input} />
+          </ViewBox>
+        </Section>
+      )}
+
+      {hasResult && (
+        <Section title="Result">
+          <ViewBox key={`${eventId}-tool-output`} raw={content.tool_output} name="the tool's result" testId="prompt-box-tool-output">
+            <GenaiValue value={content.tool_output} />
+          </ViewBox>
+        </Section>
+      )}
+
+      {tools.length > 0 && (
+        <Section title="Tools" count={tools.length} defaultOpen={!recognised}>
+          <div className="space-y-1.5">
+            {tools.map((entry, i) => (
+              <GenaiToolDefinition key={`${eventId}-tool-${i}`} entry={entry} index={i} eventId={eventId} />
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {!recognised && tools.length === 0 && (
+        <Section title="Content">
+          <div data-testid="prompt-viewer-otel-genai-generic" className="space-y-2">
+            <Muted>This content carries no messages, response or tool input; it is shown as stored.</Muted>
+            {Object.keys(stored).length > 0 ? (
+              <ViewBox key={`${eventId}-stored`} raw={stored} name="the stored content" testId="prompt-box-stored">
+                <div className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)" }}>
+                  <KeyValueList data={stored} />
+                </div>
+              </ViewBox>
+            ) : (
+              <Muted>(empty)</Muted>
+            )}
+          </div>
         </Section>
       )}
     </div>

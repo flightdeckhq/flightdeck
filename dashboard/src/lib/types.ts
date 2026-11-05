@@ -247,6 +247,14 @@ export interface Session {
    */
   capture_enabled?: boolean;
   /**
+   * The session's stored capture posture (``sessions.capture_prompts``)
+   * from ``GET /v1/sessions/:id``: true or false once a session_start
+   * declared it, null while none has. Absent on rows from other
+   * endpoints. The Prompts tab tells a capture-off run from a
+   * capture-on run that stored no content by it.
+   */
+  capture_prompts?: boolean | null;
+  /**
    * Name of the access_tokens row that opened this session.
    * Null for tok_dev-authenticated sessions and rows that predate
    * token attribution.
@@ -1052,6 +1060,15 @@ export interface EventContent {
   // Components branch on the parent event's event_type to render
   // appropriately.
   input?: string | string[] | Record<string, unknown> | null;
+  /**
+   * A tool call's arguments and result (the ``event_content``
+   * ``tool_input`` / ``tool_output`` columns), present when captured.
+   * An OpenTelemetry GenAI ``tool_call`` (``provider=otel_genai``)
+   * carries them as the framework sent them: an object or a string for
+   * the arguments, a string, object or list for the result.
+   */
+  tool_input?: unknown;
+  tool_output?: unknown;
   captured_at: string;
 }
 

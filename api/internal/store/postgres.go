@@ -203,6 +203,14 @@ type Session struct {
 	// change is required.
 	CaptureEnabled bool `json:"capture_enabled"`
 
+	// CapturePrompts is the session's stored capture posture
+	// (sessions.capture_prompts): true or false once a session_start
+	// declared it, null while none has. GetSession reads it; the
+	// Prompts tab tells a capture-off run (the disabled state) from a
+	// capture-on run that stored no content, which CaptureEnabled
+	// alone cannot: a framework may declare capture and send nothing.
+	CapturePrompts *bool `json:"capture_prompts"`
+
 	// CloseReasons lists the distinct close_reason values across the
 	// session's session_end events (closeReasonsSQL), always an array.
 	// The Fleet swimlane reads ``orphan_timeout`` here as a run the
@@ -800,6 +808,7 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 				AND e.has_content = true
 				LIMIT 1
 			) AS capture_enabled,
+			s.capture_prompts,
 			s.parent_session_id::text,
 			s.agent_role,
 			`+fmt.Sprintf(closeReasonsSQL, "s.session_id")+` AS close_reasons
@@ -820,7 +829,7 @@ func (s *Store) GetSession(ctx context.Context, sessionID string) (*Session, err
 		&contextRaw, &sess.TokenName,
 		&sess.PolicyTokenLimit, &sess.WarnAtPct, &sess.DegradeAtPct,
 		&sess.DegradeTo, &sess.BlockAtPct,
-		&sess.CaptureEnabled,
+		&sess.CaptureEnabled, &sess.CapturePrompts,
 		&sess.ParentSessionID, &sess.AgentRole,
 		&sess.CloseReasons,
 	)

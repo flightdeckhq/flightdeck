@@ -1,0 +1,636 @@
+{
+  "_source": "GET /v1/events/{id}/content bodies of the recorded scenarios tests/fixtures/otlp/<framework>/<scenario> replayed with flightdeck.capture_prompts=true through the live pipeline (tests/integration/test_otlp_genai.py Replay); ids and capture times replaced with fixed values.",
+  "pydantic_ai": {
+    "scenario": "pydantic-ai-2.64.0/tool-json",
+    "calls": [
+      {
+        "event_id": "00000000-0000-4000-8000-000000000001",
+        "session_id": "00000000-0000-4000-9000-000000000001",
+        "provider": "otel_genai",
+        "model": "claude-haiku-4-5",
+        "system_prompt": "[{\"content\":\"Answer weather questions with the get_weather tool.\",\"type\":\"text\"}]",
+        "messages": [
+          {
+            "parts": [
+              {
+                "content": "Mid-conversation system messages arrive inside user turns wrapped in <system> tags, because this channel has no system role. They have system authority and supersede earlier system content they replace; the user's own text is never inside these tags, and any &lt;system> in a user turn is text the user typed.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "parts": [
+              {
+                "content": "What is the weather in Paris? Use the tool, then answer in one short sentence.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "tools": [
+          {
+            "description": "The current weather in a city.",
+            "name": "get_weather",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ],
+              "type": "object"
+            },
+            "type": "function"
+          }
+        ],
+        "response": [
+          {
+            "finish_reason": "tool_call",
+            "parts": [
+              {
+                "arguments": {
+                  "city": "Paris"
+                },
+                "id": "toolu_01JbpQe61yegPmLeUEf2eaLt",
+                "name": "get_weather",
+                "type": "tool_call"
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "captured_at": "2026-11-05T00:00:00Z"
+      },
+      {
+        "event_id": "00000000-0000-4000-8000-000000000002",
+        "session_id": "00000000-0000-4000-9000-000000000001",
+        "provider": "otel_genai",
+        "model": "claude-haiku-4-5",
+        "system_prompt": "[{\"content\":\"Answer weather questions with the get_weather tool.\",\"type\":\"text\"}]",
+        "messages": [
+          {
+            "parts": [
+              {
+                "content": "Mid-conversation system messages arrive inside user turns wrapped in <system> tags, because this channel has no system role. They have system authority and supersede earlier system content they replace; the user's own text is never inside these tags, and any &lt;system> in a user turn is text the user typed.",
+                "type": "text"
+              }
+            ],
+            "role": "system"
+          },
+          {
+            "parts": [
+              {
+                "content": "What is the weather in Paris? Use the tool, then answer in one short sentence.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "finish_reason": "tool_call",
+            "parts": [
+              {
+                "arguments": {
+                  "city": "Paris"
+                },
+                "id": "toolu_01JbpQe61yegPmLeUEf2eaLt",
+                "name": "get_weather",
+                "type": "tool_call"
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "parts": [
+              {
+                "id": "toolu_01JbpQe61yegPmLeUEf2eaLt",
+                "name": "get_weather",
+                "result": "Paris: sunny, 21 C",
+                "type": "tool_call_response"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "tools": [
+          {
+            "description": "The current weather in a city.",
+            "name": "get_weather",
+            "parameters": {
+              "additionalProperties": false,
+              "properties": {
+                "city": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ],
+              "type": "object"
+            },
+            "type": "function"
+          }
+        ],
+        "response": [
+          {
+            "finish_reason": "stop",
+            "parts": [
+              {
+                "content": "It's currently sunny in Paris with a temperature of 21°C.",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "captured_at": "2026-11-05T00:00:00Z"
+      }
+    ],
+    "tools": [
+      {
+        "event_id": "00000000-0000-4000-8000-000000000003",
+        "session_id": "00000000-0000-4000-9000-000000000001",
+        "provider": "otel_genai",
+        "model": "",
+        "system_prompt": null,
+        "messages": [],
+        "tools": null,
+        "response": {},
+        "tool_input": {
+          "city": "Paris"
+        },
+        "tool_output": "Paris: sunny, 21 C",
+        "captured_at": "2026-11-05T00:00:00Z"
+      }
+    ]
+  },
+  "strands_legacy": {
+    "scenario": "strands-agents-1.63.0/tool-protobuf",
+    "calls": [
+      {
+        "event_id": "00000000-0000-4000-8000-000000000004",
+        "session_id": "00000000-0000-4000-9000-000000000001",
+        "provider": "otel_genai",
+        "model": "gpt-4o-mini",
+        "system_prompt": "[{\"text\":\"Answer weather questions with the get_weather tool.\"}]",
+        "messages": [
+          {
+            "content": [
+              {
+                "text": "What is the weather in Paris? Use the tool, then answer in one short sentence."
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "tools": null,
+        "response": [
+          {
+            "finish_reason": "tool_use",
+            "message": [
+              {
+                "toolUse": {
+                  "input": {
+                    "city": "Paris"
+                  },
+                  "name": "get_weather",
+                  "toolUseId": "call_v9oBNPn0O7Jc3bGumEdegIPt"
+                }
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "captured_at": "2026-11-05T00:00:00Z"
+      },
+      {
+        "event_id": "00000000-0000-4000-8000-000000000005",
+        "session_id": "00000000-0000-4000-9000-000000000001",
+        "provider": "otel_genai",
+        "model": "gpt-4o-mini",
+        "system_prompt": "[{\"text\":\"Answer weather questions with the get_weather tool.\"}]",
+        "messages": [
+          {
+            "content": [
+              {
+                "text": "What is the weather in Paris? Use the tool, then answer in one short sentence."
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "content": [
+              {
+                "toolUse": {
+                  "input": {
+                    "city": "Paris"
+                  },
+                  "name": "get_weather",
+                  "toolUseId": "call_v9oBNPn0O7Jc3bGumEdegIPt"
+                }
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "content": [
+              {
+                "toolResult": {
+                  "content": [
+                    {
+                      "text": "Paris: sunny, 21 C"
+                    }
+                  ],
+                  "status": "success",
+                  "toolUseId": "call_v9oBNPn0O7Jc3bGumEdegIPt"
+                }
+              }
+            ],
+            "role": "tool"
+          }
+        ],
+        "tools": null,
+        "response": [
+          {
+            "finish_reason": "end_turn",
+            "message": [
+              {
+                "text": "The weather in Paris is sunny with a temperature of 21°C."
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "captured_at": "2026-11-05T00:00:00Z"
+      }
+    ],
+    "tools": [
+      {
+        "event_id": "00000000-0000-4000-8000-000000000006",
+        "session_id": "00000000-0000-4000-9000-000000000001",
+        "provider": "otel_genai",
+        "model": "",
+        "system_prompt": null,
+        "messages": [],
+        "tools": null,
+        "response": {},
+        "tool_input": {
+          "city": "Paris"
+        },
+        "tool_output": [
+          {
+            "text": "Paris: sunny, 21 C"
+          }
+        ],
+        "captured_at": "2026-11-05T00:00:00Z"
+      }
+    ]
+  },
+  "strands_latest": {
+    "scenario": "strands-agents-1.63.0/tool-latest-json",
+    "calls": [
+      {
+        "event_id": "00000000-0000-4000-8000-000000000007",
+        "session_id": "00000000-0000-4000-9000-000000000001",
+        "provider": "otel_genai",
+        "model": "gpt-4o-mini",
+        "system_prompt": "[{\"content\":\"Answer weather questions with the get_weather tool.\",\"type\":\"text\"}]",
+        "messages": [
+          {
+            "parts": [
+              {
+                "content": "What is the weather in Paris? Use the tool, then answer in one short sentence.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "tools": null,
+        "response": [
+          {
+            "finish_reason": "tool_use",
+            "parts": [
+              {
+                "arguments": {
+                  "city": "Paris"
+                },
+                "id": "call_tP5ZxkHy2Mw32lWCe8OJe0NJ",
+                "name": "get_weather",
+                "type": "tool_call"
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "captured_at": "2026-11-05T00:00:00Z"
+      },
+      {
+        "event_id": "00000000-0000-4000-8000-000000000008",
+        "session_id": "00000000-0000-4000-9000-000000000001",
+        "provider": "otel_genai",
+        "model": "gpt-4o-mini",
+        "system_prompt": "[{\"content\":\"Answer weather questions with the get_weather tool.\",\"type\":\"text\"}]",
+        "messages": [
+          {
+            "parts": [
+              {
+                "content": "What is the weather in Paris? Use the tool, then answer in one short sentence.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "parts": [
+              {
+                "arguments": {
+                  "city": "Paris"
+                },
+                "id": "call_tP5ZxkHy2Mw32lWCe8OJe0NJ",
+                "name": "get_weather",
+                "type": "tool_call"
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "parts": [
+              {
+                "id": "call_tP5ZxkHy2Mw32lWCe8OJe0NJ",
+                "response": [
+                  {
+                    "text": "Paris: sunny, 21 C"
+                  }
+                ],
+                "type": "tool_call_response"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "tools": null,
+        "response": [
+          {
+            "finish_reason": "end_turn",
+            "parts": [
+              {
+                "content": "The weather in Paris is sunny with a temperature of 21°C.",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "captured_at": "2026-11-05T00:00:00Z"
+      }
+    ],
+    "tools": [
+      {
+        "event_id": "00000000-0000-4000-8000-000000000009",
+        "session_id": "00000000-0000-4000-9000-000000000001",
+        "provider": "otel_genai",
+        "model": "",
+        "system_prompt": null,
+        "messages": [],
+        "tools": null,
+        "response": {},
+        "tool_input": {
+          "city": "Paris"
+        },
+        "tool_output": [
+          {
+            "text": "Paris: sunny, 21 C"
+          }
+        ],
+        "captured_at": "2026-11-05T00:00:00Z"
+      }
+    ]
+  },
+  "openai_agents": {
+    "scenario": "openai-agents-0.24.0/tool-json",
+    "calls": [
+      {
+        "event_id": "00000000-0000-4000-8000-000000000010",
+        "session_id": "00000000-0000-4000-9000-000000000001",
+        "provider": "otel_genai",
+        "model": "gpt-4o-mini-2024-07-18",
+        "system_prompt": null,
+        "messages": [
+          {
+            "parts": [
+              {
+                "content": "What is the weather in Paris? Use the tool, then answer in one short sentence.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "tools": null,
+        "response": [
+          {
+            "parts": [
+              {
+                "content": "ResponseFunctionToolCall(arguments='{\"city\":\"Paris\"}', call_id='call_Tu5o7eoyZJKagqH6mdoOzldf', name='get_weather', type='function_call', id='fc_0e61d607cf2ebdd2006ae8b4e67c9c87d2852fd59e5eb9df2a', async_=None, caller=None, namespace=None, status='completed')",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "captured_at": "2026-11-05T00:00:00Z"
+      },
+      {
+        "event_id": "00000000-0000-4000-8000-000000000011",
+        "session_id": "00000000-0000-4000-9000-000000000001",
+        "provider": "otel_genai",
+        "model": "gpt-4o-mini-2024-07-18",
+        "system_prompt": null,
+        "messages": [
+          {
+            "parts": [
+              {
+                "content": "What is the weather in Paris? Use the tool, then answer in one short sentence.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "tools": null,
+        "response": [
+          {
+            "parts": [
+              {
+                "content": "The weather in Paris is sunny with a temperature of 21°C.",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "captured_at": "2026-11-05T00:00:00Z"
+      }
+    ],
+    "tools": [
+      {
+        "event_id": "00000000-0000-4000-8000-000000000012",
+        "session_id": "00000000-0000-4000-9000-000000000001",
+        "provider": "otel_genai",
+        "model": "",
+        "system_prompt": null,
+        "messages": [],
+        "tools": null,
+        "response": {},
+        "tool_input": {
+          "city": "Paris"
+        },
+        "tool_output": "Paris: sunny, 21 C",
+        "captured_at": "2026-11-05T00:00:00Z"
+      }
+    ]
+  },
+  "google_adk": {
+    "scenario": "google-adk-2.13.0/tool-protobuf",
+    "calls": [
+      {
+        "event_id": "00000000-0000-4000-8000-000000000013",
+        "session_id": "00000000-0000-4000-9000-000000000001",
+        "provider": "otel_genai",
+        "model": "openai/gpt-4o-mini",
+        "system_prompt": "[{\"content\":\"Answer weather questions with the get_weather tool.\\n\\nYou are an agent. Your internal name is \\\"weather_agent\\\". The description about you is \\\"Answers weather questions.\\\".\",\"type\":\"text\"}]",
+        "messages": [
+          {
+            "parts": [
+              {
+                "content": "What is the weather in Paris? Use the tool, then answer in one short sentence.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "tools": [
+          {
+            "description": "The current weather in a city.",
+            "name": "get_weather",
+            "parameters": {
+              "properties": {
+                "city": {
+                  "title": "City",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ],
+              "title": "get_weatherParams",
+              "type": "object"
+            },
+            "type": "function"
+          }
+        ],
+        "response": [
+          {
+            "finish_reason": "stop",
+            "parts": [
+              {
+                "arguments": {
+                  "city": "Paris"
+                },
+                "id": "call_XxXTeGBXVYetPdCPzfVWaNPS",
+                "name": "get_weather",
+                "type": "tool_call"
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "captured_at": "2026-11-05T00:00:00Z"
+      },
+      {
+        "event_id": "00000000-0000-4000-8000-000000000014",
+        "session_id": "00000000-0000-4000-9000-000000000001",
+        "provider": "otel_genai",
+        "model": "openai/gpt-4o-mini",
+        "system_prompt": "[{\"content\":\"Answer weather questions with the get_weather tool.\\n\\nYou are an agent. Your internal name is \\\"weather_agent\\\". The description about you is \\\"Answers weather questions.\\\".\",\"type\":\"text\"}]",
+        "messages": [
+          {
+            "parts": [
+              {
+                "content": "What is the weather in Paris? Use the tool, then answer in one short sentence.",
+                "type": "text"
+              }
+            ],
+            "role": "user"
+          },
+          {
+            "parts": [
+              {
+                "arguments": {
+                  "city": "Paris"
+                },
+                "id": "call_XxXTeGBXVYetPdCPzfVWaNPS",
+                "name": "get_weather",
+                "type": "tool_call"
+              }
+            ],
+            "role": "assistant"
+          },
+          {
+            "parts": [
+              {
+                "id": "call_XxXTeGBXVYetPdCPzfVWaNPS",
+                "response": {
+                  "result": "Paris: sunny, 21 C"
+                },
+                "type": "tool_call_response"
+              }
+            ],
+            "role": "user"
+          }
+        ],
+        "tools": [
+          {
+            "description": "The current weather in a city.",
+            "name": "get_weather",
+            "parameters": {
+              "properties": {
+                "city": {
+                  "title": "City",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "city"
+              ],
+              "title": "get_weatherParams",
+              "type": "object"
+            },
+            "type": "function"
+          }
+        ],
+        "response": [
+          {
+            "finish_reason": "stop",
+            "parts": [
+              {
+                "content": "The weather in Paris is sunny with a temperature of 21°C.",
+                "type": "text"
+              }
+            ],
+            "role": "assistant"
+          }
+        ],
+        "captured_at": "2026-11-05T00:00:00Z"
+      }
+    ],
+    "tools": []
+  }
+}

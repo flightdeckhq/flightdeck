@@ -82,9 +82,11 @@ export function SubAgentsTab({
   // sets has_content=true). Treat the SubAgentsTab as
   // capture-enabled when EITHER the API flag fires OR any of this
   // session's events carries an incoming/outgoing message body.
-  // The Rule 21 disabled state still fires when neither condition
-  // holds — e.g., a root session with capture_prompts=false and no
-  // sub-agent linkage.
+  // The session's stored posture (``capture_prompts``) counts too, so
+  // a capture-on run whose framework sent no message is not called
+  // capture-off. The Rule 21 disabled state still fires when none of
+  // the three holds — e.g., a root session with capture_prompts=false
+  // and no sub-agent linkage.
   const hasAnyMessageBody = useMemo(
     () =>
       events.some(
@@ -99,7 +101,8 @@ export function SubAgentsTab({
       ),
     [events],
   );
-  const captureEnabled = session.capture_enabled === true || hasAnyMessageBody;
+  const captureEnabled =
+    session.capture_enabled === true || session.capture_prompts === true || hasAnyMessageBody;
 
   // session_start carries this session's incoming_message; session_end
   // carries outgoing_message. Used for the SPAWNED FROM section's

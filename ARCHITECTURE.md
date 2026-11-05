@@ -4867,7 +4867,7 @@ authoritative parameter-level reference.
 |---|---|---|
 | `GET` | `/v1/fleet` | Fleet summary: agents with state rollup, total sessions, total tokens, recent_sessions rollup, and runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — sourced from the agent's most recent session's `context` JSONB via a `LEFT JOIN LATERAL`), context_facets |
 | `GET` | `/v1/sessions` | Paginated session listing; filters: `agent_id`, `flavor`, `framework`, `state`, `error_type`, `policy_event_type`, `mcp_server`, `from`, `to`, `q`, `parent_session_id`, `is_sub_agent`, `has_sub_agents`, `agent_role[]`, `include_pure_children`, `include_parents`, `close_reason`, `estimated_via`, `terminal`, `matched_entry_id`, `originating_call_context`; returns per-session aggregates (`error_types[]`, `policy_event_types[]`, `mcp_server_names[]`, `close_reasons[]`, `estimated_via_values[]`, `has_terminal_error`, `matched_entry_ids[]`, `originating_call_contexts[]`), `child_count`, and `attachment_count` (the number of re-attachments to the session, surfaced as the agent drawer Runs-tab attached pill) |
-| `GET` | `/v1/sessions/:id` | Session detail: metadata (including `close_reasons`, the distinct `close_reason` values of its `session_end` events) + chronological events (always an array, empty until the first event row lands) + attachments array |
+| `GET` | `/v1/sessions/:id` | Session detail: metadata (including `close_reasons`, the distinct `close_reason` values of its `session_end` events, and `capture_prompts`, the session's stored capture posture: `true` or `false` once a `session_start` declared it, `null` while none has) + chronological events (always an array, empty until the first event row lands) + attachments array |
 | `GET` | `/v1/agents` | Paginated agent listing; filters: `agent_type`, `client_type`, `state`, `hostname`, `user`, `os`, `orchestration` (multi-value — OR within a dimension, AND across; `os` and `orchestration` use any-session EXISTS semantics on `sessions.context`), `search` (case-insensitive substring on `agent_name` + `hostname`), `updated_since`; `sort` + `order`; `limit` (default 25, max 100) + `offset`. Each row carries the sub-agent rollup fields `agent_role` and `topology` (`lone` / `parent` / `child`) plus the runtime-context projection (`os`, `arch`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — latest-session-only, same source as the `/v1/fleet` projection) |
 | `GET` | `/v1/agents/:id/summary` | Per-agent activity summary (totals + per-bucket series) over a 1h/24h/7d/30d window. Powers the per-agent landing page. |
 | `GET` | `/v1/events` | Bulk events query: `from` (required), `to`, `flavor`, `event_type`, `session_id`, `agent_id`, `model`, payload-JSONB facet filters (`error_type`, `close_reason`, `estimated_via`, `matched_entry_id`, `originating_call_context`, `mcp_server`, `terminal`), `framework` (`agent_id` + `framework` resolve via a `sessions` subquery), session-context facet filters (`os`, `arch`, `host`, `user`, `git_branch`, `git_repo`, `orchestration`, `python_version`, `process_name` — resolved via the sessions JOIN against partial expression indexes on `sessions((context->>'<key>'))` from migration 000024), `q` (free-text ILIKE search across event_type / model / session_id / agent_name / framework), `before` + optional `before_id` (keyset cursor on `occurred_at`, then `id`) + `order` (`asc`/`desc`) for newest-first drawer pagination, `facets=true` to return per-dimension chip counts over the filtered set instead of the event list, `limit` (default 500, max 2000), `offset` (max 100000) |
@@ -6345,6 +6345,25 @@ session's, which the agent rows carry as `telemetry` (see
   OTLP session's `context.claude_code_version`; the bar shows for any
   session whose `client_type` is `claude_code`, so an OTLP session
   under a custom `flightdeck.flavor` keeps it.
+- **Agent frameworks.** A run an agent framework reports over
+  OpenTelemetry GenAI (`client_type` `otlp`, see OTLP ingest > GenAI
+  dialect) is named after its framework: `Pydantic AI`, `Strands
+  Agents`, `OpenAI Agents` or `Google ADK`, read from the label in
+  `context.frameworks[0]` (else the session's `framework`); a label the
+  dashboard has no name for shows as itself. Its run drawer has an
+  OpenTelemetry header bar in place of the Claude Code one: the
+  framework and its version, `via OpenTelemetry` (its tooltip "Reported
+  by <framework>'s OpenTelemetry instrumentation", not the Claude Code
+  exporter's), an `unattributed` mark on the trace's unattributed
+  session (`context.otel_unattributed`, the calls no named agent
+  made), the first 8 characters of `context.otel_trace_id` (all of it
+  in the tooltip; a hand-off's sibling roots share it) and the
+  sub-agent relationship pill. The OTel pill's tooltip names the
+  framework ("Pydantic AI via OpenTelemetry") where the row holds the
+  framework: the `/agents` row and the agent drawer (from the agent's
+  latest run) and the search palette's run hits. The Fleet swimlane and
+  sidebar rows and the palette's agent hits carry no framework, and
+  read "Reported via OpenTelemetry".
 - **Controls.** An OTLP session takes no directives (see
   Observer-session class): no Stop Agent, no Stop All, no
   custom-directive triggers.
@@ -6577,7 +6596,9 @@ rendered directly from `activeDetailEvent` truthiness.
 
 The drawer header carries session ID + state badge, a Claude Code bar
 for `claude_code` sessions (logo, label, `coding` badge, version and
-source, see Session source), metadata bar, and a
+source, see Session source), or the OpenTelemetry bar for an agent
+framework's run, a metadata bar (its Duration is start to end for an
+ended run, start to now for an open one), and a
 collapsible RUNTIME panel (only renders when `session.context` is
 non-empty; combines git / kubernetes / compose / frameworks fields).
 Tabs: Timeline, Prompts, Directives (conditional). The Directives tab
@@ -6620,8 +6641,47 @@ terminology is preserved exactly — Anthropic sessions display
 sessions display `messages` (system role included), `tools`, and
 `response`. Content stored with `provider=otel_genai` (an OpenTelemetry
 GenAI framework's; see OTLP ingest > GenAI dialect > Capture) is
-displayed as the framework sent it, in the GenAI `parts` shape, by a
-generic parts renderer, never through a provider's branch.
+displayed as the framework sent it by its own renderer, never through a
+provider's branch, under an `OpenTelemetry GenAI` header:
+
+- the system instructions (JSON in the text column, shown as the parts
+  or blocks they hold), each input message and each response message,
+  in its own box with its role and `finish_reason`;
+- a message's `parts` (the GenAI conventions: `text`, `reasoning`,
+  `tool_call` with its arguments, `tool_call_response` with its result
+  or response, `uri`, `blob` and `file` named by type), else its
+  `content` or `message` list (Strands' Bedrock-style `text`, `toolUse`
+  and `toolResult` blocks under the older conventions), else the
+  message as stored; text is shown as written, so OpenAI Agents' repr
+  of an SDK object stays that text;
+- a tool call's arguments and result (`tool_input`, `tool_output`);
+- the call's tool definitions, folded when the call has messages;
+- a part or block it does not know as its JSON, and content with no
+  messages, response or tool input and output as its stored fields.
+
+Every box keeps its Pretty / Raw toggle, Raw showing the value as
+stored.
+
+The Prompts tab's empty states read the run's stored capture posture,
+`capture_prompts` on `GET /v1/sessions/:id` (the run drawer and the
+event drawer both load the run through it), and whether any of its
+events stored content (`capture_enabled`). Capture is on for a run when
+either is true: a run older than the stored posture carries `null`
+there, and content can only have been stored with capture on.
+
+- capture off: the capture-disabled message (CLAUDE.md rule 21);
+- capture on and nothing stored for the run: "No content was recorded
+  for this run", and, for an OpenTelemetry GenAI run, why: the
+  framework sent none (its own content switch off, or only tool
+  definitions, which store none);
+- capture on and nothing stored for one event (its detail view's
+  Prompts tab): "No content was recorded for this event", and, for an
+  OpenTelemetry GenAI run, why: a call whose framework sent no
+  messages, or a Google ADK tool call, whose arguments and result are
+  inside the next model call's messages.
+
+The Sub-agents tab shows its capture-disabled message by the same
+rule (a message body on the run's events also counts as capture on).
 
 Streaming `post_call` rows render TTFT in the detail string and a
 `<StreamingPill>` (`STREAM` for completed, `ABORTED` for aborted). The
@@ -8154,6 +8214,13 @@ plugin emits it from its hooks.
 | `config_changed` | `ConfigChange` | `source` (`user_settings`, `project_settings`, `local_settings`, `policy_settings`, `skills`), `file_path` | none |
 | `elicitation_requested` | `Elicitation` (an MCP server asks the user for input) | `mcp_server`, `mode` (`form`, `url`), `elicitation_id` (URL mode) | `message`, `url`, `requested_schema` (as JSON text) |
 | `elicitation_responded` | `ElicitationResult` | `mcp_server`, `mode`, `elicitation_id`, `action` (`accept`, `decline`, `cancel`) | `content`, the user's answer (as JSON text) |
+
+One signal comes from ingestion rather than a hook: `agent_handoff`,
+on the agent that hands off in an OpenTelemetry GenAI run (see OTLP
+ingest > GenAI dialect > Sessions), with `signal_data` `from` and `to`
+(the two agents' names, either left out when the spans do not give it)
+and no content. The dashboard's feed line reads `hand-off · <from> →
+<to>`.
 
 The sanitised input fields are the whitelist `tool_call` events use
 (`file_path`, `command`, `query`, `pattern`, `prompt`; see Content

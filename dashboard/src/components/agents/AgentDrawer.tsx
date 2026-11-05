@@ -214,6 +214,7 @@ export function AgentDrawer({
                 <TelemetrySourcePill
                   telemetry={agent.telemetry}
                   clientType={agent.client_type}
+                  framework={agent.recent_sessions?.[0]?.framework}
                   testId="agent-drawer-telemetry-source"
                 />
                 <span

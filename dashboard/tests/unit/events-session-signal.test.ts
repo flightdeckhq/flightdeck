@@ -181,3 +181,25 @@ describe("session_signal", () => {
     ]);
   });
 });
+
+describe("agent_handoff (an OpenTelemetry GenAI hand-off)", () => {
+  it("names the agent handing off and the agent it hands to", () => {
+    expect(getEventDetail(signal("agent_handoff", { from: "triage_agent", to: "weather_agent" }))).toBe(
+      "hand-off · triage_agent → weather_agent",
+    );
+  });
+
+  it("names only what the spans gave", () => {
+    expect(getEventDetail(signal("agent_handoff", { to: "weather_agent" }))).toBe("hand-off → weather_agent");
+    expect(getEventDetail(signal("agent_handoff", { from: "triage_agent" }))).toBe("hand-off · triage_agent");
+    expect(getEventDetail(signal("agent_handoff"))).toBe("hand-off");
+  });
+
+  it("labels its from and to in the summary rows", () => {
+    expect(getSummaryRows(signal("agent_handoff", { from: "triage_agent", to: "weather_agent" }))).toEqual([
+      ["Signal", "agent handoff"],
+      ["From agent", "triage_agent"],
+      ["To agent", "weather_agent"],
+    ]);
+  });
+});

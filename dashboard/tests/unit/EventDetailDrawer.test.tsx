@@ -1,13 +1,37 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { EventDetailDrawer } from "@/components/fleet/EventDetailDrawer";
 import type { AgentEvent } from "@/lib/types";
 
+// The Prompts tab of an event without content reads the event's run
+// (capture_enabled) through useSession, which calls fetchSession.
+let mockCaptureEnabled = false;
+let mockSessionFields: Record<string, unknown> = {};
+
 vi.mock("@/lib/api", () => ({
   fetchEventContent: vi.fn(() => Promise.resolve(null)),
+  fetchSession: vi.fn((id: string) =>
+    Promise.resolve({
+      session: {
+        session_id: id,
+        flavor: "research-agent",
+        capture_enabled: mockCaptureEnabled,
+        ...mockSessionFields,
+      },
+      events: [],
+      attachments: [],
+    }),
+  ),
 }));
 
 import { fetchEventContent } from "@/lib/api";
+import { invalidateSessionCache } from "@/hooks/useSession";
+
+beforeEach(() => {
+  mockCaptureEnabled = false;
+  mockSessionFields = {};
+  invalidateSessionCache("s1-abcdef-1234");
+});
 
 const postCallEvent: AgentEvent = {
   id: "e1",
@@ -54,12 +78,49 @@ describe("EventDetailDrawer", () => {
     expect(screen.getByText("Tokens input")).toBeInTheDocument();
   });
 
-  it("prompts tab shows disabled state when no content", () => {
+  it("prompts tab shows disabled state when no content", async () => {
     render(<EventDetailDrawer event={postCallEvent} onClose={() => {}} />);
     fireEvent.click(screen.getByTestId("detail-tab-prompts"));
     expect(
-      screen.getByText("Prompt capture is not enabled for this deployment.")
+      await screen.findByText("Prompt capture is not enabled for this deployment.")
     ).toBeInTheDocument();
+  });
+
+  it("prompts tab of an event without content on a capture-on run says the event recorded none", async () => {
+    mockCaptureEnabled = true;
+    render(<EventDetailDrawer event={postCallEvent} onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("detail-tab-prompts"));
+    expect(
+      await screen.findByTestId("prompts-no-content-for-event"),
+    ).toHaveTextContent("No content was recorded for this event.");
+    expect(screen.queryByText(/Prompt capture is not enabled/)).toBeNull();
+  });
+
+  it("prompts tab reads the run's stored posture: capture on with nothing stored is not 'capture off'", async () => {
+    mockSessionFields = { capture_prompts: true };
+    render(<EventDetailDrawer event={postCallEvent} onClose={() => {}} />);
+    fireEvent.click(screen.getByTestId("detail-tab-prompts"));
+    expect(await screen.findByTestId("prompts-no-content-for-event")).toBeInTheDocument();
+    expect(screen.queryByText(/Prompt capture is not enabled/)).toBeNull();
+  });
+
+  it("prompts tab of a Google ADK tool call on a capture-on run says where its content is", async () => {
+    mockCaptureEnabled = true;
+    mockSessionFields = {
+      client_type: "otlp",
+      framework: "google_adk",
+      context: { telemetry: "otlp", frameworks: ["google_adk/2.13.0"] },
+    };
+    render(
+      <EventDetailDrawer
+        event={{ ...postCallEvent, event_type: "tool_call", tool_name: "get_weather", model: null }}
+        onClose={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("detail-tab-prompts"));
+    expect(await screen.findByTestId("prompts-no-content-reason")).toHaveTextContent(
+      "Google ADK records a tool's arguments and result only inside the next model call's messages",
+    );
   });
 
   it("prompts tab fetches content when has_content", async () => {

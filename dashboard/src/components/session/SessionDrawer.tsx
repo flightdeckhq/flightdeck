@@ -10,10 +10,13 @@ import { SHUTDOWN_GRACE_PERIOD_MS, SUCCESS_MESSAGE_DISPLAY_MS } from "@/lib/cons
 import {
   CLIENT_TYPE_LABEL,
   ClientType,
+  frameworkVersion,
   isOtlpSession,
   OBSERVE_ONLY_NOTE,
   OTLP_SOURCE_DESCRIPTION,
   OTLP_SOURCE_LABEL,
+  otlpFrameworkName,
+  otlpFrameworkSourceDescription,
   TELEMETRY_OTLP,
 } from "@/lib/agent-identity";
 import { DirectiveCard } from "@/components/directives/DirectiveCard";
@@ -27,6 +30,7 @@ import {
 } from "@/components/ui/dialog";
 import { TokenUsageBar } from "./TokenUsageBar";
 import { PromptViewer } from "./PromptViewer";
+import { NoEventContent, NoRunContent } from "./NoEventContent";
 import { SignalPromptsPanel } from "./SignalContentViewer";
 import { SubAgentsTab } from "./SubAgentsTab";
 import { EnrichmentSummary } from "@/components/events/EnrichmentSummary";
@@ -117,8 +121,13 @@ function differsFrom(
   return change.state !== known.state || change.ended_at !== known.ended_at;
 }
 
-function formatDuration(startedAt: string): string {
-  const ms = Date.now() - new Date(startedAt).getTime();
+/** A run's duration: start to end for an ended run, start to now for
+ *  one still open. An ended run's length is fixed, so a run assembled
+ *  from OpenTelemetry GenAI spans, which reaches the dashboard already
+ *  closed, reads as its own length rather than its age. */
+function formatDuration(startedAt: string, endedAt: string | null): string {
+  const end = endedAt ? new Date(endedAt).getTime() : Date.now();
+  const ms = Math.max(0, end - new Date(startedAt).getTime());
   const totalSec = Math.floor(ms / 1000);
   if (totalSec < 60) return `${totalSec}s`;
   const m = Math.floor(totalSec / 60);
@@ -900,7 +909,33 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                   entirely when the session is lone (no parent, no
                   children) so direct-SDK root sessions don't gain
                   empty chrome. */}
+              {/* An agent framework's run reported over OpenTelemetry
+                  (Pydantic AI, Strands, OpenAI Agents, Google ADK):
+                  the framework and its version, how it reports, the
+                  trace the run came in, and whether the session holds
+                  the trace's calls that no named agent made. Same row
+                  treatment as the Claude Code badge above, without
+                  its exporter tooltip. */}
+              {!isClaudeCodeSession(data.session) && isOtlpSession(data.session) && (
+                <OtelSessionBadge
+                  session={data.session}
+                  relationship={
+                    <DrawerRelationshipPill
+                      parentSessionId={data.session.parent_session_id ?? null}
+                      parentAgentLabel={parentAgentLabel}
+                      childCount={childCount}
+                      onOpenParent={() => {
+                        const pid = data.session.parent_session_id;
+                        if (!pid) return;
+                        if (onSwitchSession) onSwitchSession(pid);
+                      }}
+                      onOpenSubAgents={() => setActiveTab("sub-agents")}
+                    />
+                  }
+                />
+              )}
               {!isClaudeCodeSession(data.session) &&
+                !isOtlpSession(data.session) &&
                 (data.session.parent_session_id || childCount > 0) && (
                   <div
                     data-testid="session-headline-relationship"
@@ -1030,6 +1065,7 @@ export function SessionDrawer({ sessionId, onClose, directEventDetail, onClearDi
                 )}
                 {activeTab === "prompts" && (
                   <PromptsTab
+                    session={data?.session ?? null}
                     events={displayEvents}
                     selectedEventId={selectedEventId}
                     focusedEventId={focusedPromptEventId}
@@ -1627,6 +1663,98 @@ interface MetadataCellProps {
  *     can inspect the children inline.
  *   * Lone (no parent, no children): renders nothing.
  */
+/** How many leading hex characters of a trace id the OTel header shows:
+ *  enough to tell runs apart at a glance, as the drawer's truncated
+ *  session ids are; the full id is in the tooltip. */
+const TRACE_ID_DISPLAY_CHARS = 8;
+
+/**
+ * The run drawer's header row for a session an agent framework
+ * reported over OpenTelemetry. Names the framework (from
+ * ``context.frameworks[0]``, e.g. ``pydantic_ai/2.64.0``, else the
+ * session's ``framework``), says it reports via OpenTelemetry and so
+ * observes only, shows the run's ``otel_trace_id`` (hand-off siblings
+ * share it) and marks the trace's unattributed session
+ * (``context.otel_unattributed``), which holds the calls no named
+ * agent made.
+ */
+function OtelSessionBadge({
+  session,
+  relationship,
+}: {
+  session: SessionType;
+  relationship: React.ReactNode;
+}) {
+  const ctx = session.context ?? {};
+  const frameworks = Array.isArray(ctx.frameworks) ? ctx.frameworks : [];
+  const entry = typeof frameworks[0] === "string" ? frameworks[0] : session.framework;
+  const name = otlpFrameworkName(entry);
+  const version = frameworkVersion(entry);
+  const traceId = typeof ctx.otel_trace_id === "string" ? ctx.otel_trace_id : null;
+  const unattributed = ctx.otel_unattributed === true;
+  return (
+    <div
+      data-testid="otel-session-badge"
+      className="flex flex-wrap items-center gap-2 px-4 py-2"
+      style={{
+        borderBottom: "1px solid var(--border-subtle)",
+        background: "var(--accent-glow)",
+      }}
+    >
+      <span
+        data-testid="otel-session-framework"
+        className="text-[13px] font-semibold"
+        style={{ color: "var(--text)" }}
+      >
+        {name ?? OTLP_SOURCE_LABEL}
+      </span>
+      {version && (
+        <span className="font-mono text-[11px]" style={{ color: "var(--text-muted)" }}>
+          v{version}
+        </span>
+      )}
+      <span
+        data-testid="session-source-label"
+        data-telemetry={TELEMETRY_OTLP}
+        className="text-[11px]"
+        style={{ color: "var(--text-muted)" }}
+        title={otlpFrameworkSourceDescription(entry)}
+      >
+        {`via ${OTLP_SOURCE_LABEL}`}
+        <span className="sr-only">{`: ${OBSERVE_ONLY_NOTE}`}</span>
+      </span>
+      {unattributed && (
+        <span
+          data-testid="otel-session-unattributed"
+          className="rounded-xs font-mono text-[10px] uppercase"
+          style={{
+            padding: "0 4px",
+            lineHeight: "14px",
+            color: "var(--text-muted)",
+            border: "1px solid var(--border)",
+            letterSpacing: "0.04em",
+          }}
+          title="Model calls and tools in this trace that no named agent ran"
+        >
+          unattributed
+        </span>
+      )}
+      {traceId && (
+        <span
+          data-testid="otel-session-trace-id"
+          className="font-mono text-[11px]"
+          style={{ color: "var(--text-muted)" }}
+          title={`OpenTelemetry trace ${traceId}`}
+        >
+          trace {traceId.slice(0, TRACE_ID_DISPLAY_CHARS)}
+          <span className="sr-only">{traceId.slice(TRACE_ID_DISPLAY_CHARS)}</span>
+        </span>
+      )}
+      {relationship}
+    </div>
+  );
+}
+
 function DrawerRelationshipPill({
   parentSessionId,
   parentAgentLabel,
@@ -1786,7 +1914,9 @@ function MetadataBar({ session }: { session: SessionType }) {
       </MetadataCell>
 
       <MetadataCell label="Duration">
-        {formatDuration(session.started_at)}
+        <span data-testid="metadata-duration">
+          {formatDuration(session.started_at, session.ended_at)}
+        </span>
       </MetadataCell>
 
       <MetadataCell label="Tokens">
@@ -2059,7 +2189,7 @@ function EventDetailView({ event: initialEvent, session, onBack }: { event: Agen
             ? <SignalPromptsPanel event={event} />
             : event.has_content
               ? <PromptViewer eventId={event.id} />
-              : <div className="px-4 py-6 text-[13px]" style={{ color: "var(--text-muted)" }}>Prompt capture is not enabled for this deployment.</div>
+              : <NoEventContent event={event} session={session} />
         )}
         {activeTab === "neighbors" && (
           <div className="p-3" style={{ background: "var(--bg)" }}>
@@ -2074,6 +2204,8 @@ function EventDetailView({ event: initialEvent, session, onBack }: { event: Agen
 /* ---- Prompts tab ---- */
 
 interface PromptsTabProps {
+  /** The run, whose capture posture picks the empty state. */
+  session: SessionType | null;
   events: AgentEvent[];
   selectedEventId: string | null;
   /**
@@ -2089,6 +2221,7 @@ interface PromptsTabProps {
 }
 
 function PromptsTab({
+  session,
   events,
   selectedEventId,
   focusedEventId,
@@ -2119,11 +2252,7 @@ function PromptsTab({
   }, [focusedEventId, selectedEventId]);
 
   if (contentEvents.length === 0) {
-    return (
-      <div className="px-4 py-8 text-center text-xs text-text-muted">
-        Prompt capture is not enabled for this deployment.
-      </div>
-    );
+    return <NoRunContent session={session} />;
   }
 
   if (selectedEventId) {

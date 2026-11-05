@@ -598,3 +598,18 @@ it once both are marked, and a third assembly re-parented the agent.
 the trace row (a second copy of what the mapping derives, kept in step on
 every assembly); a stateless rule ignoring unassembled ancestors (holds
 only until the ancestor is itself assembled).
+
+## D248 -- The session detail API carries the session's stored capture posture
+
+**Date:** 2026-11-05
+**Decision:** `GET /v1/sessions/:id` returns `capture_prompts`, the
+`sessions.capture_prompts` column as stored (`true`, `false`, or `null`
+before a `session_start` declared it). The Prompts tab keys its disabled
+state on it: off or null shows the capture-disabled message; on with no
+stored content says the run recorded none.
+**Why:** a capture-on OpenTelemetry GenAI run whose framework sent no
+content stores no `event_content` row, so a dashboard reading only
+whether content exists told the operator capture was off when it was on.
+**Rejected alternative:** inferring the posture from `capture_enabled`
+(whether any event stored content), which cannot tell capture-off from
+capture-on-but-empty.

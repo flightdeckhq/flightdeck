@@ -491,6 +491,167 @@ describe("SessionDrawer", () => {
     expect(source.getAttribute("data-telemetry")).toBe("otlp");
   });
 
+  // A session an agent framework reported over OpenTelemetry GenAI, as
+  // ingestion's assembler starts it (ARCHITECTURE.md > GenAI dialect).
+  const genaiSession = {
+    state: "closed",
+    client_type: "otlp",
+    framework: "pydantic_ai",
+    flavor: "weather-app",
+    agent_name: "weather-app/weather_agent",
+    context: {
+      telemetry: "otlp",
+      supports_directives: false,
+      frameworks: ["pydantic_ai/2.64.0"],
+      otel_trace_id: "259e4dd18702beed2616b80e5f1daa4c",
+      otel_span_id: "a6f808f769fddaca",
+      otel_scope: "pydantic-ai",
+      otel_assembly: "complete",
+    },
+  };
+
+  it("an agent framework's OTLP session gets the OpenTelemetry header, not the Claude Code one", () => {
+    mockSessionOverride = genaiSession;
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.queryByTestId("claude-code-badge")).toBeNull();
+    const badge = screen.getByTestId("otel-session-badge");
+    expect(screen.getByTestId("otel-session-framework")).toHaveTextContent("Pydantic AI");
+    expect(badge).toHaveTextContent("v2.64.0");
+    const source = screen.getByTestId("session-source-label");
+    expect(source).toHaveTextContent("via OpenTelemetry");
+    expect(source.getAttribute("data-telemetry")).toBe("otlp");
+    // Its own tooltip, not the Claude Code exporter's.
+    expect(source.getAttribute("title")).toBe(
+      "Reported by Pydantic AI's OpenTelemetry instrumentation: observe only, no directives reach it",
+    );
+    const trace = screen.getByTestId("otel-session-trace-id");
+    expect(trace).toHaveTextContent("trace 259e4dd1");
+    expect(trace.getAttribute("title")).toBe("OpenTelemetry trace 259e4dd18702beed2616b80e5f1daa4c");
+    expect(screen.queryByTestId("otel-session-unattributed")).toBeNull();
+    expect(screen.queryByTestId("session-drawer-stop-agent")).toBeNull();
+  });
+
+  it("marks a trace's unattributed session and keeps the relationship pill in the header", () => {
+    mockSessionOverride = {
+      ...genaiSession,
+      framework: "openai_agents",
+      parent_session_id: "parent-1",
+      context: {
+        ...genaiSession.context,
+        frameworks: ["openai_agents"],
+        otel_unattributed: true,
+      },
+    };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.getByTestId("otel-session-framework")).toHaveTextContent("OpenAI Agents");
+    expect(screen.getByTestId("otel-session-unattributed")).toHaveTextContent("unattributed");
+    const badge = screen.getByTestId("otel-session-badge");
+    expect(badge).toContainElement(screen.getByTestId("drawer-headline-relationship-pill"));
+    // The generic relationship row does not render a second pill.
+    expect(screen.queryByTestId("session-headline-relationship")).toBeNull();
+  });
+
+  it("an event without content in a capture-on run says it recorded none rather than that capture is off", () => {
+    mockSessionOverride = { ...genaiSession, capture_enabled: true };
+    const directEvent = { ...baseEvents[1], id: "e-call", has_content: false };
+    render(
+      <SessionDrawer
+        sessionId="s1"
+        onClose={() => {}}
+        directEventDetail={directEvent}
+        onClearDirectEvent={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("detail-tab-prompts"));
+    expect(screen.getByTestId("prompts-no-content-for-event")).toHaveTextContent(
+      "No content was recorded for this event.",
+    );
+    expect(screen.getByTestId("prompts-no-content-reason")).toHaveTextContent(
+      "A call that carries only its tool definitions stores none.",
+    );
+    expect(screen.queryByText(/Prompt capture is not enabled/)).toBeNull();
+  });
+
+  it("a capture-on run that stored no content says the run recorded none, and why", () => {
+    // E5-style: the framework's own content switch was off, so no
+    // event has content (capture_enabled false) though the run's
+    // stored posture is on.
+    mockSessionOverride = { ...genaiSession, capture_prompts: true, capture_enabled: false };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByText("Prompts"));
+    expect(screen.getByTestId("prompts-no-content-for-run")).toHaveTextContent(
+      "No content was recorded for this run.",
+    );
+    expect(screen.getByTestId("prompts-no-content-reason")).toHaveTextContent(
+      "the framework sent no content for any call",
+    );
+    expect(screen.queryByText(/Prompt capture is not enabled/)).toBeNull();
+  });
+
+  it("a capture-off run that stored no content keeps the disabled state", () => {
+    mockSessionOverride = { ...genaiSession, capture_prompts: false, capture_enabled: false };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByText("Prompts"));
+    expect(screen.getByTestId("prompts-capture-disabled")).toHaveTextContent(
+      "Prompt capture is not enabled for this deployment.",
+    );
+    expect(screen.queryByTestId("prompts-no-content-for-run")).toBeNull();
+  });
+
+  it("a capture-on sensor run with no content says so without a framework reason", () => {
+    mockSessionOverride = { capture_prompts: true, capture_enabled: false };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByText("Prompts"));
+    expect(screen.getByTestId("prompts-no-content-for-run")).toHaveTextContent(
+      "No content was recorded for this run.",
+    );
+    expect(screen.queryByTestId("prompts-no-content-reason")).toBeNull();
+  });
+
+  it("an event of a capture-on run with no content anywhere says the event recorded none", () => {
+    mockSessionOverride = { ...genaiSession, capture_prompts: true, capture_enabled: false };
+    const directEvent = { ...baseEvents[1], id: "e-call", has_content: false };
+    render(
+      <SessionDrawer
+        sessionId="s1"
+        onClose={() => {}}
+        directEventDetail={directEvent}
+        onClearDirectEvent={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("detail-tab-prompts"));
+    expect(screen.getByTestId("prompts-no-content-for-event")).toHaveTextContent(
+      "No content was recorded for this event.",
+    );
+  });
+
+  it("an ended run's duration is start to end, not its age", () => {
+    mockSessionOverride = {
+      ...genaiSession,
+      started_at: "2026-04-07T10:00:00Z",
+      ended_at: "2026-04-07T10:00:42Z",
+    };
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    expect(screen.getByTestId("metadata-duration")).toHaveTextContent("42s");
+  });
+
+  it("an event without content in a capture-off run keeps the disabled state", () => {
+    mockSessionOverride = { ...genaiSession, capture_prompts: false, capture_enabled: false };
+    const directEvent = { ...baseEvents[1], id: "e-call", has_content: false };
+    render(
+      <SessionDrawer
+        sessionId="s1"
+        onClose={() => {}}
+        directEventDetail={directEvent}
+        onClearDirectEvent={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByTestId("detail-tab-prompts"));
+    expect(screen.getByTestId("prompts-capture-disabled")).toHaveTextContent(
+      "Prompt capture is not enabled for this deployment.",
+    );
+  });
+
   it("a plugin session's header names Claude Code via plugin", () => {
     mockSessionOverride = {
       client_type: "claude_code",

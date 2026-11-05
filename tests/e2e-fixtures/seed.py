@@ -1614,7 +1614,7 @@ def _refresh_fanout(
 # psql call so they share one NOW(). The worst drift a spec sees is one keep-alive cycle (a seed pass
 # plus 30 s) plus the spec's own runtime; every offset leaves that much
 # room inside the time range its spec reads it at.
-_LANE_STATES = frozenset({"active", "closed", "lost"})
+_LANE_STATES = frozenset({"active", "stale", "closed", "lost"})
 
 # How long ago the lane agents were last seen, as the pin sets it. Past
 # the Fleet's 15 s LIVE bucket and well inside its 5 min RECENT bucket
@@ -1656,8 +1656,8 @@ def _lane_spec(label: str, role_cfg: dict[str, Any]) -> dict[str, Any]:
         if end is not None and end < start:
             raise ValueError(f"{label}: segment {i} ends before it starts")
     last_seen = role_cfg.get("lane_last_seen_offset_sec")
-    if state == "lost" and last_seen is None:
-        raise ValueError(f"{label}: a lost run needs lane_last_seen_offset_sec")
+    if state in ("lost", "stale") and last_seen is None:
+        raise ValueError(f"{label}: a {state} run needs lane_last_seen_offset_sec")
     if state == "closed" and last_seen is None:
         last_seen = segments[-1][1]
     return {
@@ -1842,8 +1842,14 @@ def _pin_lane_fixtures(
                 )
             if spec["state"] == "active":
                 row = "state='active', ended_at=NULL, last_seen_at=NOW()"
-            elif spec["state"] == "lost":
-                row = f"state='lost', ended_at=NULL, last_seen_at={_interval(spec['last_seen'])}"
+            elif spec["state"] in ("lost", "stale"):
+                # A stale run is open and quiet since its last signal; the
+                # reconciler leaves it stale until the lost threshold, and
+                # the pin re-dates it every cycle long before that.
+                row = (
+                    f"state='{spec['state']}', ended_at=NULL, "
+                    f"last_seen_at={_interval(spec['last_seen'])}"
+                )
             else:
                 row = (
                     f"state='closed', ended_at={_interval(last_end)}, "

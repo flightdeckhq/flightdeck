@@ -2,13 +2,14 @@ import { memo, useCallback, useState } from "react";
 import { createPortal } from "react-dom";
 import type { Session } from "@/lib/types";
 import {
-	END_GLYPH_SIZE_PX,
-	START_GLYPH_SIZE_PX,
+	laneCentrePct,
 	type RowGlyph,
+	type RowLine,
+	type RunSegment,
 } from "@/lib/swimlane-lanes";
 
 // RunBracket draws one run glyph that SwimLane placed with
-// ``layoutRowGlyphs`` (lib/swimlane-lanes.ts):
+// ``layoutRowLanes`` (lib/swimlane-lanes.ts):
 //
 //   * ``"start"``: a filled triangle (▶) whose flat base sits just
 //     inside a segment's start, pointing into the segment.
@@ -18,9 +19,13 @@ import {
 //     reaper closed, ends at its last signal). An open segment has no
 //     end glyph, so a missing square reads as "still running".
 //
-// The glyph sits on the row's top or bottom edge, at the left edge the
-// layout packed it to. Hover or focus shows the run's tooltip; a click
-// hands the run's id to ``onClick``.
+// On a one-line row the glyph sits on the row's top edge; on a row
+// split into run lanes it sits on its lane's centre. Either way it sits
+// at the left edge the layout packed it to, at the size the row's lane
+// count gives it. Hover or focus shows the run's tooltip; a click hands
+// the run's id to ``onClick``.
+//
+// ``RunLine`` draws a segment's line along its lane on a split row.
 
 interface RunBracketProps {
 	glyph: RowGlyph;
@@ -29,13 +34,28 @@ interface RunBracketProps {
 	onClick: (sessionId: string) => void;
 }
 
-// Vertical inset from the row edge so the glyph clears the row
-// border. Same value start + end so the pair sits on a shared
-// baseline.
+// Vertical inset from the row's top edge, where a one-line row's glyphs
+// sit, so the glyph clears the row border. Same value start + end so
+// the pair sits on a shared baseline.
 const VERTICAL_MARGIN = 2;
 // A lost segment's hollow square: the stroke width, and the inset that
 // keeps the whole stroke inside the glyph's box.
 const LOST_STROKE_PX = 1.5;
+// A run line's drawn thickness: thin enough to read as a thread joining
+// the run's circles rather than a bar competing with them.
+const RUN_LINE_PX = 2;
+// The run line's resting opacity, rising to 1 while its run is hovered
+// or focused: present enough to follow along a lane, quiet enough that
+// the circles on it stay the focus.
+const RUN_LINE_REST_OPACITY = 0.6;
+// The run line's pointer band: tall enough to hit a 2 px line, and
+// inside the 11.75 px lane of a four-lane row so it never reaches a
+// neighbouring lane's line.
+const RUN_LINE_HIT_PX = 8;
+// A quiet tail's dash and gap: long enough to read as dashed at the
+// 2 px thickness, short enough that a tail a few seconds wide still
+// shows a gap.
+const QUIET_DASH_PX = 4;
 // Horizontal gap between the glyph and its hover tooltip.
 const TOOLTIP_OFFSET = 4;
 // Hover tooltip layout. Kept inline (the tooltip lives only on
@@ -73,42 +93,94 @@ function formatRunTime(ms: number): string {
 }
 
 /** The tooltip's end line for a segment. */
-function endLabel(glyph: RowGlyph): string {
-	const { segment } = glyph;
-	if (segment.endKind === "open") return "running";
+function endLabel(segment: RunSegment): string {
+	if (segment.endKind === "open") {
+		return segment.quietSinceMs !== undefined
+			? `running · quiet since ${formatRunTime(segment.quietSinceMs)}`
+			: "running";
+	}
 	if (segment.endKind === "lost") return `lost · last seen ${formatRunTime(segment.endMs)}`;
 	return formatRunTime(segment.endMs);
 }
 
-/** The glyph's accessible name: the run, the glyph and its time. */
-function ariaLabel(glyph: RowGlyph, idPrefix: string): string {
-	const { segment } = glyph;
-	const part = segment.count > 1 ? `, segment ${segment.index + 1} of ${segment.count}` : "";
-	if (glyph.kind === "start") {
-		return `Open run ${idPrefix}${part}, start ${formatRunTime(segment.startMs)}`;
-	}
-	if (segment.endKind === "lost") {
-		return `Open run ${idPrefix}${part}, lost, last seen ${formatRunTime(segment.endMs)}`;
-	}
-	return `Open run ${idPrefix}${part}, end ${formatRunTime(segment.endMs)}`;
+/** Where a mark sits. */
+interface MarkLane {
+	lane: number;
+	laneCount: number;
+	sharedBy: number;
 }
 
-function RunBracketComponent({ glyph, session, onClick }: RunBracketProps) {
-	const { segment, kind } = glyph;
-	const sessionId = segment.sessionId;
-	const idPrefix = sessionId.slice(0, 8);
+/** Where a mark sits on a split row (``lane 2 of 3``, and in the
+ *  overflow lane how many runs share it), joined by ``joiner``; null on
+ *  a one-line row. */
+function laneLabel(mark: MarkLane, joiner: string): string | null {
+	if (mark.laneCount <= 1) return null;
+	const lane = `lane ${mark.lane + 1} of ${mark.laneCount}`;
+	return mark.sharedBy > 1 ? `${lane}${joiner}shared by ${mark.sharedBy} runs` : lane;
+}
+
+/** The run's tooltip, shared by its glyphs and its line. */
+function tooltipText(segment: RunSegment, session: Session, mark: MarkLane): string {
+	const lines = [
+		`run ${segment.sessionId.slice(0, 8)}`,
+		`start: ${formatRunTime(segment.startMs)}`,
+		`end:   ${endLabel(segment)}`,
+		`state: ${session.state}`,
+		`tokens: ${(session.tokens_used ?? 0).toLocaleString()}`,
+	];
+	if (segment.count > 1) lines.push(`segment ${segment.index + 1} of ${segment.count}`);
+	const lane = laneLabel(mark, " · ");
+	if (lane) lines.push(lane);
+	return lines.join("\n");
+}
+
+/** The opening of a mark's accessible name: the run, its segment on a
+ *  resumed run, and its lane on a split row. */
+function runLabel(segment: RunSegment, mark: MarkLane): string {
+	const part = segment.count > 1 ? `, segment ${segment.index + 1} of ${segment.count}` : "";
+	const lane = laneLabel(mark, ", ");
+	return `Open run ${segment.sessionId.slice(0, 8)}${part}${lane ? `, ${lane}` : ""}`;
+}
+
+/** The glyph's accessible name: the run, the glyph, its time and, on
+ *  a split row, its lane. */
+function ariaLabel(glyph: RowGlyph): string {
+	const { segment } = glyph;
+	const run = runLabel(segment, glyph);
+	if (glyph.kind === "start") return `${run}, start ${formatRunTime(segment.startMs)}`;
+	if (segment.endKind === "lost") {
+		return `${run}, lost, last seen ${formatRunTime(segment.endMs)}`;
+	}
+	return `${run}, end ${formatRunTime(segment.endMs)}`;
+}
+
+/** The top of a mark ``size`` px tall: the row's top edge on a
+ *  one-line row, else centred on its lane. */
+function markTop(lane: number, laneCount: number, size: number): string | number {
+	if (laneCount <= 1) return VERTICAL_MARGIN;
+	return `calc(${laneCentrePct(lane, laneCount)}% - ${size / 2}px)`;
+}
+
+/**
+ * Hover and focus open the tooltip. It is anchored to the button's
+ * viewport rect so ``position: fixed`` takes it out of the
+ * timeline-panel's ``overflow: hidden`` clip — the tooltip is taller
+ * than the 48-px row, so an absolutely-positioned child of the panel
+ * gets clipped at the top or the bottom whatever its lane. The
+ * fixed-coordinate approach mirrors how ``EventNode`` positions its own
+ * tooltip and is the only way to render off-clip.
+ *
+ * The coordinates are snapshotted at hover time and are NOT refreshed
+ * if the user scrolls or resizes the window while hovering. The
+ * pointer must stay on the button to keep the tooltip visible, so any
+ * active scroll already moves the operator off-button and
+ * ``onMouseLeave`` fires. ``EventNode`` has the same no-listener
+ * behaviour for the same reason.
+ */
+function useMarkTooltip() {
 	const [tooltipPos, setTooltipPos] = useState<{ left: number; top: number } | null>(null);
-	const onMarkClick = useCallback(() => onClick(sessionId), [onClick, sessionId]);
 	const onHoverEnter = useCallback(
 		(e: React.MouseEvent<HTMLButtonElement> | React.FocusEvent<HTMLButtonElement>) => {
-			// Anchor the tooltip to the button's viewport rect so
-			// ``position: fixed`` takes it out of the timeline-panel's
-			// ``overflow: hidden`` clip — the tooltip is taller than the
-			// 48-px row, so an absolutely-positioned child of the panel
-			// gets clipped at the top or the bottom whatever its edge.
-			// The fixed-coordinate approach mirrors how ``EventNode``
-			// positions its own tooltip and is the only way to render
-			// off-clip.
 			const rect = e.currentTarget.getBoundingClientRect();
 			setTooltipPos({
 				left: rect.right + TOOLTIP_OFFSET,
@@ -118,25 +190,18 @@ function RunBracketComponent({ glyph, session, onClick }: RunBracketProps) {
 		[],
 	);
 	const onHoverLeave = useCallback(() => setTooltipPos(null), []);
-	// Note: the tooltip's left/top coordinates are snapshotted from
-	// the button's viewport rect at hover time and are NOT refreshed
-	// if the user scrolls or resizes the window while hovering. The
-	// pointer must stay on the button to keep the tooltip visible,
-	// so any active scroll already moves the operator off-button
-	// and ``onMouseLeave`` fires. ``EventNode`` has the same
-	// no-listener behaviour for the same reason.
+	return { tooltipPos, onHoverEnter, onHoverLeave };
+}
 
-	const size = kind === "start" ? START_GLYPH_SIZE_PX : END_GLYPH_SIZE_PX;
+function RunBracketComponent({ glyph, session, onClick }: RunBracketProps) {
+	const { segment, kind } = glyph;
+	const sessionId = segment.sessionId;
+	const idPrefix = sessionId.slice(0, 8);
+	const onMarkClick = useCallback(() => onClick(sessionId), [onClick, sessionId]);
+	const { tooltipPos, onHoverEnter, onHoverLeave } = useMarkTooltip();
+
+	const size = glyph.width;
 	const lost = kind === "end" && segment.endKind === "lost";
-	const tokens = session.tokens_used ?? 0;
-	const lines = [
-		`run ${idPrefix}`,
-		`start: ${formatRunTime(segment.startMs)}`,
-		`end:   ${endLabel(glyph)}`,
-		`state: ${session.state}`,
-		`tokens: ${tokens.toLocaleString()}`,
-	];
-	if (segment.count > 1) lines.push(`segment ${segment.index + 1} of ${segment.count}`);
 
 	return (
 		<>
@@ -151,7 +216,7 @@ function RunBracketComponent({ glyph, session, onClick }: RunBracketProps) {
 				data-run-lane={glyph.lane}
 				data-segment-index={segment.index}
 				data-end-kind={kind === "end" ? segment.endKind : undefined}
-				aria-label={ariaLabel(glyph, idPrefix)}
+				aria-label={ariaLabel(glyph)}
 				onClick={onMarkClick}
 				onMouseEnter={onHoverEnter}
 				onMouseLeave={onHoverLeave}
@@ -161,8 +226,7 @@ function RunBracketComponent({ glyph, session, onClick }: RunBracketProps) {
 				style={{
 					position: "absolute",
 					left: glyph.left,
-					top: glyph.lane === 0 ? VERTICAL_MARGIN : undefined,
-					bottom: glyph.lane === 1 ? VERTICAL_MARGIN : undefined,
+					top: markTop(glyph.lane, glyph.laneCount, size),
 					width: size,
 					height: size,
 					padding: 0,
@@ -203,8 +267,8 @@ function RunBracketComponent({ glyph, session, onClick }: RunBracketProps) {
 			</button>
 			{tooltipPos && (
 				<RunBracketTooltipPortal
-					sessionId={sessionId}
-					tooltip={lines.join("\n")}
+					testId={`swimlane-run-bracket-tooltip-${idPrefix}`}
+					tooltip={tooltipText(segment, session, glyph)}
 					tooltipPos={tooltipPos}
 				/>
 			)}
@@ -213,11 +277,11 @@ function RunBracketComponent({ glyph, session, onClick }: RunBracketProps) {
 }
 
 function RunBracketTooltipPortal({
-	sessionId,
+	testId,
 	tooltip,
 	tooltipPos,
 }: {
-	sessionId: string;
+	testId: string;
 	tooltip: string;
 	tooltipPos: { left: number; top: number };
 }) {
@@ -231,7 +295,7 @@ function RunBracketTooltipPortal({
 	return createPortal(
 		<span
 			role="tooltip"
-			data-testid={`swimlane-run-bracket-tooltip-${sessionId.slice(0, 8)}`}
+			data-testid={testId}
 			style={{
 				position: "fixed",
 				left: tooltipPos.left,
@@ -257,3 +321,120 @@ function RunBracketTooltipPortal({
 }
 
 export const RunBracket = memo(RunBracketComponent);
+
+interface RunLineProps {
+	line: RowLine;
+	/** The run the line joins: its state and tokens fill the tooltip. */
+	session: Session;
+	/** A mark of the line's run is hovered or focused on the row. */
+	highlighted: boolean;
+	onClick: (sessionId: string) => void;
+}
+
+/** A line's accessible end: how its segment ends. */
+function lineEnd(segment: RunSegment): string {
+	if (segment.endKind === "open") {
+		return segment.quietSinceMs !== undefined
+			? `running, quiet since ${formatRunTime(segment.quietSinceMs)}`
+			: "running";
+	}
+	if (segment.endKind === "lost") return `lost, last seen ${formatRunTime(segment.endMs)}`;
+	return `end ${formatRunTime(segment.endMs)}`;
+}
+
+/**
+ * One segment's line along its lane on a split row: solid
+ * ``var(--accent)``, dashed from where a stale run went quiet. It is a
+ * button under the circles and glyphs that opens the run like a glyph.
+ * It takes keyboard focus only when neither of the segment's glyphs is
+ * in view, so the segment keeps one tab stop. In the overflow lane the
+ * lines overlap, so they take no pointer input there.
+ */
+function RunLineComponent({ line, session, highlighted, onClick }: RunLineProps) {
+	const { segment } = line;
+	const sessionId = segment.sessionId;
+	const idPrefix = sessionId.slice(0, 8);
+	const onLineClick = useCallback(() => onClick(sessionId), [onClick, sessionId]);
+	const { tooltipPos, onHoverEnter, onHoverLeave } = useMarkTooltip();
+	const width = line.x2 - line.x1;
+	const solidWidth = line.quietX === null ? width : line.quietX - line.x1;
+	const shared = line.sharedBy > 1;
+	const lit = highlighted || tooltipPos !== null;
+	const bar: React.CSSProperties = {
+		position: "absolute",
+		top: "50%",
+		height: RUN_LINE_PX,
+		transform: "translateY(-50%)",
+		pointerEvents: "none",
+	};
+	return (
+		<>
+			<button
+				type="button"
+				data-testid={`swimlane-run-line-${idPrefix}`}
+				// Timeline's delegated hover handler reads the run to light
+				// its sub-agent connectors, as for a glyph.
+				data-session-id={sessionId}
+				data-run-lane={line.lane}
+				data-segment-index={segment.index}
+				data-tail={line.quietX === null ? "live" : "quiet"}
+				data-shared={shared ? "true" : undefined}
+				data-highlighted={lit ? "true" : "false"}
+				tabIndex={line.focusable ? 0 : -1}
+				aria-label={`${runLabel(segment, line)}, ${lineEnd(segment)}`}
+				onClick={onLineClick}
+				onMouseEnter={onHoverEnter}
+				onMouseLeave={onHoverLeave}
+				onFocus={onHoverEnter}
+				onBlur={onHoverLeave}
+				className="focus-visible:outline-solid focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-(--accent)"
+				style={{
+					position: "absolute",
+					left: line.x1,
+					width,
+					top: markTop(line.lane, line.laneCount, RUN_LINE_HIT_PX),
+					height: RUN_LINE_HIT_PX,
+					padding: 0,
+					background: "transparent",
+					border: "none",
+					cursor: "pointer",
+					// Under the circles and glyphs (zIndex 2), so every mark
+					// on the lane stays the pointer's target.
+					zIndex: 1,
+					pointerEvents: shared ? "none" : "auto",
+					opacity: lit ? 1 : RUN_LINE_REST_OPACITY,
+					transition: "opacity 120ms ease",
+				}}
+			>
+				{solidWidth > 0 && (
+					<span
+						aria-hidden="true"
+						data-testid="swimlane-run-line-solid"
+						style={{ ...bar, left: 0, width: solidWidth, background: "var(--accent)" }}
+					/>
+				)}
+				{width - solidWidth > 0 && (
+					<span
+						aria-hidden="true"
+						data-testid="swimlane-run-line-quiet-tail"
+						style={{
+							...bar,
+							left: solidWidth,
+							width: width - solidWidth,
+							background: `repeating-linear-gradient(90deg, var(--accent) 0 ${QUIET_DASH_PX}px, transparent ${QUIET_DASH_PX}px ${2 * QUIET_DASH_PX}px)`,
+						}}
+					/>
+				)}
+			</button>
+			{tooltipPos && (
+				<RunBracketTooltipPortal
+					testId={`swimlane-run-line-tooltip-${idPrefix}`}
+					tooltip={tooltipText(segment, session, line)}
+					tooltipPos={tooltipPos}
+				/>
+			)}
+		</>
+	);
+}
+
+export const RunLine = memo(RunLineComponent);

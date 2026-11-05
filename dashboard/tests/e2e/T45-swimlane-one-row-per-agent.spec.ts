@@ -10,7 +10,11 @@
  * row.
  */
 import { test, expect } from "@playwright/test";
-import { waitForFleetReady } from "./_fixtures";
+import {
+	FANOUT_FIXTURE,
+	bringSwimlaneRowIntoView,
+	waitForFleetReady,
+} from "./_fixtures";
 
 test.describe("T45 — Swimlane one row per agent", () => {
 	test("no swimlane-expanded-body container exists on any row", async ({
@@ -44,5 +48,23 @@ test.describe("T45 — Swimlane one row per agent", () => {
 		await waitForFleetReady(page);
 		const rows = page.locator('[data-testid^="swimlane-agent-row-"]');
 		await expect(rows).not.toHaveCount(0);
+	});
+
+	test("an agent whose runs overlap stays one 48 px row with one name", async ({
+		page,
+	}) => {
+		// The fan-out worker's three runs overlap, so its row splits
+		// into run lanes inside the row, never into rows of their own.
+		await page.setViewportSize({ width: 1700, height: 1800 });
+		await page.goto("/");
+		await waitForFleetReady(page);
+		await page.getByRole("button", { name: "5m", exact: true }).click();
+		const row = await bringSwimlaneRowIntoView(page, FANOUT_FIXTURE.workerName);
+		await expect(row).toHaveAttribute("data-lane-count", "3", { timeout: 10_000 });
+		await expect(
+			page.locator(`[data-testid="swimlane-agent-row-${FANOUT_FIXTURE.workerName}"]`),
+		).toHaveCount(1);
+		await expect(row.getByTestId("swimlane-agent-name-link")).toHaveCount(1);
+		expect((await row.boundingBox())!.height).toBeCloseTo(48, 0);
 	});
 });

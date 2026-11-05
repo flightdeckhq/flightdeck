@@ -67,7 +67,7 @@ the swimlane↔table parity assertion). The current journeys:
 | `T133-sub-agent-connector-ends-on-the-circles-it-joins.spec.ts` | Every connector starts on its parent circle's rim and ends on its child circle's centre |
 | `T134-hovering-a-run-lights-its-connectors.spec.ts` | Hovering a run's mark (or keyboard-focusing its glyph) lights exactly that run's connectors: a parent its fan-out, a child its own link |
 | `T135-child-row-label-hides-scrolled-circles.spec.ts` | With circles scrolled under a child row's sticky label, in Fleet and in the per-agent modal, the label's background is fully opaque |
-| `T136-freed-top-lane-is-reused.spec.ts` | A run that starts after an earlier run ended takes the top edge that run freed; the run still overlapping goes to the bottom edge |
+| `T136-freed-top-lane-is-reused.spec.ts` | A run that starts after an earlier run ended takes the top lane that run freed; the run still overlapping takes the second lane |
 | `T137-runs-started-together-keep-reachable-glyphs.spec.ts` | Three runs started together keep disjoint start glyphs; each hit-tests to itself and opens its own run's tooltip |
 | `T138-back-to-back-runs-keep-both-glyphs.spec.ts` | At 5m a hand-off (with 3 ms of worker-clock overlap) stays one lane and reads ■▶, both glyphs reachable |
 | `T139-closed-run-shows-its-end-with-the-start-off-screen.spec.ts` | At 5m, 15m and 1h a closed run whose start is before the window shows its end square, with a time in its tooltip |
@@ -77,6 +77,12 @@ the swimlane↔table parity assertion). The current journeys:
 | `T143-reaped-run-older-than-the-sessions-page-ends-at-its-last-signal.spec.ts` | A reaped run older than the 24 h sessions page, with its events kept from the page, ends at its last signal with a hollow square, from the rollup's `close_reasons` |
 | `T144-fleet-range-switch-keeps-cached-circles.spec.ts` | Widening the Fleet range and switching back keeps a run's newest circle even when the new window's pages lack it; the wider window loads newest first with the keyset cursor (its `limit` rewritten to 50 to force paging) |
 | `T145-per-agent-modal-run-glyph-opens-the-run-drawer.spec.ts` | A start triangle in the per-agent swimlane modal opens the run drawer on its run inside the modal; Esc closes the drawer, then the modal |
+| `T153-overlapping-runs-split-the-row-into-lanes.spec.ts` | The fan-out worker's three overlapping runs split its one 48 px row into three lanes: each run's circles, start glyph and solid line share its lane's centre, and its earlier lost run takes no lane |
+| `T154-row-without-overlap-keeps-one-line.spec.ts` | A single-run row and a hand-off row stay one line: no run lines, 22 px circles on the row's centre line |
+| `T155-runs-past-four-share-the-overflow-lane.spec.ts` | Five runs started together draw four lanes with `data-lane-overflow`; the last two share the fourth, every start glyph hit-tests to itself and the shared ones say `shared by 2 runs` |
+| `T156-sub-agent-connector-ends-on-the-child-run-lane.spec.ts` | Each coordinator-to-worker connector ends on its run's circle, one end per lane at distinct heights |
+| `T157-quiet-run-line-turns-dashed.spec.ts` | A stale run's line is solid to its last signal and dashed after it (`data-tail="quiet"`); the active run's line stays solid |
+| `T158-run-line-opens-its-run-when-no-glyph-is-in-view.spec.ts` | With neither run's glyphs in view, each run line takes keyboard focus and Enter opens its run drawer; with the glyphs in view the lines leave the tab order |
 | `T150-agent-tokens-count-failed-streams.spec.ts` | The Agents row's token total counts a failed stream's billed tokens and an embeddings call after a load, and adds a failed stream posted while the page is open without a reload |
 
 The `_fixtures.ts` helper exports shared fixture metadata (agent
@@ -216,10 +222,11 @@ convention: `fleet-*`, `swimlane-*`, `session-*`, `context-*`,
 Structural testids the suite relies on:
 
 - `swimlane-agent-row-<agent_name>` + `data-agent-id` + `data-topology` (SwimLane row root)
-- `swimlane-run-bracket-start-<sid_prefix>` + `swimlane-run-bracket-end-<sid_prefix>` (RunBracket; a resumed run has one per segment), with `data-session-id`, `data-run-lane` (`0` top edge, `1` bottom edge), `data-segment-index` and, on an end, `data-end-kind` (`closed` or `lost`); the row carries `data-lane-count`
+- `swimlane-run-bracket-start-<sid_prefix>` + `swimlane-run-bracket-end-<sid_prefix>` (RunBracket; a resumed run has one per segment), with `data-session-id`, `data-run-lane` (`0` is the top lane), `data-segment-index` and, on an end, `data-end-kind` (`closed` or `lost`); the row carries `data-lane-count` (1 to 4) and, with more runs overlapping than lanes, `data-lane-overflow="true"`
+- `swimlane-run-line-<sid_prefix>` (RunLine, one per segment on a split row), with `data-session-id`, `data-run-lane`, `data-segment-index`, `data-tail` (`live` or `quiet`), `data-shared` in the overflow lane and `data-highlighted`; its parts are `swimlane-run-line-solid` and `swimlane-run-line-quiet-tail`, and its tooltip `swimlane-run-line-tooltip-<sid_prefix>`
 - `swimlane-agent-status-badge` + `data-state` (AgentStatusBadge)
 - `swimlane-sub-agent-lost-dot` (lost sub-agent cue inside the row strip)
-- `session-circle-<session_id>` (EventNode circles)
+- `session-circle-<session_id>` (EventNode circles), with `data-event-id`, `data-session-id` and, on an agent row, `data-run-lane`
 - `session-drawer` (SessionDrawer root)
 - `active-filter-pill` + `active-filter-remove` (Events page facet chip)
 - `virtualized-placeholder` (off-screen SwimLane placeholder)

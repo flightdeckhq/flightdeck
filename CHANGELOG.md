@@ -142,7 +142,8 @@ All notable changes to Flightdeck are documented here.
   minutes before it cut off), every circle
   sits on its time's grid line rather than 19 px to its right, and the
   ▶ of a run that has just started sits at its start. The now line
-  moves 19 px left and the axis is about 4% narrower.
+  moves 19 px left and the axis is about 4% narrower
+  ([#257](https://github.com/flightdeckhq/flightdeck/pull/257)).
 - **A U+0000 in an event no longer fails it.** Postgres cannot store
   U+0000 (sent as `\u0000` in JSON) or an unpaired UTF-16
   surrogate escape, so one in an event's fields (a name, a sub-agent

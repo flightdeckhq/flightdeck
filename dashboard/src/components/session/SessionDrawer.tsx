@@ -2203,6 +2203,14 @@ function EventDetailView({ event: initialEvent, session, onBack }: { event: Agen
 
 /* ---- Prompts tab ---- */
 
+/** The event types whose stored content the run's Prompts tab lists. */
+const PROMPTS_TAB_EVENT_TYPES: ReadonlySet<string> = new Set([
+  "post_call",
+  "tool_call",
+  "mcp_tool_call",
+  "mcp_prompt_get",
+]);
+
 interface PromptsTabProps {
   /** The run, whose capture posture picks the empty state. */
   session: SessionType | null;
@@ -2227,14 +2235,15 @@ function PromptsTab({
   focusedEventId,
   onSelectEvent,
 }: PromptsTabProps) {
-  // post_call carries prompt+response for an LLM turn; tool_call now
-  // also carries content when the plugin has captureToolInputs on
-  // (tools[] = sanitised tool input, response[] = tool_result when
-  // capturePrompts is also on). Both belong in the Prompts tab.
+  // post_call carries prompt+response for an LLM turn; tool_call
+  // carries content when its arguments were captured: the sensor's
+  // in tool_input, the Claude Code plugin's hook as tools[] (the
+  // sanitised tool input) and response[] (the tool_result, when
+  // capturePrompts is also on). An MCP tool call or prompt fetch keeps
+  // its arguments and result in tool_input / tool_output. All of them
+  // belong in the Prompts tab.
   const contentEvents = events.filter(
-    (e) =>
-      e.has_content &&
-      (e.event_type === "post_call" || e.event_type === "tool_call"),
+    (e) => e.has_content && PROMPTS_TAB_EVENT_TYPES.has(e.event_type),
   );
   const rowRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
@@ -2298,7 +2307,7 @@ function PromptsTab({
               {badge.label}
             </span>
             <span className="font-mono" style={{ color: "var(--text-muted)" }}>{new Date(event.occurred_at).toLocaleTimeString()}</span>
-            <span style={{ color: "var(--text)" }}>{event.model}</span>
+            <span style={{ color: "var(--text)" }}>{event.model || event.tool_name}</span>
           </button>
         );
       })}

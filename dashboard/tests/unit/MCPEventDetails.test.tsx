@@ -4,7 +4,7 @@ import {
   MCPEventDetails,
   isMCPEvent,
 } from "@/components/session/MCPEventDetails";
-import type { AgentEvent, EventContent } from "@/lib/types";
+import type { AgentEvent, EventContent, Session, SessionDetail } from "@/lib/types";
 import * as api from "@/lib/api";
 
 // MCPEventDetails component contract. Mirrors the frozen
@@ -142,9 +142,50 @@ describe("MCPEventDetails — capture ON", () => {
   });
 });
 
+/** A run's detail as GET /v1/sessions/:id serves it, with its capture posture. */
+function runDetail(
+  sessionId: string,
+  capturePrompts: boolean | null,
+  captureEnabled = false,
+): SessionDetail {
+  return {
+    session: {
+      session_id: sessionId,
+      capture_prompts: capturePrompts,
+      capture_enabled: captureEnabled,
+    } as Session,
+    events: [],
+  };
+}
+
+/** The content endpoint's body for an MCP call stored with capture on. */
+function storedContent(overrides: Partial<EventContent>): EventContent {
+  return {
+    event_id: "mcp-evt-1",
+    session_id: "00000000-0000-0000-0000-000000000001",
+    provider: "mcp",
+    model: "filesystem",
+    system_prompt: null,
+    messages: [],
+    tools: null,
+    response: {},
+    captured_at: "2026-11-05T00:00:00Z",
+    ...overrides,
+  };
+}
+
 describe("MCPEventDetails — capture OFF", () => {
-  it("mcp_tool_call expanded shows the capture-disabled notice", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("mcp_tool_call expanded shows the capture-disabled notice", async () => {
+    const sessionId = "00000000-0000-0000-0000-0000000000f1";
+    const sessionSpy = vi
+      .spyOn(api, "fetchSession")
+      .mockResolvedValue(runDetail(sessionId, false));
     const event = makeMCPEvent({
+      session_id: sessionId,
       event_type: "mcp_tool_call",
       tool_name: "echo",
       payload: {
@@ -154,14 +195,190 @@ describe("MCPEventDetails — capture OFF", () => {
         // No arguments, no result -- capture_prompts=false on the wire.
       },
     });
-    const { getByTestId, queryByTestId } = render(
+    const { getByTestId, findByTestId, queryByTestId } = render(
       <MCPEventDetails event={event} />,
     );
     fireEvent.click(getByTestId("mcp-event-details-toggle-mcp-evt-1"));
     expect(
-      getByTestId("mcp-event-detail-capture-disabled-mcp-evt-1"),
+      await findByTestId("mcp-event-detail-capture-disabled-mcp-evt-1"),
+    ).toBeDefined();
+    expect(sessionSpy).toHaveBeenCalledWith(sessionId, undefined);
+    expect(queryByTestId("mcp-event-detail-arguments-mcp-evt-1")).toBeNull();
+    expect(queryByTestId("mcp-event-detail-no-content-mcp-evt-1")).toBeNull();
+  });
+
+  it("stored content the endpoint no longer serves (404) shows the capture-disabled notice", async () => {
+    vi.spyOn(api, "fetchEventContent").mockResolvedValue(null);
+    const event = makeMCPEvent({
+      event_type: "mcp_tool_call",
+      has_content: true,
+      payload: { server_name: "demo", transport: "stdio" },
+    });
+    const { getByTestId, findByTestId, queryByTestId } = render(
+      <MCPEventDetails event={event} />,
+    );
+    fireEvent.click(getByTestId("mcp-event-details-toggle-mcp-evt-1"));
+    expect(
+      await findByTestId("mcp-event-detail-capture-disabled-mcp-evt-1"),
     ).toBeDefined();
     expect(queryByTestId("mcp-event-detail-arguments-mcp-evt-1")).toBeNull();
+  });
+});
+
+describe("MCPEventDetails — arguments and result stored in event_content", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("mcp_tool_call reads tool_input / tool_output from the content endpoint", async () => {
+    const contentSpy = vi.spyOn(api, "fetchEventContent").mockResolvedValue(
+      storedContent({
+        tool_input: { path: "/etc/hosts" },
+        tool_output: { content: [{ type: "text", text: "127.0.0.1 localhost" }] },
+      }),
+    );
+    const event = makeMCPEvent({
+      event_type: "mcp_tool_call",
+      tool_name: "read_file",
+      has_content: true,
+      payload: { server_name: "filesystem", transport: "stdio", duration_ms: 12 },
+    });
+    const { getByTestId, findByTestId, queryByTestId } = render(
+      <MCPEventDetails event={event} />,
+    );
+    // Nothing is fetched until the accordion opens.
+    expect(contentSpy).not.toHaveBeenCalled();
+    fireEvent.click(getByTestId("mcp-event-details-toggle-mcp-evt-1"));
+    expect(contentSpy).toHaveBeenCalledWith("mcp-evt-1");
+    const args = await findByTestId("mcp-event-detail-arguments-mcp-evt-1");
+    expect(args.textContent).toContain("/etc/hosts");
+    expect(getByTestId("mcp-event-detail-result-mcp-evt-1").textContent).toContain(
+      "127.0.0.1 localhost",
+    );
+    expect(queryByTestId("mcp-event-detail-capture-disabled-mcp-evt-1")).toBeNull();
+  });
+
+  it("mcp_prompt_get shows the stored rendered messages under Rendered", async () => {
+    vi.spyOn(api, "fetchEventContent").mockResolvedValue(
+      storedContent({
+        tool_input: { name: "Ada" },
+        tool_output: [{ role: "user", content: { type: "text", text: "Hello Ada" } }],
+      }),
+    );
+    const event = makeMCPEvent({
+      event_type: "mcp_prompt_get",
+      has_content: true,
+      payload: { server_name: "demo", transport: "stdio", prompt_name: "greet" },
+    });
+    const { getByTestId, findByTestId, queryByTestId } = render(
+      <MCPEventDetails event={event} />,
+    );
+    fireEvent.click(getByTestId("mcp-event-details-toggle-mcp-evt-1"));
+    expect((await findByTestId("mcp-event-detail-rendered-mcp-evt-1")).textContent).toContain(
+      "Hello Ada",
+    );
+    expect(getByTestId("mcp-event-detail-arguments-mcp-evt-1").textContent).toContain("Ada");
+    expect(queryByTestId("mcp-event-detail-result-mcp-evt-1")).toBeNull();
+  });
+
+  it("content stored before the tool columns reads input / response", async () => {
+    vi.spyOn(api, "fetchEventContent").mockResolvedValue(
+      storedContent({ input: { q: "legacy" }, response: { content: [{ type: "text", text: "old" }] } }),
+    );
+    const event = makeMCPEvent({
+      event_type: "mcp_tool_call",
+      has_content: true,
+      payload: { server_name: "demo", transport: "stdio" },
+    });
+    const { getByTestId, findByTestId } = render(<MCPEventDetails event={event} />);
+    fireEvent.click(getByTestId("mcp-event-details-toggle-mcp-evt-1"));
+    expect((await findByTestId("mcp-event-detail-arguments-mcp-evt-1")).textContent).toContain(
+      "legacy",
+    );
+    expect(getByTestId("mcp-event-detail-result-mcp-evt-1").textContent).toContain("old");
+  });
+
+  it("a stored row with no arguments or result says the call recorded none", async () => {
+    vi.spyOn(api, "fetchEventContent").mockResolvedValue(storedContent({}));
+    const event = makeMCPEvent({
+      event_type: "mcp_tool_call",
+      has_content: true,
+      payload: { server_name: "demo", transport: "stdio" },
+    });
+    const { getByTestId, findByTestId, queryByTestId } = render(
+      <MCPEventDetails event={event} />,
+    );
+    fireEvent.click(getByTestId("mcp-event-details-toggle-mcp-evt-1"));
+    expect(await findByTestId("mcp-event-detail-no-content-mcp-evt-1")).toBeDefined();
+    expect(queryByTestId("mcp-event-detail-result-mcp-evt-1")).toBeNull();
+  });
+
+  it("inline arguments on an older row win over the content endpoint", () => {
+    const contentSpy = vi.spyOn(api, "fetchEventContent");
+    const event = makeMCPEvent({
+      event_type: "mcp_tool_call",
+      has_content: true,
+      payload: { server_name: "demo", transport: "stdio", arguments: { text: "inline" } },
+    });
+    const { getByTestId } = render(<MCPEventDetails event={event} />);
+    fireEvent.click(getByTestId("mcp-event-details-toggle-mcp-evt-1"));
+    expect(getByTestId("mcp-event-detail-arguments-mcp-evt-1").textContent).toContain("inline");
+    expect(contentSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe("MCPEventDetails — capture on, nothing captured", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("a capture-on run's call without a body says so instead of claiming capture is off", async () => {
+    const sessionId = "00000000-0000-0000-0000-0000000000f2";
+    vi.spyOn(api, "fetchSession").mockResolvedValue(runDetail(sessionId, true));
+    const event = makeMCPEvent({
+      session_id: sessionId,
+      event_type: "mcp_tool_call",
+      payload: { server_name: "demo", transport: "stdio" },
+    });
+    const { getByTestId, findByTestId, queryByTestId } = render(
+      <MCPEventDetails event={event} />,
+    );
+    fireEvent.click(getByTestId("mcp-event-details-toggle-mcp-evt-1"));
+    const notice = await findByTestId("mcp-event-detail-no-content-mcp-evt-1");
+    expect(notice.textContent).toContain("no request or response body was recorded");
+    expect(queryByTestId("mcp-event-detail-capture-disabled-mcp-evt-1")).toBeNull();
+  });
+
+  it("a run that fails to load says its capture setting is unknown, not that capture is off", async () => {
+    const sessionId = "00000000-0000-0000-0000-0000000000f4";
+    vi.spyOn(api, "fetchSession").mockRejectedValue(new Error("HTTP 503"));
+    const event = makeMCPEvent({
+      session_id: sessionId,
+      event_type: "mcp_tool_call",
+      payload: { server_name: "demo", transport: "stdio" },
+    });
+    const { getByTestId, findByTestId, queryByTestId } = render(
+      <MCPEventDetails event={event} />,
+    );
+    fireEvent.click(getByTestId("mcp-event-details-toggle-mcp-evt-1"));
+    const notice = await findByTestId("mcp-event-detail-capture-unknown-mcp-evt-1");
+    expect(notice.textContent).toContain("Couldn't check this run's capture setting");
+    expect(notice.textContent).toContain("HTTP 503");
+    expect(queryByTestId("mcp-event-detail-capture-disabled-mcp-evt-1")).toBeNull();
+    expect(queryByTestId("mcp-event-detail-no-content-mcp-evt-1")).toBeNull();
+  });
+
+  it("a run that predates the stored posture but stored content counts as capture on", async () => {
+    const sessionId = "00000000-0000-0000-0000-0000000000f3";
+    vi.spyOn(api, "fetchSession").mockResolvedValue(runDetail(sessionId, null, true));
+    const event = makeMCPEvent({
+      session_id: sessionId,
+      event_type: "mcp_resource_read",
+      payload: { server_name: "demo", transport: "stdio", resource_uri: "mem://x" },
+    });
+    const { getByTestId, findByTestId } = render(<MCPEventDetails event={event} />);
+    fireEvent.click(getByTestId("mcp-event-details-toggle-mcp-evt-1"));
+    expect(await findByTestId("mcp-event-detail-no-content-mcp-evt-1")).toBeDefined();
   });
 });
 

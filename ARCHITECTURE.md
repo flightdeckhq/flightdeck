@@ -4526,7 +4526,7 @@ never carries content inline.
 | `response` | model response | `{}` | `{}` | `{}` | `{}` | resource body (overflow) |
 | `input` | Responses `input` (NULL for chat) | embeddings input | NULL | NULL | NULL | NULL |
 | `tool_input` | NULL | NULL | tool args | prompt args | tool input | NULL |
-| `tool_output` | NULL | NULL | tool result | rendered messages | tool output (post-hoc) | NULL |
+| `tool_output` | NULL | NULL | tool result | rendered messages | NULL (the result is in the next call's messages) | NULL |
 | `embedding_output` | NULL | output vectors | NULL | NULL | NULL | NULL |
 
 `tool_input` / `tool_output` are dedicated columns for
@@ -6635,11 +6635,23 @@ them.
 
 The Prompts tab loads `PromptViewer` for chat events with
 `event.has_content`, `EmbeddingsContentViewer` for embeddings events
-with content, otherwise the capture-disabled message. Provider
-terminology is preserved exactly — Anthropic sessions display
+with content, otherwise the capture-disabled message. The run
+drawer's Prompts tab lists the run's events that stored content of
+the types `post_call`, `tool_call`, `mcp_tool_call` and
+`mcp_prompt_get`, each opening in `PromptViewer`. The viewer's
+header names the provider and, when the content names one, the model.
+Provider terminology is preserved exactly — Anthropic sessions display
 `system`, `messages`, `tools`, and `response` as separate fields; OpenAI
 sessions display `messages` (system role included), `tools`, and
-`response`. Content stored with `provider=otel_genai` (an OpenTelemetry
+`response`. A tool call's content (the sensor's `tool_call`,
+`mcp_tool_call` and `mcp_prompt_get`, and Claude Code's `tool_call`
+over OpenTelemetry) shows its stored `tool_input` as Arguments and its
+`tool_output` as Result, an object as labelled fields, text as written
+and any other value as JSON; the `{}` such a row holds in `response`
+is not shown as a response. The Claude Code plugin's hook `tool_call`
+keeps its `tool_use` block under `tools` and its `tool_result` under
+`response`, and shows them there. Content stored with
+`provider=otel_genai` (an OpenTelemetry
 GenAI framework's; see OTLP ingest > GenAI dialect > Capture) is
 displayed as the framework sent it by its own renderer, never through a
 provider's branch, under an `OpenTelemetry GenAI` header:
@@ -8380,9 +8392,21 @@ ways:
   `GET /v1/events/{id}/content`. A 2 MiB hard cap applies; bodies
   beyond that are truncated with a marker.
 
-`MCP_TOOL_CALL` and `MCP_PROMPT_GET` use per-field truncation
-markers in `payload.extras` rather than has_content routing, since
-their captured shapes are smaller and inlining is always cheap.
+`MCP_TOOL_CALL` and `MCP_PROMPT_GET` route their captured arguments
+and result (rendered messages for a prompt fetch) to `event_content`'s
+`tool_input` / `tool_output` columns with `has_content=true`; nothing
+is inline on the event. The event's MCP details accordion fetches them
+from `GET /v1/events/{id}/content` when it opens and shows them as
+Arguments and Result (or Rendered). A row stored before the dedicated
+columns keeps them inline as `arguments` / `result` / `rendered`
+(with per-field truncation markers for large values), and the
+accordion shows those as stored. A call with nothing captured says
+why: the capture-disabled notice when capture is off for its run
+(the run's stored `capture_prompts`, or any of its events storing
+content, as the Prompts tab reads it), otherwise that the call
+recorded no request or response body. When the run cannot be loaded,
+its capture setting is unknown and the accordion says it could not
+check it, with the error, rather than claiming capture is off.
 
 **Dashboard surfacing**. Every MCP event_type renders with its own
 TYPE pill ("MCP TOOL CALL", "MCP TOOLS DISCOVERED", "MCP RESOURCE

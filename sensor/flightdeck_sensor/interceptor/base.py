@@ -1803,15 +1803,13 @@ def _post_call(
             if inv.server_name:
                 tool_payload["server_name"] = inv.server_name[:_MAX_SERVER_NAME_CHARS]
             if session.config.capture_prompts and inv.tool_input is not None:
-                # Build the event_content envelope. tool_output
-                # populates retroactively when the next assistant
-                # turn shows the result; this emit only knows the
-                # input. Worker writes tool_input on insert; a
-                # follow-up event (or an in-flight pass over the
-                # response) populates tool_output via a separate
-                # event_content path (out of scope here —
-                # captured on the row only when the response shape
-                # carries it inline).
+                # Build the event_content envelope. The model's
+                # response holds only the call, not the tool's result,
+                # so the envelope carries tool_input and leaves
+                # tool_output null, and nothing fills it in later:
+                # the result reaches the model as part of the next
+                # request's messages, which that call's own content
+                # records when capture is on.
                 from flightdeck_sensor.interceptor.mcp import (
                     _build_tool_capture_content,
                 )

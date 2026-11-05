@@ -1,7 +1,10 @@
 import { useCallback, useState } from "react";
 import type { AgentEvent, EventContent } from "@/lib/types";
 import { fetchEventContent } from "@/lib/api";
+import { useKeyedFetch } from "@/hooks/useKeyedFetch";
+import { useSession } from "@/hooks/useSession";
 import { AccordionHeader } from "./AccordionHeader";
+import { sessionCaptureOn } from "./NoEventContent";
 
 /**
  * Collapsible details block rendered inside the expanded view of any
@@ -17,9 +20,16 @@ import { AccordionHeader } from "./AccordionHeader";
  * the structured payload that fits the dashboard's render-inline
  * convention: arguments + result for tool calls, content body for
  * resource reads, rendered messages for prompt fetches. All gated by
- * ``capture_prompts`` on the sensor side — when capture is off the
- * fields are absent from the payload and we render an explicit
- * "capture disabled" notice rather than an empty accordion.
+ * ``capture_prompts`` on the sensor side.
+ *
+ * Where the captured arguments and result live. A tool call or prompt
+ * fetch stores them in event_content's ``tool_input`` / ``tool_output``
+ * (``has_content=true``, nothing inline), fetched from
+ * ``GET /v1/events/:id/content`` when the accordion opens. Older rows
+ * (and the E2E seed's fixtures) carry them inline on the payload as
+ * ``arguments`` / ``result`` / ``rendered``, rendered as stored. An
+ * event with neither says why: the capture-disabled notice when capture
+ * is off for its run, otherwise that the call recorded no body.
  *
  * Content-overflow handling. Fields above the sensor's 8 KiB
  * inline threshold are stripped from the inline payload and replaced
@@ -135,6 +145,13 @@ export function MCPEventDetails({ event }: MCPEventDetailsProps) {
     (event.event_type === "mcp_prompt_get" &&
       (p.arguments != null || (p.rendered && p.rendered.length > 0)));
 
+  // A tool call or prompt fetch whose arguments and result were stored
+  // in event_content rather than inline.
+  const hasStoredToolContent =
+    !hasCapturedPayload &&
+    event.has_content === true &&
+    (event.event_type === "mcp_tool_call" || event.event_type === "mcp_prompt_get");
+
   return (
     <div
       data-testid={`mcp-event-details-${event.id}`}
@@ -164,8 +181,11 @@ export function MCPEventDetails({ event }: MCPEventDetailsProps) {
               onLoadFull={loadFull}
             />
           )}
-          {!isStructuredError && !hasCapturedPayload && !isListEvent && (
-            <CaptureDisabledNotice eventId={event.id} />
+          {!isStructuredError && hasStoredToolContent && (
+            <StoredToolContentBlock event={event} />
+          )}
+          {!isStructuredError && !hasCapturedPayload && !hasStoredToolContent && !isListEvent && (
+            <NoCapturedBodyNotice event={event} />
           )}
           {!isStructuredError && isListEvent && (
             <ListNotice
@@ -332,6 +352,117 @@ function CapturedPayloadBlock({
           />
         </>
       )}
+    </div>
+  );
+}
+
+/**
+ * A tool call's or prompt fetch's arguments and result as event_content
+ * stores them (``tool_input`` / ``tool_output``), fetched once the
+ * accordion opens. Content stored before the dedicated columns keeps
+ * them in ``input`` / ``response``, read when the columns are empty.
+ */
+function StoredToolContentBlock({ event }: { event: AgentEvent }) {
+  const fetched = useKeyedFetch<EventContent | null>(event.id, () => fetchEventContent(event.id));
+  const current = fetched.dataKey === event.id && fetched.error === null;
+  if (fetched.loading) {
+    return (
+      <div
+        data-testid={`mcp-event-detail-content-loading-${event.id}`}
+        className="text-xs"
+        style={{ color: "var(--text-muted)" }}
+      >
+        Loading the captured arguments and result...
+      </div>
+    );
+  }
+  if (fetched.error !== null) {
+    return (
+      <div
+        data-testid={`mcp-event-detail-content-error-${event.id}`}
+        className="text-xs"
+        style={{ color: "var(--event-error)" }}
+      >
+        {fetched.error instanceof Error ? fetched.error.message : "Failed to load content."}
+      </div>
+    );
+  }
+  if (!current) return null;
+  // The content endpoint answers 404 when capture was off for the run.
+  if (fetched.data == null) return <CaptureDisabledNotice eventId={event.id} />;
+  const content = fetched.data;
+  const args = content.tool_input ?? content.input ?? null;
+  const legacyResponse =
+    content.response != null &&
+    !(typeof content.response === "object" && !Array.isArray(content.response) && Object.keys(content.response).length === 0)
+      ? content.response
+      : null;
+  const result = content.tool_output ?? legacyResponse;
+  const resultLabel = event.event_type === "mcp_prompt_get" ? "Rendered" : "Result";
+  const resultTestId =
+    event.event_type === "mcp_prompt_get"
+      ? `mcp-event-detail-rendered-${event.id}`
+      : `mcp-event-detail-result-${event.id}`;
+  if (args == null && result == null) {
+    return <NoBodyRecorded eventId={event.id} />;
+  }
+  return (
+    <div className="space-y-2">
+      {args != null && (
+        <CodeBlock label="Arguments" value={args} testId={`mcp-event-detail-arguments-${event.id}`} />
+      )}
+      {result != null && <CodeBlock label={resultLabel} value={result} testId={resultTestId} />}
+    </div>
+  );
+}
+
+/**
+ * An event that carries no captured body, inline or stored. Capture off
+ * for its run: the capture-disabled notice. Capture on: the call simply
+ * recorded none. Shows nothing until the run has loaded, so the
+ * disabled notice never flashes on a capture-on run. When the run
+ * cannot be loaded its capture setting is unknown, so the notice says
+ * that rather than claiming capture is off.
+ */
+function NoCapturedBodyNotice({ event }: { event: AgentEvent }) {
+  const { data, loading, error } = useSession(event.session_id);
+  if (loading && !data) return null;
+  if (error && !data) return <CaptureUnknownNotice eventId={event.id} error={error} />;
+  if (!sessionCaptureOn(data?.session)) return <CaptureDisabledNotice eventId={event.id} />;
+  return <NoBodyRecorded eventId={event.id} />;
+}
+
+function CaptureUnknownNotice({ eventId, error }: { eventId: string; error: string }) {
+  return (
+    <div
+      data-testid={`mcp-event-detail-capture-unknown-${eventId}`}
+      className="text-xs"
+      style={{
+        color: "var(--text-muted)",
+        padding: "8px 10px",
+        background: "var(--bg-elevated)",
+        borderRadius: 4,
+      }}
+    >
+      No request or response body is shown for this call. Couldn&apos;t check this run&apos;s
+      capture setting: {error}
+    </div>
+  );
+}
+
+function NoBodyRecorded({ eventId }: { eventId: string }) {
+  return (
+    <div
+      data-testid={`mcp-event-detail-no-content-${eventId}`}
+      className="text-xs"
+      style={{
+        color: "var(--text-muted)",
+        padding: "8px 10px",
+        background: "var(--bg-elevated)",
+        borderRadius: 4,
+      }}
+    >
+      Capture is on, but no request or response body was recorded for this call.
     </div>
   );
 }

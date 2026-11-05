@@ -1,0 +1,91 @@
+{
+  "_source": "GET /v1/events/{id}/content bodies the live dev stack served for each tool-call source: the sensor's tool_call (an OpenAI Responses hosted web search, provider=llm), mcp_tool_call (provider=mcp, with arguments and a result, and with empty arguments), Claude Code's tool_call over OpenTelemetry (provider=anthropic, tool_input only) and the Claude Code plugin's hook tool_call (provider=anthropic, tools + response). Ids and capture times replaced with fixed values.",
+  "sensor_tool_call": {
+    "event_id": "00000000-0000-4000-8000-000000000001",
+    "session_id": "00000000-0000-4000-9000-000000000001",
+    "provider": "llm",
+    "model": "gpt-4o-mini",
+    "system_prompt": null,
+    "messages": [],
+    "tools": null,
+    "response": {},
+    "tool_input": {
+      "query": "eiffel tower completion year",
+      "type": "search"
+    },
+    "captured_at": "2026-11-05T00:00:00Z"
+  },
+  "mcp_tool_call": {
+    "event_id": "00000000-0000-4000-8000-000000000002",
+    "session_id": "00000000-0000-4000-9000-000000000002",
+    "provider": "mcp",
+    "model": "filesystem",
+    "system_prompt": null,
+    "messages": [],
+    "tools": null,
+    "response": {},
+    "tool_input": {
+      "path": "/etc/hosts"
+    },
+    "tool_output": {
+      "content": [
+        {
+          "text": "127.0.0.1 localhost",
+          "type": "text"
+        }
+      ]
+    },
+    "captured_at": "2026-11-05T00:00:00Z"
+  },
+  "mcp_tool_call_no_arguments": {
+    "event_id": "00000000-0000-4000-8000-000000000003",
+    "session_id": "00000000-0000-4000-9000-000000000003",
+    "provider": "mcp",
+    "model": "plugin:claude-mem:mcp-search",
+    "system_prompt": null,
+    "messages": [],
+    "tools": null,
+    "response": {},
+    "tool_input": {},
+    "captured_at": "2026-11-05T00:00:00Z"
+  },
+  "claude_code_otlp_tool_call": {
+    "event_id": "00000000-0000-4000-8000-000000000004",
+    "session_id": "00000000-0000-4000-9000-000000000004",
+    "provider": "anthropic",
+    "model": "",
+    "system_prompt": null,
+    "messages": [],
+    "tools": null,
+    "response": {},
+    "tool_input": {
+      "command": "echo recorded",
+      "description": "Echo the word recorded"
+    },
+    "captured_at": "2026-11-05T00:00:00Z"
+  },
+  "claude_code_hook_tool_call": {
+    "event_id": "00000000-0000-4000-8000-000000000005",
+    "session_id": "00000000-0000-4000-9000-000000000005",
+    "provider": "anthropic",
+    "model": "claude-opus-5-5",
+    "system_prompt": null,
+    "messages": [],
+    "tools": [
+      {
+        "input": {
+          "query": "select:Monitor"
+        },
+        "name": "ToolSearch",
+        "type": "tool_use"
+      }
+    ],
+    "response": [
+      {
+        "content": "{\"matches\":[\"Monitor\"],\"query\":\"select:Monitor\",\"total_deferred_tools\":140}",
+        "type": "tool_result"
+      }
+    ],
+    "captured_at": "2026-11-05T00:00:00Z"
+  }
+}

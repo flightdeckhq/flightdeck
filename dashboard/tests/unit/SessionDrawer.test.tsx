@@ -725,6 +725,38 @@ describe("SessionDrawer", () => {
     expect(badges.length).toBeGreaterThanOrEqual(1);
   });
 
+  it("lists an MCP tool call and prompt fetch that stored content, and opens one", async () => {
+    const row = (id: string, eventType: string, toolName: string | null, hasContent: boolean, at: string) => ({
+      id, session_id: "s1", flavor: "test", event_type: eventType as "post_call", model: null,
+      tokens_input: null, tokens_output: null, tokens_total: null, latency_ms: null,
+      tool_name: toolName, has_content: hasContent, occurred_at: at,
+    });
+    mockEventsOverride = [
+      row("m1", "mcp_tool_call", "read_file", true, "2026-04-07T10:01:00Z"),
+      row("m2", "mcp_prompt_get", "greet", true, "2026-04-07T10:02:00Z"),
+      // Without stored content an MCP call has nothing to open.
+      row("m3", "mcp_tool_call", "list_dir", false, "2026-04-07T10:03:00Z"),
+      // Discovery and resource reads are not listed.
+      row("m4", "mcp_tool_list", null, true, "2026-04-07T10:04:00Z"),
+      row("m5", "mcp_resource_read", null, true, "2026-04-07T10:05:00Z"),
+    ];
+    mockFetchEventContent.mockResolvedValueOnce({
+      event_id: "m1", session_id: "s1", provider: "mcp", model: "filesystem",
+      system_prompt: null, messages: [], tools: null, response: {},
+      tool_input: { path: "/etc/hosts" }, captured_at: "2026-04-07T10:01:00Z",
+    });
+    render(<SessionDrawer sessionId="s1" onClose={() => {}} />);
+    fireEvent.click(screen.getByText("Prompts"));
+    expect(screen.getByTestId("prompts-row-m1")).toHaveTextContent("read_file");
+    expect(screen.getByTestId("prompts-row-m2")).toHaveTextContent("greet");
+    for (const id of ["m3", "m4", "m5"]) {
+      expect(screen.queryByTestId(`prompts-row-${id}`)).not.toBeInTheDocument();
+    }
+    fireEvent.click(screen.getByTestId("prompts-row-m1"));
+    await waitFor(() => expect(mockFetchEventContent).toHaveBeenCalledWith("m1"));
+    expect(await screen.findByTestId("prompt-box-tool-input")).toHaveTextContent("/etc/hosts");
+  });
+
   it("sorts Prompts tab rows newest-first to match Timeline", () => {
     // Regression guard for the mismatch reported on e4a0b990:
     // Timeline rendered descending but PromptsTab rendered ascending

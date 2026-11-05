@@ -3896,7 +3896,8 @@
                 },
                 "capture_prompts": {
                     "description": "CapturePrompts is the session's stored capture posture\n(sessions.capture_prompts): true or false once a session_start\ndeclared it, null while none has. GetSession reads it; the\nPrompts tab tells a capture-off run (the disabled state) from a\ncapture-on run that stored no content, which CaptureEnabled\nalone cannot: a framework may declare capture and send nothing.",
-                    "type": "boolean"
+                    "type": "boolean",
+                    "x-nullable": true
                 },
                 "client_type": {
                     "type": "string"

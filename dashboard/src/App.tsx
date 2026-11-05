@@ -20,7 +20,7 @@ import { Analytics } from "@/pages/Analytics";
 import { Investigate } from "@/pages/Investigate";
 import { Settings } from "@/pages/Settings";
 import { CommandPalette } from "@/components/search/CommandPalette";
-import { findSessionEvent } from "@/hooks/findSessionEvent";
+import { findSessionEvent, parseEventInstant } from "@/hooks/findSessionEvent";
 import type {
   AgentEvent,
   SearchResultAgent,
@@ -258,7 +258,7 @@ export function EventDetailDrawerHost() {
   // The event's occurred_at, which the palette's link carries; an
   // older bookmark without it still resolves, by reading the run.
   const rawAt = searchParams.get("event_at");
-  const at = rawAt !== null && !Number.isNaN(Date.parse(rawAt)) ? rawAt : null;
+  const at = rawAt !== null && !Number.isNaN(parseEventInstant(rawAt)) ? rawAt : null;
   const active =
     rawEvent !== null &&
     rawSession !== null &&

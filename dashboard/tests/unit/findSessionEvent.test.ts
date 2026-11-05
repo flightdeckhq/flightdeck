@@ -6,7 +6,11 @@ vi.mock("@/lib/api", async () => {
 });
 
 import { fetchBulkEvents, type BulkEventsParams } from "@/lib/api";
-import { findSessionEvent } from "@/hooks/findSessionEvent";
+import {
+  eventInstantISO,
+  findSessionEvent,
+  parseEventInstant,
+} from "@/hooks/findSessionEvent";
 import { eventsCache, fullHistoryLoaded } from "@/hooks/useSessionEvents";
 import { EVENT_LOOKUP_MAX_PAGES } from "@/lib/constants";
 import type { AgentEvent } from "@/lib/types";
@@ -172,5 +176,42 @@ describe("findSessionEvent", () => {
     });
     expect(found).toBeNull();
     expect(fetchMock).toHaveBeenCalledTimes(EVENT_LOOKUP_MAX_PAGES);
+  });
+});
+
+describe("parseEventInstant", () => {
+  it("reads Postgres's text form as ISO 8601", () => {
+    expect(parseEventInstant("2026-11-04 19:02:50.756123+00")).toBe(
+      Date.parse("2026-11-04T19:02:50.756Z"),
+    );
+    expect(parseEventInstant("2026-11-04 21:02:50.756+02")).toBe(
+      Date.parse("2026-11-04T19:02:50.756Z"),
+    );
+    expect(parseEventInstant("2026-11-05 00:32:50.756+05:30")).toBe(
+      Date.parse("2026-11-04T19:02:50.756Z"),
+    );
+    expect(parseEventInstant("2026-11-04 14:02:50-05")).toBe(
+      Date.parse("2026-11-04T19:02:50Z"),
+    );
+  });
+
+  it("rewrites the text form itself, not relying on an engine extension", () => {
+    expect(eventInstantISO("2026-11-04 19:02:50.756123+00")).toBe(
+      "2026-11-04T19:02:50.756123+00:00",
+    );
+    expect(eventInstantISO("2026-11-05 00:32:50+05:30")).toBe("2026-11-05T00:32:50+05:30");
+    expect(eventInstantISO("2026-11-04 14:02:50-05")).toBe("2026-11-04T14:02:50-05:00");
+    expect(eventInstantISO("2026-11-04")).toBe("2026-11-04");
+  });
+
+  it("passes an ISO timestamp through unchanged", () => {
+    for (const iso of ["2026-11-04T19:02:50.756Z", "2026-11-04T21:02:50.756+02:00"]) {
+      expect(parseEventInstant(iso)).toBe(Date.parse(iso));
+    }
+  });
+
+  it("is NaN for text that is not a timestamp", () => {
+    expect(parseEventInstant("not a time")).toBeNaN();
+    expect(parseEventInstant("")).toBeNaN();
   });
 });

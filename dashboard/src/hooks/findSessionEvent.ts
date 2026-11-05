@@ -34,16 +34,37 @@ export interface SessionEventTarget {
  * Resolves to null when the event is not found. A failed page of the
  * run, or an abort, rejects.
  */
+/**
+ * Milliseconds since the epoch for an event's ``occurred_at``, or NaN.
+ *
+ * The search API writes timestamps in Postgres's text form
+ * ("2026-11-04 19:02:50.756123+00", offsets "+HH" or "+HH:MM"), which
+ * ``Date.parse`` reads only by a V8 extension. It is rewritten as ISO
+ * 8601 (a "T" separator and an "+HH:MM" offset) first, so every engine
+ * reads it; an ISO input passes through unchanged.
+ */
+export function parseEventInstant(raw: string): number {
+  return Date.parse(eventInstantISO(raw));
+}
+
+/** ``raw`` rewritten from Postgres's text form as ISO 8601. */
+export function eventInstantISO(raw: string): string {
+  return raw
+    .trim()
+    .replace(/^(\d{4}-\d{2}-\d{2}) /, "$1T")
+    .replace(/(T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?[+-]\d{2})$/, "$1:00");
+}
+
 export async function findSessionEvent(
   target: SessionEventTarget,
   signal?: AbortSignal,
 ): Promise<AgentEvent | null> {
   const { sessionId, eventId, at } = target;
-  const atMs = at ? Date.parse(at) : Number.NaN;
+  const atMs = at ? parseEventInstant(at) : Number.NaN;
   if (!Number.isNaN(atMs)) {
     // The search API writes timestamps in Postgres's text form
     // ("2026-11-04 19:02:50.756123+00"), which ``GET /v1/events``
-    // rejects; JavaScript reads it to the millisecond. The window runs
+    // rejects; ``parseEventInstant`` reads it to the millisecond. The window runs
     // to the next millisecond (``to`` is inclusive), so microseconds
     // past the millisecond still fall inside it.
     try {

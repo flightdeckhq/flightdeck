@@ -4,7 +4,9 @@
  * Fixture: a run of e2e-test-long-run with 2,050 tool calls and, newest
  * of all, one tool call named e2e-long-run-needle. It is seeded through
  * the ingestion API by ``tests/e2e-fixtures/seed_long_run.py``, once per
- * stack (``beforeAll`` skips it when the needle is already searchable),
+ * stack (``beforeAll`` skips it when the needle is already searchable;
+ * two theme projects starting together on a fresh stack may each seed
+ * one, and the spec accepts either needle),
  * and the spec waits through the API until the worker has stored the
  * run. The palette finds the needle and opens it; the event drawer
  * shows it. The lookup this replaced read only the run's oldest 2,000
@@ -26,12 +28,17 @@ interface NeedleHit {
 	session_id: string;
 }
 
-/** The needle's search hit, or null while it is not stored. */
-async function needleHit(request: APIRequestContext): Promise<NeedleHit | null> {
+/** Every stored needle's search hit, newest first. */
+async function needleHits(request: APIRequestContext): Promise<NeedleHit[]> {
 	const resp = await request.get(`${API}/v1/search?q=${NEEDLE}`, { headers: AUTH });
-	if (!resp.ok()) return null;
+	if (!resp.ok()) return [];
 	const body = (await resp.json()) as { events?: (NeedleHit & { tool_name: string })[] };
-	return body.events?.find((e) => e.tool_name === NEEDLE) ?? null;
+	return (body.events ?? []).filter((e) => e.tool_name === NEEDLE);
+}
+
+/** The newest needle's search hit, or null while none is stored. */
+async function needleHit(request: APIRequestContext): Promise<NeedleHit | null> {
+	return (await needleHits(request))[0] ?? null;
 }
 
 /** How many events the run holds. */
@@ -82,7 +89,16 @@ test.describe("T146 — The search palette opens an event anywhere in a long run
 		await expect(option).toBeVisible({ timeout: 10_000 });
 		await option.click();
 
-		await expect(page).toHaveURL(new RegExp(`event=${target.event_id}`));
+		// Both theme projects run this spec, and on a fresh stack both
+		// can seed a run before either sees the other's needle, so the
+		// palette may open the other run's needle. Each needle is the
+		// newest event of a run past its oldest 2,000, so either proves
+		// the lookup; the opened one must be a needle.
+		await expect(page).toHaveURL(/[?&]event=[0-9a-f-]{36}/);
+		const opened = new URL(page.url()).searchParams.get("event");
+		const needles = (await needleHits(request)).map((h) => h.event_id);
+		expect(needles).toContain(opened);
+		expect(needles).toContain(target.event_id);
 		const drawer = page.getByTestId("event-detail-drawer");
 		await expect(drawer).toBeVisible({ timeout: 10_000 });
 		await expect(drawer).toContainText(NEEDLE);

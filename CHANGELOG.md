@@ -83,12 +83,41 @@ All notable changes to Flightdeck are documented here.
   000035 adds `otlp_traces`, `otlp_spans` and `otlp_span_content`, and
   the ingestion API gains the store that stages a trace's records,
   leases due traces to one replica at a time, marks what an assembly
-  published and sweeps finished traces and old content. Nothing writes
-  to them yet: the receiver still rejects GenAI spans
+  published and sweeps finished traces and old content. The receiver
+  writes to them for the agent frameworks below
   ([#184](https://github.com/flightdeckhq/flightdeck/issues/184)).
   Migration 000036 adds `otlp_spans.assembled_in`, the assembly that
   marked each record, so an agent already published keeps its parent
   however late an ancestor of it arrives.
+- **Agent frameworks report to Flightdeck over OpenTelemetry.** Point a
+  Pydantic AI, Strands Agents, OpenAI Agents SDK or Google ADK app's
+  OTLP exporter at the ingestion API (`/ingest/v1/traces`, and
+  `/ingest/v1/logs` for Google ADK) with a Flightdeck token, and each
+  run shows up a few seconds after it ends, already closed, with its
+  real start and end times. Each named agent is a session (an agent
+  called as a tool is a child session, at any depth; agents that hand
+  off are sibling sessions with an `agent_handoff` signal), with its
+  model calls, tokens from the outermost call only, failed calls and
+  tool calls. Sessions are `client_type=otlp`, observe only, and name
+  the framework in `context.frameworks`. Set
+  `OTEL_RESOURCE_ATTRIBUTES=flightdeck.flavor=<app>,flightdeck.agent_type=coding`
+  to name the app and agent type (the default is `production`).
+  Metrics are counted as rejected, since they repeat the spans' usage,
+  and a scope the receiver does not map is rejected with its name
+  ([#252](https://github.com/flightdeckhq/flightdeck/pull/252)).
+- **Prompt capture for those frameworks.** With
+  `flightdeck.capture_prompts=true` in `OTEL_RESOURCE_ATTRIBUTES` (and
+  the framework's own content capture on), each model call's messages,
+  response, system instructions and tool definitions, each tool's
+  arguments and result, a failed tool's or agent's error text and a
+  child agent's incoming and outgoing messages are stored as the
+  framework sent them, under `provider=otel_genai`, and served by
+  `GET /v1/events/{id}/content`. Google ADK's content arrives on its log
+  records and is joined to its calls whichever arrives first. Content
+  waits in a staging table only while its trace is assembled. Without
+  capture, nothing of it is staged or stored. `[REDACTED]` now counts
+  as no content, as `<REDACTED>` does
+  ([#253](https://github.com/flightdeckhq/flightdeck/pull/253)).
 
 ### Fixed
 

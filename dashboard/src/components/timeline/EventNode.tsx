@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import type { EventType } from "@/lib/types";
 import { truncateSessionId } from "@/lib/events";
 import { cn } from "@/lib/utils";
+import { LANE_GEOMETRY } from "@/lib/swimlane-lanes";
 import {
   Zap, Wrench, AlertTriangle, XCircle, ArrowDown,
   Play, Square, Check, Circle, X, Database, AlertCircle,
@@ -111,13 +112,36 @@ export interface EventNodeProps {
    * there's one consistent way to colour-swap a circle.
    */
   isAttachment?: boolean;
+  /**
+   * The run lane the circle sits in on a split swimlane row (0: the top
+   * lane), stamped as ``data-run-lane``. Absent on the ALL row.
+   */
+  lane?: number;
+  /**
+   * The circle's vertical centre as a percentage of its container's
+   * height: its lane's centre on a split row. Defaults to 50, the row's
+   * centre line.
+   */
+  centrePct?: number;
+}
+
+/**
+ * The icon size for a circle ``size`` px across: the icon of the
+ * largest lane circle that fits (see ``LANE_GEOMETRY``), and 0, no
+ * icon, below the smallest circle that carries one.
+ */
+export function eventIconSize(size: number): number {
+  for (const geometry of LANE_GEOMETRY) {
+    if (size >= geometry.circle) return geometry.icon;
+  }
+  return 0;
 }
 
 function EventNodeComponent({
   x, eventType, sessionId, flavor, model, toolName,
   tokensTotal, latencyMs, occurredAt, eventId, onClick,
   size = 24, isVisible = true, directiveName, directiveStatus,
-  isAttachment = false,
+  isAttachment = false, lane, centrePct,
 }: EventNodeProps) {
   const config = eventTypeConfig[eventType] ?? defaultConfig;
   const override = eventType === "directive_result"
@@ -172,7 +196,7 @@ function EventNodeComponent({
       : config.label;
   const [hovered, setHovered] = useState(false);
   const [tooltipPos, setTooltipPos] = useState<{ top: number; left: number } | null>(null);
-  const iconSize = size <= 20 ? 11 : 13;
+  const iconSize = eventIconSize(size);
 
   const handleMouseEnter = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const rect = e.currentTarget.getBoundingClientRect();
@@ -198,6 +222,7 @@ function EventNodeComponent({
         // ``data-session-id``.
         data-event-id={eventId}
         data-session-id={sessionId}
+        data-run-lane={lane}
         className={cn(
           // ``top-1/2 -translate-y-1/2`` is the only vertical shift.
           // Tailwind 4 emits ``-translate-y-1/2`` as the separate
@@ -235,6 +260,9 @@ function EventNodeComponent({
           // positioned wrapper by half a circle (plus a buffer), so the
           // oldest circle still clears the label strip.
           left: x - size / 2, width: size, height: size,
+          // A lane's centre on a split row; the class's ``top-1/2``
+          // (the row's centre line) otherwise.
+          top: centrePct === undefined ? undefined : `${centrePct}%`,
           backgroundColor: color, color: "white",
           // MCP hexagon: drop the white border because clip-path
           // would clip it into jagged fragments at the apexes; the
@@ -264,7 +292,7 @@ function EventNodeComponent({
             adjacent circle's glyph sits topmost at a neighbour's
             centre and steals the hit-test (the lucide-wrench
             tool_call icon was the recurring offender). */}
-        <IconComponent size={iconSize} style={{ pointerEvents: "none" }} />
+        {iconSize > 0 && <IconComponent size={iconSize} style={{ pointerEvents: "none" }} />}
       </div>
 
       {/* Tooltip rendered in a portal to escape overflow:hidden */}
@@ -320,5 +348,7 @@ export const EventNode = memo(EventNodeComponent, (prev, next) => {
   if (prev.directiveStatus !== next.directiveStatus) return false;
   if (prev.directiveName !== next.directiveName) return false;
   if (prev.isAttachment !== next.isAttachment) return false;
+  if (prev.lane !== next.lane) return false;
+  if (prev.centrePct !== next.centrePct) return false;
   return true;
 });

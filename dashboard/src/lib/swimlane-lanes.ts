@@ -1,11 +1,12 @@
 import type { AgentEvent, CloseReason, Session } from "@/lib/types";
 import { ATTACH_MATCH_WINDOW_MS } from "@/lib/events";
+import { EVENT_CIRCLE_SIZE } from "@/lib/constants";
 
-// Pure layout for the run glyphs on a swimlane row: where each run's
-// segments start and end, which track each segment takes, which edge
-// of the row its glyphs sit on, and where each glyph goes so that no
-// two cover each other. No React, no DOM, and no D3 beyond the
-// caller's scale, passed in as ``toX``.
+// Pure layout for the runs on a swimlane row: where each run's
+// segments start and end, which track each segment takes, which lane
+// of the row it draws in, where each glyph goes so that no two cover
+// each other, and where each run line runs. No React, no DOM, and no
+// D3 beyond the caller's scale, passed in as ``toX``.
 
 /**
  * Two segments whose extents overlap by no more than this are a
@@ -50,6 +51,59 @@ export const GLYPH_BOUNDARY_INSET_PX = 1;
 export const MAX_GLYPH_SHIFT_PX =
   GLYPH_BOUNDARY_INSET_PX + START_GLYPH_SIZE_PX + GLYPH_GAP_PX + END_GLYPH_SIZE_PX + GLYPH_BOUNDARY_INSET_PX;
 
+/** The most lanes a row splits into. Four keeps apart the four runs of
+ *  one agent seen open at once (a Claude Code coordinator fanning out
+ *  same-role sub-agents) at circles still 10 px across; every run past
+ *  the fourth lane shares it (the overflow lane). */
+export const MAX_RUN_LANES = 4;
+
+/** The height the lanes split: the 48 px row less its 1 px bottom
+ *  border. */
+export const ROW_CONTENT_HEIGHT_PX = 47;
+
+/** Mark sizes at one lane count, in px. */
+export interface LaneGeometry {
+  /** Event circle diameter. */
+  circle: number;
+  /** The circle's icon; 0 draws none. */
+  icon: number;
+  /** The ▶'s width and height. */
+  startGlyph: number;
+  /** The ■'s side. */
+  endGlyph: number;
+}
+
+/**
+ * Mark sizes by lane count (index 0: one lane). Each circle leaves at
+ * least 1.75 px between the circles of neighbouring lanes
+ * (``ROW_CONTENT_HEIGHT_PX / lanes - circle``), so two lanes never
+ * read as one blob, and each icon is about 60% of its circle, as the
+ * one-line circle's 13 px icon is of 22 px. A 10 px circle has no room
+ * for an icon that reads, so it is coloured only. The glyphs keep their
+ * size until four lanes, where an 11 px ■ would nearly fill the
+ * 11.75 px lane; there both shrink by 2 px, keeping the ■ heavier than
+ * the ▶.
+ */
+export const LANE_GEOMETRY: readonly LaneGeometry[] = [
+  { circle: EVENT_CIRCLE_SIZE, icon: 13, startGlyph: START_GLYPH_SIZE_PX, endGlyph: END_GLYPH_SIZE_PX },
+  { circle: 18, icon: 11, startGlyph: START_GLYPH_SIZE_PX, endGlyph: END_GLYPH_SIZE_PX },
+  { circle: 12, icon: 8, startGlyph: START_GLYPH_SIZE_PX, endGlyph: END_GLYPH_SIZE_PX },
+  { circle: 10, icon: 0, startGlyph: START_GLYPH_SIZE_PX - 2, endGlyph: END_GLYPH_SIZE_PX - 2 },
+];
+
+/** The mark sizes for a row of ``laneCount`` lanes. */
+export function laneGeometry(laneCount: number): LaneGeometry {
+  const index = Math.min(Math.max(Math.round(laneCount), 1), LANE_GEOMETRY.length) - 1;
+  return LANE_GEOMETRY[index]!;
+}
+
+/** The centre of ``lane`` as a percentage of the row's content height:
+ *  50 on a one-line row. */
+export function laneCentrePct(lane: number, laneCount: number): number {
+  const count = Math.max(laneCount, 1);
+  return ((Math.min(Math.max(lane, 0), count - 1) + 0.5) * 100) / count;
+}
+
 /** The ``close_reason`` of the ``session_end`` the worker's
  *  orphan-timeout reaper writes when it closes a run that stayed lost
  *  past ``FLIGHTDECK_ORPHAN_TIMEOUT_HOURS``. */
@@ -72,6 +126,9 @@ export interface RunSegment {
   /** ``Number.POSITIVE_INFINITY`` while the segment is open. */
   endMs: number;
   endKind: SegmentEndKind;
+  /** On the open segment of a run the worker marked ``stale``: its
+   *  ``last_seen_at``, from where the run has been quiet. */
+  quietSinceMs?: number;
 }
 
 /** The session row fields ``runSegments`` reads. ``close_reasons`` is
@@ -106,7 +163,7 @@ function lastSegmentEnd(
   session: SegmentSession,
   segmentStartMs: number,
   lastSeenMs: number,
-): { endMs: number; endKind: SegmentEndKind } {
+): { endMs: number; endKind: SegmentEndKind; quietSinceMs?: number } {
   if (session.state === "lost") {
     return { endMs: Math.max(lastSeenMs, segmentStartMs), endKind: "lost" };
   }
@@ -123,7 +180,15 @@ function lastSegmentEnd(
     };
   }
   // active, idle and stale runs are open: the worker has not called
-  // them lost, and a stale run can still revive.
+  // them lost, and a stale run can still revive. A stale run has been
+  // quiet since its last signal.
+  if (session.state === "stale") {
+    return {
+      endMs: Number.POSITIVE_INFINITY,
+      endKind: "open",
+      quietSinceMs: Math.max(lastSeenMs, segmentStartMs),
+    };
+  }
   return { endMs: Number.POSITIVE_INFINITY, endKind: "open" };
 }
 
@@ -176,7 +241,12 @@ export function runSegments(
       compareIds(a.e.id, b.e.id),
   );
 
-  const spans: { startMs: number; endMs: number; endKind: SegmentEndKind }[] = [];
+  const spans: {
+    startMs: number;
+    endMs: number;
+    endKind: SegmentEndKind;
+    quietSinceMs?: number;
+  }[] = [];
   const earliest = timed[0];
   let open = !(
     earliest &&
@@ -320,11 +390,11 @@ export function overlapsInWindow(
   return false;
 }
 
-/** One glyph to pack on an edge of the row. */
+/** One glyph to pack in a lane of the row. */
 export interface GlyphBox {
   key: string;
-  /** 0: the row's top edge; 1: its bottom edge. */
-  lane: 0 | 1;
+  /** The lane the glyph sits in (0: the top lane). */
+  lane: number;
   track: number;
   kind: "start" | "end";
   sessionId: string;
@@ -338,12 +408,13 @@ export interface GlyphBox {
 }
 
 /**
- * Place glyphs so that, where it can, none on one edge overlaps
+ * Place glyphs so that, where it can, none in one lane overlaps
  * another, and return each glyph's left edge by key.
  *
  * Within a track the glyphs keep their order in time: each segment's ▶
  * before its ■, and a segment's ■ before the next segment's ▶. The
- * edge's tracks are then merged by those positions, an end before a
+ * lane's tracks (several on a one-line row and in the overflow lane)
+ * are then merged by those positions, an end before a
  * start at the same spot, so a hand-off reads ■▶, and each glyph sits
  * at least ``GLYPH_GAP_PX`` right of the one before. A glyph that would
  * cross ``visible.right`` is pulled back inside it, with as many glyphs
@@ -360,7 +431,8 @@ export function packGlyphs(
   visible: { left: number; right: number },
 ): Map<string, number> {
   const lefts = new Map<string, number>();
-  for (const lane of [0, 1] as const) {
+  const lanes = [...new Set(boxes.map((box) => box.lane))].sort((a, b) => a - b);
+  for (const lane of lanes) {
     const byTrack = new Map<number, GlyphBox[]>();
     for (const box of boxes) {
       if (box.lane !== lane) continue;
@@ -438,39 +510,85 @@ export interface RowGlyph {
   key: string;
   segment: RunSegment;
   kind: "start" | "end";
-  /** 0: the row's top edge; 1: its bottom edge. */
-  lane: 0 | 1;
+  /** The lane the glyph sits in (0: the top lane). */
+  lane: number;
+  /** The row's lane count: 1 puts the glyph on the row's top edge,
+   *  more on its lane's centre. */
+  laneCount: number;
+  /** How many runs draw in the glyph's lane: more than 1 only in the
+   *  overflow lane. */
+  sharedBy: number;
   /** Left edge in the panel's inset wrapper. */
   left: number;
+  /** Width and height. */
   width: number;
 }
 
-export interface RowGlyphLayout {
-  /** 1 when every glyph sits on the top edge, 2 while segments in view
-   *  overlap and some sit on the bottom edge. */
-  laneCount: 1 | 2;
-  /** The glyphs of the segments in view, by edge and then left to
-   *  right, the order a keyboard should visit them in. */
-  glyphs: RowGlyph[];
+/** A segment in view and the lane it draws in. */
+export interface SegmentPlacement {
+  segment: RunSegment;
+  lane: number;
 }
 
+/** The line a segment draws along its lane on a split row. */
+export interface RowLine {
+  key: string;
+  segment: RunSegment;
+  lane: number;
+  laneCount: number;
+  /** How many runs draw in the line's lane (see ``RowGlyph``). */
+  sharedBy: number;
+  /** Left and right ends in the panel's inset wrapper. */
+  x1: number;
+  x2: number;
+  /** Where the line turns dashed, the run having gone quiet there; null
+   *  for a line solid to its end. */
+  quietX: number | null;
+  /** Neither of the segment's glyphs is in view, so the line is its
+   *  segment's keyboard path. */
+  focusable: boolean;
+}
+
+export interface RowLaneLayout {
+  /** 1 while no two segments in view overlap, else the lanes drawn
+   *  (2 to ``MAX_RUN_LANES``). */
+  laneCount: number;
+  /** More tracks are in view than lanes, so the last lane is shared. */
+  overflow: boolean;
+  /** Every segment in view with its lane. */
+  placements: SegmentPlacement[];
+  /** The glyphs of the segments in view, by lane and then left to
+   *  right, the order a keyboard should visit them in. */
+  glyphs: RowGlyph[];
+  /** The run lines of a split row, by lane and then left to right;
+   *  none on a one-line row. */
+  lines: RowLine[];
+}
+
+/** Lines narrower than this are not drawn: a segment that only touches
+ *  the window's edge has nothing to join. */
+const MIN_LINE_WIDTH_PX = 1;
+
 /**
- * Lay out the run glyphs of one row.
+ * Lay out the runs of one row.
  *
  * ``segments`` is every segment of every run the row holds; tracks
  * are assigned over all of them. A segment is in view when it overlaps
- * ``[d0, d1]``, and only segments in view draw glyphs. With no two in
- * view overlapping by more than the tolerance (``OVERLAP_TOLERANCE_MS``
- * or one pixel of the window, whichever is longer), every glyph sits
- * on the top edge. Otherwise the segments of the topmost track in view
- * keep the top edge and every other segment's glyphs share the bottom
- * edge. Each glyph is drawn when its own time is in the window.
+ * ``[d0, d1]``, and only segments in view draw. With no two in view
+ * overlapping by more than the tolerance (``OVERLAP_TOLERANCE_MS`` or
+ * one pixel of the window, whichever is longer), the row is one line:
+ * every segment in lane 0, every glyph on the top edge, and no run
+ * lines. Otherwise the tracks with a segment in view become lanes in
+ * track order, so a track with nothing in view closes and the lanes
+ * below it move up. Past ``MAX_RUN_LANES``, every track from the last
+ * lane on shares it. Each glyph is drawn when its own time is in the
+ * window.
  *
  * ``toX`` maps a time to an x in the panel's inset wrapper, and
  * ``visibleLeft`` / ``visibleRight`` are the panel's edges in those
  * coordinates.
  */
-export function layoutRowGlyphs({
+export function layoutRowLanes({
   segments,
   d0,
   d1,
@@ -484,9 +602,11 @@ export function layoutRowGlyphs({
   toX: (ms: number) => number;
   visibleLeft: number;
   visibleRight: number;
-}): RowGlyphLayout {
+}): RowLaneLayout {
   const rangeMs = d1 - d0;
-  if (!(rangeMs > 0)) return { laneCount: 1, glyphs: [] };
+  if (!(rangeMs > 0)) {
+    return { laneCount: 1, overflow: false, placements: [], glyphs: [], lines: [] };
+  }
   const spanPx = toX(d1) - toX(d0);
   const msPerPx = spanPx > 0 ? rangeMs / spanPx : 0;
   const toleranceMs = Math.max(OVERLAP_TOLERANCE_MS, msPerPx);
@@ -494,19 +614,40 @@ export function layoutRowGlyphs({
   const tracks = assignSegmentTracks(segments, rangeMs, toleranceMs);
   const inView = segments.filter((s) => s.startMs <= d1 && s.endMs >= d0);
   const split = overlapsInWindow(inView, d0, d1, toleranceMs);
-  let topTrack = Number.POSITIVE_INFINITY;
-  for (const s of inView) topTrack = Math.min(topTrack, tracks.get(segmentKey(s)) ?? 0);
+
+  // The tracks in view become lanes, in track order.
+  const shownTracks = [...new Set(inView.map((s) => tracks.get(segmentKey(s)) ?? 0))].sort(
+    (a, b) => a - b,
+  );
+  const rank = new Map(shownTracks.map((track, i) => [track, i]));
+  const laneCount = split ? Math.min(shownTracks.length, MAX_RUN_LANES) : 1;
+  const overflow = split && shownTracks.length > MAX_RUN_LANES;
+  const laneOf = (segment: RunSegment): number =>
+    split ? Math.min(rank.get(tracks.get(segmentKey(segment)) ?? 0) ?? 0, MAX_RUN_LANES - 1) : 0;
+
+  const placements: SegmentPlacement[] = inView.map((segment) => ({
+    segment,
+    lane: laneOf(segment),
+  }));
+  const runsByLane = new Map<number, Set<string>>();
+  for (const { segment, lane } of placements) {
+    const runs = runsByLane.get(lane) ?? new Set<string>();
+    runs.add(segment.sessionId);
+    runsByLane.set(lane, runs);
+  }
+  // On a one-line row every run shares lane 0, which is not an overflow.
+  const sharedBy = (lane: number) => (split ? (runsByLane.get(lane)?.size ?? 1) : 1);
+  const geometry = laneGeometry(laneCount);
 
   const boxes: GlyphBox[] = [];
-  const bySegmentKey = new Map<string, { segment: RunSegment; lane: 0 | 1 }>();
-  for (const segment of inView) {
+  const placementByKey = new Map<string, SegmentPlacement>();
+  for (const placement of placements) {
+    const { segment, lane } = placement;
     const key = segmentKey(segment);
-    const track = tracks.get(key) ?? 0;
-    const lane: 0 | 1 = split && track !== topTrack ? 1 : 0;
-    bySegmentKey.set(key, { segment, lane });
+    placementByKey.set(key, placement);
     const base = {
       lane,
-      track,
+      track: tracks.get(key) ?? 0,
       sessionId: segment.sessionId,
       segmentIndex: segment.index,
       segmentStartMs: segment.startMs,
@@ -520,11 +661,11 @@ export function layoutRowGlyphs({
         kind: "start",
         timeMs: segment.startMs,
         desiredLeft: startLeft,
-        width: START_GLYPH_SIZE_PX,
+        width: geometry.startGlyph,
       });
     }
     if (segment.endKind !== "open" && segment.endMs >= d0 && segment.endMs <= d1) {
-      const endLeft = toX(segment.endMs) - END_GLYPH_SIZE_PX - GLYPH_BOUNDARY_INSET_PX;
+      const endLeft = toX(segment.endMs) - geometry.endGlyph - GLYPH_BOUNDARY_INSET_PX;
       boxes.push({
         ...base,
         key: `${key}:end`,
@@ -533,25 +674,91 @@ export function layoutRowGlyphs({
         // A segment narrower than its two glyphs puts its ■ right after
         // its own ▶: that is where its time puts it.
         desiredLeft: startDrawn
-          ? Math.max(endLeft, startLeft + START_GLYPH_SIZE_PX + GLYPH_GAP_PX)
+          ? Math.max(endLeft, startLeft + geometry.startGlyph + GLYPH_GAP_PX)
           : endLeft,
-        width: END_GLYPH_SIZE_PX,
+        width: geometry.endGlyph,
       });
     }
   }
 
   const lefts = packGlyphs(boxes, { left: visibleLeft, right: visibleRight });
   const glyphs: RowGlyph[] = boxes.map((box) => {
-    const placed = bySegmentKey.get(segmentKey({ sessionId: box.sessionId, index: box.segmentIndex }))!;
+    const placed = placementByKey.get(
+      segmentKey({ sessionId: box.sessionId, index: box.segmentIndex }),
+    )!;
     return {
       key: box.key,
       segment: placed.segment,
       kind: box.kind,
       lane: box.lane,
+      laneCount,
+      sharedBy: sharedBy(box.lane),
       left: lefts.get(box.key) ?? box.desiredLeft,
       width: box.width,
     };
   });
   glyphs.sort((a, b) => a.lane - b.lane || a.left - b.left);
-  return { laneCount: split ? 2 : 1, glyphs };
+
+  const lines: RowLine[] = [];
+  if (split) {
+    const clampX = (x: number) => Math.min(Math.max(x, visibleLeft), visibleRight);
+    for (const { segment, lane } of placements) {
+      const startInView = segment.startMs >= d0 && segment.startMs <= d1;
+      const endInView =
+        segment.endKind !== "open" && segment.endMs >= d0 && segment.endMs <= d1;
+      const x1 = startInView ? clampX(toX(segment.startMs)) : visibleLeft;
+      const x2 = endInView ? clampX(toX(segment.endMs)) : visibleRight;
+      if (x2 - x1 < MIN_LINE_WIDTH_PX) continue;
+      const quiet = segment.quietSinceMs;
+      const quietX =
+        quiet !== undefined && segment.endKind === "open" && quiet < d1
+          ? Math.min(Math.max(toX(quiet), x1), x2)
+          : null;
+      lines.push({
+        key: `${segmentKey(segment)}:line`,
+        segment,
+        lane,
+        laneCount,
+        sharedBy: sharedBy(lane),
+        x1,
+        x2,
+        quietX,
+        focusable: !startInView && !endInView,
+      });
+    }
+    lines.sort((a, b) => a.lane - b.lane || a.x1 - b.x1);
+  }
+
+  return { laneCount, overflow, placements, glyphs, lines };
+}
+
+/**
+ * The lane a run's event at ``timeMs`` draws in, given that run's
+ * ``placements``: the lane of the segment that holds the time (the
+ * run's own ``session_start`` may be stamped up to the attach match
+ * window before its segment), else of the run's segment nearest in
+ * time, else 0 (the top lane) for a run with no segment in view, such
+ * as the reaper's ``session_end`` long after a lost run's last signal.
+ */
+export function laneAt(
+  placements: readonly SegmentPlacement[] | undefined,
+  timeMs: number,
+): number {
+  if (!placements || placements.length === 0) return 0;
+  let best = placements[0]!;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  for (const placement of placements) {
+    const { startMs, endMs } = placement.segment;
+    const distance =
+      timeMs < startMs - ATTACH_MATCH_WINDOW_MS
+        ? startMs - timeMs
+        : timeMs > endMs
+          ? timeMs - endMs
+          : 0;
+    if (distance < bestDistance) {
+      best = placement;
+      bestDistance = distance;
+    }
+  }
+  return best.lane;
 }

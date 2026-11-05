@@ -59,18 +59,19 @@ test.describe("T139 — A closed run shows its end with its start off-screen", (
 			// Hover until the tooltip shows. The square drifts left as the
 			// window advances, and rows above it can move while the window's
 			// history loads, so a square that slides out from under the
-			// pointer is hovered again where it now is.
+			// pointer is hovered again where it now is. The keep-alive's re-pin
+			// can also move it between a hover and a later read, so each poll
+			// hovers and reads the text in one step.
 			const tooltip = page.locator(`[data-testid="swimlane-run-bracket-tooltip-${prefix}"]`);
 			await expect
 				.poll(
 					async () => {
 						await end.hover();
-						return tooltip.isVisible();
+						return (await tooltip.textContent({ timeout: 1_000 }).catch(() => null)) ?? "";
 					},
-					{ timeout: 10_000 },
+					{ timeout: 15_000 },
 				)
-				.toBe(true);
-			await expect(tooltip).toContainText(/end:\s+\d{2}:\d{2}:\d{2}/);
+				.toMatch(/end:\s+\d{2}:\d{2}:\d{2}/);
 		});
 	}
 });

@@ -164,11 +164,20 @@ export const CONNECTOR_FIXTURE = {
  *  coordinator and the three open worker runs in one statement on the
  *  full seed and every keep-alive cycle, posting the coordinator's
  *  spawn tool_call 1 s before the workers' tool_calls; T56's
- *  sub-agent refresh leaves every fan-out run alone. */
+ *  sub-agent refresh leaves every fan-out run alone. The coordinator's
+ *  second sub-agent, ``/wide``, has five runs started together in the
+ *  same statement: one more than a row's four run lanes. */
 export const FANOUT_FIXTURE = {
   coordinatorName: "e2e-test-fanout@e2e-host-fanout",
   workerName: "e2e-test-fanout@e2e-host-fanout/worker",
   workerRole: "worker",
+  /** The three worker runs started together. */
+  workerRoles: ["fanout-worker-1", "fanout-worker-2", "fanout-worker-3"],
+  /** The worker's earlier lost run. */
+  workerLostRole: "fanout-worker-lost",
+  wideName: "e2e-test-fanout@e2e-host-fanout/wide",
+  /** The five wide runs started together. */
+  wideRoles: ["fanout-wide-1", "fanout-wide-2", "fanout-wide-3", "fanout-wide-4", "fanout-wide-5"],
 } as const;
 
 /** The run-glyph lane fixtures (canonical.json roles that declare
@@ -209,6 +218,10 @@ export const LANE_FIXTURES = {
    *  last seen 20 min ago, reaped 2 min ago: only the agent's
    *  recent_sessions rollup carries it. */
   reapedOld: { name: "e2e-test-run-reaped-old", roles: { run: "reaped-old-run" } },
+  /** A stale run open from -240 s, last seen at -200 s, beside an
+   *  active run open from -200 s: two lanes, the stale run's line dashed
+   *  from its last signal. */
+  quiet: { name: "e2e-test-run-quiet", roles: { stale: "quiet-stale", live: "quiet-live" } },
 } as const;
 
 /** The session id seed.py derives for a canonical (agent, role) pair:

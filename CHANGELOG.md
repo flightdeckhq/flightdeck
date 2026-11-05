@@ -118,6 +118,19 @@ All notable changes to Flightdeck are documented here.
   capture, nothing of it is staged or stored. `[REDACTED]` now counts
   as no content, as `<REDACTED>` does
   ([#253](https://github.com/flightdeckhq/flightdeck/pull/253)).
+- **An agent's Fleet row splits into lanes while its runs overlap.**
+  When a Claude Code coordinator fans out several sub-agents of one
+  role, their runs used to stack their circles on one line. While two or
+  more of an agent's runs overlap in the window, its row (still one row,
+  48 px tall) now splits into up to four lanes: each run's circles,
+  ▶ and ■ sit on its own lane, a line joins them, and a sub-agent
+  connector ends on its run's lane. A fifth run onwards shares the
+  fourth lane, whose marks say how many runs share it. Circles shrink
+  with the lane count (22, 18, 12, then 10 px without an icon). A stale
+  run's line is dashed from its last signal. A run line opens its run
+  like a glyph, and takes keyboard focus when the run's glyphs are out
+  of view. The row is one line again once the overlap leaves the window
+  ([#256](https://github.com/flightdeckhq/flightdeck/pull/256)).
 
 ### Fixed
 

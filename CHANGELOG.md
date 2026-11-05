@@ -114,13 +114,20 @@ All notable changes to Flightdeck are documented here.
   framework sent them, under `provider=otel_genai`, and served by
   `GET /v1/events/{id}/content`. Google ADK's content arrives on its log
   records and is joined to its calls whichever arrives first. Content
-  waits in a staging table only while its trace is assembled. Without
+  waits in a staging table until its trace is assembled. Without
   capture, nothing of it is staged or stored. `[REDACTED]` now counts
   as no content, as `<REDACTED>` does
   ([#253](https://github.com/flightdeckhq/flightdeck/pull/253)).
 
 ### Fixed
 
+- **A U+0000 in an event no longer fails it.** Postgres cannot store
+  U+0000 (sent as `\u0000` in JSON) or an unpaired UTF-16
+  surrogate escape, so one in a prompt, a tool result or a name made the
+  worker fail the event on every redelivery, and made an OpenTelemetry
+  GenAI export fail on every retry. Ingestion now replaces each with
+  U+FFFD in events it receives or builds and in records it
+  stages ([#253](https://github.com/flightdeckhq/flightdeck/pull/253)).
 - **Captured content survives several worker replicas.** The workers
   share one NATS consumer (the Helm chart runs two), so one replica
   could store a call's content before another had stored its session's

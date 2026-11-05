@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/pgtext"
 	collogs "go.opentelemetry.io/proto/slim/otlp/collector/logs/v1"
 	colmetrics "go.opentelemetry.io/proto/slim/otlp/collector/metrics/v1"
 	coltrace "go.opentelemetry.io/proto/slim/otlp/collector/trace/v1"
@@ -379,7 +380,7 @@ func otlpHandler(
 		if mapping.Stage != nil {
 			refused, message, err := mapping.Stage(ctx)
 			if err != nil {
-				slog.Error("otlp staging failed", "signal", sig.name, "err", err)
+				slog.Error("otlp staging failed", "signal", sig.name, "err", pgtext.ErrorClass(err))
 				w.Header().Set("Retry-After", strconv.Itoa(otlpStageRetryAfterSeconds))
 				fail(http.StatusServiceUnavailable, grpcCodeUnavailable,
 					"staging records failed; retry the export")

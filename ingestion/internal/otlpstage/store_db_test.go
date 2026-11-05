@@ -347,6 +347,62 @@ func TestStageFirstRecordsIdentityWins(t *testing.T) {
 	}
 }
 
+// Text Postgres cannot store is staged as U+FFFD, so one record cannot
+// fail the staging write of a whole request on every retry: a U+0000
+// in a captured tool result, in an agent name (its text column and its
+// meta), in the resource and an unpaired surrogate escape in content.
+// The caller's batch is not changed.
+func TestStageReplacesTextPostgresCannotStore(t *testing.T) {
+	e := newTestEnv(t)
+	key := e.newKey()
+	nul := string(rune(0))
+	result, _ := json.Marshal(map[string]string{"gen_ai.tool.call.result": "order" + nul + "42"})
+	agent := span(1, 0)
+	agent.Op, agent.Name, agent.AgentName = "invoke_agent", "invoke_agent a"+nul+"b", "a"+nul+"b"
+	agent.Meta, _ = json.Marshal(map[string]string{"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "a" + nul + "b"})
+	tool := captured(span(2, 1), string(result))
+	lone := captured(span(3, 1), `{"gen_ai.input.messages":"\ud800 secret"}`)
+	b := e.batch(key, agent, tool, lone)
+	b.TokenName = "token" + nul
+	b.Resource, _ = json.Marshal(map[string]string{"service.name": "svc" + nul})
+	b.Records[0].Capture = true
+	if res := e.stage(b); res.Staged != 3 {
+		t.Fatalf("stage = %+v, want 3 staged", res)
+	}
+	if string(b.Records[1].Content) != string(result) || b.Records[0].AgentName != "a"+nul+"b" {
+		t.Error("the caller's batch was changed")
+	}
+	tr := e.traceRow(key)
+	var res map[string]any
+	_ = json.Unmarshal(tr.Resource, &res)
+	if tr.TokenName != "token\ufffd" || res["service.name"] != "svc\ufffd" {
+		t.Errorf("row token name %q resource %s", tr.TokenName, tr.Resource)
+	}
+	lt, err := e.store.LoadTrace(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range lt.Facts {
+		var meta, content map[string]any
+		_ = json.Unmarshal(f.Meta, &meta)
+		_ = json.Unmarshal(f.Content, &content)
+		switch f.SpanID {
+		case spanID(1):
+			if f.AgentName != "a�b" || f.Name != "invoke_agent a�b" || meta["gen_ai.agent.name"] != "a�b" {
+				t.Errorf("agent record %q %q meta %v", f.AgentName, f.Name, meta)
+			}
+		case spanID(2):
+			if content["gen_ai.tool.call.result"] != "order�42" {
+				t.Errorf("tool content %s", f.Content)
+			}
+		case spanID(3):
+			if content["gen_ai.input.messages"] != "� secret" {
+				t.Errorf("unpaired surrogate content %s", f.Content)
+			}
+		}
+	}
+}
+
 func TestStageWritesTheTraceRowBeforeItsRecords(t *testing.T) {
 	e := newTestEnv(t)
 	ctx := context.Background()

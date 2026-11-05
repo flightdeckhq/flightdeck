@@ -2873,6 +2873,20 @@ others, so a burst is reported even when nothing follows it. A
 negative count is refused, as a negative `tokens_*` is: it comes from a
 broken client, not a newer one.
 
+Text Postgres cannot store is replaced, not refused. U+0000 (the JSON
+escape `\u0000`) and a UTF-16 surrogate escape not paired with its
+other half are valid JSON that `jsonb` refuses, so the worker would fail
+an event carrying one on every redelivery. Ingestion replaces each with
+U+FFFD (`\ufffd`) in the body of every event before validating it,
+whether posted or built by the OTLP receiver, and in every string it
+stages for the GenAI dialect (metadata and content alike), rather than
+answering 400: the character is almost always inside captured content (a
+tool's binary output), and refusing would also drop the event's tokens.
+The escape is rewritten in place, so the body keeps its length and every
+other value its spelling. A staging write the database refuses is logged
+by its SQLSTATE and the table it names, never by the database's message,
+detail or context, which quote the refused value.
+
 Field names match exactly, and a case variant of a known field name is
 refused. Every check above reads a field under its exact name, while the
 worker decodes an event into typed structures whose field matching
@@ -3695,8 +3709,9 @@ Tokens come from that span only: never from agent spans (Pydantic AI's
 `gen_ai.aggregated_usage.*`, the `gen_ai.usage.*` on Strands' agent
 spans), from ADK's log records, which repeat their span's usage, or from
 metrics. A failed model span (ERROR status) is an `llm_error` on its
-agent's session, never a `post_call`; its error text is content, kept
-only with capture on. The four frameworks' recordings carry no usage on
+agent's session, never a `post_call`. Its error text is content and
+is never read for it, capture on or off: the `llm_error` names the
+error by its class (below). The four frameworks' recordings carry no usage on
 one (see `tests/fixtures/otlp/GENAI_COMPARISON.md` > A failed model
 call), but a provider may bill a call that then fails, so the usage is
 read from the failed span, else from the outermost level of model-call

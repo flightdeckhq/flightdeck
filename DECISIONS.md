@@ -515,6 +515,26 @@ contract, and offset pages still need the tiebreaker); paging by a new
 sequence or UUIDv7 column (a migration and backfill of every event, and
 it orders by arrival, not by the event time the views sort by).
 
+## D243 -- Concurrent runs of one agent split its swimlane row into lanes
+
+**Date:** 2026-11-02
+**Decision:** extends D157: each agent keeps one row, one label and a fixed
+48 px height. While two or more of its runs overlap in the window, the row
+splits into up to four lanes, each holding one run's circles, glyphs and a
+line joining them; from a fifth lane on, runs share the fourth. A run's
+lane follows its track (the first track free at its start and still in
+view), so sequential runs share a lane and a resumed run's segments may sit
+in different lanes. The row is one line again once no overlap is in view.
+**Why:** Claude Code fans out same-role sub-agents routinely (four runs of
+one agent were seen open at once), more than a top and a bottom edge can
+tell apart. The Agent SDK path is not helped: its sub-agent turns fold into
+the run's own session.
+**Rejected alternative:** per-run sub-rows or a row that grows per lane
+(rows below shift while live, which D157 rejected); a per-spawn agent
+identity (reverses D115 and D126); hover-only linking (nothing to see at a
+glance or on touch); a three-lane cap (keeps circle icons, but a fourth
+concurrent run would share a lane).
+
 ## D244 -- Ingestion stores an unknown stream outcome, abort reason or llm_error type as `other` and refuses a negative stream count
 
 **Date:** 2026-11-02

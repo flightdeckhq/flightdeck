@@ -6844,7 +6844,9 @@ still applies inside each circle via `EventNode.isVisible`.
 `dashboard/src/components/timeline/SwimLane.tsx` renders one row per
 agent, with one label, one status badge and a fixed 48 px height. Every
 event of every one of the agent's runs streams onto that row; there are
-no per-run rows. Sub-agent rows render indented beneath their parent
+no per-run rows. While two or more of the agent's runs overlap inside
+the window, the row's timeline panel splits into run lanes, one per run
+(see Run lanes); otherwise every run shares one line. Sub-agent rows render indented beneath their parent
 via the `data-topology` attribute (`"root"` or `"child"`); the indent
 and background tint live in `globals.css` under the
 `[data-topology="child"]` selector. The tint is translucent, so a child
@@ -6977,28 +6979,69 @@ The run drawer lists every event of a run, gaps included. The events
 cache notifies its readers on every write, and SwimLane re-derives the
 row's segments when it changes.
 
-**Run anchors.** Every segment of every run the row holds gets a
+**Run lanes.** Every segment of every run the row holds gets a
 track, in start order, with ties broken by run id: the lowest track
 that is free when the segment starts and whose last segment ended no
-more than one window span earlier; otherwise a new track. A track is
-free once its last segment has ended, within a tolerance
-(`OVERLAP_TOLERANCE_MS`, 1 s, or one pixel of the window when that is
-longer). The worker stamps a run's `started_at` and the previous run's
-`ended_at` with its own clock as it processes each event, so a hand-off
-can overlap by a few milliseconds. A gap frees its track, so a run
-that ran inside another run's gap shares that track.
+more than one window span earlier; otherwise a new track below the
+others. A track is free once its last segment has ended, within a
+tolerance (`OVERLAP_TOLERANCE_MS`, 1 s, or one pixel of the window when
+that is longer). The worker stamps a run's `started_at` and the
+previous run's `ended_at` with its own clock as it processes each
+event, so a hand-off can overlap by a few milliseconds. A gap frees its
+track, so a run that ran inside another run's gap shares that track,
+and the segments of a resumed run can sit on different tracks.
 
 A segment is in view when it overlaps the window, and only segments in
 view count. When no two segments in view overlap inside the window by
-more than the tolerance, every glyph sits on the row's top edge
-(`data-lane-count="1"`); a hand-off does not count as an overlap.
-Otherwise the segments of the topmost track in view keep the top edge
-and every other segment's glyphs share the bottom edge
-(`data-lane-count="2"`); each glyph carries its edge as
-`data-run-lane`, `0` or `1`. Circles stay on the row's centre line.
+more than the tolerance, the row is one line (`data-lane-count="1"`):
+22 px circles on the row's centre line and glyphs on its top edge. A
+hand-off does not count as an overlap. Otherwise the tracks with a
+segment in view become lanes, in track order: the panel's 47 px of
+content (the 48 px row less its bottom border) splits into equal
+lanes, and each lane draws its segments' circles, glyphs and run line
+on its centre (`data-lane-count`, 2 to 4).
+
+| Lanes | Lane height | Circle | Icon | ▶ / ■ |
+| --- | --- | --- | --- | --- |
+| 1 | 47 px | 22 px | 13 px | 10 / 11 px, top edge |
+| 2 | 23.5 px | 18 px | 11 px | 10 / 11 px, lane centre |
+| 3 | 15.7 px | 12 px | 8 px | 10 / 11 px, lane centre |
+| 4 | 11.75 px | 10 px | none | 8 / 9 px, lane centre |
+
+`LANE_GEOMETRY` in `lib/swimlane-lanes.ts` holds the table. At four
+lanes the circles of neighbouring lanes stay 1.75 px apart, and a
+10 px circle has no room for an icon, so it is coloured only.
+
+As a result:
+- a run that ends as another starts hands its lane on;
+- runs that start together get separate lanes;
+- a track with nothing in view closes, and the lanes below it move
+  up, so the top lane is always in use;
+- a run that starts takes a free lane already shown or opens one at
+  the bottom, so it moves no shown run. The exception is a run first
+  drawn after its start (a page catching up after a pause or in a
+  background tab): it can reuse a track that left the window in the
+  meantime, and the lanes below it move down;
+- a range switch re-assigns every track, since the warm span is one
+  window.
+
+At most `MAX_RUN_LANES` (4) lanes are drawn. When more tracks are in
+view, every segment from the fourth track on shares the fourth lane,
+the overflow lane: the row carries `data-lane-overflow="true"`, and
+each glyph and line in that lane says how many runs share it.
+
+Each segment's circles, glyphs and line carry its lane as
+`data-run-lane` (`0` is the top lane). A circle takes the lane of its
+run's segment that holds its time; an event outside every segment in
+view, such as the reaper's synthetic `session_end` long after the run's
+last signal, takes the lane of the run's nearest segment in view, and
+otherwise the top lane. A layout change applies at once, with no
+animation; the lanes change only when a segment starts, ends or leaves
+the window.
 
 **Run glyphs.** `RunBracket.tsx` draws each mark SwimLane places, at
-the start and end of each segment in view:
+the start and end of each segment in view, on the row's top edge on a
+one-line row and on its lane's centre on a split row:
 - The start glyph is a filled triangle (▶) in `var(--accent)`. Its
   flat base sits 1 px inside the segment's start, and it points into
   the segment.
@@ -7015,7 +7058,7 @@ Each glyph is drawn when its own time is in the window, so a segment
 that started before the window still shows its end. A segment's
 square always follows its own triangle, past the segment's end when
 the segment is narrower than the two glyphs, so a short run reads ▶■.
-Glyphs on one edge are spread apart where they would overlap: they sit
+Glyphs in one lane are spread apart where they would overlap: they sit
 side by side in time order, 1 px apart, with an end before a start at
 the same instant, so a hand-off reads ■▶. A glyph that would cross the
 panel's right edge is pulled back inside it, with the glyphs before
@@ -7025,33 +7068,59 @@ run's square needs to follow its triangle) from where its time puts
 it, so on a busy row, where spreading every glyph would carry it far
 from its run, glyphs past that limit overlap near their own time
 instead. Every glyph also stays inside the panel, never under the
-label column. On the row's top and bottom edges
-the glyphs stay clear of the circles on the centre line, so every
-circle's centre, including the circles at a segment's start and end,
-stays clickable.
+label column. A glyph sits inside its segment's span, so the centre of
+the circle at a segment's start or end stays clickable.
 
 Each glyph is a `<button>` at z-index 2, with a `var(--accent)`
 focus-visible outline and an `aria-label` that names the run, the
-glyph and its time. Hover or focus opens a portal tooltip with the run
-id prefix, the segment's start, its end (`hh:mm:ss`, `running`, or
-`lost · last seen hh:mm:ss`), the run's state and total tokens, and,
-on a resumed run, which segment it is (`segment 2 of 3`). In the Fleet
-view a click opens the run drawer scoped to that run. Glyphs are
-React-rendered SVG positioned with the shared `xScale` (D3 is used for
-math only, never to manipulate the DOM).
+glyph, its time and, on a split row, its lane. Hover or focus opens a
+portal tooltip with the run id prefix, the segment's start, its end
+(`hh:mm:ss`, `running`, or `lost · last seen hh:mm:ss`), the run's
+state and total tokens, on a resumed run which segment it is
+(`segment 2 of 3`), and on a split row its lane (`lane 2 of 3`, or
+`lane 4 of 4 · shared by 2 runs`). A click opens the run drawer scoped
+to that run, in the Fleet view and in the per-agent swimlane modal.
+Glyphs are React-rendered SVG positioned with the shared `xScale` (D3
+is used for math only, never to manipulate the DOM).
+
+**Run lines.** On a split row each segment in view draws a 2 px line
+in `var(--accent)` at 60% opacity along its lane's centre
+(`data-testid="swimlane-run-line-<id8>"`, a `<button>` under the
+circles and glyphs):
+- it runs from the segment's start, or from the panel's left edge when
+  the segment started earlier, to its end, or to the right edge while
+  the segment is open;
+- a `stale` run's open segment is dashed from its `last_seen_at` on
+  (`data-tail="quiet"`, else `live`), the worker's own stale mark, so
+  a run that went quiet reads as such without the dashboard keeping a
+  threshold of its own;
+- it rises to full opacity while any mark of its run (circle, glyph or
+  line) on the row is hovered or focused;
+- a click opens the run drawer, like a glyph;
+- it takes keyboard focus (with the glyphs' focus-visible outline)
+  only when neither of its segment's glyphs is in view, so every
+  segment on a split row has a keyboard path without doubling the tab
+  stops.
+
+The overflow lane's lines overlap one another, so they take no pointer
+input there (the lane's glyphs and circles do); they still draw, show
+the hovered run's extent and take keyboard focus when their glyphs are
+out of view. A one-line row draws no lines.
 
 **Event circles.** `EventNode.tsx` draws each event as a 22 px circle
-(`EVENT_CIRCLE_SIZE`), coloured by event type, with a lucide icon, a
-portal tooltip and a 1.25x hover scale; MCP events are hexagons. A
+(`EVENT_CIRCLE_SIZE`), or the lane size above on a split row, coloured
+by event type, with a lucide icon sized to the circle (none at 10 px),
+a portal tooltip and a 1.25x hover scale; MCP events are hexagons. A
 circle is centred on its event's x inside the panel's inset wrapper
 (below), which puts circles, and the run glyphs beside them, 19 px
 right of their time's grid line, since the time axis and the grid
 overlay are not inset. It
-sits on the row's centre line and carries `data-event-id` and
-`data-session-id`. The vertical centring
-is a single CSS translate (`top: 50%` with `translate: 0 -50%`); the
-hover scale is a separate `transform`, so it scales about the circle's
-centre.
+sits on the row's centre line, or its lane's centre, and carries
+`data-event-id`, `data-session-id` and `data-run-lane`. The vertical
+centring is a single CSS translate (`top` at the line's percentage
+with `translate: 0 -50%`); the hover scale is a separate `transform`,
+so it scales about the circle's centre. Sub-agent connectors measure
+the rendered circles, so they land on a circle in any lane.
 
 The panel's positioned wrapper is inset 19 px
 (`TIMELINE_LEFT_INSET_PX`: an 8 px buffer plus half a circle), so the
@@ -7061,7 +7130,7 @@ within half a circle plus the buffer of "now" are clipped at the
 panel's right edge; the grid overlay draws the now line.
 
 Circles are coloured by event type, never by run, and render at once,
-with no mount fade.
+with no mount fade. Runs are told apart by lane, line and glyphs.
 
 `SwimLane` is wrapped in `React.memo` with a custom comparator that
 includes `activeFilter`, `leftPanelWidth`, `sessionVersions` and the
@@ -7074,7 +7143,9 @@ the `sessionVersions` map.
 
 `VirtualizedSwimLane.tsx` wraps `SwimLane` with an
 IntersectionObserver-backed virtualizer so off-screen agent rows
-render as lightweight placeholders. Specs that locate a fixture
+render as lightweight placeholders. A row keeps its 48 px height in
+every lane layout, so a placeholder never changes size when a row
+splits. Specs that locate a fixture
 agent must scroll the fixture into view before asserting on its
 `data-testid` (see `bringSwimlaneRowIntoView` in
 `tests/e2e/_fixtures.ts`).

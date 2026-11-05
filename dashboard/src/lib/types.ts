@@ -247,11 +247,13 @@ export interface Session {
    */
   capture_enabled?: boolean;
   /**
-   * The session's stored capture posture (``sessions.capture_prompts``)
-   * from ``GET /v1/sessions/:id``: true or false once a session_start
-   * declared it, null while none has. Absent on rows from other
-   * endpoints. The Prompts tab tells a capture-off run from a
-   * capture-on run that stored no content by it.
+   * The session's stored capture posture (``sessions.capture_prompts``):
+   * true or false once a session_start declared it, null while none
+   * has. Only the api's GetSession reads it, so it arrives on
+   * ``GET /v1/sessions/:id`` and on the fleet WebSocket update, which
+   * carries the same session; a Session the dashboard builds from an
+   * agent's recent runs does not carry it. The Prompts tab tells a
+   * capture-off run from a capture-on run that stored no content by it.
    */
   capture_prompts?: boolean | null;
   /**

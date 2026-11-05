@@ -4526,7 +4526,7 @@ never carries content inline.
 | `response` | model response | `{}` | `{}` | `{}` | `{}` | resource body (overflow) |
 | `input` | Responses `input` (NULL for chat) | embeddings input | NULL | NULL | NULL | NULL |
 | `tool_input` | NULL | NULL | tool args | prompt args | tool input | NULL |
-| `tool_output` | NULL | NULL | tool result | rendered messages | tool output (post-hoc) | NULL |
+| `tool_output` | NULL | NULL | tool result | rendered messages | NULL (the result is in the next call's messages) | NULL |
 | `embedding_output` | NULL | output vectors | NULL | NULL | NULL | NULL |
 
 `tool_input` / `tool_output` are dedicated columns for
@@ -6639,7 +6639,15 @@ with content, otherwise the capture-disabled message. Provider
 terminology is preserved exactly — Anthropic sessions display
 `system`, `messages`, `tools`, and `response` as separate fields; OpenAI
 sessions display `messages` (system role included), `tools`, and
-`response`. Content stored with `provider=otel_genai` (an OpenTelemetry
+`response`. A tool call's content (the sensor's `tool_call`,
+`mcp_tool_call` and `mcp_prompt_get`, and Claude Code's `tool_call`
+over OpenTelemetry) shows its stored `tool_input` as Arguments and its
+`tool_output` as Result, an object as labelled fields, text as written
+and any other value as JSON; the `{}` such a row holds in `response`
+is not shown as a response. The Claude Code plugin's hook `tool_call`
+keeps its `tool_use` block under `tools` and its `tool_result` under
+`response`, and shows them there. Content stored with
+`provider=otel_genai` (an OpenTelemetry
 GenAI framework's; see OTLP ingest > GenAI dialect > Capture) is
 displayed as the framework sent it by its own renderer, never through a
 provider's branch, under an `OpenTelemetry GenAI` header:

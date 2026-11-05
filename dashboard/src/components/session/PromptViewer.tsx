@@ -337,6 +337,14 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
   const messages = Array.isArray(content.messages) ? content.messages : [];
   const provider = content.provider ?? "unknown";
   const model = content.model ?? "";
+  // A tool call's content row (the sensor's tool_call, mcp_tool_call
+  // and mcp_prompt_get, Claude Code's tool_call over OpenTelemetry)
+  // keeps its arguments and result in tool_input / tool_output and
+  // stores ``{}`` in the response column, which is not a response.
+  const hasToolInput = content.tool_input != null;
+  const hasToolOutput = content.tool_output != null;
+  const responseIsToolPlaceholder =
+    (hasToolInput || hasToolOutput) && isPlainObject(content.response) && Object.keys(content.response).length === 0;
 
   return (
     <div className="flex flex-col px-3 py-2">
@@ -438,15 +446,60 @@ export function PromptViewer({ eventId }: PromptViewerProps) {
       )}
 
       {/* Response */}
-      {content.response != null && (
+      {content.response != null && !responseIsToolPlaceholder && (
         <Section title="Response">
           <ViewBox key={`${eventId}-response`} raw={content.response} name="the response" testId="prompt-box-response">
             <PrettyResponse response={content.response} provider={provider} />
           </ViewBox>
         </Section>
       )}
+
+      {/* A tool call's arguments and result, as stored. */}
+      {hasToolInput && (
+        <Section title="Arguments">
+          <ViewBox key={`${eventId}-tool-input`} raw={content.tool_input} name="the tool's arguments" testId="prompt-box-tool-input">
+            <ToolValue value={content.tool_input} />
+          </ViewBox>
+        </Section>
+      )}
+
+      {hasToolOutput && (
+        <Section title="Result">
+          <ViewBox key={`${eventId}-tool-output`} raw={content.tool_output} name="the tool's result" testId="prompt-box-tool-output">
+            <ToolValue value={content.tool_output} />
+          </ViewBox>
+        </Section>
+      )}
     </div>
   );
+}
+
+/** True when a stored value holds something to show: not null, and not
+ *  an empty string, list or object. */
+function hasStoredValue(value: unknown): boolean {
+  if (value == null) return false;
+  if (typeof value === "string") return value.length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (isPlainObject(value)) return Object.keys(value).length > 0;
+  return true;
+}
+
+/** A tool's arguments or result as stored: an object as labelled
+ *  fields, text as written (pretty-printed when it holds JSON), any
+ *  other value as JSON. */
+function ToolValue({ value }: { value: unknown }) {
+  if (!hasStoredValue(value)) {
+    return <div className="text-xs" style={{ color: "var(--text-muted)" }}>(empty)</div>;
+  }
+  if (typeof value === "string") return <TextOrJson text={value} />;
+  if (isPlainObject(value)) {
+    return (
+      <div data-testid="tool-value-fields" className="rounded-md p-2.5" style={{ background: "var(--bg-elevated)" }}>
+        <KeyValueList data={value} />
+      </div>
+    );
+  }
+  return <JsonBox data={value} />;
 }
 
 /* ---- OpenTelemetry GenAI content ----
@@ -483,15 +536,6 @@ function genaiList(value: unknown): unknown[] {
   if (isPlainObject(value)) return Object.keys(value).length > 0 ? [value] : [];
   if (typeof value === "string") return value.trim() ? [value] : [];
   return value == null ? [] : [value];
-}
-
-/** True when a stored value holds something to show. */
-function hasGenaiValue(value: unknown): boolean {
-  if (value == null) return false;
-  if (typeof value === "string") return value.length > 0;
-  if (Array.isArray(value)) return value.length > 0;
-  if (isPlainObject(value)) return Object.keys(value).length > 0;
-  return true;
 }
 
 /** The system instructions: ingestion keeps them as JSON in the text
@@ -775,14 +819,14 @@ function OtelGenaiContent({ content, eventId }: { content: EventContent; eventId
   const messages = Array.isArray(content.messages) ? content.messages : [];
   const response = genaiList(content.response);
   const tools = Array.isArray(content.tools) ? content.tools : [];
-  const hasArgs = hasGenaiValue(content.tool_input);
-  const hasResult = hasGenaiValue(content.tool_output);
+  const hasArgs = hasStoredValue(content.tool_input);
+  const hasResult = hasStoredValue(content.tool_output);
   const recognised =
     system !== undefined || messages.length > 0 || response.length > 0 || hasArgs || hasResult;
   // Content with none of the above (tool definitions alone, or a field
   // this renderer does not know) shows every stored field as it is.
   const stored = Object.fromEntries(
-    Object.entries(content).filter(([k, v]) => !OTEL_GENAI_ID_FIELDS.has(k) && hasGenaiValue(v)),
+    Object.entries(content).filter(([k, v]) => !OTEL_GENAI_ID_FIELDS.has(k) && hasStoredValue(v)),
   );
 
   return (

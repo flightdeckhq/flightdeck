@@ -2227,9 +2227,10 @@ function PromptsTab({
   focusedEventId,
   onSelectEvent,
 }: PromptsTabProps) {
-  // post_call carries prompt+response for an LLM turn; tool_call now
-  // also carries content when the plugin has captureToolInputs on
-  // (tools[] = sanitised tool input, response[] = tool_result when
+  // post_call carries prompt+response for an LLM turn; tool_call
+  // carries content when its arguments were captured: the sensor's
+  // in tool_input, the Claude Code plugin's hook as tools[] (the
+  // sanitised tool input) and response[] (the tool_result, when
   // capturePrompts is also on). Both belong in the Prompts tab.
   const contentEvents = events.filter(
     (e) =>

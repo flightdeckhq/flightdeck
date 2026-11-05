@@ -209,7 +209,7 @@ type Session struct {
 	// Prompts tab tells a capture-off run (the disabled state) from a
 	// capture-on run that stored no content, which CaptureEnabled
 	// alone cannot: a framework may declare capture and send nothing.
-	CapturePrompts *bool `json:"capture_prompts"`
+	CapturePrompts *bool `json:"capture_prompts" extensions:"x-nullable"`
 
 	// CloseReasons lists the distinct close_reason values across the
 	// session's session_end events (closeReasonsSQL), always an array.

@@ -16,8 +16,10 @@ import { test, expect } from "@playwright/test";
  *      including child rows whose 28-px indent narrows the
  *      available width.
  *   2. The leftmost event circles sit inset from the timeline
- *      panel's left edge by ``TIMELINE_LEFT_BUFFER_PX`` (8 px)
- *      so circles never crowd the badge boundary.
+ *      panel's left edge: the Timeline's scale starts
+ *      ``TIMELINE_SCALE_INSET_PX`` (half a circle plus an 8 px
+ *      buffer) into the panel, so circles never crowd the badge
+ *      boundary.
  *   3. Run-bracket tooltips on bottom-anchored brackets (
  *      concurrent runs staggered to the row's bottom half) flip
  *      their anchor to ``bottom: 0`` so they extend UPWARD into
@@ -77,9 +79,9 @@ test.describe("T103 — swimlane right-edge clearance", () => {
   test("event circles render inset from the panel's left edge", async ({
     page,
   }) => {
-    // Buffer constant in SwimLane.tsx is 8 px. Circles at the
-    // OLDEST visible time render at ``panel.left + buffer``
-    // rather than flush against panel.left.
+    // The scale's inset in Timeline.tsx leaves an 8 px buffer
+    // between the panel's left edge and a circle at the OLDEST
+    // visible time, rather than flush against panel.left.
     await page.setViewportSize({ width: 1700, height: 900 });
     await page.goto("/");
     await page.waitForSelector('[data-testid="fleet-main-scroll"]', {

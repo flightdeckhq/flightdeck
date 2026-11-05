@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { scaleTime } from "d3-scale";
+import type { ScaleTime } from "d3-scale";
 import { TIMELINE_RANGE_MS, type TimeRange } from "@/lib/constants";
 import { formatRelativeLabel } from "@/lib/time";
 
@@ -26,31 +26,28 @@ import { formatRelativeLabel } from "@/lib/time";
 const NUM_LABELS = 6;
 
 interface TimeAxisProps {
-  start: Date;
-  end: Date;
-  width: number;
+  /** The Timeline's scale, shared with the rows and the grid overlay,
+   *  so each label sits on its grid line and over the circles at its
+   *  time. Its domain ends at "now" (or the paused instant). */
+  scale: ScaleTime<number, number>;
   timeRange: TimeRange;
   paused?: boolean;
 }
 
-export function TimeAxis({ start, end, width, timeRange, paused = false }: TimeAxisProps) {
-  const scale = useMemo(
-    () => scaleTime().domain([start, end]).range([0, width]),
-    [start, end, width],
-  );
+export function TimeAxis({ scale, timeRange, paused = false }: TimeAxisProps) {
+  const endMs = scale.domain()[1]?.getTime() ?? 0;
 
   const rangeMs = TIMELINE_RANGE_MS[timeRange] ?? 60_000;
 
   // Build six evenly spaced labels. i=0 is the leftmost (oldest)
   // edge of the timeline, i=NUM_LABELS-1 is the rightmost ("now"
-  // / "paused"). xPos uses the d3 scale so the "now" label sits
-  // exactly at the right edge regardless of width.
+  // / "paused"). xPos uses the shared scale, so the "now" label ends
+  // on the now line.
   const labels = useMemo(() => {
-    const referenceTime = end;
     return Array.from({ length: NUM_LABELS }, (_, i) => {
       const fraction = i / (NUM_LABELS - 1);
       const msAgo = Math.round(rangeMs * (1 - fraction));
-      const xPos = scale(new Date(referenceTime.getTime() - msAgo));
+      const xPos = scale(new Date(endMs - msAgo));
       const label =
         msAgo === 0
           ? paused
@@ -59,7 +56,7 @@ export function TimeAxis({ start, end, width, timeRange, paused = false }: TimeA
           : formatRelativeLabel(msAgo);
       return { xPos, label, isNow: msAgo === 0, index: i };
     });
-  }, [scale, rangeMs, end, paused]);
+  }, [scale, rangeMs, endMs, paused]);
 
   return (
     <div

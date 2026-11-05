@@ -9,7 +9,8 @@ import {
 //
 // The overlay used to compute its endpoints from the time scale and
 // the row's centre, which put every end 19 px left of its circle (the
-// panel's inset) and about 11 px below it (the circles sat high).
+// panel's inset at the time) and about 11 px below it (the circles sat
+// high).
 // Timeline.tsx now measures the rendered circles: the path starts on
 // the rim of the parent's spawn-event circle and ends at the centre of
 // the child's first in-window circle, both found by `data-event-id`.

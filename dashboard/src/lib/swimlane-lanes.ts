@@ -706,8 +706,11 @@ export function layoutRowLanes({
       const startInView = segment.startMs >= d0 && segment.startMs <= d1;
       const endInView =
         segment.endKind !== "open" && segment.endMs >= d0 && segment.endMs <= d1;
+      // A segment that started before the window runs in from the
+      // panel's edge; one still open runs to "now", where nothing has
+      // happened yet beyond.
       const x1 = startInView ? clampX(toX(segment.startMs)) : visibleLeft;
-      const x2 = endInView ? clampX(toX(segment.endMs)) : visibleRight;
+      const x2 = clampX(toX(endInView ? segment.endMs : d1));
       if (x2 - x1 < MIN_LINE_WIDTH_PX) continue;
       const quiet = segment.quietSinceMs;
       const quietX =

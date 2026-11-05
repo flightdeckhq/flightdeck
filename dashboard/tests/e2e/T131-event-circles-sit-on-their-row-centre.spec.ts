@@ -11,9 +11,8 @@ import {
 // `-translate-y-1/2` emits the separate `translate` property); an
 // inline `translateY(-50%)` on top of it once moved every circle
 // about 11 px up, into the top-edge glyph lane, and clipped the top
-// of the expanded ALL row's circles. The ALL row now shares the
-// agent rows' 19 px inset, so the same event sits at the same x on
-// both rows.
+// of the expanded ALL row's circles. The ALL row shares the agent
+// rows' scale, so the same event sits at the same x on both rows.
 //
 // Geometry only, so both theme projects run it unchanged.
 

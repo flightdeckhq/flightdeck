@@ -161,7 +161,8 @@ All notable changes to Flightdeck are documented here.
   `tool_output`, which the Prompts tab never read: it showed the `{}`
   such a row stores as its response. It now shows the arguments and
   the result, each with its Pretty / Raw toggle, and no `{}` response.
-  The Claude Code plugin's hook tool calls render as before.
+  The Claude Code plugin's hook tool calls render as before
+  ([#260](https://github.com/flightdeckhq/flightdeck/pull/260)).
 - **The Fleet swimlane's newest events are no longer cut off.** The
   time scale now leaves half a circle plus a small buffer at both ends
   of the timeline, shared by the rows, the grid lines and the time

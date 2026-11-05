@@ -16,13 +16,12 @@ Pydantic AI or ``ANTHROPIC_API_KEY``.
 
 from __future__ import annotations
 
-import sys
-
 from _genai import (
     SubagentRun,
     configure_exporter,
     install_tracer_provider,
     run_started,
+    skip_if_not_installed,
     verify_subagent_run,
 )
 from _helpers import print_result, require_env, wait_for_dev_stack
@@ -32,12 +31,8 @@ FLAVOR = configure_exporter("pydantic-ai")
 try:
     from pydantic_ai import Agent, RunContext
     from pydantic_ai.models.instrumented import InstrumentationSettings
-except ImportError:
-    print(
-        "SKIP: Pydantic AI is not installed in this interpreter; run with the "
-        "GenAI venv (playground/README.md, OpenTelemetry GenAI frameworks)"
-    )
-    sys.exit(2)
+except ImportError as exc:
+    skip_if_not_installed(exc, ("pydantic_ai",))
 
 MODEL = "anthropic:claude-haiku-4-5"
 SETTINGS = {"max_tokens": 200}
@@ -93,6 +88,8 @@ def main() -> None:
             root_tool="ask_weather_agent",
             child="weather_agent",
             child_tool="get_weather",
+            root_calls=2,
+            child_calls=2,
         ),
         since,
     )

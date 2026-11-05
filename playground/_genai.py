@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.parse
@@ -33,7 +34,7 @@ import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, NoReturn
 
 from _helpers import API_TOKEN, API_URL, INGESTION_URL, print_result
 
@@ -73,8 +74,10 @@ def configure_exporter(framework: str) -> str:
             # The exporters append /v1/traces and /v1/logs.
             "OTEL_EXPORTER_OTLP_ENDPOINT": INGESTION_URL,
             "OTEL_EXPORTER_OTLP_PROTOCOL": "http/protobuf",
-            # Header values are URL-decoded by the SDK.
-            "OTEL_EXPORTER_OTLP_HEADERS": f"Authorization=Bearer%20{API_TOKEN}",
+            # The SDK URL-decodes header values, so the space after
+            # Bearer (and anything else in the token) is encoded.
+            "OTEL_EXPORTER_OTLP_HEADERS": "Authorization="
+            + urllib.parse.quote(f"Bearer {API_TOKEN}"),
             "OTEL_SERVICE_NAME": flavor,
             "OTEL_RESOURCE_ATTRIBUTES": ",".join(
                 (
@@ -90,6 +93,25 @@ def configure_exporter(framework: str) -> str:
         }
     )
     return flavor
+
+
+def skip_if_not_installed(exc: ImportError, packages: tuple[str, ...]) -> NoReturn:
+    """Exit 2 (SKIP) when ``exc`` says one of the framework's own
+    ``packages`` is not installed in this interpreter; re-raise any
+    other import error. A package that is installed but fails to import
+    (a missing dependency of its own, a name a release no longer has)
+    is a broken venv, which must fail loudly rather than skip."""
+    missing = (exc.name or "") if isinstance(exc, ModuleNotFoundError) else ""
+    if not missing or not any(
+        p == missing or p.startswith(missing + ".") for p in packages
+    ):
+        raise exc
+    print(
+        f"SKIP: {missing} is not installed in this interpreter; run with the "
+        "framework's GenAI venv (playground/README.md, OpenTelemetry GenAI "
+        "frameworks)"
+    )
+    sys.exit(2)
 
 
 def install_tracer_provider() -> Callable[[], None]:
@@ -126,7 +148,10 @@ def run_started() -> datetime:
 class SubagentRun:
     """What one agent-as-a-tool run must assemble into: a root session
     for ``root`` whose ``root_tool`` ran ``child``, a child session for
-    ``child`` that called ``child_tool``."""
+    ``child`` that called ``child_tool``, each with exactly its expected
+    number of model calls (``post_call`` events). An exact count catches
+    a receiver that counts a nested SDK span as a call of its own, or
+    drops one."""
 
     flavor: str
     framework: str
@@ -134,6 +159,10 @@ class SubagentRun:
     root_tool: str
     child: str
     child_tool: str
+    # The model calls each agent makes: the call that picks its tool and
+    # the call that answers from the result, in every framework's run.
+    root_calls: int
+    child_calls: int
     # Google ADK records a tool's arguments and result only inside the
     # next model call's messages, and no content on its agent spans, so
     # its tool_calls carry no content and its child agent no incoming
@@ -252,10 +281,17 @@ def _event_checks(
 ) -> list[Check]:
     checks: list[Check] = []
     token_problems: list[str] = []
-    for row in (root, child):
+    counts: list[str] = []
+    count_problems: list[str] = []
+    for row, want in ((root, run.root_calls), (child, run.child_calls)):
         events = by_session[row["session_id"]]
         calls = _of(events, "post_call")
         total = sum(int(e.get("tokens_total") or 0) for e in calls)
+        counts.append(f"{row['agent_name'].rsplit('/', 1)[-1]}={len(calls)}")
+        if len(calls) != want:
+            count_problems.append(
+                f"{row['agent_name']}: {len(calls)} post_calls, want {want}"
+            )
         if not calls:
             token_problems.append(f"{row['agent_name']}: no post_call")
         token_problems += [
@@ -272,6 +308,13 @@ def _event_checks(
             )
         if not _of(events, "session_end"):
             token_problems.append(f"{row['agent_name']}: no session_end")
+    checks.append(
+        (
+            f"model calls: {run.root_calls} on the root, {run.child_calls} on the child",
+            not count_problems,
+            "; ".join(count_problems) or ", ".join(counts),
+        )
+    )
     checks.append(
         (
             "tokens > 0 on every post_call, tokens_used is their sum",

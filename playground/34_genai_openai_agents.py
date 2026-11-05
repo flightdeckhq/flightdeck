@@ -21,13 +21,12 @@ SDK and its instrumentation, or without ``OPENAI_API_KEY``.
 
 from __future__ import annotations
 
-import sys
-
 from _genai import (
     SubagentRun,
     configure_exporter,
     install_tracer_provider,
     run_started,
+    skip_if_not_installed,
     verify_subagent_run,
 )
 from _helpers import print_result, require_env, wait_for_dev_stack
@@ -44,13 +43,10 @@ try:
     )
     from opentelemetry import trace
     from opentelemetry.instrumentation.openai_agents import OpenAIAgentsInstrumentor
-except ImportError:
-    print(
-        "SKIP: the OpenAI Agents SDK and its OpenTelemetry instrumentation are "
-        "not installed in this interpreter; run with the GenAI venv "
-        "(playground/README.md, OpenTelemetry GenAI frameworks)"
+except ImportError as exc:
+    skip_if_not_installed(
+        exc, ("agents", "opentelemetry.instrumentation.openai_agents")
     )
-    sys.exit(2)
 
 MODEL = "gpt-4o-mini"
 SETTINGS = ModelSettings(max_tokens=200)
@@ -109,6 +105,8 @@ def main() -> None:
             root_tool="ask_weather_agent",
             child="weather_agent",
             child_tool="get_weather",
+            root_calls=2,
+            child_calls=2,
         ),
         since,
     )

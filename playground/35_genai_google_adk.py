@@ -21,15 +21,21 @@ ADK records a tool's arguments and result only inside the next model
 call's messages, so its tool calls carry no content of their own.
 
 Runs from the Google ADK venv (playground/README.md); exits 2 without
-ADK and LiteLLM, or without ``OPENAI_API_KEY``.
+ADK or without ``OPENAI_API_KEY``, and fails when ADK is installed but
+does not import (LiteLLM missing, for one).
 """
 
 from __future__ import annotations
 
 import asyncio
-import sys
 
-from _genai import SubagentRun, configure_exporter, run_started, verify_subagent_run
+from _genai import (
+    SubagentRun,
+    configure_exporter,
+    run_started,
+    skip_if_not_installed,
+    verify_subagent_run,
+)
 from _helpers import print_result, require_env, wait_for_dev_stack
 
 FLAVOR = configure_exporter("google-adk")
@@ -41,12 +47,8 @@ try:
     from google.adk.telemetry.setup import maybe_set_otel_providers
     from google.adk.tools.agent_tool import AgentTool
     from google.genai import types
-except ImportError:
-    print(
-        "SKIP: Google ADK is not installed in this interpreter; run with the "
-        "Google ADK venv (playground/README.md, OpenTelemetry GenAI frameworks)"
-    )
-    sys.exit(2)
+except ImportError as exc:
+    skip_if_not_installed(exc, ("google.adk", "google.genai"))
 
 APP = "playground_genai"
 USER = "playground"
@@ -128,6 +130,8 @@ def main() -> None:
             root_tool="weather_agent",
             child="weather_agent",
             child_tool="get_weather",
+            root_calls=2,
+            child_calls=2,
             tool_content=False,
         ),
         since,

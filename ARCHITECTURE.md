@@ -6799,14 +6799,20 @@ column edge in lockstep.
 invalidates every row immediately.
 
 Fixed-width canvas: `TIMELINE_WIDTH_PX = 900`. The xScale maps the
-selected range domain to `[0, 900]` for every time range. Wider ranges
-produce denser circles, which is the correct trade-off: fixed pixel
-space, no horizontal scrollbar, label intervals adapt to the range
-.
+selected range domain to `[19, 881]` for every time range: the panel
+less `TIMELINE_SCALE_INSET_PX` (19 px, half a 22 px circle plus an 8 px
+buffer) at each end. The oldest circle therefore clears the label strip
+by the buffer, and a circle at "now" sits whole inside the panel, as
+does the ▶ of a run that has just started. Wider ranges produce denser
+circles, which is the correct trade-off: fixed pixel space, no
+horizontal scrollbar, label intervals adapt to the range. The rows, the
+grid overlay and `TimeAxis` share this one scale, so an event's circle,
+its time's grid line and that line's label sit at one x.
 
 `TimeAxis.tsx` renders 6 evenly-spaced relative labels (e.g.
 `48s 36s 24s 12s now` for a 1-minute range) at fractions
-`[0.0, 0.2, 0.4, 0.6, 0.8, 1.0]`. The `formatRelativeLabel(ms)` helper
+`[0.0, 0.2, 0.4, 0.6, 0.8, 1.0]` of the range, placed with the
+Timeline's scale. The `formatRelativeLabel(ms)` helper
 picks the unit suffix: `s`, `m`, or `h`. No D3 tick generation — D3 is
 used for `d3-scale` and `d3-time` math only.
 
@@ -6829,8 +6835,7 @@ the AGENTS section header height directly below) carrying a
 `ChevronRight` icon + "All" label; clicking the toggle expands
 the row to its full 36px height with the aggregated pulse pane
 (`data-testid="swimlane-all-pulse"`) on the right. The pane uses the
-agent rows' 19 px inset (see Event circles under SwimLane), so a given
-time sits at the same x on every row, and its circles sit on the pane's
+agent rows' scale, so a given time sits at the same x on every row, and its circles sit on the pane's
 centre line, inside the row. The default
 is collapsed because the `/agents` page now serves as the
 dedicated fleet-overview surface — the pulse line is redundant
@@ -7088,7 +7093,7 @@ in `var(--accent)` at 60% opacity along its lane's centre
 (`data-testid="swimlane-run-line-<id8>"`, a `<button>` under the
 circles and glyphs):
 - it runs from the segment's start, or from the panel's left edge when
-  the segment started earlier, to its end, or to the right edge while
+  the segment started earlier, to its end, or to the now line while
   the segment is open;
 - a `stale` run's open segment is dashed from its `last_seen_at` on
   (`data-tail="quiet"`, else `live`), the worker's own stale mark, so
@@ -7111,23 +7116,19 @@ out of view. A one-line row draws no lines.
 (`EVENT_CIRCLE_SIZE`), or the lane size above on a split row, coloured
 by event type, with a lucide icon sized to the circle (none at 10 px),
 a portal tooltip and a 1.25x hover scale; MCP events are hexagons. A
-circle is centred on its event's x inside the panel's inset wrapper
-(below), which puts circles, and the run glyphs beside them, 19 px
-right of their time's grid line, since the time axis and the grid
-overlay are not inset. It
-sits on the row's centre line, or its lane's centre, and carries
+circle is centred on its event's x, so a circle at a grid line's time
+sits on that line. It sits on the row's centre line, or its lane's centre, and carries
 `data-event-id`, `data-session-id` and `data-run-lane`. The vertical
 centring is a single CSS translate (`top` at the line's percentage
 with `translate: 0 -50%`); the hover scale is a separate `transform`,
 so it scales about the circle's centre. Sub-agent connectors measure
 the rendered circles, so they land on a circle in any lane.
 
-The panel's positioned wrapper is inset 19 px
-(`TIMELINE_LEFT_INSET_PX`: an 8 px buffer plus half a circle), so the
-oldest circle clears the label strip. The ALL row uses the same
-inset, so a given time sits at the same x on every row. Circles
-within half a circle plus the buffer of "now" are clipped at the
-panel's right edge; the grid overlay draws the now line.
+The time scale's 19 px inset at each end of the panel (see the
+fixed-width canvas above) keeps the oldest circle clear of the label
+strip and the newest one, at "now", whole inside the panel; the grid
+overlay draws the now line through its centre. Glyphs are kept inside
+the panel's own edges, so one packed at "now" fits in the inset.
 
 Circles are coloured by event type, never by run, and render at once,
 with no mount fade. Runs are told apart by lane, line and glyphs.
@@ -7261,6 +7262,7 @@ tunable magic numbers:
 | `ALL_ROW_HEIGHT_COLLAPSED` | 24 | ALL-row height when collapsed (matches AGENTS header) |
 | `ALL_ROW_HEIGHT_EXPANDED` | 36 | ALL-row height when expanded (pulse pane) |
 | `TIMELINE_WIDTH_PX` | 900 | Fixed event-circles canvas width |
+| `TIMELINE_SCALE_INSET_PX` | 19 | Time scale inset at each end of the canvas (half a circle plus an 8 px buffer); `Timeline.tsx` |
 | `TIMELINE_RANGE_MS` | `{1m: 60_000, 5m: 300_000, 15m: 900_000, 30m: 1_800_000, 1h: 3_600_000}` | Range labels → ms |
 | `THEME_STORAGE_KEY` | `flightdeck-theme` | Theme persistence key |
 

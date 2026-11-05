@@ -522,9 +522,11 @@ it orders by arrival, not by the event time the views sort by).
 48 px height. While two or more of its runs overlap in the window, the row
 splits into up to four lanes, each holding one run's circles, glyphs and a
 line joining them; from a fifth lane on, runs share the fourth. A run's
-lane follows its track (the first track free at its start and still in
-view), so sequential runs share a lane and a resumed run's segments may sit
-in different lanes. The row is one line again once no overlap is in view.
+lane follows its track (the lowest track free at its start whose last
+segment ended within one window span) ranked among the tracks in view, so
+sequential runs share a lane, the lanes below move up when a track leaves
+the window, and a resumed run's segments may sit in different lanes. The
+row is one line again once no overlap is in view.
 **Why:** Claude Code fans out same-role sub-agents routinely (four runs of
 one agent were seen open at once), more than a top and a bottom edge can
 tell apart. The Agent SDK path is not helped: its sub-agent turns fold into

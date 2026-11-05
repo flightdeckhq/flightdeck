@@ -29,6 +29,9 @@ make test
 # Integration tests (requires running stack)
 make test-integration
 
+# Go tests that need Postgres (requires running stack)
+make test-go-db
+
 # Per-component
 make -C sensor test
 make -C ingestion test
@@ -57,6 +60,31 @@ hand, seed first (`make seed-e2e`), then:
 ```bash
 ./sensor/.venv/bin/python -m pytest tests/integration -n 4 --dist load -m "not manual and not exclusive"
 ./sensor/.venv/bin/python -m pytest tests/integration -m "exclusive"
+```
+
+### Go tests that need Postgres
+
+Some Go tests run SQL against a real database: the store packages, the staging
+store, the assembler, the workers' writer and processor, and the token
+revocation listeners. Each skips unless `TEST_POSTGRES_URL` names a database
+(`TEST_ASSEMBLER_POSTGRES_URL` for the assembler), so `make -C <component> test`
+and the CI Go job skip them. `make test-go-db` runs them against the running
+dev stack's Postgres, and CI runs it in the integration job on both Postgres
+majors that job covers. `scripts/go-db-tests.sh` creates a fresh database per
+test package, seeds it with `docker/postgres/init.sql`, migrates it to the
+newest migration through the workers' migrate-only mode, runs the package
+against it, and drops every database it created; the `flightdeck` database is
+never touched. Each package gets its own database because the assembler claims
+every due trace in its database, the staging store tests' traces included.
+
+The run fails when a test in those packages fails or skips, and when a test
+file outside the script's `DB_PACKAGES` list opens a pool or reads any
+`*POSTGRES_URL` variable. A new DB-gated test package goes into that list. To run one package by hand,
+point it at a migrated database of your own, never at `flightdeck`:
+
+```bash
+cd ingestion && TEST_POSTGRES_URL='postgres://flightdeck:flightdeck_dev@127.0.0.1:5432/<your_db>?sslmode=disable' \
+  go test -count=1 ./internal/otlpstage/
 ```
 
 ## Test Coverage

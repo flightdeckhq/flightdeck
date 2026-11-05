@@ -160,7 +160,7 @@ type OTLPMetricsPartialSuccess struct {
 // OTLPLogsHandler handles POST /v1/logs.
 //
 // @Summary      Export OTLP logs
-// @Description  OTLP/HTTP logs receiver. Accepts an ExportLogsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportLogsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the log records Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events are charged one unit each before they are published (429 when they do not fit in what is left, 413 when they exceed the whole budget). Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).
+// @Description  OTLP/HTTP logs receiver. Accepts an ExportLogsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportLogsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the log records Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events, and each GenAI record it stages (one more unit for an agent span), are charged one unit each before anything is published or staged (429 when they do not fit in what is left, 413 when they exceed the whole budget). Records of the OpenTelemetry GenAI frameworks Flightdeck maps (Pydantic AI, Strands Agents, the OpenAI Agents SDK, Google ADK) are staged durably and assembled into events once their trace is complete; the request is answered 200 only after they are staged, and 503 with Retry-After when staging fails. Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).
 // @Tags         otlp
 // @Accept       json,application/x-protobuf
 // @Produce      json,application/x-protobuf
@@ -175,8 +175,8 @@ type OTLPMetricsPartialSuccess struct {
 // @Failure      429  {object}  OTLPStatus  "token's minute budget spent, or too little of it left for the request's events; see Retry-After"
 // @Failure      500  {object}  OTLPStatus  "token validation failed"
 // @Header       429  {integer}  Retry-After  "seconds until the token's minute budget has room"
-// @Failure      503  {object}  OTLPStatus  "no decode slot free or a session read failed (see Retry-After), or publishing the mapped events failed; retry"
-// @Header       503  {integer}  Retry-After  "seconds to wait when no decode slot was free or a session read failed"
+// @Failure      503  {object}  OTLPStatus  "no decode slot free, a session read failed or staging GenAI records failed (see Retry-After), or publishing the mapped events failed; retry"
+// @Header       503  {integer}  Retry-After  "seconds to wait when no decode slot was free, a session read failed or staging failed"
 // @Router       /v1/logs [post]
 func OTLPLogsHandler(validator TokenValidator, publisher EventPublisher, attacher SessionAttacher, dialect OTLPDialect, limiter *RateLimiter) http.HandlerFunc {
 	return otlpHandler(otlpLogsSignal, validator, publisher, attacher, dialect, limiter)
@@ -185,7 +185,7 @@ func OTLPLogsHandler(validator TokenValidator, publisher EventPublisher, attache
 // OTLPTracesHandler handles POST /v1/traces.
 //
 // @Summary      Export OTLP traces
-// @Description  OTLP/HTTP traces receiver. Accepts an ExportTraceServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportTraceServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the spans Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events are charged one unit each before they are published (429 when they do not fit in what is left, 413 when they exceed the whole budget). Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).
+// @Description  OTLP/HTTP traces receiver. Accepts an ExportTraceServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportTraceServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the spans Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events, and each GenAI record it stages (one more unit for an agent span), are charged one unit each before anything is published or staged (429 when they do not fit in what is left, 413 when they exceed the whole budget). Records of the OpenTelemetry GenAI frameworks Flightdeck maps (Pydantic AI, Strands Agents, the OpenAI Agents SDK, Google ADK) are staged durably and assembled into events once their trace is complete; the request is answered 200 only after they are staged, and 503 with Retry-After when staging fails. Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).
 // @Tags         otlp
 // @Accept       json,application/x-protobuf
 // @Produce      json,application/x-protobuf
@@ -200,8 +200,8 @@ func OTLPLogsHandler(validator TokenValidator, publisher EventPublisher, attache
 // @Failure      429  {object}  OTLPStatus  "token's minute budget spent, or too little of it left for the request's events; see Retry-After"
 // @Failure      500  {object}  OTLPStatus  "token validation failed"
 // @Header       429  {integer}  Retry-After  "seconds until the token's minute budget has room"
-// @Failure      503  {object}  OTLPStatus  "no decode slot free (see Retry-After), or publishing the mapped events failed; retry"
-// @Header       503  {integer}  Retry-After  "seconds to wait when no decode slot was free"
+// @Failure      503  {object}  OTLPStatus  "no decode slot free or staging GenAI records failed (see Retry-After), or publishing the mapped events failed; retry"
+// @Header       503  {integer}  Retry-After  "seconds to wait when no decode slot was free or staging failed"
 // @Router       /v1/traces [post]
 func OTLPTracesHandler(validator TokenValidator, publisher EventPublisher, attacher SessionAttacher, dialect OTLPDialect, limiter *RateLimiter) http.HandlerFunc {
 	return otlpHandler(otlpTracesSignal, validator, publisher, attacher, dialect, limiter)
@@ -315,9 +315,9 @@ func otlpHandler(
 			return
 		}
 
-		mapCtx := ctx
+		mapCtx := withOTLPToken(ctx, result)
 		if limiter != nil {
-			mapCtx = withOTLPBudget(ctx, otlpBudget(limiter, token))
+			mapCtx = withOTLPBudget(mapCtx, otlpBudget(limiter, token))
 		}
 		mapping, acquired, status, msg := decodeInSlot(mapCtx, sig, dialect, enc, gzipped, raw)
 		if !acquired {
@@ -345,9 +345,10 @@ func otlpHandler(
 			return
 		}
 
-		// Charge the events before publishing them. Records counted as
-		// rejected cost nothing.
-		if n := len(mapping.Events); n > 0 && limiter != nil {
+		// Charge the events, and the GenAI records to be staged, before
+		// publishing or staging anything. Records counted as rejected
+		// cost nothing.
+		if n := len(mapping.Events) + mapping.StagedUnits; n > 0 && limiter != nil {
 			if n > limiter.Limit() {
 				fail(http.StatusRequestEntityTooLarge, grpcCodeResourceExhausted,
 					fmt.Sprintf("request maps to %d events, more than the token's budget of %d a minute", n, limiter.Limit()))
@@ -370,13 +371,32 @@ func otlpHandler(
 			return
 		}
 
+		// GenAI records are staged after the Claude Code events are
+		// published; the request is answered 200 only once they are
+		// durable, and 503 (which exporters retry, the staging write
+		// being idempotent) when they are not.
+		staged := 0
+		if mapping.Stage != nil {
+			refused, message, err := mapping.Stage(ctx)
+			if err != nil {
+				slog.Error("otlp staging failed", "signal", sig.name, "err", err)
+				w.Header().Set("Retry-After", strconv.Itoa(otlpStageRetryAfterSeconds))
+				fail(http.StatusServiceUnavailable, grpcCodeUnavailable,
+					"staging records failed; retry the export")
+				return
+			}
+			mapping.Rejected += refused
+			mapping.Message = joinOTLPMessages(mapping.Message, message)
+			staged = mapping.StagedUnits
+		}
+
 		if mapping.Published != nil {
 			mapping.Published()
 		}
 		writeOTLPMessage(w, enc, http.StatusOK, sig.response(mapping))
 		slog.Info("otlp export",
 			"signal", sig.name, "status", http.StatusOK,
-			"published", published, "rejected", mapping.Rejected)
+			"published", published, "staged_units", staged, "rejected", mapping.Rejected)
 	}
 }
 

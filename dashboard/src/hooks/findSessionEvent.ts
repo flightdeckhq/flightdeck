@@ -40,8 +40,10 @@ export interface SessionEventTarget {
  * The search API writes timestamps in Postgres's text form
  * ("2026-11-04 19:02:50.756123+00", offsets "+HH" or "+HH:MM"), which
  * ``Date.parse`` reads only by a V8 extension. It is rewritten as ISO
- * 8601 (a "T" separator and an "+HH:MM" offset) first, so every engine
- * reads it; an ISO input passes through unchanged.
+ * 8601 (a "T" separator, at most three fraction digits, an "+HH:MM"
+ * offset) first, the form the ECMAScript date format defines, so every
+ * engine reads it; an ISO input with milliseconds passes through
+ * unchanged.
  */
 export function parseEventInstant(raw: string): number {
   return Date.parse(eventInstantISO(raw));
@@ -52,6 +54,7 @@ export function eventInstantISO(raw: string): string {
   return raw
     .trim()
     .replace(/^(\d{4}-\d{2}-\d{2}) /, "$1T")
+    .replace(/(T\d{2}:\d{2}:\d{2}\.\d{3})\d+/, "$1")
     .replace(/(T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?[+-]\d{2})$/, "$1:00");
 }
 

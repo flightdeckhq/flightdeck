@@ -197,8 +197,9 @@ describe("parseEventInstant", () => {
 
   it("rewrites the text form itself, not relying on an engine extension", () => {
     expect(eventInstantISO("2026-11-04 19:02:50.756123+00")).toBe(
-      "2026-11-04T19:02:50.756123+00:00",
+      "2026-11-04T19:02:50.756+00:00",
     );
+    expect(eventInstantISO("2026-11-04 19:02:50.7+00")).toBe("2026-11-04T19:02:50.7+00:00");
     expect(eventInstantISO("2026-11-05 00:32:50+05:30")).toBe("2026-11-05T00:32:50+05:30");
     expect(eventInstantISO("2026-11-04 14:02:50-05")).toBe("2026-11-04T14:02:50-05:00");
     expect(eventInstantISO("2026-11-04")).toBe("2026-11-04");

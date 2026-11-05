@@ -7066,8 +7066,9 @@ the segment is narrower than the two glyphs, so a short run reads ▶■.
 Glyphs in one lane are spread apart where they would overlap: they sit
 side by side in time order, 1 px apart, with an end before a start at
 the same instant, so a hand-off reads ■▶. A glyph that would cross the
-panel's right edge is pulled back inside it, with the glyphs before
-it, so a run that has just started shows its ▶ at the edge. No glyph
+panel's right edge, as on a crowded edge near "now", is pulled back
+inside it with the glyphs before it; a lone ▶ at "now" fits inside the
+scale's inset and stays at its time. No glyph
 moves more than `MAX_GLYPH_SHIFT_PX` (24 px, the shift a zero-length
 run's square needs to follow its triangle) from where its time puts
 it, so on a busy row, where spreading every glyph would carry it far

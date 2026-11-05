@@ -66,17 +66,27 @@ test.describe("T155 — Runs past four share the overflow lane", () => {
 		expect(hits).toEqual(prefixes.map((p) => `swimlane-run-bracket-start-${p}`));
 
 		// Each tooltip names its own run and lane; the shared ones say so.
+		// The keep-alive re-pins these runs every cycle and the window
+		// moves each second, so a glyph can slide out from under the
+		// pointer between two reads: each poll hovers and reads the
+		// tooltip in one step.
 		for (let i = 0; i < glyphs.length; i++) {
-			await glyphs[i]!.hover();
 			const tooltip = page.locator(`[data-testid="swimlane-run-bracket-tooltip-${prefixes[i]}"]`);
-			await expect(tooltip).toBeVisible();
-			await expect(tooltip).toContainText(`run ${prefixes[i]}`);
-			if (i < 3) {
-				await expect(tooltip).toContainText(`lane ${i + 1} of 4`);
-				await expect(tooltip).not.toContainText("shared");
-			} else {
-				await expect(tooltip).toContainText("lane 4 of 4 · shared by 2 runs");
-			}
+			const lane = i < 3 ? `lane ${i + 1} of 4` : "lane 4 of 4 · shared by 2 runs";
+			await expect
+				.poll(
+					async () => {
+						await glyphs[i]!.hover();
+						const text = (await tooltip.textContent({ timeout: 1_000 }).catch(() => null)) ?? "";
+						return (
+							text.includes(`run ${prefixes[i]}`) &&
+							text.includes(lane) &&
+							(i >= 3 || !text.includes("shared"))
+						);
+					},
+					{ timeout: 15_000 },
+				)
+				.toBe(true);
 		}
 	});
 });

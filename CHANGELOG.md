@@ -123,9 +123,11 @@ All notable changes to Flightdeck are documented here.
 
 - **A U+0000 in an event no longer fails it.** Postgres cannot store
   U+0000 (sent as `\u0000` in JSON) or an unpaired UTF-16
-  surrogate escape, so one in a prompt, a tool result or a name made the
-  worker fail the event on every redelivery, and made an OpenTelemetry
-  GenAI export fail on every retry. Ingestion now replaces each with
+  surrogate escape, so one in an event's fields (a name, a sub-agent
+  message, an error) made the worker fail the event on every
+  redelivery, one in its captured content made the worker store the
+  event without that content, and one in an OpenTelemetry GenAI export
+  failed it on every retry. Ingestion now replaces each with
   U+FFFD in events it receives or builds and in records it
   stages ([#253](https://github.com/flightdeckhq/flightdeck/pull/253)).
 - **Captured content survives several worker replicas.** The workers

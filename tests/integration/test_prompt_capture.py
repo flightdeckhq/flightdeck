@@ -210,31 +210,17 @@ def test_sensor_client_lands_an_oversized_call_with_its_tokens() -> None:
     assert result["response"] == {"content": [{"type": "text", "text": "ok"}]}
 
 
-def test_content_the_database_rejects_lands_the_event_without_content() -> None:
-    """Content Postgres cannot store (a NUL byte in the system prompt)
-    must not leave an event that claims content: the worker writes the
-    event and its content in one transaction, and when the content row
-    is rejected it stores the event alone with has_content false, so
-    GET /events/:id/content is a plain 404.
-    """
+def _post_call_with_content(content: dict) -> tuple[str, str]:
+    """Start a capture-on session, post one post_call carrying content,
+    wait for it to be stored and return its session and event ids."""
     sid = str(uuid.uuid4())
-    flavor = f"capture-rejected-{uuid.uuid4().hex[:6]}"
-
+    flavor = f"capture-content-{uuid.uuid4().hex[:6]}"
     post_event(make_event(sid, flavor, "session_start"))
     wait_until(
         lambda: session_exists_in_fleet(sid),
         timeout=10,
         msg=f"session {sid} did not appear in fleet",
     )
-
-    content = {
-        "provider": "openai",
-        "model": "gpt-4o",
-        "system": "before\u0000after",
-        "messages": [{"role": "user", "content": "Hello"}],
-        "tools": None,
-        "response": {"choices": []},
-    }
     post_event(
         make_event(
             sid,
@@ -250,16 +236,104 @@ def test_content_the_database_rejects_lands_the_event_without_content() -> None:
         timeout=10,
         msg=f"post_call event not processed for session {sid}",
     )
-
     event_ids = _get_event_ids(sid)
     assert len(event_ids) == 1, f"expected one post_call, got {event_ids}"
+    return sid, event_ids[0]
+
+
+def test_content_the_database_rejects_lands_the_event_without_content() -> None:
+    """Content Postgres refuses must not leave an event that claims
+    content: the worker writes the event and its content in one
+    transaction, and when the content row is rejected it stores the
+    event alone with has_content false, so GET /events/:id/content is a
+    plain 404. A content blob without a response breaks the content
+    row's NOT NULL constraint; ingestion does not check the blob's
+    shape, so it reaches the worker's fallback as sent.
+    """
+    _, eid = _post_call_with_content(
+        {
+            "provider": "openai",
+            "model": "gpt-4o",
+            "system": "be brief",
+            "messages": [{"role": "user", "content": "Hello"}],
+            "tools": None,
+        }
+    )
     has_content = exec_sql(
         "SELECT has_content FROM events WHERE id = :'eid'::uuid",
-        eid=event_ids[0],
+        eid=eid,
     )
     assert has_content == "f", f"event still claims content: has_content={has_content!r}"
-    assert _query_event_content_rows(event_ids[0]) == 0
-    assert _get_event_content(event_ids[0]) is None
+    assert _query_event_content_rows(eid) == 0
+    assert _get_event_content(eid) is None
+
+
+def test_nul_in_content_is_stored_as_the_replacement_character() -> None:
+    """A NUL (U+0000) in captured content is valid JSON that Postgres
+    cannot store; ingestion replaces it with U+FFFD before the event
+    reaches the worker, so the content is stored, the event claims it
+    and the content endpoint serves it (200). An unpaired surrogate
+    escape, which Postgres refuses too, is replaced the same way.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"capture-nul-{uuid.uuid4().hex[:6]}"
+    post_event(make_event(sid, flavor, "session_start"))
+    wait_until(
+        lambda: session_exists_in_fleet(sid),
+        timeout=10,
+        msg=f"session {sid} did not appear in fleet",
+    )
+    # json.dumps writes U+0000 as the escape; the lone surrogate is
+    # spliced in as the escape a client would send.
+    event = make_event(
+        sid,
+        flavor,
+        "post_call",
+        tokens_total=50,
+        has_content=True,
+        content={
+            "provider": "openai",
+            "model": "gpt-4o",
+            "system": "before\u0000after",
+            "messages": [{"role": "user", "content": "Hello LONE"}],
+            "tools": None,
+            "response": {"choices": []},
+        },
+    )
+    body = json.dumps(event).replace("LONE", "\\ud800")
+    assert "\\u0000" in body and "\\ud800" in body
+    _post_raw_event(body)
+    wait_until(
+        lambda: get_session_event_count(sid) >= 2,
+        timeout=10,
+        msg=f"post_call event not processed for session {sid}",
+    )
+    event_ids = _get_event_ids(sid)
+    assert len(event_ids) == 1, f"expected one post_call, got {event_ids}"
+    eid = event_ids[0]
+    has_content = exec_sql(
+        "SELECT has_content FROM events WHERE id = :'eid'::uuid",
+        eid=eid,
+    )
+    assert has_content == "t", f"event does not claim its content: {has_content!r}"
+    assert _query_event_content_rows(eid) == 1
+    result = _get_event_content(eid)
+    assert result is not None, "content endpoint answered 404"
+    assert result["system_prompt"] == "before\ufffdafter", result["system_prompt"]
+    assert result["messages"] == [{"role": "user", "content": "Hello \ufffd"}], result["messages"]
+
+
+def _post_raw_event(body: str) -> None:
+    """POST /v1/events with a body as written, for escapes json.dumps
+    would not produce."""
+    req = urllib.request.Request(
+        f"{INGESTION_URL}/v1/events",
+        data=body.encode(),
+        method="POST",
+        headers={**auth_headers(), "Content-Type": "application/json"},
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        assert resp.status == 200, resp.status
 
 
 def test_has_content_without_a_content_blob_is_stored_as_no_content() -> None:

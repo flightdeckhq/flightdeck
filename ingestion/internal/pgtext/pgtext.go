@@ -116,6 +116,8 @@ func hex4(raw []byte, i int) (rune, bool) {
 // (which quote the rejected value), after the text of the layers that
 // wrapped it; any other error (a timeout, a lost connection), which
 // carries no data, as it is.
+// The no-data guarantee covers Postgres errors only: an error of any
+// other kind is logged as its own text.
 func ErrorClass(err error) string {
 	if err == nil {
 		return ""

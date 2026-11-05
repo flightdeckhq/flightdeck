@@ -2759,11 +2759,15 @@ capture-off session. When `capture_prompts=true` for the session, the
 row and its `event_content` row are written in one transaction, so no
 reader sees an event that claims content before the content exists. If
 the content can never be stored (it does not parse, or Postgres rejects
-the row as invalid data, for example a NUL byte in a text field), the
-worker stores the event alone with `has_content=false` and logs a
-warning, rather than retrying a write that would fail the same way on
-every delivery. A transient failure (a dropped connection, a timeout)
-writes nothing and the event is redelivered whole. An event that sets
+the row as invalid data or a constraint, for example a content blob
+without a `response`), the worker stores the event alone with
+`has_content=false` and logs a warning, rather than retrying a write
+that would fail the same way on every delivery. Ingestion replaces the
+text Postgres cannot store before an event reaches the bus (see
+Validation rules), so a NUL byte no longer reaches this fallback; it
+stays as the backstop for a content row nothing upstream caught. A
+transient failure (a dropped connection, a timeout) writes nothing and
+the event is redelivered whole. An event that sets
 `has_content` without a `content` blob is stored with
 `has_content=false`.
 
@@ -2875,8 +2879,11 @@ broken client, not a newer one.
 
 Text Postgres cannot store is replaced, not refused. U+0000 (the JSON
 escape `\u0000`) and a UTF-16 surrogate escape not paired with its
-other half are valid JSON that `jsonb` refuses, so the worker would fail
-an event carrying one on every redelivery. Ingestion replaces each with
+other half are valid JSON that Postgres refuses. In the event itself
+(a name, a sub-agent message, an error, anything the worker writes to
+the event row) one fails the event on every redelivery; in its content
+it makes the worker store the event without its content (see `POST
+/v1/events`), so the content is lost. Ingestion replaces each with
 U+FFFD (`\ufffd`) in the body of every event before validating it,
 whether posted or built by the OTLP receiver, and in every string it
 stages for the GenAI dialect (metadata and content alike), rather than

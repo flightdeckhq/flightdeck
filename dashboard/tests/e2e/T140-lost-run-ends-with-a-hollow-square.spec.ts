@@ -66,9 +66,18 @@ test.describe("T140 — A lost run ends with a hollow square", () => {
 		expect(fraction).toBeGreaterThan(0.4);
 		expect(fraction).toBeLessThan(0.6);
 
-		await lostEnd.hover();
+		// The lane pin re-dates the run every keep-alive cycle, which can
+		// slide the square out from under the pointer between the hover
+		// and the read, so each poll hovers and reads in one step.
 		const tooltip = page.locator(`[data-testid="swimlane-run-bracket-tooltip-${prefix(roles.recent)}"]`);
-		await expect(tooltip).toBeVisible();
-		await expect(tooltip).toContainText(/end:\s+lost · last seen \d{2}:\d{2}:\d{2}/);
+		await expect
+			.poll(
+				async () => {
+					await lostEnd.hover();
+					return (await tooltip.textContent({ timeout: 1_000 }).catch(() => null)) ?? "";
+				},
+				{ timeout: 15_000 },
+			)
+			.toMatch(/end:\s+lost · last seen \d{2}:\d{2}:\d{2}/);
 	});
 });

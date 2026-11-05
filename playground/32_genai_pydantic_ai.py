@@ -17,6 +17,8 @@ Pydantic AI or ``ANTHROPIC_API_KEY``.
 from __future__ import annotations
 
 from _genai import (
+    MODEL_MAX_RETRIES,
+    MODEL_TIMEOUT_S,
     SubagentRun,
     configure_exporter,
     install_tracer_provider,
@@ -29,12 +31,15 @@ from _helpers import print_result, require_env, wait_for_dev_stack
 FLAVOR = configure_exporter("pydantic-ai")
 
 try:
+    from anthropic import AsyncAnthropic
     from pydantic_ai import Agent, RunContext
+    from pydantic_ai.models.anthropic import AnthropicModel
     from pydantic_ai.models.instrumented import InstrumentationSettings
+    from pydantic_ai.providers.anthropic import AnthropicProvider
 except ImportError as exc:
-    skip_if_not_installed(exc, ("pydantic_ai",))
+    skip_if_not_installed(exc, ("pydantic_ai", "anthropic"))
 
-MODEL = "anthropic:claude-haiku-4-5"
+MODEL = "claude-haiku-4-5"
 SETTINGS = {"max_tokens": 200}
 
 
@@ -48,16 +53,24 @@ def main() -> None:
     wait_for_dev_stack()
     flush = install_tracer_provider()
     Agent.instrument_all(InstrumentationSettings(include_content=True))
+    model = AnthropicModel(
+        MODEL,
+        provider=AnthropicProvider(
+            anthropic_client=AsyncAnthropic(
+                timeout=MODEL_TIMEOUT_S, max_retries=MODEL_MAX_RETRIES
+            )
+        ),
+    )
 
     weather = Agent(
-        MODEL,
+        model,
         name="weather_agent",
         instructions="Answer weather questions with the get_weather tool.",
         tools=[get_weather],
         model_settings=SETTINGS,
     )
     assistant = Agent(
-        MODEL,
+        model,
         name="assistant",
         instructions=(
             "Delegate weather questions to the weather agent with the "

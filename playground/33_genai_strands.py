@@ -20,6 +20,8 @@ or ``OPENAI_API_KEY``.
 from __future__ import annotations
 
 from _genai import (
+    MODEL_MAX_RETRIES,
+    MODEL_TIMEOUT_S,
     SubagentRun,
     configure_exporter,
     run_started,
@@ -57,7 +59,11 @@ def main() -> None:
     telemetry = StrandsTelemetry()
     telemetry.setup_otlp_exporter()
 
-    model = OpenAIModel(model_id=MODEL_ID, params=PARAMS)
+    model = OpenAIModel(
+        client_args={"timeout": MODEL_TIMEOUT_S, "max_retries": MODEL_MAX_RETRIES},
+        model_id=MODEL_ID,
+        params=PARAMS,
+    )
     weather = Agent(
         model=model,
         name="weather_agent",

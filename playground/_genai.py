@@ -55,6 +55,13 @@ FETCH_TIMEOUT_S = 5.0
 # The window the session query starts before the run: span timestamps
 # come from this machine's clock, so a second covers rounding only.
 SESSION_WINDOW_SLACK = timedelta(seconds=1)
+# Each model request's client timeout. The calls here answer in 1-15 s;
+# without a cap a stalled request waits the SDK default (600 s) and
+# run_all's 180 s kill reports a bare timeout instead of the error.
+MODEL_TIMEOUT_S = 60.0
+# One retry: a stalled request that also stalls on its retry costs
+# 2 x 60 s, which with the run's ~30 s of normal work stays under 180 s.
+MODEL_MAX_RETRIES = 1
 
 
 def configure_exporter(framework: str) -> str:

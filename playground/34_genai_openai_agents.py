@@ -22,6 +22,8 @@ SDK and its instrumentation, or without ``OPENAI_API_KEY``.
 from __future__ import annotations
 
 from _genai import (
+    MODEL_MAX_RETRIES,
+    MODEL_TIMEOUT_S,
     SubagentRun,
     configure_exporter,
     install_tracer_provider,
@@ -39,13 +41,15 @@ try:
         ModelSettings,
         Runner,
         function_tool,
+        set_default_openai_client,
         set_trace_processors,
     )
+    from openai import AsyncOpenAI
     from opentelemetry import trace
     from opentelemetry.instrumentation.openai_agents import OpenAIAgentsInstrumentor
 except ImportError as exc:
     skip_if_not_installed(
-        exc, ("agents", "opentelemetry.instrumentation.openai_agents")
+        exc, ("agents", "openai", "opentelemetry.instrumentation.openai_agents")
     )
 
 MODEL = "gpt-4o-mini"
@@ -63,6 +67,10 @@ def main() -> None:
     wait_for_dev_stack()
     flush = install_tracer_provider()
     set_trace_processors([])
+    set_default_openai_client(
+        AsyncOpenAI(timeout=MODEL_TIMEOUT_S, max_retries=MODEL_MAX_RETRIES),
+        use_for_tracing=False,
+    )
     OpenAIAgentsInstrumentor().instrument(tracer_provider=trace.get_tracer_provider())
 
     weather = Agent(

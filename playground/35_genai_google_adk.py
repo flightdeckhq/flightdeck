@@ -30,6 +30,8 @@ from __future__ import annotations
 import asyncio
 
 from _genai import (
+    MODEL_MAX_RETRIES,
+    MODEL_TIMEOUT_S,
     SubagentRun,
     configure_exporter,
     run_started,
@@ -95,7 +97,13 @@ def main() -> None:
     wait_for_dev_stack()
     maybe_set_otel_providers()
 
-    model = LiteLlm(model=MODEL, max_tokens=MAX_TOKENS)
+    # LiteLlm passes these to litellm, which hands them to the OpenAI client.
+    model = LiteLlm(
+        model=MODEL,
+        max_tokens=MAX_TOKENS,
+        timeout=MODEL_TIMEOUT_S,
+        max_retries=MODEL_MAX_RETRIES,
+    )
     weather = LlmAgent(
         name="weather_agent",
         model=model,

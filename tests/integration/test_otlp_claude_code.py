@@ -352,18 +352,22 @@ def test_session_the_plugin_reports_is_not_reported_again(flavor: str) -> None:
             context={"claude_code_session_id": replay.claude_code_session_id},
         )
     )
-    wait_until(
-        lambda: _session_exists(plugin_session),
-        timeout=LAND_TIMEOUT_SECS,
-        msg="plugin session stored",
-    )
+    # Wait for the session_start event row, not just the session row:
+    # the worker writes the session row first and the event row after
+    # it, so a read in between sees the session with no events.
+    before = _events_when(plugin_session, lambda events: len(events) >= 1)
+    assert [e["event_type"] for e in before] == ["session_start"]
 
     replay.send()
     mapped = len(replay.mapped)
+    # Every record is rejected in the export response, so the ingestion
+    # API published none of them: the plugin session's events can only
+    # be the ones it already had, with no later arrival to wait for.
     assert replay.rejected == replay.unmapped + mapped
     assert any("reported by another Flightdeck client" in m for m in replay.messages)
     assert not _session_exists(replay.session_id)
-    assert len(session_events(get_session_detail(plugin_session))) == 1
+    after = session_events(get_session_detail(plugin_session))
+    assert [e["id"] for e in after] == [e["id"] for e in before]
 
 
 def _session_exists(session_id: str) -> bool:

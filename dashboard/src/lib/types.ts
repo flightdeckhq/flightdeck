@@ -1052,6 +1052,15 @@ export interface EventContent {
   // Components branch on the parent event's event_type to render
   // appropriately.
   input?: string | string[] | Record<string, unknown> | null;
+  /**
+   * A tool call's arguments and result (the ``event_content``
+   * ``tool_input`` / ``tool_output`` columns), present when captured.
+   * An OpenTelemetry GenAI ``tool_call`` (``provider=otel_genai``)
+   * carries them as the framework sent them: an object or a string for
+   * the arguments, a string, object or list for the result.
+   */
+  tool_input?: unknown;
+  tool_output?: unknown;
   captured_at: string;
 }
 

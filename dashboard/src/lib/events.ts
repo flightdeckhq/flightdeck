@@ -886,6 +886,17 @@ function signalDetail(signal: string | undefined, data: SignalData): string {
       return typeof data?.new_cwd === "string" ? `cwd → ${data.new_cwd}` : "cwd changed";
     case "config_changed":
       return typeof data?.source === "string" ? `settings changed · ${signalWords(data.source)}` : "settings changed";
+    case "agent_handoff": {
+      // An OpenTelemetry GenAI hand-off: the agent handing off names
+      // the agent it handed to. Either name is left out when the spans
+      // do not give it, so the line names only what is known.
+      const from = typeof data?.from === "string" ? data.from : null;
+      const to = typeof data?.to === "string" ? data.to : null;
+      if (from && to) return `hand-off · ${from} → ${to}`;
+      if (to) return `hand-off → ${to}`;
+      if (from) return `hand-off · ${from}`;
+      return "hand-off";
+    }
     case "elicitation_requested":
     case "elicitation_responded": {
       const server = typeof data?.mcp_server === "string" ? ` · ${data.mcp_server}` : "";
@@ -932,6 +943,8 @@ const SIGNAL_DATA_LABELS: Record<string, string> = {
   query: "Query",
   pattern: "Pattern",
   prompt: "Prompt",
+  from: "From agent",
+  to: "To agent",
 };
 
 function signalValue(key: string, value: string | number | boolean | null): string {

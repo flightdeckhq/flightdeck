@@ -2,6 +2,7 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "motion/react";
 import { X } from "lucide-react";
 import { PromptViewer } from "@/components/session/PromptViewer";
+import { NoEventContentForEvent } from "@/components/session/NoEventContent";
 import { SignalPromptsPanel } from "@/components/session/SignalContentViewer";
 import { MCPEventDetails, isMCPEvent } from "@/components/session/MCPEventDetails";
 import { SyntaxJson } from "@/components/ui/syntax-json";
@@ -254,12 +255,7 @@ export function EventDetailDrawer({ event, onClose, onSwapEvent, onViewRun }: Ev
               ) : displayed.has_content ? (
                 <PromptViewer eventId={displayed.id} />
               ) : (
-                <div
-                  className="px-4 py-6 text-[13px]"
-                  style={{ color: "var(--text-muted)" }}
-                >
-                  Prompt capture is not enabled for this deployment.
-                </div>
+                <NoEventContentForEvent event={displayed} />
               )}
             </>
           )}

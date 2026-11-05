@@ -126,6 +126,7 @@ function AgentTableRowImpl({
           <TelemetrySourcePill
             telemetry={agent.telemetry}
             clientType={agent.client_type}
+            framework={agent.recent_sessions?.[0]?.framework}
             testId={`agent-row-telemetry-source-${agent.agent_id}`}
           />
           <span

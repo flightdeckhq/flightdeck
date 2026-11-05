@@ -3,8 +3,11 @@ import { render, screen } from "@testing-library/react";
 import { TelemetrySourcePill } from "@/components/facets/TelemetrySourcePill";
 import {
   clientSourceLabel,
+  frameworkVersion,
   isOtlpSession,
   isOtlpTelemetry,
+  otlpFrameworkName,
+  otlpFrameworkSourceDescription,
 } from "@/lib/agent-identity";
 import { sessionSupportsDirectives } from "@/lib/directives";
 import { getEventDetail, getSummaryRows } from "@/lib/events";
@@ -183,5 +186,54 @@ describe("OTLP event shapes", () => {
     const rows = Object.fromEntries(getSummaryRows(call));
     expect(rows["TTFT"]).toBeUndefined();
     expect(rows["Stream outcome"]).toBe("completed");
+  });
+});
+
+describe("OpenTelemetry GenAI framework sessions", () => {
+  it("names an agent framework's run after its framework", () => {
+    expect(clientSourceLabel("otlp", "otlp", "pydantic_ai")).toBe("Pydantic AI via OpenTelemetry");
+    expect(clientSourceLabel("otlp", "otlp", "strands/1.63.0")).toBe("Strands Agents via OpenTelemetry");
+    expect(clientSourceLabel("otlp", "otlp", "openai_agents")).toBe("OpenAI Agents via OpenTelemetry");
+    expect(clientSourceLabel("otlp", "otlp", "google_adk/2.13.0")).toBe("Google ADK via OpenTelemetry");
+    // A framework the dashboard has no name for reads as its label.
+    expect(clientSourceLabel("otlp", "otlp", "new_framework/1.0")).toBe("new_framework via OpenTelemetry");
+    // No framework, or an empty one: the source alone.
+    expect(clientSourceLabel("otlp", "otlp", "")).toBe("Reported via OpenTelemetry");
+    expect(clientSourceLabel("otlp", "otlp", null)).toBe("Reported via OpenTelemetry");
+    // A named client keeps its own name whatever framework it reports.
+    expect(clientSourceLabel("claude_code", "otlp", "pydantic_ai")).toBe("Claude Code via OpenTelemetry");
+  });
+
+  it("reads a framework entry's name and version", () => {
+    expect(otlpFrameworkName("pydantic_ai/2.64.0")).toBe("Pydantic AI");
+    expect(otlpFrameworkName("openai_agents")).toBe("OpenAI Agents");
+    expect(otlpFrameworkName(undefined)).toBeNull();
+    expect(otlpFrameworkName("/1.0")).toBeNull();
+    expect(frameworkVersion("pydantic_ai/2.64.0")).toBe("2.64.0");
+    expect(frameworkVersion("openai_agents")).toBeNull();
+    expect(frameworkVersion(42)).toBeNull();
+    expect(otlpFrameworkSourceDescription("google_adk/2.13.0")).toBe(
+      "Reported by Google ADK's OpenTelemetry instrumentation: observe only, no directives reach it",
+    );
+    expect(otlpFrameworkSourceDescription(null)).toBe(
+      "Reported over OpenTelemetry: observe only, no directives reach it",
+    );
+  });
+
+  it("the OTel pill of a framework run names the framework", () => {
+    render(<TelemetrySourcePill telemetry="otlp" clientType="otlp" framework="strands" testId="pill" />);
+    expect(screen.getByTestId("pill").getAttribute("title")).toBe(
+      "Strands Agents via OpenTelemetry: observe only, no directives reach it",
+    );
+  });
+
+  it("takes no directives", () => {
+    expect(
+      sessionSupportsDirectives({
+        client_type: "otlp",
+        flavor: "pydantic_ai",
+        context: { telemetry: "otlp", supports_directives: false, frameworks: ["pydantic_ai/2.64.0"] },
+      }),
+    ).toBe(false);
   });
 });

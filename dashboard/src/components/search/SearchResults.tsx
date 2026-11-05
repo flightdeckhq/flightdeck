@@ -200,6 +200,11 @@ function SessionRow({
       <TelemetrySourcePill
         telemetry={item.context?.telemetry}
         clientType={item.client_type}
+        framework={
+          Array.isArray(item.context?.frameworks)
+            ? String(item.context.frameworks[0] ?? "")
+            : null
+        }
         testId="search-session-telemetry-source"
       />
       <StateChip state={item.state} />

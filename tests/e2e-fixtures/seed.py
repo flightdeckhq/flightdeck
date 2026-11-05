@@ -64,6 +64,7 @@ NAMESPACE_FLIGHTDECK = UUID("ee22ab58-26fc-54ef-91b4-b5c0a97f9b61")
 # The OTLP fixture lives beside this script; running it as a script puts
 # its directory first on sys.path.
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from genai_seed import seed_genai_fixtures  # noqa: E402
 from otlp_seed import refresh_otlp_child_events, seed_otlp_fixture  # noqa: E402
 
 CANONICAL_PATH = pathlib.Path(__file__).resolve().parent / "canonical.json"
@@ -2641,6 +2642,13 @@ def seed(mode: str = "full") -> None:
     # OTLP receiver (otlp_seed.py), not POST /v1/events; it is
     # re-pinned active in both modes, like the fresh-class roles above.
     seed_otlp_fixture(INGESTION_URL, API_URL, auth_headers(), mode=mode)
+
+    # Agent-framework runs reported over OTLP GenAI go in through the
+    # receiver's trace and log paths and are assembled there
+    # (genai_seed.py). They arrive closed, so the keep-alive pass has
+    # nothing to re-pin: full mode only.
+    if mode == "full":
+        seed_genai_fixtures(INGESTION_URL, API_URL, auth_headers())
 
     print(f"[seed] done — seeded={seeded} skipped={skipped} backdated={backdated}")
 

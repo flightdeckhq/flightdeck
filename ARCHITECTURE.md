@@ -6329,6 +6329,25 @@ session's, which the agent rows carry as `telemetry` (see
   OTLP session's `context.claude_code_version`; the bar shows for any
   session whose `client_type` is `claude_code`, so an OTLP session
   under a custom `flightdeck.flavor` keeps it.
+- **Agent frameworks.** A run an agent framework reports over
+  OpenTelemetry GenAI (`client_type` `otlp`, see OTLP ingest > GenAI
+  dialect) is named after its framework: `Pydantic AI`, `Strands
+  Agents`, `OpenAI Agents` or `Google ADK`, read from the label in
+  `context.frameworks[0]` (else the session's `framework`); a label the
+  dashboard has no name for shows as itself. Its run drawer has an
+  OpenTelemetry header bar in place of the Claude Code one: the
+  framework and its version, `via OpenTelemetry` (its tooltip "Reported
+  by <framework>'s OpenTelemetry instrumentation", not the Claude Code
+  exporter's), an `unattributed` mark on the trace's unattributed
+  session (`context.otel_unattributed`, the calls no named agent
+  made), the first 8 characters of `context.otel_trace_id` (all of it
+  in the tooltip; a hand-off's sibling roots share it) and the
+  sub-agent relationship pill. The OTel pill's tooltip names the
+  framework ("Pydantic AI via OpenTelemetry") where the row holds the
+  framework: the `/agents` row and the agent drawer (from the agent's
+  latest run) and the search palette's run hits. The Fleet swimlane and
+  sidebar rows and the palette's agent hits carry no framework, and
+  read "Reported via OpenTelemetry".
 - **Controls.** An OTLP session takes no directives (see
   Observer-session class): no Stop Agent, no Stop All, no
   custom-directive triggers.
@@ -6561,7 +6580,9 @@ rendered directly from `activeDetailEvent` truthiness.
 
 The drawer header carries session ID + state badge, a Claude Code bar
 for `claude_code` sessions (logo, label, `coding` badge, version and
-source, see Session source), metadata bar, and a
+source, see Session source), or the OpenTelemetry bar for an agent
+framework's run, a metadata bar (its Duration is start to end for an
+ended run, start to now for an open one), and a
 collapsible RUNTIME panel (only renders when `session.context` is
 non-empty; combines git / kubernetes / compose / frameworks fields).
 Tabs: Timeline, Prompts, Directives (conditional). The Directives tab
@@ -6604,8 +6625,37 @@ terminology is preserved exactly — Anthropic sessions display
 sessions display `messages` (system role included), `tools`, and
 `response`. Content stored with `provider=otel_genai` (an OpenTelemetry
 GenAI framework's; see OTLP ingest > GenAI dialect > Capture) is
-displayed as the framework sent it, in the GenAI `parts` shape, by a
-generic parts renderer, never through a provider's branch.
+displayed as the framework sent it by its own renderer, never through a
+provider's branch, under an `OpenTelemetry GenAI` header:
+
+- the system instructions (JSON in the text column, shown as the parts
+  or blocks they hold), each input message and each response message,
+  in its own box with its role and `finish_reason`;
+- a message's `parts` (the GenAI conventions: `text`, `reasoning`,
+  `tool_call` with its arguments, `tool_call_response` with its result
+  or response, `uri`, `blob` and `file` named by type), else its
+  `content` or `message` list (Strands' Bedrock-style `text`, `toolUse`
+  and `toolResult` blocks under the older conventions), else the
+  message as stored; text is shown as written, so OpenAI Agents' repr
+  of an SDK object stays that text;
+- a tool call's arguments and result (`tool_input`, `tool_output`);
+- the call's tool definitions, folded when the call has messages;
+- a part or block it does not know as its JSON, and content with no
+  messages, response or tool input and output as its stored fields.
+
+Every box keeps its Pretty / Raw toggle, Raw showing the value as
+stored. An event without content opens the Prompts tab of its detail
+view (in the run drawer and the event drawer) on the capture-disabled
+message only when its run has no content at all (`capture_enabled`
+false). In a run with content it says "No content was recorded for
+this event", and, for an OpenTelemetry GenAI run, why: a call whose
+framework sent no messages (one that carries only tool definitions
+stores none), or a Google ADK tool call, whose arguments and result are
+inside the next model call's messages. A capture-on GenAI run whose
+calls all stored nothing (a framework with its own content switch off)
+has no content row, so its Prompts tab reads as capture-disabled: the
+session's stored posture (`sessions.capture_prompts`) is not on the
+session API.
 
 Streaming `post_call` rows render TTFT in the detail string and a
 `<StreamingPill>` (`STREAM` for completed, `ABORTED` for aborted). The
@@ -8064,6 +8114,13 @@ plugin emits it from its hooks.
 | `config_changed` | `ConfigChange` | `source` (`user_settings`, `project_settings`, `local_settings`, `policy_settings`, `skills`), `file_path` | none |
 | `elicitation_requested` | `Elicitation` (an MCP server asks the user for input) | `mcp_server`, `mode` (`form`, `url`), `elicitation_id` (URL mode) | `message`, `url`, `requested_schema` (as JSON text) |
 | `elicitation_responded` | `ElicitationResult` | `mcp_server`, `mode`, `elicitation_id`, `action` (`accept`, `decline`, `cancel`) | `content`, the user's answer (as JSON text) |
+
+One signal comes from ingestion rather than a hook: `agent_handoff`,
+on the agent that hands off in an OpenTelemetry GenAI run (see OTLP
+ingest > GenAI dialect > Sessions), with `signal_data` `from` and `to`
+(the two agents' names, either left out when the spans do not give it)
+and no content. The dashboard's feed line reads `hand-off · <from> →
+<to>`.
 
 The sanitised input fields are the whitelist `tool_call` events use
 (`file_path`, `command`, `query`, `pattern`, `prompt`; see Content

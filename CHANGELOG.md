@@ -118,6 +118,19 @@ All notable changes to Flightdeck are documented here.
   capture, nothing of it is staged or stored. `[REDACTED]` now counts
   as no content, as `<REDACTED>` does
   ([#253](https://github.com/flightdeckhq/flightdeck/pull/253)).
+- **The dashboard shows those frameworks' runs.** The run drawer names
+  the framework and its version ("Pydantic AI v2.64.0 via
+  OpenTelemetry"), shows the run's trace id and marks a trace's
+  unattributed session; the OTel pill on the Agents table and the agent
+  drawer names the framework too. The Prompts tab shows each call's
+  system instructions, messages, response and tool definitions, and
+  each tool call's arguments and result, as the framework sent them:
+  GenAI message parts, Strands' content blocks, OpenAI Agents' text, in
+  both themes, with Raw for the stored value. A hand-off reads
+  "hand-off · triage_agent → weather_agent" in the run's timeline. In a
+  run that captured content, an event without any now says "No content
+  was recorded for this event" (with why, for a GenAI call or a Google
+  ADK tool call) instead of claiming capture is off.
 
 ### Fixed
 

@@ -147,6 +147,99 @@ export const OTLP_AGENT = {
   deniedTool: "Bash",
 } as const;
 
+/** The agent-framework runs tests/e2e-fixtures/genai_seed.py sends
+ *  through the OTLP GenAI receiver, by flavor. Every seed replays each
+ *  run under a fresh trace id dated at the seed, so a spec takes the
+ *  newest trace of a flavor (``newestGenaiRun``). An agent's name is
+ *  ``<flavor>/<agent>``, a sub-agent's ``<root agent name>/<role>``,
+ *  and the unattributed session's the flavor alone. */
+export const GENAI_FIXTURE = {
+  /** Pydantic AI tool run, capture on: two calls and a tool call. */
+  pydanticAi: "e2e-genai-pydantic-ai",
+  /** Strands tool run under the older GenAI conventions. */
+  strands: "e2e-genai-strands",
+  /** OpenAI Agents hand-off: triage_agent hands off to weather_agent. */
+  openaiHandoff: "e2e-genai-openai-handoff",
+  /** Google ADK tool run: call content from its log records; its
+   *  tool call carries none. */
+  googleAdk: "e2e-genai-google-adk",
+  /** Pydantic AI model call that failed: one llm_error. */
+  modelError: "e2e-genai-model-error",
+  /** Synthetic depth-2 run (coordinator -> researcher ->
+   *  fact_checker) and, in a trace of its own, an unattributed call. */
+  depth2: "e2e-genai-depth2",
+} as const;
+
+/** One stored session of a GenAI fixture run. */
+export interface GenaiSession {
+  session_id: string;
+  agent_id: string;
+  agent_name: string;
+  started_at: string;
+  context: Record<string, unknown>;
+}
+
+/** One stored event of a GenAI fixture session. */
+export interface GenaiEvent {
+  id: string;
+  session_id: string;
+  event_type: string;
+  has_content: boolean;
+  tool_name: string | null;
+  payload?: Record<string, unknown>;
+}
+
+const GENAI_AUTH = { Authorization: "Bearer tok_dev" };
+const GENAI_API = "http://localhost:4000/api";
+
+/** The sessions of a GenAI fixture flavor's newest seeded run: every
+ *  session of the trace whose session started last (a hand-off's two
+ *  roots share one trace), keyed by agent name. The depth-2 flavor's
+ *  unattributed session is in a trace of its own, read with
+ *  ``unattributed: true``. */
+export async function newestGenaiRun(
+  page: Page,
+  flavor: string,
+  opts: { unattributed?: boolean } = {},
+): Promise<Map<string, GenaiSession>> {
+  const params = new URLSearchParams({
+    flavor,
+    from: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString(),
+    sort: "started_at",
+    order: "desc",
+    limit: "50",
+  });
+  const resp = await page.request.get(`${GENAI_API}/v1/sessions?${params}`, {
+    headers: GENAI_AUTH,
+  });
+  if (!resp.ok()) throw new Error(`sessions of ${flavor}: ${resp.status()}`);
+  const all = ((await resp.json()) as { sessions: GenaiSession[] }).sessions.filter(
+    (s) => (s.context?.otel_unattributed === true) === (opts.unattributed === true),
+  );
+  const newest = all[0];
+  if (!newest) throw new Error(`no seeded GenAI run of ${flavor}`);
+  const trace = newest.context?.otel_trace_id;
+  return new Map(
+    all.filter((s) => s.context?.otel_trace_id === trace).map((s) => [s.agent_name, s]),
+  );
+}
+
+/** A GenAI fixture session's events, oldest first. */
+export async function genaiEvents(page: Page, sessionId: string): Promise<GenaiEvent[]> {
+  const resp = await page.request.get(`${GENAI_API}/v1/sessions/${sessionId}`, {
+    headers: GENAI_AUTH,
+  });
+  if (!resp.ok()) throw new Error(`session ${sessionId}: ${resp.status()}`);
+  return ((await resp.json()) as { events: GenaiEvent[] }).events;
+}
+
+/** The one session of ``run`` named ``name``. */
+export function genaiSession(run: Map<string, GenaiSession>, name: string): GenaiSession {
+  const s = run.get(name);
+  if (!s) throw new Error(`no session ${name} in [${[...run.keys()].join(", ")}]`);
+  return s;
+}
+
 /** The SubAgentConnector in-window anchor pair. seed.py pins both
  *  runs active and posts a fresh tool_call on each at NOW-5s on every
  *  keep-alive cycle, so the pair always has a connector at 1m and

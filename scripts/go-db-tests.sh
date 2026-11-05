@@ -16,8 +16,8 @@
 #
 # The run fails when a package fails, when any test in a listed package
 # skips (a DB-gated test that skips did not run), or when a test file
-# outside the list reads one of the DSN variables (a new DB-gated
-# package must be added to DB_PACKAGES).
+# outside the list opens Postgres or reads a Postgres DSN variable (a
+# new DB-gated package must be added to DB_PACKAGES).
 #
 # Requires: the dev stack running (`make dev`), Go, docker.
 # Usage: make test-go-db   (or scripts/go-db-tests.sh)
@@ -34,8 +34,8 @@ PG_CONTAINER="${PG_CONTAINER:-docker-postgres-1}"
 PG_BASE_URL="${PG_BASE_URL:-postgres://flightdeck:flightdeck_dev@127.0.0.1:5432}"
 MIGRATIONS_DIR="$ROOT/docker/postgres/migrations"
 
-# Every Go test package with a test that reads a Postgres DSN from the
-# environment, as <module>/<package dir>.
+# Every Go test package with a test that opens Postgres through a DSN
+# from the environment, as <module>/<package dir>.
 DB_PACKAGES=(
   api/internal/auth
   api/internal/store
@@ -64,19 +64,25 @@ psql_admin() {
 
 # --- Every DB-gated test package is in the list ---------------------------
 cd "$ROOT"
+# A package counts as DB-gated when a test file opens a connection
+# (pgxpool.New, pgx.Connect) or names any *POSTGRES_URL variable, however
+# it reads it (Getenv, LookupEnv, a helper). Lines that call Setenv are
+# left out: the config tests set FLIGHTDECK_POSTGRES_URL to a dummy
+# value to test config parsing and never open a database.
 found=()
 while IFS= read -r pkg; do found+=("$pkg"); done < <(
-  grep -rlE 'Getenv\("(TEST_POSTGRES_URL|TEST_ASSEMBLER_POSTGRES_URL)"\)' \
-    --include='*_test.go' api ingestion workers | xargs -n1 dirname | sort -u
+  grep -rnE 'pgxpool\.New|pgx\.Connect|[A-Z_]*POSTGRES_URL' \
+    --include='*_test.go' api ingestion workers |
+    grep -v 'Setenv(' | cut -d: -f1 | xargs -r -n1 dirname | sort -u
 )
-for pkg in "${found[@]}"; do
+for pkg in ${found[@]+"${found[@]}"}; do
   if [[ ! " ${DB_PACKAGES[*]} " == *" $pkg "* ]]; then
-    fail "$pkg has a test that reads a Postgres DSN but is not in DB_PACKAGES in scripts/go-db-tests.sh"
+    fail "$pkg has a test that opens Postgres or reads a Postgres DSN but is not in DB_PACKAGES in scripts/go-db-tests.sh"
   fi
 done
 for pkg in "${DB_PACKAGES[@]}"; do
-  if [[ ! " ${found[*]} " == *" $pkg "* ]]; then
-    fail "$pkg is in DB_PACKAGES but no test there reads a Postgres DSN; remove it from scripts/go-db-tests.sh"
+  if [[ ! " ${found[*]-} " == *" $pkg "* ]]; then
+    fail "$pkg is in DB_PACKAGES but no test there opens Postgres or reads a Postgres DSN; remove it from scripts/go-db-tests.sh"
   fi
 done
 
@@ -142,6 +148,10 @@ done
 endgroup
 
 # --- Run each package against its own database ----------------------------
+# Without -race: two allocation tests in ingestion/internal/handlers
+# (otlp_decode_test.go) skip under the race detector, which changes what
+# allocations cost, and the no-skip check below would flag them. The Go
+# job already runs every package under -race with the DB tests skipped.
 summary=()
 status=0
 for pkg in "${DB_PACKAGES[@]}"; do

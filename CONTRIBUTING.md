@@ -78,8 +78,8 @@ never touched. Each package gets its own database because the assembler claims
 every due trace in its database, the staging store tests' traces included.
 
 The run fails when a test in those packages fails or skips, and when a test
-file outside the script's `DB_PACKAGES` list reads one of the two variables. A
-new DB-gated test package goes into that list. To run one package by hand,
+file outside the script's `DB_PACKAGES` list opens a pool or reads any
+`*POSTGRES_URL` variable. A new DB-gated test package goes into that list. To run one package by hand,
 point it at a migrated database of your own, never at `flightdeck`:
 
 ```bash

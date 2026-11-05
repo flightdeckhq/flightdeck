@@ -142,30 +142,6 @@ const ROW_HEIGHT = 48;
 // 12px right padding + a couple of pixels of breathing room.
 const BADGE_RESERVED_ZONE_PX = 88;
 
-// Visual breathing-room buffer between the label strip's right
-// edge (where the AgentStatusBadge sits via ``ml-auto``) and the
-// leftmost event circles / run brackets in the timeline panel.
-// Without this buffer, circles render flush against the badge
-// boundary and read as "overlapping" the badge — particularly
-// when the label strip's content is wide enough that the badge
-// itself sits at the very right edge of its container. The
-// buffer is applied to the timeline-panel's inner positioned
-// wrapper rather than to xScale.range so the grid line overlay
-// (rendered by Timeline.tsx, not this component) stays aligned
-// with absolute time positions.
-const TIMELINE_LEFT_BUFFER_PX = 8;
-
-/**
- * Left inset of the timeline panel's positioned wrapper: the buffer
- * plus half a circle. Circles and run glyphs are centred on their
- * time's x inside that wrapper, so a mark at the window's left edge
- * still clears the label strip by the buffer, and a circle, a glyph
- * and a connector end at the same instant share one x. The ALL row
- * uses the same inset, so a given time sits at the same x on every
- * row.
- */
-export const TIMELINE_LEFT_INSET_PX = TIMELINE_LEFT_BUFFER_PX + EVENT_CIRCLE_SIZE / 2;
-
 // A run's segments, kept per session row and recomputed only when the
 // row object or the run's cached events change (both are replaced, never
 // mutated, on every update).
@@ -337,10 +313,10 @@ function SwimLaneComponent({
 			d0,
 			d1,
 			toX: (ms) => scale(new Date(ms)),
-			// The inset wrapper starts TIMELINE_LEFT_INSET_PX into the
-			// panel, whose overflow clips at 0 and timelineWidth.
-			visibleLeft: -TIMELINE_LEFT_INSET_PX,
-			visibleRight: timelineWidth - TIMELINE_LEFT_INSET_PX,
+			// The panel's overflow clips at 0 and timelineWidth; the
+			// scale itself is inset inside them (see Timeline.tsx).
+			visibleLeft: 0,
+			visibleRight: timelineWidth,
 		});
 		// ``scale`` is a function of d0, d1 and timelineWidth, and
 		// ``cacheEpoch`` stands for the eventsCache reads.
@@ -687,17 +663,14 @@ function SwimLaneComponent({
 					overflow: "hidden",
 				}}
 			>
-				{/* Inner positioned wrapper, inset
-				    ``TIMELINE_LEFT_INSET_PX`` (the 8 px buffer plus
-				    half a circle) from the label-strip /
-				    timeline-panel boundary, where the
-				    AgentStatusBadge sits. Circles and run glyphs
-				    centre on their time's x inside it, so a mark at
-				    the window's left edge keeps the 8 px buffer
-				    clear of the badge. Marks within that inset of
-				    NOW are clipped by the panel's
-				    ``overflow: hidden``; Timeline.tsx's grid overlay
-				    draws the now line. */}
+				{/* Inner positioned wrapper over the whole panel.
+				    Circles, run glyphs and run lines sit at their
+				    time's x on the Timeline's scale, which is inset
+				    from both panel edges (half a circle plus a
+				    buffer), so the oldest mark clears the
+				    AgentStatusBadge and one at NOW sits whole
+				    inside the panel; Timeline.tsx's grid overlay
+				    draws the now line through it. */}
 				<div
 					data-testid="swimlane-timeline-inset"
 					onMouseOver={onMarkOver}
@@ -709,7 +682,7 @@ function SwimLaneComponent({
 						top: 0,
 						right: 0,
 						bottom: 0,
-						left: TIMELINE_LEFT_INSET_PX,
+						left: 0,
 					}}
 				>
 					<AggregatedSwimLane
@@ -926,8 +899,8 @@ function AllSwimLaneComponent({
 						overflow: "hidden",
 					}}
 				>
-					{/* Same inset wrapper as the agent rows, so a given
-					    time sits at the same x on every row. */}
+					{/* Same wrapper and scale as the agent rows, so a
+					    given time sits at the same x on every row. */}
 					<div
 						data-testid="swimlane-timeline-inset"
 						style={{
@@ -935,7 +908,7 @@ function AllSwimLaneComponent({
 							top: 0,
 							right: 0,
 							bottom: 0,
-							left: TIMELINE_LEFT_INSET_PX,
+							left: 0,
 						}}
 					>
 						{flavors.flatMap((f) =>

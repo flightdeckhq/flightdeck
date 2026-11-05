@@ -1149,6 +1149,35 @@ describe("layoutRowLanes lanes", () => {
     for (const l of layout.lines) expect(l.quietX).toBeNull();
   });
 
+  it("on the Timeline's inset scale, ends an open line on the now line and keeps glyphs in the panel", () => {
+    // The Timeline maps the window onto [19, 881] of the 900 px panel.
+    const rangeMs = 5 * MIN;
+    const d0 = NOW - rangeMs;
+    const toX = (ms: number) => 19 + ((ms - d0) / rangeMs) * 862;
+    const layout = layoutRowLanes({
+      segments: [
+        seg("early", NOW - 10 * MIN, Infinity, "open"),
+        seg("mid", NOW - 30 * S, Infinity, "open"),
+        seg("new", NOW - 200, Infinity, "open"),
+      ],
+      d0,
+      d1: NOW,
+      toX,
+      visibleLeft: 0,
+      visibleRight: 900,
+    });
+    expect(layout.laneCount).toBeGreaterThan(1);
+    const early = layout.lines.find((l) => l.segment.sessionId === "early")!;
+    // In from the panel's edge (it started before the window), out to now.
+    expect(early.x1).toBe(0);
+    expect(early.x2).toBeCloseTo(881, 6);
+    // The ▶ of a run that started a moment ago sits right of "now",
+    // inside the panel's right edge, where it needs no pull-back.
+    const start = layout.glyphs.find((g) => g.segment.sessionId === "new")!;
+    expect(start.left).toBeCloseTo(toX(NOW - 200) + 1, 6);
+    expect(start.left + start.width).toBeLessThanOrEqual(900);
+  });
+
   it("makes a line focusable only when neither of its glyphs is in view", () => {
     const layout = layoutRowLanes({
       ...scaleFor(1 * MIN),

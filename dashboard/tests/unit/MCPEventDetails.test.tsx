@@ -349,6 +349,25 @@ describe("MCPEventDetails — capture on, nothing captured", () => {
     expect(queryByTestId("mcp-event-detail-capture-disabled-mcp-evt-1")).toBeNull();
   });
 
+  it("a run that fails to load says its capture setting is unknown, not that capture is off", async () => {
+    const sessionId = "00000000-0000-0000-0000-0000000000f4";
+    vi.spyOn(api, "fetchSession").mockRejectedValue(new Error("HTTP 503"));
+    const event = makeMCPEvent({
+      session_id: sessionId,
+      event_type: "mcp_tool_call",
+      payload: { server_name: "demo", transport: "stdio" },
+    });
+    const { getByTestId, findByTestId, queryByTestId } = render(
+      <MCPEventDetails event={event} />,
+    );
+    fireEvent.click(getByTestId("mcp-event-details-toggle-mcp-evt-1"));
+    const notice = await findByTestId("mcp-event-detail-capture-unknown-mcp-evt-1");
+    expect(notice.textContent).toContain("Couldn't check this run's capture setting");
+    expect(notice.textContent).toContain("HTTP 503");
+    expect(queryByTestId("mcp-event-detail-capture-disabled-mcp-evt-1")).toBeNull();
+    expect(queryByTestId("mcp-event-detail-no-content-mcp-evt-1")).toBeNull();
+  });
+
   it("a run that predates the stored posture but stored content counts as capture on", async () => {
     const sessionId = "00000000-0000-0000-0000-0000000000f3";
     vi.spyOn(api, "fetchSession").mockResolvedValue(runDetail(sessionId, null, true));

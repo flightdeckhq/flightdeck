@@ -420,14 +420,34 @@ function StoredToolContentBlock({ event }: { event: AgentEvent }) {
  * An event that carries no captured body, inline or stored. Capture off
  * for its run: the capture-disabled notice. Capture on: the call simply
  * recorded none. Shows nothing until the run has loaded, so the
- * disabled notice never flashes on a capture-on run.
+ * disabled notice never flashes on a capture-on run. When the run
+ * cannot be loaded its capture setting is unknown, so the notice says
+ * that rather than claiming capture is off.
  */
 function NoCapturedBodyNotice({ event }: { event: AgentEvent }) {
   const { data, loading, error } = useSession(event.session_id);
   if (loading && !data) return null;
-  if (error && !data) return <CaptureDisabledNotice eventId={event.id} />;
+  if (error && !data) return <CaptureUnknownNotice eventId={event.id} error={error} />;
   if (!sessionCaptureOn(data?.session)) return <CaptureDisabledNotice eventId={event.id} />;
   return <NoBodyRecorded eventId={event.id} />;
+}
+
+function CaptureUnknownNotice({ eventId, error }: { eventId: string; error: string }) {
+  return (
+    <div
+      data-testid={`mcp-event-detail-capture-unknown-${eventId}`}
+      className="text-xs"
+      style={{
+        color: "var(--text-muted)",
+        padding: "8px 10px",
+        background: "var(--bg-elevated)",
+        borderRadius: 4,
+      }}
+    >
+      No request or response body is shown for this call. Couldn&apos;t check this run&apos;s
+      capture setting: {error}
+    </div>
+  );
 }
 
 function NoBodyRecorded({ eventId }: { eventId: string }) {

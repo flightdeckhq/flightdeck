@@ -8404,7 +8404,9 @@ accordion shows those as stored. A call with nothing captured says
 why: the capture-disabled notice when capture is off for its run
 (the run's stored `capture_prompts`, or any of its events storing
 content, as the Prompts tab reads it), otherwise that the call
-recorded no request or response body.
+recorded no request or response body. When the run cannot be loaded,
+its capture setting is unknown and the accordion says it could not
+check it, with the error, rather than claiming capture is off.
 
 **Dashboard surfacing**. Every MCP event_type renders with its own
 TYPE pill ("MCP TOOL CALL", "MCP TOOLS DISCOVERED", "MCP RESOURCE

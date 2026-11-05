@@ -367,7 +367,11 @@ type renewCounter struct {
 	renewed    int
 	renewedFor map[otlpstage.TraceKey]int
 	failRenew  bool
-	beforeLoad func(otlpstage.TraceKey)
+	// failWaiting fails, once, the first renewal of a trace other than
+	// the first one renewed: a waiting trace's keep-alive renewal.
+	failWaiting bool
+	firstKey    *otlpstage.TraceKey
+	beforeLoad  func(otlpstage.TraceKey)
 }
 
 func (r *renewCounter) RenewLease(ctx context.Context, owner string, key otlpstage.TraceKey) (otlpstage.Lease, error) {
@@ -377,8 +381,15 @@ func (r *renewCounter) RenewLease(ctx context.Context, owner string, key otlpsta
 		r.renewedFor = map[otlpstage.TraceKey]int{}
 	}
 	r.renewedFor[key]++
+	if r.firstKey == nil {
+		k := key
+		r.firstKey = &k
+	}
 	fail := r.failRenew
 	r.failRenew = false
+	if r.failWaiting && key != *r.firstKey {
+		fail, r.failWaiting = true, false
+	}
 	r.mu.Unlock()
 	if fail {
 		return otlpstage.Lease{}, errors.New("renewal failed")
@@ -906,6 +917,77 @@ func TestWaitingLeasesInABatchAreRenewed(t *testing.T) {
 	// Its own four chunk renewals, plus at least one while it waited.
 	if n := e.store.renewedFor[waited]; n < 5 {
 		t.Errorf("the waiting trace's lease was renewed %d times, want at least 5", n)
+	}
+}
+
+// A waiting trace whose keep-alive renewal errors is released at once,
+// due now, rather than left to lapse; the next claim assembles it.
+func TestWaitingRenewalErrorReleases(t *testing.T) {
+	e := newEnv(t, WithChunkSize(1))
+	first, second := e.key(), e.key()
+	e.agentRun(first)
+	e.agentRun(second)
+	e.clock.Advance(otlpstage.RootGrace)
+	e.bus.after = func(int) { e.clock.Advance(otlpstage.LeaseTTL / 2) }
+	e.store.failWaiting = true
+	outs := e.tick()
+	if len(outs) != 2 || !outs[0].Marked || !outs[1].LeaseLost || outs[1].Published != 0 {
+		t.Fatalf("outcomes = %+v", outs)
+	}
+	waited := outs[1].Key
+	if pending, owner, at, _ := e.traceState(waited); !pending || owner != nil || at.After(e.clock.Now()) {
+		t.Fatalf("the waiting trace: pending=%v owner=%v resolve_at=%v, want released and due now", pending, owner, at)
+	}
+	e.bus.after = nil
+	if out := e.tickOne(); out.Key != waited || !out.Marked {
+		t.Fatalf("the next claim: %+v", out)
+	}
+}
+
+// A long chunk renews its lease after any publish slice that ends a
+// quarter of the TTL or more after the last renewal, so a slow bus never
+// lets the lease lapse inside one chunk.
+func TestLongChunkRenewsByTime(t *testing.T) {
+	e := newEnv(t, WithChunkSize(ChunkSize), WithPublishSlice(1))
+	key := e.key()
+	e.agentRun(key)
+	e.clock.Advance(otlpstage.RootGrace)
+	// Each publish takes half a lease: the trace's four events take
+	// twice the TTL, all inside one chunk.
+	e.bus.after = func(int) { e.clock.Advance(otlpstage.LeaseTTL / 2) }
+	out := e.tickOne()
+	if !out.Marked || out.Chunks != 1 || out.Renewals != 3 || out.LeaseLost {
+		t.Fatalf("outcome = %+v, want one chunk renewed after each of its first three slices", out)
+	}
+}
+
+// A trace's failure count is dropped when it comes back not ready or
+// loses its lease, so a later failure starts the backoff again.
+func TestFailureCountDroppedWhenNotReadyOrLost(t *testing.T) {
+	e := newEnv(t)
+	key := e.key()
+	e.agentRun(key)
+	e.asm.failures[key] = 4
+	// Due now, as a retry would make it, though still inside its grace.
+	if _, err := e.pool.Exec(context.Background(), `UPDATE otlp_traces SET resolve_at = $3 WHERE token_key = $1 AND trace_id = $2`,
+		key.TokenKey, key.TraceID[:], e.clock.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if out := e.tickOne(); !out.Deferred || out.Marked {
+		t.Fatalf("inside the grace: %+v", out)
+	}
+	if _, counted := e.asm.failures[key]; counted {
+		t.Error("a trace that came back not ready keeps its failure count")
+	}
+
+	e.clock.Advance(otlpstage.RootGrace)
+	e.asm.failures[key] = 4
+	e.bus.after = func(int) { e.clock.Advance(otlpstage.LeaseTTL + time.Second) }
+	if out := e.tickOne(); !out.LeaseLost {
+		t.Fatalf("lease lapse: %+v", out)
+	}
+	if _, counted := e.asm.failures[key]; counted {
+		t.Error("a trace that lost its lease keeps its failure count")
 	}
 }
 

@@ -39,11 +39,25 @@ const (
 	ClaimInterval = time.Second
 
 	// ChunkSize is the most events published between two lease
-	// renewals. A chunk publishes in well under a second on a healthy
-	// bus, so renewing before each keeps the lease (LeaseTTL, two
-	// minutes) from ever having to cover a whole trace of up to 20,000
-	// events.
+	// renewals, so a trace of up to 20,000 events renews its lease at
+	// least 40 times. Renewal does not rest on a chunk being fast: a
+	// chunk is published in slices of PublishSlice, and the lease is
+	// renewed again after any slice that ends renewEvery or more after
+	// the last renewal.
 	ChunkSize = 500
+
+	// PublishSlice is how many events are published between two checks
+	// of the time since the last renewal. One slice is what can pass
+	// between a lease falling due for renewal and being renewed: 50
+	// publishes take a few milliseconds on a healthy bus, and even a bus
+	// slowed to a second a publish leaves the lease (LeaseTTL, two
+	// minutes) more than a minute to spare.
+	PublishSlice = 50
+
+	// renewEvery is how long a lease may go without renewal while its
+	// trace publishes: a quarter of its TTL, so a renewal that is due is
+	// made with three quarters of the lease still left.
+	renewEvery = otlpstage.LeaseTTL / 4
 
 	// RetryDelayMin is how soon a trace whose load or publish failed is
 	// due again after its first failure: the next claim but one, so a
@@ -66,11 +80,10 @@ const (
 
 	// batchRenewEvery is how often the leases of a claim's traces not yet
 	// started are renewed while earlier ones of the same claim assemble:
-	// at trace and chunk boundaries, once a quarter of the lease's TTL has
-	// passed since the last renewal. A chunk publishes in well under a
-	// second, so a waiting lease never comes within a minute and a half
-	// of lapsing, however long the traces before it take; sizing the
-	// claim to fit the TTL cannot promise that, since one trace of
+	// at trace boundaries and after publish slices, once a quarter of the
+	// lease's TTL has passed since the last renewal, so a waiting lease
+	// is renewed on the same schedule as the one being published. Sizing
+	// the claim to fit the TTL could not promise that, since one trace of
 	// 20,000 events may itself take longer than two minutes.
 	batchRenewEvery = otlpstage.LeaseTTL / 4
 
@@ -116,6 +129,7 @@ type Assembler struct {
 	now       func() time.Time
 	interval  time.Duration
 	chunkSize int
+	slice     int
 	// ownerBase names this process; each claim appends a counter, so
 	// owner ids are unique per claim, never reused across claims.
 	ownerBase string
@@ -151,11 +165,20 @@ func WithChunkSize(n int) Option {
 	}
 }
 
+// WithPublishSlice replaces PublishSlice; tests use small slices.
+func WithPublishSlice(n int) Option {
+	return func(a *Assembler) {
+		if n > 0 {
+			a.slice = n
+		}
+	}
+}
+
 // New returns an assembler over store and publisher.
 func New(store Store, publisher Publisher, opts ...Option) *Assembler {
 	a := &Assembler{
 		store: store, publisher: publisher, now: time.Now,
-		interval: ClaimInterval, chunkSize: ChunkSize,
+		interval: ClaimInterval, chunkSize: ChunkSize, slice: PublishSlice,
 		ownerBase: processName(),
 		failures:  map[otlpstage.TraceKey]int{},
 	}
@@ -245,9 +268,10 @@ func (a *Assembler) Tick(ctx context.Context) []Outcome {
 		}
 		return nil
 	}
-	b := &batch{a: a, owner: owner, renewedAt: a.now(), lost: map[otlpstage.TraceKey]bool{}}
+	b := &batch{a: a, owner: owner, renewedAt: a.now(), lost: map[otlpstage.TraceKey]bool{}, gens: map[otlpstage.TraceKey]int64{}}
 	for _, tr := range claimed {
 		b.waiting = append(b.waiting, tr.Key)
+		b.gens[tr.Key] = tr.Gen
 	}
 	outcomes := make([]Outcome, 0, len(claimed))
 	for _, tr := range claimed {
@@ -264,6 +288,7 @@ func (a *Assembler) Tick(ctx context.Context) []Outcome {
 		if b.lost[tr.Key] {
 			// Its lease was not renewed while it waited (another claim
 			// holds it, or it lapsed): the next claim assembles it.
+			delete(a.failures, tr.Key)
 			outcomes = append(outcomes, Outcome{Key: tr.Key, LeaseLost: true})
 			continue
 		}
@@ -283,6 +308,7 @@ type batch struct {
 	waiting   []otlpstage.TraceKey
 	renewedAt time.Time
 	lost      map[otlpstage.TraceKey]bool
+	gens      map[otlpstage.TraceKey]int64 // each trace's gen at the claim
 }
 
 // start takes key off the waiting list: its own assembly renews it now.
@@ -296,9 +322,11 @@ func (b *batch) start(key otlpstage.TraceKey) {
 }
 
 // keepAlive renews the waiting traces' leases once batchRenewEvery has
-// passed since the last renewal; a lease that is no longer held, or
-// whose renewal failed, is marked lost and its trace is left for the
-// next claim.
+// passed since the last renewal. A lease that is no longer held is
+// marked lost, and its trace is left for the next claim. A renewal that
+// errors may have left the lease held, so the trace is released, due
+// now on a context of its own, before it is marked lost; a lease that
+// was really lost matches no row.
 func (b *batch) keepAlive(ctx context.Context) {
 	now := b.a.now()
 	if len(b.waiting) == 0 || now.Sub(b.renewedAt) < batchRenewEvery {
@@ -310,6 +338,9 @@ func (b *batch) keepAlive(ctx context.Context) {
 			continue
 		}
 		lease, err := b.a.store.RenewLease(ctx, b.owner, key)
+		if err != nil {
+			b.a.release(ctx, b.owner, key, b.gens[key], now)
+		}
 		if err != nil || !lease.Held {
 			b.lost[key] = true
 		}
@@ -324,6 +355,9 @@ type Outcome struct {
 	Published int
 	Refused   int
 	Chunks    int
+	// Renewals counts the lease renewals made inside a chunk, after a
+	// slice that ended renewEvery or more after the last renewal.
+	Renewals  int
 	LeaseLost bool
 	Marked    bool
 }
@@ -353,6 +387,7 @@ func (a *Assembler) assemble(ctx context.Context, b *batch, tr otlpstage.Trace) 
 		// that time when it is the earlier one only if it sees the gen
 		// moved from the one the claim read.
 		a.release(ctx, owner, tr.Key, tr.Gen, wait)
+		delete(a.failures, tr.Key)
 		out.Deferred = true
 		return out
 	}
@@ -364,58 +399,72 @@ func (a *Assembler) assemble(ctx context.Context, b *batch, tr otlpstage.Trace) 
 	token := auth.ValidationResult{Valid: true, ID: tr.Key.TokenKey, Name: tr.TokenName}
 	capture := lt.Capture
 
-	for start := 0; start < len(events); start += a.chunkSize {
+	// stop ends the assembly without a mark: nothing half-published is
+	// marked, and the next claim publishes the same ids again.
+	stop := func() Outcome {
+		a.logAssembly(tr, lt, out, len(events))
+		return out
+	}
+	var renewedAt time.Time
+	for start := 0; start < len(events); {
 		if ctx.Err() != nil {
-			// Shutting down between chunks: nothing half-published is
-			// marked; the next claim publishes the same ids again.
+			// Shutting down: the slice in flight was finished; the
+			// lease is released so another process takes the trace now.
 			a.release(ctx, owner, tr.Key, lt.Gen, a.now())
 			out.Deferred = true
-			a.logAssembly(tr, lt, out, len(events))
-			return out
+			return stop()
 		}
-		b.keepAlive(ctx)
-		lease, err := a.store.RenewLease(ctx, owner, tr.Key)
-		if err != nil {
-			// The lease may still be held (the renewal failed, or the
-			// run context was cancelled under it): release it now, so
-			// another process need not wait for it to lapse. A lease
-			// that was really lost matches no row, and nothing happens.
-			slog.Warn("genai lease renewal failed; releasing", "trace", hex.EncodeToString(tr.Key.TraceID[:]), "err", err)
-			a.release(ctx, owner, tr.Key, lt.Gen, a.now())
-			out.Deferred = true
-			a.logAssembly(tr, lt, out, len(events))
-			return out
+		boundary := start%a.chunkSize == 0
+		if boundary || a.now().Sub(renewedAt) >= renewEvery {
+			b.keepAlive(ctx)
+			lease, err := a.store.RenewLease(ctx, owner, tr.Key)
+			if err != nil {
+				// The lease may still be held (the renewal failed, or the
+				// run context was cancelled under it): release it now, so
+				// another process need not wait for it to lapse. A lease
+				// that was really lost matches no row, and nothing happens.
+				slog.Warn("genai lease renewal failed; releasing", "trace", hex.EncodeToString(tr.Key.TraceID[:]), "err", err)
+				a.release(ctx, owner, tr.Key, lt.Gen, a.now())
+				out.Deferred = true
+				return stop()
+			}
+			if !lease.Held {
+				slog.Warn("genai lease expired mid-assembly; the next claim publishes the trace again",
+					"trace", hex.EncodeToString(tr.Key.TraceID[:]), "published", out.Published)
+				out.LeaseLost = true
+				delete(a.failures, tr.Key)
+				return stop()
+			}
+			renewedAt = a.now()
+			if boundary {
+				out.Chunks++
+			} else {
+				out.Renewals++
+			}
+			if capture && !lease.Capture {
+				// A record without capture turned the trace off: the rest
+				// is mapped again without it, which changes no event's
+				// place or id, only what capture governs.
+				capture = false
+				in.Trace.Capture = false
+				events = withoutCapture(events, genai.Resolve(in))
+			}
 		}
-		if !lease.Held {
-			slog.Warn("genai lease expired mid-assembly; the next claim publishes the trace again",
-				"trace", hex.EncodeToString(tr.Key.TraceID[:]), "published", out.Published)
-			out.LeaseLost = true
-			a.logAssembly(tr, lt, out, len(events))
-			return out
-		}
-		if capture && !lease.Capture {
-			// A record without capture turned the trace off: the rest
-			// is mapped again without it, which changes no event's
-			// place or id, only what capture governs.
-			capture = false
-			in.Trace.Capture = false
-			events = withoutCapture(events, genai.Resolve(in))
-		}
-		end := min(start+a.chunkSize, len(events))
-		chunk, refused := a.encode(events[start:end], a.now(), capture)
+		chunkEnd := (start/a.chunkSize + 1) * a.chunkSize
+		end := min(start+a.slice, chunkEnd, len(events))
+		slice, refused := a.encode(events[start:end], a.now(), capture)
 		out.Refused += refused
-		published, err := a.publisher.Publish(context.WithoutCancel(ctx), token, chunk)
+		published, err := a.publisher.Publish(context.WithoutCancel(ctx), token, slice)
 		out.Published += published
-		out.Chunks++
 		if err != nil {
 			retry := a.retryDelay(tr.Key)
 			slog.Warn("genai publish failed; retrying", "trace", hex.EncodeToString(tr.Key.TraceID[:]),
 				"published", out.Published, "retry_in", retry.String(), "err", err)
 			a.release(ctx, owner, tr.Key, lt.Gen, a.now().Add(retry))
 			out.Deferred = true
-			a.logAssembly(tr, lt, out, len(events))
-			return out
+			return stop()
 		}
+		start = end
 	}
 
 	markCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
@@ -429,6 +478,7 @@ func (a *Assembler) assemble(ctx context.Context, b *batch, tr otlpstage.Trace) 
 		slog.Warn("genai lease expired before the mark; the next claim publishes the trace again",
 			"trace", hex.EncodeToString(tr.Key.TraceID[:]))
 		out.LeaseLost = true
+		delete(a.failures, tr.Key)
 	default:
 		out.Marked = true
 		delete(a.failures, tr.Key)
@@ -545,6 +595,7 @@ func (a *Assembler) logAssembly(tr otlpstage.Trace, lt otlpstage.LoadedTrace, ou
 		"published", out.Published,
 		"refused", out.Refused,
 		"chunks", out.Chunks,
+		"renewals_mid_chunk", out.Renewals,
 		"lag_ms", a.now().Sub(tr.LastReceivedAt).Milliseconds(),
 		"marked", out.Marked,
 		"lease_lost", out.LeaseLost,

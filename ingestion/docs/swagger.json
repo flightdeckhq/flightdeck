@@ -324,7 +324,7 @@
         },
         "/v1/logs": {
             "post": {
-                "description": "OTLP/HTTP logs receiver. Accepts an ExportLogsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportLogsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the log records Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events are charged one unit each before they are published (429 when they do not fit in what is left, 413 when they exceed the whole budget). Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).",
+                "description": "OTLP/HTTP logs receiver. Accepts an ExportLogsServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportLogsServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the log records Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events, and each GenAI record it stages (one more unit for an agent span), are charged one unit each before anything is published or staged (429 when they do not fit in what is left, 413 when they exceed the whole budget). Records of the OpenTelemetry GenAI frameworks Flightdeck maps (Pydantic AI, Strands Agents, the OpenAI Agents SDK, Google ADK) are staged durably and assembled into events once their trace is complete; the request is answered 200 only after they are staged, and 503 with Retry-After when staging fails. Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).",
                 "parameters": [
                     {
                         "description": "Bearer token",
@@ -493,10 +493,10 @@
                                 }
                             }
                         },
-                        "description": "no decode slot free or a session read failed (see Retry-After), or publishing the mapped events failed; retry",
+                        "description": "no decode slot free, a session read failed or staging GenAI records failed (see Retry-After), or publishing the mapped events failed; retry",
                         "headers": {
                             "Retry-After": {
-                                "description": "seconds to wait when no decode slot was free or a session read failed",
+                                "description": "seconds to wait when no decode slot was free, a session read failed or staging failed",
                                 "schema": {
                                     "type": "integer"
                                 }
@@ -700,7 +700,7 @@
         },
         "/v1/traces": {
             "post": {
-                "description": "OTLP/HTTP traces receiver. Accepts an ExportTraceServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportTraceServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the spans Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events are charged one unit each before they are published (429 when they do not fit in what is left, 413 when they exceed the whole budget). Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).",
+                "description": "OTLP/HTTP traces receiver. Accepts an ExportTraceServiceRequest as protobuf (application/x-protobuf) or OTLP JSON (application/json), optionally gzip-compressed (Content-Encoding: gzip). Answers 200 with an ExportTraceServiceResponse in the request's encoding whenever the body decodes; partialSuccess counts the spans Flightdeck did not map, with a message naming why. Error responses carry a google.rpc.Status in the request's encoding. The request is refused with 429 before it is read when the token's per-minute budget is spent; its mapped events, and each GenAI record it stages (one more unit for an agent span), are charged one unit each before anything is published or staged (429 when they do not fit in what is left, 413 when they exceed the whole budget). Records of the OpenTelemetry GenAI frameworks Flightdeck maps (Pydantic AI, Strands Agents, the OpenAI Agents SDK, Google ADK) are staged durably and assembled into events once their trace is complete; the request is answered 200 only after they are staged, and 503 with Retry-After when staging fails. Inflating and decoding run under a global limit of concurrent decodes (503 with Retry-After when none is free).",
                 "parameters": [
                     {
                         "description": "Bearer token",
@@ -869,10 +869,10 @@
                                 }
                             }
                         },
-                        "description": "no decode slot free (see Retry-After), or publishing the mapped events failed; retry",
+                        "description": "no decode slot free or staging GenAI records failed (see Retry-After), or publishing the mapped events failed; retry",
                         "headers": {
                             "Retry-After": {
-                                "description": "seconds to wait when no decode slot was free",
+                                "description": "seconds to wait when no decode slot was free or staging failed",
                                 "schema": {
                                     "type": "integer"
                                 }

@@ -327,6 +327,8 @@ flightdeck/
 │   │   │   ├── otlp_json.go    # OTLP JSON decoding (streaming in-place hex id rewrite)
 │   │   │   ├── otlp_dialect.go # OTLPDialect: decoded export request → events to publish + rejected count
 │   │   │   ├── otlp_publish.go # The receiver's publish path (token stamp, attachment check, start sequence), shared with the GenAI assembler
+│   │   │   ├── otlp_router.go  # OTLPRouter: each resource to its dialect by scope (Claude Code, GenAI staging), everything else rejected with its scope named
+│   │   │   ├── otlp_genai_stage.go # A request's GenAI records grouped by trace for the staging write; the units it is charged
 │   │   │   ├── ratelimit.go    # Per-token sliding-window rate limiter (in-memory, keyed by token hash; auth runs first)
 │   │   │   └── (Swagger UI route)
 │   │   ├── auth/token.go       # Bearer token validation against access_tokens
@@ -3215,8 +3217,10 @@ never selects the GenAI dialect: two of the frameworks send
 does a `gen_ai.*` operation name on its own: a framework is mapped only
 once a recording of its telemetry has fixed what its spans mean. Metric
 data points of every source are counted as rejected (`metrics repeat
-span usage`), and so is every record of any other resource, with a
-message naming its scope (`scope "<name>" is not mapped`).
+span usage`; a Claude Code resource's spans and metrics keep the Claude
+Code dialect's `source "claude-code" is not mapped`), and so is every
+record of any other resource, with a message naming its scope (`scope
+"<name>" is not mapped`).
 
 The rest of this section up to GenAI dialect describes the Claude Code
 dialect. Attribute values are read whatever their OTLP type: Claude Code sends
@@ -3479,7 +3483,8 @@ and version, name, start, end and status code) and these attributes:
 
 Stack traces and attributes not on that list are never kept. A GenAI
 span without a 16-byte trace id and an 8-byte span id, or an ADK log
-record without both, cannot be placed in a trace and is counted as
+record without both (an all-zero id, which OTLP defines as invalid,
+included), cannot be placed in a trace and is counted as
 rejected (`a GenAI record needs a 16-byte trace id and an 8-byte span
 id`), so a malformed record never fails the staging write. Message text, tool definitions, arguments and results,
 and error text are staged, in `otlp_span_content`, only under the
@@ -3518,7 +3523,9 @@ path as a scaled Helm deployment. A trace is due:
 The assembler runs one deterministic mapping over the whole trace and
 publishes ordinary events through the receiver's own publish path
 (validation, content cutting, token stamping), in chunks of at most 500
-with the lease renewed between chunks: every session's `session_start`,
+with the lease renewed before each chunk, and inside a chunk after any
+slice of 50 events that ends 30 seconds or more after the last renewal,
+so a slow bus never lets the lease lapse: every session's `session_start`,
 parents before children, then each session's calls, tools and signals
 in order of span end, then the `session_end`s, children before parents.
 It then marks the records it loaded as assembled, by key, with the
@@ -3547,9 +3554,10 @@ consecutive failure of that trace in the process, up to 30 seconds; the
 records are durable, so exporters are not affected. A lease renewal
 that errors releases the trace at once rather than leaving its lease to
 lapse. While one trace of a claim assembles, the leases of the claim's
-traces still waiting are renewed too, at chunk boundaries, at least
+traces still waiting are renewed too, with the trace's own, at least
 every 30 seconds, so a long assembly never lets them lapse; a trace
-whose waiting lease was lost is left to the next claim. A session's first
+whose waiting lease was lost is left to the next claim, and one whose
+renewal errored is released first. A session's first
 `session_start` skips the attachment check: its id is new to every row
 except one an earlier attempt at the same assembly started, whose
 copy the worker drops, so only a re-attaching start runs it. On

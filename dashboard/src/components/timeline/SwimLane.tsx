@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo } from "react";
+import { memo, useCallback, useMemo, useState } from "react";
 import { Link } from "react-router";
 import type { ScaleTime } from "d3-scale";
 import { ChevronRight } from "lucide-react";
@@ -22,7 +22,7 @@ import { ProviderLogo } from "@/components/ui/provider-logo";
 import { OSIcon } from "@/components/ui/OSIcon";
 import { OrchestrationIcon } from "@/components/ui/OrchestrationIcon";
 import { EventNode } from "./EventNode";
-import { RunBracket } from "./RunBracket";
+import { RunBracket, RunLine } from "./RunBracket";
 import { AgentStatusBadge } from "./AgentStatusBadge";
 import {
 	useSessionEvents,
@@ -32,9 +32,13 @@ import {
 } from "@/hooks/useSessionEvents";
 import { useEventsCacheEpoch } from "@/lib/events-cache-epoch";
 import {
-	layoutRowGlyphs,
+	laneAt,
+	laneCentrePct,
+	laneGeometry,
+	layoutRowLanes,
 	runSegments,
 	type RunSegment,
+	type SegmentPlacement,
 } from "@/lib/swimlane-lanes";
 import { attachmentStartIds, isDiscoveryEvent, isEventVisible } from "@/lib/events";
 import { useShowDiscoveryEvents } from "@/lib/discoveryEventsPref";
@@ -313,12 +317,13 @@ function SwimLaneComponent({
 	const displayName = agentName ?? flavor;
 	const nameParts = splitRoleSuffix(displayName, mostRecentSession?.agent_role);
 
-	// Run glyphs: where each of the row's runs ran (its segments, from
-	// the run's session_start / session_end events the page holds), on
-	// which edge of the row, and where each glyph sits so none covers
-	// another. Recomputed when the row's runs, the window, or the events
-	// cache change; the cache epoch catches a run's own history fetch,
-	// which lands without re-rendering the row.
+	// Run lanes: where each of the row's runs ran (its segments, from
+	// the run's session_start / session_end events the page holds), in
+	// which lane of the row, where each glyph sits so none covers
+	// another, and where each run line runs. Recomputed when the row's
+	// runs, the window, or the events cache change; the cache epoch
+	// catches a run's own history fetch, which lands without
+	// re-rendering the row.
 	const cacheEpoch = useEventsCacheEpoch();
 	const [domainStart, domainEnd] = scale.domain();
 	const d0 = domainStart?.getTime() ?? 0;
@@ -327,7 +332,7 @@ function SwimLaneComponent({
 		const segments = sessions.flatMap((s) =>
 			segmentsFor(s, eventsCache.get(s.session_id)),
 		);
-		return layoutRowGlyphs({
+		return layoutRowLanes({
 			segments,
 			d0,
 			d1,
@@ -345,16 +350,56 @@ function SwimLaneComponent({
 		() => new Map(sessions.map((s) => [s.session_id, s])),
 		[sessions],
 	);
+	// Each run's segments in view with their lanes, which its circles
+	// read to find their lane.
+	const placementsBySession = useMemo(() => {
+		const out = new Map<string, SegmentPlacement[]>();
+		for (const placement of runLayout.placements) {
+			const list = out.get(placement.segment.sessionId) ?? [];
+			list.push(placement);
+			out.set(placement.segment.sessionId, list);
+		}
+		return out;
+	}, [runLayout]);
 	const onGlyphClick = useCallback(
 		(sessionId: string) => onSessionClick(sessionId),
 		[onSessionClick],
 	);
+
+	// The run a mark on this row is hovered or focused for (circle,
+	// glyph or line: each carries ``data-session-id``), so its run lines
+	// rise to full opacity. Only a split row draws lines, so a one-line
+	// row never updates it.
+	const [pointerRun, setPointerRun] = useState<string | null>(null);
+	const [focusRun, setFocusRun] = useState<string | null>(null);
+	const hasLines = runLayout.lines.length > 0;
+	const onMarkOver = useCallback(
+		(e: React.MouseEvent<HTMLDivElement>) => {
+			if (!hasLines) return;
+			const run =
+				(e.target as HTMLElement).closest?.("[data-session-id]")?.getAttribute("data-session-id") ??
+				null;
+			setPointerRun((prev) => (prev === run ? prev : run));
+		},
+		[hasLines],
+	);
+	const onMarkLeave = useCallback(() => setPointerRun(null), []);
+	const onMarkFocus = useCallback(
+		(e: React.FocusEvent<HTMLDivElement>) => {
+			if (!hasLines) return;
+			setFocusRun(e.target.getAttribute("data-session-id"));
+		},
+		[hasLines],
+	);
+	const onMarkBlur = useCallback(() => setFocusRun(null), []);
+	const litRun = pointerRun ?? focusRun;
 
 	return (
 		<div
 			data-agent-id={flavor}
 			data-topology={topology}
 			data-lane-count={runLayout.laneCount}
+			data-lane-overflow={runLayout.overflow ? "true" : undefined}
 			data-testid={`swimlane-agent-row-${agentName ?? flavor}`}
 			className="flex w-full items-stretch border-b"
 			style={{
@@ -655,6 +700,10 @@ function SwimLaneComponent({
 				    draws the now line. */}
 				<div
 					data-testid="swimlane-timeline-inset"
+					onMouseOver={onMarkOver}
+					onMouseLeave={onMarkLeave}
+					onFocus={onMarkFocus}
+					onBlur={onMarkBlur}
 					style={{
 						position: "absolute",
 						top: 0,
@@ -671,11 +720,27 @@ function SwimLaneComponent({
 						activeFilter={activeFilter}
 						sessionVersions={sessionVersions}
 						matchingSessionIds={matchingSessionIds}
+						laneCount={runLayout.laneCount}
+						placementsBySession={placementsBySession}
 					/>
-					{/* Run glyphs overlay the event circles on the row's top
-					    and bottom edges: a ▶ and a ■ at each segment's start
-					    and end in the window, in edge-then-left order so Tab
-					    follows the picture. */}
+					{/* Run lines join each run's marks along its lane on a
+					    split row, under the circles and glyphs. */}
+					{runLayout.lines.map((line) => {
+						const session = sessionById.get(line.segment.sessionId);
+						return session ? (
+							<RunLine
+								key={line.key}
+								line={line}
+								session={session}
+								highlighted={litRun === line.segment.sessionId}
+								onClick={onGlyphClick}
+							/>
+						) : null;
+					})}
+					{/* Run glyphs overlay the event circles: a ▶ and a ■ at
+					    each segment's start and end in the window, on the
+					    row's top edge or on their lane's centre, in
+					    lane-then-left order so Tab follows the picture. */}
 					{runLayout.glyphs.map((glyph) => {
 						const session = sessionById.get(glyph.segment.sessionId);
 						return session ? (
@@ -924,6 +989,8 @@ function AggregatedSwimLane({
 	activeFilter,
 	sessionVersions,
 	matchingSessionIds,
+	laneCount,
+	placementsBySession,
 }: {
 	sessions: Session[];
 	scale: ScaleTime<number, number>;
@@ -932,6 +999,8 @@ function AggregatedSwimLane({
 	activeFilter?: string | null;
 	sessionVersions?: Record<string, number>;
 	matchingSessionIds?: Set<string> | null;
+	laneCount: number;
+	placementsBySession: Map<string, SegmentPlacement[]>;
 }) {
 	return (
 		<div className="relative h-full w-full">
@@ -945,11 +1014,17 @@ function AggregatedSwimLane({
 					activeFilter={activeFilter}
 					version={sessionVersions?.[session.session_id] ?? 0}
 					matchingSessionIds={matchingSessionIds}
+					laneCount={laneCount}
+					placements={placementsBySession.get(session.session_id)}
 				/>
 			))}
 		</div>
 	);
 }
+
+// A run that has no segment in view keeps one stable empty list, so its
+// circles' memo does not see a new value every render.
+const NO_PLACEMENTS: readonly SegmentPlacement[] = [];
 
 function AggregatedSessionEvents({
 	session,
@@ -959,6 +1034,8 @@ function AggregatedSessionEvents({
 	activeFilter,
 	version = 0,
 	matchingSessionIds,
+	laneCount,
+	placements = NO_PLACEMENTS,
 }: {
 	session: Session;
 	scale: ScaleTime<number, number>;
@@ -967,7 +1044,14 @@ function AggregatedSessionEvents({
 	activeFilter?: string | null;
 	version?: number;
 	matchingSessionIds?: Set<string> | null;
+	/** The agent row's lane count; absent on the ALL row, whose
+	 *  circles sit on its centre line at full size. */
+	laneCount?: number;
+	/** The run's segments in view with their lanes (agent rows only). */
+	placements?: readonly SegmentPlacement[];
 }) {
+	const split = laneCount !== undefined && laneCount > 1;
+	const circleSize = laneCount === undefined ? EVENT_CIRCLE_SIZE : laneGeometry(laneCount).circle;
 	const isActive = session.state === "active";
 	const { events } = useSessionEvents(session.session_id, isActive, version);
 	const [showDiscovery] = useShowDiscoveryEvents();
@@ -1001,6 +1085,7 @@ function AggregatedSessionEvents({
 			})
 			.map((event) => ({
 				id: event.id,
+				lane: laneAt(placements, new Date(event.occurred_at).getTime()),
 				x: scale(new Date(event.occurred_at)),
 				eventType: event.event_type,
 				model: event.model,
@@ -1018,7 +1103,7 @@ function AggregatedSessionEvents({
 		// function of ``events`` and stable reference equality of the
 		// entries, so events-as-dep is sufficient.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [events, scale, session.session_id, version]);
+	}, [events, scale, session.session_id, version, placements]);
 
 	return (
 		<div
@@ -1048,7 +1133,9 @@ function AggregatedSessionEvents({
 						const fullEvent = events.find((e) => e.id === eid);
 						onSessionClick(session.session_id, eid, fullEvent);
 					}}
-					size={EVENT_CIRCLE_SIZE}
+					size={circleSize}
+					lane={laneCount === undefined ? undefined : node.lane}
+					centrePct={split ? laneCentrePct(node.lane, laneCount) : undefined}
 					isVisible={
 						isEventVisible(node.eventType, activeFilter) &&
 						(showDiscovery || !isDiscoveryEvent(node.eventType))

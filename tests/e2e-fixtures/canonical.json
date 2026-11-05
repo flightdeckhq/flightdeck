@@ -276,6 +276,56 @@
       "skip_subagent_refresh": true,
       "purpose": "Third of the three worker runs started together (see fanout-worker-1)."
     },
+    "fanout-wide-1": {
+      "started_offset_sec": -30,
+      "ended_offset_sec": null,
+      "agent_role": "wide",
+      "parent_role": "fanout-coordinator",
+      "parent_agent": "e2e-test-fanout@e2e-host-fanout",
+      "fanout_group": "worker",
+      "skip_subagent_refresh": true,
+      "purpose": "First of five runs of the coordinator's 'wide' sub-agent, started together: one more than the four lanes a row draws, so the fifth shares the fourth (the overflow lane). The fan-out refresh pins all five active with started_at = NOW-30s, in the same statement as the coordinator and its workers, and posts one tool_call each at NOW-30s. Excluded from refresh_subagent_events so T56 never moves them. T155 reads its lanes."
+    },
+    "fanout-wide-2": {
+      "started_offset_sec": -30,
+      "ended_offset_sec": null,
+      "agent_role": "wide",
+      "parent_role": "fanout-coordinator",
+      "parent_agent": "e2e-test-fanout@e2e-host-fanout",
+      "fanout_group": "worker",
+      "skip_subagent_refresh": true,
+      "purpose": "Run 2 of the five wide runs started together (see fanout-wide-1)."
+    },
+    "fanout-wide-3": {
+      "started_offset_sec": -30,
+      "ended_offset_sec": null,
+      "agent_role": "wide",
+      "parent_role": "fanout-coordinator",
+      "parent_agent": "e2e-test-fanout@e2e-host-fanout",
+      "fanout_group": "worker",
+      "skip_subagent_refresh": true,
+      "purpose": "Run 3 of the five wide runs started together (see fanout-wide-1)."
+    },
+    "fanout-wide-4": {
+      "started_offset_sec": -30,
+      "ended_offset_sec": null,
+      "agent_role": "wide",
+      "parent_role": "fanout-coordinator",
+      "parent_agent": "e2e-test-fanout@e2e-host-fanout",
+      "fanout_group": "worker",
+      "skip_subagent_refresh": true,
+      "purpose": "Run 4 of the five wide runs started together (see fanout-wide-1)."
+    },
+    "fanout-wide-5": {
+      "started_offset_sec": -30,
+      "ended_offset_sec": null,
+      "agent_role": "wide",
+      "parent_role": "fanout-coordinator",
+      "parent_agent": "e2e-test-fanout@e2e-host-fanout",
+      "fanout_group": "worker",
+      "skip_subagent_refresh": true,
+      "purpose": "Run 5 of the five wide runs started together (see fanout-wide-1)."
+    },
     "fanout-worker-lost": {
       "started_offset_sec": -7200,
       "ended_offset_sec": null,
@@ -316,6 +366,21 @@
       "lane_segments": [[-60, null]],
       "lane_state": "active",
       "purpose": "T136 anchor: run C of the lane-reuse agent, open from -60 s, after run A ended at -90 s (see lane-reuse-a)."
+    },
+    "quiet-stale": {
+      "started_offset_sec": -240,
+      "ended_offset_sec": null,
+      "lane_segments": [[-240, null]],
+      "lane_state": "stale",
+      "lane_last_seen_offset_sec": -200,
+      "purpose": "T157 and T158 anchor: a run the worker marked stale, started 4 min ago and last seen 200 s ago. It overlaps quiet-live, so the row splits into two lanes and its line is dashed from its last signal (data-tail=quiet). At 1m neither run's start is in view, so both lines take keyboard focus."
+    },
+    "quiet-live": {
+      "started_offset_sec": -200,
+      "ended_offset_sec": null,
+      "lane_segments": [[-200, null]],
+      "lane_state": "active",
+      "purpose": "T157 and T158 anchor: an active run open from 200 s ago, beside quiet-stale; its line stays solid."
     },
     "handoff-first": {
       "started_offset_sec": -40,
@@ -717,6 +782,41 @@
         "fanout-worker-3"
       ],
       "_comment": "The coordinator's same-role sub-agent, named {parent}/{role} as the plugin names one: a single agent with an earlier lost run and three runs started together. T132 reads its name at the 460 px default; T133 and T134 use its connectors."
+    },
+    {
+      "agent_name": "e2e-test-fanout@e2e-host-fanout/wide",
+      "agent_type": "coding",
+      "client_type": "claude_code",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-fanout",
+      "flavor": "e2e-fanout",
+      "model": "claude-sonnet-4-5",
+      "framework": "claude-code",
+      "host": "e2e-host-fanout",
+      "session_roles": [
+        "fanout-wide-1",
+        "fanout-wide-2",
+        "fanout-wide-3",
+        "fanout-wide-4",
+        "fanout-wide-5"
+      ],
+      "_comment": "The coordinator's second same-role sub-agent, with five runs started together: more than the four lanes a row draws. T155 reads its overflow lane."
+    },
+    {
+      "agent_name": "e2e-test-run-quiet",
+      "agent_type": "production",
+      "client_type": "flightdeck_sensor",
+      "user": "e2e-runner",
+      "hostname": "e2e-host-lanes",
+      "flavor": "e2e-run-lanes",
+      "model": "gpt-4o-mini",
+      "framework": "langchain",
+      "host": "e2e-host-lanes",
+      "session_roles": [
+        "quiet-stale",
+        "quiet-live"
+      ],
+      "_comment": "T157 and T158 anchor: a stale run and an active run that overlap, so the row splits and the stale run's line has a quiet tail."
     },
     {
       "agent_name": "e2e-test-run-lane-reuse",

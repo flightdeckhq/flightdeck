@@ -94,13 +94,13 @@ describe("buildSearchResultHref", () => {
     expect(href).toBe("?agent_drawer=deadbeef-1234-5678-9abc-def012345678");
   });
 
-  it("event helper returns ?event=&event_session= (distinct from ?run=)", () => {
+  it("event helper returns ?event=&event_session=&event_at= (distinct from ?run=)", () => {
     const href = buildSearchResultHref(
       "event",
       event("e1-aaaa-bbbb-cccc-dddd", "s1-aaaa-bbbb-cccc-dddd"),
     );
     expect(href).toBe(
-      "?event=e1-aaaa-bbbb-cccc-dddd&event_session=s1-aaaa-bbbb-cccc-dddd",
+      "?event=e1-aaaa-bbbb-cccc-dddd&event_session=s1-aaaa-bbbb-cccc-dddd&event_at=2026-04-17T09%3A00%3A00Z",
     );
     // Critical: the event helper must NOT emit ?run= — that param
     // opens the run drawer and would stack two drawers.

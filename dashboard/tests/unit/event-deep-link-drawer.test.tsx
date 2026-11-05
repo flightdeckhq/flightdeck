@@ -42,7 +42,14 @@ function renderAt(eventId: string) {
 }
 
 function page() {
-  return { events: [{ id: E1 }, { id: E2 }], has_more: false };
+  // The run's events, as the API returns them newest first.
+  return {
+    events: [
+      { id: E2, session_id: SESSION, occurred_at: "2026-11-04T09:00:02Z" },
+      { id: E1, session_id: SESSION, occurred_at: "2026-11-04T09:00:01Z" },
+    ],
+    has_more: false,
+  };
 }
 
 beforeEach(() => {
@@ -65,6 +72,23 @@ describe("EventDetailDrawerHost", () => {
     await act(async () => releaseSecond(page()));
     expect(screen.getByTestId(`drawer-${E2}`)).toBeTruthy();
     expect(screen.queryByTestId(`drawer-${E1}`)).toBeNull();
+  });
+
+  it("opens an event the palette linked with its timestamp from one request at that instant", async () => {
+    const at = "2026-11-04T09:30:00.123456Z";
+    fetchMock.mockResolvedValueOnce({ events: [{ id: E2 }], has_more: false });
+    render(
+      <MemoryRouter initialEntries={[`/?event=${E2}&event_session=${SESSION}&event_at=${encodeURIComponent(at)}`]}>
+        <EventDetailDrawerHost />
+      </MemoryRouter>,
+    );
+    await waitFor(() => expect(screen.getByTestId(`drawer-${E2}`)).toBeTruthy());
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![0]).toMatchObject({
+      from: "2026-11-04T09:30:00.123Z",
+      to: "2026-11-04T09:30:00.124Z",
+      session_id: SESSION,
+    });
   });
 
   it("shows the not-found panel when the event is not in the page", async () => {

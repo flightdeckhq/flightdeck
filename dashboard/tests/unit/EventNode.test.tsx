@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, fireEvent } from "@testing-library/react";
-import { EventNode } from "@/components/timeline/EventNode";
+import { EventNode, eventIconSize } from "@/components/timeline/EventNode";
 
 describe("EventNode", () => {
   const baseProps = {
@@ -149,5 +149,52 @@ describe("EventNode", () => {
     const node = container.querySelector("[style*='background']") as HTMLElement;
     fireEvent.mouseEnter(node);
     expect(getByText("RESULT · error")).toBeInTheDocument();
+  });
+});
+
+describe("EventNode in run lanes", () => {
+  const baseProps = {
+    x: 100,
+    eventType: "post_call" as const,
+    sessionId: "test-sess-1",
+    flavor: "test-flavor",
+    occurredAt: "2026-04-08T10:00:00Z",
+    onClick: vi.fn(),
+  };
+  const circle = (container: HTMLElement) =>
+    container.querySelector("[data-session-id]") as HTMLElement;
+
+  it("sizes the icon for each lane's circle", () => {
+    expect(eventIconSize(24)).toBe(13);
+    expect(eventIconSize(22)).toBe(13);
+    expect(eventIconSize(20)).toBe(11);
+    expect(eventIconSize(18)).toBe(11);
+    expect(eventIconSize(12)).toBe(8);
+    expect(eventIconSize(10)).toBe(0);
+    for (const size of [22, 18, 12]) {
+      const { container, unmount } = render(<EventNode {...baseProps} size={size} />);
+      expect(circle(container).querySelector("svg")).toHaveAttribute("width", String(eventIconSize(size)));
+      unmount();
+    }
+  });
+
+  it("draws a 10 px circle with no icon", () => {
+    const { container } = render(<EventNode {...baseProps} size={10} />);
+    expect(circle(container).style.width).toBe("10px");
+    expect(circle(container).querySelector("svg")).toBeNull();
+  });
+
+  it("centres on its lane and carries it, and the memo re-renders on a lane change", () => {
+    const { container, rerender } = render(<EventNode {...baseProps} size={18} lane={0} centrePct={25} />);
+    expect(circle(container).style.top).toBe("25%");
+    expect(circle(container)).toHaveAttribute("data-run-lane", "0");
+    rerender(<EventNode {...baseProps} size={18} lane={1} centrePct={75} />);
+    expect(circle(container).style.top).toBe("75%");
+    expect(circle(container)).toHaveAttribute("data-run-lane", "1");
+    // Without a lane centre the class's top-1/2 places it.
+    rerender(<EventNode {...baseProps} size={22} />);
+    expect(circle(container).style.top).toBe("");
+    expect(circle(container)).not.toHaveAttribute("data-run-lane");
+    expect(circle(container).style.width).toBe("22px");
   });
 });

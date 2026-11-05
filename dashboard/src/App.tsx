@@ -20,7 +20,7 @@ import { Analytics } from "@/pages/Analytics";
 import { Investigate } from "@/pages/Investigate";
 import { Settings } from "@/pages/Settings";
 import { CommandPalette } from "@/components/search/CommandPalette";
-import { fetchBulkEvents } from "@/lib/api";
+import { findSessionEvent, parseEventInstant } from "@/hooks/findSessionEvent";
 import type {
   AgentEvent,
   SearchResultAgent,
@@ -173,7 +173,7 @@ export function buildSearchResultHref(
   // event — overlay via ?event= + ?event_session=, NOT ?run= (that
   // opens the run drawer; the two would stack).
   const ev = item as SearchResultEvent;
-  return `?event=${encodeURIComponent(ev.event_id)}&event_session=${encodeURIComponent(ev.session_id)}`;
+  return `?event=${encodeURIComponent(ev.event_id)}&event_session=${encodeURIComponent(ev.session_id)}&event_at=${encodeURIComponent(ev.occurred_at)}`;
 }
 
 // Strict RFC-4122 gate for the ``?agent_drawer=`` and ``?event=`` /
@@ -187,20 +187,6 @@ const AGENT_DRAWER_ID_RE =
 // Event + session ids share the same shape — intentionally a shared
 // reference so a future tightening lands once.
 const EVENT_DRAWER_ID_RE = AGENT_DRAWER_ID_RE;
-
-// EventDetailDrawerHost hydration parameters.
-//
-// 2000 is the api server's ``eventsMaxLimit`` cap (see
-// ``api/internal/handlers/events_list.go``). Sessions that exceed
-// 2000 events still hit ``has_more=true``; the host surfaces a
-// "not found in latest 2000" empty state in that case rather than
-// rendering an invisible drawer (architect review).
-//
-// 1970-01-01 is the lowest ISO timestamp the events filter accepts;
-// session-scoped queries don't need a tighter floor because the
-// ``session_id`` filter is what narrows the result set.
-const EVENT_DRAWER_FETCH_LIMIT = 2000;
-const EVENT_DRAWER_FETCH_FROM = "1970-01-01T00:00:00Z";
 
 /**
  * App-level host for the agent drawer. The drawer's open state is
@@ -256,45 +242,42 @@ function AgentDrawerHost() {
  * ``?run=`` so an event-hit click does not also trigger the run
  * drawer Investigate already mounts on ``?run=``.
  *
- * Hydration: a single ``fetchBulkEvents`` call scoped to the
- * session_id (no new endpoint) provides the AgentEvent the
- * drawer needs; the matching event is picked by id. While the
- * first fetch is in flight EventDetailDrawer renders null (its prop
- * gate), so there is no half-rendered shell to manage; switching to
- * another event keeps the current one open until the next lands.
+ * Hydration: ``findSessionEvent`` reads the run through
+ * ``GET /v1/events`` (no new endpoint): one request at the event's
+ * instant when the link carries ``event_at``, else the run newest
+ * first until the event turns up, so an event anywhere in a run of any
+ * length resolves. While the first lookup is in flight
+ * EventDetailDrawer renders null (its prop gate), so there is no
+ * half-rendered shell to manage; switching to another event keeps the
+ * current one open until the next lands.
  */
 export function EventDetailDrawerHost() {
   const [searchParams, setSearchParams] = useSearchParams();
   const rawEvent = searchParams.get("event");
   const rawSession = searchParams.get("event_session");
+  // The event's occurred_at, which the palette's link carries; an
+  // older bookmark without it still resolves, by reading the run.
+  const rawAt = searchParams.get("event_at");
+  const at = rawAt !== null && !Number.isNaN(parseEventInstant(rawAt)) ? rawAt : null;
   const active =
     rawEvent !== null &&
     rawSession !== null &&
     EVENT_DRAWER_ID_RE.test(rawEvent) &&
     EVENT_DRAWER_ID_RE.test(rawSession);
-  const requestKey = active ? `${rawSession}|${rawEvent}` : null;
+  const requestKey = active ? `${rawSession}|${rawEvent}|${at ?? ""}` : null;
   const lookup = useKeyedFetch(requestKey, (signal) =>
-    fetchBulkEvents(
-      {
-        from: EVENT_DRAWER_FETCH_FROM,
-        session_id: rawSession ?? "",
-        limit: EVENT_DRAWER_FETCH_LIMIT,
-      },
+    findSessionEvent(
+      { sessionId: rawSession ?? "", eventId: rawEvent ?? "", at: at ?? undefined },
       signal,
     ),
   );
   // While a different event loads, the drawer keeps showing the one
-  // it had (the shown key still names it).
+  // it had (the shown key still names it, and the data is still its).
   const shownKey = useShownKey(requestKey, lookup);
-  const shownEventId = shownKey === null ? null : shownKey.slice(shownKey.indexOf("|") + 1);
-  const event: AgentEvent | null =
-    shownEventId === null
-      ? null
-      : (lookup.data?.events.find((e) => e.id === shownEventId) ?? null);
-  // ``notFound`` is true when the fetch returned a page (possibly
-  // with has_more) but the target event id was absent, or the fetch
-  // failed. Used to render an explicit empty state rather than an
-  // invisible drawer.
+  const event: AgentEvent | null = shownKey === null ? null : (lookup.data ?? null);
+  // ``notFound`` is true when the lookup finished without the event
+  // (the run does not hold it) or failed. Used to render an explicit
+  // empty state rather than an invisible drawer.
   const notFound =
     requestKey !== null && !lookup.loading && (lookup.error !== null || event === null);
 
@@ -304,6 +287,7 @@ export function EventDetailDrawerHost() {
         const next = new URLSearchParams(prev);
         next.delete("event");
         next.delete("event_session");
+        next.delete("event_at");
         return next;
       },
       { replace: true },
@@ -313,8 +297,8 @@ export function EventDetailDrawerHost() {
   if (!active) return null;
   if (!event && notFound) {
     // Surface the miss explicitly so the operator isn't left
-    // staring at a blank screen. Long sessions ( > 2000 events)
-    // and pruned-history sessions land here.
+    // staring at a blank screen. A deleted event, a pruned run or a
+    // failed lookup lands here.
     return (
       <div
         role="dialog"
@@ -328,9 +312,8 @@ export function EventDetailDrawerHost() {
       >
         <div className="text-sm font-semibold">Event not found</div>
         <div className="mt-2 text-xs text-text-muted">
-          This event isn&apos;t in the latest {EVENT_DRAWER_FETCH_LIMIT}{" "}
-          events for its run. Open the run drawer to scroll back
-          through older history.
+          This event could not be found in its run. Open the run
+          drawer to look through the run&apos;s history.
         </div>
         <button
           type="button"
@@ -377,6 +360,7 @@ function CommandPaletteHost() {
           const next = new URLSearchParams(prev);
           next.delete("event");
           next.delete("event_session");
+          next.delete("event_at");
           next.delete("run");
           next.set("agent_drawer", (item as SearchResultAgent).agent_id);
           return next;
@@ -391,6 +375,7 @@ function CommandPaletteHost() {
           next.delete("run");
           next.set("event", ev.event_id);
           next.set("event_session", ev.session_id);
+          next.set("event_at", ev.occurred_at);
           return next;
         });
         return;

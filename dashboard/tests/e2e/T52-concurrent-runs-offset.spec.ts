@@ -1,20 +1,18 @@
 /**
- * T52 — Concurrent runs of the same agent render with offset
- * bracket anchors (top vs bottom).
+ * T52 — Concurrent runs of the same agent render on offset lanes.
  *
  * Multi-pod K8s deployments with collapsed FLIGHTDECK_HOSTNAME
  * (and any other case where two sessions share an agent_id and
- * have overlapping time windows) get their run glyphs on opposite
- * edges of the swimlane row so they remain visually
- * distinguishable: while two runs overlap in the window, the
- * topmost track in view keeps the top edge and the other run's
- * glyphs sit on the bottom edge (lib/swimlane-lanes.ts).
+ * have overlapping time windows) split the swimlane row into run
+ * lanes so they remain visually distinguishable: while two runs
+ * overlap in the window, each draws its circles, glyphs and line
+ * on its own lane (lib/swimlane-lanes.ts).
  *
  * Fixture: e2e-test-concurrent-runs, two open runs that overlap
  * and, before them, a run that went lost 1 h 55 min ago. A lost run
  * ends at its last signal, so it holds no lane; read as running
- * forever, it used to push both concurrent runs to the bottom edge,
- * where their start glyphs shared one vertical offset.
+ * forever, it used to take a lane and push both concurrent runs into
+ * one shared offset.
  */
 import { test, expect } from "@playwright/test";
 import { bringSwimlaneRowIntoView, waitForFleetReady } from "./_fixtures";
@@ -58,11 +56,11 @@ test.describe("T52 — Concurrent runs offset anchors", () => {
 			ys.push(box!.y);
 		}
 		const delta = Math.abs(ys[0]! - ys[1]!);
-		// 4 px tolerance accommodates sub-pixel layout; ROW_HEIGHT is
-		// 48 px and the anchors sit at the row's top edge vs bottom
-		// edge so the real delta is ~30 px. Anything > 4 px confirms
-		// the offset logic fired; anything ≤ 4 px means both brackets
-		// stacked on the same anchor (regression).
+		// 4 px tolerance accommodates sub-pixel layout; the row's 47 px
+		// of content splits into two 23.5 px lanes and each glyph sits
+		// on its lane's centre, so the real delta is ~23.5 px. Anything
+		// > 4 px confirms the lanes split; anything ≤ 4 px means both
+		// glyphs stacked on one lane (regression).
 		expect(delta).toBeGreaterThan(4);
 	});
 

@@ -5,9 +5,15 @@ import {
   GLYPH_GAP_PX,
   MAX_GLYPH_SHIFT_PX,
   OVERLAP_TOLERANCE_MS,
+  LANE_GEOMETRY,
+  MAX_RUN_LANES,
+  ROW_CONTENT_HEIGHT_PX,
   START_GLYPH_SIZE_PX,
   assignSegmentTracks,
-  layoutRowGlyphs,
+  laneAt,
+  laneCentrePct,
+  laneGeometry,
+  layoutRowLanes,
   overlapsInWindow,
   packGlyphs,
   runSegments,
@@ -599,10 +605,10 @@ describe("packGlyphs", () => {
   });
 });
 
-describe("layoutRowGlyphs", () => {
+describe("layoutRowLanes", () => {
   it("puts every glyph on the top edge when no two runs overlap in the window", () => {
     const w = scaleFor(5 * MIN);
-    const layout = layoutRowGlyphs({
+    const layout = layoutRowLanes({
       ...w,
       segments: [seg("a", NOW - 4 * MIN, NOW - 3 * MIN), seg("b", NOW - 2 * MIN, Infinity, "open")],
     });
@@ -613,7 +619,7 @@ describe("layoutRowGlyphs", () => {
 
   it("stays on one edge when the runs overlap only before the window", () => {
     const w = scaleFor(1 * MIN);
-    const layout = layoutRowGlyphs({
+    const layout = layoutRowLanes({
       ...w,
       segments: [
         seg("a", NOW - 5 * MIN, NOW - 70 * S),
@@ -627,7 +633,7 @@ describe("layoutRowGlyphs", () => {
 
   it("splits the row while runs overlap in the window: the topmost track in view keeps the top edge", () => {
     const w = scaleFor(5 * MIN);
-    const layout = layoutRowGlyphs({
+    const layout = layoutRowLanes({
       ...w,
       segments: [seg("a", NOW - 4 * MIN, Infinity, "open"), seg("b", NOW - 3 * MIN, Infinity, "open")],
     });
@@ -638,7 +644,7 @@ describe("layoutRowGlyphs", () => {
 
   it("an earlier lost run does not take the top edge", () => {
     const w = scaleFor(5 * MIN);
-    const layout = layoutRowGlyphs({
+    const layout = layoutRowLanes({
       ...w,
       segments: [
         seg("lost", NOW - 26 * 60 * MIN, NOW - 25 * 60 * MIN, "lost"),
@@ -652,7 +658,7 @@ describe("layoutRowGlyphs", () => {
 
   it("reuses a freed top edge", () => {
     const w = scaleFor(5 * MIN);
-    const layout = layoutRowGlyphs({
+    const layout = layoutRowLanes({
       ...w,
       segments: [
         seg("a", NOW - 240 * S, NOW - 180 * S),
@@ -667,14 +673,14 @@ describe("layoutRowGlyphs", () => {
 
   it("draws only the end of a segment that started before the window", () => {
     const w = scaleFor(1 * MIN);
-    const layout = layoutRowGlyphs({ ...w, segments: [seg("a", NOW - 2 * 60 * MIN, NOW - 20 * S)] });
+    const layout = layoutRowLanes({ ...w, segments: [seg("a", NOW - 2 * 60 * MIN, NOW - 20 * S)] });
     expect(layout.glyphs.map((g) => g.kind)).toEqual(["end"]);
     expect(layout.glyphs[0]!.left).toBeCloseTo(w.toX(NOW - 20 * S) - END_GLYPH_SIZE_PX - 1, 6);
   });
 
   it("ends a lost run at its last signal with its own end glyph", () => {
     const w = scaleFor(60 * MIN);
-    const layout = layoutRowGlyphs({
+    const layout = layoutRowLanes({
       ...w,
       segments: [seg("lost", NOW - 50 * MIN, NOW - 40 * MIN, "lost")],
     });
@@ -685,7 +691,7 @@ describe("layoutRowGlyphs", () => {
 
   it("draws nothing for segments out of view", () => {
     const w = scaleFor(1 * MIN);
-    const layout = layoutRowGlyphs({
+    const layout = layoutRowLanes({
       ...w,
       segments: [seg("old", NOW - 60 * MIN, NOW - 50 * MIN), seg("now", NOW - 30 * S, Infinity, "open")],
     });
@@ -694,7 +700,7 @@ describe("layoutRowGlyphs", () => {
 
   it("a run inside another run's gap does not split the row", () => {
     const w = scaleFor(5 * MIN);
-    const layout = layoutRowGlyphs({
+    const layout = layoutRowLanes({
       ...w,
       segments: [
         seg("a", NOW - 280 * S, NOW - 200 * S, "closed", 0, 2),
@@ -712,7 +718,7 @@ describe("layoutRowGlyphs", () => {
 
   it("two runs the worker stamped a few milliseconds apart do not split the row", () => {
     const w = scaleFor(1 * MIN);
-    const layout = layoutRowGlyphs({
+    const layout = layoutRowLanes({
       ...w,
       segments: [seg("a", NOW - 50 * S, NOW - 25 * S + 4), seg("b", NOW - 25 * S, Infinity, "open")],
     });
@@ -726,7 +732,7 @@ describe("layoutRowGlyphs", () => {
   it("widens the tolerance to one pixel at wide windows", () => {
     // At 1h a pixel is 4 s, so a 2 s overlap is not a split.
     const w = scaleFor(60 * MIN);
-    const layout = layoutRowGlyphs({
+    const layout = layoutRowLanes({
       ...w,
       segments: [seg("a", NOW - 30 * MIN, NOW - 20 * MIN + 2 * S), seg("b", NOW - 20 * MIN, Infinity, "open")],
     });
@@ -736,7 +742,7 @@ describe("layoutRowGlyphs", () => {
   it("keeps a short run's ▶ before its ■", () => {
     const w = scaleFor(60 * MIN);
     // 30 s at 1h is 7.5 px, narrower than ▶ + ■.
-    const layout = layoutRowGlyphs({ ...w, segments: [seg("short", NOW - 30 * MIN, NOW - 30 * MIN + 30 * S)] });
+    const layout = layoutRowLanes({ ...w, segments: [seg("short", NOW - 30 * MIN, NOW - 30 * MIN + 30 * S)] });
     const [start, end] = layout.glyphs;
     expect(start?.kind).toBe("start");
     expect(end?.kind).toBe("end");
@@ -746,14 +752,14 @@ describe("layoutRowGlyphs", () => {
 
   it("keeps a run that has just started inside the panel", () => {
     const w = scaleFor(1 * MIN);
-    const layout = layoutRowGlyphs({ ...w, segments: [seg("new", NOW - 200, Infinity, "open")] });
+    const layout = layoutRowLanes({ ...w, segments: [seg("new", NOW - 200, Infinity, "open")] });
     const [start] = layout.glyphs;
     expect(start!.left + start!.width).toBeLessThanOrEqual(w.visibleRight);
   });
 
   it("orders glyphs by edge, then left to right", () => {
     const w = scaleFor(5 * MIN);
-    const layout = layoutRowGlyphs({
+    const layout = layoutRowLanes({
       ...w,
       segments: [
         seg("b", NOW - 3 * MIN, Infinity, "open"),
@@ -766,9 +772,12 @@ describe("layoutRowGlyphs", () => {
   });
 
   it("returns nothing for an empty window", () => {
-    expect(layoutRowGlyphs({ segments: [seg("a", 0, 1)], d0: 5, d1: 5, toX: () => 0, visibleLeft: -19, visibleRight: 881 })).toEqual({
+    expect(layoutRowLanes({ segments: [seg("a", 0, 1)], d0: 5, d1: 5, toX: () => 0, visibleLeft: -19, visibleRight: 881 })).toEqual({
       laneCount: 1,
+      overflow: false,
+      placements: [],
       glyphs: [],
+      lines: [],
     });
   });
 });
@@ -813,7 +822,7 @@ function randomSegments(rand: () => number, spanMs: number): RunSegment[] {
   return segments;
 }
 
-describe("layoutRowGlyphs properties", () => {
+describe("layoutRowLanes properties", () => {
   // Sliding windows over random rows, sampled so the test stays fast.
   it.each([
     ["1m", 1 * MIN],
@@ -827,12 +836,12 @@ describe("layoutRowGlyphs properties", () => {
         const d1 = NOW - rangeMs * 2 + frame * S + Math.floor(rand() * rangeMs);
         const d0 = d1 - rangeMs;
         const toX = (ms: number) => ((ms - d0) / rangeMs) * 900;
-        const layout = layoutRowGlyphs({ segments: all, d0, d1, toX, visibleLeft: -19, visibleRight: 881 });
+        const layout = layoutRowLanes({ segments: all, d0, d1, toX, visibleLeft: -19, visibleRight: 881 });
         const toleranceMs = Math.max(OVERLAP_TOLERANCE_MS, rangeMs / 900);
 
         // Glyphs on one edge overlap only where spreading them further
         // would move one past the shift cap or out of the panel.
-        const natural = naturalLefts(all, d0, d1, toX);
+        const natural = naturalLefts(all, d0, d1, toX, layout.laneCount);
         const pinned = (g: { key: string; left: number; width: number }) => {
           const shift = Math.abs(g.left - natural.get(g.key)!);
           return (
@@ -841,7 +850,7 @@ describe("layoutRowGlyphs properties", () => {
             g.left + g.width >= 881 - 1e-6
           );
         };
-        for (const lane of [0, 1]) {
+        for (let lane = 0; lane < layout.laneCount; lane++) {
           const boxes = layout.glyphs
             .filter((g) => g.lane === lane)
             .sort((a, b) => a.left - b.left);
@@ -852,17 +861,36 @@ describe("layoutRowGlyphs properties", () => {
           }
         }
 
-        // A single-edge frame has no overlap in view; a split frame has one.
+        // A one-line frame has no overlap in view; a split frame has one.
         const inView = all.filter((s) => s.startMs <= d1 && s.endMs >= d0);
-        expect(layout.laneCount === 2).toBe(overlapsInWindow(inView, d0, d1, toleranceMs));
+        expect(layout.laneCount > 1).toBe(overlapsInWindow(inView, d0, d1, toleranceMs));
+        expect(layout.laneCount).toBeLessThanOrEqual(MAX_RUN_LANES);
+        expect(layout.placements.length).toBe(inView.length);
 
-        // Segments on the top edge of a split frame never overlap each other.
-        if (layout.laneCount === 2) {
-          const topKeys = new Set(
-            layout.glyphs.filter((g) => g.lane === 0).map((g) => segmentKey(g.segment)),
-          );
-          const top = inView.filter((s) => topKeys.has(segmentKey(s)));
-          expect(overlapsInWindow(top, d0, d1, toleranceMs)).toBe(false);
+        if (layout.laneCount > 1) {
+          const frameTracks = assignSegmentTracks(all, rangeMs, toleranceMs);
+          const laneOf = new Map(layout.placements.map((p) => [segmentKey(p.segment), p.lane]));
+          // Every lane is in use: lanes with nothing in view close up.
+          expect(new Set(laneOf.values()).size).toBe(layout.laneCount);
+          // Lanes keep track order, so closing a lane never swaps two runs.
+          for (const a of inView) {
+            for (const b of inView) {
+              if (frameTracks.get(segmentKey(a))! < frameTracks.get(segmentKey(b))!) {
+                expect(laneOf.get(segmentKey(a))!).toBeLessThanOrEqual(laneOf.get(segmentKey(b))!);
+              }
+            }
+          }
+          // The segments of a lane of its own never overlap each other.
+          const ownLanes = layout.overflow ? layout.laneCount - 1 : layout.laneCount;
+          for (let lane = 0; lane < ownLanes; lane++) {
+            const inLane = layout.placements.filter((p) => p.lane === lane).map((p) => p.segment);
+            expect(overlapsInWindow(inLane, d0, d1, toleranceMs)).toBe(false);
+          }
+          // At most one line per segment in view (none for a segment
+          // that only touches the window's edge).
+          expect(layout.lines.length).toBeLessThanOrEqual(inView.length);
+        } else {
+          expect(layout.lines).toEqual([]);
         }
 
         // A segment's ▶ is left of its ■ when both are drawn.
@@ -909,7 +937,9 @@ function naturalLefts(
   d0: number,
   d1: number,
   toX: (ms: number) => number,
+  laneCount: number,
 ): Map<string, number> {
+  const { startGlyph, endGlyph } = laneGeometry(laneCount);
   const out = new Map<string, number>();
   for (const s of segments) {
     if (!(s.startMs <= d1 && s.endMs >= d0)) continue;
@@ -918,17 +948,17 @@ function naturalLefts(
     const startLeft = toX(s.startMs) + GLYPH_BOUNDARY_INSET_PX;
     if (startDrawn) out.set(`${key}:start`, startLeft);
     if (s.endKind !== "open" && s.endMs >= d0 && s.endMs <= d1) {
-      const endLeft = toX(s.endMs) - END_GLYPH_SIZE_PX - GLYPH_BOUNDARY_INSET_PX;
+      const endLeft = toX(s.endMs) - endGlyph - GLYPH_BOUNDARY_INSET_PX;
       out.set(
         `${key}:end`,
-        startDrawn ? Math.max(endLeft, startLeft + START_GLYPH_SIZE_PX + GLYPH_GAP_PX) : endLeft,
+        startDrawn ? Math.max(endLeft, startLeft + startGlyph + GLYPH_GAP_PX) : endLeft,
       );
     }
   }
   return out;
 }
 
-describe("layoutRowGlyphs on dense rows", () => {
+describe("layoutRowLanes on dense rows", () => {
   // A busy row: hundreds of short runs, a few seconds each, as an
   // integration suite or a fan-out storm produces (one live row drew 192
   // glyphs in a minute).
@@ -955,8 +985,8 @@ describe("layoutRowGlyphs on dense rows", () => {
       const d1 = NOW - shift;
       const d0 = d1 - rangeMs;
       const toX = (ms: number) => ((ms - d0) / rangeMs) * 900;
-      const layout = layoutRowGlyphs({ segments, d0, d1, toX, visibleLeft: PANEL.left, visibleRight: PANEL.right });
-      const natural = naturalLefts(segments, d0, d1, toX);
+      const layout = layoutRowLanes({ segments, d0, d1, toX, visibleLeft: PANEL.left, visibleRight: PANEL.right });
+      const natural = naturalLefts(segments, d0, d1, toX, layout.laneCount);
       expect(layout.glyphs.length).toBe(natural.size);
       const byKey = new Map(layout.glyphs.map((g) => [g.key, g]));
       for (const g of layout.glyphs) {
@@ -975,5 +1005,217 @@ describe("layoutRowGlyphs on dense rows", () => {
         if (end) expect(g.left).toBeLessThan(end.left);
       }
     }
+  });
+});
+
+describe("lane geometry", () => {
+  it("fits every lane count's circles in the row with at least 1.75 px between lanes", () => {
+    expect(LANE_GEOMETRY).toHaveLength(MAX_RUN_LANES);
+    LANE_GEOMETRY.forEach((g, i) => {
+      const laneHeight = ROW_CONTENT_HEIGHT_PX / (i + 1);
+      expect(laneHeight - g.circle).toBeGreaterThanOrEqual(1.75);
+      // Glyphs fit inside their lane on a split row.
+      if (i > 0) expect(g.endGlyph).toBeLessThan(laneHeight);
+      // The ■ stays heavier than the ▶, and an icon fits its circle.
+      expect(g.endGlyph).toBeGreaterThan(g.startGlyph);
+      expect(g.icon).toBeLessThan(g.circle);
+    });
+    expect(laneGeometry(4)).toEqual({ circle: 10, icon: 0, startGlyph: 8, endGlyph: 9 });
+    // Out-of-range counts clamp to the table.
+    expect(laneGeometry(0)).toBe(LANE_GEOMETRY[0]);
+    expect(laneGeometry(9)).toBe(LANE_GEOMETRY[3]);
+  });
+
+  it("centres each lane in equal bands of the row", () => {
+    expect(laneCentrePct(0, 1)).toBe(50);
+    expect([0, 1].map((l) => laneCentrePct(l, 2))).toEqual([25, 75]);
+    expect([0, 1, 2].map((l) => laneCentrePct(l, 3))).toEqual([100 / 6, 50, 500 / 6]);
+    expect([0, 1, 2, 3].map((l) => laneCentrePct(l, 4))).toEqual([12.5, 37.5, 62.5, 87.5]);
+    expect(laneCentrePct(7, 4)).toBe(87.5);
+  });
+});
+
+describe("layoutRowLanes lanes", () => {
+  const w = scaleFor(5 * MIN);
+  /** n runs started together 30 s ago, ids run-1 .. run-n. */
+  function together(n: number): RunSegment[] {
+    return Array.from({ length: n }, (_, i) => seg(`run-${i + 1}`, NOW - 30 * S, Infinity, "open"));
+  }
+  const laneByRun = (layout: ReturnType<typeof layoutRowLanes>) =>
+    Object.fromEntries(layout.placements.map((p) => [p.segment.sessionId, p.lane]));
+
+  it.each([
+    [1, 1, false],
+    [2, 2, false],
+    [3, 3, false],
+    [4, 4, false],
+    [5, 4, true],
+    [7, 4, true],
+  ])("%i runs started together draw in %i lanes (overflow %s)", (runs, lanes, overflow) => {
+    const layout = layoutRowLanes({ ...w, segments: together(runs) });
+    expect(layout.laneCount).toBe(lanes);
+    expect(layout.overflow).toBe(overflow);
+    const byRun = laneByRun(layout);
+    for (let i = 0; i < runs; i++) {
+      // Run-id order, each in its own lane up to the last, which the
+      // rest share.
+      expect(byRun[`run-${i + 1}`]).toBe(Math.min(i, MAX_RUN_LANES - 1));
+    }
+  });
+
+  it("states how many runs share the overflow lane on its glyphs and lines", () => {
+    const layout = layoutRowLanes({ ...w, segments: together(6) });
+    for (const g of layout.glyphs) expect(g.sharedBy).toBe(g.lane === 3 ? 3 : 1);
+    for (const l of layout.lines) expect(l.sharedBy).toBe(l.lane === 3 ? 3 : 1);
+    expect(layout.lines.filter((l) => l.lane === 3)).toHaveLength(3);
+    // The shared glyphs still sit apart.
+    const shared = layout.glyphs.filter((g) => g.lane === 3).sort((a, b) => a.left - b.left);
+    for (let i = 1; i < shared.length; i++) {
+      expect(shared[i]!.left).toBeGreaterThanOrEqual(shared[i - 1]!.left + shared[i - 1]!.width);
+    }
+  });
+
+  it("sizes the glyphs for the lane count: 10 / 11 px up to three lanes, 8 / 9 px at four", () => {
+    const three = layoutRowLanes({ ...w, segments: together(3) });
+    expect(new Set(three.glyphs.map((g) => g.width))).toEqual(new Set([START_GLYPH_SIZE_PX]));
+    const four = layoutRowLanes({
+      ...w,
+      segments: [...together(3), seg("run-4", NOW - 30 * S, NOW - 10 * S)],
+    });
+    expect(four.laneCount).toBe(4);
+    expect(four.glyphs.filter((g) => g.kind === "start").every((g) => g.width === 8)).toBe(true);
+    expect(four.glyphs.filter((g) => g.kind === "end").map((g) => g.width)).toEqual([9]);
+    expect(four.glyphs.every((g) => g.laneCount === 4)).toBe(true);
+  });
+
+  it("closes a lane with nothing in view, and the lanes below move up in order", () => {
+    // a's track has left the 1m window; b and c keep their order.
+    const segments = [
+      seg("a", NOW - 100 * S, NOW - 70 * S),
+      seg("b", NOW - 90 * S, Infinity, "open"),
+      seg("c", NOW - 80 * S, Infinity, "open"),
+    ];
+    const wide = layoutRowLanes({ ...scaleFor(2 * MIN), segments });
+    expect(laneByRun(wide)).toEqual({ a: 0, b: 1, c: 2 });
+    const narrow = layoutRowLanes({ ...scaleFor(1 * MIN), segments });
+    expect(narrow.laneCount).toBe(2);
+    expect(laneByRun(narrow)).toEqual({ b: 0, c: 1 });
+  });
+
+  it("puts a resumed run's segments in the lanes their tracks give them", () => {
+    // a's second segment reuses its first segment's track, freed at the
+    // gap; b holds the second track throughout.
+    const layout = layoutRowLanes({
+      ...w,
+      segments: [
+        seg("a", NOW - 280 * S, NOW - 200 * S, "closed", 0, 2),
+        seg("b", NOW - 250 * S, Infinity, "open"),
+        seg("a", NOW - 150 * S, Infinity, "open", 1, 2),
+      ],
+    });
+    expect(layout.laneCount).toBe(2);
+    const lanes = layout.placements.map((p) => [segmentKey(p.segment), p.lane]);
+    expect(Object.fromEntries(lanes)).toEqual({ "a#0": 0, "b#0": 1, "a#1": 0 });
+    // One line per segment, both of a's on its lane.
+    expect(layout.lines.filter((l) => l.segment.sessionId === "a").map((l) => l.lane)).toEqual([0, 0]);
+  });
+
+  it("draws no lines on a one-line row", () => {
+    const layout = layoutRowLanes({
+      ...w,
+      segments: [seg("a", NOW - 4 * MIN, NOW - 3 * MIN), seg("b", NOW - 2 * MIN, Infinity, "open")],
+    });
+    expect(layout.laneCount).toBe(1);
+    expect(layout.lines).toEqual([]);
+  });
+
+  it("runs each line from its start to its end, or to the panel's edges", () => {
+    const layout = layoutRowLanes({
+      ...w,
+      segments: [
+        seg("closed", NOW - 4 * MIN, NOW - 1 * MIN),
+        seg("open", NOW - 3 * MIN, Infinity, "open"),
+        seg("early", NOW - 10 * MIN, NOW - 2 * MIN),
+        seg("lost", NOW - 10 * MIN, NOW - 30 * S, "lost"),
+      ],
+    });
+    const line = (id: string) => layout.lines.find((l) => l.segment.sessionId === id)!;
+    expect(line("closed").x1).toBeCloseTo(w.toX(NOW - 4 * MIN), 6);
+    expect(line("closed").x2).toBeCloseTo(w.toX(NOW - 1 * MIN), 6);
+    expect(line("open").x2).toBe(w.visibleRight);
+    expect(line("early").x1).toBe(w.visibleLeft);
+    expect(line("early").x2).toBeCloseTo(w.toX(NOW - 2 * MIN), 6);
+    expect(line("lost").x2).toBeCloseTo(w.toX(NOW - 30 * S), 6);
+    for (const l of layout.lines) expect(l.quietX).toBeNull();
+  });
+
+  it("makes a line focusable only when neither of its glyphs is in view", () => {
+    const layout = layoutRowLanes({
+      ...scaleFor(1 * MIN),
+      segments: [
+        seg("a", NOW - 5 * MIN, Infinity, "open"),
+        seg("b", NOW - 4 * MIN, Infinity, "open"),
+        seg("c", NOW - 30 * S, Infinity, "open"),
+        seg("d", NOW - 3 * MIN, NOW - 10 * S),
+      ],
+    });
+    const focusable = Object.fromEntries(layout.lines.map((l) => [l.segment.sessionId, l.focusable]));
+    expect(focusable).toEqual({ a: true, b: true, c: false, d: false });
+    expect(layout.glyphs.some((g) => g.segment.sessionId === "a")).toBe(false);
+  });
+
+  it("dashes a quiet run's line from where it went quiet", () => {
+    const quiet = { ...seg("quiet", NOW - 4 * MIN, Infinity, "open"), quietSinceMs: NOW - 3 * MIN };
+    const longQuiet = { ...seg("long", NOW - 20 * MIN, Infinity, "open"), quietSinceMs: NOW - 10 * MIN };
+    const layout = layoutRowLanes({
+      ...w,
+      segments: [quiet, longQuiet, seg("live", NOW - 2 * MIN, Infinity, "open")],
+    });
+    const line = (id: string) => layout.lines.find((l) => l.segment.sessionId === id)!;
+    expect(line("quiet").quietX).toBeCloseTo(w.toX(NOW - 3 * MIN), 6);
+    // Quiet since before the window: dashed from the panel's left edge.
+    expect(line("long").quietX).toBe(w.visibleLeft);
+    expect(line("live").quietX).toBeNull();
+  });
+});
+
+describe("laneAt", () => {
+  const placements = [
+    { segment: seg("a", NOW - 200 * S, NOW - 150 * S, "closed", 0, 2), lane: 0 },
+    { segment: seg("a", NOW - 100 * S, Infinity, "open", 1, 2), lane: 2 },
+  ];
+
+  it("gives an event its segment's lane", () => {
+    expect(laneAt(placements, NOW - 180 * S)).toBe(0);
+    expect(laneAt(placements, NOW - 50 * S)).toBe(2);
+    // The segment's own session_end, at its end.
+    expect(laneAt(placements, NOW - 150 * S)).toBe(0);
+  });
+
+  it("counts a session_start stamped just before its segment as its segment's", () => {
+    expect(laneAt(placements, NOW - 100 * S - 500)).toBe(2);
+  });
+
+  it("gives an event in a gap the nearest segment's lane, and the top lane without one", () => {
+    expect(laneAt(placements, NOW - 140 * S)).toBe(0);
+    expect(laneAt(placements, NOW - 110 * S)).toBe(2);
+    expect(laneAt([], NOW)).toBe(0);
+    expect(laneAt(undefined, NOW)).toBe(0);
+  });
+});
+
+describe("runSegments quiet tail", () => {
+  it("marks a stale run's open segment quiet since its last signal", () => {
+    const [segment] = runSegments(
+      run({ state: "stale", started_at: iso(-10 * MIN), last_seen_at: iso(-4 * MIN) }),
+      undefined,
+    );
+    expect(segment!.endKind).toBe("open");
+    expect(segment!.quietSinceMs).toBe(NOW - 4 * MIN);
+  });
+
+  it("leaves an active run's segment without a quiet tail", () => {
+    const [segment] = runSegments(run({ state: "active" }), undefined);
+    expect(segment!.quietSinceMs).toBeUndefined();
   });
 });

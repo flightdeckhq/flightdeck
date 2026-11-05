@@ -26,6 +26,16 @@ export const HISTORY_PAGE_SIZE = 1000;
  *  fleet. */
 export const HISTORY_DRAIN_MAX_EVENTS = 5000;
 
+/** Events per request when the event deep link (``?event=``) reads a
+ *  run newest first looking for its event: the API's 2,000-row cap per
+ *  request, so a long run takes as few round trips as it can. */
+export const EVENT_LOOKUP_PAGE_SIZE = 2000;
+
+/** The most pages the event deep link reads before it reports the
+ *  event not found: 50,000 events, far past any run the dashboard
+ *  draws, so a stale link to a deleted event gives up in bounded time. */
+export const EVENT_LOOKUP_MAX_PAGES = 25;
+
 /** Number of recent events loaded from the fleet store
  *  into the live feed on initial mount. */
 export const FEED_INITIAL_LOAD = 100;

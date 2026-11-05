@@ -154,7 +154,7 @@ describe("SwimLane run anchors", () => {
     expect(within(row()).queryByTestId(`swimlane-run-bracket-start-${long.session_id.slice(0, 8)}`)).toBeNull();
   });
 
-  it("gives the glyphs of runs started together distinct left edges on each edge", () => {
+  it("gives runs started together a lane each", () => {
     const started = at(-30 * S);
     const runs = [nextId("h"), nextId("i"), nextId("j")].map((id) =>
       mkSession({ session_id: id, started_at: started }),
@@ -164,10 +164,11 @@ describe("SwimLane run anchors", () => {
       const g = glyph("start", r.session_id);
       return { lane: g.getAttribute("data-run-lane"), left: parseFloat(g.style.left) };
     });
-    // The first run keeps the top edge; the other two share the bottom.
-    expect(placed.map((p) => p.lane)).toEqual(["0", "1", "1"]);
-    const bottom = placed.filter((p) => p.lane === "1").map((p) => p.left).sort((x, y) => x - y);
-    expect(bottom[1]! - bottom[0]!).toBeGreaterThanOrEqual(10);
+    // In run-id order, one lane each, so their ▶ glyphs sit at one x
+    // on three lane centres.
+    expect(row()).toHaveAttribute("data-lane-count", "3");
+    expect(placed.map((p) => p.lane)).toEqual(["0", "1", "2"]);
+    expect(new Set(placed.map((p) => p.left)).size).toBe(1);
   });
 
   it("draws glyphs only for runs in view", () => {

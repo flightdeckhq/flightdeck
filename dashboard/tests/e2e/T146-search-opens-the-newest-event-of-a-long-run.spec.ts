@@ -102,7 +102,10 @@ test.describe("T146 — The search palette opens an event anywhere in a long run
 		// The opened needle's run must itself be past its oldest 2,000
 		// and fully stored, or the old lookup could pass by luck.
 		const openedHit = (await needleHits(request)).find((h) => h.event_id === opened);
-		expect(await runEventCount(request, openedHit?.session_id ?? "")).toBeGreaterThan(CALLS);
+		// An unfiltered count would be every stored event, so the hit
+		// and its session id must be real before the run is counted.
+		expect(openedHit?.session_id).toMatch(/^[0-9a-f-]{36}$/);
+		expect(await runEventCount(request, openedHit!.session_id)).toBeGreaterThan(CALLS);
 		const drawer = page.getByTestId("event-detail-drawer");
 		await expect(drawer).toBeVisible({ timeout: 10_000 });
 		await expect(drawer).toContainText(NEEDLE);

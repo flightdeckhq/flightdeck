@@ -2759,11 +2759,15 @@ capture-off session. When `capture_prompts=true` for the session, the
 row and its `event_content` row are written in one transaction, so no
 reader sees an event that claims content before the content exists. If
 the content can never be stored (it does not parse, or Postgres rejects
-the row as invalid data, for example a NUL byte in a text field), the
-worker stores the event alone with `has_content=false` and logs a
-warning, rather than retrying a write that would fail the same way on
-every delivery. A transient failure (a dropped connection, a timeout)
-writes nothing and the event is redelivered whole. An event that sets
+the row as invalid data or a constraint, for example a content blob
+without a `response`), the worker stores the event alone with
+`has_content=false` and logs a warning, rather than retrying a write
+that would fail the same way on every delivery. Ingestion replaces the
+text Postgres cannot store before an event reaches the bus (see
+Validation rules), so a NUL byte no longer reaches this fallback; it
+stays as the backstop for a content row nothing upstream caught. A
+transient failure (a dropped connection, a timeout) writes nothing and
+the event is redelivered whole. An event that sets
 `has_content` without a `content` blob is stored with
 `has_content=false`.
 
@@ -2872,6 +2876,23 @@ line at the end of that second, which names the latest and counts the
 others, so a burst is reported even when nothing follows it. A
 negative count is refused, as a negative `tokens_*` is: it comes from a
 broken client, not a newer one.
+
+Text Postgres cannot store is replaced, not refused. U+0000 (the JSON
+escape `\u0000`) and a UTF-16 surrogate escape not paired with its
+other half are valid JSON that Postgres refuses. In the event itself
+(a name, a sub-agent message, an error, anything the worker writes to
+the event row) one fails the event on every redelivery; in its content
+it makes the worker store the event without its content (see `POST
+/v1/events`), so the content is lost. Ingestion replaces each with
+U+FFFD (`\ufffd`) in the body of every event before validating it,
+whether posted or built by the OTLP receiver, and in every string it
+stages for the GenAI dialect (metadata and content alike), rather than
+answering 400: the character is almost always inside captured content (a
+tool's binary output), and refusing would also drop the event's tokens.
+The escape is rewritten in place, so the body keeps its length and every
+other value its spelling. A staging write the database refuses is logged
+by its SQLSTATE and the table it names, never by the database's message,
+detail or context, which quote the refused value.
 
 Field names match exactly, and a case variant of a known field name is
 refused. Every check above reads a field under its exact name, while the
@@ -3226,7 +3247,7 @@ The rest of this section up to GenAI dialect describes the Claude Code
 dialect. Attribute values are read whatever their OTLP type: Claude Code sends
 numbers and booleans as strings (`"409"`, `"true"`), and the literal
 `<REDACTED>` it sends for a prompt or response it was told not to log
-counts as no content.
+counts as no content, as does the `[REDACTED]` other exporters send.
 
 | Claude Code log record | Event |
 |---|---|
@@ -3638,8 +3659,9 @@ A session starts at its agent span's start and ends at its end
 (`close_reason=normal_exit`), with `state=error` and the sub-agent error
 block when the span failed: `error_class` from `error.type`, else the
 exception type (cut to 256 bytes at a UTF-8 boundary, as on a failed
-tool or model call; a span that names neither ends in error with no
-block), and the message only with capture on. Its
+tool or model call), and `message`, the span's error text cut as a
+failed tool's is, only with capture on; a span that names no class and
+has no message to give ends in error with no block. Its
 `session_start` carries `sensor_version` (the framework's version),
 `capture_prompts` (the trace's posture, below) and a `context` of
 `telemetry=otlp`, `supports_directives=false`, `frameworks`
@@ -3694,8 +3716,9 @@ Tokens come from that span only: never from agent spans (Pydantic AI's
 `gen_ai.aggregated_usage.*`, the `gen_ai.usage.*` on Strands' agent
 spans), from ADK's log records, which repeat their span's usage, or from
 metrics. A failed model span (ERROR status) is an `llm_error` on its
-agent's session, never a `post_call`; its error text is content, kept
-only with capture on. The four frameworks' recordings carry no usage on
+agent's session, never a `post_call`. Its error text is content and
+is never read for it, capture on or off: the `llm_error` names the
+error by its class (below). The four frameworks' recordings carry no usage on
 one (see `tests/fixtures/otlp/GENAI_COMPARISON.md` > A failed model
 call), but a provider may bill a call that then fails, so the usage is
 read from the failed span, else from the outermost level of model-call
@@ -3730,7 +3753,8 @@ carries the error block `{error_type: other, error_class, message}`,
 `error_class` from `error.type`, else the first exception type, cut to
 256 bytes at a UTF-8 boundary (left out when the span names neither); its
 message is the status message, else the exception message, cut to 200
-characters, with capture on, and `<redacted>` with capture off.
+characters, with capture on (left out when the span has neither), and
+`<redacted>` with capture off.
 
 **Identity.** `client_type` is `otlp` and `framework` is the framework
 label. `agent_type` is the resource's `flightdeck.agent_type` when it
@@ -3760,18 +3784,35 @@ default, `metered`.
 resource declares `flightdeck.capture_prompts=true`, and a trace's
 posture is the AND of every resource that contributed to it: once one
 record of a trace comes without capture, the trace's staged content is
-deleted and none is staged after it. Content is read from span
-attributes (`gen_ai.input.messages`, `gen_ai.output.messages`,
-`gen_ai.system_instructions`, `gen_ai.tool.definitions`,
-`gen_ai.tool.call.arguments` and `gen_ai.tool.call.result`, Pydantic
-AI's `pydantic_ai.all_messages` and `final_result`), from Strands' span
-events (merged with the attribute copy of the same key, so it is kept
-once), from ADK's log records (whose array values are converted to the
-equivalent JSON), and from status and exception messages. `<REDACTED>`,
-`[REDACTED]`, Pydantic AI's message skeletons whose parts carry only a
-`type`, and Strands' `execute_event_loop_cycle` content count as no
-content. Content is cut to fit the 768 KiB event body limit when it is
-staged, so a staged record is never larger than the event it becomes.
+deleted and none is staged after it. A record is read only for the
+content its event can carry: a model call span for
+`gen_ai.input.messages`, `gen_ai.output.messages`,
+`gen_ai.system_instructions` and `gen_ai.tool.definitions`; a tool span
+for `gen_ai.tool.call.arguments` and `gen_ai.tool.call.result`; a named
+agent span for its input and output messages and Pydantic AI's
+`final_result`; a Google ADK log record for the four keys of a model
+call, its array values converted to the equivalent JSON; and a failed
+tool or agent span for its error text, the status message, else the
+first exception's message (never the stack trace). Every other span
+(Strands' `execute_event_loop_cycle`, which repeats its calls' messages,
+other link spans, foreign scopes), and every other attribute (Pydantic
+AI's `pydantic_ai.all_messages` included), stages nothing. A string that
+holds a JSON object or array is kept as that JSON, any other string as
+itself. Strands sends its messages as span events: under the latest
+conventions as `gen_ai.client.inference.operation.details` events
+carrying the same keys, each read only when the span has no attribute
+of that key, so a message sent both ways is kept once; under the older
+ones as one event per message (`gen_ai.system.message` the system
+instructions; `gen_ai.user.message`, `gen_ai.assistant.message` and
+`gen_ai.tool.message` the input messages; `gen_ai.choice` the output),
+each kept as its attributes with the role its event name stands for,
+and on a tool span its tool message and choice are the arguments and
+result. `<REDACTED>`, `[REDACTED]`, empty values and message skeletons
+(messages and parts that carry nothing beyond their `type`, `id`,
+`name`, `role` and `finish_reason`, as Pydantic AI sends with its own
+content switch off) count as no content. Content is cut to fit the 768
+KiB event body limit when it is staged, so a staged record is never
+larger than the event it becomes.
 
 Captured content is the one content Flightdeck writes outside
 `event_content`, and only transiently: it waits in
@@ -3781,22 +3822,33 @@ assembled, or by the sweep once it has been staged for 24 hours and 30
 seconds. With capture off nothing is staged, and no content reaches any
 table. Assembled content lands in `event_content` like any other, stored
 as the framework sent it, never converted to a provider's format, with
-`provider=otel_genai`: `system` from `gen_ai.system_instructions`
-(JSON-encoded), `messages` from the input messages, `response` from the
-output messages and `tools` from the tool definitions on a `post_call`;
-`tool_input` and `tool_output` from the tool call's arguments and result
-on a `tool_call`, through the tool-capture envelope; and a child's
-`incoming_message` and `outgoing_message` from its `invoke_agent`
-content, else its parent's `execute_tool` content. An ADK `post_call`
-takes its content from the log record with its span id. ADK records a
-tool's arguments and result only inside the next model call's messages,
-so its `tool_call`s carry none. A root agent's own content (Pydantic
-AI's `pydantic_ai.all_messages` and `final_result`, OpenAI Agents'
-input and output messages on a root `invoke_agent` span) has no
-destination: whether an agent is a root is known only at assembly, so
-it is staged like a child's, then deleted with the trace's content
-without being published. The same text is in the root's model calls'
-`messages` and `response`.
+`provider=otel_genai`. A `post_call` carries content when its call has
+input messages, output messages or system instructions (tool definitions
+alone describe the agent, not the call, so a call with only those
+carries none): `system` from `gen_ai.system_instructions` (JSON-encoded
+into the text column), `messages` from the input messages and `response`
+from the output messages (each `[]` when absent), `tools` from the tool
+definitions and `model` the requested model (empty when none). A Google
+ADK `post_call` takes its content from the log record with its span id,
+whichever of the two arrived first; the log record's keys win over the
+span's (ADK's span repeats the tool definitions without their
+parameters). A `tool_call` carries `tool_input` and `tool_output` from
+its arguments and result, in the tool-capture envelope. A child agent's
+`session_start` carries `incoming_message` (its agent span's input
+messages, else the arguments of the tool span its parent ran it through)
+and its `session_end` `outgoing_message` (its output messages, else
+Pydantic AI's `final_result`, else that tool span's result), shaped as
+the sensor's sub-agent messages are: the body on the event up to 8 KiB,
+a larger one in `event_content` under `provider=flightdeck-subagent`,
+dated at the agent span's start and end. ADK records a tool's arguments
+and result only inside the next model call's messages, so its
+`tool_call`s carry none. A root agent's own content (its messages and
+`final_result`) has no destination: whether an agent is a root is known
+only at assembly, so it is staged like a child's, then deleted with the
+trace's content without being published. The same text is in the root's
+model calls' `messages` and `response`. An assembler that publishes
+without capture (the posture turned off during the assembly) drops all
+of it: content, sub-agent messages and error text.
 
 **Lifecycle.** A GenAI session reaches the dashboard after its run
 ends, 3 to 30 seconds later, already closed, with the run's own start

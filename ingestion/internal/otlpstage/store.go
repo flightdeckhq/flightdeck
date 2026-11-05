@@ -24,6 +24,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/pgtext"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -396,7 +397,10 @@ func (b *TraceBatch) validate() error {
 // stageTx is Stage's body inside a caller's transaction.
 func (s *Store) stageTx(ctx context.Context, tx pgx.Tx, batches []TraceBatch) (StageResult, error) {
 	var res StageResult
-	ordered := slices.Clone(batches)
+	ordered := make([]TraceBatch, len(batches))
+	for i := range batches {
+		ordered[i] = storable(batches[i])
+	}
 	slices.SortStableFunc(ordered, func(a, b TraceBatch) int {
 		if c := cmp.Compare(a.Key.TokenKey, b.Key.TokenKey); c != 0 {
 			return c
@@ -413,6 +417,33 @@ func (s *Store) stageTx(ctx context.Context, tx pgx.Tx, batches []TraceBatch) (S
 		res.OverCap += r.OverCap
 	}
 	return res, nil
+}
+
+// storable is a batch with every string it stages made one Postgres
+// can store: U+0000 in a text column, and the \u0000 escape or an
+// unpaired surrogate escape in a JSON one, become U+FFFD (see pgtext).
+// Every staged string, metadata and content alike, passes through it,
+// so one such character in an exporter's record cannot fail the staging
+// write of the whole request on every retry. The caller's batch is left
+// as it was.
+func storable(b TraceBatch) TraceBatch {
+	b.TokenName = pgtext.String(b.TokenName)
+	b.Source = pgtext.String(b.Source)
+	b.SourceVersion = pgtext.String(b.SourceVersion)
+	b.Resource = pgtext.JSON(b.Resource)
+	records := make([]Record, len(b.Records))
+	for i, r := range b.Records {
+		r.ScopeName = pgtext.String(r.ScopeName)
+		r.ScopeVersion = pgtext.String(r.ScopeVersion)
+		r.Name = pgtext.String(r.Name)
+		r.Op = pgtext.String(r.Op)
+		r.AgentName = pgtext.String(r.AgentName)
+		r.Meta = pgtext.JSON(r.Meta)
+		r.Content = pgtext.JSON(r.Content)
+		records[i] = r
+	}
+	b.Records = records
+	return b
 }
 
 func jsonOrEmpty(raw json.RawMessage) string {
@@ -675,6 +706,9 @@ func insertContent(ctx context.Context, tx pgx.Tx, key TraceKey, records []Recor
 		contents []string
 	)
 	for _, r := range records {
+		// Unreachable by construction: content is inserted only when the
+		// batch's capture holds, and that is the AND of its records', so
+		// every record here declares capture. Kept as defence in depth.
 		if !r.Capture || r.Content == nil {
 			continue
 		}

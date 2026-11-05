@@ -32,8 +32,10 @@ type genaiTrace struct {
 }
 
 // stageGenAIScenario reads a recorded scenario through the receiver's
-// own decoder and the GenAI dialect's fact reader, grouped by trace in
-// order of first record.
+// own decoder and the GenAI dialect's fact and content readers, grouped
+// by trace in order of first record. Each record carries the content a
+// resource that declares capture would stage; a test that maps it
+// without capture sets the trace's posture off, as the store would.
 func stageGenAIScenario(t *testing.T, dir string) []*genaiTrace {
 	t.Helper()
 	raw, err := os.ReadFile(filepath.Join(dir, "manifest.json"))
@@ -48,7 +50,7 @@ func stageGenAIScenario(t *testing.T, dir string) []*genaiTrace {
 	}
 	byTrace := map[[16]byte]*genaiTrace{}
 	var order []*genaiTrace
-	add := func(trace [16]byte, src genai.Source, scope *commonpb.InstrumentationScope, res []*commonpb.KeyValue, f otlpstage.Fact) {
+	add := func(trace [16]byte, src genai.Source, scope *commonpb.InstrumentationScope, res []*commonpb.KeyValue, f otlpstage.Fact, content json.RawMessage) {
 		gt := byTrace[trace]
 		if gt == nil {
 			gt = &genaiTrace{
@@ -66,7 +68,7 @@ func stageGenAIScenario(t *testing.T, dir string) []*genaiTrace {
 		}
 		if !gt.seen[f.Key()] {
 			gt.seen[f.Key()] = true
-			gt.facts = append(gt.facts, otlpstage.StagedFact{Fact: f})
+			gt.facts = append(gt.facts, otlpstage.StagedFact{Fact: f, Content: fitStagedContent(content)})
 		}
 	}
 	for _, r := range m.Requests {
@@ -99,7 +101,7 @@ func stageGenAIScenario(t *testing.T, dir string) []*genaiTrace {
 						if err != nil {
 							t.Fatal(err)
 						}
-						add(trace, src, recognised, rs.GetResource().GetAttributes(), f)
+						add(trace, src, recognised, rs.GetResource().GetAttributes(), f, genai.SpanContent(f, sp))
 					}
 				}
 			}
@@ -122,7 +124,7 @@ func stageGenAIScenario(t *testing.T, dir string) []*genaiTrace {
 						if err != nil {
 							t.Fatal(err)
 						}
-						add(trace, src, sl.GetScope(), rl.GetResource().GetAttributes(), f)
+						add(trace, src, sl.GetScope(), rl.GetResource().GetAttributes(), f, genai.LogContent(lr))
 					}
 				}
 			}
@@ -138,7 +140,7 @@ func stageGenAIScenario(t *testing.T, dir string) []*genaiTrace {
 // cannot import this package (the receiver will import it), so the check
 // runs from here.
 func TestGenAIFixtureEventsPassValidation(t *testing.T) {
-	var total int
+	var total, withContent int
 	for _, fw := range genaiFixtureFrameworks {
 		ents, err := os.ReadDir(filepath.Join(genaiFixtureRoot, fw))
 		if err != nil {
@@ -168,13 +170,19 @@ func TestGenAIFixtureEventsPassValidation(t *testing.T) {
 							t.Errorf("%s/%s capture=%v: %s %s is invalid: %s", fw, e.Name(), capture, ev.EventType, ev.Payload["id"], msg)
 						}
 						total++
+						if ev.Payload["has_content"] == true {
+							if !capture {
+								t.Errorf("%s/%s: %s carries content with capture off", fw, e.Name(), ev.EventType)
+							}
+							withContent++
+						}
 					}
 				}
 			}
 		}
 	}
-	if total == 0 {
-		t.Fatal("no events validated")
+	if total == 0 || withContent == 0 {
+		t.Fatalf("validated %d events, %d with content", total, withContent)
 	}
 }
 

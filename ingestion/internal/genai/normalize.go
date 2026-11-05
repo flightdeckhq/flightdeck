@@ -73,6 +73,9 @@ const (
 	// capture is off: the placeholder the Claude Code dialect, the
 	// plugin and the worker use.
 	redactedMessage = "<redacted>"
+	// RedactedMessage is redactedMessage for the assembler, which puts
+	// it in place of any error text when it publishes without capture.
+	RedactedMessage = redactedMessage
 	// modelErrorMessage is a failed model call's error_message when the
 	// span names no error class.
 	modelErrorMessage = "model call failed"
@@ -118,6 +121,9 @@ type resolver struct {
 	prefix   string
 	received string // first_received_at in Unix nanoseconds
 	sessions map[*node]*session
+	// content is each record's staged content by span id; empty with
+	// capture off.
+	content  map[[8]byte]map[string]any
 	fallback *session
 	order    []*session // every session, in creation order
 }
@@ -141,6 +147,7 @@ func Resolve(in Input) []Event {
 		prefix:   idPrefix + in.Trace.Key.TokenKey + "/" + hexID(in.Trace.Key.TraceID[:]),
 		received: strconv.FormatInt(in.Trace.FirstReceivedAt.UnixNano(), 10),
 		sessions: map[*node]*session{},
+		content:  traceContent(in),
 	}
 	for _, n := range r.ix.order {
 		if n.kind == kindAgent {
@@ -324,8 +331,13 @@ func (r *resolver) postCall(s *session, n *node) map[string]any {
 	p := r.base(s, "post_call", r.id(idEvent, n.spanHex()), n.fact.EndNs)
 	m := n.meta
 	p["latency_ms"] = durationMs(n)
-	if model := metaText(m, attrRequestModel); model != "" {
+	model := metaText(m, attrRequestModel)
+	if model != "" {
 		p["model_requested"] = model
+	}
+	if c := r.callContent(n, model); c != nil {
+		p["has_content"] = true
+		p["content"] = c
 	}
 	if model := metaText(m, attrResponseModel); model != "" {
 		p["model_served"] = model
@@ -508,13 +520,19 @@ func (r *resolver) tool(s *session, n *node) map[string]any {
 		if class := errorClass(n); class != "" {
 			block["error_class"] = class
 		}
-		// TODO: with capture on, the status message (else the exception
-		// message) is filled in when the GenAI content PR lands; it is
-		// staged content this mapping does not read yet.
+		// The error text is content: with capture on it is the status
+		// message, else the exception message; with capture off the
+		// placeholder stands in for it.
 		if !r.in.Trace.Capture {
 			block["message"] = redactedMessage
+		} else if msg := r.errorMessage(n); msg != "" {
+			block["message"] = msg
 		}
 		p["error"] = block
+	}
+	if c := r.toolContent(n); c != nil {
+		p["has_content"] = true
+		p["content"] = c
 	}
 	return p
 }
@@ -659,11 +677,24 @@ func (r *resolver) edges(s *session) *sessionEdge {
 	end["close_reason"] = closeNormalExit
 	if s.agent != nil && s.agent.failed() {
 		end["state"] = stateError
-		// A failed agent that names no class (OpenAI Agents records no
-		// exception) ends in error without an error block.
+		// A failed agent that names no class and, with capture on, has
+		// no error text ends in error without an error block.
+		block := map[string]any{}
 		if class := errorClass(s.agent); class != "" {
-			end["error"] = map[string]any{"error_class": class}
+			block["error_class"] = class
 		}
+		if msg := r.errorMessage(s.agent); msg != "" {
+			block["message"] = msg
+		}
+		if len(block) > 0 {
+			end["error"] = block
+		}
+	}
+	if first && s.parent != nil {
+		// What the parent asked the child and what it answered: content,
+		// so read only with capture on (contentOf is empty without it).
+		subagentMessage(start, "incoming_message", "incoming", r.incomingMessage(s), startNs)
+		subagentMessage(end, "outgoing_message", "outgoing", r.outgoingMessage(s), endNs)
 	}
 	return &sessionEdge{
 		s:       s,

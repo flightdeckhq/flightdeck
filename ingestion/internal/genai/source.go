@@ -4,7 +4,9 @@
 // content-free facts (fact.go), indexes a trace's facts (trace.go),
 // derives each session's identity (identity.go) and maps the whole trace
 // to session_start, post_call, llm_error, tool_call, session_signal and
-// session_end payloads (normalize.go). It does no I/O: the staging store
+// session_end payloads (normalize.go), and reads a record's content and
+// maps it to the events' content under the capture gate (content.go).
+// It does no I/O: the staging store
 // (internal/otlpstage) holds the facts, and the assembler publishes what
 // Resolve returns through the receiver's validation and publish path.
 // ARCHITECTURE.md (OTLP ingest > GenAI dialect) is the contract.

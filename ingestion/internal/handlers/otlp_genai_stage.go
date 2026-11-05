@@ -1,7 +1,9 @@
 package handlers
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/auth"
@@ -53,13 +55,14 @@ func newGenAIResource(src genai.Source, scope *commonpb.InstrumentationScope, at
 	return genaiResource{source: src, scope: scope, attrs: attrs, capture: capture}
 }
 
-// add stages one record's fact in its trace's batch. The batch's
-// framework and identity resource are those of the trace's first record
-// in the request; the staging store keeps the ones of the record that
-// created the trace's row. Content is not staged yet: the GenAI content
-// mapping reads it in a later change, and until then nothing of a
-// record's content leaves the request, capture or not.
-func (g *genaiRequest) add(trace [16]byte, res genaiResource, f otlpstage.Fact) {
+// add stages one record's fact, and its content, in its trace's batch.
+// The batch's framework and identity resource are those of the trace's
+// first record in the request; the staging store keeps the ones of the
+// record that created the trace's row. Content rides only on a record
+// whose resource declares capture, cut to fit the event size limit so a
+// staged record is never larger than the event it becomes; the store
+// stages it only while the trace's posture is still on.
+func (g *genaiRequest) add(trace [16]byte, res genaiResource, f otlpstage.Fact, content json.RawMessage) {
 	b := g.batches[trace]
 	if b == nil {
 		b = &otlpstage.TraceBatch{
@@ -72,7 +75,10 @@ func (g *genaiRequest) add(trace [16]byte, res genaiResource, f otlpstage.Fact) 
 		g.batches[trace] = b
 		g.order = append(g.order, trace)
 	}
-	b.Records = append(b.Records, otlpstage.Record{Fact: f, Capture: res.capture})
+	if !res.capture {
+		content = nil
+	}
+	b.Records = append(b.Records, otlpstage.Record{Fact: f, Capture: res.capture, Content: fitStagedContent(content)})
 	g.records++
 	g.units++
 	if genai.IsAgentSpan(f) {
@@ -110,4 +116,35 @@ func (g *genaiRequest) mapping(store GenAIStager) (func(context.Context) (int64,
 		rejected.add(fmt.Sprintf("trace exceeds %d spans", otlpstage.MaxSpansPerTrace), int64(res.OverCap))
 		return rejected.total, rejected.message(record), nil
 	}, g.units
+}
+
+// fitStagedContent is a record's content cut to fit the event size
+// limit: every string of it cut to the same largest length that fits,
+// with the marker the receiver's events carry, as an event's content is
+// cut when it is published. Content that no cut fits is dropped.
+func fitStagedContent(content json.RawMessage) json.RawMessage {
+	if len(content) <= maxOTLPEventBodyBytes {
+		return content
+	}
+	dec := json.NewDecoder(bytes.NewReader(content))
+	dec.UseNumber() // numbers keep their literals
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return nil
+	}
+	lo, hi := 0, min(longestContentString(v), maxOTLPEventBodyBytes)
+	var best json.RawMessage
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		cut, err := json.Marshal(capContentStrings(v, mid))
+		if err != nil {
+			return nil
+		}
+		if len(cut) <= maxOTLPEventBodyBytes {
+			best, lo = cut, mid+1
+		} else {
+			hi = mid - 1
+		}
+	}
+	return best
 }

@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/identity"
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/pgtext"
 	collogs "go.opentelemetry.io/proto/slim/otlp/collector/logs/v1"
 	colmetrics "go.opentelemetry.io/proto/slim/otlp/collector/metrics/v1"
 	coltrace "go.opentelemetry.io/proto/slim/otlp/collector/trace/v1"
@@ -846,6 +847,8 @@ func finishOTLPEvent(payload map[string]any, now time.Time) ([]byte, string) {
 	if err != nil {
 		return nil, "it does not encode"
 	}
+	// Text Postgres cannot store becomes U+FFFD, as on POST /v1/events.
+	body = pgtext.JSON(body)
 	var decoded map[string]any
 	if err := json.Unmarshal(body, &decoded); err != nil {
 		return nil, "it does not encode"

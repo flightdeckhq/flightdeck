@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/auth"
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/pgtext"
 	inats "github.com/flightdeckhq/flightdeck/ingestion/internal/nats"
 )
 
@@ -258,6 +259,11 @@ func EventsHandler(
 			writeError(w, http.StatusBadRequest, "unable to read request body")
 			return
 		}
+		// U+0000 and an unpaired surrogate are valid JSON that Postgres
+		// cannot store: the worker would fail the event's write on every
+		// redelivery. They are replaced with U+FFFD rather than refused,
+		// so the rest of the event (its tokens above all) is kept.
+		body = pgtext.JSON(body)
 
 		var payload map[string]any
 		if err := json.Unmarshal(body, &payload); err != nil {

@@ -318,6 +318,91 @@ func TestStageIsIdempotent(t *testing.T) {
 	}
 }
 
+// A trace whose records come from two resources of different frameworks
+// keeps the framework, version and identity resource of the batch that
+// created its row: a later batch's are not written, so every assembly
+// of the trace derives the same identity. Capture still ANDs.
+func TestStageFirstRecordsIdentityWins(t *testing.T) {
+	e := newTestEnv(t)
+	key := e.newKey()
+	first := e.batch(key, captured(span(1, 0), `{"a":1}`))
+	e.stage(first)
+	second := TraceBatch{
+		Key: key, TokenName: "another name", Source: "strands", SourceVersion: "9.9.9",
+		Resource: json.RawMessage(`{"service.name":"another-service","flightdeck.flavor":"other"}`),
+		Records:  []Record{span(2, 1)},
+	}
+	e.stage(second)
+	tr := e.traceRow(key)
+	if tr.Source != first.Source || tr.SourceVersion != first.SourceVersion || tr.TokenName != first.TokenName {
+		t.Errorf("row = %s %s %q, want the first batch's %s %s %q",
+			tr.Source, tr.SourceVersion, tr.TokenName, first.Source, first.SourceVersion, first.TokenName)
+	}
+	var res map[string]any
+	if err := json.Unmarshal(tr.Resource, &res); err != nil || res["service.name"] != "otlpstage-test" || res["flightdeck.flavor"] != nil {
+		t.Errorf("resource = %s, want the first batch's", tr.Resource)
+	}
+	if tr.Capture || e.contentRows(key) != 0 || tr.SpanCount != 2 {
+		t.Errorf("capture=%v content=%d spans=%d: the second batch did not AND in", tr.Capture, e.contentRows(key), tr.SpanCount)
+	}
+}
+
+// Text Postgres cannot store is staged as U+FFFD, so one record cannot
+// fail the staging write of a whole request on every retry: a U+0000
+// in a captured tool result, in an agent name (its text column and its
+// meta), in the resource and an unpaired surrogate escape in content.
+// The caller's batch is not changed.
+func TestStageReplacesTextPostgresCannotStore(t *testing.T) {
+	e := newTestEnv(t)
+	key := e.newKey()
+	nul := string(rune(0))
+	result, _ := json.Marshal(map[string]string{"gen_ai.tool.call.result": "order" + nul + "42"})
+	agent := span(1, 0)
+	agent.Op, agent.Name, agent.AgentName = "invoke_agent", "invoke_agent a"+nul+"b", "a"+nul+"b"
+	agent.Meta, _ = json.Marshal(map[string]string{"gen_ai.operation.name": "invoke_agent", "gen_ai.agent.name": "a" + nul + "b"})
+	tool := captured(span(2, 1), string(result))
+	lone := captured(span(3, 1), `{"gen_ai.input.messages":"\ud800 secret"}`)
+	b := e.batch(key, agent, tool, lone)
+	b.TokenName = "token" + nul
+	b.Resource, _ = json.Marshal(map[string]string{"service.name": "svc" + nul})
+	b.Records[0].Capture = true
+	if res := e.stage(b); res.Staged != 3 {
+		t.Fatalf("stage = %+v, want 3 staged", res)
+	}
+	if string(b.Records[1].Content) != string(result) || b.Records[0].AgentName != "a"+nul+"b" {
+		t.Error("the caller's batch was changed")
+	}
+	tr := e.traceRow(key)
+	var res map[string]any
+	_ = json.Unmarshal(tr.Resource, &res)
+	if tr.TokenName != "token\ufffd" || res["service.name"] != "svc\ufffd" {
+		t.Errorf("row token name %q resource %s", tr.TokenName, tr.Resource)
+	}
+	lt, err := e.store.LoadTrace(context.Background(), key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range lt.Facts {
+		var meta, content map[string]any
+		_ = json.Unmarshal(f.Meta, &meta)
+		_ = json.Unmarshal(f.Content, &content)
+		switch f.SpanID {
+		case spanID(1):
+			if f.AgentName != "a�b" || f.Name != "invoke_agent a�b" || meta["gen_ai.agent.name"] != "a�b" {
+				t.Errorf("agent record %q %q meta %v", f.AgentName, f.Name, meta)
+			}
+		case spanID(2):
+			if content["gen_ai.tool.call.result"] != "order�42" {
+				t.Errorf("tool content %s", f.Content)
+			}
+		case spanID(3):
+			if content["gen_ai.input.messages"] != "� secret" {
+				t.Errorf("unpaired surrogate content %s", f.Content)
+			}
+		}
+	}
+}
+
 func TestStageWritesTheTraceRowBeforeItsRecords(t *testing.T) {
 	e := newTestEnv(t)
 	ctx := context.Background()

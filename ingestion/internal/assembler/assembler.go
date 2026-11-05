@@ -25,6 +25,7 @@ import (
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/genai"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/handlers"
 	"github.com/flightdeckhq/flightdeck/ingestion/internal/otlpstage"
+	"github.com/flightdeckhq/flightdeck/ingestion/internal/pgtext"
 )
 
 // Schedules and bounds. ARCHITECTURE.md (OTLP ingest > GenAI dialect)
@@ -238,7 +239,7 @@ func (a *Assembler) Sweep(ctx context.Context) {
 func (a *Assembler) sweepContent(ctx context.Context) {
 	if n, err := a.store.SweepContent(ctx); err != nil {
 		if ctx.Err() == nil {
-			slog.Warn("genai content sweep failed", "err", err)
+			slog.Warn("genai content sweep failed", "err", pgtext.ErrorClass(err))
 		}
 	} else if n > 0 {
 		slog.Info("genai content sweep", "deleted", n)
@@ -248,7 +249,7 @@ func (a *Assembler) sweepContent(ctx context.Context) {
 func (a *Assembler) sweepTraces(ctx context.Context) {
 	if n, err := a.store.SweepTraces(ctx); err != nil {
 		if ctx.Err() == nil {
-			slog.Warn("genai trace sweep failed", "err", err)
+			slog.Warn("genai trace sweep failed", "err", pgtext.ErrorClass(err))
 		}
 	} else if n > 0 {
 		slog.Info("genai trace sweep", "deleted", n)
@@ -264,7 +265,7 @@ func (a *Assembler) Tick(ctx context.Context) []Outcome {
 	claimed, err := a.store.ClaimDue(ctx, owner)
 	if err != nil {
 		if ctx.Err() == nil {
-			slog.Warn("genai claim failed", "err", err)
+			slog.Warn("genai claim failed", "err", pgtext.ErrorClass(err))
 		}
 		return nil
 	}
@@ -374,7 +375,7 @@ func (a *Assembler) assemble(ctx context.Context, b *batch, tr otlpstage.Trace) 
 	if err != nil {
 		retry := a.retryDelay(tr.Key)
 		slog.Warn("genai trace load failed", "trace", hex.EncodeToString(tr.Key.TraceID[:]),
-			"retry_in", retry.String(), "err", err)
+			"retry_in", retry.String(), "err", pgtext.ErrorClass(err))
 		a.release(ctx, owner, tr.Key, tr.Gen, a.now().Add(retry))
 		out.Deferred = true
 		return out
@@ -423,7 +424,7 @@ func (a *Assembler) assemble(ctx context.Context, b *batch, tr otlpstage.Trace) 
 				// run context was cancelled under it): release it now, so
 				// another process need not wait for it to lapse. A lease
 				// that was really lost matches no row, and nothing happens.
-				slog.Warn("genai lease renewal failed; releasing", "trace", hex.EncodeToString(tr.Key.TraceID[:]), "err", err)
+				slog.Warn("genai lease renewal failed; releasing", "trace", hex.EncodeToString(tr.Key.TraceID[:]), "err", pgtext.ErrorClass(err))
 				a.release(ctx, owner, tr.Key, lt.Gen, a.now())
 				out.Deferred = true
 				return stop()
@@ -473,7 +474,7 @@ func (a *Assembler) assemble(ctx context.Context, b *batch, tr otlpstage.Trace) 
 	switch {
 	case err != nil:
 		slog.Warn("genai mark failed; the next claim publishes the trace again",
-			"trace", hex.EncodeToString(tr.Key.TraceID[:]), "err", err)
+			"trace", hex.EncodeToString(tr.Key.TraceID[:]), "err", pgtext.ErrorClass(err))
 	case !res.Marked:
 		slog.Warn("genai lease expired before the mark; the next claim publishes the trace again",
 			"trace", hex.EncodeToString(tr.Key.TraceID[:]))
@@ -540,10 +541,25 @@ func stripAll(events []genai.Event) []genai.Event {
 	return out
 }
 
-// stripContent removes an event's content.
+// stripContent removes everything of an event that capture governs:
+// its content, a child's incoming and outgoing messages, and error
+// text (a failed tool's message becomes the placeholder; a failed
+// agent's end loses its message).
 func stripContent(p map[string]any) {
 	delete(p, "content")
+	delete(p, "incoming_message")
+	delete(p, "outgoing_message")
 	p["has_content"] = false
+	block, _ := p["error"].(map[string]any)
+	if _, has := block["message"]; !has {
+		return
+	}
+	switch p["event_type"] {
+	case "tool_call":
+		block["message"] = genai.RedactedMessage
+	case "session_end":
+		delete(block, "message")
+	}
 }
 
 // encode validates and encodes a chunk's events; an event validation
@@ -582,7 +598,7 @@ func (a *Assembler) release(ctx context.Context, owner string, key otlpstage.Tra
 	rctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), releaseTimeout)
 	defer cancel()
 	if _, err := a.store.Defer(rctx, owner, key, gen, resolveAt); err != nil {
-		slog.Warn("genai lease release failed; it lapses", "trace", hex.EncodeToString(key.TraceID[:]), "err", err)
+		slog.Warn("genai lease release failed; it lapses", "trace", hex.EncodeToString(key.TraceID[:]), "err", pgtext.ErrorClass(err))
 	}
 }
 

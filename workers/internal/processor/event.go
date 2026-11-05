@@ -530,6 +530,42 @@ type Processor struct {
 	clearSequences func(ctx context.Context, lastSeq uint64) (int64, error)
 }
 
+// eventInserter is the writer's two event inserts: the seam storeEvent
+// is tested through.
+type eventInserter interface {
+	InsertEvent(ctx context.Context, row writer.EventRow) (string, error)
+	InsertEventWithContent(ctx context.Context, row writer.EventRow, content json.RawMessage) (string, error)
+}
+
+// storeEvent writes an event row, with its content when hasContent (the
+// event claims content and the session's server-authoritative capture
+// posture permits it, not merely the event's own claim: the core
+// capture-posture contract). The event and its content go in one
+// transaction, so the event is never visible claiming content the
+// /content endpoint cannot serve yet. Content that can never be stored
+// (it does not parse, or Postgres rejects it as invalid data or a
+// constraint) is dropped and the event is stored without it, with
+// has_content false, rather than retried into the same failure; any
+// other error is returned, so the event is redelivered and retried
+// whole. An event that claims content but carries none (no content
+// field, or a JSON null) is stored with has_content false: there is
+// nothing for /content to serve.
+func storeEvent(ctx context.Context, w eventInserter, e consumer.EventPayload, row writer.EventRow, hasContent bool) (string, error) {
+	if !hasContent || len(e.Content) == 0 || string(e.Content) == "null" {
+		row.HasContent = false
+		return w.InsertEvent(ctx, row)
+	}
+	row.HasContent = true
+	eventID, err := w.InsertEventWithContent(ctx, row, e.Content)
+	if errors.Is(err, writer.ErrEventContent) {
+		slog.Warn("event content could not be stored; storing the event without it",
+			"err", err, "event_type", e.EventType, "session_id", e.SessionID)
+		row.HasContent = false
+		return w.InsertEvent(ctx, row)
+	}
+	return eventID, err
+}
+
 // carriesContent reports whether the event holds something the capture
 // gate in Process decides on: prompt content for event_content, the MCP
 // inline content, or a hook-based client's tool error text.
@@ -821,36 +857,7 @@ func (p *Processor) Process(ctx context.Context, e consumer.EventPayload) error 
 	// must not advertise content the /content endpoint can never serve.
 	hasContent := e.HasContent && captureOn
 	row := eventRow(e, ts, extra)
-	insert := func(hasContent bool) (string, error) {
-		row.HasContent = hasContent
-		return p.w.InsertEvent(ctx, row)
-	}
-	var eventID string
-	// Store prompt content only when the session's server-authoritative
-	// capture posture permits it (captureOn), not merely when the event
-	// claims has_content. This is the core capture-posture contract.
-	// The event and its content go in one transaction, so the event is
-	// never visible claiming content the /content endpoint cannot serve
-	// yet. Content that can never be stored (it does not parse, or
-	// Postgres rejects it as invalid data) is dropped and the event is
-	// stored without it, with has_content false, rather than retried
-	// into the same failure; any other error is returned, so the event
-	// is redelivered and retried whole. An event that claims content but
-	// carries none is stored with has_content false: there is nothing
-	// for /content to serve.
-	// A JSON null content field carries no content.
-	contentBlob := len(e.Content) > 0 && string(e.Content) != "null"
-	if hasContent && contentBlob {
-		row.HasContent = hasContent
-		eventID, err = p.w.InsertEventWithContent(ctx, row, e.Content)
-		if errors.Is(err, writer.ErrEventContent) {
-			slog.Warn("event content could not be stored; storing the event without it",
-				"err", err, "event_type", e.EventType, "session_id", e.SessionID)
-			eventID, err = insert(false)
-		}
-	} else {
-		eventID, err = insert(false)
-	}
+	eventID, err := storeEvent(ctx, p.w, e, row, hasContent)
 	if err != nil {
 		return err
 	}

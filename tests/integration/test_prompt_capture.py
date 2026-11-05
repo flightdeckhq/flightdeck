@@ -250,6 +250,12 @@ def test_content_the_database_rejects_lands_the_event_without_content() -> None:
     row's NOT NULL constraint; ingestion does not check the blob's
     shape, so it reaches the worker's fallback as sent.
     """
+    # This relies on ingestion not validating the content blob's shape:
+    # the missing "response" violates event_content.response NOT NULL
+    # (SQLSTATE 23502) only at the worker. If ingestion starts validating
+    # the shape, this post answers 400 and the fallback needs another way
+    # in (the NUL byte that used to reach it is now replaced at
+    # ingestion; the writer's own test still covers that case).
     _, eid = _post_call_with_content(
         {
             "provider": "openai",

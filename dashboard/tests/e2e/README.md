@@ -223,7 +223,7 @@ Structural testids the suite relies on:
 
 - `swimlane-agent-row-<agent_name>` + `data-agent-id` + `data-topology` (SwimLane row root)
 - `swimlane-run-bracket-start-<sid_prefix>` + `swimlane-run-bracket-end-<sid_prefix>` (RunBracket; a resumed run has one per segment), with `data-session-id`, `data-run-lane` (`0` is the top lane), `data-segment-index` and, on an end, `data-end-kind` (`closed` or `lost`); the row carries `data-lane-count` (1 to 4) and, with more runs overlapping than lanes, `data-lane-overflow="true"`
-- `swimlane-run-line-<sid_prefix>` (RunLine, one per segment on a split row), with `data-session-id`, `data-run-lane`, `data-segment-index`, `data-tail` (`live` or `quiet`), `data-shared` in the overflow lane and `data-highlighted`; its parts are `swimlane-run-line-solid` and `swimlane-run-line-quiet-tail`, and its tooltip `swimlane-run-line-tooltip-<sid_prefix>`
+- `swimlane-run-line-<sid_prefix>` (RunLine, one per segment on a split row), with `data-session-id`, `data-run-lane`, `data-segment-index`, `data-tail` (`live` or `quiet`), `data-shared` in the overflow lane and `data-highlighted`; its parts are `swimlane-run-solid-part` and `swimlane-run-quiet-tail`, and its tooltip `swimlane-run-line-tooltip-<sid_prefix>`
 - `swimlane-agent-status-badge` + `data-state` (AgentStatusBadge)
 - `swimlane-sub-agent-lost-dot` (lost sub-agent cue inside the row strip)
 - `session-circle-<session_id>` (EventNode circles), with `data-event-id`, `data-session-id` and, on an agent row, `data-run-lane`

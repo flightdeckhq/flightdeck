@@ -47,7 +47,7 @@ test.describe("T158 — A run line opens its run when no glyph is in view", () =
 		await expect(drawer).toHaveAttribute("data-session-id", runId);
 
 		// At 5m the starts are in view: the glyphs take the keyboard path.
-		await page.keyboard.press("Escape");
+		await drawer.getByTestId("session-drawer-close").click();
 		await expect(drawer).toHaveCount(0);
 		await page.getByRole("button", { name: "5m", exact: true }).click();
 		await expect(row.locator('[data-testid^="swimlane-run-bracket-start-"]')).toHaveCount(2, {

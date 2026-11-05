@@ -49,8 +49,8 @@ test.describe("T157 — A quiet run's line turns dashed", () => {
 				const n = el.querySelector(sel);
 				return n ? n.getBoundingClientRect() : null;
 			};
-			const solid = box('[data-testid="swimlane-run-line-solid"]');
-			const tail = box('[data-testid="swimlane-run-line-quiet-tail"]');
+			const solid = box('[data-testid="swimlane-run-solid-part"]');
+			const tail = box('[data-testid="swimlane-run-quiet-tail"]');
 			const line = el.getBoundingClientRect();
 			return {
 				solid: solid && { left: solid.left, right: solid.right },
@@ -63,7 +63,7 @@ test.describe("T157 — A quiet run's line turns dashed", () => {
 		expect(parts.solid!.right - parts.solid!.left).toBeGreaterThan(0);
 		expect(Math.abs(parts.tail!.left - parts.solid!.right)).toBeLessThanOrEqual(1);
 		expect(Math.abs(parts.tail!.right - parts.line.right)).toBeLessThanOrEqual(1);
-		await expect(live.getByTestId("swimlane-run-line-quiet-tail")).toHaveCount(0);
+		await expect(live.getByTestId("swimlane-run-quiet-tail")).toHaveCount(0);
 
 		// Hover the quiet tail near the right edge, where no circle of the
 		// run sits (it has been silent there).

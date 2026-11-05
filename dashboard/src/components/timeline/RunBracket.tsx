@@ -409,14 +409,14 @@ function RunLineComponent({ line, session, highlighted, onClick }: RunLineProps)
 				{solidWidth > 0 && (
 					<span
 						aria-hidden="true"
-						data-testid="swimlane-run-line-solid"
+						data-testid="swimlane-run-solid-part"
 						style={{ ...bar, left: 0, width: solidWidth, background: "var(--accent)" }}
 					/>
 				)}
 				{width - solidWidth > 0 && (
 					<span
 						aria-hidden="true"
-						data-testid="swimlane-run-line-quiet-tail"
+						data-testid="swimlane-run-quiet-tail"
 						style={{
 							...bar,
 							left: solidWidth,

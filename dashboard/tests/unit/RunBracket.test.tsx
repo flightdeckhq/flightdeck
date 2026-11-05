@@ -349,8 +349,8 @@ describe("RunLine", () => {
 		expect(line()).toHaveAttribute("data-run-lane", "1");
 		expect(line()).toHaveAttribute("data-session-id", SESSION_ID);
 		expect(line()).toHaveAttribute("data-tail", "live");
-		expect(screen.getByTestId("swimlane-run-line-solid").style.width).toBe("300px");
-		expect(screen.queryByTestId("swimlane-run-line-quiet-tail")).toBeNull();
+		expect(screen.getByTestId("swimlane-run-solid-part").style.width).toBe("300px");
+		expect(screen.queryByTestId("swimlane-run-quiet-tail")).toBeNull();
 	});
 
 	it("splits into a solid line and a dashed tail where the run went quiet", () => {
@@ -367,8 +367,8 @@ describe("RunLine", () => {
 			/>,
 		);
 		expect(line()).toHaveAttribute("data-tail", "quiet");
-		expect(screen.getByTestId("swimlane-run-line-solid").style.width).toBe("150px");
-		const tail = screen.getByTestId("swimlane-run-line-quiet-tail");
+		expect(screen.getByTestId("swimlane-run-solid-part").style.width).toBe("150px");
+		const tail = screen.getByTestId("swimlane-run-quiet-tail");
 		expect(tail.style.left).toBe("150px");
 		expect(tail.style.width).toBe("150px");
 		expect(tail.style.background).toContain("repeating-linear-gradient");

@@ -5,6 +5,7 @@ import {
   type TimeRange,
   TIMELINE_RANGE_MS,
   TIMELINE_WIDTH_PX,
+  EVENT_CIRCLE_SIZE,
   LEFT_PANEL_MIN_WIDTH,
   LEFT_PANEL_MAX_WIDTH,
 } from "@/lib/constants";
@@ -29,6 +30,27 @@ import {
 import { bucketFor, groupChildrenUnderParents } from "@/lib/fleet-ordering";
 import { deriveRelationship, scrollToAgentRow } from "@/lib/relationship";
 import { eventsCache } from "@/hooks/useSessionEvents";
+
+/**
+ * Space between the label strip (where the AgentStatusBadge sits) and
+ * the oldest circle, and between the newest circle and the panel's
+ * right edge: enough that a circle at either end of the window never
+ * reads as touching the badge or the edge.
+ */
+const TIMELINE_EDGE_BUFFER_PX = 8;
+
+/**
+ * How far the time scale is inset from each end of the timeline
+ * panel: half a circle plus the buffer. A circle is centred on its
+ * time, so a circle at the window's start clears the label strip by
+ * the buffer, and one at "now" sits whole inside the panel, where the
+ * panel's ``overflow: hidden`` would otherwise clip its right half. The
+ * ▶ of a run that has just started (1 px plus a 10 px glyph right of
+ * its start) fits in the same inset. The rows, the grid overlay and
+ * the time axis share the scale, so a circle, its grid line and its
+ * label sit at one x.
+ */
+export const TIMELINE_SCALE_INSET_PX = TIMELINE_EDGE_BUFFER_PX + EVENT_CIRCLE_SIZE / 2;
 
 /**
  * The run (session id) a swimlane mark belongs to: event circles and
@@ -363,13 +385,16 @@ export function Timeline({
   const start = useMemo(() => new Date(scaleEndMs - rangeMs), [scaleEndMs, rangeMs]);
 
   // Fixed canvas width for every range. The xScale maps the range
-  // domain to [0, TIMELINE_WIDTH_PX] -- wider time ranges produce
-  // denser circles, which is the correct trade-off. No horizontal
-  // scrollbar appears.
+  // domain to the canvas less TIMELINE_SCALE_INSET_PX at each end --
+  // wider time ranges produce denser circles, which is the correct
+  // trade-off. No horizontal scrollbar appears.
   const timelineWidth = TIMELINE_WIDTH_PX;
 
   const scale = useMemo(
-    () => scaleTime().domain([start, scaleEnd]).range([0, timelineWidth]),
+    () =>
+      scaleTime()
+        .domain([start, scaleEnd])
+        .range([TIMELINE_SCALE_INSET_PX, timelineWidth - TIMELINE_SCALE_INSET_PX]),
     [start, scaleEnd, timelineWidth]
   );
 
@@ -866,9 +891,7 @@ export function Timeline({
           />
           <div style={{ width: timelineWidth, flexShrink: 0 }}>
             <TimeAxis
-              start={start}
-              end={scaleEnd}
-              width={timelineWidth}
+              scale={scale}
               timeRange={timeRange}
               paused={paused}
             />

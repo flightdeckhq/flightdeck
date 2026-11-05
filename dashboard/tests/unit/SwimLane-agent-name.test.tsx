@@ -8,18 +8,16 @@ import {
   AllSwimLane,
   SWIMLANE_LABEL_BACKDROP_VAR,
   SwimLane,
-  TIMELINE_LEFT_INSET_PX,
   splitRoleSuffix,
 } from "@/components/timeline/SwimLane";
-import { EVENT_CIRCLE_SIZE } from "@/lib/constants";
 
 // SwimLane label strip and timeline inset. A sub-agent's name is
 // {parent}/{role}; the role is the only part that differs from the
 // parent's row, so the name renders as a head that gives way first
 // and a role suffix that keeps its width. The relationship pill of a
 // child row shrinks before the name does. The timeline panel's
-// positioned wrapper is inset by the buffer plus half a circle, on
-// agent rows and on the ALL row alike.
+// positioned wrapper covers the whole panel, on agent rows and on the
+// ALL row alike; the Timeline's scale carries the inset.
 
 vi.mock("@/hooks/useSessionEvents", () => ({
   useSessionEvents: () => ({ events: [], loading: false }),
@@ -231,27 +229,23 @@ describe("SwimLane label accessibility and background", () => {
   });
 });
 
-describe("SwimLane timeline inset", () => {
-  it("is the buffer plus half a circle", () => {
-    expect(TIMELINE_LEFT_INSET_PX).toBe(8 + EVENT_CIRCLE_SIZE / 2);
-  });
-
-  it("insets the agent row's positioned wrapper by TIMELINE_LEFT_INSET_PX", () => {
+describe("SwimLane timeline wrapper", () => {
+  it("covers the agent row's whole panel: the scale carries the inset", () => {
     renderRow(PARENT_NAME, [mkSession("r-1")], "agent-root");
     const wrapper = screen.getByTestId("swimlane-timeline-inset");
     expect(wrapper.style.position).toBe("absolute");
-    expect(wrapper.style.left).toBe(`${TIMELINE_LEFT_INSET_PX}px`);
+    expect(wrapper.style.left).toBe("0px");
     expect(wrapper.style.top).toBe("0px");
     expect(wrapper.style.right).toBe("0px");
     expect(wrapper.style.bottom).toBe("0px");
   });
 
-  it("pulls a just-started run's glyph back inside the inset wrapper's visible edge", () => {
-    // 60 s map onto 900 px. A run that started 350 ms ago sits at
-    // x ≈ 894.75 in wrapper coordinates, past the wrapper's visible
-    // right edge (900 - 19 = 881), where the panel would clip it. The
-    // glyph is pulled back so its right edge meets the visible edge,
-    // and the run that has just started shows its ▶.
+  it("pulls a just-started run's glyph back inside the panel's right edge", () => {
+    // This row's scale maps 60 s onto [0, 900], without the Timeline's
+    // inset. A run that started 350 ms ago sits at x ≈ 894.75, so its
+    // ▶ would cross the panel's right edge (900), where the panel
+    // clips. The glyph is pulled back so its right edge meets the
+    // panel's, and the run that has just started shows its ▶.
     renderRow(
       PARENT_NAME,
       [mkSession("r-late", { started_at: new Date(NOW.getTime() - 350).toISOString() })],
@@ -259,7 +253,7 @@ describe("SwimLane timeline inset", () => {
     );
     const glyph = screen.getByTestId("swimlane-run-bracket-start-r-late");
     const right = parseFloat(glyph.style.left) + parseFloat(glyph.style.width);
-    expect(right).toBe(900 - TIMELINE_LEFT_INSET_PX);
+    expect(right).toBe(900);
   });
 
   it("keeps the start glyph of a run that started well inside the window", () => {
@@ -273,7 +267,7 @@ describe("SwimLane timeline inset", () => {
     expect(glyph.getAttribute("data-session-id")).toBe("r-early");
   });
 
-  it("insets the expanded ALL row's pulse by the same amount", () => {
+  it("gives the expanded ALL row's pulse the same whole-panel wrapper", () => {
     const scale = scaleTime()
       .domain([new Date(NOW.getTime() - 60_000), NOW])
       .range([0, 900]);
@@ -290,7 +284,7 @@ describe("SwimLane timeline inset", () => {
     );
     const pulse = screen.getByTestId("swimlane-all-pulse");
     const wrapper = within(pulse).getByTestId("swimlane-timeline-inset");
-    expect(wrapper.style.left).toBe(`${TIMELINE_LEFT_INSET_PX}px`);
+    expect(wrapper.style.left).toBe("0px");
     expect(wrapper.style.top).toBe("0px");
     expect(wrapper.style.bottom).toBe("0px");
   });

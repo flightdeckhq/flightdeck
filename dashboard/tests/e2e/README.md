@@ -83,6 +83,7 @@ the swimlane↔table parity assertion). The current journeys:
 | `T156-sub-agent-connector-ends-on-the-child-run-lane.spec.ts` | Each coordinator-to-worker connector ends on its run's circle, one end per lane at distinct heights |
 | `T157-quiet-run-line-turns-dashed.spec.ts` | A stale run's line is solid to its last signal and dashed after it (`data-tail="quiet"`); the active run's line stays solid |
 | `T158-run-line-opens-its-run-when-no-glyph-is-in-view.spec.ts` | With neither run's glyphs in view, each run line takes keyboard focus and Enter opens its run drawer; with the glyphs in view the lines leave the tab order |
+| `T161-newest-circles-and-glyphs-stay-inside-the-panel.spec.ts` | At 1h the newest circle sits whole inside its panel with its centre where the grid lines put its time, and a just-started run's ▶ sits at its own start inside the panel |
 | `T150-agent-tokens-count-failed-streams.spec.ts` | The Agents row's token total counts a failed stream's billed tokens and an embeddings call after a load, and adds a failed stream posted while the page is open without a reload |
 
 The `_fixtures.ts` helper exports shared fixture metadata (agent

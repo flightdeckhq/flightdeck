@@ -128,6 +128,12 @@ All notable changes to Flightdeck are documented here.
   GenAI message parts, Strands' content blocks, OpenAI Agents' text, in
   both themes, with Raw for the stored value. A hand-off reads
   "hand-off · triage_agent → weather_agent" in the run's timeline.
+- **A playground script per OpenTelemetry framework.**
+  `playground/32_genai_pydantic_ai.py` through `35_genai_google_adk.py`
+  point each framework's OTLP exporter at a Flightdeck stack, run an
+  agent that calls a sub-agent as a tool, and check the two sessions
+  that come back: the parent and child, tokens, tool calls and stored
+  content (`make playground-genai-<framework>`).
 - **The Prompts tab no longer says capture is off when it is on.**
   `GET /v1/sessions/:id` returns `capture_prompts`, the session's stored
   capture posture (`true`, `false`, or `null` before a `session_start`
@@ -154,6 +160,16 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **The Fleet swimlane's newest events are no longer cut off.** The
+  time scale now leaves half a circle plus a small buffer at both ends
+  of the timeline, shared by the rows, the grid lines and the time
+  axis. A circle at "now" shows whole instead of being clipped at the
+  panel's edge (at 1h the newest half minute was hidden and the two
+  minutes before it cut off), every circle
+  sits on its time's grid line rather than 19 px to its right, and the
+  ▶ of a run that has just started sits at its start. The now line
+  moves 19 px left and the axis is about 4% narrower
+  ([#257](https://github.com/flightdeckhq/flightdeck/pull/257)).
 - **A U+0000 in an event no longer fails it.** Postgres cannot store
   U+0000 (sent as `\u0000` in JSON) or an unpaired UTF-16
   surrogate escape, so one in an event's fields (a name, a sub-agent

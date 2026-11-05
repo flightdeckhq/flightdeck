@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
-import { Timeline } from "@/components/timeline/Timeline";
-import { TIMELINE_WIDTH_PX } from "@/lib/constants";
+import { TIMELINE_SCALE_INSET_PX, Timeline } from "@/components/timeline/Timeline";
+import { EVENT_CIRCLE_SIZE, TIMELINE_WIDTH_PX } from "@/lib/constants";
 import type { FlavorSummary } from "@/lib/types";
 
 // Wrap Timeline render with a Router context so the SwimLane
@@ -343,6 +343,30 @@ describe("Timeline", () => {
       const line = screen.getByTestId(`grid-line-${i}`);
       expect((line as HTMLElement).style.background).toBe("var(--border)");
     }
+  });
+
+  it("insets the time scale by half a circle plus the buffer at each end", () => {
+    expect(TIMELINE_SCALE_INSET_PX).toBe(8 + EVENT_CIRCLE_SIZE / 2);
+    renderWithRouter(<Timeline {...defaultProps} timeRange="1h" />);
+    // Grid line 0 is the window's start, the now line its end: the
+    // scale's range is [19, 881] on the 900 px canvas.
+    expect(screen.getByTestId("grid-line-0").style.left).toBe(`${TIMELINE_SCALE_INSET_PX}px`);
+    expect(screen.getByTestId("grid-line-now").style.left).toBe(
+      `${TIMELINE_WIDTH_PX - TIMELINE_SCALE_INSET_PX}px`,
+    );
+  });
+
+  it.each(["1m", "5m", "1h"] as const)("puts each time axis label on its grid line at %s", (range) => {
+    const { container } = renderWithRouter(<Timeline {...defaultProps} timeRange={range} />);
+    const labels = container.querySelectorAll<HTMLElement>(
+      ".h-7 span.absolute.font-mono.text-\\[11px\\]",
+    );
+    expect(labels).toHaveLength(6);
+    const lines = [0, 1, 2, 3, 4].map((i) => screen.getByTestId(`grid-line-${i}`));
+    lines.push(screen.getByTestId("grid-line-now"));
+    labels.forEach((label, i) => {
+      expect(parseFloat(label.style.left)).toBeCloseTo(parseFloat(lines[i]!.style.left), 6);
+    });
   });
 
   it("grid overlay has pointerEvents: none so it does not block clicks", () => {

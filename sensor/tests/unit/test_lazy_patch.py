@@ -42,6 +42,7 @@ SDK_MODULES = (
     "mcp",
     "crewai",
     "langgraph.graph",
+    "llama_index.core",
     "claude_agent_sdk",
 )
 # Bound for the in-process waits on another thread.
@@ -110,6 +111,16 @@ def _assert_metered(sdk: str, session_id: str, events: list[dict[str, Any]]) -> 
             if e["event_type"] == "session_start" and e.get("parent_session_id") == session_id
         ]
         assert [c.get("agent_role") for c in children] == ["worker"], events
+    elif sdk == "llama_index.core":
+        children = [
+            e
+            for e in events
+            if e["event_type"] == "session_start" and e.get("parent_session_id") == session_id
+        ]
+        assert [c.get("agent_role") for c in children] == ["worker"], events
+        # The agent's model call stays on the sensor's session.
+        calls = [e for e in events if e["event_type"] == "post_call"]
+        assert [c["session_id"] for c in calls] == [session_id], events
 
 
 # ----------------------------------------------------------------------

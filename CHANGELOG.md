@@ -181,6 +181,16 @@ All notable changes to Flightdeck are documented here.
   the same on the dashboard. The Google ADK and OpenAI Agents SDK wraps
   to come report through it
   ([#185](https://github.com/flightdeckhq/flightdeck/issues/185)).
+- **LlamaIndex agent workflows open a child session per agent.** With
+  `patch()`, each agent of a `FunctionAgent`, `ReActAgent`,
+  `CodeActAgent` or `AgentWorkflow` run (llama-index-core 0.14+) is a
+  child session named after the agent, and a multi-agent hand-off ends
+  one child, opens the next and records an `agent_handoff` signal. As
+  for CrewAI and LangGraph, the agents' model, tool and MCP calls stay
+  on the sensor's session, whose budget and Stop act on the whole run.
+  Tool calls ReActAgent parses from the model's text are reported too,
+  and a tool call is never reported twice
+  ([#185](https://github.com/flightdeckhq/flightdeck/issues/185)).
 
 ### Fixed
 

@@ -2,7 +2,8 @@
 gap or a repeat: offset pages in both directions and the run drawer's
 ``before`` / ``before_id`` keyset all follow ``(occurred_at, id)`` order,
 and the session detail's capped first page ends on the row the keyset
-resumes after.
+resumes after. A range without ``to`` also lists an event dated ahead
+of the API's clock.
 
 One session, created through ingestion, carries several tool calls
 stamped with the same whole-second timestamp, the way a client that
@@ -146,6 +147,37 @@ def test_session_detail_capped_page_is_the_newest_in_order() -> None:
         },
     )
     assert _ids(rest) == ordered[:-capped][::-1]
+
+
+def test_range_without_to_includes_event_dated_ahead_of_api_clock() -> None:
+    """A query without ``to`` has no upper bound on occurred_at.
+
+    occurred_at is the client's timestamp, and ingestion accepts one up
+    to five minutes ahead of its own clock. Ending an open range at the
+    API's clock hid such an event until that clock caught up.
+    """
+    sid = str(uuid.uuid4())
+    flavor = f"test-events-ahead-{uuid.uuid4().hex[:6]}"
+    post_event(make_event(sid, flavor, "session_start"))
+    assert wait_for_session_in_fleet(sid, timeout=LANDING_TIMEOUT_SECS)
+    ahead = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() + 120))
+    post_event(make_event(sid, flavor, "tool_call", tool_name="ahead", timestamp=ahead))
+    wait_until(
+        lambda: (
+            exec_sql(
+                "SELECT count(*) FROM events WHERE session_id = :'sid'::uuid "
+                "AND event_type = 'tool_call'",
+                sid=sid,
+            )
+            == "1"
+        ),
+        timeout=LANDING_TIMEOUT_SECS,
+        msg=f"the tool call of {sid} never landed",
+    )
+    resp = _get("/v1/events", {"from": EPOCH, "session_id": sid, "event_type": "tool_call"})
+    assert [e["tool_name"] for e in resp["events"]] == ["ahead"], (
+        f"an event dated ahead of the API's clock must be listed; got {resp['events']!r}"
+    )
 
 
 def test_before_id_is_rejected_without_before_or_when_not_a_uuid() -> None:

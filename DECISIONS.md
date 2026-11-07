@@ -680,3 +680,20 @@ gets only the event id.
 envelope (a contract change that leaves every stored row unmarked);
 guessing from the shape of `input` (an embeddings call's string list
 would render as a Responses input).
+
+## D253 -- An omitted `to` leaves the sessions and events listings without an upper bound
+
+**Date:** 2026-11-07
+**Decision:** `GET /v1/sessions` and `GET /v1/events` bound `started_at`
+or `occurred_at` from above only when the request carries `to`. Omitted,
+the range is open-ended; it no longer ends at the API's clock.
+**Why:** neither column is stamped by the API's clock. Postgres stamps
+`started_at`, and `occurred_at` is the client's timestamp, which
+ingestion accepts up to five minutes ahead. Whenever the API's clock read
+behind, a just-started session or a just-sent event fell outside the
+default range: a dev box whose clock is stepped back about two seconds
+every few minutes emptied the state-sort integration test's listing.
+**Rejected alternative:** defaulting `to` to Postgres's `NOW()` (still a
+clock that can read behind the client's, and a stepped-back database
+clock drops its own rows); a grace margin on the API's clock (a guessed
+bound that a larger skew still breaks).

@@ -1918,7 +1918,7 @@ paths:
         name: from
         required: true
         type: string
-      - description: End time (ISO 8601, defaults to now)
+      - description: End time (ISO 8601; omitted, the range has no upper bound)
         in: query
         name: to
         type: string
@@ -2916,7 +2916,7 @@ paths:
         in: query
         name: from
         type: string
-      - description: 'End time (ISO 8601, default: now)'
+      - description: End time (ISO 8601; omitted, the range has no upper bound)
         in: query
         name: to
         type: string

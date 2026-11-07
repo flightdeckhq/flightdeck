@@ -897,7 +897,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "End time (ISO 8601, defaults to now)",
+                        "description": "End time (ISO 8601; omitted, the range has no upper bound)",
                         "name": "to",
                         "in": "query"
                     },
@@ -2303,7 +2303,7 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "End time (ISO 8601, default: now)",
+                        "description": "End time (ISO 8601; omitted, the range has no upper bound)",
                         "name": "to",
                         "in": "query"
                     },

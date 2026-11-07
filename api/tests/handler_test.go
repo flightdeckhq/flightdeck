@@ -2765,6 +2765,39 @@ func TestGetEventsHasMoreFormula(t *testing.T) {
 	}
 }
 
+// An omitted ``to`` reaches the store as the zero time, which the
+// store reads as no upper bound: occurred_at is the emitting client's
+// timestamp, and ending the range at the API's clock hid the events
+// of a client whose clock runs ahead.
+func TestGetEvents_OmittedTo_IsOpenEnded(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/events?from=2026-01-01T00:00:00Z", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if s.lastEventsParams == nil {
+		t.Fatal("mock did not receive params")
+	}
+	if !s.lastEventsParams.To.IsZero() {
+		t.Errorf("expected zero To for an omitted to, got %v", s.lastEventsParams.To)
+	}
+}
+
+func TestGetEvents_FromAfterTo_Returns400(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.EventsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET",
+		"/v1/events?from=2026-02-01T00:00:00Z&to=2026-01-01T00:00:00Z", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for from after to, got %d", w.Code)
+	}
+}
+
 // Drawer pagination: “before“ keyset cursor threads from the
 // query string into EventsParams.Before as an RFC3339-parsed time.
 func TestGetEvents_Before_ThreadsToStore(t *testing.T) {
@@ -2918,6 +2951,71 @@ func TestSessionsListHandler_DefaultParams(t *testing.T) {
 	}
 	if resp.Offset != 0 {
 		t.Errorf("expected default offset=0, got %d", resp.Offset)
+	}
+}
+
+// An omitted ``to`` reaches the store as the zero time, which the
+// store reads as no upper bound. Ending the range at the API's clock
+// instead dropped a session whose started_at, stamped by Postgres,
+// read ahead of that clock.
+func TestSessionsListHandler_OmittedTo_IsOpenEnded(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET", "/v1/sessions?from=1970-01-01T00:00:00Z", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if s.lastSessionsParams == nil {
+		t.Fatal("GetSessions not called")
+	}
+	if !s.lastSessionsParams.To.IsZero() {
+		t.Errorf("expected zero To for an omitted to, got %v", s.lastSessionsParams.To)
+	}
+}
+
+// With no ``to`` there is no end for ``from`` to pass, so a ``from``
+// ahead of the API's clock is a valid, open-ended range.
+func TestSessionsListHandler_FutureFromWithoutTo_Returns200(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	from := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	req := httptest.NewRequest("GET", "/v1/sessions?from="+from, nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestSessionsListHandler_ExplicitTo_ThreadsToStore(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET",
+		"/v1/sessions?from=2026-01-01T00:00:00Z&to=2026-02-01T00:00:00Z", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if s.lastSessionsParams == nil {
+		t.Fatal("GetSessions not called")
+	}
+	if got := s.lastSessionsParams.To.Format(time.RFC3339); got != "2026-02-01T00:00:00Z" {
+		t.Errorf("expected To=2026-02-01T00:00:00Z, got %s", got)
+	}
+}
+
+func TestSessionsListHandler_FromAfterTo_Returns400(t *testing.T) {
+	s := &mockStore{}
+	handler := handlers.SessionsListHandler(store.WrapStore(s))
+	req := httptest.NewRequest("GET",
+		"/v1/sessions?from=2026-02-01T00:00:00Z&to=2026-01-01T00:00:00Z", nil)
+	w := httptest.NewRecorder()
+	handler(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400 for from after to, got %d", w.Code)
 	}
 }
 

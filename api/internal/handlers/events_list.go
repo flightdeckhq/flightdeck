@@ -41,7 +41,7 @@ const (
 // @Tags         events
 // @Produce      json
 // @Param        from                     query  string  true   "Start time (ISO 8601)"
-// @Param        to                       query  string  false  "End time (ISO 8601, defaults to now)"
+// @Param        to                       query  string  false  "End time (ISO 8601; omitted, the range has no upper bound)"
 // @Param        flavor                   query  string  false  "Filter by flavor"
 // @Param        event_type               query  []string false "Filter by event type (repeatable; OR within)"
 // @Param        session_id               query  string  false  "Filter by session ID"
@@ -92,8 +92,12 @@ func EventsListHandler(s store.Querier) http.HandlerFunc {
 			return
 		}
 
-		// Parse optional "to" param (defaults to now)
-		to := time.Now().UTC()
+		// Parse the optional "to" param. Omitted, the range has no
+		// upper bound (the zero time) instead of ending at this
+		// process's clock: occurred_at is the emitting client's
+		// timestamp, and a client clock that runs ahead of this one
+		// would hide events that have already arrived.
+		var to time.Time
 		if toStr := q.Get("to"); toStr != "" {
 			parsed, err := time.Parse(time.RFC3339, toStr)
 			if err != nil {
@@ -103,7 +107,7 @@ func EventsListHandler(s store.Querier) http.HandlerFunc {
 			to = parsed
 		}
 
-		if from.After(to) {
+		if !to.IsZero() && from.After(to) {
 			writeError(w, http.StatusBadRequest, "from must be before to")
 			return
 		}

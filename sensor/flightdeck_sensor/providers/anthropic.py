@@ -13,6 +13,8 @@ from datetime import UTC
 from typing import Any
 
 from flightdeck_sensor.core.types import CallDetails, TokenUsage
+from flightdeck_sensor.providers._access import field as _field
+from flightdeck_sensor.providers._access import is_raw_stream
 from flightdeck_sensor.providers.protocol import (
     PromptContent,
     StreamAccumulator,
@@ -101,17 +103,6 @@ def _raw_stream_classes() -> tuple[type, ...]:
         return (anthropic.Stream, anthropic.AsyncStream)
     except Exception:
         return ()
-
-
-def is_raw_stream(obj: Any, classes: tuple[type, ...]) -> bool:
-    """Whether ``obj`` is one of the SDK's raw event streams ``classes``.
-
-    The test is on the object's class, not ``isinstance``: anthropic 0.x
-    overrides ``isinstance`` on ``Stream`` / ``AsyncStream`` so that a
-    ``messages.stream()`` helper (``MessageStream`` /
-    ``AsyncMessageStream``) also passes, with a ``DeprecationWarning``,
-    though the helper is not a raw stream and keeps its own snapshot."""
-    return bool(classes) and issubclass(type(obj), classes)
 
 
 def _request_headers_of(stream: Any) -> Any:
@@ -613,19 +604,6 @@ def _count(value: Any) -> int | None:
     """A token or request count as reported, or ``None`` when the field
     is missing or not an integer (a MagicMock attribute, a string)."""
     return value if isinstance(value, int) and not isinstance(value, bool) else None
-
-
-def _field(obj: Any, name: str) -> Any:
-    """Attribute or dict key ``name`` of ``obj``; ``None`` when absent.
-
-    A usage object nests its breakdowns (``output_tokens_details``,
-    ``cache_creation``, ``server_tool_use``) as typed models only on the
-    SDK releases that declare them. An older release keeps a field it
-    does not declare as a pydantic extra, which stays a plain dict, so
-    a nested read has to accept both shapes."""
-    if isinstance(obj, dict):
-        return obj.get(name)
-    return getattr(obj, name, None)
 
 
 def _thinking_tokens(usage: Any) -> int | None:

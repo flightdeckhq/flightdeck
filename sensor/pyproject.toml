@@ -188,8 +188,9 @@ openai-floor = [
 # that needs a newer SDK, or a sensor read that works on only some
 # releases, fails in CI instead of in a user's install. openai is at
 # 2.8.0, the oldest release litellm 1.83.0 installs with; the
-# openai-floor group covers 1.26. pydantic is left to the resolver,
-# because mcp 1.28 needs 2.11.
+# openai-floor group covers 1.26. pydantic 2.10 is the declared core
+# floor; the mcp extra lifts it to 2.11 (mcp 1.28 requires it), and this
+# lane resolves a newer pydantic, so 2.10 itself is not tested here.
 sdk-floors = [
     "anthropic==0.86.0",
     "openai==2.8.0",

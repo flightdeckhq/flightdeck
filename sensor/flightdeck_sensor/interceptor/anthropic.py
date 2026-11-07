@@ -103,7 +103,8 @@ from flightdeck_sensor.interceptor.platform import (
     PLATFORM_VERTEX,
     endpoint_of,
 )
-from flightdeck_sensor.providers.anthropic import AnthropicProvider, is_raw_stream
+from flightdeck_sensor.providers._access import is_raw_stream
+from flightdeck_sensor.providers.anthropic import AnthropicProvider
 
 if TYPE_CHECKING:
     from collections.abc import Callable

@@ -274,6 +274,19 @@ def test_breakdowns_an_older_sdk_keeps_as_dicts_are_still_read() -> None:
     assert streamed is not None and streamed.reasoning_tokens == 150
 
 
+def test_litellm_reads_usage_details_handed_over_as_dicts() -> None:
+    usage = SimpleNamespace(
+        prompt_tokens=120,
+        completion_tokens=40,
+        prompt_tokens_details={"cached_tokens": 80, "cache_creation_tokens": 30},
+        completion_tokens_details={"reasoning_tokens": 25},
+    )
+    tokens = LitellmProvider().extract_usage(SimpleNamespace(usage=usage))
+    assert (tokens.input_tokens, tokens.output_tokens) == (120, 40)
+    assert (tokens.cache_read_tokens, tokens.cache_creation_tokens) == (80, 30)
+    assert tokens.reasoning_tokens == 25
+
+
 def test_vertex_scope_follows_the_client_region() -> None:
     assert _vertex_scope(MagicMock(region="global"), "vertex") == "global"
     assert _vertex_scope(MagicMock(region="us-east5"), "vertex") == "regional"

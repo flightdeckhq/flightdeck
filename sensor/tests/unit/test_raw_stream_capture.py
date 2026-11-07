@@ -43,7 +43,8 @@ from flightdeck_sensor.interceptor.openai import (
     patch_openai_classes,
     unpatch_openai_classes,
 )
-from flightdeck_sensor.providers.anthropic import AnthropicProvider, is_raw_stream
+from flightdeck_sensor.providers._access import is_raw_stream
+from flightdeck_sensor.providers.anthropic import AnthropicProvider
 from flightdeck_sensor.providers.openai import OpenAIProvider
 from flightdeck_sensor.transport.client import ControlPlaneClient
 

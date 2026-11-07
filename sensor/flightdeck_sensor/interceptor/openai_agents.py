@@ -668,6 +668,13 @@ def _running_loop() -> asyncio.AbstractEventLoop | None:
         return None
 
 
+def _retrieve_outcome(future: asyncio.Future[Any]) -> None:
+    """Mark an executor job's outcome as retrieved, logging a failure at
+    debug level (the sensor fails open)."""
+    if not future.cancelled() and future.exception() is not None:
+        _log.debug("closing a run's child sessions failed", exc_info=future.exception())
+
+
 def _close_off_loop(
     scope: _RunScope, error: BaseException | None, loop: asyncio.AbstractEventLoop | None
 ) -> None:
@@ -687,7 +694,10 @@ def _close_off_loop(
     try:
         if loop is None or loop.is_closed():
             raise RuntimeError("no running event loop")
-        loop.run_in_executor(None, close)
+        future = loop.run_in_executor(None, close)
+        # Retrieve the job's outcome so asyncio never logs an exception as
+        # never retrieved; close_all logs its own failures.
+        future.add_done_callback(_retrieve_outcome)
     except RuntimeError:
         scope.close_all(error)
         return

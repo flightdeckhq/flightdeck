@@ -573,11 +573,12 @@ class Session:
             return
         self._ending_thread = threading.get_ident()
         self._state = SessionState.CLOSED
-        # A framework wrap's last child posts, still running in a worker
-        # thread, go out before this session's end and before the client
-        # closes under them.
-        self.wait_child_posts(PENDING_CHILD_POSTS_WAIT_SECS)
         try:
+            # A framework wrap's last child posts, still running in a worker
+            # thread, go out before this session's end and before the client
+            # closes under them. Inside the try, so an interrupt during the
+            # wait still sets _ended.
+            self.wait_child_posts(PENDING_CHILD_POSTS_WAIT_SECS)
             # Streams still open on this session settle now and their events
             # are flushed before session_end goes out, so the workers see the
             # post_call on an open session and roll its tokens up; a guard

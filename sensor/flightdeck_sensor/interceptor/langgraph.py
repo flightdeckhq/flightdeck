@@ -56,7 +56,7 @@ import uuid
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
-from flightdeck_sensor.core.session import subagent_error
+from flightdeck_sensor.core.session import SUBAGENT_STATE_ERROR, subagent_error
 from flightdeck_sensor.core.types import SubagentMessage
 
 if TYPE_CHECKING:
@@ -196,7 +196,7 @@ def _wrap_node_action(node_name: str, action: Callable[..., Any]) -> Callable[..
                     child_agent_id=child_agent_id,
                     child_agent_name=child_agent_name,
                     agent_role=role,
-                    state="error",
+                    state=SUBAGENT_STATE_ERROR,
                     error=subagent_error(exc),
                 )
             except Exception:  # noqa: BLE001
@@ -246,7 +246,7 @@ def _wrap_node_action(node_name: str, action: Callable[..., Any]) -> Callable[..
                     child_agent_id=child_agent_id,
                     child_agent_name=child_agent_name,
                     agent_role=role,
-                    state="error",
+                    state=SUBAGENT_STATE_ERROR,
                     error=subagent_error(exc),
                 )
             except Exception:  # noqa: BLE001

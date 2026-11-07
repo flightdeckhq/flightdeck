@@ -185,6 +185,10 @@ All notable changes to Flightdeck are documented here.
   the worker fills a session's empty `framework` from the next call and
   adds the label to `context.frameworks`. Sessions recorded before the
   upgrade are not backfilled.
+- **Analytics accepts `framework` as the second `group_by` axis.**
+  `GET /v1/analytics?group_by=model,framework` (any dimension, then
+  `framework`) failed with a 500; it now returns the per-framework
+  breakdown.
 - **Claude Agent SDK runs carry the bare `claude_agent_sdk` framework
   label.** The interceptor sent `claude-agent-sdk/<version>` as the
   per-event `framework`; it now sends `claude_agent_sdk`, with

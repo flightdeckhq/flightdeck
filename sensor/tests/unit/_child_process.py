@@ -41,6 +41,8 @@ HANG_SECS = 60.0
 # SDKs parse them into their own types and the sensor meters them.
 _CHAT_COMPLETION_USAGE = {"prompt_tokens": 7, "completion_tokens": 3, "total_tokens": 10}
 _MESSAGE_USAGE = {"input_tokens": 7, "output_tokens": 3}
+# The tool a chat completion that offers tools is answered with a call to.
+CAPTURE_TOOL_NAME = "get_weather"
 
 
 def child_env(**extra: str) -> dict[str, str]:
@@ -169,13 +171,7 @@ class CaptureServer:
                             "object": "chat.completion",
                             "created": 1_700_000_000,
                             "model": body.get("model", "gpt-4o-mini"),
-                            "choices": [
-                                {
-                                    "index": 0,
-                                    "message": {"role": "assistant", "content": "hi"},
-                                    "finish_reason": "stop",
-                                }
-                            ],
+                            "choices": [_chat_choice(offers_tools=bool(body.get("tools")))],
                             "usage": _CHAT_COMPLETION_USAGE,
                         }
                     )
@@ -219,3 +215,30 @@ class CaptureServer:
                 pass
 
         return Handler
+
+
+def _chat_choice(*, offers_tools: bool) -> dict[str, Any]:
+    """The one choice of a canned chat completion: a call to
+    :data:`CAPTURE_TOOL_NAME` when the request offered tools, else a
+    plain answer."""
+    if not offers_tools:
+        return {
+            "index": 0,
+            "message": {"role": "assistant", "content": "hi"},
+            "finish_reason": "stop",
+        }
+    return {
+        "index": 0,
+        "message": {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_capture",
+                    "type": "function",
+                    "function": {"name": CAPTURE_TOOL_NAME, "arguments": '{"city": "Paris"}'},
+                }
+            ],
+        },
+        "finish_reason": "tool_calls",
+    }

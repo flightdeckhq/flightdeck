@@ -552,14 +552,14 @@ class SdkRun:
                 self._tool_call(block, model, post_call_id)
 
     def _tool_call(self, block: dict[str, Any], model: str | None, origin: str) -> None:
-        from flightdeck_sensor.interceptor.mcp import _build_tool_capture_content
+        from flightdeck_sensor.core.tool_capture import build_tool_capture_content
 
         payload = self._payload("tool_call")
         payload["model"] = model
         payload["tool_name"] = block.get("name")
         payload["originating_event_id"] = origin
         if self._session.config.capture_prompts:
-            content = _build_tool_capture_content(
+            content = build_tool_capture_content(
                 tool_input=block.get("input"),
                 tool_output=None,
                 server_name=model or "",

@@ -67,6 +67,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from flightdeck_sensor.core.tool_capture import build_tool_capture_content
 from flightdeck_sensor.core.types import EventType, MCPServerFingerprint
 
 if TYPE_CHECKING:
@@ -340,7 +341,7 @@ def _build_overflow_event_content(
 
     This helper serves ``mcp_resource_read`` body overflow only —
     the ``mcp_tool_call`` + ``mcp_prompt_get`` paths use
-    ``_build_tool_capture_content`` with dedicated
+    ``build_tool_capture_content`` with dedicated
     ``tool_input`` / ``tool_output`` columns. Resource bodies are
     blobs, not request/response shapes; the LLM-prompt-style
     repurposing of ``input`` / ``response`` columns stays
@@ -354,56 +355,6 @@ def _build_overflow_event_content(
         "tools": None,
         "response": response_overflow if response_overflow is not None else {},
         "input": arguments_overflow,
-        "provider": "mcp",
-        "model": server_name or "",
-        "session_id": session_id,
-        "event_id": "",
-        "captured_at": datetime.now(UTC).isoformat(),
-    }
-
-
-def _build_tool_capture_content(
-    *,
-    tool_input: Any,
-    tool_output: Any,
-    server_name: str | None,
-    session_id: str,
-) -> dict[str, Any] | None:
-    """Build the event_content envelope for tool capture using the
-    dedicated ``tool_input`` / ``tool_output`` columns (migration
-    000021).
-
-    Used by ``mcp_tool_call`` + ``mcp_prompt_get`` (and by the
-    LLM-side ``tool_call`` path in interceptor/base.py). Sensor +
-    plugin produce the same wire shape; worker's
-    ``InsertEventContent`` parses both keys and writes them into
-    the dedicated columns.
-
-    Returns ``None`` when neither field is populated (capture off
-    or call errored before producing args/output) — caller skips
-    setting ``has_content`` / ``content``.
-
-    Tool args and results are never repurposed into the LLM-prompt
-    columns (``input`` carrying tool args, ``response`` carrying a
-    tool result spelled like an LLM prompt). Operators querying
-    ``event_content.tool_input`` get tool args directly without the
-    column-name semantics gymnastics.
-    """
-    if tool_input is None and tool_output is None:
-        return None
-    return {
-        "system": None,
-        "messages": [],
-        "tools": None,
-        # ``response`` is a NOT NULL column in event_content that
-        # predates tool capture; send the empty-dict default
-        # so the INSERT satisfies the column constraint. The
-        # operationally-meaningful tool capture lives in
-        # tool_input / tool_output below.
-        "response": {},
-        "input": None,
-        "tool_input": tool_input,
-        "tool_output": tool_output,
         "provider": "mcp",
         "model": server_name or "",
         "session_id": session_id,
@@ -912,7 +863,7 @@ def _emit_tool_call(
         # go to event_content regardless of size (no inline-vs-
         # overflow split) so events.payload stays lean and the
         # operator queries event_content.tool_input directly.
-        capture_content = _build_tool_capture_content(
+        capture_content = build_tool_capture_content(
             tool_input=arguments,
             tool_output=result_dict,
             server_name=server_name,
@@ -1117,7 +1068,7 @@ def _emit_prompt_get(
         # split, so the worker writes one row with both fields
         # populated and the operator queries event_content.tool_input
         # directly.
-        capture_content = _build_tool_capture_content(
+        capture_content = build_tool_capture_content(
             tool_input=arguments,
             tool_output=rendered,
             server_name=server_name,

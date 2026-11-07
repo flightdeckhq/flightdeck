@@ -160,6 +160,18 @@ All notable changes to Flightdeck are documented here.
 
 ### Fixed
 
+- **The sensor meters MCP calls when an LLM tool call is what first
+  imports `mcp`.** With prompt capture on, the first tool call an
+  Anthropic, OpenAI or litellm response carried imported the sensor's MCP
+  interceptor to build the call's captured arguments, and with it the
+  `mcp` SDK. `mcp` then finished importing before the interceptor had
+  defined its patch, so patching it failed ("patching mcp failed; its
+  calls are not metered") and every MCP call after it went unmetered. The
+  captured-arguments envelope no longer lives in the MCP interceptor, so
+  an LLM tool call imports no SDK, and an SDK whose first import happens
+  inside the interceptor module that patches it (anthropic, openai,
+  litellm and mcp alike) is now patched once that module's import ends.
+
 - **A failed Claude Code tool call counts as an error.** The plugin and
   Claude Code's OpenTelemetry store a failed tool call as a `tool_call`
   with an `error` block. It now counts in the session listing's
@@ -175,6 +187,7 @@ All notable changes to Flightdeck are documented here.
   stored by plugin releases before v0.6.0, as `plugin:<plugin>:<server>`,
   so one server is one value, and filtering on the colon key matches both
   ([#179](https://github.com/flightdeckhq/flightdeck/issues/179)).
+
 - **The sensor meters OpenAI calls on openai releases before 1.78.**
   Their client builds `chat`, `embeddings` and `responses` in its
   constructor, which the class patch never reached, so `patch()` left
@@ -223,6 +236,17 @@ All notable changes to Flightdeck are documented here.
   tool shows its parameters. A litellm `text_completion` call shows its
   prompt under Prompt (D252,
   [#222](https://github.com/flightdeckhq/flightdeck/issues/222)).
+- **A litellm Responses stream left early stores a Responses
+  response.** With capture on, a `litellm.responses(stream=True)` or
+  `aresponses(stream=True)` call the caller left before its terminal
+  event stored a response with no `object`, so the Prompts tab labelled
+  its `instructions` as System and showed no Input. The sensor now
+  keeps the response the `response.created` / `response.in_progress`
+  events carry and stores it (`object: "response"`,
+  `status: "in_progress"`, no output) when no terminal event arrived,
+  as an OpenAI SDK Responses stream already did. Usage, model and stop
+  reason still come from the streamed events
+  ([#268](https://github.com/flightdeckhq/flightdeck/pull/268)).
 - **The Fleet swimlane's newest events are no longer cut off.** The
   time scale now leaves half a circle plus a small buffer at both ends
   of the timeline, shared by the rows, the grid lines and the time

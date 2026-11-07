@@ -746,6 +746,9 @@ _RESPONSES_TERMINAL_EVENTS = frozenset(
     {"response.completed", "response.incomplete", "response.failed"}
 )
 _RESPONSES_INCOMPLETE_EVENT = "response.incomplete"
+# Events that carry the response as it stands while it is still being
+# generated (``status: "in_progress"``, no output yet).
+_RESPONSES_SNAPSHOT_EVENTS = frozenset({"response.created", "response.in_progress"})
 _RESPONSES_STATUS_INCOMPLETE = "incomplete"
 # The Responses output item a function call the model issued arrives as.
 _RESPONSES_FUNCTION_CALL = "function_call"
@@ -773,18 +776,32 @@ def _responses_messages(request_kwargs: dict[str, Any]) -> list[Any]:
 
 class _ResponsesAccumulator:
     """Keeps the whole response a streamed Responses call's terminal event
-    carries (``response.completed`` / ``.incomplete`` / ``.failed``);
-    nothing is assembled before it."""
+    carries (``response.completed`` / ``.incomplete`` / ``.failed``).
+
+    Until that event arrives it keeps the latest in-progress snapshot
+    (``response.created`` / ``response.in_progress``), so a stream the
+    caller leaves early still hands over a Responses object
+    (``object: "response"``, ``status: "in_progress"``) for content
+    capture, as the OpenAI SDK's own snapshot does. No output is folded
+    into it; the text deltas are not assembled."""
 
     def __init__(self) -> None:
         self._final: Any = None
+        self._snapshot: Any = None
 
     def add(self, event: Any) -> None:
-        if self._final is None and _field(event, "type") in _RESPONSES_TERMINAL_EVENTS:
+        if self._final is not None:
+            return
+        kind = _field(event, "type")
+        if kind in _RESPONSES_TERMINAL_EVENTS:
             self._final = _field(event, "response")
+        elif kind in _RESPONSES_SNAPSHOT_EVENTS:
+            response = _field(event, "response")
+            if response is not None:
+                self._snapshot = response
 
     def message(self) -> Any | None:
-        return self._final
+        return self._final if self._final is not None else self._snapshot
 
 
 class LitellmResponsesProvider(LitellmProvider):
@@ -867,8 +884,9 @@ class LitellmResponsesProvider(LitellmProvider):
     def stream_accumulator(
         self, stream: Any, request_kwargs: dict[str, Any]
     ) -> StreamAccumulator | None:
-        """The terminal event's response, kept always: the tool calls are
-        read from it, and holding it costs one reference."""
+        """The terminal event's response (or, before it, the latest
+        in-progress snapshot), kept always: the tool calls are read from
+        it, and holding it costs one reference."""
         return _ResponsesAccumulator()
 
     def response_stop_reason(self, response: Any) -> str | None:

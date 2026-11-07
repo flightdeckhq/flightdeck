@@ -242,6 +242,7 @@ flightdeck/
 │   │   │   ├── agent_id.py     # 5-tuple → deterministic agent_id derivation
 │   │   │   ├── errors.py       # Provider exception or non-success stop reason → structured llm_error taxonomy + payload wrapper
 │   │   │   ├── exceptions.py   # BudgetExceededError, DirectiveError, ConfigurationError
+│   │   │   ├── tool_capture.py # event_content envelope for a captured tool call (MCP, LLM-side, Agent SDK)
 │   │   │   └── import_hook.py  # sys.meta_path finder: runs patch() for an SDK as the application imports it
 │   │   ├── transport/
 │   │   │   ├── client.py       # ControlPlaneClient + EventQueue (drain + directive threads; the drain thread ends the session for a signal)
@@ -1072,11 +1073,21 @@ lookup. So an application loads only the SDKs it uses: `import
 flightdeck_sensor`, `init` and `patch` import none of them, and litellm's
 download of its price list from GitHub, which runs when litellm is
 imported, happens only when the application imports litellm. An SDK's
-interceptor module imports the SDK, so it is loaded only once the SDK is;
-`wrap` looks for a client's SDK classes only when that SDK is imported (a
-client cannot exist before), and the interceptor names `flightdeck_sensor`
-re-exports (`SensorLitellm`, the `patch_*` / `unpatch_*` functions)
-resolve on first access. LangGraph is watched as `langgraph.graph`, where
+interceptor module imports the SDK, so it is loaded only once the SDK is,
+and code shared across interceptors (the captured-arguments envelope of
+every `tool_call`, in `core/tool_capture.py`) lives outside them, so an
+LLM call never imports another SDK. When importing an interceptor module
+is nonetheless what first imports its SDK (the application reads a
+`patch_*` name before importing the SDK, say), the SDK finishes importing
+while that module is still executing: the finder watches each
+interceptor module too, and the SDK is patched as that module's code
+ends, never earlier. An interceptor module another thread started
+importing before `patch` installed the finder is waited for by `patch`,
+which then patches the SDK that import brought in. `wrap` looks for a
+client's SDK classes only when that SDK is imported (a client cannot
+exist before), and the interceptor names `flightdeck_sensor` re-exports
+(`SensorLitellm`, the `patch_*` / `unpatch_*` functions) resolve on
+first access. LangGraph is watched as `langgraph.graph`, where
 `StateGraph` lives: `langgraph` itself is a namespace package shared with
 LangGraph's other distributions, and a namespace package runs no code to
 hook.
@@ -1231,7 +1242,13 @@ is not zero. `responses(stream=True)` returns the guard around litellm's
 Responses streaming iterator; the terminal event (`response.completed` /
 `.incomplete` / `.failed`) carries the whole response and its usage, so
 nothing is added to the request and nothing is hidden, and the guard
-keeps that response for content capture and the tool calls. litellm's
+keeps that response for content capture and the tool calls. Until it
+arrives the guard keeps the latest response a `response.created` /
+`response.in_progress` event carries, so a stream left before its
+terminal event stores that in-progress response (`object: "response"`,
+`status: "in_progress"`, no output) as its content only; its usage,
+model and stop reason still come from the events, and it emits no tool
+call. litellm's
 stream wrappers are not context managers and have no `close()`, so the
 guard is used as a plain iterator; a loop left early is reported once the
 guard is collected.
@@ -6796,12 +6813,13 @@ every response object: `"response"` for a Responses call and
 has none). Neither the event nor the content names the API a call
 used, and the content's shape alone (no `messages`, an `input`) is the
 same for a Responses call, a legacy completion and an embeddings call.
-A call whose stored response carries no `object` (a stream that stored
-no response snapshot) shows no Input or Prompt, and its stored `system`
-text under System: a litellm Responses
-stream the caller leaves before its terminal event keeps no snapshot,
-while an OpenAI SDK one stores the `ResponseStreamState` snapshot, which
-carries `object` from `response.created` on. An embeddings
+A call whose stored response carries no `object` shows no Input or
+Prompt, and its stored `system` text under System. A Responses stream
+the caller leaves before its terminal event still stores a response
+that carries `object`: the OpenAI SDK's `ResponseStreamState` snapshot,
+built from `response.created` on, and for litellm the latest response a
+`response.created` / `response.in_progress` event carried
+(`status: "in_progress"`, no output). An embeddings
 call's input stays with `EmbeddingsContentViewer`. A tool call's content (the sensor's `tool_call`,
 `mcp_tool_call` and `mcp_prompt_get`, and Claude Code's `tool_call`
 over OpenTelemetry) shows its stored `tool_input` as Arguments and its

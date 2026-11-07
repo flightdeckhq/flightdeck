@@ -36,12 +36,14 @@ inherited to find its parent. The guardrails are seen where they run:
 and ``ToolOutputGuardrail.run`` are patched to look at the result they
 return, inside the run that called them.
 
-A streamed run's loop runs in a task the result holds
-(``run_loop_task``, ``_run_impl_task`` in older releases such as 0.6); its open children
-are closed from that task's done callback, after the hooks of a normal
-finish have run. The posts the hooks and guardrails make run in a worker
-thread (``asyncio.to_thread``) so the event loop is not held; the done
-callback cannot await and posts in place, once, at the end of the run.
+A streamed run's loop runs in a task the result holds (``run_loop_task``,
+``_run_impl_task`` in older releases such as 0.6); its open children are
+closed from that task's done callback, after the hooks of a normal finish
+have run. The posts the hooks and guardrails make run in a worker thread
+(``asyncio.to_thread``) so the event loop is not held. The done callback
+cannot await: it hands the closing posts to the loop's executor and
+registers them with the session, whose ``end()`` waits for them; only when
+the loop can no longer run them does it post in place.
 
 Enforcement. A model call's ``pre_call`` raises ``DirectiveError`` or
 ``BudgetExceededError`` out of ``Runner.run`` (or out of
@@ -56,6 +58,7 @@ every exception would retry a ``DirectiveError`` too.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextvars
 import dataclasses
 import functools
@@ -69,7 +72,15 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from flightdeck_sensor.core.exceptions import DirectiveError
-from flightdeck_sensor.core.session import _handoff_agent_label
+from flightdeck_sensor.core.session import (
+    SUBAGENT_ERROR_MESSAGE_KEY,
+    SUBAGENT_ERROR_TYPE_KEY,
+    SUBAGENT_STATE_CLOSED,
+    SUBAGENT_STATE_ERROR,
+    GuardrailKind,
+    _handoff_agent_label,
+    subagent_error,
+)
 from flightdeck_sensor.core.types import SubagentMessage
 
 if TYPE_CHECKING:
@@ -93,8 +104,10 @@ _DISTRIBUTION = "openai-agents"
 CONVERSATION_ID_KEY = "gen_ai_conversation_id"
 
 # The module of the OpenTelemetry instrumentation's tracing processor,
-# whose exporter reports the same runs as an OTLP session.
+# whose exporter reports the same runs as an OTLP session, and the
+# distribution that installs it.
 _OTEL_PROCESSOR_MODULE = "opentelemetry.instrumentation.openai_agents"
+_OTEL_DISTRIBUTION = "opentelemetry-instrumentation-openai-agents-v2"
 # The issue that tracks a run reported both ways.
 _DOUBLE_COUNT_ISSUE = "https://github.com/flightdeckhq/flightdeck/issues/279"
 # The OpenTelemetry exporter's endpoint settings, the per-signal one first.
@@ -105,15 +118,43 @@ _DEFAULT_PORTS = {"http": 80, "https": 443}
 # The guardrail classes this module patches, the module each lives in,
 # and the ``kind`` a guardrail_tripwire signal names for it.
 _GUARDRAILS = (
-    ("agents.guardrail", "InputGuardrail", "input"),
-    ("agents.guardrail", "OutputGuardrail", "output"),
-    ("agents.tool_guardrails", "ToolInputGuardrail", "tool_input"),
-    ("agents.tool_guardrails", "ToolOutputGuardrail", "tool_output"),
+    ("agents.guardrail", "InputGuardrail", GuardrailKind.INPUT),
+    ("agents.guardrail", "OutputGuardrail", GuardrailKind.OUTPUT),
+    ("agents.tool_guardrails", "ToolInputGuardrail", GuardrailKind.TOOL_INPUT),
+    ("agents.tool_guardrails", "ToolOutputGuardrail", GuardrailKind.TOOL_OUTPUT),
 )
-# A tool guardrail's behaviours that refuse the call: ``reject_content``
-# replaces the tool's input or output with a message to the model,
-# ``raise_exception`` stops the run.
-_TOOL_GUARDRAIL_REFUSALS = frozenset({"reject_content", "raise_exception"})
+# The guardrail kinds whose result is a tripwire (an input or output
+# guardrail's ``output.tripwire_triggered``); the tool kinds return a
+# behaviour instead.
+_TRIPWIRE_KINDS = frozenset({GuardrailKind.INPUT, GuardrailKind.OUTPUT})
+# A tool guardrail's result names its behaviour in ``behavior["type"]``.
+_BEHAVIOR_ATTR = "behavior"
+_BEHAVIOR_TYPE_KEY = "type"
+# The behaviours that refuse the call: ``reject_content`` replaces the
+# tool's input or output with a message to the model, ``raise_exception``
+# stops the run.
+_BEHAVIOR_REJECT_CONTENT = "reject_content"
+_BEHAVIOR_RAISE_EXCEPTION = "raise_exception"
+_TOOL_GUARDRAIL_REFUSALS = frozenset({_BEHAVIOR_REJECT_CONTENT, _BEHAVIOR_RAISE_EXCEPTION})
+# The exception the SDK raises when each kind of guardrail stops the run:
+# the error type a child stopped by it ends with when the run itself does
+# not raise (a streamed run's input guardrail).
+_TRIPWIRE_ERROR_TYPES = {
+    GuardrailKind.INPUT: "InputGuardrailTripwireTriggered",
+    GuardrailKind.OUTPUT: "OutputGuardrailTripwireTriggered",
+    GuardrailKind.TOOL_INPUT: "ToolInputGuardrailTripwireTriggered",
+    GuardrailKind.TOOL_OUTPUT: "ToolOutputGuardrailTripwireTriggered",
+}
+
+# The prefix of every hook method the SDK's RunHooksBase defines.
+_HOOK_PREFIX = "on_"
+# The attribute a streamed result keeps its run loop's task in: current
+# releases first, then older ones such as 0.6.
+_STREAM_TASK_ATTRS = ("run_loop_task", "_run_impl_task")
+# The runner methods and the guardrail method the wrap replaces.
+_RUN_METHOD = "run"
+_RUN_STREAMED_METHOD = "run_streamed"
+_GUARDRAIL_METHOD = "run"
 
 
 # ----------------------------------------------------------------------
@@ -264,7 +305,7 @@ class _RunScope:
         if self.closed:
             return
         self.closed = True
-        err = _error_block(error) if error is not None else self.tripwire_error
+        err = subagent_error(error) if error is not None else self.tripwire_error
         for child in list(self.open):
             _end_child(self.session, child, err)
         self.open.clear()
@@ -295,10 +336,6 @@ def _message(body: Any) -> SubagentMessage:
     return SubagentMessage(body=body, captured_at=datetime.now(UTC).isoformat())
 
 
-def _error_block(exc: BaseException) -> dict[str, str]:
-    return {"type": type(exc).__name__, "message": str(exc)}
-
-
 def _start_child(
     session: Session,
     child: _Child,
@@ -316,23 +353,13 @@ def _start_child(
 def _end_child(session: Session, child: _Child, error: dict[str, str] | None) -> None:
     try:
         session.emit_subagent_session_end(
-            state="error" if error is not None else "closed",
+            state=SUBAGENT_STATE_ERROR if error is not None else SUBAGENT_STATE_CLOSED,
             error=error,
             outgoing_message=_message(child.output) if child.has_output else None,
             **child.identity(),
         )
     except Exception:  # noqa: BLE001 - fail open
         _log.debug("child session_end failed", exc_info=True)
-
-
-def _raise_if_shutdown(session: Session) -> None:
-    """Stop the run at an agent boundary once a shutdown directive has
-    arrived, as the next model call's pre_call would."""
-    with session._lock:
-        shutdown = session._shutdown_requested
-        reason = session._shutdown_reason
-    if shutdown:
-        raise DirectiveError("shutdown", reason)
 
 
 def _conversation_id(kwargs: dict[str, Any], inherited: str | None) -> str | None:
@@ -390,7 +417,7 @@ def _make_hooks_class() -> type[Any]:
 
     async def on_agent_start(self: Any, context: Any, agent: Any) -> None:
         scope: _RunScope = self._fd_scope
-        _raise_if_shutdown(scope.session)
+        scope.session.raise_if_shutdown()
         async with scope.lock():
             await scope.ensure_child(agent)
         await self._fd_forward("on_agent_start", context, agent)
@@ -404,7 +431,7 @@ def _make_hooks_class() -> type[Any]:
 
     async def on_handoff(self: Any, context: Any, from_agent: Any, to_agent: Any) -> None:
         scope: _RunScope = self._fd_scope
-        _raise_if_shutdown(scope.session)
+        scope.session.raise_if_shutdown()
         async with scope.lock():
             child = await scope.ensure_child(from_agent)
             await asyncio.to_thread(
@@ -445,7 +472,7 @@ def _make_hooks_class() -> type[Any]:
         "on_handoff": on_handoff,
     }
     for name in dir(_RunHooksBase):
-        if name.startswith("on_") and name not in namespace:
+        if name.startswith(_HOOK_PREFIX) and name not in namespace:
             namespace[name] = _forwarder(name)
     _hooks_class = type("FlightdeckRunHooks", (_RunHooksBase,), namespace)
     return _hooks_class
@@ -464,32 +491,35 @@ def _wrap_hooks(scope: _RunScope, user_hooks: Any) -> Any | None:
 # ----------------------------------------------------------------------
 
 
-def _fired(kind: str, result: Any) -> tuple[bool, bool]:
+def _fired(kind: GuardrailKind, result: Any) -> tuple[bool, bool]:
     """Whether a guardrail's result fired, and whether it stops the run."""
-    if kind in ("input", "output"):
+    if kind in _TRIPWIRE_KINDS:
         tripped = bool(getattr(getattr(result, "output", None), "tripwire_triggered", False))
         return tripped, tripped
-    behavior = getattr(result, "behavior", None)
-    kind_name = behavior.get("type") if isinstance(behavior, dict) else None
-    return kind_name in _TOOL_GUARDRAIL_REFUSALS, kind_name == "raise_exception"
+    behavior = getattr(result, _BEHAVIOR_ATTR, None)
+    behavior_type = behavior.get(_BEHAVIOR_TYPE_KEY) if isinstance(behavior, dict) else None
+    return (
+        behavior_type in _TOOL_GUARDRAIL_REFUSALS,
+        behavior_type == _BEHAVIOR_RAISE_EXCEPTION,
+    )
 
 
-def _guarded_agent(kind: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
+def _guarded_agent(kind: GuardrailKind, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
     """The agent a guardrail's ``run`` was called for: its ``agent``
     argument (an input guardrail's first, an output guardrail's second),
     or the ``agent`` of a tool guardrail's data."""
     if "agent" in kwargs:
         return kwargs["agent"]
-    if kind == "input":
+    if kind is GuardrailKind.INPUT:
         return args[0] if args else None
-    if kind == "output":
+    if kind is GuardrailKind.OUTPUT:
         return args[1] if len(args) > 1 else None
     data = kwargs.get("data", args[0] if args else None)
     return getattr(data, "agent", None)
 
 
 async def _report_guardrail(
-    kind: str, guardrail: Any, args: tuple[Any, ...], kwargs: dict[str, Any], result: Any
+    kind: GuardrailKind, guardrail: Any, args: tuple[Any, ...], kwargs: dict[str, Any], result: Any
 ) -> None:
     scope = _RUN_SCOPE.get()
     if scope is None:
@@ -505,8 +535,8 @@ async def _report_guardrail(
     async with scope.lock():
         if stops and scope.tripwire_error is None:
             scope.tripwire_error = {
-                "type": f"{kind.title().replace('_', '')}GuardrailTripwireTriggered",
-                "message": f"Guardrail {name or kind} triggered tripwire",
+                SUBAGENT_ERROR_TYPE_KEY: _TRIPWIRE_ERROR_TYPES[kind],
+                SUBAGENT_ERROR_MESSAGE_KEY: f"Guardrail {name or kind} triggered tripwire",
             }
         child = await scope.ensure_child(agent) if agent is not None else scope.current
         identity = child.identity() if child is not None else {}
@@ -521,7 +551,7 @@ async def _report_guardrail(
         )
 
 
-def _wrap_guardrail_run(kind: str, original: Callable[..., Any]) -> Callable[..., Any]:
+def _wrap_guardrail_run(kind: GuardrailKind, original: Callable[..., Any]) -> Callable[..., Any]:
     @functools.wraps(original)
     async def run(self: Any, *args: Any, **kwargs: Any) -> Any:
         result = await original(self, *args, **kwargs)
@@ -592,7 +622,7 @@ def _wrap_run_streamed(original: Callable[..., Any]) -> Callable[..., Any]:
         try:
             result = original(self, starting_agent, input, **kwargs)
         except BaseException as exc:
-            scope.close_all(exc)
+            _close_off_loop(scope, exc, _running_loop())
             raise
         finally:
             _RUN_SCOPE.reset(token)
@@ -610,9 +640,9 @@ def _wrap_run_streamed(original: Callable[..., Any]) -> Callable[..., Any]:
 
 
 def _run_loop_task(result: Any) -> asyncio.Task[Any] | None:
-    """The task a streamed result runs its loop in: ``run_loop_task``
-    in current releases, ``_run_impl_task`` in older ones such as 0.6."""
-    for name in ("run_loop_task", "_run_impl_task"):
+    """The task a streamed result runs its loop in (see
+    :data:`_STREAM_TASK_ATTRS`)."""
+    for name in _STREAM_TASK_ATTRS:
         task = getattr(result, name, None)
         if isinstance(task, asyncio.Future):
             return task  # type: ignore[return-value]
@@ -626,9 +656,42 @@ def _stream_done(scope: _RunScope, task: asyncio.Future[Any]) -> None:
             error: BaseException | None = asyncio.CancelledError()
         else:
             error = task.exception()
-        scope.close_all(error)
+        _close_off_loop(scope, error, task.get_loop())
     except Exception:  # noqa: BLE001 - fail open
         _log.debug("closing a streamed run's child sessions failed", exc_info=True)
+
+
+def _running_loop() -> asyncio.AbstractEventLoop | None:
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
+def _close_off_loop(
+    scope: _RunScope, error: BaseException | None, loop: asyncio.AbstractEventLoop | None
+) -> None:
+    """Close the run's open children from code that cannot await (a done
+    callback, the synchronous ``run_streamed``): in a worker thread of
+    ``loop``'s executor, registered with the session so its ``end()``
+    waits for the posts, or in place when the loop can no longer run one
+    (it is closed, or shutting its executor down)."""
+    done: concurrent.futures.Future[None] = concurrent.futures.Future()
+
+    def close() -> None:
+        try:
+            scope.close_all(error)
+        finally:
+            done.set_result(None)
+
+    try:
+        if loop is None or loop.is_closed():
+            raise RuntimeError("no running event loop")
+        loop.run_in_executor(None, close)
+    except RuntimeError:
+        scope.close_all(error)
+        return
+    scope.session.track_child_post(done)
 
 
 # ----------------------------------------------------------------------
@@ -692,9 +755,10 @@ def _check_double_count(session: Session, run_config: Any) -> None:
         )
         _log.warning(
             "flightdeck_sensor: this process also exports OpenAI Agents traces through "
-            "opentelemetry-instrumentation-openai-agents %s. If that exporter sends them "
+            "%s %s. If that exporter sends them "
             "to this Flightdeck, each run may be counted twice: once by the sensor and once "
             "as an OTLP session. Report each run one way (see %s).",
+            _OTEL_DISTRIBUTION,
             where,
             _DOUBLE_COUNT_ISSUE,
         )
@@ -707,7 +771,7 @@ def _check_double_count(session: Session, run_config: Any) -> None:
 # ----------------------------------------------------------------------
 
 
-def _guardrail_classes() -> list[tuple[Any, str]]:
+def _guardrail_classes() -> list[tuple[Any, GuardrailKind]]:
     classes = []
     for module_name, class_name, kind in _GUARDRAILS:
         try:
@@ -715,7 +779,7 @@ def _guardrail_classes() -> list[tuple[Any, str]]:
         except ImportError:
             continue
         cls = getattr(module, class_name, None)
-        if cls is not None and callable(getattr(cls, "run", None)):
+        if cls is not None and callable(getattr(cls, _GUARDRAIL_METHOD, None)):
             classes.append((cls, kind))
     return classes
 
@@ -747,12 +811,12 @@ def patch_openai_agents(*, quiet: bool = False) -> None:
     runner = _AgentRunner
     if runner.__dict__.get(_PATCHED_SENTINEL, False):
         return
-    _patch_method(runner, "run", _wrap_run)
-    _patch_method(runner, "run_streamed", _wrap_run_streamed)
+    _patch_method(runner, _RUN_METHOD, _wrap_run)
+    _patch_method(runner, _RUN_STREAMED_METHOD, _wrap_run_streamed)
     setattr(runner, _PATCHED_SENTINEL, True)
     for cls, kind in _guardrail_classes():
-        if not cls.__dict__.get(_PATCHED_SENTINEL, False) and "run" in cls.__dict__:
-            _patch_method(cls, "run", functools.partial(_wrap_guardrail_run, kind))
+        if not cls.__dict__.get(_PATCHED_SENTINEL, False) and _GUARDRAIL_METHOD in cls.__dict__:
+            _patch_method(cls, _GUARDRAIL_METHOD, functools.partial(_wrap_guardrail_run, kind))
             setattr(cls, _PATCHED_SENTINEL, True)
 
 
@@ -763,11 +827,11 @@ def unpatch_openai_agents() -> None:
         return
     runner = _AgentRunner
     if runner.__dict__.get(_PATCHED_SENTINEL, False):
-        _unpatch_method(runner, "run")
-        _unpatch_method(runner, "run_streamed")
+        _unpatch_method(runner, _RUN_METHOD)
+        _unpatch_method(runner, _RUN_STREAMED_METHOD)
         delattr(runner, _PATCHED_SENTINEL)
     for cls, _kind in _guardrail_classes():
         if cls.__dict__.get(_PATCHED_SENTINEL, False):
-            _unpatch_method(cls, "run")
+            _unpatch_method(cls, _GUARDRAIL_METHOD)
             delattr(cls, _PATCHED_SENTINEL)
     _double_count_checked = False

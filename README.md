@@ -106,6 +106,7 @@ make playground-openai       # OpenAI direct
 make playground-langchain    # LangChain + ChatAnthropic / ChatOpenAI
 make playground-langgraph    # LangGraph agent loops
 make playground-llamaindex   # LlamaIndex
+make playground-llamaindex-agents  # LlamaIndex agent workflows as child sessions
 make playground-crewai       # CrewAI multi-agent
 make playground-mcp          # MCP tool calls
 make playground-policies     # token policy enforcement
@@ -146,7 +147,7 @@ Flightdeck reaches a framework two ways. The sensor meters and enforces every LL
 | Google ADK | yes on `LiteLlm` and its Claude / `AnthropicLlm` models; not on Gemini | planned | yes |
 | OpenAI Agents SDK 0.6+ | yes (not over its Responses WebSocket transport) | yes: a child session per agent and per agent used as a tool, hand-offs and guardrail tripwires (`pip install flightdeck-sensor[openai-agents]`) | yes |
 | Microsoft Agent Framework | yes on its OpenAI, Azure OpenAI, Foundry and Anthropic clients; not on `AzureAIAgentClient` | planned | no |
-| LlamaIndex | yes | planned | no |
+| LlamaIndex | yes | yes on llama-index-core 0.14+: a child session per agent of an agent workflow run, with hand-offs (its calls stay on the sensor's session) | no |
 | Deep Agents | yes (LangChain) | planned: a child session per agent and per `task` sub-agent | no |
 | Pydantic AI | yes on Anthropic and OpenAI models; not on `GoogleModel` or `BedrockConverseModel` | no: use OpenTelemetry | yes |
 | Strands Agents | yes on its OpenAI, Anthropic and LiteLLM providers; not on Bedrock | no: use OpenTelemetry | yes |

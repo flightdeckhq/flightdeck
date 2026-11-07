@@ -1049,3 +1049,200 @@ def test_canary_sdk_names_the_wrap_reads(sdk: Any) -> None:
     assert isinstance(provider._multi_processor._processors, tuple)
     assert hasattr(provider, "_disabled")
     assert hasattr(sdk.RunConfig(), "group_id")
+
+
+# ----------------------------------------------------------------------
+# Review regressions: capture-off errors, parallel and cancelled runs,
+# streamed closes off the loop thread
+# ----------------------------------------------------------------------
+
+
+def test_capture_off_sends_the_error_type_without_its_message(
+    sdk: Any, monkeypatch: pytest.MonkeyPatch, responses: Any
+) -> None:
+    """An SDK exception's text can quote tool arguments or a model's
+    reply, so with capture off the child's error block is its type alone
+    (rule 18)."""
+    session, client = _session(capture_prompts=False)
+    monkeypatch.setattr(flightdeck_sensor, "_session", session)
+    wrap.patch_openai_agents(quiet=True)
+    try:
+
+        @sdk.function_tool
+        def ping() -> str:
+            """Ping."""
+            return "pong"
+
+        _script(responses, [_call_item("ping", {}, "c1")], [_call_item("ping", {}, "c2")])
+        with pytest.raises(sdk.MaxTurnsExceeded):
+            _run(sdk, _agent(sdk, "looper", tools=[ping]), max_turns=1)
+    finally:
+        wrap.unpatch_openai_agents()
+    (end,) = _ends(client)
+    assert end["state"] == "error"
+    assert end["error"] == {"type": "MaxTurnsExceeded"}
+
+
+def test_parallel_runs_keep_their_children_apart(
+    sdk: Any, patched: tuple[Session, MagicMock], responses: Any
+) -> None:
+    _, client = patched
+    _script(responses, [_message_item("one")], [_message_item("two")])
+
+    async def both() -> list[Any]:
+        return list(
+            await asyncio.gather(
+                sdk.Runner.run(_agent(sdk, "alpha"), "for alpha"),
+                sdk.Runner.run(_agent(sdk, "beta"), "for beta"),
+            )
+        )
+
+    asyncio.run(both())
+    starts = {s["agent_role"]: s for s in _starts(client)}
+    ends = {e["agent_role"]: e for e in _ends(client)}
+    assert set(starts) == set(ends) == {"alpha", "beta"}
+    assert {s["parent_session_id"] for s in starts.values()} == {ROOT}
+    for role in ("alpha", "beta"):
+        assert starts[role]["session_id"] == ends[role]["session_id"]
+        assert starts[role]["incoming_message"]["body"] == f"for {role}"
+        assert "state" not in ends[role]
+    assert starts["alpha"]["session_id"] != starts["beta"]["session_id"]
+
+
+def _waiting_tool(sdk: Any, started: asyncio.Event) -> Any:
+    @sdk.function_tool
+    async def wait_forever() -> str:
+        """Waits until cancelled."""
+        started.set()
+        await asyncio.Event().wait()
+        return "never"
+
+    return wait_forever
+
+
+def test_cancelling_a_run_ends_its_child_in_error(
+    sdk: Any, patched: tuple[Session, MagicMock], responses: Any
+) -> None:
+    _, client = patched
+    _script(responses, [_call_item("wait_forever", {}, "c1")])
+
+    async def go() -> None:
+        started = asyncio.Event()
+        agent = _agent(sdk, "waiter", tools=[_waiting_tool(sdk, started)])
+        task = asyncio.create_task(sdk.Runner.run(agent, "go"))
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(go())
+    (end,) = _ends(client)
+    assert end["state"] == "error"
+    assert end["error"]["type"] == "CancelledError"
+
+
+def test_cancelling_a_streamed_run_ends_its_child_in_error(
+    sdk: Any, patched: tuple[Session, MagicMock], responses: Any
+) -> None:
+    _, client = patched
+    _script(responses, [_call_item("wait_forever", {}, "c1")])
+
+    async def go() -> None:
+        started = asyncio.Event()
+        agent = _agent(sdk, "waiter", tools=[_waiting_tool(sdk, started)])
+        result = sdk.Runner.run_streamed(agent, "go")
+
+        async def consume() -> None:
+            async for _ in result.stream_events():
+                pass
+
+        consumer = asyncio.create_task(consume())
+        await started.wait()
+        result.cancel()
+        # Wait for the run loop's task itself: in 0.6 a consumer blocked
+        # on the event queue is not woken by cancel().
+        loop_task = wrap._run_loop_task(result)
+        assert loop_task is not None
+        await asyncio.wait([loop_task])
+        await asyncio.sleep(0)
+        consumer.cancel()
+
+    asyncio.run(go())
+    (end,) = _ends(client)
+    assert end["state"] == "error"
+    assert end["error"]["type"] == "CancelledError"
+
+
+def test_a_streamed_runs_children_close_before_the_sensors_session_ends(
+    sdk: Any, patched: tuple[Session, MagicMock], responses: Any
+) -> None:
+    """The done callback hands the closing posts to the loop's executor;
+    an end() right after the stream (still on the loop thread) waits for
+    them, so the child's session_end precedes the sensor's."""
+    session, client = patched
+    _script(responses, [_message_item("hi")])
+
+    async def go() -> None:
+        result = sdk.Runner.run_streamed(_agent(sdk, "assistant"), "hello")
+        async for _ in result.stream_events():
+            pass
+        await asyncio.sleep(0)
+        session.end()
+
+    asyncio.run(go())
+    kinds = [(p["event_type"], p["session_id"] == ROOT) for p in _posted(client)]
+    assert kinds.index(("session_end", False)) < kinds.index(("session_end", True))
+
+
+def test_a_close_off_a_closed_loop_posts_in_place(sdk: Any) -> None:
+    session, client = _session()
+    scope = wrap._RunScope(session, parent_session_id=None, conversation_id=None, run_input="x")
+    scope.open.append(scope.new_child(types.SimpleNamespace(name="late")))
+    loop = asyncio.new_event_loop()
+    loop.close()
+    wrap._close_off_loop(scope, None, loop)
+    (end,) = _ends(client)
+    assert end["agent_role"] == "late"
+    assert session.wait_child_posts(0) is True
+
+
+def test_wait_child_posts_reports_what_is_still_running() -> None:
+    import concurrent.futures
+
+    session, _ = _session()
+    pending: concurrent.futures.Future[None] = concurrent.futures.Future()
+    session.track_child_post(pending)
+    assert session.wait_child_posts(0) is False
+    pending.set_result(None)
+    assert session.wait_child_posts(0) is True
+
+
+def test_raise_if_shutdown() -> None:
+    session, _ = _session()
+    session.raise_if_shutdown()
+    session._shutdown_requested = True
+    session._shutdown_reason = "operator stop"
+    with pytest.raises(DirectiveError, match="operator stop"):
+        session.raise_if_shutdown()
+
+
+def test_tracing_on_with_no_processors_never_warns(
+    otel_processor: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    otel_processor._multi_processor._processors = ()
+    session, _ = _session()
+    with caplog.at_level(logging.DEBUG, logger="flightdeck_sensor.interceptor.openai_agents"):
+        wrap._check_double_count(session, None)
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+    assert wrap._double_count_checked is False
+
+
+def test_the_warning_names_the_instrumentation_distribution(
+    otel_processor: Any, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    for key in wrap._OTLP_ENDPOINT_ENV:
+        monkeypatch.delenv(key, raising=False)
+    session, _ = _session()
+    with caplog.at_level(logging.WARNING):
+        wrap._check_double_count(session, None)
+    assert "opentelemetry-instrumentation-openai-agents-v2" in caplog.text

@@ -195,9 +195,26 @@ All notable changes to Flightdeck are documented here.
   the same on the dashboard. The Google ADK and OpenAI Agents SDK wraps
   to come report through it
   ([#185](https://github.com/flightdeckhq/flightdeck/issues/185)).
+- **LlamaIndex agent workflows open a child session per agent.** With
+  `patch()`, each agent of a `FunctionAgent`, `ReActAgent`,
+  `CodeActAgent` or `AgentWorkflow` run (llama-index-core 0.14+) is a
+  child session named after the agent, and a multi-agent hand-off ends
+  one child, opens the next and records an `agent_handoff` signal. As
+  for CrewAI and LangGraph, the agents' model, tool and MCP calls stay
+  on the sensor's session, whose budget and Stop act on the whole run.
+  Tool calls ReActAgent parses from the model's text are reported too,
+  and a tool call is never reported twice
+  ([#185](https://github.com/flightdeckhq/flightdeck/issues/185)).
 
 ### Fixed
 
+- **A failed sub-agent's error text stays out of its session with
+  capture off.** The CrewAI, LangGraph and LlamaIndex wraps sent the
+  exception's message on a failed child's `session_end` whatever
+  `capture_prompts` said, and an exception's text can quote a tool's
+  arguments or a model's reply. The child's error block now carries the
+  exception's type alone unless capture is on; the OpenAI Agents SDK
+  wrap does the same.
 - **A framework imported after `init()` labels its session.** `patch()`
   imports no SDK, so an application that imports its framework after
   `init()` reported `framework=null` on every event and on its session.

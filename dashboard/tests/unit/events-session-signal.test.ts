@@ -230,4 +230,15 @@ describe("guardrail_tripwire (a framework guardrail that fired)", () => {
       ["Agent", "tutor"],
     ]);
   });
+
+  it("reads a tool guardrail's kind as words in the summary rows", () => {
+    expect(
+      getSummaryRows(signal("guardrail_tripwire", { guardrail: "block_secrets", kind: "tool_input", agent: "reader" })),
+    ).toEqual([
+      ["Signal", "guardrail tripwire"],
+      ["Guardrail", "block_secrets"],
+      ["Kind", "tool input"],
+      ["Agent", "reader"],
+    ]);
+  });
 });

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import atexit
 import collections
+import concurrent.futures
 import dataclasses
 import json
 import logging
@@ -20,7 +21,9 @@ import time
 import urllib.request
 import uuid
 import weakref
+from contextvars import ContextVar
 from datetime import UTC, date, datetime
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from pydantic import ValidationError
@@ -40,6 +43,7 @@ from flightdeck_sensor.core.types import (
     SessionState,
     StatusResponse,
     SubagentMessage,
+    SubagentScope,
     TokenUsage,
 )
 
@@ -53,10 +57,21 @@ from flightdeck_sensor.interceptor import base as _interceptor_base
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from contextvars import Token
 
     from flightdeck_sensor.transport.client import ControlPlaneClient, DrainShutdown, EventQueue
 
 _log = logging.getLogger("flightdeck_sensor.core.session")
+
+# The child session whose work is running in this context, set by a
+# framework wrap around the child's steps (Session.enter_subagent_scope).
+# A context variable, so it follows the child's asyncio tasks and any
+# thread started with a copied context, and nothing else. It records
+# which child a model response's tool calls belong to; the events
+# themselves stay on the sensor's session.
+_ACTIVE_SUBAGENT_SCOPE: ContextVar[SubagentScope | None] = ContextVar(
+    "flightdeck_subagent_scope", default=None
+)
 
 
 # Operator-actionable session_start enrichment.
@@ -231,9 +246,47 @@ SIGNAL_AGENT_HANDOFF = "agent_handoff"
 # input or output guardrail whose tripwire triggered, or a tool guardrail
 # that refused a tool call's input or output.
 SIGNAL_GUARDRAIL_TRIPWIRE = "guardrail_tripwire"
-# The ``kind`` values a guardrail_tripwire signal names: which of the
-# framework's guardrail families fired.
-GUARDRAIL_KINDS = frozenset({"input", "output", "tool_input", "tool_output"})
+
+
+class GuardrailKind(StrEnum):
+    """The ``kind`` a guardrail_tripwire signal names: which of the
+    framework's guardrail families fired."""
+
+    INPUT = "input"
+    OUTPUT = "output"
+    TOOL_INPUT = "tool_input"
+    TOOL_OUTPUT = "tool_output"
+
+
+# Every kind a guardrail_tripwire signal may name; any other is left out.
+GUARDRAIL_KINDS = frozenset(GuardrailKind)
+
+# The ``state`` a child sub-agent's session_end carries: closed when its
+# work finished, error when it raised or was stopped.
+SUBAGENT_STATE_CLOSED = "closed"
+SUBAGENT_STATE_ERROR = "error"
+# The keys of a child session_end's ``error`` block. The message is the
+# exception's text, which can quote what the agent was working on (a
+# tool's arguments, a model's reply), so it is sent only with
+# capture_prompts on; the type is metadata and always sent.
+SUBAGENT_ERROR_TYPE_KEY = "type"
+SUBAGENT_ERROR_MESSAGE_KEY = "message"
+# How long end() waits, in seconds, for child-session posts a framework
+# wrap handed to a worker thread (a streamed run's last children closing)
+# before it sends the session's own session_end: those posts are each one
+# HTTP round trip, milliseconds on a healthy control plane, and a post
+# still running when the client closes would be lost. 2 s matches the
+# framework signals' post bound (HANDOFF_POST_TIMEOUT_SECS).
+PENDING_CHILD_POSTS_WAIT_SECS = 2.0
+
+
+def subagent_error(exc: BaseException) -> dict[str, str]:
+    """A child sub-agent session_end's ``error`` block for ``exc``: its type
+    and its message. :meth:`Session.emit_subagent_session_end` drops the
+    message unless capture_prompts is on."""
+    return {SUBAGENT_ERROR_TYPE_KEY: type(exc).__name__, SUBAGENT_ERROR_MESSAGE_KEY: str(exc)}
+
+
 # The bound on each name in a framework signal's signal_data (an agent's
 # or a guardrail's), in UTF-8 bytes: the receiver's bound on the same
 # names, and the ingestion API's limit on a signal_data string, which
@@ -375,6 +428,12 @@ class Session:
         self.open_stream_guards_lock = threading.Lock()
         self.queued_stream_settles: collections.deque[Any] = collections.deque()
 
+        # Child-session posts a framework wrap handed to a worker thread
+        # (see track_child_post); end() waits for them before its own
+        # session_end, bounded by PENDING_CHILD_POSTS_WAIT_SECS.
+        self._pending_child_posts: set[concurrent.futures.Future[Any]] = set()
+        self._pending_child_posts_lock = threading.Lock()
+
         self._shutdown_requested: bool = False
         self._shutdown_reason: str = ""
 
@@ -514,6 +573,10 @@ class Session:
             return
         self._ending_thread = threading.get_ident()
         self._state = SessionState.CLOSED
+        # A framework wrap's last child posts, still running in a worker
+        # thread, go out before this session's end and before the client
+        # closes under them.
+        self.wait_child_posts(PENDING_CHILD_POSTS_WAIT_SECS)
         try:
             # Streams still open on this session settle now and their events
             # are flushed before session_end goes out, so the workers see the
@@ -536,6 +599,42 @@ class Session:
                 self.config.session_id,
                 self._tokens_used,
             )
+
+    def track_child_post(self, future: concurrent.futures.Future[Any]) -> None:
+        """Register a child-session post a framework wrap runs in a worker
+        thread, so :meth:`end` waits for it (see :meth:`wait_child_posts`)."""
+        with self._pending_child_posts_lock:
+            self._pending_child_posts.add(future)
+        future.add_done_callback(self._forget_child_post)
+
+    def _forget_child_post(self, future: concurrent.futures.Future[Any]) -> None:
+        with self._pending_child_posts_lock:
+            self._pending_child_posts.discard(future)
+
+    def wait_child_posts(self, timeout: float) -> bool:
+        """Wait up to ``timeout`` seconds for the child-session posts
+        registered with :meth:`track_child_post`; True when none is left
+        running. Never raises."""
+        with self._pending_child_posts_lock:
+            pending = set(self._pending_child_posts)
+        if not pending:
+            return True
+        try:
+            _, not_done = concurrent.futures.wait(pending, timeout=timeout)
+        except Exception:
+            _log.debug("waiting for child-session posts failed", exc_info=True)
+            return False
+        return not not_done
+
+    def raise_if_shutdown(self) -> None:
+        """Raise the :class:`DirectiveError` a model call's pre_call raises
+        once a shutdown directive has arrived; a framework wrap calls it at
+        an agent boundary so a stopped run stops there too."""
+        with self._lock:
+            shutdown = self._shutdown_requested
+            reason = self._shutdown_reason
+        if shutdown:
+            raise DirectiveError("shutdown", reason)
 
     def _settle_open_streams(self, lock_wait: float | None = None) -> None:
         """Settle the streams still open on this session, queuing their
@@ -810,6 +909,72 @@ class Session:
     # other event so back-pressure / unavailability / capture_prompts
     # behaviour is uniform with the rest of the sensor.
 
+    def new_subagent_scope(
+        self,
+        *,
+        child_session_id: str,
+        child_agent_id: str,
+        child_agent_name: str,
+        agent_role: str,
+    ) -> SubagentScope:
+        """A scope for a child session of this Session, to enter around
+        the child's work with :meth:`enter_subagent_scope`."""
+        return SubagentScope(
+            owner_session_id=self.config.session_id,
+            child_session_id=child_session_id,
+            child_agent_id=child_agent_id,
+            child_agent_name=child_agent_name,
+            agent_role=agent_role,
+        )
+
+    @staticmethod
+    def enter_subagent_scope(scope: SubagentScope | None) -> Token[SubagentScope | None]:
+        """Run the current context's work as ``scope``'s child (``None``:
+        as the sensor's own session) until :meth:`exit_subagent_scope`
+        with the returned token. The events the owning Session builds in
+        the meantime stay on the sensor's session; the scope only tells
+        which child a model response's tool calls belong to (see
+        :meth:`note_reported_tool_call`)."""
+        return _ACTIVE_SUBAGENT_SCOPE.set(scope)
+
+    @staticmethod
+    def exit_subagent_scope(token: Token[SubagentScope | None]) -> None:
+        """Restore the scope that was active before the
+        :meth:`enter_subagent_scope` that returned ``token``. A token
+        from another context (a framework that ends a step elsewhere than
+        it started it) is ignored: that context's scope ends with it."""
+        try:
+            _ACTIVE_SUBAGENT_SCOPE.reset(token)
+        except ValueError:
+            _log.debug("sub-agent scope exited in another context", exc_info=True)
+
+    def active_subagent_scope(self) -> SubagentScope | None:
+        """The child of this Session whose work runs in the current
+        context, if any. A scope another Session opened (one ended by
+        teardown before a new init) is not this Session's."""
+        scope = _ACTIVE_SUBAGENT_SCOPE.get()
+        if scope is None or scope.owner_session_id != self.config.session_id:
+            return None
+        return scope
+
+    def note_reported_tool_call(self, tool_id: str | None) -> None:
+        """Record that a model response reported the tool call
+        ``tool_id`` as a ``tool_call`` event in the active child, so the
+        wrap that runs the tool does not report it again."""
+        scope = self.active_subagent_scope()
+        if scope is None or not tool_id:
+            return
+        with self._lock:
+            scope.reported_tool_ids.add(tool_id)
+
+    def tool_call_reported(self, scope: SubagentScope, tool_id: str | None) -> bool:
+        """Whether a model response in ``scope``'s child already reported
+        the tool call ``tool_id``."""
+        if not tool_id:
+            return False
+        with self._lock:
+            return tool_id in scope.reported_tool_ids
+
     def derive_subagent_id(self, agent_role: str) -> str:
         """Return the deterministic ``agent_id`` for a sub-agent of
         the given role under this Session's identity tuple.
@@ -994,7 +1159,7 @@ class Session:
         child_agent_id: str,
         child_agent_name: str,
         agent_role: str,
-        state: str = "closed",
+        state: str = SUBAGENT_STATE_CLOSED,
         outgoing_message: SubagentMessage | None = None,
         error: dict[str, Any] | None = None,
         parent_session_id: str | None = None,
@@ -1008,7 +1173,11 @@ class Session:
         framework interceptors pass ``state="error"`` when the
         child's execution raised, alongside an ``error`` dict
         carrying ``type`` (exception class name) and ``message``
-        (exception string). The L8 row-level failure cue on the
+        (exception string; :func:`subagent_error` builds it). The
+        message is the exception's text, which can quote a tool's
+        arguments or a model's reply, so it is sent only with
+        ``capture_prompts`` on; with capture off the block carries the
+        type alone. The L8 row-level failure cue on the
         dashboard reads ``state=error`` to render the red dot on
         Investigate / Fleet AgentTable / swimlane left panel.
 
@@ -1028,10 +1197,14 @@ class Session:
         # session_end → state=closed projection. Only emit the
         # explicit "state" key when the child ended in an error so
         # the wire shape stays unchanged for the success path.
-        if state != "closed":
+        if state != SUBAGENT_STATE_CLOSED:
             payload["state"] = state
         if error is not None:
-            payload["error"] = error
+            payload["error"] = (
+                error
+                if self.config.capture_prompts
+                else {k: v for k, v in error.items() if k != SUBAGENT_ERROR_MESSAGE_KEY}
+            )
         stub_or_inline, content_envelope = self._route_subagent_message(
             outgoing_message,
             "outgoing",

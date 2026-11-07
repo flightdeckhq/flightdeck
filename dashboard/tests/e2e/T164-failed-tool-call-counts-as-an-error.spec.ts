@@ -144,7 +144,9 @@ test.describe("T164 — a failed tool call counts as an error", () => {
 
     const indicator = failedRow.getByTestId(`tool-error-indicator-${failed.id}`);
     await expect(indicator).toBeVisible();
-    await expect(indicator).toHaveAttribute("aria-label", "Tool call failed: <redacted>");
+    // The seeded message is the capture-off marker, so the label names
+    // the error class instead.
+    await expect(indicator).toHaveAttribute("aria-label", "Tool call failed: PluginToolError");
     await expect(failedRow).toContainText("Bash · failed");
     await expect(okRow.getByTestId(`tool-error-indicator-${ok.id}`)).toHaveCount(0);
     await expect(okRow).not.toContainText("failed");

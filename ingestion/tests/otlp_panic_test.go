@@ -49,7 +49,7 @@ func TestOTLPPanicInDialectReleasesDecodeSlot(t *testing.T) {
 	const panics = 4 // more than the receiver's 3 decode slots
 	dialect := &panickingDialect{panics: panics}
 	srv := server.New(":0", &mockValidator{valid: true}, &mockPublisher{}, &mockDirStore{}, nil,
-		dialect, handlers.DefaultRateLimitPerMinute)
+		dialect, handlers.DefaultRateLimitPerMinute, nil)
 	ts := httptest.NewServer(srv.Handler)
 	defer ts.Close()
 

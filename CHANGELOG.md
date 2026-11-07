@@ -157,6 +157,22 @@ All notable changes to Flightdeck are documented here.
   like a glyph, and takes keyboard focus when the run's glyphs are out
   of view. The row is one line again once the overlap leaves the window
   ([#256](https://github.com/flightdeckhq/flightdeck/pull/256)).
+- **The ingestion and query APIs report request latency.** Each serves a
+  Prometheus histogram, `flightdeck_http_request_duration_seconds`,
+  labelled by route pattern (`/v1/agents/{agent_id}/summary`, never a
+  raw path; `unmatched` for a 404 or 405), method and status class, at
+  `GET /metrics` on a listener of its own: port 9103 on ingestion and
+  9104 on the query API, set with `FLIGHTDECK_METRICS_PORT` (`0` turns
+  it off). The listener carries no auth, so compose does not publish it
+  and nginx does not route to it; the Helm chart declares it on the pods
+  and lists it on headless `<release>-ingestion-metrics` and
+  `<release>-api-metrics` Services for scrapers
+  ([#178](https://github.com/flightdeckhq/flightdeck/issues/178)).
+- **Compose rotates every service's logs.** Each container logs through
+  `json-file` with a 20 MiB file size and five files kept, at most
+  100 MiB per container, so a flood of dropped events no longer grows
+  the workers' log until the host disk is full
+  ([#178](https://github.com/flightdeckhq/flightdeck/issues/178)).
 
 ### Fixed
 

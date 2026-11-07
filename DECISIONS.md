@@ -698,3 +698,23 @@ or behind by more than the size limit.
 published before the workers' consumer exists is dropped at once);
 discard-new (stops ingestion at steady state); both services
 reconciling (they fight over settings across a version skew).
+
+## D255 -- The ingestion and query APIs time requests by route pattern and serve the histogram on a listener of their own
+
+**Date:** 2026-11-07
+**Decision:** both APIs record `flightdeck_http_request_duration_seconds`
+labelled by the matched route pattern (`unmatched` otherwise), a bounded
+method and a status class, and serve it at `GET /metrics` on a separate
+unauthenticated port (9103 ingestion, 9104 query API) that compose does
+not publish and nginx does not route; Helm lists it only on headless
+`-metrics` Services. Hijacked (WebSocket) connections are not recorded.
+This extends D198, which kept `/metrics` off the API processes because
+the counters then lived only in the workers.
+**Why:** the pattern keeps ids out of label values; a port of its own
+keeps an auth-free endpoint off the public edge without a token for
+every scraper, and keeps the services free of the Prometheus client
+library, as the workers are.
+**Rejected alternative:** `/metrics` on the API port behind a token or
+an nginx deny (one routing slip exposes it); raw paths as the label
+(one series per session id); prometheus/client_golang (a dependency
+for one histogram family).

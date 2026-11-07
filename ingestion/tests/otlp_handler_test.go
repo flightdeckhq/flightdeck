@@ -806,7 +806,7 @@ func TestOTLPPublishFailureStillCharged(t *testing.T) {
 // and many clients do, is answered 200.
 func TestOTLPServerRoutesLowerCaseHeaders(t *testing.T) {
 	srv := server.New(":0", &mockValidator{valid: true}, &mockPublisher{}, &mockDirStore{}, nil,
-		handlers.UnmappedDialect{}, handlers.DefaultRateLimitPerMinute)
+		handlers.UnmappedDialect{}, handlers.DefaultRateLimitPerMinute, nil)
 	ts := httptest.NewServer(srv.Handler)
 	defer ts.Close()
 

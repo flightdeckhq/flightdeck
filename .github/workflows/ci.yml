@@ -211,6 +211,45 @@ jobs:
       - name: OpenAI tests
         run: pytest tests/unit/test_openai_constructed_resources.py -q
 
+  sensor-sdk-floors:
+    name: Sensor (Python 3.11, SDK floors)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    # The oldest anthropic, litellm and mcp releases the extras admit, and
+    # openai 2.8.0, the oldest openai litellm 1.83.0 installs with (the
+    # lock's sdk-floors group), on the oldest supported Python. The other
+    # lanes install the newest releases of each line, so a test that needs
+    # a newer SDK, or a sensor read that works on only some releases,
+    # passes there and fails in a user's install of an older one. One
+    # Python version: the SDK floors, not the interpreter, are what this
+    # lane varies.
+    defaults:
+      run:
+        working-directory: sensor
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: "3.11"
+
+      - uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884  # v10.3.0
+        with:
+          version: "0.12.24"
+          enable-cache: true
+          cache-dependency-glob: sensor/uv.lock
+
+      - name: Install the sensor with the oldest supported SDKs
+        env:
+          UV_PROJECT_ENVIRONMENT: ${{ env.pythonLocation }}
+        run: uv sync --locked --inexact --extra test --extra anthropic --extra openai --group sdk-floors
+
+      - name: Installed SDK versions
+        run: pip list | grep -iE "^(anthropic|openai|litellm|httpx|mcp|pydantic) "
+
+      - name: Unit tests
+        run: pytest tests/unit -q -n auto
+
   go:
     name: Go (ingestion, workers, api)
     runs-on: ubuntu-24.04

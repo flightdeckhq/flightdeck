@@ -883,7 +883,8 @@ different levels:
   made under litellm's outer-call mark, described with the litellm
   patch below). The patch imports the SDK's private module
   layout; the floor is `anthropic>=0.86`, the lowest release carrying
-  it. An installed SDK below the
+  it, and CI's `SDK floors` lane runs the unit suite against 0.86.0. An
+  installed SDK below the
   floor is reported once, when the sensor first patches it, with a
   warning rather than silently left unmetered. The raw view returns a response whose body is
   already read, and is metered like a plain call. Its `parse()` is

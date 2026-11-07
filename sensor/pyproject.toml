@@ -35,8 +35,9 @@ Repository = "https://github.com/flightdeckhq/flightdeck"
 # resource-level patch imports (anthropic.resources.messages.messages
 # with parse, anthropic.lib.bedrock._beta_messages,
 # anthropic.lib.vertex._beta_messages, the raw-response header); the
-# layout canary test pins those paths and the matrix runs against
-# 0.94.0. Keep in step with the floor in [project] dependencies below.
+# layout canary test pins those paths and CI's SDK-floors lane runs the
+# unit suite against 0.86.0. Keep in step with the anthropic floor in the
+# dev extra and the sdk-floors group below.
 anthropic = ["anthropic>=0.86"]
 # Floor 1.26: the first release whose chat ``create`` takes
 # ``stream_options``, which the sensor adds to every streamed chat call
@@ -181,13 +182,33 @@ openai-floor = [
     "openai==1.26.0",
     "httpx<0.28",
 ]
+# The oldest releases of the provider SDKs the extras admit, together.
+# CI's SDK-floors lane installs this group with the test extra and runs
+# the unit suite against it on the oldest supported Python, so a test
+# that needs a newer SDK, or a sensor read that works on only some
+# releases, fails in CI instead of in a user's install. openai is at
+# 2.8.0, the oldest release litellm 1.83.0 installs with; the
+# openai-floor group covers 1.26. pydantic is left to the resolver,
+# because mcp 1.28 needs 2.11.
+sdk-floors = [
+    "anthropic==0.86.0",
+    "openai==2.8.0",
+    "litellm==1.83.0",
+    "mcp==1.28.0",
+]
 
 [tool.uv]
 # uv.lock resolves every CI lane in one file; the framework lane (dev
-# extra), the SDK-majors lane and the OpenAI-floor lane need different
-# releases of the same packages, so they are declared as alternatives.
+# extra), the SDK-majors lane, the OpenAI-floor lane and the SDK-floors
+# lane need different releases of the same packages, so they are
+# declared as alternatives.
 conflicts = [
-    [{ extra = "dev" }, { group = "sdk-majors" }, { group = "openai-floor" }],
+    [
+        { extra = "dev" },
+        { group = "sdk-majors" },
+        { group = "openai-floor" },
+        { group = "sdk-floors" },
+    ],
     # Every litellm release the litellm extra admits needs a newer openai.
     [{ extra = "litellm" }, { group = "openai-floor" }],
 ]

@@ -43,6 +43,7 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from flightdeck_sensor.core.agent_id import derive_agent_id
+from flightdeck_sensor.core.context import framework_label
 from flightdeck_sensor.core.session import _sensor_version
 from flightdeck_sensor.interceptor.platform import (
     PLATFORM_ANTHROPIC,
@@ -62,6 +63,9 @@ _log = logging.getLogger("flightdeck_sensor.interceptor.claude_agent_sdk")
 _PATCHED_SENTINEL = "_flightdeck_patched"
 
 CLIENT_TYPE = "claude_agent_sdk"
+# The per-event ``framework`` label of a run: the framework classifier's
+# label for the SDK (core/context.py).
+FRAMEWORK = "claude_agent_sdk"
 # Set in the CLI's environment so the Claude Code plugin reports nothing
 # for a run this interceptor reports.
 SDK_OBSERVED_ENV = "FLIGHTDECK_SDK_OBSERVED"
@@ -365,7 +369,13 @@ class SdkRun:
         self.session_id: str | None = None
         self._ended = False
         self._billing_mode = "metered"
-        self._framework = f"claude-agent-sdk/{getattr(_sdk, '__version__', '')}".rstrip("/")
+        # The bare label on every event; the versioned entry leads the
+        # session_start's context.frameworks.
+        self._framework = FRAMEWORK
+        version = getattr(_sdk, "__version__", None)
+        self._framework_entry = (
+            f"{FRAMEWORK}/{version}" if isinstance(version, str) and version else FRAMEWORK
+        )
         self._prompt: str | None = None
         self._tokens_used = 0
         self._last_result: Any = None
@@ -454,10 +464,20 @@ class SdkRun:
         self._reported.clear()
         self._billing_mode = billing_mode(self._env, data.get("apiKeySource"))
         servers = data.get("mcp_servers")
+        process_context = self._session._context or {}
         context: dict[str, Any] = {
             # The process's runtime context (os, user, git, ...), as a
             # sub-agent's session_start inherits it.
-            **(self._session._context or {}),
+            **process_context,
+            # The SDK first, then the process's other frameworks.
+            "frameworks": [
+                self._framework_entry,
+                *(
+                    f
+                    for f in process_context.get("frameworks") or []
+                    if framework_label(f) != FRAMEWORK
+                ),
+            ],
             "claude_code_version": data.get("claude_code_version"),
             "model": data.get("model"),
             "permission_mode": data.get("permissionMode"),

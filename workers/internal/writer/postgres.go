@@ -225,7 +225,9 @@ func (w *Writer) IncrementAgentTokens(ctx context.Context, agentID string, delta
 //     row (ReviveOrCreateSession) with NULL context/token columns gets
 //     enriched by a later session_start arrival. Real values remain
 //     write-once: once sessions.context is non-null, COALESCE returns
-//     the stored value and the incoming EXCLUDED is ignored.
+//     the stored value and the incoming EXCLUDED is ignored. When it
+//     fills a sensor row whose framework a call already set, it adds
+//     that label to context.frameworks if no entry has it.
 //   - state -- EXCLUDED.state (active), which also revives a closed row
 //     for a re-attachment (clearing ended_at and closed_seq), unless the
 //     session_end that closed the row was published after this
@@ -381,7 +383,31 @@ const upsertSessionSQL = `
 	    -- row with NULL context / token columns picks up the real
 	    -- values when session_start later arrives. Real values are
 	    -- preserved (COALESCE returns the stored side first).
-	    context = COALESCE(sessions.context, EXCLUDED.context),
+	    --
+	    -- A sensor call that reached the worker before its
+	    -- session_start filled sessions.framework on the lazy row
+	    -- (UpdateSessionFromCall) but could not append to its NULL
+	    -- context; when this start writes that context, it appends the
+	    -- label unless an entry already has it, so a run with that one
+	    -- call is not left out of the analytics framework dimension.
+	    -- Other clients carry their own frameworks entries (or, for an
+	    -- OpenTelemetry Claude Code session, none on purpose).
+	    context = CASE
+	        WHEN sessions.context IS NULL
+	             AND sessions.framework IS NOT NULL
+	             AND COALESCE(sessions.client_type, EXCLUDED.client_type) = 'flightdeck_sensor'
+	             AND EXCLUDED.context IS NOT NULL AND EXCLUDED.context <> '{}'::jsonb
+	             AND COALESCE(jsonb_typeof(EXCLUDED.context->'frameworks'), 'array') = 'array'
+	             AND NOT EXISTS (
+	                 SELECT 1
+	                 FROM jsonb_array_elements_text(
+	                     COALESCE(EXCLUDED.context->'frameworks', '[]'::jsonb)) AS f
+	                 WHERE split_part(f, '/', 1) = sessions.framework
+	             )
+	        THEN jsonb_set(EXCLUDED.context, '{frameworks}',
+	                       COALESCE(EXCLUDED.context->'frameworks', '[]'::jsonb)
+	                       || to_jsonb(sessions.framework))
+	        ELSE COALESCE(sessions.context, EXCLUDED.context) END,
 	    token_id = COALESCE(sessions.token_id, EXCLUDED.token_id),
 	    token_name = COALESCE(sessions.token_name, EXCLUDED.token_name),
 	    -- Sentinel upgrade: "unknown" on flavor / agent_type
@@ -799,21 +825,58 @@ func insertEventContent(ctx context.Context, q querier, eventID, sessionID strin
 	return nil
 }
 
-// UpdateSessionModel updates the session's model field. Idempotent and
-// backward-compatible: when *model* is empty, the existing value is
-// preserved (NULLIF maps "" to NULL, and COALESCE keeps the prior value).
-// Sessions with no post_call event keep model = NULL.
-func (w *Writer) UpdateSessionModel(ctx context.Context, sessionID, model string) error {
-	if model == "" {
+// UpdateSessionFromCall records the model and framework of an event on
+// HandlePostCall's path (a call, tool call, error or signal) on its
+// session. Idempotent and backward-compatible: an empty *model* keeps the
+// stored one (NULLIF maps "" to NULL, and COALESCE keeps the prior value),
+// so sessions with no post_call keep model = NULL.
+//
+// *framework* fills sessions.framework only while it is NULL: the
+// session_start carried none because the sensor detected the framework
+// after init(), on a later event. A stored framework is never replaced.
+// The bare label is also appended to context.frameworks, which the
+// analytics framework dimension groups by, whenever it is the session's
+// own label and no entry of the array has that label, versioned or
+// bare. The session's own label is the column while NULL, or, on a
+// sensor session (the only client that detects a framework late),
+// the column's value. The check is on the array, not on the column: a
+// call can fill the column of a lazily created row whose context is
+// still NULL, and the session_start that then writes the context has no
+// framework, so the next call appends it. A NULL or '{}' context is left
+// to the session_start or UpgradeSessionContext. A session whose array
+// lists its label (the plugin's claude-code/<v>, the Agent SDK's, one
+// detected at init) is unchanged, and so is any other client's session
+// with a framework, such as an OpenTelemetry Claude Code session, which
+// carries its version as context.claude_code_version and no frameworks
+// entry. Nothing is written when the call brings neither a model nor a
+// framework to fill.
+func (w *Writer) UpdateSessionFromCall(ctx context.Context, sessionID, model, framework string) error {
+	if model == "" && framework == "" {
 		return nil
 	}
 	_, err := w.pool.Exec(ctx, `
 		UPDATE sessions
-		SET model = COALESCE(NULLIF($2, ''), model)
+		SET model = COALESCE(NULLIF($2, ''), model),
+		    framework = COALESCE(framework, NULLIF($3, '')),
+		    context = CASE
+		        WHEN $3 <> ''
+		             AND (framework IS NULL
+		                  OR (framework = $3 AND client_type = 'flightdeck_sensor'))
+		             AND context IS NOT NULL AND context <> '{}'::jsonb
+		             AND COALESCE(jsonb_typeof(context->'frameworks'), 'array') = 'array'
+		             AND NOT EXISTS (
+		                 SELECT 1
+		                 FROM jsonb_array_elements_text(COALESCE(context->'frameworks', '[]'::jsonb)) AS f
+		                 WHERE split_part(f, '/', 1) = $3
+		             )
+		        THEN jsonb_set(context, '{frameworks}',
+		                       COALESCE(context->'frameworks', '[]'::jsonb) || to_jsonb($3::text))
+		        ELSE context END
 		WHERE session_id = $1::uuid
-	`, sessionID, model)
+		  AND ($2 <> '' OR (framework IS NULL AND $3 <> ''))
+	`, sessionID, model, framework)
 	if err != nil {
-		return fmt.Errorf("update model for %s: %w", sessionID, err)
+		return fmt.Errorf("update model and framework for %s: %w", sessionID, err)
 	}
 	return nil
 }

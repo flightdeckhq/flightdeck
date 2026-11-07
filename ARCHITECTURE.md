@@ -1317,10 +1317,68 @@ routing through litellm routing through OpenAI reports
 versioned form (`langchain/0.3.27`) lives in `context.frameworks[]` for
 diagnostic detail; the bare name lives on the per-event `framework` field.
 
+The labels are one vocabulary with the OTLP receiver's GenAI dialect
+(`google_adk`, `openai_agents`, `strands`, `pydantic_ai`), so the analytics
+`framework` dimension counts a framework's sensor and OTLP sessions
+together. `claude-code` is the Claude Code client's label (the plugin's
+and the OTLP receiver's), outside this classifier vocabulary. The
+classifiers, in the order the per-event label is taken (the first match
+wins, and a framework comes before the ones it is built on or commonly
+embeds):
+
+| Label | Detected from (`sys.modules`) | Version from |
+|---|---|---|
+| `deepagents` | `deepagents` | `__version__`, else the `deepagents` distribution |
+| `crewai` | `crewai` | `__version__`, else `crewai` |
+| `google_adk` | `google.adk` | `__version__`, else `google-adk` |
+| `openai_agents` | `agents`, only when the `openai-agents` distribution is installed (the import name is generic) | `__version__`, else `openai-agents` |
+| `agent_framework` | `agent_framework` (Microsoft Agent Framework) | `__version__`, else `agent-framework-core`, `agent-framework` |
+| `semantic_kernel` | `semantic_kernel` | `__version__`, else `semantic-kernel` |
+| `autogen` | `autogen_agentchat`, `autogen_core` (Microsoft AutoGen 0.4+) | `__version__`, else `autogen-agentchat`, `autogen-core` |
+| `ag2` | `autogen` (AG2 owns the import name; Microsoft's AutoGen 0.2 reports `autogen`, see below) | `__version__`, else `ag2`, `pyautogen`, `autogen` |
+| `agno` | `agno` | `__version__`, else `agno` |
+| `strands` | `strands` | `__version__`, else `strands-agents` |
+| `pydantic_ai` | `pydantic_ai` | `__version__`, else `pydantic-ai-slim`, `pydantic-ai` |
+| `smolagents` | `smolagents` | `__version__`, else `smolagents` |
+| `claude_agent_sdk` | `claude_agent_sdk` | `__version__`, else `claude-agent-sdk` |
+| `llama_index` | `llama_index` | `__version__`, else `llama-index-core` |
+| `haystack` | `haystack` | `__version__`, else `haystack-ai` |
+| `dspy` | `dspy` | `__version__`, else `dspy` |
+| `langgraph` | `langgraph` | `__version__`, else `langgraph` |
+| `langchain` | `langchain`, `langchain_core` | `__version__`, else `langchain`, `langchain-core` |
+
 `BaseClassifier.module` accepts a tuple of aliases. `LangChainClassifier`
 lists `("langchain", "langchain_core")` so split-package installs
 (`langchain_openai`, `langchain_anthropic` without the umbrella) are still
-detected via the always-present core package.
+detected via the always-present core package. A classifier reads the
+version from the installed distribution's metadata
+(`importlib.metadata`) when the module has no `__version__`; the lookup
+is cached for the process and a missing distribution leaves the bare
+label.
+
+The `autogen` import name is AG2's: the `ag2`, `pyautogen` (from 0.3)
+and `autogen` distributions all install AG2 under it, so a loaded
+`autogen` reports `ag2`. The exception is Microsoft's AutoGen 0.2, which
+installed `autogen` too, as `pyautogen` below 0.3 (before AG2 took the
+name over) and as its 0.2 maintenance line `autogen-agentchat` below
+0.4: the first AG2 distribution found being `pyautogen` below 0.3, or no
+AG2 distribution and `autogen-agentchat` below 0.4, reports `autogen`.
+Microsoft's current AutoGen (`autogen_agentchat`, `autogen_core`)
+reports `autogen`.
+
+**A framework imported after `init`.** `patch()` imports no SDK and
+`init` imports no framework, so an application that imports its
+framework after `init` has none loaded when the classifiers first run.
+While the session's framework is still unknown, the sensor runs the
+classifiers again whenever it builds an event and `sys.modules` has
+grown since the last run; once a label resolves it is kept and no event
+scans again. The label then rides on every later event, the
+`context.frameworks[]` that a later sub-agent `session_start` inherits
+gains the versioned entry, and the worker records it on the session
+row: a later call, tool call, error or signal carrying a `framework`
+fills a null `sessions.framework` and appends that bare label to
+`context.frameworks[]` (see the `sessions` table). The scan is skipped
+on a signal's shutdown path, which imports nothing.
 
 `MCP calls routed through any framework attribute to the framework, not
 "mcp" as a framework itself` — every event the MCP interceptor emits
@@ -1350,8 +1408,12 @@ identity is unchanged for those paths.
 
 Sub-agent coverage tracks the LLM-interception coverage matrix above
 — a framework lands here only after Flightdeck observes its plain
-LLM calls. Microsoft Agent Framework (the successor to AutoGen) is planned
-([#185](https://github.com/flightdeckhq/flightdeck/issues/185)); the archived AutoGen packages are not planned.
+LLM calls. AutoGen (`autogen`) and AG2 (`ag2`) runs are labelled (see
+Framework attribution) and their LLM calls are metered through the SDK
+patches, with no sub-agent structure; that structure is planned for
+Microsoft Agent Framework, AutoGen's successor
+([#185](https://github.com/flightdeckhq/flightdeck/issues/185)), not for
+AutoGen or AG2.
 
 Cross-agent message capture rides on the same
 `capture_prompts` gate as LLM prompt content. Each
@@ -1409,6 +1471,10 @@ From the stream:
 | `SystemMessage` with subtype `init` | `session_start`: `context` carries the Claude Code version, the model, the permission mode, the working directory, the API key source and the configured MCP servers' names |
 | `AssistantMessage` | one `post_call` per message id: the model, token counts from its `usage` (the cache split included), `stop_reason`, the billing mode, `provider_metadata.platform`, and its content under `capture_prompts` (the turn's prompt as the first call's messages, the message's blocks as the response); plus one `tool_call` per `tool_use` block, its input under `capture_prompts`. Claude Code's own `<synthetic>` messages (an API error, an interrupt) are not model calls and are skipped |
 | end of the run | `session_end` (`close_reason=normal_exit`, or `state=error` with the error of the run's last `ResultMessage` when it failed) |
+
+Every event of the run carries the bare `framework=claude_agent_sdk`;
+the `session_start`'s `context.frameworks[]` lists `claude_agent_sdk/<version>`
+first, then the process's other frameworks.
 
 A `ResultMessage` ends one turn; a run can have several (a prompt
 stream, or a background task waking the run). The session ends when
@@ -1511,10 +1577,13 @@ Three collector phases:
    loop breaks). This avoids ambiguous "kubernetes AND docker" results
    inside k8s pods that also have `/.dockerenv`.
 3. **`OTHER_COLLECTORS`** — `FrameworkCollector`. Inspects `sys.modules`
-   for known AI frameworks (crewai, langchain, langgraph, llama_index,
-   autogen, haystack, dspy, smolagents, pydantic_ai). Never imports
-   anything new — if a framework was not loaded by the agent before
-   `init` ran, the collector does not claim it is in use.
+   for the known AI frameworks listed under Framework attribution
+   (deepagents, crewai, google_adk, openai_agents, agent_framework,
+   semantic_kernel, autogen, ag2, agno, strands, pydantic_ai,
+   smolagents, claude_agent_sdk, llama_index, haystack, dspy, langgraph,
+   langchain). Never imports anything new — a framework not loaded when
+   it runs is not claimed; one loaded after `init` is picked up by the
+   late detection described there.
 
 `GitCollector` shells out to `git` with a 500 ms `subprocess` timeout,
 strips embedded credentials from the remote URL via
@@ -4643,8 +4712,26 @@ treats NULL as capture-off.
 
 `framework` is the bare name (`langchain`). The full
 `context.frameworks[]` JSONB array carries versioned strings
-(`langchain/0.3.27`), and is what the analytics `framework` dimension
-groups by; the session listing's `framework` filter matches either.
+(`langchain/0.3.27`), and its labels are what the analytics `framework`
+dimension groups by; the session listing's `framework` filter matches
+either.
+`session_start` writes both. When it carried no framework, the first
+later event that carries one (a call, tool call, error or signal: the
+events the worker's `post_call` path handles) fills `framework` (a
+framework the sensor detected after `init`). Such an event also appends
+the bare label to `context.frameworks[]` whenever the session's own
+label (the column still NULL, or, on a `flightdeck_sensor` session, equal
+to the event's) has no entry there, versioned or bare; a row whose
+context is still NULL or `{}` is left for its `session_start` or the
+context upgrade to fill, and the next event appends the label then; a
+`flightdeck_sensor` `session_start` that fills a NULL context of a row
+whose `framework` a call already set appends that label itself, so a
+run with a single call is counted too. A
+stored framework is never replaced, and a session whose array already
+lists its label (the plugin's `claude-code/<version>`, the Agent SDK's,
+one detected at `init`) is left as it is, as is any other client's
+session with a framework (an OpenTelemetry Claude Code session carries
+`context.claude_code_version` and no `frameworks` entry).
 
 `parent_session_id` and `agent_role` are paired sub-agent columns.
 Both nullable, both populated only on sub-agent sessions
@@ -5405,8 +5492,8 @@ that does not know it ignores it.
 - `range` (optional): `7d`, `30d`, `90d`, or `custom`.
 - `from` / `to` (ISO 8601, used when `range=custom`).
 - `granularity`: `hour`, `day`, `week`.
-- `filter_flavor`, `filter_model`, `filter_agent_type`, `filter_framework`,
-  `filter_host` (optional).
+- `filter_flavor`, `filter_model`, `filter_agent_type`, `filter_provider`
+  (optional).
 - `filter_agent_id` (optional, UUID). Scopes the analytics window to
   events from sessions owned by a single agent. Composes with the
   other filters via AND. Joins `sessions` when the metric's base
@@ -5429,11 +5516,14 @@ plugin `tool_call` carries (the tool's own duration) is not included.
 Dimensions that live on `sessions` (`framework`, `host`, `agent_type`,
 `agent_role`) are accessed via a JOIN against `sessions` when the
 metric's base table is `events`, so event-based metrics can group by
-session-level attributes. `framework` groups by each entry of the
-session's `context.frameworks[]` (versioned strings such as
-`langchain/0.3.27` or `pydantic_ai/2.64.0`), so a session with several
-counts under each and one with none under `unknown`; the bare
-`sessions.framework` column is not read. The `framework` filter of
+session-level attributes. `framework` groups by the label of each
+entry of the session's `context.frameworks[]`, the part before the `/`:
+an entry is versioned (`langchain/0.3.27`, `pydantic_ai/2.64.0`) or bare
+(a framework detected after `init`, or one reported without a
+version), and both forms of one framework are one series, whatever the
+version. A session counts once under each label it lists, so one with
+several frameworks counts under each and one with none under
+`unknown`; the bare `sessions.framework` column is not read. The `framework` filter of
 `GET /v1/sessions` and `GET /v1/events` matches either.
 
 Latency aggregates use `events.latency_ms` and fall back to 0 via
@@ -8723,13 +8813,16 @@ lists every fingerprint from `context.mcp_servers`.
 
 Every event carries a bare-name `framework` field (`langchain`,
 `crewai`, `langgraph`,...) populated at sensor `init` from
-`FrameworkCollector` via `Session.record_framework`. Higher-level
-framework wins over SDK transport. The versioned form
-(`langchain/0.3.27`) lives in `context.frameworks[]` for diagnostic
-detail; the bare name lives on the per-event field.
+`FrameworkCollector` via `Session.record_framework`, or from a later
+event once a framework imported after `init` is loaded (see Sensor >
+Framework attribution). Higher-level framework wins over SDK transport.
+The versioned form (`langchain/0.3.27`) lives in `context.frameworks[]`
+for diagnostic detail; the bare name lives on the per-event field.
 
-`framework=null` is valid and means no classifier matched at sensor
-init. The Claude Code plugin emits `framework="claude-code"`, with
+`framework=null` is valid and means no classifier has matched yet. The
+Claude Agent SDK interceptor emits `framework="claude_agent_sdk"` on its
+sessions' events, with `claude_agent_sdk/<version>` first in their
+`context.frameworks[]`. The Claude Code plugin emits `framework="claude-code"`, with
 `claude-code/<version>` in `context.frameworks[]`, or a bare
 `claude-code` when it cannot tell the version; the OTLP receiver
 sends `framework="claude-code"` for Claude Code's telemetry too, and

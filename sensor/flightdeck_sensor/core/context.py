@@ -18,15 +18,18 @@ Design rules:
   The first one whose ``applies()`` returns ``True`` wins; the rest
   are skipped. This avoids ambiguous "kubernetes AND docker" results
   inside k8s pods that also have ``/.dockerenv``.
-- Framework classifiers inspect ``sys.modules`` only. They never
-  import anything new -- if a framework wasn't loaded by the agent
-  before ``init()`` ran, we don't claim it's in use.
+- Framework classifiers inspect ``sys.modules`` and installed package
+  metadata only. They never import anything new -- a framework not
+  loaded when they run is not claimed. The session runs them again for
+  a framework the agent imports after ``init()`` (its late framework
+  detection).
 - No network calls, no shell-outs longer than 500 ms, no writes to
   the user's filesystem.
 """
 
 from __future__ import annotations
 
+import importlib.metadata
 import os
 import platform
 import re
@@ -241,6 +244,41 @@ class CloudRunCollector(BaseCollector):
 # Framework classifier
 # ----------------------------------------------------------------------
 
+# Distribution versions already looked up, by distribution name (None when
+# it is not installed). A lookup reads dist-info files from every sys.path
+# entry, so each name is read once per process.
+_DIST_VERSIONS: dict[str, str | None] = {}
+
+
+def _distribution_version(name: str) -> str | None:
+    """The installed version of distribution ``name``, or None. Reads
+    package metadata only; never imports the package."""
+    if name in _DIST_VERSIONS:
+        return _DIST_VERSIONS[name]
+    version: str | None
+    try:
+        version = importlib.metadata.version(name) or None
+    except Exception:
+        # PackageNotFoundError, or a broken dist-info: no version.
+        version = None
+    _DIST_VERSIONS[name] = version
+    return version
+
+
+def framework_label(entry: object) -> str | None:
+    """The bare label of a ``context.frameworks[]`` entry
+    (``langchain/0.3.27`` -> ``langchain``); None for a non-string or
+    empty entry."""
+    if not isinstance(entry, str):
+        return None
+    return entry.split("/", 1)[0] or None
+
+
+def module_count() -> int:
+    """How many modules are loaded. The late framework detection runs the
+    classifiers again only when this has changed."""
+    return len(sys.modules)
+
 
 class BaseClassifier:
     """Inspects ``sys.modules`` for a known framework. Never imports.
@@ -255,25 +293,223 @@ class BaseClassifier:
     the LangChain detector silently missed every modern install and
     the per-event ``framework`` field stayed null. Confirmed via
     Rule 40d smoke.
+
+    ``distributions`` names the PyPI distributions that install the
+    framework. The first one installed gives the version when the module
+    has no ``__version__``. With ``requires_distribution`` the framework
+    counts as present only when one of them is installed, for an import
+    name generic enough that an application's own package could carry it.
     """
 
     name: str = ""
     module: str | tuple[str, ...] = ""
+    distributions: tuple[str, ...] = ()
+    requires_distribution: bool = False
 
-    def detect(self) -> str | None:
+    def _installed_version(self) -> str | None:
+        for dist in self.distributions:
+            version = _distribution_version(dist)
+            if version:
+                return version
+        return None
+
+    def _loaded(self) -> Any:
         modules = (self.module,) if isinstance(self.module, str) else tuple(self.module)
         for mod_name in modules:
             mod = sys.modules.get(mod_name)
-            if mod is None:
-                continue
-            version = getattr(mod, "__version__", None)
-            return f"{self.name}/{version}" if version else self.name
+            if mod is not None:
+                return mod
         return None
+
+    @staticmethod
+    def _entry(name: str, version: object) -> str:
+        return f"{name}/{version}" if isinstance(version, str) and version else name
+
+    def detect(self) -> str | None:
+        mod = self._loaded()
+        if mod is None:
+            return None
+        if self.requires_distribution and self._installed_version() is None:
+            return None
+        version = getattr(mod, "__version__", None)
+        if not isinstance(version, str) or not version:
+            version = self._installed_version()
+        return self._entry(self.name, version)
+
+
+class DeepAgentsClassifier(BaseClassifier):
+    # LangChain's Deep Agents is built on LangGraph and LangChain, so it
+    # comes before both.
+    name = "deepagents"
+    module = "deepagents"
+    distributions = ("deepagents",)
 
 
 class CrewAIClassifier(BaseClassifier):
     name = "crewai"
     module = "crewai"
+    distributions = ("crewai",)
+
+
+class GoogleADKClassifier(BaseClassifier):
+    # ADK sends its model calls through google-genai, a provider SDK and
+    # not a framework, so the ADK label is what a session reports.
+    name = "google_adk"
+    module = "google.adk"
+    distributions = ("google-adk",)
+
+
+class OpenAIAgentsClassifier(BaseClassifier):
+    # The OpenAI Agents SDK's import name is ``agents``, which an
+    # application's own package may also be called: it counts only with
+    # the openai-agents distribution installed.
+    name = "openai_agents"
+    module = "agents"
+    distributions = ("openai-agents",)
+    requires_distribution = True
+
+
+class AgentFrameworkClassifier(BaseClassifier):
+    # Microsoft Agent Framework, the successor to AutoGen and to Semantic
+    # Kernel's agents.
+    name = "agent_framework"
+    module = "agent_framework"
+    distributions = ("agent-framework-core", "agent-framework")
+
+
+class SemanticKernelClassifier(BaseClassifier):
+    name = "semantic_kernel"
+    module = "semantic_kernel"
+    distributions = ("semantic-kernel",)
+
+
+class AutoGenClassifier(BaseClassifier):
+    # Microsoft's AutoGen from 0.4 on. Its import names are
+    # ``autogen_agentchat`` and ``autogen_core``; the ``autogen`` import
+    # name is AG2's (AG2Classifier).
+    name = "autogen"
+    module = ("autogen_agentchat", "autogen_core")
+    distributions = ("autogen-agentchat", "autogen-core")
+
+
+# The distributions that install AG2 under the ``autogen`` import name.
+_AG2_DISTRIBUTIONS = ("ag2", "pyautogen", "autogen")
+# The distribution Microsoft published AutoGen under until 0.2; AG2 took
+# it over from 0.3 on.
+_PYAUTOGEN_DISTRIBUTION = "pyautogen"
+_PYAUTOGEN_AG2_RELEASE = (0, 3)
+# Microsoft's distribution whose 0.2 maintenance line also installs the
+# ``autogen`` import name; from 0.4 on it installs ``autogen_agentchat``.
+_AUTOGEN_LEGACY_DISTRIBUTION = "autogen-agentchat"
+# The autogen-agentchat release that moved to the ``autogen_agentchat``
+# import name.
+_AUTOGEN_AGENTCHAT_MODULE_RELEASE = (0, 4)
+
+
+def _version_below(version: str, bound: tuple[int, int]) -> bool:
+    """Whether ``version``'s major.minor is below ``bound``; False when
+    it does not start with two integers."""
+    match = re.match(r"(\d+)\.(\d+)", version)
+    if match is None:
+        return False
+    return (int(match.group(1)), int(match.group(2))) < bound
+
+
+class AG2Classifier(BaseClassifier):
+    # AG2 owns the ``autogen`` import name: the ag2, pyautogen (from 0.3)
+    # and autogen distributions all install it. Microsoft's AutoGen 0.2
+    # installed it too, as pyautogen below 0.3 and as autogen-agentchat
+    # below 0.4; either of those, with no AG2 distribution ahead of it,
+    # reports ``autogen``.
+    name = "ag2"
+    module = "autogen"
+    distributions = _AG2_DISTRIBUTIONS
+
+    def _installed(self) -> tuple[str, str] | None:
+        """The first AG2 distribution installed, with its version."""
+        for dist in self.distributions:
+            version = _distribution_version(dist)
+            if version:
+                return dist, version
+        return None
+
+    def detect(self) -> str | None:
+        mod = self._loaded()
+        if mod is None:
+            return None
+        installed = self._installed()
+        if installed is None:
+            legacy = _distribution_version(_AUTOGEN_LEGACY_DISTRIBUTION)
+            if legacy is not None and _version_below(legacy, _AUTOGEN_AGENTCHAT_MODULE_RELEASE):
+                return self._entry(AutoGenClassifier.name, legacy)
+        elif installed[0] == _PYAUTOGEN_DISTRIBUTION and _version_below(
+            installed[1], _PYAUTOGEN_AG2_RELEASE
+        ):
+            return self._entry(AutoGenClassifier.name, installed[1])
+        version = getattr(mod, "__version__", None)
+        if not isinstance(version, str) or not version:
+            version = installed[1] if installed else None
+        return self._entry(self.name, version)
+
+
+class AgnoClassifier(BaseClassifier):
+    name = "agno"
+    module = "agno"
+    distributions = ("agno",)
+
+
+class StrandsClassifier(BaseClassifier):
+    name = "strands"
+    module = "strands"
+    distributions = ("strands-agents",)
+
+
+class PydanticAIClassifier(BaseClassifier):
+    name = "pydantic_ai"
+    module = "pydantic_ai"
+    distributions = ("pydantic-ai-slim", "pydantic-ai")
+
+
+class SmolAgentsClassifier(BaseClassifier):
+    name = "smolagents"
+    module = "smolagents"
+    distributions = ("smolagents",)
+
+
+class ClaudeAgentSDKClassifier(BaseClassifier):
+    name = "claude_agent_sdk"
+    module = "claude_agent_sdk"
+    distributions = ("claude-agent-sdk",)
+
+
+class LlamaIndexClassifier(BaseClassifier):
+    name = "llama_index"
+    module = "llama_index"
+    distributions = ("llama-index-core",)
+
+
+class HaystackClassifier(BaseClassifier):
+    name = "haystack"
+    module = "haystack"
+    distributions = ("haystack-ai",)
+
+
+class DSPyClassifier(BaseClassifier):
+    name = "dspy"
+    module = "dspy"
+    distributions = ("dspy",)
+
+
+class LangGraphClassifier(BaseClassifier):
+    # LangGraph builds on LangChain and routes its LLM calls through
+    # the same ChatAnthropic / ChatOpenAI abstractions, so the
+    # existing patch() already intercepts LangGraph-driven calls.
+    # This classifier exists so the session reports LangGraph rather
+    # than bare LangChain in the dashboard CONTEXT panel and for
+    # framework analytics; it comes before LangChain for that reason.
+    name = "langgraph"
+    module = "langgraph"
+    distributions = ("langgraph",)
 
 
 class LangChainClassifier(BaseClassifier):
@@ -286,68 +522,58 @@ class LangChainClassifier(BaseClassifier):
     # multiple aliases collapses every install layout onto the bare
     # ``langchain`` framework name. Order matters: the first match
     # wins, so the umbrella module reports its version when present
-    # and ``langchain_core`` is the canonical fallback.
+    # and ``langchain_core`` is the canonical fallback. Many frameworks
+    # embed LangChain, so it is the last classifier.
     name = "langchain"
     module = ("langchain", "langchain_core")
-
-
-class LangGraphClassifier(BaseClassifier):
-    # LangGraph builds on LangChain and routes its LLM calls through
-    # the same ChatAnthropic / ChatOpenAI abstractions, so the
-    # existing patch() already intercepts LangGraph-driven calls.
-    # This classifier exists so the session_start context accurately
-    # reports LangGraph vs bare LangChain in the dashboard CONTEXT
-    # panel and for framework analytics. See ARCHITECTURE.md.
-    name = "langgraph"
-    module = "langgraph"
-
-
-class LlamaIndexClassifier(BaseClassifier):
-    name = "llama_index"
-    module = "llama_index"
-
-
-class AutoGenClassifier(BaseClassifier):
-    name = "autogen"
-    module = "autogen"
-
-
-class HaystackClassifier(BaseClassifier):
-    name = "haystack"
-    module = "haystack"
-
-
-class DSPyClassifier(BaseClassifier):
-    name = "dspy"
-    module = "dspy"
-
-
-class SmolAgentsClassifier(BaseClassifier):
-    name = "smolagents"
-    module = "smolagents"
-
-
-class PydanticAIClassifier(BaseClassifier):
-    name = "pydantic_ai"
-    module = "pydantic_ai"
+    distributions = ("langchain", "langchain-core")
 
 
 class FrameworkCollector(BaseCollector):
+    # The order the per-event ``framework`` label is taken in: the first
+    # match wins, and a framework comes before the ones it is built on or
+    # commonly embeds. ARCHITECTURE.md (Sensor > Framework attribution)
+    # lists it.
     CLASSIFIERS: list[BaseClassifier] = [
+        DeepAgentsClassifier(),
         CrewAIClassifier(),
-        LangChainClassifier(),
-        LangGraphClassifier(),
-        LlamaIndexClassifier(),
+        GoogleADKClassifier(),
+        OpenAIAgentsClassifier(),
+        AgentFrameworkClassifier(),
+        SemanticKernelClassifier(),
         AutoGenClassifier(),
+        AG2Classifier(),
+        AgnoClassifier(),
+        StrandsClassifier(),
+        PydanticAIClassifier(),
+        SmolAgentsClassifier(),
+        ClaudeAgentSDKClassifier(),
+        LlamaIndexClassifier(),
         HaystackClassifier(),
         DSPyClassifier(),
-        SmolAgentsClassifier(),
-        PydanticAIClassifier(),
+        LangGraphClassifier(),
+        LangChainClassifier(),
     ]
 
     def _gather(self) -> dict[str, Any]:
-        found = [c.detect() for c in self.CLASSIFIERS if c.detect() is not None]
+        found = detect_frameworks()
         return {"frameworks": found} if found else {}
+
+
+def detect_frameworks() -> list[str]:
+    """Every known framework loaded now, versioned where a version is
+    known, in classifier order. Never raises; a broken classifier is
+    skipped."""
+    found: list[str] = []
+    for classifier in FrameworkCollector.CLASSIFIERS:
+        try:
+            entry = classifier.detect()
+        except Exception:
+            # best-effort: one classifier must not hide the others.
+            continue
+        if entry is not None and entry not in found:
+            found.append(entry)
+    return found
 
 
 # ----------------------------------------------------------------------

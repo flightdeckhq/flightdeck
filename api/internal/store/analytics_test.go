@@ -560,8 +560,8 @@ func TestQueryAnalytics_SubagentMetricsAcceptFrameworkDimension(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s grouped by framework: %v", metric, err)
 		}
-		if len(resp.Series) != 1 || resp.Series[0].Dimension != "langgraph/0.6.11" {
-			t.Fatalf("%s: expected one series for langgraph/0.6.11, got %+v", metric, resp.Series)
+		if len(resp.Series) != 1 || resp.Series[0].Dimension != "langgraph" {
+			t.Fatalf("%s: expected one series for langgraph, got %+v", metric, resp.Series)
 		}
 	}
 	// Two-dim shape with framework as the secondary axis takes the
@@ -572,6 +572,90 @@ func TestQueryAnalytics_SubagentMetricsAcceptFrameworkDimension(t *testing.T) {
 		FilterFlavor: flavor,
 	}); err != nil {
 		t.Fatalf("child_count flavor x framework: %v", err)
+	}
+}
+
+// TestQueryAnalytics_FrameworkDimensionGroupsByLabel pins one series per
+// framework whatever its version and however it was detected: the
+// sensor's init-time detection stores a versioned entry
+// (`langchain/1.6.10`), its detection after init() a bare one
+// (`langchain`), and both count under `langchain`, once per
+// session even when a session lists the label twice.
+func TestQueryAnalytics_FrameworkDimensionGroupsByLabel(t *testing.T) {
+	s, cleanup := newTestStore(t)
+	defer cleanup()
+
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	flavor := "test-framework-label-" + randomUUID(t)[:8]
+	agentID := randomUUID(t)
+	seedAgent(t, s, agentID, now.Add(-2*time.Hour), now.Add(-30*time.Minute), 5, 500)
+	for i, contextJSON := range []string{
+		`{"frameworks": ["langchain/1.6.10"]}`,
+		`{"frameworks": ["langchain"]}`,
+		`{"frameworks": ["claude_agent_sdk/0.2.168", "langchain/1.4.4"]}`,
+		`{"frameworks": ["langchain/1.0.0", "langchain"]}`,
+		`{}`,
+	} {
+		seedSessionRow(t, s, randomUUID(t), agentID, flavor, nil, nil, contextJSON,
+			now.Add(-time.Duration(40-i)*time.Minute), 100)
+	}
+
+	resp, err := s.QueryAnalytics(ctx, AnalyticsParams{
+		Metric: "sessions", GroupBy: "framework", Range: "custom",
+		From: now.Add(-time.Hour), To: now, Granularity: "day",
+		FilterFlavor: flavor,
+	})
+	if err != nil {
+		t.Fatalf("sessions grouped by framework: %v", err)
+	}
+	got := map[string]float64{}
+	for _, series := range resp.Series {
+		got[series.Dimension] = series.Total
+	}
+	want := map[string]float64{"langchain": 4, "claude_agent_sdk": 1, "unknown": 1}
+	if len(got) != len(want) {
+		t.Fatalf("series = %v, want %v", got, want)
+	}
+	for dim, total := range want {
+		if got[dim] != total {
+			t.Errorf("series %q total = %v, want %v (all series: %v)", dim, got[dim], total, got)
+		}
+	}
+
+	// The same labels on the secondary axis, which needs the framework
+	// unnest in its FROM clause whatever the primary is: a sessions
+	// metric (flavor x framework) and an events metric (model x
+	// framework, the events joined to their sessions).
+	for _, primary := range []string{"flavor", "model"} {
+		metric := "sessions"
+		if primary == "model" {
+			metric = "tokens"
+		}
+		two, err := s.QueryAnalytics(ctx, AnalyticsParams{
+			Metric: metric, GroupBy: primary, GroupBySecondary: "framework",
+			Range: "custom", From: now.Add(-time.Hour), To: now, Granularity: "day",
+			FilterFlavor: flavor,
+		})
+		if err != nil {
+			t.Fatalf("%s grouped by %s x framework: %v", metric, primary, err)
+		}
+		if primary != "flavor" {
+			continue // no events were seeded; the query must only run
+		}
+		keys := map[string]float64{}
+		for _, series := range two.Series {
+			for _, point := range series.Data {
+				for _, bucket := range point.Breakdown {
+					keys[bucket.Key] += bucket.Value
+				}
+			}
+		}
+		for dim, total := range want {
+			if keys[dim] != total {
+				t.Errorf("%s x framework: bucket %q = %v, want %v (all: %v)", primary, dim, keys[dim], total, keys)
+			}
+		}
 	}
 }
 

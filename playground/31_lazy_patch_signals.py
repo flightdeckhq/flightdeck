@@ -1,10 +1,15 @@
-"""patch() before the SDK imports, and a SIGTERM that lands inside a sensor lock.
+"""patch() before the SDK imports, a framework imported after init(), and a
+SIGTERM that lands inside a sensor lock.
 
 1. ``import flightdeck_sensor``, ``init()`` and ``patch()`` load no SDK:
    the script checks ``sys.modules``, then imports openai, anthropic and
    litellm only afterwards and makes one tiny call through each; every
    call must land a metered ``post_call``.
-2. A child process starts a session, makes one tiny OpenAI call, then
+2. A framework imported after ``init()``: LangChain is not loaded when
+   the classifiers first run, and its first call labels the session
+   (``framework=langchain``, also in ``context.frameworks``). Skipped
+   without langchain-openai.
+3. A child process starts a session, makes one tiny OpenAI call, then
    holds the session's lock on its main thread while the script sends it
    a real SIGTERM. The child must end by SIGTERM within a bound, with its
    ``session_end`` delivered to the stack.
@@ -16,16 +21,21 @@ litellm packages, and the dev stack. Exits 2 (SKIP) without them.
 from __future__ import annotations
 
 import importlib.util
+import json
 import os
 import signal
 import subprocess
 import sys
 import time
+import urllib.request
 import uuid
+from typing import Any
 
 import flightdeck_sensor
 
 from _helpers import (
+    API_TOKEN,
+    API_URL,
     assert_event_landed,
     fetch_events_for_session,
     init_sensor,
@@ -134,6 +144,54 @@ def lazy_patch() -> None:
     flightdeck_sensor.teardown()
 
 
+def _session_row(session_id: str) -> dict[str, Any]:
+    req = urllib.request.Request(
+        f"{API_URL}/v1/sessions/{session_id}",
+        headers={"Authorization": f"Bearer {API_TOKEN}"},
+    )
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return dict(json.loads(r.read()).get("session") or {})
+
+
+def late_framework() -> None:
+    """A framework imported after init() labels the session: the
+    classifiers find nothing at init(), the next call carries the label,
+    and the worker fills the session row's framework and
+    context.frameworks."""
+    session_id = str(uuid.uuid4())
+    init_sensor(session_id, flavor=FLAVOR)
+    flightdeck_sensor.patch(quiet=True)
+    print(f"[playground:31_lazy_patch_signals] late-framework session_id={session_id}")
+    session = flightdeck_sensor._session
+    assert session is not None
+    at_init = session._framework
+
+    from langchain_openai import ChatOpenAI
+
+    t0 = time.monotonic()
+    ChatOpenAI(model=OPENAI_MODEL, max_tokens=5).invoke("hi")
+    assert_event_landed(session_id, "post_call", EVENT_LANDED_S, model_contains=OPENAI_MODEL)
+    deadline = time.monotonic() + EVENT_LANDED_S
+    row = _session_row(session_id)
+    while row.get("framework") is None and time.monotonic() < deadline:
+        time.sleep(0.5)
+        row = _session_row(session_id)
+    frameworks = (row.get("context") or {}).get("frameworks") or []
+    passed = at_init is None and row.get("framework") == "langchain" and "langchain" in frameworks
+    print_result(
+        "a framework imported after init() labels the session",
+        passed,
+        int((time.monotonic() - t0) * 1000),
+        f"at_init={at_init} framework={row.get('framework')} frameworks={frameworks}",
+    )
+    flightdeck_sensor.teardown()
+    if not passed:
+        raise AssertionError(
+            f"want framework=langchain after the late import, at init None: "
+            f"at_init={at_init} row framework={row.get('framework')} frameworks={frameworks}"
+        )
+
+
 def sigterm_inside_a_lock() -> None:
     child_session_id = str(uuid.uuid4())
     proc = subprocess.Popen(
@@ -182,6 +240,10 @@ def main() -> None:
         sys.exit(2)
     wait_for_dev_stack()
     lazy_patch()
+    if importlib.util.find_spec("langchain_openai") is None:
+        print("SKIP: late-framework section: pip install langchain-openai to run it")
+    else:
+        late_framework()
     sigterm_inside_a_lock()
 
 

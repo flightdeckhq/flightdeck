@@ -47,6 +47,11 @@ class _FrameworkModules:
             return self._installed.get(name, default)
         return sys.modules.get(name, default)
 
+    def __len__(self) -> int:
+        # Installing a framework module grows the table, as an import
+        # does: the late detection runs the classifiers again only then.
+        return len(sys.modules) + len(self._installed)
+
 
 @pytest.fixture(autouse=True)
 def frameworks(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
@@ -55,7 +60,8 @@ def frameworks(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     earlier test (or a background thread one left running) imported
     into the same worker: a loaded ``crewai`` would outrank a faked
     ``langchain``, and importing any ``crewai`` submodule re-adds the
-    package to ``sys.modules`` behind a test's back."""
+    package to ``sys.modules`` behind a test's back. No distribution
+    counts as installed, so a version comes from the fake module."""
     from flightdeck_sensor.core import context
     from flightdeck_sensor.core.context import FrameworkCollector
 
@@ -68,7 +74,26 @@ def frameworks(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         argv=sys.argv, modules=_FrameworkModules(frozenset(names), installed)
     )
     monkeypatch.setattr(context, "sys", view)
+    monkeypatch.setattr(context, "_distribution_version", lambda _name: None)
     return installed
+
+
+def _fake_module(name: str, version: str | None = None) -> types.ModuleType:
+    mod = types.ModuleType(name)
+    if version is not None:
+        mod.__version__ = version  # type: ignore[attr-defined]
+    return mod
+
+
+def _init() -> Any:
+    fd.init(
+        server="http://localhost:4000/ingest",
+        token="tok_dev",
+        agent_type="production",
+        quiet=True,
+    )
+    assert fd._session is not None
+    return fd._session
 
 
 def _reset_sensor() -> None:
@@ -155,11 +180,9 @@ def test_init_picks_first_classifier_match(
     frameworks: dict[str, Any],
 ) -> None:
     """When multiple frameworks are present the per-event field uses
-    the first match in FrameworkCollector's classifier order. Today
-    that's CrewAI > LangChain > LangGraph > LlamaIndex > AutoGen >
-    Haystack > DSPy > SmolAgents > PydanticAI. Adjusts mechanically
-    if classifier order changes -- the test asserts the *first* of a
-    known pair, not a literal name."""
+    the first match in FrameworkCollector's classifier order, where a
+    framework comes before the ones it is built on: LangGraph before
+    LangChain."""
     _reset_sensor()
     lc = MagicMock()
     lc.__version__ = "0.3.27"
@@ -175,11 +198,12 @@ def test_init_picks_first_classifier_match(
         quiet=True,
     )
     assert fd._session is not None
-    # LangChain comes before LangGraph in the classifier list -- that
+    # LangGraph comes before LangChain in the classifier list -- that
     # ordering is the contract this test pins. The two are listed in
     # context.frameworks[] in classifier order; the bare per-event
     # value is the first one.
-    assert fd._session._framework == "langchain"
+    assert fd._session._framework == "langgraph"
+    assert fd._session._context["frameworks"] == ["langgraph/0.2.50", "langchain/0.3.27"]
 
 
 def test_post_call_event_carries_framework(
@@ -209,3 +233,180 @@ def test_post_call_event_carries_framework(
 
     payload = fd._session._build_payload(EventType.POST_CALL, model="x")
     assert payload["framework"] == "langchain"
+
+
+# ----------------------------------------------------------------------
+# A framework imported after init()
+# ----------------------------------------------------------------------
+
+
+def test_a_framework_imported_before_init_labels_the_first_event(
+    frameworks: dict[str, Any],
+) -> None:
+    """Import, then init(): the classifiers find the framework at init()
+    and every event, the session_start included, carries its label."""
+    _reset_sensor()
+    frameworks["pydantic_ai"] = _fake_module("pydantic_ai", "2.64.0")
+    session = _init()
+
+    from flightdeck_sensor.core.types import EventType
+
+    assert session._framework == "pydantic_ai"
+    assert session._context["frameworks"] == ["pydantic_ai/2.64.0"]
+    assert session._build_payload(EventType.POST_CALL)["framework"] == "pydantic_ai"
+
+
+def test_a_framework_imported_after_init_labels_the_next_event(
+    frameworks: dict[str, Any],
+) -> None:
+    """init(), then import: patch() imports nothing, so the framework is
+    not loaded at init(). The next event built finds it, and every event
+    after carries the label; the versioned entry reaches the context that
+    a sub-agent's session_start inherits."""
+    _reset_sensor()
+    session = _init()
+
+    from flightdeck_sensor.core.types import EventType
+
+    assert session._framework is None
+    assert session._build_payload(EventType.POST_CALL)["framework"] is None
+
+    frameworks["agno"] = _fake_module("agno", "2.1.0")
+
+    assert session._build_payload(EventType.POST_CALL)["framework"] == "agno"
+    assert session._build_payload(EventType.TOOL_CALL)["framework"] == "agno"
+    assert session._context["frameworks"] == ["agno/2.1.0"]
+    child = session._build_subagent_payload(
+        event_type=EventType.SESSION_START,
+        child_session_id="33333333-3333-3333-3333-333333333333",
+        child_agent_id="44444444-4444-4444-4444-444444444444",
+        child_agent_name="child",
+        agent_role="researcher",
+    )
+    assert child["framework"] == "agno"
+    assert child["context"]["frameworks"] == ["agno/2.1.0"]
+
+
+def test_a_framework_imported_after_init_is_found_by_a_sub_agent_start(
+    frameworks: dict[str, Any],
+) -> None:
+    """The first event built after the import may be a sub-agent's
+    session_start; it carries the label too."""
+    _reset_sensor()
+    session = _init()
+    frameworks["crewai"] = _fake_module("crewai", "1.15.0")
+
+    from flightdeck_sensor.core.types import EventType
+
+    child = session._build_subagent_payload(
+        event_type=EventType.SESSION_START,
+        child_session_id="33333333-3333-3333-3333-333333333333",
+        child_agent_id="44444444-4444-4444-4444-444444444444",
+        child_agent_name="child",
+        agent_role="researcher",
+    )
+    assert child["framework"] == "crewai"
+
+
+def test_late_detection_scans_only_while_the_label_is_unknown_and_modules_change(
+    frameworks: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The classifiers run again only when the module table has grown,
+    and never once a label resolved: an event costs no module scan after
+    the framework is known."""
+    from flightdeck_sensor.core import context
+    from flightdeck_sensor.core.types import EventType
+
+    _reset_sensor()
+    session = _init()
+    calls: list[int] = []
+    real = context.detect_frameworks
+
+    def counting() -> list[str]:
+        calls.append(1)
+        return real()
+
+    monkeypatch.setattr(context, "detect_frameworks", counting)
+
+    session._build_payload(EventType.POST_CALL)
+    session._build_payload(EventType.POST_CALL)
+    assert calls == [], "nothing imported since the last scan: no scan"
+
+    frameworks["unrelated_module"] = _fake_module("unrelated_module")
+    session._build_payload(EventType.POST_CALL)
+    assert len(calls) == 1, "the module table grew: one scan"
+    assert session._framework is None
+
+    frameworks["strands"] = _fake_module("strands")
+    session._build_payload(EventType.POST_CALL)
+    assert session._framework == "strands"
+    scans = len(calls)
+
+    frameworks["langchain"] = _fake_module("langchain", "1.4.4")
+    for _ in range(3):
+        assert session._build_payload(EventType.POST_CALL)["framework"] == "strands"
+    assert len(calls) == scans, "the label resolved: no more scans"
+
+
+def test_late_detection_is_skipped_on_a_signals_shutdown_path(
+    frameworks: dict[str, Any],
+) -> None:
+    """A signal's shutdown builds session_end with a bounded lock wait,
+    and nothing on that path may load a module, so it never scans."""
+    from flightdeck_sensor.core.types import EventType
+
+    _reset_sensor()
+    session = _init()
+    frameworks["dspy"] = _fake_module("dspy", "3.4.0")
+
+    payload = session._build_payload(EventType.SESSION_END, lock_wait=0.5)
+    assert payload["framework"] is None
+    assert session._build_payload(EventType.POST_CALL)["framework"] == "dspy"
+
+
+def test_late_detection_is_skipped_once_the_session_is_closing(
+    frameworks: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A signal's handler marks the session closed before it wakes the
+    drain thread, and records the shutdown only after: in that window the
+    drain thread settles open streams through _build_payload with no lock
+    wait. The closed state alone must stop the scan, which could import
+    the email package through a distribution-metadata lookup."""
+    from flightdeck_sensor.core import context
+    from flightdeck_sensor.core.types import EventType, SessionState
+
+    _reset_sensor()
+    session = _init()
+    calls: list[int] = []
+
+    def counting() -> list[str]:
+        calls.append(1)
+        return ["dspy/3.4.0"]
+
+    monkeypatch.setattr(context, "detect_frameworks", counting)
+    frameworks["dspy"] = _fake_module("dspy", "3.4.0")
+    session._state = SessionState.CLOSED
+    assert session._signal_shutdown is None
+
+    assert session._build_payload(EventType.POST_CALL)["framework"] is None
+    assert calls == []
+
+
+def test_a_failing_late_scan_leaves_the_event_unlabelled(
+    frameworks: dict[str, Any], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attribution is best-effort: a scan that raises builds the event
+    with a null framework."""
+    from flightdeck_sensor.core import context
+    from flightdeck_sensor.core.types import EventType
+
+    _reset_sensor()
+    session = _init()
+
+    def broken() -> list[str]:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(context, "detect_frameworks", broken)
+    frameworks["agno"] = _fake_module("agno")
+
+    assert session._build_payload(EventType.POST_CALL)["framework"] is None

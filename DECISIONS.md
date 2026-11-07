@@ -729,3 +729,22 @@ the Prometheus client library, as the workers are.
 nginx deny (one routing slip exposes it); raw paths as the label (a
 series per session id); prometheus/client_golang (a dependency for one
 family).
+
+## D257 -- The sensor's framework labels are the GenAI dialect's, `autogen` is Microsoft's line, and a framework imported after init() is detected later
+
+**Date:** 2026-11-07
+**Decision:** sensor framework labels match the OTLP GenAI dialect's; the
+Agent SDK interceptor sends the bare `claude_agent_sdk`. The `autogen` import name
+reports `ag2`; `autogen` means `autogen_agentchat` / `autogen_core`, or
+AutoGen 0.2 (`pyautogen` < 0.3, `autogen-agentchat` < 0.4). While a
+session's framework is unknown the sensor re-runs the classifiers when it
+builds an event and `sys.modules` has grown; the worker fills a null
+`sessions.framework` from a later event and appends the label to
+`context.frameworks[]`. The analytics `framework` dimension groups by the
+label before the `/`. Existing rows are not backfilled.
+**Why:** the analytics dimension merges sensor and OTLP rows only on equal
+labels, and one framework must not split by version or import order.
+Under D240 an app importing its framework after `init()` was null.
+**Rejected alternative:** importing frameworks at `init()` (D240's cost); a
+scan per event; a second `session_start` (a re-attachment); a versioned
+list on the wire (a payload change); a backfill (AG2/AutoGen is not stored).
